@@ -396,8 +396,9 @@ let expectedA0, expectedB0, expectedA1, expectedB1 = coldOf docA0, coldOf docB0,
 checkTrue "the two documents lay out differently" (fst expectedA0 <> fst expectedB0)
 let cellPrefix id (layouts: Layout.BlockLayout list) = (layouts |> List.find (fun layout -> layout.BlockId = id)).Prefix.Trim()
 // Cell numbering restarts at the top of each table and runs through its cells.
-check "document A numbers its table cells" (cellPrefix "shared-table-r1-a-0" (fst expectedA0), cellPrefix "shared-table-r2-a-0" (fst expectedA0)) ("1.", "5.")
-check "document B numbers its table cells" (cellPrefix "shared-table-r1-a-0" (fst expectedB0), cellPrefix "shared-table-r2-a-0" (fst expectedB0)) ("1.", "7.")
+// The table continues the list of the 12 numbered body paragraphs before it.
+check "document A numbers its table cells" (cellPrefix "shared-table-r1-a-0" (fst expectedA0), cellPrefix "shared-table-r2-a-0" (fst expectedA0)) ("13.", "17.")
+check "document B numbers its table cells" (cellPrefix "shared-table-r1-a-0" (fst expectedB0), cellPrefix "shared-table-r2-a-0" (fst expectedB0)) ("13.", "19.")
 
 // Interleaved on one thread, each document with its own state.
 let stateA, stateB = Layout.createIncrementalLayoutState (), Layout.createIncrementalLayoutState ()

@@ -1622,7 +1622,7 @@ let private plannedContentOffsetForBlock (settings: LayoutSettings) measureText 
         for row in tableBlock.Rows do
             if result.IsNone && rowContainsBlock blockId row then
                 let measurement =
-                    measureTableRowForContextRowLocalWithColumnMetrics (tableMeasureScope None tableBlock) settings measureText measureRange styleContext tableBlock columnMetrics outerLeft tableHorizontalOffset row
+                    measureTableRowForContextRowLocalWithColumnMetrics (tableMeasureScopeFrom None (listCountersBeforeTable doc tableBlock) tableBlock) settings measureText measureRange styleContext tableBlock columnMetrics outerLeft tableHorizontalOffset row
                 for group in measurement.CellGroups do
                     if result.IsNone then
                         let offset =

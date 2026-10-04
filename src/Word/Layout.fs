@@ -2758,7 +2758,9 @@ type internal TableListNumbering = {
     BeforeRow: System.Collections.Generic.Dictionary<TableRow, ListCounters> option
 }
 
-let internal tableListNumbering (tableBlock: TableBlock) : TableListNumbering =
+/// True when list numbering has to be tracked through the table: it holds a
+/// numbered paragraph, or a nested table (not looked into here).
+let private tableMayHoldNumberedParagraphs (tableBlock: TableBlock) =
     let mutable hasNumbered = false
     for row in tableBlock.Rows do
         if not hasNumbered then
@@ -2768,15 +2770,57 @@ let internal tableListNumbering (tableBlock: TableBlock) : TableListNumbering =
                     else
                         for para in cell.Content do
                             if para.Metadata.ListStyle = Numbered then hasNumbered <- true
-    if not hasNumbered then { BeforeRow = None }
+    hasNumbered
+
+/// The list counters after the table, given those before it.
+let private listCountersAfterTable (counters: ListCounters) (tableBlock: TableBlock) : ListCounters =
+    if not (tableMayHoldNumberedParagraphs tableBlock) then counters
+    else
+        let mutable current = counters
+        for tableRow in tableBlock.Rows do
+            current <- advanceListCountersThroughRow current tableRow
+        current
+
+/// `initial` are the counters of the text before the table, so that a list
+/// which starts in the body continues inside the table instead of restarting.
+let internal tableListNumberingFrom (initial: ListCounters) (tableBlock: TableBlock) : TableListNumbering =
+    if not (tableMayHoldNumberedParagraphs tableBlock) then { BeforeRow = None }
     else
         let beforeRow = System.Collections.Generic.Dictionary<TableRow, ListCounters>(HashIdentity.Reference)
-        let mutable counters: ListCounters = Map.empty
+        let mutable counters: ListCounters = initial
         for tableRow in tableBlock.Rows do
             if not (beforeRow.ContainsKey tableRow) then
                 beforeRow.[tableRow] <- counters
             counters <- advanceListCountersThroughRow counters tableRow
         { BeforeRow = if counters.IsEmpty then None else Some beforeRow }
+
+let internal tableListNumbering (tableBlock: TableBlock) : TableListNumbering =
+    tableListNumberingFrom Map.empty tableBlock
+
+/// The list counters in force where a top-level table of `doc` starts: those
+/// of the numbered paragraphs and tables before it. For callers that measure a
+/// table on its own (plan, paint); the document pass has them at hand.
+let internal listCountersBeforeTable (doc: Document) (tableBlock: TableBlock) : ListCounters =
+    if not (tableMayHoldNumberedParagraphs tableBlock) then Map.empty
+    else
+        let mutable counters: ListCounters = Map.empty
+        let mutable remaining = doc.Blocks
+        let mutable found = false
+        while not found && not remaining.IsEmpty do
+            match remaining with
+            | Table candidate :: _ when obj.ReferenceEquals(candidate, tableBlock) || candidate.Id = tableBlock.Id ->
+                found <- true
+            | block :: tail ->
+                match block with
+                | Table earlier -> counters <- listCountersAfterTable counters earlier
+                | Paragraph para
+                | Heading (_, para) ->
+                    if para.Metadata.ListStyle = Numbered then
+                        counters <- snd (WordLayout.Numbering.markerAndCounters para.Metadata counters)
+                | TextBox _ -> ()
+                remaining <- tail
+            | [] -> ()
+        if found then counters else Map.empty
 
 /// Counters a top-level row starts with; ValueNone when the table has no
 /// numbered paragraphs (nothing to track).
@@ -2902,9 +2946,9 @@ type internal TableMeasureScope = {
     ScopeMerges: TableMergeMeasurements option
 }
 
-let internal tableMeasureScope (memo: ParagraphLayoutMemo option) (tableBlock: TableBlock) : TableMeasureScope =
+let internal tableMeasureScopeFrom (memo: ParagraphLayoutMemo option) (initialCounters: Map<string * int, int>) (tableBlock: TableBlock) : TableMeasureScope =
     { ScopeMemo = memo
-      ScopeNumbering = tableListNumbering tableBlock
+      ScopeNumbering = tableListNumberingFrom initialCounters tableBlock
       ScopeMerges = tableVerticalMerges tableBlock.Rows |> Option.map (fun merges -> { Merges = merges; RowLocal = null; Extra = null }) }
 
 let rec private measureTableRowWithStyleAtDepth nestedTableLayoutDepth (memo: ParagraphLayoutMemo option) (rowListCounters: ListCounters voption) (spanningCells: bool array) (mergeExtraHeight: float) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (tableBlock: TableBlock) (columnMetrics: TableColumnMetrics) (outerLeft: float) (tableLeftOffset: float) (row: TableRow) rowY tableContinuationHeaderHeight (paragraphStyleForParagraph: ParagraphBlock -> ParagraphStyle) (effectiveBufferForParagraph: ParagraphStyle -> TextBuffer -> TextBuffer) =
@@ -3073,6 +3117,9 @@ let rec private measureTableRowWithStyleAtDepth nestedTableLayoutDepth (memo: Pa
         currentColumn <- currentColumn + span
 
     { Height = rowHeight + mergeExtraHeight; CellGroups = List.rev cellGroups; Traces = List.rev traces }
+
+let internal tableMeasureScope (memo: ParagraphLayoutMemo option) (tableBlock: TableBlock) : TableMeasureScope =
+    tableMeasureScopeFrom memo Map.empty tableBlock
 
 /// The one way a top-level table row is measured: every caller (the table
 /// plan, the block flow, and the two paint paths) goes through here with the
@@ -3595,9 +3642,15 @@ let private fragmentPlanForRowTransaction settings firstTablePage headerHeight r
     addFragment currentY rowHeight repeatedHeaderHeight reason |> ignore
     currentY, resizeArrayToList fragments
 
-let private buildTableLayoutPlanWithMemo (memo: ParagraphLayoutMemo option) settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset tableY =
+let private buildTableLayoutPlanWithMemo (memo: ParagraphLayoutMemo option) (initialCounters: Map<string * int, int> voption) settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset tableY =
     let styleContext = styleContextForLayout memo doc
-    let measureScope = tableMeasureScope memo tableBlock
+    // The list counters at the table: handed in by the document pass, else
+    // worked out from the document, so the plan numbers cells as the pass does.
+    let initialCounters =
+        match initialCounters with
+        | ValueSome counters -> counters
+        | ValueNone -> listCountersBeforeTable doc tableBlock
+    let measureScope = tableMeasureScopeFrom memo initialCounters tableBlock
     let columnMetrics = tableColumnMetrics tableMaxWidth columnWidths
     let outerRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale tableBlock |> snd
     let tableX = settings.PaddingLeft + tableHorizontalOffset - outerLeft
@@ -3683,9 +3736,9 @@ let private buildTableLayoutPlanWithMemo (memo: ParagraphLayoutMemo option) sett
     }
 
 let buildTableLayoutPlanForDocument settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset tableY =
-    buildTableLayoutPlanWithMemo None settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset tableY
+    buildTableLayoutPlanWithMemo None ValueNone settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset tableY
 
-let private buildTableLayoutPlanAtWithMemo (memo: ParagraphLayoutMemo option) settings measureText measureRange doc tableBlock tableY =
+let private buildTableLayoutPlanAtWithMemo (memo: ParagraphLayoutMemo option) (initialCounters: Map<string * int, int> voption) settings measureText measureRange doc tableBlock tableY =
     let tableLeftOffset = tableLeftOffsetForDocument memo doc tableBlock
     let maxWidth = max 0.0 (settings.Width - settings.PaddingLeft - settings.MarginRight - tableLeftOffset)
     let outerLeft, outerRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale tableBlock
@@ -3693,10 +3746,10 @@ let private buildTableLayoutPlanAtWithMemo (memo: ParagraphLayoutMemo option) se
     let columnWidths = tableColumnWidths tableMaxWidth tableBlock
     let tableWidth = WordLayout.Table.tableWidthWithSpacing columnWidths (WordLayout.Table.cellSpacing WordLayout.canvasScale tableBlock)
     let tableHorizontalOffset = tableLeftOffset + tableAlignmentOffset tableBlock.Alignment maxWidth tableWidth
-    buildTableLayoutPlanWithMemo memo settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset tableY
+    buildTableLayoutPlanWithMemo memo initialCounters settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset tableY
 
 let buildTableLayoutPlanForDocumentAt settings measureText measureRange doc tableBlock tableY =
-    buildTableLayoutPlanAtWithMemo None settings measureText measureRange doc tableBlock tableY
+    buildTableLayoutPlanAtWithMemo None ValueNone settings measureText measureRange doc tableBlock tableY
 
 /// Layout document blocks. Table cell paragraphs are included so shared hit/cursor logic works inside tables.
 let private footnoteParagraphMetadataForLayout = { defaultMetadata with SpacingBefore = Some 0.0; SpacingAfter = Some 0.0 }
@@ -3730,6 +3783,7 @@ let private layoutDocumentWithRangeAndInitial
         (measureText: TextMeasurer)
         (measureRange: TextRangeMeasurer)
         (doc: Document)
+        (initialCounters: Map<string * int, int>)
         (initialObstacles: FloatingObstacle list)
         (initialPlacedBoxes: PlacedFloatingBox list) =
     // Multi-column sections are flowed by columnFlowLayout, which drives this
@@ -3738,7 +3792,7 @@ let private layoutDocumentWithRangeAndInitial
     let maxWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
     let mutable y = settings.PaddingTop
     let layouts = ResizeArray<BlockLayout>()
-    let mutable numberedCounters = Map.empty<string * int, int>
+    let mutable numberedCounters = initialCounters
     let mutable footnotesByPage: Map<int, (string * string) list> = Map.empty
     let mutable floatingObstacles: FloatingObstacle list = initialObstacles
     let mutable placedFloatingBoxes: PlacedFloatingBox list = initialPlacedBoxes
@@ -3887,7 +3941,11 @@ let private layoutDocumentWithRangeAndInitial
                     match tableRowCountForTrace with
                     | Some count -> count >= 10
                     | None -> false
-                let tablePlan = lazy (buildTableLayoutPlanAtWithMemo memo settings measureText measureRange doc tableBlock tableY)
+                // The body's list counters at this table: a list that starts in
+                // the body text continues in the cells, and on after the table.
+                let countersBeforeTable = numberedCounters
+                numberedCounters <- listCountersAfterTable countersBeforeTable tableBlock
+                let tablePlan = lazy (buildTableLayoutPlanAtWithMemo memo (ValueSome countersBeforeTable) settings measureText measureRange doc tableBlock tableY)
                 let tracePlanRows =
                     if traceRows then
                         tablePlan.Value.Rows |> List.map (fun row -> row.RowIndex, row) |> Map.ofList |> Some
@@ -3916,7 +3974,7 @@ let private layoutDocumentWithRangeAndInitial
                     let rowCount = tableRowCountForTrace |> Option.defaultValue 0
                     traceTableLayout (sprintf "start rows=%d y=%.2f page=%d widths=%s" rowCount tableY (pageNumberForY settings tableY) (columnWidths |> List.map (sprintf "%.2f") |> String.concat ","))
 
-                let measureScope = tableMeasureScope memo tableBlock
+                let measureScope = tableMeasureScopeFrom memo countersBeforeTable tableBlock
                 let measureRow (row: TableRow) rowY tableContinuationHeaderHeight =
                     measureTableRowForContextWithColumnMetrics measureScope settings measureText measureRange styleContext tableBlock columnMetrics outerLeft tableHorizontalOffset row rowY tableContinuationHeaderHeight
 
@@ -4461,7 +4519,7 @@ let private flowColumns (memo: ParagraphLayoutMemo option) (settings: LayoutSett
     let balancedHeight =
         if balanced then
             let w = columnWidth 0
-            let sub, _ = layoutDocumentWithRangeAndInitial memo { settings with Width = settings.PaddingLeft + w + settings.MarginRight; PageHeight = 100000.0 } measureText measureRange doc [] []
+            let sub, _ = layoutDocumentWithRangeAndInitial memo { settings with Width = settings.PaddingLeft + w + settings.MarginRight; PageHeight = 100000.0 } measureText measureRange doc Map.empty [] []
             let bottom = maxLineBottom settings.PaddingTop sub
             Some ((bottom - settings.PaddingTop) / float n + 2.0)
         else None
@@ -4584,7 +4642,7 @@ let private flowColumns (memo: ParagraphLayoutMemo option) (settings: LayoutSett
         | None ->
             let sub = { doc with Blocks = [block] }
             let subLayouts, _ =
-                layoutDocumentWithRangeAndInitial memo { settings with Width = settings.PaddingLeft + columnWidth col + settings.MarginRight; PageHeight = 100000.0 } measureText measureRange sub [] []
+                layoutDocumentWithRangeAndInitial memo { settings with Width = settings.PaddingLeft + columnWidth col + settings.MarginRight; PageHeight = 100000.0 } measureText measureRange sub counters [] []
             // The sub-pass lays its own footnotes out at the bottom of its
             // 100,000px page; they belong at the bottom of the real page.
             let subLayouts =
@@ -4607,6 +4665,10 @@ let private flowColumns (memo: ParagraphLayoutMemo option) (settings: LayoutSett
                     results.Add(sl |> shiftBlockY dy |> shiftBlockX (columnDx col))
                     addPageFootnotes (layoutFootnotes sl.Lines)
                 y <- y + height
+            // A list running through the table carries on after it.
+            match block with
+            | Table tableBlock -> counters <- listCountersAfterTable counters tableBlock
+            | _ -> ()
     resizeArrayToList results, page, y, footnotesByPage
 
 /// Absolute geometry of one rendered page. For single-section documents every
@@ -4744,14 +4806,14 @@ let private layoutDocumentPagesWithMemo (memo: ParagraphLayoutMemo option) (sett
                 r @ footnotes
             | _ ->
                 let firstPass, placedAfterFirst =
-                    layoutDocumentWithRangeAndInitial memo settings measureText measureRange doc [] []
+                    layoutDocumentWithRangeAndInitial memo settings measureText measureRange doc Map.empty [] []
                 let maxWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
                 let extendedObstacles, prePlacedBoxes =
                     computeAnchorExtendedObstacles maxWidth firstPass placedAfterFirst
                 if extendedObstacles.IsEmpty then firstPass
                 else
                     let secondPass, _ =
-                        layoutDocumentWithRangeAndInitial memo settings measureText measureRange doc extendedObstacles prePlacedBoxes
+                        layoutDocumentWithRangeAndInitial memo settings measureText measureRange doc Map.empty extendedObstacles prePlacedBoxes
                     secondPass
         layouts, uniformPageInfos settings layouts
     | sections ->

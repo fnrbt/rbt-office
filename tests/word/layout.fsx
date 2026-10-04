@@ -1028,6 +1028,43 @@ check "cell list continues in next cell" (listPrefix "lt-3") "3."
 check "cell list continues in next row" (listPrefix "lt-4") "4."
 check "second list in table starts at 1" (listPrefix "lt-other") "1."
 
+// A list that starts in the body continues inside a table and on after it.
+let flowSettingsForLists = { settings with Width = 1200.0; PageHeight = 2000.0 }
+let bodyListPara id : Doc.ParagraphBlock =
+    { paragraph id "item" with Metadata = { Doc.defaultMetadata with ListStyle = Doc.Numbered; ListLevel = 1; ListId = Some "L" } }
+let continuedListTable =
+    { wideFastTable with
+        Id = "continued-list-table"
+        Rows =
+            [ tableRow [ tableCell [ numberedCellPara "ct-1" "L" ] None; tableCell [ numberedCellPara "ct-2" "L"; numberedCellPara "ct-other" "M" ] None ]
+              tableRow [ tableCell [ numberedCellPara "ct-3" "L" ] None; tableCell [ paragraph "ct-plain" "plain" ] None ] ] }
+let continuedListDoc =
+    { Doc.empty with
+        Blocks =
+            [ Doc.Paragraph (bodyListPara "cb-1"); Doc.Paragraph (bodyListPara "cb-2"); Doc.Paragraph (paragraph "cb-text" "between")
+              Doc.Table continuedListTable
+              Doc.Paragraph (bodyListPara "cb-after") ]
+        Selection = None }
+let continuedLayouts = layoutDocument { settings with Width = 600.0 } measureText continuedListDoc
+let continuedPrefix id = (continuedLayouts |> List.find (fun layout -> layout.BlockId = id)).Prefix.Trim()
+check "body list numbers" (continuedPrefix "cb-1", continuedPrefix "cb-2") ("1.", "2.")
+check "list continues from the body into the table" (continuedPrefix "ct-1", continuedPrefix "ct-2", continuedPrefix "ct-3") ("3.", "4.", "5.")
+check "another list in the table starts at 1" (continuedPrefix "ct-other") "1."
+check "list continues after the table" (continuedPrefix "cb-after") "6."
+let continuedPlan =
+    buildTableLayoutPlanForDocumentAt { settings with Width = 600.0 } measureText (rangeMeasurerFromTextMeasurer measureText) continuedListDoc continuedListTable 0.0
+let planPrefix id =
+    continuedPlan.Rows
+    |> List.collect (fun row -> row.Measurement.CellGroups |> List.collect (fun group -> group.Layouts))
+    |> List.find (fun layout -> layout.BlockId = id)
+    |> fun layout -> layout.Prefix.Trim()
+check "table plan numbers cells like the document pass" (planPrefix "ct-1", planPrefix "ct-3") ("3.", "5.")
+// ... and in a multi-column (column-flow) document too.
+let continuedColumnLayouts =
+    layoutDocument flowSettingsForLists measureText { continuedListDoc with PageSetup = { continuedListDoc.PageSetup with Columns = Some { Count = 2; Gap = 20.0; Separator = false; Widths = [] } } }
+let continuedColumnPrefix id = (continuedColumnLayouts |> List.find (fun layout -> layout.BlockId = id)).Prefix.Trim()
+check "list continues into a table in a column flow" (continuedColumnPrefix "ct-1", continuedColumnPrefix "ct-3", continuedColumnPrefix "cb-after") ("3.", "5.", "6.")
+
 // ---------------------------------------------------------------------------
 // A table in a header paints its text, not only its borders.
 // ---------------------------------------------------------------------------
