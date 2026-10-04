@@ -45,6 +45,7 @@ stages=(
     stage27-input
     stage28-layout
     stage29-borders
+    stage30-overflow
     numbertext
 )
 

@@ -424,6 +424,28 @@ let private appendDrawTextOps
                 ops.Add(PdfDraw.LineTo (alignedXPt + totalWidthPt, yPdf strikeY))
                 ops.Add PdfDraw.Stroke
 
+/// A text item, cut off at its clip rectangle when it has one (text wider
+/// than its cell: Excel's text overflow stops at the first filled cell).
+let private appendClippedTextOps
+    (options: RenderOptions)
+    (faceByName: Map<string, PdfFont.TrueTypeFont>)
+    (faceRemap: Map<string, Map<int, int>>)
+    (placement: Placement)
+    (ops: ResizeArray<PdfDraw.DrawOp>)
+    (t: PaintText) =
+    match t.Clip with
+    | Some clip when clip.Width > 0.0 && clip.Height > 0.0 ->
+        let sz v = v * pxToPt * placement.Scale
+        let xPt x = placement.LeftPtOffset + sz x
+        let yPdf y = placement.PageHeightPt - placement.TopPtOffset - sz y
+        ops.Add PdfDraw.SaveState
+        ops.Add(PdfDraw.Rect (xPt clip.X, yPdf (clip.Y + clip.Height), sz clip.Width, sz clip.Height))
+        ops.Add PdfDraw.ClipPath
+        ops.Add PdfDraw.EndPath
+        appendDrawTextOps options faceByName faceRemap placement ops t
+        ops.Add PdfDraw.RestoreState
+    | _ -> appendDrawTextOps options faceByName faceRemap placement ops t
+
 /// Convert one Paint item into a list of PDF draw ops. Coordinates flip from
 /// our top-left CSS-pixel space into PDF's bottom-left point space, with the
 /// `Placement`'s margin offsets and scale baked in.
@@ -493,7 +515,7 @@ let rec private translateItem (options: RenderOptions) (faceByName: Map<string, 
           PdfDraw.Stroke ]
     | DrawText t ->
         let ops = ResizeArray<PdfDraw.DrawOp>()
-        appendDrawTextOps options faceByName faceRemap placement ops t
+        appendClippedTextOps options faceByName faceRemap placement ops t
         resizeArrayToList ops
 
 let private appendTranslatedItem (options: RenderOptions) (faceByName: Map<string, PdfFont.TrueTypeFont>) (faceResource: Map<string, string>) (faceRemap: Map<string, Map<int, int>>) (placement: Placement) (ops: ResizeArray<PdfDraw.DrawOp>) (item: PaintItem) =
@@ -519,7 +541,7 @@ let private appendTranslatedItem (options: RenderOptions) (faceByName: Map<strin
         ops.Add(PdfDraw.LineTo (xPt x2, yPdf y2))
         ops.Add PdfDraw.Stroke
     | DrawText t ->
-        appendDrawTextOps options faceByName faceRemap placement ops t
+        appendClippedTextOps options faceByName faceRemap placement ops t
     | _ ->
         for op in translateItem options faceByName faceResource faceRemap placement item do
             ops.Add op
@@ -789,7 +811,7 @@ let private shiftItem (dx: float) (dy: float) (item: PaintItem) : PaintItem =
     match item with
     | FillRect (r, c) -> FillRect (shiftRect r, c)
     | StrokeRect (r, c, w) -> StrokeRect (shiftRect r, c, w)
-    | DrawText t -> DrawText { t with Rect = shiftRect t.Rect }
+    | DrawText t -> DrawText { t with Rect = shiftRect t.Rect; Clip = t.Clip |> Option.map shiftRect }
     | GridLine (x1, y1, x2, y2, c, w) -> GridLine (x1 + dx, y1 + dy, x2 + dx, y2 + dy, c, w)
     | VecPath (segs, fill, stroke) ->
         let shifted = ResizeArray<VecSeg>(segs.Length)
@@ -932,7 +954,8 @@ let private headingText (text: string) (rect: Rect) (align: TextAlign) (fontSize
         // Body text gets a small PDF-only lift; heading labels need to stay
         // visually centered inside the shorter heading strip.
         BaselineShift = 2.0
-        Rotation = 0 }
+        Rotation = 0
+        Clip = None }
 
 /// Build the column-letter strip above the body+repeats and the row-number
 /// strip to its left, plus a separator gridline below the column-letter

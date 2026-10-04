@@ -196,7 +196,12 @@ let rec private itemCommands (item: P.PaintItem) =
         [ Cmd.StrokeRect(rect r.X r.Y r.Width r.Height, parseHexColor color, px width) ]
     | P.GridLine (x1, y1, x2, y2, color, width) ->
         [ Cmd.Line(vec2 x1 y1, vec2 x2 y2, parseHexColor color, px width) ]
-    | P.DrawText text -> textCommands text
+    | P.DrawText text ->
+        // Text wider than its cell is cut off at the cells it may run over.
+        match text.Clip, textCommands text with
+        | Some clip, (_ :: _ as cmds) when clip.Width > 0.0 && clip.Height > 0.0 ->
+            [ Cmd.Clip(rpath clip.X clip.Y clip.Width clip.Height, NonZero, cmds) ]
+        | _, cmds -> cmds
     | P.VecPath (segs, fill, stroke) ->
         let path = pathSegs segs
         [ match fill with

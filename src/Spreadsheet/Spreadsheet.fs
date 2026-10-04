@@ -300,6 +300,9 @@ type private CellNode = {
     /// The render pass that last wanted the node.
     mutable Seen: int
     mutable HasTitle: bool
+    /// The cell's text is wider than the cell: how it is drawn (run over the
+    /// empty cells beside it, or cut off) depends on its neighbours.
+    mutable Wide: bool
 }
 
 /// The node of a row or column header on display.
@@ -420,6 +423,13 @@ type Spreadsheet(container: Element) =
     let mutable renderedMetrics: obj = null
     let mutable extentWidth = -1.0
     let mutable extentHeight = -1.0
+    /// For the rows on display: the nearest filled cell left and right of
+    /// the columns in view when it holds text (its text may run into the
+    /// view), else -1 / -2. Valid for `overflowCells` and the column range.
+    let overflowSources = System.Collections.Generic.Dictionary<int, struct (int * int)>()
+    let mutable overflowCells: obj = null
+    let mutable overflowFirstCol = -1
+    let mutable overflowLastCol = -1
     /// The active cell: where typing goes, and the cell a Shift+arrow or a
     /// Shift+click extends the selection from. The model's Selection is the
     /// rectangle; this is the cell it was started at.
@@ -582,6 +592,10 @@ type Spreadsheet(container: Element) =
                     canvasFillRect ctx rect.X rect.Y rect.Width rect.Height "#f6f8fa"
                     canvasStrokeRect ctx rect.X rect.Y rect.Width rect.Height "#8a94a6" 1.0
             | SpreadsheetPaint.DrawText text ->
+                // Text wider than its cell is cut off at the cells it may run over.
+                (match text.Clip with
+                 | Some clip -> canvasClipRect ctx clip.X clip.Y clip.Width clip.Height
+                 | None -> ())
                 let align =
                     match text.Align with
                     | SpreadsheetPaint.AlignCenter -> "center"
@@ -1827,18 +1841,85 @@ type Spreadsheet(container: Element) =
                 | Some (index, count) when count > 1 -> icon <- Some (index, count)
                 | _ -> ()
             | None -> ()
+        // The text. A number that does not fit its cell shows ####, as in
+        // Excel (it is never cut off to something that reads as another number).
+        let fontPx = match cellData with Some data -> float (defaultArg data.Format.FontSize 11) | None -> 11.0
+        let measureText (text: string) =
+            match cellData with
+            | Some data -> browserTextWidth text fontPx "Arial" data.Format.Bold data.Format.Italic
+            | None -> 0.0
+        let displayText =
+            match cellData with
+            | Some data ->
+                match unwrapFormulaValue data.Value with
+                | CellValue.Number _ ->
+                    let text = SpreadsheetCellText.cellDisplayText None 1.0e6 data.Format data.Value
+                    if float text.Length * fontPx * 0.7 <= w - 10.0 || measureText text <= w - 9.0 then text
+                    else
+                        let hash = max 1.0 (measureText "#")
+                        System.String('#', max 1 (int ((w - 10.0) / hash)))
+                | _ -> SpreadsheetCellText.cellDisplayText None 1.0e6 data.Format data.Value
+            | None -> ""
+        // Text overflow: text wider than its cell runs over the empty cells
+        // beside it (to the right when left-aligned, to the left when
+        // right-aligned, both ways when centred) up to the first cell that
+        // holds something. The node keeps its place; its text is let out of
+        // its box and clipped at the run of cells it may cover.
+        let mutable wide = false
+        let mutable crossed : float list = []
+        match cellData with
+        | Some data when displayText <> "" && endRow = row && endCol = col && icon.IsNone ->
+            match SpreadsheetLayout.textOverflowSides data.Format data.Value with
+            // (Not measured when even the widest glyphs would fit the cell.)
+            | Some (toLeft, toRight) when float displayText.Length * fontPx * 1.05 > w - 10.0 ->
+                let excess = measureText displayText - (w - 10.0)
+                if excess > 0.0 then
+                    wide <- true
+                    // (Past the cell's edge: its own padding on that side is its to use.)
+                    let needLeft = if toLeft then (if toRight then excess / 2.0 else excess) - 3.0 else 0.0
+                    let needRight = if toRight then (if toLeft then excess / 2.0 else excess) - 3.0 else 0.0
+                    let first, last = SpreadsheetLayout.textOverflowSpan model row col needLeft needRight
+                    if first <> col || last <> col then
+                        let own = SpreadsheetLayout.columnLeft model col
+                        let extraLeft = own - SpreadsheetLayout.columnLeft model first
+                        let extraRight = SpreadsheetLayout.columnLeft model (last + 1) - SpreadsheetLayout.columnLeft model (col + 1)
+                        add "overflow" "visible"
+                        add "text-overflow" "clip"
+                        add "contain" "layout style"
+                        add "z-index" "1"
+                        add "clip-path" ("inset(0px " + string (-(int extraRight)) + "px 0px " + string (-(int extraLeft)) + "px)")
+                        if toLeft then
+                            add "display" "flex"
+                            add "justify-content" (if toRight then "center" else "flex-end")
+                        // The grid lines the text crosses are not shown (unless
+                        // a cell there has a border or a fill of its own).
+                        if model.ShowGridLines then
+                            let plain (c: int) =
+                                match getCell { Row = row; Col = c } model with
+                                | Some other ->
+                                    other.Format.BgColor.IsNone && other.Format.BorderLeft.IsNone && other.Format.BorderRight.IsNone
+                                | None -> true
+                            crossed <-
+                                [ for c in first .. last - 1 do
+                                    let edge = SpreadsheetLayout.columnLeft model (c + 1)
+                                    if edge > SpreadsheetLayout.columnLeft model c && plain c && plain (c + 1)
+                                       && (c <> col || data.Format.BgColor.IsNone) && (c + 1 <> col || data.Format.BgColor.IsNone) then
+                                        yield edge - own ]
+            | _ -> ()
+        | _ -> ()
+        node.Wide <- wide
         setCssText cell (css.ToString())
         setAttribute cell "data-row" (string row)
         setAttribute cell "data-col" (string col)
         if bar >= 0 then setAttribute cell "data-cf-bar" (string bar) else removeAttribute cell "data-cf-bar"
-        // The text (this also drops the icon and comment marker of the node's previous cell).
-        let displayText =
-            match cellData with
-            // Unbounded width: the cell's CSS clips, so only the number
-            // format is wanted here, not ##### overflow.
-            | Some data -> SpreadsheetCellText.cellDisplayText None 1.0e6 data.Format data.Value
-            | None -> ""
+        // (This also drops the icon and comment marker of the node's previous cell.)
         setTextContent cell displayText
+        for edge in crossed do
+            let strip = createElement "div"
+            setClassName strip "spreadsheet-overflow-gap"
+            // (Children are placed from the padding box: inside the 1px border.)
+            setCssText strip ("position:absolute;left:" + string (int (edge + 0.5) - 2) + "px;top:0;width:2px;height:100%;background:white;z-index:-1;pointer-events:none")
+            appendChild cell strip
         match icon with
         | Some (index, count) ->
             // Same low → high signal the canvas painter draws: red, amber, green.
@@ -2021,7 +2102,7 @@ type Spreadsheet(container: Element) =
                             if not (placed && sameCells) then
                                 let data = getCell { Row = r; Col = c } model
                                 let dataRef = match data with Some data -> box data | None -> null
-                                if not placed || merged || not (obj.ReferenceEquals(node.Data, dataRef)) then
+                                if not placed || merged || node.Wide || not (obj.ReferenceEquals(node.Data, dataRef)) then
                                     drawCell layer node r c x y w h pane data tables
                     | false, _ ->
                         let node =
@@ -2032,7 +2113,7 @@ type Spreadsheet(container: Element) =
                             else
                                 let element = createElement "div"
                                 setClassName element "spreadsheet-cell"
-                                { Element = element; Key = key; Pane = -1; Data = null; X = 0.0; Y = 0.0; W = 0.0; H = 0.0; Epoch = -1; Seen = 0; HasTitle = false }
+                                { Element = element; Key = key; Pane = -1; Data = null; X = 0.0; Y = 0.0; W = 0.0; H = 0.0; Epoch = -1; Seen = 0; HasTitle = false; Wide = false }
                         node.Key <- key
                         node.Seen <- generation
                         cellNodes.[key] <- node
@@ -2043,6 +2124,43 @@ type Spreadsheet(container: Element) =
                         for col = c0 to c1 do
                             if colPrefix.[col + 1] > colPrefix.[col] then visit row col
             visitBlock firstRow lastRow firstCol lastCol
+            // Text of a cell just outside the view may run into it: the
+            // nearest filled cell on each side of a row is drawn too, when
+            // it holds text. (Looked up once per row while the cells and the
+            // columns in view stay the same.)
+            if not (obj.ReferenceEquals(overflowCells, box model.Cells)) || overflowFirstCol <> firstCol || overflowLastCol <> lastCol then
+                overflowCells <- box model.Cells
+                overflowFirstCol <- firstCol
+                overflowLastCol <- lastCol
+                overflowSources.Clear()
+            let reach = 24
+            let visitOutside (r0: int) (r1: int) =
+                for row = r0 to r1 do
+                    if rowPrefix.[row + 1] > rowPrefix.[row] then
+                        let sources =
+                            match overflowSources.TryGetValue row with
+                            | true, known -> known
+                            | false, _ ->
+                                let isText (data: CellData) = match unwrapFormulaValue data.Value with CellValue.String text -> text <> "" | _ -> false
+                                let find (start: int) (step: int) =
+                                    let mutable col = start
+                                    let mutable found = -1
+                                    let mutable steps = 0
+                                    while found = -1 && steps < reach && col >= frozenCols && col < colCount do
+                                        match getCell { Row = row; Col = col } model with
+                                        | Some data when (match data.Value with CellValue.Empty | CellValue.String "" -> false | _ -> true) ->
+                                            found <- if isText data then col else -2
+                                        | _ -> ()
+                                        col <- col + step
+                                        steps <- steps + 1
+                                    found
+                                let found = struct (find (firstCol - 1) -1, find (lastCol + 1) 1)
+                                overflowSources.[row] <- found
+                                found
+                        let struct (left, right) = sources
+                        if left >= 0 && colPrefix.[left + 1] > colPrefix.[left] then visit row left
+                        if right >= 0 && colPrefix.[right + 1] > colPrefix.[right] then visit row right
+            if not (Map.isEmpty model.Cells) then visitOutside firstRow lastRow
             if frozenRows > 0 then visitBlock 0 (frozenRows - 1) firstCol lastCol
             if frozenCols > 0 then visitBlock firstRow lastRow 0 (frozenCols - 1)
             if frozenRows > 0 && frozenCols > 0 then visitBlock 0 (frozenRows - 1) 0 (frozenCols - 1)

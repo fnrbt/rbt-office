@@ -285,3 +285,88 @@ checks['export-package-parts'] = async () => {
     close();
     return lines;
 };
+
+// Text wider than its cell runs over the empty cells beside it, up to the first filled one
+// (measured from the DOM); numbers never do - one that does not fit shows ####.
+checks['text-overflow'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        // How far a cell's text is visible past its own box: [left, right] in px, from its clip.
+        const let_out = (row, col) => {
+            const node = cellNode(host, row, col), style = getComputedStyle(node);
+            // (A browser gives the shortest form: "inset(0px -200px)" when left and right are the same.)
+            const inset = (/inset\(([^)]*)\)/.exec(style.clipPath)?.[1] ?? '').split(' ').filter(Boolean).map((v) => -parseFloat(v));
+            return style.overflow === 'visible' && inset.length >= 2 ? [inset[3] ?? inset[1], inset[1]] : [0, 0];
+        };
+        // The ink of a cell's text, relative to the cell's box: [left overhang, right overhang].
+        const ink = (row, col) => {
+            const node = cellNode(host, row, col), range = document.createRange();
+            range.selectNodeContents(node);
+            const text = [...range.getClientRects()].reduce((box, r) => ({ left: Math.min(box.left, r.left), right: Math.max(box.right, r.right) }), { left: Infinity, right: -Infinity });
+            const box = node.getBoundingClientRect();
+            return [Math.max(0, Math.round(box.left - text.left)), Math.max(0, Math.round(text.right - box.right))];
+        };
+        // What is drawn at a point of the grid (the topmost cell there).
+        const topCellAt = (row, col) => {
+            const box = cellNode(host, row, col).getBoundingClientRect();
+            const node = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2).closest('.spreadsheet-cell');
+            return [Number(node.getAttribute('data-row')), Number(node.getAttribute('data-col'))];
+        };
+        const title = 'A title that is much longer than one column of the sheet';
+        grid.SetCell(1, 1, title);
+        let over = ink(1, 1), allowed = let_out(1, 1);
+        check('long text: the cell shows all of it', cellNode(host, 1, 1).textContent, title);
+        check('its ink runs past the cell to the right, not to the left', [over[0], over[1] > 100], [0, true]);
+        check('and the cell lets it out that far (whole columns)', [allowed[0], allowed[1] >= over[1], allowed[1] % 100], [0, true, 0]);
+        check('the text is drawn over the empty neighbour', topCellAt(1, 2), [1, 1]);
+        check('no ellipsis', getComputedStyle(cellNode(host, 1, 1)).textOverflow, 'clip');
+        check('the grid lines it crosses are covered', cellNode(host, 1, 1).querySelectorAll('.spreadsheet-overflow-gap').length, allowed[1] / 100);
+        // A filled cell stops it.
+        grid.SetCell(1, 3, 'stop');
+        check('a filled cell two columns on: let out over one column only', let_out(1, 1), [0, 100]);
+        check('that cell is drawn itself', topCellAt(1, 3), [1, 3]);
+        grid.SetCell(1, 2, 'x');
+        check('a filled neighbour: the text stays in its cell', [let_out(1, 1), getComputedStyle(cellNode(host, 1, 1)).overflow], [[0, 0], 'hidden']);
+        grid.SetCell(1, 2, ''); grid.SetCell(1, 3, '');
+        check('cleared again: let out again', let_out(1, 1)[1] >= over[1], true);
+        // Right-aligned and centred text.
+        grid.SetCell(3, 6, title); grid.SelectCell(3, 6); grid.ApplyFormat('alignRight');
+        over = ink(3, 6); allowed = let_out(3, 6);
+        check('right-aligned: runs to the left', [over[0] > 100, over[1], allowed[0] >= over[0], allowed[1]], [true, 0, true, 0]);
+        grid.SetCell(5, 5, title); grid.SelectCell(5, 5); grid.ApplyFormat('alignCenter');
+        over = ink(5, 5); allowed = let_out(5, 5);
+        check('centred: runs both ways, evenly', [over[0] > 50, over[1] > 50, Math.abs(over[0] - over[1]) <= 2, allowed[0] >= over[0], allowed[1] >= over[1]], [true, true, true, true, true]);
+        // Numbers.
+        grid.SetCell(7, 1, '123456789012345678');
+        grid.SetCell(8, 1, '12.5');
+        const { setColumnWidth } = await import('/spreadsheet/Model.js');
+        grid.SetWorkbook([setColumnWidth(1, 40, grid.GetModel())], ['Sheet1'], 0);
+        await frame();
+        check('a number never overflows', [let_out(7, 1), getComputedStyle(cellNode(host, 7, 1)).overflow], [[0, 0], 'hidden']);
+        check('a number too wide for its cell shows ####', [/^#+$/.test(cellNode(host, 7, 1).textContent), cellNode(host, 8, 1).textContent], [true, '12.5']);
+        check('and the hashes fit the cell', ink(7, 1), [0, 0]);
+        check('text in the narrow column still runs over', let_out(1, 1)[1] > 100, true);
+        // Wrapped text and merged cells stay where they are.
+        const { getCell, CellAddress, setCell } = await import('/spreadsheet/Model.js');
+        grid.SetCell(10, 1, title);
+        grid.MergeCells(10, 1, 10, 2);
+        check('a merged cell keeps its text inside', let_out(10, 1), [0, 0]);
+        // The workbook the hosts reported: B2 of the first sheet shows its long title.
+        await grid.ImportXlsx(await bytesOf('tests/real-world/milk-street-office.xlsx'));
+        await frame();
+        const b2 = cellNode(host, 1, 1);
+        over = ink(1, 1); allowed = let_out(1, 1);
+        check('milk-street-office B2: the whole title is shown', [b2.textContent.length > 10, over[1] > 0, allowed[1] >= over[1], getComputedStyle(b2).textOverflow], [true, true, true, 'clip']);
+        const right = b2.getBoundingClientRect().right + Math.min(over[1], 60) - 5, middle = b2.getBoundingClientRect().top + b2.getBoundingClientRect().height / 2;
+        check('and drawn over the cells beside it', document.elementFromPoint(right, middle).closest('.spreadsheet-cell') === b2, true);
+        // Scrolled so that column B is out of view: its text still shows in the columns it runs over.
+        const { scroller } = parts(host);
+        const { columnLeft } = await import('/spreadsheet/Layout.js');
+        scroller.scrollLeft = columnLeft(grid.GetModel(), 2) + 30; scroller.dispatchEvent(new Event('scroll'));
+        await frame();
+        check('scrolled past its column: the cell is still drawn', [cellNode(host, 1, 1) !== null && cellNode(host, 1, 1).style.display !== 'none', let_out(1, 1)[1] >= over[1]], [true, true]);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};

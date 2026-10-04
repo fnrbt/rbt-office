@@ -332,6 +332,56 @@ let headers (model: SpreadsheetModel) (viewport: Viewport): HeaderGeometry list 
             })
     ]
 
+// ---- text overflow ------------------------------------------------------------
+// Excel lets text that is wider than its cell run over the empty cells next
+// to it: to the right for left-aligned text, to the left for right-aligned,
+// to both sides for centred text. It stops at the first cell that holds
+// something. Only text does this - a number that does not fit shows ####.
+
+/// The sides a cell's text may overflow to: (left, right), or None when it
+/// stays in its cell (not text, wrapped, shrunk to fit, rotated, or aligned
+/// in a way that fills the cell).
+let textOverflowSides (format: CellFormat) (value: CellValue) : (bool * bool) option =
+    if format.WrapText || format.ShrinkToFit || format.TextRotation <> 0 then None
+    else
+        match unwrapFormulaValue value with
+        | CellValue.String text when text <> "" ->
+            match format.HorizontalAlign |> Option.map (fun align -> align.ToLowerInvariant()) with
+            | None | Some "left" | Some "general" | Some "" -> Some (false, true)
+            | Some "right" -> Some (true, false)
+            | Some "center" -> Some (true, true)
+            | _ -> None
+        | _ -> None
+
+/// Whether a cell stops a neighbour's text: it holds a value (a formula
+/// counts, whatever it gives) or is part of a merged cell.
+let private blocksTextOverflow (model: SpreadsheetModel) (row: int) (col: int) =
+    let addr = { Row = row; Col = col }
+    (match getCell addr model with
+     | Some data -> (match data.Value with CellValue.Empty | CellValue.String "" -> false | _ -> true)
+     | None -> false)
+    || (not model.MergedCells.IsEmpty && (findMergedCell addr model).IsSome)
+
+/// The columns the text of the cell (row, col) may be drawn over when it
+/// needs `needLeft` / `needRight` more pixels than its cell has on that
+/// side: (first column, last column). Hidden columns are passed over.
+let textOverflowSpan (model: SpreadsheetModel) (row: int) (col: int) (needLeft: float) (needRight: float) : int * int =
+    let mutable first = col
+    let mutable last = col
+    let mutable need = needRight
+    let mutable next = col + 1
+    while need > 0.0 && next < model.ColCount && not (blocksTextOverflow model row next) do
+        last <- next
+        need <- need - getColumnWidth next model
+        next <- next + 1
+    need <- needLeft
+    next <- col - 1
+    while need > 0.0 && next >= 0 && not (blocksTextOverflow model row next) do
+        first <- next
+        need <- need - getColumnWidth next model
+        next <- next - 1
+    first, last
+
 let contains (rect: Rect) x y =
     x >= rect.X && x < rect.X + rect.Width &&
     y >= rect.Y && y < rect.Y + rect.Height

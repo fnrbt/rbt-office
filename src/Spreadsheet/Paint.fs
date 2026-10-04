@@ -53,6 +53,10 @@ type PaintText = {
     /// renderer rotates the glyph stream around the cell's anchor; the
     /// rect itself is unrotated.
     Rotation: int
+    /// What the text is clipped to, when it is wider than its cell: the cell
+    /// itself, or the run of empty cells it overflows into (Excel's text
+    /// overflow). None: the text fits, or is not clipped (rotated text).
+    Clip: Rect option
 }
 
 /// A single segment of a vector path. Coordinates are in the same px space
@@ -263,6 +267,7 @@ let private buildHeaderPaintItems (model: SpreadsheetModel) (viewport: Viewport)
                     LineCount = 1
                     BaselineShift = 0.0
                     Rotation = 0
+                    Clip = None
                 }
             | RowHeader (row, rect) ->
                 yield FillRect (rect, "#f2f2f2")
@@ -284,6 +289,7 @@ let private buildHeaderPaintItems (model: SpreadsheetModel) (viewport: Viewport)
                     LineCount = 1
                     BaselineShift = 0.0
                     Rotation = 0
+                    Clip = None
                 }
     ]
 
@@ -747,6 +753,44 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                     | _ -> VAlignBottom
                 let lineCount = lines.Length
                 let richRuns = Map.tryFind cell.Address model.RichRuns
+                // Text overflow: a line of text wider than its cell is drawn
+                // over the empty cells beside it and cut off at the first
+                // cell that holds something (at its own edge when that is
+                // the neighbour).
+                let textClip =
+                    if format.WrapText || format.TextRotation <> 0 || horizForIndent = "centercontinuous" || horizForIndent = "fill" then None
+                    else
+                        let width =
+                            match richRuns, viewport.Measurer with
+                            | Some runs, Some m when not (List.isEmpty runs) ->
+                                runs |> List.sumBy (fun (text, ovr) ->
+                                    m text (ovr.FontSize |> Option.defaultValue fontPt) (ovr.FontName |> Option.orElse format.FontName)
+                                        (ovr.Bold |> Option.defaultValue format.Bold) (ovr.Italic |> Option.defaultValue format.Italic))
+                            | _ ->
+                                // (Not measured when even the widest glyphs would fit the cell.)
+                                if float lines.Head.Length * fontPt * 1.4 <= textRect.Width then 0.0
+                                else
+                                    match measure with
+                                    | Some m -> m lines.Head
+                                    | None -> float lines.Head.Length * fontPt * 0.75
+                        let excess = width - textRect.Width
+                        if excess <= 0.0 then None
+                        else
+                            let isMerged = not model.MergedCells.IsEmpty && (findMergedCell cell.Address model).IsSome
+                            match (if isMerged then None else textOverflowSides format value) with
+                            | None -> Some cell.Rect
+                            | Some (toLeft, toRight) ->
+                                // How far the text reaches past the cell's edge (the
+                                // cell's own 4px of padding on that side is its to use);
+                                // centred text needs half of the excess on each side.
+                                let needLeft = if toLeft then (if toRight then excess / 2.0 else excess) - 2.0 else 0.0
+                                let needRight = if toRight then (if toLeft then excess / 2.0 else excess) - 2.0 else 0.0
+                                let first, last = textOverflowSpan model cell.Address.Row cell.Address.Col needLeft needRight
+                                if first = cell.Address.Col && last = cell.Address.Col then Some cell.Rect
+                                else
+                                    let leftEdge = cell.Rect.X - (columnLeft model cell.Address.Col - columnLeft model first)
+                                    let rightEdge = cell.Rect.X + cell.Rect.Width + (columnLeft model (last + 1) - columnLeft model (cell.Address.Col + 1))
+                                    Some { cell.Rect with X = leftEdge; Width = rightEdge - leftEdge }
                 match richRuns, viewport.Measurer with
                 | Some runs, Some m when not (List.isEmpty runs) ->
                     // Rich-text rendering. For single-line cells we emit one
@@ -844,6 +888,7 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                                 LineCount = lineCount
                                 BaselineShift = baselineShift
                                 Rotation = format.TextRotation
+                                Clip = textClip
                             }
                             cursor <- cursor + width
                 | _ ->
@@ -866,6 +911,7 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                             LineCount = lineCount
                             BaselineShift = 0.0
                             Rotation = format.TextRotation
+                            Clip = textClip
                         }
 
         // Pass 4: auto-filter dropdown triangles on table header cells. Excel
@@ -1037,6 +1083,7 @@ let drawingFrameItems (rect: Rect) (label: string) : PaintItem list =
           LineCount = 1
           BaselineShift = 0.0
           Rotation = 0
+          Clip = None
       } ]
 
 /// The sheet's drawing objects, back to front, at sheet coordinates (the same
@@ -1077,7 +1124,7 @@ let private translatePaintItem viewport zone item =
     match item with
     | FillRect (rect, color) -> FillRect (tx rect, color)
     | StrokeRect (rect, color, width) -> StrokeRect (tx rect, color, width)
-    | DrawText text -> DrawText { text with Rect = tx text.Rect }
+    | DrawText text -> DrawText { text with Rect = tx text.Rect; Clip = text.Clip |> Option.map tx }
     | GridLine (x1, y1, x2, y2, color, width) ->
         let p1 = tx { X = x1; Y = y1; Width = 0.0; Height = 0.0 }
         let p2 = tx { X = x2; Y = y2; Width = 0.0; Height = 0.0 }
@@ -1139,6 +1186,7 @@ let buildViewportPaintItems (model: SpreadsheetModel) (viewport: Viewport): View
                             LineCount = 1
                             BaselineShift = 0.0
                             Rotation = 0
+                            Clip = None
                         })
                 }
             | RowHeader (row, rect) ->
@@ -1165,6 +1213,7 @@ let buildViewportPaintItems (model: SpreadsheetModel) (viewport: Viewport): View
                             LineCount = 1
                             BaselineShift = 0.0
                             Rotation = 0
+                            Clip = None
                         })
                 }
 

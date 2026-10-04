@@ -471,7 +471,14 @@ let rec private appendPaintItem (commands: System.Collections.Generic.List<Cmd>)
         commands.Add(Cmd.FillRect(Rbt.Renderer.Types.rect rect.X rect.Y rect.Width rect.Height, parseHexColor color))
     | StrokeRect (rect, color, width) ->
         commands.Add(Cmd.StrokeRect(Rbt.Renderer.Types.rect rect.X rect.Y rect.Width rect.Height, parseHexColor color, px width))
-    | DrawText text -> commands.AddRange(toRendererCommands text)
+    | DrawText text ->
+        // Text wider than its cell is cut off at the cells it may run over.
+        match text.Clip with
+        | Some clip when clip.Width > 0.0 && clip.Height > 0.0 ->
+            let x, y, r, b = clip.X, clip.Y, clip.X + clip.Width, clip.Y + clip.Height
+            let path = [ MoveTo (vec2 x y); LineTo (vec2 r y); LineTo (vec2 r b); LineTo (vec2 x b); Close ]
+            commands.Add(Cmd.Clip(path, NonZero, List.ofSeq (toRendererCommands text)))
+        | _ -> commands.AddRange(toRendererCommands text)
     | GridLine (x1, y1, x2, y2, color, width) ->
         // Pixel-snap axis-aligned strokes so they cover WHOLE pixels — like
         // Excel's GDI — instead of straddling the grid. A stroke centred on an
