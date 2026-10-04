@@ -83,6 +83,8 @@ let private mergeTextStyle (baseStyle: TextStyle) (overrideStyle: TextStyle) =
             RevisionType = overrideStyle.RevisionType |> Option.orElse baseStyle.RevisionType
             RevisionAuthor = overrideStyle.RevisionAuthor |> Option.orElse baseStyle.RevisionAuthor
             RevisionDate = overrideStyle.RevisionDate |> Option.orElse baseStyle.RevisionDate
+            DeletedInsertion = overrideStyle.DeletedInsertion |> Option.orElse baseStyle.DeletedInsertion
+            MoveName = overrideStyle.MoveName |> Option.orElse baseStyle.MoveName
             VertAlign = overrideStyle.VertAlign |> Option.orElse baseStyle.VertAlign
     }
 

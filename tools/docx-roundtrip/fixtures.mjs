@@ -470,6 +470,34 @@ const docs = [
             { read: 'pkg.Paragraphs.5.IndentLeft', equals: 48 }, { read: 'pkg.Paragraphs.5.ExplicitIndentLeft', equals: null }, { read: 'pkg.Paragraphs.5.ListLevelFirstLineIndent', equals: -24 },
         ],
     },
+    {
+        // Tracked changes as Word writes them: a deletion inside another author's
+        // insertion, tracked paragraph marks, and a move with its range markers.
+        name: 'synthetic/nested-revisions',
+        body:
+            `<w:p><w:r><w:t xml:space="preserve">kept </w:t></w:r><w:ins w:id="10" w:author="Ann" w:date="2024-01-02T03:04:05Z"><w:r><w:t xml:space="preserve">added by Ann </w:t></w:r>` +
+            `<w:del w:id="11" w:author="Bob" w:date="2024-02-03T04:05:06Z"><w:r><w:delText xml:space="preserve">then cut by Bob </w:delText></w:r></w:del><w:r><w:t>still added</w:t></w:r></w:ins></w:p>` +
+            `<w:p><w:pPr><w:rPr><w:ins w:id="12" w:author="Ann" w:date="2024-01-02T03:04:05Z"/></w:rPr></w:pPr><w:r><w:t>split here by Enter</w:t></w:r></w:p>` +
+            `<w:p><w:pPr><w:rPr><w:del w:id="13" w:author="Bob" w:date="2024-02-03T04:05:06Z"/></w:rPr></w:pPr><w:r><w:t>joined with the next</w:t></w:r></w:p>` +
+            `<w:p><w:r><w:t xml:space="preserve">before </w:t></w:r><w:moveFromRangeStart w:id="14" w:author="Cy" w:date="2024-03-04T05:06:07Z" w:name="move1"/><w:moveFrom w:id="15" w:author="Cy" w:date="2024-03-04T05:06:07Z"><w:r><w:t xml:space="preserve">the moved words </w:t></w:r></w:moveFrom><w:moveFromRangeEnd w:id="14"/><w:r><w:t>after</w:t></w:r></w:p>` +
+            `<w:p><w:r><w:t xml:space="preserve">destination: </w:t></w:r><w:moveToRangeStart w:id="16" w:author="Cy" w:date="2024-03-04T05:06:07Z" w:name="move1"/><w:moveTo w:id="17" w:author="Cy" w:date="2024-03-04T05:06:07Z"><w:r><w:t xml:space="preserve">the moved words </w:t></w:r></w:moveTo><w:moveToRangeEnd w:id="16"/></w:p>` +
+            p('end'),
+        expect: [
+            { part: 'word/document.xml', has: '<w:ins w:id="10" w:author="Ann" w:date="2024-01-02T03:04:05Z"><w:r>(<w:rPr>.*?</w:rPr>)?<w:t[^>]*>added by Ann </w:t></w:r></w:ins>' },
+            { part: 'word/document.xml', has: '<w:ins w:id="10" w:author="Ann" w:date="2024-01-02T03:04:05Z"><w:del w:id="11" w:author="Bob" w:date="2024-02-03T04:05:06Z"><w:r>(<w:rPr>.*?</w:rPr>)?<w:delText[^>]*>then cut by Bob </w:delText></w:r></w:del></w:ins>' },
+            { part: 'word/document.xml', has: '<w:pPr><w:rPr><w:ins w:id="12" w:author="Ann" w:date="2024-01-02T03:04:05Z"/></w:rPr></w:pPr><w:r>(<w:rPr>.*?</w:rPr>)?<w:t[^>]*>split here by Enter' },
+            { part: 'word/document.xml', has: '<w:pPr><w:rPr><w:del w:id="13" w:author="Bob" w:date="2024-02-03T04:05:06Z"/></w:rPr></w:pPr>' },
+            { part: 'word/document.xml', has: '<w:moveFromRangeStart w:id="(\\d+)" w:author="Cy" w:date="2024-03-04T05:06:07Z" w:name="move1"/><w:moveFrom w:id="15" w:author="Cy" w:date="2024-03-04T05:06:07Z"><w:r>(<w:rPr>.*?</w:rPr>)?<w:t[^>]*>the moved words </w:t></w:r></w:moveFrom><w:moveFromRangeEnd w:id="\\1"/>' },
+            { part: 'word/document.xml', has: '<w:moveToRangeStart w:id="(\\d+)" [^>]*w:name="move1"/><w:moveTo w:id="17" [^>]*><w:r>(<w:rPr>.*?</w:rPr>)?<w:t[^>]*>the moved words </w:t></w:r></w:moveTo><w:moveToRangeEnd w:id="\\1"/>' },
+            // The moved text is not turned into a deletion and an insertion.
+            { part: 'word/document.xml', lacks: '<w:delText[^>]*>the moved words' }, { part: 'word/document.xml', lacks: '<w:ins [^>]*><w:r>(<w:rPr>((?!</w:r>).)*?</w:rPr>)?<w:t[^>]*>the moved words' },
+            { read: 'pkg.Paragraphs.0.Runs.2.RevisionType', equals: 'delete' }, { read: 'pkg.Paragraphs.0.Runs.2.RevisionAuthor', equals: 'Bob' }, { read: 'pkg.Paragraphs.0.Runs.2.InsertedRevisionAuthor', equals: 'Ann' },
+            { read: 'pkg.Paragraphs.0.Runs.1.RevisionType', equals: 'insert' }, { read: 'pkg.Paragraphs.0.Runs.1.InsertedRevisionAuthor', equals: null },
+            { read: 'pkg.Paragraphs.1.MarkRevisionType', equals: 'insert' }, { read: 'pkg.Paragraphs.2.MarkRevisionType', equals: 'delete' }, { read: 'pkg.Paragraphs.2.MarkRevisionAuthor', equals: 'Bob' },
+            { read: 'pkg.Paragraphs.3.Runs.1.RevisionType', equals: 'moveFrom' }, { read: 'pkg.Paragraphs.3.Runs.1.RevisionMoveName', equals: 'move1' },
+            { read: 'pkg.Paragraphs.4.Runs.1.RevisionType', equals: 'moveTo' }, { read: 'pkg.Paragraphs.4.Runs.1.RevisionMoveName', equals: 'move1' },
+        ],
+    },
     preservedParts('synthetic/preserved-parts', [
         // Everything the editor does not model comes back as it was.
         { same: 'word/theme/theme1.xml' }, { same: 'word/fontTable.xml' }, { same: 'word/webSettings.xml' },

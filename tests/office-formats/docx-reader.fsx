@@ -219,8 +219,10 @@ let moveRevisions =
     wrappers.Content
     |> List.collect (function DocxReader.Para para -> para.Runs | _ -> [])
     |> List.choose (fun run -> match run.Content, run.RevisionType with DocxReader.Text text, Some kind -> Some (text, kind) | _ -> None)
-ok "tracked-move-as-revisions"
-   (moveRevisions = [ "origin", "delete"; "destination", "insert" ])
+// The moved text is present at both ends, and stays a move (it used to be
+// re-labelled as a deletion and an insertion).
+ok "tracked-move-kept-as-move"
+   (moveRevisions = [ "origin", "moveFrom"; "destination", "moveTo" ])
    (sprintf "%A" moveRevisions)
 
 let sdtTable =
@@ -532,6 +534,27 @@ ok "editor-paragraph-explicit-vs-inherited"
 ok "editor-run-explicit-automatic-colour"
    ((explicitParaItems.[2].["Runs"] :?> obj array).[0] :?> System.Collections.Generic.Dictionary<string, obj> |> fun run -> run.["ExplicitColorAuto"] = box true)
    "ExplicitColorAuto"
+
+// ----- tracked changes: nested, on the paragraph mark, moves -----------------
+let trackedDoc =
+    loadBody
+        ("<w:p><w:pPr><w:rPr><w:ins w:id=\"12\" w:author=\"Ann\"/></w:rPr></w:pPr><w:ins w:id=\"10\" w:author=\"Ann\"><w:r><w:t>added</w:t></w:r><w:del w:id=\"11\" w:author=\"Bob\"><w:r><w:delText>cut</w:delText></w:r></w:del></w:ins></w:p>"
+         + "<w:p><w:moveFromRangeStart w:id=\"14\" w:name=\"move1\"/><w:moveFrom w:id=\"15\" w:author=\"Cy\"><w:r><w:t>moved</w:t></w:r></w:moveFrom></w:p>"
+         + "<w:p><w:moveFrom w:id=\"18\" w:author=\"Cy\"><w:r><w:t>too</w:t></w:r></w:moveFrom><w:moveFromRangeEnd w:id=\"14\"/><w:moveToRangeStart w:id=\"16\" w:name=\"move1\"/><w:moveTo w:id=\"17\" w:author=\"Cy\"><w:r><w:t>moved</w:t></w:r></w:moveTo><w:moveToRangeEnd w:id=\"16\"/></w:p>")
+let trackedRuns =
+    DocxReader.blockParagraphs trackedDoc.Content
+    |> List.collect (fun para -> para.Runs)
+    |> List.map (fun run -> (match run.Content with DocxReader.Text text -> text | _ -> ""), run.RevisionType, run.RevisionAuthor, run.InsertedRevision |> Option.bind (fun mark -> mark.Author), run.MoveName)
+ok "deletion-inside-insertion-keeps-both"
+   (trackedRuns |> List.truncate 2 = [ "added", Some "insert", Some "Ann", None, None; "cut", Some "delete", Some "Bob", Some "Ann", None ])
+   (sprintf "%A" trackedRuns)
+ok "moves-stay-moves-with-their-range-name"
+   (trackedRuns |> List.skip 2 = [ "moved", Some "moveFrom", Some "Cy", None, Some "move1"; "too", Some "moveFrom", Some "Cy", None, Some "move1"; "moved", Some "moveTo", Some "Cy", None, Some "move1" ])
+   (sprintf "%A" trackedRuns)
+let trackedMarks = DocxReader.blockParagraphs trackedDoc.Content |> List.map (fun para -> para.MarkRevision |> Option.map (fun (revisionType, mark) -> revisionType, mark.Id, mark.Author))
+ok "tracked-paragraph-mark"
+   (trackedMarks = [ Some ("insert", Some "12", Some "Ann"); None; None ])
+   (sprintf "%A" trackedMarks)
 
 printfn ""
 printfn "OfficeFormat DocxReader tests: %d passed, %d failed" pass fail

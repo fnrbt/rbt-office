@@ -159,6 +159,16 @@ type BlockMetadata = {
     /// paragraph's list level, when its list came from a file: where an indent
     /// the paragraph does not state comes from.
     ListLevelIndents: (float option * float option) option
+    /// The paragraph mark itself is a tracked change (w:ins / w:del in the
+    /// mark's run properties): inserted = the paragraph was split here, deleted
+    /// = it is to be joined with the next one.
+    MarkRevision: ParagraphMarkRevision option
+}
+
+/// A tracked paragraph mark: RevisionType is "insert" or "delete".
+and ParagraphMarkRevision = {
+    RevisionType: string
+    Mark: RevisionMark
 }
 
 /// Flags for BlockMetadata.Explicit.
@@ -231,6 +241,7 @@ let defaultMetadata = {
     HasMarkProperties = false
     ExplicitMarkFontSize = None
     ListLevelIndents = None
+    MarkRevision = None
 }
 
 /// One segment of a vector path. Coordinates are in the path's own coordinate
@@ -3129,7 +3140,61 @@ let trackDeleteSelection author date doc =
         { marked with Selection = Some { Anchor = startPos; Focus = startPos } }
 
 let private isDeletedRun (run: TextBuffer.TextRun) =
-    run.Style.RevisionType = Some "delete"
+    TextBuffer.isRemovalRevision run.Style
+
+let private topLevelParagraphAt (doc: Document) index =
+    if index < 0 || index >= doc.Blocks.Length then None
+    else
+        match doc.Blocks.[index] with
+        | Paragraph para
+        | Heading (_, para) -> Some para
+        | _ -> None
+
+let private withMarkRevision (revision: ParagraphMarkRevision option) (doc: Document) (paragraphId: BlockId) =
+    match findParagraph doc paragraphId with
+    | Some para -> replaceParagraph doc para.Id { para with Metadata = { para.Metadata with MarkRevision = revision } }
+    | None -> doc
+
+let private revisionAuthor (author: string) = if System.String.IsNullOrWhiteSpace author then None else Some author
+let private revisionDate (date: string) = if System.String.IsNullOrWhiteSpace date then None else Some date
+
+/// Enter under track changes: the paragraph is split and the new paragraph
+/// mark (the one that now ends the first half) is recorded as inserted, so the
+/// split can be accepted or rejected. The second half keeps the original mark.
+let trackSplitBlock author date doc =
+    match doc.Selection with
+    | None -> doc
+    | Some sel ->
+        let original = findParagraph doc sel.Focus.BlockId
+        let isTopLevel = (findBlockIndex doc sel.Focus.BlockId).IsSome
+        let split = splitBlock doc
+        match original with
+        | Some para when isTopLevel && not (obj.ReferenceEquals(split, doc)) ->
+            let inserted =
+                { RevisionType = "insert"
+                  Mark = { Id = Some (nextRevisionId split); Author = revisionAuthor author; Date = revisionDate date } }
+            withMarkRevision (Some inserted) split para.Id
+        | _ -> split
+
+/// Joining two paragraphs under track changes (Backspace at the start of the
+/// second, Delete at the end of the first): the paragraphs stay apart and the
+/// first one's mark is recorded as deleted. A mark the same author inserted
+/// (and that is still pending) is simply removed again.
+let private trackDeleteMark author date (first: ParagraphBlock) (second: ParagraphBlock) cursor doc =
+    let author = revisionAuthor author
+    match first.Metadata.MarkRevision with
+    | Some revision when revision.RevisionType = "insert" && revision.Mark.Author = author ->
+        let offset = TextBuffer.length first.Buffer
+        let merged = withMarkRevision second.Metadata.MarkRevision (mergeWithNext doc first.Id) first.Id
+        { merged with Selection = Some { Anchor = { BlockId = first.Id; Offset = offset }; Focus = { BlockId = first.Id; Offset = offset } } }
+    | Some revision when revision.RevisionType = "delete" ->
+        { doc with Selection = Some { Anchor = cursor; Focus = cursor } }
+    | _ ->
+        let deleted =
+            { RevisionType = "delete"
+              Mark = { Id = Some (nextRevisionId doc); Author = author; Date = revisionDate date } }
+        let marked = withMarkRevision (Some deleted) doc first.Id
+        { marked with Selection = Some { Anchor = cursor; Focus = cursor } }
 
 let private nextTrackDeletableOffset para offset =
     para.Buffer.Runs
@@ -3157,7 +3222,11 @@ let trackDeleteForward author date doc =
         | None -> doc
         | Some para ->
             match nextTrackDeletableOffset para sel.Focus.Offset with
-            | None -> doc
+            | None ->
+                // Nothing left to delete in this paragraph: Delete at its end joins it with the next one.
+                match findBlockIndex doc para.Id |> Option.bind (fun index -> topLevelParagraphAt doc (index + 1)) with
+                | Some next when sel.Focus.Offset >= TextBuffer.length para.Buffer -> trackDeleteMark author date para next { BlockId = next.Id; Offset = 0 } doc
+                | _ -> doc
             | Some offset ->
                 let startPos = { sel.Focus with Offset = offset }
                 let selection = { Anchor = startPos; Focus = { startPos with Offset = offset + forwardStep para.Buffer offset } }
@@ -3172,7 +3241,11 @@ let trackDeleteBackward author date doc =
         | None -> doc
         | Some para ->
             match previousTrackDeletableOffset para sel.Focus.Offset with
-            | None -> doc
+            | None ->
+                // Backspace at the start of a paragraph joins it with the previous one.
+                match findBlockIndex doc para.Id |> Option.bind (fun index -> topLevelParagraphAt doc (index - 1)) with
+                | Some previous when sel.Focus.Offset = 0 -> trackDeleteMark author date previous para { BlockId = previous.Id; Offset = TextBuffer.length previous.Buffer } doc
+                | _ -> doc
             | Some offset ->
                 let startPos = { sel.Focus with Offset = offset + 1 - backwardStep para.Buffer (offset + 1) }
                 let selection = { Anchor = startPos; Focus = { startPos with Offset = offset + 1 } }
@@ -3233,8 +3306,8 @@ let private selectedRevisionSpans accept para selectionRange =
 let revisionInfos doc =
     editableParagraphsInOrder doc
     |> List.collect (fun para ->
-        para.Buffer.Runs
-        |> List.choose (function
+        (para.Buffer.Runs
+         |> List.choose (function
             | Text tr ->
                 tr.Style.RevisionType
                 |> Option.map (fun revisionType -> {
@@ -3247,8 +3320,51 @@ let revisionInfos doc =
                     Text = TextBuffer.slice tr.Start tr.Length para.Buffer
                 })
             | Image _ -> None))
+        // A tracked paragraph mark, at the end of its paragraph.
+        @ (match para.Metadata.MarkRevision with
+           | Some revision ->
+               let length = TextBuffer.length para.Buffer
+               [ { BlockId = para.Id; Start = length; End = length; RevisionType = revision.RevisionType
+                   Author = revision.Mark.Author; Date = revision.Mark.Date; Text = "\u00B6" } ]
+           | None -> []))
 
-let private applyRevisionDecision accept doc =
+/// Accept or reject the tracked paragraph marks the selection covers: a mark is
+/// covered when the selection runs past the end of its paragraph (or, for the
+/// last paragraph, when `includeLastMark`; a collapsed cursor at the end of the
+/// paragraph covers it too). Accepting an inserted mark or rejecting a deleted
+/// one keeps the paragraphs apart; the other way round joins them.
+let private applyMarkRevisionDecision accept includeLastMark (selection: Selection option) doc =
+    match selection with
+    | None -> doc, false
+    | Some sel ->
+        let startPos, endPos, blockIds =
+            if sel.IsCollapsed then sel.Focus, sel.Focus, [ sel.Focus.BlockId ]
+            else getNormalizedRange sel doc
+        let mutable updated = doc
+        let mutable changed = false
+        for blockId in List.rev blockIds do
+            match findParagraph updated blockId with
+            | Some para when para.Metadata.MarkRevision.IsSome ->
+                let length = TextBuffer.length para.Buffer
+                let covered =
+                    if blockId <> endPos.BlockId then true
+                    elif sel.IsCollapsed then endPos.Offset >= length
+                    else includeLastMark && endPos.Offset >= length
+                if covered then
+                    let revision = para.Metadata.MarkRevision.Value
+                    let join = (accept && revision.RevisionType = "delete") || (not accept && revision.RevisionType = "insert")
+                    let next = findBlockIndex updated blockId |> Option.bind (fun index -> topLevelParagraphAt updated (index + 1))
+                    match join, next with
+                    | true, Some nextPara ->
+                        // The joined paragraph ends with the next one's mark.
+                        updated <- withMarkRevision nextPara.Metadata.MarkRevision (mergeWithNext updated blockId) blockId
+                    | _ -> updated <- withMarkRevision None updated blockId
+                    changed <- true
+            | _ -> ()
+        ignore startPos
+        updated, changed
+
+let private applyRevisionDecisionWith includeLastMark accept doc =
     let selectedBlockIds =
         match doc.Selection with
         | None -> []
@@ -3275,10 +3391,20 @@ let private applyRevisionDecision accept doc =
                 | Some _ -> ()
         | _ -> ()
 
+    // Paragraph marks after the text: joining paragraphs changes the block list.
+    let markedDoc, marksChanged = applyMarkRevisionDecision accept includeLastMark doc.Selection updatedDoc
     if changed then
         let selection = firstSelection |> Option.map (fun pos -> { Anchor = pos; Focus = pos })
-        { updatedDoc with Selection = selection |> Option.orElse updatedDoc.Selection }
+        { markedDoc with Selection = selection |> Option.orElse markedDoc.Selection }
+    elif marksChanged then
+        let cursor =
+            doc.Selection
+            |> Option.map (fun sel -> if sel.IsCollapsed then sel.Focus else (let startPos, _, _ = getNormalizedRange sel doc in startPos))
+            |> Option.filter (fun pos -> (findParagraph markedDoc pos.BlockId).IsSome)
+        { markedDoc with Selection = cursor |> Option.map (fun pos -> { Anchor = pos; Focus = pos }) |> Option.orElse markedDoc.Selection }
     else updatedDoc
+
+let private applyRevisionDecision accept doc = applyRevisionDecisionWith false accept doc
 
 /// Accept selected revision runs. Insertions become normal text; deletions are removed.
 let acceptSelectedRevision doc =
@@ -3303,13 +3429,13 @@ let private allRevisionSelection doc =
 let acceptAllRevisions doc =
     match allRevisionSelection doc with
     | None -> doc
-    | Some selection -> applyRevisionDecision true { doc with Selection = Some selection }
+    | Some selection -> applyRevisionDecisionWith true true { doc with Selection = Some selection }
 
 /// Reject all revision runs in document order.
 let rejectAllRevisions doc =
     match allRevisionSelection doc with
     | None -> doc
-    | Some selection -> applyRevisionDecision false { doc with Selection = Some selection }
+    | Some selection -> applyRevisionDecisionWith true false { doc with Selection = Some selection }
 
 let private revisionSortKey doc revision =
     let paragraphs = editableParagraphsInOrder doc

@@ -24,7 +24,8 @@ const pick = (o, keys) => { const r = {}; for (const k of keys) r[k] = norm(o[k]
 
 const RUN_KEYS = ['Bold', 'Italic', 'Underline', 'UnderlineStyle', 'UnderlineColor', 'Strike', 'DoubleStrike', 'Hidden', 'AllCaps', 'SmallCaps',
     'FontSize', 'CharacterSpacing', 'FontFamily', 'Color', 'Highlight', 'VertAlign', 'Position', 'EmphasisMark', 'Hyperlink',
-    'RevisionType', 'RevisionAuthor', 'FieldCode', 'NoteId', 'NoteType', 'CommentId', 'ExplicitColorAuto'];
+    'RevisionType', 'RevisionAuthor', 'RevisionDate', 'InsertedRevisionId', 'InsertedRevisionAuthor', 'InsertedRevisionDate', 'RevisionMoveName',
+    'FieldCode', 'NoteId', 'NoteType', 'CommentId', 'ExplicitColorAuto'];
 const IMAGE_KEYS = ['ImageWidth', 'ImageHeight', 'ImageFloating', 'ImageWrap', 'ImageWrapText', 'ImagePositionX', 'ImagePositionY',
     'ImagePositionHRelativeFrom', 'ImagePositionVRelativeFrom', 'ImagePositionHAlign', 'ImagePositionVAlign', 'ImageBehindDoc', 'ImageRelativeHeight',
     'ImageDistanceLeft', 'ImageDistanceTop', 'ImageDistanceRight', 'ImageDistanceBottom', 'ImageCropLeft', 'ImageCropTop', 'ImageCropRight', 'ImageCropBottom',
@@ -39,7 +40,8 @@ const PARA_KEYS = ['Type', 'Style', 'Alignment', 'ListStyle', 'ListLevel', 'List
     'ContentControlTag', 'ContentControlAlias', 'KeepNext', 'KeepLines', 'HeaderReferences', 'FooterReferences',
     // What the paragraph itself states, as opposed to what it inherits.
     'ExplicitSpacingBefore', 'ExplicitSpacingAfter', 'ExplicitLineSpacing', 'ExplicitIndentLeft', 'ExplicitIndentRight', 'ExplicitFirstLineIndent',
-    'ExplicitContextualSpacing', 'ExplicitBackgroundColor', 'ExplicitTabs', 'HasMarkProperties', 'ExplicitMarkFontSize'];
+    'ExplicitContextualSpacing', 'ExplicitBackgroundColor', 'ExplicitTabs', 'HasMarkProperties', 'ExplicitMarkFontSize',
+    'MarkRevisionType', 'MarkRevisionId', 'MarkRevisionAuthor', 'MarkRevisionDate'];
 const TABLE_KEYS = ['TableStyleId', 'TableLook', 'PreferredWidth', 'PreferredWidthType', 'TableAlignment', 'LayoutMode', 'GridColumns', 'Borders', 'BackgroundColor',
     'CellSpacing', 'PaddingTop', 'PaddingRight', 'PaddingBottom', 'PaddingLeft'];
 const ROW_KEYS = ['IsHeader', 'Height', 'HeightRule', 'CanSplit', 'CellSpacing', 'PaddingTop', 'PaddingRight', 'PaddingBottom', 'PaddingLeft'];
@@ -130,7 +132,7 @@ function summarisePackage(pkg) {
     // The editor drops empty / whitespace-only paragraphs at the very end of the body on import.
     const body = [...(pkg.Paragraphs || [])];
     const blank = (item) => (item.Type || 'Paragraph') !== 'Table' && (item.Type || 'Paragraph') !== 'TextBox' && runsSummary(item.Runs).every((r) => r.text !== undefined && r.text.trim() === '')
-        && !item.SectionBreak && !item.PageBreakAfter && !item.ParagraphBorders && !(item.HeaderReferences || []).length && !(item.FooterReferences || []).length;
+        && !item.SectionBreak && !item.PageBreakAfter && !item.ParagraphBorders && !item.MarkRevisionType && !(item.HeaderReferences || []).length && !(item.FooterReferences || []).length;
     while (body.length && blank(body[body.length - 1])) body.pop();
     summarise(body, 'body', out);
     for (const [key, label] of [['HeaderParts', 'header'], ['FooterParts', 'footer']])
@@ -187,7 +189,7 @@ const ORDER = {
         'suppressAutoHyphens', 'kinsoku', 'wordWrap', 'overflowPunct', 'topLinePunct', 'autoSpaceDE', 'autoSpaceDN', 'bidi', 'adjustRightInd',
         'snapToGrid', 'spacing', 'ind', 'contextualSpacing', 'mirrorIndents', 'suppressOverlap', 'jc', 'textDirection', 'textAlignment',
         'textboxTightWrap', 'outlineLvl', 'divId', 'cnfStyle', 'rPr', 'sectPr', 'pPrChange'],
-    'w:rPr': ['rStyle', 'rFonts', 'b', 'bCs', 'i', 'iCs', 'caps', 'smallCaps', 'strike', 'dstrike', 'outline', 'shadow', 'emboss', 'imprint', 'noProof',
+    'w:rPr': ['ins', 'del', 'moveFrom', 'moveTo', 'rStyle', 'rFonts', 'b', 'bCs', 'i', 'iCs', 'caps', 'smallCaps', 'strike', 'dstrike', 'outline', 'shadow', 'emboss', 'imprint', 'noProof',
         'snapToGrid', 'vanish', 'webHidden', 'color', 'spacing', 'w', 'kern', 'position', 'sz', 'szCs', 'highlight', 'u', 'effect', 'bdr', 'shd',
         'fitText', 'vertAlign', 'rtl', 'cs', 'em', 'lang', 'eastAsianLayout', 'specVanish', 'oMath', 'rPrChange'],
     'w:tblPr': ['tblStyle', 'tblpPr', 'tblOverlap', 'bidiVisual', 'tblStyleRowBandSize', 'tblStyleColBandSize', 'tblW', 'jc', 'tblCellSpacing',

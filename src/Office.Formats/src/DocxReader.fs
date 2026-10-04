@@ -145,6 +145,13 @@ type RunContent =
     | RenderedPageBreak
     | PageBreak
 
+/// Id, author and date of a tracked change.
+type RevisionMark = {
+    Id: string option
+    Author: string option
+    Date: string option
+}
+
 type Run = {
     Content: RunContent
     Properties: RunProperties
@@ -152,9 +159,16 @@ type Run = {
     BookmarkEnd: string option
     RenderedPageBreakBefore: bool
     RevisionId: string option  // For track changes
+    /// insert | delete | moveFrom | moveTo
     RevisionType: string option
     RevisionAuthor: string option
     RevisionDate: string option
+    /// A deletion inside a tracked insertion (w:del in w:ins): the insertion.
+    /// RevisionType is "delete" and the fields above describe the deletion.
+    InsertedRevision: RevisionMark option
+    /// Name of the move range (w:moveFromRangeStart / w:moveToRangeStart) a
+    /// moveFrom / moveTo run lies in.
+    MoveName: string option
 }
 
 type ListInfo = {
@@ -246,6 +260,9 @@ type ParagraphProperties = {
 type Paragraph = {
     Runs: Run list
     Properties: ParagraphProperties
+    /// The paragraph mark is a tracked change (w:ins / w:del in w:pPr/w:rPr):
+    /// ("insert" | "delete", id / author / date).
+    MarkRevision: (string * RevisionMark) option
 }
 
 type BorderStyle = {
@@ -1341,7 +1358,7 @@ module Docx =
               RevisionId = None
               RevisionType = None
               RevisionAuthor = None
-              RevisionDate = None })
+              RevisionDate = None; InsertedRevision = None; MoveName = None })
 
     let fieldData (rNode: XmlNode) : Field option =
         wElem "fldChar" rNode
@@ -1436,6 +1453,8 @@ module Docx =
             RevisionType = firstResult |> Option.bind (fun run -> run.RevisionType)
             RevisionAuthor = firstResult |> Option.bind (fun run -> run.RevisionAuthor)
             RevisionDate = firstResult |> Option.bind (fun run -> run.RevisionDate)
+            InsertedRevision = firstResult |> Option.bind (fun run -> run.InsertedRevision)
+            MoveName = firstResult |> Option.bind (fun run -> run.MoveName)
         }
 
     let private flattenIncompleteField (output: Run list) (stack: ComplexFieldState list) =
@@ -1558,7 +1577,7 @@ module Docx =
               RevisionId = revId
               RevisionType = None
               RevisionAuthor = None
-              RevisionDate = None }
+              RevisionDate = None; InsertedRevision = None; MoveName = None }
 
         let childTokens =
             Xml.children rNode
@@ -1699,7 +1718,7 @@ module Docx =
                 RevisionId = None
                 RevisionType = None
                 RevisionAuthor = None
-                RevisionDate = None
+                RevisionDate = None; InsertedRevision = None; MoveName = None
             }]
 
     // Hyperlink extraction
@@ -1759,14 +1778,14 @@ module Docx =
                 | Some name when Ns.stripNs name = "fldSimple" ->
                     simpleField child |> Option.map RunToken |> Option.toList
                 | Some name when Ns.stripNs name = "oMath" || Ns.stripNs name = "oMathPara" ->
-                    [RunToken { Content = EquationXml (xmlToString child); Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None }]
+                    [RunToken { Content = EquationXml (xmlToString child); Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None }]
                 | Some name when Ns.stripNs name = "bookmarkStart" ->
                     attr "id" child
-                    |> Option.map (fun id -> RunToken { Content = BookmarkStart { Id = id; Name = attr "name" child }; Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None })
+                    |> Option.map (fun id -> RunToken { Content = BookmarkStart { Id = id; Name = attr "name" child }; Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None })
                     |> Option.toList
                 | Some name when Ns.stripNs name = "bookmarkEnd" ->
                     attr "id" child
-                    |> Option.map (fun id -> RunToken { Content = BookmarkEnd id; Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None })
+                    |> Option.map (fun id -> RunToken { Content = BookmarkEnd id; Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None })
                     |> Option.toList
                 // Transparent inline wrappers: their runs are ordinary paragraph content.
                 | Some name when (match Ns.stripNs name with "smartTag" | "customXml" | "dir" | "bdo" -> true | _ -> false) ->
@@ -1774,21 +1793,36 @@ module Docx =
                 | Some name when Ns.stripNs name = "AlternateContent" ->
                     if isGraphicAlternateContent child then
                         // A drawing in two forms: kept whole rather than reduced to its fallback.
-                        [RunToken { Content = Image (opaqueObject true child); Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None }]
+                        [RunToken { Content = Image (opaqueObject true child); Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None }]
                     else
                         // Take the fallback (plain WordprocessingML/VML) when there is one, else the first choice.
                         match Ns.childNs "Fallback" child |> Option.orElseWith (fun () -> Ns.childNs "Choice" child) with
                         | Some branch -> tokensFromNode branch
                         | None -> []
-                // A tracked move is an insertion at the destination and a deletion at the
-                // source; without this the moved text was missing from both places.
+                // Tracked changes. A move is kept as a move (moveFrom at the source,
+                // moveTo at the destination), not turned into a deletion and an insertion.
                 | Some name when (match Ns.stripNs name with "ins" | "del" | "moveTo" | "moveFrom" -> true | _ -> false) ->
-                    let revisionType = if Ns.stripNs name = "del" || Ns.stripNs name = "moveFrom" then "delete" else "insert"
+                    let revisionType =
+                        match Ns.stripNs name with
+                        | "del" -> "delete"
+                        | "moveFrom" -> "moveFrom"
+                        | "moveTo" -> "moveTo"
+                        | _ -> "insert"
                     let revisionId = Xml.attr "id" child |> Option.orElse (Xml.attr "w:id" child)
                     let author = Xml.attr "author" child |> Option.orElse (Xml.attr "w:author" child)
                     let date = Xml.attr "date" child |> Option.orElse (Xml.attr "w:date" child)
                     tokensFromNode child
                     |> List.map (function
+                        // A deletion inside this insertion stays a deletion and remembers
+                        // the insertion it is in. (The outer change used to overwrite the
+                        // inner one, so deleted text of an insertion read as inserted.)
+                        | RunToken run when revisionType = "insert" && run.RevisionType = Some "delete" ->
+                            RunToken { run with InsertedRevision = Some { Id = revisionId; Author = author; Date = date } }
+                        | RunToken run when revisionType = "delete" && run.RevisionType = Some "insert" ->
+                            RunToken { run with
+                                        RevisionId = revisionId; RevisionType = Some "delete"; RevisionAuthor = author; RevisionDate = date
+                                        InsertedRevision = Some { Id = run.RevisionId; Author = run.RevisionAuthor; Date = run.RevisionDate } }
+                        | RunToken run when run.RevisionType.IsSome -> RunToken run
                         | RunToken run -> RunToken { run with RevisionId = revisionId; RevisionType = Some revisionType; RevisionAuthor = author; RevisionDate = date }
                         | token -> token)
                 | Some name when Ns.stripNs name = "sdt" ->
@@ -1805,7 +1839,7 @@ module Docx =
                             |> Option.map (fun v -> v = "1" || v = "true")
                             |> Option.defaultValue false
                         let glyph = if isChecked then "☒" else "☐"   // ☒ / ☐
-                        [RunToken { Content = Text glyph; Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None }]
+                        [RunToken { Content = Text glyph; Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None }]
                     | None ->
                         Ns.childNs "sdtContent" child
                         |> Option.map tokensFromNode
@@ -1815,7 +1849,17 @@ module Docx =
         // Extract runs and hyperlinks
         let runs = tokensFromNode pNode |> collapseComplexFieldTokens |> attachRunMarkers |> normalizeTocRuns props
 
-        { Runs = runs; Properties = props }
+        // A tracked paragraph mark: w:ins / w:del among the mark's run properties.
+        let markRevision =
+            wElem "pPr" pNode
+            |> Option.bind (wElem "rPr")
+            |> Option.bind (fun markProps ->
+                [ "ins", "insert"; "del", "delete" ]
+                |> List.tryPick (fun (elementName, revisionType) ->
+                    wElem elementName markProps
+                    |> Option.map (fun node -> revisionType, { Id = attr "id" node; Author = attr "author" node; Date = attr "date" node })))
+
+        { Runs = runs; Properties = props; MarkRevision = markRevision }
 
     let paragraph (pNode: XmlNode) : Paragraph =
         paragraphWithRenderedBreakCounter None pNode
@@ -2663,6 +2707,49 @@ let completeOpaqueObjects (root: XmlNode) (blocks: DocumentContent list) : Docum
             | _ -> run)
     | _ -> blocks
 
+/// The move range each w:moveFrom / w:moveTo element lies in: (kind, revision id)
+/// -> range name. Ranges are opened and closed by marker elements that may sit
+/// in other paragraphs, so they are followed through the part in document order.
+let private moveNamesOfPart (root: XmlNode) : Map<string * string, string> =
+    let mutable names = Map.empty
+    let mutable fromName : string option = None
+    let mutable toName : string option = None
+    let rec walk (node: XmlNode) =
+        match node with
+        | XmlDsl.Element (name, _, children) ->
+            match Ns.stripNs name with
+            | "moveFromRangeStart" -> fromName <- Docx.attr "name" node
+            | "moveFromRangeEnd" -> fromName <- None
+            | "moveToRangeStart" -> toName <- Docx.attr "name" node
+            | "moveToRangeEnd" -> toName <- None
+            | "moveFrom" ->
+                match Docx.attr "id" node, fromName with
+                | Some id, Some rangeName -> names <- Map.add ("moveFrom", id) rangeName names
+                | _ -> ()
+            | "moveTo" ->
+                match Docx.attr "id" node, toName with
+                | Some id, Some rangeName -> names <- Map.add ("moveTo", id) rangeName names
+                | _ -> ()
+            | _ -> ()
+            for child in children do walk child
+        | _ -> ()
+    walk root
+    names
+
+/// Give the moved runs of `blocks` the name of their move range.
+let withMoveNames (root: XmlNode) (blocks: DocumentContent list) : DocumentContent list =
+    let names = moveNamesOfPart root
+    if names.IsEmpty then blocks
+    else
+        blocks
+        |> mapBlockRuns (fun run ->
+            match run.RevisionType, run.RevisionId with
+            | Some kind, Some id when kind = "moveFrom" || kind = "moveTo" ->
+                match Map.tryFind (kind, id) names with
+                | Some name -> { run with MoveName = Some name }
+                | None -> run
+            | _ -> run)
+
 /// The body models these as shapes (text boxes); the opaque copy is dropped there.
 let private dropModelledShapeRuns (blocks: DocumentContent list) : DocumentContent list =
     blocks
@@ -2713,7 +2800,7 @@ module HeaderFooter =
             match relationshipId with
             | Some partId -> mapBlockRuns (qualifyImageRun partId) blocks
             | None -> blocks
-        let blocks = Docx.bodyContent doc |> qualify |> completeOpaqueObjects doc
+        let blocks = Docx.bodyContent doc |> qualify |> completeOpaqueObjects doc |> withMoveNames doc
         {
             Content =
                 Ns.descendantsNs "p" doc
@@ -3431,6 +3518,7 @@ let parseFromSource (source: PartSource) : WordDocument option =
             |> Option.defaultValue []
             |> completeOpaqueObjects doc
             |> dropModelledShapeRuns
+            |> withMoveNames doc
 
         let pageSetup =
             body
@@ -4380,6 +4468,10 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                             "RevisionType" ==> run.RevisionType
                             "RevisionAuthor" ==> run.RevisionAuthor
                             "RevisionDate" ==> run.RevisionDate
+                            "InsertedRevisionId" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Id))
+                            "InsertedRevisionAuthor" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Author))
+                            "InsertedRevisionDate" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Date))
+                            "RevisionMoveName" ==> run.MoveName
                         ] @ bookmarkRunProps run))
                     | Image img ->
                         // Image run - resolve relationship ID to data URL
@@ -4544,6 +4636,10 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                                 "RevisionType" ==> run.RevisionType
                                 "RevisionAuthor" ==> run.RevisionAuthor
                                 "RevisionDate" ==> run.RevisionDate
+                                "InsertedRevisionId" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Id))
+                                "InsertedRevisionAuthor" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Author))
+                                "InsertedRevisionDate" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Date))
+                                "RevisionMoveName" ==> run.MoveName
                             ] @ bookmarkRunProps run))
                         | EquationXml xml ->
                             Some (objFromFields [
@@ -4621,6 +4717,10 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                 "HeaderReferences" ==> referenceObjects effectiveParaProps.HeaderReferences
                 "FooterReferences" ==> referenceObjects effectiveParaProps.FooterReferences
                 "ParagraphMarkFontSize" ==> paragraphFontSize
+                "MarkRevisionType" ==> (para.MarkRevision |> Option.map fst)
+                "MarkRevisionId" ==> (para.MarkRevision |> Option.bind (fun (_, mark) -> mark.Id))
+                "MarkRevisionAuthor" ==> (para.MarkRevision |> Option.bind (fun (_, mark) -> mark.Author))
+                "MarkRevisionDate" ==> (para.MarkRevision |> Option.bind (fun (_, mark) -> mark.Date))
             ] @ paragraphLayoutProps paragraphFontSize defaultMissingSpacingToZero effectiveParaProps.ParagraphBorders para.Properties layoutParaProps))
         | Tbl table ->
             // Convert table to editor format
@@ -4668,6 +4768,10 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                                 "RevisionType" ==> run.RevisionType
                                 "RevisionAuthor" ==> run.RevisionAuthor
                                 "RevisionDate" ==> run.RevisionDate
+                                "InsertedRevisionId" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Id))
+                                "InsertedRevisionAuthor" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Author))
+                                "InsertedRevisionDate" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Date))
+                                "RevisionMoveName" ==> run.MoveName
                             ] @ bookmarkRunProps run))
                         | Image img ->
                             let imageSrc = editorImageSource images img
@@ -4830,6 +4934,10 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                                 "RevisionType" ==> run.RevisionType
                                 "RevisionAuthor" ==> run.RevisionAuthor
                                 "RevisionDate" ==> run.RevisionDate
+                                "InsertedRevisionId" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Id))
+                                "InsertedRevisionAuthor" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Author))
+                                "InsertedRevisionDate" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Date))
+                                "RevisionMoveName" ==> run.MoveName
                             ] @ bookmarkRunProps run))
                         | EquationXml xml ->
                             Some (objFromFields [
@@ -4903,6 +5011,10 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                     "HeaderReferences" ==> referenceObjects effectiveParaProps.HeaderReferences
                     "FooterReferences" ==> referenceObjects effectiveParaProps.FooterReferences
                     "ParagraphMarkFontSize" ==> paragraphFontSize
+                    "MarkRevisionType" ==> (para.MarkRevision |> Option.map fst)
+                    "MarkRevisionId" ==> (para.MarkRevision |> Option.bind (fun (_, mark) -> mark.Id))
+                    "MarkRevisionAuthor" ==> (para.MarkRevision |> Option.bind (fun (_, mark) -> mark.Author))
+                    "MarkRevisionDate" ==> (para.MarkRevision |> Option.bind (fun (_, mark) -> mark.Date))
                 ] @ paragraphLayoutProps paragraphFontSize defaultMissingSpacingToZero effectiveParaProps.ParagraphBorders para.Properties layoutParaProps)
 
             let tableStyle = resolveTableStyle styleMap table.StyleId

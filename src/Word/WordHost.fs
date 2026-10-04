@@ -615,7 +615,12 @@ module Host =
         let author = revisionValue revision "Author"
         let date = revisionValue revision "Date"
         let excerpt = revisionValue revision "Text"
-        let label = if revisionType = "delete" then "Deleted" else "Inserted"
+        let label =
+            match revisionType with
+            | "delete" -> "Deleted"
+            | "moveFrom" -> "Moved from"
+            | "moveTo" -> "Moved to"
+            | _ -> "Inserted"
         div [ cls "word-revision-item"; attr "data-testid" "word-revision-item" ] [
             button [ cls "word-revision-summary"; attr "data-testid" "word-revision-summary"; onClick (fun _ -> selectRevisionInfo host revision) ] [
                 span [ cls "word-revision-kind"; attr "data-testid" "word-revision-kind" ] [ text label ]

@@ -503,6 +503,11 @@ let private metadataFromEditor (item: obj) =
                     ||| flag (not tabStops.IsEmpty || rightTabPosition.IsSome) ParagraphExplicit.Tabs
             HasMarkProperties = boolOrDefault false (item?HasMarkProperties)
             ExplicitMarkFontSize = optionalFloat (item?ExplicitMarkFontSize)
+            MarkRevision =
+                optionalString (item?MarkRevisionType)
+                |> Option.map (fun revisionType ->
+                    { RevisionType = revisionType
+                      Mark = { Id = optionalString (item?MarkRevisionId); Author = optionalString (item?MarkRevisionAuthor); Date = optionalString (item?MarkRevisionDate) } })
             ListLevelIndents =
                 if boolOrDefault false (item?HasListLevelIndents) then Some (optionalFloat (item?ListLevelIndentLeft), optionalFloat (item?ListLevelFirstLineIndent))
                 else None
@@ -706,6 +711,11 @@ let private editorRunsToBuffer (runs: obj array) : TextBuffer =
                     RevisionType = revisionType
                     RevisionAuthor = revisionAuthor
                     RevisionDate = revisionDate
+                    // A deletion inside a tracked insertion, and a tracked move.
+                    DeletedInsertion =
+                        if isNullOrUndefined run?InsertedRevisionId && isNullOrUndefined run?InsertedRevisionAuthor && isNullOrUndefined run?InsertedRevisionDate then None
+                        else Some { Id = optionalString (run?InsertedRevisionId); Author = optionalString (run?InsertedRevisionAuthor); Date = optionalString (run?InsertedRevisionDate) }
+                    MoveName = optionalString (run?RevisionMoveName)
                     VertAlign = vertAlign
                     Explicit = explicitFlags
                 }
@@ -1201,6 +1211,7 @@ let private isDiscardableTrailingParagraph para =
     && para.Metadata.ParagraphBorders.IsNone
     && para.Metadata.ParagraphBorderBefore.IsNone
     && para.Metadata.ParagraphBorderAfter.IsNone
+    && para.Metadata.MarkRevision.IsNone
 
 let private trimTrailingEmptyParagraphs blocks =
     let rec trim = function
@@ -1530,6 +1541,11 @@ let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) 
                     "RevisionType" ==> tr.Style.RevisionType
                     "RevisionAuthor" ==> tr.Style.RevisionAuthor
                     "RevisionDate" ==> tr.Style.RevisionDate
+                    "InsertedRevisionId" ==> (tr.Style.DeletedInsertion |> Option.bind (fun mark -> mark.Id))
+                    "InsertedRevisionAuthor" ==> (tr.Style.DeletedInsertion |> Option.bind (fun mark -> mark.Author))
+                    "InsertedRevisionDate" ==> (tr.Style.DeletedInsertion |> Option.bind (fun mark -> mark.Date))
+                    "IsDeletedInsertion" ==> tr.Style.DeletedInsertion.IsSome
+                    "RevisionMoveName" ==> tr.Style.MoveName
                     "VertAlign" ==> tr.Style.VertAlign
                     "IsImage" ==> false
                 ])
@@ -1635,6 +1651,10 @@ let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) 
         "ExplicitTabs" ==> (ParagraphExplicit.has ParagraphExplicit.Tabs metadata)
         "HasMarkProperties" ==> metadata.HasMarkProperties
         "ExplicitMarkFontSize" ==> metadata.ExplicitMarkFontSize
+        "MarkRevisionType" ==> (metadata.MarkRevision |> Option.map (fun revision -> revision.RevisionType))
+        "MarkRevisionId" ==> (metadata.MarkRevision |> Option.bind (fun revision -> revision.Mark.Id))
+        "MarkRevisionAuthor" ==> (metadata.MarkRevision |> Option.bind (fun revision -> revision.Mark.Author))
+        "MarkRevisionDate" ==> (metadata.MarkRevision |> Option.bind (fun revision -> revision.Mark.Date))
         // The indents of this paragraph's list level, for the numbering definition.
         "ListLevelIndentLeft" ==> (levelIndents |> Option.bind fst)
         "ListLevelFirstLineIndent" ==> (levelIndents |> Option.bind snd)

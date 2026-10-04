@@ -8,6 +8,13 @@ let private resizeArrayToList (items: ResizeArray<'T>) =
         result <- items.[i] :: result
     result
 
+/// Id, author and date of a tracked change.
+type RevisionMark = {
+    Id: string option
+    Author: string option
+    Date: string option
+}
+
 /// Text style for a run
 type TextStyle = {
     Style: string option
@@ -49,6 +56,14 @@ type TextStyle = {
     RevisionType: string option
     RevisionAuthor: string option
     RevisionDate: string option
+    /// Deleted text that was itself a tracked insertion (w:del inside w:ins): the
+    /// insertion it sits in. RevisionType is "delete" and the Revision* fields
+    /// describe the deletion. Accepting everything deletes the text, and so does
+    /// rejecting everything (the insertion never happened).
+    DeletedInsertion: RevisionMark option
+    /// Name of the tracked move (w:moveFromRangeStart / w:moveToRangeStart) a run
+    /// of RevisionType "moveFrom" / "moveTo" belongs to; it pairs the two ends.
+    MoveName: string option
     VertAlign: string option
     /// Bit set of ExplicitFormat flags: the on/off properties and the font size
     /// that were set directly on this run. A flagged property overrides the
@@ -124,9 +139,19 @@ let defaultStyle = {
     RevisionType = None
     RevisionAuthor = None
     RevisionDate = None
+    DeletedInsertion = None
+    MoveName = None
     VertAlign = None
     Explicit = 0
 }
+
+/// Tracked text that is shown as removed: a deletion, or the source of a move.
+let isRemovalRevision (style: TextStyle) =
+    style.RevisionType = Some "delete" || style.RevisionType = Some "moveFrom"
+
+/// Tracked text that is shown as added: an insertion, or the destination of a move.
+let isAdditionRevision (style: TextStyle) =
+    style.RevisionType = Some "insert" || style.RevisionType = Some "moveTo"
 
 /// Set on/off character properties directly on a run: the value is recorded as
 /// explicit, so "off" survives under a style that turns the property on.
@@ -482,10 +507,10 @@ let isNonbreakingBlank buffer =
     length buffer > 0 && ropeIsBlank buffer.Rope
 
 let private clearRevisionFields (style: TextStyle) =
-    if style.RevisionType.IsNone && style.RevisionId.IsNone && style.RevisionAuthor.IsNone && style.RevisionDate.IsNone then
+    if style.RevisionType.IsNone && style.RevisionId.IsNone && style.RevisionAuthor.IsNone && style.RevisionDate.IsNone && style.DeletedInsertion.IsNone && style.MoveName.IsNone then
         style
     else
-        { style with RevisionType = None; RevisionId = None; RevisionAuthor = None; RevisionDate = None }
+        { style with RevisionType = None; RevisionId = None; RevisionAuthor = None; RevisionDate = None; DeletedInsertion = None; MoveName = None }
 
 /// True when a run carries annotation identity (a field, hyperlink, comment,
 /// note reference, bookmark, equation or revision) rather than only
@@ -509,6 +534,8 @@ let private hasAnnotationIdentity (style: TextStyle) =
     || style.RevisionId.IsSome
     || style.RevisionAuthor.IsSome
     || style.RevisionDate.IsSome
+    || style.DeletedInsertion.IsSome
+    || style.MoveName.IsSome
     || style.RenderedPageBreakBefore
 
 /// Style for text typed at the edge of a run. The new text takes the run's
@@ -549,7 +576,9 @@ let private boundaryInsertStyle (style: TextStyle) (otherSide: TextStyle option)
             RevisionId = None
             RevisionType = None
             RevisionAuthor = None
-            RevisionDate = None }
+            RevisionDate = None
+            DeletedInsertion = None
+            MoveName = None }
 
 /// Insert text at position
 let insert pos (text: string) buffer =
@@ -1505,7 +1534,7 @@ let setRevision start len revisionType revisionId author date buffer =
             && style.RevisionDate = date) buffer then
         buffer
     else
-        applyStyle start len (fun style -> { style with RevisionType = Some revisionType; RevisionId = Some revisionId; RevisionAuthor = author; RevisionDate = date }) buffer
+        applyStyle start len (fun style -> { style with RevisionType = Some revisionType; RevisionId = Some revisionId; RevisionAuthor = author; RevisionDate = date; DeletedInsertion = None; MoveName = None }) buffer
 
 /// Record the deletion of a range as a tracked change. Ordinary text is kept
 /// and marked as deleted. Text that is itself a pending insertion by the same
@@ -1517,7 +1546,7 @@ let trackDelete start len revisionId author date buffer =
     else
         let rangeEnd = start + len
         let isOwnInsertion (style: TextStyle) =
-            style.RevisionType = Some "insert" && style.RevisionAuthor = author
+            isAdditionRevision style && style.RevisionAuthor = author
         let removals = ResizeArray<struct (int * int)>()
         for run in buffer.Runs do
             match run with
@@ -1529,7 +1558,15 @@ let trackDelete start len revisionId author date buffer =
             | _ -> ()
         let mutable result =
             applyStyle start len (fun style ->
-                if isOwnInsertion style || style.RevisionType = Some "delete" then style
+                if isOwnInsertion style || isRemovalRevision style then style
+                elif isAdditionRevision style then
+                    // Another author's pending insertion: it stays an insertion and is
+                    // deleted inside it (w:del in w:ins). Relabelling it a plain deletion
+                    // made Reject All bring the text back as if it had always been there.
+                    { style with
+                        RevisionType = Some "delete"; RevisionId = Some revisionId; RevisionAuthor = author; RevisionDate = date
+                        DeletedInsertion = Some { Id = style.RevisionId; Author = style.RevisionAuthor; Date = style.RevisionDate }
+                        MoveName = None }
                 else { style with RevisionType = Some "delete"; RevisionId = Some revisionId; RevisionAuthor = author; RevisionDate = date }) buffer
         for index = removals.Count - 1 downto 0 do
             let struct (removeStart, removeLength) = removals.[index]
@@ -1545,10 +1582,10 @@ let clearRevision start len buffer =
             && Option.isNone style.RevisionDate) buffer then
         buffer
     else
-        applyStyle start len (fun style -> { style with RevisionType = None; RevisionId = None; RevisionAuthor = None; RevisionDate = None }) buffer
+        applyStyle start len (fun style -> { style with RevisionType = None; RevisionId = None; RevisionAuthor = None; RevisionDate = None; DeletedInsertion = None; MoveName = None }) buffer
 
 let private clearRevisionStyle style =
-    { style with RevisionType = None; RevisionId = None; RevisionAuthor = None; RevisionDate = None }
+    { style with RevisionType = None; RevisionId = None; RevisionAuthor = None; RevisionDate = None; DeletedInsertion = None; MoveName = None }
 
 /// Resolve revision markup in one pass. Accepted insertions / rejected deletions
 /// become normal text; accepted deletions / rejected insertions are removed.
@@ -1556,11 +1593,12 @@ let resolveRevisionsInRange accept selStart selEnd isCollapsed buffer =
     let intersects start endPos =
         if isCollapsed then selStart >= start && selStart <= endPos
         else start < selEnd && endPos > selStart
-    let shouldDelete revisionType =
-        match accept, revisionType with
-        | true, "delete" -> true
-        | false, "insert" -> true
-        | _ -> false
+    // Accepting removes what was deleted or moved away, rejecting what was
+    // inserted or moved in. A deleted insertion goes either way: accepted, the
+    // deletion stands; rejected, the insertion never happened.
+    let shouldDeleteRun (style: TextStyle) =
+        style.DeletedInsertion.IsSome
+        || (if accept then isRemovalRevision style else isAdditionRevision style)
     let mutable changed = false
     let mutable firstStart = None
     let mutable deletesText = false
@@ -1574,9 +1612,8 @@ let resolveRevisionsInRange accept selStart selEnd isCollapsed buffer =
                 if not changed then
                     changed <- true
                     firstStart <- Some tr.Start
-                match tr.Style.RevisionType with
-                | Some revisionType when shouldDelete revisionType -> deletesText <- true
-                | _ -> keepsContent <- keepsContent || tr.Length > 0
+                if shouldDeleteRun tr.Style then deletesText <- true
+                else keepsContent <- keepsContent || tr.Length > 0
                 remaining <- tail
             | _ ->
                 keepsContent <- keepsContent || tr.Length > 0
@@ -1703,10 +1740,10 @@ let resolveRevisionsInRange accept selStart selEnd isCollapsed buffer =
             match run with
             | Text tr ->
                 match tr.Style.RevisionType with
-                | Some revisionType when intersects tr.Start (tr.Start + tr.Length) ->
+                | Some _ when intersects tr.Start (tr.Start + tr.Length) ->
                     if firstStart.IsNone then
                         firstStart <- Some tr.Start
-                    if not (shouldDelete revisionType) then
+                    if not (shouldDeleteRun tr.Style) then
                         addTextRun tr (clearCached tr.Style)
                 | _ ->
                     addTextRun tr tr.Style
@@ -1753,6 +1790,8 @@ let clearFormatting start len buffer =
                 RevisionType = style.RevisionType
                 RevisionAuthor = style.RevisionAuthor
                 RevisionDate = style.RevisionDate
+                DeletedInsertion = style.DeletedInsertion
+                MoveName = style.MoveName
         }) buffer
 
 /// Get style at position

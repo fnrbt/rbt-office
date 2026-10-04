@@ -492,20 +492,56 @@ let private generateReferenceRun (runObj: obj) (fallbackRun: EditorRun) =
     |> List.choose id
     |> String.concat ""
 
+let private revisionAttributes (id: string option) (author: string option) (date: string option) =
+    [ yield ("w:id", id |> Option.defaultValue "1")
+      // w:author is required on a tracked change.
+      yield ("w:author", author |> Option.defaultValue "")
+      match date with
+      | Some value -> yield ("w:date", value)
+      | None -> () ]
+
+/// How many runs of each tracked move (kind + name) of the part being written
+/// are still to come, and which moves have been opened: the range markers go
+/// before the first run and after the last run of a move, wherever those are.
+let private moveRunsLeft = System.Collections.Generic.Dictionary<string, int>()
+let private moveRangeIds = System.Collections.Generic.Dictionary<string, string>()
+let mutable private nextMoveRangeId = 900000
+
+let private moveKey (runObj: obj) =
+    match optionalString (runObj?RevisionType), optionalString (runObj?RevisionMoveName) with
+    | Some kind, Some name when kind = "moveFrom" || kind = "moveTo" -> Some (kind + "\u0000" + name, kind, name)
+    | _ -> None
+
+/// The tracked change around a run: w:ins, w:del, a deletion inside an
+/// insertion (w:del in w:ins: another author's insertion that was deleted),
+/// or a move with its range markers.
 let private revisionWrappedRun (runObj: obj) (runXml: string) =
+    let attrs = revisionAttributes (optionalString (runObj?RevisionId)) (optionalString (runObj?RevisionAuthor)) (optionalString (runObj?RevisionDate))
     match optionalString (runObj?RevisionType) with
-    | Some revisionType when revisionType = "insert" || revisionType = "delete" ->
-        let elementName = if revisionType = "delete" then "w:del" else "w:ins"
-        let attrs = [
-            yield ("w:id", optionalString (runObj?RevisionId) |> Option.defaultValue "1")
-            match optionalString (runObj?RevisionAuthor) with
-            | Some author -> yield ("w:author", author)
-            | None -> ()
-            match optionalString (runObj?RevisionDate) with
-            | Some date -> yield ("w:date", date)
-            | None -> ()
-        ]
-        element elementName attrs [runXml]
+    | Some "insert" -> element "w:ins" attrs [runXml]
+    | Some "delete" ->
+        let deletion = element "w:del" attrs [runXml]
+        let insertedId, insertedAuthor, insertedDate =
+            optionalString (runObj?InsertedRevisionId), optionalString (runObj?InsertedRevisionAuthor), optionalString (runObj?InsertedRevisionDate)
+        if insertedId.IsSome || insertedAuthor.IsSome || insertedDate.IsSome then
+            element "w:ins" (revisionAttributes insertedId insertedAuthor insertedDate) [deletion]
+        else deletion
+    | Some kind when kind = "moveFrom" || kind = "moveTo" ->
+        let wrapped = element ("w:" + kind) attrs [runXml]
+        match moveKey runObj with
+        | Some (key, _, name) ->
+            let rangeStart =
+                if moveRangeIds.ContainsKey key then ""
+                else
+                    let rangeId = string nextMoveRangeId
+                    nextMoveRangeId <- nextMoveRangeId + 1
+                    moveRangeIds.[key] <- rangeId
+                    selfClosing ("w:" + kind + "RangeStart") (revisionAttributes (Some rangeId) (optionalString (runObj?RevisionAuthor)) (optionalString (runObj?RevisionDate)) @ [("w:name", name)])
+            let left = (match moveRunsLeft.TryGetValue key with | true, count -> count | _ -> 1) - 1
+            moveRunsLeft.[key] <- left
+            let rangeEnd = if left <= 0 then selfClosing ("w:" + kind + "RangeEnd") [("w:id", moveRangeIds.[key])] else ""
+            rangeStart + wrapped + rangeEnd
+        | None -> wrapped
     | _ -> runXml
 
 // ---- parts kept from the opened package -----------------------------------
@@ -1065,13 +1101,22 @@ let private paragraphMarkRunProps (para: obj) =
     // A paragraph mark that had run properties keeps a w:rPr (with the size it
     // stated): the mark's size sets the height of an empty paragraph.
     let stated = if boolOrDefault false (para?HasMarkProperties) then Some (optionalFloat (para?ExplicitMarkFontSize)) else None
+    // A tracked paragraph mark (Enter, or two paragraphs joined, under track
+    // changes): w:ins / w:del come first in the mark's run properties.
+    let tracked =
+        match optionalString (para?MarkRevisionType) with
+        | Some revisionType when revisionType = "insert" || revisionType = "delete" ->
+            [ selfClosing (if revisionType = "delete" then "w:del" else "w:ins")
+                  (revisionAttributes (optionalString (para?MarkRevisionId)) (optionalString (para?MarkRevisionAuthor)) (optionalString (para?MarkRevisionDate))) ]
+        | _ -> []
+    let size (value: float) =
+        let sz = InverseConversion.pixelsToHalfPoints value
+        [selfClosing "w:sz" [("w:val", sz)]; selfClosing "w:szCs" [("w:val", sz)]]
     match pinned, stated with
-    | Some size, _
-    | None, Some (Some size) ->
-        let sz = InverseConversion.pixelsToHalfPoints size
-        Some (element "w:rPr" [] [selfClosing "w:sz" [("w:val", sz)]; selfClosing "w:szCs" [("w:val", sz)]])
-    | None, Some None -> Some (selfClosing "w:rPr" [])
-    | None, None -> None
+    | Some value, _
+    | None, Some (Some value) -> Some (element "w:rPr" [] (tracked @ size value))
+    | None, Some None -> Some (element "w:rPr" [] tracked)
+    | None, None -> if tracked.IsEmpty then None else Some (element "w:rPr" [] tracked)
 
 /// Paragraph properties in CT_PPr sequence order: pStyle, keepNext, keepLines,
 /// pageBreakBefore, widowControl, numPr, pBdr, shd, tabs, bidi, spacing, ind,
@@ -2874,8 +2919,18 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
         |> List.collect (fun (_, rels) -> rels |> List.map (fun rel -> rel.Id))
         |> Set.ofList
     reservedPartPaths <- preserved.Parts |> List.map fst |> Set.ofList
-    let withRelationshipsOf (key: string) (generate: unit -> string) =
+    nextMoveRangeId <- 900000
+    let withRelationshipsOf (key: string) (blocks: obj array) (generate: unit -> string) =
         currentPartRelationshipIds <- keptFor key |> List.map (fun rel -> rel.Id) |> Set.ofList
+        // The runs of each tracked move in this part, for its range markers.
+        moveRunsLeft.Clear()
+        moveRangeIds.Clear()
+        for para in blocks |> Array.toList |> List.collect collectItemParagraphs do
+            for run in optionalArray (para?Runs) do
+                match moveKey run with
+                | Some (moveKeyValue, _, _) ->
+                    moveRunsLeft.[moveKeyValue] <- (match moveRunsLeft.TryGetValue moveKeyValue with | true, count -> count | _ -> 0) + 1
+                | None -> ()
         let xml = generate ()
         currentPartRelationshipIds <- Set.empty
         xml
@@ -2958,7 +3013,7 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
     let files = [
         yield { Path = "[Content_Types].xml"; Content = generateContentTypesPreserved preserved hasSettings hasComments hasFootnotes hasEndnotes headerParts footerParts allImages }
         yield { Path = "_rels/.rels"; Content = generateRootRelsPreserved preserved }
-        yield { Path = "word/document.xml"; Content = withRelationshipsOf "document" (fun () -> generateDocumentXmlPackage paragraphs bodyImages pageSetup headerParts footerParts) }
+        yield { Path = "word/document.xml"; Content = withRelationshipsOf "document" paragraphs (fun () -> generateDocumentXmlPackage paragraphs bodyImages pageSetup headerParts footerParts) }
         yield { Path = "word/_rels/document.xml.rels"; Content = generateDocumentRelsPreserved (keptFor "document") hasSettings hyperlinks hasComments hasFootnotes hasEndnotes headerParts footerParts bodyImages }
         yield { Path = "word/styles.xml"
                 Content =
@@ -2979,23 +3034,23 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
             if not (keptFor "settings").IsEmpty then
                 yield { Path = "word/_rels/settings.xml.rels"; Content = generatePartRelsWithKept (keptFor "settings") Map.empty emptyImageScope }
         for header in headerPackages do
-            yield { Path = "word/" + header.Info.Target; Content = withRelationshipsOf header.Info.RelId (fun () -> generateHeaderFooterXml "w:hdr" header.Hyperlinks header.Images header.Info.Blocks) }
+            yield { Path = "word/" + header.Info.Target; Content = withRelationshipsOf header.Info.RelId header.Info.Blocks (fun () -> generateHeaderFooterXml "w:hdr" header.Hyperlinks header.Images header.Info.Blocks) }
             if partRelsNeeded header.Info.RelId header.Images header.Hyperlinks then
                 yield { Path = sprintf "word/_rels/%s.rels" header.Info.Target; Content = generatePartRelsWithKept (keptFor header.Info.RelId) header.Hyperlinks header.Images }
         for footer in footerPackages do
-            yield { Path = "word/" + footer.Info.Target; Content = withRelationshipsOf footer.Info.RelId (fun () -> generateHeaderFooterXml "w:ftr" footer.Hyperlinks footer.Images footer.Info.Blocks) }
+            yield { Path = "word/" + footer.Info.Target; Content = withRelationshipsOf footer.Info.RelId footer.Info.Blocks (fun () -> generateHeaderFooterXml "w:ftr" footer.Hyperlinks footer.Images footer.Info.Blocks) }
             if partRelsNeeded footer.Info.RelId footer.Images footer.Hyperlinks then
                 yield { Path = sprintf "word/_rels/%s.rels" footer.Info.Target; Content = generatePartRelsWithKept (keptFor footer.Info.RelId) footer.Hyperlinks footer.Images }
         if hasComments then
-            yield { Path = "word/comments.xml"; Content = withRelationshipsOf "comments" (fun () -> generateCommentsPart (partBody commentImages commentLinks) comments) }
+            yield { Path = "word/comments.xml"; Content = withRelationshipsOf "comments" commentBlocks (fun () -> generateCommentsPart (partBody commentImages commentLinks) comments) }
             if partRelsNeeded "comments" commentImages commentLinks then
                 yield { Path = "word/_rels/comments.xml.rels"; Content = generatePartRelsWithKept (keptFor "comments") commentLinks commentImages }
         if hasFootnotes then
-            yield { Path = "word/footnotes.xml"; Content = withRelationshipsOf "footnotes" (fun () -> generateNotesPart "w:footnotes" "w:footnote" "w:footnoteRef" (partBody footnoteImages footnoteLinks) footnotes) }
+            yield { Path = "word/footnotes.xml"; Content = withRelationshipsOf "footnotes" footnoteBlocks (fun () -> generateNotesPart "w:footnotes" "w:footnote" "w:footnoteRef" (partBody footnoteImages footnoteLinks) footnotes) }
             if partRelsNeeded "footnotes" footnoteImages footnoteLinks then
                 yield { Path = "word/_rels/footnotes.xml.rels"; Content = generatePartRelsWithKept (keptFor "footnotes") footnoteLinks footnoteImages }
         if hasEndnotes then
-            yield { Path = "word/endnotes.xml"; Content = withRelationshipsOf "endnotes" (fun () -> generateNotesPart "w:endnotes" "w:endnote" "w:endnoteRef" (partBody endnoteImages endnoteLinks) endnotes) }
+            yield { Path = "word/endnotes.xml"; Content = withRelationshipsOf "endnotes" endnoteBlocks (fun () -> generateNotesPart "w:endnotes" "w:endnote" "w:endnoteRef" (partBody endnoteImages endnoteLinks) endnotes) }
             if partRelsNeeded "endnotes" endnoteImages endnoteLinks then
                 yield { Path = "word/_rels/endnotes.xml.rels"; Content = generatePartRelsWithKept (keptFor "endnotes") endnoteLinks endnoteImages }
     ]

@@ -1794,6 +1794,60 @@ let ownForwardDoc =
     Doc.trackDeleteForward "me" "d1" { ownInsertDoc with Selection = Some { Anchor = pos "tr" 4; Focus = pos "tr" 4 } }
 check "tracked delete forward over own insertion" (paraText "tr" (Doc.rejectAllRevisions ownForwardDoc)) "base"
 
+// Deleting another author's pending insertion keeps it an insertion and records
+// the deletion inside it (w:del in w:ins). Accepting everything removes the
+// text; so does rejecting everything, because the insertion never happened.
+let otherRuns doc =
+    (Doc.findParagraph doc "tr").Value.Buffer.Runs
+    |> List.choose (function
+        | Text run -> Some (slice run.Start run.Length (Doc.findParagraph doc "tr").Value.Buffer, run.Style.RevisionType, run.Style.RevisionAuthor, run.Style.DeletedInsertion |> Option.bind (fun mark -> mark.Author))
+        | Image _ -> None)
+check "deleted insertion keeps both changes"
+    (otherRuns otherBackspaceDoc)
+    [ "base", None, None, None; "NE", Some "insert", Some "me", None; "W", Some "delete", Some "someone else", Some "me" ]
+check "deleted insertion: reject all removes the text" (paraText "tr" (Doc.rejectAllRevisions otherBackspaceDoc)) "base"
+check "deleted insertion: accept all removes the deleted part" (paraText "tr" (Doc.acceptAllRevisions otherBackspaceDoc)) "baseNE"
+let movedBuffer =
+    ofString "stay gone here"
+    |> setRevision 5 5 "moveFrom" "7" (Some "Cy") None
+    |> applyStyle 5 5 (fun style -> { style with MoveName = Some "move1" })
+    |> setRevision 10 4 "moveTo" "8" (Some "Cy") None
+let movedDoc = caretDoc "tr" movedBuffer 0
+check "accepting a move keeps the destination" (paraText "tr" (Doc.acceptAllRevisions movedDoc)) "stay here"
+check "rejecting a move keeps the source" (paraText "tr" (Doc.rejectAllRevisions movedDoc)) "stay gone "
+check "moved text is shown as removed / added"
+    (isRemovalRevision { defaultStyle with RevisionType = Some "moveFrom" }, isAdditionRevision { defaultStyle with RevisionType = Some "moveTo" })
+    (true, true)
+
+// Enter and joining paragraphs under track changes are tracked on the paragraph mark.
+let splitTracked = caretDoc "tr" (ofString "onetwo") 3 |> Doc.trackSplitBlock "me" "d1"
+let paragraphTexts (doc: Doc.Document) = doc.Blocks |> List.choose (function Doc.Paragraph p | Doc.Heading (_, p) -> Some (toString p.Buffer) | _ -> None)
+let markRevisions (doc: Doc.Document) =
+    doc.Blocks |> List.choose (function Doc.Paragraph p | Doc.Heading (_, p) -> Some (p.Metadata.MarkRevision |> Option.map (fun revision -> revision.RevisionType, revision.Mark.Author)) | _ -> None)
+check "tracked Enter splits the paragraph" (paragraphTexts splitTracked) [ "one"; "two" ]
+check "tracked Enter marks the new paragraph mark as inserted" (markRevisions splitTracked) [ Some ("insert", Some "me"); None ]
+check "tracked Enter is listed as a revision"
+    (Doc.revisionInfos splitTracked |> List.map (fun revision -> revision.RevisionType, revision.Start, revision.Text))
+    [ "insert", 3, "\u00B6" ]
+check "accepting a tracked Enter keeps the split" (paragraphTexts (Doc.acceptAllRevisions splitTracked), markRevisions (Doc.acceptAllRevisions splitTracked)) ([ "one"; "two" ], [ None; None ])
+check "rejecting a tracked Enter joins the paragraphs" (paragraphTexts (Doc.rejectAllRevisions splitTracked)) [ "onetwo" ]
+// Backspace at the start of the second paragraph by the same author undoes the pending split ...
+check "own tracked Enter removed by Backspace" (paragraphTexts (Doc.trackDeleteBackward "me" "d1" splitTracked)) [ "onetwo" ]
+// ... and by someone else is not a split to undo: the mark is theirs to delete only via a tracked deletion.
+let twoParagraphs =
+    { Doc.empty with
+        Blocks = [ Doc.Paragraph (para "a" (ofString "first")); Doc.Paragraph (para "b" (ofString "second")) ]
+        Selection = Some { Anchor = pos "b" 0; Focus = pos "b" 0 } }
+let joinTracked = Doc.trackDeleteBackward "me" "d1" twoParagraphs
+check "tracked Backspace at a paragraph start keeps both paragraphs" (paragraphTexts joinTracked) [ "first"; "second" ]
+check "tracked Backspace marks the previous paragraph mark as deleted" (markRevisions joinTracked) [ Some ("delete", Some "me"); None ]
+check "tracked Backspace moves the caret to the end of the previous paragraph"
+    (joinTracked.Selection |> Option.map (fun sel -> sel.Focus.BlockId, sel.Focus.Offset)) (Some ("a", 5))
+check "accepting a deleted paragraph mark joins the paragraphs" (paragraphTexts (Doc.acceptAllRevisions joinTracked)) [ "firstsecond" ]
+check "rejecting a deleted paragraph mark keeps them apart" (paragraphTexts (Doc.rejectAllRevisions joinTracked), markRevisions (Doc.rejectAllRevisions joinTracked)) ([ "first"; "second" ], [ None; None ])
+let forwardJoin = Doc.trackDeleteForward "me" "d1" { twoParagraphs with Selection = Some { Anchor = pos "a" 5; Focus = pos "a" 5 } }
+check "tracked Delete at a paragraph end marks its mark as deleted" (markRevisions forwardJoin) [ Some ("delete", Some "me"); None ]
+
 // A surrogate pair is one character to the caret and to Backspace/Delete.
 let emoji = "\U0001F600"
 let emojiDoc offset = caretDoc "em" (ofString ("a" + emoji + "b")) offset

@@ -459,7 +459,9 @@ let private withSourceRunProps (paraProps: DocxReader.ParagraphProperties) (run:
         RevisionId = run.RevisionId
         RevisionType = run.RevisionType
         RevisionAuthor = run.RevisionAuthor
-        RevisionDate = run.RevisionDate }
+        RevisionDate = run.RevisionDate
+        DeletedInsertion = run.InsertedRevision |> Option.map (fun mark -> ({ Id = mark.Id; Author = mark.Author; Date = mark.Date }: Rbt.Word.TextBuffer.RevisionMark))
+        MoveName = run.MoveName }
 
 let private editorRunsToBufferWithImages (decorate: int -> Rbt.Word.TextBuffer.TextStyle -> Rbt.Word.TextBuffer.TextStyle) (decorateImageRun: int -> Rbt.Word.TextBuffer.ImageRun -> Rbt.Word.TextBuffer.ImageRun) (images: Map<string, string>) (runs: EP.EditorRun list) =
     let decorateImage index (run: Rbt.Word.TextBuffer.Run) =
@@ -665,6 +667,10 @@ let private paraMetadata styleMap resolver useDocumentMarkForPureEmpty defaultMi
             HasMarkProperties = props.ParagraphRunProperties.IsSome
             ExplicitMarkFontSize = props.ParagraphRunProperties |> Option.bind (fun mark -> mark.FontSize |> Option.map (fun _ -> TC.fontSizeToPoints mark.FontSize))
             ListLevelIndents = numberingDef |> Option.map (fun _ -> numberingIndentLeft, numberingFirstLineIndent)
+            MarkRevision =
+                para.MarkRevision
+                |> Option.map (fun (revisionType, mark) ->
+                    ({ RevisionType = revisionType; Mark = { Id = mark.Id; Author = mark.Author; Date = mark.Date } }: ParagraphMarkRevision))
             ListStyle =
                 match numberingDef with
                 | Some def when def.NumberFormat = "bullet" -> Bullet
@@ -746,7 +752,7 @@ let rec private tableCell resolver images styleMap tableStyleMap comments notes 
                     properties
             { para with Properties = properties }
         | None -> para
-    let emptyPara : DocxReader.Paragraph = { Runs = []; Properties = DocxReader.Docx.paragraphProps XmlDsl.Empty }
+    let emptyPara : DocxReader.Paragraph = { Runs = []; Properties = DocxReader.Docx.paragraphProps XmlDsl.Empty; MarkRevision = None }
     let defaultMissingSpacingToZero =
         paragraphProperties |> Option.exists tableStyleParagraphResetsMissingSpacing
     let content =

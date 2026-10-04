@@ -204,6 +204,9 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
     let insertTextForMode text doc =
         if handler.TrackChanges then Doc.insertTrackedText handler.TrackChangesAuthor handler.TrackChangesDate text doc else Doc.insertText text doc
 
+    let splitBlockForMode doc =
+        if handler.TrackChanges then Doc.trackSplitBlock handler.TrackChangesAuthor handler.TrackChangesDate doc else Doc.splitBlock doc
+
     let deleteSelectionForMode doc =
         if handler.TrackChanges then Doc.trackDeleteSelection handler.TrackChangesAuthor handler.TrackChangesDate doc else Doc.deleteSelection doc
 
@@ -359,7 +362,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                         if ch = '\r' || ch = '\n' then
                             sawLineBreak <- true
                             insertSegment index
-                            doc' <- Doc.splitBlock doc'
+                            doc' <- splitBlockForMode doc'
                             if ch = '\r' && index + 1 < text.Length && text.[index + 1] = '\n' then
                                 index <- index + 1
                             segmentStart <- index + 1
@@ -447,7 +450,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                     else
                         // Normal split
                         let beforeDoc = handler.Document
-                        let afterDoc = Doc.splitBlock handler.Document
+                        let afterDoc = splitBlockForMode handler.Document
                         if not (documentsEqualForChange afterDoc beforeDoc) then
                             let cmd = SplitBlockCommand(beforeDoc, afterDoc) :> ICommand
                             let (doc', hist') = Cmd.execute cmd beforeDoc handler.History

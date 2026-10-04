@@ -522,10 +522,10 @@ module Image =
 
 module Text =
     let isInsertedRevision (style: TextStyle) =
-        style.RevisionType |> Option.exists (fun value -> value = "insert")
+        TextBuffer.isAdditionRevision style
 
     let isDeletedRevision (style: TextStyle) =
-        style.RevisionType |> Option.exists (fun value -> value = "delete")
+        TextBuffer.isRemovalRevision style
 
     let revisionColor (style: TextStyle) =
         if isDeletedRevision style then Some "#C00000"
