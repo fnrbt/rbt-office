@@ -48,7 +48,7 @@ const SETUP_KEYS = ['PageWidth', 'PageHeight', 'MarginLeft', 'MarginRight', 'Mar
 
 function runSummary(run) {
     if (run.IsImage) {
-        const s = { image: (run.ImageSrc || '').length, ...pick(run, IMAGE_KEYS) };
+        const s = { image: (run.ImageSrc || '').length, ...pick(run, IMAGE_KEYS), opaque: run.OpaqueXml || null, opaqueKind: run.OpaqueKind || null };
         // What an anchor without the attribute means, which the writer spells out.
         if (s.ImageFloating) {
             if (!s.ImagePositionHAlign) s.ImagePositionX ??= 0;
@@ -307,6 +307,16 @@ async function parts(bytes) {
     return out;
 }
 
+// Every part as base64, for byte-for-byte comparison of the parts that are kept.
+async function rawParts(bytes) {
+    const zip = await window.JSZip.loadAsync(bytes);
+    const out = {};
+    for (const name of Object.keys(zip.files)) if (!zip.files[name].dir) out[name] = await zip.files[name].async('base64');
+    return out;
+}
+// Parts of an object the editor does not model: they must come back unchanged.
+const OPAQUE_PART = /^word\/(charts|embeddings|diagrams)\//;
+
 window.roundTrip = async (name, expect) => {
     const problems = [];
     let stats = '', saved = [], xml = '';
@@ -334,6 +344,28 @@ window.roundTrip = async (name, expect) => {
         for (const part of Object.keys(p2)) if (p2[part] !== p3[part]) problems.push(`${part} differs between save 2 and save 3`);
         if (Object.keys(p2).length !== Object.keys(p3).length) problems.push('part list differs between save 2 and save 3');
         xml = p1['word/document.xml'];
+        const raw0 = await rawParts(original), raw1 = await rawParts(bytes1);
+        for (const name of Object.keys(raw0)) if (OPAQUE_PART.test(name) && raw0[name] !== raw1[name]) problems.push(`${name}: ${raw1[name] === undefined ? 'missing after save' : 'changed by save'}`);
+        // Every relationship target of the saved package exists, and every part has a content type.
+        const types = p1['[Content_Types].xml'] || '';
+        for (const [relsName, relsXml] of Object.entries(p1)) {
+            if (!relsName.endsWith('.rels')) continue;
+            const owner = relsName.replace(/_rels\/([^/]*)\.rels$/, '$1');
+            const base = owner.includes('/') ? owner.slice(0, owner.lastIndexOf('/')) : '';
+            for (const m of relsXml.matchAll(/<Relationship\b[^>]*>/g)) {
+                if (/TargetMode="External"/.test(m[0])) continue;
+                const target = /Target="([^"]*)"/.exec(m[0])?.[1] ?? '';
+                const resolved = target.startsWith('/') ? target.slice(1) : (base ? base + '/' : '') + target;
+                const norm = []; for (const seg of resolved.split('/')) { if (seg === '..') norm.pop(); else if (seg && seg !== '.') norm.push(seg); }
+                if (raw1[norm.join('/')] === undefined) problems.push(`${relsName}: relationship target ${target} is not in the package`);
+            }
+        }
+        for (const name of Object.keys(raw1)) {
+            if (name === '[Content_Types].xml') continue;
+            const ext = name.slice(name.lastIndexOf('.') + 1).toLowerCase();
+            if (!new RegExp(`PartName="/${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`, 'i').test(types) && !new RegExp(`Extension="${ext}"`, 'i').test(types))
+                problems.push(`${name}: no content type`);
+        }
 
         const flatText = (s) => s.filter((e) => e.runs).map((e) => e.runs.map((r) => r.text ?? '￼').join('')).join('\n');
         for (const e of expect) {
@@ -341,6 +373,8 @@ window.roundTrip = async (name, expect) => {
             if (e.lacks && new RegExp(e.lacks).test(p1[e.part] ?? '')) problems.push(`${e.part}: unexpected /${e.lacks}/`);
             if (e.readText && !flatText(s0).includes(e.readText)) problems.push(`reader: expected text ${JSON.stringify(e.readText)} in ${JSON.stringify(flatText(s0).slice(0, 300))}`);
             if (e.savedText && !flatText(s1).includes(e.savedText)) problems.push(`after save: expected text ${JSON.stringify(e.savedText)} in ${JSON.stringify(flatText(s1).slice(0, 300))}`);
+            if (e.same && raw0[e.same] !== raw1[e.same]) problems.push(`${e.same}: ${raw1[e.same] === undefined ? 'missing after save' : 'not byte-identical after save'}`);
+            if (e.absent && raw1[e.absent] !== undefined) problems.push(`${e.absent}: should not be in the saved package`);
             if (e.read) { const got = e.read.split('.').reduce((o, k) => (o == null ? o : o[k]), { pkg: first.pkg, items: s0 }); if (JSON.stringify(norm(got)) !== JSON.stringify(e.equals)) problems.push(`reader: ${e.read} = ${JSON.stringify(norm(got))}, expected ${JSON.stringify(e.equals)}`); }
         }
         stats = `${s0.filter((e) => e.kind === 'para').length} paragraphs, ${s0.filter((e) => e.kind === 'table').length} tables, ${bytes1.length} bytes`;

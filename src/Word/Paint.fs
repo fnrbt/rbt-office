@@ -887,7 +887,26 @@ let private addParagraphCommandsWithBaselineOffset baselineOffset (settings: Lay
             | ImageSegment (src, x, yOffset, width, height, _, _, _, _, cropLeft, cropTop, cropRight, cropBottom) ->
                 let imageX = settings.PaddingLeft + x + lineAlignmentOffset
                 let imageY = line.Y + yOffset
-                commands.Add(DrawImage (src, imageX, imageY, width, height, cropLeft, cropTop, cropRight, cropBottom))
+                if src.StartsWith TextBuffer.opaqueSourcePrefix then
+                    // An object kept from the file that has no picture to show: a frame of
+                    // its size with its kind, for the ones a reader expects to see something
+                    // (a chart, SmartArt, an embedded object). Other drawings leave their space empty.
+                    let label =
+                        match src.Substring TextBuffer.opaqueSourcePrefix.Length with
+                        | "chart" -> Some "Chart"
+                        | "diagram" -> Some "SmartArt"
+                        | "ole" -> Some "Embedded object"
+                        | _ -> None
+                    match label with
+                    | Some text when width > 0.0 && height > 0.0 ->
+                        commands.Add(FillRect ("#F3F4F6", imageX, imageY, width, height))
+                        commands.Add(StrokeRect ("#9CA3AF", 1.0, imageX, imageY, width, height))
+                        let labelStyle = styleFromTextStyle { TextBuffer.defaultStyle with FontSize = 13.0; Color = Some "#4B5563" }
+                        if height >= 20.0 then
+                            commands.Add(DrawText (text, labelStyle, imageX + 8.0, imageY + 18.0, max 0.0 (width - 16.0)))
+                    | _ -> ()
+                else
+                    commands.Add(DrawImage (src, imageX, imageY, width, height, cropLeft, cropTop, cropRight, cropBottom))
 
             | MathSegment (prims, style, x, _, _, _, _, _) ->
                 // Emit the pre-laid-out equation primitives relative to the math

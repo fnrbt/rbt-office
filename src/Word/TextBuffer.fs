@@ -155,6 +155,22 @@ let characterSpacingSlots (text: string) =
 let characterSpacingAdvance (text: string) (style: TextStyle) =
     style.CharacterSpacing * characterSpacingSlots text
 
+/// An object of the file the editor does not model (chart, SmartArt, OLE
+/// object, grouped drawing, ...): the element as it was read, written back
+/// unchanged on save. It sits in the text as an image run that shows the
+/// object's fallback picture or a placeholder frame.
+type OpaqueObject = {
+    /// The element, with the namespace declarations it needs on its root.
+    Xml: string
+    /// chart | diagram | ole | shape | drawing
+    Kind: string
+    /// A child of the paragraph (it holds its own runs) rather than of a run.
+    ParagraphLevel: bool
+}
+
+/// Src of an opaque object without a picture: "opaque:<kind>".
+let opaqueSourcePrefix = "opaque:"
+
 /// Image data for inline images
 type ImageRun = {
     Start: int           // Character offset (position in text)
@@ -193,6 +209,8 @@ type ImageRun = {
     PositionVAlign: string option
     /// Which sides text wraps on (bothSides, left, right, largest).
     WrapText: string option
+    /// Set when this is not a picture but a preserved object of the file.
+    Opaque: OpaqueObject option
 }
 
 /// Text run with consistent styling
@@ -975,6 +993,7 @@ let insertImageWithMetadata pos src linked width height alt name title floating 
         PositionHAlign = None
         PositionVAlign = None
         WrapText = None
+        Opaque = None
     }
 
     // Insert image run and shift subsequent runs

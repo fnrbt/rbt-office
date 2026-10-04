@@ -467,46 +467,6 @@ type HeaderFooterPart = {
 }
 
 
-/// The body of a footnote or endnote as it is in the file: blocks with their
-/// formatting, hyperlinks and tables. The reference run in the text carries
-/// the note's plain text (TextStyle.NoteText) for display; `Text` is that
-/// plain text as imported, so an edit of the reference's NoteText is noticed
-/// (the note is then saved from the edited text instead of these blocks).
-type NoteBody = {
-    /// "footnote" or "endnote".
-    NoteType: string
-    Id: string
-    /// w:type of a special note (separator, continuationSeparator, ...); None for an ordinary one.
-    Kind: string option
-    /// The body starts with the automatic reference mark.
-    HasMark: bool
-    MarkStyle: string option
-    Text: string
-    Blocks: Block list
-}
-
-/// The body of a comment as it is in the file (see NoteBody).
-type CommentBody = {
-    Id: string
-    Author: string option
-    Date: string option
-    Initials: string option
-    Text: string
-    Blocks: Block list
-}
-
-/// What belongs to the document's package beyond the body and the
-/// headers / footers. Carried through editing and written back on save.
-type PackageData = {
-    Notes: NoteBody list
-    Comments: CommentBody list
-}
-
-let emptyPackageData = {
-    Notes = []
-    Comments = []
-}
-
 type PageSetup = {
     PageWidth: float
     PageHeight: float
@@ -564,6 +524,57 @@ type NamedStyle = {
     KeepLines: bool option
     PageBreakBefore: bool option
     WidowControl: bool option
+}
+
+/// The body of a footnote or endnote as it is in the file: blocks with their
+/// formatting, hyperlinks and tables. The reference run in the text carries
+/// the note's plain text (TextStyle.NoteText) for display; `Text` is that
+/// plain text as imported, so an edit of the reference's NoteText is noticed
+/// (the note is then saved from the edited text instead of these blocks).
+type NoteBody = {
+    /// "footnote" or "endnote".
+    NoteType: string
+    Id: string
+    /// w:type of a special note (separator, continuationSeparator, ...); None for an ordinary one.
+    Kind: string option
+    /// The body starts with the automatic reference mark.
+    HasMark: bool
+    MarkStyle: string option
+    Text: string
+    Blocks: Block list
+}
+
+/// The body of a comment as it is in the file (see NoteBody).
+type CommentBody = {
+    Id: string
+    Author: string option
+    Date: string option
+    Initials: string option
+    Text: string
+    Blocks: Block list
+}
+
+/// What belongs to the document's package beyond the body and the
+/// headers / footers. Carried through editing and written back on save.
+type PackageData = {
+    Notes: NoteBody list
+    Comments: CommentBody list
+    /// The parts of the opened package the editor does not model (theme,
+    /// settings, document properties, custom XML, chart / diagram / embedded
+    /// object parts, the original styles part, ...), exactly as the reader
+    /// delivered them; null for a document made from scratch. The editor never
+    /// looks inside: it is handed back to the writer on save.
+    Preserved: obj
+    /// The style catalog as imported. A style that still equals its entry here
+    /// was not changed in the editor, and its original definition is kept.
+    ImportedStyles: NamedStyle list
+}
+
+let emptyPackageData = {
+    Notes = []
+    Comments = []
+    Preserved = null
+    ImportedStyles = []
 }
 
 let defaultPageSetup = {

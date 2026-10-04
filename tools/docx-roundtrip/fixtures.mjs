@@ -318,6 +318,77 @@ const docs = [
             { part: 'word/document.xml', has: 'descr="alt text" title="the title"' }, { part: 'word/document.xml', has: '<wp:inline[^>]*><wp:extent cx="457200" cy="457200"/>' },
         ],
     },
+    {
+        // Objects the editor does not model are kept as they are: the drawing XML in
+        // the text, and the parts behind it (chart + embedded workbook, diagram parts,
+        // OLE binary and its picture) with their relationships and content types.
+        name: 'synthetic/opaque-objects',
+        root: 'xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" xmlns:cx1="http://schemas.microsoft.com/office/drawing/2015/9/8/chartex" xmlns:wp14="http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing" mc:Ignorable="wp14"',
+        body:
+            `<w:p><w:r><w:t xml:space="preserve">chart: </w:t></w:r><w:r><w:rPr><w:noProof/></w:rPr><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0" wp14:anchorId="12345678"><wp:extent cx="2743200" cy="1828800"/><wp:docPr id="1" name="Chart 1"/><wp:cNvGraphicFramePr/>` +
+            `<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart r:id="rId30"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>` +
+            `<w:p><w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="1828800" cy="914400"/><wp:docPr id="2" name="Diagram 2"/><wp:cNvGraphicFramePr/>` +
+            `<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/diagram"><dgm:relIds r:dm="rId31" r:lo="rId32" r:qs="rId33" r:cs="rId34"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>` +
+            `<w:p><w:r><w:object w:dxaOrig="1440" w:dyaOrig="720"><v:shape id="_x0000_i1025" style="width:72pt;height:36pt" o:ole=""><v:imagedata r:id="rId35" o:title=""/></v:shape><o:OLEObject Type="Embed" ProgID="Excel.Sheet.12" ShapeID="_x0000_i1025" DrawAspect="Content" ObjectID="_1" r:id="rId36"/></w:object></w:r></w:p>` +
+            `<w:p><w:r><mc:AlternateContent><mc:Choice Requires="cx1"><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="914400" cy="914400"/><wp:docPr id="3" name="Chart 3"/><a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/drawing/2014/chartex"><cx1:chart r:id="rId37"/></a:graphicData></a:graphic></wp:inline></w:drawing></mc:Choice>` +
+            `<mc:Fallback>${drawing('rId38', 914400, 914400).replace('<w:r>', '').replace('</w:r>', '')}</mc:Fallback></mc:AlternateContent></w:r></w:p>` +
+            `<w:p><w:r><mc:AlternateContent><mc:Choice Requires="wpg"><w:drawing><wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="2" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="column"><wp:posOffset>0</wp:posOffset></wp:positionH><wp:positionV relativeFrom="paragraph"><wp:posOffset>0</wp:posOffset></wp:positionV><wp:extent cx="914400" cy="457200"/><wp:wrapNone/><wp:docPr id="4" name="Group 4"/>` +
+            `<a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup"><wpg:wgp><wpg:cNvGrpSpPr/><wpg:grpSpPr/><wps:wsp><wps:cNvSpPr/><wps:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></wps:spPr><wps:bodyPr/></wps:wsp><wps:wsp><wps:cNvSpPr/><wps:spPr><a:prstGeom prst="ellipse"><a:avLst/></a:prstGeom></wps:spPr><wps:bodyPr/></wps:wsp></wpg:wgp></a:graphicData></a:graphic></wp:anchor></w:drawing></mc:Choice>` +
+            `<mc:Fallback><w:pict><v:group style="position:absolute;width:72pt;height:36pt"><v:rect style="width:36pt;height:36pt"/><v:oval style="width:36pt;height:36pt"/></v:group></w:pict></mc:Fallback></mc:AlternateContent></w:r><w:r><w:t>after the group</w:t></w:r></w:p>` +
+            p('end'),
+        sect: `<w:sectPr><w:headerReference w:type="default" r:id="rId9"/><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr>`,
+        rels:
+            `<Relationship Id="rId30" Type="${REL}/chart" Target="charts/chart1.xml"/>` +
+            ['Data', 'Layout', 'QuickStyle', 'Colors'].map((kind, i) => `<Relationship Id="rId${31 + i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/diagram${kind}" Target="diagrams/${kind.toLowerCase()}1.xml"/>`).join('') +
+            `<Relationship Id="rId35" Type="${REL}/image" Target="media/ole1.png"/><Relationship Id="rId36" Type="${REL}/package" Target="embeddings/Sheet1.xlsx"/>` +
+            `<Relationship Id="rId37" Type="http://schemas.microsoft.com/office/2014/relationships/chartEx" Target="charts/chartEx1.xml"/><Relationship Id="rId38" Type="${REL}/image" Target="media/fallback.png"/>` +
+            `<Relationship Id="rId9" Type="${REL}/header" Target="header1.xml"/>`,
+        extra: {
+            'word/charts/chart1.xml': '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><c:chart><c:plotArea><c:barChart><c:barDir val="col"/></c:barChart></c:plotArea></c:chart><c:externalData r:id="rId1"><c:autoUpdate val="0"/></c:externalData></c:chartSpace>',
+            'word/charts/_rels/chart1.xml.rels': `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${REL}/package" Target="../embeddings/Workbook1.xlsx"/></Relationships>`,
+            'word/embeddings/Workbook1.xlsx': Buffer.from([80, 75, 3, 4, 0, 1, 2, 3, 250, 251, 252, 253, 254, 255]),
+            'word/embeddings/Sheet1.xlsx': Buffer.from([80, 75, 5, 6, 9, 8, 7]),
+            'word/charts/chartEx1.xml': '<cx:chartSpace xmlns:cx="http://schemas.microsoft.com/office/drawing/2014/chartex"><cx:chart/></cx:chartSpace>',
+            'word/diagrams/data1.xml': '<dgm:dataModel xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram"><dgm:ptLst/></dgm:dataModel>',
+            'word/diagrams/layout1.xml': '<dgm:layoutDef xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram"/>',
+            'word/diagrams/quickstyle1.xml': '<dgm:styleDef xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram"/>',
+            'word/diagrams/colors1.xml': '<dgm:colorsDef xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram"/>',
+            'word/media/ole1.png': PNG, 'word/media/fallback.png': PNG2,
+            // A WordArt watermark: VML in the header, with nothing the reader models.
+            'word/header1.xml': `<w:hdr ${W} xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office"><w:p><w:r><w:pict><v:shape id="PowerPlusWaterMarkObject1" o:spid="_x0000_s2049" type="#_x0000_t136" style="position:absolute;margin-left:0;margin-top:0;width:412.4pt;height:247.45pt;rotation:315;z-index:-251658752" fillcolor="silver" stroked="f"><v:textpath style="font-family:&quot;Calibri&quot;;font-size:1pt" string="DRAFT"/></v:shape></w:pict></w:r><w:r><w:t>header text</w:t></w:r></w:p></w:hdr>`,
+        },
+        types: '<Default Extension="png" ContentType="image/png"/><Default Extension="xlsx" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"/>' +
+            '<Override PartName="/word/charts/chart1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/>' +
+            '<Override PartName="/word/charts/chartEx1.xml" ContentType="application/vnd.ms-office.chartex+xml"/>' +
+            '<Override PartName="/word/diagrams/data1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.diagramData+xml"/>' +
+            '<Override PartName="/word/diagrams/layout1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.diagramLayout+xml"/>' +
+            '<Override PartName="/word/diagrams/quickstyle1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.diagramStyle+xml"/>' +
+            '<Override PartName="/word/diagrams/colors1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.diagramColors+xml"/>' +
+            '<Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/>',
+        expect: [
+            { part: 'word/document.xml', has: 'chart: </w:t></w:r><w:r><w:drawing[^>]*><wp:inline [^>]*wp14:anchorId="12345678"[^>]*><wp:extent cx="2743200" cy="1828800"/>.*?<c:chart r:id="rId30"/>' },
+            { part: 'word/document.xml', has: '<dgm:relIds r:cs="rId34" r:dm="rId31" r:lo="rId32" r:qs="rId33"/>' },
+            { part: 'word/document.xml', has: '<w:object [^>]*>.*?<v:imagedata [^>]*r:id="rId35"[^>]*/>.*?<o:OLEObject [^>]*ProgID="Excel.Sheet.12"[^>]*r:id="rId36"' },
+            { part: 'word/document.xml', has: '<mc:Choice Requires="cx1"><w:drawing>.*?<cx1:chart r:id="rId37"/>.*?<mc:Fallback>.*?r:embed="rId38"' },
+            { part: 'word/document.xml', has: '<mc:Choice Requires="wpg">.*?<wpg:wgp>.*?</wpg:wgp>.*?<mc:Fallback><w:pict><v:group ' },
+            { part: 'word/document.xml', lacks: '>Chart<' }, { part: 'word/document.xml', lacks: 'wps:txbx' },
+            { part: 'word/_rels/document.xml.rels', has: '<Relationship Id="rId30" Type="[^"]*/chart" Target="/word/charts/chart1.xml"/>' },
+            { part: 'word/_rels/document.xml.rels', has: 'Id="rId31" Type="[^"]*/diagramData" Target="/word/diagrams/data1.xml"' },
+            { part: 'word/_rels/document.xml.rels', has: 'Id="rId36" Type="[^"]*/package" Target="/word/embeddings/Sheet1.xlsx"' },
+            { part: 'word/_rels/document.xml.rels', has: 'Id="rId38" Type="[^"]*/image" Target="/word/media/fallback.png"' },
+            { part: '[Content_Types].xml', has: 'PartName="/word/charts/chart1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart\\+xml"' },
+            { part: '[Content_Types].xml', has: 'Extension="xlsx"' }, { part: '[Content_Types].xml', has: 'PartName="/word/diagrams/colors1.xml"' },
+            { part: 'word/header1.xml', has: '<w:pict[^>]*><v:shape [^>]*id="PowerPlusWaterMarkObject1"[^>]*><v:textpath [^>]*string="DRAFT"[^>]*/></v:shape></w:pict>' },
+            { same: 'word/charts/chart1.xml' }, { same: 'word/charts/_rels/chart1.xml.rels' }, { same: 'word/embeddings/Workbook1.xlsx' }, { same: 'word/embeddings/Sheet1.xlsx' },
+            { same: 'word/diagrams/data1.xml' }, { same: 'word/diagrams/colors1.xml' }, { same: 'word/media/ole1.png' }, { same: 'word/media/fallback.png' }, { same: 'word/charts/chartEx1.xml' },
+            { read: 'pkg.Paragraphs.0.Runs.1.OpaqueKind', equals: 'chart' }, { read: 'pkg.Paragraphs.0.Runs.1.ImageSrc', equals: 'opaque:chart' }, { read: 'pkg.Paragraphs.0.Runs.1.ImageWidth', equals: 288 },
+            { read: 'pkg.Paragraphs.1.Runs.0.OpaqueKind', equals: 'diagram' }, { read: 'pkg.Paragraphs.2.Runs.0.OpaqueKind', equals: 'ole' },
+            // The chart with a fallback picture shows that picture.
+            { read: 'pkg.Paragraphs.3.Runs.0.ImageSrc.length', equals: 22 + Math.ceil(PNG2.length / 3) * 4 },
+            { read: 'pkg.Paragraphs.4.Runs.0.OpaqueKind', equals: 'drawing' }, { read: 'pkg.Paragraphs.length', equals: 6 },
+            { read: 'pkg.HeaderParts.0.Paragraphs.0.Runs.0.OpaqueKind', equals: 'shape' },
+        ],
+    },
 ];
 
 export async function syntheticFixtures(JSZip) {
@@ -329,7 +400,7 @@ export async function syntheticFixtures(JSZip) {
         zip.file('word/_rels/document.xml.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId100" Type="${REL}/styles" Target="styles.xml"/><Relationship Id="rId101" Type="${REL}/numbering" Target="numbering.xml"/>${doc.rels ?? ''}</Relationships>`);
         zip.file('word/styles.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>${styles}`);
         zip.file('word/numbering.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>${numbering}`);
-        zip.file('word/document.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document ${W}><w:body>${doc.body}${doc.sect ?? sect}</w:body></w:document>`);
+        zip.file('word/document.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document ${W}${doc.root ? ' ' + doc.root : ''}><w:body>${doc.body}${doc.sect ?? sect}</w:body></w:document>`);
         for (const [name, data] of Object.entries(doc.extra ?? {})) zip.file(name, data);
         out.push({ name: doc.name + '.docx', data: await zip.generateAsync({ type: 'nodebuffer' }), expect: doc.expect });
     }

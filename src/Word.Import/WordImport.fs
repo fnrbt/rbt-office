@@ -509,6 +509,7 @@ let private editorRunsToBufferWithImages (decorate: int -> Rbt.Word.TextBuffer.T
                 PositionHAlign = None
                 PositionVAlign = None
                 WrapText = None
+                Opaque = None
             } |> decorateImage runIndex)
             offset <- offset + 1
         elif not (String.IsNullOrEmpty run.Text) then
@@ -701,7 +702,13 @@ let private mkPara resolver images styleMap comments notes useDocumentMarkForPur
         if sourceRuns.Length = editorPara.Runs.Length && index < sourceRuns.Length then
             match sourceRuns.[index].Content with
             | DocxReader.Image source ->
-                { image with PositionHAlign = source.PositionHAlign; PositionVAlign = source.PositionVAlign; WrapText = source.WrapText }
+                { image with
+                    PositionHAlign = source.PositionHAlign
+                    PositionVAlign = source.PositionVAlign
+                    WrapText = source.WrapText
+                    // An opaque object shows its fallback picture, or a placeholder frame.
+                    Src = (if source.Opaque.IsSome then DocxReader.editorImageSource images source else image.Src)
+                    Opaque = source.Opaque |> Option.map (fun opaque -> ({ Xml = opaque.Xml; Kind = opaque.Kind; ParagraphLevel = opaque.ParagraphLevel }: Rbt.Word.TextBuffer.OpaqueObject)) }
             | _ -> image
         else image
     {
@@ -1062,6 +1069,7 @@ let importDoc (doc: DocxReader.WordDocument) =
             | Table table -> table.Rows |> List.tryPick (fun row -> row.Cells |> List.tryPick (fun cell -> cell.Content |> List.tryHead))
             | TextBox textBox -> textBox.Content |> List.tryHead)
 
+    let styles = doc.Styles |> List.map (namedStyle doc.Theme)
     let headerParts = doc.Headers |> List.map (headerFooterPart resolver doc.Images styleMap tableStyleMap comments notes)
     let footerParts = doc.Footers |> List.map (headerFooterPart resolver doc.Images styleMap tableStyleMap comments notes)
 
@@ -1069,7 +1077,7 @@ let importDoc (doc: DocxReader.WordDocument) =
         Blocks = blocks
         Selection = firstParagraph |> Option.map (fun para -> { Anchor = { BlockId = para.Id; Offset = 0 }; Focus = { BlockId = para.Id; Offset = 0 } })
         PageSetup = pageSetup doc
-        Styles = doc.Styles |> List.map (namedStyle doc.Theme)
+        Styles = styles
         Headers = headerParts |> List.tryHead |> Option.map (fun part -> part.Blocks |> List.choose (function | Paragraph p -> Some p | Heading (_, p) -> Some p | _ -> None)) |> Option.defaultValue []
         Footers = footerParts |> List.tryHead |> Option.map (fun part -> part.Blocks |> List.choose (function | Paragraph p -> Some p | Heading (_, p) -> Some p | _ -> None)) |> Option.defaultValue []
         HeaderParts = headerParts
@@ -1077,5 +1085,7 @@ let importDoc (doc: DocxReader.WordDocument) =
         Package =
             { emptyPackageData with
                 Notes = noteBodies "footnote" doc.Footnotes @ noteBodies "endnote" doc.Endnotes
-                Comments = commentBodies }
+                Comments = commentBodies
+                Preserved = box doc.Preserved
+                ImportedStyles = styles }
     }

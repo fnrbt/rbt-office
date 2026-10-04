@@ -558,6 +558,12 @@ let private editorRunsToBuffer (runs: obj array) : TextBuffer =
                 PositionHAlign = optionalString (run?ImagePositionHAlign)
                 PositionVAlign = optionalString (run?ImagePositionVAlign)
                 WrapText = optionalString (run?ImageWrapText)
+                Opaque =
+                    optionalString (run?OpaqueXml)
+                    |> Option.map (fun xml ->
+                        { Xml = xml
+                          Kind = run?OpaqueKind |> stringOrDefault "drawing"
+                          ParagraphLevel = run?OpaqueParagraphLevel |> boolOrDefault false })
             })
 
             currentOffset <- currentOffset + 1
@@ -1325,7 +1331,9 @@ let importFromEditorPackage (package: obj) : Document =
                     Notes =
                         noteBodiesFromEditor "footnote" (optionalArray (package?Footnotes))
                         @ noteBodiesFromEditor "endnote" (optionalArray (package?Endnotes))
-                    Comments = comments } }
+                    Comments = comments
+                    Preserved = (if isNullOrUndefined package?Preserved then null else package?Preserved)
+                    ImportedStyles = doc.Styles } }
         |> withCommentDetails comments
     if isNullOrUndefined package?PageSetup then doc else { doc with PageSetup = pageSetupFromEditor package?PageSetup }
 
@@ -1484,6 +1492,9 @@ let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) 
                     "ImagePositionHAlign" ==> img.PositionHAlign
                     "ImagePositionVAlign" ==> img.PositionVAlign
                     "ImageWrapText" ==> img.WrapText
+                    "OpaqueXml" ==> (img.Opaque |> Option.map (fun opaque -> opaque.Xml))
+                    "OpaqueKind" ==> (img.Opaque |> Option.map (fun opaque -> opaque.Kind))
+                    "OpaqueParagraphLevel" ==> (img.Opaque |> Option.map (fun opaque -> opaque.ParagraphLevel))
                 ])
         )
 
@@ -1885,6 +1896,12 @@ let exportDocumentPackage (doc: Document) : obj =
         "Footnotes" ==> notesToEditor context "footnote" doc
         "Endnotes" ==> notesToEditor context "endnote" doc
         "Comments" ==> commentsToEditor context doc
+        "Preserved" ==> doc.Package.Preserved
+        // Styles changed in the editor (or new): the others keep their original definition.
+        "ChangedStyles" ==> (doc.Styles
+                             |> List.filter (fun style -> not (doc.Package.ImportedStyles |> List.exists (fun imported -> imported = style)))
+                             |> List.map (fun style -> style.StyleType + ":" + style.Id)
+                             |> List.toArray)
         "Paragraphs" ==> exportToEditor doc
         "PageSetup" ==> exportPageSetupToEditor doc.PageSetup
         "Styles" ==> exportStylesToEditor doc.Styles

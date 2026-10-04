@@ -705,6 +705,27 @@ check "section without a header reference inherits the previous one"
     (sectionHeaderTexts { threeSectionDoc with PageSetup = Doc.defaultPageSetup } inheritingLayouts)
     [ "Header one"; "Header one"; "Header one" ]
 
+// An object kept from the file without a picture is painted as a labelled frame of its size.
+let opaqueRunDoc kind =
+    let buffer = Rbt.Word.TextBuffer.empty |> Rbt.Word.TextBuffer.insertImage 0 (Rbt.Word.TextBuffer.opaqueSourcePrefix + kind) (Some 200.0) (Some 100.0) None
+    { Doc.empty with
+        Blocks = [ Doc.Paragraph { Id = "opaque-para"; Buffer = buffer; Metadata = Doc.defaultMetadata } ]
+        Selection = None }
+let opaqueCommands kind =
+    let _, commands, _ = collectDocumentCommands settings "Calibri" measureText (rangeMeasurerFromTextMeasurer measureText) (opaqueRunDoc kind)
+    commands
+check "opaque chart paints a labelled placeholder frame"
+    (opaqueCommands "chart"
+     |> List.choose (function
+         | StrokeRect (_, _, _, _, width, height) -> Some (sprintf "frame %gx%g" width height)
+         | DrawText (text, _, _, _, _) -> Some ("text " + text)
+         | DrawImage _ -> Some "image"
+         | _ -> None))
+    [ "frame 200x100"; "text Chart" ]
+check "opaque drawing without a picture paints nothing"
+    (opaqueCommands "drawing" |> List.exists (function StrokeRect _ | DrawImage _ | DrawText _ -> true | _ -> false))
+    false
+
 let headerDepthDoc =
     { Doc.empty with
         HeaderParts =

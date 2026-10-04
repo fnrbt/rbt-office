@@ -505,6 +505,96 @@ let private revisionWrappedRun (runObj: obj) (runXml: string) =
         element elementName attrs [runXml]
     | _ -> runXml
 
+// ---- parts kept from the opened package -----------------------------------
+
+type PreservedRelationshipInfo = { Id: string; Type: string; Target: string; External: bool }
+
+/// The "Preserved" object of the editor package (DocxReader.toEditorPreserved).
+type PreservedPackage = {
+    /// (path, data)
+    Parts: (string * byte[]) list
+    RootRelationships: PreservedRelationshipInfo list
+    DocumentRelationshipId: string
+    PartRelationships: Map<string, PreservedRelationshipInfo list>
+    Defaults: (string * string) list
+    Overrides: (string * string) list
+    MainContentType: string option
+    StylesXml: string option
+    SettingsXml: string option
+}
+
+let private emptyPreservedPackage = {
+    Parts = []
+    RootRelationships = []
+    DocumentRelationshipId = "rId1"
+    PartRelationships = Map.empty
+    Defaults = []
+    Overrides = []
+    MainContentType = None
+    StylesXml = None
+    SettingsXml = None
+}
+
+let private preservedRelationshipsFromObject (value: obj) : PreservedRelationshipInfo list =
+    optionalArray value
+    |> Array.toList
+    |> List.choose (fun rel ->
+        match optionalString (rel?Id), optionalString (rel?Type), optionalString (rel?Target) with
+        | Some id, Some relType, Some target -> Some { Id = id; Type = relType; Target = target; External = boolOrDefault false (rel?External) }
+        | _ -> None)
+
+let private preservedPackageFromObject (value: obj) : PreservedPackage =
+    if isNullOrUndefined value then emptyPreservedPackage
+    else
+        { Parts =
+            optionalArray (value?Parts)
+            |> Array.toList
+            |> List.choose (fun part ->
+                if isNullOrUndefined part?Data then None
+                else optionalString (part?Path) |> Option.map (fun path -> path, unbox<byte[]> part?Data))
+          RootRelationships = preservedRelationshipsFromObject (value?RootRelationships)
+          DocumentRelationshipId = optionalString (value?DocumentRelationshipId) |> Option.defaultValue "rId1"
+          PartRelationships =
+            optionalArray (value?PartRelationships)
+            |> Array.toList
+            |> List.choose (fun entry -> optionalString (entry?Part) |> Option.map (fun key -> key, preservedRelationshipsFromObject (entry?Relationships)))
+            |> Map.ofList
+          Defaults =
+            optionalArray (value?Defaults)
+            |> Array.toList
+            |> List.choose (fun entry -> Option.map2 (fun extension contentType -> extension, contentType) (optionalString (entry?Extension)) (optionalString (entry?ContentType)))
+          Overrides =
+            optionalArray (value?Overrides)
+            |> Array.toList
+            |> List.choose (fun entry -> Option.map2 (fun partName contentType -> partName, contentType) (optionalString (entry?PartName)) (optionalString (entry?ContentType)))
+          MainContentType = optionalString (value?MainContentType)
+          StylesXml = optionalString (value?StylesXml)
+          SettingsXml = optionalString (value?SettingsXml) }
+
+/// Relationship ids and part paths of the kept package: what the writer makes
+/// up itself (image / hyperlink ids, media file names) must not collide with them.
+let mutable private reservedRelationshipIds : Set<string> = Set.empty
+let mutable private reservedPartPaths : Set<string> = Set.empty
+/// Kept relationship ids of the part being written: an opaque object is only
+/// written when everything it refers to is there.
+let mutable private currentPartRelationshipIds : Set<string> = Set.empty
+
+let private freshRelationshipId (candidate: string) =
+    let mutable id = candidate
+    while Set.contains id reservedRelationshipIds do
+        id <- id + "x"
+    id
+
+let private preservedRelationshipElement (rel: PreservedRelationshipInfo) =
+    selfClosing "Relationship" [
+        yield ("Id", rel.Id)
+        yield ("Type", rel.Type)
+        yield ("Target", rel.Target)
+        if rel.External then yield ("TargetMode", "External")
+    ]
+
+let private relationshipIdPattern = System.Text.RegularExpressions.Regex("\\s(?:r:[A-Za-z]+|o:relid)=\"([^\"]*)\"")
+
 /// Every paragraph object reachable from a block: text box content, table
 /// cells and the tables nested inside cells. The hyperlink, image, comment,
 /// note, numbering and style collectors all go through this, so content in a
@@ -539,7 +629,7 @@ let private hyperlinkMap (items: obj array) =
     // Not "rId<n>": header/footer parts keep the relationship ids they were read
     // with (rId7, ...), and a hyperlink numbered into the same range pointed at
     // header1.xml after saving.
-    |> List.mapi (fun index url -> (url, sprintf "rIdLink%d" (index + 1)))
+    |> List.mapi (fun index url -> (url, freshRelationshipId (sprintf "rIdLink%d" (index + 1))))
     |> Map.ofList
 
 type CommentRef = { Id: string; Text: string; Author: string option; Date: string option }
@@ -662,7 +752,8 @@ let private collectParagraphImageSources (para: obj) =
         |> unbox<obj array>
         |> Array.toList
         |> List.choose (fun run ->
-            if boolOrDefault false (run?IsImage) then optionalString (run?ImageSrc)
+            // An opaque object's picture is one of the kept parts, not a new image.
+            if boolOrDefault false (run?IsImage) && isNullOrUndefined run?OpaqueXml then optionalString (run?ImageSrc)
             else None)
 
 let private collectItemImageSources (item: obj) =
@@ -678,13 +769,16 @@ let private buildImageScope (mediaStartIndex: int) (items: obj array) =
         |> List.choose (fun src ->
             parseDataUrl src
             |> Option.map (fun (extension, contentType, data) ->
+                // Not the name of a kept part (a fallback picture of an opaque object).
+                while Set.contains (sprintf "word/media/image%d.%s" nextMediaIndex extension) reservedPartPaths do
+                    nextMediaIndex <- nextMediaIndex + 1
                 let fileName = sprintf "image%d.%s" nextMediaIndex extension
-                let relId = sprintf "rIdImage%d" nextMediaIndex
+                let relId = freshRelationshipId (sprintf "rIdImage%d" nextMediaIndex)
                 nextMediaIndex <- nextMediaIndex + 1
                 { Src = src; RelId = relId; FileName = fileName; Extension = extension; ContentType = contentType; Data = Some data; Linked = false })
             |> Option.orElseWith (fun () ->
                 if src.StartsWith("http://") || src.StartsWith("https://") then
-                    let relId = sprintf "rIdImage%d" nextMediaIndex
+                    let relId = freshRelationshipId (sprintf "rIdImage%d" nextMediaIndex)
                     nextMediaIndex <- nextMediaIndex + 1
                     Some { Src = src; RelId = relId; FileName = ""; Extension = ""; ContentType = ""; Data = None; Linked = true }
                 else None))
@@ -783,12 +877,12 @@ let private generateImageRun (asset: ImageAsset) (runObj: obj) =
     element "w:r" [] [
         element "w:drawing" [] [
             drawingContainer [
-                selfClosing "wp:docPr" ([("id", asset.RelId.Replace("rIdImage", "")); ("name", imageName)] @ altAttrs @ titleAttrs)
+                selfClosing "wp:docPr" ([("id", (asset.RelId.Replace("rIdImage", "").TrimEnd('x'))); ("name", imageName)] @ altAttrs @ titleAttrs)
                 element "a:graphic" [("xmlns:a", "http://schemas.openxmlformats.org/drawingml/2006/main")] [
                     element "a:graphicData" [("uri", "http://schemas.openxmlformats.org/drawingml/2006/picture")] [
                         element "pic:pic" [("xmlns:pic", "http://schemas.openxmlformats.org/drawingml/2006/picture")] [
                             element "pic:nvPicPr" [] [
-                                selfClosing "pic:cNvPr" ([("id", asset.RelId.Replace("rIdImage", "")); ("name", imageName)] @ altAttrs @ titleAttrs)
+                                selfClosing "pic:cNvPr" ([("id", (asset.RelId.Replace("rIdImage", "").TrimEnd('x'))); ("name", imageName)] @ altAttrs @ titleAttrs)
                                 selfClosing "pic:cNvPicPr" []
                             ]
                             element "pic:blipFill" [] [
@@ -1064,7 +1158,18 @@ let private generateParagraphWithHyperlinksAndImagesWithPageSetup (packageSetup:
         |> Array.toList
         |> List.map (fun runObj ->
             let runXml =
-                if boolOrDefault false (runObj?IsImage) then
+                if not (isNullOrUndefined runObj?OpaqueXml) then
+                    // An object kept from the file (chart, SmartArt, OLE object, ...):
+                    // its element goes back as it was read. If a relationship it
+                    // needs is not in this part (the run was pasted from another
+                    // document), only its description is written.
+                    let xml = runObj?OpaqueXml |> unbox<string>
+                    let referenced = [ for m in relationshipIdPattern.Matches xml -> m.Groups.[1].Value ]
+                    if referenced |> List.forall (fun id -> Set.contains id currentPartRelationshipIds) then
+                        if boolOrDefault false (runObj?OpaqueParagraphLevel) then xml else "<w:r>" + xml + "</w:r>"
+                    else
+                        runElement [] (isDeletedRun runObj) (optionalString (runObj?ImageAlt) |> Option.defaultValue "")
+                elif boolOrDefault false (runObj?IsImage) then
                     match optionalString (runObj?ImageSrc) |> Option.bind (fun src -> Map.tryFind src images.AssetBySrc) with
                     | Some asset -> generateImageRun asset runObj
                     | None ->
@@ -1662,7 +1767,7 @@ let private headerFooterInfos scopedRelationshipIds prefix startIndex (parts: ob
     |> Array.mapi (fun index part ->
         let number = startIndex + index
         let explicitRelId = optionalString (part?RelationshipId)
-        let relId = explicitRelId |> Option.defaultValue (sprintf "rId%s%d" prefix number)
+        let relId = explicitRelId |> Option.defaultValue (freshRelationshipId (sprintf "rId%s%d" prefix number))
         let fileName = sprintf "%s%d.xml" prefix number
         { Kind = part?Kind |> stringOrDefault (part?Type |> stringOrDefault "default")
           RelId = relId
@@ -1774,6 +1879,36 @@ let private generateContentTypesWithImages hasComments hasFootnotes hasEndnotes 
     ]
     document (element "Types" [("xmlns", Namespaces.contentTypes)] children)
 
+/// [Content_Types].xml for a package that carries kept parts: the original
+/// Default entries, the writer's own, and the Override entries of the kept parts.
+let private generateContentTypesPreserved (preserved: PreservedPackage) hasSettings hasComments hasFootnotes hasEndnotes (headers: HeaderFooterPartInfo array) (footers: HeaderFooterPartInfo array) (imageAssets: ImageAsset array) =
+    let own =
+        [ yield "/word/document.xml", preserved.MainContentType |> Option.defaultValue "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"
+          yield "/word/styles.xml", "application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"
+          yield "/word/numbering.xml", "application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"
+          if hasSettings then yield "/word/settings.xml", "application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"
+          for header in headers do yield header.PartName, "application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"
+          for footer in footers do yield footer.PartName, "application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"
+          if hasComments then yield "/word/comments.xml", "application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"
+          if hasFootnotes then yield "/word/footnotes.xml", "application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml"
+          if hasEndnotes then yield "/word/endnotes.xml", "application/vnd.openxmlformats-officedocument.wordprocessingml.endnotes+xml" ]
+    let ownNames = own |> List.map (fun (name, _) -> name.ToLowerInvariant()) |> Set.ofList
+    let keptNames = preserved.Parts |> List.map (fun (path, _) -> ("/" + path).ToLowerInvariant()) |> Set.ofList
+    let keptOverrides =
+        preserved.Overrides
+        |> List.filter (fun (name, _) -> Set.contains (name.ToLowerInvariant()) keptNames && not (Set.contains (name.ToLowerInvariant()) ownNames))
+    let defaults =
+        [ yield "rels", "application/vnd.openxmlformats-package.relationships+xml"
+          yield "xml", "application/xml"
+          yield! preserved.Defaults
+          for image in imageAssets do
+              if not image.Linked then yield image.Extension, image.ContentType ]
+        |> List.distinctBy (fun (extension, _) -> extension.ToLowerInvariant())
+    let children =
+        [ for extension, contentType in defaults do yield selfClosing "Default" [("Extension", extension); ("ContentType", contentType)]
+          for name, contentType in own @ keptOverrides do yield selfClosing "Override" [("PartName", name); ("ContentType", contentType)] ]
+    document (element "Types" [("xmlns", Namespaces.contentTypes)] children)
+
 let generateContentTypesPackage hasSettings hasComments hasFootnotes hasEndnotes (headers: HeaderFooterPartInfo array) (footers: HeaderFooterPartInfo array) (imageAssets: ImageAsset array) =
     let children = [
         yield selfClosing "Default" [("Extension", "rels"); ("ContentType", "application/vnd.openxmlformats-package.relationships+xml")]
@@ -1801,16 +1936,18 @@ let generateRootRels () : string =
     document root
 
 /// Generate word/_rels/document.xml.rels
+/// The writer's own relationship ids are named, not numbered: kept
+/// relationships of the opened document have ids like rId1, rId2.
 let private documentRelationshipElements (hyperlinks: Map<string, string>) (hasComments: bool) (hasFootnotes: bool) (hasEndnotes: bool) =
     let baseRels = [
-        yield selfClosing "Relationship" [("Id", "rId1"); ("Type", RelationshipTypes.styles); ("Target", "styles.xml")]
-        yield selfClosing "Relationship" [("Id", "rId2"); ("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering"); ("Target", "numbering.xml")]
+        yield selfClosing "Relationship" [("Id", freshRelationshipId "rIdStyles"); ("Type", RelationshipTypes.styles); ("Target", "styles.xml")]
+        yield selfClosing "Relationship" [("Id", freshRelationshipId "rIdNumbering"); ("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering"); ("Target", "numbering.xml")]
         if hasComments then
-            yield selfClosing "Relationship" [("Id", "rIdComments"); ("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments"); ("Target", "comments.xml")]
+            yield selfClosing "Relationship" [("Id", freshRelationshipId "rIdComments"); ("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments"); ("Target", "comments.xml")]
         if hasFootnotes then
-            yield selfClosing "Relationship" [("Id", "rIdFootnotes"); ("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes"); ("Target", "footnotes.xml")]
+            yield selfClosing "Relationship" [("Id", freshRelationshipId "rIdFootnotes"); ("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes"); ("Target", "footnotes.xml")]
         if hasEndnotes then
-            yield selfClosing "Relationship" [("Id", "rIdEndnotes"); ("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/endnotes"); ("Target", "endnotes.xml")]
+            yield selfClosing "Relationship" [("Id", freshRelationshipId "rIdEndnotes"); ("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/endnotes"); ("Target", "endnotes.xml")]
     ]
     let hyperlinkRels =
         hyperlinks
@@ -1846,16 +1983,40 @@ let private generateDocumentRelsWithImages hyperlinks hasComments hasFootnotes h
 
 let generateDocumentRelsPackage hasSettings hyperlinks hasComments hasFootnotes hasEndnotes (headers: HeaderFooterPartInfo array) (footers: HeaderFooterPartInfo array) (images: ImageScope) =
     let headerFooterRels =
-        [ if hasSettings then yield selfClosing "Relationship" [("Id", "rIdSettings"); ("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings"); ("Target", "settings.xml")]
+        [ if hasSettings then yield selfClosing "Relationship" [("Id", freshRelationshipId "rIdSettings"); ("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings"); ("Target", "settings.xml")]
           for header in headers -> selfClosing "Relationship" [("Id", header.RelId); ("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/header"); ("Target", header.Target)]
           for footer in footers -> selfClosing "Relationship" [("Id", footer.RelId); ("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer"); ("Target", footer.Target)] ]
     let rels = documentRelationshipElements hyperlinks hasComments hasFootnotes hasEndnotes @ headerFooterRels @ generateImageRelationships images.Assets
     let root = element "Relationships" [("xmlns", Namespaces.relationshipsPackage)] rels
     document root
 
-let private generatePartRels (hyperlinks: Map<string, string>) (images: ImageScope) =
-    let rels = generateImageRelationships images.Assets @ generateHyperlinkRelationships hyperlinks
+/// The relationships part of the main document: the writer's own, then the kept ones.
+let private generateDocumentRelsPreserved (kept: PreservedRelationshipInfo list) hasSettings hyperlinks hasComments hasFootnotes hasEndnotes (headers: HeaderFooterPartInfo array) (footers: HeaderFooterPartInfo array) (images: ImageScope) =
+    let headerFooterRels =
+        [ if hasSettings then yield selfClosing "Relationship" [("Id", freshRelationshipId "rIdSettings"); ("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings"); ("Target", "settings.xml")]
+          for header in headers -> selfClosing "Relationship" [("Id", header.RelId); ("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/header"); ("Target", header.Target)]
+          for footer in footers -> selfClosing "Relationship" [("Id", footer.RelId); ("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer"); ("Target", footer.Target)] ]
+    let rels =
+        documentRelationshipElements hyperlinks hasComments hasFootnotes hasEndnotes
+        @ headerFooterRels
+        @ generateImageRelationships images.Assets
+        @ (kept |> List.map preservedRelationshipElement)
     document (element "Relationships" [("xmlns", Namespaces.relationshipsPackage)] rels)
+
+let private generateRootRelsPreserved (preserved: PreservedPackage) : string =
+    let main = selfClosing "Relationship" [("Id", preserved.DocumentRelationshipId); ("Type", RelationshipTypes.officeDocument); ("Target", "word/document.xml")]
+    let kept =
+        preserved.RootRelationships
+        |> List.filter (fun rel -> rel.Id <> preserved.DocumentRelationshipId)
+        |> List.map preservedRelationshipElement
+    document (element "Relationships" [("xmlns", Namespaces.relationshipsPackage)] (main :: kept))
+
+let private generatePartRelsWithKept (kept: PreservedRelationshipInfo list) (hyperlinks: Map<string, string>) (images: ImageScope) =
+    let rels = generateImageRelationships images.Assets @ generateHyperlinkRelationships hyperlinks @ (kept |> List.map preservedRelationshipElement)
+    document (element "Relationships" [("xmlns", Namespaces.relationshipsPackage)] rels)
+
+let private generatePartRels (hyperlinks: Map<string, string>) (images: ImageScope) =
+    generatePartRelsWithKept [] hyperlinks images
 
 let generateComments (comments: CommentRef list) : string =
     let children =
@@ -2519,6 +2680,21 @@ let writeFromEditor (paragraphs: obj array) : Fable.Core.JS.Promise<obj> =
 
 let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
     nextShapeId <- 1000
+    // What was kept of the opened package: written back around the parts the
+    // editor owns. A package without it (a new document) is written from scratch.
+    let preserved = preservedPackageFromObject (package?Preserved)
+    let keptFor (key: string) = preserved.PartRelationships |> Map.tryFind key |> Option.defaultValue []
+    reservedRelationshipIds <-
+        preserved.PartRelationships
+        |> Map.toList
+        |> List.collect (fun (_, rels) -> rels |> List.map (fun rel -> rel.Id))
+        |> Set.ofList
+    reservedPartPaths <- preserved.Parts |> List.map fst |> Set.ofList
+    let withRelationshipsOf (key: string) (generate: unit -> string) =
+        currentPartRelationshipIds <- keptFor key |> List.map (fun rel -> rel.Id) |> Set.ofList
+        let xml = generate ()
+        currentPartRelationshipIds <- Set.empty
+        xml
     let paragraphs = optionalArray (package?Paragraphs)
     let pageSetup = optionalPageSetup (package?PageSetup)
     let hasSettings = pageSetup |> Option.exists (fun setup -> setup.EvenAndOddHeaders)
@@ -2589,41 +2765,49 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
     let hasComments = not comments.IsEmpty
     let hasFootnotes = not footnotes.IsEmpty
     let hasEndnotes = not endnotes.IsEmpty
+    let partRelsNeeded (key: string) (images: ImageScope) (links: Map<string, string>) =
+        images.Assets.Length > 0 || not links.IsEmpty || not (keptFor key).IsEmpty
 
     let files = [
-        yield { Path = "[Content_Types].xml"; Content = generateContentTypesPackage hasSettings hasComments hasFootnotes hasEndnotes headerParts footerParts allImages }
-        yield { Path = "_rels/.rels"; Content = generateRootRels() }
-        yield { Path = "word/document.xml"; Content = generateDocumentXmlPackage paragraphs bodyImages pageSetup headerParts footerParts }
-        yield { Path = "word/_rels/document.xml.rels"; Content = generateDocumentRelsPackage hasSettings hyperlinks hasComments hasFootnotes hasEndnotes headerParts footerParts bodyImages }
+        yield { Path = "[Content_Types].xml"; Content = generateContentTypesPreserved preserved hasSettings hasComments hasFootnotes hasEndnotes headerParts footerParts allImages }
+        yield { Path = "_rels/.rels"; Content = generateRootRelsPreserved preserved }
+        yield { Path = "word/document.xml"; Content = withRelationshipsOf "document" (fun () -> generateDocumentXmlPackage paragraphs bodyImages pageSetup headerParts footerParts) }
+        yield { Path = "word/_rels/document.xml.rels"; Content = generateDocumentRelsPreserved (keptFor "document") hasSettings hyperlinks hasComments hasFootnotes hasEndnotes headerParts footerParts bodyImages }
         yield { Path = "word/styles.xml"; Content = generateDefaultStylesWithStyles styles }
         yield { Path = "word/numbering.xml"; Content = numberingXml }
         if hasSettings then
             yield { Path = "word/settings.xml"; Content = generateSettings pageSetup }
         for header in headerPackages do
-            yield { Path = "word/" + header.Info.Target; Content = generateHeaderFooterXml "w:hdr" header.Hyperlinks header.Images header.Info.Blocks }
-            if header.Images.Assets.Length > 0 || not header.Hyperlinks.IsEmpty then
-                yield { Path = sprintf "word/_rels/%s.rels" header.Info.Target; Content = generatePartRels header.Hyperlinks header.Images }
+            yield { Path = "word/" + header.Info.Target; Content = withRelationshipsOf header.Info.RelId (fun () -> generateHeaderFooterXml "w:hdr" header.Hyperlinks header.Images header.Info.Blocks) }
+            if partRelsNeeded header.Info.RelId header.Images header.Hyperlinks then
+                yield { Path = sprintf "word/_rels/%s.rels" header.Info.Target; Content = generatePartRelsWithKept (keptFor header.Info.RelId) header.Hyperlinks header.Images }
         for footer in footerPackages do
-            yield { Path = "word/" + footer.Info.Target; Content = generateHeaderFooterXml "w:ftr" footer.Hyperlinks footer.Images footer.Info.Blocks }
-            if footer.Images.Assets.Length > 0 || not footer.Hyperlinks.IsEmpty then
-                yield { Path = sprintf "word/_rels/%s.rels" footer.Info.Target; Content = generatePartRels footer.Hyperlinks footer.Images }
+            yield { Path = "word/" + footer.Info.Target; Content = withRelationshipsOf footer.Info.RelId (fun () -> generateHeaderFooterXml "w:ftr" footer.Hyperlinks footer.Images footer.Info.Blocks) }
+            if partRelsNeeded footer.Info.RelId footer.Images footer.Hyperlinks then
+                yield { Path = sprintf "word/_rels/%s.rels" footer.Info.Target; Content = generatePartRelsWithKept (keptFor footer.Info.RelId) footer.Hyperlinks footer.Images }
         if hasComments then
-            yield { Path = "word/comments.xml"; Content = generateCommentsPart (partBody commentImages commentLinks) comments }
-            if commentImages.Assets.Length > 0 || not commentLinks.IsEmpty then
-                yield { Path = "word/_rels/comments.xml.rels"; Content = generatePartRels commentLinks commentImages }
+            yield { Path = "word/comments.xml"; Content = withRelationshipsOf "comments" (fun () -> generateCommentsPart (partBody commentImages commentLinks) comments) }
+            if partRelsNeeded "comments" commentImages commentLinks then
+                yield { Path = "word/_rels/comments.xml.rels"; Content = generatePartRelsWithKept (keptFor "comments") commentLinks commentImages }
         if hasFootnotes then
-            yield { Path = "word/footnotes.xml"; Content = generateNotesPart "w:footnotes" "w:footnote" "w:footnoteRef" (partBody footnoteImages footnoteLinks) footnotes }
-            if footnoteImages.Assets.Length > 0 || not footnoteLinks.IsEmpty then
-                yield { Path = "word/_rels/footnotes.xml.rels"; Content = generatePartRels footnoteLinks footnoteImages }
+            yield { Path = "word/footnotes.xml"; Content = withRelationshipsOf "footnotes" (fun () -> generateNotesPart "w:footnotes" "w:footnote" "w:footnoteRef" (partBody footnoteImages footnoteLinks) footnotes) }
+            if partRelsNeeded "footnotes" footnoteImages footnoteLinks then
+                yield { Path = "word/_rels/footnotes.xml.rels"; Content = generatePartRelsWithKept (keptFor "footnotes") footnoteLinks footnoteImages }
         if hasEndnotes then
-            yield { Path = "word/endnotes.xml"; Content = generateNotesPart "w:endnotes" "w:endnote" "w:endnoteRef" (partBody endnoteImages endnoteLinks) endnotes }
-            if endnoteImages.Assets.Length > 0 || not endnoteLinks.IsEmpty then
-                yield { Path = "word/_rels/endnotes.xml.rels"; Content = generatePartRels endnoteLinks endnoteImages }
+            yield { Path = "word/endnotes.xml"; Content = withRelationshipsOf "endnotes" (fun () -> generateNotesPart "w:endnotes" "w:endnote" "w:endnoteRef" (partBody endnoteImages endnoteLinks) endnotes) }
+            if partRelsNeeded "endnotes" endnoteImages endnoteLinks then
+                yield { Path = "word/_rels/endnotes.xml.rels"; Content = generatePartRelsWithKept (keptFor "endnotes") endnoteLinks endnoteImages }
     ]
 
+    // Kept parts go back as they were, except where the writer produced a part
+    // of the same name.
+    let written = files |> List.map (fun file -> file.Path) |> Set.ofList
     let binaryFiles =
-        allImages
-        |> Array.choose (fun image -> image.Data |> Option.map (fun data -> sprintf "word/media/%s" image.FileName, data))
-        |> Array.toList
+        (allImages
+         |> Array.choose (fun image -> image.Data |> Option.map (fun data -> sprintf "word/media/%s" image.FileName, data))
+         |> Array.toList)
+        @ (preserved.Parts |> List.filter (fun (path, _) -> not (Set.contains path written)))
 
+    reservedRelationshipIds <- Set.empty
+    reservedPartPaths <- Set.empty
     createPackageWithBinary files binaryFiles

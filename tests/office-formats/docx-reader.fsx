@@ -417,6 +417,73 @@ ok "shape-text-is-not-body-text"
    (contentTexts shapesDoc.Content = [ "one"; "two"; "three" ])
    (sprintf "%A" (contentTexts shapesDoc.Content))
 
+// ----- objects the reader does not model are kept, with their parts -----------
+let docxPackage (parts: (string * string) list) (binaryParts: (string * byte[]) list) =
+    use stream = new System.IO.MemoryStream()
+    do
+        use archive = new System.IO.Compression.ZipArchive(stream, System.IO.Compression.ZipArchiveMode.Create, true)
+        for name, (text: string) in parts do
+            use writer = new System.IO.StreamWriter(archive.CreateEntry(name).Open(), System.Text.UTF8Encoding(false))
+            writer.Write text
+        for name, (bytes: byte[]) in binaryParts do
+            use entry = archive.CreateEntry(name).Open()
+            entry.Write(bytes, 0, bytes.Length)
+    stream.ToArray()
+let chartNs = wNs + " xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\""
+let chartDoc =
+    docxPackage
+        [ "[Content_Types].xml", "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"xlsx\" ContentType=\"application/x-sheet\"/><Override PartName=\"/word/charts/chart1.xml\" ContentType=\"application/x-chart\"/><Override PartName=\"/main/doc.xml\" ContentType=\"application/x-main\"/></Types>"
+          "_rels/.rels", relsXml (sprintf "<Relationship Id=\"rId7\" Type=\"%s\" Target=\"main/doc.xml\"/><Relationship Id=\"rId8\" Type=\"http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties\" Target=\"docProps/core.xml\"/>" (relType "officeDocument"))
+          "docProps/core.xml", "<cp:coreProperties xmlns:cp=\"http://schemas.openxmlformats.org/package/2006/metadata/core-properties\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\"><dc:title>Kept title</dc:title></cp:coreProperties>"
+          // The main part is not word/document.xml: it is found through the package relationships.
+          "main/doc.xml", sprintf "<w:document %s><w:body><w:p><w:r><w:t>before</w:t></w:r><w:r><w:drawing><wp:inline><wp:extent cx=\"1905000\" cy=\"952500\"/><wp:docPr id=\"1\" name=\"Chart 1\"/><a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/chart\"><c:chart r:id=\"rId5\"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p></w:body></w:document>" chartNs
+          "main/_rels/doc.xml.rels", relsXml (sprintf "<Relationship Id=\"rId5\" Type=\"%s\" Target=\"/word/charts/chart1.xml\"/><Relationship Id=\"rId6\" Type=\"%s\" Target=\"theme/theme1.xml\"/><Relationship Id=\"rId9\" Type=\"%s\" Target=\"media/unused.png\"/>" (relType "chart") (relType "theme") (relType "image"))
+          "main/theme/theme1.xml", "<a:theme xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" name=\"Kept\"/>"
+          "word/charts/chart1.xml", "<c:chartSpace xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\"/>"
+          "word/charts/_rels/chart1.xml.rels", relsXml (sprintf "<Relationship Id=\"rId1\" Type=\"%s\" Target=\"../embeddings/book.xlsx\"/>" (relType "package")) ]
+        [ "word/embeddings/book.xlsx", [| 1uy; 2uy; 3uy |]; "main/media/unused.png", [| 9uy |] ]
+    |> DocxReader.loadBytesNative
+let chartRuns =
+    chartDoc
+    |> Option.map (fun doc -> DocxReader.blockParagraphs doc.Content |> List.collect (fun para -> para.Runs))
+    |> Option.defaultValue []
+ok "main-part-resolved-from-package-relationships"
+   (chartDoc |> Option.map (fun doc -> contentTexts doc.Content) = Some [ "before" ])
+   (sprintf "%A" (chartDoc |> Option.map (fun doc -> contentTexts doc.Content)))
+ok "core-properties-through-package-relationships"
+   (chartDoc |> Option.bind (fun doc -> doc.Properties) |> Option.bind (fun props -> props.Title) = Some "Kept title")
+   (sprintf "%A" (chartDoc |> Option.bind (fun doc -> doc.Properties)))
+let chartOpaque = chartRuns |> List.tryPick (fun run -> match run.Content with DocxReader.Image image -> image.Opaque |> Option.map (fun opaque -> image, opaque) | _ -> None)
+ok "chart-is-an-opaque-object"
+   (chartOpaque |> Option.map (fun (image, opaque) -> opaque.Kind, opaque.ParagraphLevel, image.Width, image.Height, image.RelationshipId) = Some ("chart", false, Some 200.0, Some 100.0, ""))
+   (sprintf "%A" chartOpaque)
+ok "opaque-xml-is-self-contained"
+   (chartOpaque |> Option.exists (fun (_, opaque) ->
+        opaque.Xml.StartsWith "<w:drawing " && opaque.Xml.Contains "xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\""
+        && opaque.Xml.Contains "xmlns:wp=" && opaque.Xml.Contains "<c:chart r:id=\"rId5\"/>" && not (opaque.Xml.Contains "xmlns:pic=")
+        && (XmlDsl.parse opaque.Xml |> DocxReader.Docx.xmlToString) = opaque.Xml))
+   (sprintf "%A" (chartOpaque |> Option.map (fun (_, opaque) -> opaque.Xml)))
+let keptParts = chartDoc |> Option.map (fun doc -> doc.Preserved.Parts |> List.map (fun part -> part.Path)) |> Option.defaultValue []
+ok "kept-parts-are-those-reachable"
+   (keptParts = [ "docProps/core.xml"; "main/theme/theme1.xml"; "word/charts/_rels/chart1.xml.rels"; "word/charts/chart1.xml"; "word/embeddings/book.xlsx" ])
+   (sprintf "%A" keptParts)
+let keptDocRels =
+    chartDoc
+    |> Option.bind (fun doc -> Map.tryFind "document" doc.Preserved.PartRelationships)
+    |> Option.defaultValue []
+    |> List.map (fun rel -> rel.Id, rel.Target)
+ok "kept-relationships-have-absolute-targets"
+   (keptDocRels = [ "rId5", "/word/charts/chart1.xml"; "rId6", "/main/theme/theme1.xml" ])
+   (sprintf "%A" keptDocRels)
+ok "kept-package-metadata"
+   ((chartDoc |> Option.map (fun doc -> doc.Preserved.DocumentRelationshipId, doc.Preserved.MainContentType, doc.Preserved.RootRelationships |> List.map (fun rel -> rel.Target), doc.Preserved.Defaults))
+     = Some ("rId7", Some "application/x-main", [ "/docProps/core.xml" ], [ "xlsx", "application/x-sheet" ]))
+   (sprintf "%A" (chartDoc |> Option.map (fun doc -> doc.Preserved.DocumentRelationshipId, doc.Preserved.MainContentType)))
+ok "self-contained-xml-keeps-attribute-order"
+   ((DocxReader.selfContainedXml (Map.ofList [ "xmlns:a", "urn:a"; "xmlns:b", "urn:b"; "xmlns:mc", "urn:mc"; "mc:Ignorable", "b z" ]) "<a:x z=\"1\" b:k=\"2\"><a:y/></a:x>")
+     = "<a:x b:k=\"2\" mc:Ignorable=\"b\" xmlns:a=\"urn:a\" xmlns:b=\"urn:b\" xmlns:mc=\"urn:mc\" z=\"1\"><a:y/></a:x>")
+   (DocxReader.selfContainedXml (Map.ofList [ "xmlns:a", "urn:a"; "xmlns:b", "urn:b"; "xmlns:mc", "urn:mc"; "mc:Ignorable", "b z" ]) "<a:x z=\"1\" b:k=\"2\"><a:y/></a:x>")
+
 printfn ""
 printfn "OfficeFormat DocxReader tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

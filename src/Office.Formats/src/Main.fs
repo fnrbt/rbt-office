@@ -342,6 +342,7 @@ module Processors =
                     "Footnotes" ==> DocxReader.toEditorNotes doc.Theme doc.Images doc.Styles doc.NumberingDefinitions doc.Footnotes
                     "Endnotes" ==> DocxReader.toEditorNotes doc.Theme doc.Images doc.Styles doc.NumberingDefinitions doc.Endnotes
                     "Comments" ==> DocxReader.toEditorComments doc.Theme doc.Images doc.Styles doc.NumberingDefinitions doc.Comments
+                    "Preserved" ==> DocxReader.toEditorPreserved doc.Preserved
                     "Theme" ==> (doc.Theme |> Option.map (fun theme -> createObj [ "MajorFont" ==> theme.MajorFont; "MinorFont" ==> theme.MinorFont; "Colors" ==> createObj (theme.Colors |> Map.toList |> List.map (fun (key, value) -> key ==> value)) ]))
                 ]
             | None ->

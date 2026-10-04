@@ -89,6 +89,23 @@ type ImageData = {
     PositionVAlign: string option
     /// wrapText of wp:wrapSquare / wrapTight / wrapThrough (bothSides, left, right, largest).
     WrapText: string option
+    /// Set for an object the reader does not model (chart, SmartArt, OLE object,
+    /// grouped / VML drawing, unknown mc:AlternateContent): the element as it is
+    /// in the file, to be written back unchanged. The other fields then describe
+    /// its frame; RelationshipId is that of a fallback picture, or "".
+    Opaque: OpaqueObject option
+}
+
+/// An element kept verbatim. Xml is self-contained: the namespace declarations
+/// it relies on are on its root element.
+and OpaqueObject = {
+    Xml: string
+    /// chart | diagram | ole | shape | drawing
+    Kind: string
+    /// A child of w:p (it holds its own runs) rather than of w:r.
+    ParagraphLevel: bool
+    /// The body's shape import models this one as a text box / shape.
+    ShapeCandidate: bool
 }
 
 type NoteReference = {
@@ -520,6 +537,57 @@ type NumberingDefinition = {
     RightTabPosition: string option
 }
 
+/// A relationship kept from the opened package. An internal Target is the
+/// absolute part name ("/word/charts/chart1.xml"), so it can be written into
+/// the relationships of any part.
+type PreservedRelationship = {
+    Id: string
+    Type: string
+    Target: string
+    External: bool
+}
+
+type PreservedPart = {
+    /// Package path without a leading slash.
+    Path: string
+    Data: byte[]
+}
+
+/// What the opened package holds beyond the parts the editor regenerates
+/// (document, headers / footers, notes, comments, numbering): kept and written
+/// back on save. See DocumentWriter.writeFromEditorPackage.
+type PackagePreservation = {
+    /// Parts reachable from the kept relationships, with their own .rels parts.
+    Parts: PreservedPart list
+    /// Package-level relationships other than the main document's.
+    RootRelationships: PreservedRelationship list
+    /// Id of the package relationship that points at the main document.
+    DocumentRelationshipId: string
+    /// Kept relationships of each regenerated part. Keys: "document", the
+    /// relationship id of a header / footer, "footnotes", "endnotes", "comments".
+    PartRelationships: Map<string, PreservedRelationship list>
+    /// [Content_Types].xml: Default (extension, type) and Override (part name, type) entries.
+    Defaults: (string * string) list
+    Overrides: (string * string) list
+    /// Content type of the main document part (a template or macro-enabled document has its own).
+    MainContentType: string option
+    /// The original styles and settings parts: the writer merges into them.
+    StylesXml: string option
+    SettingsXml: string option
+}
+
+let emptyPackagePreservation = {
+    Parts = []
+    RootRelationships = []
+    DocumentRelationshipId = "rId1"
+    PartRelationships = Map.empty
+    Defaults = []
+    Overrides = []
+    MainContentType = None
+    StylesXml = None
+    SettingsXml = None
+}
+
 type WordDocument = {
     Content: DocumentContent list
     Relationships: Relationship list
@@ -536,6 +604,7 @@ type WordDocument = {
     Shapes: Shape list
     PageSetup: PageSetup option
     NumberingDefinitions: NumberingDefinition list
+    Preserved: PackagePreservation
 }
 
 // DSL for DOCX-specific XML patterns
@@ -876,6 +945,137 @@ module Docx =
                 FooterReferences = []
             }
 
+    let private emuToPixels (emu: float) = emu / 9525.0
+
+    /// The frame of a w:drawing: size, name / description and, for an anchored
+    /// one, wrap and position. `rId` is the relationship of the picture shown.
+    let drawingImageData (drawing: XmlNode) (rId: string) (linked: bool) : ImageData =
+        let extent = Ns.descendantsNs "extent" drawing |> List.tryHead
+        let width = extent |> Option.bind (Xml.attr "cx") |> Option.map (fun cx -> emuToPixels (float cx))
+        let height = extent |> Option.bind (Xml.attr "cy") |> Option.map (fun cy -> emuToPixels (float cy))
+        let docPr = Ns.descendantsNs "docPr" drawing |> List.tryHead
+        let name = docPr |> Option.bind (Xml.attr "name")
+        let title = docPr |> Option.bind (Xml.attr "title")
+        let desc = docPr |> Option.bind (Xml.attr "descr")
+        let anchor = Ns.childNs "anchor" drawing
+        let floating = anchor.IsSome
+        let wrap =
+            anchor
+            |> Option.bind (fun a ->
+                Xml.children a
+                |> List.tryPick (fun child ->
+                    Xml.name child
+                    |> Option.map Ns.stripNs
+                    |> Option.bind (function
+                        | "wrapNone" -> Some "none"
+                        | "wrapSquare" -> Some "square"
+                        | "wrapTight" -> Some "tight"
+                        | "wrapThrough" -> Some "through"
+                        | "wrapTopAndBottom" -> Some "topAndBottom"
+                        | _ -> None)))
+        let positionOffset localName =
+            anchor
+            |> Option.bind (Ns.childNs localName)
+            |> Option.bind (Ns.childNs "posOffset")
+            |> Option.bind Xml.text
+            |> Option.bind (fun value ->
+                match System.Double.TryParse(value) with
+                | true, parsed -> Some (emuToPixels parsed)
+                | false, _ -> None)
+        let positionAlign localName =
+            anchor
+            |> Option.bind (Ns.childNs localName)
+            |> Option.bind (Ns.childNs "align")
+            |> Option.bind Xml.text
+        let wrapText =
+            anchor
+            |> Option.bind (fun a ->
+                Xml.children a
+                |> List.tryPick (fun child ->
+                    match Xml.name child |> Option.map Ns.stripNs with
+                    | Some "wrapSquare" | Some "wrapTight" | Some "wrapThrough" -> Xml.attr "wrapText" child
+                    | _ -> None))
+        let positionRelativeFrom localName =
+            anchor
+            |> Option.bind (Ns.childNs localName)
+            |> Option.bind (Xml.attr "relativeFrom")
+        let anchorBool attrName =
+            anchor
+            |> Option.bind (Xml.attr attrName)
+            |> Option.map (fun value -> value = "1" || value.ToLowerInvariant() = "true")
+        let anchorDistance attrName =
+            anchor
+            |> Option.bind (Xml.attr attrName)
+            |> Option.bind (fun value ->
+                match System.Double.TryParse(value) with
+                | true, parsed -> Some (emuToPixels parsed)
+                | false, _ -> None)
+        let simplePositionOffset attrName =
+            anchor
+            |> Option.bind (Ns.childNs "simplePos")
+            |> Option.bind (Xml.attr attrName)
+            |> Option.bind (fun value ->
+                match System.Double.TryParse(value) with
+                | true, parsed -> Some (emuToPixels parsed)
+                | false, _ -> None)
+
+        let positionX = positionOffset "positionH"
+        let positionY = positionOffset "positionV"
+        let positionHRelativeFrom = positionRelativeFrom "positionH"
+        let positionVRelativeFrom = positionRelativeFrom "positionV"
+        let behindDoc = anchorBool "behindDoc"
+        let allowOverlap = anchorBool "allowOverlap"
+        let layoutInCell = anchorBool "layoutInCell"
+        let distanceTop = anchorDistance "distT"
+        let distanceBottom = anchorDistance "distB"
+        let distanceLeft = anchorDistance "distL"
+        let distanceRight = anchorDistance "distR"
+        let relativeHeight = anchor |> Option.bind (Xml.attr "relativeHeight")
+        let locked = anchorBool "locked"
+        let simplePosition = anchorBool "simplePos"
+        let simplePositionX = simplePositionOffset "x"
+        let simplePositionY = simplePositionOffset "y"
+        let srcRect = Ns.descendantsNs "srcRect" drawing |> List.tryHead
+        let cropLeft = srcRect |> Option.bind (Xml.attr "l")
+        let cropTop = srcRect |> Option.bind (Xml.attr "t")
+        let cropRight = srcRect |> Option.bind (Xml.attr "r")
+        let cropBottom = srcRect |> Option.bind (Xml.attr "b")
+        {
+            RelationshipId = rId
+            Linked = linked
+            Name = name
+            Title = title
+            Width = width
+            Height = height
+            Description = desc
+            Floating = floating
+            Wrap = wrap
+            PositionX = positionX
+            PositionY = positionY
+            PositionHRelativeFrom = positionHRelativeFrom
+            PositionVRelativeFrom = positionVRelativeFrom
+            BehindDoc = behindDoc
+            AllowOverlap = allowOverlap
+            LayoutInCell = layoutInCell
+            DistanceTop = distanceTop
+            DistanceBottom = distanceBottom
+            DistanceLeft = distanceLeft
+            DistanceRight = distanceRight
+            RelativeHeight = relativeHeight
+            Locked = locked
+            SimplePosition = simplePosition
+            SimplePositionX = simplePositionX
+            SimplePositionY = simplePositionY
+            CropLeft = cropLeft
+            CropTop = cropTop
+            CropRight = cropRight
+            CropBottom = cropBottom
+            PositionHAlign = positionAlign "positionH"
+            PositionVAlign = positionAlign "positionV"
+            WrapText = wrapText
+            Opaque = None
+        }
+
     // Image extraction
     let imageData (rNode: XmlNode) : ImageData option =
         // Store DOCX extents as 96-DPI canvas pixels. The Word print path
@@ -919,178 +1119,20 @@ module Docx =
             PositionHAlign = None
             PositionVAlign = None
             WrapText = None
+            Opaque = None
         }
         let drawingImage =
             wElem "drawing" rNode
             |> Option.bind (fun drawing ->
-            let extent = Ns.descendantsNs "extent" drawing |> List.tryHead
-            let width = extent |> Option.bind (Xml.attr "cx") |> Option.map (fun cx -> emuToPixels (float cx))
-            let height = extent |> Option.bind (Xml.attr "cy") |> Option.map (fun cy -> emuToPixels (float cy))
-            let docPr = Ns.descendantsNs "docPr" drawing |> List.tryHead
-            let name = docPr |> Option.bind (Xml.attr "name")
-            let title = docPr |> Option.bind (Xml.attr "title")
-            let desc = docPr |> Option.bind (Xml.attr "descr")
-            let blip = Ns.descendantsNs "blip" drawing |> List.tryHead
-            match blip with
-            | Some b ->
-                let embedId = Xml.attr "r:embed" b |> Option.orElseWith (fun () -> attrByLocalName "embed" b)
-                let linkId = Xml.attr "r:link" b |> Option.orElseWith (fun () -> attrByLocalName "link" b)
-                embedId |> Option.orElse linkId
-                |> Option.map (fun rId ->
-                    let anchor = Ns.childNs "anchor" drawing
-                    let floating = anchor.IsSome
-                    let wrap =
-                        anchor
-                        |> Option.bind (fun a ->
-                            Xml.children a
-                            |> List.tryPick (fun child ->
-                                Xml.name child
-                                |> Option.map Ns.stripNs
-                                |> Option.bind (function
-                                    | "wrapNone" -> Some "none"
-                                    | "wrapSquare" -> Some "square"
-                                    | "wrapTight" -> Some "tight"
-                                    | "wrapThrough" -> Some "through"
-                                    | "wrapTopAndBottom" -> Some "topAndBottom"
-                                    | _ -> None)))
-                    let positionOffset localName =
-                        anchor
-                        |> Option.bind (Ns.childNs localName)
-                        |> Option.bind (Ns.childNs "posOffset")
-                        |> Option.bind Xml.text
-                        |> Option.bind (fun value ->
-                            match System.Double.TryParse(value) with
-                            | true, parsed -> Some (emuToPixels parsed)
-                            | false, _ -> None)
-                    let positionAlign localName =
-                        anchor
-                        |> Option.bind (Ns.childNs localName)
-                        |> Option.bind (Ns.childNs "align")
-                        |> Option.bind Xml.text
-                    let wrapText =
-                        anchor
-                        |> Option.bind (fun a ->
-                            Xml.children a
-                            |> List.tryPick (fun child ->
-                                match Xml.name child |> Option.map Ns.stripNs with
-                                | Some "wrapSquare" | Some "wrapTight" | Some "wrapThrough" -> Xml.attr "wrapText" child
-                                | _ -> None))
-                    let positionRelativeFrom localName =
-                        anchor
-                        |> Option.bind (Ns.childNs localName)
-                        |> Option.bind (Xml.attr "relativeFrom")
-                    let anchorBool attrName =
-                        anchor
-                        |> Option.bind (Xml.attr attrName)
-                        |> Option.map (fun value -> value = "1" || value.ToLowerInvariant() = "true")
-                    let anchorDistance attrName =
-                        anchor
-                        |> Option.bind (Xml.attr attrName)
-                        |> Option.bind (fun value ->
-                            match System.Double.TryParse(value) with
-                            | true, parsed -> Some (emuToPixels parsed)
-                            | false, _ -> None)
-                    let simplePositionOffset attrName =
-                        anchor
-                        |> Option.bind (Ns.childNs "simplePos")
-                        |> Option.bind (Xml.attr attrName)
-                        |> Option.bind (fun value ->
-                            match System.Double.TryParse(value) with
-                            | true, parsed -> Some (emuToPixels parsed)
-                            | false, _ -> None)
-
-                    let positionX = positionOffset "positionH"
-                    let positionY = positionOffset "positionV"
-                    let positionHRelativeFrom = positionRelativeFrom "positionH"
-                    let positionVRelativeFrom = positionRelativeFrom "positionV"
-                    let behindDoc = anchorBool "behindDoc"
-                    let allowOverlap = anchorBool "allowOverlap"
-                    let layoutInCell = anchorBool "layoutInCell"
-                    let distanceTop = anchorDistance "distT"
-                    let distanceBottom = anchorDistance "distB"
-                    let distanceLeft = anchorDistance "distL"
-                    let distanceRight = anchorDistance "distR"
-                    let relativeHeight = anchor |> Option.bind (Xml.attr "relativeHeight")
-                    let locked = anchorBool "locked"
-                    let simplePosition = anchorBool "simplePos"
-                    let simplePositionX = simplePositionOffset "x"
-                    let simplePositionY = simplePositionOffset "y"
-                    let srcRect = Ns.descendantsNs "srcRect" drawing |> List.tryHead
-                    let cropLeft = srcRect |> Option.bind (Xml.attr "l")
-                    let cropTop = srcRect |> Option.bind (Xml.attr "t")
-                    let cropRight = srcRect |> Option.bind (Xml.attr "r")
-                    let cropBottom = srcRect |> Option.bind (Xml.attr "b")
-                    {
-                        RelationshipId = rId
-                        Linked = embedId.IsNone && linkId.IsSome
-                        Name = name
-                        Title = title
-                        Width = width
-                        Height = height
-                        Description = desc
-                        Floating = floating
-                        Wrap = wrap
-                        PositionX = positionX
-                        PositionY = positionY
-                        PositionHRelativeFrom = positionHRelativeFrom
-                        PositionVRelativeFrom = positionVRelativeFrom
-                        BehindDoc = behindDoc
-                        AllowOverlap = allowOverlap
-                        LayoutInCell = layoutInCell
-                        DistanceTop = distanceTop
-                        DistanceBottom = distanceBottom
-                        DistanceLeft = distanceLeft
-                        DistanceRight = distanceRight
-                        RelativeHeight = relativeHeight
-                        Locked = locked
-                        SimplePosition = simplePosition
-                        SimplePositionX = simplePositionX
-                        SimplePositionY = simplePositionY
-                        CropLeft = cropLeft
-                        CropTop = cropTop
-                        CropRight = cropRight
-                        CropBottom = cropBottom
-                        PositionHAlign = positionAlign "positionH"
-                        PositionVAlign = positionAlign "positionV"
-                        WrapText = wrapText
-                    })
-            | None ->
-                if Ns.descendantsNs "chart" drawing |> List.isEmpty |> not then
-                    Some {
-                        RelationshipId = "__unsupported-chart"
-                        Linked = false
-                        Name = name
-                        Title = title |> Option.orElse (Some "Unsupported chart")
-                        Width = width
-                        Height = height
-                        Description = desc |> Option.orElse (Some "Chart")
-                        Floating = false
-                        Wrap = None
-                        PositionX = None
-                        PositionY = None
-                        PositionHRelativeFrom = None
-                        PositionVRelativeFrom = None
-                        BehindDoc = None
-                        AllowOverlap = None
-                        LayoutInCell = None
-                        DistanceTop = None
-                        DistanceBottom = None
-                        DistanceLeft = None
-                        DistanceRight = None
-                        RelativeHeight = None
-                        Locked = None
-                        SimplePosition = None
-                        SimplePositionX = None
-                        SimplePositionY = None
-                        CropLeft = None
-                        CropTop = None
-                        CropRight = None
-                        CropBottom = None
-                        PositionHAlign = None
-                        PositionVAlign = None
-                        WrapText = None
-                    }
-                else None)
+                match Ns.descendantsNs "blip" drawing |> List.tryHead with
+                | Some b ->
+                    let embedId = Xml.attr "r:embed" b |> Option.orElseWith (fun () -> attrByLocalName "embed" b)
+                    let linkId = Xml.attr "r:link" b |> Option.orElseWith (fun () -> attrByLocalName "link" b)
+                    embedId |> Option.orElse linkId
+                    |> Option.map (fun rId -> drawingImageData drawing rId (embedId.IsNone && linkId.IsSome))
+                // A drawing without a picture (chart, SmartArt, shape) is not an image;
+                // it is kept as an opaque object (see opaqueObject).
+                | None -> None)
         let vmlImage =
             wElem "pict" rNode
             |> Option.bind (fun pict ->
@@ -1118,6 +1160,131 @@ module Docx =
                             |> Option.map ptToPixels
                         emptyImage rId false (shape |> Option.bind (fun value -> Xml.attr "id" value)) (Xml.attr "o:title" image) (shape |> Option.bind (fun value -> Xml.attr "alt" value)) (stylePoints "width") (stylePoints "height"))))
         drawingImage |> Option.orElseWith (fun () -> vmlImage)
+
+    // ---- drawings the reader does not model ---------------------------------
+
+    // A plain picture also has a:prstGeom (inside pic:spPr). It is read as an
+    // image run; without this guard every picture was imported a second time
+    // as a rectangle shape and saved as a text box.
+    let private isPictureDrawing node =
+        (Ns.descendantsNs "pic" node |> List.isEmpty |> not)
+        && (Ns.descendantsNs "wsp" node |> List.isEmpty)
+
+    // A shape is imported when it carries text (txbxContent) or a real geometry
+    // (prstGeom / custGeom), so autoshapes without text still render.
+    let private hasShapeContent node =
+        (Ns.descendantsNs "txbxContent" node |> List.isEmpty |> not)
+        || (not (isPictureDrawing node)
+            && ((Ns.descendantsNs "prstGeom" node |> List.isEmpty |> not)
+                || (Ns.descendantsNs "custGeom" node |> List.isEmpty |> not)))
+
+    /// A drawing the shape model can hold: one shape with text and / or
+    /// geometry. Groups, drawing canvases, charts and diagrams are not.
+    let isModelledShape (node: XmlNode) =
+        hasShapeContent node
+        && (Ns.descendantsNs "wgp" node).IsEmpty
+        && (Ns.descendantsNs "wpc" node).IsEmpty
+        && (Ns.descendantsNs "group" node).IsEmpty
+        && (Ns.descendantsNs "chart" node).IsEmpty
+        && (Ns.descendantsNs "relIds" node).IsEmpty
+
+    /// The shape roots under `node`, in document order. For DrawingML that is
+    /// the wp:anchor / wp:inline wrapper — position (wp:positionH/V) and display
+    /// size (wp:extent) live there, the geometry and fill in the nested wsp.
+    /// VML shapes carry their attributes on the v:shape / v:rect element itself.
+    ///
+    /// An mc:AlternateContent holds the same shape twice (DrawingML choice, VML
+    /// fallback); only one of them is taken. Scanning the document for anchors
+    /// and v:shapes separately imported such a text box two times.
+    let rec modelledShapeRoots (node: XmlNode) : XmlNode list =
+        match Xml.name node |> Option.map Ns.stripNs with
+        | Some "AlternateContent" ->
+            let fromChoice = Ns.childNs "Choice" node |> Option.map modelledShapeRoots |> Option.defaultValue []
+            if not fromChoice.IsEmpty then fromChoice
+            else Ns.childNs "Fallback" node |> Option.map modelledShapeRoots |> Option.defaultValue []
+        | Some "anchor" | Some "inline" -> if isModelledShape node then [node] else []
+        | Some "shape" | Some "rect" | Some "roundrect" | Some "oval" when (match node with XmlDsl.Element(name, _, _) -> name.StartsWith "v:" | _ -> false) ->
+            if isModelledShape node then [node] else []
+        | Some _ -> Xml.children node |> List.collect modelledShapeRoots
+        | None -> []
+
+    let private hasGraphics (node: XmlNode) =
+        not (Ns.descendantsNs "drawing" node).IsEmpty
+        || not (Ns.descendantsNs "pict" node).IsEmpty
+        || not (Ns.descendantsNs "object" node).IsEmpty
+
+    /// An mc:AlternateContent whose choice is a drawing: kept whole, so the
+    /// choice is not lost to its fallback.
+    let private isGraphicAlternateContent (node: XmlNode) =
+        Ns.childNs "Choice" node |> Option.exists hasGraphics
+
+    let private blankImageData (relationshipId: string) : ImageData =
+        { RelationshipId = relationshipId; Linked = false; Name = None; Title = None; Width = None; Height = None; Description = None
+          Floating = false; Wrap = None; PositionX = None; PositionY = None; PositionHRelativeFrom = None; PositionVRelativeFrom = None
+          BehindDoc = None; AllowOverlap = None; LayoutInCell = None; DistanceTop = None; DistanceBottom = None; DistanceLeft = None
+          DistanceRight = None; RelativeHeight = None; Locked = None; SimplePosition = None; SimplePositionX = None; SimplePositionY = None
+          CropLeft = None; CropTop = None; CropRight = None; CropBottom = None; PositionHAlign = None; PositionVAlign = None; WrapText = None
+          Opaque = None }
+
+    /// An object the reader does not model, as an image-like run: its frame
+    /// (size, floating position), the fallback picture when the document has
+    /// one, and the element itself to write back. Charts and SmartArt used to
+    /// be replaced by the text "Chart", which destroyed them on save.
+    let opaqueObject (paragraphLevel: bool) (node: XmlNode) : ImageData =
+        let nodeName = Xml.name node |> Option.map Ns.stripNs |> Option.defaultValue ""
+        let fallbackBranch =
+            match nodeName with
+            | "AlternateContent" -> Ns.childNs "Fallback" node
+            | "object" | "pict" -> Some node
+            | _ -> None
+        let fallbackRelationship =
+            fallbackBranch
+            |> Option.bind (fun branch ->
+                Ns.descendantsNs "imagedata" branch
+                |> List.tryHead
+                |> Option.bind (fun image -> Xml.attr "r:id" image |> Option.orElseWith (fun () -> attrByLocalName "id" image))
+                |> Option.orElseWith (fun () ->
+                    Ns.descendantsNs "blip" branch |> List.tryHead |> Option.bind (fun blip -> Xml.attr "r:embed" blip |> Option.orElseWith (fun () -> attrByLocalName "embed" blip))))
+            |> Option.defaultValue ""
+        let frame =
+            match Ns.descendantsNs "drawing" node |> List.tryHead with
+            | Some drawing -> { drawingImageData drawing fallbackRelationship false with RelationshipId = fallbackRelationship }
+            | None ->
+                // VML: the size and position are in the shape's style attribute.
+                let style =
+                    Ns.descendantsNs "shape" node @ Ns.descendantsNs "rect" node @ Ns.descendantsNs "group" node
+                    |> List.tryPick (Xml.attr "style")
+                    |> Option.defaultValue ""
+                let styleNumber (name: string) =
+                    style.Split(';')
+                    |> Array.tryPick (fun part ->
+                        let pieces = part.Split([| ':' |], 2)
+                        if pieces.Length = 2 && pieces.[0].Trim().ToLowerInvariant() = name then
+                            let raw = pieces.[1].Trim().ToLowerInvariant()
+                            let number (text: string) =
+                                match System.Double.TryParse(text, Globalization.NumberStyles.Float, Globalization.CultureInfo.InvariantCulture) with
+                                | true, parsed -> Some parsed
+                                | false, _ -> None
+                            if raw.EndsWith "pt" then number (raw.Substring(0, raw.Length - 2)) |> Option.map (fun pt -> pt * 96.0 / 72.0)
+                            elif raw.EndsWith "in" then number (raw.Substring(0, raw.Length - 2)) |> Option.map (fun inches -> inches * 96.0)
+                            elif raw.EndsWith "px" then number (raw.Substring(0, raw.Length - 2))
+                            else number raw
+                        else None)
+                { blankImageData fallbackRelationship with
+                    Width = styleNumber "width"
+                    Height = styleNumber "height"
+                    Floating = style.Replace(" ", "").ToLowerInvariant().Contains "position:absolute"
+                    Wrap = Some "none" }
+        let shapeCandidate = not (modelledShapeRoots node).IsEmpty
+        let kind =
+            if nodeName = "object" || not (Ns.descendantsNs "OLEObject" node).IsEmpty then "ole"
+            elif not (Ns.descendantsNs "chart" node).IsEmpty then "chart"
+            elif not (Ns.descendantsNs "relIds" node).IsEmpty then "diagram"
+            elif shapeCandidate || nodeName = "pict" then "shape"
+            else "drawing"
+        { frame with
+            Description = frame.Description |> Option.orElse frame.Name
+            Opaque = Some { Xml = xmlToString node; Kind = kind; ParagraphLevel = paragraphLevel; ShapeCandidate = shapeCandidate } }
 
     // Comment reference extraction
     let commentReference (rNode: XmlNode) : string option =
@@ -1433,7 +1600,13 @@ module Docx =
                         | _ -> Some (makeRun (Text "\n") |> RunToken)
                     | "lastRenderedPageBreak" -> Some (makeRun RenderedPageBreak |> RunToken)
                     | "drawing"
-                    | "pict" -> imageData rNode |> Option.map (Image >> makeRun >> RunToken)
+                    | "pict" ->
+                        match imageData rNode with
+                        | Some image -> Some (makeRun (Image image) |> RunToken)
+                        | None -> Some (makeRun (Image (opaqueObject false child)) |> RunToken)
+                    // An embedded (OLE) object, and a drawing offered in two forms.
+                    | "object" -> Some (makeRun (Image (opaqueObject false child)) |> RunToken)
+                    | "AlternateContent" when isGraphicAlternateContent child -> Some (makeRun (Image (opaqueObject false child)) |> RunToken)
                     | "commentReference" -> attr "id" child |> Option.map (CommentReference >> makeRun >> RunToken)
                     | "footnoteReference" -> attr "id" child |> Option.map (fun id -> makeRun (NoteRef { Id = id; NoteType = "footnote" }) |> RunToken)
                     | "endnoteReference" -> attr "id" child |> Option.map (fun id -> makeRun (NoteRef { Id = id; NoteType = "endnote" }) |> RunToken)
@@ -1599,10 +1772,14 @@ module Docx =
                 | Some name when (match Ns.stripNs name with "smartTag" | "customXml" | "dir" | "bdo" -> true | _ -> false) ->
                     tokensFromNode child
                 | Some name when Ns.stripNs name = "AlternateContent" ->
-                    // Take the fallback (plain WordprocessingML/VML) when there is one, else the first choice.
-                    match Ns.childNs "Fallback" child |> Option.orElseWith (fun () -> Ns.childNs "Choice" child) with
-                    | Some branch -> tokensFromNode branch
-                    | None -> []
+                    if isGraphicAlternateContent child then
+                        // A drawing in two forms: kept whole rather than reduced to its fallback.
+                        [RunToken { Content = Image (opaqueObject true child); Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None }]
+                    else
+                        // Take the fallback (plain WordprocessingML/VML) when there is one, else the first choice.
+                        match Ns.childNs "Fallback" child |> Option.orElseWith (fun () -> Ns.childNs "Choice" child) with
+                        | Some branch -> tokensFromNode branch
+                        | None -> []
                 // A tracked move is an insertion at the destination and a deletion at the
                 // source; without this the moved text was missing from both places.
                 | Some name when (match Ns.stripNs name with "ins" | "del" | "moveTo" | "moveFrom" -> true | _ -> false) ->
@@ -2396,9 +2573,8 @@ let footnotesPartKey = "footnotes"
 let endnotesPartKey = "endnotes"
 let commentsPartKey = "comments"
 
-/// Apply `mapRun` to every run of every paragraph in `blocks`, nested tables included.
-let rec mapBlockRuns (mapRun: Run -> Run) (blocks: DocumentContent list) : DocumentContent list =
-    let mapParagraph (para: Paragraph) = { para with Runs = para.Runs |> List.map mapRun }
+/// Apply `mapParagraph` to every paragraph in `blocks`, nested tables included.
+let rec mapBlockParagraphs (mapParagraph: Paragraph -> Paragraph) (blocks: DocumentContent list) : DocumentContent list =
     let rec mapTable (table: Table) =
         { table with
             Rows =
@@ -2415,6 +2591,85 @@ let rec mapBlockRuns (mapRun: Run -> Run) (blocks: DocumentContent list) : Docum
     |> List.map (function
         | Para para -> Para (mapParagraph para)
         | Tbl table -> Tbl (mapTable table))
+
+/// Apply `mapRun` to every run of every paragraph in `blocks`, nested tables included.
+let mapBlockRuns (mapRun: Run -> Run) (blocks: DocumentContent list) : DocumentContent list =
+    mapBlockParagraphs (fun para -> { para with Runs = para.Runs |> List.map mapRun }) blocks
+
+let private xmlnsDeclarations (attrs: Map<string, string>) : Map<string, string> =
+    attrs
+    |> Map.toList
+    |> List.choose (fun (name, value) -> if name.StartsWith "xmlns:" then Some (name.Substring 6, value) else None)
+    |> Map.ofList
+
+let private prefixPattern = System.Text.RegularExpressions.Regex(@"[<\s/]([A-Za-z_][A-Za-z0-9_.\-]*):[A-Za-z_]")
+let private startTagAttributePattern = System.Text.RegularExpressions.Regex("\\s([^\\s=]+)=\"([^\"]*)\"")
+let private prefixListPattern = System.Text.RegularExpressions.Regex("(?:Requires|Ignorable)=\"([^\"]*)\"")
+
+/// `xml` (one element, serialised) with the namespace declarations of the
+/// part's root element it relies on added to its own root, so it stays valid
+/// wherever it is written. `rootAttributes` are the attributes of the root
+/// element of the part the fragment was taken from.
+let selfContainedXml (rootAttributes: Map<string, string>) (xml: string) : string =
+    let rootNamespaces = xmlnsDeclarations rootAttributes
+    let tagEnd = xml.IndexOf '>'
+    if rootNamespaces.IsEmpty || tagEnd < 0 then xml
+    else
+        let used =
+            [ for m in prefixPattern.Matches xml do yield m.Groups.[1].Value
+              for m in prefixListPattern.Matches xml do yield! m.Groups.[1].Value.Split([| ' ' |], StringSplitOptions.RemoveEmptyEntries) ]
+            |> Set.ofList
+        let startTag = xml.Substring(0, tagEnd)
+        // Prefixes the part declares ignorable and the fragment uses.
+        let ignorable =
+            match Map.tryFind "mc:Ignorable" rootAttributes with
+            | Some value when not (startTag.Contains "mc:Ignorable=") ->
+                value.Split([| ' ' |], StringSplitOptions.RemoveEmptyEntries) |> Array.filter (fun prefix -> Set.contains prefix used) |> Array.toList
+            | _ -> []
+        let used = if ignorable.IsEmpty then used else Set.add "mc" used
+        let additions =
+            [ for KeyValue(prefix, uri) in rootNamespaces do
+                if Set.contains prefix used && not (startTag.Contains ("xmlns:" + prefix + "=")) then
+                    yield "xmlns:" + prefix, uri.Replace("&", "&amp;").Replace("\"", "&quot;").Replace("<", "&lt;")
+              if not ignorable.IsEmpty then yield "mc:Ignorable", String.concat " " ignorable ]
+        if additions.IsEmpty then xml
+        else
+            // The root start tag is rebuilt with its attributes in name order, the
+            // order the serialiser writes them in: reading the result again and
+            // serialising it gives the same text.
+            let mutable nameEnd = 1
+            while nameEnd < xml.Length && xml.[nameEnd] <> ' ' && xml.[nameEnd] <> '>' && xml.[nameEnd] <> '/' do
+                nameEnd <- nameEnd + 1
+            let selfClosed = tagEnd > 0 && xml.[tagEnd - 1] = '/'
+            let attributeText = xml.Substring(nameEnd, (if selfClosed then tagEnd - 1 else tagEnd) - nameEnd)
+            let existing = [ for m in startTagAttributePattern.Matches attributeText -> m.Groups.[1].Value, m.Groups.[2].Value ]
+            let attributes =
+                (existing @ additions)
+                |> Map.ofList
+                |> Map.toList
+                |> List.map (fun (name, value) -> " " + name + "=\"" + value + "\"")
+                |> String.concat ""
+            xml.Substring(0, nameEnd) + attributes + xml.Substring(if selfClosed then tagEnd - 1 else tagEnd)
+
+/// Make the XML of every opaque object in `blocks` self-contained (see selfContainedXml).
+let completeOpaqueObjects (root: XmlNode) (blocks: DocumentContent list) : DocumentContent list =
+    match root with
+    | XmlDsl.Element(_, attrs, _) ->
+        blocks
+        |> mapBlockRuns (fun run ->
+            match run.Content with
+            | Image ({ Opaque = Some opaque } as image) ->
+                { run with Content = Image { image with Opaque = Some { opaque with Xml = selfContainedXml attrs opaque.Xml } } }
+            | _ -> run)
+    | _ -> blocks
+
+/// The body models these as shapes (text boxes); the opaque copy is dropped there.
+let private dropModelledShapeRuns (blocks: DocumentContent list) : DocumentContent list =
+    blocks
+    |> mapBlockParagraphs (fun para ->
+        if para.Runs |> List.exists (fun run -> match run.Content with Image { Opaque = Some { ShapeCandidate = true } } -> true | _ -> false) then
+            { para with Runs = para.Runs |> List.filter (fun run -> match run.Content with Image { Opaque = Some { ShapeCandidate = true } } -> false | _ -> true) }
+        else para)
 
 /// Relationship ids are local to a part: the header's rId1 is not the body's
 /// rId1. Image references of a part other than the body are qualified with a
@@ -2458,12 +2713,13 @@ module HeaderFooter =
             match relationshipId with
             | Some partId -> mapBlockRuns (qualifyImageRun partId) blocks
             | None -> blocks
-        let blocks = Docx.bodyContent doc |> qualify
+        let blocks = Docx.bodyContent doc |> qualify |> completeOpaqueObjects doc
         {
             Content =
                 Ns.descendantsNs "p" doc
                 |> List.map (fun node -> Para (Docx.paragraph node))
                 |> qualify
+                |> completeOpaqueObjects doc
                 |> List.choose (function Para para -> Some para | Tbl _ -> None)
             Blocks = blocks
             Type = hfType
@@ -2512,6 +2768,7 @@ module Comments =
         let doc = XmlDsl.parse xml
         Ns.descendantsNs "comment" doc
         |> List.choose parseComment
+        |> List.map (fun comment -> { comment with Blocks = completeOpaqueObjects doc comment.Blocks })
 
 // Track Changes (Revisions) parsing
 module Revisions =
@@ -2591,6 +2848,9 @@ module Notes =
                 Ns.descendantsNs "endnote" doc
                 |> List.choose parseNote
             footnotes @ endnotes
+        |> List.map (fun note ->
+            let blocks = completeOpaqueObjects doc note.Blocks
+            { note with Blocks = blocks; Content = blockParagraphs blocks })
 
     /// The text the note is shown with: every text run of the body, joined.
     let plainText (note: Note) : string =
@@ -2837,52 +3097,6 @@ module Shapes =
             Name = Ns.descendantsNs "docPr" shapeNode |> List.tryHead |> Option.bind (Xml.attr "name")
         }
 
-    // Import a node if it carries text (txbxContent) OR a real geometry
-    // (prstGeom/custGeom) — so autoshapes with no text still render.
-    // A plain picture also has a:prstGeom (inside pic:spPr). It is already
-    // read as an image run; without this guard every picture was imported
-    // a second time as a rectangle shape and saved as a text box.
-    let private isPicture node =
-        (Ns.descendantsNs "pic" node |> List.isEmpty |> not)
-        && (Ns.descendantsNs "wsp" node |> List.isEmpty)
-
-    let private hasContent node =
-        (Ns.descendantsNs "txbxContent" node |> List.isEmpty |> not)
-        || (not (isPicture node)
-            && ((Ns.descendantsNs "prstGeom" node |> List.isEmpty |> not)
-                || (Ns.descendantsNs "custGeom" node |> List.isEmpty |> not)))
-
-    /// A drawing the shape model can hold: one shape with text and / or
-    /// geometry. Groups, drawing canvases, charts and diagrams are not.
-    let isModelledShape (node: XmlNode) =
-        hasContent node
-        && (Ns.descendantsNs "wgp" node).IsEmpty
-        && (Ns.descendantsNs "wpc" node).IsEmpty
-        && (Ns.descendantsNs "group" node).IsEmpty
-        && (Ns.descendantsNs "chart" node).IsEmpty
-        && (Ns.descendantsNs "relIds" node).IsEmpty
-
-    /// The shape roots under `node`, in document order. For DrawingML that is
-    /// the wp:anchor / wp:inline wrapper — position (wp:positionH/V) and display
-    /// size (wp:extent) live there, the geometry and fill in the nested wsp,
-    /// and parseShape reads both through descendant lookups. VML shapes carry
-    /// their attributes on the v:shape / v:rect / ... element itself.
-    ///
-    /// An mc:AlternateContent holds the same shape twice (DrawingML choice, VML
-    /// fallback); only one of them is taken. Scanning the document for anchors
-    /// and v:shapes separately imported such a text box two times.
-    let rec private shapeRoots (node: XmlNode) : XmlNode list =
-        match Xml.name node |> Option.map Ns.stripNs with
-        | Some "AlternateContent" ->
-            let fromChoice = Ns.childNs "Choice" node |> Option.map shapeRoots |> Option.defaultValue []
-            if not fromChoice.IsEmpty then fromChoice
-            else Ns.childNs "Fallback" node |> Option.map shapeRoots |> Option.defaultValue []
-        | Some "anchor" | Some "inline" -> if isModelledShape node then [node] else []
-        | Some "shape" | Some "rect" | Some "roundrect" | Some "oval" when (match node with XmlDsl.Element(name, _, _) -> name.StartsWith "v:" | _ -> false) ->
-            if isModelledShape node then [node] else []
-        | Some _ -> Xml.children node |> List.collect shapeRoots
-        | None -> []
-
     /// Shapes of the document body, each with the index of the body block
     /// (as Docx.bodyContent numbers them) it is anchored in.
     let parseShapes (doc: XmlNode) : Shape list =
@@ -2898,11 +3112,11 @@ module Shapes =
         | Some body ->
             blockNodes body
             |> List.mapi (fun index block ->
-                shapeRoots block
+                Docx.modelledShapeRoots block
                 |> List.choose parseShape
                 |> List.map (fun shape -> { shape with AnchorBlock = Some index }))
             |> List.concat
-        | None -> shapeRoots doc |> List.choose parseShape
+        | None -> Docx.modelledShapeRoots doc |> List.choose parseShape
 
 // Resolve hyperlink targets from relationships
 let resolveHyperlinks (doc: WordDocument) : WordDocument =
@@ -3040,353 +3254,260 @@ let private relationshipsOfXml (xml: string option) =
 let private relationshipTargetBase (rel: Relationship) =
     parentPath (ZipInterop.resolveTarget "word" rel.Target)
 
-let private loadPartRelationships archive (rel: Relationship) =
-    promise {
-        let relsPath = normalizePath ("word/_rels/" + lastPathSegment rel.Target + ".rels")
-        let! xml = getFileText archive relsPath
-        return
-            xml
-            |> Option.map XmlDsl.parse
-            |> Option.map parseRelationships
-            |> Option.defaultValue []
-    }
+/// The parts of a package, read on demand (.NET) or loaded up front (browser).
+type PartSource = {
+    Text: string -> string option
+    Bytes: string -> byte[] option
+}
 
-let private loadImageData archive baseDir (rels: Relationship list) =
-    rels
-    |> List.filter (fun r -> r.Type.Contains("/image"))
-    |> List.map (fun rel ->
-        promise {
-            if rel.TargetMode = Some "External" then
-                return Some (rel.Id, rel.Target)
-            else
-                let imagePath = resolveRelationshipTarget baseDir rel.Target
-                let mimeType = getMimeType rel.Target
-                let! dataUrl = getFileAsDataUrl archive imagePath mimeType
-                return dataUrl |> Option.map (fun url -> (rel.Id, url))
-        })
-    |> List.toArray
-    |> Promise.all
+let private dataUrlOfBytes (mimeType: string) (bytes: byte[]) =
+    "data:" + mimeType + ";base64," + Convert.ToBase64String bytes
 
-let private getFileAsDataUrlNative (archive: ZipArchive) (path: string) (mimeType: string) : string option =
-    getFileBytesNative archive path
-    |> Option.map (fun bytes -> "data:" + mimeType + ";base64," + Convert.ToBase64String(bytes))
-
-let private loadPartRelationshipsNative archive (rel: Relationship) =
-    let relsPath = normalizePath ("word/_rels/" + lastPathSegment rel.Target + ".rels")
-    getFileTextNative archive relsPath
-    |> Option.map XmlDsl.parse
-    |> Option.map parseRelationships
-    |> Option.defaultValue []
-
-let private loadImageDataNative archive baseDir (rels: Relationship list) =
+/// Images of a part: (relationship id, data URL). A linked (external) picture
+/// has no data; its target URL is delivered as the source and is marked Linked
+/// on the run, so that nothing fetches it unless the host allows it.
+let private loadImages (source: PartSource) (baseDir: string) (rels: Relationship list) : (string * string) list =
     rels
     |> List.choose (fun rel ->
         if rel.Type.Contains("/image") then
             if rel.TargetMode = Some "External" then
                 Some (rel.Id, rel.Target)
             else
-                let imagePath = resolveRelationshipTarget baseDir rel.Target
-                let mimeType = getMimeType rel.Target
-                getFileAsDataUrlNative archive imagePath mimeType
-                |> Option.map (fun url -> (rel.Id, url))
+                source.Bytes (resolveRelationshipTarget baseDir rel.Target)
+                |> Option.map (fun bytes -> rel.Id, dataUrlOfBytes (getMimeType rel.Target) bytes)
         else
             None)
 
-// Parse DOCX archive
-let parseDocument (archive: ZipArchive) : Fable.Core.JS.Promise<WordDocument option> =
-    promise {
-        // Load main document parts
-        let! docXml = getFileText archive "word/document.xml"
-        let! relsXml = getFileText archive "word/_rels/document.xml.rels"
-        let! stylesXml = getFileText archive "word/styles.xml"
-        let! themeXml = getFileText archive "word/theme/theme1.xml"
-        let! numberingXml = getFileText archive "word/numbering.xml"
-        let! settingsXml = getFileText archive "word/settings.xml"
-        let! propsXml = getFileText archive "docProps/core.xml"
+let private relationshipIdPattern = System.Text.RegularExpressions.Regex("\\s(?:r:[A-Za-z]+|o:relid)=\"([^\"]*)\"")
 
-        match docXml with
-        | Some xml ->
-            let doc = XmlDsl.parse xml
-            let body = Ns.childNs "body" doc
+/// Relationship ids an XML fragment refers to (r:id, r:embed, r:link, r:dm, ..., o:relid).
+let relationshipIdsInXml (xml: string) : string list =
+    [ for m in relationshipIdPattern.Matches xml -> m.Groups.[1].Value ] |> List.distinct
 
-            let rels = relationshipsOfXml relsXml
+let private opaqueXmlOfBlocks (blocks: DocumentContent list) : string list =
+    blockParagraphs blocks
+    |> List.collect (fun para ->
+        para.Runs
+        |> List.choose (fun run ->
+            match run.Content with
+            | Image { Opaque = Some opaque } -> Some opaque.Xml
+            | _ -> None))
 
-            // Notes and comments are parts of their own, each with its own relationships.
-            let commentsPath = partPathOfType "word" rels "/comments" "word/comments.xml"
-            let footnotesPath = partPathOfType "word" rels "/footnotes" "word/footnotes.xml"
-            let endnotesPath = partPathOfType "word" rels "/endnotes" "word/endnotes.xml"
-            let! commentsXml = getFileText archive commentsPath
-            let! footnotesXml = getFileText archive footnotesPath
-            let! endnotesXml = getFileText archive endnotesPath
-            let! commentsRelsXml = getFileText archive (partRelsPath commentsPath)
-            let! footnotesRelsXml = getFileText archive (partRelsPath footnotesPath)
-            let! endnotesRelsXml = getFileText archive (partRelsPath endnotesPath)
-            let commentsRels = relationshipsOfXml commentsRelsXml
-            let footnotesRels = relationshipsOfXml footnotesRelsXml
-            let endnotesRels = relationshipsOfXml endnotesRelsXml
+/// Relationship types of parts the writer regenerates (or, for the comment
+/// extension parts, that refer into a part it regenerates).
+let private isRegeneratedRelationshipType (relType: string) =
+    [ "/styles"; "/numbering"; "/settings"; "/header"; "/footer"; "/footnotes"; "/endnotes"; "/comments"
+      "/commentsExtended"; "/commentsIds"; "/commentsExtensible" ]
+    |> List.exists (fun suffix -> relType.EndsWith suffix)
 
-            let styles =
-                stylesXml
-                |> Option.map Styles.parseStyles
-                |> Option.defaultValue []
+/// The relationships of a regenerated part that are written back: everything
+/// the writer does not produce itself. Pictures and hyperlinks are produced by
+/// the writer from the model, so those are kept only when an opaque object of
+/// the part refers to them.
+let private keptRelationships (baseDir: string) (rels: Relationship list) (opaqueXml: string list) : PreservedRelationship list =
+    let referenced = opaqueXml |> List.collect relationshipIdsInXml |> Set.ofList
+    rels
+    |> List.filter (fun rel ->
+        if isRegeneratedRelationshipType rel.Type then false
+        elif rel.Type.EndsWith "/image" || rel.Type.EndsWith "/hyperlink" then Set.contains rel.Id referenced
+        else true)
+    |> List.map (fun rel ->
+        let isExternal = rel.TargetMode = Some "External"
+        { Id = rel.Id
+          Type = rel.Type
+          Target = if isExternal then rel.Target else "/" + resolveRelationshipTarget baseDir rel.Target
+          External = isExternal })
 
-            let theme = themeXml |> Option.map Theme.parseTheme
+/// Every part reachable from `roots` through the parts' own relationships,
+/// with those relationship parts, in a stable order.
+let private reachableParts (source: PartSource) (excluded: Set<string>) (roots: PreservedRelationship list) : PreservedPart list =
+    let seen = System.Collections.Generic.HashSet<string>()
+    let parts = ResizeArray<PreservedPart>()
+    let pending = System.Collections.Generic.Queue<string>()
+    for rel in roots do
+        if not rel.External then pending.Enqueue (normalizePath rel.Target)
+    while pending.Count > 0 do
+        let path = pending.Dequeue()
+        if not (excluded.Contains path) && seen.Add path then
+            match source.Bytes path with
+            | Some data ->
+                parts.Add { Path = path; Data = data }
+                let relsPath = partRelsPath path
+                match source.Bytes relsPath, source.Text relsPath with
+                | Some relsData, relsText ->
+                    if seen.Add relsPath then parts.Add { Path = relsPath; Data = relsData }
+                    for rel in relationshipsOfXml relsText do
+                        if rel.TargetMode <> Some "External" then
+                            pending.Enqueue (resolveRelationshipTarget (parentPath path) rel.Target)
+                | _ -> ()
+            | None -> ()
+    parts |> Seq.sortBy (fun part -> part.Path) |> Seq.toList
 
-            let numberingDefinitions =
-                numberingXml
-                |> Option.map Numbering.parseNumbering
-                |> Option.defaultValue []
+let private contentTypeEntries (xml: string option) : (string * string) list * (string * string) list =
+    match xml |> Option.map XmlDsl.parse with
+    | Some types ->
+        let entries (elementName: string) (keyName: string) =
+            Xml.children types
+            |> List.choose (fun node ->
+                if Xml.name node |> Option.map Ns.stripNs = Some elementName then
+                    match Xml.attr keyName node, Xml.attr "ContentType" node with
+                    | Some key, Some contentType -> Some (key, contentType)
+                    | _ -> None
+                else None)
+        entries "Default" "Extension", entries "Override" "PartName"
+    | None -> [], []
 
-            let evenAndOddHeaders = parseSettings settingsXml
-
-            let props =
-                propsXml
-                |> Option.map Properties.parseProperties
-
-            let headerRefTypes =
-                Ns.descendantsNs "headerReference" doc
-                |> List.choose (fun refNode ->
-                    Xml.attr "r:id" refNode
-                    |> Option.map (fun id -> (id, Docx.attr "type" refNode |> Option.defaultValue "default")))
-                |> Map.ofList
-
-            let footerRefTypes =
-                Ns.descendantsNs "footerReference" doc
-                |> List.choose (fun refNode ->
-                    Xml.attr "r:id" refNode
-                    |> Option.map (fun id -> (id, Docx.attr "type" refNode |> Option.defaultValue "default")))
-                |> Map.ofList
-
-            let loadHeaderFooter (rel: Relationship) (hfType: string) =
-                promise {
-                    let path = ZipInterop.resolveTarget "word" rel.Target
-                    let! xml = getFileText archive path
-                    let! partRelsXml = getFileText archive (partRelsPath path)
-                    return
-                        xml
-                        |> Option.map (fun value ->
-                            HeaderFooter.parseHeaderFooter value hfType (Some rel.Id)
-                            |> resolveHeaderFooterHyperlinks (relationshipsOfXml partRelsXml))
-                }
-
-            let! headers =
-                rels
-                |> List.filter (fun rel -> rel.Type.Contains("/header"))
-                |> List.map (fun rel -> loadHeaderFooter rel (headerRefTypes |> Map.tryFind rel.Id |> Option.defaultValue "default"))
-                |> List.toArray
-                |> Promise.all
-
-            let! footers =
-                rels
-                |> List.filter (fun rel -> rel.Type.Contains("/footer"))
-                |> List.map (fun rel -> loadHeaderFooter rel (footerRefTypes |> Map.tryFind rel.Id |> Option.defaultValue "default"))
-                |> List.toArray
-                |> Promise.all
-
-            let content =
-                body
-                |> Option.map (fun bodyNode -> Docx.bodyContentWithFinalSection (Ns.childNs "sectPr" bodyNode) bodyNode)
-                |> Option.defaultValue []
-
-            let pageSetup =
-                body
-                |> Option.bind (Ns.childNs "sectPr")
-                |> parsePageSetup evenAndOddHeaders
-
-            // Parse advanced features
-            let comments =
-                commentsXml
-                |> Option.map Comments.parseComments
-                |> Option.defaultValue []
-                |> List.map (resolveCommentHyperlinks commentsRels)
-
-            let revisions = Revisions.parseRevisions doc
-
-            let footnotes =
-                footnotesXml
-                |> Option.map Notes.parseNotes
-                |> Option.defaultValue []
-                |> List.map (resolveNoteHyperlinks footnotesRels)
-
-            let endnotes =
-                endnotesXml
-                |> Option.map Notes.parseNotes
-                |> Option.defaultValue []
-                |> List.map (resolveNoteHyperlinks endnotesRels)
-
-            let shapes = Shapes.parseShapes doc
-
-            // Load image data from zip
-            let! images =
-                promise {
-                    let partRels =
-                        rels
-                        |> List.filter (fun r -> r.Type.Contains("/header") || r.Type.Contains("/footer"))
-
-                    let! bodyImages = loadImageData archive "word" rels
-                    let! runningContentImages =
-                        partRels
-                        |> List.map (fun partRel ->
-                            promise {
-                                let! partRelationships = loadPartRelationships archive partRel
-                                let! partImages = loadImageData archive (relationshipTargetBase partRel) partRelationships
-                                return partImages |> Array.map (Option.map (fun (relId, dataUrl) -> partImageKey partRel.Id relId, dataUrl))
-                            })
-                        |> List.toArray
-                        |> Promise.all
-
-                    let keyed key (partImages: (string * string) option array) =
-                        partImages |> Array.map (Option.map (fun (relId, dataUrl) -> partImageKey key relId, dataUrl))
-                    let! footnoteImages = loadImageData archive (parentPath footnotesPath) footnotesRels
-                    let! endnoteImages = loadImageData archive (parentPath endnotesPath) endnotesRels
-                    let! commentImages = loadImageData archive (parentPath commentsPath) commentsRels
-
-                    return
-                        Array.concat (bodyImages :: (runningContentImages |> Array.toList)
-                                      @ [ keyed footnotesPartKey footnoteImages; keyed endnotesPartKey endnoteImages; keyed commentsPartKey commentImages ])
-                        |> Array.choose id
-                        |> Map.ofArray
-                }
-
-            let document = {
-                Content = content
-                Relationships = rels
-                Styles = styles
-                Theme = theme
-                Headers = headers |> Array.choose id |> Array.toList
-                Footers = footers |> Array.choose id |> Array.toList
-                Properties = props
-                Comments = comments
-                Revisions = revisions
-                Footnotes = footnotes
-                Endnotes = endnotes
-                Shapes = shapes
-                Images = images
-                PageSetup = pageSetup
-                NumberingDefinitions = numberingDefinitions
-            }
-
-            return Some (resolveHyperlinks document)
-
-        | None -> return None
-    }
-
-let parseDocumentNative (archive: ZipArchive) : WordDocument option =
-    let docXml = getFileTextNative archive "word/document.xml"
-    let relsXml = getFileTextNative archive "word/_rels/document.xml.rels"
-    let stylesXml = getFileTextNative archive "word/styles.xml"
-    let themeXml = getFileTextNative archive "word/theme/theme1.xml"
-    let numberingXml = getFileTextNative archive "word/numbering.xml"
-    let settingsXml = getFileTextNative archive "word/settings.xml"
-    let propsXml = getFileTextNative archive "docProps/core.xml"
+/// Parse a DOCX package.
+///
+/// The main document part is the target of the package's officeDocument
+/// relationship (it need not be word/document.xml), and every other part is
+/// found through the relationships of the part that refers to it.
+let parseFromSource (source: PartSource) : WordDocument option =
+    let rootRels = source.Text "_rels/.rels" |> relationshipsOfXml
+    let mainRelationship = rootRels |> List.tryFind (fun rel -> rel.Type.EndsWith "/officeDocument" && rel.TargetMode <> Some "External")
+    let mainPath =
+        mainRelationship
+        |> Option.map (fun rel -> ZipInterop.resolveTarget "" rel.Target)
+        |> Option.filter (fun path -> (source.Text path).IsSome)
+        |> Option.defaultValue "word/document.xml"
+    let docDir = parentPath mainPath
+    let docXml = source.Text mainPath
 
     docXml
     |> Option.map (fun xml ->
         let doc = XmlDsl.parse xml
         let body = Ns.childNs "body" doc
+        let rels = source.Text (partRelsPath mainPath) |> relationshipsOfXml
+        let partPath typeSuffix fallback = partPathOfType docDir rels typeSuffix ((if docDir = "" then "" else docDir + "/") + fallback)
 
-        let rels = relationshipsOfXml relsXml
+        let stylesPath = partPath "/styles" "styles.xml"
+        let settingsPath = partPath "/settings" "settings.xml"
+        let stylesXml = source.Text stylesPath
+        let settingsXml = source.Text settingsPath
+        let themeXml = source.Text (partPath "/theme" "theme/theme1.xml")
+        let numberingXml = source.Text (partPath "/numbering" "numbering.xml")
+        let propsXml = source.Text (partPathOfType "" rootRels "/core-properties" "docProps/core.xml")
 
-        let commentsPath = partPathOfType "word" rels "/comments" "word/comments.xml"
-        let footnotesPath = partPathOfType "word" rels "/footnotes" "word/footnotes.xml"
-        let endnotesPath = partPathOfType "word" rels "/endnotes" "word/endnotes.xml"
-        let commentsXml = getFileTextNative archive commentsPath
-        let footnotesXml = getFileTextNative archive footnotesPath
-        let endnotesXml = getFileTextNative archive endnotesPath
-        let commentsRels = getFileTextNative archive (partRelsPath commentsPath) |> relationshipsOfXml
-        let footnotesRels = getFileTextNative archive (partRelsPath footnotesPath) |> relationshipsOfXml
-        let endnotesRels = getFileTextNative archive (partRelsPath endnotesPath) |> relationshipsOfXml
+        // Notes and comments are parts of their own, each with its own relationships.
+        let commentsPath = partPath "/comments" "comments.xml"
+        let footnotesPath = partPath "/footnotes" "footnotes.xml"
+        let endnotesPath = partPath "/endnotes" "endnotes.xml"
+        let commentsRels = source.Text (partRelsPath commentsPath) |> relationshipsOfXml
+        let footnotesRels = source.Text (partRelsPath footnotesPath) |> relationshipsOfXml
+        let endnotesRels = source.Text (partRelsPath endnotesPath) |> relationshipsOfXml
 
-        let styles =
-            stylesXml
-            |> Option.map Styles.parseStyles
-            |> Option.defaultValue []
-
+        let styles = stylesXml |> Option.map Styles.parseStyles |> Option.defaultValue []
         let theme = themeXml |> Option.map Theme.parseTheme
-
-        let numberingDefinitions =
-            numberingXml
-            |> Option.map Numbering.parseNumbering
-            |> Option.defaultValue []
-
+        let numberingDefinitions = numberingXml |> Option.map Numbering.parseNumbering |> Option.defaultValue []
         let evenAndOddHeaders = parseSettings settingsXml
         let props = propsXml |> Option.map Properties.parseProperties
 
-        let headerRefTypes =
-            Ns.descendantsNs "headerReference" doc
+        let referenceTypes name =
+            Ns.descendantsNs name doc
             |> List.choose (fun refNode ->
                 Xml.attr "r:id" refNode
                 |> Option.map (fun id -> (id, Docx.attr "type" refNode |> Option.defaultValue "default")))
             |> Map.ofList
+        let headerRefTypes = referenceTypes "headerReference"
+        let footerRefTypes = referenceTypes "footerReference"
 
-        let footerRefTypes =
-            Ns.descendantsNs "footerReference" doc
-            |> List.choose (fun refNode ->
-                Xml.attr "r:id" refNode
-                |> Option.map (fun id -> (id, Docx.attr "type" refNode |> Option.defaultValue "default")))
-            |> Map.ofList
-
-        let loadHeaderFooterNative (rel: Relationship) (hfType: string) =
-            let path = ZipInterop.resolveTarget "word" rel.Target
-            getFileTextNative archive path
+        // (part, its path, its relationships)
+        let loadHeaderFooter (refTypes: Map<string, string>) (rel: Relationship) =
+            let path = ZipInterop.resolveTarget docDir rel.Target
+            let partRels = source.Text (partRelsPath path) |> relationshipsOfXml
+            source.Text path
             |> Option.map (fun value ->
-                HeaderFooter.parseHeaderFooter value hfType (Some rel.Id)
-                |> resolveHeaderFooterHyperlinks (getFileTextNative archive (partRelsPath path) |> relationshipsOfXml))
+                let hfType = refTypes |> Map.tryFind rel.Id |> Option.defaultValue "default"
+                (HeaderFooter.parseHeaderFooter value hfType (Some rel.Id) |> resolveHeaderFooterHyperlinks partRels), path, partRels)
 
-        let headers =
-            rels
-            |> List.filter (fun rel -> rel.Type.Contains("/header"))
-            |> List.choose (fun rel -> loadHeaderFooterNative rel (headerRefTypes |> Map.tryFind rel.Id |> Option.defaultValue "default"))
+        let headerParts = rels |> List.filter (fun rel -> rel.Type.EndsWith "/header") |> List.choose (loadHeaderFooter headerRefTypes)
+        let footerParts = rels |> List.filter (fun rel -> rel.Type.EndsWith "/footer") |> List.choose (loadHeaderFooter footerRefTypes)
 
-        let footers =
-            rels
-            |> List.filter (fun rel -> rel.Type.Contains("/footer"))
-            |> List.choose (fun rel -> loadHeaderFooterNative rel (footerRefTypes |> Map.tryFind rel.Id |> Option.defaultValue "default"))
-
+        // Shapes the body models are text boxes; everything else that is not a
+        // picture stays in the text as an opaque object.
         let content =
             body
             |> Option.map (fun bodyNode -> Docx.bodyContentWithFinalSection (Ns.childNs "sectPr" bodyNode) bodyNode)
             |> Option.defaultValue []
+            |> completeOpaqueObjects doc
+            |> dropModelledShapeRuns
 
         let pageSetup =
             body
             |> Option.bind (Ns.childNs "sectPr")
             |> parsePageSetup evenAndOddHeaders
 
-        let comments = commentsXml |> Option.map Comments.parseComments |> Option.defaultValue [] |> List.map (resolveCommentHyperlinks commentsRels)
+        let comments =
+            source.Text commentsPath |> Option.map Comments.parseComments |> Option.defaultValue [] |> List.map (resolveCommentHyperlinks commentsRels)
         let revisions = Revisions.parseRevisions doc
-        let footnotes = footnotesXml |> Option.map Notes.parseNotes |> Option.defaultValue [] |> List.map (resolveNoteHyperlinks footnotesRels)
-        let endnotes = endnotesXml |> Option.map Notes.parseNotes |> Option.defaultValue [] |> List.map (resolveNoteHyperlinks endnotesRels)
-        let shapes = Shapes.parseShapes doc
-
-        let partRels = rels |> List.filter (fun r -> r.Type.Contains("/header") || r.Type.Contains("/footer"))
-        let bodyImages = loadImageDataNative archive "word" rels
-        let runningContentImages =
-            partRels
-            |> List.collect (fun partRel ->
-                let partRelationships = loadPartRelationshipsNative archive partRel
-                loadImageDataNative archive (relationshipTargetBase partRel) partRelationships
-                |> List.map (fun (relId, dataUrl) -> partImageKey partRel.Id relId, dataUrl))
+        let footnotes =
+            source.Text footnotesPath |> Option.map Notes.parseNotes |> Option.defaultValue [] |> List.map (resolveNoteHyperlinks footnotesRels)
+        let endnotes =
+            source.Text endnotesPath |> Option.map Notes.parseNotes |> Option.defaultValue [] |> List.map (resolveNoteHyperlinks endnotesRels)
+        let shapes =
+            Shapes.parseShapes doc
+            |> List.map (fun shape ->
+                { shape with Content = shape.Content |> List.map Para |> completeOpaqueObjects doc |> List.choose (function Para para -> Some para | Tbl _ -> None) })
 
         let keyedImages key baseDir partRelationships =
-            loadImageDataNative archive baseDir partRelationships
+            loadImages source baseDir partRelationships
             |> List.map (fun (relId, dataUrl) -> partImageKey key relId, dataUrl)
 
         let images =
-            (bodyImages
-             @ runningContentImages
+            (loadImages source docDir rels
+             @ ((headerParts @ footerParts)
+                |> List.collect (fun (part, path, partRels) ->
+                    match part.RelationshipId with
+                    | Some partId -> keyedImages partId (parentPath path) partRels
+                    | None -> []))
              @ keyedImages footnotesPartKey (parentPath footnotesPath) footnotesRels
              @ keyedImages endnotesPartKey (parentPath endnotesPath) endnotesRels
              @ keyedImages commentsPartKey (parentPath commentsPath) commentsRels)
             |> Map.ofList
+
+        // ---- what is kept of the package for the next save ----
+        let rootKept =
+            keptRelationships "" (rootRels |> List.filter (fun rel -> not (rel.Type.EndsWith "/officeDocument"))) []
+        let partKept =
+            [ yield "document", keptRelationships docDir rels (opaqueXmlOfBlocks content @ (shapes |> List.collect (fun shape -> opaqueXmlOfBlocks (shape.Content |> List.map Para))))
+              for part, path, partRels in headerParts @ footerParts do
+                  match part.RelationshipId with
+                  | Some partId -> yield partId, keptRelationships (parentPath path) partRels (opaqueXmlOfBlocks part.Blocks)
+                  | None -> ()
+              yield footnotesPartKey, keptRelationships (parentPath footnotesPath) footnotesRels (footnotes |> List.collect (fun note -> opaqueXmlOfBlocks note.Blocks))
+              yield endnotesPartKey, keptRelationships (parentPath endnotesPath) endnotesRels (endnotes |> List.collect (fun note -> opaqueXmlOfBlocks note.Blocks))
+              yield commentsPartKey, keptRelationships (parentPath commentsPath) commentsRels (comments |> List.collect (fun comment -> opaqueXmlOfBlocks comment.Blocks)) ]
+            |> List.filter (fun (_, kept) -> not kept.IsEmpty)
+        // Parts the writer produces itself are never carried over as they are.
+        let regenerated =
+            [ yield mainPath
+              yield stylesPath
+              yield settingsPath
+              yield partPath "/numbering" "numbering.xml"
+              yield commentsPath
+              yield footnotesPath
+              yield endnotesPath
+              for _, path, _ in headerParts @ footerParts do yield path ]
+            |> Set.ofList
+        let defaults, overrides = contentTypeEntries (source.Text "[Content_Types].xml")
+        let preserved =
+            { Parts = reachableParts source regenerated (rootKept @ (partKept |> List.collect snd))
+              RootRelationships = rootKept
+              DocumentRelationshipId = mainRelationship |> Option.map (fun rel -> rel.Id) |> Option.defaultValue "rId1"
+              PartRelationships = Map.ofList partKept
+              Defaults = defaults
+              Overrides = overrides
+              MainContentType = overrides |> List.tryPick (fun (partName, contentType) -> if normalizePath partName = mainPath then Some contentType else None)
+              StylesXml = stylesXml
+              SettingsXml = settingsXml }
 
         {
             Content = content
             Relationships = rels
             Styles = styles
             Theme = theme
-            Headers = headers
-            Footers = footers
+            Headers = headerParts |> List.map (fun (part, _, _) -> part)
+            Footers = footerParts |> List.map (fun (part, _, _) -> part)
             Properties = props
             Comments = comments
             Revisions = revisions
@@ -3396,8 +3517,60 @@ let parseDocumentNative (archive: ZipArchive) : WordDocument option =
             Images = images
             PageSetup = pageSetup
             NumberingDefinitions = numberingDefinitions
+            Preserved = preserved
         }
         |> resolveHyperlinks)
+
+#if FABLE_COMPILER
+[<Fable.Core.Emit("new Uint8Array($0)")>]
+let private bytesOfArrayBuffer (buffer: obj) : byte[] = Fable.Core.Util.jsNative
+
+[<Fable.Core.Emit("new TextDecoder('utf-8').decode($0)")>]
+let private textOfBytes (bytes: byte[]) : string = Fable.Core.Util.jsNative
+#else
+let private bytesOfArrayBuffer (buffer: obj) : byte[] = unbox buffer
+let private textOfBytes (bytes: byte[]) : string = System.Text.Encoding.UTF8.GetString bytes
+#endif
+
+let private lookupPart (parts: Map<string, 'T>) (path: string) : 'T option =
+    match Map.tryFind path parts with
+    | Some value -> Some value
+    | None ->
+        // OPC part names are case-insensitive.
+        let wanted = path.ToLowerInvariant()
+        parts |> Map.tryPick (fun name value -> if name.ToLowerInvariant() = wanted then Some value else None)
+
+// Parse DOCX archive
+let parseDocument (archive: ZipArchive) : Fable.Core.JS.Promise<WordDocument option> =
+    promise {
+        // Every entry is read once, up front: the parser follows relationships
+        // from part to part, which a promise per part would turn inside out.
+        let! entries =
+            archive.Files
+            |> Map.toArray
+            |> Array.map (fun (name, file) ->
+                promise {
+                    let! buffer = file.GetArrayBuffer()
+                    return name, bytesOfArrayBuffer buffer
+                })
+            |> Promise.all
+        let bytes = Map.ofArray entries
+        let texts = System.Collections.Generic.Dictionary<string, string option>()
+        let source =
+            { Bytes = lookupPart bytes
+              Text =
+                fun path ->
+                    match texts.TryGetValue path with
+                    | true, text -> text
+                    | false, _ ->
+                        let text = lookupPart bytes path |> Option.map textOfBytes
+                        texts.[path] <- text
+                        text }
+        return parseFromSource source
+    }
+
+let parseDocumentNative (archive: ZipArchive) : WordDocument option =
+    parseFromSource { Text = getFileTextNative archive; Bytes = getFileBytesNative archive }
 
 // Public API for loading DOCX from data
 let load (data: obj) : Fable.Core.JS.Promise<WordDocument option> =
@@ -4095,6 +4268,23 @@ let private styleKeepProperties (styleMap: Map<string, StyleDefinition>) (para: 
     if para.Properties.KeepNext.IsNone && para.Properties.KeepLines.IsNone then effectiveParaProps
     else resolvedParagraphProperties styleMap { para.Properties with KeepNext = None; KeepLines = None }
 
+/// Source prefix of an opaque object that has no picture to show: the painter
+/// draws a placeholder frame for "opaque:<kind>".
+let opaqueSourcePrefix = "opaque:"
+
+/// What an image run shows: the picture behind its relationship; for an opaque
+/// object its fallback picture when the browser can draw it, else a placeholder.
+let editorImageSource (images: Map<string, string>) (img: ImageData) : string =
+    match img.Opaque with
+    | Some opaque ->
+        match Map.tryFind img.RelationshipId images with
+        | Some (source: string) when source.StartsWith "data:image/" && not (source.StartsWith "data:image/x-emf") && not (source.StartsWith "data:image/x-wmf") && not (source.StartsWith "data:image/tiff") -> source
+        | _ -> opaqueSourcePrefix + opaque.Kind
+    | None ->
+        images
+        |> Map.tryFind img.RelationshipId
+        |> Option.defaultValue img.RelationshipId  // Fallback to relId if not found
+
 let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefinition list) (content: DocumentContent list) (images: Map<string, string>) (noteBodies: Map<string * string, string>) : obj array =
     let styleMap = buildStyleMap styles
     let _, documentDefaultParagraphProperties = resolveStyle styleMap (Some Styles.defaultStyleId)
@@ -4165,10 +4355,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                         ] @ bookmarkRunProps run))
                     | Image img ->
                         // Image run - resolve relationship ID to data URL
-                        let imageSrc =
-                            images
-                            |> Map.tryFind img.RelationshipId
-                            |> Option.defaultValue img.RelationshipId  // Fallback to relId if not found
+                        let imageSrc = editorImageSource images img
                         Some (objFromFields [
                             "IsImage" ==> true
                             "ImageSrc" ==> imageSrc
@@ -4203,6 +4390,9 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                             "ImagePositionHAlign" ==> img.PositionHAlign
                             "ImagePositionVAlign" ==> img.PositionVAlign
                             "ImageWrapText" ==> img.WrapText
+                            "OpaqueXml" ==> (img.Opaque |> Option.map (fun opaque -> opaque.Xml))
+                            "OpaqueKind" ==> (img.Opaque |> Option.map (fun opaque -> opaque.Kind))
+                            "OpaqueParagraphLevel" ==> (img.Opaque |> Option.map (fun opaque -> opaque.ParagraphLevel))
                         ])
                     | Link link ->
                         // Hyperlink as text run with link property
@@ -4452,10 +4642,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                                 "RevisionDate" ==> run.RevisionDate
                             ] @ bookmarkRunProps run))
                         | Image img ->
-                            let imageSrc =
-                                images
-                                |> Map.tryFind img.RelationshipId
-                                |> Option.defaultValue img.RelationshipId
+                            let imageSrc = editorImageSource images img
                             Some (objFromFields [
                                 "IsImage" ==> true
                                 "ImageSrc" ==> imageSrc
@@ -4490,6 +4677,9 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                                 "ImagePositionHAlign" ==> img.PositionHAlign
                                 "ImagePositionVAlign" ==> img.PositionVAlign
                                 "ImageWrapText" ==> img.WrapText
+                                "OpaqueXml" ==> (img.Opaque |> Option.map (fun opaque -> opaque.Xml))
+                                "OpaqueKind" ==> (img.Opaque |> Option.map (fun opaque -> opaque.Kind))
+                                "OpaqueParagraphLevel" ==> (img.Opaque |> Option.map (fun opaque -> opaque.ParagraphLevel))
                             ])
                         | Link link ->
                             let effectiveLinkProps = resolvedRunProperties styleMap effectiveParaProps link.Properties
@@ -5103,3 +5293,25 @@ let toEditorComments (theme: Theme option) (images: Map<string, string>) (styles
             "Blocks" ==> (toEditorParagraphsInternal theme styles comment.Blocks images Map.empty |> applyNumberingDefinitions numberingDefinitions)
         ])
     |> List.toArray
+
+/// The kept parts of the package for the editor package object ("Preserved").
+/// Part data is a byte array (a Uint8Array in the browser); the object is
+/// handed back to DocumentWriter.writeFromEditorPackage unchanged.
+let toEditorPreserved (preserved: PackagePreservation) : obj =
+    let relationship (rel: PreservedRelationship) =
+        objFromFields [ "Id" ==> rel.Id; "Type" ==> rel.Type; "Target" ==> rel.Target; "External" ==> rel.External ]
+    let relationships (rels: PreservedRelationship list) = rels |> List.map relationship |> List.toArray
+    objFromFields [
+        "Parts" ==> (preserved.Parts |> List.map (fun part -> objFromFields [ "Path" ==> part.Path; "Data" ==> part.Data ]) |> List.toArray)
+        "RootRelationships" ==> relationships preserved.RootRelationships
+        "DocumentRelationshipId" ==> preserved.DocumentRelationshipId
+        "PartRelationships" ==> (preserved.PartRelationships
+                                 |> Map.toList
+                                 |> List.map (fun (key, rels) -> objFromFields [ "Part" ==> key; "Relationships" ==> relationships rels ])
+                                 |> List.toArray)
+        "Defaults" ==> (preserved.Defaults |> List.map (fun (extension, contentType) -> objFromFields [ "Extension" ==> extension; "ContentType" ==> contentType ]) |> List.toArray)
+        "Overrides" ==> (preserved.Overrides |> List.map (fun (partName, contentType) -> objFromFields [ "PartName" ==> partName; "ContentType" ==> contentType ]) |> List.toArray)
+        "MainContentType" ==> preserved.MainContentType
+        "StylesXml" ==> preserved.StylesXml
+        "SettingsXml" ==> preserved.SettingsXml
+    ]

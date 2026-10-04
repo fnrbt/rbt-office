@@ -344,5 +344,21 @@ check "native floating image: alignment, wrap side, crop, z-order"
      |> List.choose (function Rbt.Word.TextBuffer.Image image -> Some (image.Floating, image.PositionHAlign, image.PositionX, image.PositionVRelativeFrom, image.Wrap, image.WrapText, image.BehindDoc, image.RelativeHeight, image.CropLeft, image.CropBottom) | _ -> None))
     [ true, Some "right", None, Some "page", Some "tight", Some "left", Some true, Some "9", Some "10000", Some "5000" ]
 
+// ----- a chart is kept as an opaque object ----------------------------------
+let nativeChartDoc =
+    importPackage
+        """<w:p><w:r><w:t>before</w:t></w:r><w:r><w:drawing><wp:inline><wp:extent cx="1905000" cy="952500"/><wp:docPr id="1" name="Chart 1"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart r:id="rId5"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>"""
+        [ "word/_rels/document.xml.rels", """<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId5" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="charts/chart1.xml"/></Relationships>"""
+          "word/charts/chart1.xml", """<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"/>""" ]
+let nativeChartRuns =
+    paragraphsOfBlocks nativeChartDoc.Blocks
+    |> List.collect (fun para -> para.Buffer.Runs)
+    |> List.choose (function Rbt.Word.TextBuffer.Image image -> Some (image.Src, image.Width, image.Height, image.Opaque |> Option.map (fun opaque -> opaque.Kind, opaque.Xml.Contains "<c:chart r:id=\"rId5\"/>")) | _ -> None)
+check "native chart: an opaque image run with a placeholder source" nativeChartRuns [ "opaque:chart", Some 200.0, Some 100.0, Some ("chart", true) ]
+check "native chart: text is not replaced by a placeholder word" (firstParagraphText nativeChartDoc) "before\uFFFC"
+check "native chart: its part is kept"
+    ((nativeChartDoc.Package.Preserved :?> DocxReader.PackagePreservation).Parts |> List.map (fun part -> part.Path))
+    [ "word/charts/chart1.xml" ]
+
 printfn "word import smoke: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
