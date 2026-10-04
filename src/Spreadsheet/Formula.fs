@@ -34,6 +34,11 @@ let private indexOfOrdinalIgnoreCase (needle: string) (haystack: string) (startI
         startIndex
     elif needle.Length > haystack.Length - startIndex then
         -1
+    elif (let upper = haystack.ToUpperInvariant() in upper.Length = haystack.Length) && needle.ToUpperInvariant().Length = needle.Length then
+        // Upper-casing kept every character in its place (it does but for a
+        // few letters such as the German sharp s): the search is the
+        // platform's own, far faster than a loop over characters here.
+        haystack.ToUpperInvariant().IndexOf(needle.ToUpperInvariant(), startIndex, StringComparison.Ordinal)
     else
         let charEqualsIgnoreCase a b =
             a = b || Char.ToUpperInvariant a = Char.ToUpperInvariant b
@@ -919,7 +924,7 @@ and private parseComparison (p: Parser) : Expr =
 
 /// Parse a formula string (leading `=` optional). Returns the AST or an error
 /// message describing the parse failure.
-let parseFormula (input: string) : Result<Expr, string> =
+let private parseFormulaText (input: string) : Result<Expr, string> =
     try
         // Legacy array formulas arrive wrapped in braces: `{=SUM(A1:A3*B1:B3)}`.
         let input =
@@ -934,6 +939,25 @@ let parseFormula (input: string) : Result<Expr, string> =
         | TEnd -> Ok e
         | t -> Result.Error (sprintf "Unexpected trailing token %A" t)
     with ex -> Result.Error ex.Message
+
+/// The parsed formulas, by text. A recalculation asks for every formula of
+/// the workbook, and so does building the dependency graph: parsing them
+/// again each time was most of what both cost. (An AST is immutable and
+/// depends on the text alone.)
+let private parsedFormulas = Dictionary<string, Result<Expr, string>>()
+
+/// Parse a formula string (leading `=` optional). Returns the AST or an error
+/// message describing the parse failure.
+let parseFormula (input: string) : Result<Expr, string> =
+    if isNull input then parseFormulaText input
+    else
+        match parsedFormulas.TryGetValue input with
+        | true, known -> known
+        | false, _ ->
+            let parsed = parseFormulaText input
+            if parsedFormulas.Count > 200000 then parsedFormulas.Clear()
+            parsedFormulas.[input] <- parsed
+            parsed
 
 let private parseFormulaShared (input: string) : Result<Expr, string> =
     parseFormula input
@@ -3402,14 +3426,18 @@ let private arrayFunctionSet = HashSet<string>(arrayFunctionNames, StringCompare
 let isArrayFunction (name: string) = arrayFunctionSet.Contains name
 #endif
 
+let private arrayFunctionNamesUpper = arrayFunctionNames |> Array.map (fun name -> name.ToUpperInvariant())
+
 let private formulaTextMayContainArrayFunctionName (formula: string) =
     if isNull formula then
         false
     else
+        // Upper-cased once, then the platform's own search for each name.
+        let upper = formula.ToUpperInvariant()
         let mutable found = false
         let mutable index = 0
-        while not found && index < arrayFunctionNames.Length do
-            if indexOfOrdinalIgnoreCase arrayFunctionNames.[index] formula 0 >= 0 then
+        while not found && index < arrayFunctionNamesUpper.Length do
+            if upper.IndexOf(arrayFunctionNamesUpper.[index], StringComparison.Ordinal) >= 0 then
                 found <- true
             index <- index + 1
         found
@@ -13180,13 +13208,25 @@ let containsThreeDReference (e: Expr) : bool =
 
 /// Cheap text test: can this formula possibly spill? Saves parsing the ones
 /// that plainly cannot.
+/// What `formulaTextMaySpill` found for a formula text: every recalculation
+/// asks for every formula of the workbook again.
+let private maySpillByText = Dictionary<string, bool>()
+
 let private formulaTextMaySpill (formula: string) =
     if isNull formula then false
     else
-        formula.IndexOf ':' >= 0 || formula.IndexOf '{' >= 0 || formula.IndexOf '#' >= 0 || formula.IndexOf '[' >= 0
-        || indexOfOrdinalIgnoreCase "OFFSET" formula 0 >= 0 || indexOfOrdinalIgnoreCase "INDIRECT" formula 0 >= 0
-        || indexOfOrdinalIgnoreCase "INDEX" formula 0 >= 0
-        || formulaTextMayContainArrayFunctionName formula
+        match maySpillByText.TryGetValue formula with
+        | true, known -> known
+        | false, _ ->
+            let found =
+                formula.IndexOf ':' >= 0 || formula.IndexOf '{' >= 0 || formula.IndexOf '#' >= 0 || formula.IndexOf '[' >= 0
+                || (let upper = formula.ToUpperInvariant()
+                    upper.IndexOf("OFFSET", StringComparison.Ordinal) >= 0 || upper.IndexOf("INDIRECT", StringComparison.Ordinal) >= 0
+                    || upper.IndexOf("INDEX", StringComparison.Ordinal) >= 0)
+                || formulaTextMayContainArrayFunctionName formula
+            if maySpillByText.Count > 100000 then maySpillByText.Clear()
+            maySpillByText.[formula] <- found
+            found
 
 /// Materialize dynamic-array spills for rendering. For each formula whose
 /// formula uses a spilling function (SEQUENCE/UNIQUE/SORT/FILTER/…), evaluate

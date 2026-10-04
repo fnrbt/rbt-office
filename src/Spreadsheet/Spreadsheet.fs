@@ -530,6 +530,18 @@ type Spreadsheet(container: Element) =
                     | Some deferred when deferred.HasFormulas -> convertInPlace index
                     | _ -> ()
 
+    /// The undo steps that change no value (formats, merges): undoing or
+    /// redoing one needs no recalculation of the workbook.
+    let valueNeutralSteps = ResizeArray<Command>()
+    let pushValueNeutral (command: Command) =
+        valueNeutralSteps.Add command
+        if valueNeutralSteps.Count > 200 then valueNeutralSteps.RemoveAt 0
+        model <- pushCommand command model
+    let isValueNeutral (command: Command option) =
+        match command with
+        | Some command -> valueNeutralSteps |> Seq.exists (fun known -> obj.ReferenceEquals(known, command))
+        | None -> false
+
     let convertAllSheets () =
         formulaSheetsConverted <- true
         for index in 0 .. sheets.Length - 1 do
@@ -1504,9 +1516,9 @@ type Spreadsheet(container: Element) =
         if obj.ReferenceEquals(updated, model) then false
         else
             model <- updated
-            model <- pushCommand { Undo = (fun m -> restoreCellMap oldCells m)
-                                   Redo = apply
-                                   Description = description } model
+            pushValueNeutral { Undo = (fun m -> restoreCellMap oldCells m)
+                               Redo = apply
+                               Description = description }
             true
 
     let formatSelection (description: string) (update: CellFormat -> CellFormat) : bool =
@@ -1815,7 +1827,7 @@ type Spreadsheet(container: Element) =
         match undo model with
         | Some undoneModel ->
             model <- undoneModel
-            recalculateFormulas()
+            if not (isValueNeutral command) then recalculateFormulas()
             observeRevisionAfter 1 command
             render()
         | None -> ()
@@ -1826,7 +1838,7 @@ type Spreadsheet(container: Element) =
         match redo model with
         | Some redoneModel ->
             model <- redoneModel
-            recalculateFormulas()
+            if not (isValueNeutral command) then recalculateFormulas()
             observeRevisionAfter 2 command
             render()
         | None -> ()
@@ -4520,9 +4532,9 @@ type Spreadsheet(container: Element) =
         model <- addMergedCell startRow startCol endRow endCol model
         let after = model.MergedCells
         if not (obj.ReferenceEquals(before, after)) then
-            model <- pushCommand { Undo = (fun m -> { m with MergedCells = before })
-                                   Redo = (fun m -> { m with MergedCells = after })
-                                   Description = "Merge cells" } model
+            pushValueNeutral { Undo = (fun m -> { m with MergedCells = before })
+                               Redo = (fun m -> { m with MergedCells = after })
+                               Description = "Merge cells" }
         render()
 
     /// Unmerge cells at address (one undo step).
@@ -4532,9 +4544,9 @@ type Spreadsheet(container: Element) =
         model <- removeMergedCell addr model
         let after = model.MergedCells
         if before.Length <> after.Length then
-            model <- pushCommand { Undo = (fun m -> { m with MergedCells = before })
-                                   Redo = (fun m -> { m with MergedCells = after })
-                                   Description = "Unmerge cells" } model
+            pushValueNeutral { Undo = (fun m -> { m with MergedCells = before })
+                               Redo = (fun m -> { m with MergedCells = after })
+                               Description = "Unmerge cells" }
         render()
 
     /// Add or update comment on a cell

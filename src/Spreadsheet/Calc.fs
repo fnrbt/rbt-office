@@ -648,16 +648,18 @@ let trySingleCellEdit (cell: SheetCell) (cellData: CellData)
                 | None -> buildEngine workbook
             let updatedWorkbook, updatedEngine =
                 updateCell cell cellData.Value cellData workbook engine
+            // No calculation chain although there are formulas: a cycle.
+            // (The cells are only looked through when there is no chain - not
+            // at every edit of a workbook with several hundred thousand cells.)
             let hasCircularRef =
-                let mutable formulaCells = 0
-                updatedWorkbook.Sheets
-                |> Map.iter (fun _ sheet ->
-                    sheet.Model.Cells
-                    |> Map.iter (fun _ cell ->
-                        match cell.Value with
-                        | CellValue.Formula _ -> formulaCells <- formulaCells + 1
-                        | _ -> ()))
-                formulaCells > 0 && List.isEmpty updatedEngine.CalcChain
+                List.isEmpty updatedEngine.CalcChain
+                && (updatedWorkbook.Sheets
+                    |> Map.exists (fun _ sheet ->
+                        sheet.Model.Cells
+                        |> Map.exists (fun _ cell ->
+                            match cell.Value with
+                            | CellValue.Formula _ -> true
+                            | _ -> false)))
             // The cells this edit makes stale (and the volatile ones, which are
             // recalculated on every pass): none of them may be a spilling formula.
             let reachesSpill () =

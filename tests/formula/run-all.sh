@@ -46,6 +46,7 @@ stages=(
     stage28-layout
     stage29-borders
     stage30-overflow
+    stage31-edits
     numbertext
 )
 

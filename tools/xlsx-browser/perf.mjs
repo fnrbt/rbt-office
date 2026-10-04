@@ -4,7 +4,9 @@
 // reading the written file again, and frame times while scrolling a sheet.
 //
 // Usage:
-//   node tools/xlsx-browser/perf.mjs --dist $DIST [--profile load|export|reread|scroll] [--sheet NAME] [--frames N] [--steps 120,0] [--no-scroll] [--no-jump] [file.xlsx ...]
+//   node tools/xlsx-browser/perf.mjs --dist $DIST [--profile load|export|reread|scroll|edits] [--sheet NAME] [--frames N] [--steps 120,0] [--no-scroll] [--no-jump] [--edits] [file.xlsx ...]
+// (--edits also times edits of a large block: a format on 10 000 cells, a paste of 1 000 x 20
+// cells, a typed entry and their undo, on the first sheet and on the sheet with the most cells.)
 // (--no-jump leaves out the jumps to the far end: 0.1.4 took minutes for one frame there.)
 // With no files: tests/real-world/dashboard-sales-analysis.xlsx and milk-street-office.xlsx.
 // --profile prints the functions with the most self time in that phase (CPU profile).
@@ -27,6 +29,7 @@ const frames = Number(opt('--frames') ?? 120);
 const steps = (opt('--steps') ?? '120,0').split(',').map(Number);
 const noJump = (() => { const i = args.indexOf('--no-jump'); if (i < 0) return false; args.splice(i, 1); return true; })();
 const noScroll = (() => { const i = args.indexOf('--no-scroll'); if (i < 0) return false; args.splice(i, 1); return true; })();
+const edits = (() => { const i = args.indexOf('--edits'); if (i < 0) return false; args.splice(i, 1); return true; })();
 const port = Number(process.env.PORT ?? 16101);
 const jszipDir = [process.env.JSZIP_DIR, path.join(repo, 'node_modules/jszip'), path.resolve(repo, '../rbt-office/node_modules/jszip')].find((p) => p && fs.existsSync(p));
 if (!jszipDir) { console.error('jszip not found; set JSZIP_DIR'); process.exit(2); }
@@ -61,6 +64,35 @@ try {
             return [performance.now() - t0, Array.from(names).length];
         },
         sheets() { return grid.GetSheetNames().map((name, index) => ({ name, index, cells: grid.GetSheets()[index].Cells.size ?? 0, rows: grid.GetSheets()[index].RowCount })); },
+        // Edits of a large block on a sheet: a format applied to 10 000 cells, a paste of
+        // 1 000 x 20 cells, one typed entry, and their undo. Each time is the call itself
+        // (model, recalculation, render) and the frame that follows it.
+        async edits(index) {
+            if (grid.GetActiveSheetIndex() !== index) grid.SwitchSheet(index);
+            const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            await frame();
+            const timed = async (run) => { const t0 = performance.now(); run(); const call = performance.now() - t0; await new Promise((resolve) => requestAnimationFrame(resolve)); return [call, performance.now() - t0]; };
+            const out = {};
+            grid.SelectRange(0, 0, 999, 9);
+            out.format = await timed(() => grid.ApplyFormat('bold'));
+            out.formatUndo = await timed(() => grid.Undo());
+            out.color = await timed(() => grid.ApplyBgColor('#ffeeaa'));
+            await timed(() => grid.Undo());
+            out.border = await timed(() => grid.ApplyBorder('all', 'thin', '#000000'));
+            await timed(() => grid.Undo());
+            const block = Array.from({ length: 1000 }, (_, r) => Array.from({ length: 20 }, (_, c) => (c % 3 === 0 ? 'item ' + (r * 20 + c) : String(r * 20 + c + 0.5))).join('\\t')).join('\\n');
+            grid.SelectCell(5, 2);
+            out.paste = await timed(() => grid.PasteText(block, ''));
+            out.pasteUndo = await timed(() => grid.Undo());
+            grid.SelectCell(7, 3);
+            out.type = await timed(() => grid.EnterText(7, 3, '12345'));
+            out.typeText = await timed(() => grid.EnterText(8, 3, 'some text'));
+            await timed(() => grid.Undo()); await timed(() => grid.Undo());
+            grid.SelectRange(0, 0, 999, 9);
+            out.clear = await timed(() => host.querySelector('.spreadsheet-content').dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true, cancelable: true })));
+            out.clearUndo = await timed(() => grid.Undo());
+            return out;
+        },
         // Scroll the sheet a screenful at a time, one step per frame; the time of a
         // frame is from one requestAnimationFrame callback to the next.
         async scroll(index, frames, jump, stepSize) {
@@ -147,6 +179,19 @@ try {
         const [reread] = await phase('reread', () => tab.evaluate(() => window.perf.reread()));
         console.log(`  re-read (sheet names)    ${ms(reread)}`);
         const sheets = await tab.evaluate(() => window.perf.sheets());
+        if (edits) {
+            for (const sheet of (sheetName ? sheets.filter((s) => s.name === sheetName) : [sheets[0], sheets.slice().sort((a, b) => b.cells - a.cells)[0]].filter((s, i, all) => all.indexOf(s) === i))) {
+                const e = await phase('edits', () => tab.evaluate((index) => window.perf.edits(index), sheet.index));
+                const both = ([call, total]) => `${ms(call)} (${ms(total)} with the frame)`;
+                console.log(`  edits on "${sheet.name}" (${sheet.cells} cells):`);
+                console.log(`    ApplyFormat('bold') on 10 000 cells   ${both(e.format)}; undo ${both(e.formatUndo)}`);
+                console.log(`    ApplyBgColor on 10 000 cells          ${both(e.color)}`);
+                console.log(`    ApplyBorder('all') on 10 000 cells    ${both(e.border)}`);
+                console.log(`    paste of 1 000 x 20 cells             ${both(e.paste)}; undo ${both(e.pasteUndo)}`);
+                console.log(`    one typed number                      ${both(e.type)}; one typed text ${both(e.typeText)}`);
+                console.log(`    Delete on 10 000 cells                ${both(e.clear)}; undo ${both(e.clearUndo)}`);
+            }
+        }
         const target = sheetName ? sheets.find((s) => s.name === sheetName) : sheets.slice().sort((a, b) => b.rows - a.rows)[0];
         if (target && !noScroll) {
           for (const stepSize of steps) {

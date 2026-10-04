@@ -1150,6 +1150,18 @@ let clearSelectionCells (selection: Selection) (model: SpreadsheetModel): Spread
     match selection with
     | SingleCell (row, col) ->
         clearCell { Row = row; Col = col } model
+    | Range (startRow, startCol, endRow, endCol) when float (endRow - startRow + 1) * float (endCol - startCol + 1) <= 50000.0 ->
+        // A block of moderate size: its cells are taken out one by one,
+        // which leaves the rest of a large sheet's map as it is (filtering
+        // the whole map costs seconds on a sheet of several hundred
+        // thousand cells).
+        let mutable cells = model.Cells
+        for row in startRow .. endRow do
+            for col in startCol .. endCol do
+                let addr = { Row = row; Col = col }
+                if Map.containsKey addr cells then cells <- Map.remove addr cells
+        if obj.ReferenceEquals(cells, model.Cells) then model
+        else { model with Cells = cells } |> invalidateFilterProjection
     | Range (startRow, startCol, endRow, endCol) ->
         let mutable changed = false
         let cells =
