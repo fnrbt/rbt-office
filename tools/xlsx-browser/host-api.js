@@ -440,3 +440,107 @@ checks['dispose-releases'] = async () => {
     EventTarget.prototype.addEventListener = add; EventTarget.prototype.removeEventListener = remove;
     return lines;
 };
+
+// ImportXlsx converts sheets to models when they are needed: opening a workbook with a large
+// data sheet does not pay for that sheet until it is shown or read. Formulas into a sheet that
+// is not converted, recalculation, export and the revision behave as with every sheet converted.
+checks['lazy-sheets'] = async () => {
+    const { lines, check, note } = makeLog();
+    const { grid, close } = mountGrid();
+    const eager = mountGrid();
+    try {
+        const importer = await import('/spreadsheet/XlsxImporter.js');
+        const { displayValue, getCellValue, CellAddress } = await import('/spreadsheet/Model.js');
+        const shown = (model, row, col) => displayValue(getCellValue(new CellAddress(row, col), model));
+        const dashboard = await bytesOf('tests/real-world/dashboard-sales-analysis.xlsx');
+        // Every sheet converted up front (what ImportXlsx did before), for the time and for comparison.
+        let t0 = performance.now();
+        eager.grid.InstallImportedWorkbook(await importer.importWorkbookPromise(dashboard.buffer.slice(0)), -1);
+        const eagerTime = performance.now() - t0;
+        t0 = performance.now();
+        await grid.ImportXlsx(dashboard);
+        const lazyTime = performance.now() - t0;
+        note(`dashboard (11 MB): ImportXlsx ${lazyTime.toFixed(0)} ms, every sheet converted up front ${eagerTime.toFixed(0)} ms`);
+        check('opening converts less than everything (faster than converting every sheet)', lazyTime < eagerTime * 0.8, true);
+        const names = grid.GetSheetNames(), data = names.indexOf('Data'), shownIndex = grid.GetActiveSheetIndex();
+        check('only the sheet on display is converted', names.map((_, i) => grid.IsSheetLoaded(i)), names.map((_, i) => i === shownIndex));
+        check('an opened workbook is unmodified', grid.IsModified(), false);
+        const revision = grid.GetRevision();
+        const changes = [];
+        grid.OnChange((change) => changes.push(change.Sheets.join(',')));
+        // A formula into the sheet that is not converted.
+        const dataModel = eager.grid.GetSheets()[data];
+        const row = grid.GetModel().RowCount - 1;
+        grid.EnterText(row, 0, '=Data!A2');
+        check('a formula into an unconverted sheet reads its cell', await valueAt(grid, row, 0), shown(dataModel, 1, 0));
+        check('that converted the sheet', grid.IsSheetLoaded(data), true);
+        check('the edit is one change, of the edited sheet only', changes, [String(shownIndex)]);
+        grid.EnterText(row, 1, '=COUNTA(Data!A1:A200)');
+        check('a range of it', await valueAt(grid, row, 1), '200');
+        grid.Undo(); grid.Undo();
+        check('undone: the revision the workbook was opened with', [grid.GetRevision(), grid.IsModified()], [revision, false]);
+        // Showing a sheet converts it; that is not a change.
+        const other = names.findIndex((_, i) => !grid.IsSheetLoaded(i));
+        if (other >= 0) {
+            changes.length = 0;
+            grid.SwitchSheet(other);
+            check('showing a sheet converts it, without a change to the workbook', [grid.IsSheetLoaded(other), changes, grid.IsModified()], [true, [], false]);
+            grid.SwitchSheet(shownIndex);
+        }
+
+        // The same edits with sheets converted on demand and with all converted: the same workbook.
+        const compare = async (file, edit) => {
+            const bytes = await bytesOf(file);
+            const a = mountGrid(), b = mountGrid();
+            try {
+                await a.grid.ImportXlsx(bytes);
+                b.grid.InstallImportedWorkbook(await importer.importWorkbookPromise(bytes.buffer.slice(0)), -1);
+                const loadedAtOpen = a.grid.GetSheetNames().filter((_, i) => a.grid.IsSheetLoaded(i)).length;
+                edit(a.grid); edit(b.grid);
+                // Saved with what is converted so far, then read back.
+                const saved = await a.grid.ExportXlsx(), savedEager = await b.grid.ExportXlsx();
+                const stillDeferred = a.grid.GetSheetNames().filter((_, i) => !a.grid.IsSheetLoaded(i)).length;
+                const reread = async (data) => { const wb = await importer.importWorkbookPromise(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)); return wb.Sheets.map((sheet) => sheet.Model); };
+                const differences = (left, right) => {
+                    const out = [];
+                    left.forEach((model, index) => {
+                        const rows = Math.max(model.RowCount, right[index].RowCount), cols = Math.max(model.ColCount, right[index].ColCount);
+                        for (let r = 0; r < rows && out.length < 5; r++) for (let c = 0; c < cols && out.length < 5; c++) {
+                            const x = shown(model, r, c), y = shown(right[index], r, c);
+                            if (x !== y) out.push(`sheet ${index} R${r + 1}C${c + 1}: ${x} / ${y}`);
+                        }
+                    });
+                    return out;
+                };
+                const label = file.split('/').pop();
+                check(`${label}: saved files read the same`, differences(await reread(saved), await reread(savedEager)), []);
+                check(`${label}: every sheet shows the same`, differences(a.grid.GetSheets(), b.grid.GetSheets()), []);
+                return { loadedAtOpen, stillDeferred, sheets: a.grid.GetSheetNames().length };
+            } finally { a.close(); b.close(); }
+        };
+        // No edit: nothing but the first sheet is ever converted, and the file is written from the source.
+        let result = await compare('tests/real-world/milk-street-office.xlsx', () => {});
+        check('milk-street unedited: one sheet converted at open, the rest never', [result.loadedAtOpen, result.stillDeferred], [1, result.sheets - 1]);
+        // An edit that formulas of other sheets depend on: they are converted and recalculated.
+        result = await compare('tests/real-world/milk-street-office.xlsx', (g) => { g.EnterText(4, 2, '123456'); g.EnterText(6, 3, '0.5'); g.InsertRows(3, 2); g.Undo(); });
+        result = await compare('tests/real-world/lyric-multifamily.xlsx', (g) => { g.EnterText(5, 2, '77'); g.SelectRange(2, 1, 4, 3); g.ApplyFormat('bold'); g.SwitchSheet(1); g.EnterText(3, 3, '5'); g.DeleteRows(8, 1); });
+        result = await compare('tests/real-world/dcf-stock-analysis.xlsx', (g) => { g.EnterText(3, 1, '9'); });
+        // The dashboard: an edit on the first sheet leaves the data sheet unconverted, and the save does too.
+        const fresh = mountGrid();
+        try {
+            await fresh.grid.ImportXlsx(dashboard);
+            fresh.grid.EnterText(row, 0, 'edited');
+            t0 = performance.now();
+            const bytes = await fresh.grid.ExportXlsx();
+            note(`dashboard: ExportXlsx after an edit ${(performance.now() - t0).toFixed(0)} ms`);
+            check('dashboard: an edit and a save leave the data sheet unconverted', fresh.grid.IsSheetLoaded(data), false);
+            const zip = await window.JSZip.loadAsync(bytes), original = await window.JSZip.loadAsync(dashboard);
+            const sheetXml = async (z) => { const xml = await z.files[`xl/worksheets/sheet${data + 1}.xml`].async('string'); return [(xml.match(/<row /g) ?? []).length, (xml.match(/<c /g) ?? []).length]; };
+            check('and its rows and cells are all written', await sheetXml(zip), await sheetXml(original));
+            const back = await importer.importWorkbookPromise(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+            check('and read back the same', [0, 1, 500, 76929].map((r) => [0, 3, 7].map((c) => shown(back.Sheets[data].Model, r, c))), [0, 1, 500, 76929].map((r) => [0, 3, 7].map((c) => shown(dataModel, r, c))));
+        } finally { fresh.close(); }
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close(); eager.close();
+    return lines;
+};

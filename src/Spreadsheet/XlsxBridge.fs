@@ -1042,6 +1042,92 @@ module Import =
     let importWorkbook (wb: XlsxReader.Workbook) : ImportedWorkbook =
         importWorkbookWith defaultImportOptions wb
 
+    let private readerCellIsFormula (cell: XlsxReader.Cell) =
+        cell.Formula.IsSome || (match cell.Value with XlsxReader.Formula _ -> true | _ -> false)
+    let private readerCellIsUncached (cell: XlsxReader.Cell) =
+        match cell.Value with XlsxReader.Formula _ -> true | _ -> false
+
+    /// Convert a loaded workbook sheet by sheet, when each is first needed:
+    /// `Sheets` holds a stand-in (`SpreadsheetModel.Deferred`) for every sheet
+    /// `convertNow` does not ask for; `Model.resolveSheet` converts it (when
+    /// it is shown, when a formula reads it). The reader's workbook is kept
+    /// as `Source`, and an export writes a sheet that was never converted
+    /// from it. The stand-ins carry the sheet's tables, so structured
+    /// references resolve before their sheet is converted.
+    ///
+    /// A workbook with formulas the file has no values for (one written by a
+    /// library rather than by Excel) is converted whole, as `importWorkbook`
+    /// does: its values come from a calculation over every sheet.
+    let importWorkbookLazy (convertNow: int -> bool) (wb: XlsxReader.Workbook) : ImportedWorkbook =
+        let options = defaultImportOptions
+        let readerSheets = List.toArray wb.Sheets
+        if readerSheets.Length = 0 then failwith "XLSX workbook has no worksheets"
+        let anyUncached =
+            readerSheets |> Array.exists (fun sheet -> sheet.Rows |> List.exists (fun row -> row.Cells |> List.exists readerCellIsUncached))
+        if anyUncached || readerSheets.Length = 1 then importWorkbookWith options wb
+        else
+            let names = readerSheets |> Array.map (fun sheet -> sheet.Name)
+            let sourceId = nextSourceId ()
+            let names' = definedNames wb
+            let lookupName (index: int) (name: string) =
+                let key = name.ToUpperInvariant()
+                Map.tryFind (Some (sheetIdOfIndex index), key) names'
+                |> Option.orElse (Map.tryFind (None, key) names')
+            let baseline : SpreadsheetModel array = Array.zeroCreate readerSheets.Length
+            let standIns : SpreadsheetModel array = Array.zeroCreate readerSheets.Length
+            // A sheet being converted (a list validation of one sheet can read another).
+            let converting = Array.create readerSheets.Length false
+            let rec convert (index: int) : SpreadsheetModel =
+                let deferred = standIns.[index].Deferred.Value
+                match deferred.Loaded with
+                | Some loaded -> loaded
+                | None ->
+                    converting.[index] <- true
+                    let import = importSheet options wb readerSheets.[index]
+                    let own = { import.Model with SourceSheet = Some { Book = sourceId; Sheet = index } }
+                    let lookupSheet (name: string option) =
+                        match name with
+                        | None -> Some own
+                        | Some name ->
+                            names
+                            |> Array.tryFindIndex (fun n -> String.Equals(n, name, StringComparison.OrdinalIgnoreCase))
+                            |> Option.bind (fun other -> if other = index then Some own elif converting.[other] then None else Some (convert other))
+                    let model = applyPendingLists lookupSheet (lookupName index) import.PendingLists own
+                    converting.[index] <- false
+                    deferred.Loaded <- Some model
+                    // What an export compares the sheet with: as it was opened.
+                    baseline.[index] <- model
+                    model
+            let tableColumns =
+                readerSheets
+                |> Array.mapi (fun index sheet ->
+                    let sheetTables, columns = tables wb sheet
+                    let hasFormulas =
+                        not sheet.ConditionalFormats.IsEmpty || not sheet.DataValidations.IsEmpty
+                        || sheet.Rows |> List.exists (fun row -> row.Cells |> List.exists readerCellIsFormula)
+                    standIns.[index] <-
+                        { createEmpty options.MinRows options.MinCols with
+                            Tables = sheetTables
+                            SourceSheet = Some { Book = sourceId; Sheet = index }
+                            Deferred = Some { Loaded = None; Load = (fun () -> convert index); HasFormulas = hasFormulas } }
+                    baseline.[index] <- standIns.[index]
+                    columns)
+                |> Array.fold (fun acc columns -> Map.fold (fun m k v -> Map.add k v m) acc columns) Map.empty
+            let visible = readerSheets |> Array.map (fun sheet -> sheetStateText sheet.State = "visible")
+            let firstVisible = visible |> Array.tryFindIndex id |> Option.defaultValue 0
+            let models = standIns |> Array.mapi (fun index standIn -> if convertNow index then convert index else standIn)
+            let context = buildWorkbookContext models names visible tableColumns names' firstVisible
+            { Sheets =
+                names
+                |> Array.mapi (fun index name ->
+                    ({ Name = name
+                       Model = models.[index]
+                       State = sheetStateText readerSheets.[index].State
+                       Visible = visible.[index] } : ImportedSheet))
+              Context = context
+              Date1904 = wb.Date1904
+              Source = { Id = sourceId; Workbook = wb; Baseline = baseline; BaselineNames = context.Names } }
+
     /// One sheet, with only that sheet as the context of its formulas - use
     /// `importWorkbook` when other sheets or defined names matter.
     let importSheetWith (options: ImportOptions) (wb: XlsxReader.Workbook) (sheet: XlsxReader.Worksheet) : SpreadsheetModel =
@@ -1530,7 +1616,9 @@ module Export =
                         | true, _ -> XlsxReader.SheetVisible
                         | false, XlsxReader.SheetVisible -> XlsxReader.SheetHidden
                         | false, hidden -> hidden
-                    sourcedSheet cache dxfIndex name state outSheet readerSheet before model
+                    // A sheet that was never converted goes back as the file had it.
+                    if isDeferredSheet model then { outSheet with Name = name; State = state }
+                    else sourcedSheet cache dxfIndex name state outSheet readerSheet before model
                 | None ->
                     modelSheet cache dxfIndex name (if visibleAt index then XlsxReader.SheetVisible else XlsxReader.SheetHidden) model)
             |> Array.toList

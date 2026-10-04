@@ -138,7 +138,7 @@ let private formulaCellsWithRectContaining (cell: SheetCell) (engine: CalcEngine
 
 /// Look up a sheet's model within the workbook.
 let private sheetModel (sheetId: SheetId) (workbook: Workbook) : SpreadsheetModel option =
-    Map.tryFind sheetId workbook.Sheets |> Option.map (fun s -> s.Model)
+    Map.tryFind sheetId workbook.Sheets |> Option.map (fun s -> resolveSheet s.Model)
 
 /// Extract the cross-sheet references of a formula AST. Delegates to the
 /// shared implementation in Formula.fs so the two stay in lock-step as the

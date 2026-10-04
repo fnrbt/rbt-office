@@ -1192,7 +1192,7 @@ let referencesQualified (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
         | None -> Some homeSheet
         | Some n -> workbook |> Option.bind (Rbt.Spreadsheet.Workbook.resolveSheetName n)
     let modelOf (sid: Rbt.Spreadsheet.Workbook.SheetId) =
-        workbook |> Option.bind (fun wb -> Map.tryFind sid wb.Sheets) |> Option.map (fun sheet -> sheet.Model)
+        workbook |> Option.bind (fun wb -> Map.tryFind sid wb.Sheets) |> Option.map (fun sheet -> resolveSheet sheet.Model)
     let refs = HashSet<Rbt.Spreadsheet.Workbook.SheetCell>()
     let stack = ResizeArray<struct (Set<string> * Expr)>()
     stack.Add(struct (Set.empty, expr))
@@ -1876,7 +1876,8 @@ let private resolveModel (sheet: string option) (model: SpreadsheetModel)
         | Some wb ->
             Rbt.Spreadsheet.Workbook.resolveSheetName name wb
             |> Option.bind (fun sid -> Map.tryFind sid wb.Sheets)
-            |> Option.map (fun s -> s.Model)
+            // (A sheet of an opened file is converted when a formula first reads it.)
+            |> Option.map (fun s -> resolveSheet s.Model)
 
 /// Read a single cell's value, resolving cross-sheet references.
 let private readCell (r: RefAst) (model: SpreadsheetModel)
@@ -3864,7 +3865,7 @@ let private resolveNameForEval (name: string) (currentSheet: Rbt.Spreadsheet.Wor
             | Some sheetName -> Rbt.Spreadsheet.Workbook.resolveSheetName sheetName wb
             | None -> currentSheet
         match sheetId |> Option.bind (fun id -> Map.tryFind id wb.Sheets) with
-        | Some sheet -> Some (RangeRef (clampOpenRange sheet.Model a b))
+        | Some sheet -> Some (RangeRef (clampOpenRange (resolveSheet sheet.Model) a b))
         | None -> Some (ErrorLit Err.ref)
     | other -> other
 
@@ -4026,7 +4027,7 @@ and expandThreeD (reference: Expr) (ctx: EvalContext) : Expr =
                         | RangeRef (a, b) ->
                             let a = onSheet a sheet.Name
                             let b = onSheet b sheet.Name
-                            yield (if isOpenRange a b then RangeRef (clampOpenRange sheet.Model a b) else RangeRef (a, b))
+                            yield (if isOpenRange a b then RangeRef (clampOpenRange (resolveSheet sheet.Model) a b) else RangeRef (a, b))
                         | _ -> ()
                     | None -> () ]
             Function (unionOperatorName, parts)

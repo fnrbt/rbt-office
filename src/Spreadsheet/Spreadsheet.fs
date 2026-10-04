@@ -480,6 +480,55 @@ type Spreadsheet(container: Element) =
     /// Counts the clipboard events the grid handled (see handleKeyDown).
     let mutable clipboardEvents = 0
 
+    // --- sheets converted on demand ---------------------------------------------
+    // ImportXlsx converts a sheet of the file to a model when it is first
+    // needed: when it is shown, when a formula reads it, and - for a sheet
+    // with formulas, conditional formats or validations of its own - at the
+    // first edit of the workbook (what it shows can depend on the edit, and
+    // an edit of rows / columns has to reach its formulas). Until then
+    // `sheets` holds a stand-in without cells (see Model.resolveSheet), and
+    // ExportXlsx writes the sheet from the file.
+
+    /// Put the sheet at `index` in place of its stand-in (converting it now
+    /// unless a formula already made it). Not a change of the workbook: what
+    /// the revision and the change listeners were last told is updated too.
+    let convertInPlace (index: int) =
+        if index >= 0 && index < sheets.Length then
+            match sheets.[index].Deferred with
+            | Some _ ->
+                let loaded = resolveSheet sheets.[index]
+                sheets.[index] <- loaded
+                if index < revisionSheets.Length && revisionSheets.[index].Deferred.IsSome then revisionSheets.[index] <- loaded
+                if index < notifiedSheets.Length && notifiedSheets.[index].Deferred.IsSome then notifiedSheets.[index] <- loaded
+                // The incremental engine was built without the sheet's cells.
+                calcEngine <- None
+            | None -> ()
+
+    /// Sheets a formula converted while it was evaluated take their place.
+    let adoptConvertedSheets () =
+        for index in 0 .. sheets.Length - 1 do
+            if index <> activeSheetIndex then
+                match sheets.[index].Deferred with
+                | Some deferred when deferred.Loaded.IsSome -> convertInPlace index
+                | _ -> ()
+
+    /// Before the first edit: convert every sheet that has formulas (or
+    /// rules) of its own. Sheets of plain data stay as they are.
+    let mutable formulaSheetsConverted = true
+    let convertFormulaSheets () =
+        if not formulaSheetsConverted then
+            formulaSheetsConverted <- true
+            for index in 0 .. sheets.Length - 1 do
+                if index <> activeSheetIndex then
+                    match sheets.[index].Deferred with
+                    | Some deferred when deferred.HasFormulas -> convertInPlace index
+                    | _ -> ()
+
+    let convertAllSheets () =
+        formulaSheetsConverted <- true
+        for index in 0 .. sheets.Length - 1 do
+            if index <> activeSheetIndex then convertInPlace index
+
     let currentViewport (): SpreadsheetLayout.Viewport = {
         ScrollX = scrollLeft
         ScrollY = scrollTop
@@ -736,14 +785,18 @@ type Spreadsheet(container: Element) =
     /// spilled cells settle), not only the visible one.
     let recalculateFormulas () =
         invalidateCalcEngine()
+        convertFormulaSheets ()
         currentWorkbookSnapshot()
         |> recalculateWorkbook
         |> installWorkbookSnapshot
+        adoptConvertedSheets ()
 
     /// Insert or delete rows/columns on the active sheet as one undoable
     /// step. The edit and its undo both go through the workbook so formulas on
     /// other sheets, defined names and structured-reference tables follow.
     let applyStructureEdit (edit: StructureEdit) (description: string) =
+        // Formulas of every sheet follow the rows / columns that move.
+        convertFormulaSheets ()
         let sheetId = sheetIdForIndex activeSheetIndex
         let edited, undoInfo = Rbt.Spreadsheet.Workbook.applyStructureEdit sheetId edit (currentWorkbookSnapshot())
         installWorkbookSnapshot edited
@@ -804,6 +857,8 @@ type Spreadsheet(container: Element) =
         match model.Clipboard with
         | None -> ()
         | Some clipboardData ->
+            // (A pasted cut re-points the formulas of every sheet.)
+            convertFormulaSheets ()
             let anchors = pasteAnchors model.Selection clipboardData
             let touched =
                 [ for anchor in anchors do
@@ -909,12 +964,15 @@ type Spreadsheet(container: Element) =
         count
 
     let recalculateSingleCellEdit (addr: CellAddress) (cellData: CellData) =
+        convertFormulaSheets ()
         let wb = currentWorkbookSnapshot()
         let sheetCell = { Sheet = wb.ActiveSheet; Cell = addr }
         match SpreadsheetCalc.trySingleCellEdit sheetCell cellData wb calcEngine with
         | SpreadsheetCalc.IncrementalApplied (updatedWorkbook, updatedEngine) ->
             installWorkbookSnapshot updatedWorkbook
             calcEngine <- Some updatedEngine
+            // (Drops the engine when a formula converted a sheet: it was built without it.)
+            adoptConvertedSheets ()
         | SpreadsheetCalc.IncrementalFallback _ ->
             model <- setCell addr cellData model
             recalculateFormulas()
@@ -3887,6 +3945,9 @@ type Spreadsheet(container: Element) =
     /// Every sheet's current model, in sheet order (the active sheet's
     /// included, with its latest edits).
     member _.GetSheets() : SpreadsheetModel array =
+        // (Converts the sheets of an opened file that were not needed so far:
+        // see IsSheetLoaded. GetModel() is the sheet on display alone.)
+        convertAllSheets ()
         Array.init sheets.Length (fun i -> if i = activeSheetIndex then model else sheets.[i])
 
     /// Names of every sheet, in sheet order.
@@ -3946,6 +4007,8 @@ type Spreadsheet(container: Element) =
             // Persist current sheet's mutable state into the array.
             sheets.[activeSheetIndex] <- model
             if activeSheetIndex < sheetAnchors.Length then sheetAnchors.[activeSheetIndex] <- anchorCell
+            // A sheet of an opened file is converted when it is first shown.
+            convertInPlace index
             activeSheetIndex <- index
             model <- sheets.[index]
             anchorCell <- (if index < sheetAnchors.Length then sheetAnchors.[index] else { Row = 0; Col = 0 })
@@ -3995,6 +4058,10 @@ type Spreadsheet(container: Element) =
             if names.Length = newSheets.Length then Array.copy names
             else Array.init newSheets.Length (fun i -> sprintf "Sheet%d" (i + 1))
         let safeIndex = max 0 (min (sheets.Length - 1) activeIndex)
+        // The sheet on display is a converted one; the others may be
+        // stand-ins (ImportXlsx), converted when they are needed.
+        convertInPlace safeIndex
+        formulaSheetsConverted <- not (sheets |> Array.exists isDeferredSheet)
         activeSheetIndex <- safeIndex
         model <- sheets.[safeIndex]
         workbook <-
@@ -4028,13 +4095,22 @@ type Spreadsheet(container: Element) =
         // A workbook that was just opened is the saved one.
         this.MarkSaved()
 
-    /// Open an XLSX file: every sheet is loaded and the first visible one
-    /// shown. `data` is an ArrayBuffer, Uint8Array or Blob. The promise
+    /// Open an XLSX file: every sheet is read and the first visible one
+    /// shown; the other sheets are converted to models as they are needed
+    /// (see IsSheetLoaded). `data` is an ArrayBuffer, Uint8Array or Blob. The promise
     /// rejects when the file cannot be read; the current workbook is then
     /// left untouched.
     member this.ImportXlsx(data: obj): JS.Promise<unit> =
         (loadReaderWorkbook data None).``then``(fun readerWorkbook ->
-            this.InstallImportedWorkbook(Rbt.Spreadsheet.XlsxBridge.Import.importWorkbook readerWorkbook, -1))
+            this.InstallImportedWorkbook(Rbt.Spreadsheet.XlsxBridge.Import.importWorkbookLazy (fun _ -> false) readerWorkbook, -1))
+
+    /// Whether the sheet at `index` has been converted to a model. After
+    /// ImportXlsx only the sheet on display is; the others are converted when
+    /// they are first shown, when a formula reads them, or - those with
+    /// formulas of their own - at the first edit. A sheet that is not
+    /// converted is written by ExportXlsx exactly as the file had it.
+    member _.IsSheetLoaded(index: int) : bool =
+        index >= 0 && index < sheets.Length && (index = activeSheetIndex || not (isDeferredSheet sheets.[index]))
 
     /// Whether the workbook came from an XLSX file whose unmodelled content
     /// (drawings, named styles, theme, kept parts) ExportXlsx will carry over.

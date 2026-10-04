@@ -865,6 +865,23 @@ type SpreadsheetModel = {
     /// cell reference without being modelled (sparklines, x14 conditional
     /// formats) is only written back while this is what it was at import.
     StructureVersion: int
+
+    /// Set on the stand-in for a sheet of an opened file that has not been
+    /// converted to a model yet (a sheet is converted when it is first shown,
+    /// or when a formula reads it). The stand-in has no cells; `resolveSheet`
+    /// gives the sheet itself. None for every other model.
+    Deferred: DeferredSheet option
+}
+
+/// A sheet of an opened file, converted on demand (see `SpreadsheetModel.Deferred`).
+and DeferredSheet = {
+    /// The converted sheet, once something asked for it.
+    mutable Loaded: SpreadsheetModel option
+    /// Convert the sheet (it is converted once; this then gives `Loaded`).
+    Load: unit -> SpreadsheetModel
+    /// The sheet has formulas, conditional formats or validations: what it
+    /// shows can depend on other sheets, and their edits on it.
+    HasFormulas: bool
 }
 
 /// Command for undo/redo (must come after SpreadsheetModel)
@@ -928,7 +945,24 @@ let createEmpty rowCount colCount = {
     KeptRanges = []
     SourceSheet = None
     StructureVersion = 0
+    Deferred = None
 }
+
+/// The model of a sheet: for the stand-in of a sheet that has not been
+/// converted yet, the sheet itself (converting it now), else the model.
+let resolveSheet (model: SpreadsheetModel) : SpreadsheetModel =
+    match model.Deferred with
+    | None -> model
+    | Some deferred ->
+        match deferred.Loaded with
+        | Some loaded -> loaded
+        | None -> deferred.Load ()
+
+/// Whether the model is the stand-in of a sheet that is not converted yet.
+let isDeferredSheet (model: SpreadsheetModel) : bool =
+    match model.Deferred with
+    | Some deferred -> deferred.Loaded.IsNone
+    | None -> false
 
 /// Convert column index to letter (0="A", 25="Z", 26="AA")
 let rec columnToLetter (col: int): string =
