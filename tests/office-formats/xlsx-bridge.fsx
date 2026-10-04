@@ -198,6 +198,50 @@ let bigEndian (at: int) = (int logoBytes.[at] <<< 24) ||| (int logoBytes.[at + 1
 eq "fixture picture: a PNG with a header and an end"
     (logoBytes.[0..7], System.Text.Encoding.ASCII.GetString(logoBytes, 12, 4), bigEndian 16, bigEndian 20, System.Text.Encoding.ASCII.GetString(logoBytes, logoBytes.Length - 8, 4))
     ([| 137uy; 80uy; 78uy; 71uy; 13uy; 10uy; 26uy; 10uy |], "IHDR", 24, 16, "IEND")
+
+// ---- the PNG decoder of the native hosts ---------------------------------------
+module Png = Rbt.Spreadsheet.Png
+let decodedLogo = Png.tryDecode logoBytes
+let pixelOf (image: Png.DecodedImage) x y = let at = (y * image.Width + x) * 4 in int image.Rgba.[at], int image.Rgba.[at + 1], int image.Rgba.[at + 2], int image.Rgba.[at + 3]
+eq "png: the fixture picture decodes" (decodedLogo |> Option.map (fun image -> image.Width, image.Height, image.Rgba.Length)) (Some (24, 16, 24 * 16 * 4))
+eq "png: its border, field and diagonal"
+    (decodedLogo |> Option.map (fun image -> pixelOf image 0 0, pixelOf image 20 3, pixelOf image 12 8))
+    (Some ((255, 255, 255, 255), (32, 96, 200, 255), (240, 140, 20, 255)))
+eq "png: junk behind a PNG signature is not a picture" (Png.tryDecode [| 137uy; 80uy; 78uy; 71uy; 1uy; 2uy; 3uy; 250uy |]) None
+eq "png: nothing" (Png.tryDecode [||], Png.tryDecode null) (None, None)
+/// A PNG of the given colour type and bit depth from unfiltered rows (each row given without its filter byte).
+let makePng (width: int) (height: int) (bitDepth: int) (colorType: int) (filter: byte) (rows: byte[] list) (extra: (string * byte[]) list) =
+    let chunk (kind: string) (body: byte[]) =
+        let length = [| byte (body.Length >>> 24); byte (body.Length >>> 16); byte (body.Length >>> 8); byte body.Length |]
+        Array.concat [ length; System.Text.Encoding.ASCII.GetBytes kind; body; [| 0uy; 0uy; 0uy; 0uy |] ]
+    let be (value: int) = [| byte (value >>> 24); byte (value >>> 16); byte (value >>> 8); byte value |]
+    let raw = rows |> List.map (fun row -> Array.append [| filter |] row) |> Array.concat
+    use packed = new System.IO.MemoryStream()
+    (use zlib = new System.IO.Compression.ZLibStream(packed, System.IO.Compression.CompressionLevel.Optimal, true)
+     zlib.Write(raw, 0, raw.Length))
+    Array.concat
+        [ yield [| 137uy; 80uy; 78uy; 71uy; 13uy; 10uy; 26uy; 10uy |]
+          yield chunk "IHDR" (Array.concat [ be width; be height; [| byte bitDepth; byte colorType; 0uy; 0uy; 0uy |] ])
+          for kind, body in extra do yield chunk kind body
+          yield chunk "IDAT" (packed.ToArray())
+          yield chunk "IEND" [||] ]
+let pixelsOf (png: byte[]) = Png.tryDecode png |> Option.map (fun image -> [ for y in 0 .. image.Height - 1 do for x in 0 .. image.Width - 1 -> pixelOf image x y ])
+eq "png: RGBA" (pixelsOf (makePng 2 1 8 6 0uy [ [| 10uy; 20uy; 30uy; 255uy; 200uy; 100uy; 50uy; 128uy |] ] [])) (Some [ (10, 20, 30, 255); (200, 100, 50, 128) ])
+eq "png: greyscale with alpha" (pixelsOf (makePng 2 1 8 4 0uy [ [| 90uy; 255uy; 200uy; 0uy |] ] [])) (Some [ (90, 90, 90, 255); (200, 200, 200, 0) ])
+eq "png: a palette with transparency"
+    (pixelsOf (makePng 3 1 8 3 0uy [ [| 0uy; 1uy; 2uy |] ] [ "PLTE", [| 255uy; 0uy; 0uy; 0uy; 255uy; 0uy; 0uy; 0uy; 255uy |]; "tRNS", [| 255uy; 0uy |] ]))
+    (Some [ (255, 0, 0, 255); (0, 255, 0, 0); (0, 0, 255, 255) ])
+eq "png: a 1-bit palette" (pixelsOf (makePng 4 1 1 3 0uy [ [| 0b10100000uy |] ] [ "PLTE", [| 0uy; 0uy; 0uy; 255uy; 255uy; 255uy |] ])) (Some [ (255, 255, 255, 255); (0, 0, 0, 255); (255, 255, 255, 255); (0, 0, 0, 255) ])
+eq "png: 16 bits per channel" (pixelsOf (makePng 1 1 16 2 0uy [ [| 0x12uy; 0x34uy; 0x56uy; 0x78uy; 0x9Auy; 0xBCuy |] ] [])) (Some [ (0x12, 0x56, 0x9A, 255) ])
+// Row filters: the same two rows written with "up" for the second and "sub" within the rows.
+eq "png: the up filter" (pixelsOf (makePng 1 2 8 0 2uy [ [| 100uy |]; [| 5uy |] ] [])) (Some [ (100, 100, 100, 255); (105, 105, 105, 255) ])
+eq "png: the sub filter" (pixelsOf (makePng 3 1 8 0 1uy [ [| 10uy; 5uy; 5uy |] ] [])) (Some [ (10, 10, 10, 255); (15, 15, 15, 255); (20, 20, 20, 255) ])
+eq "png: the average and Paeth filters decode to bytes"
+    (pixelsOf (makePng 2 1 8 0 3uy [ [| 40uy; 10uy |] ] []), pixelsOf (makePng 2 1 8 0 4uy [ [| 40uy; 10uy |] ] []))
+    (Some [ (40, 40, 40, 255); (30, 30, 30, 255) ], Some [ (40, 40, 40, 255); (50, 50, 50, 255) ])
+eq "png: premultiplied BGRA for a framebuffer"
+    (Png.tryDecode (makePng 2 1 8 6 0uy [ [| 10uy; 20uy; 30uy; 255uy; 200uy; 100uy; 50uy; 128uy |] ] []) |> Option.map Png.toPremultipliedBgra)
+    (Some [| 0xFF0A141Eu; (128u <<< 24) ||| (100u <<< 16) ||| (50u <<< 8) ||| 25u |])
 let extrasModel = extrasImported.Sheets.[0].Model
 let describeDrawing (drawing: SheetDrawing) =
     (match drawing.Content with Picture (contentType, _, data) -> "picture " + contentType + " " + string data.Length | KeptObject (kind, _) -> kind),

@@ -16,6 +16,7 @@
     <Compile Include="ConditionalFormatting.fs" />
     <Compile Include="Layout.fs" />
     <Compile Include="Paint.fs" />
+    <Compile Include="Png.fs" />
     <Compile Include="XlsxBridge.fs" />
     <Compile Include="XlsxImporter.fs" />
     <Compile Include="Tabs.fs" />

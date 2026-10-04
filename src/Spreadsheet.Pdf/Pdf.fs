@@ -226,6 +226,10 @@ type private Placement = {
     /// When true, every fill becomes white and every stroke / text becomes
     /// black. Matches Excel's `<pageSetup blackAndWhite="1"/>` print mode.
     BlackAndWhite: bool
+    /// The name of a picture's image object in the document (embedding it at
+    /// first use), or None for a picture that cannot be embedded: a labelled
+    /// frame is drawn for that one.
+    ImageName: PaintImage -> string option
 }
 
 /// usWinAscent / usWinDescent from the font's OS/2 table, in font units.
@@ -493,9 +497,18 @@ let rec private translateItem (options: RenderOptions) (faceByName: Map<string, 
         | _ -> []
     match item with
     | (VecPath _ | VecGroup _) -> vec (1.0, 0.0, 0.0, 1.0, 0.0, 0.0) item
-    // Pictures are not embedded in the PDF yet: a labelled frame stands for them.
+    // A picture (PNG or JPEG) is embedded and stretched over its rectangle; a
+    // labelled frame stands for one in a format the PDF cannot hold.
     | DrawImage (rect, image) ->
-        drawingFrameItems rect image.Label |> List.collect (translateItem options faceByName faceResource faceRemap placement)
+        match (if rect.Width > 0.0 && rect.Height > 0.0 then placement.ImageName image else None) with
+        | Some name ->
+            [ PdfDraw.SaveState
+              // An image fills the unit square: scale it to the rectangle, its lower-left corner at the rectangle's.
+              PdfDraw.Transform (sz rect.Width, 0.0, 0.0, sz rect.Height, xPt rect.X, yPdf (rect.Y + rect.Height))
+              PdfDraw.DrawXObject name
+              PdfDraw.RestoreState ]
+        | None ->
+            drawingFrameItems rect image.Label |> List.collect (translateItem options faceByName faceResource faceRemap placement)
     | FillRect (rect, color) ->
         [ PdfDraw.SetFillColor (parseHexColor (bwFill placement.BlackAndWhite color))
           PdfDraw.Rect (xPt rect.X, yPdf (rect.Y + rect.Height), sz rect.Width, sz rect.Height)
@@ -545,6 +558,44 @@ let private appendTranslatedItem (options: RenderOptions) (faceByName: Map<strin
     | _ ->
         for op in translateItem options faceByName faceResource faceRemap placement item do
             ops.Add op
+
+/// The pictures embedded in a PDF document: each picture's data becomes one
+/// image object, whatever the number of pages it is drawn on.
+type private EmbeddedImages(builder: PdfDoc.DocBuilder) =
+    let names = System.Collections.Generic.Dictionary<byte[], string option>(HashIdentity.Reference)
+    let onPage = System.Collections.Generic.HashSet<string>()
+    /// The image object of a picture (PNG and JPEG can be embedded).
+    member _.NameOf (image: PaintImage) : string option =
+        let name =
+            match names.TryGetValue image.Data with
+            | true, known -> known
+            | false, _ ->
+                let isPng = image.Data.Length > 8 && image.Data.[0] = 0x89uy && image.Data.[1] = 0x50uy && image.Data.[2] = 0x4Euy && image.Data.[3] = 0x47uy
+                let isJpeg = image.Data.Length > 3 && image.Data.[0] = 0xFFuy && image.Data.[1] = 0xD8uy
+                let parsed =
+                    try
+                        // (Result.Error: the sheet model has an `Error` case of its own in scope.)
+                        if isPng then (match Rbt.Pdf.Image.fromPng image.Data with Result.Ok info -> Some info | Result.Error _ -> None)
+                        elif isJpeg then (match Rbt.Pdf.Image.fromJpeg image.Data with Result.Ok info -> Some info | Result.Error _ -> None)
+                        else None
+                    with _ -> None
+                let made =
+                    parsed
+                    |> Option.map (fun info ->
+                        let name = sprintf "Im%d" (names.Count + 1)
+                        builder.Images <- builder.Images |> Map.add name (Rbt.Pdf.Image.toXObject builder.Doc info)
+                        name)
+                names.[image.Data] <- made
+                made
+        match name with
+        | Some used -> onPage.Add used |> ignore
+        | None -> ()
+        name
+    /// The images drawn since the last call: the page's image resources.
+    member _.TakePageNames () : string list =
+        let used = List.ofSeq onPage
+        onPage.Clear()
+        used
 
 type private AxisGeometry = {
     Size: int -> float
@@ -1241,6 +1292,7 @@ let toBytesWith (options: RenderOptions) (model: SpreadsheetModel)
         |> withPrintColumnWidths maxPrintCol
         |> withPrintRowHeights maxPrintRow
     let builder = PdfDoc.create ()
+    let imageNames = EmbeddedImages builder
 
     let parsed = System.Collections.Generic.Dictionary<string, PdfFont.TrueTypeFont>()
     let failedFaces = System.Collections.Generic.HashSet<string>()
@@ -1697,7 +1749,8 @@ let toBytesWith (options: RenderOptions) (model: SpreadsheetModel)
               TopPtOffset = topPtOffset
               PageHeightPt = pageHeightPt
               Scale = pagination.Scale
-              BlackAndWhite = ps.BlackAndWhite }
+              BlackAndWhite = ps.BlackAndWhite
+              ImageName = imageNames.NameOf }
         let ops = System.Collections.Generic.List<PdfDraw.DrawOp>()
         let sz v = v * pxToPt * placement.Scale
         let xPt x = placement.LeftPtOffset + sz x
@@ -1739,7 +1792,7 @@ let toBytesWith (options: RenderOptions) (model: SpreadsheetModel)
         | Some section ->
             appendHeaderFooterOps ops section footerBaselineYPt
         | None -> ()
-        PdfDoc.addPage builder (pageWidthPt, pageHeightPt) loadedFaceNames [] (resizeArrayToList ops) |> ignore
+        PdfDoc.addPage builder (pageWidthPt, pageHeightPt) loadedFaceNames (imageNames.TakePageNames ()) (resizeArrayToList ops) |> ignore
 
     PdfDoc.toBytes builder
 
@@ -1751,15 +1804,16 @@ let toBytes (options: RenderOptions) (model: SpreadsheetModel) : byte[] =
 /// PDF — proves the VecPath/VecGroup primitives through the PDF path.
 let sceneToBytes (widthPx: float) (heightPx: float) (items: PaintItem list) : byte[] =
     let builder = PdfDoc.create ()
+    let imageNames = EmbeddedImages builder
     let pageWidthPt = widthPx * pxToPt
     let pageHeightPt = heightPx * pxToPt
     let placement =
         { LeftPtOffset = 0.0; TopPtOffset = 0.0; PageHeightPt = pageHeightPt
-          Scale = 1.0; BlackAndWhite = false }
+          Scale = 1.0; BlackAndWhite = false; ImageName = imageNames.NameOf }
     let opts = { DefaultFontFamily = "Calibri"; Fonts = []; CjkFallback = []; SheetName = ""; FileName = "" }
     let ops = System.Collections.Generic.List<PdfDraw.DrawOp>()
     for item in items do
         for op in translateItem opts Map.empty Map.empty Map.empty placement item do
             ops.Add op
-    PdfDoc.addPage builder (pageWidthPt, pageHeightPt) [] [] (resizeArrayToList ops) |> ignore
+    PdfDoc.addPage builder (pageWidthPt, pageHeightPt) [] (imageNames.TakePageNames ()) (resizeArrayToList ops) |> ignore
     PdfDoc.toBytes builder

@@ -465,6 +465,18 @@ let private toRendererCommands (text: PaintText) =
         let xform = Matrix3x2.multiply rot (Matrix3x2.translate shiftX shiftY)
         [ Cmd.Group(xform, 1.0, inner) ]
 
+/// The decoded pixels of a picture, kept with its data (a picture is drawn at every paint).
+let private decodedPictures = System.Runtime.CompilerServices.ConditionalWeakTable<byte[], Rbt.Renderer.Types.Framebuffer option ref>()
+
+let private pictureFramebuffer (data: byte[]) : Rbt.Renderer.Types.Framebuffer option =
+    if isNull data then None
+    else
+        let entry =
+            decodedPictures.GetValue(data, fun bytes ->
+                ref (Rbt.Spreadsheet.Png.tryDecode bytes
+                     |> Option.map (fun image -> Rbt.Renderer.Types.Framebuffer.ofArray (Rbt.Spreadsheet.Png.toPremultipliedBgra image) image.Width image.Height)))
+        entry.Value
+
 let rec private appendPaintItem (commands: System.Collections.Generic.List<Cmd>) item =
     match item with
     | FillRect (rect, color) ->
@@ -532,10 +544,15 @@ let rec private appendPaintItem (commands: System.Collections.Generic.List<Cmd>)
         for child in children do
             appendPaintItem childCommands child
         commands.Add(Cmd.Group(xform, 1.0, resizeArrayToList childCommands))
-    // Pictures are not decoded by this renderer yet: a labelled frame stands for them.
+    // A picture is drawn from its pixels (PNG); a labelled frame stands for a
+    // picture in a format that is not decoded here, as it does for a chart.
     | DrawImage (rect, image) ->
-        for frameItem in drawingFrameItems rect image.Label do
-            appendPaintItem commands frameItem
+        match pictureFramebuffer image.Data with
+        | Some fb when rect.Width > 0.0 && rect.Height > 0.0 ->
+            commands.Add(Cmd.DrawImage(fb, Rbt.Renderer.Types.rect 0.0 0.0 (float fb.W) (float fb.H), Rbt.Renderer.Types.rect rect.X rect.Y rect.Width rect.Height, true))
+        | _ ->
+            for frameItem in drawingFrameItems rect image.Label do
+                appendPaintItem commands frameItem
 
 let private renderPaintItem item =
     let commands = System.Collections.Generic.List<Cmd>()

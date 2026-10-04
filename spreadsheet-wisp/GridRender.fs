@@ -188,6 +188,18 @@ let private textCommands (text: P.PaintText) =
                     (Matrix3x2.multiply (Matrix3x2.rotate (degrees * Math.PI / 180.0)) (Matrix3x2.translate -x -y))
             [ Cmd.Group(m, 1.0, cmds) ]
 
+/// The decoded pixels of a picture, kept with its data (a picture is drawn at every paint).
+let private decodedPictures = System.Runtime.CompilerServices.ConditionalWeakTable<byte[], Framebuffer option ref>()
+
+let private pictureFramebuffer (data: byte[]) : Framebuffer option =
+    if isNull data then None
+    else
+        let entry =
+            decodedPictures.GetValue(data, fun bytes ->
+                ref (Rbt.Spreadsheet.Png.tryDecode bytes
+                     |> Option.map (fun image -> Framebuffer.ofArray (Rbt.Spreadsheet.Png.toPremultipliedBgra image) image.Width image.Height)))
+        entry.Value
+
 let rec private itemCommands (item: P.PaintItem) =
     match item with
     | P.FillRect (r, color) ->
@@ -214,8 +226,13 @@ let rec private itemCommands (item: P.PaintItem) =
               yield! placeholder { X = 0.0; Y = 0.0; Width = 24.0; Height = 24.0 } ]
     | P.VecGroup ((a, b, c, d, e, f), children) ->
         [ Cmd.Group({ M11 = a; M12 = b; M21 = c; M22 = d; DX = e; DY = f }, 1.0, children |> List.collect itemCommands) ]
-    // Pictures are not decoded by this renderer yet: a labelled frame stands for them.
-    | P.DrawImage (r, image) -> P.drawingFrameItems r image.Label |> List.collect itemCommands
+    // A picture is drawn from its pixels (PNG); a labelled frame stands for a
+    // picture in a format that is not decoded here, as it does for a chart.
+    | P.DrawImage (r, image) ->
+        match pictureFramebuffer image.Data with
+        | Some fb when r.Width > 0.0 && r.Height > 0.0 ->
+            [ Cmd.DrawImage(fb, rect 0.0 0.0 (float fb.W) (float fb.H), rect r.X r.Y r.Width r.Height, true) ]
+        | _ -> P.drawingFrameItems r image.Label |> List.collect itemCommands
 
 let private clipCommands (clip: L.Rect) (cmds: Cmd list) =
     if clip.Width <= 0.0 || clip.Height <= 0.0 then []
