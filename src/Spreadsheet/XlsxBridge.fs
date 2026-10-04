@@ -369,7 +369,7 @@ module Import =
     let private border (side: XlsxReader.CellBorderSide option) : BorderStyle option =
         side
         |> Option.bind (fun b ->
-            if String.IsNullOrWhiteSpace b.Style then None
+            if String.IsNullOrWhiteSpace b.Style || b.Style = "none" then None
             else Some { Style = b.Style; Color = b.Color |> Option.bind hexColor })
 
     let private format (s: XlsxReader.CellStyle) : CellFormat =

@@ -147,7 +147,7 @@ const describeWorkbook = (wb) => excel.sheetNames(wb).map((name, index) => {
     };
 });
 const names = (wb) => excel.workbookInfo(wb).definedNames.map((n) => [n.name.toUpperCase(), n.refersTo, n.localSheetId ?? null]).sort();
-const partsOf = async (bytes, pattern) => {
+export const partsOf = async (bytes, pattern) => {
     const zip = await window.JSZip.loadAsync(bytes), out = {};
     for (const entry of Object.keys(zip.files)) if (pattern.test(entry) && !zip.files[entry].dir) out[entry] = await zip.files[entry].async('base64');
     return out;
@@ -345,7 +345,7 @@ checks['export-edited'] = async () => {
 // and content types that make them part of the workbook; a pivot table follows inserted
 // rows; sheets keep that through a rename / reorder / added sheet.
 const CARRIED_PARTS = /^xl\/(pivotTables|pivotCache|slicers|slicerCaches|externalLinks)\//;
-const textParts = async (bytes, pattern) => {
+export const textParts = async (bytes, pattern) => {
     const zip = await window.JSZip.loadAsync(bytes), out = {};
     for (const entry of Object.keys(zip.files)) if (pattern.test(entry) && !zip.files[entry].dir) out[entry] = await zip.files[entry].async('string');
     return out;
@@ -639,9 +639,9 @@ checks['edit-without-dependents'] = async () => {
 
 // ---- the grid itself: scrolling, selection, keyboard, clipboard, formatting, read-only ----
 
-const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-const parts = (host) => ({ scroller: host.querySelector('.spreadsheet-container'), content: host.querySelector('.spreadsheet-content') });
-const press = (host, key, options = {}) => parts(host).content.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...options }));
+export const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+export const parts = (host) => ({ scroller: host.querySelector('.spreadsheet-container'), content: host.querySelector('.spreadsheet-content') });
+export const press = (host, key, options = {}) => parts(host).content.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...options }));
 // The cell node at a point of the host (CSS pixels from its top-left corner), as [row, col], or what else is there.
 const cellAtPoint = (host, x, y) => {
     const box = host.getBoundingClientRect();
@@ -665,11 +665,11 @@ const mouse = async (grid, host, type, row, col, options = {}) => {
     target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, clientX: box.left + x, clientY: box.top + y, button: 0, ...options }));
 };
 const withFields = (record, fields) => Object.assign(Object.create(Object.getPrototypeOf(record)), record, fields);
-const valueAt = async (grid, row, col) => {
+export const valueAt = async (grid, row, col) => {
     const { getCellValue, CellAddress, displayValue } = await import('/spreadsheet/Model.js');
     return displayValue(getCellValue(new CellAddress(row, col), grid.GetModel()));
 };
-const formatAt = async (grid, row, col) => {
+export const formatAt = async (grid, row, col) => {
     const { getCell, CellAddress, defaultFormat } = await import('/spreadsheet/Model.js');
     return getCell(new CellAddress(row, col), grid.GetModel())?.Format ?? defaultFormat;
 };

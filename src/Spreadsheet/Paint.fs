@@ -295,7 +295,7 @@ let private borderStrokeWidth (style: string) : float =
     match style.ToLowerInvariant() with
     | "hair" -> 0.5
     | "thin" | "dashed" | "dotted" | "dashdot" | "dashdotdot" -> 1.0
-    | "medium" | "mediumdashed" | "mediumdotted" | "mediumdashdot" | "mediumdashdotdot" -> 1.75
+    | "medium" | "mediumdashed" | "mediumdotted" | "mediumdashdot" | "mediumdashdotdot" -> 2.0
     | "thick" -> 3.0
     | "double" -> 2.0
     | "slantdashdot" -> 1.5

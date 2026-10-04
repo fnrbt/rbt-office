@@ -1173,7 +1173,12 @@ type Spreadsheet(container: Element) =
                               if format.Underline then yield "text-decoration:underline"
                               match format.TextColor with Some color -> yield "color:" + color | None -> ()
                               match format.BgColor with Some color -> yield "background-color:" + color | None -> ()
-                              match format.HorizontalAlign with Some align -> yield "text-align:" + align | None -> () ]
+                              match format.HorizontalAlign with Some align -> yield "text-align:" + align | None -> ()
+                              for name, border in [ "border-top", format.BorderTop; "border-right", format.BorderRight
+                                                    "border-bottom", format.BorderBottom; "border-left", format.BorderLeft ] do
+                                  match border with
+                                  | Some border when (borderCssParts border.Style).IsSome -> yield name + ":" + borderCss border
+                                  | _ -> () ]
                         if not styles.IsEmpty then sb.Append(" style=\"").Append(htmlEscape (String.concat ";" styles)).Append('"') |> ignore
                     | None -> ()
                     sb.Append('>').Append((htmlEscape (cellText data)).Replace("\n", "<br>")).Append("</td>") |> ignore
@@ -1344,17 +1349,18 @@ type Spreadsheet(container: Element) =
     /// Apply `update` to the format of every cell of the selection as one
     /// undoable step. A selection too large to give every cell a format of
     /// its own (whole rows or columns) changes the cells that exist.
-    let formatSelection (description: string) (update: CellFormat -> CellFormat) : bool =
+    let formatSelectionAt (description: string) (updateAt: int * int * int * int -> CellAddress -> CellFormat -> CellFormat) : bool =
         let top, left, bottom, right = selectionBounds()
         let bottom = min bottom (model.RowCount - 1)
         let right = min right (model.ColCount - 1)
+        let block = top, left, bottom, right
         let area = float (bottom - top + 1) * float (right - left + 1)
         let oldCells = model.Cells
         let apply (m: SpreadsheetModel) : SpreadsheetModel =
             let mutable cells = m.Cells
             let change (addr: CellAddress) (existing: CellData option) =
                 let data = existing |> Option.defaultValue { Value = CellValue.Empty; Format = defaultFormat; Comment = None }
-                let format = update data.Format
+                let format = updateAt block addr data.Format
                 if not (obj.ReferenceEquals(format, data.Format)) && format <> data.Format then
                     cells <- Map.add addr { data with Format = format } cells
             if area <= 20000.0 then
@@ -1374,6 +1380,9 @@ type Spreadsheet(container: Element) =
                                    Redo = apply
                                    Description = description } model
             true
+
+    let formatSelection (description: string) (update: CellFormat -> CellFormat) : bool =
+        formatSelectionAt description (fun _ _ format -> update format)
 
     /// The format a toggle (bold, italic ...) goes by: the active cell's.
     let activeFormat () : CellFormat =
@@ -1750,15 +1759,27 @@ type Spreadsheet(container: Element) =
             if format.WrapText then
                 add "white-space" "normal"
                 add "word-wrap" "break-word"
-            let side (name: string) (border: BorderStyle option) =
-                match border with
-                | Some border -> add name (border.Style + " " + defaultArg border.Color "#000000")
-                | None -> ()
-            side "border-top" format.BorderTop
-            side "border-bottom" format.BorderBottom
-            side "border-left" format.BorderLeft
-            side "border-right" format.BorderRight
         | None -> ()
+        // Borders. A merged cell is drawn as its first cell over its whole
+        // span: its right and bottom edges are those of its last column / row.
+        let side (name: string) (border: BorderStyle option) =
+            match border with
+            | Some border when (borderCssParts border.Style).IsSome -> add name (borderCss border)
+            | _ -> ()
+        let formatAt (r: int) (c: int) =
+            if r = row && c = col then cellData |> Option.map (fun data -> data.Format)
+            else getCell { Row = r; Col = c } model |> Option.map (fun data -> data.Format)
+        let own = formatAt row col
+        let endRow, endCol =
+            if model.MergedCells.IsEmpty then row, col
+            else
+                match findMergedCell addr model with
+                | Some merge -> merge.EndRow, merge.EndCol
+                | None -> row, col
+        side "border-top" (own |> Option.bind (fun format -> format.BorderTop))
+        side "border-left" (own |> Option.bind (fun format -> format.BorderLeft))
+        side "border-bottom" (formatAt endRow col |> Option.bind (fun format -> format.BorderBottom))
+        side "border-right" (formatAt row endCol |> Option.bind (fun format -> format.BorderRight))
         // Conditional formatting (highest priority): the merged effect of
         // every matching rule that covers the cell.
         let mutable icon : (int * int) option = None
@@ -1954,9 +1975,12 @@ type Spreadsheet(container: Element) =
                 let mutable c = col
                 let mutable w = colPrefix.[col + 1] - colPrefix.[col]
                 let mutable h = rowPrefix.[row + 1] - rowPrefix.[row]
+                // A merged cell's look also depends on its other cells (their borders).
+                let mutable merged = false
                 if hasMerges then
                     match findMergedCell { Row = row; Col = col } model with
                     | Some merge ->
+                        merged <- true
                         // A merged cell is drawn once, as its first cell, over its whole span.
                         r <- max 0 (min (rowCount - 1) merge.StartRow)
                         c <- max 0 (min (colCount - 1) merge.StartCol)
@@ -1976,7 +2000,7 @@ type Spreadsheet(container: Element) =
                             if not (placed && sameCells) then
                                 let data = getCell { Row = r; Col = c } model
                                 let dataRef = match data with Some data -> box data | None -> null
-                                if not placed || not (obj.ReferenceEquals(node.Data, dataRef)) then
+                                if not placed || merged || not (obj.ReferenceEquals(node.Data, dataRef)) then
                                     drawCell layer node r c x y w h pane data tables
                     | false, _ ->
                         let node =
@@ -4118,24 +4142,17 @@ type Spreadsheet(container: Element) =
         if formatSelection "Number format" (fun existing -> { existing with NumberFormat = Some format }) then
             render()
 
-    /// Apply a border to every cell of the selection (one undo step):
-    /// side is "top" | "bottom" | "left" | "right" | "all".
+    /// Apply a border to the selection, as one change and one undo step.
+    /// `side`: "top" | "bottom" | "left" | "right" | "all" (that side of
+    /// every cell), "outside" (the outline of the selection only), "inside"
+    /// (the edges between its cells), "none" (clear every border).
+    /// `style`: an Excel border style - "thin" | "medium" | "thick" |
+    /// "dashed" | "dotted" | "double" | "hair" | "mediumDashed" | "dashDot" |
+    /// "mediumDashDot" | "dashDotDot" | "mediumDashDotDot" | "slantDashDot" -
+    /// or "none" to clear the sides named. `color`: "#RRGGBB".
     member _.ApplyBorder(side: string, style: string, color: string) =
-        let border = { Style = style; Color = Some color }
-        let update (format: CellFormat) =
-            match side with
-            | "top" -> { format with BorderTop = Some border }
-            | "bottom" -> { format with BorderBottom = Some border }
-            | "left" -> { format with BorderLeft = Some border }
-            | "right" -> { format with BorderRight = Some border }
-            | "all" ->
-                { format with
-                    BorderTop = Some border
-                    BorderBottom = Some border
-                    BorderLeft = Some border
-                    BorderRight = Some border }
-            | _ -> format
-        if formatSelection "Border" update then render()
+        let color = if System.String.IsNullOrEmpty color then "#000000" else color
+        if formatSelectionAt "Border" (fun block addr format -> borderFormatInBlock block side style color addr.Row addr.Col format) then render()
 
     /// Merge cells in a range (one undo step).
     member _.MergeCells(startRow: int, startCol: int, endRow: int, endCol: int) =

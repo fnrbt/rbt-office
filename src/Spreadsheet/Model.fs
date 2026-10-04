@@ -32,6 +32,32 @@ type BorderStyle = {
     Color: string option
 }
 
+/// How an Excel border style is drawn with CSS: (width in px, CSS line
+/// style), or None for no border ("none", ""). Excel's styles have no exact
+/// CSS twins; each gets the nearest one of the same weight (thin 1px,
+/// medium 2px, thick 3px; `double` needs 3px for its two rules and the gap).
+let borderCssParts (style: string) : (int * string) option =
+    match (if isNull style then "" else style).ToLowerInvariant() with
+    | "" | "none" -> None
+    | "thin" -> Some (1, "solid")
+    | "medium" -> Some (2, "solid")
+    | "thick" -> Some (3, "solid")
+    | "double" -> Some (3, "double")
+    | "hair" | "dotted" -> Some (1, "dotted")
+    | "dashed" | "dashdot" | "dashdotdot" -> Some (1, "dashed")
+    | "mediumdotted" -> Some (2, "dotted")
+    | "mediumdashed" | "mediumdashdot" | "mediumdashdotdot" | "slantdashdot" -> Some (2, "dashed")
+    | "solid" -> Some (1, "solid")   // CSS names, as older callers passed them
+    | _ -> Some (1, "solid")
+
+/// The value of a CSS `border-<side>` declaration for a cell border:
+/// "1px solid #000000" - always with a width and a line style, without
+/// which CSS draws nothing.
+let borderCss (border: BorderStyle) : string =
+    match borderCssParts border.Style with
+    | Some (width, line) -> string width + "px " + line + " " + (border.Color |> Option.defaultValue "#000000")
+    | None -> "none"
+
 /// Cell formatting
 type CellFormat = {
     Bold: bool
@@ -1027,6 +1053,40 @@ let private applyBorderToFormat side border (format: CellFormat) =
             BorderBottom = Some border
             BorderLeft = Some border
             BorderRight = Some border }
+    | _ -> format
+
+/// What `ApplyBorder(side, style, color)` does to the format of the cell
+/// (row, col) of the selected block (top, left, bottom, right):
+/// "top" | "bottom" | "left" | "right" | "all" set that side of every cell,
+/// "outside" the outline of the block only, "inside" the edges between its
+/// cells, "none" clears all four sides. A style of "none" (or "") clears
+/// the sides it is applied to. The format is returned as is when nothing
+/// changes for this cell.
+let borderFormatInBlock (top: int, left: int, bottom: int, right: int) (side: string) (style: string) (color: string)
+                        (row: int) (col: int) (format: CellFormat) : CellFormat =
+    let border =
+        match borderCssParts style with
+        | Some _ when side <> "none" -> Some { Style = style; Color = Some color }
+        | _ -> None
+    let set (t: bool) (b: bool) (l: bool) (r: bool) =
+        if not (t || b || l || r) then format
+        else
+            let pick wanted current = if wanted then border else current
+            let updated =
+                { format with
+                    BorderTop = pick t format.BorderTop
+                    BorderBottom = pick b format.BorderBottom
+                    BorderLeft = pick l format.BorderLeft
+                    BorderRight = pick r format.BorderRight }
+            if updated = format then format else updated
+    match side with
+    | "top" -> set true false false false
+    | "bottom" -> set false true false false
+    | "left" -> set false false true false
+    | "right" -> set false false false true
+    | "all" | "none" -> set true true true true
+    | "outside" -> set (row = top) (row = bottom) (col = left) (col = right)
+    | "inside" -> set (row > top) (row < bottom) (col > left) (col < right)
     | _ -> format
 
 let setCellBorder (addr: CellAddress) (side: string) (style: string) (color: string) (model: SpreadsheetModel): SpreadsheetModel =

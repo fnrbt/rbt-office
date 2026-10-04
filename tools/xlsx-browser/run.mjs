@@ -7,8 +7,10 @@
 // opened again, and its pictures, kept drawing objects (charts), threaded
 // comments and kept parts are compared.
 //
-// It then runs the checks of the Spreadsheet web component (component.js):
-// change events, dispose, sheet access and sizing, and its XLSX export.
+// It then runs the checks of the Spreadsheet web component (component.js,
+// host-api.js): change events, dispose, sheet access and sizing, its XLSX
+// export, and what hosts rely on (borders, text overflow, row / column
+// counts, revisions, package integrity of exported files, lazy sheets).
 //
 // Usage:
 //   dotnet fable src/Office.Formats --outDir $DIST/office-formats --lang JavaScript --noCache
@@ -58,7 +60,7 @@ const fixtures = new Map(files.map((file) => [path.basename(file), fs.readFileSy
 const componentFixture = (name) => { const file = path.join(repo, path.normalize(name)); return file.startsWith(repo) && fs.existsSync(file) ? fs.readFileSync(file) : null; };
 const componentPage = `<!doctype html><meta charset="utf-8"><body style="margin:0"><script src="/jszip.min.js"></script>
 <script type="importmap">{"imports":{"jszip":"/jszip-shim.js"}}</script><script type="module">
-try { await import('/component.js'); } catch (e) { window.loadError = String(e && e.stack || e); }
+try { await import('/component.js'); await import('/host-api.js'); window.componentReady = true; } catch (e) { window.loadError = String(e && e.stack || e); }
 </script>`;
 
 const page = `<!doctype html><meta charset="utf-8"><script src="/jszip.min.js"></script>
@@ -103,7 +105,7 @@ const server = http.createServer((req, res) => {
     if (url.pathname === '/jszip.min.js') return send(200, 'text/javascript', fs.readFileSync(path.join(jszipDir, 'dist/jszip.min.js')));
     if (url.pathname === '/jszip-shim.js') return send(200, 'text/javascript', 'export default window.JSZip;');
     if (url.pathname === '/component') return send(200, 'text/html', componentPage);
-    if (url.pathname === '/component.js') return send(200, 'text/javascript', fs.readFileSync(path.join(here, 'component.js')));
+    if (/^\/[\w-]+\.js$/.test(url.pathname) && fs.existsSync(path.join(here, url.pathname.slice(1)))) return send(200, 'text/javascript', fs.readFileSync(path.join(here, url.pathname.slice(1))));
     if (url.pathname === '/fixture') { const name = url.searchParams.get('name'); const data = fixtures.get(name) ?? componentFixture(name); return data ? send(200, 'application/octet-stream', data) : send(404, 'text/plain', 'no fixture'); }
     const file = path.join(dist, path.normalize(url.pathname));
     if (file.startsWith(dist) && fs.existsSync(file) && fs.statSync(file).isFile()) return send(200, 'text/javascript', fs.readFileSync(file));
@@ -139,7 +141,7 @@ try {
         const pageErrors = [];
         componentTab.on('pageerror', (e) => pageErrors.push(e.message));
         await componentTab.goto(`http://127.0.0.1:${port}/component`);
-        await componentTab.waitForFunction('window.componentChecks !== undefined || window.loadError !== undefined', null, { timeout: 120000 });
+        await componentTab.waitForFunction('window.componentReady !== undefined || window.loadError !== undefined', null, { timeout: 120000 });
         const componentLoadError = await componentTab.evaluate('window.loadError');
         if (componentLoadError) throw new Error('component page failed to load modules: ' + componentLoadError);
         const debuggerSession = await componentTab.context().newCDPSession(componentTab);

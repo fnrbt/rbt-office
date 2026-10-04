@@ -44,6 +44,7 @@ stages=(
     stage26-rules
     stage27-input
     stage28-layout
+    stage29-borders
     numbertext
 )
 
