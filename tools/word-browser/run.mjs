@@ -30,6 +30,7 @@
 //   keystroke-long   the time of a keystroke in a 75-page and a 600-page document (see also perf.mjs)
 //   table-tools      insertTable (borders, caret rectangle, Tab / Shift+Tab between cells), getCaretContext, no internal style ids, spacing in the selection format, markSaved(revision)
 //   caret-frames     a caret move / selection change builds no paint frame (getRenderStats().FrameBuilds); the pixels are those of a new frame
+//   viewer-first-page  the viewer's getRenderStats; the first renderPage collects the commands of the page's paragraphs only; pages are the same pixels in any order
 //
 // Environment (as tools/docx-roundtrip/roundtrip.mjs): PLAYWRIGHT, JSZIP_DIR, PORT (default 16022).
 // Exit code is non-zero when any check fails.
@@ -47,7 +48,7 @@ const opt = (name) => { const i = args.indexOf(name); if (i < 0) return undefine
 const dist = path.resolve(opt('--dist') ?? path.join(repo, 'dist'));
 const port = Number(process.env.PORT ?? 16022);
 const all = ['explicit-format', 'page-frames', 'ime', 'typing', 'track-changes', 'linked-images', 'opaque-click', 'viewport', 'selection-format',
-    'placeholder-and-frames', 'caret-movement', 'revision', 'viewer-measurers', 'page-centering', 'commands', 'image-handles', 'painter-frames', 'viewer-entry', 'keystroke-long', 'table-tools', 'caret-frames'];
+    'placeholder-and-frames', 'caret-movement', 'revision', 'viewer-measurers', 'page-centering', 'commands', 'image-handles', 'painter-frames', 'viewer-entry', 'keystroke-long', 'table-tools', 'caret-frames', 'viewer-first-page'];
 const checks = args.length ? args : all;
 
 const jszipDir = [process.env.JSZIP_DIR, path.join(repo, 'node_modules/jszip'), path.resolve(repo, '../rbt-office/node_modules/jszip')].find((p) => p && fs.existsSync(p));

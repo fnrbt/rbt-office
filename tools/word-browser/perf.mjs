@@ -11,7 +11,8 @@
 // Usage:
 //   node tools/word-browser/perf.mjs --dist $DIST [--repeat N] [--keys N] [--profile keys] [--callers FUNCTION] [--painter]
 // --profile keys prints the functions with the most self time while typing, and the time under each
-// function (--profile enter: the time under each function while Enter and Backspace alternate); --callers FUNCTION adds the time under that function by its chain of callers.
+// function (--profile enter: the time under each function while Enter and Backspace alternate;
+// --profile load: where opening the document spends its time); --callers FUNCTION adds the time under that function by its chain of callers.
 // --painter installs a (trivial) text path painter and measurers first.
 // Environment: PLAYWRIGHT, JSZIP_DIR, PORT (default 16125).
 import http from 'node:http';
@@ -60,18 +61,29 @@ try {
         async load(usePainter) {
             const bytes = new Uint8Array(await (await fetch('/long.docx')).arrayBuffer());
             const t0 = performance.now();
-            Word.importFromDocxPackage(editor, await OF.processors.forEditorPackage(bytes));
-            const loaded = performance.now() - t0;
+            const editorPackage = await OF.processors.forEditorPackage(bytes);
+            const read = performance.now() - t0;
+            // As a host does: the measurers and the painter first, then the document (laid out once).
+            let t1 = performance.now();
             if (usePainter) {
                 Word.setTextMeasurers(editor, (text, style) => text.length * style.FontSize * 0.5, (text, style, start, length) => Math.max(0, Math.min(length, text.length - start)) * style.FontSize * 0.5);
                 Word.setTextPathPainter(editor, (text, style, x, baseline, width) => false);
             }
+            const installed = performance.now() - t1;
+            // (A host shows the document through a viewport: what is painted first is one screen.)
+            Word.setViewport(editor, { scale: 1, devicePixelRatio: 1, scrollTop: 0, scrollLeft: 0, width: 1000, height: 800 });
+            t1 = performance.now();
+            Word.importFromDocxPackage(editor, editorPackage);
+            const imported = performance.now() - t1;
+            const loaded = performance.now() - t0;
             const size = Word.getDocumentSize(editor);
             // The caret in a plain paragraph near the middle of the document.
+            t1 = performance.now();
             const frames = Word.getPageFrames(editor);
+            const framesTime = performance.now() - t1;
             const target = frames[Math.floor(frames.length / 2)];
             Word.setViewport(editor, { scale: 1, devicePixelRatio: 1, scrollTop: target.Top, scrollLeft: 0, width: 1000, height: 800 });
-            return { loaded, pages: size.PageCount, top: target.Top };
+            return { loaded, read, imported, installed, frames: framesTime, pages: size.PageCount, top: target.Top };
         },
         // Put the caret into a paragraph of plain text on the page in view (by clicking at a point of the canvas).
         caretAt(x, y) { return Word.getSelectionInformation ? JSON.stringify(Word.getCaretRect(editor)) : null; },
@@ -116,6 +128,27 @@ try {
             for (let i = 0; i < count; i++) { const t0 = performance.now(); Word.insertText(editor, text); times.push(performance.now() - t0); }
             return stats(times);
         },
+        // The viewer (a preview): load, page frames, the first page painted, the pages after it.
+        async viewer(pages) {
+            const createViewer = (await import('/word/WordViewer.js')).default;
+            const bytes = new Uint8Array(await (await fetch('/long.docx')).arrayBuffer());
+            let t0 = performance.now();
+            const editorPackage = await OF.processors.forEditorPackage(bytes);
+            const read = performance.now() - t0;
+            t0 = performance.now();
+            const viewer = createViewer(document.createElement('canvas'));
+            viewer.load(editorPackage);
+            const frames = viewer.getPageFrames();
+            const laidOut = performance.now() - t0;
+            const target = document.createElement('canvas');
+            t0 = performance.now();
+            viewer.renderPage(target, 0, 1);
+            const first = performance.now() - t0;
+            const firstStats = viewer.getRenderStats ? viewer.getRenderStats() : null;
+            const times = [];
+            for (let i = 1; i <= pages && i < frames.length; i++) { const t = performance.now(); viewer.renderPage(target, i, 1); times.push(performance.now() - t); }
+            return { read, laidOut, first, later: stats(times), pages: frames.length, firstStats, lastStats: viewer.getRenderStats ? viewer.getRenderStats() : null };
+        },
         text() { return Word.getText(editor).length; },
         renderStats() { return Word.getRenderStats ? Word.getRenderStats(editor) : null; },
     };
@@ -145,7 +178,36 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
         await tab.waitForFunction('window.perf !== undefined || window.loadError !== undefined', null, { timeout: 240000 });
         const loadError = await tab.evaluate('window.loadError');
         if (loadError) throw new Error('page failed to load modules: ' + loadError);
+        const cdpLoad = await tab.context().newCDPSession(tab);
+        if (profile === 'load') { await cdpLoad.send('Profiler.enable'); await cdpLoad.send('Profiler.setSamplingInterval', { interval: 500 }); await cdpLoad.send('Profiler.start'); }
         const loaded = await tab.evaluate((usePainter) => window.perf.load(usePainter), painter);
+        if (profile === 'load') {
+            // Where opening the document spends its time: self time, and time under each function.
+            const { profile: cpu } = await cdpLoad.send('Profiler.stop');
+            const interval = cpu.timeDeltas.reduce((a, b) => a + b, 0) / Math.max(1, cpu.samples.length) / 1000;
+            const byId = new Map(cpu.nodes.map((node) => [node.id, node]));
+            const selfById = new Map();
+            for (const id of cpu.samples) selfById.set(id, (selfById.get(id) ?? 0) + interval);
+            const keyOf = (frame) => `${frame.functionName || '(anonymous)'}  ${frame.url.split('/').slice(-2).join('/')}:${frame.lineNumber + 1}`;
+            const self = new Map();
+            for (const [id, time] of selfById) { const key = keyOf(byId.get(id).callFrame); self.set(key, (self.get(key) ?? 0) + time); }
+            console.log('  -- opening: self time --');
+            for (const [key, time] of [...self.entries()].sort((a, b) => b[1] - a[1]).slice(0, 28)) console.log(`  ${time.toFixed(0).padStart(7)} ms  ${key}`);
+            const total = new Map();
+            const walk = (node, open) => {
+                const key = keyOf(node.callFrame);
+                let sum = selfById.get(node.id) ?? 0;
+                const inside = open.has(key);
+                if (!inside) open.add(key);
+                for (const child of node.children ?? []) sum += walk(byId.get(child), open);
+                if (!inside) { open.delete(key); total.set(key, (total.get(key) ?? 0) + sum); }
+                return sum;
+            };
+            walk(cpu.nodes[0], new Set());
+            console.log('  -- opening: time under a function --');
+            for (const [key, time] of [...total.entries()].filter(([key]) => (process.env.PROFILE_FILTER ? new RegExp(process.env.PROFILE_FILTER) : /word\/|office-formats\//).test(key)).sort((a, b) => b[1] - a[1]).slice(0, 70)) console.log(`  ${time.toFixed(0).padStart(7)} ms  ${key}`);
+        }
+        console.log(`  opening: read the package ${(loaded.read / 1000).toFixed(2)} s, import and first paint ${(loaded.imported / 1000).toFixed(2)} s${painter ? `, measurers and painter installed ${(loaded.installed / 1000).toFixed(2)} s` : ''}, page frames ${loaded.frames.toFixed(0)} ms`);
         console.log(`docx4j-getting-started x ${repeat}: ${loaded.pages} pages, loaded in ${(loaded.loaded / 1000).toFixed(2)} s${painter ? ' (text path painter and measurers installed)' : ''}`);
         // A click into the text of the page in view puts the caret there.
         await tab.mouse.click(400, 300);
@@ -235,6 +297,9 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
         console.log(`  Backspace (merging the paragraphs again):  ${line(split.times[1])}; the last one laid out ${split.laidOut} and collected ${split.collected} of ${split.blocks} blocks`);
         const pasted = await tab.evaluate(() => window.perf.pastes(15, 'a short string '));
         console.log(`  a short string inserted (15 characters):  ${line(pasted)}`);
+        const viewed = await tab.evaluate(() => window.perf.viewer(40));
+        console.log(`  the viewer: package read ${(viewed.read / 1000).toFixed(2)} s, load and page frames ${(viewed.laidOut / 1000).toFixed(2)} s (${viewed.pages} pages), the first renderPage ${ms(viewed.first)}, the next 40: ${line(viewed.later)}`
+            + (viewed.firstStats ? `; commands collected for the first page: ${viewed.firstStats.CollectedOnPaint} paragraphs of ${viewed.firstStats.Blocks} blocks, after 41 pages ${viewed.lastStats.CollectedOnPaint}` : ''));
         const scrolled = await tab.evaluate(([n, top]) => window.perf.scroll(n, top), [60, loaded.top]);
         console.log(`  a scroll frame (40 px):  ${line(scrolled)}`);
         console.log(`  render stats: ${JSON.stringify(await tab.evaluate(() => window.perf.renderStats()))}`);

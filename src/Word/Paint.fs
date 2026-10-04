@@ -2356,18 +2356,26 @@ let collectDocumentCommands settings fontFamily measureText measureRange doc =
 /// The paint commands of one part of the document (a block, the note areas, a
 /// page's header and footer) with their vertical extents.
 type PaintChunk = {
-    Commands: PaintCommand array
-    Tops: float array
-    Bottoms: float array
+    mutable Commands: PaintCommand array
+    mutable Tops: float array
+    mutable Bottoms: float array
     /// The extent of the whole chunk (infinite when a command's is unknown).
-    Top: float
-    Bottom: float
+    /// Of a chunk whose commands are not collected yet: a band they are
+    /// certain to lie in.
+    mutable Top: float
+    mutable Bottom: float
     /// The extent of the chunk's pictures (Top > Bottom when it has none).
-    ImageTop: float
-    ImageBottom: float
+    mutable ImageTop: float
+    mutable ImageBottom: float
+    /// Collects the commands of a chunk that has not been painted yet (see
+    /// `forceChunk`): a paragraph's commands are collected when a band that
+    /// reaches its place is painted, not when the frame is built - opening a
+    /// long document, or painting its first page, does not collect the
+    /// commands of every page.
+    mutable Pending: (unit -> PaintCommand array) option
 }
 
-let chunkOfCommands (commands: PaintCommand array) : PaintChunk =
+let private fillChunk (chunk: PaintChunk) (commands: PaintCommand array) =
     let tops = Array.zeroCreate<float> commands.Length
     let bottoms = Array.zeroCreate<float> commands.Length
     let mutable top = System.Double.PositiveInfinity
@@ -2390,7 +2398,41 @@ let chunkOfCommands (commands: PaintCommand array) : PaintChunk =
             bottoms.[i] <- System.Double.PositiveInfinity
         top <- min top tops.[i]
         bottom <- max bottom bottoms.[i]
-    { Commands = commands; Tops = tops; Bottoms = bottoms; Top = top; Bottom = bottom; ImageTop = imageTop; ImageBottom = imageBottom }
+    chunk.Commands <- commands
+    chunk.Tops <- tops
+    chunk.Bottoms <- bottoms
+    chunk.Top <- top
+    chunk.Bottom <- bottom
+    chunk.ImageTop <- imageTop
+    chunk.ImageBottom <- imageBottom
+    chunk.Pending <- None
+
+let private blankChunk () : PaintChunk =
+    { Commands = [||]; Tops = [||]; Bottoms = [||]; Top = System.Double.PositiveInfinity; Bottom = System.Double.NegativeInfinity
+      ImageTop = System.Double.PositiveInfinity; ImageBottom = System.Double.NegativeInfinity; Pending = None }
+
+let chunkOfCommands (commands: PaintCommand array) : PaintChunk =
+    let chunk = blankChunk ()
+    fillChunk chunk commands
+    chunk
+
+/// A chunk whose commands are collected when they are first wanted; until
+/// then it stands for the band top .. bottom, which they lie in.
+let private deferredChunk (top: float) (bottom: float) (collect: unit -> PaintCommand array) : PaintChunk =
+    let chunk = blankChunk ()
+    chunk.Top <- top
+    chunk.Bottom <- bottom
+    chunk.Pending <- Some collect
+    chunk
+
+/// The chunk with its commands (collected now when they were not yet).
+let forceChunk (chunk: PaintChunk) : PaintChunk =
+    match chunk.Pending with
+    | Some collect ->
+        chunk.Pending <- None
+        fillChunk chunk (collect ())
+        chunk
+    | None -> chunk
 
 let private emptyChunk = chunkOfCommands [||]
 
@@ -2398,7 +2440,7 @@ let private emptyChunk = chunkOfCommands [||]
 let commandsOfChunks (chunks: PaintChunk array) : PaintCommand list =
     let mutable result = []
     for chunkIndex = chunks.Length - 1 downto 0 do
-        let commands = chunks.[chunkIndex].Commands
+        let commands = (forceChunk chunks.[chunkIndex]).Commands
         for i = commands.Length - 1 downto 0 do
             result <- commands.[i] :: result
     result
@@ -2423,7 +2465,7 @@ let chunkDifferenceBand (before: PaintChunk array) (after: PaintChunk array) : C
             top <- min top commandTop
             bottom <- max bottom commandBottom
     let addChunk (chunk: PaintChunk) =
-        if chunk.Commands.Length > 0 then add chunk.Top chunk.Bottom
+        if chunk.Commands.Length > 0 || chunk.Pending.IsSome then add chunk.Top chunk.Bottom
     let beforeCount = before.Length - prefix - suffix
     let afterCount = after.Length - prefix - suffix
     if beforeCount = afterCount && beforeCount <= 64 then
@@ -2431,7 +2473,13 @@ let chunkDifferenceBand (before: PaintChunk array) (after: PaintChunk array) : C
         for offset in 0 .. beforeCount - 1 do
             let left = before.[prefix + offset]
             let right = after.[prefix + offset]
-            if not (obj.ReferenceEquals(left, right)) then
+            if obj.ReferenceEquals(left, right) then ()
+            elif left.Pending.IsSome then
+                // What was there was never painted: the band both stand for.
+                addChunk left
+                addChunk right
+            else
+                let right = forceChunk right
                 let shared = min left.Commands.Length right.Commands.Length
                 for i in 0 .. shared - 1 do
                     if not (obj.ReferenceEquals(left.Commands.[i], right.Commands.[i])) && left.Commands.[i] <> right.Commands.[i] then
@@ -2530,7 +2578,7 @@ let private sameLayoutList (left: BlockLayout list) (right: BlockLayout list) =
 /// the paint before, the chunks of what did not change are the same objects.
 /// None when the document needs the whole-document collection (column
 /// separator rules, which follow every line of a page).
-let collectDocumentChunks (cache: PaintCache) (settings: LayoutSettings) fontFamily (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (slices: LayoutSlices) (pages: PageInfo list) : PaintChunk array option =
+let collectDocumentChunksWith (deferCollection: bool) (cache: PaintCache) (settings: LayoutSettings) fontFamily (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (slices: LayoutSlices) (pages: PageInfo list) : PaintChunk array option =
     let separators =
         match doc.PageSetup.Columns with
         | Some columns when columns.Count >= 2 && columns.Separator -> true
@@ -2598,6 +2646,7 @@ let collectDocumentChunks (cache: PaintCache) (settings: LayoutSettings) fontFam
             | ValueNone ->
                 collected <- collected + 1
                 let commands = ResizeArray<PaintCommand>()
+                let mutable deferred : PaintChunk option = None
                 let yIn = currentY
                 match block with
                 | Table tableBlock ->
@@ -2616,13 +2665,45 @@ let collectDocumentChunks (cache: PaintCache) (settings: LayoutSettings) fontFam
                     | None -> ()
                     | Some para ->
                         if count > 0 then
+                            // A paragraph of text draws within its lines (and a little around
+                            // them): its commands wait until a band that reaches it is painted.
+                            // One with a picture or an equation, which can sit anywhere, does not wait.
+                            let mutable plain = true
+                            let mutable top = System.Double.PositiveInfinity
+                            let mutable bottom = System.Double.NegativeInfinity
+                            let mutable tallest = settings.LineHeight
                             for offset in 0 .. count - 1 do
-                                addParagraphCommandsKept settings fontFamily measureText measureRange commands layouts.[start + offset]
+                                let layout = layouts.[start + offset]
+                                top <- min top layout.Y
+                                bottom <- max bottom (layout.Y + layout.Height)
+                                for line in layout.Lines do
+                                    top <- min top line.Y
+                                    bottom <- max bottom (line.Y + line.Height)
+                                    tallest <- max tallest line.Height
+                                    for segment in line.Segments do
+                                        match segment with
+                                        | TextSegment _ -> ()
+                                        | _ -> plain <- false
+                            if plain && deferCollection then
+                                let slice = Array.init count (fun offset -> layouts.[start + offset])
+                                let margin = tallest * 2.0 + 64.0
+                                deferred <-
+                                    Some (deferredChunk (top - margin) (bottom + margin) (fun () ->
+                                        let own = ResizeArray<PaintCommand>()
+                                        for layout in slice do
+                                            addParagraphCommandsKept settings fontFamily measureText measureRange own layout
+                                        own.ToArray()))
+                            else
+                                for offset in 0 .. count - 1 do
+                                    addParagraphCommandsKept settings fontFamily measureText measureRange commands layouts.[start + offset]
                             let layout = layouts.[start]
                             currentY <- layout.Y + layout.Height
                             if para.Metadata.PageBreakAfter || para.Metadata.SectionBreak = Some "nextPage" then
                                 currentY <- WordLayout.Page.advanceToNextPage settings.PageHeight settings.PaddingTop currentY
-                let chunk = if commands.Count = 0 then emptyChunk else chunkOfCommands (commands.ToArray())
+                let chunk =
+                    match deferred with
+                    | Some chunk -> chunk
+                    | None -> if commands.Count = 0 then emptyChunk else chunkOfCommands (commands.ToArray())
                 entries.[blockIndex] <- { EntryBlock = block; EntryLayouts = layouts; EntryStart = start; EntryCount = count; EntryYIn = yIn; EntryYOut = currentY; EntryChunk = chunk }
                 chunks.Add chunk
         cache.CacheBlocks <- blocks
@@ -2659,6 +2740,11 @@ let collectDocumentChunks (cache: PaintCache) (settings: LayoutSettings) fontFam
             cache.CacheHeaderFooterChunks <- pageChunks
             chunks.AddRange pageChunks
         Some (chunks.ToArray())
+
+/// `collectDocumentChunksWith`, the commands of plain paragraphs collected
+/// when they are first painted (see `PaintChunk.Pending`).
+let collectDocumentChunks (cache: PaintCache) (settings: LayoutSettings) fontFamily (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (slices: LayoutSlices) (pages: PageInfo list) : PaintChunk array option =
+    collectDocumentChunksWith true cache settings fontFamily measureText measureRange doc slices pages
 
 let private layoutListLookup (layouts: BlockLayout list) =
     fun blockId ->

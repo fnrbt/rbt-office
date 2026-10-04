@@ -4262,7 +4262,16 @@ let private resolveTableStyle (styleMap: Map<string, StyleDefinition>) styleId :
 
     styleId |> Option.bind (resolve Set.empty)
 
-let private resolveStyle (styleMap: Map<string, StyleDefinition>) styleId : RunProperties * ParagraphProperties option =
+/// What `resolveStyle` and `defaultParagraphStyleId` found for the style map
+/// in hand, by style id: they are asked for every paragraph and every run of
+/// a document, and a style's resolution (its chain of based-on styles merged)
+/// depends on the map alone.
+let mutable private resolvedStylesFor : obj = null
+let private resolvedStyles = System.Collections.Generic.Dictionary<string, RunProperties * ParagraphProperties option>()
+let mutable private defaultParagraphStyleFor : obj = null
+let mutable private defaultParagraphStyleKnown : string option = None
+
+let private resolveStyleUncached (styleMap: Map<string, StyleDefinition>) styleId : RunProperties * ParagraphProperties option =
     let rec resolve visited id =
         if Set.contains id visited then (emptyRunProperties, (None: ParagraphProperties option))
         else
@@ -4284,11 +4293,31 @@ let private resolveStyle (styleMap: Map<string, StyleDefinition>) styleId : RunP
 
     styleId |> Option.map (resolve Set.empty) |> Option.defaultValue (emptyRunProperties, None)
 
+let private resolveStyle (styleMap: Map<string, StyleDefinition>) (styleId: string option) : RunProperties * ParagraphProperties option =
+    match styleId with
+    | None -> (emptyRunProperties, None)
+    | Some id ->
+        if not (obj.ReferenceEquals(resolvedStylesFor, styleMap)) then
+            resolvedStyles.Clear()
+            resolvedStylesFor <- box styleMap
+        match resolvedStyles.TryGetValue id with
+        | true, known -> known
+        | false, _ ->
+            let resolved = resolveStyleUncached styleMap styleId
+            resolvedStyles.[id] <- resolved
+            resolved
+
 let private defaultParagraphStyleId (styleMap: Map<string, StyleDefinition>) =
-    styleMap
-    |> Map.toSeq
-    |> Seq.tryPick (fun (id, style) ->
-        if style.StyleType = "paragraph" && style.IsDefault then Some id else None)
+    if obj.ReferenceEquals(defaultParagraphStyleFor, styleMap) then defaultParagraphStyleKnown
+    else
+        let found =
+            styleMap
+            |> Map.toSeq
+            |> Seq.tryPick (fun (id, style) ->
+                if style.StyleType = "paragraph" && style.IsDefault then Some id else None)
+        defaultParagraphStyleFor <- box styleMap
+        defaultParagraphStyleKnown <- found
+        found
 
 let private resolvedParagraphProperties (styleMap: Map<string, StyleDefinition>) (props: ParagraphProperties) =
     let _, docDefaults = resolveStyle styleMap (Some Styles.defaultStyleId)

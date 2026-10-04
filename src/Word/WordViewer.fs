@@ -58,6 +58,8 @@ module Viewer =
     ///   clearTextMeasurer()            measure text as an editor with the same measurers does:
     ///                                  the viewer then has that editor's lines and pages
     ///   setTextPathPainter(painterFor) painterFor(context2d) gives the text painter for a canvas
+    ///   getRenderStats()               { FrameBuilds, LaidOutBlocks, CollectedBlocks, CollectedOnPaint, Blocks,
+    ///                                    PainterVersion, MeasurerVersion } - see API.getRenderStats
     ///   render(document)               paint a Document on the viewer's canvas (as before)
     let createViewer (canvas: HTMLCanvasElement) =
         let ctx = Ren.createContext canvas
@@ -94,6 +96,8 @@ module Viewer =
         state?getPageCount <- fun () -> Ren.pageCount ctx (current ())
         state?getDocumentSize <- fun () -> documentSizeToJs ctx (current ())
         state?renderPage <- fun (target: HTMLCanvasElement) (pageIndex: int) (scale: float) -> Ren.renderPage ctx (current ()) target pageIndex scale
+        // Counters of the viewer's renderer (as the editor's getRenderStats).
+        state?getRenderStats <- fun () -> Ren.renderStats ctx (current ())
         state
 
     /// `import createViewer from '.../word/WordViewer.js'`.

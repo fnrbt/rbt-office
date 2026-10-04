@@ -610,6 +610,7 @@ let mutable keptPasses = 0
 let mutable chunkedPaints = 0
 let mutable blocksPainted = 0
 let mutable blocksCollected = 0
+let mutable deferredChunks = 0
 for seed, sections, twoColumns, steps in [ 11, false, false, 140; 12, true, false, 140; 13, true, false, 140; 14, false, true, 60; 15, false, false, 140; 16, true, false, 100 ] do
     let random = System.Random seed
     let state = Layout.createIncrementalLayoutState ()
@@ -640,6 +641,16 @@ for seed, sections, twoColumns, steps in [ 11, false, false, 140; 12, true, fals
                     match Layout.withTablePlanScope paintScope (fun () -> Paint.collectDocumentChunks paintCache settings "Calibri" measureText measureRange doc slices incPages) with
                     | Some chunks ->
                         chunkedPaints <- chunkedPaints + 1
+                        // A chunk whose commands are not collected yet stands for a band: they lie in it.
+                        for chunk in chunks do
+                            if chunk.Pending.IsSome then
+                                deferredChunks <- deferredChunks + 1
+                                let top, bottom = chunk.Top, chunk.Bottom
+                                let forced = Paint.forceChunk chunk
+                                if forced.Commands.Length > 0 && (forced.Top < top || forced.Bottom > bottom) then
+                                    failed <- true
+                                    fail <- fail + 1
+                                    printfn "FAIL random %d %s: a paragraph's commands (%.1f .. %.1f) lie outside the band it stood for (%.1f .. %.1f)" seed label forced.Top forced.Bottom top bottom
                         blocksPainted <- blocksPainted + doc.Blocks.Length
                         blocksCollected <- blocksCollected + Paint.paintCacheCollectedBlocks paintCache
                         let chunkCommands = Paint.commandsOfChunks chunks
@@ -675,6 +686,7 @@ for seed, sections, twoColumns, steps in [ 11, false, false, 140; 12, true, fals
         if state.Memo.MemoKeptPass then keptPasses <- keptPasses + 1
 checkTrue (sprintf "most passes of the random sequences kept layouts of the pass before (%d)" keptPasses) (keptPasses > 400)
 checkTrue (sprintf "the paints in chunks (%d) collected a fraction of the blocks anew (%d of %d)" chunkedPaints blocksCollected blocksPainted) (chunkedPaints > 400 && blocksCollected * 3 < blocksPainted)
+checkTrue (sprintf "paragraphs' commands were collected when wanted (%d chunks), within the band they stood for" deferredChunks) (deferredChunks > 1000)
 printfn "random sequences: %d passes kept layouts; %d paints in chunks collected %d of %d blocks" keptPasses chunkedPaints blocksCollected blocksPainted
 
 // What a block's place depends on apart from the state the pass reaches it

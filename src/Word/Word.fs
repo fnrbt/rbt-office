@@ -513,19 +513,13 @@ module API =
     ///   out and its paint commands collected - a caret move builds none),
     ///   LaidOutBlocks / CollectedBlocks (of the last frame built: the
     ///   top-level blocks that were laid out / whose paint commands were
-    ///   collected again; the others kept what they had), Blocks (top-level
-    ///   blocks of the document), PainterVersion, MeasurerVersion (times a
-    ///   text path painter / the measurers were installed or cleared) }.
+    ///   collected again; the others kept what they had), CollectedOnPaint
+    ///   (paragraphs whose commands were collected when they were first
+    ///   painted, so far), Blocks (top-level blocks of the document),
+    ///   PainterVersion, MeasurerVersion (times a text path painter / the
+    ///   measurers were installed or cleared) }.
     let getRenderStats (editor: Editor) =
-        let ctx = editor.Handler.RenderContext
-        createObj [
-            "FrameBuilds" ==> ctx.FrameBuilds
-            "LaidOutBlocks" ==> ctx.LastLaidOutBlocks
-            "CollectedBlocks" ==> ctx.LastCollectedBlocks
-            "Blocks" ==> List.length editor.Doc.Blocks
-            "PainterVersion" ==> ctx.TextPathPainterVersion
-            "MeasurerVersion" ==> ctx.TextMeasurerVersion
-        ]
+        Ren.renderStats editor.Handler.RenderContext editor.Doc
 
     let getCachedLayouts (editor: Editor) =
         Ren.cachedLayouts editor.Handler.RenderContext editor.Doc

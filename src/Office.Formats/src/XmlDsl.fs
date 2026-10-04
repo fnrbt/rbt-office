@@ -93,43 +93,39 @@ let private domParseError (doc: obj) : string = jsNative
 [<Emit("($0.doctype != null)")>]
 let private domHasDoctype (doc: obj) : bool = jsNative
 
-let rec private convertNode (node: obj) (parentAttrs: Map<string, string> option) : XmlNode =
+/// A DOM node as an XmlNode. `preserve`: the parent element has
+/// xml:space="preserve" (in Word XML: whitespace is text).
+let rec private convertNode (node: obj) (preserve: bool) : XmlNode =
     let nodeType: int = node?nodeType
-    let nodeName: string = node?nodeName
 
     match nodeType with
     | 1 -> // ELEMENT_NODE
-        let attrs =
-            let attrList: obj = node?attributes
-            let length: int = attrList?length
-            [ for i in 0 .. length - 1 do
-                let attr: obj = attrList?(i)
-                let name: string = attr?name
-                let value: string = attr?value
-                name, value ]
-            |> Map.ofList
+        let nodeName: string = node?nodeName
+        let attrList: obj = node?attributes
+        let length: int = attrList?length
+        let mutable attrs : Map<string, string> = Map.empty
+        let mutable preserveChildren = false
+        for i in 0 .. length - 1 do
+            let attr: obj = attrList?(i)
+            let name: string = attr?name
+            let value: string = attr?value
+            if name = "xml:space" then preserveChildren <- (value = "preserve")
+            attrs <- Map.add name value attrs
 
+        // (From the last child to the first: the list is built front to back.)
         let childNodes: obj = node?childNodes
         let childCount: int = childNodes?length
-        let children =
-            [ for i in 0 .. childCount - 1 do
-                convertNode (childNodes?(i)) (Some attrs) ]
-            |> List.filter ((<>) Empty)
+        let mutable children : XmlNode list = []
+        for i = childCount - 1 downto 0 do
+            match convertNode (childNodes?(i)) preserveChildren with
+            | Empty -> ()
+            | child -> children <- child :: children
 
         Element(nodeName, attrs, children)
 
     | 3 -> // TEXT_NODE
         let textContent: string = node?textContent
-
-        // Check if parent element has xml:space="preserve"
-        // In Word XML, this indicates whitespace should be preserved
-        let shouldPreserve =
-            parentAttrs
-            |> Option.bind (Map.tryFind "xml:space")
-            |> Option.map ((=) "preserve")
-            |> Option.defaultValue false
-
-        if shouldPreserve then
+        if preserve then
             // Preserve all whitespace when xml:space="preserve"
             if textContent.Length > 0 then Text textContent else Empty
         else
@@ -153,7 +149,7 @@ let parse (xmlString: string) : XmlNode =
     if domHasDoctype doc then
         failwith "Malformed XML: DTD is not allowed"
     let root: obj = doc?documentElement
-    if isNull root then Empty else convertNode root None
+    if isNull root then Empty else convertNode root false
 #else
 let private xName (element: XElement) (name: XName) =
     let prefix = element.GetPrefixOfNamespace(name.Namespace)
@@ -215,22 +211,32 @@ module Ns =
         | -1 -> name
         | idx -> name.Substring(idx + 1)
 
+    /// `stripNs name = localName`, without making the stripped name.
+    let private hasLocalName (localName: string) (name: string) =
+        let colon = name.LastIndexOf(':')
+        if colon < 0 then name = localName
+        else name.Length - colon - 1 = localName.Length && name.EndsWith(localName, System.StringComparison.Ordinal)
+
     let childNs localName node =
         Xml.children node
         |> List.tryFind (fun n ->
-            match Xml.name n with
-            | Some name -> stripNs name = localName
-            | None -> false)
+            match n with
+            | Element (name, _, _) -> hasLocalName localName name
+            | _ -> false)
 
+    /// The elements under (and including) a node that have a local name, in
+    /// document order.
     let descendantsNs localName node =
-        let rec collectAll acc = function
-            | Element(n, a, kids) as elem ->
-                let acc' = elem :: acc
-                List.fold collectAll acc' kids
-            | _ -> acc
-        collectAll [] node
-        |> List.rev
-        |> List.filter (fun n ->
-            match Xml.name n with
-            | Some name -> stripNs name = localName
-            | None -> false)
+        let found = ResizeArray<XmlNode>()
+        let rec visit (current: XmlNode) =
+            match current with
+            | Element (name, _, kids) ->
+                if hasLocalName localName name then found.Add current
+                for kid in kids do
+                    visit kid
+            | _ -> ()
+        visit node
+        let mutable result = []
+        for i = found.Count - 1 downto 0 do
+            result <- found.[i] :: result
+        result

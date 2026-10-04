@@ -106,6 +106,9 @@ type RenderContext = {
     /// document was collected as a whole).
     mutable LastLaidOutBlocks: int
     mutable LastCollectedBlocks: int
+    /// Paragraphs whose paint commands were collected when a band that
+    /// reaches them was first painted (not when their frame was built).
+    mutable CollectedOnPaint: int
     /// Stands for the text measurers the context lays out with (a new object
     /// whenever they change): table plans are kept per scope, see
     /// `Layout.withTablePlanScope`.
@@ -176,6 +179,7 @@ let createContext (canvas: HTMLCanvasElement) = {
     FrameBuilds = 0
     LastLaidOutBlocks = 0
     LastCollectedBlocks = 0
+    CollectedOnPaint = 0
     PlanScope = obj ()
     LayoutState = Rbt.Word.Layout.createIncrementalLayoutState ()
     PaintCache = createPaintCache ()
@@ -202,16 +206,75 @@ let private browserMetricScale (family: string) (style: TextBuffer.TextStyle) =
 [<Emit("$0.get($1)")>]
 let private mapGet (map: obj) (key: string) : obj = jsNative
 
+/// The canvas font of a text style and the scale its measured widths are
+/// corrected by: made once per style object (a run's style is asked for with
+/// every word of the run).
+type private MeasureFont = { Font: string; Scale: float }
+
+[<Emit("new WeakMap()")>]
+let private newStyleMap () : obj = jsNative
+[<Emit("$0.get($1)")>]
+let private styleMapGet (_map: obj) (_style: TextBuffer.TextStyle) : MeasureFont = jsNative
+[<Emit("$0.set($1, $2)")>]
+let private styleMapSet (_map: obj) (_style: TextBuffer.TextStyle) (_font: MeasureFont) : unit = jsNative
+let private measureFonts = newStyleMap ()
+
+/// Widths the canvas gave, by font and text. A document's words repeat, and
+/// measuring every word of every run was most of the time of a first layout.
+/// (A width depends on the font string and the text alone.)
+let private measuredWidths = System.Collections.Generic.Dictionary<string, System.Collections.Generic.Dictionary<string, float>>()
+let mutable private measuredWidthCount = 0
+
+/// Forget the measured widths: the fonts the canvas measures with changed.
+let clearMeasuredWidths () =
+    measuredWidths.Clear()
+    measuredWidthCount <- 0
+
+[<Emit("((typeof document !== 'undefined' && document.fonts && document.fonts.addEventListener) ? document.fonts.addEventListener('loadingdone', $0) : undefined)")>]
+let private onFontsLoaded (_callback: obj -> unit) : unit = jsNative
+// A font face that finished loading measures differently from the fallback
+// that stood in for it.
+onFontsLoaded (fun _ -> clearMeasuredWidths ())
+
 /// Measure text width with style
 let measureTextStyled (ctx: RenderContext) (text: string) (style: TextBuffer.TextStyle) =
-    let fontStyle = if style.Bold && style.Italic then "bold italic"
-                    elif style.Bold then "bold"
-                    elif style.Italic then "italic"
-                    else ""
-    let fontFamily = style.FontFamily |> Option.defaultValue ctx.FontFamily
-    let fontSize = if style.VertAlign.IsSome then style.FontSize * 0.7 else style.FontSize
-    ctx.Ctx.font <- sprintf "%s %fpx %s" fontStyle fontSize (cssFontFamily fontFamily)
-    (ctx.Ctx.measureText(text).width * browserMetricScale fontFamily style) + TextBuffer.characterSpacingAdvance text style
+    let font =
+        let known = styleMapGet measureFonts style
+        if not (isNull (box known)) && (style.FontFamily.IsSome || known.Font.EndsWith (cssFontFamily ctx.FontFamily)) then known
+        else
+            let fontStyle = if style.Bold && style.Italic then "bold italic"
+                            elif style.Bold then "bold"
+                            elif style.Italic then "italic"
+                            else ""
+            let fontFamily = style.FontFamily |> Option.defaultValue ctx.FontFamily
+            let fontSize = if style.VertAlign.IsSome then style.FontSize * 0.7 else style.FontSize
+            let made = { Font = sprintf "%s %fpx %s" fontStyle fontSize (cssFontFamily fontFamily); Scale = browserMetricScale fontFamily style }
+            styleMapSet measureFonts style made
+            made
+    let widths =
+        match measuredWidths.TryGetValue font.Font with
+        | true, widths -> widths
+        | false, _ ->
+            let widths = System.Collections.Generic.Dictionary<string, float>()
+            measuredWidths.[font.Font] <- widths
+            widths
+    let width =
+        match widths.TryGetValue text with
+        | true, width -> width
+        | false, _ ->
+            ctx.Ctx.font <- font.Font
+            let width = ctx.Ctx.measureText(text).width
+            // (Bounded: long texts are measured as they come, and the lot is dropped when it grows large.)
+            if text.Length <= 48 then
+                if measuredWidthCount > 200000 then
+                    measuredWidths.Clear()
+                    measuredWidthCount <- 0
+                    measuredWidths.[font.Font] <- widths
+                    widths.Clear()
+                widths.[text] <- width
+                measuredWidthCount <- measuredWidthCount + 1
+            width
+    (width * font.Scale) + TextBuffer.characterSpacingAdvance text style
 
 let layoutSettings (ctx: RenderContext) (doc: Document) =
     let hasFooter = not doc.Footers.IsEmpty || not doc.FooterParts.IsEmpty
@@ -257,6 +320,7 @@ let cachedLayouts (ctx: RenderContext) (doc: Document) =
     | _ -> None
 
 let clearLayoutCache (ctx: RenderContext) =
+    clearMeasuredWidths ()
     ctx.PlanScope <- obj ()
     Rbt.Word.Layout.clearIncrementalLayoutState ctx.LayoutState
     clearPaintCache ctx.PaintCache
@@ -880,13 +944,16 @@ let private renderCommandList ctx commands =
 
 let private renderChunks ctx (chunks: PaintChunk array) =
     for chunk in chunks do
-        for command in chunk.Commands do
+        for command in (forceChunk chunk).Commands do
             renderPaintCommand ctx command
 
 /// The commands of the chunks that reach into a band (top .. bottom).
 let private renderChunksInBand ctx (chunks: PaintChunk array) (top: float) (bottom: float) =
     for chunk in chunks do
         if chunk.Bottom >= top && chunk.Top <= bottom then
+            // (The commands of a paragraph that was not painted yet are collected now.)
+            if chunk.Pending.IsSome then ctx.CollectedOnPaint <- ctx.CollectedOnPaint + 1
+            let chunk = forceChunk chunk
             let commands = chunk.Commands
             for i = 0 to commands.Length - 1 do
                 if chunk.Bottoms.[i] >= top && chunk.Tops.[i] <= bottom then
@@ -1291,7 +1358,21 @@ let renderPage (ctx: RenderContext) (doc: Document) (canvas: HTMLCanvasElement) 
         renderPagesInBand target [ page ] page.Top bottom
         renderChunksInBand target frame.Body page.Top bottom
         target.Ctx.restore()
+        // (The target is a copy of the context: what it counted is the context's.)
+        ctx.CollectedOnPaint <- target.CollectedOnPaint
         true
+
+/// Counters of a renderer, for hosts and checks (see API.getRenderStats).
+let renderStats (ctx: RenderContext) (doc: Document) : obj =
+    Fable.Core.JsInterop.createObj [
+        "FrameBuilds", box ctx.FrameBuilds
+        "LaidOutBlocks", box ctx.LastLaidOutBlocks
+        "CollectedBlocks", box ctx.LastCollectedBlocks
+        "CollectedOnPaint", box ctx.CollectedOnPaint
+        "Blocks", box (List.length doc.Blocks)
+        "PainterVersion", box ctx.TextPathPainterVersion
+        "MeasurerVersion", box ctx.TextMeasurerVersion
+    ]
 
 /// Render document to canvas
 let render (ctx: RenderContext) (doc: Document) =
