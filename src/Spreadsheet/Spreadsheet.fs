@@ -4248,25 +4248,75 @@ type Spreadsheet(container: Element) =
         | Some wb -> Rbt.Spreadsheet.Workbook.getTableNames wb
         | None -> []
 
-    /// Insert a row at the specified index
-    member _.InsertRow(atRow: int) =
-        applyStructureEdit (InsertRows (atRow, 1)) (sprintf "Insert row at %d" atRow)
-        render()
+    /// Insert `count` rows (default 1) above row `atRow` (0-based): one model
+    /// update, one undo step, every formula in the workbook rewritten once.
+    member this.InsertRow(atRow: int, ?count: int) = this.InsertRows(atRow, defaultArg count 1)
 
-    /// Delete a row at the specified index
-    member _.DeleteRow(atRow: int) =
-        applyStructureEdit (DeleteRows (atRow, 1)) (sprintf "Delete row %d" atRow)
-        render()
+    /// Delete `count` rows (default 1) from row `atRow` on, as one step.
+    member this.DeleteRow(atRow: int, ?count: int) = this.DeleteRows(atRow, defaultArg count 1)
 
-    /// Insert a column at the specified index
-    member _.InsertColumn(atCol: int) =
-        applyStructureEdit (InsertCols (atCol, 1)) (sprintf "Insert column at %s" (columnToLetter atCol))
-        render()
+    /// Insert `count` columns (default 1) before column `atCol`, as one step.
+    member this.InsertColumn(atCol: int, ?count: int) = this.InsertColumns(atCol, defaultArg count 1)
 
-    /// Delete a column at the specified index
-    member _.DeleteColumn(atCol: int) =
-        applyStructureEdit (DeleteCols (atCol, 1)) (sprintf "Delete column %s" (columnToLetter atCol))
-        render()
+    /// Delete `count` columns (default 1) from column `atCol` on, as one step.
+    member this.DeleteColumn(atCol: int, ?count: int) = this.DeleteColumns(atCol, defaultArg count 1)
+
+    /// Insert `count` rows above row `at`, as one undo step. Called without
+    /// arguments it acts on the selection, as Excel's Insert does: as many
+    /// rows as are selected, above the first of them. With `at` alone, one row.
+    member _.InsertRows(?at: int, ?count: int) =
+        let top, _, bottom, _ = selectionBounds()
+        let at, count =
+            match at with
+            | Some at -> at, defaultArg count 1
+            | None -> top, defaultArg count (bottom - top + 1)
+        let at = max 0 at
+        let count = max 0 count
+        if count > 0 then
+            applyStructureEdit (InsertRows (at, count)) (if count = 1 then sprintf "Insert row at %d" at else sprintf "Insert %d rows at %d" count at)
+            render()
+
+    /// Delete `count` rows from row `at` on, as one undo step. Called without
+    /// arguments it deletes the rows of the selection.
+    member _.DeleteRows(?at: int, ?count: int) =
+        let top, _, bottom, _ = selectionBounds()
+        let at, count =
+            match at with
+            | Some at -> at, defaultArg count 1
+            | None -> top, defaultArg count (bottom - top + 1)
+        let at = max 0 at
+        let count = max 0 (min count (model.RowCount - at))
+        if count > 0 then
+            applyStructureEdit (DeleteRows (at, count)) (if count = 1 then sprintf "Delete row %d" at else sprintf "Delete %d rows from %d" count at)
+            render()
+
+    /// Insert `count` columns before column `at`, as one undo step. Called
+    /// without arguments: as many columns as are selected, before the first.
+    member _.InsertColumns(?at: int, ?count: int) =
+        let _, left, _, right = selectionBounds()
+        let at, count =
+            match at with
+            | Some at -> at, defaultArg count 1
+            | None -> left, defaultArg count (right - left + 1)
+        let at = max 0 at
+        let count = max 0 count
+        if count > 0 then
+            applyStructureEdit (InsertCols (at, count)) (if count = 1 then sprintf "Insert column at %s" (columnToLetter at) else sprintf "Insert %d columns at %s" count (columnToLetter at))
+            render()
+
+    /// Delete `count` columns from column `at` on, as one undo step. Called
+    /// without arguments it deletes the columns of the selection.
+    member _.DeleteColumns(?at: int, ?count: int) =
+        let _, left, _, right = selectionBounds()
+        let at, count =
+            match at with
+            | Some at -> at, defaultArg count 1
+            | None -> left, defaultArg count (right - left + 1)
+        let at = max 0 at
+        let count = max 0 (min count (model.ColCount - at))
+        if count > 0 then
+            applyStructureEdit (DeleteCols (at, count)) (if count = 1 then sprintf "Delete column %s" (columnToLetter at) else sprintf "Delete %d columns from %s" count (columnToLetter at))
+            render()
 
     /// Start a search
     member _.StartSearch(query: string, caseSensitive: bool) =

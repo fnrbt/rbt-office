@@ -97,3 +97,66 @@ checks['borders'] = async () => {
     close();
     return lines;
 };
+
+// InsertRow / DeleteRow / InsertColumn / DeleteColumn take a count; InsertRows / DeleteRows /
+// InsertColumns / DeleteColumns act on the selection when called without arguments. Each is
+// one change, one undo step, and formulas are rewritten once.
+checks['row-column-counts'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, close } = mountGrid();
+    try {
+        const { getCell, CellAddress } = await import('/spreadsheet/Model.js');
+        const formula = (row, col) => { const v = getCell(new CellAddress(row, col), grid.GetModel())?.Value; return v && v.fields ? String(v.fields[0]) : null; };
+        const fill = () => { for (let row = 0; row < 10; row++) { grid.SetCell(row, 0, String(row + 1)); grid.SetCell(row, 1, String((row + 1) * 10)); } grid.SetCell(12, 0, '=SUM(A1:A10)'); grid.SetCell(0, 5, '=B10+A9'); };
+        fill();
+        const column = async (col, n) => { const out = []; for (let row = 0; row < n; row++) out.push(await valueAt(grid, row, col)); return out; };
+        const changes = [];
+        grid.OnChange((change) => changes.push(change));
+        const rows0 = grid.GetModel().RowCount, cols0 = grid.GetModel().ColCount;
+        grid.InsertRow(2, 3);
+        check('InsertRow(2, 3): three rows, one change', [await column(0, 7), changes.length, grid.GetModel().RowCount - rows0], [['1', '2', '', '', '', '3', '4'], 1, 3]);
+        check('formulas follow, rewritten once', [formula(15, 0), await valueAt(grid, 15, 0), formula(0, 5)], ['=SUM(A1:A13)', '55', '=B13+A12']);
+        grid.Undo();
+        check('one undo step', [await column(0, 4), formula(12, 0), grid.GetModel().RowCount - rows0, grid.CanUndo()], [['1', '2', '3', '4'], '=SUM(A1:A10)', 0, false]);
+        grid.Redo(); grid.Undo();
+        changes.length = 0;
+        grid.DeleteRow(1, 4);
+        check('DeleteRow(1, 4)', [await column(0, 6), changes.length, formula(8, 0), await valueAt(grid, 8, 0)], [['1', '6', '7', '8', '9', '10'], 1, '=SUM(A1:A6)', '41']);
+        grid.Undo();
+        check('undone in one step', [await column(0, 3), await valueAt(grid, 12, 0)], [['1', '2', '3'], '55']);
+        grid.DeleteRow(0);
+        check('DeleteRow(0): one row as before', [await column(0, 2), await valueAt(grid, 11, 0)], [['2', '3'], '54']);
+        grid.Undo();
+        grid.InsertColumn(1, 2);
+        check('InsertColumn(1, 2)', [await valueAt(grid, 0, 1), await valueAt(grid, 0, 3), formula(0, 7), grid.GetModel().ColCount - cols0], ['', '10', '=D10+A9', 2]);
+        grid.Undo();
+        grid.DeleteColumn(1, 1);
+        check('DeleteColumn(1, 1)', [await valueAt(grid, 0, 1), grid.GetModel().ColCount - cols0], ['', -1]);
+        grid.Undo();
+        // On the selection.
+        grid.SelectRange(3, 0, 5, 1);
+        changes.length = 0;
+        grid.InsertRows();
+        check('InsertRows(): as many rows as selected, above them', [await column(0, 8), changes.length], [['1', '2', '3', '', '', '', '4', '5'], 1]);
+        grid.Undo();
+        grid.SelectRange(3, 0, 5, 1);
+        grid.DeleteRows();
+        check('DeleteRows(): the selected rows', [await column(0, 5), await valueAt(grid, 9, 0)], [['1', '2', '3', '7', '8'], '40']);
+        grid.Undo();
+        check('and back in one step', await valueAt(grid, 12, 0), '55');
+        grid.SelectRange(0, 1, 2, 2);
+        grid.InsertColumns();
+        check('InsertColumns(): two columns before the selection', [await valueAt(grid, 0, 1), await valueAt(grid, 0, 2), await valueAt(grid, 0, 3)], ['', '', '10']);
+        grid.Undo();
+        grid.SelectRange(0, 1, 2, 1);
+        grid.DeleteColumns();
+        check('DeleteColumns(): the selected column', [await valueAt(grid, 0, 1), grid.GetModel().ColCount - cols0], ['', -1]);
+        grid.Undo();
+        grid.InsertRows(4, 2); grid.DeleteRows(4, 2);
+        check('InsertRows(at, count) / DeleteRows(at, count)', [await column(0, 6), await valueAt(grid, 12, 0)], [['1', '2', '3', '4', '5', '6'], '55']);
+        grid.InsertColumns(0, 2); grid.DeleteColumns(0, 2);
+        check('InsertColumns(at, count) / DeleteColumns(at, count)', [await valueAt(grid, 0, 0), await valueAt(grid, 0, 1)], ['1', '10']);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
