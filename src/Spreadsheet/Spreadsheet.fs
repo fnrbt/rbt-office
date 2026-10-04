@@ -111,6 +111,23 @@ let private canvasText (ctx: obj) (text: string) (x: float) (y: float) (fontSize
 [<Emit("$0.save(); $0.translate($3, $4); $0.rotate($5); $0.fillStyle = $6; $0.font = ($7 ? 'bold ' : '') + ($8 ? 'italic ' : '') + $2 + 'px ' + $9 + ', sans-serif'; $0.textBaseline = 'alphabetic'; $0.textAlign = 'left'; $0.fillText($1, 0, 0); $0.restore()")>]
 let private canvasTextRotated (ctx: obj) (text: string) (fontSize: float) (tx: float) (ty: float) (angle: float) (color: string) (bold: bool) (italic: bool) (fontName: string): unit = jsNative
 
+// Pictures: one object URL and one decoded <img> per picture's data, shared
+// by the DOM renderer and the canvas painter.
+[<Emit("(($0.__rbtPictureUrl) || ($0.__rbtPictureUrl = URL.createObjectURL(new Blob([$0], { type: $1 }))))")>]
+let private pictureUrl (data: byte[]) (contentType: string): string = jsNative
+
+[<Emit("(($0.__rbtPictureElement) || ($0.__rbtPictureElement = (() => { const img = new Image(); img.src = ($0.__rbtPictureUrl) || ($0.__rbtPictureUrl = URL.createObjectURL(new Blob([$0], { type: $1 }))); return img; })()))")>]
+let private pictureElement (data: byte[]) (contentType: string): Element = jsNative
+
+[<Emit("($0.complete && $0.naturalWidth > 0)")>]
+let private pictureReady (image: Element): bool = jsNative
+
+[<Emit("$0.drawImage($1, $2, $3, $4, $5)")>]
+let private canvasDrawImage (ctx: obj) (image: Element) (x: float) (y: float) (width: float) (height: float): unit = jsNative
+
+[<Emit("(($0.__rbtPictureUrl) ? (URL.revokeObjectURL($0.__rbtPictureUrl), delete $0.__rbtPictureUrl, delete $0.__rbtPictureElement) : undefined)")>]
+let private releasePicture (data: byte[]): unit = jsNative
+
 [<Emit("(typeof ResizeObserver === 'function' ? (() => { const o = new ResizeObserver(() => $1()); o.observe($0); return () => o.disconnect(); })() : (() => {}))")>]
 let private observeResize (el: Element) (callback: unit -> unit): unit -> unit = jsNative
 
@@ -143,7 +160,18 @@ let private sameSheetContent (a: SpreadsheetModel) (b: SpreadsheetModel) =
         && a.FrozenRows = b.FrozenRows
         && a.FrozenCols = b.FrozenCols
         && a.ShowGridLines = b.ShowGridLines
+        && sameRef a.Drawings b.Drawings
+        && sameRef a.Threads b.Threads
         && a.Macros = b.Macros)
+
+/// A comment thread as the text of a tooltip: the comment, then its replies.
+let private threadText (thread: CommentThread) =
+    let line (comment: CommentThread) =
+        match comment.Author with
+        | Some author -> sprintf "%s:\n%s" author comment.Text
+        | None -> comment.Text
+    line thread :: (thread.Replies |> List.map (fun reply -> "\u21B3 " + line reply))
+    |> String.concat "\n\n"
 
 /// Spreadsheet component — interactively edits a Workbook (a collection
 /// of sheets sharing strings, styles, theme, defined names). The class
@@ -337,6 +365,14 @@ type Spreadsheet(container: Element) =
                 elif abs (x1 - x2) < 0.01 then canvasLine ctx (snap x1) y1 (snap x1) y2 color w
                 else canvasLine ctx x1 y1 x2 y2 color w
             | SpreadsheetPaint.VecPath _ | SpreadsheetPaint.VecGroup _ -> drawVec painted.Item
+            | SpreadsheetPaint.DrawImage (rect, image) ->
+                // A picture that is not decoded yet shows its frame; the canvas
+                // is painted again by the caller once it has loaded.
+                let element = pictureElement image.Data image.ContentType
+                if pictureReady element then canvasDrawImage ctx element rect.X rect.Y rect.Width rect.Height
+                else
+                    canvasFillRect ctx rect.X rect.Y rect.Width rect.Height "#f6f8fa"
+                    canvasStrokeRect ctx rect.X rect.Y rect.Width rect.Height "#8a94a6" 1.0
             | SpreadsheetPaint.DrawText text ->
                 let align =
                     match text.Align with
@@ -1502,8 +1538,24 @@ type Spreadsheet(container: Element) =
                         else "1px solid #8BC34A"
                     setStyle cell "border" borderStyle
 
-                // Add comment indicator if cell has a comment
+                // Add comment indicator if cell has a comment or a comment thread
+                let thread = if Map.isEmpty model.Threads then None else Map.tryFind { Row = row; Col = col } model.Threads
                 match cellData with
+                | _ when thread.IsSome ->
+                    let indicator = createElement "div"
+                    setStyles indicator [
+                        "position", "absolute"
+                        "top", "0"
+                        "right", "0"
+                        "width", "0"
+                        "height", "0"
+                        "border-style", "solid"
+                        "border-width", "0 6px 6px 0"
+                        "border-color", "transparent #7b61ff transparent transparent"
+                        "pointer-events", "none"
+                    ]
+                    appendChild cell indicator
+                    setAttribute cell "title" (threadText thread.Value)
                 | Some data when data.Comment.IsSome ->
                     let indicator = createElement "div"
                     setStyles indicator [
@@ -1664,6 +1716,7 @@ type Spreadsheet(container: Element) =
                         | Some cell -> appendBodyCell row col cell
                         | None -> ()  // Skip non-primary merged cells
 
+            renderDrawings content
             renderOverlays content
             match editInput with
             | Some input when model.EditingCell.IsSome ->
@@ -1714,6 +1767,52 @@ type Spreadsheet(container: Element) =
         | SingleCell (row, col) -> sprintf "%s%d" (columnToLetter col) (row + 1)
         | Range (startRow, startCol, endRow, endCol) ->
             sprintf "%s%d:%s%d" (columnToLetter startCol) (startRow + 1) (columnToLetter endCol) (endRow + 1)
+
+    /// Pictures, and labelled frames for charts and other kept objects, over
+    /// the cells at their anchors. They are part of the scrolled content, so
+    /// they move with the sheet; clicks go through to the cells under them.
+    and renderDrawings (content: Element) =
+        for drawing in model.Drawings do
+            let rect = SpreadsheetLayout.drawingRect model drawing
+            if rect.Width >= 1.0 && rect.Height >= 1.0 then
+                let label = SpreadsheetLayout.drawingLabel drawing
+                let node =
+                    match drawing.Content with
+                    | Picture (contentType, _, data) ->
+                        let image = createElement "img"
+                        setAttribute image "src" (pictureUrl data contentType)
+                        setAttribute image "alt" (drawing.Description |> Option.defaultValue label)
+                        setAttribute image "draggable" "false"
+                        setClassName image "spreadsheet-drawing spreadsheet-picture"
+                        image
+                    | KeptObject (kind, _) ->
+                        let frame = createElement "div"
+                        setClassName frame ("spreadsheet-drawing spreadsheet-object spreadsheet-object-" + kind)
+                        setTextContent frame label
+                        setStyles frame [
+                            "display", "flex"
+                            "align-items", "center"
+                            "justify-content", "center"
+                            "box-sizing", "border-box"
+                            "background", "#f6f8fa"
+                            "border", "1px solid #8a94a6"
+                            "color", "#4a5568"
+                            "font", "12px Arial, sans-serif"
+                            "overflow", "hidden"
+                        ]
+                        frame
+                setAttribute node "title" label
+                setStyles node [
+                    "position", "absolute"
+                    "left", sprintf "%.1fpx" (rowHeaderWidth + rect.X)
+                    "top", sprintf "%.1fpx" (headerHeight + rect.Y)
+                    "width", sprintf "%.1fpx" rect.Width
+                    "height", sprintf "%.1fpx" rect.Height
+                    "z-index", "3"
+                    "pointer-events", "none"
+                ]
+                appendChild content node
+                chromeNodes.Add node
 
     /// What sits on top of the cells: the selection's fill handle, the input
     /// message of the selected cell's validation, and the validation notice.
@@ -2922,6 +3021,12 @@ type Spreadsheet(container: Element) =
             clearTimeoutId id
             noticeTimer <- None
         | None -> ()
+        // Object URLs made for the pictures on display.
+        for sheetModel in Array.append [| model |] sheets do
+            for drawing in sheetModel.Drawings do
+                match drawing.Content with
+                | Picture (_, _, data) -> releasePicture data
+                | KeptObject _ -> ()
         match gridContainer with
         | Some gridDiv -> detach gridDiv
         | None -> ()
@@ -3127,6 +3232,45 @@ type Spreadsheet(container: Element) =
 
     /// Render the current model through the shared portable paint command path.
     member _.RenderPortableCanvas(canvas: Element) = renderPortablePaintToCanvas canvas
+
+    /// How many of the portable paint items are drawing objects (pictures;
+    /// the frame fill of a chart or other kept object counts once each).
+    member _.PortableDrawingItemCount() =
+        SpreadsheetPaint.buildDrawingPaintItems model (currentViewport())
+        |> List.filter (function
+            | SpreadsheetPaint.DrawImage _ -> true
+            | SpreadsheetPaint.FillRect (_, "#f6f8fa") -> true
+            | _ -> false)
+        |> List.length
+
+    /// The active sheet's pictures and other drawing objects, back to front:
+    /// { kind: "picture" | "chart" | "shape" | "other", name, description,
+    ///   row, col (anchor cell), x, y, width, height (sheet pixels) }.
+    member _.GetDrawings() : obj array =
+        model.Drawings
+        |> List.map (fun drawing ->
+            let rect = SpreadsheetLayout.drawingRect model drawing
+            createObj [
+                "kind" ==> (match drawing.Content with Picture _ -> "picture" | KeptObject (kind, _) -> kind)
+                "name" ==> drawing.Name
+                "description" ==> drawing.Description
+                "row" ==> drawing.Anchor.FromRow
+                "col" ==> drawing.Anchor.FromCol
+                "x" ==> rect.X
+                "y" ==> rect.Y
+                "width" ==> rect.Width
+                "height" ==> rect.Height
+            ])
+        |> List.toArray
+
+    /// The comment thread on a cell of the active sheet: { author, date,
+    /// text, replies: [{ author, date, text }] }, or null.
+    member _.GetCommentThread(row: int, col: int) : obj =
+        match Map.tryFind { Row = row; Col = col } model.Threads with
+        | None -> null
+        | Some thread ->
+            let entry (comment: CommentThread) = [ "author" ==> comment.Author; "date" ==> comment.Date; "text" ==> comment.Text ]
+            createObj (entry thread @ [ "replies" ==> (thread.Replies |> List.map (fun reply -> createObj (entry reply)) |> List.toArray) ])
 
     member _.PortablePaintItemCount() =
         SpreadsheetPaint.buildViewportPaintItems model (currentViewport()) |> List.length

@@ -187,6 +187,63 @@ eq "fresh: defined names" (freshBack.NamedRanges |> List.map (fun n -> n.Name.To
 let freshAgain = Bridge.Import.importWorkbook freshBack
 eq "fresh: import of the export" (freshAgain.Sheets.[0].Model.Cells |> Map.map (fun _ cell -> cell.Value)) (fresh.Cells |> Map.map (fun _ cell -> match cell.Value with CellValue.Formula (text, cached) -> CellValue.Formula (text.TrimStart '=', cached) | value -> value))
 
+// ---- pictures, kept objects and threaded comments are in the model ---------
+// synthetic-drawing-extras.xlsx: a picture B3..D7 (two-cell, editAs oneCell), a
+// chart at F (one-cell) in front of it, a threaded comment with a reply on B2.
+let extrasWb = load "test-documents-excel/synthetic-drawing-extras.xlsx"
+let extrasImported = Bridge.Import.importWorkbook extrasWb
+let extrasModel = extrasImported.Sheets.[0].Model
+let describeDrawing (drawing: SheetDrawing) =
+    (match drawing.Content with Picture (contentType, _, data) -> "picture " + contentType + " " + string data.Length | KeptObject (kind, _) -> kind),
+    drawing.Name, drawing.Anchor.Kind, (drawing.Anchor.FromRow, drawing.Anchor.FromCol), (drawing.Anchor.ToRow, drawing.Anchor.ToCol), drawing.Anchor.EditAs
+eq "import: drawings in z-order" (extrasModel.Drawings |> List.map describeDrawing)
+    [ ("picture image/png 8", Some "Logo", "twoCell", (2, 1), (Some 6, Some 3), Some "oneCell")
+      ("chart", Some "Chart 1", "oneCell", (extrasModel.Drawings.[1].Anchor.FromRow, 5), (None, None), None) ]
+eq "import: anchor offsets and sizes are pixels" (extrasModel.Drawings.[0].Anchor.FromOffsetX, extrasModel.Drawings.[0].Anchor.Width, extrasModel.Drawings.[1].Anchor.Width) (1.0, Some 128.0, Some 320.0)
+eq "import: threaded comment with its reply" (extrasModel.Threads |> Map.toList |> List.map (fun (a, thread) -> a.Row, a.Col, thread.Author, thread.Text, thread.Replies |> List.map (fun reply -> reply.Author, reply.Text)))
+    [ 1, 1, Some "Ann Author", "Is this right?", [ Some "Bob Reply", "Yes & checked" ] ]
+ok "import: the thread's cell shows a comment marker" ((extrasModel.Cells.[addr 1 1]).Format.HasComment) "no marker"
+let extrasInput (model: SpreadsheetModel) = inputOf extrasImported [| model |] extrasImported.Context.Names
+// Untouched: the file's drawings and threads go back exactly.
+eq "export: untouched extras are the file's" ((Bridge.Export.toWorkbookOut (extrasInput extrasModel)).Sheets.[0].Extras) ((XlsxWriter.packageFromReaderWorkbook extrasWb).Sheets.[0].Extras)
+// Two rows inserted above everything, one column inserted before column C.
+let pictureRect (model: SpreadsheetModel) = Rbt.Spreadsheet.Layout.drawingRect model model.Drawings.[0]
+let movedModel = extrasModel |> applyStructureEdit (InsertRows (0, 2)) |> applyStructureEdit (InsertCols (2, 1))
+eq "edit: the picture moved with its rows and kept its size (oneCell)" (describeDrawing movedModel.Drawings.[0]) ("picture image/png 8", Some "Logo", "twoCell", (4, 1), (Some 8, Some 3), Some "oneCell")
+eq "edit: the chart moved down and right" ((movedModel.Drawings.[1].Anchor.FromRow, movedModel.Drawings.[1].Anchor.FromCol)) (extrasModel.Drawings.[1].Anchor.FromRow + 2, 6)
+eq "edit: the thread moved with its cell" (movedModel.Threads |> Map.toList |> List.map (fun (a, _) -> a.Row, a.Col)) [ 3, 1 ]
+eq "edit: the picture is drawn two rows lower" ((pictureRect movedModel).Y - (pictureRect extrasModel).Y) 50.0
+let movedBack = reread (Bridge.Export.toWorkbookOut (extrasInput movedModel))
+let movedExtras = movedBack.Sheets.[0].Extras
+eq "export: picture re-anchored, same data" (movedExtras.Images |> List.map (fun image -> image.Anchor.FromRow, image.Anchor.FromCol, image.Anchor.ToRow, image.Anchor.ToCol, image.Anchor.FromColOffset, image.Data, image.Name))
+    [ 4, 1, Some 8, Some 3, 9525.0, extrasWb.Sheets.[0].Extras.Images.[0].Data, Some "Logo" ]
+eq "export: chart re-anchored, still the chart" (movedExtras.Objects |> List.map (fun item -> item.Kind, item.Name, item.Anchor.FromRow, item.Anchor.FromCol, item.Anchor.Width, item.Xml.Contains "<c:chart r:id=\"rId2\"/>"))
+    [ "chart", Some "Chart 1", extrasModel.Drawings.[1].Anchor.FromRow + 2, 6, extrasWb.Sheets.[0].Extras.Objects.[0].Anchor.Width, true ]
+eq "export: z-order kept" (movedExtras.Images.[0].Anchor.Order < movedExtras.Objects.[0].Anchor.Order) true
+eq "export: thread at its new cell, author and reply kept" (movedExtras.ThreadedComments |> List.map (fun thread -> thread.CellRef.Column, thread.CellRef.Row, thread.Author, thread.Text, thread.Replies |> List.map (fun reply -> reply.Author, reply.Text, reply.CellRef.Row)))
+    [ "B", 4, Some "Ann Author", "Is this right?", [ Some "Bob Reply", "Yes & checked", 4 ] ]
+ok "export: the chart part is still in the package" (movedBack.Preserved.Parts |> List.exists (fun (path, _) -> path.EndsWith "charts/chart1.xml")) "chart part missing"
+// Deleting the rows a drawing is anchored in does not delete the drawing: it moves to the deletion.
+let deletedModel = extrasModel |> applyStructureEdit (DeleteRows (1, 4))
+eq "edit: deleting the anchor rows keeps the picture" (deletedModel.Drawings.Length, deletedModel.Drawings.[0].Anchor.FromRow, deletedModel.Drawings.[0].Anchor.FromOffsetY) (2, 1, 0.0)
+eq "edit: deleting the thread's row removes the thread" (deletedModel.Threads.Count) 0
+// A two-cell anchor that sizes with its cells grows when a row is inserted inside it.
+let sizing = { extrasModel with Drawings = extrasModel.Drawings |> List.map (fun drawing -> { drawing with Anchor = { drawing.Anchor with EditAs = None } }) }
+eq "edit: a move-and-size anchor grows with an inserted row" ((applyStructureEdit (InsertRows (4, 1)) sizing).Drawings.[0].Anchor |> fun anchor -> anchor.FromRow, anchor.ToRow) (2, Some 7)
+// The portable painter paints the picture and a labelled frame for the chart.
+let paintViewport : Rbt.Spreadsheet.Layout.Viewport = { ScrollX = 0.0; ScrollY = 0.0; Width = 1200.0; Height = 800.0; HeaderHeight = 30.0; RowHeaderWidth = 50.0; Measurer = None }
+let painted = Rbt.Spreadsheet.Paint.buildPaintItems extrasModel paintViewport
+eq "paint: the picture at its anchor" (painted |> List.choose (function Rbt.Spreadsheet.Paint.DrawImage (rect, image) -> Some (rect.X, rect.Y, image.ContentType, image.Data.Length, image.Label) | _ -> None))
+    [ 50.0 + (pictureRect extrasModel).X, 30.0 + (pictureRect extrasModel).Y, "image/png", 8, "Picture: Logo" ]
+ok "paint: a labelled frame for the chart" (painted |> List.exists (function Rbt.Spreadsheet.Paint.DrawText text -> text.Text = "Chart: Chart 1" | _ -> false)) "no chart label"
+eq "paint: the viewport items scroll the drawing with the body" (Rbt.Spreadsheet.Paint.buildViewportPaintItems extrasModel { paintViewport with ScrollY = 40.0 } |> List.choose (fun item -> match item.Item with Rbt.Spreadsheet.Paint.DrawImage (rect, _) -> Some (item.Zone, rect.Y) | _ -> None))
+    [ Rbt.Spreadsheet.Layout.BodyZone, 30.0 + (pictureRect extrasModel).Y - 40.0 ]
+// A picture in a workbook made in the editor is written; threads too.
+let pictured = { fresh with Drawings = [ extrasModel.Drawings.[0] ]; Threads = Map.ofList [ addr 0 0, { Id = "{BBBBBBBB-0000-0000-0000-000000000001}"; Author = Some "New Author"; PersonId = None; Date = None; Text = "typed here"; Replies = [] } ] }
+let picturedBack = reread (Bridge.Export.toWorkbookOut { Sheets = [| pictured |]; Names = [| "First" |]; Visible = [| true |]; ActiveSheetIndex = 0; DefinedNames = Map.empty; Source = None; Macros = None })
+eq "fresh: picture and thread written" (picturedBack.Sheets.[0].Extras.Images |> List.map (fun image -> image.Data.Length, image.Anchor.FromRow), picturedBack.Sheets.[0].Extras.ThreadedComments |> List.map (fun thread -> thread.Author, thread.Text))
+    ([ 8, 2 ], [ Some "New Author", "typed here" ])
+
 // ---- import options ----------------------------------------------------------
 let roomy = Bridge.Import.importWorkbookWith Bridge.editorImportOptions wb
 ok "editor options leave room to grow" (roomy.Sheets.[0].Model.RowCount >= imported.Sheets.[0].Model.RowCount + 100 && roomy.Sheets.[0].Model.ColCount >= imported.Sheets.[0].Model.ColCount + 20) "model is not larger"

@@ -209,6 +209,8 @@ let rec private itemCommands (item: P.PaintItem) =
               yield! placeholder { X = 0.0; Y = 0.0; Width = 24.0; Height = 24.0 } ]
     | P.VecGroup ((a, b, c, d, e, f), children) ->
         [ Cmd.Group({ M11 = a; M12 = b; M21 = c; M22 = d; DX = e; DY = f }, 1.0, children |> List.collect itemCommands) ]
+    // Pictures are not decoded by this renderer yet: a labelled frame stands for them.
+    | P.DrawImage (r, image) -> P.drawingFrameItems r image.Label |> List.collect itemCommands
 
 let private clipCommands (clip: L.Rect) (cmds: Cmd list) =
     if clip.Width <= 0.0 || clip.Height <= 0.0 then []

@@ -525,6 +525,10 @@ let rec private appendPaintItem (commands: System.Collections.Generic.List<Cmd>)
         for child in children do
             appendPaintItem childCommands child
         commands.Add(Cmd.Group(xform, 1.0, resizeArrayToList childCommands))
+    // Pictures are not decoded by this renderer yet: a labelled frame stands for them.
+    | DrawImage (rect, image) ->
+        for frameItem in drawingFrameItems rect image.Label do
+            appendPaintItem commands frameItem
 
 let private renderPaintItem item =
     let commands = System.Collections.Generic.List<Cmd>()

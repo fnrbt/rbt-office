@@ -587,6 +587,59 @@ let paperSizePoints (code: int) : float * float =
     | _ -> 612.0, 792.0      // unknown → Letter
 
 /// Spreadsheet model (forward declaration for Command type)
+/// Where a drawing object sits on the sheet (as xdr:twoCellAnchor /
+/// oneCellAnchor / absoluteAnchor). Rows and columns are 0-based; offsets,
+/// positions and sizes are pixels at 100% (9525 EMU each).
+type DrawingAnchor = {
+    /// "twoCell" | "oneCell" | "absolute"
+    Kind: string
+    FromRow: int
+    FromCol: int
+    /// Offset of the top-left corner inside its cell.
+    FromOffsetX: float
+    FromOffsetY: float
+    /// The bottom-right corner of a two-cell anchor.
+    ToRow: int option
+    ToCol: int option
+    ToOffsetX: float
+    ToOffsetY: float
+    /// Position of an absolute anchor.
+    X: float
+    Y: float
+    /// Size given by the anchor (one-cell, absolute) or by the object itself.
+    Width: float option
+    Height: float option
+    /// How a two-cell anchor follows its cells: "twoCell" (move and size,
+    /// the default), "oneCell" (move only) or "absolute" (stay put).
+    EditAs: string option
+}
+
+type DrawingContent =
+    /// A picture: content type ("image/png"), file extension, data.
+    | Picture of contentType: string * extension: string * data: byte[]
+    /// An object the editor does not model (chart, shape, group, ...), kept
+    /// as the XML of its anchor element: kind ("chart" | "shape" | "other").
+    | KeptObject of kind: string * xml: string
+
+/// A picture or other drawing object on a sheet.
+type SheetDrawing = {
+    Anchor: DrawingAnchor
+    Name: string option
+    Description: string option
+    Content: DrawingContent
+}
+
+/// A threaded comment: a comment with an author, a date and replies.
+type CommentThread = {
+    Id: string
+    Author: string option
+    /// Id of the workbook's person entry behind the author.
+    PersonId: string option
+    Date: string option
+    Text: string
+    Replies: CommentThread list
+}
+
 type SpreadsheetModel = {
     /// Sparse cell storage - only non-empty cells
     Cells: Map<CellAddress, CellData>
@@ -703,6 +756,13 @@ type SpreadsheetModel = {
     /// Workbook_Open) and user-run macros live here; `Vba.runOnModel` executes
     /// it. Persisted/round-tripped separately from cell data.
     Macros: string
+
+    /// Pictures and other drawing objects, back to front. They move with
+    /// their anchor cells when rows or columns are inserted or deleted.
+    Drawings: SheetDrawing list
+
+    /// Threaded comments by cell (shown where a cell's comment is shown).
+    Threads: Map<CellAddress, CommentThread>
 }
 
 /// Command for undo/redo (must come after SpreadsheetModel)
@@ -758,6 +818,8 @@ let createEmpty rowCount colCount = {
     Spill = Map.empty
     Validations = Map.empty
     Macros = ""
+    Drawings = []
+    Threads = Map.empty
 }
 
 /// Convert column index to letter (0="A", 25="Z", 26="AA")
@@ -1820,8 +1882,42 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
             | Some moved -> Map.add moved (moveValidation validation) acc
             | None -> acc) Map.empty
 
+    // Drawing objects follow their anchor cells. An object whose anchor row
+    // or column is deleted is not deleted with it: it moves to where the
+    // deletion happened. A two-cell anchor grows or shrinks with what is
+    // inserted or deleted between its corners, unless it says "oneCell"
+    // (move, keep the size) or "absolute" (stay).
+    let drawings =
+        let moveDrawing (drawing: SheetDrawing) =
+            let anchor = drawing.Anchor
+            if anchor.Kind = "absolute" || anchor.EditAs = Some "absolute" then drawing
+            else
+                let fromIndex = if onRows then anchor.FromRow else anchor.FromCol
+                let fromOffset = if onRows then anchor.FromOffsetY else anchor.FromOffsetX
+                let newFrom, newFromOffset =
+                    match moveIndex fromIndex with
+                    | Some moved -> moved, fromOffset
+                    | None -> at, 0.0
+                let toIndex = if onRows then anchor.ToRow else anchor.ToCol
+                let toOffset = if onRows then anchor.ToOffsetY else anchor.ToOffsetX
+                let newTo, newToOffset =
+                    match toIndex with
+                    | None -> None, toOffset
+                    | Some index when anchor.EditAs = Some "oneCell" -> Some (max newFrom (index + (newFrom - fromIndex))), toOffset
+                    | Some index ->
+                        match moveIndex index with
+                        | Some moved -> Some (max newFrom moved), toOffset
+                        | None -> Some (max newFrom at), 0.0
+                let moved =
+                    if onRows then { anchor with FromRow = newFrom; FromOffsetY = newFromOffset; ToRow = newTo; ToOffsetY = newToOffset }
+                    else { anchor with FromCol = newFrom; FromOffsetX = newFromOffset; ToCol = newTo; ToOffsetX = newToOffset }
+                if moved = anchor then drawing else { drawing with Anchor = moved }
+        if model.Drawings.IsEmpty then model.Drawings else model.Drawings |> List.map moveDrawing
+
     let delta = if isInsert then count else -count
     { model with
+        Drawings = drawings
+        Threads = (if Map.isEmpty model.Threads then model.Threads else moveAddressMap model.Threads)
         Cells = cells
         PageSetup = pageSetup
         Selection = selection

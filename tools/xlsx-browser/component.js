@@ -339,3 +339,90 @@ checks['export-edited'] = async () => {
     close();
     return lines;
 };
+
+// Pictures, charts and threaded comments in the grid: shown, moved with inserted rows /
+// columns, and exported where they now are.
+checks['drawings-in-grid'] = async () => {
+    const { lines, check, note } = makeLog();
+    const anchors = (wb, sheetName) => {
+        const sheet = excel.sheet(sheetName, wb);
+        return [...excel.images(sheet).map((image) => ['picture', image.name ?? null, image.anchor.fromRow, image.anchor.fromCol, image.anchor.toRow ?? null, image.data.length, sum(image.data)]),
+            ...excel.drawingObjects(sheet).map((item) => [item.kind, item.name ?? null, item.anchor.fromRow, item.anchor.fromCol, item.anchor.toRow ?? null])];
+    };
+    for (const file of ['tests/test-documents-excel/synthetic-drawing-extras.xlsx', 'tests/test-documents-excel/phpsp-32chartreadwrite.xlsx', 'tests/test-documents-excel/phpsp-27template.xlsx', 'tests/real-world/chart-zoo.xlsx']) {
+        const short = file.split('/').pop();
+        const { grid, host, close } = mountGrid();
+        try {
+            const original = await bytesOf(file);
+            await grid.ImportXlsx(original.slice());
+            const before = await excel.load(original.slice());
+            // The sheet with the most drawing objects.
+            const sheetNames = grid.GetSheetNames();
+            const counts = sheetNames.map((name) => anchors(before, name).length);
+            const index = counts.indexOf(Math.max(...counts));
+            if (index !== grid.GetActiveSheetIndex()) grid.SwitchSheet(index);
+            const name = sheetNames[index], fileAnchors = anchors(before, name);
+            const model = grid.GetSheets()[index];
+            const drawings = Array.from(model.Drawings);
+            check(`${short}: every picture and kept object is in the model`, drawings.length, fileAnchors.length);
+            const pictures = fileAnchors.filter((a) => a[0] === 'picture').length;
+            const nodes = () => [...host.querySelectorAll('.spreadsheet-drawing')];
+            const boxes = () => nodes().map((node) => { const r = node.getBoundingClientRect(), c = host.querySelector('.spreadsheet-content').getBoundingClientRect(); return [Math.round(r.left - c.left), Math.round(r.top - c.top), Math.round(r.width), Math.round(r.height)]; });
+            check(`${short}: the grid shows them (pictures as images, the rest as labelled frames)`, [nodes().filter((n) => n.tagName === 'IMG').length, nodes().filter((n) => n.tagName === 'DIV').length], [pictures, fileAnchors.length - pictures]);
+            if (pictures > 0) {
+                const image = nodes().find((n) => n.tagName === 'IMG');
+                await image.decode().catch(() => {});
+                note(`${short}: first picture ${image.naturalWidth}x${image.naturalHeight}, shown ${boxes()[nodes().indexOf(image)].slice(2).join('x')}`);
+                if (!/synthetic/.test(short)) check(`${short}: the picture decodes`, image.naturalWidth > 0, true);
+            }
+            const frame = nodes().find((n) => n.tagName === 'DIV');
+            if (frame) check(`${short}: a kept object's frame says what it is`, /^(Chart|Shape|Object)/.test(frame.textContent), true);
+            check(`${short}: every drawing has a size on screen`, boxes().every((b) => b[2] >= 1 && b[3] >= 1), true);
+            // The portable painter paints them too.
+            const canvas = document.createElement('canvas');
+            document.body.appendChild(canvas);
+            grid.RenderPortableCanvas(canvas);
+            check(`${short}: the portable painter is given the drawings`, grid.PortableDrawingItemCount(), fileAnchors.length);
+            if (pictures > 0 && !/synthetic/.test(short)) {
+                // The painter decodes a picture on first use; once decoded the canvas shows it, not its frame.
+                await new Promise((resolve) => setTimeout(resolve, 300));
+                grid.RenderPortableCanvas(canvas);
+                const first = grid.GetDrawings().find((d) => d.kind === 'picture');
+                const x = Math.round(50 + first.x + 2), y = Math.round(30 + first.y + 2), w = Math.max(1, Math.min(canvas.width - x, Math.round(first.width - 4))), h = Math.max(1, Math.min(canvas.height - y, Math.round(first.height - 4)));
+                const data = canvas.getContext('2d').getImageData(x, y, w, h).data;
+                const colours = new Set();
+                for (let i = 0; i < data.length; i += 4) colours.add((data[i] << 16) | (data[i + 1] << 8) | data[i + 2]);
+                if (x + 20 < canvas.width && y + 20 < canvas.height) check(`${short}: the canvas shows the picture's pixels (${colours.size} colours)`, colours.size > 8, true);
+                else note(`${short}: the first picture is outside the ${canvas.width}x${canvas.height} canvas (at ${x},${y})`);
+            }
+            canvas.remove();
+
+            // Two rows inserted at the top: everything on screen moves down two rows, and so does the export.
+            const boxesBefore = boxes();
+            grid.InsertRow(0); grid.InsertRow(0);
+            const rowsHeight = 50;
+            check(`${short}: the drawings move down with two inserted rows`, boxes().map((b, i) => [b[0] - boxesBefore[i][0], b[1] - boxesBefore[i][1]]), boxesBefore.map(() => [0, rowsHeight]));
+            const saved = await grid.ExportXlsx();
+            const after = await excel.load(saved.slice());
+            const absolute = new Set(Array.from(model.Drawings, (d, i) => (d.Anchor.Kind === 'absolute' ? i : -1)));
+            const expected = fileAnchors.map((a) => { const copy = [...a]; copy[2] += 2; if (copy[4] != null) copy[4] += 2; return copy; });
+            const sortKey = (a) => JSON.stringify([a[0], a[1], a[3]]);
+            check(`${short}: exported at their new rows, pictures byte for byte`, anchors(after, name).sort((x, y) => sortKey(x).localeCompare(sortKey(y))), absolute.size > 1 ? null : expected.sort((x, y) => sortKey(x).localeCompare(sortKey(y))));
+            check(`${short}: chart parts byte for byte`, changedParts(await partsOf(original, KEPT_PARTS), await partsOf(saved, KEPT_PARTS)), []);
+            check(`${short}: z-order kept`, zOrder(after), zOrder(before));
+            grid.Undo(); grid.Undo();
+            check(`${short}: undo puts them back`, boxes(), boxesBefore);
+            // Threaded comments: a marker and the thread as the cell's tooltip; they follow their cell.
+            const threads = excel.threadedComments(excel.sheet(name, before));
+            if (threads.length > 0) {
+                const titles = () => [...host.querySelectorAll('.spreadsheet-content [title]')].map((n) => n.getAttribute('title')).filter((t) => t.includes('Is this right?'));
+                check(`${short}: the thread is shown with its author and reply`, titles().map((t) => [t.includes('Ann Author'), t.includes('Bob Reply'), t.includes('Yes & checked')]), [[true, true, true]]);
+                grid.InsertRow(0);
+                const moved = await excel.load((await grid.ExportXlsx()).slice());
+                check(`${short}: the thread is exported at its new cell`, excel.threadedComments(excel.sheet(name, moved)).map((t) => [t.ref ?? t.cellRef ?? null, t.author ?? null, (t.replies ?? []).length]), threads.map((t) => [(t.ref ?? t.cellRef ?? '').replace(/\d+$/, (n) => String(Number(n) + 1)), t.author ?? null, (t.replies ?? []).length]));
+            }
+        } catch (e) { lines.push(`FAIL ${short} threw ` + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+        close();
+    }
+    return lines;
+};

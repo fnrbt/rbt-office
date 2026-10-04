@@ -204,6 +204,139 @@ let buildWorkbookContext (models: SpreadsheetModel array) (names: string array) 
       Tables = Map.ofList tables
       Names = definedNames }
 
+/// Pixels at 100% per EMU (the unit drawing anchors use in the file).
+let private emuPerPixel = 9525.0
+
+/// A reader anchor (EMU) as a model anchor (pixels).
+let private anchorOfReader (anchor: XlsxReader.SheetAnchor) : DrawingAnchor =
+    { Kind = anchor.Kind
+      FromRow = anchor.FromRow
+      FromCol = anchor.FromCol
+      FromOffsetX = anchor.FromColOffset / emuPerPixel
+      FromOffsetY = anchor.FromRowOffset / emuPerPixel
+      ToRow = anchor.ToRow
+      ToCol = anchor.ToCol
+      ToOffsetX = anchor.ToColOffset / emuPerPixel
+      ToOffsetY = anchor.ToRowOffset / emuPerPixel
+      X = anchor.X / emuPerPixel
+      Y = anchor.Y / emuPerPixel
+      Width = anchor.Width |> Option.map (fun emu -> emu / emuPerPixel)
+      Height = anchor.Height |> Option.map (fun emu -> emu / emuPerPixel)
+      EditAs = anchor.EditAs }
+
+/// A model anchor as a reader anchor; `order` is its z-order on the sheet.
+let private anchorToReader (order: int) (anchor: DrawingAnchor) : XlsxReader.SheetAnchor =
+    let emu (pixels: float) = Math.Round (pixels * emuPerPixel)
+    { Kind = anchor.Kind
+      FromCol = anchor.FromCol
+      FromColOffset = emu anchor.FromOffsetX
+      FromRow = anchor.FromRow
+      FromRowOffset = emu anchor.FromOffsetY
+      ToCol = anchor.ToCol
+      ToColOffset = emu anchor.ToOffsetX
+      ToRow = anchor.ToRow
+      ToRowOffset = emu anchor.ToOffsetY
+      X = emu anchor.X
+      Y = emu anchor.Y
+      Width = anchor.Width |> Option.map emu
+      Height = anchor.Height |> Option.map emu
+      EditAs = anchor.EditAs
+      Order = order }
+
+/// The sheet's pictures and kept objects as model drawings, back to front.
+let private drawingsOfExtras (extras: XlsxReader.SheetExtras) : SheetDrawing list =
+    (extras.Images
+     |> List.map (fun image ->
+        image.Anchor.Order, 0,
+        ({ Anchor = anchorOfReader image.Anchor
+           Name = image.Name
+           Description = image.Description
+           Content = Picture (image.ContentType, image.Extension, image.Data) } : SheetDrawing)))
+    @ (extras.Objects
+       |> List.map (fun item ->
+        item.Anchor.Order, 1,
+        ({ Anchor = anchorOfReader item.Anchor
+           Name = item.Name
+           Description = None
+           Content = KeptObject (item.Kind, item.Xml) } : SheetDrawing)))
+    |> List.sortBy (fun (order, kind, _) -> order, kind)
+    |> List.map (fun (_, _, drawing) -> drawing)
+
+let rec private threadOfReader (comment: XlsxReader.ThreadedComment) : CommentThread =
+    { Id = comment.Id
+      Author = comment.Author
+      PersonId = comment.PersonId
+      Date = comment.Date
+      Text = comment.Text
+      Replies = comment.Replies |> List.map threadOfReader }
+
+let rec private threadToReader (addr: CellAddress) (thread: CommentThread) : XlsxReader.ThreadedComment =
+    { CellRef = { Column = columnToLetter addr.Col; Row = addr.Row + 1 }
+      Id = thread.Id
+      Author = thread.Author
+      PersonId = thread.PersonId
+      Date = thread.Date
+      Text = thread.Text
+      Replies = thread.Replies |> List.map (threadToReader addr) }
+
+/// The `<from>` / `<to>` marker of a kept object's anchor element, rewritten
+/// for a new cell position. The element is otherwise written back unchanged.
+let private rewriteMarker (xml: string) (name: string) (col: int) (colOffset: float) (row: int) (rowOffset: float) : string =
+    // The marker element with whatever prefix the file uses: <xdr:from> ... </xdr:from>.
+    let closeAt = xml.IndexOf (":" + name + ">")
+    let openAt = if closeAt < 0 then -1 else xml.LastIndexOf ('<', closeAt)
+    if openAt < 0 || xml.Substring(openAt + 1, closeAt - openAt - 1).Contains "/" then xml
+    else
+        let prefix = xml.Substring(openAt + 1, closeAt - openAt - 1)
+        let closing = sprintf "</%s:%s>" prefix name
+        let endAt = xml.IndexOf (closing, closeAt)
+        if endAt < 0 then xml
+        else
+            let emu (pixels: float) = string (int64 (Math.Round (pixels * emuPerPixel)))
+            let marker =
+                sprintf "<%s:%s><%s:col>%d</%s:col><%s:colOff>%s</%s:colOff><%s:row>%d</%s:row><%s:rowOff>%s</%s:rowOff>%s"
+                    prefix name prefix col prefix prefix (emu colOffset) prefix prefix row prefix prefix (emu rowOffset) prefix closing
+            xml.Substring(0, openAt) + marker + xml.Substring(endAt + closing.Length)
+
+/// The drawing objects and threaded comments of a model in the reader's
+/// shape, for the writer. `original` supplies what only the file knows (the
+/// relationships kept objects refer to, sheetFormatPr, column definitions).
+let private extrasOfModel (original: XlsxReader.SheetExtras) (before: SpreadsheetModel option) (model: SpreadsheetModel) : XlsxReader.SheetExtras =
+    let drawingsUnchanged =
+        match before with
+        | Some baseline -> obj.ReferenceEquals(baseline.Drawings, model.Drawings) || baseline.Drawings = model.Drawings
+        | None -> false
+    let threadsUnchanged =
+        match before with
+        | Some baseline -> obj.ReferenceEquals(baseline.Threads, model.Threads) || baseline.Threads = model.Threads
+        | None -> false
+    let images, objects =
+        if drawingsUnchanged then original.Images, original.Objects
+        else
+            let images = ResizeArray<XlsxReader.SheetImage>()
+            let objects = ResizeArray<XlsxReader.SheetObject>()
+            model.Drawings
+            |> List.iteri (fun order drawing ->
+                let anchor = anchorToReader order drawing.Anchor
+                match drawing.Content with
+                | Picture (contentType, extension, data) ->
+                    images.Add { Anchor = anchor; Name = drawing.Name; Description = drawing.Description; ContentType = contentType; Extension = extension; Data = data }
+                | KeptObject (kind, xml) ->
+                    // The element goes back as it was, at the object's current cells.
+                    let moved =
+                        if drawing.Anchor.Kind = "absolute" then xml
+                        else
+                            let withFrom = rewriteMarker xml "from" drawing.Anchor.FromCol drawing.Anchor.FromOffsetX drawing.Anchor.FromRow drawing.Anchor.FromOffsetY
+                            match drawing.Anchor.ToCol, drawing.Anchor.ToRow with
+                            | Some toCol, Some toRow -> rewriteMarker withFrom "to" toCol drawing.Anchor.ToOffsetX toRow drawing.Anchor.ToOffsetY
+                            | _ -> withFrom
+                    objects.Add { Anchor = anchor; Kind = kind; Name = drawing.Name; Xml = moved })
+            List.ofSeq images, List.ofSeq objects
+    let threads =
+        if threadsUnchanged then original.ThreadedComments
+        else model.Threads |> Map.toList |> List.map (fun (addr, thread) -> threadToReader addr thread)
+    { original with Images = images; Objects = objects; ThreadedComments = threads }
+
 module Import =
 
     /// A list validation whose source is a range or a defined name rather than
@@ -640,6 +773,20 @@ module Import =
                         | None -> ()
             | _ -> ()
 
+        // Threaded comments, by cell. The cell shows a comment marker, whether
+        // or not the file also has the legacy placeholder comment for it.
+        let mutable threads = Map.empty<CellAddress, CommentThread>
+        for thread in sheet.Extras.ThreadedComments do
+            let r = thread.CellRef.Row - 1
+            let c = columnIndexOfLetters thread.CellRef.Column
+            if r >= 0 && c >= 0 && not (Map.containsKey { Row = r; Col = c } threads) then
+                let addr : CellAddress = { Row = r; Col = c }
+                threads <- Map.add addr (threadOfReader thread) threads
+                match Map.tryFind addr cellMap with
+                | Some data when not data.Format.HasComment -> cellMap <- Map.add addr { data with Format = { data.Format with HasComment = true } } cellMap
+                | Some _ -> ()
+                | None -> cellMap <- Map.add addr { Value = CellValue.Empty; Format = { defaultFormat with HasComment = true }; Comment = None } cellMap
+
         let model =
             { createEmpty modelRows modelCols with
                 Cells = cellMap
@@ -653,7 +800,9 @@ module Import =
                 ShowGridLines = sheet.ShowGridLines
                 Validations = rules
                 ConditionalFormats = conditionalFormats wb sheet
-                PageSetup = pageSetup sheet }
+                PageSetup = pageSetup sheet
+                Drawings = drawingsOfExtras sheet.Extras
+                Threads = threads }
         { Model = model
           PendingLists = pendingLists
           TableColumns = tableColumns
@@ -1037,7 +1186,11 @@ module Export =
           PrintArea = model.PageSetup.PrintArea |> Option.map rangeRef
           PrintTitleRows = model.PageSetup.RepeatRows |> Option.map (fun (a, b) -> sprintf "$%d:$%d" (a + 1) (b + 1))
           PrintTitleCols = model.PageSetup.RepeatCols |> Option.map (fun (a, b) -> sprintf "$%s:$%s" (columnToLetter a) (columnToLetter b))
-          Extras = XlsxReader.emptySheetExtras }
+          // Pictures and threads of the model. Kept objects need the parts of
+          // the file they came from, so a sheet without a source has none.
+          Extras =
+            extrasOfModel XlsxReader.emptySheetExtras None
+                { model with Drawings = model.Drawings |> List.filter (fun drawing -> match drawing.Content with Picture _ -> true | KeptObject _ -> false) } }
 
     let private sameRef (a: 'T) (b: 'T) = obj.ReferenceEquals(a, b)
 
@@ -1114,9 +1267,12 @@ module Export =
             PrintTitleRows = if before.PageSetup.RepeatRows = model.PageSetup.RepeatRows then original.PrintTitleRows else fromModel.PrintTitleRows
             PrintTitleCols = if before.PageSetup.RepeatCols = model.PageSetup.RepeatCols then original.PrintTitleCols else fromModel.PrintTitleCols
             Extras =
+                // Drawing objects and threaded comments are written from the
+                // model: where the user's row and column edits moved them.
+                let extras = extrasOfModel original.Extras (Some before) model
                 // Column styles are by position: they are kept as long as no column was inserted or deleted.
-                if before.ColCount = model.ColCount then original.Extras
-                else { original.Extras with Columns = []; ColumnStyles = [] } }
+                if before.ColCount = model.ColCount then extras
+                else { extras with Columns = []; ColumnStyles = [] } }
 
     /// The defined names to write. Names that still read as imported are
     /// written as the file had them (their spelling and order); otherwise

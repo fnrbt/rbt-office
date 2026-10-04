@@ -77,6 +77,18 @@ type PaintItem =
     /// x' = a·x + c·y + e, y' = b·x + d·y + f. Used to place/scale a chart
     /// scene into its anchor rect.
     | VecGroup of (float * float * float * float * float * float) * PaintItem list
+    /// A picture stretched over a rectangle. A renderer that cannot decode
+    /// images draws the frame `drawingFrameItems` describes instead.
+    | DrawImage of Rect * PaintImage
+
+/// The data of a picture to paint.
+and PaintImage = {
+    /// "image/png", "image/jpeg", ...
+    ContentType: string
+    Data: byte[]
+    /// What to say when the picture cannot be shown.
+    Label: string
+}
 
 type ViewportPaintItem = {
     Zone: ViewportZone
@@ -1002,6 +1014,46 @@ let selectionPaintItems (model: SpreadsheetModel) (viewport: Viewport): PaintIte
         yield StrokeRect (bounds, "#217346", 2.0)
     ]
 
+/// A labelled frame standing for a drawing object that is not painted as
+/// itself: a chart or another kept object, or a picture on a renderer that
+/// cannot decode images.
+let drawingFrameItems (rect: Rect) (label: string) : PaintItem list =
+    [ FillRect (rect, "#f6f8fa")
+      StrokeRect (rect, "#8a94a6", 1.0)
+      DrawText {
+          Text = label
+          Rect = rect
+          Color = "#4a5568"
+          FontSize = 10.0
+          FontName = None
+          Bold = false
+          Italic = false
+          Underline = false
+          UnderlineDouble = false
+          Strikethrough = false
+          Align = AlignCenter
+          VerticalAlign = VAlignMiddle
+          LineIndex = 0
+          LineCount = 1
+          BaselineShift = 0.0
+          Rotation = 0
+      } ]
+
+/// The sheet's drawing objects, back to front, at sheet coordinates (the same
+/// space as the cell items: headers included, scroll not applied). Pictures
+/// are `DrawImage`; charts and other kept objects a labelled frame.
+let buildDrawingPaintItems (model: SpreadsheetModel) (viewport: Viewport) : PaintItem list =
+    if model.Drawings.IsEmpty then []
+    else
+        [ for drawing in model.Drawings do
+            let rect = drawingRect model drawing
+            if rect.Width >= 1.0 && rect.Height >= 1.0 then
+                let placed = { rect with X = rect.X + viewport.RowHeaderWidth; Y = rect.Y + viewport.HeaderHeight }
+                match drawing.Content with
+                | Picture (contentType, _, data) ->
+                    yield DrawImage (placed, { ContentType = contentType; Data = data; Label = drawingLabel drawing })
+                | KeptObject _ -> yield! drawingFrameItems placed (drawingLabel drawing) ]
+
 let buildPaintItems (model: SpreadsheetModel) (viewport: Viewport): PaintItem list =
     let model = model |> applyFilterRowHeights
     [
@@ -1011,6 +1063,8 @@ let buildPaintItems (model: SpreadsheetModel) (viewport: Viewport): PaintItem li
         // absolute cell coordinates because ScrollX/Y are zero.
         for (_zone, item) in buildCellPaintItems model viewport do
             yield item
+        // Pictures and placeholders for kept objects float over the cells.
+        yield! buildDrawingPaintItems model viewport
         // Freeze divider lines on top of cell strokes but under any
         // selection / DrawText emitted later. The cell-item zone tag is
         // irrelevant here; we draw the divider in the model coordinate
@@ -1048,6 +1102,7 @@ let private translatePaintItem viewport zone item =
         // children stay in group-local coordinates.
         let o = tx { X = 0.0; Y = 0.0; Width = 0.0; Height = 0.0 }
         VecGroup ((a, b, c, d, e + o.X, f + o.Y), children)
+    | DrawImage (rect, image) -> DrawImage (tx rect, image)
 
 let buildViewportPaintItems (model: SpreadsheetModel) (viewport: Viewport): ViewportPaintItem list =
     let model = model |> applyFilterRowHeights
@@ -1115,6 +1170,10 @@ let buildViewportPaintItems (model: SpreadsheetModel) (viewport: Viewport): View
 
         for (zone, item) in buildCellPaintItems model viewport do
             yield { Zone = zone; Item = translatePaintItem viewport zone item }
+
+        // Drawing objects float over the cells and scroll with the body.
+        for item in buildDrawingPaintItems model viewport do
+            yield { Zone = BodyZone; Item = translatePaintItem viewport BodyZone item }
 
         // Freeze dividers paint with the same zone as the body they border,
         // so they scroll with the body horizontally (row divider) or

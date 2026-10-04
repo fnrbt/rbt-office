@@ -122,6 +122,38 @@ let rowTop (model: SpreadsheetModel) (row: int): float =
 let columnLeft (model: SpreadsheetModel) (col: int): float =
     prefixSizeUncached (fun c -> getColumnWidth c model) col
 
+/// Where a drawing object sits on the sheet, in sheet pixels (origin at the
+/// top-left corner of A1, headers not included).
+let drawingRect (model: SpreadsheetModel) (drawing: SheetDrawing) : Rect =
+    let anchor = drawing.Anchor
+    let width = anchor.Width |> Option.defaultValue 0.0
+    let height = anchor.Height |> Option.defaultValue 0.0
+    if anchor.Kind = "absolute" then { X = anchor.X; Y = anchor.Y; Width = width; Height = height }
+    else
+        let left = columnLeft model anchor.FromCol + anchor.FromOffsetX
+        let top = rowTop model anchor.FromRow + anchor.FromOffsetY
+        match anchor.Kind, anchor.ToCol, anchor.ToRow with
+        | "twoCell", Some toCol, Some toRow ->
+            let right = columnLeft model toCol + anchor.ToOffsetX
+            let bottom = rowTop model toRow + anchor.ToOffsetY
+            // Hidden rows / columns can collapse the span; the object's own size is the fallback.
+            { X = left; Y = top
+              Width = (if right - left >= 1.0 then right - left else width)
+              Height = (if bottom - top >= 1.0 then bottom - top else height) }
+        | _ -> { X = left; Y = top; Width = width; Height = height }
+
+/// What a placeholder for a kept drawing object says ("Chart: Sales by region").
+let drawingLabel (drawing: SheetDrawing) : string =
+    let kind =
+        match drawing.Content with
+        | Picture _ -> "Picture"
+        | KeptObject ("chart", _) -> "Chart"
+        | KeptObject ("shape", _) -> "Shape"
+        | KeptObject _ -> "Object"
+    match drawing.Name with
+    | Some name when name.Trim() <> "" -> kind + ": " + name
+    | _ -> kind
+
 let columnX (model: SpreadsheetModel) (viewport: Viewport) (col: int): float =
     viewport.RowHeaderWidth + columnLeft model col
 

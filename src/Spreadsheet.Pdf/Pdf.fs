@@ -427,7 +427,7 @@ let private appendDrawTextOps
 /// Convert one Paint item into a list of PDF draw ops. Coordinates flip from
 /// our top-left CSS-pixel space into PDF's bottom-left point space, with the
 /// `Placement`'s margin offsets and scale baked in.
-let private translateItem (options: RenderOptions) (faceByName: Map<string, PdfFont.TrueTypeFont>) (faceResource: Map<string, string>) (faceRemap: Map<string, Map<int, int>>) (placement: Placement) (item: PaintItem) : PdfDraw.DrawOp list =
+let rec private translateItem (options: RenderOptions) (faceByName: Map<string, PdfFont.TrueTypeFont>) (faceResource: Map<string, string>) (faceRemap: Map<string, Map<int, int>>) (placement: Placement) (item: PaintItem) : PdfDraw.DrawOp list =
     let sz v = v * pxToPt * placement.Scale          // size in pt
     let xPt x = placement.LeftPtOffset + sz x
     let yPdf y = placement.PageHeightPt - placement.TopPtOffset - sz y
@@ -471,6 +471,9 @@ let private translateItem (options: RenderOptions) (faceByName: Map<string, PdfF
         | _ -> []
     match item with
     | (VecPath _ | VecGroup _) -> vec (1.0, 0.0, 0.0, 1.0, 0.0, 0.0) item
+    // Pictures are not embedded in the PDF yet: a labelled frame stands for them.
+    | DrawImage (rect, image) ->
+        drawingFrameItems rect image.Label |> List.collect (translateItem options faceByName faceResource faceRemap placement)
     | FillRect (rect, color) ->
         [ PdfDraw.SetFillColor (parseHexColor (bwFill placement.BlackAndWhite color))
           PdfDraw.Rect (xPt rect.X, yPdf (rect.Y + rect.Height), sz rect.Width, sz rect.Height)
@@ -685,6 +688,7 @@ let private isDegenerate (item: PaintItem) : bool =
         // genuinely zero-length point.
         abs (x2 - x1) < 0.5 && abs (y2 - y1) < 0.5
     | VecPath _ | VecGroup _ -> false
+    | DrawImage (r, _) -> r.Width < 0.5 || r.Height < 0.5
 
 /// The screen path emits a white fill for every cell even when the workbook
 /// has no explicit fill. In print those default fills would cover the
@@ -794,6 +798,7 @@ let private shiftItem (dx: float) (dy: float) (item: PaintItem) : PaintItem =
         VecPath (resizeArrayToList shifted, fill, stroke)
     | VecGroup ((a, b, c, d, e, f), children) ->
         VecGroup ((a, b, c, d, e + dx, f + dy), children)
+    | DrawImage (r, image) -> DrawImage (shiftRect r, image)
 
 /// Iterate the paint items for a contiguous (rowStart..rowEnd × colStart..colEnd)
 /// slice of the model, shifted so the slice's top-left lands at page-local
