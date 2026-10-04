@@ -200,6 +200,100 @@ let columnLeft (model: SpreadsheetModel) (col: int): float =
     elif col <= metrics.ColCount then metrics.ColPrefix.[col]
     else metrics.ColPrefix.[metrics.ColCount] + prefixSizeUncached (fun c -> getColumnWidth (metrics.ColCount + c) model) (col - metrics.ColCount)
 
+/// What is drawn on the edge two cells share.
+type SharedEdge =
+    /// Inside a merged cell: nothing.
+    | EdgeInside
+    /// No border: a grid line, unless the sheet shows none or a filled cell hides it.
+    | EdgeGrid of shown: bool
+    /// The one border of the edge (see `Model.resolveSharedBorder`).
+    | EdgeBorder of BorderStyle
+
+let private visibleBefore (prefix: float array) (index: int) =
+    let mutable at = index - 1
+    while at >= 0 && prefix.[at + 1] <= prefix.[at] do
+        at <- at - 1
+    at
+
+let private visibleAfter (prefix: float array) (count: int) (index: int) =
+    let mutable at = index + 1
+    while at < count && prefix.[at + 1] <= prefix.[at] do
+        at <- at + 1
+    if at < count then at else -1
+
+let private borderFormatAt (model: SpreadsheetModel) (row: int) (col: int) : CellFormat option =
+    match Map.tryFind { Row = row; Col = col } model.Cells with
+    | Some cell -> Some cell.Format
+    | None -> None
+
+let private mergeAt (model: SpreadsheetModel) (row: int) (col: int) : MergedCell option =
+    if model.MergedCells.IsEmpty then None else findMergedCell { Row = row; Col = col } model
+
+/// A cell's fill hides the grid lines around it (a merged cell's is its first cell's).
+let private filledAt (model: SpreadsheetModel) (row: int) (col: int) =
+    let format =
+        match mergeAt model row col with
+        | Some merge -> borderFormatAt model merge.StartRow merge.StartCol
+        | None -> borderFormatAt model row col
+    match format with
+    | Some format -> format.BgColor.IsSome
+    | None -> false
+
+let private sharedEdge (model: SpreadsheetModel) (firstRow: int) (firstCol: int) (secondRow: int) (secondCol: int) (horizontal: bool) : SharedEdge =
+    let hasFirst = firstRow >= 0 && firstCol >= 0
+    let hasSecond = secondRow >= 0 && secondCol >= 0
+    let inside =
+        hasFirst && hasSecond
+        && (match mergeAt model firstRow firstCol, mergeAt model secondRow secondCol with
+            | Some a, Some b -> a.StartRow = b.StartRow && a.StartCol = b.StartCol
+            | _ -> false)
+    if inside then EdgeInside
+    else
+        let side (present: bool) (row: int) (col: int) (pick: CellFormat -> BorderStyle option) =
+            if present then borderFormatAt model row col |> Option.bind pick else None
+        let first = side hasFirst firstRow firstCol (fun format -> if horizontal then format.BorderBottom else format.BorderRight)
+        let second = side hasSecond secondRow secondCol (fun format -> if horizontal then format.BorderTop else format.BorderLeft)
+        match resolveSharedBorder first second with
+        | Some border -> EdgeBorder border
+        | None ->
+            EdgeGrid (model.ShowGridLines
+                      && not (hasFirst && filledAt model firstRow firstCol)
+                      && not (hasSecond && filledAt model secondRow secondCol))
+
+/// The edge above a cell: between it and the cell in the nearest row above
+/// that is shown (hidden rows have no part in it).
+let edgeAbove (model: SpreadsheetModel) (row: int) (col: int) : SharedEdge =
+    let metrics = metricsOf model
+    let above = if row <= metrics.RowCount then visibleBefore metrics.RowPrefix (min row metrics.RowCount) else row - 1
+    sharedEdge model above (if above >= 0 then col else -1) row col true
+
+/// The edge to the left of a cell.
+let edgeLeft (model: SpreadsheetModel) (row: int) (col: int) : SharedEdge =
+    let metrics = metricsOf model
+    let left = if col <= metrics.ColCount then visibleBefore metrics.ColPrefix (min col metrics.ColCount) else col - 1
+    sharedEdge model (if left >= 0 then row else -1) left row col false
+
+/// The edge below a cell: the edge above the next row shown, or the cell's own bottom border in the last one.
+let edgeBelow (model: SpreadsheetModel) (row: int) (col: int) : SharedEdge =
+    let metrics = metricsOf model
+    let below = if row < metrics.RowCount then visibleAfter metrics.RowPrefix metrics.RowCount row else -1
+    if below >= 0 then edgeAbove model below col else sharedEdge model row col -1 -1 true
+
+/// The edge to the right of a cell.
+let edgeRight (model: SpreadsheetModel) (row: int) (col: int) : SharedEdge =
+    let metrics = metricsOf model
+    let right = if col < metrics.ColCount then visibleAfter metrics.ColPrefix metrics.ColCount col else -1
+    if right >= 0 then edgeLeft model row right else sharedEdge model row col -1 -1 false
+
+/// The row shown above a row, the column shown left of a column (-1: none).
+let rowShownBefore (model: SpreadsheetModel) (row: int) =
+    let metrics = metricsOf model
+    if row <= metrics.RowCount then visibleBefore metrics.RowPrefix row else row - 1
+
+let columnShownBefore (model: SpreadsheetModel) (col: int) =
+    let metrics = metricsOf model
+    if col <= metrics.ColCount then visibleBefore metrics.ColPrefix col else col - 1
+
 /// Where a drawing object sits on the sheet, in sheet pixels (origin at the
 /// top-left corner of A1, headers not included).
 let drawingRect (model: SpreadsheetModel) (drawing: SheetDrawing) : Rect =

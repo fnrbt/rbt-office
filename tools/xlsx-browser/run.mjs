@@ -149,6 +149,8 @@ try {
         await debuggerSession.send('Debugger.enable');
         // For the checks that a disposed grid can be collected: a full garbage collection on request.
         await componentTab.exposeFunction('collectGarbage', async () => { await debuggerSession.send('HeapProfiler.enable'); await debuggerSession.send('HeapProfiler.collectGarbage'); });
+        // For the pixel checks of the DOM grid: a screenshot of a region of the page, as a PNG in base64.
+        await componentTab.exposeFunction('screenshotRegion', async (x, y, width, height) => (await componentTab.screenshot({ clip: { x, y, width, height } })).toString('base64'));
         for (const name of await componentTab.evaluate('Object.keys(window.componentChecks)')) {
             if (only && !only.split(',').includes(name)) continue;
             componentChecks++;

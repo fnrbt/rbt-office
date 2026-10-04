@@ -58,5 +58,71 @@ eq "nothing to do keeps the format" (obj.ReferenceEquals(borderFormatInBlock blo
 eq "one cell: outside is its box" (borderFormatInBlock (4, 4, 4, 4) "outside" "thin" "#000000" 4 4 defaultFormat |> sides) "TBLR"
 eq "one cell: inside is nothing" (borderFormatInBlock (4, 4, 4, 4) "inside" "thin" "#000000" 4 4 defaultFormat |> sides) ""
 
+// ---- one line per edge ---------------------------------------------------------
+// The edge two cells share has one border: the stronger of what the two cells
+// state for it (Excel's order of styles, not the stroke width), the later
+// cell's - below / to the right - when they are equally strong.
+module Layout = Rbt.Spreadsheet.Layout
+module Paint = Rbt.Spreadsheet.Paint
+let line style color = Some { Style = style; Color = Some color }
+eq "one side states a border" (resolveSharedBorder (line "thin" "#f00") None, resolveSharedBorder None (line "thin" "#00f")) (line "thin" "#f00", line "thin" "#00f")
+eq "the stronger wins, whichever cell states it" (resolveSharedBorder (line "thick" "#f00") (line "thin" "#00f"), resolveSharedBorder (line "thin" "#f00") (line "medium" "#00f")) (line "thick" "#f00", line "medium" "#00f")
+eq "double outranks thick, thin outranks dashed" (resolveSharedBorder (line "double" "#f00") (line "thick" "#00f"), resolveSharedBorder (line "dashed" "#f00") (line "thin" "#00f")) (line "double" "#f00", line "thin" "#00f")
+eq "equally strong: the later cell's" (resolveSharedBorder (line "medium" "#f00") (line "medium" "#00f")) (line "medium" "#00f")
+eq "a style of none is no border" (resolveSharedBorder (line "none" "#f00") (line "hair" "#00f"), resolveSharedBorder (line "none" "#f00") None) (line "hair" "#00f", None)
+
+let cellWith (change: CellFormat -> CellFormat) = { Value = CellValue.Empty; Format = change defaultFormat; Comment = None }
+let at2 row col : CellAddress = { Row = row; Col = col }
+let sheet =
+    createEmpty 20 10
+    |> setCell (at2 2 2) (cellWith (fun f -> { f with BorderBottom = line "thin" "#f00"; BorderRight = line "thick" "#f00" }))
+    |> setCell (at2 3 2) (cellWith (fun f -> { f with BorderTop = line "thick" "#00f" }))
+    |> setCell (at2 2 3) (cellWith (fun f -> { f with BorderLeft = line "thin" "#00f" }))
+    |> setCell (at2 6 6) (cellWith (fun f -> { f with BgColor = Some "#ffeeaa" }))
+eq "the edge below a cell is the edge above the next" (Layout.edgeBelow sheet 2 2, Layout.edgeAbove sheet 3 2) (Layout.EdgeBorder (line "thick" "#00f").Value, Layout.EdgeBorder (line "thick" "#00f").Value)
+eq "the edge to the right is the edge to the left of the next" (Layout.edgeRight sheet 2 2, Layout.edgeLeft sheet 2 3) (Layout.EdgeBorder (line "thick" "#f00").Value, Layout.EdgeBorder (line "thick" "#f00").Value)
+eq "no border: a grid line" (Layout.edgeAbove sheet 10 5, Layout.edgeLeft sheet 10 5) (Layout.EdgeGrid true, Layout.EdgeGrid true)
+eq "a fill hides the grid lines around its cell" (Layout.edgeAbove sheet 6 6, Layout.edgeLeft sheet 6 6, Layout.edgeBelow sheet 6 6, Layout.edgeRight sheet 6 6) (Layout.EdgeGrid false, Layout.EdgeGrid false, Layout.EdgeGrid false, Layout.EdgeGrid false)
+eq "a sheet without grid lines shows none" (Layout.edgeAbove { sheet with ShowGridLines = false } 10 5) (Layout.EdgeGrid false)
+// A hidden row is not part of an edge: the cells above and below it share one.
+let hidden = { sheet with RowHeights = sheet.RowHeights |> Map.add 4 0.0 } |> setCell (at2 3 4) (cellWith (fun f -> { f with BorderBottom = line "medium" "#0a0" }))
+eq "across a hidden row" (Layout.edgeAbove hidden 5 4) (Layout.EdgeBorder (line "medium" "#0a0").Value)
+// Inside a merged cell there is no edge; its outline is that of the cells along it.
+let merged =
+    { sheet with MergedCells = [ { StartRow = 12; StartCol = 1; EndRow = 13; EndCol = 2 } ] }
+    |> setCell (at2 12 1) (cellWith (fun f -> { f with BorderTop = line "thin" "#000"; BorderLeft = line "thin" "#000" }))
+    |> setCell (at2 13 2) (cellWith (fun f -> { f with BorderBottom = line "medium" "#000"; BorderRight = line "medium" "#000" }))
+eq "inside a merged cell" (Layout.edgeAbove merged 13 1, Layout.edgeLeft merged 12 2) (Layout.EdgeInside, Layout.EdgeInside)
+eq "its outline" (Layout.edgeAbove merged 12 1, Layout.edgeBelow merged 13 2, Layout.edgeRight merged 13 2) (Layout.EdgeBorder (line "thin" "#000").Value, Layout.EdgeBorder (line "medium" "#000").Value, Layout.EdgeBorder (line "medium" "#000").Value)
+
+// The portable painter: a 3 x 3 block with every border medium has one line
+// on each of its 24 edges (4 lines of 3 edges each way), not one per cell side.
+let blockSheet =
+    [ for row in 1 .. 3 do for col in 1 .. 3 -> row, col ]
+    |> List.fold (fun model (row, col) -> setCell (at2 row col) (cellWith (borderFormatInBlock (1, 1, 3, 3) "all" "medium" "#000000" row col)) model) (createEmpty 20 10)
+let borderLines (model: SpreadsheetModel) =
+    Paint.buildPaintItems model (Layout.defaultViewport 800.0 500.0)
+    |> List.choose (function
+        | Paint.GridLine (x1, y1, x2, y2, color, width) when color = "#000000" -> Some (x1, y1, x2, y2, width)
+        | _ -> None)
+let drawn = borderLines blockSheet
+eq "the painter: one line per edge" (drawn.Length, drawn |> List.distinct |> List.length, drawn |> List.forall (fun (_, _, _, _, width) -> width = 2.0)) (24, 24, true)
+// A line runs half its width past both ends: an outline has no notch at its corners.
+let horizontal = drawn |> List.filter (fun (_, y1, _, y2, _) -> y1 = y2)
+let cornerX = horizontal |> List.map (fun (x1, _, _, _, _) -> x1) |> List.min
+let leftmostVertical = drawn |> List.filter (fun (x1, _, x2, _, _) -> x1 = x2) |> List.map (fun (x1, _, _, _, _) -> x1) |> List.min
+eq "a medium line starts 1 px before the corner it leaves from" (leftmostVertical - cornerX) 1.0
+// Two cells with different borders on the edge they share: the painter draws the one of resolveSharedBorder.
+let coloured (model: SpreadsheetModel) color =
+    Paint.buildPaintItems model (Layout.defaultViewport 800.0 500.0)
+    |> List.choose (function Paint.GridLine (_, _, _, _, c, width) when c = color -> Some width | _ -> None)
+let conflict first second =
+    createEmpty 20 10
+    |> setCell (at2 2 2) (cellWith (fun f -> { f with BorderBottom = first }))
+    |> setCell (at2 3 2) (cellWith (fun f -> { f with BorderTop = second }))
+eq "the painter: the stronger border of the two" (coloured (conflict (line "thin" "#ff0000") (line "thick" "#0000ff")) "#0000ff", coloured (conflict (line "thin" "#ff0000") (line "thick" "#0000ff")) "#ff0000") ([ 3.0 ], [])
+eq "the painter: the upper cell's when it is stronger" (coloured (conflict (line "thick" "#ff0000") (line "thin" "#0000ff")) "#ff0000", coloured (conflict (line "thick" "#ff0000") (line "thin" "#0000ff")) "#0000ff") ([ 3.0 ], [])
+eq "the painter: the later cell's on a tie" (coloured (conflict (line "medium" "#ff0000") (line "medium" "#0000ff")) "#0000ff", coloured (conflict (line "medium" "#ff0000") (line "medium" "#0000ff")) "#ff0000") ([ 2.0 ], [])
+
 printfn "stage29-borders: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

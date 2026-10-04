@@ -3,96 +3,216 @@
 import { checks, makeLog, mountGrid, bytesOf, frame, parts, press, valueAt, formatAt, OF, createSpreadsheet, container } from '/component.js';
 
 const cellNode = (host, row, col) => host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"]`);
-const borderOf = (host, row, col, side) => {
-    const style = getComputedStyle(cellNode(host, row, col));
-    return `${style.getPropertyValue(`border-${side}-width`)} ${style.getPropertyValue(`border-${side}-style`)} ${style.getPropertyValue(`border-${side}-color`)}`;
+// What is on screen, pixel by pixel: run.mjs takes a screenshot of a region of the page.
+const screenPixels = async (x, y, width, height) => {
+    const image = new Image();
+    image.src = 'data:image/png;base64,' + await window.screenshotRegion(Math.round(x), Math.round(y), Math.round(width), Math.round(height));
+    await image.decode();
+    const canvas = document.createElement('canvas');
+    canvas.width = image.width; canvas.height = image.height;
+    const context = canvas.getContext('2d');
+    context.drawImage(image, 0, 0);
+    const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    // (Outside the region: no colour that any check looks for.)
+    return { width: canvas.width, height: canvas.height, at: (px, py) => (px < 0 || py < 0 || px >= canvas.width || py >= canvas.height) ? [-999, -999, -999] : [data[(py * canvas.width + px) * 4], data[(py * canvas.width + px) * 4 + 1], data[(py * canvas.width + px) * 4 + 2]] };
 };
-const GRIDLINE = '1px solid rgb(224, 224, 224)';
+const near = (pixel, color) => Math.abs(pixel[0] - color[0]) + Math.abs(pixel[1] - color[1]) + Math.abs(pixel[2] - color[2]) < 60;
+const GRID = [224, 224, 224], BLACK = [0, 0, 0], WHITE = [255, 255, 255];
+// The runs of a colour along a line of pixels: [[start, length], ...].
+const runsOf = (pixels, color) => {
+    const runs = [];
+    pixels.forEach((pixel, i) => { if (near(pixel, color)) { const last = runs[runs.length - 1]; if (last && last[0] + last[1] === i) last[1]++; else runs.push([i, 1]); } });
+    return runs;
+};
+// What a source of pixels (the screen, a canvas) shows around the cells of a grid: lines across
+// an edge and along it. `origin` is where the sheet's cell (0, 0) is in the source.
+const edgeProbe = (source, origin, model, layout) => {
+    const left = (col) => origin.x + layout.columnLeft(model, col), top = (row) => origin.y + layout.rowTop(model, row);
+    const column = (x, y0, y1) => { const out = []; for (let y = Math.round(y0); y < Math.round(y1); y++) out.push(source.at(Math.round(x), y)); return out; };
+    const line = (y, x0, x1) => { const out = []; for (let x = Math.round(x0); x < Math.round(x1); x++) out.push(source.at(x, Math.round(y))); return out; };
+    return {
+        left, top,
+        // The thicknesses of the lines of a colour met going down through the middle of a column, from the middle of one row to the middle of another.
+        across: (col, fromRow, toRow, color) => runsOf(column((left(col) + left(col + 1)) / 2, (top(fromRow) + top(fromRow + 1)) / 2, (top(toRow) + top(toRow + 1)) / 2), color).map((run) => run[1]),
+        // ... and going right through the middle of a row.
+        along: (row, fromCol, toCol, color) => runsOf(line((top(row) + top(row + 1)) / 2, (left(fromCol) + left(fromCol + 1)) / 2, (left(toCol) + left(toCol + 1)) / 2), color).map((run) => run[1]),
+        // Whether every pixel of a horizontal / vertical stretch is of a colour.
+        solidRow: (y, x0, x1, color) => line(y, x0, x1).every((pixel) => near(pixel, color)),
+        solidColumn: (x, y0, y1, color) => column(x, y0, y1).every((pixel) => near(pixel, color)),
+        // The rows of pixels around an edge between two rows that are of the colour all the way from x0 to x1.
+        rowsOf: (row, x0, x1, color) => { const out = []; for (let y = Math.round(top(row)) - 4; y <= Math.round(top(row)) + 4; y++) if (line(y, x0, x1).every((pixel) => near(pixel, color))) out.push(y - Math.round(top(row))); return out; },
+        columnsOf: (col, y0, y1, color) => { const out = []; for (let x = Math.round(left(col)) - 4; x <= Math.round(left(col)) + 4; x++) if (column(x, y0, y1).every((pixel) => near(pixel, color))) out.push(x - Math.round(left(col))); return out; },
+    };
+};
 
-// Cell borders are drawn: each Excel border style gives a complete CSS border
-// (width, line style, colour); ApplyBorder's "outside" / "inside" / "none";
-// an imported workbook's borders; the HTML flavour of a copy carries them.
+// Cell borders, as Excel draws them: one line per edge two cells share - the stronger of the two
+// cells' borders, the later cell's on a tie - at the thickness of its style whether it is inside a
+// block or its outline; outlines continuous through corners and cell boundaries; grid lines one
+// pixel wide, replaced by a border rather than beside it. Checked in the pixels of the DOM grid
+// (a screenshot) and of the portable painter (a canvas), which draw the same edges.
 checks['borders'] = async () => {
-    const { lines, check } = makeLog();
+    const { lines, check, note } = makeLog();
     const { grid, host, close } = mountGrid();
     try {
-        const sides = (row, col) => ['top', 'right', 'bottom', 'left'].map((side) => borderOf(host, row, col, side));
-        grid.SelectRange(1, 1, 3, 3);
-        grid.ApplyBorder('all', 'thin', '#000000');
-        const black = 'rgb(0, 0, 0)';
-        check('all / thin: a 1px solid border on every side of every cell', [sides(1, 1), sides(2, 2), sides(3, 3)].flat().every((v) => v === `1px solid ${black}`), true);
-        check('a cell outside the selection keeps its grid lines', sides(5, 5), [GRIDLINE, GRIDLINE, GRIDLINE, GRIDLINE]);
-        const kinds = { thin: '1px solid', medium: '2px solid', thick: '3px solid', dashed: '1px dashed', dotted: '1px dotted', double: '3px double', hair: '1px dotted',
-                        mediumDashed: '2px dashed', dashDot: '1px dashed', mediumDashDot: '2px dashed', dashDotDot: '1px dashed', mediumDashDotDot: '2px dashed', slantDashDot: '2px dashed' };
-        grid.SelectCell(6, 1);
-        for (const [style, css] of Object.entries(kinds)) {
-            grid.ApplyBorder('top', style, '#ff0000');
-            check(`${style}: computed border-top`, borderOf(host, 6, 1, 'top'), `${css} rgb(255, 0, 0)`);
-        }
-        check('the other sides of that cell are untouched', sides(6, 1).slice(1), [GRIDLINE, GRIDLINE, GRIDLINE]);
-        grid.ApplyBorder('top', 'none', '#000000');
-        check('a style of none clears the side', borderOf(host, 6, 1, 'top'), GRIDLINE);
+        const layout = await import('/spreadsheet/Layout.js');
+        const screen = async () => {
+            await frame();
+            const box = host.getBoundingClientRect();
+            const shot = await screenPixels(box.left, box.top, Math.min(1090, box.width), Math.min(590, box.height));
+            const first = cellNode(host, 0, 0).getBoundingClientRect();
+            return edgeProbe(shot, { x: first.left - box.left, y: first.top - box.top }, grid.GetModel(), layout);
+        };
+        const painted = () => {
+            const canvas = document.createElement('canvas');
+            grid.RenderPortableCanvas(canvas);
+            const context = canvas.getContext('2d');
+            const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
+            // (Where the painter drew nothing the canvas is transparent: the page's white shows.)
+            const at = (x, y) => { const i = (y * canvas.width + x) * 4; return (x < 0 || y < 0 || x >= canvas.width || y >= canvas.height) ? [-999, -999, -999] : data[i + 3] < 8 ? [255, 255, 255] : [data[i], data[i + 1], data[i + 2]]; };
+            return edgeProbe({ at }, { x: 50, y: 30 }, grid.GetModel(), layout);
+        };
+        grid.SelectCell(12, 8);   // (the selection outline is drawn over the cells: away from what is measured)
 
-        // none: one step, the whole selection.
+        // Grid lines: one pixel between two cells, both ways.
+        let probe = await screen();
+        check('grid lines are 1 px wide (three rows and three columns crossed)', [probe.across(5, 5, 8, GRID), probe.along(5, 5, 8, GRID)], [[1, 1, 1], [1, 1, 1]]);
+
+        // "all": every edge of a 3 x 3 block, inner lines as thick as the outline.
+        const widths = { thin: 1, medium: 2, thick: 3 };
+        for (const [style, width] of Object.entries(widths)) {
+            grid.SelectRange(1, 1, 3, 3);
+            grid.ApplyBorder('all', style, '#000000');
+            grid.SelectCell(12, 8);
+            probe = await screen();
+            // Down the middle of column 2 from row 0 to row 4: the outline, two inner lines, the outline. Likewise across.
+            check(`all / ${style}: the outline and the inner lines are ${width} px, one line per edge`, [probe.across(2, 0, 4, BLACK), probe.along(2, 0, 4, BLACK)], [[width, width, width, width], [width, width, width, width]]);
+            check(`all / ${style}: no grid line beside a border`, [probe.across(2, 0, 4, GRID), probe.along(2, 0, 4, GRID)], [[], []]);
+            const canvas = painted();
+            check(`all / ${style}: the portable painter draws the same lines`, [canvas.across(2, 0, 4, BLACK), canvas.along(2, 0, 4, BLACK)], [[width, width, width, width], [width, width, width, width]]);
+            check(`all / ${style}: the edges the component reports`, [grid.GetCellEdges(2, 2).Top, grid.GetCellEdges(2, 2).Right, grid.GetCellEdges(0, 2).Bottom, grid.GetCellEdges(4, 4).Top],
+                [{ Style: style, Color: '#000000', Width: width }, { Style: style, Color: '#000000', Width: width }, { Style: style, Color: '#000000', Width: width }, 'grid']);
+            grid.SelectRange(1, 1, 3, 3);
+            grid.ApplyBorder('none', 'thin', '#000000');
+        }
+        // double: two rules and a gap, once per edge.
+        grid.SelectRange(1, 1, 3, 3);
+        grid.ApplyBorder('all', 'double', '#000000');
+        grid.SelectCell(12, 8);
+        probe = await screen();
+        check('all / double: each edge is two 1 px rules (not a box of its own per cell)', [probe.across(2, 0, 4, BLACK), probe.along(2, 0, 4, BLACK)], [[1, 1, 1, 1, 1, 1, 1, 1], [1, 1, 1, 1, 1, 1, 1, 1]]);
         grid.SelectRange(1, 1, 3, 3);
         grid.ApplyBorder('none', 'thin', '#000000');
-        check('none: every border of the selection cleared', [sides(1, 1), sides(2, 2), sides(3, 3)].flat().every((v) => v === GRIDLINE), true);
+        check('none: every border of the selection cleared', [grid.GetCellEdges(1, 1), grid.GetCellEdges(3, 3)].map((edges) => Object.values(edges).every((edge) => edge === 'grid')), [true, true]);
         grid.Undo();
-        check('none: one undo step brings them all back', [sides(1, 1), sides(3, 3)].flat().every((v) => v === `1px solid ${black}`), true);
+        check('none: one undo step brings them all back', [grid.GetCellEdges(1, 1).Top.Style, grid.GetCellEdges(3, 3).Bottom.Style], ['double', 'double']);
         grid.Redo();
-        // outside: the outline only.
-        grid.ApplyBorder('outside', 'medium', '#0000ff');
-        const blue = '2px solid rgb(0, 0, 255)';
-        check('outside: the corner cell has its two outer sides', sides(1, 1), [blue, GRIDLINE, GRIDLINE, blue]);
-        check('outside: an edge cell has one', sides(1, 2), [blue, GRIDLINE, GRIDLINE, GRIDLINE]);
-        check('outside: the middle cell has none', sides(2, 2), [GRIDLINE, GRIDLINE, GRIDLINE, GRIDLINE]);
-        check('outside: the far corner', sides(3, 3), [GRIDLINE, blue, blue, GRIDLINE]);
-        grid.Undo();
-        check('outside: one undo step', [sides(1, 1), sides(3, 3)].flat().every((v) => v === GRIDLINE), true);
-        grid.ApplyBorder('inside', 'thin', '#000000');
-        const line = `1px solid ${black}`;
-        check('inside: the corner cell has its two inner sides', sides(1, 1), [GRIDLINE, line, line, GRIDLINE]);
-        check('inside: the middle cell has all four', sides(2, 2), [line, line, line, line]);
-        grid.Undo();
+
+        // outside: an outline, continuous along its sides (no break at a cell boundary) and through its corners.
+        for (const [style, width] of [['medium', 2], ['thick', 3]]) {
+            grid.SelectRange(1, 1, 3, 3);
+            grid.ApplyBorder('outside', style, '#000000');
+            grid.SelectCell(12, 8);
+            for (const [name, source] of [['the grid', await screen()], ['the portable painter', painted()]]) {
+                const x0 = source.left(1), x1 = source.left(4), y0 = source.top(1), y1 = source.top(4);
+                // The rows of pixels that are black all the way along the top and the bottom side, the columns along the left and the right side.
+                const sides = [source.rowsOf(1, x0 + 1, x1 - 1, BLACK), source.rowsOf(4, x0 + 1, x1 - 1, BLACK), source.columnsOf(1, y0 + 1, y1 - 1, BLACK), source.columnsOf(4, y0 + 1, y1 - 1, BLACK)];
+                check(`outside / ${style} in ${name}: each side is ${width} unbroken rows / columns of pixels`, sides.map((rows) => rows.length), [width, width, width, width]);
+                // Through the corners: the top and bottom sides, at their rows, run on over the columns of the left and right sides.
+                check(`outside / ${style} in ${name}: the top side runs through both corners`, sides[0].every((dy) => source.solidRow(source.top(1) + dy, x0 + Math.min(...sides[2]), x1 + Math.max(...sides[3]) + 1, BLACK)), true);
+                check(`outside / ${style} in ${name}: the bottom side runs through both corners`, sides[1].every((dy) => source.solidRow(source.top(4) + dy, x0 + Math.min(...sides[2]), x1 + Math.max(...sides[3]) + 1, BLACK)), true);
+                check(`outside / ${style} in ${name}: the left and right sides run from the top side to the bottom side`,
+                    [sides[2].every((dx) => source.solidColumn(x0 + dx, y0 + Math.min(...sides[0]), y1 + Math.max(...sides[1]) + 1, BLACK)), sides[3].every((dx) => source.solidColumn(x1 + dx, y0 + Math.min(...sides[0]), y1 + Math.max(...sides[1]) + 1, BLACK))], [true, true]);
+                // (The painter's grid lines are a darker grey.)
+                const grey = name === 'the grid' ? GRID : [166, 166, 166];
+                check(`outside / ${style} in ${name}: the inner edges keep their grid lines, 1 px`, [source.across(2, 1, 3, grey), source.along(2, 1, 3, grey), source.across(2, 1, 3, BLACK)], [[1, 1], [1, 1], []]);
+            }
+            check(`outside / ${style}: the corner cell has its two outer edges, the middle cell none`, [grid.GetCellEdges(1, 1).Top?.Style, grid.GetCellEdges(1, 1).Left?.Style, grid.GetCellEdges(1, 1).Bottom, grid.GetCellEdges(2, 2).Top, grid.GetCellEdges(3, 3).Bottom?.Style, grid.GetCellEdges(3, 3).Right?.Style],
+                [style, style, 'grid', 'grid', style, style]);
+            grid.Undo();
+            check(`outside / ${style}: one undo step`, [grid.GetCellEdges(1, 1).Top, grid.GetCellEdges(3, 3).Bottom], ['grid', 'grid']);
+        }
+        // A single side over several cells: one unbroken line.
+        grid.SelectRange(6, 1, 6, 4);
+        grid.ApplyBorder('bottom', 'thin', '#000000');
+        grid.SelectCell(12, 8);
+        probe = await screen();
+        check('bottom / thin over four cells: one unbroken 1 px line, in place of the grid line', [probe.rowsOf(7, probe.left(1), probe.left(5), BLACK).length, probe.across(2, 6, 7, GRID)], [1, []]);
+        check('inside: the inner edges of a block only', (() => { grid.SelectRange(1, 1, 3, 3); grid.ApplyBorder('inside', 'thin', '#000000'); const e = [grid.GetCellEdges(1, 1), grid.GetCellEdges(2, 2)]; grid.Undo(); return [e[0].Top, e[0].Right.Style, e[0].Bottom.Style, e[0].Left, e[1].Top.Style, e[1].Left.Style]; })(), ['grid', 'thin', 'thin', 'grid', 'thin', 'thin']);
+
+        // Two cells that state different borders for the edge they share: the stronger one, the later cell's on a tie.
+        grid.SelectCell(9, 1); grid.ApplyBorder('bottom', 'thin', '#ff0000');
+        grid.SelectCell(10, 1); grid.ApplyBorder('top', 'thick', '#0000ff');
+        grid.SelectCell(9, 2); grid.ApplyBorder('bottom', 'thick', '#ff0000');
+        grid.SelectCell(10, 2); grid.ApplyBorder('top', 'thin', '#0000ff');
+        grid.SelectCell(9, 3); grid.ApplyBorder('bottom', 'medium', '#ff0000');
+        grid.SelectCell(10, 3); grid.ApplyBorder('top', 'medium', '#0000ff');
+        grid.SelectCell(9, 4); grid.ApplyBorder('right', 'thin', '#ff0000');
+        grid.SelectCell(9, 5); grid.ApplyBorder('left', 'thin', '#0000ff');
+        grid.SelectCell(12, 8);
+        check('a shared edge: the stronger border (below), the stronger border (above), the later cell on a tie (below, right)',
+            [grid.GetCellEdges(10, 1).Top, grid.GetCellEdges(10, 2).Top, grid.GetCellEdges(9, 3).Bottom, grid.GetCellEdges(9, 4).Right].map((edge) => `${edge.Style} ${edge.Color}`),
+            ['thick #0000ff', 'thick #ff0000', 'medium #0000ff', 'thin #0000ff']);
+        probe = await screen();
+        const RED = [255, 0, 0], BLUE = [0, 0, 255];
+        check('drawn so: one line per edge, of the winning colour', [probe.across(1, 9, 10, BLUE), probe.across(1, 9, 10, RED), probe.across(2, 9, 10, RED), probe.across(2, 9, 10, BLUE), probe.across(3, 9, 10, BLUE), probe.across(3, 9, 10, RED), probe.along(9, 4, 5, BLUE), probe.along(9, 4, 5, RED)],
+            [[3], [], [3], [], [2], [], [1], []]);
+        const canvas = painted();
+        check('and by the portable painter', [canvas.across(1, 9, 10, BLUE), canvas.across(1, 9, 10, RED), canvas.across(2, 9, 10, RED), canvas.across(2, 9, 10, BLUE), canvas.across(3, 9, 10, BLUE), canvas.across(3, 9, 10, RED), canvas.along(9, 4, 5, BLUE), canvas.along(9, 4, 5, RED)],
+            [[3], [], [3], [], [2], [], [1], []]);
+
+        // Every style has a line of its width and CSS line style.
+        const kinds = { thin: '1px solid', medium: '2px solid', thick: '3px solid', dashed: '1px dashed', dotted: '1px dotted', double: '3px double', hair: '1px dotted',
+                        mediumDashed: '2px dashed', dashDot: '1px dashed', mediumDashDot: '2px dashed', dashDotDot: '1px dashed', mediumDashDotDot: '2px dashed', slantDashDot: '2px dashed' };
+        const drawnTop = (row, col) => { const edge = [...cellNode(host, row, col).querySelectorAll('.spreadsheet-edge')].map((node) => getComputedStyle(node)).find((style) => parseFloat(style.borderTopWidth) > 0); return edge ? `${edge.borderTopWidth} ${edge.borderTopStyle} ${edge.borderTopColor}` : null; };
+        grid.SelectCell(12, 1);
+        for (const [style, css] of Object.entries(kinds)) {
+            grid.ApplyBorder('top', style, '#ff0000');
+            await frame();
+            check(`${style}: the edge element's border`, drawnTop(12, 1), `${css} rgb(255, 0, 0)`);
+        }
+        grid.ApplyBorder('top', 'none', '#000000');
+        await frame();
+        check('a style of none clears the side', [drawnTop(12, 1), grid.GetCellEdges(12, 1).Top], [null, 'grid']);
+
+        // A filled cell hides the grid lines around it; a sheet without grid lines shows none.
+        grid.SelectRange(14, 1, 15, 2);
+        grid.ApplyBgColor('#ffeeaa');
+        grid.SelectCell(12, 8);
+        probe = await screen();
+        check('a fill hides the grid lines of its cells', [grid.GetCellEdges(14, 1).Top, grid.GetCellEdges(15, 2).Left, probe.across(1, 14, 15, GRID), probe.across(1, 16, 17, GRID)], [null, null, [], [1]]);
 
         // The HTML flavour of a copy.
-        grid.SelectRange(1, 1, 1, 2);
+        grid.SelectRange(17, 1, 17, 2);
         grid.ApplyBorder('bottom', 'double', '#00aa00');
-        grid.SetCell(1, 1, 'x');
+        grid.SetCell(17, 1, 'x');
         const html = grid.GetSelectionHtml();
         check('GetSelectionHtml carries the border', /border-bottom:3px double #00aa00/.test(html), true);
-        const probe = document.createElement('div'); probe.innerHTML = html; document.body.appendChild(probe);
-        check('and a browser reads it as a border', getComputedStyle(probe.querySelector('td')).borderBottomStyle, 'double');
-        probe.remove();
+        const sample = document.createElement('div'); sample.innerHTML = html; document.body.appendChild(sample);
+        check('and a browser reads it as a border', getComputedStyle(sample.querySelector('td')).borderBottomStyle, 'double');
+        sample.remove();
 
-        // The portable painter draws them too (a thick red box on a canvas).
-        grid.SelectRange(9, 1, 10, 2);
-        grid.ApplyBorder('outside', 'thick', '#ff0000');
-        grid.SelectCell(0, 0);   // the selection outline is drawn over the cells
-        const canvas = document.createElement('canvas');
-        grid.RenderPortableCanvas(canvas);
-        const { columnLeft, rowTop } = await import('/spreadsheet/Layout.js');
-        const model = grid.GetModel();
-        const pixel = canvas.getContext('2d').getImageData(Math.round(50 + (columnLeft(model, 1) + columnLeft(model, 2)) / 2), Math.round(30 + rowTop(model, 9)), 1, 1).data;
-        check('the portable painter draws the border', [pixel[0] > 200, pixel[1] < 80, pixel[2] < 80], [true, true, true]);
+        // A sheet of a file with grid lines on: 1 px too.
+        await grid.ImportXlsx(await bytesOf('tests/test-documents-excel/synthetic-drawing-extras.xlsx'));
+        grid.SelectCell(30, 12);
+        probe = await screen();
+        check('synthetic-drawing-extras.xlsx: grid lines 1 px', [grid.GetModel().ShowGridLines, probe.across(6, 9, 12, GRID), probe.along(10, 6, 9, GRID)], [true, [1, 1, 1], [1, 1, 1]]);
 
-        // An imported workbook: every bordered cell of the sheet on display has a drawn border.
+        // An imported workbook: every edge with a border in view is drawn as one edge element in the cell that owns it.
         await grid.ImportXlsx(await bytesOf('tests/real-world/milk-street-office.xlsx'));
         await frame();
-        const { getCell, CellAddress } = await import('/spreadsheet/Model.js');
         let bordered = 0, drawn = 0;
         for (const node of host.querySelectorAll('.spreadsheet-cell')) {
             if (node.style.display === 'none') continue;
             const row = Number(node.getAttribute('data-row')), col = Number(node.getAttribute('data-col'));
-            const format = getCell(new CellAddress(row, col), grid.GetModel())?.Format;
-            for (const [side, border] of [['top', format?.BorderTop], ['left', format?.BorderLeft]]) {
-                if (!border) continue;
+            const edges = grid.GetCellEdges(row, col);
+            const own = [...node.querySelectorAll('.spreadsheet-edge')].map((edge) => getComputedStyle(edge));
+            for (const [edge, side] of [[edges.Top, 'Top'], [edges.Left, 'Left']]) {
+                if (!edge || edge === 'grid') continue;
                 bordered++;
-                const style = getComputedStyle(node);
-                if (style.getPropertyValue(`border-${side}-style`) !== 'none' && style.getPropertyValue(`border-${side}-color`) !== 'rgb(224, 224, 224)' && parseFloat(style.getPropertyValue(`border-${side}-width`)) >= 1) drawn++;
+                if (own.some((style) => parseFloat(style[`border${side}Width`]) === edge.Width && style[`border${side}Style`] !== 'none')) drawn++;
             }
         }
-        check('imported borders are drawn (bordered sides in view > 0, all drawn)', [bordered > 0, drawn], [true, bordered]);
+        check('imported borders are drawn (bordered edges in view > 0, all drawn)', [bordered > 0, drawn], [true, bordered]);
     } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
     close();
     return lines;

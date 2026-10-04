@@ -307,30 +307,6 @@ let private borderStrokeWidth (style: string) : float =
     | "slantdashdot" -> 1.5
     | _ -> 1.0
 
-/// Border-collapse priority for `<border style>` values. NOT the same as
-/// stroke width — Excel's collapse rule follows the OOXML hierarchy where
-/// `double` outranks `thick` even though `thick` paints fatter, because
-/// `double` carries more visual semantics. Order: None < Hair < Dotted <
-/// Dashed-family < Thin < Medium < Thick < Double. Equal priority resolves
-/// in the caller's tiebreak.
-let private borderPriority (style: string) : int =
-    match style.ToLowerInvariant() with
-    | "" -> 0
-    | "hair" -> 1
-    | "dotted" -> 2
-    | "dashed" -> 3
-    | "dashdot" -> 4
-    | "dashdotdot" -> 5
-    | "mediumdashed" -> 6
-    | "mediumdashdot" -> 7
-    | "mediumdashdotdot" -> 8
-    | "slantdashdot" -> 9
-    | "thin" -> 10
-    | "medium" -> 11
-    | "thick" -> 12
-    | "double" -> 13
-    | _ -> 10  // unknown → treat as thin
-
 let private borderColor (side: BorderStyle) : string =
     side.Color |> Option.defaultValue "#000000"
 
@@ -481,7 +457,12 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                 // Hair = very thin dotted. Simulate with tiny dots.
                 dashChunks 0.5 1.0
             else
-                [ GridLine (x1, y1, x2, y2, color, w) ]
+                // A solid line runs half its width past both ends, so that two
+                // of them meeting at a corner leave no notch there (an outline
+                // is continuous through its corners).
+                let cap = if w > 1.0 then w / 2.0 else 0.0
+                if isHorizontal then [ GridLine (x1 - cap, y1, x2 + cap, y2, color, w) ]
+                else [ GridLine (x1, y1 - cap, x2, y2 + cap, color, w) ]
 
         // Border collapse: when two adjacent cells both declare a border
         // on their shared edge, Excel draws the heavier one and skips the
@@ -576,49 +557,48 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                     horizontalEdge mr1 mc0 mc1 (fun f -> f.BorderBottom),
                     verticalEdge mr0 mr1 mc0 (fun f -> f.BorderLeft),
                     verticalEdge mr0 mr1 mc1 (fun f -> f.BorderRight)
-            // Top border: skip if the cell above already drew a heavier
-            // (or equal-weight) bottom edge. The above-bottom owns ties.
-            // Higher priority wins (double > thick > medium > thin > dashed).
+            // One line per shared edge (Model.resolveSharedBorder): the
+            // stronger style wins (double > thick > medium > thin > dashed),
+            // and of two equally strong ones the later cell's - the cell
+            // below / to the right.
+            // Top border: drawn unless the cell above has a strictly heavier bottom border.
             match bTop with
             | Some side ->
                 let aboveBottom = neighborSide (mr0 - 1) mc0 (fun f -> f.BorderBottom)
                 let mine = weightOf (Some side)
                 let neighbor = weightOf aboveBottom
-                if mine > neighbor then
+                if mine >= neighbor then
                     for item in emitBorderSide true side (rect.X, rect.Y) (rect.X + rect.Width, rect.Y) do
                         yield zone, item
             | None -> ()
-            // Bottom border: draws unless the cell below has a strictly
-            // heavier top border.
+            // Bottom border: drawn when it is heavier than the top border of the cell below.
             match bBottom with
             | Some side ->
                 let belowTop = neighborSide (mr1 + 1) mc0 (fun f -> f.BorderTop)
                 let mine = weightOf (Some side)
                 let neighbor = weightOf belowTop
-                if mine >= neighbor then
+                if mine > neighbor then
                     let y = rect.Y + rect.Height
                     for item in emitBorderSide true side (rect.X, y) (rect.X + rect.Width, y) do
                         yield zone, item
             | None -> ()
-            // Left border: skip if the cell to the left already drew a
-            // heavier-or-equal right edge.
+            // Left border: drawn unless the cell to the left has a strictly heavier right border.
             match bLeft with
             | Some side ->
                 let leftRight = neighborSide mr0 (mc0 - 1) (fun f -> f.BorderRight)
                 let mine = weightOf (Some side)
                 let neighbor = weightOf leftRight
-                if mine > neighbor then
+                if mine >= neighbor then
                     for item in emitBorderSide false side (rect.X, rect.Y) (rect.X, rect.Y + rect.Height) do
                         yield zone, item
             | None -> ()
-            // Right border: draws unless the cell to the right has a
-            // strictly heavier left border.
+            // Right border: drawn when it is heavier than the left border of the cell to the right.
             match bRight with
             | Some side ->
                 let rightLeft = neighborSide mr0 (mc1 + 1) (fun f -> f.BorderLeft)
                 let mine = weightOf (Some side)
                 let neighbor = weightOf rightLeft
-                if mine >= neighbor then
+                if mine > neighbor then
                     let x = rect.X + rect.Width
                     for item in emitBorderSide false side (x, rect.Y) (x, rect.Y + rect.Height) do
                         yield zone, item

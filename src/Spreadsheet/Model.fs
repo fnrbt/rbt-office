@@ -50,6 +50,44 @@ let borderCssParts (style: string) : (int * string) option =
     | "solid" -> Some (1, "solid")   // CSS names, as older callers passed them
     | _ -> Some (1, "solid")
 
+/// Excel's order of border styles where two cells state a border for the edge
+/// they share. NOT the stroke width: `double` outranks `thick` although
+/// `thick` paints fatter. None < hair < dotted < the dashed family < thin <
+/// medium < thick < double.
+let borderPriority (style: string) : int =
+    match (if isNull style then "" else style).ToLowerInvariant() with
+    | "" | "none" -> 0
+    | "hair" -> 1
+    | "dotted" -> 2
+    | "dashed" -> 3
+    | "dashdot" -> 4
+    | "dashdotdot" -> 5
+    | "mediumdashed" -> 6
+    | "mediumdashdot" -> 7
+    | "mediumdashdotdot" -> 8
+    | "slantdashdot" -> 9
+    | "thin" -> 10
+    | "medium" -> 11
+    | "thick" -> 12
+    | "double" -> 13
+    | _ -> 10  // unknown: as thin
+
+/// The one border drawn on the edge two cells share. `first` is what the
+/// cell above / to the left states for it (its bottom / right border),
+/// `second` what the cell below / to the right states (its top / left
+/// border). The stronger style wins (`borderPriority`); of two equally strong
+/// ones the later cell's - Excel stores a border applied to an edge on both
+/// cells, and the cell written last (below / right) is the one it shows.
+let resolveSharedBorder (first: BorderStyle option) (second: BorderStyle option) : BorderStyle option =
+    let drawn (border: BorderStyle option) =
+        match border with
+        | Some b when borderPriority b.Style > 0 -> border
+        | _ -> None
+    match drawn first, drawn second with
+    | None, other -> other
+    | other, None -> other
+    | Some a, Some b -> if borderPriority a.Style > borderPriority b.Style then Some a else Some b
+
 /// The value of a CSS `border-<side>` declaration for a cell border:
 /// "1px solid #000000" - always with a width and a line style, without
 /// which CSS draws nothing.

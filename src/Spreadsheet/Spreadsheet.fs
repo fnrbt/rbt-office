@@ -50,6 +50,9 @@ let private caretToEnd (input: Element): unit = jsNative
 [<Emit("setTimeout($0, $1)")>]
 let private setTimeoutMs (callback: unit -> unit) (delay: int): int = jsNative
 
+/// The colour of the grid lines of the DOM grid.
+let private defaultGridColor = "#e0e0e0"
+
 [<Emit("clearTimeout($0)")>]
 let private clearTimeoutId (id: int): unit = jsNative
 
@@ -306,6 +309,11 @@ type private CellNode = {
     mutable Pane: int
     /// The cell's data (the CellData record itself, or null).
     mutable Data: obj
+    /// The data of the cells whose borders and fills the node's edges also
+    /// depend on: the cell above, the cell to the left, and the one above that.
+    mutable NearAbove: obj
+    mutable NearLeft: obj
+    mutable NearCorner: obj
     mutable X: float
     mutable Y: float
     mutable W: float
@@ -474,6 +482,24 @@ type Spreadsheet(container: Element) =
     let mutable styleEpoch = 0
     /// What the last render drew from.
     let mutable renderedCells: obj = null
+    /// The cells the grid looked up while drawing, by row and column, for the
+    /// cell map they were looked up in: a cell's edges are shared with its
+    /// neighbours, so each visible cell is asked for several times in a pass.
+    let lookedUpCells = System.Collections.Generic.Dictionary<float, CellData option>()
+    let mutable lookedUpIn : obj = null
+    let cellAt (row: int) (col: int) : CellData option =
+        if row < 0 || col < 0 then None
+        else
+            if not (obj.ReferenceEquals(lookedUpIn, model.Cells)) || lookedUpCells.Count > 40000 then
+                lookedUpCells.Clear()
+                lookedUpIn <- box model.Cells
+            let key = float row * 16384.0 + float col
+            match lookedUpCells.TryGetValue key with
+            | true, known -> known
+            | false, _ ->
+                let found = getCell { Row = row; Col = col } model
+                lookedUpCells.[key] <- found
+                found
     let mutable renderedStyleInputs: obj array = [||]
     let mutable renderedDrawings: obj = null
     let mutable renderedMetrics: obj = null
@@ -1937,7 +1963,8 @@ type Spreadsheet(container: Element) =
         add "width" (px w)
         add "height" (px h)
         add "line-height" (px (h - 4.0))
-        if not model.ShowGridLines then add "border-color" "transparent"
+        // The colour of the cell's grid lines (a table has its own).
+        let mutable gridColor = defaultGridColor
         // Table styling first (base styles).
         let tableInfo =
             tables
@@ -1951,10 +1978,10 @@ type Spreadsheet(container: Element) =
             add "color" "white"
             add "font-weight" "bold"
             add "text-align" "center"
-            add "border" "1px solid #2E5AA8"
+            gridColor <- "#2E5AA8"
         | Some (false, isEvenRow) ->
             add "background-color" (if isEvenRow then "#FFFFFF" else "#EDF2FA")
-            add "border" "1px solid #D0D8E4"
+            gridColor <- "#D0D8E4"
         | None -> ()
         // The cell's own format (over the table's).
         match cellData with
@@ -1976,26 +2003,124 @@ type Spreadsheet(container: Element) =
                 add "white-space" "normal"
                 add "word-wrap" "break-word"
         | None -> ()
-        // Borders. A merged cell is drawn as its first cell over its whole
-        // span: its right and bottom edges are those of its last column / row.
-        let side (name: string) (border: BorderStyle option) =
-            match border with
-            | Some border when (borderCssParts border.Style).IsSome -> add name (borderCss border)
-            | _ -> ()
+        // Borders and grid lines: one line per edge. A cell draws the edge
+        // above it and the edge to its left - each the one border the two
+        // cells that share it resolve to (Layout.edgeAbove / edgeLeft), or
+        // their grid line - inside its own box; the edges below and to its
+        // right are the next cells'. (A cell of the last row / column draws
+        // those too.) Grid lines are an inset shadow of the cell; a border is
+        // a child element over it, the stronger of the two on top where they
+        // meet, so a line runs on through the corners of the cells it passes.
         let formatAt (r: int) (c: int) =
             if r = row && c = col then cellData |> Option.map (fun data -> data.Format)
             else getCell { Row = r; Col = c } model |> Option.map (fun data -> data.Format)
-        let own = formatAt row col
         let endRow, endCol =
             if model.MergedCells.IsEmpty then row, col
             else
                 match findMergedCell addr model with
                 | Some merge -> merge.EndRow, merge.EndCol
                 | None -> row, col
-        side "border-top" (own |> Option.bind (fun format -> format.BorderTop))
-        side "border-left" (own |> Option.bind (fun format -> format.BorderLeft))
-        side "border-bottom" (formatAt endRow col |> Option.bind (fun format -> format.BorderBottom))
-        side "border-right" (formatAt row endCol |> Option.bind (fun format -> format.BorderRight))
+        let edgeChildren = ResizeArray<int * string>()
+        let borderWidth (border: BorderStyle) = match borderCssParts border.Style with Some (width, _) -> width | None -> 0
+        // The runs of one kind along an edge of the cell: (offset, length, kind).
+        let runsAlong (first: int) (last: int) (startOf: int -> float) (kindAt: int -> SpreadsheetLayout.SharedEdge) =
+            if first = last then [ 0.0, (startOf (last + 1) - startOf first), kindAt first ]
+            else
+                let runs = ResizeArray<float * float * SpreadsheetLayout.SharedEdge>()
+                let origin = startOf first
+                for index in first .. last do
+                    let size = startOf (index + 1) - startOf index
+                    if size > 0.0 then
+                        let kind = kindAt index
+                        let offset = startOf index - origin
+                        if runs.Count > 0 && (let (_, _, previous) = runs.[runs.Count - 1] in previous = kind) then
+                            let (start, length, _) = runs.[runs.Count - 1]
+                            runs.[runs.Count - 1] <- (start, length + size, kind)
+                        else runs.Add (offset, size, kind)
+                List.ofSeq runs
+        let shadows = ResizeArray<string>()
+        // side: 0 top, 1 left, 2 bottom, 3 right.
+        let drawEdge (side: int) (runs: (float * float * SpreadsheetLayout.SharedEdge) list) =
+            let gridShadow =
+                match side with
+                | 0 -> "inset 0 1px 0 0 "
+                | 1 -> "inset 1px 0 0 0 "
+                | 2 -> "inset 0 -1px 0 0 "
+                | _ -> "inset -1px 0 0 0 "
+            let place (offset: float) (length: float) (thickness: int) (line: string) =
+                let o = string (int (offset + 0.5)) + "px"
+                let l = string (int (length + 0.5)) + "px"
+                match side with
+                | 0 -> "position:absolute;pointer-events:none;left:" + o + ";top:0;width:" + l + ";height:0;border-top:" + line
+                | 1 -> "position:absolute;pointer-events:none;left:0;top:" + o + ";width:0;height:" + l + ";border-left:" + line
+                | 2 -> "position:absolute;pointer-events:none;left:" + o + ";bottom:0;width:" + l + ";height:0;border-bottom:" + line
+                | _ -> "position:absolute;pointer-events:none;right:0;top:" + o + ";width:0;height:" + l + ";border-right:" + line
+            match runs with
+            | [ (_, _, SpreadsheetLayout.EdgeGrid true) ] -> shadows.Add (gridShadow + gridColor)
+            | _ ->
+                for offset, length, kind in runs do
+                    match kind with
+                    | SpreadsheetLayout.EdgeBorder border -> edgeChildren.Add (borderPriority border.Style, place offset length (borderWidth border) (borderCss border))
+                    | SpreadsheetLayout.EdgeGrid true -> edgeChildren.Add (0, place offset length 1 ("1px solid " + gridColor))
+                    | _ -> ()
+        let columnStart (c: int) = SpreadsheetLayout.columnLeft model c
+        let rowStart (r: int) = SpreadsheetLayout.rowTop model r
+        // The cells the edges are shared with: the one above, the one to the
+        // left, and the one above that (for the corner between them).
+        let above = SpreadsheetLayout.rowShownBefore model row
+        let before = SpreadsheetLayout.columnShownBefore model col
+        let aboveData = cellAt above col
+        let leftData = cellAt row before
+        let cornerData = cellAt above before
+        let plainSheet = model.MergedCells.IsEmpty
+        // (Without merged cells an edge follows from the two cells' formats: no further look-ups.)
+        let edgeBetween (first: CellData option) (second: CellData option) (horizontal: bool) (hasFirst: bool) =
+            let border (data: CellData option) (pick: CellFormat -> BorderStyle option) = data |> Option.bind (fun data -> pick data.Format)
+            let filled (data: CellData option) = match data with Some data -> data.Format.BgColor.IsSome | None -> false
+            let stated =
+                resolveSharedBorder
+                    (if hasFirst then border first (fun format -> if horizontal then format.BorderBottom else format.BorderRight) else None)
+                    (border second (fun format -> if horizontal then format.BorderTop else format.BorderLeft))
+            match stated with
+            | Some line -> SpreadsheetLayout.EdgeBorder line
+            | None -> SpreadsheetLayout.EdgeGrid (model.ShowGridLines && not (hasFirst && filled first) && not (filled second))
+        let topRuns =
+            if plainSheet then [ 0.0, w, edgeBetween aboveData cellData true (above >= 0) ]
+            else runsAlong col endCol columnStart (fun c -> SpreadsheetLayout.edgeAbove model row c)
+        let leftRuns =
+            if plainSheet then [ 0.0, h, edgeBetween leftData cellData false (before >= 0) ]
+            else runsAlong row endRow rowStart (fun r -> SpreadsheetLayout.edgeLeft model r col)
+        drawEdge 0 topRuns
+        drawEdge 1 leftRuns
+        if endRow >= model.RowCount - 1 then drawEdge 2 (runsAlong col endCol columnStart (fun c -> SpreadsheetLayout.edgeBelow model endRow c))
+        if endCol >= model.ColCount - 1 then drawEdge 3 (runsAlong row endRow rowStart (fun r -> SpreadsheetLayout.edgeRight model r endCol))
+        // Where a border from above ends at one coming from the left (the
+        // far corner of an outline), neither is this cell's own edge: the
+        // corner between them is filled, unless an own edge covers it.
+        if above >= 0 && before >= 0 && (aboveData.IsSome || leftData.IsSome || cornerData.IsSome) then
+            let verticalEdge =
+                if plainSheet then edgeBetween cornerData aboveData false true else SpreadsheetLayout.edgeLeft model above col
+            let horizontalEdge =
+                if plainSheet then edgeBetween cornerData leftData true true else SpreadsheetLayout.edgeAbove model row before
+            match verticalEdge, horizontalEdge with
+            | SpreadsheetLayout.EdgeBorder vertical, SpreadsheetLayout.EdgeBorder horizontal ->
+                let cornerWidth = borderWidth vertical
+                let cornerHeight = borderWidth horizontal
+                let covered =
+                    (match topRuns with
+                     | (_, _, SpreadsheetLayout.EdgeBorder own) :: _ -> borderWidth own >= cornerHeight
+                     | _ -> false)
+                    || (match leftRuns with
+                        | (_, _, SpreadsheetLayout.EdgeBorder own) :: _ -> borderWidth own >= cornerWidth
+                        | _ -> false)
+                if not covered && cornerWidth > 0 && cornerHeight > 0 then
+                    let stronger = if borderPriority vertical.Style > borderPriority horizontal.Style then vertical else horizontal
+                    edgeChildren.Add (100, "position:absolute;pointer-events:none;left:0;top:0;width:" + string cornerWidth + "px;height:" + string cornerHeight
+                                           + "px;background:" + (stronger.Color |> Option.defaultValue "#000000"))
+            | _ -> ()
+        // (The style sheet gives a cell the two grid lines most cells have.)
+        if not (shadows.Count = 2 && gridColor = defaultGridColor && shadows.[0].StartsWith "inset 0 1px" && shadows.[1].StartsWith "inset 1px") then
+            add "box-shadow" (if shadows.Count = 0 then "none" else String.concat "," shadows)
         // Conditional formatting (highest priority): the merged effect of
         // every matching rule that covers the cell.
         let mutable icon : (int * int) option = None
@@ -2095,6 +2220,13 @@ type Spreadsheet(container: Element) =
         if bar >= 0 then setAttribute cell "data-cf-bar" (string bar) else removeAttribute cell "data-cf-bar"
         // (This also drops the icon and comment marker of the node's previous cell.)
         setTextContent cell displayText
+        // The weaker edge first: where two meet, the stronger is on top.
+        if edgeChildren.Count > 0 then
+            for _, style in edgeChildren |> Seq.sortBy fst do
+                let line = createElement "div"
+                setClassName line "spreadsheet-edge"
+                setCssText line style
+                appendChild cell line
         for edge in crossed do
             let strip = createElement "div"
             setClassName strip "spreadsheet-overflow-gap"
@@ -2132,6 +2264,10 @@ type Spreadsheet(container: Element) =
                 node.HasTitle <- false
         node.Pane <- pane
         node.Data <- (match cellData with Some data -> box data | None -> null)
+        let near (data: CellData option) = match data with Some data -> box data | None -> null
+        node.NearAbove <- near aboveData
+        node.NearLeft <- near leftData
+        node.NearCorner <- near cornerData
         node.X <- x
         node.Y <- y
         node.W <- w
@@ -2281,9 +2417,18 @@ type Spreadsheet(container: Element) =
                             node.Seen <- generation
                             let placed = node.Epoch = styleEpoch && node.X = x && node.Y = y && node.W = w && node.H = h && node.Pane = pane
                             if not (placed && sameCells) then
-                                let data = getCell { Row = r; Col = c } model
+                                let data = cellAt r c
                                 let dataRef = match data with Some data -> box data | None -> null
-                                if not placed || merged || node.Wide || not (obj.ReferenceEquals(node.Data, dataRef)) then
+                                // (The edges the node draws are shared with the cells above and to its left.)
+                                let nearChanged () =
+                                    let mutable above = r - 1
+                                    while above >= 0 && rowPrefix.[above + 1] <= rowPrefix.[above] do above <- above - 1
+                                    let mutable before = c - 1
+                                    while before >= 0 && colPrefix.[before + 1] <= colPrefix.[before] do before <- before - 1
+                                    let near (nr: int) (nc: int) = match cellAt nr nc with Some data -> box data | None -> null
+                                    not (obj.ReferenceEquals(node.NearAbove, near above c)) || not (obj.ReferenceEquals(node.NearLeft, near r before))
+                                    || not (obj.ReferenceEquals(node.NearCorner, near above before))
+                                if not placed || merged || node.Wide || not (obj.ReferenceEquals(node.Data, dataRef)) || nearChanged () then
                                     drawCell layer node r c x y w h pane data tables
                     | false, _ ->
                         let node =
@@ -2294,11 +2439,11 @@ type Spreadsheet(container: Element) =
                             else
                                 let element = createElement "div"
                                 setClassName element "spreadsheet-cell"
-                                { Element = element; Key = key; Pane = -1; Data = null; X = 0.0; Y = 0.0; W = 0.0; H = 0.0; Epoch = -1; Seen = 0; HasTitle = false; Wide = false }
+                                { Element = element; Key = key; Pane = -1; Data = null; NearAbove = null; NearLeft = null; NearCorner = null; X = 0.0; Y = 0.0; W = 0.0; H = 0.0; Epoch = -1; Seen = 0; HasTitle = false; Wide = false }
                         node.Key <- key
                         node.Seen <- generation
                         cellNodes.[key] <- node
-                        drawCell layer node r c x y w h pane (getCell { Row = r; Col = c } model) tables
+                        drawCell layer node r c x y w h pane (cellAt r c) tables
             let visitBlock (r0: int) (r1: int) (c0: int) (c1: int) =
                 for row = r0 to r1 do
                     if rowPrefix.[row + 1] > rowPrefix.[row] then
@@ -3591,8 +3736,10 @@ type Spreadsheet(container: Element) =
         // `contain` lets the browser lay out and paint each on its own.
         let sheetStyle = createElement "style"
         setTextContent sheetStyle
-            (".spreadsheet-container .spreadsheet-cell{position:absolute;padding:2px 4px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;box-sizing:border-box;"
-             + "font-family:Arial, sans-serif;font-size:11px;cursor:default;background:white;border:1px solid #e0e0e0;contain:strict}"
+            // (A cell has no border of its own: its grid lines - the edge above it and the edge
+            // to its left - are an inset shadow, and borders are child elements; see drawCell.)
+            (".spreadsheet-container .spreadsheet-cell{position:absolute;padding:3px 5px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;box-sizing:border-box;"
+             + "font-family:Arial, sans-serif;font-size:11px;cursor:default;background:white;border:none;box-shadow:inset 0 1px 0 0 " + defaultGridColor + ",inset 1px 0 0 0 " + defaultGridColor + ";contain:strict}"
              + ".spreadsheet-container .spreadsheet-col-header{position:absolute;top:0;height:" + string headerHeight + "px;border-right:1px solid #d0d0d0;border-bottom:1px solid #a6a6a6;"
              + "background:linear-gradient(180deg, #f8f8f8 0%, #e8e8e8 100%);display:flex;align-items:center;justify-content:space-between;padding:0 4px;box-sizing:border-box;"
              + "font-weight:normal;font-size:11px;font-family:Arial, sans-serif;color:#444;user-select:none}"
@@ -4177,6 +4324,30 @@ type Spreadsheet(container: Element) =
                 ensureRecalcEngine () |> ignore) 250 |> ignore
         for listener in sheetChangedListeners do
             try listener safeIndex with _ -> ()
+
+    /// The four edges of a cell of the active sheet as they are drawn - one
+    /// line per edge, shared with the neighbouring cell: { Top, Right,
+    /// Bottom, Left }, each "grid" (a grid line), null (nothing: inside a
+    /// merged cell, grid lines off, or hidden by a fill) or { Style, Color,
+    /// Width } - the border the two cells of the edge resolve to (the
+    /// stronger style, the cell below / to the right on a tie).
+    member _.GetCellEdges(row: int, col: int) : obj =
+        let describe (edge: SpreadsheetLayout.SharedEdge) : obj =
+            match edge with
+            | SpreadsheetLayout.EdgeBorder border ->
+                createObj [
+                    "Style" ==> border.Style
+                    "Color" ==> (border.Color |> Option.defaultValue "#000000")
+                    "Width" ==> (match borderCssParts border.Style with Some (width, _) -> width | None -> 0)
+                ]
+            | SpreadsheetLayout.EdgeGrid true -> box "grid"
+            | _ -> null
+        createObj [
+            "Top" ==> describe (SpreadsheetLayout.edgeAbove model row col)
+            "Right" ==> describe (SpreadsheetLayout.edgeRight model row col)
+            "Bottom" ==> describe (SpreadsheetLayout.edgeBelow model row col)
+            "Left" ==> describe (SpreadsheetLayout.edgeLeft model row col)
+        ]
 
     /// Switch incremental recalculation off (every edit recalculates the
     /// whole workbook, as before 0.1.7) or on again. It is on by default.
