@@ -111,6 +111,36 @@ let private canvasText (ctx: obj) (text: string) (x: float) (y: float) (fontSize
 [<Emit("$0.save(); $0.translate($3, $4); $0.rotate($5); $0.fillStyle = $6; $0.font = ($7 ? 'bold ' : '') + ($8 ? 'italic ' : '') + $2 + 'px ' + $9 + ', sans-serif'; $0.textBaseline = 'alphabetic'; $0.textAlign = 'left'; $0.fillText($1, 0, 0); $0.restore()")>]
 let private canvasTextRotated (ctx: obj) (text: string) (fontSize: float) (tx: float) (ty: float) (angle: float) (color: string) (bold: bool) (italic: bool) (fontName: string): unit = jsNative
 
+[<Emit("(typeof ResizeObserver === 'function' ? (() => { const o = new ResizeObserver(() => $1()); o.observe($0); return () => o.disconnect(); })() : (() => {}))")>]
+let private observeResize (el: Element) (callback: unit -> unit): unit -> unit = jsNative
+
+[<Emit("($0.parentNode ? $0.parentNode.removeChild($0) : undefined)")>]
+let private detach (el: Element): unit = jsNative
+
+let private sameRef (a: 'T) (b: 'T) = obj.ReferenceEquals(a, b)
+
+/// Whether two models of a sheet hold the same document content: everything
+/// that is part of the workbook, as opposed to view and editing state
+/// (selection, edit buffer, clipboard, search, undo history).
+let private sameSheetContent (a: SpreadsheetModel) (b: SpreadsheetModel) =
+    sameRef a b
+    || (sameRef a.Cells b.Cells
+        && sameRef a.RichRuns b.RichRuns
+        && sameRef a.RowHeights b.RowHeights
+        && sameRef a.ColumnWidths b.ColumnWidths
+        && sameRef a.Validations b.Validations
+        && (sameRef a.MergedCells b.MergedCells || a.MergedCells = b.MergedCells)
+        && sameRef a.ConditionalFormats b.ConditionalFormats
+        && (sameRef a.Tables b.Tables || a.Tables = b.Tables)
+        && sameRef a.Filters b.Filters
+        && (sameRef a.PageSetup b.PageSetup || a.PageSetup = b.PageSetup)
+        && a.RowCount = b.RowCount
+        && a.ColCount = b.ColCount
+        && a.FrozenRows = b.FrozenRows
+        && a.FrozenCols = b.FrozenCols
+        && a.ShowGridLines = b.ShowGridLines
+        && a.Macros = b.Macros)
+
 /// Spreadsheet component — interactively edits a Workbook (a collection
 /// of sheets sharing strings, styles, theme, defined names). The class
 /// renders one sheet at a time; chrome layers a tab strip on top via
@@ -130,6 +160,18 @@ type Spreadsheet(container: Element) =
     let mutable activeSheetIndex = 0
     let mutable model = sheets.[0]
     let sheetChangedListeners = System.Collections.Generic.List<int -> unit>()
+    /// OnChange / OnSelectionChange subscribers.
+    let changeListeners = ResizeArray<obj -> unit>()
+    let selectionListeners = ResizeArray<obj -> unit>()
+    /// What the listeners were last told about: every sheet's model and name,
+    /// and the selection of the active sheet.
+    let mutable notifiedSheets: SpreadsheetModel array = [||]
+    let mutable notifiedNames: string array = [||]
+    let mutable notifiedSelection: (int * Selection) option = None
+    /// Undo what Mount set up outside the grid's own nodes (document-level
+    /// listeners, observers, overlays appended to <body>).
+    let cleanups = ResizeArray<unit -> unit>()
+    let mutable disposed = false
     let mutable workbook: Workbook option = None  // Optional workbook for table references
     let mutable calcEngine: SpreadsheetCalc.CalcEngine option = None
     let mutable readOnly = false
@@ -1623,6 +1665,48 @@ type Spreadsheet(container: Element) =
                 if editCaretAtEnd then caretToEnd input else select input
             | _ -> if hadFocus then focusQuietly content
             lastRenderedModel <- Some model
+            notifyChanges ()
+
+    /// Tell OnChange / OnSelectionChange subscribers what changed since they
+    /// were last told. Every change to the workbook ends in a render, so this
+    /// runs from there; the snapshot is updated before the callbacks run, so a
+    /// callback that causes another render is not told twice.
+    and notifyChanges () =
+        if changeListeners.Count > 0 || selectionListeners.Count > 0 then
+            let current = Array.init sheets.Length (fun i -> if i = activeSheetIndex then model else sheets.[i])
+            let structureChanged = current.Length <> notifiedSheets.Length || sheetNames <> notifiedNames
+            let changedSheets =
+                [| for i in 0 .. current.Length - 1 do
+                    if i >= notifiedSheets.Length || not (sameSheetContent current.[i] notifiedSheets.[i]) then yield i |]
+            let selection = Some (activeSheetIndex, model.Selection)
+            let selectionChanged = selection <> notifiedSelection
+            notifiedSheets <- current
+            notifiedNames <- Array.copy sheetNames
+            notifiedSelection <- selection
+            if structureChanged || changedSheets.Length > 0 then
+                let change =
+                    createObj [
+                        "Sheets" ==> changedSheets
+                        "StructureChanged" ==> structureChanged
+                        "ActiveSheetIndex" ==> activeSheetIndex
+                    ]
+                for listener in changeListeners.ToArray() do
+                    if changeListeners.Contains listener then (try listener change with _ -> ())
+            if selectionChanged then
+                let change =
+                    createObj [
+                        "SheetIndex" ==> activeSheetIndex
+                        "Selection" ==> selectionRefText ()
+                    ]
+                for listener in selectionListeners.ToArray() do
+                    if selectionListeners.Contains listener then (try listener change with _ -> ())
+
+    /// The selection as an A1 reference ("B2" or "B2:D5").
+    and selectionRefText () =
+        match model.Selection with
+        | SingleCell (row, col) -> sprintf "%s%d" (columnToLetter col) (row + 1)
+        | Range (startRow, startCol, endRow, endCol) ->
+            sprintf "%s%d:%s%d" (columnToLetter startCol) (startRow + 1) (columnToLetter endCol) (endRow + 1)
 
     /// What sits on top of the cells: the selection's fill handle, the input
     /// message of the selected cell's validation, and the validation notice.
@@ -2001,8 +2085,11 @@ type Spreadsheet(container: Element) =
 
         // Delay adding the click listener to avoid immediate closure
         JS.setTimeout (fun () ->
-            addEventListener (getDocument()) "click" closeDropdown
+            if not disposed then addEventListener (getDocument()) "click" closeDropdown
         ) 100 |> ignore
+        cleanups.Add(fun () ->
+            removeEventListener (getDocument()) "click" closeDropdown
+            detach dropdown)
 
 
     /// Show find/replace dialog
@@ -2275,6 +2362,9 @@ type Spreadsheet(container: Element) =
                 removeEventListener (getDocument()) "keydown" handleEscape
 
         addEventListener (getDocument()) "keydown" handleEscape
+        cleanups.Add(fun () ->
+            removeEventListener (getDocument()) "keydown" handleEscape
+            detach overlay)
 
         ()
 
@@ -2653,6 +2743,9 @@ type Spreadsheet(container: Element) =
                     removeEventListener (getDocument()) "keydown" handleEscape
 
             addEventListener (getDocument()) "keydown" handleEscape
+            cleanups.Add(fun () ->
+                removeEventListener (getDocument()) "keydown" handleEscape
+                detach overlay)
 
             ()
 
@@ -2673,9 +2766,15 @@ type Spreadsheet(container: Element) =
         // Create container
         let gridDiv = createElement "div"
         setClassName gridDiv "spreadsheet-container"
+        // The grid fills its container. A container with no height of its own
+        // (height: auto) would grow with the grid's content instead of
+        // scrolling it, so the grid then takes a fixed height.
+        let fillsContainer = getClientHeight container > 0.0
         setStyles gridDiv [
             "width", "100%"
-            "height", "600px"
+            "height", (if fillsContainer then "100%" else "600px")
+            "min-height", "200px"
+            "box-sizing", "border-box"
             "overflow", "auto"
             "position", "relative"
             "border", "1px solid #c0c0c0"
@@ -2705,7 +2804,7 @@ type Spreadsheet(container: Element) =
         let doc = getDocument()
 
         // Mouse move for resizing (throttled with requestAnimationFrame)
-        addEventListener doc "mousemove" (fun e ->
+        let onDocumentMouseMove = (fun (e: obj) ->
             if isResizingColumn then
                 match resizeColumnIndex with
                 | Some col ->
@@ -2741,7 +2840,7 @@ type Spreadsheet(container: Element) =
         )
 
         // Mouse up for both drag selection and resize
-        addEventListener doc "mouseup" (fun _ ->
+        let onDocumentMouseUp = (fun (_: obj) ->
             if isFilling then
                 isFilling <- false
                 match fillSource, fillTarget with
@@ -2766,6 +2865,12 @@ type Spreadsheet(container: Element) =
                 render()  // Final render to ensure clean state
         )
 
+        addEventListener doc "mousemove" onDocumentMouseMove
+        addEventListener doc "mouseup" onDocumentMouseUp
+        cleanups.Add(fun () ->
+            removeEventListener doc "mousemove" onDocumentMouseMove
+            removeEventListener doc "mouseup" onDocumentMouseUp)
+
         // Focus content to receive keyboard events
         setAttribute content "tabindex" "0"
 
@@ -2774,14 +2879,96 @@ type Spreadsheet(container: Element) =
 
         gridContainer <- Some gridDiv
         contentElement <- Some content
+        disposed <- false
 
         // Initial render
         containerHeight <- getClientHeight gridDiv
         containerWidth <- getClientWidth gridDiv
         render()
 
+        // Follow the container: the visible range depends on the grid's size.
+        let stopObserving =
+            observeResize gridDiv (fun () ->
+                if not disposed then
+                    let height = getClientHeight gridDiv
+                    let width = getClientWidth gridDiv
+                    if height <> containerHeight || width <> containerWidth then
+                        containerHeight <- height
+                        containerWidth <- width
+                        render())
+        cleanups.Add stopObserving
+
         // Focus for keyboard
         focus content
+
+    /// Take the spreadsheet out of the page: removes every listener it
+    /// registered outside its own nodes (document-level mouse handlers, the
+    /// resize observer, open dialogs and dropdowns) and every DOM node it
+    /// created, and drops all subscriptions. The instance can be mounted again.
+    member _.Dispose() =
+        disposed <- true
+        for cleanup in cleanups.ToArray() do
+            try cleanup () with _ -> ()
+        cleanups.Clear()
+        match noticeTimer with
+        | Some id ->
+            clearTimeoutId id
+            noticeTimer <- None
+        | None -> ()
+        match gridContainer with
+        | Some gridDiv -> detach gridDiv
+        | None -> ()
+        gridContainer <- None
+        contentElement <- None
+        editInput <- None
+        cellPool.Clear()
+        chromeNodes.Clear()
+        lastRenderedModel <- None
+        changeListeners.Clear()
+        selectionListeners.Clear()
+        sheetChangedListeners.Clear()
+
+    /// Call `callback` after every change to the workbook's content: cell
+    /// values and formats, row / column sizes, merges, inserted or deleted
+    /// rows and columns, tables, validations, conditional formats, sheets
+    /// added, removed or renamed, undo and redo. It receives
+    /// { Sheets: number[] (indices of the sheets that changed),
+    ///   StructureChanged: boolean (sheet list changed), ActiveSheetIndex }.
+    /// Selection moves and in-cell typing before it is committed are not
+    /// document changes. Returns a function that removes the subscription.
+    member _.OnChange(callback: System.Action<obj>) : System.Action =
+        let listener = callback.Invoke
+        if changeListeners.Count = 0 && selectionListeners.Count = 0 then
+            // Changes are reported from here on, not since the last subscriber left.
+            notifiedSheets <- Array.init sheets.Length (fun i -> if i = activeSheetIndex then model else sheets.[i])
+            notifiedNames <- Array.copy sheetNames
+            notifiedSelection <- Some (activeSheetIndex, model.Selection)
+        changeListeners.Add listener
+        System.Action(fun () -> changeListeners.Remove listener |> ignore)
+
+    /// Call `callback` after the selection changed (another cell or range, or
+    /// another sheet). It receives { SheetIndex, Selection: "B2" | "B2:D5" }.
+    /// Returns a function that removes the subscription.
+    member _.OnSelectionChange(callback: System.Action<obj>) : System.Action =
+        let listener = callback.Invoke
+        if changeListeners.Count = 0 && selectionListeners.Count = 0 then
+            notifiedSheets <- Array.init sheets.Length (fun i -> if i = activeSheetIndex then model else sheets.[i])
+            notifiedNames <- Array.copy sheetNames
+            notifiedSelection <- Some (activeSheetIndex, model.Selection)
+        selectionListeners.Add listener
+        System.Action(fun () -> selectionListeners.Remove listener |> ignore)
+
+    /// Every sheet's current model, in sheet order (the active sheet's
+    /// included, with its latest edits).
+    member _.GetSheets() : SpreadsheetModel array =
+        Array.init sheets.Length (fun i -> if i = activeSheetIndex then model else sheets.[i])
+
+    /// Names of every sheet, in sheet order.
+    member _.GetSheetNames() : string array =
+        Array.copy sheetNames
+
+    /// 0-based index of the sheet on display.
+    member _.GetActiveSheetIndex() : int = activeSheetIndex
 
     /// Get model (for debugging)
     member _.GetModel() = model

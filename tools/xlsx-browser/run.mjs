@@ -7,9 +7,17 @@
 // opened again, and its pictures, kept drawing objects (charts), threaded
 // comments and kept parts are compared.
 //
+// It then runs the checks of the Spreadsheet web component (component.js):
+// change events, dispose, sheet access and sizing, and its XLSX export.
+//
 // Usage:
 //   dotnet fable src/Office.Formats --outDir $DIST/office-formats --lang JavaScript --noCache
-//   node tools/xlsx-browser/run.mjs --dist $DIST [file.xlsx ...]
+//   dotnet fable src/Spreadsheet    --outDir $DIST/spreadsheet    --lang JavaScript --noCache
+//   node tools/xlsx-browser/run.mjs --dist $DIST [--only NAME] [file.xlsx ...]
+// (--only runs a single component check, or "roundtrip" for the reader / writer part.)
+// Fable resolves XlsxImporter's import of the Office.Formats bundle relative to
+// the repository's dist/; when $DIST is elsewhere this runner serves that path
+// from $DIST/office-formats.
 // With no files it takes every workbook under tests/real-world and
 // tests/test-documents-excel that has a part under xl/media, xl/charts or
 // xl/drawings. Environment: PLAYWRIGHT, JSZIP_DIR, PORT (default 16023).
@@ -24,7 +32,9 @@ const repo = path.resolve(here, '../..');
 const args = process.argv.slice(2);
 const opt = (name) => { const i = args.indexOf(name); if (i < 0) return undefined; const v = args[i + 1]; args.splice(i, 2); return v; };
 const dist = path.resolve(opt('--dist') ?? path.join(repo, 'dist'));
+const verbose = (() => { const i = args.indexOf('--verbose'); if (i < 0) return false; args.splice(i, 1); return true; })();
 const port = Number(process.env.PORT ?? 16023);
+const only = opt('--only');
 const jszipDir = [process.env.JSZIP_DIR, path.join(repo, 'node_modules/jszip'), path.resolve(repo, '../rbt-office/node_modules/jszip')].find((p) => p && fs.existsSync(p));
 if (!jszipDir) { console.error('jszip not found; set JSZIP_DIR'); process.exit(2); }
 const JSZip = createRequire(import.meta.url)(path.join(jszipDir, 'dist/jszip.min.js'));
@@ -42,6 +52,12 @@ if (files.length === 0) {
         }
 }
 const fixtures = new Map(files.map((file) => [path.basename(file), fs.readFileSync(file)]));
+// Workbooks the component checks open, by path relative to the repository.
+const componentFixture = (name) => { const file = path.join(repo, path.normalize(name)); return file.startsWith(repo) && fs.existsSync(file) ? fs.readFileSync(file) : null; };
+const componentPage = `<!doctype html><meta charset="utf-8"><body style="margin:0"><script src="/jszip.min.js"></script>
+<script type="importmap">{"imports":{"jszip":"/jszip-shim.js"}}</script><script type="module">
+try { await import('/component.js'); } catch (e) { window.loadError = String(e && e.stack || e); }
+</script>`;
 
 const page = `<!doctype html><meta charset="utf-8"><script src="/jszip.min.js"></script>
 <script type="importmap">{"imports":{"jszip":"/jszip-shim.js"}}</script><script type="module">
@@ -84,8 +100,12 @@ const server = http.createServer((req, res) => {
     if (url.pathname === '/') return send(200, 'text/html', page);
     if (url.pathname === '/jszip.min.js') return send(200, 'text/javascript', fs.readFileSync(path.join(jszipDir, 'dist/jszip.min.js')));
     if (url.pathname === '/jszip-shim.js') return send(200, 'text/javascript', 'export default window.JSZip;');
-    if (url.pathname === '/fixture') { const data = fixtures.get(url.searchParams.get('name')); return data ? send(200, 'application/octet-stream', data) : send(404, 'text/plain', 'no fixture'); }
-    const file = path.join(dist, path.normalize(url.pathname));
+    if (url.pathname === '/component') return send(200, 'text/html', componentPage);
+    if (url.pathname === '/component.js') return send(200, 'text/javascript', fs.readFileSync(path.join(here, 'component.js')));
+    if (url.pathname === '/fixture') { const name = url.searchParams.get('name'); const data = fixtures.get(name) ?? componentFixture(name); return data ? send(200, 'application/octet-stream', data) : send(404, 'text/plain', 'no fixture'); }
+    // XlsxImporter's import of the sibling bundle, as Fable wrote it for an out-of-tree $DIST.
+    const sibling = url.pathname.indexOf('/dist/office-formats/');
+    const file = sibling >= 0 ? path.join(dist, 'office-formats', url.pathname.slice(sibling + '/dist/office-formats/'.length)) : path.join(dist, path.normalize(url.pathname));
     if (file.startsWith(dist) && fs.existsSync(file) && fs.statSync(file).isFile()) return send(200, 'text/javascript', fs.readFileSync(file));
     send(404, 'text/plain', 'not found');
 });
@@ -93,7 +113,7 @@ if (!fs.existsSync(path.join(dist, 'office-formats/src/Main.js'))) { console.err
 await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve));
 const playwright = await import(process.env.PLAYWRIGHT ? pathToFileURL(process.env.PLAYWRIGHT).href : 'playwright');
 const browser = await (playwright.chromium ?? playwright.default.chromium).launch();
-let failed = 0, pictures = 0, charts = 0;
+let failed = 0, pictures = 0, charts = 0, componentChecks = 0;
 try {
     const tab = await browser.newPage();
     tab.on('pageerror', (e) => console.error('page error:', e.message));
@@ -101,7 +121,7 @@ try {
     await tab.waitForFunction('window.check !== undefined || window.loadError !== undefined');
     const loadError = await tab.evaluate('window.loadError');
     if (loadError) throw new Error('page failed to load modules: ' + loadError);
-    for (const name of fixtures.keys()) {
+    for (const name of (only && only !== 'roundtrip' ? [] : fixtures.keys())) {
         let result;
         try { result = await tab.evaluate((n) => window.check(n), name); }
         catch (e) { failed++; console.log(`FAIL ${name}  threw: ${String(e.message).split('\n')[0]}`); continue; }
@@ -112,6 +132,29 @@ try {
         for (const entry of result.changed) console.log('     ' + entry);
         if (!good) failed++;
     }
+    // ---- the Spreadsheet web component ----
+    if (only !== 'roundtrip') {
+        if (!fs.existsSync(path.join(dist, 'spreadsheet/Spreadsheet.js'))) throw new Error(`missing spreadsheet/Spreadsheet.js under ${dist}; Fable-compile src/Spreadsheet first (see header)`);
+        const componentTab = await browser.newPage({ viewport: { width: 1200, height: 900 } });
+        const pageErrors = [];
+        componentTab.on('pageerror', (e) => pageErrors.push(e.message));
+        await componentTab.goto(`http://127.0.0.1:${port}/component`);
+        await componentTab.waitForFunction('window.componentChecks !== undefined || window.loadError !== undefined', null, { timeout: 120000 });
+        const componentLoadError = await componentTab.evaluate('window.loadError');
+        if (componentLoadError) throw new Error('component page failed to load modules: ' + componentLoadError);
+        for (const name of await componentTab.evaluate('Object.keys(window.componentChecks)')) {
+            if (only && only !== name) continue;
+            componentChecks++;
+            let lines;
+            try { lines = await componentTab.evaluate((n) => window.componentChecks[n](), name); }
+            catch (e) { lines = ['FAIL threw: ' + String(e.message).split('\n')[0]]; }
+            lines.push(...pageErrors.splice(0).map((message) => 'FAIL page error: ' + message));
+            const bad = lines.filter((line) => !line.startsWith('ok'));
+            console.log(`${bad.length === 0 ? 'ok  ' : 'FAIL'} ${name}  (${lines.length - bad.length} passed, ${bad.length} failed)`);
+            for (const line of (verbose ? lines : bad)) console.log('     ' + line);
+            if (bad.length) failed++;
+        }
+    }
 } finally { await browser.close(); server.close(); }
-console.log(failed === 0 ? `\nXLSX BROWSER ROUND TRIP: ALL PASSED (${fixtures.size} workbooks, ${pictures} pictures, ${charts} charts)` : `\nXLSX BROWSER ROUND TRIP: ${failed} workbook(s) FAILED`);
+console.log(failed === 0 ? `\nXLSX BROWSER CHECKS: ALL PASSED (${only && only !== 'roundtrip' ? 0 : fixtures.size} workbooks round-tripped with ${pictures} pictures and ${charts} charts, ${componentChecks} component checks)` : `\nXLSX BROWSER CHECKS: ${failed} FAILED`);
 process.exit(failed === 0 ? 0 : 1);
