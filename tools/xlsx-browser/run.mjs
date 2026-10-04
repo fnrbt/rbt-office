@@ -14,7 +14,7 @@
 //   dotnet fable src/Office.Formats --outDir $DIST/office-formats --lang JavaScript --noCache
 //   dotnet fable src/Spreadsheet    --outDir $DIST/spreadsheet    --lang JavaScript --noCache
 //   node tools/xlsx-browser/run.mjs --dist $DIST [--only NAME] [file.xlsx ...]
-// (--only runs a single component check, or "roundtrip" for the reader / writer part.)
+// (--only runs the named component checks (comma separated), or "roundtrip" for the reader / writer part.)
 // The Spreadsheet bundle carries its own compiled copy of the XLSX reader and
 // writer (Office.Formats is a project reference of it); the checks read the
 // exported bytes back with the Office.Formats bundle.
@@ -34,6 +34,8 @@ const opt = (name) => { const i = args.indexOf(name); if (i < 0) return undefine
 const dist = path.resolve(opt('--dist') ?? path.join(repo, 'dist'));
 const verbose = (() => { const i = args.indexOf('--verbose'); if (i < 0) return false; args.splice(i, 1); return true; })();
 const port = Number(process.env.PORT ?? 16023);
+// Each check gets this long (the page is closed when one takes longer).
+const checkTimeout = Number(process.env.CHECK_TIMEOUT ?? 240000);
 const only = opt('--only');
 const jszipDir = [process.env.JSZIP_DIR, path.join(repo, 'node_modules/jszip'), path.resolve(repo, '../rbt-office/node_modules/jszip')].find((p) => p && fs.existsSync(p));
 if (!jszipDir) { console.error('jszip not found; set JSZIP_DIR'); process.exit(2); }
@@ -140,15 +142,29 @@ try {
         await componentTab.waitForFunction('window.componentChecks !== undefined || window.loadError !== undefined', null, { timeout: 120000 });
         const componentLoadError = await componentTab.evaluate('window.loadError');
         if (componentLoadError) throw new Error('component page failed to load modules: ' + componentLoadError);
+        const debuggerSession = await componentTab.context().newCDPSession(componentTab);
+        await debuggerSession.send('Debugger.enable');
         for (const name of await componentTab.evaluate('Object.keys(window.componentChecks)')) {
-            if (only && only !== name) continue;
+            if (only && !only.split(',').includes(name)) continue;
             componentChecks++;
             let lines;
-            try { lines = await componentTab.evaluate((n) => window.componentChecks[n](), name); }
-            catch (e) { lines = ['FAIL threw: ' + String(e.message).split('\n')[0]]; }
+            try { lines = await Promise.race([componentTab.evaluate((n) => window.componentChecks[n](), name), new Promise((_, reject) => setTimeout(() => reject(new Error(`no result after ${checkTimeout} ms`)), checkTimeout))]); }
+            catch (e) {
+                lines = ['FAIL threw: ' + String(e.message).split('\n')[0]];
+                if (/no result after/.test(String(e.message))) {
+                    // Where the page is stuck: pause it and read the stack.
+                    try {
+                        const paused = new Promise((resolve) => debuggerSession.once('Debugger.paused', resolve));
+                        await debuggerSession.send('Debugger.pause');
+                        const { callFrames } = await Promise.race([paused, new Promise((_, reject) => setTimeout(() => reject(new Error('not paused')), 10000))]);
+                        for (const frame of callFrames.slice(0, 14)) lines.push(`FAIL   at ${frame.functionName || '(anonymous)'} ${frame.url.split('/').slice(-2).join('/')}:${frame.location.lineNumber + 1}`);
+                    } catch { /* the page is gone */ }
+                }
+            }
             lines.push(...pageErrors.splice(0).map((message) => 'FAIL page error: ' + message));
             const bad = lines.filter((line) => !line.startsWith('ok'));
-            console.log(`${bad.length === 0 ? 'ok  ' : 'FAIL'} ${name}  (${lines.length - bad.length} passed, ${bad.length} failed)`);
+            const heap = await Promise.race([componentTab.evaluate(() => (performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1e6) : -1)), new Promise((resolve) => setTimeout(() => resolve(-1), 3000))]).catch(() => -1);
+            console.log(`${bad.length === 0 ? 'ok  ' : 'FAIL'} ${name}  (${lines.length - bad.length} passed, ${bad.length} failed${heap >= 0 ? `, JS heap ${heap} MB` : ''})`);
             for (const line of (verbose ? lines : bad)) console.log('     ' + line);
             if (bad.length) failed++;
         }

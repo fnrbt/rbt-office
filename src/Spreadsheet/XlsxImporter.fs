@@ -105,11 +105,19 @@ let importAllSheetsPromise (buffer: JS.ArrayBuffer): JS.Promise<(string * Spread
     (importWorkbookPromise buffer).``then``(fun imported ->
         imported.Sheets |> Array.map (fun sheet -> sheet.Name, sheet.Model))
 
+/// The sheets the workbook lists, read from the workbook part alone (no
+/// sheet is parsed, so this is quick however large the file is).
+let private loadSheetInfos (buffer: JS.ArrayBuffer): JS.Promise<XlsxReader.Xlsx.SheetInfo list> =
+    (XlsxReader.loadSheetInfos buffer).``then``(fun infos ->
+        match infos with
+        | Some infos -> infos
+        | None -> failwith "Not a readable XLSX workbook: the package has no workbook part")
+
 /// Name and visibility of every sheet: `{ name, state, visible }` where
 /// state is "visible" | "hidden" | "veryHidden".
 let getSheetInfosPromise (buffer: JS.ArrayBuffer): JS.Promise<obj[]> =
-    (loadReaderWorkbook buffer None).``then``(fun workbook ->
-        workbook.Sheets
+    (loadSheetInfos buffer).``then``(fun infos ->
+        infos
         |> List.map (fun sheet ->
             let state = XlsxBridge.sheetStateText sheet.State
             createObj [ "name" ==> sheet.Name; "state" ==> state; "visible" ==> (state = "visible") ])
@@ -117,12 +125,12 @@ let getSheetInfosPromise (buffer: JS.ArrayBuffer): JS.Promise<obj[]> =
 
 /// Names of every sheet in the workbook, hidden ones included.
 let getSheetNamesPromise (buffer: JS.ArrayBuffer): JS.Promise<string[]> =
-    (loadReaderWorkbook buffer None).``then``(fun workbook -> workbook.Sheets |> List.map (fun sheet -> sheet.Name) |> List.toArray)
+    (loadSheetInfos buffer).``then``(fun infos -> infos |> List.map (fun sheet -> sheet.Name) |> List.toArray)
 
 /// Names of the sheets Excel shows a tab for.
 let getVisibleSheetNamesPromise (buffer: JS.ArrayBuffer): JS.Promise<string[]> =
-    (loadReaderWorkbook buffer None).``then``(fun workbook ->
-        workbook.Sheets
+    (loadSheetInfos buffer).``then``(fun infos ->
+        infos
         |> List.filter (fun sheet -> sheet.State = XlsxReader.SheetVisible)
         |> List.map (fun sheet -> sheet.Name)
         |> List.toArray)

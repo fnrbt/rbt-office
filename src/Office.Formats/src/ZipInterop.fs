@@ -312,7 +312,8 @@ let private createBlob (buffer: obj) (mimeType: string) : obj = jsNative
 [<Emit("URL.createObjectURL($0)")>]
 let private createObjectUrl (blob: obj) : string = jsNative
 
-[<Emit("(() => { const bytes = new Uint8Array($0); let binary = ''; for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]); return btoa(binary); })()")>]
+// In chunks: one string concatenation per byte is quadratic on a large part.
+[<Emit("(() => { const bytes = new Uint8Array($0); const parts = []; for (let i = 0; i < bytes.length; i += 32768) parts.push(String.fromCharCode.apply(null, bytes.subarray(i, i + 32768))); return btoa(parts.join('')); })()")>]
 let private arrayBufferToBase64 (_buffer: obj) : string = jsNative
 
 // Get file as Blob URL (more efficient than base64)

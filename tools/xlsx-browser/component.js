@@ -340,6 +340,177 @@ checks['export-edited'] = async () => {
     return lines;
 };
 
+// What the editor does not model but a save must not lose: pivot tables, pivot caches,
+// slicers, slicer caches and external links go back byte for byte, with the relationships
+// and content types that make them part of the workbook; a pivot table follows inserted
+// rows; sheets keep that through a rename / reorder / added sheet.
+const CARRIED_PARTS = /^xl\/(pivotTables|pivotCache|slicers|slicerCaches|externalLinks)\//;
+const textParts = async (bytes, pattern) => {
+    const zip = await window.JSZip.loadAsync(bytes), out = {};
+    for (const entry of Object.keys(zip.files)) if (pattern.test(entry) && !zip.files[entry].dir) out[entry] = await zip.files[entry].async('string');
+    return out;
+};
+const countOf = (text, pattern) => (text.match(pattern) ?? []).length;
+checks['export-kept-parts'] = async () => {
+    const { lines, check, note } = makeLog();
+    const { grid, close } = mountGrid();
+    try {
+        const file = 'tests/real-world/dashboard-sales-analysis.xlsx';
+        const original = await bytesOf(file);
+        const loadStarted = performance.now();
+        await grid.ImportXlsx(original.slice());
+        const loadTime = performance.now() - loadStarted;
+        const before = await partsOf(original, CARRIED_PARTS);
+        check('the file has 8 pivot tables, a pivot cache, slicers and external links', [countOf(Object.keys(before).join('\n'), /pivotTables\/pivotTable\d+\.xml$/gm), countOf(Object.keys(before).join('\n'), /slicerCaches\/slicerCache\d+\.xml$/gm), countOf(Object.keys(before).join('\n'), /externalLinks\/externalLink\d+\.xml$/gm)], [8, 3, 2]);
+        // An edit, then a save.
+        grid.SetCell(40, 0, 'edited');
+        const exportStarted = performance.now();
+        const saved = await grid.ExportXlsx();
+        const exportTime = performance.now() - exportStarted;
+        const after = await partsOf(saved, CARRIED_PARTS);
+        check('pivot / slicer / external-link parts and their .rels byte for byte', changedParts(before, after), []);
+        const meta = await textParts(saved, /^(\[Content_Types\]\.xml|xl\/workbook\.xml|xl\/_rels\/workbook\.xml\.rels|xl\/worksheets\/_rels\/.*\.rels|xl\/worksheets\/sheet1\.xml)$/);
+        const types = meta['[Content_Types].xml'];
+        check('every kept part has its content type', Object.keys(before).filter((entry) => entry.endsWith('.xml') && !types.includes(`PartName="/${entry}"`)), []);
+        const workbookXml = meta['xl/workbook.xml'], workbookRels = meta['xl/_rels/workbook.xml.rels'];
+        check('workbook.xml lists the pivot cache, external references and slicer caches', [countOf(workbookXml, /<pivotCache /g), countOf(workbookXml, /<externalReference /g), countOf(workbookXml, /slicerCache r:id=/g)], [1, 2, 3]);
+        check('workbook relationships to them', [countOf(workbookRels, /\/pivotCacheDefinition"/g), countOf(workbookRels, /\/slicerCache"/g), countOf(workbookRels, /\/externalLink"/g)], [1, 3, 2]);
+        const ids = [...workbookXml.matchAll(/r:id="([^"]*)"/g)].map((m) => m[1]);
+        check('every r:id of workbook.xml is a relationship, none twice', [ids.filter((id) => !workbookRels.includes(`Id="${id}"`)), ids.length - new Set(ids).size], [[], 0]);
+        const originalWorkbook = (await textParts(original, /^xl\/workbook\.xml$/))['xl/workbook.xml'];
+        const sheetIds = (xml) => [...xml.matchAll(/<sheet name="([^"]*)" sheetId="(\d+)"/g)].map((m) => m[1] + '=' + m[2]);
+        check('sheets keep their sheetId (slicer caches name pivot tables by it)', sheetIds(workbookXml), sheetIds(originalWorkbook));
+        const sheetRels = Object.entries(meta).filter(([entry]) => entry.startsWith('xl/worksheets/_rels/')).map(([, xml]) => xml).join('');
+        check('sheet relationships to pivot tables and the slicer part', [countOf(sheetRels, /\/pivotTable"/g), countOf(sheetRels, /relationships\/slicer"/g)], [8, 1]);
+        const slicerId = /x14:slicer r:id="([^"]*)"/.exec(meta['xl/worksheets/sheet1.xml'])?.[1];
+        check('the sheet lists its slicers, under a relationship of the sheet', [!!slicerId, (meta['xl/worksheets/_rels/sheet1.xml.rels'] ?? '').includes(`Id="${slicerId}"`)], [true, true]);
+        check('the written workbook opens again with its sheets', Array.from(await (await import('/spreadsheet/XlsxImporter.js')).getSheetNamesPromise(saved.slice())), grid.GetSheetNames());
+        note(`dashboard: load ${Math.round(loadTime)} ms, export ${Math.round(exportTime)} ms, ${saved.length} bytes`);
+
+        // Two rows inserted above a pivot table: only its <location ref> changes.
+        const names = grid.GetSheetNames(), linePivot = names.indexOf('Line Pivot');
+        grid.SwitchSheet(linePivot);
+        const pivotPath = grid.GetModel().KeptRanges.head.Key;
+        const locationOf = (xml) => /<location [^>]*ref="([^"]*)"/.exec(xml)?.[1];
+        const pivotBefore = (await textParts(original, CARRIED_PARTS))[pivotPath];
+        grid.InsertRow(0); grid.InsertRow(0);
+        const moved = await grid.ExportXlsx();
+        const pivotAfter = (await textParts(moved, CARRIED_PARTS))[pivotPath];
+        check('a pivot table follows rows inserted above it', [locationOf(pivotBefore), locationOf(pivotAfter)], ['A3:D27', 'A5:D29']);
+        check('and the rest of its part is untouched', pivotAfter.replace('ref="A5:D29"', 'ref="A3:D27"') === pivotBefore, true);
+        check('the other kept parts too', changedParts(before, await partsOf(moved, CARRIED_PARTS)).filter((entry) => !entry.startsWith(pivotPath)), []);
+        grid.Undo(); grid.Undo();
+        check('undo puts the pivot table back', locationOf((await textParts(await grid.ExportXlsx(), CARRIED_PARTS))[pivotPath]), 'A3:D27');
+
+        // The host renames, reorders and adds sheets: each sheet still has what the file gave it.
+        const { createEmpty } = await import('/spreadsheet/Model.js');
+        const sheets = grid.GetSheets();
+        grid.InstallWorkbook([createEmpty(50, 10), ...[...sheets].reverse()], ['Added', ...[...names].reverse().map((name) => name + ' 2')], 0, undefined);
+        check('the grid still knows the file after sheets were renamed, reordered and one added', grid.HasXlsxSource(), true);
+        const shuffled = await grid.ExportXlsx();
+        check('kept parts byte for byte after rename / reorder / add', changedParts(before, await partsOf(shuffled, CARRIED_PARTS)), []);
+        const reread = await excel.load(shuffled.slice());
+        const pivotsPerSheet = (wb) => Object.fromEntries(excel.sheetNames(wb).map((name) => [name.replace(/ 2$/, ''), excel.sheet(name, wb).Extras.PivotLocations.length ?? [...excel.sheet(name, wb).Extras.PivotLocations].length]));
+        const expectedPivots = { ...pivotsPerSheet(await excel.load(original.slice())), Added: 0 };
+        const sorted = (counts) => Object.entries(counts).sort((x, y) => x[0].localeCompare(y[0]));
+        check('each sheet has its own pivot tables', sorted(pivotsPerSheet(reread)), sorted(expectedPivots));
+        // A different workbook has nothing of this file.
+        grid.InstallWorkbook([createEmpty(50, 10)], ['Fresh'], 0, undefined);
+        check('a different workbook has no source', grid.HasXlsxSource(), false);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
+
+// What-if data tables are written back as data tables (they used to become plain values),
+// keep the results the file had, and follow structure edits.
+checks['export-data-tables'] = async () => {
+    const { lines, check } = makeLog();
+    const tablesOf = async (bytes) => {
+        const sheets = await textParts(bytes, /^xl\/worksheets\/[^/]+\.xml$/), found = [];
+        for (const xml of Object.values(sheets))
+            for (const m of xml.matchAll(/<c r="([A-Z]+\d+)"[^>]*><f ([^>]*t="dataTable"[^>]*)\/><v>([^<]*)<\/v>/g)) {
+                const attrs = Object.fromEntries([...m[2].matchAll(/([A-Za-z0-9]+)="([^"]*)"/g)].map((a) => [a[1], a[2]]).filter(([name]) => name !== 'aca'));
+                found.push([m[1], attrs.ref, attrs.dt2D ?? '0', attrs.dtr ?? '0', attrs.r1, attrs.r2 ?? '', Number(m[3])]);
+            }
+        return found.sort((a, b) => a[0].localeCompare(b[0]));
+    };
+    for (const [file, sheet, expected] of [['tests/real-world/milk-street-office.xlsx', 'Annual', 10], ['tests/real-world/saopaulo-condos.xlsx', 'Assumptions', 8]]) {
+        const short = file.split('/').pop();
+        const { grid, close } = mountGrid();
+        try {
+            const original = await bytesOf(file);
+            await grid.ImportXlsx(original.slice());
+            const before = await tablesOf(original);
+            check(`${short}: the file has ${expected} data tables`, before.length, expected);
+            const index = grid.GetSheetNames().indexOf(sheet);
+            grid.SwitchSheet(index);
+            check(`${short}: they are in the model`, [...grid.GetModel().DataTables].length, expected);
+            // An edit elsewhere (a full recalculation happens on the row insert below).
+            grid.SetCell(0, 60, '5');
+            check(`${short}: written back as data tables with the file's results`, firstDifference(await tablesOf(await grid.ExportXlsx()), before), null);
+            grid.InsertRow(0);
+            const shift = (ref) => ref.replace(/(\$?[A-Z]+\$?)(\d+)/g, (_, col, row) => col + (Number(row) + 1));
+            const after = await tablesOf(await grid.ExportXlsx());
+            check(`${short}: range and input cells follow an inserted row`, firstDifference(after.map((t) => t.slice(0, 6)), before.map((t) => [shift(t[0]), shift(t[1]), t[2], t[3], shift(t[4]), shift(t[5])]).sort((a, b) => a[0].localeCompare(b[0]))), null);
+            check(`${short}: the results are still the file's after the recalculation`, after.map((t) => t[6]).sort(), before.map((t) => t[6]).sort());
+        } catch (e) { lines.push(`FAIL ${short} threw ` + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+        close();
+    }
+    return lines;
+};
+
+// Hyperlinks and column default styles follow inserted and deleted rows / columns.
+checks['links-and-column-styles-follow-edits'] = async () => {
+    const { lines, check } = makeLog();
+    {
+        const { grid, close } = mountGrid();
+        try {
+            const original = await bytesOf('tests/test-documents-excel/synthetic-formatting.xlsx');
+            await grid.ImportXlsx(original.slice());
+            const linksOf = async (bytes) => { const wb = await excel.load(bytes.slice()); return excel.sheetNames(wb).flatMap((name) => excel.sheetMeta(wb, excel.sheet(name, wb)).hyperlinks.map((link) => [name, link.range ?? link.Range, link.target ?? link.Target])); };
+            const before = await linksOf(original);
+            check('the file has a hyperlink', before.length, 1);
+            const sheetIndex = grid.GetSheetNames().indexOf(before[0][0]);
+            if (sheetIndex !== grid.GetActiveSheetIndex()) grid.SwitchSheet(sheetIndex);
+            check('unedited: where it was', await linksOf(await grid.ExportXlsx()), before);
+            grid.InsertRow(0); grid.InsertColumn(0);
+            const shifted = before[0][1].replace(/([A-Z]+)(\d+)/g, (_, col, row) => String.fromCharCode(col.charCodeAt(0) + 1) + (Number(row) + 1));
+            check('it moves with an inserted row and column', await linksOf(await grid.ExportXlsx()), [[before[0][0], shifted, before[0][2]]]);
+            grid.Undo(); grid.Undo();
+            check('and back with undo', await linksOf(await grid.ExportXlsx()), before);
+        } catch (e) { lines.push('FAIL hyperlinks threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+        close();
+    }
+    {
+        const { grid, close } = mountGrid();
+        try {
+            const original = await bytesOf('tests/real-world/saopaulo-condos.xlsx');
+            await grid.ImportXlsx(original.slice());
+            const index = grid.GetSheets().findIndex((sheet) => [...sheet.ColumnStyles].length > 0);
+            grid.SwitchSheet(index);
+            const entry = `xl/worksheets/sheet${index + 1}.xml`;
+            // Styled columns of the sheet, one entry per column (up to column 60).
+            const styled = async (bytes) => {
+                const xml = (await textParts(bytes, /^xl\/worksheets\/[^/]+\.xml$/))[entry], columns = [];
+                for (const col of xml.match(/<col [^>]*>/g) ?? []) {
+                    const style = /style="(\d+)"/.exec(col), min = Number(/min="(\d+)"/.exec(col)[1]), max = Number(/max="(\d+)"/.exec(col)[1]);
+                    if (style && style[1] !== '0') for (let c = min; c <= Math.min(max, 60); c++) columns.push(c);
+                }
+                return columns;
+            };
+            const before = await styled(original);
+            check('the sheet has columns with a default style', before.length > 0, true);
+            grid.InsertColumn(0);
+            check('they are still styled, one column to the right, after a column is inserted', await styled(await grid.ExportXlsx()), [...new Set(before.map((c) => Math.min(60, c + 1)).concat(before.includes(60) ? [60] : []))].sort((a, b) => a - b));
+            grid.Undo();
+            check('and as in the file after undo', await styled(await grid.ExportXlsx()), before);
+        } catch (e) { lines.push('FAIL column styles threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+        close();
+    }
+    return lines;
+};
+
 // Pictures, charts and threaded comments in the grid: shown, moved with inserted rows /
 // columns, and exported where they now are.
 checks['drawings-in-grid'] = async () => {

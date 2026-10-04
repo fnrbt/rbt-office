@@ -1582,6 +1582,376 @@ module Xlsx =
 
     let row rowNode = rowWithStyles None rowNode
 
+    // ---- <sheetData> read straight from the text of the part -------------------
+    // A large sheet is almost all <sheetData>: rows of cells with a formula and
+    // a value. Building a DOM and then a node tree for it costs several times
+    // the part's size in memory and most of the load time in a browser. The
+    // rows are therefore scanned from the text; everything else of the sheet
+    // (columns, merges, rules, page setup) still goes through the XML parser,
+    // on the part with its rows cut out. Cells are assembled by `buildCell`,
+    // as in the other two parsers.
+
+    /// Decode the five predefined entities and character references.
+    let private decodeXmlText (text: string) : string =
+        if text.IndexOf '&' < 0 then text
+        else
+            let sb = StringBuilder(text.Length)
+            let mutable i = 0
+            while i < text.Length do
+                let ch = text.[i]
+                if ch = '&' then
+                    let close = text.IndexOf(';', i)
+                    if close < 0 || close - i > 10 then
+                        sb.Append ch |> ignore
+                        i <- i + 1
+                    else
+                        let name = text.Substring(i + 1, close - i - 1)
+                        let replacement =
+                            match name with
+                            | "amp" -> "&"
+                            | "lt" -> "<"
+                            | "gt" -> ">"
+                            | "quot" -> "\""
+                            | "apos" -> "'"
+                            | _ when name.StartsWith "#" ->
+                                let code =
+                                    if name.Length > 2 && (name.[1] = 'x' || name.[1] = 'X') then
+                                        let mutable value = 0
+                                        let mutable valid = true
+                                        for k in 2 .. name.Length - 1 do
+                                            let c = name.[k]
+                                            if c >= '0' && c <= '9' then value <- value * 16 + (int c - int '0')
+                                            elif c >= 'a' && c <= 'f' then value <- value * 16 + (int c - int 'a' + 10)
+                                            elif c >= 'A' && c <= 'F' then value <- value * 16 + (int c - int 'A' + 10)
+                                            else valid <- false
+                                        if valid then value else -1
+                                    else
+                                        match tryParseInt (name.Substring 1) with
+                                        | Some value -> value
+                                        | None -> -1
+                                if code < 0 then "&" + name + ";"
+                                elif code < 0x10000 then string (char code)
+                                else
+                                    // A character beyond the BMP is a surrogate pair.
+                                    let offset = code - 0x10000
+                                    string (char (0xD800 + (offset >>> 10))) + string (char (0xDC00 + (offset &&& 0x3FF)))
+                            | _ -> "&" + name + ";"
+                        sb.Append replacement |> ignore
+                        i <- close + 1
+                else
+                    sb.Append ch |> ignore
+                    i <- i + 1
+            sb.ToString()
+
+    // The scanner works on character codes and reads the attributes of a tag
+    // in one pass into a small array: it runs over tens of megabytes of text,
+    // and it is kept in small functions of one shape each so that a JavaScript
+    // engine compiles (and keeps) them optimised.
+
+    let inline private codeAt (text: string) (index: int) : int = int text.[index]
+
+    let inline private isSpaceCode (code: int) = code = 32 || code = 10 || code = 13 || code = 9
+
+    /// Ordinal search from `start` (the default search of .NET is by culture, and slow).
+#if FABLE_COMPILER
+    let inline private indexOfFrom (text: string) (value: string) (start: int) : int = text.IndexOf(value, start)
+#else
+    let inline private indexOfFrom (text: string) (value: string) (start: int) : int = text.IndexOf(value, start, System.StringComparison.Ordinal)
+#endif
+
+    /// Read the attributes of a start tag (`xml.[from .. upTo - 1]`, the text
+    /// after the element name) once: `values.[i]` becomes the value of the
+    /// attribute `names.[i]`, or null when the tag does not have it.
+    let private scanAttributes (xml: string) (from: int) (upTo: int) (names: string array) (values: string array) : unit =
+        for k in 0 .. values.Length - 1 do
+            values.[k] <- null
+        let mutable i = from
+        while i < upTo do
+            while i < upTo && isSpaceCode (codeAt xml i) do i <- i + 1
+            let nameStart = i
+            let mutable inName = true
+            while inName && i < upTo do
+                let code = codeAt xml i
+                if code = 61 || code = 47 || isSpaceCode code then inName <- false else i <- i + 1
+            let nameEnd = i
+            while i < upTo && isSpaceCode (codeAt xml i) do i <- i + 1
+            if i < upTo && codeAt xml i = 61 then
+                i <- i + 1
+                while i < upTo && isSpaceCode (codeAt xml i) do i <- i + 1
+                if i < upTo then
+                    let quote = xml.[i]
+                    let valueStart = i + 1
+                    let valueEnd = xml.IndexOf(quote, valueStart)
+                    if valueEnd < 0 || valueEnd >= upTo then i <- upTo
+                    else
+                        let length = nameEnd - nameStart
+                        let mutable k = 0
+                        while k < names.Length do
+                            let name = names.[k]
+                            let mutable same = name.Length = length
+                            let mutable j = 0
+                            while same && j < length do
+                                if codeAt xml (nameStart + j) <> codeAt name j then same <- false
+                                j <- j + 1
+                            if same then
+                                values.[k] <- decodeXmlText (xml.Substring(valueStart, valueEnd - valueStart))
+                                k <- names.Length
+                            else k <- k + 1
+                        i <- valueEnd + 1
+            else
+                i <- i + 1
+
+    /// A run of decimal digits as a number, or -1.
+    let private digitsValue (text: string) : int =
+        if isNull text || text.Length = 0 || text.Length > 9 then -1
+        else
+            let mutable value = 0
+            let mutable i = 0
+            while value >= 0 && i < text.Length do
+                let code = codeAt text i
+                if code >= 48 && code <= 57 then value <- value * 10 + (code - 48) else value <- -1
+                i <- i + 1
+            value
+
+    /// An integer attribute as the XML parsers read it (`tryParseInt`).
+    let private intAttribute (text: string) : int option =
+        if isNull text then None
+        else
+            match digitsValue text with
+            | -1 -> tryParseInt text
+            | value -> Some value
+
+    let private boolAttribute (text: string) : bool option =
+        if isNull text then None else Some (isTrueText text)
+
+    /// Text content of an element as the XML parser hands it over: line ends
+    /// normalised, entities decoded, and trimmed unless the element says
+    /// xml:space="preserve". `tagFrom .. tagEnd` is the text of the start tag
+    /// after the element name.
+    let private scanText (xml: string) (tagFrom: int) (tagEnd: int) (contentEnd: int) : string =
+        let raw = xml.Substring(tagEnd + 1, contentEnd - tagEnd - 1)
+        // An XML parser reads every line end (CR LF, CR) as LF; a character
+        // reference (&#13;) is the way to say CR.
+        let raw = if raw.IndexOf '\r' < 0 then raw else raw.Replace("\r\n", "\n").Replace("\r", "\n")
+        let decoded = decodeXmlText raw
+        let preserve = tagEnd > tagFrom && indexOfFrom (xml.Substring(tagFrom, tagEnd - tagFrom)) "preserve" 0 >= 0
+        if preserve then decoded else decoded.Trim()
+
+    /// What a scan of a sheet's rows carries from cell to cell.
+    type private RowScan = {
+        Xml: string
+        Ctx: SheetParseContext
+        ColumnNames: System.Collections.Generic.Dictionary<int, string>
+        RowNames: string array
+        RowValues: string array
+        CellNames: string array
+        CellValues: string array
+        FormulaNames: string array
+        FormulaValues: string array
+        /// Where the next inline string (`<is`) is, or -1 when there is none ahead.
+        mutable NextInline: int
+        mutable Valid: bool
+        mutable PrevCol: int
+    }
+
+    let private scanColumnName (scan: RowScan) (index: int) : string =
+        match scan.ColumnNames.TryGetValue index with
+        | true, name -> name
+        | false, _ ->
+            let name = indexToColumnLetters index
+            scan.ColumnNames.[index] <- name
+            name
+
+    /// The `<f>` and `<v>` children of a cell: (formula text or null, its tag
+    /// bounds, value text or null). Other children are skipped.
+    let private scanCellChildren (scan: RowScan) (from: int) (cellEnd: int) (formulaTag: int array) : string * string =
+        let xml = scan.Xml
+        let mutable formula : string = null
+        let mutable value : string = null
+        let mutable childPos = from
+        while childPos < cellEnd do
+            let childAt = xml.IndexOf('<', childPos)
+            if childAt < 0 || childAt >= cellEnd - 1 then childPos <- cellEnd
+            else
+                let childTagEnd = xml.IndexOf('>', childAt)
+                if childTagEnd < 0 || childTagEnd > cellEnd then childPos <- cellEnd
+                else
+                    let selfClosed = codeAt xml (childTagEnd - 1) = 47
+                    let nameCode = codeAt xml (childAt + 1)
+                    let afterCode = codeAt xml (childAt + 2)
+                    let single = isSpaceCode afterCode || afterCode = 62 || afterCode = 47
+                    // 102 'f', 118 'v'
+                    if single && (nameCode = 102 || nameCode = 118) then
+                        let tagAttrEnd = if selfClosed then childTagEnd - 1 else childTagEnd
+                        let contentEnd =
+                            if selfClosed then childTagEnd
+                            else
+                                match indexOfFrom xml (if nameCode = 102 then "</f>" else "</v>") childTagEnd with
+                                | -1 -> cellEnd
+                                | index -> min index cellEnd
+                        let text = if selfClosed then "" else scanText xml (childAt + 2) tagAttrEnd contentEnd
+                        if nameCode = 102 then
+                            formula <- text
+                            formulaTag.[0] <- childAt + 2
+                            formulaTag.[1] <- tagAttrEnd
+                        else value <- text
+                        childPos <- if selfClosed then childTagEnd + 1 else contentEnd + 4
+                    elif nameCode = 47 || selfClosed then childPos <- childTagEnd + 1
+                    else
+                        // An element this reader has no use for (extLst): skip over it.
+                        let mutable nameEnd = childAt + 1
+                        while nameEnd < childTagEnd && not (isSpaceCode (codeAt xml nameEnd)) do nameEnd <- nameEnd + 1
+                        let closing = "</" + xml.Substring(childAt + 1, nameEnd - childAt - 1) + ">"
+                        match indexOfFrom xml closing childTagEnd with
+                        | -1 -> childPos <- cellEnd
+                        | index -> childPos <- index + closing.Length
+        formula, value
+
+    /// One `<c>` that has no inline string: `cellAt` is its "<", `cellTagEnd`
+    /// the ">" of its start tag, `cellEnd` its "</c>" (or `cellTagEnd` when
+    /// the tag closes itself).
+    let private scanCell (scan: RowScan) (rowIndex: int) (cellAt: int) (cellTagEnd: int) (cellEnd: int) (selfClosed: bool) : Cell =
+        let xml = scan.Xml
+        scanAttributes xml (cellAt + 2) (if selfClosed then cellTagEnd - 1 else cellTagEnd) scan.CellNames scan.CellValues
+        let reference = scan.CellValues.[0]
+        let mutable colIndex = 0
+        let mutable row = 0
+        if not (isNull reference) then
+            for i in 0 .. reference.Length - 1 do
+                let code = codeAt reference i
+                if code >= 65 && code <= 90 then colIndex <- colIndex * 26 + (code - 64)
+                elif code >= 97 && code <= 122 then colIndex <- colIndex * 26 + (code - 96)
+                elif code >= 48 && code <= 57 then row <- row * 10 + (code - 48)
+        if colIndex = 0 then
+            // No (usable) reference: one column right of the previous cell.
+            colIndex <- scan.PrevCol + 1
+            row <- rowIndex
+        elif row <= 0 then row <- rowIndex
+        scan.PrevCol <- colIndex
+        let cellType = match scan.CellValues.[2] with | null -> None | text -> Some text
+        let styleIdx = intAttribute scan.CellValues.[1]
+        if selfClosed then
+            buildCell scan.Ctx (scanColumnName scan colIndex) colIndex row cellType styleIdx None None None None (fun _ -> None) None None []
+        else
+            let formulaTag = [| 0; 0 |]
+            let formula, value = scanCellChildren scan (cellTagEnd + 1) cellEnd formulaTag
+            if isNull formula then
+                buildCell scan.Ctx (scanColumnName scan colIndex) colIndex row cellType styleIdx None None None None (fun _ -> None)
+                    (if isNull value then None else Some value) None []
+            else
+                scanAttributes xml formulaTag.[0] formulaTag.[1] scan.FormulaNames scan.FormulaValues
+                let optional (text: string) = if isNull text then None else Some text
+                let fType = optional scan.FormulaValues.[0]
+                let fRef = optional scan.FormulaValues.[1]
+                let fSi = optional scan.FormulaValues.[2]
+                // The other attributes are only asked for by a data table.
+                let fAttr (name: string) =
+                    let names = [| name |]
+                    let values : string array = [| null |]
+                    scanAttributes xml formulaTag.[0] formulaTag.[1] names values
+                    optional values.[0]
+                buildCell scan.Ctx (scanColumnName scan colIndex) colIndex row cellType styleIdx (Some formula) fType fRef fSi fAttr
+                    (if isNull value then None else Some value) None []
+
+    /// The cells of one row: `from` is just after the row's start tag, `rowEnd` its "</row>".
+    let private scanRowCells (scan: RowScan) (rowIndex: int) (from: int) (rowEnd: int) : Cell list =
+        let xml = scan.Xml
+        let cells = System.Collections.Generic.List<Cell>()
+        scan.PrevCol <- 0
+        let mutable cellPos = from
+        while scan.Valid && cellPos < rowEnd do
+            let cellAt = indexOfFrom xml "<c" cellPos
+            if cellAt < 0 || cellAt >= rowEnd then cellPos <- rowEnd
+            else
+                let cellTagEnd = xml.IndexOf('>', cellAt)
+                let next = codeAt xml (cellAt + 2)
+                if cellTagEnd < 0 || cellTagEnd > rowEnd || not (isSpaceCode next || next = 62 || next = 47) then scan.Valid <- false
+                else
+                    let selfClosed = codeAt xml (cellTagEnd - 1) = 47
+                    let cellEnd = if selfClosed then cellTagEnd else indexOfFrom xml "</c>" cellTagEnd
+                    if cellEnd < 0 || cellEnd > rowEnd then scan.Valid <- false
+                    else
+                        // Where the next inline string is: looked for again only once it is passed.
+                        if scan.NextInline >= 0 && scan.NextInline < cellAt then scan.NextInline <- indexOfFrom xml "<is" cellAt
+                        if not selfClosed && scan.NextInline >= 0 && scan.NextInline < cellEnd then
+                            // An inline string (plain or rich) is rare: the XML parser reads this one cell.
+                            let cell, colIndex = cellFromNode scan.Ctx rowIndex scan.PrevCol (XmlDsl.parse (xml.Substring(cellAt, cellEnd + 4 - cellAt)))
+                            scan.PrevCol <- colIndex
+                            cells.Add cell
+                        else
+                            cells.Add (scanCell scan rowIndex cellAt cellTagEnd cellEnd selfClosed)
+                        cellPos <- if selfClosed then cellTagEnd + 1 else cellEnd + 4
+        List.ofSeq cells
+
+    /// The rows of a sheet part, from its text. None when the part is not in
+    /// the plain shape this scanner reads (a prefixed sheetData element,
+    /// comments or CDATA among the rows): the caller then parses the whole part.
+    /// Also returns the part with the rows cut out.
+    let internal scanSheetRows (ctx: SheetParseContext) (sheetXml: string) : (Row list * string) option =
+        let openAt = indexOfFrom sheetXml "<sheetData" 0
+        if openAt < 0 then None
+        else
+            let openEnd = sheetXml.IndexOf('>', openAt)
+            if openEnd < 0 then None
+            elif codeAt sheetXml (openEnd - 1) = 47 then Some ([], sheetXml)
+            else
+                let closeAt = indexOfFrom sheetXml "</sheetData>" openEnd
+                let commentAt = if closeAt < 0 then -1 else indexOfFrom sheetXml "<!" openEnd
+                if closeAt < 0 || (commentAt >= 0 && commentAt < closeAt) then None
+                else
+                    let scan =
+                        { Xml = sheetXml
+                          Ctx = ctx
+                          ColumnNames = System.Collections.Generic.Dictionary<int, string>()
+                          RowNames = [| "r"; "ht"; "customHeight"; "hidden"; "s"; "customFormat"; "spans" |]
+                          RowValues = Array.create 7 null
+                          CellNames = [| "r"; "s"; "t" |]
+                          CellValues = Array.create 3 null
+                          FormulaNames = [| "t"; "ref"; "si" |]
+                          FormulaValues = Array.create 3 null
+                          NextInline = indexOfFrom sheetXml "<is" openEnd
+                          Valid = true
+                          PrevCol = 0 }
+                    let rows = System.Collections.Generic.List<Row>()
+                    let mutable prevRow = 0
+                    let mutable pos = openEnd + 1
+                    while scan.Valid && pos < closeAt do
+                        let rowAt = indexOfFrom sheetXml "<row" pos
+                        if rowAt < 0 || rowAt >= closeAt then pos <- closeAt
+                        else
+                            let rowTagEnd = sheetXml.IndexOf('>', rowAt)
+                            let afterName = codeAt sheetXml (rowAt + 4)
+                            if rowTagEnd < 0 || rowTagEnd > closeAt || not (isSpaceCode afterName || afterName = 62 || afterName = 47) then scan.Valid <- false
+                            else
+                                let selfClosed = codeAt sheetXml (rowTagEnd - 1) = 47
+                                scanAttributes sheetXml (rowAt + 4) (if selfClosed then rowTagEnd - 1 else rowTagEnd) scan.RowNames scan.RowValues
+                                let rowIndex =
+                                    match intAttribute scan.RowValues.[0] with
+                                    | Some r when r > 0 -> r
+                                    | _ -> prevRow + 1
+                                prevRow <- rowIndex
+                                let rawHeight = match scan.RowValues.[1] with | null -> None | text -> tryParseFloat text
+                                let customHeightAttr = boolAttribute scan.RowValues.[2]
+                                let hidden = boolAttribute scan.RowValues.[3] |> Option.defaultValue false
+                                let rowStyle = intAttribute scan.RowValues.[4]
+                                let customFormat = boolAttribute scan.RowValues.[5] |> Option.defaultValue false
+                                let spans = match scan.RowValues.[6] with | null -> None | text -> Some text
+                                let rowEnd = if selfClosed then rowTagEnd else indexOfFrom sheetXml "</row>" rowTagEnd
+                                if rowEnd < 0 || rowEnd > closeAt then scan.Valid <- false
+                                else
+                                    let cells = if selfClosed then [] else scanRowCells scan rowIndex (rowTagEnd + 1) rowEnd
+                                    if scan.Valid then
+                                        rows.Add
+                                            { Index = rowIndex
+                                              Cells = rowSpanCells ctx rowIndex rowStyle customFormat spans cells
+                                              Height = (if customHeightAttr = Some true then rawHeight else None)
+                                              RawHeight = rawHeight
+                                              CustomHeight = customHeightAttr
+                                              Hidden = hidden }
+                                    pos <- if selfClosed then rowTagEnd + 1 else rowEnd + 6
+                    if not scan.Valid then None
+                    else Some (List.ofSeq rows, sheetXml.Substring(0, openAt) + "<sheetData/>" + sheetXml.Substring(closeAt + 12))
+
     // Merged cells extraction
     let parseMergeCell (ref: string) : MergeCell option =
         match ref.Split(':') with
@@ -2424,6 +2794,21 @@ module Xlsx =
             PrintTitleCols = printNames.PrintTitleCols
             Extras = emptySheetExtras
         }
+
+    /// A sheet from the text of its part: the rows are scanned from the text
+    /// (see `scanSheetRows`), the rest goes through the XML parser. `rest`
+    /// reads what it needs (rules, validations) from the parsed part without
+    /// its rows. None when the rows are not in the shape the scanner reads.
+    let internal worksheetScannedCore (ctx: SheetParseContext) (name: string) (state: SheetState) (sheetXml: string) (comments: CellComment list)
+                                      (rest: XmlNode -> ConditionalFormat list * DataValidation list)
+                                      (pivotTables: PivotTable list) (tables: TableDefinition list) (sheetRels: Relationship list) (printNames: WorksheetPrintNames) : Worksheet option =
+        // Rows first: a shared formula's master must be seen before its followers.
+        match scanSheetRows ctx sheetXml with
+        | None -> None
+        | Some (rows, withoutRows) ->
+            let sheet = XmlDsl.parse withoutRows
+            let condFormats, dataVals = rest sheet
+            Some { worksheetFromNodeCore ctx name state sheet comments condFormats dataVals [] pivotTables tables sheetRels printNames with Rows = rows }
 
     let worksheetFromNodeWithStyles (styles: CellStyle array option) (name: string) (sheet: XmlNode) (comments: CellComment list) (condFormats: ConditionalFormat list) (dataVals: DataValidation list) (charts: Chart list) (pivotTables: PivotTable list) (tables: TableDefinition list) (sheetRels: Relationship list) (printNames: WorksheetPrintNames) : Worksheet =
         worksheetFromNodeCore (newSheetContext styles false) name SheetVisible sheet comments condFormats dataVals charts pivotTables tables sheetRels printNames
@@ -4153,7 +4538,10 @@ let private defaultThemeColors = [|
     "0563C1"; "954F72"
 |]
 
-let private buildWorkbook (source: PartSource) (header: WorkbookHeader) (sheetsToLoad: (int * Xlsx.SheetInfo * string) list) : Workbook =
+/// `scanRows` (native only; a browser always does): read the rows of each
+/// sheet from the text of its part instead of with the streaming XML reader.
+let private buildWorkbook (scanRows: bool) (source: PartSource) (header: WorkbookHeader) (sheetsToLoad: (int * Xlsx.SheetInfo * string) list) : Workbook =
+    ignore scanRows
     let sharedStringEntries =
         source.Text header.SharedStringsPath
         |> Option.map Xlsx.sharedStrings
@@ -4247,12 +4635,29 @@ let private buildWorkbook (source: PartSource) (header: WorkbookHeader) (sheetsT
                     let condFormats = ConditionalFormats.parseConditionalFormats themeColors sheet
                     let dataVals = DataValidations.parseDataValidations sheet
                     Xlsx.worksheetFromNodeCore ctx info.Name info.State sheet comments condFormats dataVals [] pivots tables sheetRels printNames
+                // In a browser the rows are read from the text of the part: a
+                // DOM plus a node tree of a large sheet is most of the load time.
+                let viaScan () =
+                    Xlsx.worksheetScannedCore ctx info.Name info.State xml comments
+                        (fun sheet -> ConditionalFormats.parseConditionalFormats themeColors sheet, DataValidations.parseDataValidations sheet)
+                        pivots tables sheetRels printNames
+                let scanned () =
+                    match viaScan () with
+                    | Some sheet -> withExtras sheet
+                    | None ->
+                        // The scanner may have recorded shared formulas and data
+                        // tables before it gave up: start again.
+                        ctx.SharedFormulas.Clear()
+                        ctx.DataTables.Clear()
+                        withExtras (viaDom ())
 #if FABLE_COMPILER
-                withExtras (viaDom ())
+                scanned ()
 #else
-                match Xlsx.worksheetNativeFastCore ctx info.Name info.State xml comments pivots tables sheetRels printNames with
-                | Some sheet -> withExtras sheet
-                | None -> withExtras (viaDom ())
+                if scanRows then scanned ()
+                else
+                    match Xlsx.worksheetNativeFastCore ctx info.Name info.State xml comments pivots tables sheetRels printNames with
+                    | Some sheet -> withExtras sheet
+                    | None -> withExtras (viaDom ())
 #endif
             ))
 
@@ -4372,7 +4777,38 @@ let private parseWorkbookFiltered loadAll sheetName (archive: ZipArchive) : Fabl
                        @ (sheetPaths |> List.map relsPathFor))
             do! fetch (sheetPaths |> List.collect (sheetDependencyPaths source))
             do! fetchBytes ()
-            return Some (buildWorkbook source header sheetsToLoad)
+            return Some (buildWorkbook true source header sheetsToLoad)
+    }
+
+/// Name, sheetId, relationship id and state of every sheet, from the
+/// workbook part alone: no sheet, style or string part is read.
+let private parseSheetInfos (archive: ZipArchive) : Fable.Core.JS.Promise<Xlsx.SheetInfo list option> =
+    let cache = System.Collections.Generic.Dictionary<string, string>()
+    let source = {
+        Exists = fun path -> (ZipInterop.tryFindFile archive path).IsSome
+        Text = fun path -> match cache.TryGetValue path with | true, text -> Some text | _ -> None
+        Bytes = fun _ -> None
+    }
+    let fetch (paths: string list) : Fable.Core.JS.Promise<unit> =
+        let wanted =
+            paths
+            |> List.choose (fun path -> ZipInterop.tryFindFile archive path |> Option.map (fun file -> path, file))
+            |> List.toArray
+        wanted
+        |> Array.map (fun (_, file) -> file.GetText())
+        |> Promise.all
+        |> Promise.map (fun texts -> texts |> Array.iteri (fun i text -> cache.[fst wanted.[i]] <- text))
+    promise {
+        do! fetch [ "_rels/.rels" ]
+        let workbookPath = mainPartPath source
+        do! fetch [ workbookPath; relsPathFor workbookPath ]
+        return
+            readWorkbookHeader source workbookPath
+            |> Option.map (fun header ->
+                // The sheets a load would give: those whose part is in the package.
+                selectedSheets header true None
+                |> List.filter (fun (_, _, path) -> source.Exists path)
+                |> List.map (fun (_, info, _) -> info))
     }
 
 let parseWorkbook (archive: ZipArchive) : Fable.Core.JS.Promise<Workbook option> =
@@ -4409,6 +4845,15 @@ let load (data: obj) : Fable.Core.JS.Promise<Workbook option> =
     promise {
         let! archive = loadArchive data
         return! parseWorkbook archive
+    }
+
+/// The sheets a workbook lists (name, state), without reading any of them:
+/// for a sheet picker, or to check that written bytes open as a workbook.
+/// None when the package has no workbook part.
+let loadSheetInfos (data: obj) : Fable.Core.JS.Promise<Xlsx.SheetInfo list option> =
+    promise {
+        let! archive = loadArchive data
+        return! parseSheetInfos archive
     }
 
 let loadSelected (data: obj) (sheetName: string option) : Fable.Core.JS.Promise<Workbook option> =
@@ -4472,14 +4917,23 @@ let sheetToArray (wb: Workbook) (sheet: Worksheet) : obj array array =
 #if !FABLE_COMPILER
 // Synchronous native loader: the same stages as the JSZip entry, reading
 // parts straight from the archive so native runners need no Promise scheduler.
-let private parseWorkbookNativeFiltered loadAll sheetName (archive: ZipArchive) : Workbook option =
+let private parseWorkbookNativeWith (scanRows: bool) loadAll sheetName (archive: ZipArchive) : Workbook option =
     let source = {
         Exists = fun path -> (ZipInterop.tryFindFile archive path).IsSome
         Text = ZipInterop.getFileTextNative archive
         Bytes = ZipInterop.getFileBytesNative archive
     }
     readWorkbookHeader source (mainPartPath source)
-    |> Option.map (fun header -> buildWorkbook source header (selectedSheets header loadAll sheetName))
+    |> Option.map (fun header -> buildWorkbook scanRows source header (selectedSheets header loadAll sheetName))
+
+let private parseWorkbookNativeFiltered loadAll sheetName (archive: ZipArchive) : Workbook option =
+    parseWorkbookNativeWith false loadAll sheetName archive
+
+/// The whole workbook, with the rows of every sheet read by the text scanner
+/// the browser build uses (`Xlsx.scanSheetRows`) rather than the streaming
+/// XML reader. For tests: both must give the same workbook.
+let loadBytesNativeScanned (data: byte[]) : Workbook option =
+    parseWorkbookNativeWith true true None (ZipInterop.loadArchiveNative data)
 
 let parseWorkbookNative (archive: ZipArchive) : Workbook option =
     parseWorkbookNativeFiltered true None archive

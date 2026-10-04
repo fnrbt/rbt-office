@@ -551,6 +551,9 @@ type private StyleBook = {
     Xfs: XfKey list
     NumFmtIds: Map<string, int>
     StyleIndex: Map<XfKey, int>
+    /// The cellXfs index of a cell format. Formats are looked up by identity
+    /// first: the cells of a workbook share a few format records.
+    StyleIdOf: XlsxCellFormat -> int
 }
 
 let private invariant (value: float) = numberText value
@@ -694,13 +697,35 @@ let private columnStyleKey (style: XlsxReader.CellStyle) =
             DiagonalDown = style.DiagonalDown }
 
 let private collectStyles (workbook: XlsxWorkbookOut) =
-    let xfs =
-        workbook.Sheets
-        |> List.collect (fun s ->
-            (s.Cells |> List.map (fun c -> xfKey c.Format))
-            // Default cell styles of columns (<col style>).
-            @ (s.Extras.ColumnStyles |> List.map (fun (_, _, style) -> columnStyleKey style)))
-        |> List.fold (fun acc key -> appendUnique key acc) [ defaultXfKey ]
+    // One pass over the cells. A format record seen before (the same object)
+    // costs a lookup by identity; only a new one is turned into its key and
+    // compared by content. The order of first appearance gives the indexes.
+    let xfList = ResizeArray<XfKey>()
+    let xfIndex = System.Collections.Generic.Dictionary<XfKey, int>(HashIdentity.Structural)
+    let byIdentity = System.Collections.Generic.Dictionary<XlsxCellFormat, int>(HashIdentity.Reference)
+    let indexOfKey (key: XfKey) =
+        match xfIndex.TryGetValue key with
+        | true, index -> index
+        | false, _ ->
+            let index = xfList.Count
+            xfList.Add key
+            xfIndex.[key] <- index
+            index
+    let styleIdOf (format: XlsxCellFormat) =
+        match byIdentity.TryGetValue format with
+        | true, index -> index
+        | false, _ ->
+            let index = indexOfKey (xfKey format)
+            byIdentity.[format] <- index
+            index
+    indexOfKey defaultXfKey |> ignore
+    for sheet in workbook.Sheets do
+        for cell in sheet.Cells do
+            styleIdOf cell.Format |> ignore
+        // Default cell styles of columns (<col style>).
+        for _, _, style in sheet.Extras.ColumnStyles do
+            indexOfKey (columnStyleKey style) |> ignore
+    let xfs = List.ofSeq xfList
     let fonts =
         xfs |> List.map (fun x -> x.Font) |> List.fold (fun acc key -> appendUnique key acc) [ defaultFontKey ]
     // Custom fills only. Fill 0 (none) and fill 1 (gray125) are reserved by
@@ -724,21 +749,41 @@ let private collectStyles (workbook: XlsxWorkbookOut) =
       Borders = borders
       Xfs = xfs
       NumFmtIds = customNumFmts
-      StyleIndex = styleIndex }
+      StyleIndex = styleIndex
+      StyleIdOf = styleIdOf }
 
-let private sharedTextOf value =
-    match value with
-    | XlsxText (text, runs) -> Some { Text = text; Runs = runs }
-    | XlsxFormula (_, Some (XlsxText (text, runs))) -> Some { Text = text; Runs = runs }
-    | _ -> None
-
-let private collectSharedStrings (workbook: XlsxWorkbookOut) =
-    let items =
-        workbook.Sheets
-        |> List.collect (fun s -> s.Cells |> List.choose (fun c -> sharedTextOf c.Value))
-        |> List.distinct
-    let index = items |> List.mapi (fun i key -> key, i) |> Map.ofList
-    items, index
+/// The shared strings of the workbook in order of first use, and the index
+/// of a text (with its runs). Plain texts - nearly all of them - are found
+/// by the string alone.
+let private collectSharedStrings (workbook: XlsxWorkbookOut) : SharedStringKey list * (string -> XlsxRichRun list -> int) =
+    let items = ResizeArray<SharedStringKey>()
+    let plain = System.Collections.Generic.Dictionary<string, int>()
+    let rich = System.Collections.Generic.Dictionary<SharedStringKey, int>(HashIdentity.Structural)
+    let indexOf (text: string) (runs: XlsxRichRun list) : int =
+        if runs.IsEmpty then
+            match plain.TryGetValue text with
+            | true, index -> index
+            | false, _ ->
+                let index = items.Count
+                items.Add { Text = text; Runs = [] }
+                plain.[text] <- index
+                index
+        else
+            let key = { Text = text; Runs = runs }
+            match rich.TryGetValue key with
+            | true, index -> index
+            | false, _ ->
+                let index = items.Count
+                items.Add key
+                rich.[key] <- index
+                index
+    for sheet in workbook.Sheets do
+        for cell in sheet.Cells do
+            match cell.Value with
+            | XlsxText (text, runs) -> indexOf text runs |> ignore
+            | XlsxFormula (_, Some (XlsxText (text, runs))) -> indexOf text runs |> ignore
+            | _ -> ()
+    List.ofSeq items, indexOf
 
 let private fontXml (font: FontKey) =
     let children = [
@@ -949,28 +994,29 @@ let private richRunXml (run: XlsxRichRun) =
     sprintf "<r>%s<t xml:space=\"preserve\">%s</t></r>" pr (escapedCellText run.Text)
 
 let private sharedStringsXmlPreserved (items: SharedStringKey list) =
-    let body =
-        items
-        |> List.map (fun item ->
-            if List.isEmpty item.Runs then
-                sprintf "<si><t xml:space=\"preserve\">%s</t></si>" (escapedCellText item.Text)
-            else
-                "<si>" + (item.Runs |> List.map richRunXml |> String.concat "") + "</si>")
-        |> String.concat ""
-    sprintf "%s\n<sst xmlns=\"%s\" count=\"%d\" uniqueCount=\"%d\">%s</sst>"
-        declaration Namespaces.spreadsheet items.Length items.Length body
+    let sb = StringBuilder()
+    let count = string items.Length
+    sb.Append(declaration).Append("\n<sst xmlns=\"").Append(Namespaces.spreadsheet).Append("\" count=\"").Append(count).Append("\" uniqueCount=\"").Append(count).Append("\">") |> ignore
+    for item in items do
+        if List.isEmpty item.Runs then
+            sb.Append("<si><t xml:space=\"preserve\">") |> ignore
+            appendCellText sb item.Text
+            sb.Append("</t></si>") |> ignore
+        else
+            sb.Append("<si>") |> ignore
+            for run in item.Runs do
+                sb.Append(richRunXml run) |> ignore
+            sb.Append("</si>") |> ignore
+    sb.Append("</sst>").ToString()
 
-let private cachedValueXml sharedIndex value =
+let private cachedValueXml (sharedIndex: string -> XlsxRichRun list -> int) value =
     let rec loop v =
         match v with
         | XlsxBlank -> "", ""
-        | XlsxNumber n -> "", sprintf "<v>%s</v>" (invariant n)
-        | XlsxBoolean b -> " t=\"b\"", sprintf "<v>%d</v>" (if b then 1 else 0)
-        | XlsxError e -> " t=\"e\"", sprintf "<v>%s</v>" (escaped e)
-        | XlsxText (text, runs) ->
-            let key = { Text = text; Runs = runs }
-            let idx = Map.find key sharedIndex
-            " t=\"s\"", sprintf "<v>%d</v>" idx
+        | XlsxNumber n -> "", "<v>" + invariant n + "</v>"
+        | XlsxBoolean b -> " t=\"b\"", (if b then "<v>1</v>" else "<v>0</v>")
+        | XlsxError e -> " t=\"e\"", "<v>" + escaped e + "</v>"
+        | XlsxText (text, runs) -> " t=\"s\"", "<v>" + string (sharedIndex text runs) + "</v>"
         | XlsxFormula (_, cached) ->
             cached |> Option.map loop |> Option.defaultValue ("", "")
     loop value
@@ -990,45 +1036,81 @@ let private dataTableXml (table: XlsxReader.DataTableFormula) =
     ]
     "<f " + String.concat " " attrs + "/>"
 
-let private cellXmlFull (styles: StyleBook) sharedIndex (dataTables: Map<string, XlsxReader.DataTableFormula>) (cell: XlsxCellOut) =
-    let reference = cellRef cell.Row cell.Col
-    let xf = xfKey cell.Format
-    let styleId = Map.find xf styles.StyleIndex
-    let styleAttr = if styleId = 0 then "" else sprintf " s=\"%d\"" styleId
-    match (if dataTables.IsEmpty then None else Map.tryFind reference dataTables), cell.Value with
+/// Column letters by index, made once per column.
+let private columnLetterCache = System.Collections.Generic.Dictionary<int, string>()
+let private columnLetters (col: int) =
+    match columnLetterCache.TryGetValue col with
+    | true, letters -> letters
+    | false, _ ->
+        let letters = columnToLetter col
+        columnLetterCache.[col] <- letters
+        letters
+
+/// Text for an element or attribute, escaped only when it has something to escape.
+let private escapedFast (value: string) =
+    let mutable plain = true
+    let mutable i = 0
+    while plain && i < value.Length do
+        let ch = value.[i]
+        if ch = '&' || ch = '<' || ch = '>' || ch = '"' || ch = '\'' || ch < ' ' || ch = '\uFFFE' || ch = '\uFFFF' then plain <- false
+        i <- i + 1
+    if plain then value else escaped value
+
+/// One `<c>` appended to `sb`. `rowText` is the row number as text.
+let private appendCellXml (sb: StringBuilder) (styles: StyleBook) (sharedIndex: string -> XlsxRichRun list -> int) (dataTables: Map<string, XlsxReader.DataTableFormula>) (rowText: string) (cell: XlsxCellOut) =
+    let styleId = styles.StyleIdOf cell.Format
+    let letters = columnLetters cell.Col
+    let dataTable = if dataTables.IsEmpty then None else Map.tryFind (letters + rowText) dataTables
+    let openCell (typeAttr: string) =
+        sb.Append("<c r=\"").Append(letters).Append(rowText).Append('"') |> ignore
+        if styleId <> 0 then sb.Append(" s=\"").Append(string styleId).Append('"') |> ignore
+        sb.Append(typeAttr) |> ignore
+    match dataTable, cell.Value with
     // The first cell of a what-if data table: the table, and the result the cell holds.
     | Some table, value ->
         let tAttr, cachedXml = cachedValueXml sharedIndex value
-        sprintf "<c r=\"%s\"%s%s>%s%s</c>" reference styleAttr tAttr (dataTableXml table) cachedXml
-    | None, value ->
-    match value with
-    | XlsxBlank ->
-        if styleId = 0 then ""
-        else sprintf "<c r=\"%s\"%s/>" reference styleAttr
-    | XlsxFormula (formula, cached) ->
+        openCell tAttr
+        sb.Append('>').Append(dataTableXml table).Append(cachedXml).Append("</c>") |> ignore
+    | None, XlsxBlank ->
+        if styleId <> 0 then
+            openCell ""
+            sb.Append("/>") |> ignore
+    | None, XlsxNumber n ->
+        openCell ""
+        sb.Append("><v>").Append(invariant n).Append("</v></c>") |> ignore
+    | None, XlsxText (text, runs) ->
+        openCell " t=\"s\""
+        sb.Append("><v>").Append(string (sharedIndex text runs)).Append("</v></c>") |> ignore
+    | None, XlsxFormula (formula, cached) ->
         let tAttr, cachedXml = cached |> Option.map (cachedValueXml sharedIndex) |> Option.defaultValue ("", "")
-        sprintf "<c r=\"%s\"%s%s><f>%s</f>%s</c>" reference styleAttr tAttr (escaped formula) cachedXml
-    | other ->
+        openCell tAttr
+        sb.Append("><f>").Append(escapedFast formula).Append("</f>").Append(cachedXml).Append("</c>") |> ignore
+    | None, other ->
         let tAttr, valueXml = cachedValueXml sharedIndex other
-        sprintf "<c r=\"%s\"%s%s>%s</c>" reference styleAttr tAttr valueXml
+        openCell tAttr
+        sb.Append('>').Append(valueXml).Append("</c>") |> ignore
 
 let private sheetDimension (sheet: XlsxSheetOut) =
-    let refs =
-        [ for c in sheet.Cells -> c.Row, c.Col
-          for m in sheet.MergedCells do
-              yield m.StartRow, m.StartCol
-              yield m.EndRow, m.EndCol
-          for t in sheet.Tables do
-              yield t.StartRow - 1, t.StartCol - 1
-              yield t.EndRow - 1, t.EndCol - 1 ]
-    match refs with
-    | [] -> "A1"
-    | _ ->
-        let minR = refs |> List.map fst |> List.min
-        let minC = refs |> List.map snd |> List.min
-        let maxR = refs |> List.map fst |> List.max
-        let maxC = refs |> List.map snd |> List.max
-        sprintf "%s:%s" (cellRef minR minC) (cellRef maxR maxC)
+    let mutable any = false
+    let mutable minR = System.Int32.MaxValue
+    let mutable minC = System.Int32.MaxValue
+    let mutable maxR = 0
+    let mutable maxC = 0
+    let cover row col =
+        any <- true
+        if row < minR then minR <- row
+        if row > maxR then maxR <- row
+        if col < minC then minC <- col
+        if col > maxC then maxC <- col
+    for c in sheet.Cells do cover c.Row c.Col
+    for m in sheet.MergedCells do
+        cover m.StartRow m.StartCol
+        cover m.EndRow m.EndCol
+    for t in sheet.Tables do
+        cover (t.StartRow - 1) (t.StartCol - 1)
+        cover (t.EndRow - 1) (t.EndCol - 1)
+    if not any then "A1"
+    else cellRef minR minC + ":" + cellRef maxR maxC
 
 /// `<cols>`: widths (0 = hidden), and the default cell style a column range
 /// had in the file. Neighbouring columns with the same width and style are
@@ -1110,54 +1192,70 @@ let private sheetViewsXml (sheet: XlsxSheetOut) active =
 let private firstCellOfRange (range: string) =
     (match range.IndexOf ':' with -1 -> range | index -> range.Substring(0, index)).Replace("$", "").ToUpperInvariant()
 
-let private rowsXml styles sharedIndex (sheet: XlsxSheetOut) =
+let private rowsXml (styles: StyleBook) (sharedIndex: string -> XlsxRichRun list -> int) (sheet: XlsxSheetOut) : string =
     // A data table is written on the first cell of its range.
     let dataTables = sheet.Extras.DataTables |> List.map (fun table -> firstCellOfRange table.Ref, table) |> Map.ofList
-    let sheet =
-        // That cell is written even when it holds nothing.
-        let present = sheet.Cells |> List.map (fun c -> cellRef c.Row c.Col) |> Set.ofList
-        let missing =
-            dataTables
-            |> Map.toList
-            |> List.choose (fun (reference, _) ->
-                if Set.contains reference present then None
-                else
-                    let mutable col = 0
-                    let mutable row = 0
-                    for ch in reference do
-                        if ch >= 'A' && ch <= 'Z' then col <- col * 26 + (int ch - int 'A' + 1)
-                        elif ch >= '0' && ch <= '9' then row <- row * 10 + (int ch - int '0')
-                    if row < 1 || col < 1 then None
-                    else Some { Row = row - 1; Col = col - 1; Value = XlsxBlank; Format = defaultXlsxCellFormat; Comment = None })
-        if missing.IsEmpty then sheet else { sheet with Cells = sheet.Cells @ missing }
-    let cellsByRow = sheet.Cells |> List.groupBy (fun c -> c.Row) |> Map.ofList
-    let rowHeights = sheet.RowHeights |> Map.ofList
-    let rowSet =
-        Set.union
-            (cellsByRow |> Map.toSeq |> Seq.map fst |> Set.ofSeq)
-            (rowHeights |> Map.toSeq |> Seq.map fst |> Set.ofSeq)
-    rowSet
-    |> Set.toList
-    |> List.sort
-    |> List.map (fun row ->
-        let rowAttrs = [
-            yield sprintf "r=\"%d\"" (row + 1)
-            match Map.tryFind row rowHeights with
-            // Height 0 is how the sheet model says "hidden" (as for columns).
-            | Some h when h <= 0.0 -> yield "hidden=\"1\""
-            | Some h ->
-                yield sprintf "ht=\"%s\"" (invariantFixed h)
-                yield "customHeight=\"1\""
-            | None -> ()
-        ]
-        let cells =
-            Map.tryFind row cellsByRow
-            |> Option.defaultValue []
-            |> List.sortBy (fun c -> c.Col)
-            |> List.map (cellXmlFull styles sharedIndex dataTables)
-            |> String.concat ""
-        sprintf "<row %s>%s</row>" (String.concat " " rowAttrs) cells)
-    |> String.concat ""
+    let cells =
+        let listed = List.toArray sheet.Cells
+        if dataTables.IsEmpty then listed
+        else
+            // That cell is written even when it holds nothing.
+            let present = System.Collections.Generic.HashSet<string>()
+            for c in listed do
+                present.Add (cellRef c.Row c.Col) |> ignore
+            let missing =
+                dataTables
+                |> Map.toArray
+                |> Array.choose (fun (reference, _) ->
+                    if present.Contains reference then None
+                    else
+                        let mutable col = 0
+                        let mutable row = 0
+                        for ch in reference do
+                            if ch >= 'A' && ch <= 'Z' then col <- col * 26 + (int ch - int 'A' + 1)
+                            elif ch >= '0' && ch <= '9' then row <- row * 10 + (int ch - int '0')
+                        if row < 1 || col < 1 then None
+                        else Some { Row = row - 1; Col = col - 1; Value = XlsxBlank; Format = defaultXlsxCellFormat; Comment = None })
+            if missing.Length = 0 then listed else Array.append listed missing
+    // Cells in row order, then column order. They usually arrive that way.
+    let mutable ordered = true
+    let mutable i = 1
+    while ordered && i < cells.Length do
+        let a = cells.[i - 1]
+        let b = cells.[i]
+        if a.Row > b.Row || (a.Row = b.Row && a.Col > b.Col) then ordered <- false
+        i <- i + 1
+    let cells =
+        if ordered then cells
+        // (Stable: cells at the same place keep their order.)
+        else cells |> Array.mapi (fun index cell -> index, cell) |> Array.sortWith (fun (ia, a) (ib, b) -> if a.Row <> b.Row then compare a.Row b.Row elif a.Col <> b.Col then compare a.Col b.Col else compare ia ib) |> Array.map snd
+    let heights = sheet.RowHeights |> List.toArray |> Array.sortBy fst
+    // The last height given for a row wins, as with a map built from the list.
+    let sb = StringBuilder()
+    let mutable cellAt = 0
+    let mutable heightAt = 0
+    while cellAt < cells.Length || heightAt < heights.Length do
+        let row =
+            if cellAt >= cells.Length then fst heights.[heightAt]
+            elif heightAt >= heights.Length then cells.[cellAt].Row
+            else min cells.[cellAt].Row (fst heights.[heightAt])
+        let mutable height = None
+        while heightAt < heights.Length && fst heights.[heightAt] = row do
+            height <- Some (snd heights.[heightAt])
+            heightAt <- heightAt + 1
+        let rowText = string (row + 1)
+        sb.Append("<row r=\"").Append(rowText).Append('"') |> ignore
+        match height with
+        // Height 0 is how the sheet model says "hidden" (as for columns).
+        | Some h when h <= 0.0 -> sb.Append(" hidden=\"1\"") |> ignore
+        | Some h -> sb.Append(" ht=\"").Append(invariantFixed h).Append("\" customHeight=\"1\"") |> ignore
+        | None -> ()
+        sb.Append('>') |> ignore
+        while cellAt < cells.Length && cells.[cellAt].Row = row do
+            appendCellXml sb styles sharedIndex dataTables rowText cells.[cellAt]
+            cellAt <- cellAt + 1
+        sb.Append("</row>") |> ignore
+    sb.ToString()
 
 let private mergeCellsXmlFull (mergedCells: MergedCellRange list) =
     if List.isEmpty mergedCells then ""
@@ -1962,6 +2060,20 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
         | Some f, _ -> XlsxFormula (f, Some (plainValueOf cell))
         | None, XlsxReader.Formula f -> XlsxFormula (f, None)
         | None, _ -> plainValueOf cell
+    // One format record per cell format of the file, shared by every cell
+    // that uses it (the writer then finds a cell's style by identity).
+    let formatCache = System.Collections.Generic.Dictionary<int, XlsxCellFormat>()
+    let formatOf (cell: XlsxReader.Cell) =
+        let key = cell.StyleIndex |> Option.defaultValue -1
+        match formatCache.TryGetValue key with
+        | true, format -> format
+        | false, _ ->
+            let format =
+                match namedStyleOf cell with
+                | None -> styleOf cell.Style
+                | named -> { styleOf cell.Style with NamedStyle = named }
+            formatCache.[key] <- format
+            format
     { Sheets =
         workbook.Sheets
         |> List.map (fun sheet ->
@@ -1982,11 +2094,8 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
                         { Row = r
                           Col = c
                           Value = valueOf cell
-                          Format =
-                            (match namedStyleOf cell with
-                             | None -> styleOf cell.Style
-                             | named -> { styleOf cell.Style with NamedStyle = named })
-                          Comment = Map.tryFind (r, c) comments }))
+                          Format = formatOf cell
+                          Comment = (if comments.IsEmpty then None else Map.tryFind (r, c) comments) }))
               MergedCells =
                 sheet.MergedCells
                 |> List.map (fun m ->

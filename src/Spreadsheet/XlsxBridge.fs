@@ -1236,12 +1236,29 @@ module Export =
     let private rangeRef (r: CellRange) =
         sprintf "$%s$%d:$%s$%d" (columnToLetter r.From.Col) (r.From.Row + 1) (columnToLetter r.To.Col) (r.To.Row + 1)
 
-    let private cellOut (model: SpreadsheetModel) (addr: CellAddress) (data: CellData) : XlsxWriter.XlsxCellOut =
-        let runs = model.RichRuns |> Map.tryFind addr |> Option.map (List.map richRun) |> Option.defaultValue []
+    /// Writer formats by the model format they were made from (by identity:
+    /// the cells of a sheet share a few format records), so that the writer
+    /// in turn finds the style of a cell by identity.
+    type private FormatCache = Collections.Generic.Dictionary<CellFormat, XlsxWriter.XlsxCellFormat>
+
+    let private newFormatCache () : FormatCache = Collections.Generic.Dictionary<CellFormat, XlsxWriter.XlsxCellFormat>(HashIdentity.Reference)
+
+    let private cachedFormat (cache: FormatCache) (f: CellFormat) : XlsxWriter.XlsxCellFormat =
+        match cache.TryGetValue f with
+        | true, converted -> converted
+        | false, _ ->
+            let converted = format f
+            cache.[f] <- converted
+            converted
+
+    let private cellOut (cache: FormatCache) (model: SpreadsheetModel) (addr: CellAddress) (data: CellData) : XlsxWriter.XlsxCellOut =
+        let runs =
+            if model.RichRuns.IsEmpty then []
+            else model.RichRuns |> Map.tryFind addr |> Option.map (List.map richRun) |> Option.defaultValue []
         { Row = addr.Row
           Col = addr.Col
           Value = value runs data.Value
-          Format = format data.Format
+          Format = cachedFormat cache data.Format
           Comment = data.Comment |> Option.map (fun c -> c.Text, c.Author) }
 
     let private cellRangeText (r: CellRange) =
@@ -1264,11 +1281,12 @@ module Export =
                Input2Deleted = table.Input2Deleted
                CalculateAlways = table.CalculateAlways } : XlsxReader.DataTableFormula))
 
-    /// A sheet written from its model alone.
-    let private modelSheet (dxfIndex: XlsxReader.Dxf -> int) (name: string) (state: XlsxReader.SheetState) (model: SpreadsheetModel) : XlsxWriter.XlsxSheetOut =
+    /// A sheet written from its model alone. `cells` are its cells in the
+    /// writer's shape (a sheet from a file supplies its own, see `sourcedSheet`).
+    let private modelSheetWith (cells: XlsxWriter.XlsxCellOut list) (dxfIndex: XlsxReader.Dxf -> int) (name: string) (state: XlsxReader.SheetState) (model: SpreadsheetModel) : XlsxWriter.XlsxSheetOut =
         { Name = name
           State = state
-          Cells = model.Cells |> Map.toList |> List.map (fun (addr, data) -> cellOut model addr data)
+          Cells = cells
           MergedCells = model.MergedCells |> List.map (fun m -> ({ StartRow = m.StartRow; StartCol = m.StartCol; EndRow = m.EndRow; EndCol = m.EndCol } : XlsxWriter.MergedCellRange))
           ColumnWidths = model.ColumnWidths |> Map.toList |> List.map (fun (c, px) -> c, px / 7.0)
           RowHeights = model.RowHeights |> Map.toList |> List.map (fun (r, px) -> r, px / 1.333)
@@ -1294,6 +1312,10 @@ module Export =
             { extrasOfModel XlsxReader.emptySheetExtras None
                 { model with Drawings = model.Drawings |> List.filter (fun drawing -> match drawing.Content with Picture _ -> true | KeptObject _ -> false) }
                 with DataTables = dataTables model } }
+
+    let private modelSheet (cache: FormatCache) (dxfIndex: XlsxReader.Dxf -> int) (name: string) (state: XlsxReader.SheetState) (model: SpreadsheetModel) : XlsxWriter.XlsxSheetOut =
+        let cells = model.Cells |> Map.toList |> List.map (fun (addr, data) -> cellOut cache model addr data)
+        modelSheetWith cells dxfIndex name state model
 
     let private sameRef (a: 'T) (b: 'T) = obj.ReferenceEquals(a, b)
 
@@ -1326,32 +1348,46 @@ module Export =
 
     /// A sheet that came from a file: the model's current state, with
     /// everything the user left alone written as the file had it.
-    let private sourcedSheet (dxfIndex: XlsxReader.Dxf -> int) (name: string) (state: XlsxReader.SheetState)
+    let private sourcedSheet (cache: FormatCache) (dxfIndex: XlsxReader.Dxf -> int) (name: string) (state: XlsxReader.SheetState)
                              (original: XlsxWriter.XlsxSheetOut) (readerSheet: XlsxReader.Worksheet)
                              (before: SpreadsheetModel) (model: SpreadsheetModel) : XlsxWriter.XlsxSheetOut =
-        let fromModel = modelSheet dxfIndex name state model
         let cells =
-                let originals = Collections.Generic.Dictionary<int * int, XlsxWriter.XlsxCellOut>()
-                for cell in original.Cells do originals.[(cell.Row, cell.Col)] <- cell
+                // Cells by position, as one number (16384 columns to a row).
+                let key (row: int) (col: int) = float row * 16384.0 + float col
+                let originals = Collections.Generic.Dictionary<float, XlsxWriter.XlsxCellOut>()
+                for cell in original.Cells do originals.[key cell.Row cell.Col] <- cell
+                // The cells as imported. With the cell map itself unchanged every cell is.
+                let sameCells = sameRef before.Cells model.Cells
+                let previousCells = Collections.Generic.Dictionary<float, CellData>()
+                if not sameCells then
+                    for KeyValue(addr, data) in before.Cells do previousCells.[key addr.Row addr.Col] <- data
+                let sameRuns = sameRef before.RichRuns model.RichRuns
                 model.Cells
                 |> Map.toList
                 |> List.map (fun (addr, data) ->
+                    let position = key addr.Row addr.Col
+                    let previous =
+                        if sameCells then Some data
+                        else
+                            match previousCells.TryGetValue position with
+                            | true, found -> Some found
+                            | false, _ -> None
                     let untouched =
-                        match Map.tryFind addr before.Cells with
+                        match previous with
                         | Some previous ->
                             (sameRef previous data || previous = data || onlyBecameError previous data)
-                            && Map.tryFind addr before.RichRuns = Map.tryFind addr model.RichRuns
+                            && (sameRuns || Map.tryFind addr before.RichRuns = Map.tryFind addr model.RichRuns)
                         | None -> false
-                    match untouched, originals.TryGetValue((addr.Row, addr.Col)) with
+                    match untouched, originals.TryGetValue position with
                     | true, (true, kept) -> kept
-                    | false, (true, kept) when (match Map.tryFind addr before.Cells with Some previous -> previous.Format = data.Format | None -> false) ->
+                    | false, (true, kept) when (match previous with Some previous -> sameRef previous.Format data.Format || previous.Format = data.Format | None -> false) ->
                         // Only the value (or the comment) changed: the cell keeps
                         // the format the file gave it, its named cell style included.
-                        { cellOut model addr data with Format = kept.Format }
-                    | _ -> cellOut model addr data)
+                        { cellOut cache model addr data with Format = kept.Format }
+                    | _ -> cellOut cache model addr data)
+        let fromModel = modelSheetWith cells dxfIndex name state model
         let unchanged (pick: SpreadsheetModel -> 'T) = sameRef (pick before) (pick model) || pick before = pick model
         { fromModel with
-            Cells = cells
             ColumnWidths = patchSizes original.ColumnWidths before.ColumnWidths model.ColumnWidths 7.0 100.0
             RowHeights = patchSizes original.RowHeights before.RowHeights model.RowHeights 1.333 25.0
             Tables = if unchanged (fun m -> m.Tables) then original.Tables else fromModel.Tables
@@ -1442,6 +1478,7 @@ module Export =
             match dxfs.IndexOf dxf with
             | -1 -> dxfs.Add dxf; dxfs.Count - 1
             | index -> index
+        let cache = newFormatCache ()
         let nameOf index = if index < input.Names.Length then input.Names.[index] else sprintf "Sheet%d" (index + 1)
         let visibleAt index = index >= input.Visible.Length || input.Visible.[index]
         // A sheet of the source is found by the identity its model carries
@@ -1477,9 +1514,9 @@ module Export =
                         | true, _ -> XlsxReader.SheetVisible
                         | false, XlsxReader.SheetVisible -> XlsxReader.SheetHidden
                         | false, hidden -> hidden
-                    sourcedSheet dxfIndex name state outSheet readerSheet before model
+                    sourcedSheet cache dxfIndex name state outSheet readerSheet before model
                 | None ->
-                    modelSheet dxfIndex name (if visibleAt index then XlsxReader.SheetVisible else XlsxReader.SheetHidden) model)
+                    modelSheet cache dxfIndex name (if visibleAt index then XlsxReader.SheetVisible else XlsxReader.SheetHidden) model)
             |> Array.toList
         { Sheets = sheets
           ActiveSheetIndex = max 0 (min (input.Sheets.Length - 1) input.ActiveSheetIndex)
