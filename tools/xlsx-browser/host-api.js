@@ -160,3 +160,74 @@ checks['row-column-counts'] = async () => {
     close();
     return lines;
 };
+
+// GetRevision / MarkSaved / IsModified: undo back to the saved state is clean again; a save
+// that finishes late marks the revision it wrote; OnChange carries Revision and Modified.
+checks['revision'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        check('a new grid is unmodified', [grid.IsModified(), grid.GetRevision()], [false, 0]);
+        const changes = [];
+        grid.OnChange((change) => changes.push([change.Revision, change.Modified]));
+        grid.EnterText(0, 0, 'one');
+        const r1 = grid.GetRevision();
+        check('an edit is a new revision, reported with the change', [grid.IsModified(), r1 !== 0, changes], [true, true, [[r1, true]]]);
+        grid.SelectCell(4, 4); grid.Render();
+        check('a selection move is not', grid.GetRevision(), r1);
+        grid.Undo();
+        check('undo restores the revision', [grid.GetRevision(), grid.IsModified(), changes[changes.length - 1]], [0, false, [0, false]]);
+        grid.Redo();
+        check('redo too', [grid.GetRevision(), grid.IsModified()], [r1, true]);
+        grid.MarkSaved();
+        check('MarkSaved: unmodified', grid.IsModified(), false);
+        grid.EnterText(1, 0, 'two'); grid.SelectRange(0, 0, 1, 0); grid.ApplyFormat('bold'); grid.InsertRow(0, 2);
+        const r4 = grid.GetRevision();
+        check('three more steps: modified', [grid.IsModified(), new Set([r1, r4]).size], [true, 2]);
+        grid.Undo(); grid.Undo();
+        check('part of the way back: still modified', grid.IsModified(), true);
+        grid.Undo();
+        check('undone back to the saved state: unmodified', [grid.IsModified(), grid.GetRevision()], [false, r1]);
+        grid.Undo();
+        check('undone past it: modified', grid.IsModified(), true);
+        grid.Redo();
+        check('and redone to it: unmodified', grid.IsModified(), false);
+        grid.Redo(); grid.Redo(); grid.Redo();
+        check('redone to the end: the revision it had', grid.GetRevision(), r4);
+        // A new edit after an undo is a revision of its own (not the one that was undone).
+        grid.Undo();
+        const undone = grid.GetRevision();
+        grid.EnterText(5, 5, 'x');
+        check('a new edit after an undo is a new revision', [grid.GetRevision() !== r4, grid.GetRevision() !== undone], [true, true]);
+        // The save protocol: the revision that was written is the one marked.
+        const written = grid.GetRevision();
+        const bytes = await grid.ExportXlsx();
+        grid.EnterText(6, 6, 'typed while saving');
+        grid.MarkSaved(written);
+        check('a save that finishes after more typing leaves the workbook modified', [grid.IsModified(), bytes.length > 0], [true, true]);
+        grid.Undo();
+        check('and undoing that typing gives the saved state', grid.IsModified(), false);
+        // A change without an undo step cannot be walked back to a known revision.
+        grid.SetCell(8, 8, 'host write');
+        const hostRevision = grid.GetRevision();
+        grid.Undo();
+        check('undo after a host write is a new revision, not a saved one', [grid.IsModified(), grid.GetRevision() !== hostRevision, grid.GetRevision() !== written], [true, true, true]);
+        // Opening a workbook: saved.
+        await grid.ImportXlsx(await bytesOf('tests/real-world/milk-street-office.xlsx'));
+        check('an opened workbook is unmodified', grid.IsModified(), false);
+        const opened = grid.GetRevision();
+        grid.SwitchSheet(1); grid.SwitchSheet(0);
+        check('switching sheets changes nothing', [grid.IsModified(), grid.GetRevision()], [false, opened]);
+        grid.EnterText(0, 0, 'edit'); grid.Undo();
+        check('edit and undo in an opened workbook: unmodified', [grid.IsModified(), grid.GetRevision()], [false, opened]);
+        // Unmounted: the revision still follows.
+        const bare = createSpreadsheet(document.createElement('div'));
+        bare.EnterText(0, 0, 'a'); const b1 = bare.GetRevision(); bare.EnterText(0, 1, 'b');
+        bare.Undo();
+        check('not mounted: edits and undo move the revision', [bare.IsModified(), bare.GetRevision()], [true, b1]);
+        bare.Undo();
+        check('not mounted: all undone is unmodified', bare.IsModified(), false);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};

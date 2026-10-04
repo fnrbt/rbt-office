@@ -359,6 +359,21 @@ type Spreadsheet(container: Element) =
     let mutable notifiedSheets: SpreadsheetModel array = [||]
     let mutable notifiedNames: string array = [||]
     let mutable notifiedSelection: (int * Selection * CellAddress) option = None
+    // --- revisions ----------------------------------------------------------------
+    // The revision is a number that names the workbook's content: every
+    // change gives a new one, and undo / redo bring back the number the
+    // content had before (so a host that remembers the revision it saved
+    // knows the workbook is clean again after undoing back to it).
+    let mutable revision = 0
+    let mutable lastRevision = 0
+    let mutable savedRevision = 0
+    /// The content the current revision was given to.
+    let mutable revisionSheets: SpreadsheetModel array = Array.copy sheets
+    let mutable revisionNames: string array = Array.copy sheetNames
+    /// The undoable steps in the order they were taken, each with the
+    /// revision before and after it, and the ones undone since (for redo).
+    let appliedSteps = ResizeArray<Command * int * int>()
+    let undoneSteps = ResizeArray<Command * int * int>()
     /// Undo what Mount set up outside the grid's own nodes (document-level
     /// listeners, observers, overlays appended to <body>).
     let cleanups = ResizeArray<unit -> unit>()
@@ -1682,18 +1697,24 @@ type Spreadsheet(container: Element) =
                 else false)
 
     and undoStep () =
+        observeRevision ()
+        let command = List.tryHead model.History.Past
         match undo model with
         | Some undoneModel ->
             model <- undoneModel
             recalculateFormulas()
+            observeRevisionAfter 1 command
             render()
         | None -> ()
 
     and redoStep () =
+        observeRevision ()
+        let command = List.tryHead model.History.Future
         match redo model with
         | Some redoneModel ->
             model <- redoneModel
             recalculateFormulas()
+            observeRevisionAfter 2 command
             render()
         | None -> ()
 
@@ -2080,13 +2101,61 @@ type Spreadsheet(container: Element) =
             renderDrawings content metrics
             renderOverlays layer metrics frozenRows frozenCols
             notifyChanges ()
-        | _ -> ()
+        | _ ->
+            // Not mounted: nothing to draw, but the revision still follows the content.
+            observeRevision ()
+
+    /// Bring the revision in line with the workbook as it is now. `step`
+    /// says what brought it there: 1 an undo of `command`, 2 a redo of it,
+    /// 0 anything else. Unchanged content keeps its number.
+    and observeRevisionAfter (step: int) (command: Command option) =
+        let current = Array.init sheets.Length (fun i -> if i = activeSheetIndex then model else sheets.[i])
+        let same =
+            current.Length = revisionSheets.Length
+            && sheetNames = revisionNames
+            && Array.forall2 sameSheetContent current revisionSheets
+        if not same then
+            revisionSheets <- current
+            revisionNames <- Array.copy sheetNames
+            let fresh () =
+                lastRevision <- lastRevision + 1
+                lastRevision
+            let isTop (steps: ResizeArray<Command * int * int>) (command: Command) =
+                steps.Count > 0 && (let known, _, _ = steps.[steps.Count - 1] in obj.ReferenceEquals(known, command))
+            match step, command with
+            | 1, Some command when isTop appliedSteps command ->
+                let entry = appliedSteps.[appliedSteps.Count - 1]
+                appliedSteps.RemoveAt (appliedSteps.Count - 1)
+                undoneSteps.Add entry
+                let _, before, _ = entry
+                revision <- before
+            | 2, Some command when isTop undoneSteps command ->
+                let entry = undoneSteps.[undoneSteps.Count - 1]
+                undoneSteps.RemoveAt (undoneSteps.Count - 1)
+                appliedSteps.Add entry
+                let _, _, after = entry
+                revision <- after
+            | _ ->
+                let before = revision
+                revision <- fresh ()
+                undoneSteps.Clear()
+                // An undoable step is the one on top of the active sheet's
+                // history; any other change (a host's SetCell, an undo out of
+                // order) cannot be walked back to a known revision.
+                match (if step = 0 then List.tryHead model.History.Past else None) with
+                | Some pushed when not (appliedSteps |> Seq.exists (fun (known, _, _) -> obj.ReferenceEquals(known, pushed))) ->
+                    appliedSteps.Add ((pushed, before, revision))
+                    if appliedSteps.Count > 400 then appliedSteps.RemoveAt 0
+                | _ -> appliedSteps.Clear()
+
+    and observeRevision () = observeRevisionAfter 0 None
 
     /// Tell OnChange / OnSelectionChange subscribers what changed since they
     /// were last told. Every change to the workbook ends in a render, so this
     /// runs from there; the snapshot is updated before the callbacks run, so a
     /// callback that causes another render is not told twice.
     and notifyChanges () =
+        observeRevision ()
         if changeListeners.Count > 0 || selectionListeners.Count > 0 then
             let current = Array.init sheets.Length (fun i -> if i = activeSheetIndex then model else sheets.[i])
             let structureChanged = current.Length <> notifiedSheets.Length || sheetNames <> notifiedNames
@@ -2104,6 +2173,8 @@ type Spreadsheet(container: Element) =
                         "Sheets" ==> changedSheets
                         "StructureChanged" ==> structureChanged
                         "ActiveSheetIndex" ==> activeSheetIndex
+                        "Revision" ==> revision
+                        "Modified" ==> (revision <> savedRevision)
                     ]
                 for listener in changeListeners.ToArray() do
                     if changeListeners.Contains listener then (try listener change with _ -> ())
@@ -3586,7 +3657,8 @@ type Spreadsheet(container: Element) =
     /// rows and columns, tables, validations, conditional formats, sheets
     /// added, removed or renamed, undo and redo. It receives
     /// { Sheets: number[] (indices of the sheets that changed),
-    ///   StructureChanged: boolean (sheet list changed), ActiveSheetIndex }.
+    ///   StructureChanged: boolean (sheet list changed), ActiveSheetIndex,
+    ///   Revision: number, Modified: boolean } (see GetRevision / IsModified).
     /// Selection moves and in-cell typing before it is committed are not
     /// document changes. Returns a function that removes the subscription.
     member _.OnChange(callback: System.Action<obj>) : System.Action =
@@ -3610,6 +3682,31 @@ type Spreadsheet(container: Element) =
             notifiedSelection <- Some (activeSheetIndex, model.Selection, activeCellAddress())
         selectionListeners.Add listener
         System.Action(fun () -> selectionListeners.Remove listener |> ignore)
+
+    /// The revision of the workbook's content: a number that changes with
+    /// every change to it (not with selection moves or typing that is not
+    /// committed yet) and that undo / redo bring back - undoing every change
+    /// since a save gives the revision that was saved.
+    member _.GetRevision() : int =
+        observeRevision ()
+        revision
+
+    /// Remember a revision as the saved one: IsModified() is false while the
+    /// workbook is at it, also after undoing back to it. Without an argument
+    /// it is the current revision. A save that takes time passes the revision
+    /// it wrote, so that what the user did meanwhile stays unsaved:
+    ///   const r = grid.GetRevision(); const bytes = await grid.ExportXlsx();
+    ///   await upload(bytes); grid.MarkSaved(r);
+    /// ImportXlsx / InstallImportedWorkbook mark the opened workbook as saved;
+    /// SetWorkbook / InstallWorkbook count as a change.
+    member _.MarkSaved(?savedAt: int) : unit =
+        observeRevision ()
+        savedRevision <- defaultArg savedAt revision
+
+    /// Whether the workbook's content differs from the saved revision.
+    member _.IsModified() : bool =
+        observeRevision ()
+        revision <> savedRevision
 
     /// Every sheet's current model, in sheet order (the active sheet's
     /// included, with its latest edits).
@@ -3732,6 +3829,9 @@ type Spreadsheet(container: Element) =
                 Some (buildWorkbookContext sheets sheetNames (Array.create sheets.Length true) Map.empty Map.empty safeIndex)
         sheetAnchors <- Array.create sheets.Length { Row = 0; Col = 0 }
         anchorCell <- { Row = 0; Col = 0 }
+        // The steps of the previous workbook cannot be undone into this one.
+        appliedSteps.Clear()
+        undoneSteps.Clear()
         resetScroll ()
         render()
         for listener in sheetChangedListeners do
@@ -3749,6 +3849,8 @@ type Spreadsheet(container: Element) =
             else imported.Sheets |> Array.tryFindIndex (fun sheet -> sheet.Visible) |> Option.defaultValue 0
         this.InstallWorkbook(models, names, active, Some imported.Context)
         if models.Length > 0 then xlsxSource <- Some imported.Source
+        // A workbook that was just opened is the saved one.
+        this.MarkSaved()
 
     /// Open an XLSX file: every sheet is loaded and the first visible one
     /// shown. `data` is an ArrayBuffer, Uint8Array or Blob. The promise
