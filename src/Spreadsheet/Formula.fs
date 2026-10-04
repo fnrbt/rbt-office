@@ -1562,11 +1562,61 @@ let rec adjustExprForEdit (edit: StructureEdit) (targetsEditedSheet: string opti
 let adjustFormulaTextForEdit (edit: StructureEdit) (targetsEditedSheet: string option -> bool) (formula: string) : string =
     rewriteFormulaText (adjustExprForEdit edit targetsEditedSheet) formula
 
+/// Re-point references after a block of cells was moved (cut and paste), with
+/// Excel's rules: a reference to a moved cell follows it (onto another sheet
+/// when the block went there), a range moves when the whole of it moved, and
+/// a reference to a cell the block landed on is #REF! — that cell is gone.
+let rec moveExprReferences (move: CellMove) (expr: Expr) : Expr =
+    let inSource row col = row >= move.Top && row <= move.Bottom && col >= move.Left && col <= move.Right
+    let inTarget row col = inSource (row - move.DeltaRow) (col - move.DeltaCol)
+    let moved (r: RefAst) =
+        { r with Row = r.Row + move.DeltaRow; Col = r.Col + move.DeltaCol; Sheet = move.Requalify r.Sheet }
+    let stationary (r: RefAst) =
+        match r.Sheet, move.QualifyStationary with
+        | None, Some _ -> { r with Sheet = move.QualifyStationary }
+        | _ -> r
+    let recurse = moveExprReferences move
+    match expr with
+    | Number _ | Str _ | Bool _ | ErrorLit _ | NameRef _ | TableRef _ | ArrayLit _ | MissingArg -> expr
+    | CellRef r ->
+        if move.OnSourceSheet r.Sheet && inSource r.Row r.Col then CellRef (moved r)
+        elif move.OnTargetSheet r.Sheet && inTarget r.Row r.Col then ErrorLit Err.ref
+        else CellRef (stationary r)
+    | SpillRef r ->
+        if move.OnSourceSheet r.Sheet && inSource r.Row r.Col then SpillRef (moved r)
+        elif move.OnTargetSheet r.Sheet && inTarget r.Row r.Col then ErrorLit Err.ref
+        else SpillRef (stationary r)
+    | RangeRef (a, b) ->
+        if isWholeColumnRange a b || isWholeRowRange a b then RangeRef (stationary a, stationary b)
+        elif move.OnSourceSheet a.Sheet && inSource a.Row a.Col && inSource b.Row b.Col then RangeRef (moved a, moved b)
+        elif move.OnTargetSheet a.Sheet && inTarget a.Row a.Col && inTarget b.Row b.Col then ErrorLit Err.ref
+        else RangeRef (stationary a, stationary b)
+    | UnaryOp (op, operand) -> UnaryOp (op, recurse operand)
+    | BinOp _ ->
+        let operations = ResizeArray<struct (string * Expr)>()
+        let mutable current = expr
+        let mutable collecting = true
+        while collecting do
+            match current with
+            | BinOp (left, op, right) ->
+                operations.Add(struct (op, right))
+                current <- left
+            | _ -> collecting <- false
+        let mutable result = recurse current
+        for index = operations.Count - 1 downto 0 do
+            let struct (op, right) = operations.[index]
+            result <- BinOp (result, op, recurse right)
+        result
+    | Function (name, args) -> Function (name, args |> List.map recurse)
+
+let moveFormulaText (move: CellMove) (formula: string) : string =
+    rewriteFormulaText (moveExprReferences move) formula
+
 /// Installs the formula rewrites Model.fs needs for paste and row/column
 /// edits (it compiles before this file). Model.fs reads this value to force
 /// the installation on hosts that have not touched this module yet.
 let formulaHooksInstalled : bool =
-    installFormulaHooks { Shift = shiftFormulaText; Adjust = adjustFormulaTextForEdit }
+    installFormulaHooks { Shift = shiftFormulaText; Adjust = adjustFormulaTextForEdit; Move = moveFormulaText }
     true
 
 /// Replace every `NameRef` whose (case-insensitive) name is bound in `subst`

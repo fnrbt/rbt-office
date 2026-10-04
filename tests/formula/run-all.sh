@@ -39,6 +39,7 @@ stages=(
     stage21-structure
     stage22-semantics
     stage23-functions
+    stage24-moves
     numbertext
 )
 

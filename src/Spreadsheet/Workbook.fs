@@ -438,6 +438,94 @@ let undoStructureEdit (undo: StructureEditUndo) (workbook: Workbook) : Workbook 
             if Map.tryFind key acc = Some after then Map.add key before acc else acc) workbook.Names
     { workbook with Sheets = sheets; Tables = tables; Names = names }
 
+// --- Cut and paste: references follow the moved cells -------------------------
+
+/// What `repointMovedCells` rewrote, for `undoRepointMovedCells`.
+type CellMoveUndo = {
+    /// Formula cells rewritten: (sheet, cell, before, after).
+    Cells: (SheetId * CellAddress * CellData * CellData) list
+    /// Defined names whose refers-to text changed: (key, before, after).
+    Names: ((SheetId option * string) * string * string) list
+}
+
+/// After the block `(top, left, bottom, right)` of `sourceSheet` was cut and
+/// pasted `(deltaRow, deltaCol)` away on `targetSheet`, re-point every formula
+/// and defined name in the workbook that referred to the moved cells — Excel
+/// moves references with the cells. Call it once the block sits at its new
+/// place. The formulas inside the block keep pointing at the cells they
+/// named (qualified with the old sheet's name when the block changed sheet),
+/// except that references to cells of the block itself travel with it.
+let repointMovedCells (sourceSheet: SheetId) (top: int, left: int, bottom: int, right: int)
+                      (targetSheet: SheetId) (deltaRow: int, deltaCol: int)
+                      (workbook: Workbook) : Workbook * CellMoveUndo =
+    let nameOf id = Map.tryFind id workbook.Sheets |> Option.map (fun sheet -> sheet.Name)
+    match nameOf sourceSheet, nameOf targetSheet with
+    | Some sourceName, Some targetName when deltaRow <> 0 || deltaCol <> 0 || sourceSheet <> targetSheet ->
+        let sameSheet = sourceSheet = targetSheet
+        let names (sheetName: string) (qualifier: string) =
+            qualifier.Equals(sheetName, System.StringComparison.OrdinalIgnoreCase)
+        /// `owner` is the sheet an unqualified reference of the formula means.
+        let moveFor (host: SheetId option) (owner: SheetId option) (carried: bool) : CellMove =
+            { Top = top; Left = left; Bottom = bottom; Right = right
+              DeltaRow = deltaRow; DeltaCol = deltaCol
+              OnSourceSheet = (fun q -> match q with None -> owner = Some sourceSheet | Some n -> names sourceName n)
+              OnTargetSheet = (fun q -> match q with None -> owner = Some targetSheet | Some n -> names targetName n)
+              Requalify = (fun q -> if sameSheet then q elif host = Some targetSheet then None else Some targetName)
+              QualifyStationary = if carried && not sameSheet then Some sourceName else None }
+        let changedCells = ResizeArray<SheetId * CellAddress * CellData * CellData>()
+        let sheets =
+            workbook.Sheets
+            |> Map.map (fun id sheet ->
+                let mutable cells = sheet.Model.Cells
+                for KeyValue(addr, cellData) in sheet.Model.Cells do
+                    match cellData.Value with
+                    | Formula (formula, cached) ->
+                        let carried =
+                            id = targetSheet
+                            && addr.Row - deltaRow >= top && addr.Row - deltaRow <= bottom
+                            && addr.Col - deltaCol >= left && addr.Col - deltaCol <= right
+                        let move = moveFor (Some id) (Some (if carried then sourceSheet else id)) carried
+                        let rewritten = moveFormulaReferences move formula
+                        if rewritten <> formula then
+                            let after = { cellData with Value = Formula (rewritten, cached) }
+                            cells <- Map.add addr after cells
+                            changedCells.Add((id, addr, cellData, after))
+                    | _ -> ()
+                if obj.ReferenceEquals(cells, sheet.Model.Cells) then sheet
+                else { sheet with Model = { sheet.Model with Cells = cells } |> invalidateFilterProjection })
+        let changedNames = ResizeArray<(SheetId option * string) * string * string>()
+        let definedNames =
+            workbook.Names
+            |> Map.map (fun key refersTo ->
+                let rewritten = moveFormulaReferences (moveFor None (fst key) false) refersTo
+                if rewritten <> refersTo then changedNames.Add((key, refersTo, rewritten))
+                rewritten)
+        { workbook with Sheets = sheets; Names = definedNames },
+        { Cells = List.ofSeq changedCells; Names = List.ofSeq changedNames }
+    | _ -> workbook, { Cells = []; Names = [] }
+
+/// Reverse `repointMovedCells`: every formula it rewrote goes back, unless it
+/// was edited since.
+let undoRepointMovedCells (undo: CellMoveUndo) (workbook: Workbook) : Workbook =
+    let sheets =
+        workbook.Sheets
+        |> Map.map (fun id sheet ->
+            let mutable model = sheet.Model
+            for (owner, addr, before, after) in undo.Cells do
+                if owner = id then
+                    match Map.tryFind addr model.Cells with
+                    | Some current ->
+                        (match current.Value, after.Value with
+                         | Formula (a, _), Formula (b, _) when a = b -> model <- setCell addr before model
+                         | _ -> ())
+                    | None -> ()
+            if obj.ReferenceEquals(model, sheet.Model) then sheet else { sheet with Model = model })
+    let definedNames =
+        undo.Names
+        |> List.fold (fun acc (key, before, after) ->
+            if Map.tryFind key acc = Some after then Map.add key before acc else acc) workbook.Names
+    { workbook with Sheets = sheets; Names = definedNames }
+
 /// Get all sheet names
 let getSheetNames (workbook: Workbook): (SheetId * string) list =
     workbook.SheetOrder

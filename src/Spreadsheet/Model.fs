@@ -193,6 +193,11 @@ type ClipboardData = {
     IsCut: bool
     SourceStartRow: int
     SourceStartCol: int
+    /// Bottom-right corner of the copied/cut rectangle (inclusive). Together
+    /// with the start it gives the block's size — needed to tile a paste and
+    /// to re-point references after a cut is pasted.
+    SourceEndRow: int
+    SourceEndCol: int
 }
 
 /// Sort state for a column
@@ -968,6 +973,27 @@ type StructureEdit =
     | InsertCols of at: int * count: int
     | DeleteCols of at: int * count: int
 
+/// A block of cells moved by cut-and-paste: the rectangle it occupied and how
+/// far it travelled. The predicates classify a reference's sheet qualifier
+/// (None = unqualified) as seen from the formula being rewritten.
+type CellMove = {
+    Top: int
+    Left: int
+    Bottom: int
+    Right: int
+    DeltaRow: int
+    DeltaCol: int
+    /// Does this qualifier name the sheet the block was cut from?
+    OnSourceSheet: string option -> bool
+    /// Does this qualifier name the sheet the block was pasted on?
+    OnTargetSheet: string option -> bool
+    /// The qualifier a reference to a moved cell carries afterwards.
+    Requalify: string option -> string option
+    /// The qualifier an unqualified reference to a cell that did NOT move gets
+    /// (a formula carried to another sheet keeps pointing at its old sheet).
+    QualifyStationary: string option
+}
+
 /// Formula-text rewrites. They need the formula parser and printer, which
 /// compile after this module (Formula.fs), so Formula.fs installs them here.
 type FormulaHooks = {
@@ -976,6 +1002,8 @@ type FormulaHooks = {
     /// Re-point references after a structure edit. The predicate says whether
     /// a reference's sheet qualifier (None = unqualified) names the edited sheet.
     Adjust: StructureEdit -> (string option -> bool) -> string -> string
+    /// Re-point references to a block of cells that was moved.
+    Move: CellMove -> string -> string
 }
 
 let mutable private formulaHooks : FormulaHooks option = None
@@ -1021,6 +1049,12 @@ let adjustFormulaForEdit (edit: StructureEdit) (targetsEditedSheet: string optio
     | Some hooks -> hooks.Adjust edit targetsEditedSheet formula
     | None -> formula
 
+/// Re-point a formula's references to cells that a cut-and-paste moved.
+let moveFormulaReferences (move: CellMove) (formula: string) : string =
+    match currentFormulaHooks () with
+    | Some hooks -> hooks.Move move formula
+    | None -> formula
+
 /// Serialize selection to clipboard data
 let serializeSelection (selection: Selection) (model: SpreadsheetModel) (isCut: bool): ClipboardData =
     match selection with
@@ -1029,9 +1063,9 @@ let serializeSelection (selection: Selection) (model: SpreadsheetModel) (isCut: 
         let cellData = getCell addr model
         match cellData with
         | Some data ->
-            { Cells = [(0, 0, data)]; IsCut = isCut; SourceStartRow = row; SourceStartCol = col }
+            { Cells = [(0, 0, data)]; IsCut = isCut; SourceStartRow = row; SourceStartCol = col; SourceEndRow = row; SourceEndCol = col }
         | None ->
-            { Cells = []; IsCut = isCut; SourceStartRow = row; SourceStartCol = col }
+            { Cells = []; IsCut = isCut; SourceStartRow = row; SourceStartCol = col; SourceEndRow = row; SourceEndCol = col }
 
     | Range (startRow, startCol, endRow, endCol) ->
         let cells =
@@ -1049,7 +1083,7 @@ let serializeSelection (selection: Selection) (model: SpreadsheetModel) (isCut: 
             )
             |> List.choose id
 
-        { Cells = cells; IsCut = isCut; SourceStartRow = startRow; SourceStartCol = startCol }
+        { Cells = cells; IsCut = isCut; SourceStartRow = startRow; SourceStartCol = startCol; SourceEndRow = endRow; SourceEndCol = endCol }
 
 /// Paste clipboard data at target address
 let pasteClipboard (targetAddr: CellAddress) (clipboardData: ClipboardData) (model: SpreadsheetModel): SpreadsheetModel =
@@ -1079,6 +1113,43 @@ let pasteClipboard (targetAddr: CellAddress) (clipboardData: ClipboardData) (mod
             updatedModel <- setCell pasteAddr adjustedCellData updatedModel
 
     refreshFilterProjection updatedModel
+
+/// Where a paste of `clipboard` into `selection` puts the block's top-left
+/// corner. One place — the selection's top-left — unless the selection is a
+/// whole multiple of the copied block's size, in which case the block is
+/// tiled across it (Excel's rule). A cut is a move and never tiles.
+let pasteAnchors (selection: Selection) (clipboard: ClipboardData) : CellAddress list =
+    let height = max 1 (clipboard.SourceEndRow - clipboard.SourceStartRow + 1)
+    let width = max 1 (clipboard.SourceEndCol - clipboard.SourceStartCol + 1)
+    match selection with
+    | SingleCell (row, col) -> [ { Row = row; Col = col } ]
+    | Range (r0, c0, r1, c1) ->
+        let top, left = min r0 r1, min c0 c1
+        let rows, cols = abs (r1 - r0) + 1, abs (c1 - c0) + 1
+        if not clipboard.IsCut && rows % height = 0 && cols % width = 0 && (rows > height || cols > width) then
+            [ for i in 0 .. rows / height - 1 do
+                for j in 0 .. cols / width - 1 do
+                    yield { Row = top + i * height; Col = left + j * width } ]
+        else [ { Row = top; Col = left } ]
+
+/// The selection after a paste: the whole area the pasted blocks cover.
+let pasteSelection (anchors: CellAddress list) (clipboard: ClipboardData) (fallback: Selection) : Selection =
+    match anchors with
+    | [] -> fallback
+    | _ ->
+        let height = max 1 (clipboard.SourceEndRow - clipboard.SourceStartRow + 1)
+        let width = max 1 (clipboard.SourceEndCol - clipboard.SourceStartCol + 1)
+        let top = anchors |> List.map (fun a -> a.Row) |> List.min
+        let left = anchors |> List.map (fun a -> a.Col) |> List.min
+        let bottom = (anchors |> List.map (fun a -> a.Row) |> List.max) + height - 1
+        let right = (anchors |> List.map (fun a -> a.Col) |> List.max) + width - 1
+        if top = bottom && left = right then SingleCell (top, left) else Range (top, left, bottom, right)
+
+/// Paste the clipboard into a selection (tiling it when the selection is a
+/// multiple of the block's size).
+let pasteClipboardIntoSelection (selection: Selection) (clipboard: ClipboardData) (model: SpreadsheetModel) : SpreadsheetModel =
+    pasteAnchors selection clipboard
+    |> List.fold (fun acc anchor -> pasteClipboard anchor clipboard acc) model
 
 /// Push command to history (clears future stack)
 let pushCommand (command: Command) (model: SpreadsheetModel): SpreadsheetModel =
@@ -1529,9 +1600,37 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
             | Some movedGhost, Some movedAnchor -> Map.add movedGhost movedAnchor acc
             | _ -> acc) Map.empty
 
+    // Print area and print titles follow the rows/columns they name; a
+    // deleted print area or title band is dropped. Manual breaks sit *after*
+    // a 1-based row/column, i.e. on the 0-based index before it.
+    let pageSetup =
+        let setup = model.PageSetup
+        let printArea =
+            setup.PrintArea
+            |> Option.bind (fun area ->
+                if onRows then
+                    moveSpan area.From.Row area.To.Row
+                    |> Option.map (fun (lo, hi) -> { From = { area.From with Row = lo }; To = { area.To with Row = hi } })
+                else
+                    moveSpan area.From.Col area.To.Col
+                    |> Option.map (fun (lo, hi) -> { From = { area.From with Col = lo }; To = { area.To with Col = hi } }))
+        let moveBreaks (breaks: int list) =
+            breaks
+            |> List.choose (fun after -> moveIndex (after - 1) |> Option.map (fun index -> index + 1))
+            |> List.distinct
+        let updated =
+            { setup with
+                PrintArea = printArea
+                RepeatRows = if onRows then setup.RepeatRows |> Option.bind (fun (lo, hi) -> moveSpan lo hi) else setup.RepeatRows
+                RepeatCols = if onRows then setup.RepeatCols else setup.RepeatCols |> Option.bind (fun (lo, hi) -> moveSpan lo hi)
+                ManualRowBreaks = if onRows then moveBreaks setup.ManualRowBreaks else setup.ManualRowBreaks
+                ManualColBreaks = if onRows then setup.ManualColBreaks else moveBreaks setup.ManualColBreaks }
+        if updated = setup then setup else updated
+
     let delta = if isInsert then count else -count
     { model with
         Cells = cells
+        PageSetup = pageSetup
         Selection = selection
         RowCount = if onRows then max 1 (model.RowCount + delta) else model.RowCount
         ColCount = if onRows then model.ColCount else max 1 (model.ColCount + delta)
@@ -1568,6 +1667,18 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
 /// names and structured-reference tables.
 let applyStructureEdit (edit: StructureEdit) (model: SpreadsheetModel) : SpreadsheetModel =
     applyStructureEditWith Option.isNone edit model
+
+/// Insert or delete rows/columns on a sheet whose name the host knows but
+/// that is edited outside a `Workbook` (a host keeping its own sheet list).
+/// References that name the sheet itself (`Data!A1` on sheet Data) follow the
+/// edit just like unqualified ones — the same predicate
+/// `Workbook.applyStructureEdit` uses for the edited sheet.
+let applyStructureEditNamed (sheetName: string) (edit: StructureEdit) (model: SpreadsheetModel) : SpreadsheetModel =
+    let targetsEditedSheet (qualifier: string option) =
+        match qualifier with
+        | None -> true
+        | Some name -> name.Equals(sheetName, StringComparison.OrdinalIgnoreCase)
+    applyStructureEditWith targetsEditedSheet edit model
 
 /// Insert a row at the specified index (shifts rows down)
 let insertRow (atRow: int) (model: SpreadsheetModel): SpreadsheetModel =

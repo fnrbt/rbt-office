@@ -415,6 +415,75 @@ type Spreadsheet(container: Element) =
             }
             model <- pushCommand command model
 
+    /// Paste the clipboard at the selection as one undoable step. A pasted
+    /// cut is a move: every formula and defined name in the workbook that
+    /// referred to the moved cells is re-pointed at their new place.
+    let pasteClipboardAtSelection () =
+        match model.Clipboard with
+        | None -> ()
+        | Some clipboardData ->
+            let anchors = pasteAnchors model.Selection clipboardData
+            let touched =
+                [ for anchor in anchors do
+                    for (relRow, relCol, _) in clipboardData.Cells do
+                        yield { Row = anchor.Row + relRow; Col = anchor.Col + relCol } ]
+                |> List.distinct
+            let oldCells = touched |> List.map (fun addr -> addr, getCell addr model)
+            for anchor in anchors do
+                model <- pasteClipboard anchor clipboardData model
+            let moveUndo =
+                match anchors with
+                | [ anchor ] when clipboardData.IsCut ->
+                    let sheetId = sheetIdForIndex activeSheetIndex
+                    let source =
+                        clipboardData.SourceStartRow, clipboardData.SourceStartCol,
+                        clipboardData.SourceEndRow, clipboardData.SourceEndCol
+                    let delta = anchor.Row - clipboardData.SourceStartRow, anchor.Col - clipboardData.SourceStartCol
+                    let repointed, undoInfo =
+                        Rbt.Spreadsheet.Workbook.repointMovedCells sheetId source sheetId delta (currentWorkbookSnapshot())
+                    installWorkbookSnapshot repointed
+                    Some undoInfo
+                | _ -> None
+            recalculateFormulas()
+            let newCells = touched |> List.map (fun addr -> addr, getCell addr model)
+            let afterSelection = pasteSelection anchors clipboardData model.Selection
+            model <- { model with Selection = afterSelection }
+            let command = {
+                Undo = fun m ->
+                    model <- restoreCellOptions oldCells m
+                    match moveUndo with
+                    | Some undoInfo ->
+                        currentWorkbookSnapshot()
+                        |> Rbt.Spreadsheet.Workbook.undoRepointMovedCells undoInfo
+                        |> installWorkbookSnapshot
+                    | None -> ()
+                    model
+                Redo = fun m ->
+                    model <- restoreCellOptions newCells m
+                    match moveUndo with
+                    | Some _ ->
+                        // Re-run the move against the workbook as it is now.
+                        match anchors with
+                        | [ anchor ] ->
+                            let sheetId = sheetIdForIndex activeSheetIndex
+                            let source =
+                                clipboardData.SourceStartRow, clipboardData.SourceStartCol,
+                                clipboardData.SourceEndRow, clipboardData.SourceEndCol
+                            let delta = anchor.Row - clipboardData.SourceStartRow, anchor.Col - clipboardData.SourceStartCol
+                            currentWorkbookSnapshot()
+                            |> Rbt.Spreadsheet.Workbook.repointMovedCells sheetId source sheetId delta
+                            |> fst
+                            |> installWorkbookSnapshot
+                        | _ -> ()
+                    | None -> ()
+                    model
+                Description = "Paste"
+            }
+            model <- pushCommand command model
+            // A cut can be pasted once.
+            if clipboardData.IsCut then
+                model <- { model with Clipboard = None }
+
     /// Replace in the selected cell as one undoable step. True when it matched.
     let replaceInSelection (findText: string) (replaceText: string) (caseSensitive: bool) =
         let changedAddr =
@@ -732,78 +801,8 @@ type Spreadsheet(container: Element) =
                 | "v" ->
                     // Paste
                     preventDefault e
-                    match model.Clipboard with
-                    | Some clipboardData ->
-                        match model.Selection with
-                        | SingleCell (row, col) ->
-                            let targetAddr = { Row = row; Col = col }
-
-                            // Capture old values for undo
-                            let oldCells =
-                                clipboardData.Cells
-                                |> List.map (fun (relRow, relCol, _) ->
-                                    let pasteRow = row + relRow
-                                    let pasteCol = col + relCol
-                                    let addr = { Row = pasteRow; Col = pasteCol }
-                                    (addr, getCell addr model)
-                                )
-
-                            // Perform paste
-                            model <- pasteClipboard targetAddr clipboardData model
-
-                            // Re-evaluate all formulas in pasted cells
-                            for (relRow, relCol, _) in clipboardData.Cells do
-                                let pasteRow = row + relRow
-                                let pasteCol = col + relCol
-                                let addr = { Row = pasteRow; Col = pasteCol }
-                                match getCell addr model with
-                                | Some cellData ->
-                                    match cellData.Value with
-                                    | Formula (formula, _) ->
-                                        let result = evaluateFormula formula model workbook
-                                        let newCellData = { cellData with Value = Formula (formula, result) }
-                                        model <- setCell addr newCellData model
-                                    | _ -> ()
-                                | None -> ()
-                            recalculateFormulas()
-
-                            // Capture new values for redo
-                            let newCells =
-                                clipboardData.Cells
-                                |> List.map (fun (relRow, relCol, _) ->
-                                    let pasteRow = row + relRow
-                                    let pasteCol = col + relCol
-                                    let addr = { Row = pasteRow; Col = pasteCol }
-                                    (addr, getCell addr model)
-                                )
-
-                            // Create undo command
-                            let command = {
-                                Undo = fun m ->
-                                    let mutable result = m
-                                    for (addr, oldValue) in oldCells do
-                                        match oldValue with
-                                        | Some cellData -> result <- setCell addr cellData result
-                                        | None -> result <- clearCell addr result
-                                    result
-                                Redo = fun m ->
-                                    let mutable result = m
-                                    for (addr, newValue) in newCells do
-                                        match newValue with
-                                        | Some cellData -> result <- setCell addr cellData result
-                                        | None -> result <- clearCell addr result
-                                    result
-                                Description = "Paste"
-                            }
-                            model <- pushCommand command model
-
-                            // Clear cut flag after paste
-                            if clipboardData.IsCut then
-                                model <- { model with Clipboard = None }
-
-                            render()
-                        | _ -> ()
-                    | None -> ()
+                    pasteClipboardAtSelection()
+                    render()
 
                 | "z" ->
                     // Undo
@@ -3236,34 +3235,8 @@ type Spreadsheet(container: Element) =
 
     /// Paste from clipboard
     member _.Paste() =
-        match model.Selection, model.Clipboard with
-        | SingleCell (row, col), Some clipData ->
-            // Undo restores the full pre-paste cell map so dependent formulas
-            // recalculated by the paste roll back too (O(1) persistent-map ref).
-            let oldCells = model.Cells
-            model <- pasteClipboard { Row = row; Col = col } clipData model
-            recalculateFormulas()
-
-            let command = {
-                Undo = fun m -> restoreCellMap oldCells m
-                Redo = fun m -> pasteClipboard { Row = row; Col = col } clipData m
-                Description = "Paste"
-            }
-            model <- pushCommand command model
-            render()
-        | Range (startRow, startCol, _, _), Some clipData ->
-            let oldCells = model.Cells
-            model <- pasteClipboard { Row = startRow; Col = startCol } clipData model
-            recalculateFormulas()
-
-            let command = {
-                Undo = fun m -> restoreCellMap oldCells m
-                Redo = fun m -> pasteClipboard { Row = startRow; Col = startCol } clipData m
-                Description = "Paste"
-            }
-            model <- pushCommand command model
-            render()
-        | _ -> ()
+        pasteClipboardAtSelection()
+        render()
 
 /// Export for JavaScript
 [<ExportDefault>]

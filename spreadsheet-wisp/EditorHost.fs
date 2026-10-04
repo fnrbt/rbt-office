@@ -15,6 +15,8 @@ type KeyEvent = { Key: string; Shift: bool; Ctrl: bool; Alt: bool }
 
 module Clip =
     let mutable Data : M.ClipboardData option = None
+    /// Index of the sheet the clipboard block was taken from.
+    let mutable SourceSheet = 0
     let mutable Text = ""
 
 type EditorState =
@@ -90,6 +92,47 @@ let applyChange (st: EditorState) (transform: M.SpreadsheetModel -> M.Spreadshee
         st.RedoStack.Value <- []
         putActiveModel st after
     true
+
+let private sheetIdAt (index: int) = sprintf "sheet%d" (index + 1)
+
+/// The editor's sheets as a workbook, so edits that reach across sheets
+/// (row/column insertion, moving cells) go through the workbook functions.
+let private workbookOf (st: EditorState) : Workbook.Workbook =
+    let sheets = st.Sheets.Value
+    let names = st.SheetNames.Value
+    let entries =
+        [ for i in 0 .. sheets.Length - 1 ->
+            let id = sheetIdAt i
+            let sheet : Workbook.Sheet =
+                { Id = id; Name = (if i < names.Length then names.[i] else sprintf "Sheet%d" (i + 1)); Model = sheets.[i]; Visible = true }
+            id, sheet ]
+    { Sheets = Map.ofList entries
+      SheetOrder = entries |> List.map fst
+      ActiveSheet = sheetIdAt (max 0 (min (sheets.Length - 1) st.ActiveSheet.Value))
+      Tables = Map.empty
+      Names = Map.empty }
+
+/// Apply a workbook-wide change as one undoable step.
+let applyWorkbookChange (st: EditorState) (transform: Workbook.Workbook -> Workbook.Workbook) =
+    invalidateCalc st
+    let before = st.Sheets.Value
+    let changed = transform (workbookOf st)
+    let after =
+        before |> Array.mapi (fun i model ->
+            match Map.tryFind (sheetIdAt i) changed.Sheets with
+            | Some sheet -> sheet.Model
+            | None -> model)
+    if Array.exists2 (fun (a: M.SpreadsheetModel) b -> not (Object.ReferenceEquals(a, b))) before after then
+        st.UndoStack.Value <- (before, st.ActiveSheet.Value) :: st.UndoStack.Value |> List.truncate 50
+        st.RedoStack.Value <- []
+        st.Sheets.Value <- after
+    true
+
+/// Insert or delete rows/columns on the active sheet. Formulas on every sheet
+/// that point at it follow, including ones that name the sheet explicitly.
+let applyStructureEdit (st: EditorState) (edit: M.StructureEdit) =
+    let sheetId = sheetIdAt st.ActiveSheet.Value
+    applyWorkbookChange st (fun wb -> Workbook.applyStructureEdit sheetId edit wb |> fst |> Formula.recalculateWorkbook)
 
 let undo (st: EditorState) =
     match st.UndoStack.Value with
@@ -331,6 +374,7 @@ let copySelection (st: EditorState) =
     let model = activeModel st
     let data = M.serializeSelection model.Selection model false
     Clip.Data <- Some data
+    Clip.SourceSheet <- st.ActiveSheet.Value
     let r, c = focusCell model
     Clip.Text <- cellEditText model r c
     true
@@ -338,6 +382,7 @@ let copySelection (st: EditorState) =
 let cutSelection (st: EditorState) =
     let model = activeModel st
     Clip.Data <- Some (M.serializeSelection model.Selection model true)
+    Clip.SourceSheet <- st.ActiveSheet.Value
     let r, c = focusCell model
     Clip.Text <- cellEditText model r c
     applyChange st (M.clearSelectionCells model.Selection) |> ignore
@@ -346,8 +391,27 @@ let cutSelection (st: EditorState) =
 let pasteFromClipboard (st: EditorState) =
     match Clip.Data with
     | Some data ->
-        let r, c = focusCell (activeModel st)
-        applyChange st (M.pasteClipboard { Row = r; Col = c } data) |> ignore
+        let model = activeModel st
+        if data.IsCut then
+            // A pasted cut is a move: references to the moved cells follow
+            // them, on every sheet.
+            let r, c = focusCell model
+            let targetId = sheetIdAt st.ActiveSheet.Value
+            let sourceId = sheetIdAt Clip.SourceSheet
+            let source = data.SourceStartRow, data.SourceStartCol, data.SourceEndRow, data.SourceEndCol
+            let delta = r - data.SourceStartRow, c - data.SourceStartCol
+            applyWorkbookChange st (fun wb ->
+                match Map.tryFind targetId wb.Sheets with
+                | Some sheet ->
+                    wb
+                    |> Workbook.updateSheetModel targetId (M.pasteClipboard { Row = r; Col = c } data sheet.Model)
+                    |> Workbook.repointMovedCells sourceId source targetId delta
+                    |> fst
+                    |> Formula.recalculateWorkbook
+                | None -> wb) |> ignore
+            Clip.Data <- None
+        else
+            applyChange st (M.pasteClipboardIntoSelection model.Selection data) |> ignore
         true
     | None when Clip.Text <> "" ->
         let r, c = focusCell (activeModel st)
