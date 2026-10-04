@@ -890,14 +890,79 @@ let setParagraphContents (texts: string list) doc =
                 })
     { doc with Blocks = blocks; Selection = None }
 
+// ---- where a block is ---------------------------------------------------------
+// Looking a paragraph up by id walked the blocks (and the cells of every
+// table before it), comparing ids: the cost of a keystroke grew with the
+// caret's place in the document. The top-level index a block id was last
+// found at is remembered; a lookup goes there first (and a few places around
+// it - blocks inserted or removed before it move it), and only then through
+// the document. The hints belong to no document: one that points at another
+// block is simply wrong, and corrected by the search.
+let private blockPlaces = System.Collections.Generic.Dictionary<string, int>()
+
+let private blockHolds (blockId: string) (block: Block) =
+    match block with
+    | Paragraph p
+    | Heading (_, p) -> p.Id = blockId
+    | Table t ->
+        t.Id = blockId
+        || (let mutable found = false
+            for row in t.Rows do
+                if not found then
+                    for cell in row.Cells do
+                        if not found then
+                            for para in cell.Content do
+                                if para.Id = blockId then found <- true
+            found)
+    | TextBox t -> t.Id = blockId || (t.Content |> List.exists (fun para -> para.Id = blockId))
+
+/// The top-level block that is, or holds, the block with an id, and its
+/// index among the document's blocks.
+let locateBlock (doc: Document) (blockId: string) : struct (int * Block) voption =
+    let hint =
+        lock blockPlaces (fun () ->
+            match blockPlaces.TryGetValue blockId with
+            | true, index -> index
+            | false, _ -> -1)
+    let mutable result = ValueNone
+    if hint >= 0 then
+        // The blocks from a few before the hint to a few after it.
+        let first = max 0 (hint - 6)
+        let mutable rest = doc.Blocks
+        let mutable index = 0
+        while index < first && not rest.IsEmpty do
+            rest <- rest.Tail
+            index <- index + 1
+        while result.IsNone && index <= hint + 6 && not rest.IsEmpty do
+            if blockHolds blockId rest.Head then result <- ValueSome (struct (index, rest.Head))
+            rest <- rest.Tail
+            index <- index + 1
+    if result.IsNone then
+        let mutable rest = doc.Blocks
+        let mutable index = 0
+        while result.IsNone && not rest.IsEmpty do
+            if blockHolds blockId rest.Head then result <- ValueSome (struct (index, rest.Head))
+            rest <- rest.Tail
+            index <- index + 1
+    match result with
+    | ValueSome (struct (index, _)) when index <> hint ->
+        lock blockPlaces (fun () ->
+            if blockPlaces.Count > 200000 then blockPlaces.Clear()
+            blockPlaces.[blockId] <- index)
+    | _ -> ()
+    result
+
 /// Find block by ID
 let findBlock doc blockId =
-    doc.Blocks
-    |> List.tryFind (function
-        | Paragraph p -> p.Id = blockId
-        | Heading (_, p) -> p.Id = blockId
-        | Table t -> t.Id = blockId
-        | TextBox t -> t.Id = blockId)
+    let idOf (block: Block) =
+        match block with
+        | Paragraph p
+        | Heading (_, p) -> p.Id
+        | Table t -> t.Id
+        | TextBox t -> t.Id
+    match locateBlock doc blockId with
+    | ValueSome (struct (_, block)) when idOf block = blockId -> Some block
+    | _ -> None
 
 /// Try to get the editable paragraph payload from a block.
 let tryGetParagraph = function
@@ -1021,7 +1086,9 @@ let private mapEditableParagraphs (mapper: ParagraphBlock -> ParagraphBlock) (do
 
 /// Find an editable paragraph anywhere in the document, including table cells.
 let findParagraph doc paragraphId =
-    doc.Blocks
+    (match locateBlock doc paragraphId with
+     | ValueSome (struct (_, block)) -> [ block ]
+     | ValueNone -> [])
     |> List.tryPick (function
         | Paragraph p
         | Heading (_, p) when p.Id = paragraphId -> Some p
@@ -1037,17 +1104,35 @@ let findParagraph doc paragraphId =
 
 /// Replace an editable paragraph anywhere in the document, preserving its container.
 let replaceParagraph (doc: Document) paragraphId newPara =
-    // (Ids are unique: the first paragraph with this id is the one, and the
-    // blocks after its block are not looked into.)
-    let mutable replaced = false
-    mapEditableParagraphsUntil
-        (fun () -> replaced)
-        (fun para ->
-            if not replaced && para.Id = paragraphId then
-                replaced <- true
-                newPara
-            else para)
-        doc
+    // (Ids are unique: the block that holds the paragraph is found by its
+    // place, the blocks before it are kept as they are and the list after it
+    // is the same list.)
+    match locateBlock doc paragraphId with
+    | ValueNone -> doc
+    | ValueSome (struct (index, block)) ->
+        let single = { doc with Blocks = [ block ] }
+        let mutable replaced = false
+        let mapped =
+            mapEditableParagraphsUntil
+                (fun () -> replaced)
+                (fun para ->
+                    if not replaced && para.Id = paragraphId then
+                        replaced <- true
+                        newPara
+                    else para)
+                single
+        match mapped.Blocks with
+        | [ changed ] when not (sameReference changed block) ->
+            let before = ResizeArray<Block>(index)
+            let mutable rest = doc.Blocks
+            for _ in 1 .. index do
+                before.Add rest.Head
+                rest <- rest.Tail
+            let mutable blocks = changed :: rest.Tail
+            for i = before.Count - 1 downto 0 do
+                blocks <- before.[i] :: blocks
+            { doc with Blocks = blocks }
+        | _ -> doc
 
 let private editableParagraphsInOrder doc =
     doc.Blocks
@@ -1338,7 +1423,10 @@ let private emptyTableCell () =
     }
 
 let private tryFindTableCellByParagraph doc paragraphId =
-    doc.Blocks
+    // (The one block that holds the paragraph, found by its place.)
+    (match locateBlock doc paragraphId with
+     | ValueSome (struct (_, block)) -> [ block ]
+     | ValueNone -> [])
     |> List.tryPick (function
         | Table table ->
             table.Rows
@@ -1378,8 +1466,9 @@ let private tryGetTableCellParagraph doc tableId rowIndex colIndex =
 
 /// Find block index by ID
 let findBlockIndex doc blockId =
-    doc.Blocks
-    |> List.tryFindIndex (fun b -> getBlockId b = blockId)
+    match locateBlock doc blockId with
+    | ValueSome (struct (index, block)) when getBlockId block = blockId -> Some index
+    | _ -> None
 
 /// Get normalized range with block IDs for multi-block selection
 let getNormalizedRange (sel: Selection) (doc: Document) =
@@ -3963,7 +4052,7 @@ let caretContext (doc: Document) : CaretContext =
         match tryFindTableCellByParagraph doc focus.BlockId with
         | None -> inText
         | Some (tableId, rowIndex, colIndex) ->
-            let table = doc.Blocks |> List.tryPick (function Table table when table.Id = tableId -> Some table | _ -> None)
+            let table = match findBlock doc tableId with Some (Table table) -> Some table | _ -> None
             match table with
             | None -> inText
             | Some table ->

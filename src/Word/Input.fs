@@ -16,8 +16,21 @@ let private documentsEqualForChange (left: Rbt.Word.Document.Document) (right: R
 
 /// True when two documents differ at most in their selection. Moving the
 /// caret is not something Undo steps through.
-let sameContent (left: Rbt.Word.Document.Document) (right: Rbt.Word.Document.Document) =
+/// Whether two documents are the same content by identity: every part but
+/// the selection is the same object (what a caret move leaves, and what an
+/// undo comes back to). Constant time; false for equal content in other objects.
+let sameContentObjects (left: Rbt.Word.Document.Document) (right: Rbt.Word.Document.Document) =
     obj.ReferenceEquals(left, right)
+    || (obj.ReferenceEquals(left.Blocks, right.Blocks)
+        && obj.ReferenceEquals(left.PageSetup, right.PageSetup)
+        && obj.ReferenceEquals(left.Styles, right.Styles)
+        && obj.ReferenceEquals(left.Headers, right.Headers)
+        && obj.ReferenceEquals(left.Footers, right.Footers)
+        && obj.ReferenceEquals(left.HeaderParts, right.HeaderParts)
+        && obj.ReferenceEquals(left.FooterParts, right.FooterParts))
+
+let sameContent (left: Rbt.Word.Document.Document) (right: Rbt.Word.Document.Document) =
+    sameContentObjects left right
     || (left.PageSetup = right.PageSetup
         && sameListOrEqual left.Blocks right.Blocks
         && sameListOrEqual left.Styles right.Styles
@@ -214,10 +227,24 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
     let measureRange = measureRangeWithContext ctx
 
     /// The visual lines of the document's editable text, in layout order.
+    // (Kept for the layout they were made from: a run of Up / Down keys, which
+    // changes the selection only, enumerates the document's lines once.)
+    let mutable visualLinesOf : obj = null
+    let mutable visualLinesKnown : (Layout.BlockLayout * Layout.MeasuredLine) array = [||]
+    let visualLineStarts = System.Collections.Generic.Dictionary<string, int>()
     let visualLines (doc: Doc.Document) : (Layout.BlockLayout * Layout.MeasuredLine) array =
-        [| for layout in layoutDocument ctx doc do
-            if not (layout.BlockId.StartsWith Layout.footnoteBlockIdPrefix) && not (layout.BlockId.StartsWith Layout.endnoteBlockIdPrefix) then
-                for line in layout.Lines -> layout, line |]
+        let layouts = layoutDocument ctx doc
+        if not (obj.ReferenceEquals(visualLinesOf, layouts)) then
+            let lines = ResizeArray<Layout.BlockLayout * Layout.MeasuredLine>()
+            visualLineStarts.Clear()
+            for layout in layouts do
+                if not (layout.BlockId.StartsWith Layout.footnoteBlockIdPrefix) && not (layout.BlockId.StartsWith Layout.endnoteBlockIdPrefix) then
+                    if not layout.Lines.IsEmpty && not (visualLineStarts.ContainsKey layout.BlockId) then visualLineStarts.[layout.BlockId] <- lines.Count
+                    for line in layout.Lines do
+                        lines.Add (layout, line)
+            visualLinesKnown <- lines.ToArray()
+            visualLinesOf <- box layouts
+        visualLinesKnown
 
     /// Layout x of an offset on a line.
     let lineX (doc: Doc.Document) (layout: Layout.BlockLayout) (line: Layout.MeasuredLine) (offset: int) =
@@ -228,13 +255,26 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         // A paragraph continued in another column or on another page has one layout per fragment.
         let mutable found = -1
         let mutable fallback = -1
-        for i in 0 .. lines.Length - 1 do
+        // From the block's first line on, when these are the lines of `visualLines`
+        // (a block's lines follow one another: the search ends where they end).
+        let indexed = obj.ReferenceEquals(lines, visualLinesKnown)
+        let mutable i =
+            if indexed then
+                match visualLineStarts.TryGetValue position.BlockId with
+                | true, start -> start
+                | false, _ -> lines.Length
+            else 0
+        let mutable searching = true
+        while searching && i < lines.Length do
             let layout, line = lines.[i]
-            if found < 0 && layout.BlockId = position.BlockId then
+            if layout.BlockId = position.BlockId then
                 if fallback < 0 then fallback <- i
                 if line.StartOffset <= position.Offset && position.Offset <= line.EndOffset
                    && obj.ReferenceEquals(Layout.lineForOffset layout position.Offset, line) then
                     found <- i
+                    searching <- false
+            elif indexed && fallback >= 0 then searching <- false
+            i <- i + 1
         if found >= 0 then Some found elif fallback >= 0 then Some fallback else None
 
     /// The last offset the caret can have and still be drawn on the line: a

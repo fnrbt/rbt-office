@@ -2528,6 +2528,8 @@ type PaintCache = private {
     mutable CacheHeaderFooterCommands: PaintCommand array array
     /// How many blocks' commands the last collection made anew.
     mutable CollectedBlocks: int
+    /// The layout pass (LayoutSlices.SliceGeneration) the entries were collected from.
+    mutable CacheGeneration: int
 }
 
 let createPaintCache () : PaintCache = {
@@ -2545,9 +2547,11 @@ let createPaintCache () : PaintCache = {
     CacheHeaderFooterChunks = [||]
     CacheHeaderFooterCommands = [||]
     CollectedBlocks = 0
+    CacheGeneration = 0
 }
 
 let clearPaintCache (cache: PaintCache) =
+    cache.CacheGeneration <- 0
     cache.CacheSettings <- None
     cache.CacheBlocks <- [||]
     cache.CacheEntries <- [||]
@@ -2616,7 +2620,26 @@ let collectDocumentChunksWith (deferCollection: bool) (cache: PaintCache) (setti
         let chunks = ResizeArray<PaintChunk>(blocks.Length + 8)
         let mutable currentY = doc.PageSetup.MarginTop
         let mutable collected = 0
+        // The blocks the layout pass says kept their layouts from the pass the
+        // cache was collected from keep their entries without a look: the
+        // collection is the work of the blocks in between.
+        let trustedPrefix, trustedSuffix =
+            if cache.CacheGeneration = 0 || cache.CacheEntries.Length <> cache.CacheBlocks.Length then 0, 0
+            elif slices.SliceGeneration = cache.CacheGeneration && cache.CacheBlocks.Length = blocks.Length then blocks.Length, 0
+            elif slices.SliceBase = cache.CacheGeneration then
+                min prefix slices.SliceKeptPrefix, min suffix slices.SliceKeptSuffix
+            else 0, 0
+        let suffixStart = blocks.Length - trustedSuffix
+        let mutable suffixTrusted = false
         for blockIndex in 0 .. blocks.Length - 1 do
+            if blockIndex = suffixStart && trustedSuffix > 0 then
+                suffixTrusted <- cache.CacheEntries.[blockIndex + shift].EntryYIn = currentY
+            if blockIndex < trustedPrefix || (blockIndex >= suffixStart && suffixTrusted) then
+                let entry = cache.CacheEntries.[if blockIndex < trustedPrefix then blockIndex else blockIndex + shift]
+                entries.[blockIndex] <- entry
+                chunks.Add entry.EntryChunk
+                currentY <- entry.EntryYOut
+            else
             let block = blocks.[blockIndex]
             let start = slices.SliceStarts.[blockIndex]
             let count = slices.SliceStarts.[blockIndex + 1] - start
@@ -2709,6 +2732,7 @@ let collectDocumentChunksWith (deferCollection: bool) (cache: PaintCache) (setti
         cache.CacheBlocks <- blocks
         cache.CacheEntries <- entries
         cache.CollectedBlocks <- collected
+        cache.CacheGeneration <- slices.SliceGeneration
 
         // The note areas.
         if not (sameLayoutList cache.CacheNotes slices.SliceNotes) || (slices.SliceNotes.IsEmpty && cache.CacheNoteChunk.Commands.Length > 0) then
@@ -2788,6 +2812,21 @@ let requiredFontFaces (settings: LayoutSettings) (defaultFamily: string) (measur
 let private layoutListLookup (layouts: BlockLayout list) =
     fun blockId ->
         layouts |> List.tryFind (fun l -> l.BlockId = blockId)
+
+/// The first layout of a block, by id, from the layouts a pass handed over
+/// block by block: the block is found by its place, the layout in its slice.
+let sliceLayoutLookup (doc: Document) (slices: LayoutSlices) : BlockId -> BlockLayout option =
+    fun blockId ->
+        match locateBlock doc blockId with
+        | ValueSome (struct (index, _)) when index < slices.SliceBlocks.Length ->
+            let mutable found = None
+            let mutable at = slices.SliceStarts.[index]
+            let last = slices.SliceStarts.[index + 1]
+            while found.IsNone && at < last do
+                if slices.SliceLayouts.[at].BlockId = blockId then found <- Some slices.SliceLayouts.[at]
+                at <- at + 1
+            found
+        | _ -> None
 
 let private selectionCommandsForNormalizedRange
     (settings: LayoutSettings)
@@ -2893,6 +2932,93 @@ let selectionCommandsWithRange (settings: LayoutSettings) (measureRange: TextRan
 
 let selectionCommands (settings: LayoutSettings) (measureText: TextMeasurer) (doc: Document) (layouts: BlockLayout list) =
     selectionCommandsWithRange settings (rangeMeasurerFromTextMeasurer measureText) doc layouts
+
+/// The highlight of a selection that runs over several top-level blocks, for
+/// the band top .. bottom of the document only: the blocks between the two
+/// ends are found by their place, and of their layouts those that reach into
+/// the band get their lines highlighted - a selection of the whole of a long
+/// document costs what is on screen. With the caret. None when the two ends
+/// are in one block (the caller's general path is cheap then).
+let selectionCommandsInBand (settings: LayoutSettings) (measureRange: TextRangeMeasurer) (doc: Document) (slices: LayoutSlices) (bandTop: float) (bandBottom: float) : PaintCommand list option =
+    match doc.Selection with
+    | Some sel when not sel.IsCollapsed ->
+        match locateBlock doc sel.Anchor.BlockId, locateBlock doc sel.Focus.BlockId with
+        | ValueSome (struct (anchorIndex, _)), ValueSome (struct (focusIndex, _))
+            when anchorIndex <> focusIndex && anchorIndex < slices.SliceBlocks.Length && focusIndex < slices.SliceBlocks.Length ->
+            let startPos, endPos, first, last =
+                if anchorIndex < focusIndex then sel.Anchor, sel.Focus, anchorIndex, focusIndex
+                else sel.Focus, sel.Anchor, focusIndex, anchorIndex
+            let commands = ResizeArray<PaintCommand>()
+            // The editable paragraphs of a block, in reading order.
+            let idsOf (block: Block) =
+                match block with
+                | Paragraph p
+                | Heading (_, p) -> [ p.Id ]
+                | Table t -> [ for row in t.Rows do for cell in row.Cells do for para in cell.Content -> para.Id ]
+                | TextBox t -> t.Content |> List.map (fun para -> para.Id)
+            let highlight (layout: BlockLayout) (fromOffset: int) (toOffset: int) =
+                for line in layout.Lines do
+                    if line.Y + line.Height >= bandTop && line.Y <= bandBottom then
+                        let lineStart = max fromOffset line.StartOffset
+                        let lineEnd = min toOffset line.EndOffset
+                        if lineEnd > lineStart then
+                            let mutable startX = 0.0
+                            let mutable endX = 0.0
+                            if lineStart <= line.StartOffset && lineEnd >= line.EndOffset then
+                                let mutable hasSegment = false
+                                for segment in line.Segments do
+                                    let x = segmentX segment
+                                    let width = segmentWidth segment
+                                    if not hasSegment then
+                                        startX <- x
+                                        endX <- x + width
+                                        hasSegment <- true
+                                    else
+                                        startX <- min startX x
+                                        endX <- max endX (x + width)
+                                if not hasSegment then endX <- line.Width
+                            else
+                                startX <- xForOffsetWithRange measureRange line lineStart
+                                endX <- xForOffsetWithRange measureRange line lineEnd
+                            commands.Add(FillRect ("rgba(0, 120, 215, 0.3)", settings.PaddingLeft + startX + alignmentOffset layout line, line.Y, endX - startX, line.Height))
+            for index in first .. last do
+                let from = slices.SliceStarts.[index]
+                let until = slices.SliceStarts.[index + 1]
+                // (Nothing of the block in the band: nothing to look at.)
+                let mutable inBand = false
+                let mutable at = from
+                while not inBand && at < until do
+                    let layout = slices.SliceLayouts.[at]
+                    if layout.Y + layout.Height >= bandTop && layout.Y <= bandBottom then inBand <- true
+                    at <- at + 1
+                if inBand then
+                    if index <> first && index <> last then
+                        for at in from .. until - 1 do
+                            let layout = slices.SliceLayouts.[at]
+                            highlight layout 0 (maxOffsetInLayout layout)
+                    else
+                        // The block of an end: its paragraphs from the start position on / up to the end position.
+                        let ids = idsOf slices.SliceBlocks.[index] |> List.toArray
+                        let place (id: BlockId) = System.Array.IndexOf(ids, id)
+                        let startAt = if index = first then place startPos.BlockId else -1
+                        let endAt = if index = last then place endPos.BlockId else System.Int32.MaxValue
+                        for at in from .. until - 1 do
+                            let layout = slices.SliceLayouts.[at]
+                            let own = place layout.BlockId
+                            if own >= startAt && own <= endAt then
+                                let fromOffset = if index = first && own = startAt then startPos.Offset else 0
+                                let toOffset = if index = last && own = endAt then endPos.Offset else maxOffsetInLayout layout
+                                highlight layout fromOffset toOffset
+            match sliceLayoutLookup doc slices sel.Focus.BlockId with
+            | Some layout ->
+                let line = lineForOffset layout sel.Focus.Offset
+                if line.Y + line.Height >= bandTop && line.Y <= bandBottom then
+                    let x = xForOffsetWithRange measureRange line sel.Focus.Offset
+                    commands.Add(FillRect ("#0066ff", settings.PaddingLeft + x + alignmentOffset layout line, line.Y, 2.0, line.Height))
+            | None -> ()
+            Some (resizeArrayToList commands)
+        | _ -> None
+    | _ -> None
 
 let hoverCommands (settings: LayoutSettings) (layouts: BlockLayout list) (hoveredImage: (BlockId * int) option) =
     match hoveredImage with

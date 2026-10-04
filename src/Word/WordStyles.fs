@@ -680,14 +680,14 @@ let selectionFormat (doc: Document) : SelectionFormat =
     | None -> format
     | Some selection ->
         let context = styleContext doc
-        let headingLevels =
-            doc.Blocks
-            |> List.choose (function
-                | Heading (level, para) -> Some (para.Id, level)
-                | _ -> None)
-            |> Map.ofList
+        // (Asked of the paragraphs of the selection, each found by its place:
+        // not a map of every heading of the document at every call.)
+        let headingLevelOf (id: string) =
+            match findBlock doc id with
+            | Some (Heading (level, _)) -> Some level
+            | _ -> None
         let paragraphStyleOf (para: ParagraphBlock) =
-            match Map.tryFind para.Id headingLevels with
+            match headingLevelOf para.Id with
             | Some level -> forBlockInContext context (Heading (level, para))
             | None -> forBlockInContext context (Paragraph para)
         let addCharacter (paragraphStyle: ParagraphStyle) (runStyle: TextStyle) =
@@ -705,7 +705,7 @@ let selectionFormat (doc: Document) : SelectionFormat =
         let addParagraph (para: ParagraphBlock) (paragraphStyle: ParagraphStyle) =
             let metadata: BlockMetadata = effectiveMetadata paragraphStyle para.Metadata
             let headingLevel =
-                match Map.tryFind para.Id headingLevels with
+                match headingLevelOf para.Id with
                 | Some level -> level
                 | None ->
                     match paragraphStyle.OutlineLevel with

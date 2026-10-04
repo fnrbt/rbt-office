@@ -753,5 +753,47 @@ let _, lookAheadInitial, lookAheadEdited =
 checkTrue "the empty paragraph's height depends on the paragraph after the table"
     (heightOf "la-empty" lookAheadInitial <> heightOf "la-empty" (coldLayoutsOf (setMetadata "la-web" (fun metadata -> { metadata with Style = None }) lookAheadDoc)))
 
+// ---- the highlight of a long selection, for a band of the document ----------
+// A selection over many blocks is highlighted from the blocks' places and
+// their layouts in the band on screen: the rectangles are those of the walk
+// over the whole selection, cut to the band.
+for label, doc, anchor, focus in [ "plain", plainDoc, ("p3", 2), ("p40", 5); "backwards", plainDoc, ("p50", 4), ("p2", 1); "tables", tableDoc, ("tb2", 3), ("ta3", 6); "from a cell", tableDoc, ("t1-r3-a", 1), ("ta2", 2) ] do
+    let selected = Doc.setSelection { BlockId = fst anchor; Offset = snd anchor } { BlockId = fst focus; Offset = snd focus } doc
+    let state = Layout.createIncrementalLayoutState ()
+    let layouts = Layout.layoutDocumentIncrementalWithRange state settings measureText measureRange selected
+    let whole = Paint.selectionCommandsWithRange settings measureRange selected layouts |> List.sort
+    match state.LastSlices with
+    | Some slices ->
+        let everywhere = Paint.selectionCommandsInBand settings measureRange selected slices System.Double.NegativeInfinity System.Double.PositiveInfinity
+        check (label + ": the banded highlight over the whole document") (everywhere |> Option.map List.sort) (Some whole)
+        checkTrue (label + ": there is something to highlight") (whole.Length > 20)
+        let top, bottom = 1500.0, 2300.0
+        let inBand = whole |> List.filter (fun command -> match Paint.commandYExtent command with Some (t, b) -> b >= top && t <= bottom | None -> true)
+        let banded = Paint.selectionCommandsInBand settings measureRange selected slices top bottom |> Option.defaultValue []
+        checkTrue (label + ": a band holds the rectangles that reach into it, and no others far from it")
+            (inBand |> List.forall (fun command -> List.contains command banded) && banded.Length < whole.Length
+             && banded |> List.forall (fun command -> List.contains command whole))
+        // A block's layout by the block's place.
+        let lookup = Paint.sliceLayoutLookup selected slices
+        check (label + ": a layout found by its block's place") (lookup (fst focus) |> Option.map (fun layout -> layout.BlockId, layout.Y)) (layouts |> List.tryFind (fun layout -> layout.BlockId = fst focus) |> Option.map (fun layout -> layout.BlockId, layout.Y))
+    | None -> checkTrue (label + ": the pass hands its layouts over block by block") false
+
+// Blocks are found by the place they were last seen at, wherever edits moved them.
+do
+    let mutable doc = plainDoc
+    let find id = Doc.findParagraph doc id |> Option.map (fun para -> para.Id)
+    check "found" (find "p30", find "p60", find "nothing") (Some "p30", Some "p60", None)
+    doc <- removeBlock "p5" doc |> removeBlock "p6" |> removeBlock "p7"
+    check "after blocks before it were removed" (find "p30", Doc.findBlockIndex doc "p30") (Some "p30", Some 26)
+    for i in 1 .. 20 do doc <- insertAfter "p2" (Doc.Paragraph (para (sprintf "added%d" i) "added")) doc
+    check "after many were inserted before it" (find "p30", Doc.findBlockIndex doc "p30", find "added7") (Some "p30", Some 46, Some "added7")
+    let replaced = Doc.replaceParagraph doc "p30" (para "p30" "replaced")
+    check "replaced in place: the blocks around it are the same objects"
+        (List.length replaced.Blocks, obj.ReferenceEquals(List.item 45 replaced.Blocks, List.item 45 doc.Blocks), obj.ReferenceEquals(List.skip 47 replaced.Blocks, List.skip 47 doc.Blocks),
+         Doc.findParagraph replaced "p30" |> Option.map (fun p -> toString p.Buffer))
+        (List.length doc.Blocks, true, true, Some "replaced")
+    check "an id no block has leaves the document as it is" (obj.ReferenceEquals(Doc.replaceParagraph doc "none" (para "none" "x"), doc)) true
+    check "a paragraph in a table cell" ((Doc.replaceParagraph tableDoc "t1-r3-b" (para "t1-r3-b" "cell") |> fun d -> Doc.findParagraph d "t1-r3-b") |> Option.map (fun p -> toString p.Buffer)) (Some "cell")
+
 printfn "incremental-layout: %d passed, %d failed" pass fail
 if fail > 0 then failwithf "%d incremental layout checks failed" fail

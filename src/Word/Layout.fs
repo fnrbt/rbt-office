@@ -2420,6 +2420,10 @@ type PassRecord = {
     PassResults: BlockLayout array
     /// Whether any of the results refers to an endnote.
     PassHasEndnotes: bool
+    /// How many blocks at the start and (of the rest) at the end have the
+    /// layouts - the same objects - of the pass this one started from.
+    PassKeptPrefix: int
+    PassKeptSuffix: int
 }
 
 /// The body layouts of the last pass block by block: the layouts of
@@ -2432,7 +2436,20 @@ type LayoutSlices = {
     SliceLayouts: BlockLayout array
     /// Footnote and endnote paragraphs, in the order of the layout list.
     SliceNotes: BlockLayout list
+    /// A number of this pass, and of the pass it kept layouts from (0: none).
+    /// The first SliceKeptPrefix and the last SliceKeptSuffix blocks have the
+    /// layouts, the same objects, they had in that pass.
+    SliceGeneration: int
+    SliceBase: int
+    SliceKeptPrefix: int
+    SliceKeptSuffix: int
 }
+
+/// Numbers the passes that hand slices over (see LayoutSlices.SliceGeneration).
+let mutable private sliceGenerations = 0
+let private nextSliceGeneration () =
+    sliceGenerations <- sliceGenerations + 1
+    sliceGenerations
 
 /// One page's footnote paragraphs and what they were laid out from.
 type FootnoteAreaRecord = {
@@ -4808,6 +4825,8 @@ let private layoutDocumentPassKept
             indexShift <- record.PassBlocks.Length - blocks.Length
     | None -> ()
     let mutable keptLayouts = layouts.Count > 0
+    let keptPrefix = blockIndex
+    let mutable keptSuffix = 0
     while blockIndex < blocks.Length do
         let state = currentState ()
         match lastPass with
@@ -4823,6 +4842,7 @@ let private layoutDocumentPassKept
             for index in from .. record.PassResults.Length - 1 do
                 layouts.Add record.PassResults.[index]
             if from < record.PassResults.Length then keptLayouts <- true
+            keptSuffix <- blocks.Length - blockIndex
             restoreState record.PassCheckpoints.[record.PassBlocks.Length]
             blockIndex <- blocks.Length
         | _ ->
@@ -4835,7 +4855,7 @@ let private layoutDocumentPassKept
             | _ -> ()
     let bodyRecord =
         match lastPass with
-        | Some record when unchanged -> record
+        | Some record when unchanged -> (if record.PassKeptPrefix = blocks.Length then record else { record with PassKeptPrefix = blocks.Length; PassKeptSuffix = 0 })
         | _ ->
             checkpoints.Add (currentState ())
             starts.Add layouts.Count
@@ -4859,6 +4879,8 @@ let private layoutDocumentPassKept
                 // (Kept layouts that refer to endnotes were found by the pass that made them. An edit that
                 // removes the last reference leaves the flag set: the endnote pass then looks, and finds none.)
                 PassHasEndnotes = hasEndnoteRefs
+                PassKeptPrefix = keptPrefix
+                PassKeptSuffix = keptSuffix
             }
     match memo with
     | Some memo when slot <> "" ->
@@ -5378,6 +5400,8 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
         keptEndnotes <- record.PassHasEndnotes
     | _ -> ()
     let freshFrom = results.Count
+    let keptPrefix = blockIndex
+    let mutable keptSuffix = 0
     let mutable freshTo = -1
     while blockIndex < blocks.Length do
         let state = currentState ()
@@ -5385,6 +5409,7 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
         | Some record when blockIndex >= convergeFrom && samePassState state record.PassCheckpoints.[blockIndex + indexShift] ->
             // From here on this pass is the last one: its layouts stand.
             freshTo <- results.Count
+            keptSuffix <- blocks.Length - blockIndex
             let from = record.PassStarts.[blockIndex + indexShift]
             let shift = results.Count - from
             for index in blockIndex + indexShift .. record.PassBlocks.Length - 1 do
@@ -5407,7 +5432,7 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
         match memo with
         | Some memo -> memo.MemoKeptPass <- true
         | None -> ()
-        record, page, y, footnotesByPage
+        (if record.PassKeptPrefix = blocks.Length then record else { record with PassKeptPrefix = blocks.Length; PassKeptSuffix = 0 }), page, y, footnotesByPage
     | None ->
         if freshTo < 0 then freshTo <- results.Count
         checkpoints.Add (currentState ())
@@ -5432,6 +5457,8 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
             PassStarts = starts.ToArray()
             PassResults = results.ToArray()
             PassHasEndnotes = keptEndnotes || resultsHaveEndnotes results freshFrom freshTo
+            PassKeptPrefix = keptPrefix
+            PassKeptSuffix = keptSuffix
         }
         match memo with
         | Some memo when slot <> "" ->
@@ -5519,6 +5546,9 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
     let results = ResizeArray<BlockLayout>()
     // Where each block's layouts start in the results (see LayoutSlices).
     let blockStarts = ResizeArray<int>()
+    let mutable keptPrefix = 0
+    let mutable keptRun = true
+    let mutable keptSuffix = 0
     let mutable hasEndnoteRefs = false
     let pageTops = ResizeArray<float>()    // absolute top of each page index
     let pageSettings = ResizeArray<LayoutSettings>()  // settings owning each page
@@ -5563,6 +5593,13 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
         let slot = match memo with Some _ -> "s" + string i | None -> ""
         let record, endPage, endY, secFootnotes = flowColumnsKept slot memo secSettings measureText measureRange secDoc secColumns pageTopOf true currentPage currentY balanced footnotesByPage
         footnotesByPage <- secFootnotes
+        // (Blocks kept from the last pass, from the start of the document and from its end.)
+        let count = record.PassBlocks.Length
+        if keptRun then
+            keptPrefix <- keptPrefix + record.PassKeptPrefix
+            if record.PassKeptPrefix < count then keptRun <- false
+        if record.PassKeptPrefix >= count then keptSuffix <- keptSuffix + count
+        else keptSuffix <- record.PassKeptSuffix
         for start in 0 .. record.PassBlocks.Length - 1 do
             blockStarts.Add (results.Count + record.PassStarts.[start])
         if record.PassHasEndnotes then hasEndnoteRefs <- true
@@ -5612,7 +5649,9 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
     noteLayouts.AddRange endnotes
     match memo with
     | Some memo ->
-        memo.MemoSlices <- Some { SliceBlocks = List.toArray doc.Blocks; SliceStarts = blockStarts.ToArray(); SliceLayouts = bodyLayouts; SliceNotes = resizeArrayToList noteLayouts }
+        memo.MemoSlices <-
+            Some { SliceBlocks = List.toArray doc.Blocks; SliceStarts = blockStarts.ToArray(); SliceLayouts = bodyLayouts; SliceNotes = resizeArrayToList noteLayouts
+                   SliceGeneration = 0; SliceBase = 0; SliceKeptPrefix = keptPrefix; SliceKeptSuffix = (if keptRun then 0 else keptSuffix) }
     | None -> ()
     let pages =
         match endnotes with
@@ -5651,7 +5690,10 @@ let private layoutDocumentPagesWithMemo (memo: ParagraphLayoutMemo option) (sett
                 let slot name = match memo with Some _ -> name | None -> ""
                 let keepSlices (record: PassRecord) notes =
                     match memo with
-                    | Some memo -> memo.MemoSlices <- Some { SliceBlocks = record.PassBlocks; SliceStarts = record.PassStarts; SliceLayouts = record.PassResults; SliceNotes = notes }
+                    | Some memo ->
+                        memo.MemoSlices <-
+                            Some { SliceBlocks = record.PassBlocks; SliceStarts = record.PassStarts; SliceLayouts = record.PassResults; SliceNotes = notes
+                                   SliceGeneration = 0; SliceBase = 0; SliceKeptPrefix = record.PassKeptPrefix; SliceKeptSuffix = record.PassKeptSuffix }
                     | None -> ()
                 let firstPass, placedAfterFirst, firstRecord, firstNotes =
                     layoutDocumentPassKept (slot "d1") memo settings measureText measureRange doc Map.empty [] []
@@ -5801,7 +5843,9 @@ let layoutDocumentPagesIncremental (state: IncrementalLayoutState) (settings: La
         memo.MemoSlices <- None
         let layouts, pages = layoutDocumentPagesWithMemo (Some memo) settings measureText measureRange doc
         state.MeasuredBlockCount <- state.MeasuredBlockCount + memo.LineBreakCount
-        state.LastSlices <- memo.MemoSlices
+        // (Numbered, with the number of the pass before: what was kept was kept from that one.)
+        let before = match state.LastSlices with Some slices -> slices.SliceGeneration | None -> 0
+        state.LastSlices <- memo.MemoSlices |> Option.map (fun slices -> { slices with SliceGeneration = nextSliceGeneration (); SliceBase = before })
         // Drop entries of paragraphs that no longer exist once they pile up. (A pass
         // that kept layouts of the last one did not visit the paragraphs they belong
         // to: which entries are stale is known after a pass over the whole document.)

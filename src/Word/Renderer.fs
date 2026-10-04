@@ -47,6 +47,9 @@ type PaintFrame = {
     /// highlight, caret, the frame of the caret's content control, the hover
     /// outline. Painted after the static overlay.
     OverlayCommands: PaintCommand list
+    /// The band of the document the overlay's selection highlight was made
+    /// for (None: the whole document).
+    OverlayBand: (float * float) option
     CanvasWidth: float
     CanvasHeight: float
     FontFamily: string
@@ -1000,21 +1003,47 @@ let private renderPartialFrame ctx doc frame band =
     ctx.Ctx.restore()
     ctx.Ctx.fillStyle <- U3.Case1 "#000000"
 
-/// The overlay that follows the selection and the pointer.
-let private selectionOverlay (ctx: RenderContext) (settings: LayoutSettings) (doc: Document) (layouts: BlockLayout list) (tryFindLayout: (string -> BlockLayout option) option) hoveredImage =
-    match tryFindLayout with
-    | Some tryFind ->
-        List.concat [
-            selectionCommandsWithRangeLookup settings (measureRangeWithContext ctx) doc tryFind
-            markupMarkerCommands settings doc layouts
-            hoverCommandsLookup settings tryFind hoveredImage
-        ]
-    | None ->
-        List.concat [
-            selectionCommandsWithRange settings (measureRangeWithContext ctx) doc layouts
-            markupMarkerCommands settings doc layouts
-            hoverCommands settings layouts hoveredImage
-        ]
+/// The slices of the layout the context holds, when they are the layouts given.
+let private slicesFor (ctx: RenderContext) (layouts: BlockLayout list) =
+    match ctx.LayoutState.LastSlices, ctx.LayoutState.LastLayouts with
+    | Some slices, Some known when obj.ReferenceEquals(known, layouts) -> Some slices
+    | _ -> None
+
+/// The band of the document a selection highlight is made for through a
+/// viewport: what is visible and a screen above and below it.
+let private overlayBandOf (ctx: RenderContext) : (float * float) option =
+    match ctx.Viewport with
+    | Some vp ->
+        let top = (vp.ScrollTop - vp.OriginY) / vp.Scale
+        let height = vp.Height / vp.Scale
+        Some (top - height, top + 2.0 * height)
+    | None -> None
+
+/// The overlay that follows the selection and the pointer, and the band of
+/// the document it was made for (None: all of it). A block's layout is found
+/// by the block's place when the layout pass handed its layouts over block
+/// by block; a selection over several blocks is highlighted in the band only.
+let private selectionOverlay (ctx: RenderContext) (settings: LayoutSettings) (doc: Document) (layouts: BlockLayout list) (tryFindLayout: (string -> BlockLayout option) option) hoveredImage : PaintCommand list * (float * float) option =
+    let slices = slicesFor ctx layouts
+    let tryFind =
+        match slices, tryFindLayout with
+        | Some slices, _ -> Some (sliceLayoutLookup doc slices)
+        | None, known -> known
+    let banded =
+        match slices, overlayBandOf ctx with
+        | Some slices, Some (top, bottom) ->
+            selectionCommandsInBand settings (measureRangeWithContext ctx) doc slices top bottom |> Option.map (fun commands -> commands, (top, bottom))
+        | _ -> None
+    let selection, band =
+        match banded, tryFind with
+        | Some (commands, band), _ -> commands, Some band
+        | None, Some tryFind -> selectionCommandsWithRangeLookup settings (measureRangeWithContext ctx) doc tryFind, None
+        | None, None -> selectionCommandsWithRange settings (measureRangeWithContext ctx) doc layouts, None
+    let hover =
+        match tryFind with
+        | Some tryFind -> hoverCommandsLookup settings tryFind hoveredImage
+        | None -> hoverCommands settings layouts hoveredImage
+    List.concat [ selection; markupMarkerCommands settings doc layouts; hover ], band
 
 let private buildFrame (ctx: RenderContext) (doc: Document) hoveredImage =
     ctx.FrameBuilds <- ctx.FrameBuilds + 1
@@ -1034,13 +1063,15 @@ let private buildFrame (ctx: RenderContext) (doc: Document) hoveredImage =
                 // The whole document's commands at once, as one chunk.
                 let _, commands, _ = collectDocumentCommandsWithLayoutsAndPages settings ctx.FontFamily (measureWithContext ctx) (measureRangeWithContext ctx) doc layouts pages
                 [| chunkOfCommands (List.toArray commands) |])
+    let overlay, overlayBand = selectionOverlay ctx settings doc layouts None hoveredImage
     {
         Document = doc
         Layouts = layouts
         Pages = pageFramesForLayouts settings doc layouts pages
         Body = body
         StaticOverlay = commentAnchorCommands ctx doc layouts
-        OverlayCommands = selectionOverlay ctx settings doc layouts None hoveredImage
+        OverlayCommands = overlay
+        OverlayBand = overlayBand
         CanvasWidth = canvasWidth ctx
         CanvasHeight = canvasHeight ctx
         FontFamily = ctx.FontFamily
@@ -1086,8 +1117,8 @@ let private frameFor (ctx: RenderContext) (doc: Document) hoveredImage =
         else
             // The layout state follows the document on display (hit tests, the caret rectangle).
             layoutDocumentWithPages ctx doc |> ignore
-            let overlay = selectionOverlay ctx (layoutSettings ctx doc) doc previous.Layouts (Some (frameLayoutLookup previous)) hoveredImage
-            { previous with Document = doc; Hovered = hoveredImage; OverlayCommands = overlay }
+            let overlay, overlayBand = selectionOverlay ctx (layoutSettings ctx doc) doc previous.Layouts (Some (fun id -> frameLayoutLookup previous id)) hoveredImage
+            { previous with Document = doc; Hovered = hoveredImage; OverlayCommands = overlay; OverlayBand = overlayBand }
     | _ -> buildFrame ctx doc hoveredImage
 
 // ---- viewport ---------------------------------------------------------------
@@ -1251,6 +1282,18 @@ let private renderThroughViewport (ctx: RenderContext) (doc: Document) hoveredIm
     // Scrolling and zooming show the same document: its commands are reused.
     let frame =
         let frame = frameFor ctx doc hoveredImage
+        // A selection highlight made for a band of the document: made again
+        // for the band in view once the view leaves it.
+        let frame =
+            match frame.OverlayBand with
+            | Some (top, bottom) ->
+                let viewTop = (vp.ScrollTop - vp.OriginY) / vp.Scale
+                let viewBottom = viewTop + vp.Height / vp.Scale
+                if viewTop >= top && viewBottom <= bottom then frame
+                else
+                    let overlay, overlayBand = selectionOverlay ctx (layoutSettings ctx doc) doc frame.Layouts None hoveredImage
+                    { frame with OverlayCommands = overlay; OverlayBand = overlayBand }
+            | None -> frame
         if frame.Viewport = Some vp && not resized then frame
         else { frame with Viewport = Some vp; CanvasWidth = canvasWidth ctx; CanvasHeight = canvasHeight ctx }
     let visible = visibleBand vp

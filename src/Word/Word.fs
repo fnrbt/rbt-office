@@ -55,7 +55,11 @@ module API =
     /// content seen before (undo, redo) gets its number back, anything else
     /// a new one.
     let private observeRevision (editor: Editor) (doc: Doc.Document) =
-        if not (Inp.sameContent doc editor.RevisionDocument) then
+        // (By identity, in constant time: a caret move keeps every part of the
+        // document but the selection, and undo / redo bring back the very
+        // documents that were left. Comparing contents walked the blocks of
+        // up to 400 remembered states at every keystroke.)
+        if not (Inp.sameContentObjects doc editor.RevisionDocument) then
             // What is being left can be come back to.
             editor.KnownRevisions.Insert(0, (editor.RevisionDocument, editor.Revision))
             if editor.KnownRevisions.Count > 400 then editor.KnownRevisions.RemoveAt (editor.KnownRevisions.Count - 1)
@@ -63,7 +67,7 @@ module API =
             let mutable i = 0
             while known < 0 && i < editor.KnownRevisions.Count do
                 let state, revision = editor.KnownRevisions.[i]
-                if Inp.sameContent state doc then known <- revision
+                if Inp.sameContentObjects state doc then known <- revision
                 i <- i + 1
             if known >= 0 then editor.Revision <- known
             else

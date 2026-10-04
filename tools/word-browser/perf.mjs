@@ -149,6 +149,22 @@ try {
             for (let i = 1; i <= pages && i < frames.length; i++) { const t = performance.now(); viewer.renderPage(target, i, 1); times.push(performance.now() - t); }
             return { read, laidOut, first, later: stats(times), pages: frames.length, firstStats, lastStats: viewer.getRenderStats ? viewer.getRenderStats() : null };
         },
+        // Everything selected: the frame after it, scroll frames with it, then a caret placed again.
+        selectAll(top) {
+            const before = Word.getSelection(editor);
+            let t0 = performance.now(); Word.selectAll(editor); const select = performance.now() - t0;
+            const times = [];
+            for (let i = 0; i < 30; i++) { const t = performance.now(); Word.setViewport(editor, { scale: 1, devicePixelRatio: 1, scrollTop: top + i * 400, scrollLeft: 0, width: 1000, height: 800 }); times.push(performance.now() - t); }
+            t0 = performance.now(); Word.setSelection(editor, before.FocusBlockId, before.FocusOffset, before.FocusBlockId, before.FocusOffset); const collapse = performance.now() - t0;
+            Word.setViewport(editor, { scale: 1, devicePixelRatio: 1, scrollTop: top, scrollLeft: 0, width: 1000, height: 800 });
+            return { select, scroll: stats(times), collapse };
+        },
+        // What the host reads after every change, and vertical caret moves.
+        queries(count) {
+            const context = [], format = [];
+            for (let i = 0; i < count; i++) { let t = performance.now(); Word.getCaretContext(editor); context.push(performance.now() - t); t = performance.now(); Word.getSelectionFormat(editor); format.push(performance.now() - t); }
+            return { context: stats(context), format: stats(format) };
+        },
         text() { return Word.getText(editor).length; },
         renderStats() { return Word.getRenderStats ? Word.getRenderStats(editor) : null; },
     };
@@ -297,6 +313,12 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
         console.log(`  Backspace (merging the paragraphs again):  ${line(split.times[1])}; the last one laid out ${split.laidOut} and collected ${split.collected} of ${split.blocks} blocks`);
         const pasted = await tab.evaluate(() => window.perf.pastes(15, 'a short string '));
         console.log(`  a short string inserted (15 characters):  ${line(pasted)}`);
+        const vertical = await tab.evaluate(() => window.perf.pressed(['ArrowDown', 'ArrowUp'], 20));
+        console.log(`  ArrowDown:  ${line(vertical.times[0])}; ArrowUp: ${line(vertical.times[1])}`);
+        const asked = await tab.evaluate(() => window.perf.queries(40));
+        console.log(`  getCaretContext:  ${line(asked.context)}; getSelectionFormat: ${line(asked.format)}`);
+        const all = await tab.evaluate((top) => window.perf.selectAll(top), loaded.top);
+        console.log(`  select all:  ${ms(all.select)}; a scroll frame (400 px) with everything selected: ${line(all.scroll)}; the caret placed again ${ms(all.collapse)}`);
         const viewed = await tab.evaluate(() => window.perf.viewer(40));
         console.log(`  the viewer: package read ${(viewed.read / 1000).toFixed(2)} s, load and page frames ${(viewed.laidOut / 1000).toFixed(2)} s (${viewed.pages} pages), the first renderPage ${ms(viewed.first)}, the next 40: ${line(viewed.later)}`
             + (viewed.firstStats ? `; commands collected for the first page: ${viewed.firstStats.CollectedOnPaint} paragraphs of ${viewed.firstStats.Blocks} blocks, after 41 pages ${viewed.lastStats.CollectedOnPaint}` : ''));
