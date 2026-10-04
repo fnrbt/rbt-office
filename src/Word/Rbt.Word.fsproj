@@ -19,6 +19,7 @@
     <Compile Include="Clipboard.fs" />
     <Compile Include="Docx.fs" />
     <Compile Include="Renderer.fs" />
+    <Compile Include="WordViewer.fs" />
     <Compile Include="Input.fs" />
     <Compile Include="Word.fs" />
     <Compile Include="WordVba.fs" />
