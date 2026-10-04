@@ -1107,21 +1107,16 @@ let textBoxDoc =
     { Doc.empty with
         Blocks =
             [ Doc.TextBox
-                { Id = "tb1"
-                  Content = [ para "tbp1" (ofString "box") ]
-                  X = Some 10.0
-                  Y = Some 20.0
-                  PositionHRelativeFrom = None
-                  PositionVRelativeFrom = None
-                  Width = 120.0
-                  Height = 60.0
-                  FillColor = Some "#ffffff"
-                  BorderColor = Some "#111111"
-                  BorderWidth = Some 1.0
-                  RelativeHeight = None
-                  Geometry = Doc.GeoRect
-                  Gradient = None
-                  Rotation = 0.0 } ]
+                { Doc.defaultTextBox with
+                    Id = "tb1"
+                    Content = [ para "tbp1" (ofString "box") ]
+                    X = Some 10.0
+                    Y = Some 20.0
+                    Width = 120.0
+                    Height = 60.0
+                    FillColor = Some "#ffffff"
+                    BorderColor = Some "#111111"
+                    BorderWidth = Some 1.0 } ]
         Selection = Some { Anchor = pos "tb1" 0; Focus = pos "tb1" 0 } }
 // removed: tested deleted cache/perf machinery
 

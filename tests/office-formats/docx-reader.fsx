@@ -400,6 +400,23 @@ ok "final-section-references-on-page-setup"
    (finalSection = Some ([ "default", "rId13" ], [ "first", "rId14" ], Some 3))
    (sprintf "%A" finalSection)
 
+// ----- shapes: one per AlternateContent, anchored, with wrap / line / position ---
+let shapesDoc =
+    docxWithParts "<w:p><w:r><w:t>one</w:t></w:r></w:p><w:p><w:r><w:t>two</w:t></w:r><w:r><mc:AlternateContent><mc:Choice Requires=\"wps\" xmlns:wps=\"http://schemas.microsoft.com/office/word/2010/wordprocessingShape\"><w:drawing><wp:anchor distT=\"0\" distB=\"0\" distL=\"114300\" distR=\"114300\" simplePos=\"0\" relativeHeight=\"7\" behindDoc=\"1\" locked=\"0\" layoutInCell=\"1\" allowOverlap=\"1\"><wp:simplePos x=\"0\" y=\"0\"/><wp:positionH relativeFrom=\"page\"><wp:posOffset>952500</wp:posOffset></wp:positionH><wp:positionV relativeFrom=\"margin\"><wp:align>top</wp:align></wp:positionV><wp:extent cx=\"1905000\" cy=\"952500\"/><wp:wrapSquare wrapText=\"bothSides\"/><wp:docPr id=\"3\" name=\"Oval 3\"/><a:graphic><a:graphicData uri=\"http://schemas.microsoft.com/office/word/2010/wordprocessingShape\"><wps:wsp><wps:cNvSpPr/><wps:spPr><a:xfrm rot=\"1800000\"><a:off x=\"0\" y=\"0\"/><a:ext cx=\"1905000\" cy=\"952500\"/></a:xfrm><a:prstGeom prst=\"ellipse\"><a:avLst/></a:prstGeom><a:noFill/><a:ln w=\"19050\"><a:solidFill><a:srgbClr val=\"FF0000\"/></a:solidFill><a:prstDash val=\"sysDash\"/></a:ln></wps:spPr><wps:txbx><w:txbxContent><w:p><w:r><w:t>inside</w:t></w:r></w:p></w:txbxContent></wps:txbx><wps:bodyPr/></wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></mc:Choice><mc:Fallback><w:pict><v:shape xmlns:v=\"urn:schemas-microsoft-com:vml\" id=\"s1\" type=\"#_x0000_t202\" style=\"position:absolute;width:150pt;height:75pt\"><v:textbox><w:txbxContent><w:p><w:r><w:t>inside</w:t></w:r></w:p></w:txbxContent></v:textbox></v:shape></w:pict></mc:Fallback></mc:AlternateContent></w:r></w:p><w:p><w:r><w:t>three</w:t></w:r></w:p>" [] []
+    |> DocxReader.loadBytesNative |> Option.get
+ok "shape-read-once-not-also-from-fallback" (shapesDoc.Shapes.Length = 1) (sprintf "%d shapes" shapesDoc.Shapes.Length)
+let shapeSummary =
+    shapesDoc.Shapes
+    |> List.map (fun shape ->
+        shape.AnchorBlock, shape.Preset, shape.Wrap, shape.BehindDoc, shape.RelativeHeight, shape.NoFill, shape.NoLine, shape.LineDash,
+        shape.BorderWidth |> Option.map (fun width -> Math.Round(width, 2)), shape.PositionHRelativeFrom, shape.PositionVAlign, shape.Rotation, shape.Name)
+ok "shape-anchor-wrap-line-position"
+   (shapeSummary = [ Some 1, Some "ellipse", Some "square", Some true, Some "7", true, false, Some "sysDash", Some 2.0, Some "page", Some "top", 30.0, Some "Oval 3" ])
+   (sprintf "%A" shapeSummary)
+ok "shape-text-is-not-body-text"
+   (contentTexts shapesDoc.Content = [ "one"; "two"; "three" ])
+   (sprintf "%A" (contentTexts shapesDoc.Content))
+
 printfn ""
 printfn "OfficeFormat DocxReader tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

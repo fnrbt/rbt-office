@@ -25,6 +25,15 @@ const li = (text, numId, ilvl = 0) => p(text, `<w:numPr><w:ilvl w:val="${ilvl}"/
 const cell = (content, tcPr = '') => `<w:tc><w:tcPr><w:tcW w:w="2400" w:type="dxa"/>${tcPr}</w:tcPr>${content}</w:tc>`;
 const drawing = (rid, cx, cy) => `<w:r><w:drawing><wp:inline><wp:extent cx="${cx}" cy="${cy}"/><wp:docPr id="1" name="pic"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="1" name="pic"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${rid}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"/></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>`;
 
+const WPS = 'http://schemas.microsoft.com/office/word/2010/wordprocessingShape';
+// A wps shape in mc:AlternateContent with the VML fallback Word writes next to it.
+const shapeAnchor = (id, name, o, spPr, text) =>
+    `<w:r><mc:AlternateContent><mc:Choice Requires="wps" xmlns:wps="${WPS}"><w:drawing><wp:anchor distT="${o.dist}" distB="${o.dist}" distL="${o.dist}" distR="${o.dist}" simplePos="0" relativeHeight="${o.z}" behindDoc="${o.behind}" locked="0" layoutInCell="1" allowOverlap="1">` +
+    `<wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="${o.relH}"><wp:posOffset>${o.x}</wp:posOffset></wp:positionH><wp:positionV relativeFrom="${o.relV}"><wp:posOffset>${o.y}</wp:posOffset></wp:positionV>` +
+    `<wp:extent cx="${o.cx}" cy="${o.cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/>${o.wrap}<wp:docPr id="${id}" name="${name}"/><wp:cNvGraphicFramePr/>` +
+    `<a:graphic><a:graphicData uri="${WPS}"><wps:wsp><wps:cNvSpPr/><wps:spPr>${spPr}</wps:spPr>${text ? `<wps:txbx><w:txbxContent>${text}</w:txbxContent></wps:txbx>` : ''}<wps:bodyPr/></wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></mc:Choice>` +
+    `<mc:Fallback><w:pict><v:shape xmlns:v="urn:schemas-microsoft-com:vml" id="vml${id}" type="#_x0000_t202" style="position:absolute;margin-left:10pt;margin-top:10pt;width:50pt;height:30pt"><v:textbox><w:txbxContent>${text || '<w:p/>'}</w:txbxContent></v:textbox></v:shape></w:pict></mc:Fallback></mc:AlternateContent></w:r>`;
+
 const docs = [
     {
         name: 'synthetic/units',
@@ -254,6 +263,59 @@ const docs = [
             { read: 'pkg.PageSetup.HeaderReferences.0.RelationshipId', equals: 'rId13' }, { read: 'pkg.PageSetup.FooterReferences', equals: null }, { read: 'pkg.PageSetup.PageNumberStart', equals: 3 },
             { read: 'pkg.Paragraphs.1.HeaderReferences.0.RelationshipId', equals: 'rId11' }, { read: 'pkg.Paragraphs.2.HeaderReferences', equals: null },
             { read: 'pkg.Paragraphs.4.HeaderReferences.0.RelationshipId', equals: 'rId12' }, { read: 'pkg.Paragraphs.4.SectionPageNumberStart', equals: 7 },
+        ],
+    },
+    {
+        // Shapes are written as DrawingML (wp:anchor / wp:inline + wps:wsp in an
+        // mc:AlternateContent with a VML fallback): geometry, rotation, fills, line and
+        // wrap / position survive, and each shape stays in the paragraph it is anchored in.
+        name: 'synthetic/shapes',
+        body:
+            p('before the shapes') +
+            `<w:p><w:r><w:t>anchor paragraph</w:t></w:r>` +
+            shapeAnchor(1, 'Oval', { relH: 'page', relV: 'page', x: 571500, y: 952500, cx: 1333500, cy: 857250, wrap: '<wp:wrapSquare wrapText="bothSides"/>', behind: 0, z: 5, dist: 114300 },
+                `<a:xfrm rot="900000"><a:off x="0" y="0"/><a:ext cx="1333500" cy="857250"/></a:xfrm><a:prstGeom prst="ellipse"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="4472C4"/></a:solidFill><a:ln w="25400"><a:solidFill><a:srgbClr val="2F5496"/></a:solidFill><a:prstDash val="dash"/></a:ln>`,
+                p('in the oval', '', '<w:b/>')) +
+            shapeAnchor(2, 'Gradient box', { relH: 'margin', relV: 'paragraph', x: 1905000, y: 0, cx: 952500, cy: 476250, wrap: '<wp:wrapNone/>', behind: 1, z: 3, dist: 0 },
+                `<a:xfrm><a:off x="0" y="0"/><a:ext cx="952500" cy="476250"/></a:xfrm><a:prstGeom prst="roundRect"><a:avLst/></a:prstGeom><a:gradFill><a:gsLst><a:gs pos="0"><a:srgbClr val="FF0000"/></a:gs><a:gs pos="100000"><a:srgbClr val="0000FF"/></a:gs></a:gsLst><a:lin ang="5400000" scaled="0"/></a:gradFill><a:ln w="9525"><a:noFill/></a:ln>`, '') +
+            `</w:p>` + p('between') +
+            `<w:p><w:r><w:t>second anchor</w:t></w:r>` +
+            shapeAnchor(3, 'Triangle', { relH: 'column', relV: 'paragraph', x: 95250, y: 190500, cx: 762000, cy: 762000, wrap: '<wp:wrapTopAndBottom/>', behind: 0, z: 9, dist: 0 },
+                `<a:xfrm><a:off x="0" y="0"/><a:ext cx="762000" cy="762000"/></a:xfrm><a:custGeom><a:avLst/><a:gdLst/><a:ahLst/><a:cxnLst/><a:rect l="0" t="0" r="r" b="b"/><a:pathLst><a:path w="100" h="100"><a:moveTo><a:pt x="50" y="0"/></a:moveTo><a:lnTo><a:pt x="100" y="100"/></a:lnTo><a:lnTo><a:pt x="0" y="100"/></a:lnTo><a:close/></a:path></a:pathLst></a:custGeom><a:noFill/><a:ln w="12700"><a:solidFill><a:srgbClr val="00B050"/></a:solidFill></a:ln>`, '') +
+            `</w:p>` + p('after the shapes'),
+        expect: [
+            { part: 'word/document.xml', has: 'anchor paragraph</w:t></w:r><w:r><mc:AlternateContent[^>]*><mc:Choice Requires="wps"><w:drawing><wp:anchor ' },
+            { part: 'word/document.xml', has: '<wp:positionH relativeFrom="page"><wp:posOffset>571500</wp:posOffset></wp:positionH><wp:positionV relativeFrom="page"><wp:posOffset>952500</wp:posOffset>' },
+            { part: 'word/document.xml', has: '<wp:extent cx="1333500" cy="857250"/>.*?<wp:wrapSquare wrapText="bothSides"/>' },
+            { part: 'word/document.xml', has: '<a:xfrm rot="900000">.*?<a:prstGeom prst="ellipse">.*?<a:solidFill><a:srgbClr val="4472C4"/></a:solidFill><a:ln w="25400"><a:solidFill><a:srgbClr val="2F5496"/></a:solidFill><a:prstDash val="dash"/></a:ln>' },
+            { part: 'word/document.xml', has: '<wps:txbx><w:txbxContent>.*?<w:b/>.*?in the oval' },
+            { part: 'word/document.xml', has: 'behindDoc="1".*?<a:prstGeom prst="roundRect">.*?<a:gradFill[^>]*><a:gsLst><a:gs pos="0"><a:srgbClr val="FF0000"/></a:gs><a:gs pos="100000"><a:srgbClr val="0000FF"/></a:gs></a:gsLst><a:lin ang="5400000" scaled="0"/></a:gradFill><a:ln w="9525"><a:noFill/>' },
+            { part: 'word/document.xml', has: 'second anchor</w:t></w:r><w:r><mc:AlternateContent.*?<wp:wrapTopAndBottom/>.*?<a:custGeom>.*?<a:path w="100" h="100"><a:moveTo><a:pt x="50" y="0"/></a:moveTo><a:lnTo><a:pt x="100" y="100"/></a:lnTo><a:lnTo><a:pt x="0" y="100"/></a:lnTo><a:close/></a:path>.*?<a:noFill/><a:ln w="12700">' },
+            { part: 'word/document.xml', has: '<mc:Fallback><w:pict><v:shape ' }, { part: 'word/document.xml', has: 'relativeHeight="9"' },
+            // Three shapes in, three shapes out: the VML fallback is not read as a second copy.
+            { read: 'pkg.Paragraphs.length', equals: 8 }, { read: 'pkg.Paragraphs.5.AnchorBlock', equals: 1 }, { read: 'pkg.Paragraphs.7.AnchorBlock', equals: 3 },
+            { read: 'pkg.Paragraphs.5.Rotation', equals: 15 }, { read: 'pkg.Paragraphs.6.Gradient.Angle', equals: 90 }, { read: 'pkg.Paragraphs.7.NoFill', equals: true },
+        ],
+    },
+    {
+        // A floating picture: crop, wrap mode and side, alignment-based position,
+        // relative-from, behind-text and z-order survive.
+        name: 'synthetic/floating-image',
+        body:
+            `<w:p><w:r><w:t>text</w:t></w:r><w:r><w:drawing><wp:anchor distT="45720" distB="91440" distL="114300" distR="228600" simplePos="0" relativeHeight="251659264" behindDoc="1" locked="0" layoutInCell="1" allowOverlap="0">` +
+            `<wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="margin"><wp:align>right</wp:align></wp:positionH><wp:positionV relativeFrom="page"><wp:posOffset>914400</wp:posOffset></wp:positionV>` +
+            `<wp:extent cx="1371600" cy="685800"/><wp:wrapTight wrapText="left"><wp:wrapPolygon edited="0"><wp:start x="0" y="0"/><wp:lineTo x="0" y="21600"/><wp:lineTo x="21600" y="21600"/><wp:lineTo x="21600" y="0"/><wp:lineTo x="0" y="0"/></wp:wrapPolygon></wp:wrapTight>` +
+            `<wp:docPr id="7" name="Picture 7" descr="alt text" title="the title"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="7" name="Picture 7"/><pic:cNvPicPr/></pic:nvPicPr>` +
+            `<pic:blipFill><a:blip r:embed="rId1"/><a:srcRect l="10000" t="5000" r="20000" b="15000"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="1371600" cy="685800"/></a:xfrm><a:prstGeom prst="rect"/></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r></w:p>` +
+            `<w:p>${drawing('rId1', 457200, 457200)}<w:r><w:t>inline picture</w:t></w:r></w:p>`,
+        rels: `<Relationship Id="rId1" Type="${REL}/image" Target="media/body.png"/>`,
+        extra: { 'word/media/body.png': PNG },
+        types: '<Default Extension="png" ContentType="image/png"/>',
+        expect: [
+            { part: 'word/document.xml', has: '<wp:anchor [^>]*distT="45720" distB="91440" distL="114300" distR="228600"[^>]*relativeHeight="251659264" behindDoc="1"[^>]*allowOverlap="0"' },
+            { part: 'word/document.xml', has: '<wp:positionH relativeFrom="margin"><wp:align>right</wp:align></wp:positionH><wp:positionV relativeFrom="page"><wp:posOffset>914400</wp:posOffset>' },
+            { part: 'word/document.xml', has: '<wp:wrapTight wrapText="left">' }, { part: 'word/document.xml', has: '<a:srcRect l="10000" t="5000" r="20000" b="15000"/>' },
+            { part: 'word/document.xml', has: 'descr="alt text" title="the title"' }, { part: 'word/document.xml', has: '<wp:inline[^>]*><wp:extent cx="457200" cy="457200"/>' },
         ],
     },
 ];

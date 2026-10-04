@@ -300,6 +300,25 @@ module Processors =
                 "CustomH" ==> (shape.CustomH |> Option.defaultValue 0.0)
                 "Gradient" ==> gradient
                 "Rotation" ==> shape.Rotation
+                "AnchorBlock" ==> shape.AnchorBlock
+                "Inline" ==> shape.Inline
+                "Wrap" ==> shape.Wrap
+                "PositionHRelativeFrom" ==> shape.PositionHRelativeFrom
+                "PositionVRelativeFrom" ==> shape.PositionVRelativeFrom
+                "PositionHAlign" ==> shape.PositionHAlign
+                "PositionVAlign" ==> shape.PositionVAlign
+                "BehindDoc" ==> shape.BehindDoc
+                "AllowOverlap" ==> shape.AllowOverlap
+                "LayoutInCell" ==> shape.LayoutInCell
+                "RelativeHeight" ==> shape.RelativeHeight
+                "DistanceTop" ==> shape.DistanceTop
+                "DistanceBottom" ==> shape.DistanceBottom
+                "DistanceLeft" ==> shape.DistanceLeft
+                "DistanceRight" ==> shape.DistanceRight
+                "NoFill" ==> shape.NoFill
+                "NoLine" ==> shape.NoLine
+                "BorderDash" ==> shape.LineDash
+                "Name" ==> shape.Name
                 "Paragraphs" ==> paragraphs
             ])
         |> List.toArray

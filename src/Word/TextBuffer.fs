@@ -187,6 +187,12 @@ type ImageRun = {
     CropTop: string option
     CropRight: string option
     CropBottom: string option
+    /// wp:align of wp:positionH / wp:positionV (left, center, right, top, ...): the
+    /// image is placed by alignment instead of PositionX / PositionY.
+    PositionHAlign: string option
+    PositionVAlign: string option
+    /// Which sides text wraps on (bothSides, left, right, largest).
+    WrapText: string option
 }
 
 /// Text run with consistent styling
@@ -966,6 +972,9 @@ let insertImageWithMetadata pos src linked width height alt name title floating 
         CropTop = cropTop
         CropRight = cropRight
         CropBottom = cropBottom
+        PositionHAlign = None
+        PositionVAlign = None
+        WrapText = None
     }
 
     // Insert image run and shift subsequent runs

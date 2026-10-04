@@ -25,7 +25,13 @@ const pick = (o, keys) => { const r = {}; for (const k of keys) r[k] = norm(o[k]
 const RUN_KEYS = ['Bold', 'Italic', 'Underline', 'UnderlineStyle', 'UnderlineColor', 'Strike', 'DoubleStrike', 'Hidden', 'AllCaps', 'SmallCaps',
     'FontSize', 'CharacterSpacing', 'FontFamily', 'Color', 'Highlight', 'VertAlign', 'Position', 'EmphasisMark', 'Hyperlink',
     'RevisionType', 'RevisionAuthor', 'FieldCode', 'NoteId', 'NoteType', 'CommentId'];
-const IMAGE_KEYS = ['ImageWidth', 'ImageHeight', 'ImageFloating', 'ImageWrap', 'ImagePositionX', 'ImagePositionY', 'ImageDistanceLeft', 'ImageDistanceTop', 'ImageAlt'];
+const IMAGE_KEYS = ['ImageWidth', 'ImageHeight', 'ImageFloating', 'ImageWrap', 'ImageWrapText', 'ImagePositionX', 'ImagePositionY',
+    'ImagePositionHRelativeFrom', 'ImagePositionVRelativeFrom', 'ImagePositionHAlign', 'ImagePositionVAlign', 'ImageBehindDoc', 'ImageRelativeHeight',
+    'ImageDistanceLeft', 'ImageDistanceTop', 'ImageDistanceRight', 'ImageDistanceBottom', 'ImageCropLeft', 'ImageCropTop', 'ImageCropRight', 'ImageCropBottom',
+    'ImageAllowOverlap', 'ImageLayoutInCell', 'ImageAlt', 'ImageTitle'];
+const SHAPE_KEYS = ['Width', 'Height', 'X', 'Y', 'Geometry', 'CustomPath', 'CustomW', 'CustomH', 'Gradient', 'Rotation', 'FillColor', 'BorderColor', 'BorderWidth',
+    'NoFill', 'NoLine', 'BorderDash', 'Inline', 'Wrap', 'PositionHRelativeFrom', 'PositionVRelativeFrom', 'PositionHAlign', 'PositionVAlign', 'BehindDoc',
+    'RelativeHeight', 'AnchorBlock', 'DistanceTop', 'DistanceBottom', 'DistanceLeft', 'DistanceRight'];
 const PARA_KEYS = ['Type', 'Style', 'Alignment', 'ListStyle', 'ListLevel', 'ListId', 'ListNumberFormat', 'ListLevelText', 'ListStart',
     'IndentLeft', 'IndentRight', 'FirstLineIndent', 'SpacingBefore', 'SpacingAfter', 'LineSpacing', 'LineSpacingRule',
     'TabStops', 'Rtl', 'BackgroundColor', 'ParagraphBorders', 'PageBreakBefore', 'PageBreakAfter', 'SectionBreak',
@@ -43,8 +49,15 @@ const SETUP_KEYS = ['PageWidth', 'PageHeight', 'MarginLeft', 'MarginRight', 'Mar
 function runSummary(run) {
     if (run.IsImage) {
         const s = { image: (run.ImageSrc || '').length, ...pick(run, IMAGE_KEYS) };
-        // No offset (the image is placed by wp:align, which the model does not hold) is written as offset 0.
-        if (s.ImageFloating) { s.ImagePositionX ??= 0; s.ImagePositionY ??= 0; }
+        // What an anchor without the attribute means, which the writer spells out.
+        if (s.ImageFloating) {
+            if (!s.ImagePositionHAlign) s.ImagePositionX ??= 0;
+            if (!s.ImagePositionVAlign) s.ImagePositionY ??= 0;
+            s.ImageWrap ??= 'square';
+            if (s.ImageWrap === 'square' || s.ImageWrap === 'tight' || s.ImageWrap === 'through') s.ImageWrapText ??= 'bothSides';
+            s.ImagePositionHRelativeFrom ??= 'column'; s.ImagePositionVRelativeFrom ??= 'paragraph'; s.ImageRelativeHeight ??= '0';
+            s.ImageDistanceLeft ??= 12; s.ImageDistanceRight ??= 12; s.ImageAllowOverlap ??= true; s.ImageLayoutInCell ??= true;
+        }
         return s;
     }
     const s = { text: run.Text ?? '', ...pick(run, RUN_KEYS) };
@@ -86,7 +99,18 @@ function summarise(items, prefix, out) {
                 });
             });
         } else if (type === 'TextBox') {
-            out.push({ path, kind: 'textbox', props: pick(item, ['Width', 'Height', 'X', 'Y']) });
+            const props = pick(item, SHAPE_KEYS);
+            // A shape that says nothing about these is written with what it then means.
+            props.Geometry ??= 'rect'; props.Rotation ??= 0; props.BorderWidth ??= 1;
+            if (!props.NoFill && !props.Gradient) props.FillColor = (props.FillColor ?? '#FFFFFF').toUpperCase();
+            if (!props.NoLine) props.BorderColor = (props.BorderColor ?? '#808080').toUpperCase();
+            if (!props.Inline) {
+                props.Wrap ??= 'none'; props.RelativeHeight ??= '251658240';
+                props.PositionHRelativeFrom ??= 'column'; props.PositionVRelativeFrom ??= 'paragraph';
+                if (!props.PositionHAlign) props.X ??= 0;
+                if (!props.PositionVAlign) props.Y ??= 0;
+            } else { props.X = null; props.Y = null; }
+            out.push({ path, kind: 'textbox', props });
             summarise(item.Paragraphs, path + '.p', out);
         } else {
             const props = pick(item, PARA_KEYS);
@@ -126,7 +150,7 @@ function summarisePackage(pkg) {
     const setup = pick(pkg.PageSetup || {}, SETUP_KEYS);
     const DEFAULTS = { PageWidth: 816, PageHeight: 1056, MarginLeft: 96, MarginRight: 96, MarginTop: 96, MarginBottom: 96, HeaderDistance: 48, FooterDistance: 48, ColumnCount: 1, ColumnSpace: 0 };
     if (setup.PageWidth === null) Object.assign(setup, DEFAULTS);
-    setup.ColumnCount ??= 1; setup.ColumnSpace ??= 0;
+    setup.ColumnCount ??= 1; setup.ColumnSpace ??= 0; setup.HeaderDistance ??= 48; setup.FooterDistance ??= 48;
     out.push({ path: 'pageSetup', kind: 'setup', props: setup });
     return out;
 }

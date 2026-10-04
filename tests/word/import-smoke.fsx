@@ -323,5 +323,26 @@ check "native sections: display page numbers"
     (threeSectionNative.Blocks |> List.map (fun block -> threeSectionPageMap.BlockAnchors |> List.tryFind (fun anchor -> (match block with Paragraph para | Heading (_, para) -> para.Id | _ -> "") = anchor.PageBlockId) |> Option.map (fun anchor -> anchor.PageNumber)))
     [ Some 1; Some 1; Some 7; Some 7; Some 3 ]
 
+// ----- shapes keep their anchor paragraph and their look ----------------------
+let nativeShapeDoc = importPackage ("""<w:p><w:r><w:t>one</w:t></w:r></w:p><w:p><w:r><w:t>two</w:t></w:r><w:r><mc:AlternateContent><mc:Choice Requires="wps" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><w:drawing><wp:anchor distT="0" distB="0" distL="114300" distR="114300" simplePos="0" relativeHeight="7" behindDoc="1" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="page"><wp:posOffset>952500</wp:posOffset></wp:positionH><wp:positionV relativeFrom="margin"><wp:align>top</wp:align></wp:positionV><wp:extent cx="1905000" cy="952500"/><wp:wrapSquare wrapText="bothSides"/><wp:docPr id="3" name="Oval 3"/><a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:wsp><wps:cNvSpPr/><wps:spPr><a:xfrm rot="1800000"><a:off x="0" y="0"/><a:ext cx="1905000" cy="952500"/></a:xfrm><a:prstGeom prst="ellipse"><a:avLst/></a:prstGeom><a:noFill/><a:ln w="19050"><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill><a:prstDash val="sysDash"/></a:ln></wps:spPr><wps:txbx><w:txbxContent><w:p><w:r><w:t>inside</w:t></w:r></w:p></w:txbxContent></wps:txbx><wps:bodyPr/></wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></mc:Choice><mc:Fallback><w:pict><v:shape xmlns:v="urn:schemas-microsoft-com:vml" id="s1" type="#_x0000_t202" style="position:absolute;width:150pt;height:75pt"><v:textbox><w:txbxContent><w:p><w:r><w:t>inside</w:t></w:r></w:p></w:txbxContent></v:textbox></v:shape></w:pict></mc:Fallback></mc:AlternateContent></w:r></w:p><w:p><w:r><w:t>three</w:t></w:r></w:p>""") []
+let nativeShapes = nativeShapeDoc.Blocks |> List.choose (function TextBox textBox -> Some textBox | _ -> None)
+let nativeAnchorText (textBox: TextBoxBlock) =
+    textBox.AnchorBlockId
+    |> Option.bind (fun id -> nativeShapeDoc.Blocks |> List.tryPick (function Paragraph para when para.Id = id -> Some (textOfPara para) | _ -> None))
+check "native shape: one shape, anchored in its paragraph" (nativeShapes |> List.map nativeAnchorText) [ Some "two" ]
+check "native shape: geometry, fill, line, wrap, position"
+    (nativeShapes |> List.map (fun shape -> shape.Geometry, shape.FillColor, shape.BorderColor, shape.BorderDash, shape.Wrap, shape.BehindDoc, shape.RelativeHeight, shape.PositionHRelativeFrom, shape.PositionVAlign, shape.Rotation))
+    [ GeoPreset "ellipse", None, Some "#FF0000", Some "sysDash", Some "square", Some true, Some "7", Some "page", Some "top", 30.0 ]
+
+let nativeFloatingImage =
+    importPackage
+        """<w:p><w:r><w:drawing><wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="9" behindDoc="1" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="margin"><wp:align>right</wp:align></wp:positionH><wp:positionV relativeFrom="page"><wp:posOffset>914400</wp:posOffset></wp:positionV><wp:extent cx="914400" cy="457200"/><wp:wrapTight wrapText="left"/><wp:docPr id="1" name="p"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:blipFill><a:blip r:embed="rId1"/><a:srcRect l="10000" b="5000"/></pic:blipFill><pic:spPr><a:prstGeom prst="rect"/></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r></w:p>"""
+        [ "word/_rels/document.xml.rels", """<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="https://example.com/a.png" TargetMode="External"/></Relationships>""" ]
+check "native floating image: alignment, wrap side, crop, z-order"
+    (paragraphsOfBlocks nativeFloatingImage.Blocks
+     |> List.collect (fun para -> para.Buffer.Runs)
+     |> List.choose (function Rbt.Word.TextBuffer.Image image -> Some (image.Floating, image.PositionHAlign, image.PositionX, image.PositionVRelativeFrom, image.Wrap, image.WrapText, image.BehindDoc, image.RelativeHeight, image.CropLeft, image.CropBottom) | _ -> None))
+    [ true, Some "right", None, Some "page", Some "tight", Some "left", Some true, Some "9", Some "10000", Some "5000" ]
+
 printfn "word import smoke: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

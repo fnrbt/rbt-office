@@ -460,7 +460,11 @@ let private withSourceRunProps (paraProps: DocxReader.ParagraphProperties) (run:
         RevisionAuthor = run.RevisionAuthor
         RevisionDate = run.RevisionDate }
 
-let private editorRunsToBufferWith (decorate: int -> Rbt.Word.TextBuffer.TextStyle -> Rbt.Word.TextBuffer.TextStyle) (images: Map<string, string>) (runs: EP.EditorRun list) =
+let private editorRunsToBufferWithImages (decorate: int -> Rbt.Word.TextBuffer.TextStyle -> Rbt.Word.TextBuffer.TextStyle) (decorateImageRun: int -> Rbt.Word.TextBuffer.ImageRun -> Rbt.Word.TextBuffer.ImageRun) (images: Map<string, string>) (runs: EP.EditorRun list) =
+    let decorateImage index (run: Rbt.Word.TextBuffer.Run) =
+        match run with
+        | Image image -> Image (decorateImageRun index image)
+        | other -> other
     let mutable runIndex = -1
     let mutable offset = 0
     let parts = ResizeArray<string>()
@@ -502,7 +506,10 @@ let private editorRunsToBufferWith (decorate: int -> Rbt.Word.TextBuffer.TextSty
                 CropTop = run.ImageCropTop
                 CropRight = run.ImageCropRight
                 CropBottom = run.ImageCropBottom
-            })
+                PositionHAlign = None
+                PositionVAlign = None
+                WrapText = None
+            } |> decorateImage runIndex)
             offset <- offset + 1
         elif not (String.IsNullOrEmpty run.Text) then
             let style = decorate runIndex (textStyle run)
@@ -515,6 +522,9 @@ let private editorRunsToBufferWith (decorate: int -> Rbt.Word.TextBuffer.TextSty
             offset <- offset + run.Text.Length
 
     { Rope = Rope.ofString (String.Concat parts); Runs = bufferRuns |> Seq.toList }
+
+let private editorRunsToBufferWith decorate (images: Map<string, string>) (runs: EP.EditorRun list) =
+    editorRunsToBufferWithImages decorate (fun _ image -> image) images runs
 
 let private editorRunsToBuffer (images: Map<string, string>) (runs: EP.EditorRun list) =
     editorRunsToBufferWith (fun _ style -> style) images runs
@@ -686,9 +696,17 @@ let private mkPara resolver images styleMap comments notes useDocumentMarkForPur
         if sourceRuns.Length = editorPara.Runs.Length && index < sourceRuns.Length then
             withSourceRunProps para.Properties sourceRuns.[index] style
         else style
+    // What EditorRun does not carry about an image, from the source run.
+    let decorateImage index (image: Rbt.Word.TextBuffer.ImageRun) =
+        if sourceRuns.Length = editorPara.Runs.Length && index < sourceRuns.Length then
+            match sourceRuns.[index].Content with
+            | DocxReader.Image source ->
+                { image with PositionHAlign = source.PositionHAlign; PositionVAlign = source.PositionVAlign; WrapText = source.WrapText }
+            | _ -> image
+        else image
     {
         Id = Guid.NewGuid().ToString("N")
-        Buffer = editorRunsToBufferWith decorate images editorPara.Runs
+        Buffer = editorRunsToBufferWithImages decorate decorateImage images editorPara.Runs
         Metadata = paraMetadata styleMap resolver useDocumentMarkForPureEmpty defaultMissingSpacingToZero para editorPara
     }
 
@@ -993,22 +1011,45 @@ let importDoc (doc: DocxReader.WordDocument) =
                 shape.Gradient
                 |> Option.map (fun g ->
                     { Stops = g.Stops |> List.map (fun s -> { Offset = s.Offset; Color = s.Color }); Angle = g.Angle; Radial = g.Radial })
+            let anchorId =
+                shape.AnchorBlock
+                |> Option.bind (fun index -> List.tryItem index blocks)
+                |> Option.bind (function
+                    | Paragraph para
+                    | Heading (_, para) -> Some para.Id
+                    | Table table -> Some table.Id
+                    | TextBox _ -> None)
             TextBox {
-                Id = sprintf "shape-%d" i
-                Content = content
-                X = shape.Position |> Option.map fst
-                Y = shape.Position |> Option.map snd
-                PositionHRelativeFrom = None
-                PositionVRelativeFrom = None
-                Width = shape.Width |> Option.defaultValue 220.0
-                Height = shape.Height |> Option.defaultValue 72.0
-                FillColor = shape.FillColor |> Option.orElse (Some "#FFFFFF")
-                BorderColor = shape.BorderColor |> Option.orElse (Some "#808080")
-                BorderWidth = shape.BorderWidth |> Option.orElse (Some 1.0)
-                RelativeHeight = None
-                Geometry = geometry
-                Gradient = gradient
-                Rotation = shape.Rotation
+                defaultTextBox with
+                    Id = sprintf "shape-%d" i
+                    Content = content
+                    X = shape.Position |> Option.map fst
+                    Y = shape.Position |> Option.map snd
+                    PositionHRelativeFrom = shape.PositionHRelativeFrom
+                    PositionVRelativeFrom = shape.PositionVRelativeFrom
+                    Width = shape.Width |> Option.defaultValue 220.0
+                    Height = shape.Height |> Option.defaultValue 72.0
+                    FillColor = if shape.NoFill then None else shape.FillColor |> Option.orElse (Some "#FFFFFF")
+                    BorderColor = if shape.NoLine then None else shape.BorderColor |> Option.orElse (Some "#808080")
+                    BorderWidth = shape.BorderWidth |> Option.orElse (Some 1.0)
+                    RelativeHeight = shape.RelativeHeight
+                    Geometry = geometry
+                    Gradient = gradient
+                    Rotation = shape.Rotation
+                    Inline = shape.Inline
+                    Wrap = shape.Wrap
+                    PositionHAlign = shape.PositionHAlign
+                    PositionVAlign = shape.PositionVAlign
+                    BehindDoc = shape.BehindDoc
+                    AllowOverlap = shape.AllowOverlap
+                    LayoutInCell = shape.LayoutInCell
+                    DistanceTop = shape.DistanceTop
+                    DistanceBottom = shape.DistanceBottom
+                    DistanceLeft = shape.DistanceLeft
+                    DistanceRight = shape.DistanceRight
+                    BorderDash = shape.LineDash
+                    Name = shape.Name
+                    AnchorBlockId = anchorId
             })
 
     let blocks = blocks @ shapeBlocks

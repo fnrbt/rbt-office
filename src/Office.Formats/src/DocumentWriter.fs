@@ -707,6 +707,31 @@ let private optionalImageDistance defaultValue (value: obj) =
 let private boolFlag defaultValue (value: obj) =
     if boolOrDefault defaultValue value then "1" else "0"
 
+/// wp:wrapNone / wrapSquare / wrapTight / wrapThrough / wrapTopAndBottom of an anchor.
+/// Tight and through need a wrap polygon; the model has none, so the bounding box is given.
+let private anchorWrapElement (wrap: string option) (wrapText: string option) =
+    let side = wrapText |> Option.defaultValue "bothSides"
+    let polygon =
+        element "wp:wrapPolygon" [("edited", "0")] [
+            selfClosing "wp:start" [("x", "0"); ("y", "0")]
+            selfClosing "wp:lineTo" [("x", "0"); ("y", "21600")]
+            selfClosing "wp:lineTo" [("x", "21600"); ("y", "21600")]
+            selfClosing "wp:lineTo" [("x", "21600"); ("y", "0")]
+            selfClosing "wp:lineTo" [("x", "0"); ("y", "0")]
+        ]
+    match wrap with
+    | Some "none" -> selfClosing "wp:wrapNone" []
+    | Some "topAndBottom" -> selfClosing "wp:wrapTopAndBottom" []
+    | Some "tight" -> element "wp:wrapTight" [("wrapText", side)] [polygon]
+    | Some "through" -> element "wp:wrapThrough" [("wrapText", side)] [polygon]
+    | _ -> selfClosing "wp:wrapSquare" [("wrapText", side)]
+
+/// wp:positionH / wp:positionV: by alignment when the object has one, else by offset.
+let private anchorPositionElement (name: string) (relativeFrom: string) (align: string option) (offset: string) =
+    match align with
+    | Some value when value <> "" -> element name [("relativeFrom", relativeFrom)] [elementWithText "wp:align" [] value]
+    | _ -> element name [("relativeFrom", relativeFrom)] [elementWithText "wp:posOffset" [] offset]
+
 let private generateImageRun (asset: ImageAsset) (runObj: obj) =
     let width = optionalImageSize 96.0 (runObj?ImageWidth)
     let height = optionalImageSize 48.0 (runObj?ImageHeight)
@@ -737,13 +762,7 @@ let private generateImageRun (asset: ImageAsset) (runObj: obj) =
         |> List.choose (fun (name, value) -> value |> Option.map (fun text -> name, text))
     let drawingContainer =
         if boolOrDefault false (runObj?ImageFloating) then
-            let wrap =
-                match optionalString (runObj?ImageWrap) with
-                | Some "none" -> selfClosing "wp:wrapNone" []
-                | Some "topAndBottom" -> selfClosing "wp:wrapTopAndBottom" []
-                | Some "tight" -> selfClosing "wp:wrapTight" [("wrapText", "bothSides")]
-                | Some "through" -> selfClosing "wp:wrapThrough" [("wrapText", "bothSides")]
-                | _ -> selfClosing "wp:wrapSquare" [("wrapText", "bothSides")]
+            let wrap = anchorWrapElement (optionalString (runObj?ImageWrap)) (optionalString (runObj?ImageWrapText))
             fun children ->
                 element "wp:anchor" [
                     ("xmlns:wp", "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing")
@@ -752,8 +771,8 @@ let private generateImageRun (asset: ImageAsset) (runObj: obj) =
                     ("locked", locked); ("layoutInCell", layoutInCell); ("allowOverlap", allowOverlap)
                 ] ([
                     selfClosing "wp:simplePos" [("x", simplePositionX); ("y", simplePositionY)]
-                    element "wp:positionH" [("relativeFrom", positionHRelativeFrom)] [elementWithText "wp:posOffset" [] positionX]
-                    element "wp:positionV" [("relativeFrom", positionVRelativeFrom)] [elementWithText "wp:posOffset" [] positionY]
+                    anchorPositionElement "wp:positionH" positionHRelativeFrom (optionalString (runObj?ImagePositionHAlign)) positionX
+                    anchorPositionElement "wp:positionV" positionVRelativeFrom (optionalString (runObj?ImagePositionVAlign)) positionY
                     selfClosing "wp:extent" [("cx", width); ("cy", height)]
                     wrap
                 ] @ children)
@@ -1384,36 +1403,186 @@ and private generateTable (hyperlinks: Map<string, string>) (images: ImageScope)
         rows
     ]
 
-let private generateTextBoxRun (packageSetup: PageSetupInfo) (hyperlinks: Map<string, string>) (images: ImageScope) (item: obj) : string =
+/// Shape ids must be unique in the document; they are handed out per save.
+let mutable private nextShapeId = 1000
+
+let private drawingNamespaces =
+    {| Wp = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+       A = "http://schemas.openxmlformats.org/drawingml/2006/main"
+       Wps = "http://schemas.microsoft.com/office/word/2010/wordprocessingShape"
+       Mc = "http://schemas.openxmlformats.org/markup-compatibility/2006" |}
+
+let private srgbColor (color: string) =
+    selfClosing "a:srgbClr" [("val", InverseConversion.cssColorToWord (Some color) |> Option.defaultValue "000000")]
+
+/// a:prstGeom or a:custGeom of a shape item (Geometry / CustomPath / CustomW / CustomH).
+let private shapeGeometryElement (item: obj) =
+    let geometry = optionalString (item?Geometry) |> Option.defaultValue "rect"
+    let coordinate (value: float) = string (roundToInt value)
+    let point (points: obj) index = selfClosing "a:pt" [("x", coordinate (floatOrDefault 0.0 (points?(index)))); ("y", coordinate (floatOrDefault 0.0 (points?(index + 1))))]
+    let segments =
+        optionalArray (item?CustomPath)
+        |> Array.toList
+        |> List.choose (fun segment ->
+            let points = segment?P
+            match optionalString (segment?Op) with
+            | Some "M" -> Some (element "a:moveTo" [] [point points 0])
+            | Some "L" -> Some (element "a:lnTo" [] [point points 0])
+            | Some "C" -> Some (element "a:cubicBezTo" [] [point points 0; point points 2; point points 4])
+            | Some "Q" -> Some (element "a:quadBezTo" [] [point points 0; point points 2])
+            | Some "Z" -> Some (selfClosing "a:close" [])
+            | _ -> None)
+    let coordW = floatOrDefault 0.0 (item?CustomW)
+    let coordH = floatOrDefault 0.0 (item?CustomH)
+    if geometry = "custom" && not segments.IsEmpty && coordW > 0.0 && coordH > 0.0 then
+        element "a:custGeom" [] [
+            selfClosing "a:avLst" []
+            selfClosing "a:gdLst" []
+            selfClosing "a:ahLst" []
+            selfClosing "a:cxnLst" []
+            selfClosing "a:rect" [("l", "0"); ("t", "0"); ("r", "r"); ("b", "b")]
+            element "a:pathLst" [] [element "a:path" [("w", coordinate coordW); ("h", coordinate coordH)] segments]
+        ]
+    else
+        element "a:prstGeom" [("prst", (if geometry = "custom" || geometry = "" then "rect" else geometry))] [selfClosing "a:avLst" []]
+
+/// The fill of a shape: gradient, solid colour or none.
+let private shapeFillElement (item: obj) =
+    let gradient = item?Gradient
+    let stops = if isNullOrUndefined gradient then [||] else optionalArray (gradient?Stops)
+    if stops.Length > 0 then
+        let stopElements =
+            stops
+            |> Array.toList
+            |> List.map (fun stop ->
+                element "a:gs" [("pos", string (roundToInt (floatOrDefault 0.0 (stop?Offset) * 100000.0)))] [srgbColor (stop?Color |> stringOrDefault "#000000")])
+        let direction =
+            if boolOrDefault false (gradient?Radial) then
+                element "a:path" [("path", "circle")] [selfClosing "a:fillToRect" [("l", "50000"); ("t", "50000"); ("r", "50000"); ("b", "50000")]]
+            else
+                selfClosing "a:lin" [("ang", string (roundToInt (floatOrDefault 0.0 (gradient?Angle) * 60000.0))); ("scaled", "0")]
+        element "a:gradFill" [("rotWithShape", "1")] [element "a:gsLst" [] stopElements; direction]
+    elif boolOrDefault false (item?NoFill) then selfClosing "a:noFill" []
+    else element "a:solidFill" [] [srgbColor (optionalString (item?FillColor) |> Option.defaultValue "#FFFFFF")]
+
+/// a:ln: width (px -> EMU), colour or none, preset dash.
+let private shapeLineElement (item: obj) =
+    let width = optionalFloat (item?BorderWidth) |> Option.defaultValue 1.0 |> pixelsToEmus
+    let children =
+        [ if boolOrDefault false (item?NoLine) then yield selfClosing "a:noFill" []
+          else yield element "a:solidFill" [] [srgbColor (optionalString (item?BorderColor) |> Option.defaultValue "#808080")]
+          match optionalString (item?BorderDash) with
+          | Some dash when dash <> "" && dash <> "solid" -> yield selfClosing "a:prstDash" [("val", dash)]
+          | _ -> () ]
+    element "a:ln" [("w", string (max 0 width))] children
+
+/// The VML form of a shape, for readers without DrawingML shapes (the
+/// mc:Fallback Word writes too): a text box rectangle at the same place.
+let private generateVmlShape (shapeId: string) (item: obj) (content: string) : string =
     let width = floatOrDefault 220.0 (item?Width) |> pixelsToPoints
     let height = floatOrDefault 72.0 (item?Height) |> pixelsToPoints
     let x = optionalFloat (item?X) |> Option.map pixelsToPoints |> Option.defaultValue 0.0
     let y = optionalFloat (item?Y) |> Option.map pixelsToPoints |> Option.defaultValue 0.0
-    let fill = optionalString (item?FillColor) |> Option.defaultValue "#FFFFFF"
-    let stroke = optionalString (item?BorderColor) |> Option.defaultValue "#808080"
     let strokeWeight = optionalFloat (item?BorderWidth) |> Option.map pixelsToPoints |> Option.defaultValue 0.75
-    let shapeId = optionalString (item?ShapeId) |> Option.defaultValue ("textbox" + string (abs (hash (width, height, x, y))))
+    let rotation = floatOrDefault 0.0 (item?Rotation)
+    let style =
+        if boolOrDefault false (item?Inline) then sprintf "width:%.4fpt;height:%.4fpt" width height
+        else sprintf "position:absolute;margin-left:%.4fpt;margin-top:%.4fpt;width:%.4fpt;height:%.4fpt;z-index:1" x y width height
+    let style = if abs rotation >= 0.01 then style + sprintf ";rotation:%.2f" rotation else style
+    element "w:pict" [] [
+        element "v:shape" [
+            yield ("xmlns:v", "urn:schemas-microsoft-com:vml")
+            yield ("id", shapeId)
+            yield ("type", "#_x0000_t202")
+            yield ("style", style)
+            if boolOrDefault false (item?NoFill) then yield ("filled", "f")
+            else yield ("fillcolor", optionalString (item?FillColor) |> Option.defaultValue "#FFFFFF")
+            if boolOrDefault false (item?NoLine) then yield ("stroked", "f")
+            else
+                yield ("strokecolor", optionalString (item?BorderColor) |> Option.defaultValue "#808080")
+                yield ("strokeweight", sprintf "%.2fpt" strokeWeight)
+        ] [
+            element "v:textbox" [] [
+                element "w:txbxContent" [] [content]
+            ]
+        ]
+    ]
+
+/// A text box / shape as Word writes it: DrawingML (wp:anchor or wp:inline
+/// around a wps:wsp) in an mc:AlternateContent with a VML fallback. Geometry,
+/// rotation, solid / gradient / no fill, line colour, width and dash, wrap
+/// mode and position are written from the model. (It used to be a bare VML
+/// text box rectangle, so an ellipse or a rotated arrow came back as a white box.)
+let private generateTextBoxRun (packageSetup: PageSetupInfo) (hyperlinks: Map<string, string>) (images: ImageScope) (item: obj) : string =
+    let widthEmu = floatOrDefault 220.0 (item?Width) |> pixelsToEmus |> max 0 |> string
+    let heightEmu = floatOrDefault 72.0 (item?Height) |> pixelsToEmus |> max 0 |> string
+    let shapeNumber = nextShapeId
+    nextShapeId <- nextShapeId + 1
+    let shapeName = optionalString (item?Name) |> Option.defaultValue (sprintf "Shape %d" shapeNumber)
     let paragraphs =
         if isNullOrUndefined item?Paragraphs then [||] else item?Paragraphs |> unbox<obj array>
     let content =
-        if paragraphs.Length = 0 then generateParagraphWithHyperlinksAndImagesWithPageSetup packageSetup hyperlinks images (createObj [ "Runs" ==> [||]; "Alignment" ==> "left" ])
+        if paragraphs.Length = 0 then ""
         else paragraphs |> Array.map (generateParagraphWithHyperlinksAndImagesWithPageSetup packageSetup hyperlinks images) |> String.concat ""
-    let style = sprintf "position:absolute;margin-left:%.4fpt;margin-top:%.4fpt;width:%.4fpt;height:%.4fpt;z-index:1" x y width height
-    element "w:r" [] [
-        element "w:pict" [] [
-            element "v:shape" [
-                ("xmlns:v", "urn:schemas-microsoft-com:vml")
-                ("id", shapeId)
-                ("type", "#_x0000_t202")
-                ("style", style)
-                ("fillcolor", fill)
-                ("strokecolor", stroke)
-                ("strokeweight", sprintf "%.2fpt" strokeWeight)
-            ] [
-                element "v:textbox" [ ("style", "mso-fit-shape-to-text:t") ] [
-                    element "w:txbxContent" [] [content]
+    let emptyParagraph = element "w:p" [] []
+    let rotation = floatOrDefault 0.0 (item?Rotation)
+    let shape =
+        element "wps:wsp" [] [
+            yield selfClosing "wps:cNvSpPr" (if paragraphs.Length > 0 then [("txBox", "1")] else [])
+            yield element "wps:spPr" [] [
+                element "a:xfrm" (if abs rotation >= 0.0001 then [("rot", string (roundToInt (rotation * 60000.0)))] else []) [
+                    selfClosing "a:off" [("x", "0"); ("y", "0")]
+                    selfClosing "a:ext" [("cx", widthEmu); ("cy", heightEmu)]
                 ]
+                shapeGeometryElement item
+                shapeFillElement item
+                shapeLineElement item
             ]
+            if paragraphs.Length > 0 then
+                yield element "wps:txbx" [] [element "w:txbxContent" [] [content]]
+            yield selfClosing "wps:bodyPr" [("rot", "0"); ("vert", "horz"); ("wrap", "square"); ("lIns", "91440"); ("tIns", "45720"); ("rIns", "91440"); ("bIns", "45720"); ("anchor", "t"); ("anchorCtr", "0")]
+        ]
+    let graphic =
+        element "a:graphic" [("xmlns:a", drawingNamespaces.A)] [
+            element "a:graphicData" [("uri", drawingNamespaces.Wps)] [shape]
+        ]
+    let docPr = selfClosing "wp:docPr" [("id", string shapeNumber); ("name", shapeName)]
+    let distance (value: obj) = optionalFloat value |> Option.defaultValue 0.0 |> pixelsToEmus |> max 0 |> string
+    let drawing =
+        if boolOrDefault false (item?Inline) then
+            element "wp:inline" [("xmlns:wp", drawingNamespaces.Wp); ("distT", distance (item?DistanceTop)); ("distB", distance (item?DistanceBottom)); ("distL", distance (item?DistanceLeft)); ("distR", distance (item?DistanceRight))] [
+                selfClosing "wp:extent" [("cx", widthEmu); ("cy", heightEmu)]
+                docPr
+                selfClosing "wp:cNvGraphicFramePr" []
+                graphic
+            ]
+        else
+            let offset (value: obj) = optionalFloat value |> Option.defaultValue 0.0 |> pixelsToEmus |> string
+            let relativeFrom (value: obj) (legacy: obj) fallback =
+                optionalString value |> Option.orElse (optionalString legacy) |> Option.defaultValue fallback
+            element "wp:anchor" [
+                ("xmlns:wp", drawingNamespaces.Wp)
+                ("distT", distance (item?DistanceTop)); ("distB", distance (item?DistanceBottom)); ("distL", distance (item?DistanceLeft)); ("distR", distance (item?DistanceRight))
+                ("simplePos", "0")
+                ("relativeHeight", optionalString (item?RelativeHeight) |> Option.orElse (optionalString (item?TextBoxRelativeHeight)) |> Option.defaultValue "251658240")
+                ("behindDoc", boolFlag false (item?BehindDoc)); ("locked", "0")
+                ("layoutInCell", boolFlag true (item?LayoutInCell)); ("allowOverlap", boolFlag true (item?AllowOverlap))
+            ] [
+                selfClosing "wp:simplePos" [("x", "0"); ("y", "0")]
+                anchorPositionElement "wp:positionH" (relativeFrom (item?PositionHRelativeFrom) (item?TextBoxPositionHRelativeFrom) "column") (optionalString (item?PositionHAlign)) (offset (item?X))
+                anchorPositionElement "wp:positionV" (relativeFrom (item?PositionVRelativeFrom) (item?TextBoxPositionVRelativeFrom) "paragraph") (optionalString (item?PositionVAlign)) (offset (item?Y))
+                selfClosing "wp:extent" [("cx", widthEmu); ("cy", heightEmu)]
+                selfClosing "wp:effectExtent" [("l", "0"); ("t", "0"); ("r", "0"); ("b", "0")]
+                // A text box made in the editor has no wrap mode; it floats over the text.
+                anchorWrapElement (optionalString (item?Wrap) |> Option.orElse (Some "none")) None
+                docPr
+                selfClosing "wp:cNvGraphicFramePr" []
+                graphic
+            ]
+    element "w:r" [] [
+        element "mc:AlternateContent" [("xmlns:mc", drawingNamespaces.Mc); ("xmlns:wps", drawingNamespaces.Wps)] [
+            element "mc:Choice" [("Requires", "wps")] [element "w:drawing" [] [drawing]]
+            element "mc:Fallback" [] [generateVmlShape (sprintf "_x0000_s%d" shapeNumber) item (if content = "" then emptyParagraph else content)]
         ]
     ]
 
@@ -1428,9 +1597,15 @@ let private generateBlocks (generateItem: obj -> string) (generateTextBoxRun: ob
     let parts = ResizeArray<string>()
     let paragraphEnd = "</w:p>"
     for item in items do
-        if (item?Type |> stringOrDefault "Paragraph") = "TextBox" && parts.Count > 0 && parts.[parts.Count - 1].EndsWith paragraphEnd then
+        let isTextBox = (item?Type |> stringOrDefault "Paragraph") = "TextBox"
+        if isTextBox && parts.Count > 0 && parts.[parts.Count - 1].EndsWith paragraphEnd then
             let previous = parts.[parts.Count - 1]
             parts.[parts.Count - 1] <- previous.Substring(0, previous.Length - paragraphEnd.Length) + generateTextBoxRun item + paragraphEnd
+        elif isTextBox && parts.Count > 0 && parts.[parts.Count - 1].EndsWith "</w:tbl>" && parts.[parts.Count - 1].LastIndexOf paragraphEnd >= 0 then
+            // Anchored inside a table: stays in the table, in its last paragraph.
+            let previous = parts.[parts.Count - 1]
+            let index = previous.LastIndexOf paragraphEnd
+            parts.[parts.Count - 1] <- previous.Substring(0, index) + generateTextBoxRun item + previous.Substring index
         else
             parts.Add (generateItem item)
     String.concat "" parts
@@ -2308,6 +2483,7 @@ let private generateSettings (pageSetup: PageSetupInfo option) =
 
 /// Write DOCX from EditorFormat (Phase 2)
 let writeFromEditor (paragraphs: obj array) : Fable.Core.JS.Promise<obj> =
+    nextShapeId <- 1000
     let hyperlinks = hyperlinkMap paragraphs
     let bodyImages, _ = buildImageScope 1 paragraphs
     let comments = collectComments paragraphs
@@ -2342,6 +2518,7 @@ let writeFromEditor (paragraphs: obj array) : Fable.Core.JS.Promise<obj> =
     createPackageWithBinary files binaryFiles
 
 let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
+    nextShapeId <- 1000
     let paragraphs = optionalArray (package?Paragraphs)
     let pageSetup = optionalPageSetup (package?PageSetup)
     let hasSettings = pageSetup |> Option.exists (fun setup -> setup.EvenAndOddHeaders)

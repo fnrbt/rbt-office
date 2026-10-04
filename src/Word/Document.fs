@@ -270,6 +270,25 @@ and TextBoxBlock = {
     Geometry: ShapeGeometry
     Gradient: GradientSpec option
     Rotation: float
+    /// In the text line (wp:inline) rather than floating (wp:anchor).
+    Inline: bool
+    /// none | square | tight | through | topAndBottom.
+    Wrap: string option
+    /// wp:align of the position (left, center, right, top, ...), used instead of X / Y.
+    PositionHAlign: string option
+    PositionVAlign: string option
+    BehindDoc: bool option
+    AllowOverlap: bool option
+    LayoutInCell: bool option
+    DistanceTop: float option
+    DistanceBottom: float option
+    DistanceLeft: float option
+    DistanceRight: float option
+    /// Preset line dash (dash, dot, dashDot, sysDash, ...); None = solid.
+    BorderDash: string option
+    Name: string option
+    /// The body block (paragraph or table) the shape is anchored in.
+    AnchorBlockId: BlockId option
 }
 
 and TableRow = {
@@ -352,6 +371,39 @@ and TableBorders = {
 and TableVerticalMerge =
     | RestartMerge
     | ContinueMerge
+
+/// A text box as the editor makes it: a white rectangle with a grey outline.
+let defaultTextBox : TextBoxBlock = {
+    Id = ""
+    Content = []
+    X = None
+    Y = None
+    PositionHRelativeFrom = None
+    PositionVRelativeFrom = None
+    Width = 220.0
+    Height = 72.0
+    FillColor = Some "#FFFFFF"
+    BorderColor = Some "#808080"
+    BorderWidth = Some 1.0
+    RelativeHeight = None
+    Geometry = GeoRect
+    Gradient = None
+    Rotation = 0.0
+    Inline = false
+    Wrap = None
+    PositionHAlign = None
+    PositionVAlign = None
+    BehindDoc = None
+    AllowOverlap = None
+    LayoutInCell = None
+    DistanceTop = None
+    DistanceBottom = None
+    DistanceLeft = None
+    DistanceRight = None
+    BorderDash = None
+    Name = None
+    AnchorBlockId = None
+}
 
 /// Cursor position
 type Position = {
@@ -1974,21 +2026,13 @@ let insertTextBox text doc =
         Metadata = defaultMetadata
     }
     let textBox = TextBox {
-        Id = nextBlockId ()
-        Content = [para]
-        X = Some 96.0
-        Y = Some 96.0
-        PositionHRelativeFrom = None
-        PositionVRelativeFrom = None
-        Width = 240.0
-        Height = 96.0
-        FillColor = Some "#FFFFFF"
-        BorderColor = Some "#808080"
-        BorderWidth = Some 1.0
-        RelativeHeight = None
-        Geometry = GeoRect
-        Gradient = None
-        Rotation = 0.0
+        defaultTextBox with
+            Id = nextBlockId ()
+            Content = [para]
+            X = Some 96.0
+            Y = Some 96.0
+            Width = 240.0
+            Height = 96.0
     }
     insertTopLevelBlockAfterSelection textBox doc
 

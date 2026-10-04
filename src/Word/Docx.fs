@@ -555,6 +555,9 @@ let private editorRunsToBuffer (runs: obj array) : TextBuffer =
                 CropTop = cropTop
                 CropRight = cropRight
                 CropBottom = cropBottom
+                PositionHAlign = optionalString (run?ImagePositionHAlign)
+                PositionVAlign = optionalString (run?ImagePositionVAlign)
+                WrapText = optionalString (run?ImageWrapText)
             })
 
             currentOffset <- currentOffset + 1
@@ -984,22 +987,40 @@ let rec private blockFromEditor (item: obj) =
     | "TextBox" ->
         let paragraphs = item?Paragraphs |> unbox<obj array>
         let cellParagraphs = paragraphs |> Array.map paragraphFromEditor |> Array.toList
+        // A shape without a fill / line says so (NoFill / NoLine); a text box that
+        // says nothing about them is one made in the editor, white with a grey outline.
+        let noFill = boolOrDefault false (item?NoFill)
+        let noLine = boolOrDefault false (item?NoLine)
         TextBox {
-            Id = nextImportedBlockId ()
-            Content = cellParagraphs
-            X = optionalNumberAsFloat (item?X)
-            Y = optionalNumberAsFloat (item?Y)
-            PositionHRelativeFrom = optionalString (item?PositionHRelativeFrom) |> Option.orElse (optionalString (item?TextBoxPositionHRelativeFrom))
-            PositionVRelativeFrom = optionalString (item?PositionVRelativeFrom) |> Option.orElse (optionalString (item?TextBoxPositionVRelativeFrom))
-            Width = optionalNumberAsFloat (item?Width) |> Option.defaultValue 220.0
-            Height = optionalNumberAsFloat (item?Height) |> Option.defaultValue 72.0
-            FillColor = optionalString (item?FillColor) |> Option.orElse (Some "#FFFFFF")
-            BorderColor = optionalString (item?BorderColor) |> Option.orElse (Some "#808080")
-            BorderWidth = optionalNumberAsFloat (item?BorderWidth) |> Option.orElse (Some 1.0)
-            RelativeHeight = optionalString (item?RelativeHeight) |> Option.orElse (optionalString (item?TextBoxRelativeHeight))
-            Geometry = geometryFromEditor item
-            Gradient = gradientFromEditor (item?Gradient)
-            Rotation = optionalNumberAsFloat (item?Rotation) |> Option.defaultValue 0.0
+            defaultTextBox with
+                Id = nextImportedBlockId ()
+                Content = cellParagraphs
+                X = optionalNumberAsFloat (item?X)
+                Y = optionalNumberAsFloat (item?Y)
+                PositionHRelativeFrom = optionalString (item?PositionHRelativeFrom) |> Option.orElse (optionalString (item?TextBoxPositionHRelativeFrom))
+                PositionVRelativeFrom = optionalString (item?PositionVRelativeFrom) |> Option.orElse (optionalString (item?TextBoxPositionVRelativeFrom))
+                Width = optionalNumberAsFloat (item?Width) |> Option.defaultValue 220.0
+                Height = optionalNumberAsFloat (item?Height) |> Option.defaultValue 72.0
+                FillColor = if noFill then None else optionalString (item?FillColor) |> Option.orElse (Some "#FFFFFF")
+                BorderColor = if noLine then None else optionalString (item?BorderColor) |> Option.orElse (Some "#808080")
+                BorderWidth = optionalNumberAsFloat (item?BorderWidth) |> Option.orElse (Some 1.0)
+                RelativeHeight = optionalString (item?RelativeHeight) |> Option.orElse (optionalString (item?TextBoxRelativeHeight))
+                Geometry = geometryFromEditor item
+                Gradient = gradientFromEditor (item?Gradient)
+                Rotation = optionalNumberAsFloat (item?Rotation) |> Option.defaultValue 0.0
+                Inline = boolOrDefault false (item?Inline)
+                Wrap = optionalString (item?Wrap)
+                PositionHAlign = optionalString (item?PositionHAlign)
+                PositionVAlign = optionalString (item?PositionVAlign)
+                BehindDoc = optionalBool (item?BehindDoc)
+                AllowOverlap = optionalBool (item?AllowOverlap)
+                LayoutInCell = optionalBool (item?LayoutInCell)
+                DistanceTop = optionalNumberAsFloat (item?DistanceTop)
+                DistanceBottom = optionalNumberAsFloat (item?DistanceBottom)
+                DistanceLeft = optionalNumberAsFloat (item?DistanceLeft)
+                DistanceRight = optionalNumberAsFloat (item?DistanceRight)
+                BorderDash = optionalString (item?BorderDash)
+                Name = optionalString (item?Name)
         }
 
     | "Table" ->
@@ -1097,8 +1118,27 @@ let rec private blockFromEditor (item: obj) =
     | _ ->
         Paragraph (paragraphFromEditor item)
 
+/// The id of the block a shape is anchored in. The reader gives the anchor as
+/// AnchorBlock, an index into the same item array.
 let private blocksFromEditor (items: obj array) =
-    items |> Array.map blockFromEditor |> Array.toList
+    let blocks = items |> Array.map blockFromEditor
+    let idAt index =
+        if index < 0 || index >= blocks.Length then None
+        else
+            match blocks.[index] with
+            | Paragraph para
+            | Heading (_, para) -> Some para.Id
+            | Table table -> Some table.Id
+            | TextBox _ -> None
+    blocks
+    |> Array.mapi (fun index block ->
+        match block with
+        | TextBox textBox ->
+            match optionalInt (items.[index]?AnchorBlock) |> Option.bind idAt with
+            | Some anchorId -> TextBox { textBox with AnchorBlockId = Some anchorId }
+            | None -> block
+        | _ -> block)
+    |> Array.toList
 
 let private isDiscardableTrailingParagraph para =
     System.String.IsNullOrWhiteSpace(TextBuffer.toString para.Buffer)
@@ -1441,6 +1481,9 @@ let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) 
                     "ImageCropTop" ==> img.CropTop
                     "ImageCropRight" ==> img.CropRight
                     "ImageCropBottom" ==> img.CropBottom
+                    "ImagePositionHAlign" ==> img.PositionHAlign
+                    "ImagePositionVAlign" ==> img.PositionVAlign
+                    "ImageWrapText" ==> img.WrapText
                 ])
         )
 
@@ -1560,8 +1603,51 @@ let rec private blockToEditor (context: WordStyles.DocumentStyleContext option) 
     | Paragraph para -> paragraphToEditor context "Paragraph" 0 para
     | Heading (level, para) -> paragraphToEditor context "Heading" level para
     | TextBox textBox ->
+        let geometry, customPath, customW, customH =
+            match textBox.Geometry with
+            | GeoRect -> "rect", [||], 0.0, 0.0
+            | GeoPreset preset -> preset, [||], 0.0, 0.0
+            | GeoCustom (segs, coordW, coordH) ->
+                let seg (op: string) (points: float list) = createObj [ "Op" ==> op; "P" ==> List.toArray points ]
+                let path =
+                    segs
+                    |> List.map (function
+                        | PMove (x, y) -> seg "M" [ x; y ]
+                        | PLine (x, y) -> seg "L" [ x; y ]
+                        | PCubic (c1x, c1y, c2x, c2y, x, y) -> seg "C" [ c1x; c1y; c2x; c2y; x; y ]
+                        | PQuad (cx, cy, x, y) -> seg "Q" [ cx; cy; x; y ]
+                        | PClose -> seg "Z" [])
+                    |> List.toArray
+                "custom", path, coordW, coordH
         createObj [
             "Type" ==> "TextBox"
+            "Geometry" ==> geometry
+            "CustomPath" ==> customPath
+            "CustomW" ==> customW
+            "CustomH" ==> customH
+            "Gradient" ==> (textBox.Gradient
+                            |> Option.map (fun gradient ->
+                                createObj [
+                                    "Stops" ==> (gradient.Stops |> List.map (fun stop -> createObj [ "Offset" ==> stop.Offset; "Color" ==> stop.Color ]) |> List.toArray)
+                                    "Angle" ==> gradient.Angle
+                                    "Radial" ==> gradient.Radial ])
+                            |> Option.toObj)
+            "Rotation" ==> textBox.Rotation
+            "NoFill" ==> (textBox.FillColor.IsNone && textBox.Gradient.IsNone)
+            "NoLine" ==> textBox.BorderColor.IsNone
+            "Inline" ==> textBox.Inline
+            "Wrap" ==> textBox.Wrap
+            "PositionHAlign" ==> textBox.PositionHAlign
+            "PositionVAlign" ==> textBox.PositionVAlign
+            "BehindDoc" ==> textBox.BehindDoc
+            "AllowOverlap" ==> textBox.AllowOverlap
+            "LayoutInCell" ==> textBox.LayoutInCell
+            "DistanceTop" ==> textBox.DistanceTop
+            "DistanceBottom" ==> textBox.DistanceBottom
+            "DistanceLeft" ==> textBox.DistanceLeft
+            "DistanceRight" ==> textBox.DistanceRight
+            "BorderDash" ==> textBox.BorderDash
+            "Name" ==> textBox.Name
             "X" ==> textBox.X
             "Y" ==> textBox.Y
             "PositionHRelativeFrom" ==> textBox.PositionHRelativeFrom
@@ -1638,9 +1724,35 @@ let rec private blockToEditor (context: WordStyles.DocumentStyleContext option) 
                 "PaddingLeft" ==> canvasPixelsToDxa table.PaddingLeft
             ]
 
+/// Blocks in the order they are written: a shape follows the block it is
+/// anchored in (the writer puts it into that block), wherever it sits in the
+/// block list. Imported shapes are kept at the end of the list, and writing
+/// them there moved every shape of a document into its last paragraph.
+let private blocksInAnchorOrder (blocks: Block list) : Block list =
+    let idOf block =
+        match block with
+        | Paragraph para
+        | Heading (_, para) -> Some para.Id
+        | Table table -> Some table.Id
+        | TextBox _ -> None
+    let anchorIds = blocks |> List.choose idOf |> Set.ofList
+    let isAnchored (textBox: TextBoxBlock) = textBox.AnchorBlockId |> Option.exists (fun id -> Set.contains id anchorIds)
+    let anchored =
+        blocks |> List.choose (function TextBox textBox when isAnchored textBox -> Some textBox | _ -> None)
+    if anchored.IsEmpty then blocks
+    else
+        blocks
+        |> List.collect (fun block ->
+            match block with
+            | TextBox textBox when isAnchored textBox -> []
+            | _ ->
+                match idOf block with
+                | Some id -> block :: (anchored |> List.filter (fun textBox -> textBox.AnchorBlockId = Some id) |> List.map TextBox)
+                | None -> [ block ])
+
 let exportToEditor (doc: Document) : obj array =
     let context = Some (WordStyles.styleContext doc)
-    doc.Blocks
+    blocksInAnchorOrder doc.Blocks
     |> List.map (blockToEditor context)
     |> List.toArray
 

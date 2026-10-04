@@ -83,6 +83,12 @@ type ImageData = {
     CropTop: string option
     CropRight: string option
     CropBottom: string option
+    /// wp:positionH / wp:positionV given as wp:align (left, center, right, top, ...)
+    /// instead of an offset.
+    PositionHAlign: string option
+    PositionVAlign: string option
+    /// wrapText of wp:wrapSquare / wrapTight / wrapThrough (bothSides, left, right, largest).
+    WrapText: string option
 }
 
 type NoteReference = {
@@ -454,6 +460,31 @@ type Shape = {
     Gradient: ShapeGradient option
     /// Shape rotation in degrees (a:xfrm@rot, 60000ths -> degrees).
     Rotation: float
+    /// Index of the body block (paragraph or table) the shape is anchored in.
+    AnchorBlock: int option
+    /// wp:inline (in the text line) rather than wp:anchor.
+    Inline: bool
+    /// none | square | tight | through | topAndBottom.
+    Wrap: string option
+    PositionHRelativeFrom: string option
+    PositionVRelativeFrom: string option
+    PositionHAlign: string option
+    PositionVAlign: string option
+    BehindDoc: bool option
+    AllowOverlap: bool option
+    LayoutInCell: bool option
+    RelativeHeight: string option
+    DistanceTop: float option
+    DistanceBottom: float option
+    DistanceLeft: float option
+    DistanceRight: float option
+    /// a:noFill / a:ln with a:noFill (VML filled="f" / stroked="f").
+    NoFill: bool
+    NoLine: bool
+    /// a:prstDash@val (dash, dot, dashDot, sysDash, ...).
+    LineDash: string option
+    /// wp:docPr@name.
+    Name: string option
 }
 
 type PageSetup = {
@@ -885,6 +916,9 @@ module Docx =
             CropTop = None
             CropRight = None
             CropBottom = None
+            PositionHAlign = None
+            PositionVAlign = None
+            WrapText = None
         }
         let drawingImage =
             wElem "drawing" rNode
@@ -928,6 +962,19 @@ module Docx =
                             match System.Double.TryParse(value) with
                             | true, parsed -> Some (emuToPixels parsed)
                             | false, _ -> None)
+                    let positionAlign localName =
+                        anchor
+                        |> Option.bind (Ns.childNs localName)
+                        |> Option.bind (Ns.childNs "align")
+                        |> Option.bind Xml.text
+                    let wrapText =
+                        anchor
+                        |> Option.bind (fun a ->
+                            Xml.children a
+                            |> List.tryPick (fun child ->
+                                match Xml.name child |> Option.map Ns.stripNs with
+                                | Some "wrapSquare" | Some "wrapTight" | Some "wrapThrough" -> Xml.attr "wrapText" child
+                                | _ -> None))
                     let positionRelativeFrom localName =
                         anchor
                         |> Option.bind (Ns.childNs localName)
@@ -1003,6 +1050,9 @@ module Docx =
                         CropTop = cropTop
                         CropRight = cropRight
                         CropBottom = cropBottom
+                        PositionHAlign = positionAlign "positionH"
+                        PositionVAlign = positionAlign "positionV"
+                        WrapText = wrapText
                     })
             | None ->
                 if Ns.descendantsNs "chart" drawing |> List.isEmpty |> not then
@@ -1036,6 +1086,9 @@ module Docx =
                         CropTop = None
                         CropRight = None
                         CropBottom = None
+                        PositionHAlign = None
+                        PositionVAlign = None
+                        WrapText = None
                     }
                 else None)
         let vmlImage =
@@ -2666,6 +2719,16 @@ module Shapes =
         |> Option.map (fun r -> r / 60000.0)
         |> Option.defaultValue 0.0
 
+    let private childNamed (name: string) (node: XmlNode) =
+        Xml.children node |> List.tryFind (fun child -> Xml.name child |> Option.map Ns.stripNs = Some name)
+
+    /// The shape's own properties element (wps:spPr), not a nested picture's.
+    let private shapeProperties (shapeNode: XmlNode) =
+        Ns.descendantsNs "spPr" shapeNode |> List.tryHead
+
+    let private vmlBool (value: string option) =
+        value |> Option.map (fun text -> let t = text.ToLowerInvariant() in t = "t" || t = "true" || t = "1")
+
     let parseShape (shapeNode: XmlNode) : Shape option =
         let id = Xml.attr "id" shapeNode
         let shapeType = Xml.attr "type" shapeNode
@@ -2702,15 +2765,36 @@ module Shapes =
         let extOf node tag = xfrm |> Option.bind (Ns.childNs node) |> Option.bind (Xml.attr tag) |> Option.bind parseFloat |> Option.map emuToPixels
         let width = width |> Option.orElseWith (fun () -> extOf "ext" "cx")
         let height = height |> Option.orElseWith (fun () -> extOf "ext" "cy")
+        let spPr = shapeProperties shapeNode
+        let line = spPr |> Option.bind (childNamed "ln")
         let fillColor =
             (Xml.attr "fillcolor" shapeNode |> normalizeColor) |> Option.orElseWith (fun () -> parseDmlFill shapeNode)
         let borderColor =
             (Xml.attr "strokecolor" shapeNode |> normalizeColor) |> Option.orElseWith (fun () -> parseDmlLine shapeNode)
-        let borderWidth = Xml.attr "strokeweight" shapeNode |> strokeWeightFromAttr
+        // a:ln@w is EMU (12700 per point); VML strokeweight carries its unit.
+        let borderWidth =
+            Xml.attr "strokeweight" shapeNode |> strokeWeightFromAttr
+            |> Option.orElseWith (fun () -> line |> Option.bind (Xml.attr "w") |> Option.bind parseFloat |> Option.map emuToPixels)
         let custom = parseCustom shapeNode
         // VML shapes use a "#_x0000_t202"-style type ref; only surface a clean
         // DrawingML preset name as the geometry hint.
         let preset = parsePreset shapeNode
+        let isAnchor = Xml.name shapeNode |> Option.map Ns.stripNs = Some "anchor"
+        let isInline = Xml.name shapeNode |> Option.map Ns.stripNs = Some "inline"
+        let anchorBool name = if isAnchor then Xml.attr name shapeNode |> Option.map (fun value -> value = "1" || value.ToLowerInvariant() = "true") else None
+        let anchorDistance name = if isAnchor || isInline then Xml.attr name shapeNode |> Option.bind parseFloat |> Option.map emuToPixels else None
+        let wrapChild =
+            if not isAnchor then None
+            else
+                Xml.children shapeNode
+                |> List.tryPick (fun child ->
+                    match Xml.name child |> Option.map Ns.stripNs with
+                    | Some "wrapNone" -> Some "none"
+                    | Some "wrapSquare" -> Some "square"
+                    | Some "wrapTight" -> Some "tight"
+                    | Some "wrapThrough" -> Some "through"
+                    | Some "wrapTopAndBottom" -> Some "topAndBottom"
+                    | _ -> None)
 
         Some {
             Id = id
@@ -2728,30 +2812,97 @@ module Shapes =
             CustomH = custom |> Option.map (fun (_, _, h) -> h)
             Gradient = parseGradient shapeNode
             Rotation = parseRotation shapeNode
+            AnchorBlock = None
+            Inline = isInline
+            Wrap = wrapChild
+            PositionHRelativeFrom = posH |> Option.bind (Xml.attr "relativeFrom")
+            PositionVRelativeFrom = posV |> Option.bind (Xml.attr "relativeFrom")
+            PositionHAlign = posH |> Option.bind (Ns.childNs "align") |> Option.bind Xml.text
+            PositionVAlign = posV |> Option.bind (Ns.childNs "align") |> Option.bind Xml.text
+            BehindDoc = anchorBool "behindDoc"
+            AllowOverlap = anchorBool "allowOverlap"
+            LayoutInCell = anchorBool "layoutInCell"
+            RelativeHeight = if isAnchor then Xml.attr "relativeHeight" shapeNode else None
+            DistanceTop = anchorDistance "distT"
+            DistanceBottom = anchorDistance "distB"
+            DistanceLeft = anchorDistance "distL"
+            DistanceRight = anchorDistance "distR"
+            NoFill =
+                (spPr |> Option.exists (fun props -> (childNamed "noFill" props).IsSome))
+                || vmlBool (Xml.attr "filled" shapeNode) = Some false
+            NoLine =
+                (line |> Option.exists (fun ln -> (childNamed "noFill" ln).IsSome))
+                || vmlBool (Xml.attr "stroked" shapeNode) = Some false
+            LineDash = line |> Option.bind (childNamed "prstDash") |> Option.bind (Xml.attr "val")
+            Name = Ns.descendantsNs "docPr" shapeNode |> List.tryHead |> Option.bind (Xml.attr "name")
         }
 
+    // Import a node if it carries text (txbxContent) OR a real geometry
+    // (prstGeom/custGeom) — so autoshapes with no text still render.
+    // A plain picture also has a:prstGeom (inside pic:spPr). It is already
+    // read as an image run; without this guard every picture was imported
+    // a second time as a rectangle shape and saved as a text box.
+    let private isPicture node =
+        (Ns.descendantsNs "pic" node |> List.isEmpty |> not)
+        && (Ns.descendantsNs "wsp" node |> List.isEmpty)
+
+    let private hasContent node =
+        (Ns.descendantsNs "txbxContent" node |> List.isEmpty |> not)
+        || (not (isPicture node)
+            && ((Ns.descendantsNs "prstGeom" node |> List.isEmpty |> not)
+                || (Ns.descendantsNs "custGeom" node |> List.isEmpty |> not)))
+
+    /// A drawing the shape model can hold: one shape with text and / or
+    /// geometry. Groups, drawing canvases, charts and diagrams are not.
+    let isModelledShape (node: XmlNode) =
+        hasContent node
+        && (Ns.descendantsNs "wgp" node).IsEmpty
+        && (Ns.descendantsNs "wpc" node).IsEmpty
+        && (Ns.descendantsNs "group" node).IsEmpty
+        && (Ns.descendantsNs "chart" node).IsEmpty
+        && (Ns.descendantsNs "relIds" node).IsEmpty
+
+    /// The shape roots under `node`, in document order. For DrawingML that is
+    /// the wp:anchor / wp:inline wrapper — position (wp:positionH/V) and display
+    /// size (wp:extent) live there, the geometry and fill in the nested wsp,
+    /// and parseShape reads both through descendant lookups. VML shapes carry
+    /// their attributes on the v:shape / v:rect / ... element itself.
+    ///
+    /// An mc:AlternateContent holds the same shape twice (DrawingML choice, VML
+    /// fallback); only one of them is taken. Scanning the document for anchors
+    /// and v:shapes separately imported such a text box two times.
+    let rec private shapeRoots (node: XmlNode) : XmlNode list =
+        match Xml.name node |> Option.map Ns.stripNs with
+        | Some "AlternateContent" ->
+            let fromChoice = Ns.childNs "Choice" node |> Option.map shapeRoots |> Option.defaultValue []
+            if not fromChoice.IsEmpty then fromChoice
+            else Ns.childNs "Fallback" node |> Option.map shapeRoots |> Option.defaultValue []
+        | Some "anchor" | Some "inline" -> if isModelledShape node then [node] else []
+        | Some "shape" | Some "rect" | Some "roundrect" | Some "oval" when (match node with XmlDsl.Element(name, _, _) -> name.StartsWith "v:" | _ -> false) ->
+            if isModelledShape node then [node] else []
+        | Some _ -> Xml.children node |> List.collect shapeRoots
+        | None -> []
+
+    /// Shapes of the document body, each with the index of the body block
+    /// (as Docx.bodyContent numbers them) it is anchored in.
     let parseShapes (doc: XmlNode) : Shape list =
-        // Import a node if it carries text (txbxContent) OR a real geometry
-        // (prstGeom/custGeom) — so autoshapes with no text still render.
-        // A plain picture also has a:prstGeom (inside pic:spPr). It is already
-        // read as an image run; without this guard every picture was imported
-        // a second time as a rectangle shape and saved as a text box.
-        let isPicture node =
-            (Ns.descendantsNs "pic" node |> List.isEmpty |> not)
-            && (Ns.descendantsNs "wsp" node |> List.isEmpty)
-        let hasContent node =
-            (Ns.descendantsNs "txbxContent" node |> List.isEmpty |> not)
-            || (not (isPicture node)
-                && ((Ns.descendantsNs "prstGeom" node |> List.isEmpty |> not)
-                    || (Ns.descendantsNs "custGeom" node |> List.isEmpty |> not)))
-        // For DrawingML, parse from the wp:anchor / wp:inline wrapper — position
-        // (wp:positionH/V) and display size (wp:extent) live there, while the
-        // geometry/fill live in the nested wsp. parseShape reads everything via
-        // descendant lookups, so passing the whole wrapper picks up both. VML
-        // shapes carry their attrs on the v:shape node itself, so pass those.
-        (Ns.descendantsNs "anchor" doc) @ (Ns.descendantsNs "inline" doc) @ (Ns.descendantsNs "shape" doc)
-        |> List.filter hasContent
-        |> List.choose parseShape
+        let rec blockNodes (node: XmlNode) : XmlNode list =
+            Xml.children node
+            |> List.collect (fun child ->
+                match Xml.name child |> Option.map Ns.stripNs with
+                | Some "p" | Some "tbl" -> [child]
+                | Some "sdt" -> Ns.childNs "sdtContent" child |> Option.map blockNodes |> Option.defaultValue []
+                | Some "customXml" -> blockNodes child
+                | _ -> [])
+        match Ns.childNs "body" doc with
+        | Some body ->
+            blockNodes body
+            |> List.mapi (fun index block ->
+                shapeRoots block
+                |> List.choose parseShape
+                |> List.map (fun shape -> { shape with AnchorBlock = Some index }))
+            |> List.concat
+        | None -> shapeRoots doc |> List.choose parseShape
 
 // Resolve hyperlink targets from relationships
 let resolveHyperlinks (doc: WordDocument) : WordDocument =
@@ -4049,6 +4200,9 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                             "ImageCropTop" ==> img.CropTop
                             "ImageCropRight" ==> img.CropRight
                             "ImageCropBottom" ==> img.CropBottom
+                            "ImagePositionHAlign" ==> img.PositionHAlign
+                            "ImagePositionVAlign" ==> img.PositionVAlign
+                            "ImageWrapText" ==> img.WrapText
                         ])
                     | Link link ->
                         // Hyperlink as text run with link property
@@ -4333,6 +4487,9 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                                 "ImageCropTop" ==> img.CropTop
                                 "ImageCropRight" ==> img.CropRight
                                 "ImageCropBottom" ==> img.CropBottom
+                                "ImagePositionHAlign" ==> img.PositionHAlign
+                                "ImagePositionVAlign" ==> img.PositionVAlign
+                                "ImageWrapText" ==> img.WrapText
                             ])
                         | Link link ->
                             let effectiveLinkProps = resolvedRunProperties styleMap effectiveParaProps link.Properties
