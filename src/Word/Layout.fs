@@ -3777,6 +3777,70 @@ let private footnoteLayoutsForPage (settings: LayoutSettings) (measureText: Text
     let blockTop = pageContentBottom - footnoteBottomPad - tempY
     laidOut |> List.map (fun layout -> moveLayoutToY (blockTop + layout.Y) layout)
 
+/// Endnote paragraphs for every endnote referenced in `bodyLayouts`, in document
+/// order, stacked below `bodyBottom` (Word puts endnotes at the end of the
+/// document); Paint draws the separator above the first. `pageAt y` gives the
+/// content top and bottom of the page holding `y` and the content top of the
+/// page after it, so the notes continue onto further pages.
+let private endnoteLayoutsAfterBody (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (maxWidth: float) (bodyLayouts: BlockLayout seq) (bodyBottom: float) (pageAt: float -> struct (float * float * float)) : BlockLayout list =
+    let ordered = ResizeArray<BlockLayout>(bodyLayouts)
+    ordered.Sort(System.Comparison<BlockLayout>(fun left right -> compare left.Y right.Y))
+    let endnotes = ResizeArray<string * string>()
+    let seenEndnotes = System.Collections.Generic.HashSet<string>()
+    for layout in ordered do
+        for line in layout.Lines do
+            for id, text in endnotesInLine line do
+                if seenEndnotes.Add id then
+                    endnotes.Add(id, text)
+    let result = ResizeArray<BlockLayout>()
+    // An unpaged page: each note is measured for its natural height and placed explicitly.
+    let noteSettings = { settings with PageHeight = unpagedMeasurementPageHeight }
+    let mutable noteY = bodyBottom + endnoteTopGap
+    for noteIndex = 0 to endnotes.Count - 1 do
+        let id, text = endnotes.[noteIndex]
+        let mark = endnoteMark id
+        let noteString = sprintf "%s %s" mark (text.Trim())
+        let buffer =
+            TextBuffer.ofString noteString
+            |> TextBuffer.setFontFamily 0 noteString.Length footnoteFontFamily
+            |> TextBuffer.setFontSize 0 noteString.Length footnoteFontSize
+            |> TextBuffer.setVertAlign 0 mark.Length (Some "superscript")
+        let para = { Id = sprintf "%s%d" endnoteBlockIdPrefix noteIndex; Buffer = buffer; Metadata = footnoteParagraphMetadataForLayout }
+        let probe, _ = layoutParagraphAtWithRange noteSettings measureText measureRange maxWidth 0.0 0.0 para Map.empty
+        let height = probe.Height
+        let struct (contentTop, contentBottom, nextContentTop) = pageAt noteY
+        // A note that does not fit on the current page starts the next one.
+        let startY = if noteY > contentTop && noteY + height > contentBottom then nextContentTop else noteY
+        result.Add(moveLayoutToY startY probe)
+        noteY <- startY + height
+    resizeArrayToList result
+
+/// Vertical position of a paragraph that follows another one directly, given
+/// where it would start (`y`, right after the previous paragraph and its
+/// spacing after): adjoining spacing collapses to the larger of the two,
+/// contextual spacing drops it between paragraphs of one style, and a border
+/// shared by both is not repeated.
+let private collapseParagraphSpacing (y: float) (previousPara: ParagraphBlock) (previousStyle: ParagraphStyle) (previousMetadata: BlockMetadata) (previousSpacingAfter: float) (para: ParagraphBlock) (paragraphStyle: ParagraphStyle) (effectiveMetadata: BlockMetadata) =
+    let contextualSpacingEnabled (style: ParagraphStyle) (metadata: BlockMetadata) =
+        metadata.ContextualSpacing |> Option.orElse style.ContextualSpacing |> Option.defaultValue false
+    let spacingBefore = WordLayout.Paragraph.spacingBefore paragraphStyle effectiveMetadata
+    let stylesMatch = para.Metadata.Style.IsSome && previousPara.Metadata.Style = para.Metadata.Style
+    let effectivePreviousSpacingAfter =
+        if stylesMatch && contextualSpacingEnabled previousStyle previousMetadata then 0.0 else previousSpacingAfter
+    let effectiveSpacingBefore =
+        if stylesMatch && contextualSpacingEnabled paragraphStyle effectiveMetadata then 0.0 else spacingBefore
+    let collapsed = (y - previousSpacingAfter) + max effectivePreviousSpacingAfter effectiveSpacingBefore - spacingBefore
+    let sameBorders =
+        previousMetadata.ParagraphBorders.IsSome
+        && previousMetadata.ParagraphBorders = effectiveMetadata.ParagraphBorders
+        && previousMetadata.ParagraphBorderBefore = effectiveMetadata.ParagraphBorderBefore
+        && previousMetadata.ParagraphBorderAfter = effectiveMetadata.ParagraphBorderAfter
+    if stylesMatch && sameBorders then
+        let _, previousBorderAfter = paragraphBorderVerticalAdvance previousMetadata
+        let currentBorderBefore, _ = paragraphBorderVerticalAdvance effectiveMetadata
+        collapsed - previousBorderAfter - currentBorderBefore
+    else collapsed
+
 let private layoutDocumentWithRangeAndInitial
         (memo: ParagraphLayoutMemo option)
         (settings: LayoutSettings)
@@ -4146,16 +4210,7 @@ let private layoutDocumentWithRangeAndInitial
             if y > contentTop then
                 match previousParagraphContext with
                 | Some (previousPara, previousStyle, previousMetadata, previousSpacingAfter) ->
-                    let stylesMatch = sameParagraphStyle previousPara para
-                    let effectivePreviousSpacingAfter =
-                        if stylesMatch && contextualSpacingEnabled previousStyle previousMetadata then 0.0 else previousSpacingAfter
-                    let effectiveSpacingBefore =
-                        if stylesMatch && contextualSpacingEnabled paragraphStyle effectiveMetadata then 0.0 else spacingBefore
-                    y <- (y - previousSpacingAfter) + max effectivePreviousSpacingAfter effectiveSpacingBefore - spacingBefore
-                    if stylesMatch && sameParagraphBorders previousMetadata effectiveMetadata then
-                        let _, previousBorderAfter = paragraphBorderVerticalAdvance previousMetadata
-                        let currentBorderBefore, _ = paragraphBorderVerticalAdvance effectiveMetadata
-                        y <- y - previousBorderAfter - currentBorderBefore
+                    y <- collapseParagraphSpacing y previousPara previousStyle previousMetadata previousSpacingAfter para paragraphStyle effectiveMetadata
                 | None -> ()
             let initialStart = timingStart ()
             let initialLayout, initialCounters, initialObstacles, initialPlacedBoxes = layoutParagraphWithMemo memo settings measureText measureRange maxWidth y 0.0 paragraphStyle (effectiveBufferInContext styleContext) para numberedCounters floatingObstacles placedFloatingBoxes
@@ -4302,42 +4357,14 @@ let private layoutDocumentWithRangeAndInitial
             if not (layout.BlockId.StartsWith footnoteBlockIdPrefix) then
                 bodyLayouts.Add layout
                 bodyBottom <- max bodyBottom (layout.Y + layout.Height)
-        bodyLayouts.Sort(System.Comparison<BlockLayout>(fun left right -> compare left.Y right.Y))
-        let endnotes = ResizeArray<string * string>()
-        let seenEndnotes = System.Collections.Generic.HashSet<string>()
-        for layout in bodyLayouts do
-            for line in layout.Lines do
-                for id, text in endnotesInLine line do
-                    if seenEndnotes.Add id then
-                        endnotes.Add(id, text)
         let stride = pageHeight settings + pageGap
-        let mutable noteY = bodyBottom + endnoteTopGap
-        for noteIndex = 0 to endnotes.Count - 1 do
-            let id, text = endnotes.[noteIndex]
-            let mark = endnoteMark id
-            let noteString = sprintf "%s %s" mark (text.Trim())
-            let buffer =
-                TextBuffer.ofString noteString
-                |> TextBuffer.setFontFamily 0 noteString.Length footnoteFontFamily
-                |> TextBuffer.setFontSize 0 noteString.Length footnoteFontSize
-                |> TextBuffer.setVertAlign 0 mark.Length (Some "superscript")
-            let para = { Id = sprintf "%s%d" endnoteBlockIdPrefix noteIndex; Buffer = buffer; Metadata = footnoteParagraphMetadata }
-            // Lay the note out at a safe Y (page-1 content top) to get its natural
-            // height without triggering layoutParagraph's own page-break handling,
-            // then place it; if it won't fit on the current page, start it at the
-            // top of the next page (Word continues endnotes across pages).
-            let probe, _ = layoutParagraphAtWithRange settings measureText measureRange maxWidth settings.PaddingTop 0.0 para Map.empty
-            let height = probe.Height
+        let pageAt noteY =
             let pageIndex = int (floor (noteY / stride))
             let pageTop = float pageIndex * stride
-            let contentTop = WordLayout.Page.contentTop settings.PaddingTop pageTop
-            let contentBottom = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
-            let startY =
-                if noteY > contentTop && noteY + height > contentBottom
-                then WordLayout.Page.contentTop settings.PaddingTop (float (pageIndex + 1) * stride)
-                else noteY
-            layouts.Add(moveLayoutToY startY probe)
-            noteY <- startY + height
+            struct (WordLayout.Page.contentTop settings.PaddingTop pageTop,
+                    WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop,
+                    WordLayout.Page.contentTop settings.PaddingTop (float (pageIndex + 1) * stride))
+        layouts.AddRange(endnoteLayoutsAfterBody settings measureText measureRange maxWidth bodyLayouts bodyBottom pageAt)
 
     resizeArrayToList layouts, placedFloatingBoxes
 
@@ -4520,6 +4547,11 @@ let private flowColumns (memo: ParagraphLayoutMemo option) (settings: LayoutSett
         if balanced then
             let w = columnWidth 0
             let sub, _ = layoutDocumentWithRangeAndInitial memo { settings with Width = settings.PaddingLeft + w + settings.MarginRight; PageHeight = 100000.0 } measureText measureRange doc Map.empty [] []
+            // The sub-pass adds its own footnote / endnote paragraphs; they are
+            // not part of the text being balanced.
+            let sub =
+                sub |> List.filter (fun layout ->
+                    not (layout.BlockId.StartsWith footnoteBlockIdPrefix) && not (layout.BlockId.StartsWith endnoteBlockIdPrefix))
             let bottom = maxLineBottom settings.PaddingTop sub
             Some ((bottom - settings.PaddingTop) / float n + 2.0)
         else None
@@ -4555,19 +4587,65 @@ let private flowColumns (memo: ParagraphLayoutMemo option) (settings: LayoutSett
         | Some bh -> startY + bh
         | None -> contentBottomAt page - footnoteReserveHeight settings (pageFootnotes ())
     let atColumnTop () = abs (y - columnTop ()) < 0.5
+    // The paragraph placed just above in this column, for spacing collapse:
+    // (paragraph, style, effective metadata, spacing after). None at a column top.
+    let mutable previousParagraph: (ParagraphBlock * ParagraphStyle * BlockMetadata * float) option = None
     let advanceColumn () =
         col <- col + 1
         if col >= n then
             col <- 0
             if balancedHeight.IsNone then page <- page + 1
         y <- columnTop ()
+        previousParagraph <- None
 
-    for block in doc.Blocks do
+    let blocks = List.toArray doc.Blocks
+    // Keep-with-next, as in the single-column pass: a paragraph that keeps with
+    // the next one moves to the next column together with the paragraphs it is
+    // chained to when the group (those paragraphs and the first line of what
+    // follows) does not fit below it but would fit in a fresh column.
+    let keepGroupMovesToNextColumn index (style: ParagraphStyle) (layout: BlockLayout) colBottom =
+        if style.KeepNext <> Some true || atColumnTop () then false
+        else
+            let mutable groupHeight = paragraphVisibleFitHeight style layout
+            let mutable probeY = layout.Y + layout.Height
+            let mutable probeIndex = index + 1
+            let mutable probing = true
+            let mutable probed = false
+            let mutable movable = true
+            while probing do
+                let next = if probeIndex < blocks.Length then tryGetParagraph blocks.[probeIndex] else None
+                match next with
+                | Some nextPara ->
+                    let nextStyle = forBlockInContext styleContext blocks.[probeIndex]
+                    if nextPara.Metadata.PageBreakBefore || nextStyle.PageBreakBefore = Some true then
+                        movable <- false
+                        probing <- false
+                    else
+                        let nextLayout, _, _, _ =
+                            layoutParagraphWithMemo memo flowSettings measureText measureRange (columnWidth col) probeY 0.0 nextStyle (effectiveBufferInContext styleContext) nextPara counters [] []
+                        let keepsFurther = nextStyle.KeepNext = Some true
+                        groupHeight <-
+                            groupHeight
+                            + (if keepsFurther then paragraphVisibleFitHeight nextStyle nextLayout
+                               else
+                                   match nextLayout.Lines with
+                                   | firstLine :: _ -> max settings.LineHeight firstLine.Height
+                                   | [] -> min nextLayout.Height settings.LineHeight)
+                        probeY <- nextLayout.Y + nextLayout.Height
+                        probed <- true
+                        probing <- keepsFurther && not nextPara.Metadata.PageBreakAfter
+                        probeIndex <- probeIndex + 1
+                | None -> probing <- false
+            movable && probed && y + groupHeight > colBottom + 0.5 && groupHeight <= colBottom - columnTop ()
+
+    for blockIndex = 0 to blocks.Length - 1 do
+        let block = blocks.[blockIndex]
         match tryGetParagraph block with
         | Some para0 ->
             if (para0.Metadata.PageBreakBefore || para0.Metadata.RenderedPageBreakBefore.IsSome) && not (atColumnTop ()) then
                 advanceColumn ()
             let style = forBlockInContext styleContext block
+            let mutable keepChecked = false
             let mutable remaining = para0
             // Characters of the paragraph already placed in earlier columns.
             // A continuation is laid out from the rest of the text, so its
@@ -4578,8 +4656,20 @@ let private flowColumns (memo: ParagraphLayoutMemo option) (settings: LayoutSett
             while not placed do
                 let colBottom = columnBottom ()
                 let isContinuation = consumedOffset > 0
+                // Spacing between this paragraph and the one above it in the
+                // column collapses as in the single-column pass.
+                let layoutY =
+                    match previousParagraph with
+                    | Some (previousPara, previousStyle, previousMetadata, previousSpacingAfter) when not isContinuation && not (atColumnTop ()) ->
+                        collapseParagraphSpacing y previousPara previousStyle previousMetadata previousSpacingAfter remaining style (WordStyles.effectiveMetadata style remaining.Metadata)
+                    | _ -> y
                 let rawLayout, newCounters, _, _ =
-                    layoutParagraphWithMemo memo flowSettings measureText measureRange (columnWidth col) y 0.0 style (effectiveBufferInContext styleContext) remaining counters [] []
+                    layoutParagraphWithMemo memo flowSettings measureText measureRange (columnWidth col) layoutY 0.0 style (effectiveBufferInContext styleContext) remaining counters [] []
+                let moveKeepGroup =
+                    if keepChecked || isContinuation then false
+                    else
+                        keepChecked <- true
+                        keepGroupMovesToNextColumn blockIndex style rawLayout colBottom
                 let layout =
                     if isContinuation then
                         // The list marker belongs to the first fragment only.
@@ -4606,19 +4696,17 @@ let private flowColumns (memo: ParagraphLayoutMemo option) (settings: LayoutSett
                             fitNotes <- candidateNotes
                         else
                             stillFitting <- false
-                if fitCount = layout.Lines.Length then
+                let placeWhole () =
                     results.Add(shiftBlockX (columnDx col) layout)
                     addPageFootnotes (layoutFootnotes layout.Lines)
                     counters <- newCounters
                     y <- layout.Y + layout.Height
+                    previousParagraph <- Some (remaining, style, layout.Metadata, WordLayout.Paragraph.spacingAfter style layout.Metadata)
                     placed <- true
+                if moveKeepGroup then advanceColumn ()
+                elif fitCount = layout.Lines.Length then placeWhole ()
                 elif fitCount = 0 then
-                    if atColumnTop () then
-                        results.Add(shiftBlockX (columnDx col) layout)
-                        addPageFootnotes (layoutFootnotes layout.Lines)
-                        counters <- newCounters
-                        y <- layout.Y + layout.Height
-                        placed <- true
+                    if atColumnTop () then placeWhole ()
                     else advanceColumn ()
                 else
                     let fitLines = takeLines fitCount layout.Lines
@@ -4640,6 +4728,7 @@ let private flowColumns (memo: ParagraphLayoutMemo option) (settings: LayoutSett
                         advanceColumn ()
             if para0.Metadata.PageBreakAfter && not (atColumnTop ()) then advanceColumn ()
         | None ->
+            previousParagraph <- None
             let sub = { doc with Blocks = [block] }
             let subLayouts, _ =
                 layoutDocumentWithRangeAndInitial memo { settings with Width = settings.PaddingLeft + columnWidth col + settings.MarginRight; PageHeight = 100000.0 } measureText measureRange sub counters [] []
@@ -4714,6 +4803,19 @@ let private settingsForGeometry (settings: LayoutSettings) (geometry: SectionPag
 let private pageInfoOf (s: LayoutSettings) top =
     { Top = top; Width = s.Width; Height = pageHeight s; MarginTop = s.PaddingTop; MarginBottom = s.MarginBottom; MarginLeft = s.PaddingLeft; MarginRight = s.MarginRight }
 
+/// Extend a page list so it reaches down to `bottom` (note areas below the
+/// last body line), repeating the geometry of the last page.
+let pageInfosCoveringBottom (bottom: float) (pages: PageInfo list) =
+    match List.tryLast pages with
+    | None -> pages
+    | Some last ->
+        let extra = ResizeArray<PageInfo>()
+        let mutable top = last.Top
+        while top + last.Height + pageGap < bottom do
+            top <- top + last.Height + pageGap
+            extra.Add { last with Top = top }
+        if extra.Count = 0 then pages else pages @ resizeArrayToList extra
+
 /// The uniform page list for a single-section document (legacy stride model).
 let uniformPageInfosWithLayoutCount (settings: LayoutSettings) (layouts: BlockLayout list) =
     let stride = pageHeight settings + pageGap
@@ -4779,12 +4881,41 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
         currentPage <- endPage
         currentY <- endY)
     let maxPage = pageTops.Count - 1
+    let bodyLayouts = results.ToArray()
     for KeyValue (pageIndex, notes) in footnotesByPage do
         if not notes.IsEmpty && pageIndex <= maxPage && pageIndex < pageSettings.Count then
             let s = pageSettings.[pageIndex]
             let contentBottom = WordLayout.Page.contentBottom (pageHeight s) s.MarginBottom pageTops.[pageIndex]
             results.AddRange(footnoteLayoutsForPage s measureText measureRange (s.Width - s.PaddingLeft - s.MarginRight) pageIndex contentBottom notes)
     let pages = [ for p in 0 .. maxPage -> pageInfoOf pageSettings.[p] pageTops.[p] ]
+    // Endnotes go after the last section's text, in its page geometry; pages
+    // they spill onto repeat the last page.
+    let lastSettings = pageSettings.[maxPage]
+    let lastStride = pageHeight lastSettings + pageGap
+    let pageAt noteY =
+        let mutable index = 0
+        for p in 0 .. maxPage do
+            if pageTops.[p] <= noteY + 0.5 then index <- p
+        if index < maxPage then
+            let pageSetting = pageSettings.[index]
+            struct (WordLayout.Page.contentTop pageSetting.PaddingTop pageTops.[index],
+                    WordLayout.Page.contentBottom (pageHeight pageSetting) pageSetting.MarginBottom pageTops.[index],
+                    WordLayout.Page.contentTop pageSettings.[index + 1].PaddingTop pageTops.[index + 1])
+        else
+            let top = pageTops.[maxPage] + floor (max 0.0 (noteY - pageTops.[maxPage]) / lastStride) * lastStride
+            struct (WordLayout.Page.contentTop lastSettings.PaddingTop top,
+                    WordLayout.Page.contentBottom (pageHeight lastSettings) lastSettings.MarginBottom top,
+                    WordLayout.Page.contentTop lastSettings.PaddingTop (top + lastStride))
+    let mutable bodyBottom = 0.0
+    for layout in bodyLayouts do
+        bodyBottom <- max bodyBottom (layout.Y + layout.Height)
+    let endnotes =
+        endnoteLayoutsAfterBody lastSettings measureText measureRange (lastSettings.Width - lastSettings.PaddingLeft - lastSettings.MarginRight) bodyLayouts bodyBottom pageAt
+    results.AddRange endnotes
+    let pages =
+        match endnotes with
+        | [] -> pages
+        | _ -> pageInfosCoveringBottom (maxLineBottom 0.0 endnotes) pages
     resizeArrayToList results, pages
 
 /// Lay out a document, returning the layouts and the per-page geometry.
@@ -4803,7 +4934,17 @@ let private layoutDocumentPagesWithMemo (memo: ParagraphLayoutMemo option) (sett
                         if not notes.IsEmpty then
                             let contentBottom = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom (float pageIndex * stride)
                             yield! footnoteLayoutsForPage settings measureText measureRange maxWidth pageIndex contentBottom notes ]
-                r @ footnotes
+                // Endnotes after the columns' text, across the full text width.
+                let mutable bodyBottom = settings.PaddingTop
+                for layout in r do
+                    bodyBottom <- max bodyBottom (layout.Y + layout.Height)
+                let pageAt noteY =
+                    let pageIndex = int (floor (noteY / stride))
+                    let pageTop = float pageIndex * stride
+                    struct (WordLayout.Page.contentTop settings.PaddingTop pageTop,
+                            WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop,
+                            WordLayout.Page.contentTop settings.PaddingTop (float (pageIndex + 1) * stride))
+                r @ footnotes @ endnoteLayoutsAfterBody settings measureText measureRange maxWidth r bodyBottom pageAt
             | _ ->
                 let firstPass, placedAfterFirst =
                     layoutDocumentWithRangeAndInitial memo settings measureText measureRange doc Map.empty [] []
@@ -4827,19 +4968,6 @@ let documentHasSections (doc: Document) =
         match tryGetParagraph block with
         | Some para -> para.Metadata.SectionBreak.IsSome
         | None -> false)
-
-/// Extend a page list so it reaches down to `bottom` (note areas below the
-/// last body line), repeating the geometry of the last page.
-let pageInfosCoveringBottom (bottom: float) (pages: PageInfo list) =
-    match List.tryLast pages with
-    | None -> pages
-    | Some last ->
-        let extra = ResizeArray<PageInfo>()
-        let mutable top = last.Top
-        while top + last.Height + pageGap < bottom do
-            top <- top + last.Height + pageGap
-            extra.Add { last with Top = top }
-        if extra.Count = 0 then pages else pages @ resizeArrayToList extra
 
 /// Index of the page a document Y falls on (the last page starting at or above it).
 let pageIndexForYInPages (pages: PageInfo list) (y: float) =

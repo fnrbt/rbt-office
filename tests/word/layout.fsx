@@ -1147,6 +1147,92 @@ check "section footnote sits at the bottom of the referencing page"
     true
 
 // ---------------------------------------------------------------------------
+// The column / section flow behaves like the single-column pass: endnotes are
+// produced, adjoining paragraph spacing collapses, keep-with-next is honoured.
+// ---------------------------------------------------------------------------
+let endnotedPara id =
+    let text = "body text with an endnote x"
+    { paragraph id text with Buffer = ofString text |> setNote (text.Length - 1) 1 (Some "1") (Some "endnote") (Some "the endnote text") }
+let isEndnoteLayout (layout: BlockLayout) = layout.BlockId.StartsWith endnoteBlockIdPrefix
+let bodyBottomOf (layouts: BlockLayout list) =
+    layouts |> List.filter (fun layout -> not (isEndnoteLayout layout) && not (isFootnoteLayout layout)) |> List.map (fun layout -> layout.Y + layout.Height) |> List.max
+let columnEndnoteLayouts =
+    layoutDocument flowSettings measureText
+        { columnFlowDoc with Blocks = [ Doc.Paragraph (endnotedPara "flow-endnote"); Doc.Paragraph (paragraph "flow-after-endnote" "after") ] }
+let columnEndnotes = columnEndnoteLayouts |> List.filter isEndnoteLayout
+check "two-column document lays its endnote out" columnEndnotes.Length 1
+check "column endnote sits below the body" (columnEndnotes |> List.forall (fun layout -> layout.Y >= bodyBottomOf columnEndnoteLayouts)) true
+check "column endnote holds the note text"
+    (columnEndnotes |> List.collect (fun layout -> layout.Lines) |> List.collect (fun line -> line.Segments) |> List.map textOfSegment |> String.concat "" |> fun text -> text.Contains "the endnote text")
+    true
+let sectionEndnoteLayouts, sectionEndnotePages =
+    layoutDocumentPages flowSettings measureText (rangeMeasurerFromTextMeasurer measureText)
+        { Doc.empty with
+            Blocks = [ Doc.Paragraph sectionBreakPara; Doc.Paragraph (endnotedPara "sec-endnote"); Doc.Paragraph (paragraph "sec-after-endnote" "after") ]
+            PageSetup = flowPageSetup
+            Selection = None }
+let sectionEndnotes = sectionEndnoteLayouts |> List.filter isEndnoteLayout
+check "sectioned document lays its endnote out" sectionEndnotes.Length 1
+check "section endnote sits below the body, on a page"
+    (sectionEndnotes |> List.forall (fun layout ->
+        layout.Y >= bodyBottomOf sectionEndnoteLayouts
+        && sectionEndnotePages |> List.exists (fun page -> layout.Y >= page.Top + page.MarginTop - 0.5 && layout.Y + layout.Height <= page.Top + page.Height - page.MarginBottom + 0.5)))
+    true
+// Many endnotes spill onto further pages, which the page list covers.
+let manyEndnotesPara index =
+    let text = sprintf "note %d x" index
+    { paragraph (sprintf "many-endnote-%d" index) text with Buffer = ofString text |> setNote (text.Length - 1) 1 (Some (string index)) (Some "endnote") (Some (String.concat " " [ for _ in 1 .. 40 -> "endnote" ])) }
+let manyEndnoteLayouts, manyEndnotePages =
+    layoutDocumentPages flowSettings measureText (rangeMeasurerFromTextMeasurer measureText)
+        { Doc.empty with
+            Blocks = Doc.Paragraph sectionBreakPara :: [ for index in 1 .. 12 -> Doc.Paragraph (manyEndnotesPara index) ]
+            PageSetup = flowPageSetup
+            Selection = None }
+let lastManyPage = List.last manyEndnotePages
+check "section endnotes all laid out" (manyEndnoteLayouts |> List.filter isEndnoteLayout |> List.length) 12
+check "pages cover endnotes that spill over"
+    (manyEndnoteLayouts |> List.filter isEndnoteLayout |> List.forall (fun layout -> layout.Y + layout.Height <= lastManyPage.Top + lastManyPage.Height))
+    true
+// Spacing after / before collapses in a column exactly as in the single-column pass.
+let spacedPara id after before =
+    { paragraph id "spaced" with Metadata = { Doc.defaultMetadata with SpacingAfter = Some after; SpacingBefore = Some before } }
+let spacingBlocks = [ Doc.Paragraph (spacedPara "sp-1" 30.0 0.0); Doc.Paragraph (spacedPara "sp-2" 0.0 12.0); Doc.Paragraph (spacedPara "sp-3" 0.0 40.0) ]
+let spacingGaps (layouts: BlockLayout list) =
+    let y id = (layouts |> List.find (fun layout -> layout.BlockId = id)).Lines.Head.Y
+    System.Math.Round(y "sp-2" - y "sp-1", 3), System.Math.Round(y "sp-3" - y "sp-2", 3)
+let singleColumnSpacing = layoutDocument flowSettings measureText { columnFlowDoc with Blocks = spacingBlocks; PageSetup = flowPageSetup }
+let twoColumnSpacing = layoutDocument flowSettings measureText { columnFlowDoc with Blocks = spacingBlocks }
+check "column flow collapses paragraph spacing like the single-column pass" (spacingGaps twoColumnSpacing) (spacingGaps singleColumnSpacing)
+let uncollapsedGap =
+    let line = (singleColumnSpacing |> List.find (fun layout -> layout.BlockId = "sp-1")).Lines.Head
+    System.Math.Round(line.Height + (30.0 + 12.0) * 96.0 / 72.0, 3)
+check "the collapsed gap is smaller than the sum of the spacings" (fst (spacingGaps twoColumnSpacing) < uncollapsedGap) true
+// Keep-with-next: a heading at the foot of a column moves with the text it introduces.
+let keepNextStyle : Doc.NamedStyle = { namedStyle "KeepHead" None None with StyleType = "paragraph"; KeepNext = Some true }
+let fillerPara index = { paragraph (sprintf "kn-fill-%d" index) "filler" with Metadata = { Doc.defaultMetadata with SpacingAfter = Some 0.0 } }
+let keepDoc fillers keep =
+    { columnFlowDoc with
+        Styles = [ keepNextStyle ]
+        Blocks =
+            [ for index in 1 .. fillers -> Doc.Paragraph (fillerPara index) ]
+            @ [ Doc.Paragraph { paragraph "kn-head" "heading" with Metadata = { Doc.defaultMetadata with Style = (if keep then Some "KeepHead" else None); SpacingAfter = Some 0.0 } }
+                Doc.Paragraph { paragraph "kn-body" "body" with Metadata = { Doc.defaultMetadata with SpacingAfter = Some 0.0 } } ] }
+let columnOfBlock (layouts: BlockLayout list) id =
+    let layout = layouts |> List.find (fun layout -> layout.BlockId = id)
+    match layout.Lines.Head.Segments with
+    | TextSegment (_, _, x, _, _) :: _ -> if x >= 250.0 then 1 else 0
+    | _ -> -1
+let keepColumns fillers keep =
+    let layouts = layoutDocument flowSettings measureText (keepDoc fillers keep)
+    columnOfBlock layouts "kn-head", columnOfBlock layouts "kn-body"
+// The filler count that leaves the heading alone at the foot of the first column.
+let strandingFillers = [ 1 .. 40 ] |> List.tryFind (fun fillers -> keepColumns fillers false = (0, 1))
+check "a heading can be stranded at the foot of a column" strandingFillers.IsSome true
+check "keep-with-next takes the heading to the next column"
+    (strandingFillers |> Option.map (fun fillers -> keepColumns fillers true))
+    (Some (1, 1))
+
+// ---------------------------------------------------------------------------
 // Sections with their own page size: painting from an existing layout pass
 // keeps the per-section page geometry instead of assuming uniform pages.
 // ---------------------------------------------------------------------------
