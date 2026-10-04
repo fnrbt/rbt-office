@@ -544,3 +544,40 @@ checks['lazy-sheets'] = async () => {
     close(); eager.close();
     return lines;
 };
+
+// The picture of tests/test-documents-excel/synthetic-drawing-extras.xlsx is a real PNG
+// (24 x 16: a blue field, a white border, an orange diagonal): it decodes and is drawn, in the
+// DOM grid and by the portable painter, and survives an export.
+checks['fixture-picture'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        const original = await bytesOf('tests/test-documents-excel/synthetic-drawing-extras.xlsx');
+        await grid.ImportXlsx(original);
+        const picture = grid.GetDrawings().find((drawing) => drawing.kind === 'picture');
+        check('the sheet has the picture', [picture?.name, picture?.width > 20, picture?.height > 20], ['Logo', true, true]);
+        const image = await new Promise((resolve) => {
+            const poll = () => { const node = host.querySelector('img'); if (node && node.complete && node.naturalWidth > 0) resolve(node); else if (performance.now() - t0 > 5000) resolve(node); else setTimeout(poll, 20); };
+            const t0 = performance.now(); poll();
+        });
+        check('the grid shows it as a decoded image of 24 x 16', [image?.naturalWidth, image?.naturalHeight], [24, 16]);
+        const box = image.getBoundingClientRect();
+        check('stretched over its anchor', [Math.round(box.width), Math.round(box.height)], [Math.round(picture.width), Math.round(picture.height)]);
+        // Its pixels, read back from a canvas the image is drawn on.
+        const probe = document.createElement('canvas'); probe.width = 24; probe.height = 16;
+        probe.getContext('2d').drawImage(image, 0, 0);
+        const at = (x, y) => [...probe.getContext('2d').getImageData(x, y, 1, 1).data.slice(0, 3)];
+        check('its pixels: the border, the field, the diagonal', [at(0, 0), at(20, 3), at(12, 8)], [[255, 255, 255], [32, 96, 200], [240, 140, 20]]);
+        // The portable painter draws the picture too (not a labelled frame).
+        const canvas = document.createElement('canvas');
+        grid.SelectCell(20, 8);
+        grid.RenderPortableCanvas(canvas);
+        const centre = canvas.getContext('2d').getImageData(Math.round(50 + picture.x + picture.width * 0.8), Math.round(30 + picture.y + picture.height * 0.25), 1, 1).data;
+        check('the portable painter draws its pixels', [Math.abs(centre[0] - 32) < 30, Math.abs(centre[1] - 96) < 30, Math.abs(centre[2] - 200) < 40], [true, true, true]);
+        // And it is in the exported file, byte for byte.
+        const media = async (bytes) => { const zip = await window.JSZip.loadAsync(bytes); const names = Object.keys(zip.files).filter((name) => name.startsWith('xl/media/') && !zip.files[name].dir); return Promise.all(names.map(async (name) => (await zip.files[name].async('uint8array')).length)); };
+        check('the exported file holds the same picture', await media(await grid.ExportXlsx()), await media(original));
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};

@@ -192,12 +192,18 @@ eq "fresh: import of the export" (freshAgain.Sheets.[0].Model.Cells |> Map.map (
 // chart at F (one-cell) in front of it, a threaded comment with a reply on B2.
 let extrasWb = load "test-documents-excel/synthetic-drawing-extras.xlsx"
 let extrasImported = Bridge.Import.importWorkbook extrasWb
+// The fixture's picture is a real PNG (24 x 16), so that hosts can assert on it rendered.
+let logoBytes = extrasWb.Sheets.[0].Extras.Images.[0].Data
+let bigEndian (at: int) = (int logoBytes.[at] <<< 24) ||| (int logoBytes.[at + 1] <<< 16) ||| (int logoBytes.[at + 2] <<< 8) ||| int logoBytes.[at + 3]
+eq "fixture picture: a PNG with a header and an end"
+    (logoBytes.[0..7], System.Text.Encoding.ASCII.GetString(logoBytes, 12, 4), bigEndian 16, bigEndian 20, System.Text.Encoding.ASCII.GetString(logoBytes, logoBytes.Length - 8, 4))
+    ([| 137uy; 80uy; 78uy; 71uy; 13uy; 10uy; 26uy; 10uy |], "IHDR", 24, 16, "IEND")
 let extrasModel = extrasImported.Sheets.[0].Model
 let describeDrawing (drawing: SheetDrawing) =
     (match drawing.Content with Picture (contentType, _, data) -> "picture " + contentType + " " + string data.Length | KeptObject (kind, _) -> kind),
     drawing.Name, drawing.Anchor.Kind, (drawing.Anchor.FromRow, drawing.Anchor.FromCol), (drawing.Anchor.ToRow, drawing.Anchor.ToCol), drawing.Anchor.EditAs
 eq "import: drawings in z-order" (extrasModel.Drawings |> List.map describeDrawing)
-    [ ("picture image/png 8", Some "Logo", "twoCell", (2, 1), (Some 6, Some 3), Some "oneCell")
+    [ ("picture image/png 154", Some "Logo", "twoCell", (2, 1), (Some 6, Some 3), Some "oneCell")
       ("chart", Some "Chart 1", "oneCell", (extrasModel.Drawings.[1].Anchor.FromRow, 5), (None, None), None) ]
 eq "import: anchor offsets and sizes are pixels" (extrasModel.Drawings.[0].Anchor.FromOffsetX, extrasModel.Drawings.[0].Anchor.Width, extrasModel.Drawings.[1].Anchor.Width) (1.0, Some 128.0, Some 320.0)
 eq "import: threaded comment with its reply" (extrasModel.Threads |> Map.toList |> List.map (fun (a, thread) -> a.Row, a.Col, thread.Author, thread.Text, thread.Replies |> List.map (fun reply -> reply.Author, reply.Text)))
@@ -209,7 +215,7 @@ eq "export: untouched extras are the file's" ((Bridge.Export.toWorkbookOut (extr
 // Two rows inserted above everything, one column inserted before column C.
 let pictureRect (model: SpreadsheetModel) = Rbt.Spreadsheet.Layout.drawingRect model model.Drawings.[0]
 let movedModel = extrasModel |> applyStructureEdit (InsertRows (0, 2)) |> applyStructureEdit (InsertCols (2, 1))
-eq "edit: the picture moved with its rows and kept its size (oneCell)" (describeDrawing movedModel.Drawings.[0]) ("picture image/png 8", Some "Logo", "twoCell", (4, 1), (Some 8, Some 3), Some "oneCell")
+eq "edit: the picture moved with its rows and kept its size (oneCell)" (describeDrawing movedModel.Drawings.[0]) ("picture image/png 154", Some "Logo", "twoCell", (4, 1), (Some 8, Some 3), Some "oneCell")
 eq "edit: the chart moved down and right" ((movedModel.Drawings.[1].Anchor.FromRow, movedModel.Drawings.[1].Anchor.FromCol)) (extrasModel.Drawings.[1].Anchor.FromRow + 2, 6)
 eq "edit: the thread moved with its cell" (movedModel.Threads |> Map.toList |> List.map (fun (a, _) -> a.Row, a.Col)) [ 3, 1 ]
 eq "edit: the picture is drawn two rows lower" ((pictureRect movedModel).Y - (pictureRect extrasModel).Y) 50.0
@@ -234,7 +240,7 @@ eq "edit: a move-and-size anchor grows with an inserted row" ((applyStructureEdi
 let paintViewport : Rbt.Spreadsheet.Layout.Viewport = { ScrollX = 0.0; ScrollY = 0.0; Width = 1200.0; Height = 800.0; HeaderHeight = 30.0; RowHeaderWidth = 50.0; Measurer = None }
 let painted = Rbt.Spreadsheet.Paint.buildPaintItems extrasModel paintViewport
 eq "paint: the picture at its anchor" (painted |> List.choose (function Rbt.Spreadsheet.Paint.DrawImage (rect, image) -> Some (rect.X, rect.Y, image.ContentType, image.Data.Length, image.Label) | _ -> None))
-    [ 50.0 + (pictureRect extrasModel).X, 30.0 + (pictureRect extrasModel).Y, "image/png", 8, "Picture: Logo" ]
+    [ 50.0 + (pictureRect extrasModel).X, 30.0 + (pictureRect extrasModel).Y, "image/png", 154, "Picture: Logo" ]
 ok "paint: a labelled frame for the chart" (painted |> List.exists (function Rbt.Spreadsheet.Paint.DrawText text -> text.Text = "Chart: Chart 1" | _ -> false)) "no chart label"
 eq "paint: the viewport items scroll the drawing with the body" (Rbt.Spreadsheet.Paint.buildViewportPaintItems extrasModel { paintViewport with ScrollY = 40.0 } |> List.choose (fun item -> match item.Item with Rbt.Spreadsheet.Paint.DrawImage (rect, _) -> Some (item.Zone, rect.Y) | _ -> None))
     [ Rbt.Spreadsheet.Layout.BodyZone, 30.0 + (pictureRect extrasModel).Y - 40.0 ]
@@ -242,7 +248,7 @@ eq "paint: the viewport items scroll the drawing with the body" (Rbt.Spreadsheet
 let pictured = { fresh with Drawings = [ extrasModel.Drawings.[0] ]; Threads = Map.ofList [ addr 0 0, { Id = "{BBBBBBBB-0000-0000-0000-000000000001}"; Author = Some "New Author"; PersonId = None; Date = None; Text = "typed here"; Replies = [] } ] }
 let picturedBack = reread (Bridge.Export.toWorkbookOut { Sheets = [| pictured |]; Names = [| "First" |]; Visible = [| true |]; ActiveSheetIndex = 0; DefinedNames = Map.empty; Source = None; Macros = None })
 eq "fresh: picture and thread written" (picturedBack.Sheets.[0].Extras.Images |> List.map (fun image -> image.Data.Length, image.Anchor.FromRow), picturedBack.Sheets.[0].Extras.ThreadedComments |> List.map (fun thread -> thread.Author, thread.Text))
-    ([ 8, 2 ], [ Some "New Author", "typed here" ])
+    ([ 154, 2 ], [ Some "New Author", "typed here" ])
 
 // ---- recalculation of an Excel-calculated workbook ---------------------------
 // (milk-street-office.xlsx: 13,337 formulas, one legacy array formula.)
