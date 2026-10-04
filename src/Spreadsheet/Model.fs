@@ -640,6 +640,58 @@ type CommentThread = {
     Replies: CommentThread list
 }
 
+/// A hyperlink on a range of cells: an address, or a place in the workbook
+/// (`IsInternal`, e.g. "Sheet2!A1").
+type SheetHyperlink = {
+    Range: CellRange
+    Target: string
+    IsInternal: bool
+}
+
+/// The default cell style of a run of columns (`<col min max style>`): what
+/// a cell of those columns looks like when it has no format of its own.
+type ColumnStyle = {
+    /// First and last column, 0-based, inclusive.
+    First: int
+    Last: int
+    Format: CellFormat
+    /// The style in the file the sheet came from (an index into what the
+    /// file bridge kept), or -1 for a style set in the editor.
+    Source: int
+}
+
+/// A what-if data table: Excel fills `Range` by putting each row / column
+/// header value into the input cells and recalculating. It is not an
+/// expression; the editor does not evaluate it. The cells of the range hold
+/// the results the file had, and a recalculation leaves them alone.
+type DataTable = {
+    Range: CellRange
+    TwoDimensional: bool
+    /// A one-input table whose input runs along the row.
+    RowInput: bool
+    /// The input cells, as A1 references.
+    Input1: string
+    Input2: string option
+    Input1Deleted: bool
+    Input2Deleted: bool
+    CalculateAlways: bool
+}
+
+/// A range that something the editor does not model sits on (a pivot table
+/// of the file): kept so that it follows inserted and deleted rows / columns.
+type KeptRange = {
+    /// What the range belongs to (for a pivot table, the path of its part).
+    Key: string
+    Range: CellRange
+}
+
+/// Which sheet of which opened file a model is: `Book` identifies the import
+/// (`XlsxBridge.XlsxSource.Id`), `Sheet` is the sheet's position in that file.
+type SheetOrigin = {
+    Book: int
+    Sheet: int
+}
+
 type SpreadsheetModel = {
     /// Sparse cell storage - only non-empty cells
     Cells: Map<CellAddress, CellData>
@@ -763,6 +815,24 @@ type SpreadsheetModel = {
 
     /// Threaded comments by cell (shown where a cell's comment is shown).
     Threads: Map<CellAddress, CommentThread>
+
+    /// Hyperlinks, by range. They move with their cells.
+    Hyperlinks: SheetHyperlink list
+
+    /// Default cell styles of columns. They move with their columns.
+    ColumnStyles: ColumnStyle list
+
+    /// What-if data tables. Their ranges and input cells follow structure edits.
+    DataTables: DataTable list
+
+    /// Ranges of things the editor does not model (pivot tables).
+    KeptRanges: KeptRange list
+
+    /// Which sheet of the opened file this model is, when it came from one.
+    /// It stays with the model through renames, reordering and added or
+    /// removed sheets, so a save can carry over what the editor does not
+    /// model. None for a sheet made in the editor.
+    SourceSheet: SheetOrigin option
 }
 
 /// Command for undo/redo (must come after SpreadsheetModel)
@@ -820,6 +890,11 @@ let createEmpty rowCount colCount = {
     Macros = ""
     Drawings = []
     Threads = Map.empty
+    Hyperlinks = []
+    ColumnStyles = []
+    DataTables = []
+    KeptRanges = []
+    SourceSheet = None
 }
 
 /// Convert column index to letter (0="A", 25="Z", 26="AA")
@@ -1914,8 +1989,73 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
                 if moved = anchor then drawing else { drawing with Anchor = moved }
         if model.Drawings.IsEmpty then model.Drawings else model.Drawings |> List.map moveDrawing
 
+    // A range that is not a rule: it follows its cells, and is gone when
+    // every row / column of it was deleted.
+    let moveCellRange (range: CellRange) : CellRange option =
+        if onRows then
+            moveSpan range.From.Row range.To.Row
+            |> Option.map (fun (lo, hi) -> { From = { range.From with Row = lo }; To = { range.To with Row = hi } })
+        else
+            moveSpan range.From.Col range.To.Col
+            |> Option.map (fun (lo, hi) -> { From = { range.From with Col = lo }; To = { range.To with Col = hi } })
+    let moveRanged (range: 'T -> CellRange) (withRange: 'T -> CellRange -> 'T) (items: 'T list) : 'T list =
+        if items.IsEmpty then items
+        else
+            let moved =
+                items
+                |> List.choose (fun item ->
+                    moveCellRange (range item)
+                    |> Option.map (fun next -> if next = range item then item else withRange item next))
+            if moved.Length = items.Length && List.forall2 (fun (a: 'T) (b: 'T) -> obj.ReferenceEquals(a, b)) moved items then items else moved
+    let hyperlinks = model.Hyperlinks |> moveRanged (fun link -> link.Range) (fun link range -> { link with Range = range })
+    let keptRanges = model.KeptRanges |> moveRanged (fun kept -> kept.Range) (fun kept range -> { kept with Range = range })
+    // The input cells of a data table are references: they move like the
+    // references of a formula, and a deleted one is marked as such.
+    let dataTables =
+        let moveInput (reference: string) (deleted: bool) =
+            if deleted || reference = "" then reference, deleted
+            else
+                let adjusted = adjustFormulaForEdit edit targetsEditedSheet ("=" + reference)
+                let text = if adjusted.StartsWith "=" then adjusted.Substring 1 else adjusted
+                if text.Contains "#REF!" then reference, true else text, false
+        model.DataTables
+        |> moveRanged (fun table -> table.Range) (fun table range -> { table with Range = range })
+        |> fun tables ->
+            if tables.IsEmpty then tables
+            else
+                let adjusted =
+                    tables
+                    |> List.map (fun table ->
+                        let input1, deleted1 = moveInput table.Input1 table.Input1Deleted
+                        let input2, deleted2 =
+                            match table.Input2 with
+                            | Some reference ->
+                                let text, deleted = moveInput reference table.Input2Deleted
+                                Some text, deleted
+                            | None -> None, table.Input2Deleted
+                        if input1 = table.Input1 && input2 = table.Input2 && deleted1 = table.Input1Deleted && deleted2 = table.Input2Deleted then table
+                        else { table with Input1 = input1; Input2 = input2; Input1Deleted = deleted1; Input2Deleted = deleted2 })
+                if List.forall2 (fun (a: DataTable) (b: DataTable) -> obj.ReferenceEquals(a, b)) adjusted tables then tables else adjusted
+    // Column default styles belong to their columns.
+    let columnStyles =
+        if onRows || model.ColumnStyles.IsEmpty then model.ColumnStyles
+        else
+            model.ColumnStyles
+            |> List.choose (fun style ->
+                // A whole-sheet style (to the last column) stays one.
+                if style.First = 0 && style.Last >= 16383 then Some style
+                else
+                    moveSpan style.First style.Last
+                    |> Option.map (fun (first, last) ->
+                        let last = if style.Last >= 16383 then 16383 else min 16383 last
+                        if first = style.First && last = style.Last then style else { style with First = first; Last = last }))
+
     let delta = if isInsert then count else -count
     { model with
+        Hyperlinks = hyperlinks
+        KeptRanges = keptRanges
+        DataTables = dataTables
+        ColumnStyles = columnStyles
         Drawings = drawings
         Threads = (if Map.isEmpty model.Threads then model.Threads else moveAddressMap model.Threads)
         Cells = cells

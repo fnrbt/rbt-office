@@ -141,6 +141,9 @@ type ImportedSheet = {
 /// reader's workbook, and each sheet's model exactly as it was installed (so
 /// that "the user did not touch this" can be told from "this changed").
 type XlsxSource = {
+    /// Identifies this import: the models of its sheets carry it in
+    /// `SourceSheet.Book`, so a model is only matched with the file it came from.
+    Id: int
     Workbook: XlsxReader.Workbook
     /// Parallel to `Workbook.Sheets`.
     Baseline: SpreadsheetModel array
@@ -169,6 +172,13 @@ type ImportOptions = {
     ExtraRows: int
     ExtraCols: int
 }
+
+let mutable private lastSourceId = 0
+
+/// A fresh `XlsxSource.Id`.
+let private nextSourceId () =
+    lastSourceId <- lastSourceId + 1
+    lastSourceId
 
 /// A grid as large as its content (at least 100 x 26): the web component.
 let defaultImportOptions = { MinRows = 100; MinCols = 26; ExtraRows = 0; ExtraCols = 0 }
@@ -800,8 +810,59 @@ module Import =
                 | Some _ -> ()
                 | None -> cellMap <- Map.add addr { Value = CellValue.Empty; Format = { defaultFormat with HasComment = true }; Comment = None } cellMap
 
+        // Hyperlinks, by range: they follow their cells from here on.
+        let hyperlinks =
+            sheet.Hyperlinks
+            |> List.choose (fun link ->
+                parseRangeClipped 1048575 16383 link.Range
+                |> Option.map (fun (sr, sc, er, ec) ->
+                    ({ Range = { From = { Row = sr; Col = sc }; To = { Row = er; Col = ec } }
+                       Target = link.Target
+                       IsInternal = link.IsInternal } : SheetHyperlink)))
+        // Default cell styles of columns, in the order `XlsxWriter.
+        // packageFromReaderWorkbook` lists them (`Source` is that position).
+        let columnStyles =
+            sheet.Columns
+            |> List.choose (fun column ->
+                match column.Style with
+                | Some index when index > 0 && index < wb.Styles.Length -> Some (column, index)
+                | _ -> None)
+            |> List.mapi (fun position (column, index) ->
+                ({ First = column.Index - 1
+                   Last = column.MaxIndex - 1
+                   Format =
+                    (match styleCache.TryGetValue index with
+                     | true, cached -> cached
+                     | false, _ -> format wb.Styles.[index])
+                   Source = position } : ColumnStyle))
+        // What-if data tables: the cells of the range hold the file's results.
+        let dataTables =
+            sheet.Extras.DataTables
+            |> List.choose (fun table ->
+                parsePlainRange table.Ref
+                |> Option.map (fun (sr, sc, er, ec) ->
+                    ({ Range = { From = { Row = sr; Col = sc }; To = { Row = er; Col = ec } }
+                       TwoDimensional = table.TwoDimensional
+                       RowInput = table.RowInput
+                       Input1 = table.Input1
+                       Input2 = table.Input2
+                       Input1Deleted = table.Input1Deleted
+                       Input2Deleted = table.Input2Deleted
+                       CalculateAlways = table.CalculateAlways } : DataTable)))
+        // Where the file's pivot tables sit.
+        let keptRanges =
+            sheet.Extras.PivotLocations
+            |> List.choose (fun (path, range) ->
+                parsePlainRange range
+                |> Option.map (fun (sr, sc, er, ec) ->
+                    ({ Key = path; Range = { From = { Row = sr; Col = sc }; To = { Row = er; Col = ec } } } : KeptRange)))
+
         let model =
             { createEmpty modelRows modelCols with
+                Hyperlinks = hyperlinks
+                ColumnStyles = columnStyles
+                DataTables = dataTables
+                KeptRanges = keptRanges
                 Cells = cellMap
                 RichRuns = richRuns
                 MergedCells = merged
@@ -918,7 +979,14 @@ module Import =
         let readerSheets = List.toArray wb.Sheets
         if readerSheets.Length = 0 then failwith "XLSX workbook has no worksheets"
         let names = readerSheets |> Array.map (fun sheet -> sheet.Name)
-        let imports = readerSheets |> Array.map (importSheet options wb)
+        // Each model knows which sheet of the file it is, whatever happens to
+        // its name or position later.
+        let sourceId = nextSourceId ()
+        let imports =
+            readerSheets
+            |> Array.mapi (fun index sheet ->
+                let import = importSheet options wb sheet
+                { import with Model = { import.Model with SourceSheet = Some { Book = sourceId; Sheet = index } } })
         let names' = definedNames wb
 
         // List validations that point at a range or a name, now that every sheet exists.
@@ -959,7 +1027,7 @@ module Import =
                    Visible = visible.[index] } : ImportedSheet))
           Context = context
           Date1904 = wb.Date1904
-          Source = { Workbook = wb; Baseline = finalModels; BaselineNames = context.Names } }
+          Source = { Id = sourceId; Workbook = wb; Baseline = finalModels; BaselineNames = context.Names } }
 
     let importWorkbook (wb: XlsxReader.Workbook) : ImportedWorkbook =
         importWorkbookWith defaultImportOptions wb
@@ -1176,6 +1244,26 @@ module Export =
           Format = format data.Format
           Comment = data.Comment |> Option.map (fun c -> c.Text, c.Author) }
 
+    let private cellRangeText (r: CellRange) =
+        if r.From = r.To then formatCellRef r.From.Row r.From.Col
+        else formatCellRef r.From.Row r.From.Col + ":" + formatCellRef r.To.Row r.To.Col
+
+    let private hyperlinks (model: SpreadsheetModel) : XlsxWriter.XlsxHyperlink list =
+        model.Hyperlinks
+        |> List.map (fun link -> ({ Range = cellRangeText link.Range; Target = link.Target; IsInternal = link.IsInternal } : XlsxWriter.XlsxHyperlink))
+
+    let private dataTables (model: SpreadsheetModel) : XlsxReader.DataTableFormula list =
+        model.DataTables
+        |> List.map (fun table ->
+            ({ Ref = cellRangeText table.Range
+               TwoDimensional = table.TwoDimensional
+               RowInput = table.RowInput
+               Input1 = table.Input1
+               Input2 = table.Input2
+               Input1Deleted = table.Input1Deleted
+               Input2Deleted = table.Input2Deleted
+               CalculateAlways = table.CalculateAlways } : XlsxReader.DataTableFormula))
+
     /// A sheet written from its model alone.
     let private modelSheet (dxfIndex: XlsxReader.Dxf -> int) (name: string) (state: XlsxReader.SheetState) (model: SpreadsheetModel) : XlsxWriter.XlsxSheetOut =
         { Name = name
@@ -1190,7 +1278,7 @@ module Export =
           Tables = model.Tables |> List.map (table model)
           DataValidations = validations model
           ConditionalFormats = conditionalFormats dxfIndex model
-          Hyperlinks = []
+          Hyperlinks = hyperlinks model
           PageMargins = Some (margins model.PageSetup.Margins)
           PageSetup = Some (pageSetup None model.PageSetup)
           PrintOptions = Some (printOptions model.PageSetup.Options)
@@ -1203,8 +1291,9 @@ module Export =
           // Pictures and threads of the model. Kept objects need the parts of
           // the file they came from, so a sheet without a source has none.
           Extras =
-            extrasOfModel XlsxReader.emptySheetExtras None
-                { model with Drawings = model.Drawings |> List.filter (fun drawing -> match drawing.Content with Picture _ -> true | KeptObject _ -> false) } }
+            { extrasOfModel XlsxReader.emptySheetExtras None
+                { model with Drawings = model.Drawings |> List.filter (fun drawing -> match drawing.Content with Picture _ -> true | KeptObject _ -> false) }
+                with DataTables = dataTables model } }
 
     let private sameRef (a: 'T) (b: 'T) = obj.ReferenceEquals(a, b)
 
@@ -1270,7 +1359,8 @@ module Export =
             // import; unchanged validations go back as the file states them.
             DataValidations = if sameRef before.Validations model.Validations then original.DataValidations else fromModel.DataValidations
             ConditionalFormats = if sameRef before.ConditionalFormats model.ConditionalFormats then original.ConditionalFormats else fromModel.ConditionalFormats
-            Hyperlinks = original.Hyperlinks
+            // Hyperlinks are written where their cells are now.
+            Hyperlinks = if unchanged (fun m -> m.Hyperlinks) then original.Hyperlinks else fromModel.Hyperlinks
             PageMargins = if before.PageSetup.Margins = model.PageSetup.Margins then original.PageMargins else fromModel.PageMargins
             PageSetup =
                 if unchanged (fun m -> m.PageSetup) then original.PageSetup
@@ -1284,9 +1374,24 @@ module Export =
                 // Drawing objects and threaded comments are written from the
                 // model: where the user's row and column edits moved them.
                 let extras = extrasOfModel original.Extras (Some before) model
-                // Column styles are by position: they are kept as long as no column was inserted or deleted.
-                if before.ColCount = model.ColCount then extras
-                else { extras with Columns = []; ColumnStyles = [] } }
+                let extras =
+                    if unchanged (fun m -> m.DataTables) then extras
+                    else { extras with DataTables = dataTables model }
+                // Column default styles follow their columns. The file's own
+                // `<col>` list is by position: it is only kept while no
+                // column was inserted or deleted.
+                if before.ColCount = model.ColCount && unchanged (fun m -> m.ColumnStyles) then extras
+                else
+                    let fileStyles = List.toArray original.Extras.ColumnStyles
+                    { extras with
+                        Columns = []
+                        ColumnStyles =
+                            model.ColumnStyles
+                            |> List.choose (fun style ->
+                                if style.Source >= 0 && style.Source < fileStyles.Length then
+                                    let _, _, cellStyle = fileStyles.[style.Source]
+                                    Some (style.First, style.Last, cellStyle)
+                                else None) } }
 
     /// The defined names to write. Names that still read as imported are
     /// written as the file had them (their spelling and order); otherwise
@@ -1339,34 +1444,32 @@ module Export =
             | index -> index
         let nameOf index = if index < input.Names.Length then input.Names.[index] else sprintf "Sheet%d" (index + 1)
         let visibleAt index = index >= input.Visible.Length || input.Visible.[index]
-        // A sheet of the source is found by name; sheets cannot be reordered
-        // without also being renamed apart, so the name is the identity.
-        let sourceSheets =
+        // A sheet of the source is found by the identity its model carries
+        // (`SourceSheet`: which sheet of the file it was imported as), so the
+        // carry-over survives renames, reordering and added or removed
+        // sheets. Two models claiming the same sheet (a copy): the first is it.
+        let sourceOf : int -> (XlsxReader.Worksheet * XlsxWriter.XlsxSheetOut * SpreadsheetModel) option =
             match input.Source, original with
             | Some source, Some package ->
                 let readerSheets = List.toArray source.Workbook.Sheets
                 let outSheets = List.toArray package.Sheets
-                [ for i in 0 .. readerSheets.Length - 1 do
-                    if i < outSheets.Length && i < source.Baseline.Length then
-                        yield readerSheets.[i].Name.ToUpperInvariant(), (readerSheets.[i], outSheets.[i], source.Baseline.[i]) ]
-                |> Map.ofList
-            | _ -> Map.empty
-        // A renamed sheet is still the file's sheet at its position, as long
-        // as no sheet was added or removed.
-        let sourceByIndex =
-            match input.Source, original with
-            | Some source, Some package when source.Workbook.Sheets.Length = input.Sheets.Length ->
-                let readerSheets = List.toArray source.Workbook.Sheets
-                let outSheets = List.toArray package.Sheets
-                fun index ->
-                    if index < outSheets.Length && index < source.Baseline.Length then Some (readerSheets.[index], outSheets.[index], source.Baseline.[index])
-                    else None
+                let claimed = Collections.Generic.HashSet<int>()
+                let owners =
+                    input.Sheets
+                    |> Array.map (fun model ->
+                        match model.SourceSheet with
+                        | Some origin when origin.Book = source.Id && origin.Sheet >= 0 && origin.Sheet < readerSheets.Length
+                                           && origin.Sheet < outSheets.Length && origin.Sheet < source.Baseline.Length
+                                           && claimed.Add origin.Sheet ->
+                            Some (readerSheets.[origin.Sheet], outSheets.[origin.Sheet], source.Baseline.[origin.Sheet])
+                        | _ -> None)
+                fun index -> if index < owners.Length then owners.[index] else None
             | _ -> fun _ -> None
         let sheets =
             input.Sheets
             |> Array.mapi (fun index model ->
                 let name = nameOf index
-                match Map.tryFind (name.ToUpperInvariant()) sourceSheets |> Option.orElse (sourceByIndex index) with
+                match sourceOf index with
                 | Some (readerSheet, outSheet, before) ->
                     // Hidden and very hidden are both "no tab" to the editor.
                     let state =
@@ -1385,5 +1488,28 @@ module Export =
           Dxfs = List.ofSeq dxfs
           Preserved =
             match input.Source with
-            | Some source -> source.Workbook.Preserved
+            | Some source ->
+                // A pivot table whose cells moved (rows / columns inserted or
+                // deleted before it) is written at its new place: only the
+                // range of its <location> changes, the part is otherwise kept.
+                let moved =
+                    [ for index in 0 .. input.Sheets.Length - 1 do
+                        match sourceOf index with
+                        | Some (_, _, before) when not (sameRef before.KeptRanges input.Sheets.[index].KeptRanges) ->
+                            for kept in input.Sheets.[index].KeptRanges do
+                                match before.KeptRanges |> List.tryFind (fun was -> was.Key = kept.Key) with
+                                | Some was when was.Range <> kept.Range -> yield kept.Key, cellRangeText kept.Range
+                                | _ -> ()
+                        | _ -> () ]
+                    |> Map.ofList
+                if moved.IsEmpty then source.Workbook.Preserved
+                else
+                    { source.Workbook.Preserved with
+                        Parts =
+                            source.Workbook.Preserved.Parts
+                            |> List.map (fun (path, data) ->
+                                match Map.tryFind path moved with
+                                | Some range ->
+                                    path, Text.Encoding.UTF8.GetBytes (XlsxReader.withPivotLocation range (Text.Encoding.UTF8.GetString data))
+                                | None -> path, data) }
             | None -> XlsxReader.emptyWorkbookPreservation }

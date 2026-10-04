@@ -975,12 +975,33 @@ let private cachedValueXml sharedIndex value =
             cached |> Option.map loop |> Option.defaultValue ("", "")
     loop value
 
-let private cellXmlFull (styles: StyleBook) sharedIndex (cell: XlsxCellOut) =
+/// `<f t="dataTable" .../>` of a what-if data table.
+let private dataTableXml (table: XlsxReader.DataTableFormula) =
+    let attrs = [
+        yield "t=\"dataTable\""
+        yield attr "ref" table.Ref
+        if table.TwoDimensional then yield "dt2D=\"1\""
+        if table.RowInput then yield "dtr=\"1\""
+        yield attr "r1" table.Input1
+        match table.Input2 with Some input -> yield attr "r2" input | None -> ()
+        if table.Input1Deleted then yield "del1=\"1\""
+        if table.Input2Deleted then yield "del2=\"1\""
+        if table.CalculateAlways then yield "ca=\"1\""
+    ]
+    "<f " + String.concat " " attrs + "/>"
+
+let private cellXmlFull (styles: StyleBook) sharedIndex (dataTables: Map<string, XlsxReader.DataTableFormula>) (cell: XlsxCellOut) =
     let reference = cellRef cell.Row cell.Col
     let xf = xfKey cell.Format
     let styleId = Map.find xf styles.StyleIndex
     let styleAttr = if styleId = 0 then "" else sprintf " s=\"%d\"" styleId
-    match cell.Value with
+    match (if dataTables.IsEmpty then None else Map.tryFind reference dataTables), cell.Value with
+    // The first cell of a what-if data table: the table, and the result the cell holds.
+    | Some table, value ->
+        let tAttr, cachedXml = cachedValueXml sharedIndex value
+        sprintf "<c r=\"%s\"%s%s>%s%s</c>" reference styleAttr tAttr (dataTableXml table) cachedXml
+    | None, value ->
+    match value with
     | XlsxBlank ->
         if styleId = 0 then ""
         else sprintf "<c r=\"%s\"%s/>" reference styleAttr
@@ -1085,7 +1106,30 @@ let private sheetViewsXml (sheet: XlsxSheetOut) active =
         else ""
     sprintf "<sheetViews><sheetView %s>%s</sheetView></sheetViews>" (String.concat " " attrs) pane
 
+/// The first cell of a range reference ("B5:F10" -> "B5"), without "$".
+let private firstCellOfRange (range: string) =
+    (match range.IndexOf ':' with -1 -> range | index -> range.Substring(0, index)).Replace("$", "").ToUpperInvariant()
+
 let private rowsXml styles sharedIndex (sheet: XlsxSheetOut) =
+    // A data table is written on the first cell of its range.
+    let dataTables = sheet.Extras.DataTables |> List.map (fun table -> firstCellOfRange table.Ref, table) |> Map.ofList
+    let sheet =
+        // That cell is written even when it holds nothing.
+        let present = sheet.Cells |> List.map (fun c -> cellRef c.Row c.Col) |> Set.ofList
+        let missing =
+            dataTables
+            |> Map.toList
+            |> List.choose (fun (reference, _) ->
+                if Set.contains reference present then None
+                else
+                    let mutable col = 0
+                    let mutable row = 0
+                    for ch in reference do
+                        if ch >= 'A' && ch <= 'Z' then col <- col * 26 + (int ch - int 'A' + 1)
+                        elif ch >= '0' && ch <= '9' then row <- row * 10 + (int ch - int '0')
+                    if row < 1 || col < 1 then None
+                    else Some { Row = row - 1; Col = col - 1; Value = XlsxBlank; Format = defaultXlsxCellFormat; Comment = None })
+        if missing.IsEmpty then sheet else { sheet with Cells = sheet.Cells @ missing }
     let cellsByRow = sheet.Cells |> List.groupBy (fun c -> c.Row) |> Map.ofList
     let rowHeights = sheet.RowHeights |> Map.ofList
     let rowSet =
@@ -1110,7 +1154,7 @@ let private rowsXml styles sharedIndex (sheet: XlsxSheetOut) =
             Map.tryFind row cellsByRow
             |> Option.defaultValue []
             |> List.sortBy (fun c -> c.Col)
-            |> List.map (cellXmlFull styles sharedIndex)
+            |> List.map (cellXmlFull styles sharedIndex dataTables)
             |> String.concat ""
         sprintf "<row %s>%s</row>" (String.concat " " rowAttrs) cells)
     |> String.concat ""
@@ -1434,6 +1478,8 @@ let private worksheetXml (styles: StyleBook) sharedIndex sheetIndex active (shee
     + (if hasDrawing sheet then sprintf "<drawing r:id=\"rIdDrawing%d\"/>" sheetIndex else "")
     + (if sheet.Cells |> List.exists (fun c -> c.Comment.IsSome) then sprintf "<legacyDrawing r:id=\"rIdCommentsVml%d\"/>" sheetIndex else "")
     + tablePartsXml sheet.Tables.Length
+    // The slicer list (and other kept extensions) of the file the sheet came from.
+    + (if sheet.Extras.KeptExtensions.IsEmpty then "" else "<extLst>" + String.concat "" sheet.Extras.KeptExtensions + "</extLst>")
     + "</worksheet>"
 
 let private commentsXml (cells: XlsxCellOut list) =
@@ -1513,11 +1559,48 @@ let private sheetRelsXml sheetIndex (sheet: XlsxSheetOut) firstTableId =
             yield sprintf "<Relationship Id=\"rIdDrawing%d\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing\" Target=\"/xl/drawings/sheetDrawing%d.xml\"/>" sheetIndex sheetIndex
         if not sheet.Extras.ThreadedComments.IsEmpty then
             yield sprintf "<Relationship Id=\"rIdThreaded%d\" Type=\"http://schemas.microsoft.com/office/2017/10/relationships/threadedComment\" Target=\"/xl/threadedComments/threadedComment%d.xml\"/>" sheetIndex sheetIndex
+        // Pivot tables, slicers and timelines of the file, under the ids the
+        // sheet's kept extensions name them by.
+        for relId, relType, target, isExternal in sheet.Extras.KeptRelationships do
+            yield sprintf "<Relationship %s %s %s%s/>" (attr "Id" relId) (attr "Type" relType) (attr "Target" target) (if isExternal then " TargetMode=\"External\"" else "")
     ]
     if List.isEmpty rels then None
     else Some (sprintf "%s\n<Relationships xmlns=\"%s\">%s</Relationships>" declaration Namespaces.relationshipsPackage (String.concat "" rels))
 
+/// The relationship id of each sheet in workbook.xml.rels: rId<n>, unless a
+/// kept relationship of the workbook (a pivot cache, an external link) has it.
+let private sheetRelationshipIds (workbook: XlsxWorkbookOut) : string list =
+    let taken = workbook.Preserved.WorkbookRelationships |> List.map (fun (id, _, _, _) -> id) |> Set.ofList
+    workbook.Sheets
+    |> List.mapi (fun i _ ->
+        let plain = sprintf "rId%d" (i + 1)
+        if Set.contains plain taken then sprintf "rIdSheet%d" (i + 1) else plain)
+
+/// The `sheetId` of each sheet: the one its file gave it (other parts name the
+/// sheet by it: a slicer cache lists pivot tables by tabId), a free one otherwise.
+let private sheetIds (workbook: XlsxWorkbookOut) : int list =
+    let mutable used = Set.empty<int>
+    let fromFile =
+        workbook.Sheets
+        |> List.map (fun sheet ->
+            match sheet.Extras.SheetId with
+            | Some id when id > 0 && not (Set.contains id used) ->
+                used <- Set.add id used
+                Some id
+            | _ -> None)
+    let mutable next = 1
+    fromFile
+    |> List.map (fun id ->
+        match id with
+        | Some id -> id
+        | None ->
+            while Set.contains next used do next <- next + 1
+            used <- Set.add next used
+            next)
+
 let private workbookXmlFull (workbook: XlsxWorkbookOut) =
+    let relIds = sheetRelationshipIds workbook |> List.toArray
+    let ids = sheetIds workbook |> List.toArray
     let sheets =
         workbook.Sheets
         |> List.mapi (fun i s ->
@@ -1526,8 +1609,8 @@ let private workbookXmlFull (workbook: XlsxWorkbookOut) =
                 | XlsxReader.SheetVisible -> ""
                 | XlsxReader.SheetHidden -> " state=\"hidden\""
                 | XlsxReader.SheetVeryHidden -> " state=\"veryHidden\""
-            sprintf "<sheet %s sheetId=\"%d\" r:id=\"rId%d\"%s/>"
-                (attr "name" s.Name) (i + 1) (i + 1) visible)
+            sprintf "<sheet %s sheetId=\"%d\" r:id=\"%s\"%s/>"
+                (attr "name" s.Name) ids.[i] relIds.[i] visible)
         |> String.concat ""
     // In a reference a sheet name is quoted with apostrophes, and an
     // apostrophe inside the name is doubled ('Bob''s'!$A$1).
@@ -1562,13 +1645,17 @@ let private workbookXmlFull (workbook: XlsxWorkbookOut) =
         workbook.Sheets
         |> List.exists (fun s -> s.Cells |> List.exists (fun c -> match c.Value with XlsxFormula (_, None) -> true | _ -> false))
     let calcPr = if hasUncachedFormula then "<calcPr fullCalcOnLoad=\"1\"/>" else ""
-    sprintf "%s\n<workbook xmlns=\"%s\" xmlns:r=\"%s\"><bookViews><workbookView activeTab=\"%d\"/></bookViews><sheets>%s</sheets>%s%s</workbook>"
-        declaration Namespaces.spreadsheet Namespaces.relationships (max 0 workbook.ActiveSheetIndex) sheets definedNames calcPr
+    // Child order is fixed by CT_Workbook: sheets, externalReferences,
+    // definedNames, calcPr, pivotCaches, extLst.
+    let kept = workbook.Preserved
+    sprintf "%s\n<workbook xmlns=\"%s\" xmlns:r=\"%s\"><bookViews><workbookView activeTab=\"%d\"/></bookViews><sheets>%s</sheets>%s%s%s%s%s</workbook>"
+        declaration Namespaces.spreadsheet Namespaces.relationships (max 0 workbook.ActiveSheetIndex) sheets
+        kept.ExternalReferencesXml definedNames calcPr kept.PivotCachesXml kept.WorkbookExtLstXml
 
-let private workbookRelsXmlFull (sheetCount: int) hasVba (themePath: string option) (hasPersons: bool) =
+let private workbookRelsXmlFull (workbook: XlsxWorkbookOut) hasVba (themePath: string option) (hasPersons: bool) =
     let sheetRels =
-        [ 1 .. sheetCount ]
-        |> List.map (fun i -> sprintf "<Relationship Id=\"rId%d\" Type=\"%s\" Target=\"worksheets/sheet%d.xml\"/>" i RelationshipTypes.worksheet i)
+        sheetRelationshipIds workbook
+        |> List.mapi (fun i id -> sprintf "<Relationship Id=\"%s\" Type=\"%s\" Target=\"worksheets/sheet%d.xml\"/>" id RelationshipTypes.worksheet (i + 1))
     let baseRels = [
         yield! sheetRels
         yield sprintf "<Relationship Id=\"rIdStyles\" Type=\"%s\" Target=\"styles.xml\"/>" RelationshipTypes.styles
@@ -1579,6 +1666,9 @@ let private workbookRelsXmlFull (sheetCount: int) hasVba (themePath: string opti
         | Some path -> yield sprintf "<Relationship Id=\"rIdTheme\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme\" Target=\"/%s\"/>" (escaped path)
         | None -> ()
         if hasPersons then yield "<Relationship Id=\"rIdPersons\" Type=\"http://schemas.microsoft.com/office/2017/10/relationships/person\" Target=\"/xl/persons/person.xml\"/>"
+        // Pivot caches, slicer caches and external links, under the ids workbook.xml names them by.
+        for relId, relType, target, isExternal in workbook.Preserved.WorkbookRelationships do
+            yield sprintf "<Relationship %s %s %s%s/>" (attr "Id" relId) (attr "Type" relType) (attr "Target" target) (if isExternal then " TargetMode=\"External\"" else "")
     ]
     sprintf "%s\n<Relationships xmlns=\"%s\">%s</Relationships>" declaration Namespaces.relationshipsPackage (String.concat "" baseRels)
 
@@ -1661,7 +1751,7 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
     let hasThreads = workbook.Sheets |> List.exists (fun sheet -> not sheet.Extras.ThreadedComments.IsEmpty)
     // The theme stays only if its part was kept.
     let themePath = workbook.Preserved.ThemePath |> Option.filter (fun path -> workbook.Preserved.Parts |> List.exists (fun (kept, _) -> kept = path))
-    textFiles.Add { Path = "xl/_rels/workbook.xml.rels"; Content = workbookRelsXmlFull workbook.Sheets.Length hasVba themePath hasThreads }
+    textFiles.Add { Path = "xl/_rels/workbook.xml.rels"; Content = workbookRelsXmlFull workbook hasVba themePath hasThreads }
     if hasThreads then textFiles.Add { Path = "xl/persons/person.xml"; Content = personsXml persons }
     let keptPartPaths = workbook.Preserved.Parts |> List.map fst |> Set.ofList
     let mediaFiles = ResizeArray<string * byte[]>()

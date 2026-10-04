@@ -3153,9 +3153,15 @@ type Spreadsheet(container: Element) =
     member _.InstallWorkbook(newSheets: SpreadsheetModel array, names: string array, activeIndex: int, context: Workbook option) =
         if newSheets.Length = 0 then () else
         invalidateCalcEngine()
-        // A different workbook: nothing of the file the previous one came from
-        // belongs to it (InstallImportedWorkbook / ImportXlsx set the new source).
-        xlsxSource <- None
+        // The file the previous workbook came from stays the source as long as
+        // one of the new sheets is a sheet of it (sheets renamed, reordered,
+        // added or removed by the host): each model says which file and sheet
+        // it came from. A different workbook has no such sheet.
+        // (InstallImportedWorkbook / ImportXlsx set the new source.)
+        xlsxSource <-
+            xlsxSource
+            |> Option.filter (fun source ->
+                newSheets |> Array.exists (fun sheet -> match sheet.SourceSheet with Some origin -> origin.Book = source.Id | None -> false))
         sheets <- newSheets
         sheetNames <-
             if names.Length = newSheets.Length then Array.copy names

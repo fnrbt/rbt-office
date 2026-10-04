@@ -589,6 +589,27 @@ type ThreadedComment = {
     Replies: ThreadedComment list
 }
 
+/// A what-if data table (`<f t="dataTable" ref="B5:F10" dt2D="1" dtr="1" r1="B1" r2="B2"/>`
+/// on the first cell of the range it fills). It is not an expression: Excel
+/// recomputes the range by substituting the input cells. The cells keep the
+/// results the file cached.
+type DataTableFormula = {
+    /// The range the table fills.
+    Ref: string
+    /// Two input cells (`dt2D`).
+    TwoDimensional: bool
+    /// A one-input table whose input runs along the row (`dtr`).
+    RowInput: bool
+    /// The input cells (`r1`, `r2`).
+    Input1: string
+    Input2: string option
+    /// The input cell was deleted (`del1`, `del2`).
+    Input1Deleted: bool
+    Input2Deleted: bool
+    /// `ca`: always calculated.
+    CalculateAlways: bool
+}
+
 /// What a sheet holds beyond its cells: pictures, other drawing objects and threaded comments.
 type SheetExtras = {
     Images: SheetImage list
@@ -608,9 +629,24 @@ type SheetExtras = {
     /// column (0-based) and the style, likewise filled in by
     /// `packageFromReaderWorkbook`.
     ColumnStyles: (int * int * CellStyle) list
+    /// The sheet's `sheetId` in workbook.xml. Other parts name a sheet by it
+    /// (a slicer cache lists its pivot tables by `tabId`), so it is written back.
+    SheetId: int option
+    /// Relationships of the sheet part to parts the model does not hold
+    /// (pivot tables, slicers, timelines): id, type, absolute target, external.
+    KeptRelationships: (string * string * string * bool) list
+    /// `<ext>` elements of the sheet's `<extLst>` that refer to those parts
+    /// (the slicer list), with the namespace declarations they need.
+    KeptExtensions: string list
+    /// The sheet's pivot tables: part path and the range of `<location ref>`.
+    PivotLocations: (string * string) list
+    /// What-if data tables, in file order.
+    DataTables: DataTableFormula list
 }
 
-let emptySheetExtras = { Images = []; Objects = []; ThreadedComments = []; DrawingRelationships = []; Format = None; Columns = []; ColumnStyles = [] }
+let emptySheetExtras =
+    { Images = []; Objects = []; ThreadedComments = []; DrawingRelationships = []; Format = None; Columns = []; ColumnStyles = []
+      SheetId = None; KeptRelationships = []; KeptExtensions = []; PivotLocations = []; DataTables = [] }
 
 /// A named cell style (cellStyles / cellStyleXfs of styles.xml), with the
 /// font, fill, border and number format its xf refers to given as their XML so
@@ -649,9 +685,19 @@ type WorkbookPreservation = {
     /// `StyleIndex` holds): the index in `NamedStyles` of the named cell style
     /// it is based on (its xfId), or -1.
     CellXfNamedStyles: int array
+    /// Relationships of the workbook part to kept parts (pivot caches, slicer
+    /// caches, external links, connections): id, type, absolute target, external.
+    WorkbookRelationships: (string * string * string * bool) list
+    /// The elements of workbook.xml that refer to them, as they were:
+    /// `<externalReferences>`, `<pivotCaches>` and `<extLst>` ("" when absent).
+    ExternalReferencesXml: string
+    PivotCachesXml: string
+    WorkbookExtLstXml: string
 }
 
-let emptyWorkbookPreservation = { Parts = []; Defaults = []; Overrides = []; ThemePath = None; NamedStyles = []; Persons = []; CellXfNamedStyles = [||] }
+let emptyWorkbookPreservation =
+    { Parts = []; Defaults = []; Overrides = []; ThemePath = None; NamedStyles = []; Persons = []; CellXfNamedStyles = [||]
+      WorkbookRelationships = []; ExternalReferencesXml = ""; PivotCachesXml = ""; WorkbookExtLstXml = "" }
 
 type Worksheet = {
     Name: string
@@ -1317,6 +1363,8 @@ module Xlsx =
         DateShift: bool array
         /// Shared-formula masters seen so far: `si` -> (row, column, text).
         SharedFormulas: System.Collections.Generic.Dictionary<string, int * int * string>
+        /// What-if data tables seen so far.
+        DataTables: ResizeArray<DataTableFormula>
     }
 
     /// Days between the 1904 and 1900 date systems' epochs.
@@ -1331,6 +1379,7 @@ module Xlsx =
                     styles |> Array.map (fun style -> style.NumberFormat |> Option.exists isDateFormatCode)
                 | _ -> [||]
             SharedFormulas = System.Collections.Generic.Dictionary<string, int * int * string>()
+            DataTables = ResizeArray<DataTableFormula>()
         }
 
     let private resolvedStyle (styles: CellStyle array option) styleIdx =
@@ -1344,6 +1393,7 @@ module Xlsx =
     let private buildCell (ctx: SheetParseContext) (column: string) (colIndex: int) (rowIndex: int)
                           (cellType: string option) (styleIdx: int option)
                           (fText: string option) (fType: string option) (fRef: string option) (fSi: string option)
+                          (fAttr: string -> string option)
                           (value: string option) (inlineText: string option) (inlineRuns: (string * RunProps) list) : Cell =
         let formula, arrayRef =
             match fText with
@@ -1367,8 +1417,20 @@ module Xlsx =
                         | None -> None, None
                 | Some "array" -> (if text <> "" then Some text else None), fRef
                 // A what-if data table: its "formula" is a pair of input-cell
-                // references, not an expression. Keep the cached result only.
-                | Some "dataTable" -> None, None
+                // references, not an expression. The cell keeps the cached
+                // result; the table itself is recorded for the sheet.
+                | Some "dataTable" ->
+                    let flag name = fAttr name |> Option.map isTrueText |> Option.defaultValue false
+                    ctx.DataTables.Add
+                        { Ref = fRef |> Option.defaultValue (column + string rowIndex)
+                          TwoDimensional = flag "dt2D"
+                          RowInput = flag "dtr"
+                          Input1 = fAttr "r1" |> Option.defaultValue ""
+                          Input2 = fAttr "r2"
+                          Input1Deleted = flag "del1"
+                          Input2Deleted = flag "del2"
+                          CalculateAlways = flag "ca" }
+                    None, None
                 | _ -> (if text <> "" then Some text else None), None
         let cached =
             match cellValueFromParts cellType value inlineText with
@@ -1439,6 +1501,7 @@ module Xlsx =
         let cell =
             buildCell ctx column colIndex row cellType styleIdx
                 fText (fNode |> Option.bind (Xml.attr "t")) (fNode |> Option.bind (Xml.attr "ref")) (fNode |> Option.bind (Xml.attr "si"))
+                (fun name -> fNode |> Option.bind (Xml.attr name))
                 value inlineText inlineRuns
         cell, colIndex
 
@@ -1915,6 +1978,7 @@ module Xlsx =
         let mutable fType = None
         let mutable fRef = None
         let mutable fSi = None
+        let mutable fExtra : Map<string, string> = Map.empty
         let mutable value = None
         let mutable inlineText = None
         let mutable inlineRuns = []
@@ -1929,6 +1993,11 @@ module Xlsx =
                         fType <- nativeAttr reader "t"
                         fRef <- nativeAttr reader "ref"
                         fSi <- nativeAttr reader "si"
+                        if fType = Some "dataTable" then
+                            for name in [ "dt2D"; "dtr"; "r1"; "r2"; "del1"; "del2"; "ca" ] do
+                                match nativeAttr reader name with
+                                | Some text -> fExtra <- Map.add name text fExtra
+                                | None -> ()
                         fText <- Some (readElementTextNative reader)
                     | "v" -> value <- Some (readElementTextNative reader)
                     | "is" ->
@@ -1941,7 +2010,7 @@ module Xlsx =
                 | _ -> ()
         let cell =
             buildCell ctx (nativeColumnName columnsByIndex colIndex) colIndex row cellType styleIdx
-                fText fType fRef fSi value inlineText inlineRuns
+                fText fType fRef fSi (fun name -> Map.tryFind name fExtra) value inlineText inlineRuns
         cell, colIndex
 
     /// Streaming twin of `rowFromNode`.
@@ -3691,7 +3760,22 @@ type private WorkbookHeader = {
     StylesPath: string
     SharedStringsPath: string
     ThemePath: string
+    /// Relationships of the workbook part to kept parts, and the elements of
+    /// workbook.xml that refer to them (see WorkbookPreservation).
+    KeptRels: (string * string * string * bool) list
+    ExternalReferencesXml: string
+    PivotCachesXml: string
+    ExtLstXml: string
 }
+
+/// Relationship types of the workbook part whose targets are kept as they are.
+let private isKeptWorkbookRelType (relType: string) =
+    [ "/pivotCacheDefinition"; "/slicerCache"; "/externalLink"; "/timelineCache"; "/connections" ]
+    |> List.exists (fun suffix -> relType.EndsWith suffix)
+
+/// Relationship types of a sheet part whose targets are kept as they are.
+let private isKeptSheetRelType (relType: string) =
+    [ "/pivotTable"; "/slicer"; "/timeline" ] |> List.exists (fun suffix -> relType.EndsWith suffix)
 
 let private readWorkbookHeader (source: PartSource) (workbookPath: string) : WorkbookHeader option =
     source.Text workbookPath
@@ -3705,7 +3789,33 @@ let private readWorkbookHeader (source: PartSource) (workbookPath: string) : Wor
             |> Option.filter source.Exists
             |> Option.defaultValue (ZipInterop.resolveTarget (partDirectory workbookPath) fallback)
         let namedRanges, printNames = NamedRanges.parseNamedRanges wb |> NamedRanges.splitPrintNames
+        let keptRels =
+            rels
+            |> List.filter (fun r -> isKeptWorkbookRelType r.Type)
+            |> List.map (fun r -> r.Id, r.Type, (if isInternal r then "/" + relTargetPath workbookPath r else r.Target), not (isInternal r))
+        let keptIds = keptRels |> List.map (fun (id, _, _, _) -> id) |> Set.ofList
+        let rootAttributes = match wb with | XmlDsl.Element (_, attrs, _) -> attrs | _ -> Map.empty
+        let fragment (node: XmlNode) = DocxReader.selfContainedXml rootAttributes (DocxReader.Docx.xmlToString node)
+        // An element is kept when every relationship it names is a kept one.
+        let refersOnlyToKept (xml: string) =
+            DocxReader.relationshipIdsInXml xml |> List.forall (fun id -> Set.contains id keptIds)
+        let keptChild (name: string) =
+            match Ns.childNs name wb with
+            | Some node ->
+                let xml = fragment node
+                if refersOnlyToKept xml then xml else ""
+            | None -> ""
+        let extLst =
+            match Ns.childNs "extLst" wb with
+            | Some node ->
+                let kept = Xml.children node |> List.map fragment |> List.filter refersOnlyToKept
+                if kept.IsEmpty then "" else "<extLst>" + String.concat "" kept + "</extLst>"
+            | None -> ""
         {
+            KeptRels = keptRels
+            ExternalReferencesXml = keptChild "externalReferences"
+            PivotCachesXml = keptChild "pivotCaches"
+            ExtLstXml = extLst
             WorkbookPath = workbookPath
             Rels = rels
             SheetInfos = Xlsx.sheets wb
@@ -3945,6 +4055,64 @@ let private readNamedStyles (stylesXml: string) : NamedCellStyle list * int arra
 
 // ---- parts kept for the next save ----------------------------------------------
 
+/// The `<ext>` elements of a sheet's own `<extLst>` (the one that closes the
+/// worksheet element) that hold a slicer list or timeline references, each
+/// with the namespace declarations it needs. Read from the text of the part:
+/// both sheet parsers leave the extension list alone.
+let private keptSheetExtensions (sheetXml: string) : string list =
+    let closeAt = sheetXml.LastIndexOf "</extLst>"
+    let rootAt = sheetXml.IndexOf "<worksheet"
+    if closeAt < 0 || rootAt < 0 then []
+    else
+        let after = sheetXml.Substring(closeAt + 9).Trim()
+        let rootEnd = sheetXml.IndexOf ('>', rootAt)
+        if not (after.StartsWith "</") || after.IndexOf '<' <> after.LastIndexOf '<' || rootEnd < 0 then []
+        else
+            // The matching start tag: the last "<extLst" at nesting depth 0 before it.
+            let mutable depth = 0
+            let mutable openAt = -1
+            let mutable at = closeAt
+            while openAt < 0 && at > rootEnd do
+                let previousOpen = sheetXml.LastIndexOf ("<extLst", at - 1)
+                let previousClose = sheetXml.LastIndexOf ("</extLst>", at - 1)
+                if previousOpen < 0 then at <- -1
+                elif previousClose > previousOpen then
+                    depth <- depth + 1
+                    at <- previousClose
+                elif depth > 0 then
+                    depth <- depth - 1
+                    at <- previousOpen
+                else openAt <- previousOpen
+            let fragment = if openAt < 0 then "" else sheetXml.Substring(openAt, closeAt + 9 - openAt)
+            if not (fragment.Contains "slicerList" || fragment.Contains "timelineRefs") then []
+            else
+                try
+                    let rootTag = sheetXml.Substring(rootAt, rootEnd - rootAt).TrimEnd('/')
+                    match XmlDsl.parse (rootTag + ">" + fragment + "</worksheet>") with
+                    | XmlDsl.Element (_, rootAttributes, [ extLst ]) ->
+                        Xml.children extLst
+                        |> List.map (fun ext -> DocxReader.selfContainedXml rootAttributes (DocxReader.Docx.xmlToString ext))
+                        |> List.filter (fun xml -> xml.Contains "slicerList" || xml.Contains "timelineRefs")
+                    | _ -> []
+                with _ -> []
+
+let private pivotLocationPattern = System.Text.RegularExpressions.Regex("<(?:[A-Za-z0-9_]+:)?location\\b[^>]*?\\sref=\"([^\"]*)\"")
+
+/// The range of a pivot table part's `<location ref>`.
+let pivotLocationOf (pivotXml: string) : string option =
+    let m = pivotLocationPattern.Match pivotXml
+    if m.Success then Some m.Groups.[1].Value else None
+
+/// `pivotXml` with the range of its `<location ref>` replaced.
+let withPivotLocation (range: string) (pivotXml: string) : string =
+    let m = pivotLocationPattern.Match pivotXml
+    if not m.Success then pivotXml
+    else
+        // (Not through the group's index: a JS regex match has none.)
+        let whole = m.Value
+        let at = m.Index + whole.LastIndexOf "ref=\"" + 5
+        pivotXml.Substring(0, at) + range + pivotXml.Substring(at + m.Groups.[1].Value.Length)
+
 /// Every part reachable from `roots` through the parts' own relationships
 /// (charts with their embedded data and style parts), with those .rels parts.
 let private reachablePartsFrom (source: PartSource) (roots: string list) : (string * byte[]) list =
@@ -4049,20 +4217,42 @@ let private buildWorkbook (source: PartSource) (header: WorkbookHeader) (sheetsT
                 let threads =
                     partsOfType "/threadedComment"
                     |> List.collect (fun threadXml -> try readThreadedComments persons threadXml with _ -> [])
-                let extras = { emptySheetExtras with Images = images; Objects = objects; ThreadedComments = threads; DrawingRelationships = drawingRels }
+                // Pivot tables, slicers and timelines: their parts are kept as they are.
+                let keptRels =
+                    sheetRels
+                    |> List.filter (fun r -> isKeptSheetRelType r.Type)
+                    |> List.map (fun r -> r.Id, r.Type, (if isInternal r then "/" + relTargetPath sheetPath r else r.Target), not (isInternal r))
+                let keptIds = keptRels |> List.map (fun (id, _, _, _) -> id) |> Set.ofList
+                let keptExtensions =
+                    keptSheetExtensions xml
+                    |> List.filter (fun ext -> DocxReader.relationshipIdsInXml ext |> List.forall (fun id -> Set.contains id keptIds))
+                let pivotLocations =
+                    sheetRels
+                    |> List.filter (fun r -> r.Type.EndsWith "/pivotTable" && isInternal r)
+                    |> List.choose (fun r ->
+                        let path = relTargetPath sheetPath r
+                        source.Text path |> Option.bind pivotLocationOf |> Option.map (fun range -> path, range))
+                let extras =
+                    { emptySheetExtras with
+                        Images = images; Objects = objects; ThreadedComments = threads; DrawingRelationships = drawingRels
+                        SheetId = tryParseInt info.SheetId
+                        KeptRelationships = keptRels
+                        KeptExtensions = keptExtensions
+                        PivotLocations = pivotLocations }
                 // A fresh context per sheet: shared-formula groups are sheet-local.
                 let ctx = Xlsx.newSheetContext (Some styles) header.Date1904
+                let withExtras (sheet: Worksheet) = { sheet with Extras = { extras with DataTables = List.ofSeq ctx.DataTables } }
                 let viaDom () =
                     let sheet = XmlDsl.parse xml
                     let condFormats = ConditionalFormats.parseConditionalFormats themeColors sheet
                     let dataVals = DataValidations.parseDataValidations sheet
                     Xlsx.worksheetFromNodeCore ctx info.Name info.State sheet comments condFormats dataVals [] pivots tables sheetRels printNames
 #if FABLE_COMPILER
-                { viaDom () with Extras = extras }
+                withExtras (viaDom ())
 #else
                 match Xlsx.worksheetNativeFastCore ctx info.Name info.State xml comments pivots tables sheetRels printNames with
-                | Some sheet -> { sheet with Extras = extras }
-                | None -> { viaDom () with Extras = extras }
+                | Some sheet -> withExtras sheet
+                | None -> withExtras (viaDom ())
 #endif
             ))
 
@@ -4073,6 +4263,10 @@ let private buildWorkbook (source: PartSource) (header: WorkbookHeader) (sheetsT
          |> List.collect (fun sheet -> sheet.Extras.DrawingRelationships)
          |> List.choose (fun (_, _, target, isExternal) -> if isExternal || target.StartsWith "#" then None else Some (ZipInterop.normalizePath target)))
         @ (if source.Exists header.ThemePath then [ header.ThemePath ] else [])
+        // Pivot tables and slicers of the sheets, and the workbook's pivot
+        // caches, slicer caches and external links.
+        @ ((worksheets |> List.collect (fun sheet -> sheet.Extras.KeptRelationships)) @ header.KeptRels
+           |> List.choose (fun (_, _, target, isExternal) -> if isExternal then None else Some (ZipInterop.normalizePath target)))
     let defaults, overrides = contentTypesOf source
     let namedStyles = stylesXml |> Option.map (fun xml -> try readNamedStyles xml with _ -> [], [||]) |> Option.defaultValue ([], [||])
     let preserved =
@@ -4082,7 +4276,11 @@ let private buildWorkbook (source: PartSource) (header: WorkbookHeader) (sheetsT
           ThemePath = if source.Exists header.ThemePath then Some header.ThemePath else None
           NamedStyles = fst namedStyles
           Persons = persons
-          CellXfNamedStyles = snd namedStyles }
+          CellXfNamedStyles = snd namedStyles
+          WorkbookRelationships = header.KeptRels
+          ExternalReferencesXml = header.ExternalReferencesXml
+          PivotCachesXml = header.PivotCachesXml
+          WorkbookExtLstXml = header.ExtLstXml }
 
     {
         Sheets = worksheets
