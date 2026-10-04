@@ -711,8 +711,15 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             let x = me.clientX - rect.left
             let y = me.clientY - rect.top
 
+            // A release that is still on the picked-up object is a click, not
+            // a move: the object stays where it is, exactly as it was.
+            let releasedOnDraggedImage (dragState: DragImageState) =
+                match hitTestForImage handler.RenderContext handler.Document x y with
+                | Some (blockId, offset, _, _, _, _) -> blockId = dragState.BlockId && offset = dragState.Offset
+                | None -> false
+
             match handler.DraggingImage with
-            | Some dragState when abs (x - dragState.InitialX) > 3.0 || abs (y - dragState.InitialY) > 3.0 ->
+            | Some dragState when (abs (x - dragState.InitialX) > 3.0 || abs (y - dragState.InitialY) > 3.0) && not (releasedOnDraggedImage dragState) ->
                 let target =
                     match hitTest handler.RenderContext handler.Document x y with
                     | Some target -> target

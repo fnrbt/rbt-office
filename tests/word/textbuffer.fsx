@@ -2053,6 +2053,26 @@ check "unset alignment inherits centred style" (loudMeta unsetLoud) Doc.Center
 check "explicit left beats centred style" (loudMeta (Doc.alignLeft unsetLoud)) Doc.Left
 check "explicit right beats centred style" (loudMeta (Doc.alignRight unsetLoud)) Doc.Right
 
+// Moving an image run keeps everything it carries: an opaque object (chart)
+// is written back from its XML, so losing it turns the chart into its alt text.
+let opaqueChart = { Xml = "<w:drawing><c:chart r:id=\"rId5\"/></w:drawing>"; Kind = "chart"; ParagraphLevel = false }
+let chartDoc =
+    let chartRun =
+        match (insertImage 0 "opaque:chart" (Some 576.0) (Some 336.0) (Some "Chart 1") empty).Runs with
+        | [ Image image ] -> { image with Opaque = Some opaqueChart; PositionHAlign = Some "center"; WrapText = Some "bothSides" }
+        | _ -> failwith "expected one image run"
+    let chartPara : Doc.ParagraphBlock = { Id = "chart"; Buffer = insertImageRun 0 chartRun empty |> insert 1 "after"; Metadata = Doc.defaultMetadata }
+    { Doc.empty with Blocks = [ Doc.Paragraph chartPara; Doc.Paragraph { Id = "other"; Buffer = ofString "target text"; Metadata = Doc.defaultMetadata } ] }
+let imageRunsOf blockId (doc: Doc.Document) =
+    (Doc.findParagraph doc blockId |> Option.get).Buffer.Runs |> List.choose (function Image image -> Some image | _ -> None)
+let movedWithin = Doc.moveImage "chart" 0 "chart" 6 chartDoc
+check "move within paragraph keeps opaque" ((imageRunsOf "chart" movedWithin) |> List.map (fun image -> image.Opaque, image.PositionHAlign, image.WrapText, image.Alt)) [ Some opaqueChart, Some "center", Some "bothSides", Some "Chart 1" ]
+check "move within paragraph text" (Doc.getText movedWithin) "after\uFFFC\ntarget text"
+let movedAcross = Doc.moveImage "chart" 0 "other" 6 chartDoc
+check "move across paragraphs keeps opaque" ((imageRunsOf "other" movedAcross) |> List.map (fun image -> image.Start, image.Opaque, image.Width)) [ 6, Some opaqueChart, Some 576.0 ]
+check "move across paragraphs leaves source" (imageRunsOf "chart" movedAcross) []
+check "resize keeps opaque" ((imageRunsOf "chart" (Doc.resizeImage "chart" 0 300.0 200.0 chartDoc)) |> List.map (fun image -> image.Opaque, image.Width)) [ Some opaqueChart, Some 300.0 ]
+
 // removed: command-history retention/budget tests targeted the deleted cache machinery (RetainedSourceTextCharCount, trimHistory)
 printfn ""
 printfn "Word textbuffer tests: %d passed, %d failed" pass fail

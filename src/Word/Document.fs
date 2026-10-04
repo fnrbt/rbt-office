@@ -1916,7 +1916,8 @@ let moveImage blockId offset targetBlockId targetOffset doc =
                     if blockId = targetBlockId && targetOffset > offset then targetOffset - 1
                     else targetOffset
                 let boundedOffset = max 0 (min (TextBuffer.length targetPara.Buffer) insertOffset)
-                let targetBuffer = TextBuffer.insertImageWithMetadata boundedOffset img.Src img.Linked img.Width img.Height img.Alt img.Name img.Title img.Floating img.Wrap img.PositionX img.PositionY img.PositionHRelativeFrom img.PositionVRelativeFrom img.BehindDoc img.AllowOverlap img.LayoutInCell img.DistanceTop img.DistanceBottom img.DistanceLeft img.DistanceRight img.RelativeHeight img.Locked img.SimplePosition img.SimplePositionX img.SimplePositionY img.CropLeft img.CropTop img.CropRight img.CropBottom targetPara.Buffer
+                // The run moves whole: an opaque object keeps its XML, a picture its placement.
+                let targetBuffer = TextBuffer.insertImageRun boundedOffset img targetPara.Buffer
                 let nextDoc = replaceParagraph docWithoutImage targetPara.Id { targetPara with Buffer = targetBuffer }
                 { nextDoc with Selection = Some { Anchor = { BlockId = targetBlockId; Offset = boundedOffset + 1 }; Focus = { BlockId = targetBlockId; Offset = boundedOffset + 1 } } }
 

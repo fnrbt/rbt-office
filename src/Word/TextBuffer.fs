@@ -1020,48 +1020,11 @@ let resizeImage pos newWidth newHeight buffer =
                     newRuns.Add run
             { buffer with Runs = resizeArrayToList newRuns }
 
-/// Insert image at position
-let insertImageWithMetadata pos src linked width height alt name title floating wrap positionX positionY positionHRelativeFrom positionVRelativeFrom behindDoc allowOverlap layoutInCell distanceTop distanceBottom distanceLeft distanceRight relativeHeight locked simplePosition simplePositionX simplePositionY cropLeft cropTop cropRight cropBottom buffer =
-    // Insert placeholder character in rope
+/// Insert an image run as it is (every field kept, an opaque object's XML
+/// included) at a position.
+let insertImageRun pos (image: ImageRun) buffer =
     let newRope = Rope.insert pos objectReplacementChar buffer.Rope
-
-    // Create image run
-    let imageRun = Image {
-        Start = pos
-        Src = src
-        Linked = linked
-        Width = width
-        Height = height
-        Alt = alt
-        Name = name
-        Title = title
-        Floating = floating
-        Wrap = wrap
-        PositionX = positionX
-        PositionY = positionY
-        PositionHRelativeFrom = positionHRelativeFrom
-        PositionVRelativeFrom = positionVRelativeFrom
-        BehindDoc = behindDoc
-        AllowOverlap = allowOverlap
-        LayoutInCell = layoutInCell
-        DistanceTop = distanceTop
-        DistanceBottom = distanceBottom
-        DistanceLeft = distanceLeft
-        DistanceRight = distanceRight
-        RelativeHeight = relativeHeight
-        Locked = locked
-        SimplePosition = simplePosition
-        SimplePositionX = simplePositionX
-        SimplePositionY = simplePositionY
-        CropLeft = cropLeft
-        CropTop = cropTop
-        CropRight = cropRight
-        CropBottom = cropBottom
-        PositionHAlign = None
-        PositionVAlign = None
-        WrapText = None
-        Opaque = None
-    }
+    let imageRun = Image { image with Start = pos }
 
     // Insert image run and shift subsequent runs
     let newRuns = ResizeArray<Run>()
@@ -1101,6 +1064,45 @@ let insertImageWithMetadata pos src linked width height alt name title floating 
         newRuns.Add imageRun
 
     { Rope = newRope; Runs = resizeArrayToList newRuns }
+
+/// Insert image at position
+let insertImageWithMetadata pos src linked width height alt name title floating wrap positionX positionY positionHRelativeFrom positionVRelativeFrom behindDoc allowOverlap layoutInCell distanceTop distanceBottom distanceLeft distanceRight relativeHeight locked simplePosition simplePositionX simplePositionY cropLeft cropTop cropRight cropBottom buffer =
+    insertImageRun pos {
+        Start = pos
+        Src = src
+        Linked = linked
+        Width = width
+        Height = height
+        Alt = alt
+        Name = name
+        Title = title
+        Floating = floating
+        Wrap = wrap
+        PositionX = positionX
+        PositionY = positionY
+        PositionHRelativeFrom = positionHRelativeFrom
+        PositionVRelativeFrom = positionVRelativeFrom
+        BehindDoc = behindDoc
+        AllowOverlap = allowOverlap
+        LayoutInCell = layoutInCell
+        DistanceTop = distanceTop
+        DistanceBottom = distanceBottom
+        DistanceLeft = distanceLeft
+        DistanceRight = distanceRight
+        RelativeHeight = relativeHeight
+        Locked = locked
+        SimplePosition = simplePosition
+        SimplePositionX = simplePositionX
+        SimplePositionY = simplePositionY
+        CropLeft = cropLeft
+        CropTop = cropTop
+        CropRight = cropRight
+        CropBottom = cropBottom
+        PositionHAlign = None
+        PositionVAlign = None
+        WrapText = None
+        Opaque = None
+    } buffer
 
 let insertImage pos src width height alt buffer =
     insertImageWithMetadata pos src false width height alt None None false None None None None None None None None None None None None None None None None None None None None None buffer
