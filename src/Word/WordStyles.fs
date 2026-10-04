@@ -596,3 +596,130 @@ let effectiveMetadata (paragraphStyle: ParagraphStyle) (metadata: BlockMetadata)
             LineSpacingRule = metadata.LineSpacingRule |> Option.orElse paragraphStyle.LineSpacingRule
             WidowControl = metadata.WidowControl |> Option.orElse paragraphStyle.WidowControl
             BackgroundColor = metadata.BackgroundColor |> Option.orElse paragraphStyle.BackgroundColor }
+
+/// A property over a selection: nothing to report (no text selected), the
+/// same value everywhere, or different values.
+type FormatValue<'T> =
+    | NoValue
+    | Uniform of 'T
+    | Mixed
+
+module FormatValue =
+    let add (value: 'T) (current: FormatValue<'T>) =
+        match current with
+        | NoValue -> Uniform value
+        | Uniform existing when existing = value -> current
+        | _ -> Mixed
+
+/// The formatting a toolbar shows for the selection: what is displayed
+/// (styles resolved), not just what the runs state themselves.
+[<RequireQualifiedAccess>]
+type SelectionFormat = {
+    Bold: FormatValue<bool>
+    Italic: FormatValue<bool>
+    Underline: FormatValue<bool>
+    Strike: FormatValue<bool>
+    /// None: no family stated anywhere (the renderer's default face).
+    FontFamily: FormatValue<string option>
+    /// Same unit as Document.setFontSize.
+    FontSize: FormatValue<float>
+    /// None: automatic colour.
+    Color: FormatValue<string option>
+    Highlight: FormatValue<string option>
+    /// The paragraph style id; None for the default paragraph style.
+    StyleId: FormatValue<string option>
+    /// 0 for body text.
+    HeadingLevel: FormatValue<int>
+    Alignment: FormatValue<Alignment>
+    ListKind: FormatValue<ListStyle>
+    ListLevel: FormatValue<int>
+    IndentLeft: FormatValue<float>
+    IndentRight: FormatValue<float>
+    FirstLineIndent: FormatValue<float>
+}
+
+/// Effective character and paragraph formatting of the selection. With a
+/// caret, the formatting typing would continue with (the character before
+/// the caret, or the paragraph's own when it is empty) and the caret's
+/// paragraph; with a range, every selected run and every paragraph touched.
+let selectionFormat (doc: Document) : SelectionFormat =
+    let mutable format: SelectionFormat = {
+        SelectionFormat.Bold = NoValue; Italic = NoValue; Underline = NoValue; Strike = NoValue
+        FontFamily = NoValue; FontSize = NoValue; Color = NoValue; Highlight = NoValue
+        StyleId = NoValue; HeadingLevel = NoValue; Alignment = NoValue
+        ListKind = NoValue; ListLevel = NoValue; IndentLeft = NoValue; IndentRight = NoValue; FirstLineIndent = NoValue
+    }
+    match doc.Selection with
+    | None -> format
+    | Some selection ->
+        let context = styleContext doc
+        let headingLevels =
+            doc.Blocks
+            |> List.choose (function
+                | Heading (level, para) -> Some (para.Id, level)
+                | _ -> None)
+            |> Map.ofList
+        let paragraphStyleOf (para: ParagraphBlock) =
+            match Map.tryFind para.Id headingLevels with
+            | Some level -> forBlockInContext context (Heading (level, para))
+            | None -> forBlockInContext context (Paragraph para)
+        let addCharacter (paragraphStyle: ParagraphStyle) (runStyle: TextStyle) =
+            let style = effectiveTextStyleWithResolved context.ResolvedCharacterStyles paragraphStyle runStyle
+            format <-
+                { format with
+                    Bold = FormatValue.add style.Bold format.Bold
+                    Italic = FormatValue.add style.Italic format.Italic
+                    Underline = FormatValue.add style.Underline format.Underline
+                    Strike = FormatValue.add (style.Strike || style.DoubleStrike) format.Strike
+                    FontFamily = FormatValue.add style.FontFamily format.FontFamily
+                    FontSize = FormatValue.add style.FontSize format.FontSize
+                    Color = FormatValue.add style.Color format.Color
+                    Highlight = FormatValue.add style.Highlight format.Highlight }
+        let addParagraph (para: ParagraphBlock) (paragraphStyle: ParagraphStyle) =
+            let metadata: BlockMetadata = effectiveMetadata paragraphStyle para.Metadata
+            let headingLevel =
+                match Map.tryFind para.Id headingLevels with
+                | Some level -> level
+                | None ->
+                    match paragraphStyle.OutlineLevel with
+                    | Some level when level >= 1 && level <= 9 -> level
+                    | _ -> 0
+            format <-
+                { format with
+                    StyleId = FormatValue.add para.Metadata.Style format.StyleId
+                    HeadingLevel = FormatValue.add headingLevel format.HeadingLevel
+                    Alignment = FormatValue.add metadata.Alignment format.Alignment
+                    ListKind = FormatValue.add metadata.ListStyle format.ListKind
+                    ListLevel = FormatValue.add (if metadata.ListStyle = NoList then 0 else metadata.ListLevel) format.ListLevel
+                    IndentLeft = FormatValue.add (metadata.IndentLeft |> Option.defaultValue 0.0) format.IndentLeft
+                    IndentRight = FormatValue.add (metadata.IndentRight |> Option.defaultValue 0.0) format.IndentRight
+                    FirstLineIndent = FormatValue.add (metadata.FirstLineIndent |> Option.defaultValue 0.0) format.FirstLineIndent }
+        let caretStyle (para: ParagraphBlock) offset =
+            // What typing here continues with: the character before the caret.
+            TextBuffer.getStyleAt (if offset > 0 then offset - 1 else 0) para.Buffer
+        let addCaret (blockId: BlockId) offset =
+            match findParagraph doc blockId with
+            | None -> ()
+            | Some para ->
+                let paragraphStyle = paragraphStyleOf para
+                addParagraph para paragraphStyle
+                addCharacter paragraphStyle (caretStyle para offset)
+        if selection.IsCollapsed then
+            addCaret selection.Focus.BlockId selection.Focus.Offset
+        else
+            let ranges = selectedParagraphRanges doc
+            for (para, rangeStart, rangeEnd) in ranges do
+                let paragraphStyle = paragraphStyleOf para
+                addParagraph para paragraphStyle
+                for run in para.Buffer.Runs do
+                    match run with
+                    | Text textRun when textRun.Length > 0 && textRun.Start < rangeEnd && textRun.Start + textRun.Length > rangeStart ->
+                        addCharacter paragraphStyle textRun.Style
+                    | _ -> ()
+            // A range with no text in it (only a picture, or only paragraph marks).
+            if format.Bold = NoValue then
+                match ranges with
+                | (para, rangeStart, _) :: _ -> addCharacter (paragraphStyleOf para) (caretStyle para rangeStart)
+                | [] -> ()
+            if format.StyleId = NoValue then addCaret selection.Focus.BlockId selection.Focus.Offset
+        format

@@ -30,6 +30,11 @@ module API =
     type Editor = {
         Handler: Inp.InputHandler
         mutable Doc: Doc.Document
+        /// Callbacks registered with onChange.
+        Listeners: ResizeArray<obj -> unit>
+        /// Undo / redo availability as last reported to the listeners.
+        mutable NotifiedCanUndo: bool
+        mutable NotifiedCanRedo: bool
     }
 
     let private layoutsForEditor (editor: Editor) =
@@ -69,6 +74,7 @@ module API =
     /// Detach the editor's window-level listeners and remove its hidden text
     /// input element. Call when the canvas is removed.
     let dispose (editor: Editor) =
+        editor.Listeners.Clear()
         Inp.dispose editor.Handler
 
     /// The hidden text input that holds the keyboard focus while the editor is
@@ -80,19 +86,117 @@ module API =
         | Some element -> box element
         | None -> null
 
+    /// Tell the onChange listeners what an engine change was. Nothing is
+    /// reported when neither the document, the selection nor the undo / redo
+    /// availability changed.
+    let private notifyListeners (editor: Editor) (previous: Doc.Document) (current: Doc.Document) =
+        if editor.Listeners.Count > 0 then
+            let documentChanged = not (Inp.sameContent previous current)
+            let selectionChanged = previous.Selection <> current.Selection
+            let canUndoNow = Inp.canUndo editor.Handler
+            let canRedoNow = Inp.canRedo editor.Handler
+            if documentChanged || selectionChanged || canUndoNow <> editor.NotifiedCanUndo || canRedoNow <> editor.NotifiedCanRedo then
+                editor.NotifiedCanUndo <- canUndoNow
+                editor.NotifiedCanRedo <- canRedoNow
+                let change =
+                    createObj [
+                        "DocumentChanged" ==> documentChanged
+                        "SelectionChanged" ==> selectionChanged
+                        "CanUndo" ==> canUndoNow
+                        "CanRedo" ==> canRedoNow
+                    ]
+                // A listener may unsubscribe (or subscribe) while being called.
+                for listener in editor.Listeners.ToArray() do
+                    if editor.Listeners.Contains listener then listener change
+
+    /// Call `callback` after every change of the document or the selection
+    /// (typing, pointer, toolbar / API commands, undo, redo, loading a
+    /// document). It receives { DocumentChanged, SelectionChanged, CanUndo,
+    /// CanRedo }. Returns a function that removes the subscription.
+    let onChange (editor: Editor) (callback: obj -> unit) : unit -> unit =
+        editor.Listeners.Add callback
+        editor.NotifiedCanUndo <- Inp.canUndo editor.Handler
+        editor.NotifiedCanRedo <- Inp.canRedo editor.Handler
+        fun () -> editor.Listeners.Remove callback |> ignore
+
+    let private formatValueToJs (convert: 'T -> obj) (value: WordStyles.FormatValue<'T>) : obj =
+        match value with
+        | WordStyles.NoValue -> null
+        | WordStyles.Uniform item -> convert item
+        | WordStyles.Mixed -> box "mixed"
+
+    let private optionalStringToJs (value: string option) : obj =
+        match value with
+        | Some text -> box text
+        | None -> null
+
+    /// The formatting of the current selection, for toolbar state. Each value
+    /// is the effective one (styles resolved), "mixed" when the selection
+    /// holds different values, or null when there is nothing to report.
+    ///   Bold, Italic, Underline, Strike: boolean
+    ///   FontFamily: string (null: the default face), FontSize: number (unit of setFontSize)
+    ///   Color: "#RRGGBB" (null: automatic), Highlight: colour name / value (null: none)
+    ///   Paragraph: { StyleId (null: default style), HeadingLevel (0: body text),
+    ///     Alignment "left" | "center" | "right" | "justify",
+    ///     ListKind "none" | "bullet" | "numbered", ListLevel, IndentLeft, IndentRight, FirstLineIndent }
+    ///   HasSelection, IsCollapsed, CanUndo, CanRedo: boolean
+    let getSelectionFormat (editor: Editor) =
+        let format = WordStyles.selectionFormat editor.Doc
+        let boolean = formatValueToJs (fun (value: bool) -> box value)
+        let number = formatValueToJs (fun (value: float) -> box value)
+        let text = formatValueToJs optionalStringToJs
+        createObj [
+            "Bold" ==> boolean format.Bold
+            "Italic" ==> boolean format.Italic
+            "Underline" ==> boolean format.Underline
+            "Strike" ==> boolean format.Strike
+            "FontFamily" ==> text format.FontFamily
+            "FontSize" ==> number format.FontSize
+            "Color" ==> text format.Color
+            "Highlight" ==> text format.Highlight
+            "Paragraph" ==> createObj [
+                "StyleId" ==> text format.StyleId
+                "HeadingLevel" ==> formatValueToJs (fun (level: int) -> box level) format.HeadingLevel
+                "Alignment" ==> formatValueToJs (fun alignment ->
+                                    match alignment with
+                                    | Doc.Left -> box "left"
+                                    | Doc.Center -> box "center"
+                                    | Doc.Right -> box "right"
+                                    | Doc.Justify -> box "justify") format.Alignment
+                "ListKind" ==> formatValueToJs (fun kind ->
+                                    match kind with
+                                    | Doc.NoList -> box "none"
+                                    | Doc.Bullet -> box "bullet"
+                                    | Doc.Numbered -> box "numbered") format.ListKind
+                "ListLevel" ==> formatValueToJs (fun (level: int) -> box level) format.ListLevel
+                "IndentLeft" ==> number format.IndentLeft
+                "IndentRight" ==> number format.IndentRight
+                "FirstLineIndent" ==> number format.FirstLineIndent
+            ]
+            "HasSelection" ==> editor.Doc.Selection.IsSome
+            "IsCollapsed" ==> (match editor.Doc.Selection with Some selection -> selection.IsCollapsed | None -> true)
+            "CanUndo" ==> Inp.canUndo editor.Handler
+            "CanRedo" ==> Inp.canRedo editor.Handler
+        ]
+
     let initializeCanvasWithChange (canvas: HTMLCanvasElement) (afterChange: unit -> unit) =
         let doc = Doc.empty
         let mutable editor = Unchecked.defaultof<Editor>
 
         let onChange newDoc =
+            let previous = editor.Doc
             editor.Doc <- newDoc
             afterChange ()
+            notifyListeners editor previous newDoc
 
         let handler = Inp.create canvas doc onChange
 
         editor <- {
             Handler = handler
             Doc = doc
+            Listeners = ResizeArray()
+            NotifiedCanUndo = false
+            NotifiedCanRedo = false
         }
 
         editor
@@ -365,6 +469,13 @@ module API =
         let startOffset = anchor?StartOffset |> unbox<int>
         let endOffset = anchor?EndOffset |> unbox<int>
         let newDoc = Doc.setSelection { BlockId = blockId; Offset = startOffset } { BlockId = blockId; Offset = endOffset } editor.Doc
+        commitDocumentUpdate editor newDoc
+
+    /// Select from one document position to another (the same position twice
+    /// places the caret). Positions are (block id, offset) as getSelection,
+    /// hitTestPosition and getLayoutLines report them.
+    let setSelection (editor: Editor) (anchorBlockId: string) (anchorOffset: int) (focusBlockId: string) (focusOffset: int) =
+        let newDoc = Doc.setSelection { BlockId = anchorBlockId; Offset = anchorOffset } { BlockId = focusBlockId; Offset = focusOffset } editor.Doc
         commitDocumentUpdate editor newDoc
 
     let getSelection (editor: Editor) =
@@ -2100,6 +2211,8 @@ module API =
             "redo" ==> redo
             "canUndo" ==> canUndo
             "canRedo" ==> canRedo
+            "onChange" ==> onChange
+            "getSelectionFormat" ==> getSelectionFormat
             "dispose" ==> dispose
             "getInputElement" ==> getInputElement
             "getTrackChanges" ==> getTrackChanges
@@ -2118,6 +2231,7 @@ module API =
             "getRevisionInfos" ==> getRevisionInfos
             "selectCommentAnchor" ==> selectCommentAnchor
             "getSelection" ==> getSelection
+            "setSelection" ==> setSelection
             "clearSelection" ==> clearSelection
             "getImageHitTest" ==> getImageHitTest
             "getLayoutSegments" ==> getLayoutSegments

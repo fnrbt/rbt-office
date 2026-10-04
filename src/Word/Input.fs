@@ -16,7 +16,7 @@ let private documentsEqualForChange (left: Rbt.Word.Document.Document) (right: R
 
 /// True when two documents differ at most in their selection. Moving the
 /// caret is not something Undo steps through.
-let private sameContent (left: Rbt.Word.Document.Document) (right: Rbt.Word.Document.Document) =
+let sameContent (left: Rbt.Word.Document.Document) (right: Rbt.Word.Document.Document) =
     obj.ReferenceEquals(left, right)
     || (left.PageSetup = right.PageSetup
         && sameListOrEqual left.Blocks right.Blocks

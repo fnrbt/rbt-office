@@ -16,6 +16,7 @@
 //   track-changes    tracked typing and Enter through the keyboard, saved as w:ins and a tracked mark
 //   linked-images    a linked picture is not requested until the host allows it; unsafe links are inactive
 //   opaque-click     clicking, dragging and typing next to a chart placeholder keeps the chart on export
+//   selection-format getSelectionFormat (value / "mixed"), canUndo / canRedo, onChange and unsubscribing
 //   viewport         setViewport (zoom / devicePixelRatio / scroll): pixels and hit tests against whole-canvas mode, renderPage timing
 //
 // Environment (as tools/docx-roundtrip/roundtrip.mjs): PLAYWRIGHT, JSZIP_DIR, PORT (default 16022).
@@ -33,7 +34,7 @@ const args = process.argv.slice(2);
 const opt = (name) => { const i = args.indexOf(name); if (i < 0) return undefined; const v = args[i + 1]; args.splice(i, 2); return v; };
 const dist = path.resolve(opt('--dist') ?? path.join(repo, 'dist'));
 const port = Number(process.env.PORT ?? 16022);
-const all = ['explicit-format', 'page-frames', 'ime', 'typing', 'track-changes', 'linked-images', 'opaque-click', 'viewport'];
+const all = ['explicit-format', 'page-frames', 'ime', 'typing', 'track-changes', 'linked-images', 'opaque-click', 'viewport', 'selection-format'];
 const checks = args.length ? args : all;
 
 const jszipDir = [process.env.JSZIP_DIR, path.join(repo, 'node_modules/jszip'), path.resolve(repo, '../rbt-office/node_modules/jszip')].find((p) => p && fs.existsSync(p));

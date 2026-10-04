@@ -1397,6 +1397,30 @@ let getNormalizedRange (sel: Selection) (doc: Document) =
         // Fallback if blocks not found
         (sel.Anchor, sel.Focus, [])
 
+/// The paragraphs a non-collapsed selection touches, in document order, each
+/// with the selected range [start, end) inside it. One pass over the document.
+let selectedParagraphRanges (doc: Document) : (ParagraphBlock * int * int) list =
+    match doc.Selection with
+    | None -> []
+    | Some sel when sel.IsCollapsed -> []
+    | Some sel ->
+        let paragraphs = editableParagraphsInOrder doc
+        let anchorIdx = paragraphs |> List.tryFindIndex (fun p -> p.Id = sel.Anchor.BlockId)
+        let focusIdx = paragraphs |> List.tryFindIndex (fun p -> p.Id = sel.Focus.BlockId)
+        match anchorIdx, focusIdx with
+        | Some aIdx, Some fIdx ->
+            let startIdx, startOffset, endIdx, endOffset =
+                if aIdx < fIdx || (aIdx = fIdx && sel.Anchor.Offset <= sel.Focus.Offset) then aIdx, sel.Anchor.Offset, fIdx, sel.Focus.Offset
+                else fIdx, sel.Focus.Offset, aIdx, sel.Anchor.Offset
+            paragraphs
+            |> List.skip startIdx
+            |> List.truncate (endIdx - startIdx + 1)
+            |> List.mapi (fun i para ->
+                let index = startIdx + i
+                let length = TextBuffer.length para.Buffer
+                para, (if index = startIdx then startOffset else 0), (if index = endIdx then endOffset else length))
+        | _ -> []
+
 /// Split block at cursor, creating two blocks
 let splitBlock doc =
     match doc.Selection with

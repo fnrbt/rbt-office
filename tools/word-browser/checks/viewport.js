@@ -96,7 +96,7 @@ try {
     const line = Word.getLayoutLines(ref).find((l) => l.Y > 180 && l.Y < 380 && (l.Text || '').trim().length > 8);
     for (const target of [editor, ref]) {
         const hit = Word.hitTestPosition(target, line.X + 30, line.Y + line.Height / 2);
-        Word.selectFindMatch(target, { BlockId: hit.BlockId, StartOffset: hit.Offset, EndOffset: hit.Offset });
+        Word.setSelection(target, hit.BlockId, hit.Offset, hit.BlockId, hit.Offset);
         Word.insertText(target, 'viewport edit ');
     }
     check('after an edit the viewport still matches whole-canvas mode', differing(canvas, refCanvas, 60, 150) < 0.004, true);

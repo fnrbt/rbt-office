@@ -2073,6 +2073,44 @@ check "move across paragraphs keeps opaque" ((imageRunsOf "other" movedAcross) |
 check "move across paragraphs leaves source" (imageRunsOf "chart" movedAcross) []
 check "resize keeps opaque" ((imageRunsOf "chart" (Doc.resizeImage "chart" 0 300.0 200.0 chartDoc)) |> List.map (fun image -> image.Opaque, image.Width)) [ Some opaqueChart, Some 300.0 ]
 
+// Selection formatting for toolbars: effective values, Mixed across the selection.
+let formatDoc =
+    let styled =
+        { Rope = Rbt.Word.Rope.ofString "plain bold red"
+          Runs =
+            [ Text { Start = 0; Length = 6; Style = defaultStyle }
+              Text { Start = 6; Length = 5; Style = withExplicitBold true defaultStyle }
+              Text { Start = 11; Length = 3; Style = { defaultStyle with Color = Some "#FF0000"; FontFamily = Some "Georgia"; FontSize = 20.0; Explicit = ExplicitFormat.FontSize } } ] }
+    { Doc.empty with
+        Blocks =
+            [ Doc.Paragraph { Id = "f1"; Buffer = styled; Metadata = Doc.defaultMetadata }
+              Doc.Heading (2, { Id = "f2"; Buffer = ofString "heading"; Metadata = { Doc.defaultMetadata with Alignment = Doc.Center; ExplicitAlignment = true } })
+              Doc.Paragraph { Id = "f3"; Buffer = ofString "item"; Metadata = { Doc.defaultMetadata with ListStyle = Doc.Bullet; ListLevel = 2; IndentLeft = Some 48.0 } }
+              Doc.Paragraph { Id = "f4"; Buffer = empty; Metadata = Doc.defaultMetadata } ] }
+let formatOf anchorId anchorOffset focusId focusOffset =
+    WS.selectionFormat (Doc.setSelection { BlockId = anchorId; Offset = anchorOffset } { BlockId = focusId; Offset = focusOffset } formatDoc)
+let caretPlain = formatOf "f1" 3 "f1" 3
+check "format: caret in plain text" (caretPlain.Bold, caretPlain.Italic, caretPlain.Color, caretPlain.FontFamily) (WS.Uniform false, WS.Uniform false, WS.Uniform None, WS.Uniform (Some "Calibri"))
+check "format: caret paragraph" (caretPlain.HeadingLevel, caretPlain.Alignment, caretPlain.ListKind, caretPlain.ListLevel, caretPlain.IndentLeft) (WS.Uniform 0, WS.Uniform Doc.Left, WS.Uniform Doc.NoList, WS.Uniform 0, WS.Uniform 0.0)
+check "format: caret after bold text continues bold" (formatOf "f1" 9 "f1" 9).Bold (WS.Uniform true)
+check "format: caret at the start of bold text is still plain" (formatOf "f1" 6 "f1" 6).Bold (WS.Uniform false)
+check "format: range inside bold" (formatOf "f1" 7 "f1" 10).Bold (WS.Uniform true)
+let acrossRuns = formatOf "f1" 2 "f1" 13
+check "format: range across runs is mixed" (acrossRuns.Bold, acrossRuns.Color, acrossRuns.FontFamily, acrossRuns.FontSize, acrossRuns.Italic) (WS.Mixed, WS.Mixed, WS.Mixed, WS.Mixed, WS.Uniform false)
+let redOnly = formatOf "f1" 14 "f1" 11
+check "format: backwards range over red text" (redOnly.Color, redOnly.FontFamily, redOnly.FontSize, redOnly.Bold) (WS.Uniform (Some "#FF0000"), WS.Uniform (Some "Georgia"), WS.Uniform 20.0, WS.Uniform false)
+let headingCaret = formatOf "f2" 2 "f2" 2
+check "format: heading is bold through its style" (headingCaret.Bold, headingCaret.HeadingLevel, headingCaret.Alignment, headingCaret.FontSize) (WS.Uniform true, WS.Uniform 2, WS.Uniform Doc.Center, WS.Uniform 18.0)
+let listCaret = formatOf "f3" 0 "f3" 0
+check "format: list paragraph" (listCaret.ListKind, listCaret.ListLevel, listCaret.IndentLeft) (WS.Uniform Doc.Bullet, WS.Uniform 2, WS.Uniform 48.0)
+let acrossParagraphs = formatOf "f1" 0 "f3" 2
+check "format: across paragraphs" (acrossParagraphs.HeadingLevel, acrossParagraphs.Alignment, acrossParagraphs.ListKind, acrossParagraphs.Bold, acrossParagraphs.Underline) (WS.Mixed, WS.Mixed, WS.Mixed, WS.Mixed, WS.Uniform false)
+let emptyCaret = formatOf "f4" 0 "f4" 0
+check "format: empty paragraph reports its own formatting" (emptyCaret.Bold, emptyCaret.FontSize, emptyCaret.FontFamily) (WS.Uniform false, WS.Uniform 11.0, WS.Uniform (Some "Calibri"))
+check "format: no selection" (WS.selectionFormat { formatDoc with Selection = None }).Bold WS.NoValue
+check "format: toggling bold over a mixed range makes it bold" (WS.selectionFormat (WS.toggleBold (Doc.setSelection { BlockId = "f1"; Offset = 2 } { BlockId = "f1"; Offset = 13 } formatDoc))).Bold (WS.Uniform true)
+check "selected paragraph ranges" (Doc.selectedParagraphRanges (Doc.setSelection { BlockId = "f3"; Offset = 2 } { BlockId = "f1"; Offset = 4 } formatDoc) |> List.map (fun (para, s, e) -> para.Id, s, e)) [ "f1", 4, 14; "f2", 0, 7; "f3", 0, 2 ]
+
 // removed: command-history retention/budget tests targeted the deleted cache machinery (RetainedSourceTextCharCount, trimHistory)
 printfn ""
 printfn "Word textbuffer tests: %d passed, %d failed" pass fail
