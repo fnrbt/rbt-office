@@ -322,6 +322,65 @@ ok "editor-paragraph-direct-keep"
    (keepSummary = [ (None, None, Some true); (Some true, Some false, None); (Some false, None, Some true) ])
    (sprintf "%A" keepSummary)
 
+// ----- footnote / endnote / comment bodies are blocks -----------------------
+let relsNs = "xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\""
+let notesDoc =
+    docxWithParts
+        "<w:p><w:r><w:t>body</w:t></w:r><w:r><w:footnoteReference w:id=\"2\"/></w:r><w:r><w:endnoteReference w:id=\"1\"/></w:r><w:r><w:commentReference w:id=\"5\"/></w:r></w:p>"
+        [ "word/_rels/document.xml.rels",
+          sprintf "<Relationships %s><Relationship Id=\"rId1\" Type=\"%s\" Target=\"notes/foot.xml\"/><Relationship Id=\"rId2\" Type=\"%s\" Target=\"endnotes.xml\"/><Relationship Id=\"rId3\" Type=\"%s\" Target=\"comments.xml\"/></Relationships>"
+              relsNs (relType "footnotes") (relType "endnotes") (relType "comments")
+          "word/notes/foot.xml",
+          sprintf "<w:footnotes %s><w:footnote w:type=\"separator\" w:id=\"-1\"><w:p><w:r><w:separator/></w:r></w:p></w:footnote><w:footnote w:id=\"2\"><w:p><w:r><w:rPr><w:rStyle w:val=\"FootnoteReference\"/></w:rPr><w:footnoteRef/></w:r><w:r><w:rPr><w:b/></w:rPr><w:t>bold</w:t></w:r><w:hyperlink r:id=\"rId9\"><w:r><w:t>link</w:t></w:r></w:hyperlink></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:p><w:r><w:t>tail</w:t></w:r></w:p></w:footnote></w:footnotes>" wNs
+          "word/notes/_rels/foot.xml.rels",
+          sprintf "<Relationships %s><Relationship Id=\"rId9\" Type=\"%s\" Target=\"https://example.com/n\" TargetMode=\"External\"/></Relationships>" relsNs (relType "hyperlink")
+          "word/endnotes.xml",
+          sprintf "<w:endnotes %s><w:endnote w:id=\"1\"><w:p><w:r><w:endnoteRef/></w:r><w:r><w:rPr><w:i/></w:rPr><w:t>end</w:t></w:r></w:p></w:endnote></w:endnotes>" wNs
+          "word/comments.xml",
+          sprintf "<w:comments %s><w:comment w:id=\"5\" w:author=\"Ann\" w:initials=\"A\"><w:p><w:r><w:t xml:space=\"preserve\">first </w:t></w:r><w:r><w:rPr><w:b/></w:rPr><w:t>remark</w:t></w:r></w:p><w:p><w:r><w:t>second</w:t></w:r></w:p></w:comment></w:comments>" wNs ]
+        []
+    |> DocxReader.loadBytesNative |> Option.get
+let blockShape (blocks: DocxReader.DocumentContent list) =
+    blocks |> List.map (function DocxReader.Para _ -> "p" | DocxReader.Tbl _ -> "tbl")
+let footnote2 = notesDoc.Footnotes |> List.tryFind (fun note -> note.Id = "2")
+ok "footnote-part-resolved-from-relationships"
+   (notesDoc.Footnotes |> List.map (fun note -> note.Id, note.Kind) = [ "-1", Some "separator"; "2", None ])
+   (sprintf "%A" (notesDoc.Footnotes |> List.map (fun note -> note.Id, note.Kind)))
+ok "footnote-body-keeps-table"
+   (footnote2 |> Option.map (fun note -> blockShape note.Blocks) = Some [ "p"; "tbl"; "p" ])
+   (sprintf "%A" (footnote2 |> Option.map (fun note -> blockShape note.Blocks)))
+ok "footnote-mark-and-style"
+   (footnote2 |> Option.map (fun note -> note.HasMark, note.MarkStyle) = Some (true, Some "FootnoteReference"))
+   (sprintf "%A" footnote2)
+let footnoteRuns =
+    footnote2
+    |> Option.map (fun note -> DocxReader.blockParagraphs note.Blocks |> List.collect (fun para -> para.Runs))
+    |> Option.defaultValue []
+ok "footnote-run-formatting"
+   (footnoteRuns |> List.exists (fun run -> run.Content = DocxReader.Text "bold" && run.Properties.Bold = Some true))
+   (sprintf "%A" footnoteRuns)
+ok "footnote-hyperlink-from-own-relationships"
+   (footnoteRuns |> List.exists (fun run -> match run.Content with DocxReader.Link link -> link.Text = "link" && link.Target = Some "https://example.com/n" | _ -> false))
+   (sprintf "%A" footnoteRuns)
+ok "footnote-plain-text"
+   (footnote2 |> Option.map DocxReader.Notes.plainText = Some "boldlinkcelltail")
+   (sprintf "%A" (footnote2 |> Option.map DocxReader.Notes.plainText))
+ok "endnote-body"
+   (notesDoc.Endnotes |> List.map (fun note -> note.Id, note.HasMark, blockShape note.Blocks) = [ "1", true, [ "p" ] ])
+   (sprintf "%A" notesDoc.Endnotes)
+ok "comment-body-blocks"
+   ((notesDoc.Comments |> List.map (fun comment -> comment.Id, comment.Author, comment.Initials, comment.Text, blockShape comment.Blocks))
+     = [ "5", Some "Ann", Some "A", "first remark second", [ "p"; "p" ] ])
+   (sprintf "%A" notesDoc.Comments)
+let editorNotes =
+    DocxReader.toEditorNotes notesDoc.Theme notesDoc.Images notesDoc.Styles notesDoc.NumberingDefinitions notesDoc.Footnotes
+    |> Array.map (fun item -> item :?> System.Collections.Generic.Dictionary<string, obj>)
+ok "editor-notes-carry-blocks"
+   (editorNotes.Length = 2
+    && (editorNotes.[1].["Blocks"] :?> obj array).Length = 3
+    && ((editorNotes.[1].["Blocks"] :?> obj array).[1] :?> System.Collections.Generic.Dictionary<string, obj>).["Type"] = box "Table")
+   (sprintf "%d notes" editorNotes.Length)
+
 printfn ""
 printfn "OfficeFormat DocxReader tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

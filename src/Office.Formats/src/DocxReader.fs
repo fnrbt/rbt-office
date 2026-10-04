@@ -393,6 +393,10 @@ type Comment = {
     Date: string option
     Text: string
     InitialText: string option
+    /// w:initials of the comment author.
+    Initials: string option
+    /// The comment body in order, with tables kept as tables and run formatting.
+    Blocks: DocumentContent list
 }
 
 type RevisionType =
@@ -412,7 +416,16 @@ type Revision = {
 
 type Note = {
     Id: string
+    /// Every paragraph of the note, tables flattened (kept for callers that only want text).
     Content: Paragraph list
+    /// The note body in order, with tables kept as tables.
+    Blocks: DocumentContent list
+    /// w:type: None for an ordinary note, else "separator", "continuationSeparator", "continuationNotice".
+    Kind: string option
+    /// The body starts with the automatic reference mark (w:footnoteRef / w:endnoteRef).
+    HasMark: bool
+    /// Character style of the run that holds the mark.
+    MarkStyle: string option
 }
 
 /// One segment of a custom (a:custGeom) path. Op is M/L/C/Q/Z; Pts are the flat
@@ -2347,44 +2360,80 @@ module Properties =
 let partImageKey (partRelationshipId: string) (imageRelationshipId: string) =
     partRelationshipId + "/" + imageRelationshipId
 
+/// Image key prefixes of the parts that have no relationship id of their own use.
+let footnotesPartKey = "footnotes"
+let endnotesPartKey = "endnotes"
+let commentsPartKey = "comments"
+
+/// Apply `mapRun` to every run of every paragraph in `blocks`, nested tables included.
+let rec mapBlockRuns (mapRun: Run -> Run) (blocks: DocumentContent list) : DocumentContent list =
+    let mapParagraph (para: Paragraph) = { para with Runs = para.Runs |> List.map mapRun }
+    let rec mapTable (table: Table) =
+        { table with
+            Rows =
+                table.Rows
+                |> List.map (fun row ->
+                    { row with
+                        Cells =
+                            row.Cells
+                            |> List.map (fun cell ->
+                                { cell with
+                                    Paragraphs = cell.Paragraphs |> List.map mapParagraph
+                                    NestedTables = cell.NestedTables |> List.map mapTable }) }) }
+    blocks
+    |> List.map (function
+        | Para para -> Para (mapParagraph para)
+        | Tbl table -> Tbl (mapTable table))
+
+/// Relationship ids are local to a part: the header's rId1 is not the body's
+/// rId1. Image references of a part other than the body are qualified with a
+/// key of that part so they cannot collide in the document-wide image map.
+let qualifyImageRun (partKey: string) (run: Run) : Run =
+    match run.Content with
+    | Image image -> { run with Content = Image { image with RelationshipId = partImageKey partKey image.RelationshipId } }
+    | _ -> run
+
+/// Hyperlink targets live in the relationships of the part the link is in.
+let resolveHyperlinkRun (relMap: Map<string, string>) (run: Run) : Run =
+    match run.Content with
+    | Link link ->
+        match link.RelationshipId |> Option.bind (fun rId -> Map.tryFind rId relMap) with
+        | Some target -> { run with Content = Link { link with Target = Some target } }
+        | None -> run
+    | _ -> run
+
+let private hyperlinkTargets (rels: Relationship list) =
+    rels
+    |> List.choose (fun rel -> if rel.Target <> "" then Some (rel.Id, rel.Target) else None)
+    |> Map.ofList
+
+/// Paragraphs of `blocks` in document order, table cells included.
+let rec blockParagraphs (blocks: DocumentContent list) : Paragraph list =
+    let rec tableParagraphs (table: Table) =
+        table.Rows
+        |> List.collect (fun row ->
+            row.Cells
+            |> List.collect (fun cell -> cell.Paragraphs @ (cell.NestedTables |> List.collect tableParagraphs)))
+    blocks
+    |> List.collect (function
+        | Para para -> [para]
+        | Tbl table -> tableParagraphs table)
+
 // Header/Footer parsing
 module HeaderFooter =
     let parseHeaderFooter (xml: string) (hfType: string) (relationshipId: string option) : HeaderFooter =
         let doc = XmlDsl.parse xml
-        // Relationship ids are local to a part: the header's rId1 is not the
-        // body's rId1. Image references are qualified with the part's own
-        // relationship id so they cannot collide in the document-wide image map.
-        let qualify = relationshipId |> Option.map partImageKey |> Option.defaultValue id
-        let rec qualifyParagraph (para: Paragraph) =
-            { para with
-                Runs =
-                    para.Runs
-                    |> List.map (fun run ->
-                        match run.Content with
-                        | Image image -> { run with Content = Image { image with RelationshipId = qualify image.RelationshipId } }
-                        | _ -> run) }
-        and qualifyTable (table: Table) =
-            { table with
-                Rows =
-                    table.Rows
-                    |> List.map (fun row ->
-                        { row with
-                            Cells =
-                                row.Cells
-                                |> List.map (fun cell ->
-                                    { cell with
-                                        Paragraphs = cell.Paragraphs |> List.map qualifyParagraph
-                                        NestedTables = cell.NestedTables |> List.map qualifyTable }) }) }
-        let paragraphs =
-            Ns.descendantsNs "p" doc
-            |> List.map (Docx.paragraph >> qualifyParagraph)
-        let blocks =
-            Docx.bodyContent doc
-            |> List.map (function
-                | Para para -> Para (qualifyParagraph para)
-                | Tbl table -> Tbl (qualifyTable table))
+        let qualify blocks =
+            match relationshipId with
+            | Some partId -> mapBlockRuns (qualifyImageRun partId) blocks
+            | None -> blocks
+        let blocks = Docx.bodyContent doc |> qualify
         {
-            Content = paragraphs
+            Content =
+                Ns.descendantsNs "p" doc
+                |> List.map (fun node -> Para (Docx.paragraph node))
+                |> qualify
+                |> List.choose (function Para para -> Some para | Tbl _ -> None)
             Blocks = blocks
             Type = hfType
             RelationshipId = relationshipId
@@ -2398,29 +2447,25 @@ module Comments =
             let author = Docx.attr "author" commentNode
             let date = Docx.attr "date" commentNode
 
-            let paragraphs =
-                Ns.descendantsNs "p" commentNode
-                |> List.map Docx.paragraph
+            let blocks = Docx.bodyContent commentNode |> mapBlockRuns (qualifyImageRun commentsPartKey)
+            let paragraphs = blockParagraphs blocks
+            let runText (r: Run) =
+                match r.Content with
+                | Text t -> Some t
+                | Link link -> Some link.Text
+                | _ -> None
 
+            // Runs of a paragraph join without a separator; paragraphs with a space.
             let text =
                 paragraphs
-                |> List.collect (fun p ->
-                    p.Runs |> List.choose (fun r ->
-                        match r.Content with
-                        | Text t -> Some t
-                        | _ -> None))
+                |> List.map (fun p -> p.Runs |> List.choose runText |> String.concat "")
+                |> List.filter (fun line -> line <> "")
                 |> String.concat " "
 
             let initialText =
                 paragraphs
                 |> List.tryHead
-                |> Option.bind (fun p ->
-                    p.Runs
-                    |> List.tryHead
-                    |> Option.bind (fun r ->
-                        match r.Content with
-                        | Text t -> Some t
-                        | _ -> None))
+                |> Option.bind (fun p -> p.Runs |> List.tryPick runText)
 
             {
                 Id = id
@@ -2428,6 +2473,8 @@ module Comments =
                 Date = date
                 Text = text
                 InitialText = initialText
+                Initials = Docx.attr "initials" commentNode
+                Blocks = blocks
             })
 
     let parseComments (xml: string) : Comment list =
@@ -2478,16 +2525,31 @@ module Revisions =
 
 // Footnotes and Endnotes parsing
 module Notes =
-    let parseNote (noteNode: XmlNode) : Note option =
+    let private parseNoteOfPart (partKey: string) (noteNode: XmlNode) : Note option =
         Docx.attr "id" noteNode
         |> Option.map (fun id ->
-            let paragraphs =
-                Ns.descendantsNs "p" noteNode
-                |> List.map Docx.paragraph
+            let blocks = Docx.bodyContent noteNode |> mapBlockRuns (qualifyImageRun partKey)
+            // The run holding the automatic reference mark.
+            let markRun =
+                Ns.descendantsNs "r" noteNode
+                |> List.tryFind (fun run ->
+                    Xml.children run
+                    |> List.exists (fun child ->
+                        match Xml.name child |> Option.map Ns.stripNs with
+                        | Some "footnoteRef" | Some "endnoteRef" -> true
+                        | _ -> false))
             {
                 Id = id
-                Content = paragraphs
+                Content = blockParagraphs blocks
+                Blocks = blocks
+                Kind = Docx.attr "type" noteNode |> Option.filter (fun kind -> kind <> "normal")
+                HasMark = markRun.IsSome
+                MarkStyle = markRun |> Option.bind (fun run -> (Docx.runProps run).Style)
             })
+
+    let parseNote (noteNode: XmlNode) : Note option =
+        let partKey = if Xml.name noteNode |> Option.map Ns.stripNs = Some "endnote" then endnotesPartKey else footnotesPartKey
+        parseNoteOfPart partKey noteNode
 
     let parseNotes (xml: string) : Note list =
         let doc = XmlDsl.parse xml
@@ -2498,6 +2560,17 @@ module Notes =
                 Ns.descendantsNs "endnote" doc
                 |> List.choose parseNote
             footnotes @ endnotes
+
+    /// The text the note is shown with: every text run of the body, joined.
+    let plainText (note: Note) : string =
+        note.Content
+        |> List.collect (fun para -> para.Runs)
+        |> List.map (fun run ->
+            match run.Content with
+            | Text text -> text
+            | Link link -> link.Text
+            | _ -> "")
+        |> String.concat ""
 
 // Shapes and Text Boxes parsing
 module Shapes =
@@ -2704,38 +2777,26 @@ module Shapes =
 
 // Resolve hyperlink targets from relationships
 let resolveHyperlinks (doc: WordDocument) : WordDocument =
-    let relMap =
-        doc.Relationships
-        |> List.choose (fun rel ->
-            if rel.Target <> "" then Some (rel.Id, rel.Target) else None)
-        |> Map.ofList
+    { doc with Content = doc.Content |> mapBlockRuns (resolveHyperlinkRun (hyperlinkTargets doc.Relationships)) }
 
-    let resolveRun (run: Run) : Run =
-        match run.Content with
-        | Link link ->
-            let target =
-                link.RelationshipId
-                |> Option.bind (fun rId -> Map.tryFind rId relMap)
-            { run with Content = Link { link with Target = target } }
-        | _ -> run
+/// Hyperlinks of a header / footer resolve against that part's own relationships.
+let private resolveHeaderFooterHyperlinks (rels: Relationship list) (part: HeaderFooter) : HeaderFooter =
+    if rels.IsEmpty then part
+    else
+        let resolve = mapBlockRuns (resolveHyperlinkRun (hyperlinkTargets rels))
+        { part with
+            Blocks = resolve part.Blocks
+            Content = part.Content |> List.map Para |> resolve |> List.choose (function Para para -> Some para | Tbl _ -> None) }
 
-    let resolvePara (para: Paragraph) : Paragraph =
-        { para with Runs = para.Runs |> List.map resolveRun }
+let private resolveNoteHyperlinks (rels: Relationship list) (note: Note) : Note =
+    if rels.IsEmpty then note
+    else
+        let blocks = note.Blocks |> mapBlockRuns (resolveHyperlinkRun (hyperlinkTargets rels))
+        { note with Blocks = blocks; Content = blockParagraphs blocks }
 
-    let rec resolveTable table =
-        let resolveCell (cell: TableCell) =
-            { cell with
-                Paragraphs = cell.Paragraphs |> List.map resolvePara
-                NestedTables = cell.NestedTables |> List.map resolveTable }
-        let resolveRow (row: TableRow) =
-            { row with Cells = row.Cells |> List.map resolveCell }
-        { table with Rows = table.Rows |> List.map resolveRow }
-
-    let resolveContent = function
-        | Para p -> Para (resolvePara p)
-        | Tbl t -> Tbl (resolveTable t)
-
-    { doc with Content = doc.Content |> List.map resolveContent }
+let private resolveCommentHyperlinks (rels: Relationship list) (comment: Comment) : Comment =
+    if rels.IsEmpty then comment
+    else { comment with Blocks = comment.Blocks |> mapBlockRuns (resolveHyperlinkRun (hyperlinkTargets rels)) }
 
 // Determine MIME type from file extension
 let getMimeType (path: string) : string =
@@ -2824,6 +2885,24 @@ let private parentPath (path: string) =
 let private resolveRelationshipTarget baseDir target =
     ZipInterop.resolveTarget baseDir target
 
+/// The relationships part of the part at `partPath` (word/footnotes.xml -> word/_rels/footnotes.xml.rels).
+let private partRelsPath (partPath: string) =
+    let dir = parentPath partPath
+    (if dir = "" then "" else dir + "/") + "_rels/" + lastPathSegment partPath + ".rels"
+
+/// The package path of the part a relationship of the given type points at, or `fallback`.
+let private partPathOfType (baseDir: string) (rels: Relationship list) (typeSuffix: string) (fallback: string) =
+    rels
+    |> List.tryFind (fun rel -> rel.Type.EndsWith typeSuffix && rel.TargetMode <> Some "External")
+    |> Option.map (fun rel -> ZipInterop.resolveTarget baseDir rel.Target)
+    |> Option.defaultValue fallback
+
+let private relationshipsOfXml (xml: string option) =
+    xml
+    |> Option.map XmlDsl.parse
+    |> Option.map parseRelationships
+    |> Option.defaultValue []
+
 let private relationshipTargetBase (rel: Relationship) =
     parentPath (ZipInterop.resolveTarget "word" rel.Target)
 
@@ -2891,21 +2970,26 @@ let parseDocument (archive: ZipArchive) : Fable.Core.JS.Promise<WordDocument opt
         let! settingsXml = getFileText archive "word/settings.xml"
         let! propsXml = getFileText archive "docProps/core.xml"
 
-        // Load advanced features
-        let! commentsXml = getFileText archive "word/comments.xml"
-        let! footnotesXml = getFileText archive "word/footnotes.xml"
-        let! endnotesXml = getFileText archive "word/endnotes.xml"
-
         match docXml with
         | Some xml ->
             let doc = XmlDsl.parse xml
             let body = Ns.childNs "body" doc
 
-            let rels =
-                relsXml
-                |> Option.map XmlDsl.parse
-                |> Option.map parseRelationships
-                |> Option.defaultValue []
+            let rels = relationshipsOfXml relsXml
+
+            // Notes and comments are parts of their own, each with its own relationships.
+            let commentsPath = partPathOfType "word" rels "/comments" "word/comments.xml"
+            let footnotesPath = partPathOfType "word" rels "/footnotes" "word/footnotes.xml"
+            let endnotesPath = partPathOfType "word" rels "/endnotes" "word/endnotes.xml"
+            let! commentsXml = getFileText archive commentsPath
+            let! footnotesXml = getFileText archive footnotesPath
+            let! endnotesXml = getFileText archive endnotesPath
+            let! commentsRelsXml = getFileText archive (partRelsPath commentsPath)
+            let! footnotesRelsXml = getFileText archive (partRelsPath footnotesPath)
+            let! endnotesRelsXml = getFileText archive (partRelsPath endnotesPath)
+            let commentsRels = relationshipsOfXml commentsRelsXml
+            let footnotesRels = relationshipsOfXml footnotesRelsXml
+            let endnotesRels = relationshipsOfXml endnotesRelsXml
 
             let styles =
                 stylesXml
@@ -2943,7 +3027,12 @@ let parseDocument (archive: ZipArchive) : Fable.Core.JS.Promise<WordDocument opt
                 promise {
                     let path = ZipInterop.resolveTarget "word" rel.Target
                     let! xml = getFileText archive path
-                    return xml |> Option.map (fun value -> HeaderFooter.parseHeaderFooter value hfType (Some rel.Id))
+                    let! partRelsXml = getFileText archive (partRelsPath path)
+                    return
+                        xml
+                        |> Option.map (fun value ->
+                            HeaderFooter.parseHeaderFooter value hfType (Some rel.Id)
+                            |> resolveHeaderFooterHyperlinks (relationshipsOfXml partRelsXml))
                 }
 
             let! headers =
@@ -2975,6 +3064,7 @@ let parseDocument (archive: ZipArchive) : Fable.Core.JS.Promise<WordDocument opt
                 commentsXml
                 |> Option.map Comments.parseComments
                 |> Option.defaultValue []
+                |> List.map (resolveCommentHyperlinks commentsRels)
 
             let revisions = Revisions.parseRevisions doc
 
@@ -2982,11 +3072,13 @@ let parseDocument (archive: ZipArchive) : Fable.Core.JS.Promise<WordDocument opt
                 footnotesXml
                 |> Option.map Notes.parseNotes
                 |> Option.defaultValue []
+                |> List.map (resolveNoteHyperlinks footnotesRels)
 
             let endnotes =
                 endnotesXml
                 |> Option.map Notes.parseNotes
                 |> Option.defaultValue []
+                |> List.map (resolveNoteHyperlinks endnotesRels)
 
             let shapes = Shapes.parseShapes doc
 
@@ -3009,8 +3101,15 @@ let parseDocument (archive: ZipArchive) : Fable.Core.JS.Promise<WordDocument opt
                         |> List.toArray
                         |> Promise.all
 
+                    let keyed key (partImages: (string * string) option array) =
+                        partImages |> Array.map (Option.map (fun (relId, dataUrl) -> partImageKey key relId, dataUrl))
+                    let! footnoteImages = loadImageData archive (parentPath footnotesPath) footnotesRels
+                    let! endnoteImages = loadImageData archive (parentPath endnotesPath) endnotesRels
+                    let! commentImages = loadImageData archive (parentPath commentsPath) commentsRels
+
                     return
-                        Array.concat (bodyImages :: (runningContentImages |> Array.toList))
+                        Array.concat (bodyImages :: (runningContentImages |> Array.toList)
+                                      @ [ keyed footnotesPartKey footnoteImages; keyed endnotesPartKey endnoteImages; keyed commentsPartKey commentImages ])
                         |> Array.choose id
                         |> Map.ofArray
                 }
@@ -3046,20 +3145,23 @@ let parseDocumentNative (archive: ZipArchive) : WordDocument option =
     let numberingXml = getFileTextNative archive "word/numbering.xml"
     let settingsXml = getFileTextNative archive "word/settings.xml"
     let propsXml = getFileTextNative archive "docProps/core.xml"
-    let commentsXml = getFileTextNative archive "word/comments.xml"
-    let footnotesXml = getFileTextNative archive "word/footnotes.xml"
-    let endnotesXml = getFileTextNative archive "word/endnotes.xml"
 
     docXml
     |> Option.map (fun xml ->
         let doc = XmlDsl.parse xml
         let body = Ns.childNs "body" doc
 
-        let rels =
-            relsXml
-            |> Option.map XmlDsl.parse
-            |> Option.map parseRelationships
-            |> Option.defaultValue []
+        let rels = relationshipsOfXml relsXml
+
+        let commentsPath = partPathOfType "word" rels "/comments" "word/comments.xml"
+        let footnotesPath = partPathOfType "word" rels "/footnotes" "word/footnotes.xml"
+        let endnotesPath = partPathOfType "word" rels "/endnotes" "word/endnotes.xml"
+        let commentsXml = getFileTextNative archive commentsPath
+        let footnotesXml = getFileTextNative archive footnotesPath
+        let endnotesXml = getFileTextNative archive endnotesPath
+        let commentsRels = getFileTextNative archive (partRelsPath commentsPath) |> relationshipsOfXml
+        let footnotesRels = getFileTextNative archive (partRelsPath footnotesPath) |> relationshipsOfXml
+        let endnotesRels = getFileTextNative archive (partRelsPath endnotesPath) |> relationshipsOfXml
 
         let styles =
             stylesXml
@@ -3093,7 +3195,9 @@ let parseDocumentNative (archive: ZipArchive) : WordDocument option =
         let loadHeaderFooterNative (rel: Relationship) (hfType: string) =
             let path = ZipInterop.resolveTarget "word" rel.Target
             getFileTextNative archive path
-            |> Option.map (fun value -> HeaderFooter.parseHeaderFooter value hfType (Some rel.Id))
+            |> Option.map (fun value ->
+                HeaderFooter.parseHeaderFooter value hfType (Some rel.Id)
+                |> resolveHeaderFooterHyperlinks (getFileTextNative archive (partRelsPath path) |> relationshipsOfXml))
 
         let headers =
             rels
@@ -3115,10 +3219,10 @@ let parseDocumentNative (archive: ZipArchive) : WordDocument option =
             |> Option.bind (Ns.childNs "sectPr")
             |> parsePageSetup evenAndOddHeaders
 
-        let comments = commentsXml |> Option.map Comments.parseComments |> Option.defaultValue []
+        let comments = commentsXml |> Option.map Comments.parseComments |> Option.defaultValue [] |> List.map (resolveCommentHyperlinks commentsRels)
         let revisions = Revisions.parseRevisions doc
-        let footnotes = footnotesXml |> Option.map Notes.parseNotes |> Option.defaultValue []
-        let endnotes = endnotesXml |> Option.map Notes.parseNotes |> Option.defaultValue []
+        let footnotes = footnotesXml |> Option.map Notes.parseNotes |> Option.defaultValue [] |> List.map (resolveNoteHyperlinks footnotesRels)
+        let endnotes = endnotesXml |> Option.map Notes.parseNotes |> Option.defaultValue [] |> List.map (resolveNoteHyperlinks endnotesRels)
         let shapes = Shapes.parseShapes doc
 
         let partRels = rels |> List.filter (fun r -> r.Type.Contains("/header") || r.Type.Contains("/footer"))
@@ -3130,8 +3234,16 @@ let parseDocumentNative (archive: ZipArchive) : WordDocument option =
                 loadImageDataNative archive (relationshipTargetBase partRel) partRelationships
                 |> List.map (fun (relId, dataUrl) -> partImageKey partRel.Id relId, dataUrl))
 
+        let keyedImages key baseDir partRelationships =
+            loadImageDataNative archive baseDir partRelationships
+            |> List.map (fun (relId, dataUrl) -> partImageKey key relId, dataUrl)
+
         let images =
-            (bodyImages @ runningContentImages)
+            (bodyImages
+             @ runningContentImages
+             @ keyedImages footnotesPartKey (parentPath footnotesPath) footnotesRels
+             @ keyedImages endnotesPartKey (parentPath endnotesPath) endnotesRels
+             @ keyedImages commentsPartKey (parentPath commentsPath) commentsRels)
             |> Map.ofList
 
         {
@@ -4758,17 +4870,8 @@ let toEditorParagraphsWithStylesAndNumbering (content: DocumentContent list) (im
     |> applyNumberingDefinitions numberingDefinitions
 
 let private noteBodyMap (footnotes: Note list) (endnotes: Note list) : Map<string * string, string> =
-    let bodyText (note: Note) =
-        note.Content
-        |> List.collect (fun para -> para.Runs)
-        |> List.map (fun run ->
-            match run.Content with
-            | Text text -> text
-            | Link link -> link.Text
-            | _ -> "")
-        |> String.concat ""
-    (footnotes |> List.map (fun note -> ("footnote", note.Id), bodyText note))
-    @ (endnotes |> List.map (fun note -> ("endnote", note.Id), bodyText note))
+    (footnotes |> List.map (fun note -> ("footnote", note.Id), Notes.plainText note))
+    @ (endnotes |> List.map (fun note -> ("endnote", note.Id), Notes.plainText note))
     |> Map.ofList
 
 let toEditorParagraphsWithStylesThemeAndNumbering (theme: Theme option) (content: DocumentContent list) (images: Map<string, string>) (styles: StyleDefinition list) (numberingDefinitions: NumberingDefinition list) (footnotes: Note list) (endnotes: Note list) : obj array =
@@ -4826,3 +4929,34 @@ let toEditorPageSetup (doc: WordDocument) : obj =
             "ColumnWidths" ==> (setup.Columns |> Option.map (fun c -> c.Widths |> List.map (fun (w, s) -> objFromFields [ "W" ==> w; "S" ==> s ]) |> Array.ofList) |> Option.defaultValue [||])
             "SectionStart" ==> setup.SectionStart
         ]
+
+/// Footnote / endnote bodies as editor blocks (paragraphs with runs, tables),
+/// one object per note: Id, Kind (w:type of a separator note), HasMark /
+/// MarkStyle (the automatic reference mark), Text (the plain text the reference
+/// run carries as NoteText) and Blocks.
+let toEditorNotes (theme: Theme option) (images: Map<string, string>) (styles: StyleDefinition list) (numberingDefinitions: NumberingDefinition list) (notes: Note list) : obj array =
+    notes
+    |> List.map (fun note ->
+        objFromFields [
+            "Id" ==> note.Id
+            "Kind" ==> note.Kind
+            "HasMark" ==> note.HasMark
+            "MarkStyle" ==> note.MarkStyle
+            "Text" ==> Notes.plainText note
+            "Blocks" ==> (toEditorParagraphsInternal theme styles note.Blocks images Map.empty |> applyNumberingDefinitions numberingDefinitions)
+        ])
+    |> List.toArray
+
+/// Comment bodies as editor blocks: Id, Author, Date, Initials, Text, Blocks.
+let toEditorComments (theme: Theme option) (images: Map<string, string>) (styles: StyleDefinition list) (numberingDefinitions: NumberingDefinition list) (comments: Comment list) : obj array =
+    comments
+    |> List.map (fun comment ->
+        objFromFields [
+            "Id" ==> comment.Id
+            "Author" ==> comment.Author
+            "Date" ==> comment.Date
+            "Initials" ==> comment.Initials
+            "Text" ==> comment.Text
+            "Blocks" ==> (toEditorParagraphsInternal theme styles comment.Blocks images Map.empty |> applyNumberingDefinitions numberingDefinitions)
+        ])
+    |> List.toArray

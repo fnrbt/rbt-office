@@ -415,6 +415,46 @@ type HeaderFooterPart = {
 }
 
 
+/// The body of a footnote or endnote as it is in the file: blocks with their
+/// formatting, hyperlinks and tables. The reference run in the text carries
+/// the note's plain text (TextStyle.NoteText) for display; `Text` is that
+/// plain text as imported, so an edit of the reference's NoteText is noticed
+/// (the note is then saved from the edited text instead of these blocks).
+type NoteBody = {
+    /// "footnote" or "endnote".
+    NoteType: string
+    Id: string
+    /// w:type of a special note (separator, continuationSeparator, ...); None for an ordinary one.
+    Kind: string option
+    /// The body starts with the automatic reference mark.
+    HasMark: bool
+    MarkStyle: string option
+    Text: string
+    Blocks: Block list
+}
+
+/// The body of a comment as it is in the file (see NoteBody).
+type CommentBody = {
+    Id: string
+    Author: string option
+    Date: string option
+    Initials: string option
+    Text: string
+    Blocks: Block list
+}
+
+/// What belongs to the document's package beyond the body and the
+/// headers / footers. Carried through editing and written back on save.
+type PackageData = {
+    Notes: NoteBody list
+    Comments: CommentBody list
+}
+
+let emptyPackageData = {
+    Notes = []
+    Comments = []
+}
+
 type PageSetup = {
     PageWidth: float
     PageHeight: float
@@ -491,7 +531,50 @@ type Document = {
     Footers: ParagraphBlock list
     HeaderParts: HeaderFooterPart list
     FooterParts: HeaderFooterPart list
+    Package: PackageData
 }
+
+/// Every paragraph of a block list in document order, including the cells of
+/// nested tables and text box content.
+let rec paragraphsOfBlocks (blocks: Block list) : ParagraphBlock list =
+    let rec tableParagraphs (table: TableBlock) =
+        table.Rows
+        |> List.collect (fun row ->
+            row.Cells
+            |> List.collect (fun cell -> cell.Content @ (cell.NestedTables |> List.collect tableParagraphs)))
+    blocks
+    |> List.collect (function
+        | Paragraph para
+        | Heading (_, para) -> [para]
+        | Table table -> tableParagraphs table
+        | TextBox textBox -> textBox.Content)
+
+/// Apply `mapper` to every paragraph of a block list (see paragraphsOfBlocks).
+let rec mapParagraphsOfBlocks (mapper: ParagraphBlock -> ParagraphBlock) (blocks: Block list) : Block list =
+    let rec mapTable (table: TableBlock) =
+        { table with
+            Rows =
+                table.Rows
+                |> List.map (fun row ->
+                    { row with
+                        Cells =
+                            row.Cells
+                            |> List.map (fun cell ->
+                                { cell with
+                                    Content = cell.Content |> List.map mapper
+                                    NestedTables = cell.NestedTables |> List.map mapTable }) }) }
+    blocks
+    |> List.map (function
+        | Paragraph para -> Paragraph (mapper para)
+        | Heading (level, para) -> Heading (level, mapper para)
+        | Table table -> Table (mapTable table)
+        | TextBox textBox -> TextBox { textBox with Content = textBox.Content |> List.map mapper })
+
+/// Every paragraph of the document: body, then header and footer parts.
+let allParagraphs (doc: Document) : ParagraphBlock list =
+    paragraphsOfBlocks doc.Blocks
+    @ (doc.HeaderParts |> List.collect (fun part -> paragraphsOfBlocks part.Blocks))
+    @ (doc.FooterParts |> List.collect (fun part -> paragraphsOfBlocks part.Blocks))
 
 let setPageSetup (setup: PageSetup) (doc: Document) =
     if doc.PageSetup = setup then doc else { doc with PageSetup = setup }
@@ -558,6 +641,7 @@ let empty = {
     Footers = []
     HeaderParts = []
     FooterParts = []
+    Package = emptyPackageData
 }
 
 let private isPlainTextDocument text doc =
@@ -600,7 +684,8 @@ let setPlainTextContent (text: string) doc =
             Headers = []
             Footers = []
             HeaderParts = []
-            FooterParts = [] }
+            FooterParts = []
+            Package = emptyPackageData }
 
 /// Replace the document content with one default paragraph per input string
 /// (setPlainTextContent puts the whole text into a single paragraph with

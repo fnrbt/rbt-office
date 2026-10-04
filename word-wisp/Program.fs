@@ -30,7 +30,7 @@ let private mkPara (text: string) : Doc.ParagraphBlock =
 
 let private sampleDoc () : Doc.Document =
     { Blocks = [ mkPara "wisp-word"; mkPara "Type here — this document is editable. Click to place the cursor, drag to select, Ctrl+Z to undo." ] |> List.map Doc.Paragraph
-      Selection = None; PageSetup = Doc.defaultPageSetup; Styles = []; Headers = []; Footers = []; HeaderParts = []; FooterParts = [] }
+      Selection = None; PageSetup = Doc.defaultPageSetup; Styles = []; Headers = []; Footers = []; HeaderParts = []; FooterParts = []; Package = Doc.emptyPackageData }
 
 let private loadDocx (path: string) : Doc.Document option =
     try

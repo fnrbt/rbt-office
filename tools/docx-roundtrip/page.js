@@ -114,6 +114,13 @@ function summarisePackage(pkg) {
             out.push({ path: `${label}${i}`, kind: 'part', props: pick(part, ['Type']) });
             summarise(part.Paragraphs, `${label}${i}`, out);
         });
+    // Footnote / endnote / comment bodies are blocks like the body's.
+    for (const [key, label] of [['Footnotes', 'footnote'], ['Endnotes', 'endnote'], ['Comments', 'comment']])
+        (pkg[key] || []).forEach((note) => {
+            const path = `${label}#${note.Id}`;
+            out.push({ path, kind: 'note', props: pick(note, ['Id', 'Kind', 'HasMark', 'MarkStyle', 'Author', 'Date', 'Initials', 'Text']) });
+            summarise(note.Blocks, path, out);
+        });
     // No sectPr at all means the default page; the writer then spells the default out.
     const setup = pick(pkg.PageSetup || {}, SETUP_KEYS);
     const DEFAULTS = { PageWidth: 816, PageHeight: 1056, MarginLeft: 96, MarginRight: 96, MarginTop: 96, MarginBottom: 96, HeaderDistance: 48, FooterDistance: 48, ColumnCount: 1, ColumnSpace: 0 };

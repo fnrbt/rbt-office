@@ -320,6 +320,9 @@ module Processors =
                     "HeaderParts" ==> DocxReader.toEditorHeaderFootersWithStylesAndTheme doc.Theme doc.Headers doc.Images doc.Styles
                     "FooterParts" ==> DocxReader.toEditorHeaderFootersWithStylesAndTheme doc.Theme doc.Footers doc.Images doc.Styles
                     "PageSetup" ==> DocxReader.toEditorPageSetup doc
+                    "Footnotes" ==> DocxReader.toEditorNotes doc.Theme doc.Images doc.Styles doc.NumberingDefinitions doc.Footnotes
+                    "Endnotes" ==> DocxReader.toEditorNotes doc.Theme doc.Images doc.Styles doc.NumberingDefinitions doc.Endnotes
+                    "Comments" ==> DocxReader.toEditorComments doc.Theme doc.Images doc.Styles doc.NumberingDefinitions doc.Comments
                     "Theme" ==> (doc.Theme |> Option.map (fun theme -> createObj [ "MajorFont" ==> theme.MajorFont; "MinorFont" ==> theme.MinorFont; "Colors" ==> createObj (theme.Colors |> Map.toList |> List.map (fun (key, value) -> key ==> value)) ]))
                 ]
             | None ->

@@ -20,7 +20,11 @@ let load (path: string) =
 let stats (doc: DocxReader.WordDocument) =
     let text = DocxReader.extractText doc
     let tables = doc.Content |> List.filter (function DocxReader.Tbl _ -> true | _ -> false) |> List.length
-    text, doc.Content.Length, tables, doc.Headers.Length + doc.Footers.Length, doc.Images.Count
+    // Note and comment bodies: how many, and how many blocks / tables they hold.
+    let noteBlocks = (doc.Footnotes @ doc.Endnotes |> List.collect (fun note -> note.Blocks)) @ (doc.Comments |> List.collect (fun comment -> comment.Blocks))
+    let noteTables = noteBlocks |> List.filter (function DocxReader.Tbl _ -> true | _ -> false) |> List.length
+    let notes = doc.Footnotes.Length + doc.Endnotes.Length + doc.Comments.Length
+    (text, notes, noteBlocks.Length, noteTables), doc.Content.Length, tables, doc.Headers.Length + doc.Footers.Length, doc.Images.Count
 
 for first in Directory.GetFiles(dir, "*.pass1.docx") |> Array.sort do
     let name = Path.GetFileName(first).Replace(".pass1.docx", "")
@@ -28,10 +32,12 @@ for first in Directory.GetFiles(dir, "*.pass1.docx") |> Array.sort do
     | Some a, Some b ->
         let (textA, blocksA, tablesA, partsA, imagesA), (textB, blocksB, tablesB, partsB, imagesB) = stats a, stats b
         if textA = textB && blocksA = blocksB && tablesA = tablesB && partsA = partsB && imagesA = imagesB then
-            printfn "ok   %s  (%d blocks, %d tables, %d header/footer parts, %d images, %d chars)" name blocksA tablesA partsA imagesA textA.Length
+            let (text, notes, noteBlocks, noteTables) = textA
+            printfn "ok   %s  (%d blocks, %d tables, %d header/footer parts, %d images, %d chars, %d notes/comments with %d blocks, %d tables)" name blocksA tablesA partsA imagesA text.Length notes noteBlocks noteTables
         else
             failed <- failed + 1
-            printfn "FAIL %s  save 1: %d blocks %d tables %d parts %d images %d chars; save 2: %d blocks %d tables %d parts %d images %d chars" name blocksA tablesA partsA imagesA textA.Length blocksB tablesB partsB imagesB textB.Length
+            let chars (text: string, _, _, _) = text.Length
+            printfn "FAIL %s  save 1: %d blocks %d tables %d parts %d images %d chars %A; save 2: %d blocks %d tables %d parts %d images %d chars %A" name blocksA tablesA partsA imagesA (chars textA) textA blocksB tablesB partsB imagesB (chars textB) textB
     | _ ->
         failed <- failed + 1
         printfn "FAIL %s  the .NET reader could not open a saved document" name

@@ -1714,6 +1714,142 @@ let generateNotes (rootName: string) (noteElementName: string) (notes: NoteRef l
 
     document (element rootName [("xmlns:w", Namespaces.word)] children)
 
+/// A footnote / endnote with its body as blocks (package.Footnotes /
+/// package.Endnotes), or with plain text only (a reference run's NoteText, for
+/// callers that do not deliver bodies).
+type NotePart = {
+    Id: string
+    /// w:type of a special note: separator, continuationSeparator, continuationNotice.
+    Kind: string option
+    HasMark: bool
+    MarkStyle: string option
+    Blocks: obj array
+    PlainText: string option
+}
+
+type CommentPart = {
+    Id: string
+    Author: string option
+    Date: string option
+    Initials: string option
+    Blocks: obj array
+    PlainText: string option
+}
+
+let private notePartsFromPackage (value: obj) : NotePart list =
+    optionalArray value
+    |> Array.toList
+    |> List.choose (fun item ->
+        optionalString (item?Id)
+        |> Option.map (fun id ->
+            { Id = id
+              Kind = optionalString (item?Kind)
+              HasMark = boolOrDefault true (item?HasMark)
+              MarkStyle = optionalString (item?MarkStyle)
+              Blocks = optionalArray (item?Blocks)
+              PlainText = None }))
+
+let private commentPartsFromPackage (value: obj) : CommentPart list =
+    optionalArray value
+    |> Array.toList
+    |> List.choose (fun item ->
+        optionalString (item?Id)
+        |> Option.map (fun id ->
+            { Id = id
+              Author = optionalString (item?Author)
+              Date = optionalString (item?Date)
+              Initials = optionalString (item?Initials)
+              Blocks = optionalArray (item?Blocks)
+              PlainText = None }))
+
+/// Bodies from the package first; a note that is only known from a reference
+/// run (NoteText) is added as plain text.
+let private mergeNoteParts (fromPackage: NotePart list) (fromRuns: NoteRef list) : NotePart list =
+    let known = fromPackage |> List.map (fun note -> note.Id) |> Set.ofList
+    fromPackage
+    @ (fromRuns
+       |> List.filter (fun note -> not (Set.contains note.Id known))
+       |> List.map (fun note -> { Id = note.Id; Kind = None; HasMark = false; MarkStyle = None; Blocks = [||]; PlainText = Some note.Text }))
+
+let private mergeCommentParts (fromPackage: CommentPart list) (fromRuns: CommentRef list) : CommentPart list =
+    let known = fromPackage |> List.map (fun comment -> comment.Id) |> Set.ofList
+    fromPackage
+    @ (fromRuns
+       |> List.filter (fun comment -> not (Set.contains comment.Id known))
+       |> List.map (fun comment -> { Id = comment.Id; Author = comment.Author; Date = comment.Date; Initials = None; Blocks = [||]; PlainText = Some comment.Text }))
+
+let private partRootAttributes =
+    [("xmlns:w", Namespaces.word); ("xmlns:r", Namespaces.relationships); ("xmlns:m", Namespaces.math)]
+
+/// footnotes.xml / endnotes.xml with the note bodies as blocks. The reader
+/// used to hand over the text of a note only, and this wrote one plain run per
+/// note, so a table, a hyperlink or bold text in a footnote was gone after a save.
+let private generateNotesPart (rootName: string) (noteElementName: string) (markElementName: string) (generateBody: obj array -> string) (notes: NotePart list) : string =
+    let markRun (note: NotePart) =
+        match note.Kind with
+        | Some "separator" -> element "w:r" [] [selfClosing "w:separator" []]
+        | Some "continuationSeparator" -> element "w:r" [] [selfClosing "w:continuationSeparator" []]
+        | _ ->
+            let rPr =
+                match note.MarkStyle with
+                | Some styleId when styleId <> "" -> [selfClosing "w:rStyle" [("w:val", styleId)]]
+                | _ -> [selfClosing "w:vertAlign" [("w:val", "superscript")]]
+            element "w:r" [] [element "w:rPr" [] rPr; selfClosing markElementName []]
+    // The mark (or the separator line of a separator note) is the first run of
+    // the first paragraph.
+    let withMark (note: NotePart) (body: string) =
+        let emptyProps = "<w:p><w:pPr/>"
+        let propsStart = "<w:p><w:pPr>"
+        let propsEnd = "</w:pPr>"
+        let isSeparator = note.Kind = Some "separator" || note.Kind = Some "continuationSeparator"
+        if not note.HasMark && not isSeparator then body
+        elif body.StartsWith emptyProps then emptyProps + markRun note + body.Substring emptyProps.Length
+        elif body.StartsWith propsStart then
+            let index = body.IndexOf propsEnd
+            if index < 0 then body
+            else body.Substring(0, index + propsEnd.Length) + markRun note + body.Substring(index + propsEnd.Length)
+        elif body.StartsWith "<w:p>" then "<w:p>" + markRun note + body.Substring 5
+        else body
+    let children =
+        notes
+        |> List.map (fun note ->
+            let attrs =
+                [ match note.Kind with
+                  | Some kind -> yield ("w:type", kind)
+                  | None -> ()
+                  yield ("w:id", note.Id) ]
+            let body =
+                match note.PlainText with
+                | Some text -> element "w:p" [] [runElement [] false text]
+                | None ->
+                    let body = generateBody note.Blocks
+                    // A note must hold at least one paragraph.
+                    withMark note (if body = "" then element "w:p" [] [selfClosing "w:pPr" []] else body)
+            element noteElementName attrs [body])
+    document (element rootName partRootAttributes children)
+
+let private generateCommentsPart (generateBody: obj array -> string) (comments: CommentPart list) : string =
+    let children =
+        comments
+        |> List.map (fun comment ->
+            let attrs =
+                [ yield ("w:id", comment.Id)
+                  yield ("w:author", comment.Author |> Option.defaultValue "RedBat")
+                  match comment.Date with
+                  | Some date -> yield ("w:date", date)
+                  | None -> ()
+                  match comment.Initials with
+                  | Some initials -> yield ("w:initials", initials)
+                  | None -> () ]
+            let body =
+                match comment.PlainText with
+                | Some text -> element "w:p" [] [runElement [] false text]
+                | None ->
+                    let body = generateBody comment.Blocks
+                    if body = "" then element "w:p" [] [] else body
+            element "w:comment" attrs [body])
+    document (element "w:comments" partRootAttributes children)
+
 type NumberingInfo = { NumId: string; Level: int; Format: string; LevelText: string; Start: int option; HasOverride: bool }
 
 /// One entry per (list id, level) used in the document. The list id, number
@@ -2231,18 +2367,41 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
             let images, next = buildImageScope nextMediaIndex part.Blocks
             nextMediaIndex <- next
             { Info = part; Images = images; Hyperlinks = hyperlinkMap part.Blocks })
-    let allImages =
-        [| yield! bodyImages.Assets
-           for part in headerPackages do yield! part.Images.Assets
-           for part in footerPackages do yield! part.Images.Assets |]
-    let allBlocks =
+    let contentBlocks =
         [| yield! paragraphs
            for part in headerParts do yield! part.Blocks
            for part in footerParts do yield! part.Blocks |]
     let hyperlinks = hyperlinkMap paragraphs
-    let comments = collectComments allBlocks
-    let footnotes = collectNotes "footnote" allBlocks
-    let endnotes = collectNotes "endnote" allBlocks
+    // Note and comment bodies come with the package; a reference whose body
+    // is not there is written from the text on the reference run.
+    let comments = mergeCommentParts (commentPartsFromPackage (package?Comments)) (collectComments contentBlocks)
+    let footnotes = mergeNoteParts (notePartsFromPackage (package?Footnotes)) (collectNotes "footnote" contentBlocks)
+    let endnotes = mergeNoteParts (notePartsFromPackage (package?Endnotes)) (collectNotes "endnote" contentBlocks)
+    // Each of these parts has its own relationships: its images and hyperlinks.
+    let bodyPart (blocks: obj array) =
+        let images, next = buildImageScope nextMediaIndex blocks
+        nextMediaIndex <- next
+        images, hyperlinkMap blocks
+    let footnoteBlocks = footnotes |> List.toArray |> Array.collect (fun note -> note.Blocks)
+    let endnoteBlocks = endnotes |> List.toArray |> Array.collect (fun note -> note.Blocks)
+    let commentBlocks = comments |> List.toArray |> Array.collect (fun comment -> comment.Blocks)
+    let footnoteImages, footnoteLinks = bodyPart footnoteBlocks
+    let endnoteImages, endnoteLinks = bodyPart endnoteBlocks
+    let commentImages, commentLinks = bodyPart commentBlocks
+    let partBody (images: ImageScope) (links: Map<string, string>) (blocks: obj array) =
+        blocks |> generateBlocks (generateDocumentItemWithImages links images) (generateTextBoxRun defaultPageSetupInfo links images)
+    let allImages =
+        [| yield! bodyImages.Assets
+           for part in headerPackages do yield! part.Images.Assets
+           for part in footerPackages do yield! part.Images.Assets
+           yield! footnoteImages.Assets
+           yield! endnoteImages.Assets
+           yield! commentImages.Assets |]
+    let allBlocks =
+        [| yield! contentBlocks
+           yield! footnoteBlocks
+           yield! endnoteBlocks
+           yield! commentBlocks |]
     // Rendered first: it picks the default list ids the paragraph writer uses.
     let numberingXml = generateNumbering (collectNumberingInfo allBlocks)
     let styles =
@@ -2270,11 +2429,17 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
             if footer.Images.Assets.Length > 0 || not footer.Hyperlinks.IsEmpty then
                 yield { Path = sprintf "word/_rels/%s.rels" footer.Info.Target; Content = generatePartRels footer.Hyperlinks footer.Images }
         if hasComments then
-            yield { Path = "word/comments.xml"; Content = generateComments comments }
+            yield { Path = "word/comments.xml"; Content = generateCommentsPart (partBody commentImages commentLinks) comments }
+            if commentImages.Assets.Length > 0 || not commentLinks.IsEmpty then
+                yield { Path = "word/_rels/comments.xml.rels"; Content = generatePartRels commentLinks commentImages }
         if hasFootnotes then
-            yield { Path = "word/footnotes.xml"; Content = generateNotes "w:footnotes" "w:footnote" footnotes }
+            yield { Path = "word/footnotes.xml"; Content = generateNotesPart "w:footnotes" "w:footnote" "w:footnoteRef" (partBody footnoteImages footnoteLinks) footnotes }
+            if footnoteImages.Assets.Length > 0 || not footnoteLinks.IsEmpty then
+                yield { Path = "word/_rels/footnotes.xml.rels"; Content = generatePartRels footnoteLinks footnoteImages }
         if hasEndnotes then
-            yield { Path = "word/endnotes.xml"; Content = generateNotes "w:endnotes" "w:endnote" endnotes }
+            yield { Path = "word/endnotes.xml"; Content = generateNotesPart "w:endnotes" "w:endnote" "w:endnoteRef" (partBody endnoteImages endnoteLinks) endnotes }
+            if endnoteImages.Assets.Length > 0 || not endnoteLinks.IsEmpty then
+                yield { Path = "word/_rels/endnotes.xml.rels"; Content = generatePartRels endnoteLinks endnoteImages }
     ]
 
     let binaryFiles =

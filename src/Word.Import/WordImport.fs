@@ -917,9 +917,11 @@ let importDoc (doc: DocxReader.WordDocument) =
         (doc.Endnotes |> List.map (fun n -> ("endnote", n.Id), noteText n))
         |> Map.ofList
 
-    let blocks =
+    // Body-style blocks: paragraphs and tables in order. Used for the body and
+    // for the bodies of footnotes, endnotes and comments.
+    let contentBlocks (content: DocxReader.DocumentContent list) =
         let documentDefaultMissingSpacingToZero = documentDefaultParagraphResetsMissingSpacing styleMap
-        doc.Content
+        content
         |> List.map (function
             | DocxReader.Para para ->
                 let defaultMissingSpacingToZero =
@@ -927,6 +929,29 @@ let importDoc (doc: DocxReader.WordDocument) =
                     || directParagraphFormattingResetsMissingSpacing para.Properties
                 Paragraph (mkPara resolver doc.Images styleMap comments notes true defaultMissingSpacingToZero para)
             | DocxReader.Tbl table -> Table (tableBlock resolver doc.Images styleMap tableStyleMap comments notes table))
+
+    let blocks = contentBlocks doc.Content
+
+    let noteBodies noteType (items: DocxReader.Note list) : NoteBody list =
+        items
+        |> List.map (fun note ->
+            { NoteType = noteType
+              Id = note.Id
+              Kind = note.Kind
+              HasMark = note.HasMark
+              MarkStyle = note.MarkStyle
+              Text = notes |> Map.tryFind (noteType, note.Id) |> Option.defaultValue ""
+              Blocks = contentBlocks note.Blocks })
+
+    let commentBodies : CommentBody list =
+        doc.Comments
+        |> List.map (fun comment ->
+            { Id = comment.Id
+              Author = comment.Author
+              Date = comment.Date
+              Initials = comment.Initials
+              Text = comment.Text
+              Blocks = contentBlocks comment.Blocks })
 
     // Drawing shapes / autoshapes -> floating TextBox blocks (preset/custom
     // geometry + gradient), mirroring the Fable bridge in Office.Formats Main.
@@ -997,4 +1022,8 @@ let importDoc (doc: DocxReader.WordDocument) =
         Footers = footerParts |> List.tryHead |> Option.map (fun part -> part.Blocks |> List.choose (function | Paragraph p -> Some p | Heading (_, p) -> Some p | _ -> None)) |> Option.defaultValue []
         HeaderParts = headerParts
         FooterParts = footerParts
+        Package =
+            { emptyPackageData with
+                Notes = noteBodies "footnote" doc.Footnotes @ noteBodies "endnote" doc.Endnotes
+                Comments = commentBodies }
     }

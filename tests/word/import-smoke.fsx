@@ -132,6 +132,8 @@ check "compat alias summary" (summary compatDoc) (summary libraryDoc)
 // indents in px (twips / 15), exact line spacing as line px / font px with the
 // font size in ParagraphMarkFontSize, and the run / paragraph properties the
 // typed EditorRun cannot carry.
+let wNsAll = "xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:mc=\"http://schemas.openxmlformats.org/markup-compatibility/2006\" xmlns:wp=\"http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:pic=\"http://schemas.openxmlformats.org/drawingml/2006/picture\" xmlns:wps=\"http://schemas.microsoft.com/office/word/2010/wordprocessingShape\" xmlns:v=\"urn:schemas-microsoft-com:vml\" xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\""
+
 let syntheticDocx (body: string) =
     use stream = new IO.MemoryStream()
     do
@@ -224,6 +226,48 @@ let directKeepDoc =
 check "native direct keepNext / keepLines"
     (directKeepDoc.Blocks |> List.choose (function Paragraph para | Heading (_, para) -> Some (para.Metadata.KeepNext, para.Metadata.KeepLines) | _ -> None))
     [ Some true, Some true; Some false, None; None, None ]
+
+// ----- footnote / endnote / comment bodies ---------------------------------
+/// A package made of the given parts (word/document.xml gets the body wrapper).
+let syntheticPackage (body: string) (parts: (string * string) list) =
+    use stream = new IO.MemoryStream()
+    do
+        use archive = new IO.Compression.ZipArchive(stream, IO.Compression.ZipArchiveMode.Create, true)
+        let add (name: string) (text: string) =
+            use writer = new IO.StreamWriter(archive.CreateEntry(name).Open(), Text.UTF8Encoding(false))
+            writer.Write text
+        add "[Content_Types].xml" """<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>"""
+        add "word/document.xml" (sprintf "<w:document %s><w:body>%s</w:body></w:document>" wNsAll body)
+        for name, text in parts do add name text
+    stream.ToArray()
+let importPackage body parts =
+    syntheticPackage body parts |> DocxReader.loadBytesNative |> Option.get |> Rbt.Word.Import.importDoc
+
+let notesNativeDoc =
+    importPackage
+        """<w:p><w:r><w:t>body</w:t></w:r><w:r><w:footnoteReference w:id="2"/></w:r><w:r><w:commentReference w:id="5"/></w:r></w:p>"""
+        [ "word/footnotes.xml",
+          sprintf """<w:footnotes %s><w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote><w:footnote w:id="2"><w:p><w:r><w:footnoteRef/></w:r><w:r><w:rPr><w:b/></w:rPr><w:t>bold</w:t></w:r><w:hyperlink r:id="rId9"><w:r><w:t>link</w:t></w:r></w:hyperlink></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:footnote></w:footnotes>""" wNsAll
+          "word/_rels/footnotes.xml.rels",
+          """<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId9" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.com/n" TargetMode="External"/></Relationships>"""
+          "word/comments.xml",
+          sprintf """<w:comments %s><w:comment w:id="5" w:author="Ann" w:initials="A"><w:p><w:r><w:rPr><w:i/></w:rPr><w:t>remark</w:t></w:r></w:p></w:comment></w:comments>""" wNsAll ]
+let nativeNote = notesNativeDoc.Package.Notes |> List.tryFind (fun note -> note.Id = "2")
+check "native note bodies" (notesNativeDoc.Package.Notes |> List.map (fun note -> note.NoteType, note.Id, note.Kind)) [ "footnote", "-1", Some "separator"; "footnote", "2", None ]
+check "native note body keeps the table" (nativeNote |> Option.map (fun note -> note.Blocks |> List.map blockKind)) (Some [ "Paragraph"; "Table" ])
+let nativeNoteRuns =
+    nativeNote
+    |> Option.map (fun note -> paragraphsOfBlocks note.Blocks |> List.collect (fun para -> para.Buffer.Runs |> List.choose (function Rbt.Word.TextBuffer.Text run -> Some (Rbt.Word.TextBuffer.slice run.Start run.Length para.Buffer, run.Style.Bold, run.Style.Hyperlink) | _ -> None)))
+    |> Option.defaultValue []
+check "native note body formatting and hyperlink" nativeNoteRuns [ "bold", true, None; "link", false, Some "https://example.com/n"; "cell", false, None ]
+let nativeNoteReference =
+    paragraphsOfBlocks notesNativeDoc.Blocks
+    |> List.collect (fun para -> para.Buffer.Runs)
+    |> List.tryPick (function Rbt.Word.TextBuffer.Text run when run.Style.NoteId = Some "2" -> Some run.Style.NoteText | _ -> None)
+check "native note text matches the reference run" (nativeNote |> Option.map (fun note -> Some note.Text)) nativeNoteReference
+check "native comment body"
+    (notesNativeDoc.Package.Comments |> List.map (fun comment -> comment.Id, comment.Author, comment.Initials, comment.Text, comment.Blocks |> List.map blockKind))
+    [ "5", Some "Ann", Some "A", "remark", [ "Paragraph" ] ]
 
 printfn "word import smoke: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

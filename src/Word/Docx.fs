@@ -1168,7 +1168,7 @@ let importFromEditor (editorParagraphs: obj array) : Document =
     let styles = stylesFromEditor editorParagraphs
 
     // Create document with all blocks
-    let doc = { Blocks = blocks; Selection = None; PageSetup = defaultPageSetup; Styles = styles; Headers = []; Footers = []; HeaderParts = []; FooterParts = [] }
+    let doc = { Blocks = blocks; Selection = None; PageSetup = defaultPageSetup; Styles = styles; Headers = []; Footers = []; HeaderParts = []; FooterParts = []; Package = emptyPackageData }
 
     // Set cursor at start of first block (paragraph only, skip tables for now)
     match blocks |> List.tryFind (function | Paragraph _ -> true | _ -> false) with
@@ -1205,6 +1205,67 @@ let importFromEditorWithPageSetupAndHeaderFooterParts (editorParagraphs: obj arr
 let private optionalArray (value: obj) =
     if isNullOrUndefined value then [||] else unbox<obj array> value
 
+let private noteBodiesFromEditor (noteType: string) (items: obj array) : NoteBody list =
+    items
+    |> Array.choose (fun item ->
+        optionalString (item?Id)
+        |> Option.map (fun id ->
+            { NoteType = noteType
+              Id = id
+              Kind = optionalString (item?Kind)
+              HasMark = item?HasMark |> boolOrDefault true
+              MarkStyle = optionalString (item?MarkStyle)
+              Text = item?Text |> stringOrDefault ""
+              Blocks = blocksFromEditor (optionalArray (item?Blocks)) }))
+    |> Array.toList
+
+let private commentBodiesFromEditor (items: obj array) : CommentBody list =
+    items
+    |> Array.choose (fun item ->
+        optionalString (item?Id)
+        |> Option.map (fun id ->
+            { Id = id
+              Author = optionalString (item?Author)
+              Date = optionalString (item?Date)
+              Initials = optionalString (item?Initials)
+              Text = item?Text |> stringOrDefault ""
+              Blocks = blocksFromEditor (optionalArray (item?Blocks)) }))
+    |> Array.toList
+
+/// The reader's comment reference run only carries the comment id; give it the
+/// text, author and date of the comment so the comments pane can show them.
+let private withCommentDetails (comments: CommentBody list) (doc: Document) : Document =
+    if comments.IsEmpty then doc
+    else
+        let byId = comments |> List.map (fun comment -> comment.Id, comment) |> Map.ofList
+        let fill (para: ParagraphBlock) =
+            let needsFill =
+                para.Buffer.Runs
+                |> List.exists (function
+                    | Text run -> run.Style.CommentId.IsSome && run.Style.CommentText.IsNone
+                    | Image _ -> false)
+            if not needsFill then para
+            else
+                let runs =
+                    para.Buffer.Runs
+                    |> List.map (function
+                        | Text run when run.Style.CommentId.IsSome && run.Style.CommentText.IsNone ->
+                            match run.Style.CommentId |> Option.bind (fun id -> Map.tryFind id byId) with
+                            | Some comment ->
+                                Text { run with
+                                        Style = { run.Style with
+                                                    CommentText = Some comment.Text
+                                                    CommentAuthor = run.Style.CommentAuthor |> Option.orElse comment.Author
+                                                    CommentDate = run.Style.CommentDate |> Option.orElse comment.Date } }
+                            | None -> Text run
+                        | other -> other)
+                { para with Buffer = { para.Buffer with Runs = runs } }
+        let mapPart (part: HeaderFooterPart) = { part with Blocks = mapParagraphsOfBlocks fill part.Blocks }
+        { doc with
+            Blocks = mapParagraphsOfBlocks fill doc.Blocks
+            HeaderParts = doc.HeaderParts |> List.map mapPart
+            FooterParts = doc.FooterParts |> List.map mapPart }
+
 let importFromEditorPackage (package: obj) : Document =
     let paragraphs = optionalArray (package?Paragraphs)
     let styles = optionalArray (package?Styles)
@@ -1213,6 +1274,16 @@ let importFromEditorPackage (package: obj) : Document =
     let doc = importFromEditorWithHeaderFooterParts paragraphs headerParts footerParts
     let doc =
         { doc with Styles = mergeCatalogAndInferredStyles styles doc.Styles }
+    let comments = commentBodiesFromEditor (optionalArray (package?Comments))
+    let doc =
+        { doc with
+            Package =
+                { doc.Package with
+                    Notes =
+                        noteBodiesFromEditor "footnote" (optionalArray (package?Footnotes))
+                        @ noteBodiesFromEditor "endnote" (optionalArray (package?Endnotes))
+                    Comments = comments } }
+        |> withCommentDetails comments
     if isNullOrUndefined package?PageSetup then doc else { doc with PageSetup = pageSetupFromEditor package?PageSetup }
 
 /// Export Word document to EditorParagraphs for Office.Formats
@@ -1611,10 +1682,91 @@ let exportPageSetupToEditor (setup: PageSetup) : obj =
         "SectionStart" ==> setup.SectionStart
     ]
 
+/// A note / comment body made of plain text: what the editor has for a note
+/// it created, or for one whose text was changed after import.
+let private plainBodyBlocks context (styleId: string option) (text: string) : obj array =
+    let para = { Id = nextImportedBlockId (); Buffer = TextBuffer.ofString text; Metadata = { defaultMetadata with Style = styleId } }
+    [| paragraphToEditor context "Paragraph" 0 para |]
+
+/// Footnotes or endnotes for the editor package. A note is written from its
+/// imported body (formatting, hyperlinks, tables) as long as the reference in
+/// the text still carries the text it was imported with; otherwise from the
+/// text on the reference. Notes nothing refers to any more are left out, the
+/// separator notes are kept.
+let private notesToEditor context (noteType: string) (doc: Document) : obj array =
+    let bodies = doc.Package.Notes |> List.filter (fun note -> note.NoteType = noteType)
+    let referenced =
+        allParagraphs doc
+        |> List.collect (fun para ->
+            para.Buffer.Runs
+            |> List.choose (function
+                | Text run ->
+                    match run.Style.NoteId with
+                    | Some id when (run.Style.NoteType |> Option.defaultValue "footnote") = noteType -> Some (id, run.Style.NoteText)
+                    | _ -> None
+                | Image _ -> None))
+        |> List.distinctBy fst
+    let textStyle =
+        let styleId = if noteType = "endnote" then "EndnoteText" else "FootnoteText"
+        if doc.Styles |> List.exists (fun style -> style.Id = styleId && style.StyleType = "paragraph") then Some styleId else None
+    let noteObject (id: string) (kind: string option) hasMark (markStyle: string option) (text: string) (blocks: obj array) =
+        createObj [
+            "Id" ==> id
+            "Kind" ==> kind
+            "HasMark" ==> hasMark
+            "MarkStyle" ==> markStyle
+            "Text" ==> text
+            "Blocks" ==> blocks
+        ]
+    let rich (body: NoteBody) =
+        noteObject body.Id body.Kind body.HasMark body.MarkStyle body.Text (body.Blocks |> List.map (blockToEditor context) |> List.toArray)
+    [| for body in bodies do
+           if body.Kind.IsSome then yield rich body
+       for id, text in referenced do
+           match bodies |> List.tryFind (fun body -> body.Id = id && body.Kind.IsNone) with
+           | Some body when text.IsNone || text = Some body.Text -> yield rich body
+           | Some body ->
+               let text = text |> Option.defaultValue ""
+               yield noteObject id None body.HasMark body.MarkStyle text (plainBodyBlocks context textStyle text)
+           | None ->
+               let text = text |> Option.defaultValue ""
+               yield noteObject id None true None text (plainBodyBlocks context textStyle text) |]
+
+let private commentsToEditor context (doc: Document) : obj array =
+    let referenced =
+        allParagraphs doc
+        |> List.collect (fun para ->
+            para.Buffer.Runs
+            |> List.choose (function
+                | Text run -> run.Style.CommentId |> Option.map (fun id -> id, run.Style)
+                | Image _ -> None))
+        |> List.distinctBy fst
+    let commentObject (id: string) (author: string option) (date: string option) (initials: string option) (text: string) (blocks: obj array) =
+        createObj [
+            "Id" ==> id
+            "Author" ==> author
+            "Date" ==> date
+            "Initials" ==> initials
+            "Text" ==> text
+            "Blocks" ==> blocks
+        ]
+    [| for id, style in referenced do
+           match doc.Package.Comments |> List.tryFind (fun body -> body.Id = id) with
+           | Some body when style.CommentText.IsNone || style.CommentText = Some body.Text ->
+               yield commentObject id (style.CommentAuthor |> Option.orElse body.Author) (style.CommentDate |> Option.orElse body.Date) body.Initials body.Text
+                         (body.Blocks |> List.map (blockToEditor context) |> List.toArray)
+           | body ->
+               let text = style.CommentText |> Option.defaultValue ""
+               yield commentObject id style.CommentAuthor style.CommentDate (body |> Option.bind (fun value -> value.Initials)) text (plainBodyBlocks context None text) |]
+
 /// The whole document as the package DocumentWriter.writeFromEditorPackage
 /// takes: the inverse of importFromEditorPackage.
 let exportDocumentPackage (doc: Document) : obj =
+    let context = Some (WordStyles.styleContext doc)
     createObj [
+        "Footnotes" ==> notesToEditor context "footnote" doc
+        "Endnotes" ==> notesToEditor context "endnote" doc
+        "Comments" ==> commentsToEditor context doc
         "Paragraphs" ==> exportToEditor doc
         "PageSetup" ==> exportPageSetupToEditor doc.PageSetup
         "Styles" ==> exportStylesToEditor doc.Styles

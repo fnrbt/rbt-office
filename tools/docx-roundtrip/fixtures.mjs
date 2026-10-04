@@ -182,6 +182,51 @@ const docs = [
             { readText: 'smart custom dir bdo fallback' },
         ],
     },
+    {
+        // Footnote, endnote and comment bodies are blocks: formatting, a hyperlink
+        // (in the part's own relationships) and a table survive the save.
+        name: 'synthetic/rich-notes',
+        body:
+            `<w:p><w:r><w:t xml:space="preserve">Body with a note</w:t></w:r><w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:footnoteReference w:id="2"/></w:r>` +
+            `<w:r><w:t xml:space="preserve"> and an endnote</w:t></w:r><w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:endnoteReference w:id="1"/></w:r>` +
+            `<w:r><w:t xml:space="preserve"> and a comment</w:t></w:r><w:r><w:commentReference w:id="5"/></w:r></w:p>`,
+        rels:
+            `<Relationship Id="rId20" Type="${REL}/footnotes" Target="footnotes.xml"/><Relationship Id="rId21" Type="${REL}/endnotes" Target="endnotes.xml"/>` +
+            `<Relationship Id="rId22" Type="${REL}/comments" Target="comments.xml"/>`,
+        types:
+            '<Override PartName="/word/footnotes.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml"/>' +
+            '<Override PartName="/word/endnotes.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.endnotes+xml"/>' +
+            '<Override PartName="/word/comments.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"/>',
+        extra: {
+            'word/footnotes.xml': `<w:footnotes ${W}>` +
+                `<w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>` +
+                `<w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>` +
+                `<w:footnote w:id="2"><w:p><w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:footnoteRef/></w:r><w:r><w:t xml:space="preserve"> See </w:t></w:r>` +
+                `<w:r><w:rPr><w:b/></w:rPr><w:t>the bold source</w:t></w:r><w:r><w:t xml:space="preserve"> at </w:t></w:r>` +
+                `<w:hyperlink r:id="rId1"><w:r><w:rPr><w:u w:val="single"/></w:rPr><w:t>the site</w:t></w:r></w:hyperlink></w:p>` +
+                `<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr><w:tblGrid><w:gridCol w:w="1500"/><w:gridCol w:w="1500"/></w:tblGrid><w:tr>` +
+                `<w:tc><w:tcPr><w:tcW w:w="1500" w:type="dxa"/></w:tcPr>${p('note cell a')}</w:tc><w:tc><w:tcPr><w:tcW w:w="1500" w:type="dxa"/></w:tcPr>${p('note cell b')}</w:tc></w:tr></w:tbl>` +
+                `${p('after the note table')}</w:footnote></w:footnotes>`,
+            'word/_rels/footnotes.xml.rels': `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${REL}/hyperlink" Target="https://example.com/note" TargetMode="External"/></Relationships>`,
+            'word/endnotes.xml': `<w:endnotes ${W}><w:endnote w:id="1"><w:p><w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:endnoteRef/></w:r><w:r><w:rPr><w:i/></w:rPr><w:t xml:space="preserve"> italic endnote</w:t></w:r></w:p></w:endnote></w:endnotes>`,
+            'word/comments.xml': `<w:comments ${W}><w:comment w:id="5" w:author="Ann" w:date="2024-03-04T05:06:07Z" w:initials="A">` +
+                `<w:p><w:r><w:t xml:space="preserve">first </w:t></w:r><w:r><w:rPr><w:b/></w:rPr><w:t>bold remark</w:t></w:r></w:p>${p('second paragraph')}</w:comment></w:comments>`,
+        },
+        expect: [
+            { part: 'word/footnotes.xml', has: '<w:footnote w:type="separator" w:id="-1">.*<w:separator/>' },
+            { part: 'word/footnotes.xml', has: '<w:footnote w:id="2"><w:p><w:pPr/?>(.*?</w:pPr>)?<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:footnoteRef/></w:r>' },
+            { part: 'word/footnotes.xml', has: '<w:b/>.*the bold source' }, { part: 'word/footnotes.xml', has: '<w:hyperlink r:id="[^"]+"[^>]*>.*the site' },
+            { part: 'word/footnotes.xml', has: '<w:tbl>.*note cell a.*note cell b.*</w:tbl>.*after the note table' },
+            { part: 'word/footnotes.xml', lacks: '<w:footnoteRef/>.*<w:footnoteRef/>' },
+            { part: 'word/_rels/footnotes.xml.rels', has: 'Target="https://example.com/note" TargetMode="External"' },
+            { part: 'word/endnotes.xml', has: '<w:endnoteRef/>.*<w:i/>.*italic endnote' },
+            { part: 'word/comments.xml', has: '<w:comment w:id="5" w:author="Ann" w:date="2024-03-04T05:06:07Z" w:initials="A">' },
+            { part: 'word/comments.xml', has: '<w:b/>.*bold remark.*second paragraph' },
+            { part: 'word/document.xml', has: '<w:footnoteReference w:id="2"/>' }, { part: 'word/document.xml', has: '<w:commentReference w:id="5"/>' },
+            { read: 'pkg.Footnotes.2.Blocks.1.Type', equals: 'Table' }, { read: 'pkg.Footnotes.2.Blocks.0.Runs.3.Hyperlink', equals: 'https://example.com/note' },
+            { read: 'pkg.Comments.0.Text', equals: 'first bold remark second paragraph' },
+        ],
+    },
 ];
 
 export async function syntheticFixtures(JSZip) {
