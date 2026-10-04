@@ -1794,6 +1794,32 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
                 if ranges = entry.Ranges && rule = entry.Format.Rule then Some entry
                 else Some { entry with Ranges = ranges; Format = { entry.Format with Rule = rule } })
 
+    // Validations move with their cells; the formulas in their rules are
+    // re-pointed and their anchors follow.
+    let validations =
+        let adjust (formula: string) = adjustFormulaForEdit edit targetsEditedSheet formula
+        let cache = System.Collections.Generic.Dictionary<DataValidation, DataValidation>(HashIdentity.Reference)
+        let moveValidation (validation: DataValidation) =
+            match cache.TryGetValue validation with
+            | true, moved -> moved
+            | false, _ ->
+                let rule =
+                    match validation.Rule with
+                    | Comparison (kind, op, first, second) -> Comparison (kind, op, adjust first, second |> Option.map adjust)
+                    | CustomFormula formula -> CustomFormula (adjust formula)
+                    | other -> other
+                let anchor = validation.Anchor |> Option.bind moveAddr
+                let moved =
+                    if rule = validation.Rule && anchor = validation.Anchor then validation
+                    else { validation with Rule = rule; Anchor = anchor }
+                cache.[validation] <- moved
+                moved
+        model.Validations
+        |> Map.fold (fun acc addr validation ->
+            match moveAddr addr with
+            | Some moved -> Map.add moved (moveValidation validation) acc
+            | None -> acc) Map.empty
+
     let delta = if isInsert then count else -count
     { model with
         Cells = cells
@@ -1809,7 +1835,7 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
         Tables = tables
         CfBoldCells = model.CfBoldCells |> Seq.choose moveAddr |> Set.ofSeq
         Spill = spill
-        Validations = moveAddressMap model.Validations
+        Validations = validations
         Filters =
             if onRows then model.Filters
             else

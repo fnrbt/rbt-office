@@ -255,6 +255,14 @@ eq "v-input-message"   ((getValidation (at 10 1) vmodel).Value.InputTitle, (getV
 eq "v-literal-only"    (validateValue (CustomFormula "=FALSE") (V 1.0), (match validateValue (Comparison (WholeKind, OpNotEqual, "4", None)) (V 4.0) with Result.Error _ -> true | _ -> false))
                        (Result.Ok (), true)
 
+// Row/column edits carry the rule's formulas and anchor along.
+let vEdited = insertRow 0 vmodel
+eq "v-edit-moves-cell"    ((getValidation (at 6 1) vEdited).Value.Rule, (getValidation (at 6 1) vEdited).Value.Anchor)
+                          (CustomFormula "=ISNUMBER(B6)", Some (at 5 1))
+eq "v-edit-operand"       (getValidation (at 5 1) vEdited).Value.Rule (Comparison (DecimalKind, OpGreaterThan, "=C2", None))
+eq "v-edit-absolute"      (getValidation (at 7 1) vEdited).Value.Rule (CustomFormula "=COUNTIF($A$2:$A$10,B8)=0")
+eq "v-edit-still-works"   (invalid (checkEntry (at 5 1) (V 10.0) vEdited), invalid (checkEntry (at 5 1) (V 10.5) vEdited)) (true, false)
+
 // OOXML shape of validations.
 let ov kind op f1 f2 : OoxmlValidation =
     { Type = kind; Operator = op; Formula1 = f1; Formula2 = f2; AllowBlank = true; ShowErrorMessage = true; ShowInputMessage = true
