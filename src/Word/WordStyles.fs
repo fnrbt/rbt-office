@@ -316,8 +316,20 @@ let buildStyleContext (doc: Document) =
         DefaultParagraphStyleId = defaultParagraphStyleId
     }
 
+/// The style contexts built last, with the style lists they were built from.
+/// A context depends on the document's style list alone, and that list is
+/// the same object from one edit to the next: resolving every style again for
+/// each layout and paint pass (and once per table) was 30-50 ms of a
+/// keystroke.
+let mutable private knownStyleContexts : (NamedStyle list * DocumentStyleContext) list = []
+
 let styleContext (doc: Document) =
-    buildStyleContext doc
+    match knownStyleContexts |> List.tryFind (fun (styles, _) -> obj.ReferenceEquals(styles, doc.Styles)) with
+    | Some (_, context) -> context
+    | None ->
+        let context = buildStyleContext doc
+        knownStyleContexts <- (doc.Styles, context) :: List.truncate 3 knownStyleContexts
+        context
 
 let private headingText size = {
     TextBuffer.defaultStyle with

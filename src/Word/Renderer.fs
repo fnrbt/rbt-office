@@ -96,6 +96,10 @@ type RenderContext = {
     /// How many paint frames were built (the commands of the whole document
     /// collected) - for hosts and checks that want to see frames reused.
     mutable FrameBuilds: int
+    /// Stands for the text measurers the context lays out with (a new object
+    /// whenever they change): table plans are kept per scope, see
+    /// `Layout.withTablePlanScope`.
+    mutable PlanScope: obj
     LayoutState: IncrementalLayoutState
     mutable LastPaint: PaintFrame option
     /// None: the canvas holds the whole document at layout scale and the host
@@ -155,6 +159,7 @@ let createContext (canvas: HTMLCanvasElement) = {
     TextPathPainterVersion = 0
     TextMeasurerVersion = 0
     FrameBuilds = 0
+    PlanScope = obj ()
     LayoutState = Rbt.Word.Layout.createIncrementalLayoutState ()
     LastPaint = None
     Viewport = None
@@ -218,11 +223,13 @@ let measureRangeWithContext ctx text style start length =
     | None -> rangeMeasurerFromTextMeasurer (measureWithContext ctx) text style start length
 
 let layoutDocument (ctx: RenderContext) (doc: Document) =
-    Rbt.Word.Layout.layoutDocumentIncrementalWithRange ctx.LayoutState (layoutSettings ctx doc) (measureWithContext ctx) (measureRangeWithContext ctx) doc
+    Rbt.Word.Layout.withTablePlanScope ctx.PlanScope (fun () ->
+        Rbt.Word.Layout.layoutDocumentIncrementalWithRange ctx.LayoutState (layoutSettings ctx doc) (measureWithContext ctx) (measureRangeWithContext ctx) doc)
 
 /// Layouts plus the per-page geometry of the same (incremental) layout pass.
 let layoutDocumentWithPages (ctx: RenderContext) (doc: Document) =
-    Rbt.Word.Layout.layoutDocumentPagesIncremental ctx.LayoutState (layoutSettings ctx doc) (measureWithContext ctx) (measureRangeWithContext ctx) doc
+    Rbt.Word.Layout.withTablePlanScope ctx.PlanScope (fun () ->
+        Rbt.Word.Layout.layoutDocumentPagesIncremental ctx.LayoutState (layoutSettings ctx doc) (measureWithContext ctx) (measureRangeWithContext ctx) doc)
 
 let cachedLayouts (ctx: RenderContext) (doc: Document) =
     match ctx.LayoutState.LastDocument, ctx.LayoutState.LastLayouts with
@@ -230,6 +237,7 @@ let cachedLayouts (ctx: RenderContext) (doc: Document) =
     | _ -> None
 
 let clearLayoutCache (ctx: RenderContext) =
+    ctx.PlanScope <- obj ()
     Rbt.Word.Layout.clearIncrementalLayoutState ctx.LayoutState
     ctx.LastPaint <- None
     ctx.PageFrame <- None
@@ -816,7 +824,9 @@ let private buildFrame (ctx: RenderContext) (doc: Document) hoveredImage =
     ctx.FrameBuilds <- ctx.FrameBuilds + 1
     let settings = layoutSettings ctx doc
     let layouts, pages = layoutDocumentWithPages ctx doc
-    let layouts, bodyCommands, _ = collectDocumentCommandsWithLayoutsAndPages settings ctx.FontFamily (measureWithContext ctx) (measureRangeWithContext ctx) doc layouts pages
+    let layouts, bodyCommands, _ =
+        Rbt.Word.Layout.withTablePlanScope ctx.PlanScope (fun () ->
+            collectDocumentCommandsWithLayoutsAndPages settings ctx.FontFamily (measureWithContext ctx) (measureRangeWithContext ctx) doc layouts pages)
     let overlayCommands =
         List.concat [
             commentAnchorCommands ctx doc layouts

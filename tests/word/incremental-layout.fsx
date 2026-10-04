@@ -443,5 +443,95 @@ System.Threading.Tasks.Parallel.For(
 check "concurrent layouts match the single-threaded results" (List.ofSeq concurrentFailures) []
 checkTrue "concurrent layouts ran on more than one thread" (concurrentThreads.Count > 1)
 
+// ---------------------------------------------------------------------------
+// What is kept between passes of a long document: the rest of a paragraph
+// that breaks over a page (in a document with sections it is laid out as a
+// paragraph of its own, with the paragraph's id), the plans of tables, and
+// the paint commands of paragraphs.
+// ---------------------------------------------------------------------------
+let brokenDoc =
+    [ for i in 1 .. 40 ->
+        let metadata = if i = 30 then { Doc.defaultMetadata with SectionBreak = Some "nextPage" } else Doc.defaultMetadata
+        // Every fifth paragraph is long enough to run over a page.
+        Doc.Paragraph (paraWith (sprintf "br%d" i) metadata (words (sprintf "b%d_" i) (if i % 5 = 0 then 700 else 20 + (i * 7) % 40))) ]
+    |> document
+let brokenState, brokenInitial, _ =
+    assertEquivalent "paragraphs broken over pages" brokenDoc
+        [ "typing a character", typeIn "br12" 3 "X"
+          "typing in a broken paragraph", typeIn "br10" 5 "Y"
+          "typing that moves everything", typeIn "br2" 3 (words "push" 70) ]
+checkTrue "several paragraphs break over a page"
+    ([ for i in 5 .. 5 .. 25 -> (pagesOfBlock (sprintf "br%d" i) brokenInitial).Length ] |> List.filter (fun pages -> pages >= 2) |> List.length >= 3)
+let brokenKeystroke = Layout.createIncrementalLayoutState ()
+Layout.layoutDocumentIncrementalWithRange brokenKeystroke settings measureText measureRange brokenDoc |> ignore
+Layout.resetIncrementalLayoutMeasurements brokenKeystroke
+Layout.layoutDocumentIncrementalWithRange brokenKeystroke settings measureText measureRange (typeIn "br12" 3 "X" brokenDoc) |> ignore
+check "a keystroke measures one paragraph, not the ones broken over pages" (Layout.incrementalLayoutMeasuredBlockCount brokenKeystroke) 1
+Layout.resetIncrementalLayoutMeasurements brokenKeystroke
+Layout.layoutDocumentIncrementalWithRange brokenKeystroke settings measureText measureRange (typeIn "br12" 3 "XY" brokenDoc) |> ignore
+check "and so does the next" (Layout.incrementalLayoutMeasuredBlockCount brokenKeystroke) 1
+
+// Table plans are kept within a scope: a keystroke outside the tables measures no cell again.
+let mutable measured = 0
+let countingMeasure (text: string) (style: TextStyle) =
+    measured <- measured + 1
+    measureText text style
+let countingRange = Layout.rangeMeasurerFromTextMeasurer countingMeasure
+let planDoc =
+    [ yield Doc.Paragraph (para "pl-first" (words "first" 30))
+      for t in 1 .. 4 do
+          yield table (sprintf "pt%d" t) 12
+          yield Doc.Paragraph (para (sprintf "pl%d" t) (words "between" 25))
+      yield Doc.Paragraph (para "pl-last" (words "last" 30)) ]
+    |> document
+let scope = obj ()
+let planState = Layout.createIncrementalLayoutState ()
+let inScope (run: unit -> 'T) = Layout.withTablePlanScope scope run
+let coldPlan = Layout.layoutDocumentPages settings measureText measureRange planDoc
+let firstPlan = inScope (fun () -> Layout.layoutDocumentPagesIncremental planState settings countingMeasure countingRange planDoc)
+check "tables in a scope: the cold layout" firstPlan coldPlan
+let firstMeasured = measured
+measured <- 0
+let typedLast = typeIn "pl-last" 2 "X" planDoc
+let secondPlan = inScope (fun () -> Layout.layoutDocumentPagesIncremental planState settings countingMeasure countingRange typedLast)
+check "after a keystroke below the tables: the cold layout" secondPlan (Layout.layoutDocumentPages settings measureText measureRange typedLast)
+checkTrue (sprintf "and no table is measured again (%d measurements, %d at first)" measured firstMeasured) (measured * 20 < firstMeasured)
+measured <- 0
+let typedCell = typeIn "pt2-r3-a" 1 (words "cell" 12) typedLast
+let thirdPlan = inScope (fun () -> Layout.layoutDocumentPagesIncremental planState settings countingMeasure countingRange typedCell)
+check "after typing in a cell (the tables below move): the cold layout" thirdPlan (Layout.layoutDocumentPages settings measureText measureRange typedCell)
+let typedFirst = typeIn "pl-first" 2 (words "push" 60) typedCell
+check "after typing above every table: the cold layout"
+    (inScope (fun () -> Layout.layoutDocumentPagesIncremental planState settings countingMeasure countingRange typedFirst))
+    (Layout.layoutDocumentPages settings measureText measureRange typedFirst)
+// Another scope (other measurers) does not see these plans.
+let wide (text: string) (style: TextStyle) = float text.Length * style.FontSize * 0.7
+let wideRange = Layout.rangeMeasurerFromTextMeasurer wide
+check "another scope with other measurers lays out with those"
+    (Layout.withTablePlanScope (obj ()) (fun () -> Layout.layoutDocumentPagesIncremental (Layout.createIncrementalLayoutState ()) settings wide wideRange typedFirst))
+    (Layout.layoutDocumentPages settings wide wideRange typedFirst)
+check "and the first scope still has its own"
+    (inScope (fun () -> Layout.layoutDocumentPagesIncremental planState settings countingMeasure countingRange typedFirst))
+    (Layout.layoutDocumentPages settings measureText measureRange typedFirst)
+
+// Paint commands kept with paragraph layouts: what a fresh collection gives.
+module Paint = Rbt.Word.Paint
+let commandsOf (doc: Doc.Document) (layouts: Layout.BlockLayout list) (pages: Layout.PageInfo list) =
+    let _, commands, _ = Paint.collectDocumentCommandsWithLayoutsAndPages settings "Calibri" measureText measureRange doc layouts pages
+    commands
+let paintState = Layout.createIncrementalLayoutState ()
+let paintOnce (doc: Doc.Document) =
+    let layouts, pages = Layout.withTablePlanScope scope (fun () -> Layout.layoutDocumentPagesIncremental paintState settings measureText measureRange doc)
+    Layout.withTablePlanScope scope (fun () -> commandsOf doc layouts pages)
+let freshCommands (doc: Doc.Document) =
+    let layouts, pages = Layout.layoutDocumentPages settings measureText measureRange doc
+    commandsOf doc layouts pages
+for label, doc in [ "paragraphs broken over pages", brokenDoc; "tables", planDoc; "sections", sectionDoc; "plain", plainDoc ] do
+    check (label + ": commands of the incremental layout") (paintOnce doc) (freshCommands doc)
+    check (label + ": collected again") (paintOnce doc) (freshCommands doc)
+    let firstParagraph = doc.Blocks |> List.pick (function Doc.Paragraph p -> Some p.Id | _ -> None)
+    let edited = typeIn firstParagraph 2 "Z" doc
+    check (label + ": after a keystroke") (paintOnce edited) (freshCommands edited)
+
 printfn "incremental-layout: %d passed, %d failed" pass fail
 if fail > 0 then failwithf "%d incremental layout checks failed" fail

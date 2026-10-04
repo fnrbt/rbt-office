@@ -2366,11 +2366,26 @@ type ParagraphLayoutMemoEntry = {
     MemoContentTextStyle: TextBuffer.TextStyle
     mutable MemoLines: (ParagraphLineBreakKey * MeasuredLine list) option
     mutable MemoPlacement: (ParagraphPlacementKey * BlockLayout) option
+    /// The line breaks and the placement before the current ones: a pass can
+    /// lay a paragraph out twice (tried at the foot of a page, then placed on
+    /// the next), and with one slot each the two would evict each other at
+    /// every pass.
+    mutable MemoLinesOlder: (ParagraphLineBreakKey * MeasuredLine list) option
+    mutable MemoPlacementOlder: (ParagraphPlacementKey * BlockLayout) option
+    /// As MemoPlacement, for a paragraph laid out next to floating objects:
+    /// the placement, the obstacles and placed boxes it was given, and the
+    /// layout with the obstacles and boxes it handed on.
+    mutable MemoObstaclePlacement: (ParagraphPlacementKey * FloatingObstacle list * PlacedFloatingBox list * BlockLayout * FloatingObstacle list * PlacedFloatingBox list) option
     mutable MemoGeneration: int
 }
 
 type ParagraphLayoutMemo = {
     MemoEntries: System.Collections.Generic.Dictionary<string, ParagraphLayoutMemoEntry>
+    /// The rest of a paragraph that runs on in the next column or page, by
+    /// paragraph id and the offset it starts at: the buffer it was cut from,
+    /// where, and the paragraph made of the rest. Handing back the same
+    /// paragraph lets its own memo entry stand from one pass to the next.
+    MemoContinuations: System.Collections.Generic.Dictionary<string, TextBuffer * int * ParagraphBlock>
     mutable Generation: int
     mutable LineBreakCount: int
     mutable MemoStyles: NamedStyle list
@@ -2379,6 +2394,7 @@ type ParagraphLayoutMemo = {
 
 let private createParagraphLayoutMemo () = {
     MemoEntries = System.Collections.Generic.Dictionary<string, ParagraphLayoutMemoEntry>()
+    MemoContinuations = System.Collections.Generic.Dictionary<string, TextBuffer * int * ParagraphBlock>()
     Generation = 0
     LineBreakCount = 0
     MemoStyles = []
@@ -2426,17 +2442,40 @@ let private paragraphMemoEntry (memo: ParagraphLayoutMemo) (paragraphStyle: Para
             MemoContentTextStyle = contentTextStyle
             MemoLines = None
             MemoPlacement = None
+            MemoLinesOlder = None
+            MemoPlacementOlder = None
+            MemoObstaclePlacement = None
             MemoGeneration = memo.Generation
         }
-        memo.MemoEntries.[para.Id] <- entry
         entry
-    match memo.MemoEntries.TryGetValue para.Id with
-    | true, entry when obj.ReferenceEquals(entry.MemoBuffer, para.Buffer)
-                       && sameOrEqual entry.MemoRawMetadata para.Metadata
-                       && sameOrEqual entry.MemoParagraphStyle paragraphStyle ->
+    // A paragraph that breaks over a page is laid out as two paragraphs with
+    // one id - the whole and the rest - at every pass; with one entry per id
+    // each would put the other out. An id has a few slots: the one that holds
+    // this paragraph is found by its buffer, a new entry takes a free slot or
+    // one that this pass has not used.
+    let slotKey (slot: int) = if slot = 0 then para.Id else para.Id + "\u0001" + string slot
+    let slots = 3
+    let mutable found = None
+    let mutable free = -1
+    let mutable slot = 0
+    while found.IsNone && slot < slots do
+        match memo.MemoEntries.TryGetValue (slotKey slot) with
+        | true, entry ->
+            if obj.ReferenceEquals(entry.MemoBuffer, para.Buffer)
+               && sameOrEqual entry.MemoRawMetadata para.Metadata
+               && sameOrEqual entry.MemoParagraphStyle paragraphStyle then
+                found <- Some entry
+            elif free < 0 && entry.MemoGeneration <> memo.Generation then free <- slot
+        | false, _ -> if free < 0 then free <- slot
+        slot <- slot + 1
+    match found with
+    | Some entry ->
         entry.MemoGeneration <- memo.Generation
         entry
-    | _ -> fresh ()
+    | None ->
+        let entry = fresh ()
+        memo.MemoEntries.[slotKey (if free < 0 then slots - 1 else free)] <- entry
+        entry
 
 let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (maxWidth: float) (y: float) (xOffset: float) (paragraphStyle: ParagraphStyle) (effectiveBufferForParagraph: ParagraphStyle -> TextBuffer -> TextBuffer) (para: ParagraphBlock) (numberedCounters: Map<string * int, int>) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) (memoEntry: ParagraphLayoutMemoEntry option) =
     let mutable counters = numberedCounters
@@ -2509,10 +2548,15 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
                 LineAvailableWidth = availableWidth
                 LineSingleLineFastPath = singleLineFastPath
             }
-            match entry.MemoLines with
-            | Some (cachedKey, cachedLines) when cachedKey = key -> cachedLines, initialObstacles, initialPlacedBoxes
-            | _ ->
+            match entry.MemoLines, entry.MemoLinesOlder with
+            | Some (cachedKey, cachedLines), _ when cachedKey = key -> cachedLines, initialObstacles, initialPlacedBoxes
+            | current, Some (olderKey, olderLines) when olderKey = key ->
+                entry.MemoLinesOlder <- current
+                entry.MemoLines <- Some (olderKey, olderLines)
+                olderLines, initialObstacles, initialPlacedBoxes
+            | current, _ ->
                 let lines, obstacles, placedBoxes = breakLines ()
+                entry.MemoLinesOlder <- current
                 entry.MemoLines <- Some (key, lines)
                 lines, obstacles, placedBoxes
         | None -> breakLines ()
@@ -2623,7 +2667,10 @@ let private layoutParagraphWithMemo (memo: ParagraphLayoutMemo option) (settings
     let uncached () =
         layoutParagraphCore settings measureText measureRange maxWidth y xOffset paragraphStyle effectiveBufferForParagraph para numberedCounters initialObstacles initialPlacedBoxes None
     match memo with
-    | Some memo when initialObstacles.IsEmpty && initialPlacedBoxes.IsEmpty ->
+    | Some memo when not (initialObstacles.IsEmpty && initialPlacedBoxes.IsEmpty) ->
+        // Next to floating objects: once one is on a page, every paragraph
+        // after it is handed the obstacles. The same paragraph at the same
+        // place with the same obstacles is laid out as it was.
         let entry = paragraphMemoEntry memo paragraphStyle effectiveBufferForParagraph para
         if entry.MemoHasFloatingImage then uncached ()
         else
@@ -2635,15 +2682,42 @@ let private layoutParagraphWithMemo (memo: ParagraphLayoutMemo option) (settings
                 PlacementXOffset = xOffset
                 PlacementPrefix = prefixOpt |> Option.defaultValue ""
             }
-            match entry.MemoPlacement with
-            | Some (cachedKey, layout) when cachedKey = key ->
-                layout, updatedCounters, initialObstacles, initialPlacedBoxes
+            match entry.MemoObstaclePlacement with
+            | Some (cachedKey, obstaclesIn, boxesIn, layout, obstaclesOut, boxesOut)
+                when cachedKey = key && sameOrEqual obstaclesIn initialObstacles && sameOrEqual boxesIn initialPlacedBoxes ->
+                layout, updatedCounters, obstaclesOut, boxesOut
             | _ ->
+                let layout, counters, obstacles, placedBoxes = uncached ()
+                entry.MemoObstaclePlacement <- Some (key, initialObstacles, initialPlacedBoxes, layout, obstacles, placedBoxes)
+                layout, counters, obstacles, placedBoxes
+    | Some memo ->
+        let entry = paragraphMemoEntry memo paragraphStyle effectiveBufferForParagraph para
+        if entry.MemoHasFloatingImage then uncached ()
+        else
+            let prefixOpt, updatedCounters = WordLayout.Numbering.markerAndCounters entry.MemoMetadata numberedCounters
+            let key = {
+                PlacementSettings = settings
+                PlacementMaxWidth = maxWidth
+                PlacementY = y
+                PlacementXOffset = xOffset
+                PlacementPrefix = prefixOpt |> Option.defaultValue ""
+            }
+            match entry.MemoPlacement, entry.MemoPlacementOlder with
+            | Some (cachedKey, layout), _ when cachedKey = key ->
+                layout, updatedCounters, initialObstacles, initialPlacedBoxes
+            | current, Some (olderKey, layout) when olderKey = key ->
+                entry.MemoPlacementOlder <- current
+                entry.MemoPlacement <- Some (olderKey, layout)
+                layout, updatedCounters, initialObstacles, initialPlacedBoxes
+            | current, _ ->
                 let linesBefore = entry.MemoLines
+                let linesOlderBefore = entry.MemoLinesOlder
                 let layout, counters, obstacles, placedBoxes =
                     layoutParagraphCore settings measureText measureRange maxWidth y xOffset paragraphStyle effectiveBufferForParagraph para numberedCounters initialObstacles initialPlacedBoxes (Some entry)
-                if not (obj.ReferenceEquals(linesBefore, entry.MemoLines)) then
+                // (Lines were broken when a new entry came in, not when the two slots changed places.)
+                if not (obj.ReferenceEquals(linesBefore, entry.MemoLines)) && not (obj.ReferenceEquals(linesOlderBefore, entry.MemoLines)) then
                     memo.LineBreakCount <- memo.LineBreakCount + 1
+                entry.MemoPlacementOlder <- current
                 entry.MemoPlacement <- Some (key, layout)
                 layout, counters, obstacles, placedBoxes
     | _ -> uncached ()
@@ -3693,7 +3767,115 @@ let private fragmentPlanForRowTransaction settings firstTablePage headerHeight r
     addFragment currentY rowHeight repeatedHeaderHeight reason |> ignore
     currentY, resizeArrayToList fragments
 
-let private buildTableLayoutPlanWithMemo (memo: ParagraphLayoutMemo option) (initialCounters: Map<string * int, int> voption) settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset tableY =
+// ---- table plans kept between passes -----------------------------------------
+// The plan of a table - its rows measured, placed and split over pages - is
+// what both the layout pass and the paint pass work from, and each built it
+// again for every table of the document at every edit: two thirds of the cost
+// of a keystroke in a long document with tables. A plan depends on the table
+// (the same object while it is not edited), where it starts, the settings,
+// the styles, the list counters before it, and the text measurers. The last
+// are functions and cannot be compared, so plans are kept per *scope*: a
+// renderer opens one for its layout state (`withTablePlanScope`), and gets a
+// new one when its measurers change. Outside a scope nothing is kept.
+
+type private KnownTablePlan = {
+    Scope: obj
+    Y: float
+    Settings: LayoutSettings
+    Styles: NamedStyle list
+    Counters: Map<string * int, int> voption
+    MaxWidth: float
+    ColumnWidths: float list
+    OuterLeft: float
+    HorizontalOffset: float
+    Plan: TableLayoutPlan
+}
+
+#if FABLE_COMPILER
+let mutable private tablePlanScopeValue : obj = null
+let private getTablePlanScope () : obj = tablePlanScopeValue
+let private setTablePlanScope (scope: obj) = tablePlanScopeValue <- scope
+#else
+// (Per thread: native hosts lay documents out on several threads.)
+type private TablePlanScopeHolder() =
+    [<System.ThreadStatic; DefaultValue>]
+    static val mutable private scope : obj
+    static member Scope
+        with get () : obj = TablePlanScopeHolder.scope
+        and set (value: obj) = TablePlanScopeHolder.scope <- value
+let private getTablePlanScope () : obj = TablePlanScopeHolder.Scope
+let private setTablePlanScope (scope: obj) = TablePlanScopeHolder.Scope <- scope
+#endif
+
+/// Run `run` with table plans kept for `scope` (an object that stands for one
+/// set of text measurers): a table that is the same object at the same place
+/// as in the last pass of this scope is not measured again.
+let withTablePlanScope (scope: obj) (run: unit -> 'T) : 'T =
+    let previous = getTablePlanScope ()
+    setTablePlanScope scope
+    try run ()
+    finally setTablePlanScope previous
+
+/// The scope table plans are kept for at the moment (null: none).
+let currentTablePlanScope () : obj = getTablePlanScope ()
+
+#if FABLE_COMPILER
+[<Fable.Core.Emit("new WeakMap()")>]
+let private newTablePlanMap () : obj = Fable.Core.Util.jsNative
+[<Fable.Core.Emit("$0.get($1)")>]
+let private tablePlanMapGet (map: obj) (key: TableBlock) : KnownTablePlan = Fable.Core.Util.jsNative
+[<Fable.Core.Emit("$0.set($1, $2)")>]
+let private tablePlanMapSet (map: obj) (key: TableBlock) (value: KnownTablePlan) : unit = Fable.Core.Util.jsNative
+let private knownTablePlans = newTablePlanMap ()
+let private tryKnownTablePlan (table: TableBlock) : KnownTablePlan option =
+    let entry = tablePlanMapGet knownTablePlans table
+    if isNull (box entry) then None else Some entry
+let private rememberTablePlan (table: TableBlock) (entry: KnownTablePlan) = tablePlanMapSet knownTablePlans table entry
+#else
+let private knownTablePlans = System.Runtime.CompilerServices.ConditionalWeakTable<TableBlock, KnownTablePlan>()
+let private tryKnownTablePlan (table: TableBlock) : KnownTablePlan option =
+    match knownTablePlans.TryGetValue table with
+    | true, entry -> Some entry
+    | false, _ -> None
+let private rememberTablePlan (table: TableBlock) (entry: KnownTablePlan) =
+    lock knownTablePlans (fun () ->
+        knownTablePlans.Remove table |> ignore
+        knownTablePlans.Add(table, entry))
+#endif
+
+let rec private buildTableLayoutPlanWithMemo (memo: ParagraphLayoutMemo option) (initialCounters: Map<string * int, int> voption) settings measureText measureRange (doc: Document) (tableBlock: TableBlock) (tableMaxWidth: float) (columnWidths: float list) (outerLeft: float) (tableHorizontalOffset: float) (tableY: float) : TableLayoutPlan =
+    let scope = getTablePlanScope ()
+    let known =
+        if isNull scope then None
+        else
+            match tryKnownTablePlan tableBlock with
+            | Some entry when obj.ReferenceEquals(entry.Scope, scope)
+                              && entry.Y = tableY
+                              && obj.ReferenceEquals(entry.Styles, doc.Styles)
+                              && entry.MaxWidth = tableMaxWidth
+                              && entry.OuterLeft = outerLeft
+                              && entry.HorizontalOffset = tableHorizontalOffset
+                              && (obj.ReferenceEquals(entry.Settings, settings) || entry.Settings = settings)
+                              && (obj.ReferenceEquals(entry.ColumnWidths, columnWidths) || entry.ColumnWidths = columnWidths)
+                              // (A pass that does not state the counters - the paint pass - takes
+                              // the plan of the layout pass that came before it.)
+                              && (match initialCounters, entry.Counters with
+                                  | ValueNone, _ -> true
+                                  | ValueSome wanted, ValueSome had -> obj.ReferenceEquals(wanted, had) || wanted = had
+                                  | ValueSome _, ValueNone -> false) ->
+                Some entry.Plan
+            | _ -> None
+    match known with
+    | Some plan -> plan
+    | None ->
+        let plan = buildTableLayoutPlanUncached memo initialCounters settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset tableY
+        if not (isNull scope) then
+            rememberTablePlan tableBlock
+                { Scope = scope; Y = tableY; Settings = settings; Styles = doc.Styles; Counters = initialCounters; MaxWidth = tableMaxWidth
+                  ColumnWidths = columnWidths; OuterLeft = outerLeft; HorizontalOffset = tableHorizontalOffset; Plan = plan }
+        plan
+
+and private buildTableLayoutPlanUncached (memo: ParagraphLayoutMemo option) (initialCounters: Map<string * int, int> voption) settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset tableY =
     let styleContext = styleContextForLayout memo doc
     // The list counters at the table: handed in by the document pass, else
     // worked out from the document, so the plan numbers cells as the pass does.
@@ -4772,7 +4954,21 @@ let private flowColumns (memo: ParagraphLayoutMemo option) (settings: LayoutSett
                             { remaining.Metadata with
                                 SpacingBefore = Some 0.0
                                 FirstLineIndent = if remaining.Metadata.ListStyle = NoList then Some 0.0 else remaining.Metadata.FirstLineIndent }
-                        remaining <- { remaining with Buffer = TextBuffer.delete 0 cut remaining.Buffer; Metadata = continuationMetadata }
+                        remaining <-
+                            // The rest of the paragraph: the same object as at the last
+                            // pass while it is cut from the same buffer at the same place.
+                            let build () = { remaining with Buffer = TextBuffer.delete 0 cut remaining.Buffer; Metadata = continuationMetadata }
+                            match memo with
+                            | None -> build ()
+                            | Some memo ->
+                                let key = remaining.Id + "\u0001" + string consumedOffset
+                                match memo.MemoContinuations.TryGetValue key with
+                                | true, (source, sourceCut, known) when obj.ReferenceEquals(source, remaining.Buffer) && sourceCut = cut
+                                                                        && sameOrEqual known.Metadata continuationMetadata -> known
+                                | _ ->
+                                    let rest = build ()
+                                    memo.MemoContinuations.[key] <- (remaining.Buffer, cut, rest)
+                                    rest
                         consumedOffset <- lastFit.EndOffset
                         advanceColumn ()
                     | None ->
@@ -5077,6 +5273,7 @@ let clearIncrementalLayoutState (state: IncrementalLayoutState) =
     state.MeasuredBlockCount <- 0
     state.MemoSweepThreshold <- 256
     state.Memo.MemoEntries.Clear()
+    state.Memo.MemoContinuations.Clear()
     state.Memo.MemoStyles <- []
     state.Memo.MemoStyleContext <- None
 
@@ -5093,7 +5290,9 @@ let layoutDocumentPagesIncremental (state: IncrementalLayoutState) (settings: La
         let memo = state.Memo
         if not (obj.ReferenceEquals(memo.MemoStyles, doc.Styles)) then
             // Named (character) styles feed every paragraph's effective runs.
-            if memo.MemoStyles <> doc.Styles then memo.MemoEntries.Clear()
+            if memo.MemoStyles <> doc.Styles then
+                memo.MemoEntries.Clear()
+                memo.MemoContinuations.Clear()
             memo.MemoStyles <- doc.Styles
             memo.MemoStyleContext <- None
         memo.Generation <- memo.Generation + 1
@@ -5107,6 +5306,7 @@ let layoutDocumentPagesIncremental (state: IncrementalLayoutState) (settings: La
                 if entry.MemoGeneration <> memo.Generation then stale.Add id
             for id in stale do
                 memo.MemoEntries.Remove id |> ignore
+            if memo.MemoContinuations.Count > 4096 then memo.MemoContinuations.Clear()
             state.MemoSweepThreshold <- memo.MemoEntries.Count * 2 + 256
         state.LastDocument <- Some doc
         state.LastSettings <- Some settings

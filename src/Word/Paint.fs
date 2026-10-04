@@ -945,6 +945,59 @@ let private addParagraphCommands settings fontFamily measureText measureRange co
 let paragraphCommands settings fontFamily measureText measureRange layout =
     paragraphCommandsWithBaselineOffset 0.0 settings fontFamily measureText measureRange layout
 
+// ---- the commands of a paragraph, kept with its layout ---------------------------
+// The incremental layout hands back the same BlockLayout object for a
+// paragraph that an edit did not touch or move. Its paint commands depend on
+// that layout alone (and on the settings and the font it was laid out with;
+// new measurers give new layouts), so they are kept with it: an edit collects
+// the commands of the paragraphs that changed, not of the whole document -
+// which was a third of the cost of a keystroke in a 600-page document
+// (measuring every run again for its underline, its tab leaders ...).
+
+/// What was collected for a layout, and with what.
+type private ParagraphCommandsEntry = {
+    Settings: LayoutSettings
+    FontFamily: string
+    Commands: PaintCommand array
+}
+
+#if FABLE_COMPILER
+[<Fable.Core.Emit("new WeakMap()")>]
+let private newLayoutMap () : obj = Fable.Core.Util.jsNative
+[<Fable.Core.Emit("$0.get($1)")>]
+let private layoutMapGet (map: obj) (key: BlockLayout) : ParagraphCommandsEntry = Fable.Core.Util.jsNative
+[<Fable.Core.Emit("$0.set($1, $2)")>]
+let private layoutMapSet (map: obj) (key: BlockLayout) (value: ParagraphCommandsEntry) : unit = Fable.Core.Util.jsNative
+let private paragraphCommandsByLayout = newLayoutMap ()
+let private tryKnownParagraphCommands (layout: BlockLayout) : ParagraphCommandsEntry option =
+    let entry = layoutMapGet paragraphCommandsByLayout layout
+    if isNull (box entry) then None else Some entry
+let private rememberParagraphCommands (layout: BlockLayout) (entry: ParagraphCommandsEntry) =
+    layoutMapSet paragraphCommandsByLayout layout entry
+#else
+let private paragraphCommandsByLayout = System.Runtime.CompilerServices.ConditionalWeakTable<BlockLayout, ParagraphCommandsEntry>()
+let private tryKnownParagraphCommands (layout: BlockLayout) : ParagraphCommandsEntry option =
+    match paragraphCommandsByLayout.TryGetValue layout with
+    | true, entry -> Some entry
+    | false, _ -> None
+let private rememberParagraphCommands (layout: BlockLayout) (entry: ParagraphCommandsEntry) =
+    lock paragraphCommandsByLayout (fun () ->
+        paragraphCommandsByLayout.Remove layout |> ignore
+        paragraphCommandsByLayout.Add(layout, entry))
+#endif
+
+/// `addParagraphCommands`, with the commands kept for the next time the same
+/// layout is painted.
+let private addParagraphCommandsKept (settings: LayoutSettings) (fontFamily: string) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (commands: ResizeArray<PaintCommand>) (layout: BlockLayout) =
+    match tryKnownParagraphCommands layout with
+    | Some entry when entry.FontFamily = fontFamily && (obj.ReferenceEquals(entry.Settings, settings) || entry.Settings = settings) ->
+        commands.AddRange entry.Commands
+    | _ ->
+        let start = commands.Count
+        addParagraphCommands settings fontFamily measureText measureRange commands layout
+        let own = Array.init (commands.Count - start) (fun index -> commands.[start + index])
+        rememberParagraphCommands layout { Settings = settings; FontFamily = fontFamily; Commands = own }
+
 // Keep line layout stable and correct only the drawn glyph baseline for Word's
 // spaced table cells, whose visual text boxes sit higher than our default paint.
 let private spacedTableCellBaselineOffset = -4.0
@@ -1767,6 +1820,54 @@ let private plannedContentOffsetForBlock (settings: LayoutSettings) measureText 
                                 result <- Some (layout.Y + offset)
         result
 
+/// What `plannedContentOffsetForBlock` gave for a table, kept like the table
+/// plans (per scope, see `Layout.withTablePlanScope`): it measures a row of
+/// the table, and was asked for every table of the document at every paint.
+type private KnownContentOffset = {
+    Scope: obj
+    Settings: LayoutSettings
+    Styles: NamedStyle list
+    BlockId: BlockId
+    Offset: float option
+}
+
+#if FABLE_COMPILER
+[<Fable.Core.Emit("new WeakMap()")>]
+let private newContentOffsetMap () : obj = Fable.Core.Util.jsNative
+[<Fable.Core.Emit("$0.get($1)")>]
+let private contentOffsetMapGet (map: obj) (key: TableBlock) : KnownContentOffset = Fable.Core.Util.jsNative
+[<Fable.Core.Emit("$0.set($1, $2)")>]
+let private contentOffsetMapSet (map: obj) (key: TableBlock) (value: KnownContentOffset) : unit = Fable.Core.Util.jsNative
+let private knownContentOffsets = newContentOffsetMap ()
+let private tryKnownContentOffset (table: TableBlock) : KnownContentOffset option =
+    let entry = contentOffsetMapGet knownContentOffsets table
+    if isNull (box entry) then None else Some entry
+let private rememberContentOffset (table: TableBlock) (entry: KnownContentOffset) = contentOffsetMapSet knownContentOffsets table entry
+#else
+let private knownContentOffsets = System.Runtime.CompilerServices.ConditionalWeakTable<TableBlock, KnownContentOffset>()
+let private tryKnownContentOffset (table: TableBlock) : KnownContentOffset option =
+    match knownContentOffsets.TryGetValue table with
+    | true, entry -> Some entry
+    | false, _ -> None
+let private rememberContentOffset (table: TableBlock) (entry: KnownContentOffset) =
+    lock knownContentOffsets (fun () ->
+        knownContentOffsets.Remove table |> ignore
+        knownContentOffsets.Add(table, entry))
+#endif
+
+let private plannedContentOffsetForBlockKept (settings: LayoutSettings) measureText measureRange (doc: Document) (tableBlock: TableBlock) (blockId: BlockId) =
+    let scope = currentTablePlanScope ()
+    if isNull scope then plannedContentOffsetForBlock settings measureText measureRange doc tableBlock blockId
+    else
+        match tryKnownContentOffset tableBlock with
+        | Some entry when obj.ReferenceEquals(entry.Scope, scope) && entry.BlockId = blockId && obj.ReferenceEquals(entry.Styles, doc.Styles)
+                          && (obj.ReferenceEquals(entry.Settings, settings) || entry.Settings = settings) ->
+            entry.Offset
+        | _ ->
+            let offset = plannedContentOffsetForBlock settings measureText measureRange doc tableBlock blockId
+            rememberContentOffset tableBlock { Scope = scope; Settings = settings; Styles = doc.Styles; BlockId = blockId; Offset = offset }
+            offset
+
 let private plannedContentOffsetFromFullPlan (settings: LayoutSettings) measureText measureRange doc tableBlock =
     let mutable firstPlannedContentOffset = System.Double.PositiveInfinity
     let planAtZero = buildTableLayoutPlanForDocumentAt settings measureText measureRange doc tableBlock 0.0
@@ -1785,7 +1886,7 @@ let private canonicalTableYFromLayouts (settings: LayoutSettings) measureText me
     match firstActualTableContentLayout index tableBlock with
     | None -> None
     | Some (blockId, firstActualContentY) ->
-        match plannedContentOffsetForBlock settings measureText measureRange doc tableBlock blockId
+        match plannedContentOffsetForBlockKept settings measureText measureRange doc tableBlock blockId
               |> Option.orElseWith (fun () -> plannedContentOffsetFromFullPlan settings measureText measureRange doc tableBlock) with
         | Some firstPlannedContentOffset -> Some (firstActualContentY - firstPlannedContentOffset)
         | None -> Some firstActualContentY
@@ -2026,9 +2127,9 @@ let private collectDocumentCommandsWithLayoutsUncached (settings: LayoutSettings
                     match index.ByBlock.TryGetValue para.Id with
                     | true, paraLayouts ->
                         for paraLayout in paraLayouts do
-                            addParagraphCommands settings fontFamily measureText measureRange commands paraLayout
+                            addParagraphCommandsKept settings fontFamily measureText measureRange commands paraLayout
                     | false, _ ->
-                        addParagraphCommands settings fontFamily measureText measureRange commands layout
+                        addParagraphCommandsKept settings fontFamily measureText measureRange commands layout
                     currentY <- layout.Y + layout.Height
                     if para.Metadata.PageBreakAfter || para.Metadata.SectionBreak = Some "nextPage" then
                         currentY <- WordLayout.Page.advanceToNextPage settings.PageHeight settings.PaddingTop currentY
