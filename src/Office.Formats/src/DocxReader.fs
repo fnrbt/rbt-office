@@ -469,6 +469,11 @@ type PageSetup = {
     EvenAndOddHeaders: bool option
     Columns: SectionColumns option
     SectionStart: string option   // body sectPr w:type (e.g. "continuous")
+    /// Header / footer references and page number start of the body-level
+    /// sectPr, i.e. of the final section.
+    HeaderReferences: HeaderFooterReference list
+    FooterReferences: HeaderFooterReference list
+    PageNumberStart: int option
 }
 
 type NumberingDefinition = {
@@ -685,7 +690,7 @@ module Docx =
             }
 
     // Paragraph properties extraction
-    let private headerFooterReferences name props =
+    let headerFooterReferences name props =
         wElems name props
         |> List.choose (fun node ->
             Xml.attr "r:id" node
@@ -1876,41 +1881,14 @@ module Docx =
                 | _ -> item)
             |> Array.toList
 
-        let content = contentFromNode bodyNode |> normalizeSectionBreaks
-        match finalSectPr with
-        | None -> content
-        | Some section ->
-            let finalHeaderRefs = headerFooterReferences "headerReference" section
-            let finalFooterRefs = headerFooterReferences "footerReference" section
-            let finalPageNumberStart =
-                getPropVal "pgNumType" "start" section
-                |> Option.bind (fun value -> match System.Int32.TryParse(value) with | true, parsed -> Some parsed | false, _ -> None)
-            if finalHeaderRefs.IsEmpty && finalFooterRefs.IsEmpty && finalPageNumberStart.IsNone then
-                content
-            else
-                let hasInlineSection =
-                    content
-                    |> List.exists (function
-                        | Para para -> para.Properties.SectionBreak.IsSome || not para.Properties.HeaderReferences.IsEmpty || not para.Properties.FooterReferences.IsEmpty
-                        | _ -> false)
-
-                let applyFinalSectionProps (para: Paragraph) : ParagraphProperties =
-                    { para.Properties with
-                        HeaderReferences = if finalHeaderRefs.IsEmpty then para.Properties.HeaderReferences else finalHeaderRefs
-                        FooterReferences = if finalFooterRefs.IsEmpty then para.Properties.FooterReferences else finalFooterRefs
-                        SectionPageNumberStart = finalPageNumberStart |> Option.orElse para.Properties.SectionPageNumberStart }
-
-                let rec apply applied pending items =
-                    match items with
-                    | [] -> []
-                    | Para para :: rest ->
-                        if pending || (not applied && finalPageNumberStart.IsSome && not hasInlineSection) then
-                            Para { para with Properties = applyFinalSectionProps para } :: rest
-                        else
-                            let startsNextSection = not para.Properties.HeaderReferences.IsEmpty || not para.Properties.FooterReferences.IsEmpty
-                            Para para :: apply applied startsNextSection rest
-                    | item :: rest -> item :: apply applied pending rest
-                apply false false content
+        // Every section's properties stay on the section they belong to: a
+        // w:sectPr inside a paragraph describes the section that ends with that
+        // paragraph, the body-level one the final section (PageSetup). The final
+        // section's header / footer references used to be copied onto the
+        // paragraph after the first section break, which put the last section's
+        // header on the second section of a document with three or more.
+        ignore finalSectPr
+        contentFromNode bodyNode |> normalizeSectionBreaks
 
     let bodyContent (bodyNode: XmlNode) : DocumentContent list =
         bodyContentWithFinalSection None bodyNode
@@ -2851,6 +2829,11 @@ let private parsePageSetup evenAndOddHeaders (sectPr: XmlNode option) : PageSetu
             EvenAndOddHeaders = Some evenAndOddHeaders
             Columns = columns
             SectionStart = Docx.getPropVal "type" "val" section
+            HeaderReferences = Docx.headerFooterReferences "headerReference" section
+            FooterReferences = Docx.headerFooterReferences "footerReference" section
+            PageNumberStart =
+                Docx.getPropVal "pgNumType" "start" section
+                |> Option.bind (fun value -> match System.Int32.TryParse(value) with | true, parsed -> Some parsed | false, _ -> None)
         })
 
 // Extract image as data URL from archive
@@ -4928,6 +4911,9 @@ let toEditorPageSetup (doc: WordDocument) : obj =
             "ColumnSeparator" ==> (setup.Columns |> Option.map (fun c -> c.Separator) |> Option.defaultValue false)
             "ColumnWidths" ==> (setup.Columns |> Option.map (fun c -> c.Widths |> List.map (fun (w, s) -> objFromFields [ "W" ==> w; "S" ==> s ]) |> Array.ofList) |> Option.defaultValue [||])
             "SectionStart" ==> setup.SectionStart
+            "HeaderReferences" ==> referenceObjects setup.HeaderReferences
+            "FooterReferences" ==> referenceObjects setup.FooterReferences
+            "PageNumberStart" ==> setup.PageNumberStart
         ]
 
 /// Footnote / endnote bodies as editor blocks (paragraphs with runs, tables),

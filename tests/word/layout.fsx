@@ -669,6 +669,42 @@ let referencedHeaderTexts =
     commands
     |> List.choose (function | DrawText (text, _, _, _, _) -> Some text | _ -> None)
 check "referenced header part" referencedHeaderTexts [ "Right header"; "Right header" ]
+// Three sections: the first two carry their header on the paragraph that ends
+// them, the final one in the page setup. The final section's header used to be
+// attached to the paragraph after the first break, i.e. inside section two.
+let sectionPagePitch = pageHeight settings + pageGap
+let sectionEndLayout id pageIndex (refs: (string * string) list) sectionBreak =
+    { blockLayout id (float pageIndex * sectionPagePitch + 40.0) hitLine with
+        Height = 20.0
+        Metadata = { Doc.defaultMetadata with HeaderReferences = refs; SectionBreak = sectionBreak } }
+let threeSectionDoc =
+    { Doc.empty with
+        PageSetup = { Doc.defaultPageSetup with HeaderReferences = [ "default", "h3" ] }
+        HeaderParts =
+            [ { Kind = "default"; RelationshipId = Some "h1"; Blocks = [ Doc.Paragraph (paragraph "sec-h1" "Header one") ] }
+              { Kind = "default"; RelationshipId = Some "h2"; Blocks = [ Doc.Paragraph (paragraph "sec-h2" "Header two") ] }
+              { Kind = "default"; RelationshipId = Some "h3"; Blocks = [ Doc.Paragraph (paragraph "sec-h3" "Header three") ] } ] }
+let sectionHeaderTexts doc layouts =
+    let _, commands, _ =
+        collectDocumentCommandsWithLayouts settings "Calibri" measureText (rangeMeasurerFromTextMeasurer measureText) doc (Some layouts)
+    commands |> List.choose (function | DrawText (text, _, _, _, _) when text.StartsWith "Header" -> Some text | _ -> None)
+let threeSectionLayouts =
+    [ sectionEndLayout "sec-end-1" 0 [ "default", "h1" ] (Some "nextPage")
+      { blockLayout "sec-2-body" (1.0 * sectionPagePitch + 40.0) hitLine with Height = 20.0 }
+      sectionEndLayout "sec-end-2" 2 [ "default", "h2" ] (Some "nextPage")
+      { blockLayout "sec-3-body" (4.0 * sectionPagePitch + 40.0) hitLine with Height = 20.0 } ]
+check "three sections: each page gets its section's header"
+    (sectionHeaderTexts threeSectionDoc threeSectionLayouts)
+    [ "Header one"; "Header two"; "Header two"; "Header three"; "Header three" ]
+// A section that names no header keeps the previous section's ("link to previous").
+let inheritingLayouts =
+    [ sectionEndLayout "inh-end-1" 0 [ "default", "h1" ] (Some "nextPage")
+      sectionEndLayout "inh-end-2" 1 [] (Some "nextPage")
+      { blockLayout "inh-3-body" (2.0 * sectionPagePitch + 40.0) hitLine with Height = 20.0 } ]
+check "section without a header reference inherits the previous one"
+    (sectionHeaderTexts { threeSectionDoc with PageSetup = Doc.defaultPageSetup } inheritingLayouts)
+    [ "Header one"; "Header one"; "Header one" ]
+
 let headerDepthDoc =
     { Doc.empty with
         HeaderParts =

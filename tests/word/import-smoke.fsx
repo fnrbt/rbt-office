@@ -289,5 +289,39 @@ check "native header table cells"
 // Document.Headers stays the paragraph-only view of the first part.
 check "native header paragraph view" (headerTableDoc.Headers |> List.map textOfPara) [ "above"; "below" ]
 
+// ----- three sections: every section keeps its own references ---------------
+let sectionPara refs extra = sprintf """<w:p><w:pPr><w:sectPr>%s<w:pgSz w:w="12240" w:h="15840"/>%s</w:sectPr></w:pPr></w:p>""" refs extra
+let threeSectionNative =
+    importPackage
+        ("""<w:p><w:r><w:t>one</w:t></w:r></w:p>""" + sectionPara """<w:headerReference w:type="default" r:id="rId11"/>""" ""
+         + """<w:p><w:r><w:t>two</w:t></w:r></w:p>""" + sectionPara """<w:headerReference w:type="default" r:id="rId12"/>""" """<w:pgNumType w:start="7"/>"""
+         + """<w:p><w:r><w:t>three</w:t></w:r></w:p><w:sectPr><w:headerReference w:type="default" r:id="rId13"/><w:footerReference w:type="default" r:id="rId14"/><w:pgSz w:w="12240" w:h="15840"/><w:pgNumType w:start="3"/></w:sectPr>""")
+        [ "word/_rels/document.xml.rels",
+          """<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">"""
+          + ([ "rId11", "header", "header1.xml"; "rId12", "header", "header2.xml"; "rId13", "header", "header3.xml"; "rId14", "footer", "footer1.xml" ]
+             |> List.map (fun (id, kind, target) -> sprintf """<Relationship Id="%s" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/%s" Target="%s"/>""" id kind target)
+             |> String.concat "")
+          + "</Relationships>"
+          "word/header1.xml", sprintf """<w:hdr %s><w:p><w:r><w:t>H1</w:t></w:r></w:p></w:hdr>""" wNsAll
+          "word/header2.xml", sprintf """<w:hdr %s><w:p><w:r><w:t>H2</w:t></w:r></w:p></w:hdr>""" wNsAll
+          "word/header3.xml", sprintf """<w:hdr %s><w:p><w:r><w:t>H3</w:t></w:r></w:p></w:hdr>""" wNsAll
+          "word/footer1.xml", sprintf """<w:ftr %s><w:p><w:r><w:t>F1</w:t></w:r></w:p></w:ftr>""" wNsAll ]
+let threeSectionParas = threeSectionNative.Blocks |> List.choose (function Paragraph para | Heading (_, para) -> Some para | _ -> None)
+check "native sections: references stay on the paragraph that ends the section"
+    (threeSectionParas |> List.map (fun para -> textOfPara para, para.Metadata.HeaderReferences))
+    [ "one", []; "", [ "default", "rId11" ]; "two", []; "", [ "default", "rId12" ]; "three", [] ]
+check "native sections: the final section's references are on the page setup"
+    (threeSectionNative.PageSetup.HeaderReferences, threeSectionNative.PageSetup.FooterReferences, threeSectionNative.PageSetup.PageNumberStart)
+    ([ "default", "rId13" ], [ "default", "rId14" ], Some 3)
+// Numbering restarts on the first page of the section that asks for it: section
+// two starts at "two" (not at the paragraph that ends it), the final one at "three".
+check "native sections: page numbering restarts at the section start"
+    (pageNumberRestarts threeSectionNative |> List.map (fun (_, paragraphId, start) -> (paragraphId |> Option.bind (fun id -> threeSectionParas |> List.tryFind (fun para -> para.Id = id)) |> Option.map textOfPara), start))
+    [ Some "two", 7; Some "three", 3 ]
+let threeSectionPageMap = buildPageMap threeSectionNative
+check "native sections: display page numbers"
+    (threeSectionNative.Blocks |> List.map (fun block -> threeSectionPageMap.BlockAnchors |> List.tryFind (fun anchor -> (match block with Paragraph para | Heading (_, para) -> para.Id | _ -> "") = anchor.PageBlockId) |> Option.map (fun anchor -> anchor.PageNumber)))
+    [ Some 1; Some 1; Some 7; Some 7; Some 3 ]
+
 printfn "word import smoke: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

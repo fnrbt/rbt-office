@@ -1373,25 +1373,33 @@ let private pageIndexForY (pages: PageInfo array) y =
 type private SectionReferenceIndex = {
     EndPages: int array
     References: (string * string) list array
+    /// The final section's references: for the pages after the last section end.
+    Final: (string * string) list
 }
 
-let private buildSectionReferenceIndex (pages: PageInfo array) (layouts: BlockLayout list) isHeader =
+/// Every section's header (or footer) references with the page its section
+/// ends on. A section's sectPr sits on its LAST paragraph, so the references
+/// there apply to the pages up to that paragraph; the final section's come
+/// from the page setup. A section that names no reference of a kind uses the
+/// previous section's (Word's "link to previous").
+let private buildSectionReferenceIndex (pages: PageInfo array) (layouts: BlockLayout list) (finalReferences: (string * string) list) isHeader =
     let endPages = ResizeArray<int>()
     let references = ResizeArray<(string * string) list>()
+    let mutable effective : (string * string) list = []
     for layout in layouts do
-        let refs = if isHeader then layout.Metadata.HeaderReferences else layout.Metadata.FooterReferences
-        if not refs.IsEmpty then
-            let endPage = pageIndexForY pages (layout.Y + layout.Height)
-            let lastIndex = endPages.Count - 1
-            if lastIndex < 0 || endPages.[lastIndex] <> endPage then
-                endPages.Add endPage
-                references.Add refs
-    { EndPages = endPages.ToArray(); References = references.ToArray() }
+        if endsSection layout.Metadata then
+            let refs = if isHeader then layout.Metadata.HeaderReferences else layout.Metadata.FooterReferences
+            effective <- inheritSectionReferences effective refs
+            if not effective.IsEmpty then
+                let endPage = pageIndexForY pages (layout.Y + layout.Height)
+                let lastIndex = endPages.Count - 1
+                if lastIndex < 0 || endPages.[lastIndex] <> endPage then
+                    endPages.Add endPage
+                    references.Add effective
+    { EndPages = endPages.ToArray(); References = references.ToArray(); Final = inheritSectionReferences effective finalReferences }
 
-// A header/footer reference lives in a section's sectPr, which (for a section
-// closed by a break paragraph) sits on that section's LAST paragraph. So the
-// reference applies to the section ending on that page; for a target page we
-// want the section with the smallest end-page that still contains it.
+// For a target page we want the section with the smallest end-page that still
+// contains it; a page after every section end belongs to the final section.
 let private sectionRefsForPage (index: SectionReferenceIndex) pageIndex =
     let pages = index.EndPages
     let mutable lo = 0
@@ -1402,7 +1410,7 @@ let private sectionRefsForPage (index: SectionReferenceIndex) pageIndex =
             lo <- mid + 1
         else
             hi <- mid
-    if lo < pages.Length then index.References.[lo] else []
+    if lo < pages.Length then index.References.[lo] else index.Final
 
 let private blocksForPage (settings: LayoutSettings) (pageSetup: PageSetup) pageIndex fallbackBlocks (parts: HeaderFooterPartIndex) sectionRefs =
     if parts.Parts.IsEmpty then
@@ -1500,11 +1508,11 @@ let private headerFooterCommands (settings: LayoutSettings) fontFamily measureTe
         let headerParts = buildHeaderFooterPartIndex doc.HeaderParts
         let footerParts = buildHeaderFooterPartIndex doc.FooterParts
         let headerRefs =
-            if doc.Headers.IsEmpty && doc.HeaderParts.IsEmpty then { EndPages = [||]; References = [||] }
-            else buildSectionReferenceIndex pagesArray layouts true
+            if doc.Headers.IsEmpty && doc.HeaderParts.IsEmpty then { EndPages = [||]; References = [||]; Final = [] }
+            else buildSectionReferenceIndex pagesArray layouts doc.PageSetup.HeaderReferences true
         let footerRefs =
-            if doc.Footers.IsEmpty && doc.FooterParts.IsEmpty then { EndPages = [||]; References = [||] }
-            else buildSectionReferenceIndex pagesArray layouts false
+            if doc.Footers.IsEmpty && doc.FooterParts.IsEmpty then { EndPages = [||]; References = [||]; Final = [] }
+            else buildSectionReferenceIndex pagesArray layouts doc.PageSetup.FooterReferences false
         let referenceListComparer =
             { new IEqualityComparer<Block list> with
                 member _.Equals(left, right) = obj.ReferenceEquals(left, right)

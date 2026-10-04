@@ -381,6 +381,25 @@ ok "editor-notes-carry-blocks"
     && ((editorNotes.[1].["Blocks"] :?> obj array).[1] :?> System.Collections.Generic.Dictionary<string, obj>).["Type"] = box "Table")
    (sprintf "%d notes" editorNotes.Length)
 
+// ----- section properties stay on their own section --------------------------
+let sectionsDoc =
+    (fun body -> docxWithParts body [] [] |> DocxReader.loadBytesNative |> Option.get)
+        ("<w:p><w:r><w:t>one</w:t></w:r></w:p><w:p><w:pPr><w:sectPr><w:headerReference w:type=\"default\" r:id=\"rId11\"/></w:sectPr></w:pPr></w:p>"
+         + "<w:p><w:r><w:t>two</w:t></w:r></w:p><w:p><w:pPr><w:sectPr><w:headerReference w:type=\"default\" r:id=\"rId12\"/><w:pgNumType w:start=\"7\"/></w:sectPr></w:pPr></w:p>"
+         + "<w:p><w:r><w:t>three</w:t></w:r></w:p><w:sectPr><w:headerReference w:type=\"default\" r:id=\"rId13\"/><w:footerReference w:type=\"first\" r:id=\"rId14\"/><w:pgNumType w:start=\"3\"/></w:sectPr>")
+let sectionRefs =
+    sectionsDoc.Content
+    |> List.choose (function
+        | DocxReader.Para para -> Some (para.Properties.HeaderReferences |> List.map (fun r -> r.RelationshipId), para.Properties.SectionPageNumberStart)
+        | _ -> None)
+ok "section-references-stay-on-ending-paragraph"
+   (sectionRefs = [ [], None; [ "rId11" ], None; [], None; [ "rId12" ], Some 7; [], None ])
+   (sprintf "%A" sectionRefs)
+let finalSection = sectionsDoc.PageSetup |> Option.map (fun setup -> setup.HeaderReferences |> List.map (fun r -> r.Kind, r.RelationshipId), setup.FooterReferences |> List.map (fun r -> r.Kind, r.RelationshipId), setup.PageNumberStart)
+ok "final-section-references-on-page-setup"
+   (finalSection = Some ([ "default", "rId13" ], [ "first", "rId14" ], Some 3))
+   (sprintf "%A" finalSection)
+
 printfn ""
 printfn "OfficeFormat DocxReader tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

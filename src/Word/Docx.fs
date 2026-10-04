@@ -1160,6 +1160,9 @@ let private pageSetupFromEditor (value: obj) =
                             | w -> [ for i in 0 .. jsArrayLength w - 1 -> let o = jsArrayGet w i in (optionalFloat (o?W) |> Option.defaultValue 0.0, optionalFloat (o?S) |> Option.defaultValue 0.0) ] }: SectionColumns)
             | _ -> None
         SectionStart = optionalString (value?SectionStart)
+        HeaderReferences = refsFromEditor (value?HeaderReferences)
+        FooterReferences = refsFromEditor (value?FooterReferences)
+        PageNumberStart = optionalInt (value?PageNumberStart)
     }
 
 /// Import EditorParagraphs from Office.Formats into Word document
@@ -1680,6 +1683,9 @@ let exportPageSetupToEditor (setup: PageSetup) : obj =
                             |> Option.map (fun columns -> columns.Widths |> List.map (fun (width, space) -> createObj [ "W" ==> width; "S" ==> space ]) |> List.toArray)
                             |> Option.defaultValue [||])
         "SectionStart" ==> setup.SectionStart
+        "HeaderReferences" ==> refsToEditor setup.HeaderReferences
+        "FooterReferences" ==> refsToEditor setup.FooterReferences
+        "PageNumberStart" ==> setup.PageNumberStart
     ]
 
 /// A note / comment body made of plain text: what the editor has for a note

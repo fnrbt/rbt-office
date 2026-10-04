@@ -1102,13 +1102,15 @@ module API =
     let private pageMapFromLayout (editor: Editor) =
         let layouts = layoutsForEditor editor
         let paragraphs = paragraphMap editor.Doc
+        // Numbering restarts on the first page of the section that asks for it.
+        let restarts = Doc.pageNumberRestarts editor.Doc
         let restartPoints =
             layouts
             |> List.choose (fun layout ->
-                tryFindParagraph paragraphs layout.BlockId
-                |> Option.bind (fun para ->
-                    para.Metadata.SectionPageNumberStart
-                    |> Option.map (fun start -> pageNumberForY editor.Doc layout.Y, max 1 start)))
+                restarts
+                |> List.tryFind (fun (blockId, paragraphId, _) -> blockId = layout.BlockId || paragraphId = Some layout.BlockId)
+                |> Option.map (fun (_, _, start) -> pageNumberForY editor.Doc layout.Y, max 1 start))
+            |> List.distinct
             |> List.sortBy fst
 
         let displayPageNumberForY y =
@@ -1568,6 +1570,9 @@ module API =
             EvenAndOddHeaders = editor.Doc.PageSetup.EvenAndOddHeaders
             Columns = editor.Doc.PageSetup.Columns
             SectionStart = editor.Doc.PageSetup.SectionStart
+            HeaderReferences = editor.Doc.PageSetup.HeaderReferences
+            FooterReferences = editor.Doc.PageSetup.FooterReferences
+            PageNumberStart = editor.Doc.PageSetup.PageNumberStart
         }
         let newDoc = Doc.setPageSetup setup editor.Doc
         commitDocumentUpdate editor newDoc
@@ -1586,6 +1591,9 @@ module API =
             EvenAndOddHeaders = evenAndOddHeaders
             Columns = editor.Doc.PageSetup.Columns
             SectionStart = editor.Doc.PageSetup.SectionStart
+            HeaderReferences = editor.Doc.PageSetup.HeaderReferences
+            FooterReferences = editor.Doc.PageSetup.FooterReferences
+            PageNumberStart = editor.Doc.PageSetup.PageNumberStart
         }
         let newDoc = Doc.setPageSetup setup editor.Doc
         commitDocumentUpdate editor newDoc

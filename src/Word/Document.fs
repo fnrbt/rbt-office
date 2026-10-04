@@ -468,6 +468,13 @@ type PageSetup = {
     EvenAndOddHeaders: bool
     Columns: SectionColumns option
     SectionStart: string option
+    /// Header / footer references (kind, relationship id) of the final section,
+    /// the one the body-level w:sectPr describes. The earlier sections carry
+    /// theirs on the paragraph that ends them (BlockMetadata.HeaderReferences).
+    HeaderReferences: (string * string) list
+    FooterReferences: (string * string) list
+    /// w:pgNumType w:start of the final section.
+    PageNumberStart: int option
 }
 
 type NamedStyle = {
@@ -520,7 +527,24 @@ let defaultPageSetup = {
     EvenAndOddHeaders = false
     Columns = None
     SectionStart = None
+    HeaderReferences = []
+    FooterReferences = []
+    PageNumberStart = None
 }
+
+/// A paragraph that ends a section: its w:sectPr describes the section that
+/// ends with it (break type, page geometry, columns, header / footer
+/// references, page number start).
+let endsSection (metadata: BlockMetadata) =
+    metadata.SectionBreak.IsSome
+    || metadata.SectionPageSetup.IsSome
+    || not metadata.HeaderReferences.IsEmpty
+    || not metadata.FooterReferences.IsEmpty
+
+/// A section's references by kind: its own, and for a kind it does not name
+/// the one it inherits from the section before it.
+let inheritSectionReferences (previous: (string * string) list) (own: (string * string) list) : (string * string) list =
+    own @ (previous |> List.filter (fun (kind, _) -> not (own |> List.exists (fun (ownKind, _) -> ownKind = kind))))
 
 type Document = {
     Blocks: Block list
@@ -575,6 +599,41 @@ let allParagraphs (doc: Document) : ParagraphBlock list =
     paragraphsOfBlocks doc.Blocks
     @ (doc.HeaderParts |> List.collect (fun part -> paragraphsOfBlocks part.Blocks))
     @ (doc.FooterParts |> List.collect (fun part -> paragraphsOfBlocks part.Blocks))
+
+/// Where page numbering restarts: (id of the block, id of its first paragraph,
+/// first page number). A section's w:pgNumType w:start applies from the first
+/// page of that section, so the restart point is the first block after the
+/// previous section's end, not the paragraph that carries the section
+/// properties (the section's last one). A paragraph that carries a start
+/// without ending a section restarts at itself.
+let pageNumberRestarts (doc: Document) : (BlockId * BlockId option * int) list =
+    let result = ResizeArray<BlockId * BlockId option * int>()
+    let idOf block =
+        match block with
+        | Paragraph para
+        | Heading (_, para) -> para.Id
+        | Table table -> table.Id
+        | TextBox textBox -> textBox.Id
+    let firstParagraphId block = paragraphsOfBlocks [ block ] |> List.tryHead |> Option.map (fun para -> para.Id)
+    let mutable sectionFirst : Block option = None
+    for block in doc.Blocks do
+        let isFlow = match block with TextBox _ -> false | _ -> true
+        if isFlow && sectionFirst.IsNone then sectionFirst <- Some block
+        match block with
+        | Paragraph para
+        | Heading (_, para) ->
+            match para.Metadata.SectionPageNumberStart with
+            | Some start when endsSection para.Metadata ->
+                let first = sectionFirst |> Option.defaultValue block
+                result.Add(idOf first, firstParagraphId first, start)
+            | Some start -> result.Add(para.Id, Some para.Id, start)
+            | None -> ()
+            if endsSection para.Metadata then sectionFirst <- None
+        | _ -> ()
+    match doc.PageSetup.PageNumberStart, sectionFirst with
+    | Some start, Some first -> result.Add(idOf first, firstParagraphId first, start)
+    | _ -> ()
+    List.ofSeq result
 
 let setPageSetup (setup: PageSetup) (doc: Document) =
     if doc.PageSetup = setup then doc else { doc with PageSetup = setup }
@@ -914,13 +973,15 @@ let buildPageMap (doc: Document) =
                     bookmarkAnchors <- bookmarkAnchors @ [{ PageBookmarkName = name; PageBookmarkBlockId = para.Id; PageBookmarkStartOffset = run.Start; PageNumber = pageNumber }])
             | Image _ -> ())
 
+    let restarts = pageNumberRestarts doc
     doc.Blocks
     |> List.iter (fun block ->
         let paragraphs = blockParagraphs block
         if blockAnchors.Length > 0 && paragraphs |> List.exists (paragraphPageBreakBefore doc) then
             physicalPageNumber <- physicalPageNumber + 1
-        paragraphs
-        |> List.choose (fun para -> para.Metadata.SectionPageNumberStart)
+        restarts
+        |> List.filter (fun (restartBlockId, _, _) -> restartBlockId = blockId block)
+        |> List.map (fun (_, _, start) -> start)
         |> List.tryLast
         |> Option.iter (fun start ->
             displayPageStart <- max 1 start
@@ -3338,20 +3399,38 @@ let setCurrentSectionBreak sectionBreak doc =
                 | TextBox textBox -> TextBox textBox
             replaceBlock doc para.Id newBlock
 
+/// Set the header / footer references of the section the cursor is in: on the
+/// paragraph that ends that section, or on the page setup for the final
+/// section (which no paragraph ends).
 let setCurrentHeaderFooterReferences headerReferences footerReferences doc =
     match doc.Selection with
     | None -> doc
     | Some sel ->
-        match findBlock doc sel.Focus.BlockId with
+        let containsFocus block =
+            match block with
+            | Table table -> table.Id = sel.Focus.BlockId || (paragraphsOfBlocks [ block ] |> List.exists (fun para -> para.Id = sel.Focus.BlockId))
+            | _ -> paragraphsOfBlocks [ block ] |> List.exists (fun para -> para.Id = sel.Focus.BlockId)
+        match doc.Blocks |> List.tryFindIndex containsFocus with
         | None -> doc
-        | Some block ->
-            let para = getParagraph block
-            let newMetadata = { para.Metadata with HeaderReferences = headerReferences; FooterReferences = footerReferences }
-            let newPara = { para with Metadata = newMetadata }
-            let newBlock =
-                match block with
-                | Paragraph _ -> Paragraph newPara
-                | Heading (level, _) -> Heading (level, newPara)
-                | Table table -> Table table
-                | TextBox textBox -> TextBox textBox
-            replaceBlock doc para.Id newBlock
+        | Some index ->
+            let sectionEnd =
+                doc.Blocks
+                |> List.skip index
+                |> List.tryPick (fun block ->
+                    match block with
+                    | Paragraph para
+                    | Heading (_, para) when endsSection para.Metadata -> Some para
+                    | _ -> None)
+            match sectionEnd with
+            | Some para ->
+                let newPara = { para with Metadata = { para.Metadata with HeaderReferences = headerReferences; FooterReferences = footerReferences } }
+                { doc with
+                    Blocks =
+                        doc.Blocks
+                        |> List.map (fun block ->
+                            match block with
+                            | Paragraph current when current.Id = para.Id -> Paragraph newPara
+                            | Heading (level, current) when current.Id = para.Id -> Heading (level, newPara)
+                            | other -> other) }
+            | None ->
+                { doc with PageSetup = { doc.PageSetup with HeaderReferences = headerReferences; FooterReferences = footerReferences } }

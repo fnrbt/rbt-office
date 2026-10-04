@@ -16,7 +16,7 @@ const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const norm = (v) => {
     if (v === undefined || v === null || v === false || v === '') return null;
     if (typeof v === 'number') return Math.round(v * 1000) / 1000;
-    if (Array.isArray(v)) return v.map(norm);
+    if (Array.isArray(v)) return v.length ? v.map(norm) : null;
     if (typeof v === 'object') { const o = {}; for (const k of Object.keys(v).sort()) { const n = norm(v[k]); if (n !== null) o[k] = n; } return Object.keys(o).length ? o : null; }
     return v;
 };
@@ -30,14 +30,15 @@ const PARA_KEYS = ['Type', 'Style', 'Alignment', 'ListStyle', 'ListLevel', 'List
     'IndentLeft', 'IndentRight', 'FirstLineIndent', 'SpacingBefore', 'SpacingAfter', 'LineSpacing', 'LineSpacingRule',
     'TabStops', 'Rtl', 'BackgroundColor', 'ParagraphBorders', 'PageBreakBefore', 'PageBreakAfter', 'SectionBreak',
     'SectionPageNumberStart', 'SectionPageSetup', 'SectionColumns', 'StyleContextualSpacing',
-    'ContentControlTag', 'ContentControlAlias', 'KeepNext', 'KeepLines'];
+    'ContentControlTag', 'ContentControlAlias', 'KeepNext', 'KeepLines', 'HeaderReferences', 'FooterReferences'];
 const TABLE_KEYS = ['PreferredWidth', 'PreferredWidthType', 'TableAlignment', 'LayoutMode', 'GridColumns', 'Borders', 'BackgroundColor',
     'CellSpacing', 'PaddingTop', 'PaddingRight', 'PaddingBottom', 'PaddingLeft'];
 const ROW_KEYS = ['IsHeader', 'Height', 'HeightRule', 'CanSplit', 'CellSpacing', 'PaddingTop', 'PaddingRight', 'PaddingBottom', 'PaddingLeft'];
 const CELL_KEYS = ['ColSpan', 'BackgroundColor', 'Width', 'PreferredWidth', 'PreferredWidthType', 'Borders', 'VerticalAlignment', 'VerticalMerge',
     'PaddingTop', 'PaddingRight', 'PaddingBottom', 'PaddingLeft'];
 const SETUP_KEYS = ['PageWidth', 'PageHeight', 'MarginLeft', 'MarginRight', 'MarginTop', 'MarginBottom', 'HeaderDistance', 'FooterDistance',
-    'DifferentFirstPage', 'EvenAndOddHeaders', 'ColumnCount', 'ColumnSpace', 'ColumnSeparator', 'ColumnWidths'];
+    'DifferentFirstPage', 'EvenAndOddHeaders', 'ColumnCount', 'ColumnSpace', 'ColumnSeparator', 'ColumnWidths',
+    'HeaderReferences', 'FooterReferences', 'PageNumberStart', 'SectionStart'];
 
 function runSummary(run) {
     if (run.IsImage) {
@@ -125,7 +126,7 @@ function summarisePackage(pkg) {
     const setup = pick(pkg.PageSetup || {}, SETUP_KEYS);
     const DEFAULTS = { PageWidth: 816, PageHeight: 1056, MarginLeft: 96, MarginRight: 96, MarginTop: 96, MarginBottom: 96, HeaderDistance: 48, FooterDistance: 48, ColumnCount: 1, ColumnSpace: 0 };
     if (setup.PageWidth === null) Object.assign(setup, DEFAULTS);
-    setup.ColumnWidths ??= []; setup.ColumnCount ??= 1; setup.ColumnSpace ??= 0;
+    setup.ColumnCount ??= 1; setup.ColumnSpace ??= 0;
     out.push({ path: 'pageSetup', kind: 'setup', props: setup });
     return out;
 }

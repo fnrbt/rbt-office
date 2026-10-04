@@ -892,6 +892,9 @@ let private pageSetup (doc: DocxReader.WordDocument) =
             EvenAndOddHeaders = setup.EvenAndOddHeaders |> Option.defaultValue defaultPageSetup.EvenAndOddHeaders
             Columns = setup.Columns |> Option.map (fun c -> ({ Count = c.Count; Gap = c.Gap; Separator = c.Separator; Widths = c.Widths }: Rbt.Word.Document.SectionColumns))
             SectionStart = setup.SectionStart
+            HeaderReferences = setup.HeaderReferences |> List.map (fun ref -> ref.Kind, ref.RelationshipId)
+            FooterReferences = setup.FooterReferences |> List.map (fun ref -> ref.Kind, ref.RelationshipId)
+            PageNumberStart = setup.PageNumberStart
         }
 
 /// A header / footer part with its blocks in order. It used to be built from

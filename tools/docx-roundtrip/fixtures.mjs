@@ -227,6 +227,35 @@ const docs = [
             { read: 'pkg.Comments.0.Text', equals: 'first bold remark second paragraph' },
         ],
     },
+    {
+        // Three sections, each with its own header: a section's references stay in
+        // the sectPr of the paragraph that ends it, the final section's in the body sectPr.
+        name: 'synthetic/three-sections',
+        body:
+            p('section one') + `<w:p><w:pPr><w:sectPr><w:headerReference w:type="default" r:id="rId11"/><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr></w:pPr></w:p>` +
+            p('section two') + p('still section two') + `<w:p><w:pPr><w:sectPr><w:headerReference w:type="default" r:id="rId12"/><w:footerReference w:type="default" r:id="rId14"/><w:pgSz w:w="15840" w:h="12240"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/><w:pgNumType w:start="7"/></w:sectPr></w:pPr></w:p>` +
+            p('section three'),
+        sect: `<w:sectPr><w:headerReference w:type="default" r:id="rId13"/><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/><w:pgNumType w:start="3"/></w:sectPr>`,
+        rels: [['rId11', 'header', 'header1.xml'], ['rId12', 'header', 'header2.xml'], ['rId13', 'header', 'header3.xml'], ['rId14', 'footer', 'footer1.xml']]
+            .map(([id, kind, target]) => `<Relationship Id="${id}" Type="${REL}/${kind}" Target="${target}"/>`).join(''),
+        extra: {
+            'word/header1.xml': `<w:hdr ${W}>${p('header one')}</w:hdr>`, 'word/header2.xml': `<w:hdr ${W}>${p('header two')}</w:hdr>`,
+            'word/header3.xml': `<w:hdr ${W}>${p('header three')}</w:hdr>`, 'word/footer1.xml': `<w:ftr ${W}>${p('footer of section two')}</w:ftr>`,
+        },
+        types: [1, 2, 3].map((n) => `<Override PartName="/word/header${n}.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/>`).join('') +
+            '<Override PartName="/word/footer1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/>',
+        expect: [
+            { part: 'word/document.xml', has: '<w:sectPr><w:headerReference w:type="default" r:id="rId11"/>(<w:type w:val="nextPage"/>)?<w:pgSz w:w="12240" w:h="15840"/>.*</w:sectPr></w:pPr>.*section two' },
+            { part: 'word/document.xml', has: 'still section two.*<w:sectPr><w:headerReference w:type="default" r:id="rId12"/><w:footerReference w:type="default" r:id="rId14"/>(<w:type w:val="nextPage"/>)?<w:pgSz w:w="15840" w:h="12240"/>.*<w:pgNumType w:start="7"/></w:sectPr></w:pPr>' },
+            { part: 'word/document.xml', has: 'section three.*</w:p><w:sectPr><w:headerReference w:type="default" r:id="rId13"/><w:pgSz w:w="12240" w:h="15840"/>.*<w:pgNumType w:start="3"/></w:sectPr></w:body>' },
+            // Each reference is written once, and the final section does not pick up section two's footer.
+            { part: 'word/document.xml', lacks: 'rId13.*rId13' }, { part: 'word/document.xml', lacks: 'rId14.*rId14' }, { part: 'word/document.xml', lacks: 'rId12.*rId12' },
+            { part: 'word/document.xml', lacks: '<w:sectPr>.*<w:sectPr>.*<w:sectPr>.*<w:sectPr>' },
+            { read: 'pkg.PageSetup.HeaderReferences.0.RelationshipId', equals: 'rId13' }, { read: 'pkg.PageSetup.FooterReferences', equals: null }, { read: 'pkg.PageSetup.PageNumberStart', equals: 3 },
+            { read: 'pkg.Paragraphs.1.HeaderReferences.0.RelationshipId', equals: 'rId11' }, { read: 'pkg.Paragraphs.2.HeaderReferences', equals: null },
+            { read: 'pkg.Paragraphs.4.HeaderReferences.0.RelationshipId', equals: 'rId12' }, { read: 'pkg.Paragraphs.4.SectionPageNumberStart', equals: 7 },
+        ],
+    },
 ];
 
 export async function syntheticFixtures(JSZip) {

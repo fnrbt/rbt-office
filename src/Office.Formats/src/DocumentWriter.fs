@@ -96,6 +96,11 @@ type PageSetupInfo = {
     ColumnSeparator: bool
     ColumnWidths: (float * float) list
     SectionStart: string option
+    /// The final section's header / footer references ((kind, relationship id))
+    /// and page number start: what the body-level w:sectPr holds.
+    HeaderReferences: (string * string) list
+    FooterReferences: (string * string) list
+    PageNumberStart: int option
 }
 
 let private defaultPageSetupInfo = {
@@ -114,7 +119,17 @@ let private defaultPageSetupInfo = {
     ColumnSeparator = false
     ColumnWidths = []
     SectionStart = None
+    HeaderReferences = []
+    FooterReferences = []
+    PageNumberStart = None
 }
+
+let private referencePairs (value: obj) : (string * string) list =
+    optionalArray value
+    |> Array.toList
+    |> List.choose (fun item ->
+        optionalString (item?RelationshipId)
+        |> Option.map (fun relId -> item?Kind |> stringOrDefault (item?Type |> stringOrDefault "default"), relId))
 
 let private optionalPageSetup (value: obj) =
     if isNullOrUndefined value then None
@@ -138,6 +153,9 @@ let private optionalPageSetup (value: obj) =
                 |> Array.toList
                 |> List.map (fun column -> floatOrDefault 0.0 (column?W), floatOrDefault 0.0 (column?S))
             SectionStart = optionalString (value?SectionStart)
+            HeaderReferences = referencePairs (value?HeaderReferences)
+            FooterReferences = referencePairs (value?FooterReferences)
+            PageNumberStart = optionalInt (value?PageNumberStart)
         }
 
 let private sectionColumnsElement (setup: PageSetupInfo) =
@@ -796,16 +814,16 @@ let private sectionReferences elementName differentFirstPage evenAndOddHeaders (
                     selfClosing elementName [("w:type", kind); ("r:id", relationshipId)])
             else None)
 
-/// The w:sectPr of a paragraph that ends a section. Only a paragraph with a
-/// SectionBreak gets one: the reader also puts the *final* section's header
-/// references on that section's first paragraph, and writing a sectPr for
-/// those split the last section in two (see finalSectionReferences).
+/// The w:sectPr of a paragraph that ends a section: one with a section break,
+/// section geometry or section header / footer references. It describes the
+/// section that ends with the paragraph.
 let private paragraphSectionProperties (packageSetup: PageSetupInfo) (para: obj) =
     // The reader clears SectionBreak on an empty next-page paragraph that is
     // followed by a continuous one, but that paragraph still ends a section and
     // still carries its geometry; it is written back with the default type.
     let sectionBreak = optionalString (para?SectionBreak)
-    if sectionBreak.IsNone && isNullOrUndefined para?SectionPageSetup then None
+    let hasReferences = (optionalArray (para?HeaderReferences)).Length > 0 || (optionalArray (para?FooterReferences)).Length > 0
+    if sectionBreak.IsNone && isNullOrUndefined para?SectionPageSetup && not hasReferences then None
     else
         let paraSetup =
             optionalPageSetup (para?SectionPageSetup)
@@ -813,6 +831,7 @@ let private paragraphSectionProperties (packageSetup: PageSetupInfo) (para: obj)
             // A sectPr without pgSz/pgMar is US Letter with default margins to Word,
             // so a section with unknown geometry takes the document's.
             |> Option.defaultValue { packageSetup with DifferentFirstPage = false; ColumnCount = 1; ColumnWidths = []; SectionStart = None }
+            |> fun setup -> { setup with HeaderReferences = []; FooterReferences = []; PageNumberStart = None }
         let setup =
             let columns = para?SectionColumns
             if isNullOrUndefined columns then paraSetup
@@ -1483,48 +1502,24 @@ let private generateHeaderFooterXml rootName (hyperlinks: Map<string, string>) (
     let content = if content = "" then element "w:p" [] [] else content
     document (element rootName [("xmlns:w", Namespaces.word); ("xmlns:r", Namespaces.relationships); ("xmlns:m", Namespaces.math)] [content])
 
-/// Header/footer references and page-number start that belong to the final
-/// section. The reader moves the body sectPr's references onto a paragraph
-/// that does not end a section (the paragraph after the first section break),
-/// so references found on such a paragraph are the final section's and go
-/// back into the body-level w:sectPr; references on a section-ending
-/// paragraph stay in that paragraph's own sectPr.
-let private finalSectionReferences (items: obj array) =
-    let mutable headers : obj = null
-    let mutable footers : obj = null
-    let mutable pageNumberStart : int option = None
-    for para in items |> Array.toList |> List.collect collectItemParagraphs do
-        let endsSection = (optionalString (para?SectionBreak)).IsSome || not (isNullOrUndefined para?SectionPageSetup)
-        if not endsSection then
-            if (optionalArray (para?HeaderReferences)).Length > 0 then headers <- para?HeaderReferences
-            if (optionalArray (para?FooterReferences)).Length > 0 then footers <- para?FooterReferences
-            match optionalInt (para?SectionPageNumberStart) with
-            | Some start -> pageNumberStart <- Some start
-            | None -> ()
-    headers, footers, pageNumberStart
-
-let private generateSectionProperties (items: obj array) (pageSetup: PageSetupInfo option) (headers: HeaderFooterPartInfo array) (footers: HeaderFooterPartInfo array) =
+/// The body-level w:sectPr: the final section. Its header / footer references
+/// and page number start come from the page setup; a header / footer part
+/// that no section refers to (one made in the editor) is attached here.
+let private generateSectionProperties (pageSetup: PageSetupInfo option) (headers: HeaderFooterPartInfo array) (footers: HeaderFooterPartInfo array) =
     let setup = pageSetup |> Option.defaultValue defaultPageSetupInfo
-    let finalHeaders, finalFooters, pageNumberStart = finalSectionReferences items
-    let refs name (explicit: obj) (parts: HeaderFooterPartInfo array) =
-        let fromParagraphs =
-            optionalArray explicit
-            |> Array.toList
-            |> List.choose (fun item ->
-                optionalString (item?RelationshipId)
-                |> Option.map (fun relId -> item?Kind |> stringOrDefault (item?Type |> stringOrDefault "default"), relId))
+    let refs name (explicit: (string * string) list) (parts: HeaderFooterPartInfo array) =
         let fromParts = parts |> Array.toList |> List.map (fun part -> part.Kind, part.RelId)
         // CT_SectPr allows one reference per type; the section's own references win.
-        fromParagraphs @ fromParts
+        explicit @ fromParts
         |> List.filter (fun (kind, _) -> includeHeaderFooterKind setup.DifferentFirstPage setup.EvenAndOddHeaders kind)
         |> List.distinctBy fst
         |> List.map (fun (kind, relId) -> selfClosing name [("w:type", kind); ("r:id", relId)])
     let children =
         sectionPropertiesChildren
-            (refs "w:headerReference" finalHeaders headers @ refs "w:footerReference" finalFooters footers)
+            (refs "w:headerReference" setup.HeaderReferences headers @ refs "w:footerReference" setup.FooterReferences footers)
             (pageSetup |> Option.bind (fun setup -> setup.SectionStart))
             pageSetup
-            pageNumberStart
+            setup.PageNumberStart
     if children.IsEmpty then "" else element "w:sectPr" [] children
 
 /// Generate document.xml with formatting (handles JS arrays)
@@ -1567,7 +1562,7 @@ let generateDocumentXmlPackage (paragraphs: obj array) (images: ImageScope) (pag
         |> generateBlocks (generateDocumentItemWithImagesAndPageSetup setup hyperlinks images) (generateTextBoxRun setup hyperlinks images)
     let globalHeaders = headers |> Array.filter (fun part -> part.IsGlobal)
     let globalFooters = footers |> Array.filter (fun part -> part.IsGlobal)
-    let body = element "w:body" [] [paraElements; generateSectionProperties paragraphs pageSetup globalHeaders globalFooters]
+    let body = element "w:body" [] [paraElements; generateSectionProperties pageSetup globalHeaders globalFooters]
     let doc = element "w:document" [("xmlns:w", Namespaces.word); ("xmlns:r", Namespaces.relationships); ("xmlns:m", Namespaces.math)] [body]
     document doc
 
@@ -2350,7 +2345,14 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
     let paragraphs = optionalArray (package?Paragraphs)
     let pageSetup = optionalPageSetup (package?PageSetup)
     let hasSettings = pageSetup |> Option.exists (fun setup -> setup.EvenAndOddHeaders)
-    let sectionReferenceIds = collectSectionReferenceIds paragraphs
+    // Relationship ids some section refers to; the parts behind the others are
+    // attached to the final section.
+    let sectionReferenceIds =
+        let finalIds =
+            pageSetup
+            |> Option.map (fun setup -> (setup.HeaderReferences @ setup.FooterReferences) |> List.map snd)
+            |> Option.defaultValue []
+        Set.union (collectSectionReferenceIds paragraphs) (Set.ofList finalIds)
     let headerParts = optionalArray (package?HeaderParts) |> headerFooterInfos sectionReferenceIds "header" 1
     let footerParts = optionalArray (package?FooterParts) |> headerFooterInfos sectionReferenceIds "footer" 1
     let bodyImages, nextAfterBody = buildImageScope 1 paragraphs
