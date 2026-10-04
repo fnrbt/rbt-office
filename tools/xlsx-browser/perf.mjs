@@ -4,7 +4,7 @@
 // reading the written file again, and frame times while scrolling a sheet.
 //
 // Usage:
-//   node tools/xlsx-browser/perf.mjs --dist $DIST [--profile load|export|reread|scroll|edits] [--sheet NAME] [--frames N] [--steps 120,0] [--no-scroll] [--no-jump] [--edits] [file.xlsx ...]
+//   node tools/xlsx-browser/perf.mjs --dist $DIST [--profile load|export|reread|scroll|edits|first] [--sheet NAME] [--frames N] [--steps 120,0] [--no-scroll] [--no-jump] [--edits] [file.xlsx ...]
 // (--edits also times edits of a large block: a format on 10 000 cells, a paste of 1 000 x 20
 // cells, a typed entry and their undo, on the first sheet and on the sheet with the most cells.)
 // (--no-jump leaves out the jumps to the far end: 0.1.4 took minutes for one frame there.)
@@ -67,12 +67,32 @@ try {
         // Edits of a large block on a sheet: a format applied to 10 000 cells, a paste of
         // 1 000 x 20 cells, one typed entry, and their undo. Each time is the call itself
         // (model, recalculation, render) and the frame that follows it.
+        // The first edit of a workbook that was just opened: the sheets with formulas are
+        // converted and the dependency graph is built (it is built in idle time otherwise).
+        async firstEdit(name) {
+            const bytes = new Uint8Array(await (await fetch('/file?name=' + encodeURIComponent(name))).arrayBuffer());
+            if (grid) grid.Dispose();
+            grid = createSpreadsheet(host); grid.Mount();
+            await grid.ImportXlsx(bytes);
+            const t0 = performance.now();
+            grid.EnterText(7, 3, '54321');
+            const first = performance.now() - t0;
+            const s = grid.GetRecalcStats ? grid.GetRecalcStats() : null;
+            const t1 = performance.now();
+            grid.EnterText(7, 3, '12345');
+            return { first, second: performance.now() - t1, kind: s ? s.Kind + (s.Reason ? ': ' + s.Reason : '') + ', ' + s.Formulas + ' formulas in the graph' : '' };
+        },
         async edits(index) {
             if (grid.GetActiveSheetIndex() !== index) grid.SwitchSheet(index);
             const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
             await frame();
-            const timed = async (run) => { const t0 = performance.now(); run(); const call = performance.now() - t0; await new Promise((resolve) => requestAnimationFrame(resolve)); return [call, performance.now() - t0]; };
+            // [the call, the call and the frame after it, what the recalculation was (GetRecalcStats)]
+            const recalc = () => { const s = grid.GetRecalcStats ? grid.GetRecalcStats() : null; return s ? (s.Kind === 'incremental' ? 'incremental: ' + s.ChangedCells + ' cells changed, ' + s.EvaluatedFormulas + ' of ' + s.Formulas + ' formulas evaluated' : s.Kind + ' recalculation' + (s.Reason ? ': ' + s.Reason : '')) : ''; };
+            const timed = async (run) => { const t0 = performance.now(); run(); const call = performance.now() - t0; const kind = recalc(); await new Promise((resolve) => requestAnimationFrame(resolve)); return [call, performance.now() - t0, kind]; };
             const out = {};
+            // The first edit of the workbook builds the dependency graph (unless it was built in idle time).
+            out.first = await timed(() => grid.EnterText(7, 3, '54321'));
+            await timed(() => grid.Undo());
             grid.SelectRange(0, 0, 999, 9);
             out.format = await timed(() => grid.ApplyFormat('bold'));
             out.formatUndo = await timed(() => grid.Undo());
@@ -180,10 +200,13 @@ try {
         console.log(`  re-read (sheet names)    ${ms(reread)}`);
         const sheets = await tab.evaluate(() => window.perf.sheets());
         if (edits) {
+            const f = await phase('first', () => tab.evaluate((name) => window.perf.firstEdit(name), file));
+            console.log(`  the first edit right after opening (a typed number): ${ms(f.first)} [${f.kind}]; the same cell again ${ms(f.second)}`);
             for (const sheet of (sheetName ? sheets.filter((s) => s.name === sheetName) : [sheets[0], sheets.slice().sort((a, b) => b.cells - a.cells)[0]].filter((s, i, all) => all.indexOf(s) === i))) {
                 const e = await phase('edits', () => tab.evaluate((index) => window.perf.edits(index), sheet.index));
-                const both = ([call, total]) => `${ms(call)} (${ms(total)} with the frame)`;
+                const both = ([call, total, kind]) => `${ms(call)} (${ms(total)} with the frame)${kind ? ' [' + kind + ']' : ''}`;
                 console.log(`  edits on "${sheet.name}" (${sheet.cells} cells):`);
+                console.log(`    the first typed number                ${both(e.first)}`);
                 console.log(`    ApplyFormat('bold') on 10 000 cells   ${both(e.format)}; undo ${both(e.formatUndo)}`);
                 console.log(`    ApplyBgColor on 10 000 cells          ${both(e.color)}`);
                 console.log(`    ApplyBorder('all') on 10 000 cells    ${both(e.border)}`);

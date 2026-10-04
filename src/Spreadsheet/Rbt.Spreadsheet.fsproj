@@ -13,6 +13,7 @@
     <Compile Include="Pivot.fs" />
     <Compile Include="Formula.fs" />
     <Compile Include="Calc.fs" />
+    <Compile Include="Recalc.fs" />
     <Compile Include="ConditionalFormatting.fs" />
     <Compile Include="Layout.fs" />
     <Compile Include="Paint.fs" />

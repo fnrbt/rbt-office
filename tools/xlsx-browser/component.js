@@ -654,6 +654,109 @@ checks['drawings-in-grid'] = async () => {
 // An edit nothing depends on recalculates nothing: every cached value of the file is
 // exported as it was (the incremental engine handles it, also in a workbook that has
 // an array formula).
+// An edit recalculates the formulas that read what it changed (Recalc), not the workbook:
+// GetRecalcStats says so, the values are those of a full recalculation (the same edits in a
+// grid with incremental recalculation switched off), and the times are a fraction of one.
+checks['incremental-recalc'] = async () => {
+    const { lines, check, note } = makeLog();
+    const valuesOf = (grid) => {
+        const out = [];
+        for (const [addr, cell] of grid.GetModel().Cells) out.push(addr.Row + ',' + addr.Col + '=' + JSON.stringify(cell.Value));
+        return out.sort();
+    };
+    const firstDifference = (a, b) => { for (let i = 0; i < Math.max(a.length, b.length); i++) if (a[i] !== b[i]) return `${a[i]} vs ${b[i]}`; return null; };
+    // A sheet of formulas that read each other: chains, row and column sums, a whole-column sum, a lookup, text.
+    const build = (grid) => {
+        const rows = [];
+        for (let r = 0; r < 60; r++) rows.push([r + 1, (r * 7) % 13, `=A${r + 1}*B${r + 1}`, r === 0 ? '=C1' : `=D${r}+C${r + 1}`, `=SUM(A${r + 1}:C${r + 1})`, `=IF(D${r + 1}>500,"high","low")`].join('\t'));
+        grid.SelectCell(0, 0);
+        grid.PasteText(rows.join('\n'), '');
+        grid.EnterText(0, 8, '=SUM(A:A)'); grid.EnterText(1, 8, '=SUM(C1:C60)+I1'); grid.EnterText(2, 8, '=INDEX(D1:D60,MATCH(MAX(A1:A60),A1:A60,0))');
+        grid.EnterText(3, 8, '=COUNTIF(F1:F60,"high")'); grid.EnterText(4, 8, '=I2*2');
+    };
+    const incremental = mountGrid(), full = mountGrid();
+    try {
+        full.grid.SetIncrementalRecalculation(false);
+        build(incremental.grid); build(full.grid);
+        check('the built sheets agree', firstDifference(valuesOf(incremental.grid), valuesOf(full.grid)), null);
+        let seed = 12345;
+        const random = (n) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
+        const key = (grid, host, name, ctrl = false) => host.querySelector('.spreadsheet-content').dispatchEvent(new KeyboardEvent('keydown', { key: name, ctrlKey: ctrl, bubbles: true, cancelable: true }));
+        const kinds = { incremental: 0, full: 0 };
+        let evaluated = 0, mismatch = null, steps = 0;
+        for (let step = 0; step < 120 && !mismatch; step++) {
+            const kind = random(10), row = random(60), col = random(3);
+            // (What an action types is drawn once: both grids get the same.)
+            const typed = String(random(500)), span = random(4), overwrite = [2 + random(3), String(random(100))];
+            const pasted = Array.from({ length: 1 + random(6) }, () => `${random(90)}\t${random(40)}`).join('\n');
+            const formula = `=A${1 + random(60)}+SUM(B${1 + random(30)}:C${31 + random(30)})`;
+            const action =
+                kind < 4 ? ['a number typed', (g) => g.EnterText(row, col === 2 ? 0 : col, typed)] :
+                kind === 4 ? ['a block pasted', (g) => { g.SelectCell(row, 0); g.PasteText(pasted, ''); }] :
+                kind === 5 ? ['a block deleted', (g, h) => { g.SelectRange(row, 0, Math.min(59, row + span), 1); key(g, h, 'Delete'); }] :
+                kind === 6 ? ['undo', (g) => g.Undo()] :
+                kind === 7 ? ['redo', (g) => g.Redo()] :
+                kind === 8 ? ['a formula typed', (g) => g.EnterText(row, 6, formula)] :
+                ['a formula overwritten', (g) => g.EnterText(row, overwrite[0], overwrite[1])];
+            action[1](incremental.grid, incremental.host); action[1](full.grid, full.host);
+            steps++;
+            const stats = incremental.grid.GetRecalcStats();
+            kinds[stats.Kind] = (kinds[stats.Kind] ?? 0) + 1;
+            if (stats.Kind === 'incremental') evaluated += stats.EvaluatedFormulas;
+            const difference = firstDifference(valuesOf(incremental.grid), valuesOf(full.grid));
+            if (difference) mismatch = `step ${step} (${action[0]}): ${difference}`;
+        }
+        check('120 random edits (typing, paste, delete, undo, redo, formulas): the values of a full recalculation after each', mismatch, null);
+        check('and they were recalculated incrementally', [kinds.incremental > 100, full.grid.GetRecalcStats().Kind], [true, 'full']);
+        note(`${kinds.incremental} incremental (${evaluated} formulas evaluated, of ${incremental.grid.GetRecalcStats().Formulas} in the sheet), ${kinds.full ?? 0} full`);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    incremental.close(); full.close();
+
+    // The formula-heavy workbook: the first edit builds the dependency graph; an edit with few
+    // dependents evaluates a few formulas; a block pasted where most formulas read evaluates those.
+    const { grid, host, close } = mountGrid();
+    try {
+        await grid.ImportXlsx((await bytesOf('tests/real-world/milk-street-office.xlsx')).slice());
+        let t0 = performance.now();
+        grid.EnterText(7, 3, '54321');
+        const first = performance.now() - t0, firstStats = grid.GetRecalcStats();
+        t0 = performance.now();
+        grid.EnterText(7, 3, '12345');
+        const second = performance.now() - t0, secondStats = grid.GetRecalcStats();
+        check('the first edit builds the graph and is incremental', [firstStats.Kind, firstStats.Formulas > 13000, first < 1200], ['incremental', true, true]);
+        check('an edit with few dependents evaluates few formulas, in a few milliseconds', [secondStats.Kind, secondStats.EvaluatedFormulas < 50, second < 60], ['incremental', true, true]);
+        grid.SwitchSheet(1);
+        const block = Array.from({ length: 1000 }, (_, r) => Array.from({ length: 20 }, (_, c) => (c % 3 === 0 ? 'item ' + (r * 20 + c) : String(r * 20 + c + 0.5))).join('\t')).join('\n');
+        grid.SelectCell(5, 2);
+        t0 = performance.now();
+        grid.PasteText(block, '');
+        const paste = performance.now() - t0, pasteStats = grid.GetRecalcStats();
+        t0 = performance.now();
+        grid.Undo();
+        const undo = performance.now() - t0, undoStats = grid.GetRecalcStats();
+        check('a paste of 1 000 x 20 cells is incremental, and so is its undo', [pasteStats.Kind, pasteStats.ChangedCells > 5000, undoStats.Kind], ['incremental', true, 'incremental']);
+        t0 = performance.now();
+        grid.EnterText(3, 40, '77');
+        const after = performance.now() - t0;
+        note(`milk-street-office: first edit ${Math.round(first)} ms (${firstStats.Formulas} formulas in the graph), an edit with few dependents ${second.toFixed(1)} ms, ` +
+            `paste of 1 000 x 20 ${Math.round(paste)} ms (${pasteStats.EvaluatedFormulas} formulas evaluated), its undo ${Math.round(undo)} ms, a typed number after it ${after.toFixed(1)} ms`);
+        // The undo put every value back.
+        const original = describeWorkbook(await excel.load((await bytesOf('tests/real-world/milk-street-office.xlsx')).slice()));
+        grid.Undo(); grid.Undo(); grid.Undo();
+        const saved = describeWorkbook(await excel.load((await grid.ExportXlsx()).slice()));
+        const changed = [];
+        original.forEach((sheet, index) => {
+            const now = new Map(saved[index].cells.map((c) => [c[0] + ':' + c[1], c]));
+            // (A formula that was evaluated again has the engine's value: the file's to the last digits.)
+            const same = (a, b) => Object.is(a, b) || (typeof a === 'number' && typeof b === 'number' && Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(a), Math.abs(b)));
+            for (const c of sheet.cells) { const n = now.get(c[0] + ':' + c[1]); if (c[3] != null && (!n || !same(n[2], c[2]))) changed.push(`${sheet.name}!${c[0]},${c[1]}: ${c[2]} -> ${n && n[2]}`); }
+        });
+        check('after undoing every edit the formulas have the values of the file', changed.slice(0, 3), []);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
+
 checks['edit-without-dependents'] = async () => {
     const { lines, check, note } = makeLog();
     for (const file of ['tests/real-world/milk-street-office.xlsx', 'tests/real-world/saopaulo-condos.xlsx']) {

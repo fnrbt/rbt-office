@@ -7,7 +7,7 @@ open Rbt.Spreadsheet.Model
 open Rbt.Spreadsheet.Formula
 open Rbt.Spreadsheet.Workbook
 open Rbt.Spreadsheet.XlsxImporter
-module SpreadsheetCalc = Rbt.Spreadsheet.Calc
+module SpreadsheetRecalc = Rbt.Spreadsheet.Recalc
 module SpreadsheetLayout = Rbt.Spreadsheet.Layout
 module SpreadsheetPaint = Rbt.Spreadsheet.Paint
 module SpreadsheetCellText = Rbt.Spreadsheet.CellText
@@ -426,7 +426,22 @@ type Spreadsheet(container: Element) =
     /// The XLSX file the current workbook was imported from, for ExportXlsx:
     /// what the editor does not model is carried over from it.
     let mutable xlsxSource: Rbt.Spreadsheet.XlsxBridge.XlsxSource option = None
-    let mutable calcEngine: SpreadsheetCalc.CalcEngine option = None
+    /// The dependency graph of the workbook as it was last calculated (see
+    /// Recalc): an edit of cells evaluates the formulas that read them, not
+    /// the workbook. Built at the first edit (or shortly after a workbook is
+    /// installed, when no sheet waits to be converted) from
+    /// `calculatedWorkbook`, the workbook as it was last calculated or
+    /// installed, and kept up to date by the edits.
+    let mutable recalcEngine: SpreadsheetRecalc.Engine option = None
+    let mutable calculatedWorkbook: Workbook option = None
+    let mutable engineGeneration = 0
+    /// What the last recalculation did: "incremental" (with the engine's
+    /// counts) or "full".
+    /// False: every edit recalculates the whole workbook (SetIncrementalRecalculation).
+    let mutable incrementalRecalculation = true
+    let mutable lastRecalculation = "none"
+    let mutable lastFullReason = ""
+    let mutable lastRecalcStats : SpreadsheetRecalc.RecalcStats = { ChangedCells = 0; ReachedFormulas = 0; EvaluatedFormulas = 0 }
     let mutable readOnly = false
     let mutable scrollTop = 0.0
     let mutable scrollLeft = 0.0
@@ -506,8 +521,8 @@ type Spreadsheet(container: Element) =
                 sheets.[index] <- loaded
                 if index < revisionSheets.Length && revisionSheets.[index].Deferred.IsSome then revisionSheets.[index] <- loaded
                 if index < notifiedSheets.Length && notifiedSheets.[index].Deferred.IsSome then notifiedSheets.[index] <- loaded
-                // The incremental engine was built without the sheet's cells.
-                calcEngine <- None
+                // An engine built before a sheet with formulas was converted does not know them.
+                if recalcEngine.IsSome && cellsHaveFormulaCells loaded.Cells then recalcEngine <- None
             | None -> ()
 
     /// Sheets a formula converted while it was evaluated take their place.
@@ -569,8 +584,12 @@ type Spreadsheet(container: Element) =
     let restoreCellMap (cells: Map<CellAddress, CellData>) (m: SpreadsheetModel) =
         { m with Cells = cells } |> invalidateFilterProjection
 
+    /// The workbook was replaced or changed in more than its cells: the
+    /// dependency graph and the calculated state it stands on are dropped.
     let invalidateCalcEngine () =
-        calcEngine <- None
+        recalcEngine <- None
+        calculatedWorkbook <- None
+        engineGeneration <- engineGeneration + 1
 
     let sheetIdForIndex (index: int) =
         match workbook with
@@ -801,13 +820,71 @@ type Spreadsheet(container: Element) =
     /// read the sheet that was just edited, so every sheet is recalculated
     /// (formulas, then dynamic-array spills, then formulas again so readers of
     /// spilled cells settle), not only the visible one.
+    /// The engine for the workbook as it was last calculated, built now when there is none yet.
+    let ensureRecalcEngine () =
+        match recalcEngine, calculatedWorkbook with
+        | Some engine, _ -> Some engine
+        | None, Some calculated ->
+            let engine = SpreadsheetRecalc.build calculated
+            recalcEngine <- Some engine
+            Some engine
+        | None, None -> None
+
+    /// Recalculate after an edit. `hint` names the cells the edit touched
+    /// when they are known. The formulas that read the changed cells are
+    /// evaluated (Recalc); the whole workbook is recalculated - every sheet:
+    /// formulas, then dynamic-array spills, then formulas again so readers of
+    /// spilled cells settle - when the edit is more than one of cells, when
+    /// it reaches a spill or a cycle, and before there is a calculated state
+    /// to start from.
+    let recalculateAfterEdit (hint: (SheetId * CellAddress) list option) =
+        convertFormulaSheets ()
+        let edited = currentWorkbookSnapshot()
+        let incremental =
+            match (if incrementalRecalculation then ensureRecalcEngine () else None) with
+            | Some engine ->
+                match SpreadsheetRecalc.recalculate engine edited hint with
+                | Some recalculated ->
+                    lastRecalculation <- "incremental"
+                    lastRecalcStats <- SpreadsheetRecalc.lastStats engine
+                    Some recalculated
+                | None ->
+                    lastFullReason <- SpreadsheetRecalc.lastDecline engine
+                    None
+            | None ->
+                lastFullReason <- if incrementalRecalculation then "no calculated state to start from" else "incremental recalculation is switched off"
+                None
+        match incremental with
+        | Some recalculated ->
+            installWorkbookSnapshot recalculated
+            calculatedWorkbook <- Some recalculated
+        | None ->
+            lastRecalculation <- "full"
+            let recalculated = recalculateWorkbook edited
+            installWorkbookSnapshot recalculated
+            // The engine goes on from the result, or is built again at the next edit.
+            match recalcEngine with
+            | Some engine when not (SpreadsheetRecalc.adopt engine recalculated) -> recalcEngine <- None
+            | _ -> ()
+            calculatedWorkbook <- Some recalculated
+        adoptConvertedSheets ()
+
+    /// Recalculation after an edit whose cells are not named: the sheets'
+    /// cells are compared with the calculated state.
     let recalculateFormulas () =
+        recalculateAfterEdit None
+
+    /// Full recalculation of the whole workbook, whatever the edit was (rows /
+    /// columns moved, sheets, names).
+    let recalculateEverything () =
         invalidateCalcEngine()
         convertFormulaSheets ()
-        currentWorkbookSnapshot()
-        |> recalculateWorkbook
-        |> installWorkbookSnapshot
+        let recalculated = currentWorkbookSnapshot() |> recalculateWorkbook
+        installWorkbookSnapshot recalculated
+        lastRecalculation <- "full"
+        lastFullReason <- "rows, columns, sheets or names changed"
         adoptConvertedSheets ()
+        calculatedWorkbook <- Some (currentWorkbookSnapshot())
 
     /// Insert or delete rows/columns on the active sheet as one undoable
     /// step. The edit and its undo both go through the workbook so formulas on
@@ -818,7 +895,7 @@ type Spreadsheet(container: Element) =
         let sheetId = sheetIdForIndex activeSheetIndex
         let edited, undoInfo = Rbt.Spreadsheet.Workbook.applyStructureEdit sheetId edit (currentWorkbookSnapshot())
         installWorkbookSnapshot edited
-        recalculateFormulas()
+        recalculateEverything()
         // Undo()/Redo() recalculate after running the command.
         let command = {
             Undo = fun _ ->
@@ -983,17 +1060,11 @@ type Spreadsheet(container: Element) =
 
     let recalculateSingleCellEdit (addr: CellAddress) (cellData: CellData) =
         convertFormulaSheets ()
-        let wb = currentWorkbookSnapshot()
-        let sheetCell = { Sheet = wb.ActiveSheet; Cell = addr }
-        match SpreadsheetCalc.trySingleCellEdit sheetCell cellData wb calcEngine with
-        | SpreadsheetCalc.IncrementalApplied (updatedWorkbook, updatedEngine) ->
-            installWorkbookSnapshot updatedWorkbook
-            calcEngine <- Some updatedEngine
-            // (Drops the engine when a formula converted a sheet: it was built without it.)
-            adoptConvertedSheets ()
-        | SpreadsheetCalc.IncrementalFallback _ ->
-            model <- setCell addr cellData model
-            recalculateFormulas()
+        // (The engine is built from the workbook as it is before the entry.)
+        if calculatedWorkbook.IsNone && recalcEngine.IsNone then calculatedWorkbook <- Some (currentWorkbookSnapshot())
+        if incrementalRecalculation then ensureRecalcEngine () |> ignore
+        model <- setCell addr cellData model
+        recalculateAfterEdit (Some [ sheetIdForIndex activeSheetIndex, addr ])
 
     let hitTestEvent (e: obj) =
         match gridContainer with
@@ -3675,7 +3746,6 @@ type Spreadsheet(container: Element) =
             elif within target ".col-header-text" then
                 match headerIndex target ".spreadsheet-col-header" "data-col" with
                 | Some col ->
-                    invalidateCalcEngine()
                     // Toggle sort direction if clicking same column, otherwise ascending
                     let ascending =
                         match model.SortState with
@@ -3876,7 +3946,9 @@ type Spreadsheet(container: Element) =
         // of conditional-format formulas (a closure over this workbook).
         Rbt.Spreadsheet.ConditionalFormatting.resetFormulaEvaluator ()
         ruleWorkbook <- None
-        calcEngine <- None
+        recalcEngine <- None
+        calculatedWorkbook <- None
+        engineGeneration <- engineGeneration + 1
         overflowSources.Clear()
         overflowCells <- null
         notifiedSheets <- [||]
@@ -4019,7 +4091,6 @@ type Spreadsheet(container: Element) =
     /// exactly where they left it, the way Excel does.
     member _.SwitchSheet(index: int) =
         if index >= 0 && index < sheets.Length && index <> activeSheetIndex then
-            invalidateCalcEngine()
             // An entry in progress belongs to the sheet being left.
             if model.EditingCell.IsSome then finishEditing true |> ignore
             // Persist current sheet's mutable state into the array.
@@ -4095,8 +4166,39 @@ type Spreadsheet(container: Element) =
         undoneSteps.Clear()
         resetScroll ()
         render()
+        // The workbook as it is installed is the calculated state edits start
+        // from (a file's formulas come with their values). Its dependency
+        // graph is built a moment later, unless a sheet with formulas still
+        // waits to be converted - then at the first edit, which converts it.
+        calculatedWorkbook <- Some (currentWorkbookSnapshot())
+        let generation = engineGeneration
+        if formulaSheetsConverted then
+            setTimeoutMs (fun () ->
+                if not disposed && incrementalRecalculation && generation = engineGeneration && recalcEngine.IsNone then
+                    ensureRecalcEngine () |> ignore) 250 |> ignore
         for listener in sheetChangedListeners do
             try listener safeIndex with _ -> ()
+
+    /// Switch incremental recalculation off (every edit recalculates the
+    /// whole workbook, as before 0.1.7) or on again. It is on by default.
+    member _.SetIncrementalRecalculation(enabled: bool) =
+        incrementalRecalculation <- enabled
+        if not enabled then recalcEngine <- None
+
+    /// What the last recalculation was: { Kind: "incremental" | "full" |
+    /// "none", Reason (why it was a full one), ChangedCells, ReachedFormulas,
+    /// EvaluatedFormulas (of the last incremental one), Formulas (in the
+    /// dependency graph, -1 before it is built) }. For hosts and checks that want to see that an edit
+    /// recalculated what it changed.
+    member _.GetRecalcStats() : obj =
+        createObj [
+            "Kind" ==> lastRecalculation
+            "Reason" ==> (if lastRecalculation = "full" then lastFullReason else "")
+            "ChangedCells" ==> lastRecalcStats.ChangedCells
+            "ReachedFormulas" ==> lastRecalcStats.ReachedFormulas
+            "EvaluatedFormulas" ==> lastRecalcStats.EvaluatedFormulas
+            "Formulas" ==> (match recalcEngine with Some engine -> SpreadsheetRecalc.formulaCount engine | None -> -1)
+        ]
 
     /// Install a workbook imported from XLSX (`XlsxImporter.importWorkbook`
     /// / `importWorkbookPromise`), remembering the file it came from so that
@@ -4576,6 +4678,7 @@ type Spreadsheet(container: Element) =
     member _.SetWorkbookContext(wb: Workbook) =
         invalidateCalcEngine()
         workbook <- Some wb
+        calculatedWorkbook <- Some (currentWorkbookSnapshot())
         render()  // Re-render to apply table styles
 
     /// Get workbook

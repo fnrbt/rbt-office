@@ -47,6 +47,7 @@ stages=(
     stage29-borders
     stage30-overflow
     stage31-edits
+    stage32-recalc
     numbertext
 )
 

@@ -10,7 +10,8 @@
 // It then runs the checks of the Spreadsheet web component (component.js,
 // host-api.js): change events, dispose, sheet access and sizing, its XLSX
 // export, and what hosts rely on (borders, text overflow, row / column
-// counts, revisions, package integrity of exported files, lazy sheets).
+// counts, revisions, package integrity of exported files, lazy sheets,
+// incremental recalculation).
 //
 // Usage:
 //   dotnet fable src/Office.Formats --outDir $DIST/office-formats --lang JavaScript --noCache

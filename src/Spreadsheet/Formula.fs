@@ -1351,6 +1351,56 @@ and referencesRangedAt (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
         cellSet <- Set.add cell cellSet
     (cellSet, resizeArrayToList rects)
 
+/// The areas a formula reads, one call per reference: the sheet and the
+/// inclusive bounds (a single cell is a 1 x 1 area). The references are those
+/// of `referencesRangedAt` - defined names and structured references resolved
+/// through the workbook, a reference to a sheet that does not exist left out -
+/// without building a set of cells.
+let iterReferenceAreas (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
+                       (homeSheet: Rbt.Spreadsheet.Workbook.SheetId)
+                       (cell: CellAddress option)
+                       (expr: Expr)
+                       (onArea: Rbt.Spreadsheet.Workbook.SheetId -> int -> int -> int -> int -> unit) : unit =
+    let sheetIdOf (name: string option) =
+        match name with
+        | None -> Some homeSheet
+        | Some n -> workbook |> Option.bind (Rbt.Spreadsheet.Workbook.resolveSheetName n)
+    let stack = ResizeArray<struct (Set<string> * Expr)>()
+    stack.Add(struct (Set.empty, expr))
+    while stack.Count > 0 do
+        let last = stack.Count - 1
+        let struct (seen, e) = stack.[last]
+        stack.RemoveAt last
+        match e with
+        | Number _ | Str _ | Bool _ | ErrorLit _ | ArrayLit _ | MissingArg -> ()
+        | TableRef sel ->
+            match tableRefArea workbook (Some homeSheet) cell sel with
+            | Some (sid, (r0, c0, r1, c1)) -> onArea sid r0 c0 r1 c1
+            | None -> ()
+        | NameRef name ->
+            let key = name.ToUpperInvariant()
+            if not (Set.contains key seen) then
+                match workbook |> Option.bind (resolveNameExpr name (Some homeSheet)) with
+                | Some resolved -> stack.Add(struct (Set.add key seen, resolved))
+                | None -> ()
+        | CellRef r | SpillRef r ->
+            match sheetIdOf r.Sheet with
+            | Some sid -> onArea sid r.Row r.Col r.Row r.Col
+            | None -> ()
+        | RangeRef (a, b) ->
+            match sheetIdOf a.Sheet with
+            | Some sid ->
+                let sr, sc, er, ec = normalizeRange a b
+                onArea sid sr sc er ec
+            | None -> ()
+        | UnaryOp (_, inner) -> stack.Add(struct (seen, inner))
+        | BinOp (l, _, r) ->
+            stack.Add(struct (seen, l))
+            stack.Add(struct (seen, r))
+        | Function (_, args) ->
+            for arg in args do
+                stack.Add(struct (seen, arg))
+
 /// Shift every *relative* reference in an expression by (dr, dc). Absolute
 /// components (`$`-locked row/col) are left untouched. This is how a
 /// formula written for one anchor cell is re-pointed for another — used by
@@ -3419,8 +3469,16 @@ let private arrayFunctionNames =
        "MMULT"; "MINVERSE"; "FREQUENCY" |]
 
 #if FABLE_COMPILER
+/// (Asked for every function call of every formula: what was found for a name, as it is written, is kept.)
+let private arrayFunctionKnown = Dictionary<string, bool>()
 let isArrayFunction (name: string) =
-    arrayFunctionNames |> Array.exists (equalsOrdinalIgnoreCase name)
+    match arrayFunctionKnown.TryGetValue name with
+    | true, known -> known
+    | false, _ ->
+        let found = arrayFunctionNames |> Array.exists (equalsOrdinalIgnoreCase name)
+        if arrayFunctionKnown.Count > 4096 then arrayFunctionKnown.Clear()
+        arrayFunctionKnown.[name] <- found
+        found
 #else
 let private arrayFunctionSet = HashSet<string>(arrayFunctionNames, StringComparer.OrdinalIgnoreCase)
 let isArrayFunction (name: string) = arrayFunctionSet.Contains name
