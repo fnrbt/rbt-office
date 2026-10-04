@@ -535,6 +535,101 @@ ok "new-workbook-has-no-drawing-parts"
     archive.Entries |> Seq.forall (fun entry -> not (entry.FullName.Contains "drawings/sheetDrawing") && not (entry.FullName.Contains "theme") && not (entry.FullName.Contains "threadedComment")))
    "unexpected parts"
 
+// ---- <col> ranges and styles, fullCalcOnLoad, named cell styles, z-order ----
+let realWorkbook (relative: string) = XlsxReader.loadBytesNative (File.ReadAllBytes(Path.Combine(__SOURCE_DIRECTORY__, "..", relative))) |> Option.get
+for file in [ "real-world/lyric-multifamily.xlsx"; "real-world/saopaulo-condos.xlsx"; "real-world/milk-street-office.xlsx"; "test-documents-excel/poi-49156.xlsx" ] do
+    let before = realWorkbook file
+    let bytes = XlsxWriter.writeWorkbookPackageBytes (XlsxWriter.packageFromReaderWorkbook before)
+    let after = XlsxReader.loadBytesNative bytes |> Option.get
+    // Column definitions come back as the file had them: the same ranges, widths, hidden flags and default cell styles.
+    let columnsOf (workbook: XlsxReader.Workbook) =
+        workbook.Sheets
+        |> List.map (fun sheet ->
+            sheet.Columns
+            |> List.map (fun column ->
+                column.Index, column.MaxIndex, column.Width |> Option.map (fun w -> Math.Round(w, 2)), column.Hidden,
+                column.Style |> Option.bind (fun index -> if index > 0 && index < workbook.Styles.Length then Some workbook.Styles.[index] else None)))
+    let merged (columns: (int * int * float option * bool * XlsxReader.CellStyle option) list) =
+        // The file may itself split a run of equal columns; compare with equal neighbours joined.
+        columns
+        |> List.fold (fun acc (lo, hi, width, hidden, style) ->
+            match acc with
+            | (plo, phi, pwidth, phidden, pstyle) :: rest when phi + 1 = lo && pwidth = width && phidden = hidden && pstyle = style -> (plo, hi, width, hidden, style) :: rest
+            | _ -> (lo, hi, width, hidden, style) :: acc) []
+        |> List.rev
+    ok (file + " col ranges and styles") (List.map merged (columnsOf after) = List.map merged (columnsOf before))
+       (sprintf "%A\n   became\n%A" (columnsOf before |> List.map (List.truncate 6)) (columnsOf after |> List.map (List.truncate 6)))
+    ok (file + " col ranges are not split") (List.sum (List.map List.length (columnsOf after)) <= List.sum (List.map List.length (columnsOf before)))
+       (sprintf "%d <col> became %d" (List.sum (List.map List.length (columnsOf before))) (List.sum (List.map List.length (columnsOf after))))
+    // Every cell is still based on the named cell style it had.
+    let namedOf (workbook: XlsxReader.Workbook) =
+        let names = workbook.Preserved.NamedStyles |> List.map (fun style -> style.Name) |> List.toArray
+        [ for sheet in workbook.Sheets do
+            for row in sheet.Rows do
+                for cell in row.Cells do
+                    let name =
+                        match cell.StyleIndex with
+                        | Some index when index >= 0 && index < workbook.Preserved.CellXfNamedStyles.Length ->
+                            let named = workbook.Preserved.CellXfNamedStyles.[index]
+                            if named >= 0 && named < names.Length then names.[named] else "?"
+                        | _ -> if names.Length > 0 then names.[0] else "?"
+                    yield sheet.Name, cell.Reference, name ]
+    let namedAfter = namedOf after |> List.map (fun (sheet, reference, name) -> (sheet, reference), name) |> Map.ofList
+    let lost = namedOf before |> List.filter (fun (sheet, reference, name) -> Map.tryFind (sheet, reference) namedAfter <> Some name)
+    ok (file + " named style of every cell") lost.IsEmpty (sprintf "%d cells, first: %A -> %A" lost.Length (List.tryHead lost) (lost |> List.tryHead |> Option.bind (fun (sheet, reference, _) -> Map.tryFind (sheet, reference) namedAfter)))
+    ok (file + " every cell format knows its named style") (before.Styles.Length = before.Preserved.CellXfNamedStyles.Length) (sprintf "%d styles, %d links" before.Styles.Length before.Preserved.CellXfNamedStyles.Length)
+    // An Excel-calculated workbook has every result cached: no forced recalculation.
+    ok (file + " no fullCalcOnLoad when results are cached") (not ((partText bytes "xl/workbook.xml").Contains "fullCalcOnLoad")) "calcPr written"
+let namedStylesInUse =
+    let workbook = realWorkbook "real-world/milk-street-office.xlsx"
+    workbook.Preserved.CellXfNamedStyles |> Array.filter (fun named -> named > 0) |> Array.distinct |> Array.length
+ok "the named-style check is not vacuous" (namedStylesInUse >= 1) (sprintf "%d named styles other than the first are used" namedStylesInUse)
+// Before this was kept, every cell format was written with xfId="0".
+ok "a cell format is written with the xfId of its named style"
+   (let styles = partText (XlsxWriter.writeWorkbookPackageBytes (XlsxWriter.packageFromReaderWorkbook (realWorkbook "real-world/milk-street-office.xlsx"))) "xl/styles.xml"
+    let cellXfs = styles.Substring(styles.IndexOf "<cellXfs")
+    System.Text.RegularExpressions.Regex.IsMatch(cellXfs.Substring(0, cellXfs.IndexOf "</cellXfs>"), "xfId=\"[1-9]"))
+   "every xf has xfId 0"
+
+// fullCalcOnLoad: only when a formula goes out without a result.
+let calcWorkbook (cached: XlsxWriter.XlsxCellValue option) =
+    let sheet = (XlsxWriter.packageFromReaderWorkbook (realWorkbook "test-documents-excel/poi-49156.xlsx")).Sheets.Head
+    let formula : XlsxWriter.XlsxCellOut = { Row = 60; Col = 0; Value = XlsxWriter.XlsxFormula ("1+1", cached); Format = XlsxWriter.defaultXlsxCellFormat; Comment = None }
+    { (XlsxWriter.packageFromReaderWorkbook (realWorkbook "test-documents-excel/poi-49156.xlsx")) with Sheets = [ { sheet with Cells = sheet.Cells @ [ formula ] } ] }
+let uncachedXml = partText (XlsxWriter.writeWorkbookPackageBytes (calcWorkbook None)) "xl/workbook.xml"
+ok "fullCalcOnLoad for a formula without a cached value" (uncachedXml.Contains "<calcPr fullCalcOnLoad=\"1\"/></workbook>") uncachedXml
+ok "no fullCalcOnLoad when the formula has its value" (not ((partText (XlsxWriter.writeWorkbookPackageBytes (calcWorkbook (Some (XlsxWriter.XlsxNumber 2.0)))) "xl/workbook.xml").Contains "calcPr")) "calcPr written"
+ok "the uncached workbook still opens" ((XlsxReader.loadBytesNative (XlsxWriter.writeWorkbookPackageBytes (calcWorkbook None))).IsSome) "unreadable"
+
+// z-order: pictures and kept objects stay interleaved as the drawing part had them.
+let zOrderOf (workbook: XlsxReader.Workbook) =
+    workbook.Sheets
+    |> List.map (fun sheet ->
+        (sheet.Extras.Images |> List.map (fun image -> image.Anchor.Order, "picture", image.Name))
+        @ (sheet.Extras.Objects |> List.map (fun item -> item.Anchor.Order, item.Kind, item.Name))
+        |> List.sortBy (fun (order, _, _) -> order)
+        |> List.map (fun (_, kind, name) -> kind, name))
+for file in [ "test-documents-excel/phpsp-32chartreadwrite.xlsx"; "real-world/dashboard-ecommerce-sales.xlsx"; "test-documents-excel/phpsp-27template.xlsx" ] do
+    let before = realWorkbook file
+    let after = XlsxReader.loadBytesNative (XlsxWriter.writeWorkbookPackageBytes (XlsxWriter.packageFromReaderWorkbook before)) |> Option.get
+    ok (file + " z-order of pictures and objects") (zOrderOf after = zOrderOf before) (sprintf "%A became %A" (zOrderOf before) (zOrderOf after))
+// A chart behind a picture stays behind it: swap the orders and write.
+let swapped =
+    let package = XlsxWriter.packageFromReaderWorkbook (realWorkbook "test-documents-excel/phpsp-32chartreadwrite.xlsx")
+    { package with
+        Sheets =
+            package.Sheets
+            |> List.map (fun sheet ->
+                { sheet with
+                    Extras =
+                        { sheet.Extras with
+                            Images = sheet.Extras.Images |> List.map (fun image -> { image with Anchor = { image.Anchor with Order = image.Anchor.Order + 100 } }) } }) }
+let swappedBack = XlsxReader.loadBytesNative (XlsxWriter.writeWorkbookPackageBytes swapped) |> Option.get
+ok "objects are written in front of or behind pictures by their order"
+   (zOrderOf swappedBack |> List.forall (fun sheet -> match List.tryFindIndex (fun (kind, _) -> kind = "picture") sheet with | Some first -> sheet |> List.skip first |> List.forall (fun (kind, _) -> kind = "picture") | None -> true)
+    && zOrderOf swappedBack |> List.exists (fun sheet -> sheet |> List.exists (fun (kind, _) -> kind <> "picture") && sheet |> List.exists (fun (kind, _) -> kind = "picture")))
+   (sprintf "%A" (zOrderOf swappedBack))
+
 printfn ""
 printfn "OfficeFormat XLSX writer tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

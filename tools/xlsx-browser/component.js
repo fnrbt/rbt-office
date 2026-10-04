@@ -157,6 +157,26 @@ const KEPT_PARTS = /^xl\/(charts|theme|embeddings)\//, MEDIA_PARTS = /^xl\/media
 const changedParts = (before, after) => Object.keys(before).filter((entry) => before[entry] !== after[entry]).map((entry) => entry + (after[entry] === undefined ? ' (missing)' : ' (changed)'));
 // Pictures used by a sheet, as a sorted list of (length, checksum); an unused media part of the file is not carried.
 const mediaContents = (parts) => [...new Set(Object.values(parts).map((data) => data.length + ':' + [...data].reduce((n, ch) => (n * 31 + ch.charCodeAt(0)) | 0, 7)))].sort();
+// The <col> elements of every worksheet: how many, and how many columns carry a default style.
+const colElements = async (bytes) => {
+    const zip = await window.JSZip.loadAsync(bytes);
+    let count = 0, styledColumns = 0;
+    for (const entry of Object.keys(zip.files)) {
+        if (!/^xl\/worksheets\/[^/]+\.xml$/.test(entry)) continue;
+        const xml = await zip.files[entry].async('string');
+        for (const col of xml.match(/<col [^>]*>/g) ?? []) {
+            count++;
+            const style = /style="(\d+)"/.exec(col), min = Number(/min="(\d+)"/.exec(col)[1]), max = Number(/max="(\d+)"/.exec(col)[1]);
+            if (style && style[1] !== '0') styledColumns += max - min + 1;
+        }
+    }
+    return { count, styledColumns };
+};
+// Pictures and kept objects of every sheet, back to front.
+const zOrder = (wb) => excel.sheetNames(wb).map((name) => {
+    const sheet = excel.sheet(name, wb);
+    return [...Array.from(sheet.Extras.Images, (image) => [image.Anchor.Order, 'picture']), ...Array.from(sheet.Extras.Objects, (item) => [item.Anchor.Order, item.Kind])].sort((x, y) => x[0] - y[0]).map((entry) => entry[1]);
+});
 // { value, formula, error, bold, fillColor, ... } of a cell, or undefined.
 const cellAt = (wb, sheetName, ref) => {
     const sheet = excel.sheet(sheetName, wb), cells = excel.cellsColumnar(wb, sheet);
@@ -205,6 +225,10 @@ checks['export-unedited'] = async () => {
             check(`${short}: defined names`, names(after), names(before));
             check(`${short}: chart, theme and embedded parts byte for byte`, changedParts(await partsOf(original, KEPT_PARTS), await partsOf(saved, KEPT_PARTS)), []);
             check(`${short}: every media part is in the saved package`, mediaContents(await partsOf(saved, MEDIA_PARTS)), mediaContents(await partsOf(original, MEDIA_PARTS)));
+            // <col> definitions: ranges are not split into one element per column, default cell styles are kept.
+            const colsBefore = await colElements(original), colsAfter = await colElements(saved);
+            check(`${short}: <col> ranges are not split (${colsBefore.count} -> ${colsAfter.count}), column styles kept`, [colsAfter.count <= colsBefore.count, colsAfter.styledColumns], [true, colsBefore.styledColumns]);
+            check(`${short}: z-order of pictures and kept objects`, zOrder(after), zOrder(before));
             note(`${short}: ${a.length} sheets, ${a.reduce((n, s) => n + s.cells.length, 0)} cells, ${a.reduce((n, s) => n + s.images.length, 0)} pictures, ${a.reduce((n, s) => n + s.objects.length, 0)} kept objects, ${saved.length} bytes`);
         } catch (e) { lines.push(`FAIL ${short} threw ` + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
         close();

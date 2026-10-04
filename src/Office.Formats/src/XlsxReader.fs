@@ -549,6 +549,9 @@ type SheetAnchor = {
     Height: float option
     /// editAs: twoCell | oneCell | absolute.
     EditAs: string option
+    /// Position of the anchor in the drawing part: its z-order among the
+    /// sheet's pictures and other objects (later is in front).
+    Order: int
 }
 
 /// A picture anchored to cells.
@@ -601,9 +604,13 @@ type SheetExtras = {
     /// The sheet's `<col>` definitions as the file has them (ranges, default
     /// cell style), likewise filled in by `packageFromReaderWorkbook`.
     Columns: ColumnInfo list
+    /// Default cell style of column ranges (`<col style>`): first and last
+    /// column (0-based) and the style, likewise filled in by
+    /// `packageFromReaderWorkbook`.
+    ColumnStyles: (int * int * CellStyle) list
 }
 
-let emptySheetExtras = { Images = []; Objects = []; ThreadedComments = []; DrawingRelationships = []; Format = None; Columns = [] }
+let emptySheetExtras = { Images = []; Objects = []; ThreadedComments = []; DrawingRelationships = []; Format = None; Columns = []; ColumnStyles = [] }
 
 /// A named cell style (cellStyles / cellStyleXfs of styles.xml), with the
 /// font, fill, border and number format its xf refers to given as their XML so
@@ -638,9 +645,13 @@ type WorkbookPreservation = {
     NamedStyles: NamedCellStyle list
     /// Persons of the threaded comments: (id, display name, user id, provider id).
     Persons: (string * string * string * string) list
+    /// For each cell format of the file (cellXfs entry, the index a cell's
+    /// `StyleIndex` holds): the index in `NamedStyles` of the named cell style
+    /// it is based on (its xfId), or -1.
+    CellXfNamedStyles: int array
 }
 
-let emptyWorkbookPreservation = { Parts = []; Defaults = []; Overrides = []; ThemePath = None; NamedStyles = []; Persons = [] }
+let emptyWorkbookPreservation = { Parts = []; Defaults = []; Overrides = []; ThemePath = None; NamedStyles = []; Persons = []; CellXfNamedStyles = [||] }
 
 type Worksheet = {
     Name: string
@@ -3776,7 +3787,8 @@ let private anchorOf (node: XmlNode) : SheetAnchor option =
           Y = pos |> Option.bind (Xml.attr "y") |> number
           Width = width
           Height = height
-          EditAs = Xml.attr "editAs" node })
+          EditAs = Xml.attr "editAs" node
+          Order = 0 })
 
 /// The pictures and other objects of a sheet's drawing part. A picture is read
 /// into the model (anchor, size, data); anything else (a chart, a shape, a
@@ -3787,9 +3799,12 @@ let private readDrawing (source: PartSource) (drawingPath: string) : SheetImage 
         let rels = relationshipsOf source drawingPath
         let images = ResizeArray<SheetImage>()
         let objects = ResizeArray<SheetObject>()
+        let mutable order = 0
         for node in anchors do
             match anchorOf node with
             | Some anchor ->
+                let anchor = { anchor with Order = order }
+                order <- order + 1
                 let picture =
                     Ns.childNs "pic" node
                     |> Option.bind (fun pic ->
@@ -3873,7 +3888,7 @@ let private readThreadedComments (persons: (string * string * string * string) l
 
 // ---- named cell styles ---------------------------------------------------------
 
-let private readNamedStyles (stylesXml: string) : NamedCellStyle list =
+let private readNamedStyles (stylesXml: string) : NamedCellStyle list * int array =
     let doc = XmlDsl.parse stylesXml
     let entries (containerName: string) =
         Ns.childNs containerName doc |> Option.map Xml.children |> Option.defaultValue [] |> List.filter (fun node -> (Xml.name node).IsSome) |> List.toArray
@@ -3916,7 +3931,17 @@ let private readNamedStyles (stylesXml: string) : NamedCellStyle list =
     // In the order of their xf, so that xf 0 (Normal, which the cell formats are based on) stays first.
     |> List.sortBy fst
     |> List.distinctBy fst
-    |> List.map snd
+    |> fun named ->
+        // Which named style each cell format is based on (its xfId).
+        let position = named |> List.mapi (fun index (xfId, _) -> xfId, index) |> Map.ofList
+        let cellXfNamedStyles =
+            entries "cellXfs"
+            |> Array.map (fun xf ->
+                Xml.attr "xfId" xf
+                |> Option.bind tryParseInt
+                |> Option.bind (fun xfId -> Map.tryFind xfId position)
+                |> Option.defaultValue -1)
+        List.map snd named, cellXfNamedStyles
 
 // ---- parts kept for the next save ----------------------------------------------
 
@@ -4049,13 +4074,15 @@ let private buildWorkbook (source: PartSource) (header: WorkbookHeader) (sheetsT
          |> List.choose (fun (_, _, target, isExternal) -> if isExternal || target.StartsWith "#" then None else Some (ZipInterop.normalizePath target)))
         @ (if source.Exists header.ThemePath then [ header.ThemePath ] else [])
     let defaults, overrides = contentTypesOf source
+    let namedStyles = stylesXml |> Option.map (fun xml -> try readNamedStyles xml with _ -> [], [||]) |> Option.defaultValue ([], [||])
     let preserved =
         { Parts = reachablePartsFrom source (List.distinct keptRoots)
           Defaults = defaults
           Overrides = overrides
           ThemePath = if source.Exists header.ThemePath then Some header.ThemePath else None
-          NamedStyles = stylesXml |> Option.map (fun xml -> try readNamedStyles xml with _ -> []) |> Option.defaultValue []
-          Persons = persons }
+          NamedStyles = fst namedStyles
+          Persons = persons
+          CellXfNamedStyles = snd namedStyles }
 
     {
         Sheets = worksheets

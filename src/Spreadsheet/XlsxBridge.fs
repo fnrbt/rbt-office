@@ -1088,6 +1088,10 @@ module Export =
                         | None -> false
                     match untouched, originals.TryGetValue((addr.Row, addr.Col)) with
                     | true, (true, kept) -> kept
+                    | false, (true, kept) when (match Map.tryFind addr before.Cells with Some previous -> previous.Format = data.Format | None -> false) ->
+                        // Only the value (or the comment) changed: the cell keeps
+                        // the format the file gave it, its named cell style included.
+                        { cellOut model addr data with Format = kept.Format }
                     | _ -> cellOut model addr data)
         let unchanged (pick: SpreadsheetModel -> 'T) = sameRef (pick before) (pick model) || pick before = pick model
         { fromModel with
@@ -1109,7 +1113,10 @@ module Export =
             PrintArea = if before.PageSetup.PrintArea = model.PageSetup.PrintArea then original.PrintArea else fromModel.PrintArea
             PrintTitleRows = if before.PageSetup.RepeatRows = model.PageSetup.RepeatRows then original.PrintTitleRows else fromModel.PrintTitleRows
             PrintTitleCols = if before.PageSetup.RepeatCols = model.PageSetup.RepeatCols then original.PrintTitleCols else fromModel.PrintTitleCols
-            Extras = original.Extras }
+            Extras =
+                // Column styles are by position: they are kept as long as no column was inserted or deleted.
+                if before.ColCount = model.ColCount then original.Extras
+                else { original.Extras with Columns = []; ColumnStyles = [] } }
 
     /// The defined names to write. Names that still read as imported are
     /// written as the file had them (their spelling and order); otherwise

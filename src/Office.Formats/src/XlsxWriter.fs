@@ -293,6 +293,9 @@ type XlsxCellFormat = {
     BorderDiagonal: XlsxBorderSide option
     DiagonalUp: bool
     DiagonalDown: bool
+    /// The named cell style the format is based on: an index into the
+    /// workbook's `Preserved.NamedStyles`. None is the first one (Normal).
+    NamedStyle: int option
 }
 
 type XlsxVertAlign =
@@ -492,6 +495,7 @@ let defaultXlsxCellFormat = {
     BorderDiagonal = None
     DiagonalUp = false
     DiagonalDown = false
+    NamedStyle = None
 }
 
 type private FontKey = {
@@ -528,6 +532,8 @@ type private XfKey = {
     Indent: int
     ShrinkToFit: bool
     TextRotation: int
+    /// Index of the named cell style (cellStyleXfs entry) the xf is based on.
+    NamedStyle: int
 }
 
 type private SharedStringKey = {
@@ -617,7 +623,8 @@ let private xfKey (fmt: XlsxCellFormat) =
       WrapText = fmt.WrapText
       Indent = fmt.Indent
       ShrinkToFit = fmt.ShrinkToFit
-      TextRotation = fmt.TextRotation }
+      TextRotation = fmt.TextRotation
+      NamedStyle = fmt.NamedStyle |> Option.defaultValue 0 |> max 0 }
 
 let private defaultFontKey = fontKey defaultXlsxCellFormat
 let private defaultBorderKey = borderKey defaultXlsxCellFormat
@@ -658,10 +665,41 @@ let private builtInNumFmtId (code: string) =
 let private appendUnique item items =
     if List.contains item items then items else items @ [ item ]
 
+let private columnStyleKey (style: XlsxReader.CellStyle) =
+    let side (b: XlsxReader.CellBorderSide option) = b |> Option.map (fun x -> { Style = x.Style; Color = x.Color })
+    xfKey
+        { defaultXlsxCellFormat with
+            Bold = style.Bold
+            Italic = style.Italic
+            Underline = style.Underline
+            UnderlineDouble = style.UnderlineDouble
+            Strikethrough = style.Strikethrough
+            FontName = style.FontName
+            TextColor = style.FontColor |> Option.map (fun c -> "#" + c.TrimStart('#'))
+            FillColor = style.FillColor |> Option.map (fun c -> "#" + c.TrimStart('#'))
+            FontSize = style.FontSize
+            NumberFormat = style.NumberFormat
+            HorizontalAlign = style.HorizontalAlign
+            VerticalAlign = style.VerticalAlign
+            WrapText = style.WrapText
+            Indent = style.Indent
+            ShrinkToFit = style.ShrinkToFit
+            TextRotation = style.TextRotation
+            BorderTop = side style.BorderTop
+            BorderBottom = side style.BorderBottom
+            BorderLeft = side style.BorderLeft
+            BorderRight = side style.BorderRight
+            BorderDiagonal = side style.BorderDiagonal
+            DiagonalUp = style.DiagonalUp
+            DiagonalDown = style.DiagonalDown }
+
 let private collectStyles (workbook: XlsxWorkbookOut) =
     let xfs =
         workbook.Sheets
-        |> List.collect (fun s -> s.Cells |> List.map (fun c -> xfKey c.Format))
+        |> List.collect (fun s ->
+            (s.Cells |> List.map (fun c -> xfKey c.Format))
+            // Default cell styles of columns (<col style>).
+            @ (s.Extras.ColumnStyles |> List.map (fun (_, _, style) -> columnStyleKey style)))
         |> List.fold (fun acc key -> appendUnique key acc) [ defaultXfKey ]
     let fonts =
         xfs |> List.map (fun x -> x.Font) |> List.fold (fun acc key -> appendUnique key acc) [ defaultFontKey ]
@@ -862,7 +900,8 @@ let private stylesXml (book: StyleBook) =
             yield sprintf "fontId=\"%d\"" fontId
             yield sprintf "fillId=\"%d\"" fillId
             yield sprintf "borderId=\"%d\"" borderId
-            yield "xfId=\"0\""
+            // The named cell style the format is based on (Normal when the workbook has no such style).
+            yield sprintf "xfId=\"%d\"" (if xf.NamedStyle > 0 && xf.NamedStyle < named.Length then xf.NamedStyle else 0)
             if xf.NumFmt.IsSome then yield "applyNumberFormat=\"1\""
             if fontId <> 0 then yield "applyFont=\"1\""
             if fillId <> 0 then yield "applyFill=\"1\""
@@ -970,18 +1009,61 @@ let private sheetDimension (sheet: XlsxSheetOut) =
         let maxC = refs |> List.map snd |> List.max
         sprintf "%s:%s" (cellRef minR minC) (cellRef maxR maxC)
 
-let private colsXml (sheet: XlsxSheetOut) =
-    if List.isEmpty sheet.ColumnWidths then ""
+/// `<cols>`: widths (0 = hidden), and the default cell style a column range
+/// had in the file. Neighbouring columns with the same width and style are
+/// written as one `<col min max>`, as Excel does.
+let private colsXml (styles: StyleBook) (sheet: XlsxSheetOut) =
+    let widths = Map.ofList sheet.ColumnWidths
+    let styleIds =
+        sheet.Extras.ColumnStyles
+        |> List.collect (fun (first, last, style) ->
+            match Map.tryFind (columnStyleKey style) styles.StyleIndex with
+            | Some id when id > 0 -> [ for col in max 0 first .. min 16383 last -> col, id ]
+            | _ -> [])
+        |> Map.ofList
+    // A hidden column keeps the width the file gave it.
+    let fileWidth col =
+        sheet.Extras.Columns
+        |> List.tryFind (fun column -> col + 1 >= column.Index && col + 1 <= column.MaxIndex)
+        |> Option.bind (fun column -> column.Width)
+    let columns =
+        Set.union (widths |> Map.toSeq |> Seq.map fst |> Set.ofSeq) (styleIds |> Map.toSeq |> Seq.map fst |> Set.ofSeq)
+        |> Set.toList
+    if List.isEmpty columns then ""
     else
-        let body =
-            sheet.ColumnWidths
-            |> List.sortBy fst
-            |> List.map (fun (col, width) ->
-                let width = max 0.0 width
-                sprintf "<col min=\"%d\" max=\"%d\" width=\"%s\" customWidth=\"1\"%s/>"
-                    (col + 1) (col + 1) (invariantFixed width) (if width = 0.0 then " hidden=\"1\"" else ""))
-            |> String.concat ""
-        "<cols>" + body + "</cols>"
+        let attributes col =
+            let width, hidden =
+                match Map.tryFind col widths with
+                | Some width when width <= 0.0 -> fileWidth col, true
+                | Some width -> Some width, false
+                | None -> None, false
+            let parts = [
+                match width with
+                | Some value -> yield sprintf "width=\"%s\" customWidth=\"1\"" (invariantFixed value)
+                | None -> ()
+                match Map.tryFind col styleIds with
+                | Some id -> yield sprintf "style=\"%d\"" id
+                | None -> ()
+                if hidden then yield "hidden=\"1\""
+            ]
+            String.concat " " parts
+        let body = StringBuilder()
+        let flush (first: int) (last: int) (attrs: string) =
+            body.Append(sprintf "<col min=\"%d\" max=\"%d\"%s/>" (first + 1) (last + 1) (if attrs = "" then "" else " " + attrs)) |> ignore
+        let mutable start = List.head columns
+        let mutable previous = start
+        let mutable current = attributes start
+        for col in List.tail columns do
+            let attrs = attributes col
+            if col = previous + 1 && attrs = current then
+                previous <- col
+            else
+                flush start previous current
+                start <- col
+                previous <- col
+                current <- attrs
+        flush start previous current
+        "<cols>" + body.ToString() + "</cols>"
 
 let private sheetViewsXml (sheet: XlsxSheetOut) active =
     let attrs = [
@@ -1243,12 +1325,15 @@ let private drawingXml (sheet: XlsxSheetOut) (imageRelIds: string list) =
             sprintf "<xdr:absoluteAnchor><xdr:pos x=\"%s\" y=\"%s\"/><xdr:ext cx=\"%s\" cy=\"%s\"/>%s</xdr:absoluteAnchor>" (emu anchor.X) (emu anchor.Y) (emu width) (emu height) pic
         | _ ->
             sprintf "<xdr:oneCellAnchor>%s<xdr:ext cx=\"%s\" cy=\"%s\"/>%s</xdr:oneCellAnchor>" from (emu width) (emu height) pic
-    let pictures = List.map3 picture [ 0 .. sheet.Extras.Images.Length - 1 ] imageRelIds sheet.Extras.Images
-    let objects = sheet.Extras.Objects |> List.map (fun item -> item.Xml)
+    // Pictures and kept objects in their z-order (the order of the anchors in
+    // the drawing part), whichever kind they are.
+    let pictures = List.map3 (fun index relId (image: XlsxReader.SheetImage) -> image.Anchor.Order, 0, picture index relId image) [ 0 .. sheet.Extras.Images.Length - 1 ] imageRelIds sheet.Extras.Images
+    let objects = sheet.Extras.Objects |> List.map (fun item -> item.Anchor.Order, 1, item.Xml)
+    let ordered = pictures @ objects |> List.sortBy (fun (order, kind, _) -> order, kind) |> List.map (fun (_, _, xml) -> xml)
     // Only the two namespaces every anchor uses are declared here; a kept object
     // carries the others on its own element, and a picture declares r: on its blip.
     sprintf "%s\n<xdr:wsDr xmlns:xdr=\"%s\" xmlns:a=\"%s\">%s</xdr:wsDr>"
-        declaration drawingNamespace drawingMainNamespace (String.concat "" (pictures @ objects))
+        declaration drawingNamespace drawingMainNamespace (String.concat "" ordered)
 
 /// The person behind an author name: the kept one, or a new entry.
 let private personsOf (workbook: XlsxWorkbookOut) : (string * string * string * string) list =
@@ -1335,7 +1420,7 @@ let private worksheetXml (styles: StyleBook) sharedIndex sheetIndex active (shee
     + sprintf "<dimension ref=\"%s\"/>" (sheetDimension sheet)
     + sheetViewsXml sheet active
     + sheetFormatXml sheet
-    + colsXml sheet
+    + colsXml styles sheet
     + ("<sheetData>" + rowsXml styles sharedIndex sheet + "</sheetData>")
     // Child order is fixed by CT_Worksheet; Excel refuses a part that
     // deviates (e.g. tableParts before legacyDrawing).
@@ -1472,8 +1557,13 @@ let private workbookXmlFull (workbook: XlsxWorkbookOut) =
                         (escaped n.RefersTo))
                 |> String.concat ""
             "<definedNames>" + body + "</definedNames>"
-    sprintf "%s\n<workbook xmlns=\"%s\" xmlns:r=\"%s\"><bookViews><workbookView activeTab=\"%d\"/></bookViews><sheets>%s</sheets>%s</workbook>"
-        declaration Namespaces.spreadsheet Namespaces.relationships (max 0 workbook.ActiveSheetIndex) sheets definedNames
+    // A formula written without a result has to be calculated when the file is opened.
+    let hasUncachedFormula =
+        workbook.Sheets
+        |> List.exists (fun s -> s.Cells |> List.exists (fun c -> match c.Value with XlsxFormula (_, None) -> true | _ -> false))
+    let calcPr = if hasUncachedFormula then "<calcPr fullCalcOnLoad=\"1\"/>" else ""
+    sprintf "%s\n<workbook xmlns=\"%s\" xmlns:r=\"%s\"><bookViews><workbookView activeTab=\"%d\"/></bookViews><sheets>%s</sheets>%s%s</workbook>"
+        declaration Namespaces.spreadsheet Namespaces.relationships (max 0 workbook.ActiveSheetIndex) sheets definedNames calcPr
 
 let private workbookRelsXmlFull (sheetCount: int) hasVba (themePath: string option) (hasPersons: bool) =
     let sheetRels =
@@ -1706,8 +1796,8 @@ let private cellRefFromReader (r: XlsxReader.CellReference) =
         acc - 1
     r.Row - 1, col
 
-let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut =
-    let styleOf (style: XlsxReader.CellStyle option) =
+/// A reader cell style as a writer cell format.
+let formatOfReaderStyle (style: XlsxReader.CellStyle option) : XlsxCellFormat =
         match style with
         | None -> defaultXlsxCellFormat
         | Some s ->
@@ -1737,6 +1827,16 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
                 BorderDiagonal = side s.BorderDiagonal
                 DiagonalUp = s.DiagonalUp
                 DiagonalDown = s.DiagonalDown }
+
+let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut =
+    let styleOf = formatOfReaderStyle
+    // The named cell style a cell's format is based on (xfId of its cellXfs entry).
+    let namedStyleOf (cell: XlsxReader.Cell) =
+        match cell.StyleIndex with
+        | Some index when index >= 0 && index < workbook.Preserved.CellXfNamedStyles.Length ->
+            let named = workbook.Preserved.CellXfNamedStyles.[index]
+            if named > 0 then Some named else None
+        | _ -> None
     let runOf (props: XlsxReader.RunProps) text =
         { Text = text
           Bold = Some props.Bold
@@ -1792,7 +1892,10 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
                         { Row = r
                           Col = c
                           Value = valueOf cell
-                          Format = styleOf cell.Style
+                          Format =
+                            (match namedStyleOf cell with
+                             | None -> styleOf cell.Style
+                             | named -> { styleOf cell.Style with NamedStyle = named })
                           Comment = Map.tryFind (r, c) comments }))
               MergedCells =
                 sheet.MergedCells
@@ -1885,7 +1988,16 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
               PrintArea = sheet.PrintArea
               PrintTitleRows = sheet.PrintTitleRows
               PrintTitleCols = sheet.PrintTitleCols
-              Extras = { sheet.Extras with Format = Some sheet.Format; Columns = sheet.Columns } })
+              Extras =
+                { sheet.Extras with
+                    Format = Some sheet.Format
+                    Columns = sheet.Columns
+                    ColumnStyles =
+                        sheet.Columns
+                        |> List.choose (fun column ->
+                            match column.Style with
+                            | Some index when index > 0 && index < workbook.Styles.Length -> Some (column.Index - 1, column.MaxIndex - 1, workbook.Styles.[index])
+                            | _ -> None) } })
       ActiveSheetIndex = 0
       DefinedNames = workbook.NamedRanges |> List.map (fun n -> { Name = n.Name; RefersTo = n.RefersTo; LocalSheetIndex = n.Scope |> Option.bind (fun s -> match System.Int32.TryParse s with true, v -> Some v | _ -> None) })
       VbaProjectSource = None

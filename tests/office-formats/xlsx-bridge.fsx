@@ -147,6 +147,24 @@ let errorModel =
 let errorOut = Bridge.Export.toWorkbookOut (inputOf imported (imported.Sheets |> Array.mapi (fun i sheet -> if i = 0 then errorModel else sheet.Model)) imported.Context.Names)
 eq "a result that only became an error is not written" ((cellsOf errorOut.Sheets.[0]).[(formulaAddr.Row, formulaAddr.Col)]) ((cellsOf (XlsxWriter.packageFromReaderWorkbook wb).Sheets.[0]).[(formulaAddr.Row, formulaAddr.Col)])
 
+// ---- a cell whose value alone changed keeps the file's format and named style
+let styledOriginal =
+    (XlsxWriter.packageFromReaderWorkbook wb).Sheets
+    |> List.mapi (fun index sheet -> sheet.Cells |> List.filter (fun cell -> cell.Format.NamedStyle.IsSome && (match cell.Value with XlsxWriter.XlsxNumber _ -> true | _ -> false)) |> List.map (fun cell -> index, cell))
+    |> List.concat
+    |> List.tryHead
+match styledOriginal with
+| None -> ok "a number cell based on a named style exists" false "none in milk-street-office.xlsx"
+| Some (sheetIndex, styledCell) ->
+    let address = addr styledCell.Row styledCell.Col
+    let models = imported.Sheets |> Array.map (fun sheet -> sheet.Model)
+    let retyped = models |> Array.mapi (fun i model -> if i = sheetIndex then setCell address { model.Cells.[address] with Value = CellValue.Number 98765.0 } model else model)
+    let out = (Bridge.Export.toWorkbookOut (inputOf imported retyped imported.Context.Names)).Sheets.[sheetIndex] |> cellsOf
+    eq "value-only edit: new value, the file's format and named style" (out.[(styledCell.Row, styledCell.Col)]) { styledCell with Value = XlsxWriter.XlsxNumber 98765.0 }
+    let restyled = models |> Array.mapi (fun i model -> if i = sheetIndex then setCell address { model.Cells.[address] with Format = { model.Cells.[address].Format with Bold = not model.Cells.[address].Format.Bold } } model else model)
+    let outRestyled = (Bridge.Export.toWorkbookOut (inputOf imported restyled imported.Context.Names)).Sheets.[sheetIndex] |> cellsOf
+    eq "format edit: the editor's format is written" (outRestyled.[(styledCell.Row, styledCell.Col)].Format.Bold) (not styledCell.Format.Bold)
+
 // ---- a workbook made in the editor (no file behind it) ---------------------
 let fresh =
     createEmpty 50 10
