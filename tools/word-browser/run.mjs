@@ -18,6 +18,12 @@
 //   opaque-click     clicking, dragging and typing next to a chart placeholder keeps the chart on export
 //   selection-format getSelectionFormat (value / "mixed"), canUndo / canRedo, onChange and unsubscribing
 //   viewport         setViewport (zoom / devicePixelRatio / scroll): pixels and hit tests against whole-canvas mode, renderPage timing
+//   placeholder-and-frames  the chart placeholder's label is drawn at its own size, centred; content-control frames only around the caret's control
+//   caret-movement   Up / Down by visual lines keeping the column, Home / End, Ctrl+arrows, PageUp / PageDown, Ctrl+Home / End, Shift variants, double / triple click
+//   revision         getRevision / markSaved / isModified across edits, undo and redo
+//   viewer-measurers a viewer with the editor's measurers has the editor's pages; renderPage uses the text painter made for its canvas
+//   page-centering   narrower pages are centred through a viewport (X in getPageFrames, pixels, hit tests); nothing is painted between pages
+//   commands         point sizes, colours, fonts, styles, spacing, page break, table rows / columns / merge / split, hyperlinks, image resize by its handles
 //
 // Environment (as tools/docx-roundtrip/roundtrip.mjs): PLAYWRIGHT, JSZIP_DIR, PORT (default 16022).
 // Exit code is non-zero when any check fails.
@@ -34,7 +40,8 @@ const args = process.argv.slice(2);
 const opt = (name) => { const i = args.indexOf(name); if (i < 0) return undefined; const v = args[i + 1]; args.splice(i, 2); return v; };
 const dist = path.resolve(opt('--dist') ?? path.join(repo, 'dist'));
 const port = Number(process.env.PORT ?? 16022);
-const all = ['explicit-format', 'page-frames', 'ime', 'typing', 'track-changes', 'linked-images', 'opaque-click', 'viewport', 'selection-format'];
+const all = ['explicit-format', 'page-frames', 'ime', 'typing', 'track-changes', 'linked-images', 'opaque-click', 'viewport', 'selection-format',
+    'placeholder-and-frames', 'caret-movement', 'revision', 'viewer-measurers', 'page-centering', 'commands'];
 const checks = args.length ? args : all;
 
 const jszipDir = [process.env.JSZIP_DIR, path.join(repo, 'node_modules/jszip'), path.resolve(repo, '../rbt-office/node_modules/jszip')].find((p) => p && fs.existsSync(p));
@@ -76,7 +83,7 @@ catch { console.error('playwright not found; set PLAYWRIGHT=/path/to/playwright/
 const browser = await (playwright.chromium ?? playwright.default.chromium).launch();
 let failedChecks = 0;
 try {
-    for (const check of checks) {
+    const runCheck = async (check) => {
         externalProbes = 0;
         const tab = await browser.newPage({ viewport: { width: 1100, height: 900 } });
         const errors = [];
@@ -84,9 +91,12 @@ try {
         await tab.goto(`http://127.0.0.1:${port}/?check=${encodeURIComponent(check)}`);
         await tab.waitForFunction('window.result !== undefined || window.drive !== undefined', null, { timeout: 240000 });
         if (await tab.evaluate('window.drive !== undefined')) {
-            // The check wants real input: [["click", x, y] | ["type", text] | ["press", key] | ["down", x, y] | ["move", x, y] | ["up"] | ["wheel", dx, dy] | ["eval", js]] ...
+            // The check wants real input: [["click" | "dblclick" | "tripleclick" | "shiftclick", x, y] | ["type", text] | ["press", key] | ["down", x, y] | ["move", x, y] | ["up"] | ["wheel", dx, dy] | ["eval", js]] ...
             for (const [action, a, b] of await tab.evaluate('window.drive')) {
                 if (action === 'click') await tab.mouse.click(a, b);
+                else if (action === 'dblclick') await tab.mouse.dblclick(a, b);
+                else if (action === 'tripleclick') await tab.mouse.click(a, b, { clickCount: 3 });
+                else if (action === 'shiftclick') { await tab.keyboard.down('Shift'); await tab.mouse.click(a, b); await tab.keyboard.up('Shift'); }
                 else if (action === 'type') await tab.keyboard.type(a);
                 else if (action === 'press') await tab.keyboard.press(a);
                 else if (action === 'down') { await tab.mouse.move(a, b); await tab.mouse.down(); }
@@ -99,11 +109,17 @@ try {
             await tab.waitForFunction('window.result !== undefined', null, { timeout: 240000 });
         }
         const result = await tab.evaluate('window.result');
+        await tab.close();
+        return { result, errors };
+    };
+    for (const check of checks) {
+        let { result, errors } = await runCheck(check);
+        // A module request that the page could not fetch (the browser was busy starting up): once more.
+        if (result.log.some((line) => line.includes('Failed to fetch dynamically imported module'))) ({ result, errors } = await runCheck(check));
         const problems = [...errors, ...result.log.filter((line) => process.env.VERBOSE || !line.startsWith("ok"))];
         console.log(`${result.failed === 0 && errors.length === 0 ? 'ok  ' : 'FAIL'} ${check}  (${result.passed} passed, ${result.failed} failed)`);
         for (const line of problems) console.log('     ' + line);
         if (result.failed || errors.length) failedChecks++;
-        await tab.close();
     }
 } finally {
     await browser.close();

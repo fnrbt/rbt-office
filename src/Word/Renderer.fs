@@ -77,6 +77,12 @@ type RenderContext = {
     mutable TextMeasurer: TextMeasurer option
     mutable TextRangeMeasurer: TextRangeMeasurer option
     mutable TextPathPainter: (string -> TextPaintStyle -> float -> float -> float -> bool) option
+    /// Makes a text path painter for a canvas context: how text is painted on
+    /// canvases other than the context's own (`renderPage` targets). A
+    /// painter draws on one context; this makes one for any.
+    /// (Delegates, not curried functions: the factory and the painter it
+    /// returns come from JavaScript.)
+    mutable TextPathPainterFactory: System.Func<CanvasRenderingContext2D, System.Func<string, TextPaintStyle, float, float, float, bool>> option
     LayoutState: IncrementalLayoutState
     mutable LastPaint: PaintFrame option
     /// None: the canvas holds the whole document at layout scale and the host
@@ -132,6 +138,7 @@ let createContext (canvas: HTMLCanvasElement) = {
     TextMeasurer = None
     TextRangeMeasurer = None
     TextPathPainter = None
+    TextPathPainterFactory = None
     LayoutState = Rbt.Word.Layout.createIncrementalLayoutState ()
     LastPaint = None
     Viewport = None
@@ -771,7 +778,7 @@ let private buildFrame (ctx: RenderContext) (doc: Document) hoveredImage =
         List.concat [
             commentAnchorCommands ctx doc layouts
             selectionCommandsWithRange settings (measureRangeWithContext ctx) doc layouts
-            markupMarkerCommands settings layouts
+            markupMarkerCommands settings doc layouts
             hoverCommands settings layouts hoveredImage
         ]
     {
@@ -838,18 +845,66 @@ let private renderIndexedInBand ctx (index: CommandIndex) top bottom =
         if index.Bottoms.[i] >= top && index.Tops.[i] <= bottom then
             renderPaintCommand ctx index.Commands.[i]
 
+/// Pages are laid out with their left edge at x = 0. Shown through a
+/// viewport, a page narrower than the widest one (a portrait section among
+/// landscape ones) is centred in the document's width: this is how far it is
+/// moved right. Whole-canvas mode leaves pages where the layout put them.
+let private pageOffsetX (documentWidth: float) (page: PageInfo) =
+    max 0.0 (floor ((documentWidth - page.Width) / 2.0))
+
+let private documentWidthOf (pages: PageInfo list) =
+    let mutable width = 0.0
+    for page in pages do
+        width <- max width page.Width
+    width
+
+/// The pages of the frame on display, when there is one.
+let private displayedPages (ctx: RenderContext) : PageInfo list =
+    match ctx.LastPaint with
+    | Some frame -> frame.Pages
+    | None -> []
+
+/// How far the page at layout y is moved right on screen (0 in whole-canvas
+/// mode, or when all pages are as wide as the document).
+let private offsetXAtY (ctx: RenderContext) (y: float) : float =
+    match ctx.Viewport with
+    | None -> 0.0
+    | Some _ ->
+        let pages = displayedPages ctx
+        let width = documentWidthOf pages
+        // The page the point is on, or the one it is nearest to (between pages).
+        let mutable best = 0.0
+        let mutable bestDistance = System.Double.MaxValue
+        for page in pages do
+            let distance = if y < page.Top then page.Top - y elif y > page.Top + page.Height then y - (page.Top + page.Height) else 0.0
+            if distance < bestDistance then
+                bestDistance <- distance
+                best <- pageOffsetX width page
+        best
+
+/// The x of each page on screen in layout pixels (see `pageOffsetX`),
+/// parallel to `pages`: all 0 in whole-canvas mode.
+let pageOffsets (ctx: RenderContext) (pages: PageInfo list) : float list =
+    match ctx.Viewport with
+    | None -> pages |> List.map (fun _ -> 0.0)
+    | Some _ ->
+        let width = documentWidthOf pages
+        pages |> List.map (pageOffsetX width)
+
 /// Layout coordinates of a point given in CSS pixels relative to the canvas.
 /// Whole-canvas mode maps one to one (the host scales the canvas itself).
 let viewportToLayout (ctx: RenderContext) (x: float) (y: float) =
     match ctx.Viewport with
     | None -> x, y
-    | Some vp -> (x + vp.ScrollLeft - vp.OriginX) / vp.Scale, (y + vp.ScrollTop - vp.OriginY) / vp.Scale
+    | Some vp ->
+        let layoutY = (y + vp.ScrollTop - vp.OriginY) / vp.Scale
+        (x + vp.ScrollLeft - vp.OriginX) / vp.Scale - offsetXAtY ctx layoutY, layoutY
 
 /// CSS pixels relative to the canvas of a point in layout coordinates.
 let layoutToViewport (ctx: RenderContext) (x: float) (y: float) =
     match ctx.Viewport with
     | None -> x, y
-    | Some vp -> x * vp.Scale + vp.OriginX - vp.ScrollLeft, y * vp.Scale + vp.OriginY - vp.ScrollTop
+    | Some vp -> (x + offsetXAtY ctx y) * vp.Scale + vp.OriginX - vp.ScrollLeft, y * vp.Scale + vp.OriginY - vp.ScrollTop
 
 /// CSS pixels per layout pixel on the canvas (1 in whole-canvas mode).
 let viewportScale (ctx: RenderContext) =
@@ -876,15 +931,18 @@ let private fitCanvasToViewport (ctx: RenderContext) (vp: Viewport) =
 
 let private deskColor = "#eef0f3"
 
+let private renderPageSheet (ctx: RenderContext) (page: PageInfo) =
+    ctx.Ctx.fillStyle <- U3.Case1 "#ffffff"
+    ctx.Ctx.fillRect(0.0, page.Top, page.Width, page.Height)
+    ctx.Ctx.strokeStyle <- U3.Case1 "#d0d5dd"
+    ctx.Ctx.lineWidth <- 1.0
+    setLineDash ctx.Ctx [||]
+    ctx.Ctx.strokeRect(0.5, page.Top + 0.5, page.Width - 1.0, page.Height - 1.0)
+
 let private renderPagesInBand (ctx: RenderContext) (pages: PageInfo list) top bottom =
     for page in pages do
         if page.Top + page.Height >= top && page.Top <= bottom then
-            ctx.Ctx.fillStyle <- U3.Case1 "#ffffff"
-            ctx.Ctx.fillRect(0.0, page.Top, page.Width, page.Height)
-            ctx.Ctx.strokeStyle <- U3.Case1 "#d0d5dd"
-            ctx.Ctx.lineWidth <- 1.0
-            setLineDash ctx.Ctx [||]
-            ctx.Ctx.strokeRect(0.5, page.Top + 0.5, page.Width - 1.0, page.Height - 1.0)
+            renderPageSheet ctx page
 
 /// Paint a band of the document through the viewport transform: the desk,
 /// the pages and the commands that intersect it, and nothing else.
@@ -905,9 +963,24 @@ let private renderViewportBand (ctx: RenderContext) (frame: PaintFrame) (vp: Vie
     ctx.Ctx.fillStyle <- U3.Case1 deskColor
     ctx.Ctx.fillRect(left, top, width, height)
     ctx.Ctx.font <- sprintf "%fpx %s" ctx.FontSize ctx.FontFamily
-    renderPagesInBand ctx frame.Pages top band.Bottom
-    renderIndexedInBand ctx (bodyIndex frame) top band.Bottom
-    renderIndexedInBand ctx (overlayIndex frame) top band.Bottom
+    // Page by page: each is painted at its own x (a narrower page is centred
+    // in the document's width) and clipped to its sheet, so nothing of a page
+    // - a table border running on to the next one - shows in the gap between
+    // pages.
+    let documentWidth = documentWidthOf frame.Pages
+    for page in frame.Pages do
+        let pageTop = max top page.Top
+        let pageBottom = min band.Bottom (page.Top + page.Height)
+        if pageBottom > pageTop then
+            ctx.Ctx.save()
+            ctx.Ctx.translate(pageOffsetX documentWidth page, 0.0)
+            ctx.Ctx.beginPath()
+            ctx.Ctx.rect(0.0, pageTop, page.Width, pageBottom - pageTop)
+            ctx.Ctx.clip()
+            renderPageSheet ctx page
+            renderIndexedInBand ctx (bodyIndex frame) pageTop pageBottom
+            renderIndexedInBand ctx (overlayIndex frame) pageTop pageBottom
+            ctx.Ctx.restore()
     ctx.Ctx.restore()
     ctx.Ctx.fillStyle <- U3.Case1 "#000000"
 
@@ -985,8 +1058,11 @@ let documentSize (ctx: RenderContext) (doc: Document) =
 /// Read-only: no selection, caret or hover is drawn. The document's paint
 /// commands are collected once and reused for every page, so painting all
 /// pages costs one pass over the document, not one per page.
-/// A text path painter installed on the context draws on the editor canvas
-/// and is not used here.
+/// Text is measured with the context's measurers, so the pages are the pages
+/// of the editor / viewer the context belongs to. A text path painter draws
+/// on one canvas: the page is painted with the painter the context's factory
+/// (`TextPathPainterFactory`) makes for the target canvas, or with canvas
+/// text when there is none.
 let renderPage (ctx: RenderContext) (doc: Document) (canvas: HTMLCanvasElement) (pageIndex: int) (scale: float) =
     let usable (frame: PaintFrame) =
         obj.ReferenceEquals(frame.Document, doc)
@@ -1004,7 +1080,15 @@ let renderPage (ctx: RenderContext) (doc: Document) (canvas: HTMLCanvasElement) 
     | Some page ->
         canvas.width <- max 1.0 (round (page.Width * scale))
         canvas.height <- max 1.0 (round (page.Height * scale))
-        let target = { ctx with Canvas = canvas; Ctx = canvas.getContext_2d(); TextPathPainter = None }
+        let targetContext = canvas.getContext_2d()
+        let painter =
+            match ctx.TextPathPainterFactory with
+            | Some factory ->
+                let paint = factory.Invoke targetContext
+                if isNull (box paint) then None
+                else Some (fun (text: string) (style: TextPaintStyle) (x: float) (baseline: float) (width: float) -> paint.Invoke(text, style, x, baseline, width))
+            | None -> None
+        let target = { ctx with Canvas = canvas; Ctx = targetContext; TextPathPainter = painter }
         let bottom = page.Top + page.Height
         target.Ctx.save()
         setTransform target.Ctx scale 0.0 0.0 scale 0.0 (-page.Top * scale)

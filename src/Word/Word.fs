@@ -35,7 +35,41 @@ module API =
         /// Undo / redo availability as last reported to the listeners.
         mutable NotifiedCanUndo: bool
         mutable NotifiedCanRedo: bool
+        /// The revision of the document's content (see getRevision): a
+        /// number given to each state of the content when it first appears.
+        /// Undo and redo go back to states that have their number already.
+        mutable Revision: int
+        mutable LastRevision: int
+        /// The revision the host last saved (see markSaved).
+        mutable SavedRevision: int
+        /// The document the current revision was given to, and the states
+        /// undo / redo can come back to, newest first.
+        mutable RevisionDocument: Doc.Document
+        KnownRevisions: ResizeArray<Doc.Document * int>
+        /// Font families the host's text stack can draw (see setFontFamilies).
+        mutable FontFamilies: string array
     }
+
+    /// Bring the revision in line with the document that is now shown: the
+    /// same content keeps its number (a moved caret is not a new revision),
+    /// content seen before (undo, redo) gets its number back, anything else
+    /// a new one.
+    let private observeRevision (editor: Editor) (doc: Doc.Document) =
+        if not (Inp.sameContent doc editor.RevisionDocument) then
+            // What is being left can be come back to.
+            editor.KnownRevisions.Insert(0, (editor.RevisionDocument, editor.Revision))
+            if editor.KnownRevisions.Count > 400 then editor.KnownRevisions.RemoveAt (editor.KnownRevisions.Count - 1)
+            let mutable known = -1
+            let mutable i = 0
+            while known < 0 && i < editor.KnownRevisions.Count do
+                let state, revision = editor.KnownRevisions.[i]
+                if Inp.sameContent state doc then known <- revision
+                i <- i + 1
+            if known >= 0 then editor.Revision <- known
+            else
+                editor.LastRevision <- editor.LastRevision + 1
+                editor.Revision <- editor.LastRevision
+            editor.RevisionDocument <- doc
 
     let private layoutsForEditor (editor: Editor) =
         Ren.cachedLayouts editor.Handler.RenderContext editor.Doc
@@ -55,6 +89,11 @@ module API =
     let private loadDocument (editor: Editor) newDoc =
         Inp.loadDocument editor.Handler newDoc
         editor.Doc <- newDoc
+        // A loaded document is a new document: nothing of the old one can be
+        // come back to, and it is as it was saved.
+        editor.KnownRevisions.Clear()
+        observeRevision editor newDoc
+        editor.SavedRevision <- editor.Revision
 
     /// Undo the last change, whether typed or made through the API.
     /// Returns false when there was nothing to undo.
@@ -104,6 +143,8 @@ module API =
                         "SelectionChanged" ==> selectionChanged
                         "CanUndo" ==> canUndoNow
                         "CanRedo" ==> canRedoNow
+                        "Revision" ==> editor.Revision
+                        "Modified" ==> (editor.Revision <> editor.SavedRevision)
                     ]
                 // A listener may unsubscribe (or subscribe) while being called.
                 for listener in editor.Listeners.ToArray() do
@@ -112,12 +153,30 @@ module API =
     /// Call `callback` after every change of the document or the selection
     /// (typing, pointer, toolbar / API commands, undo, redo, loading a
     /// document). It receives { DocumentChanged, SelectionChanged, CanUndo,
-    /// CanRedo }. Returns a function that removes the subscription.
+    /// CanRedo, Revision, Modified } (see getRevision / isModified). Returns a
+    /// function that removes the subscription.
     let onChange (editor: Editor) (callback: obj -> unit) : unit -> unit =
         editor.Listeners.Add callback
         editor.NotifiedCanUndo <- Inp.canUndo editor.Handler
         editor.NotifiedCanRedo <- Inp.canRedo editor.Handler
         fun () -> editor.Listeners.Remove callback |> ignore
+
+    /// The revision of the document's content: a number that changes with
+    /// every change of the content (not with the caret or the selection),
+    /// never repeats for different content, and comes back when undo or redo
+    /// brings the content back. Undoing to the state that was saved gives the
+    /// revision that was saved.
+    let getRevision (editor: Editor) : int = editor.Revision
+
+    /// Remember the current content as the saved one: isModified is false
+    /// until the content differs from it (and false again after undoing or
+    /// redoing back to it).
+    let markSaved (editor: Editor) : unit =
+        editor.SavedRevision <- editor.Revision
+
+    /// Whether the content differs from what was last loaded or marked saved.
+    let isModified (editor: Editor) : bool =
+        editor.Revision <> editor.SavedRevision
 
     let private formatValueToJs (convert: 'T -> obj) (value: WordStyles.FormatValue<'T>) : obj =
         match value with
@@ -134,7 +193,11 @@ module API =
     /// is the effective one (styles resolved), "mixed" when the selection
     /// holds different values, or null when there is nothing to report.
     ///   Bold, Italic, Underline, Strike: boolean
-    ///   FontFamily: string (null: the default face), FontSize: number (unit of setFontSize)
+    ///   FontFamily: string (null: the default face)
+    ///   FontSize: number, in layout pixels (CSS pixels at 100%; the unit of setFontSize)
+    ///   FontSizePt: the same size in points (what a document states and a
+    ///     size box shows: 11, 12, 14 ...; the unit of setFontSizePt)
+    ///   Hyperlink: the target of the link the caret / selection is in (null: none)
     ///   Color: "#RRGGBB" (null: automatic), Highlight: colour name / value (null: none)
     ///   Paragraph: { StyleId (null: default style), HeadingLevel (0: body text),
     ///     Alignment "left" | "center" | "right" | "justify",
@@ -152,6 +215,14 @@ module API =
             "Strike" ==> boolean format.Strike
             "FontFamily" ==> text format.FontFamily
             "FontSize" ==> number format.FontSize
+            "FontSizePt" ==> formatValueToJs (fun (pixels: float) -> box (System.Math.Round (pixels * 72.0 / 96.0 * 100.0) / 100.0)) format.FontSize
+            "Hyperlink" ==>
+                (match editor.Doc.Selection with
+                 | Some selection ->
+                    match Doc.findParagraph editor.Doc selection.Focus.BlockId |> Option.bind (fun para -> Doc.hyperlinkAt para (if selection.Anchor.BlockId = selection.Focus.BlockId then min selection.Anchor.Offset selection.Focus.Offset else selection.Focus.Offset)) with
+                    | Some (target, _, _) -> box target
+                    | None -> null
+                 | None -> null)
             "Color" ==> text format.Color
             "Highlight" ==> text format.Highlight
             "Paragraph" ==> createObj [
@@ -186,6 +257,7 @@ module API =
         let onChange newDoc =
             let previous = editor.Doc
             editor.Doc <- newDoc
+            observeRevision editor newDoc
             afterChange ()
             notifyListeners editor previous newDoc
 
@@ -197,6 +269,12 @@ module API =
             Listeners = ResizeArray()
             NotifiedCanUndo = false
             NotifiedCanRedo = false
+            Revision = 0
+            LastRevision = 0
+            SavedRevision = 0
+            RevisionDocument = doc
+            KnownRevisions = ResizeArray()
+            FontFamilies = [||]
         }
 
         editor
@@ -213,10 +291,14 @@ module API =
 
         initializeCanvas canvas
 
-    let private pageFramesToJs (pages: Layout.PageInfo list) =
-        pages
-        |> List.map (fun page ->
+    let private pageFramesToJs (ctx: Ren.RenderContext) (pages: Layout.PageInfo list) =
+        List.zip pages (Ren.pageOffsets ctx pages)
+        |> List.map (fun (page, x) ->
             createObj [
+                // Where the page's left edge is in the document's width, in
+                // layout pixels: 0 in whole-canvas mode; through a viewport a
+                // page narrower than the widest one is centred.
+                "X" ==> x
                 "Top" ==> page.Top
                 "Width" ==> page.Width
                 "Height" ==> page.Height
@@ -367,6 +449,10 @@ module API =
     ///   setImageCache(map)             Map of image source -> decoded HTMLImageElement
     ///   getPageCount() / getPageFrames() / getDocumentSize()
     ///   renderPage(canvas, pageIndex, scale)   paint one page (see API.renderPage)
+    ///   setTextMeasurers(measureText, measureRange) / setTextMeasurer / setTextRangeMeasurer /
+    ///   clearTextMeasurer()            measure text as an editor with the same measurers does:
+    ///                                  the viewer then has that editor's lines and pages
+    ///   setTextPathPainter(painterFor) painterFor(context2d) gives the text painter for a canvas
     ///   render(document)               paint a Document on the viewer's canvas (as before)
     let createViewer (canvas: HTMLCanvasElement) =
         let ctx = Ren.createContext canvas
@@ -384,7 +470,39 @@ module API =
         state?setImageCache <- fun (cache: obj) ->
             ctx.ImageCache <- (if isNull cache then None else Some cache)
             ctx.LastPaint <- None
-        state?getPageFrames <- fun () -> pageFramesToJs (Ren.pageFrames ctx (current ()))
+        // The same measurers (and text painter) as an editor: with them the
+        // viewer breaks lines and pages exactly as that editor does.
+        let relayout () =
+            Ren.clearLayoutCache ctx
+        state?setTextMeasurers <- fun (measureText: Layout.TextMeasurer) (measureRange: Layout.TextRangeMeasurer) ->
+            ctx.TextMeasurer <- (if isNull (box measureText) then None else Some measureText)
+            ctx.TextRangeMeasurer <- (if isNull (box measureRange) then None else Some measureRange)
+            relayout ()
+        state?setTextMeasurer <- fun (measureText: Layout.TextMeasurer) ->
+            ctx.TextMeasurer <- (if isNull (box measureText) then None else Some measureText)
+            relayout ()
+        state?setTextRangeMeasurer <- fun (measureRange: Layout.TextRangeMeasurer) ->
+            ctx.TextRangeMeasurer <- (if isNull (box measureRange) then None else Some measureRange)
+            relayout ()
+        // `painterFor(context2d)` returns the painter for that canvas context
+        // (text, style, x, baseline, width) -> true when it painted the text.
+        state?setTextPathPainter <- fun (painterFor: System.Func<CanvasRenderingContext2D, System.Func<string, Paint.TextPaintStyle, float, float, float, bool>>) ->
+            if isNull (box painterFor) then
+                ctx.TextPathPainterFactory <- None
+                ctx.TextPathPainter <- None
+            else
+                ctx.TextPathPainterFactory <- Some painterFor
+                let paint = painterFor.Invoke ctx.Ctx
+                ctx.TextPathPainter <- Some (fun text style x baseline width -> paint.Invoke(text, style, x, baseline, width))
+            ctx.LastPaint <- None
+            ctx.PageFrame <- None
+        state?clearTextMeasurer <- fun () ->
+            ctx.TextMeasurer <- None
+            ctx.TextRangeMeasurer <- None
+            ctx.TextPathPainter <- None
+            ctx.TextPathPainterFactory <- None
+            relayout ()
+        state?getPageFrames <- fun () -> pageFramesToJs ctx (Ren.pageFrames ctx (current ()))
         state?getPageCount <- fun () -> Ren.pageCount ctx (current ())
         state?getDocumentSize <- fun () -> documentSizeToJs ctx (current ())
         state?renderPage <- fun (target: HTMLCanvasElement) (pageIndex: int) (scale: float) -> Ren.renderPage ctx (current ()) target pageIndex scale
@@ -424,14 +542,27 @@ module API =
         editor.Handler.RenderContext.TextPathPainter <- Some paintText
         Ren.render editor.Handler.RenderContext editor.Doc
 
+    /// As setTextPathPainter, for every canvas the editor paints on:
+    /// `painterFor(context2d)` returns the painter for that canvas context, so
+    /// renderPage paints its pages with it too (a painter draws on one context).
+    let setTextPathPainterFactory (editor: Editor) (painterFor: System.Func<CanvasRenderingContext2D, System.Func<string, Paint.TextPaintStyle, float, float, float, bool>>) =
+        let ctx = editor.Handler.RenderContext
+        ctx.TextPathPainterFactory <- Some painterFor
+        let paint = painterFor.Invoke ctx.Ctx
+        ctx.TextPathPainter <- Some (fun text style x baseline width -> paint.Invoke(text, style, x, baseline, width))
+        ctx.PageFrame <- None
+        Ren.render ctx editor.Doc
+
     let clearTextPathPainter (editor: Editor) =
         editor.Handler.RenderContext.TextPathPainter <- None
+        editor.Handler.RenderContext.TextPathPainterFactory <- None
         Ren.render editor.Handler.RenderContext editor.Doc
 
     let clearTextMeasurer (editor: Editor) =
         editor.Handler.RenderContext.TextMeasurer <- None
         editor.Handler.RenderContext.TextRangeMeasurer <- None
         editor.Handler.RenderContext.TextPathPainter <- None
+        editor.Handler.RenderContext.TextPathPainterFactory <- None
         Ren.clearLayoutCache editor.Handler.RenderContext
         Ren.render editor.Handler.RenderContext editor.Doc
 
@@ -1641,6 +1772,122 @@ module API =
         let newDoc = Doc.setFontFamily family editor.Doc
         commitDocumentUpdate editor newDoc
 
+    /// Set the font size of the selection in points (11, 12, 14 ...: the unit
+    /// documents state sizes in and a size box shows). setFontSize takes
+    /// layout pixels (points x 96 / 72).
+    let setFontSizePt (editor: Editor) (points: float) =
+        setFontSizeFor editor (points * 96.0 / 72.0)
+
+    /// Tell the editor which font families the host's text stack can draw
+    /// (getFontFamilies then offers them).
+    let setFontFamilies (editor: Editor) (families: string array) =
+        editor.FontFamilies <- (if isNull (box families) then [||] else families |> Array.filter (fun name -> not (System.String.IsNullOrWhiteSpace name)))
+
+    /// The font families to offer in a font box: the ones the text stack
+    /// installed (setFontFamilies) and the ones the document uses (its text
+    /// and its styles), sorted, each once. Without a text stack and with an
+    /// empty document: the editor's default face.
+    let getFontFamilies (editor: Editor) : string array =
+        let used = System.Collections.Generic.HashSet<string>()
+        let names = ResizeArray<string>()
+        let add (name: string) =
+            if not (System.String.IsNullOrWhiteSpace name) && used.Add (name.Trim().ToLowerInvariant()) then names.Add (name.Trim())
+        for name in editor.FontFamilies do add name
+        for style in editor.Doc.Styles do
+            match style.Text |> Option.bind (fun text -> text.FontFamily) with
+            | Some name -> add name
+            | None -> ()
+        for para in Doc.allParagraphs editor.Doc do
+            for run in para.Buffer.Runs do
+                match run with
+                | TextBuf.Text text ->
+                    match text.Style.FontFamily with
+                    | Some name -> add name
+                    | None -> ()
+                | _ -> ()
+        if names.Count = 0 then add editor.Handler.RenderContext.FontFamily
+        names.ToArray() |> Array.sortBy (fun name -> name.ToLowerInvariant())
+
+    /// The document's styles, for a style box: [{ Id, Name, Type ("paragraph" |
+    /// "character" | "table" | "numbering"), IsDefault, IsQuickStyle, Hidden,
+    /// HeadingLevel (1-9, or 0), BasedOn (id or null) }]. setParagraphStyle /
+    /// setCharacterStyle take the Id.
+    let getStyles (editor: Editor) : obj array =
+        // "heading 3" / "Heading3" is a level-3 heading whatever its outline level says.
+        let headingLevel (style: Doc.NamedStyle) =
+            let name = (style.Name |> Option.defaultValue style.Id).Trim().ToLowerInvariant().Replace(" ", "")
+            if name.StartsWith "heading" && name.Length = 8 && name.[7] >= '1' && name.[7] <= '9' then int name.[7] - int '0'
+            else
+                match style.OutlineLevel with
+                // The file's outline level counts from 0.
+                | Some level when level >= 0 && level <= 8 && style.StyleType = "paragraph" -> level + 1
+                | _ -> 0
+        editor.Doc.Styles
+        // (The document defaults are kept among the styles; they are not one.)
+        |> List.filter (fun style -> style.StyleType <> "defaults")
+        |> List.map (fun style ->
+            createObj [
+                "Id" ==> style.Id
+                "Name" ==> (style.Name |> Option.defaultValue style.Id)
+                "Type" ==> style.StyleType
+                "IsDefault" ==> style.IsDefault
+                "IsQuickStyle" ==> style.IsQuickStyle
+                "Hidden" ==> (style.SemiHidden && not style.UnhideWhenUsed)
+                "HeadingLevel" ==> headingLevel style
+                "BasedOn" ==> optionalStringToJs style.BasedOn
+            ])
+        |> List.toArray
+
+    /// Line spacing of the selected paragraphs as a multiple of single
+    /// spacing (1, 1.15, 1.5, 2 ...); 0 or less goes back to the style's.
+    let setLineSpacing (editor: Editor) (multiple: float) =
+        commitDocumentUpdate editor (Doc.setLineSpacing (if multiple > 0.0 then Some multiple else None) editor.Doc)
+
+    /// Space before / after the selected paragraphs, in points; a negative
+    /// value goes back to the style's.
+    let setSpacingBefore (editor: Editor) (points: float) =
+        commitDocumentUpdate editor (Doc.setSpacingBefore (if points >= 0.0 then Some (points * 96.0 / 72.0) else None) editor.Doc)
+
+    let setSpacingAfter (editor: Editor) (points: float) =
+        commitDocumentUpdate editor (Doc.setSpacingAfter (if points >= 0.0 then Some (points * 96.0 / 72.0) else None) editor.Doc)
+
+    /// Insert a page break at the caret (Ctrl+Enter in Word).
+    let insertPageBreak (editor: Editor) =
+        commitDocumentUpdate editor (Doc.insertPageBreak editor.Doc)
+
+    /// Insert a hyperlink to `target`: the selected text becomes the link;
+    /// with a caret, `text` (or the target, when it is empty) is inserted as
+    /// the link.
+    let insertHyperlink (editor: Editor) (target: string) (text: string) =
+        if not (isNull (box target)) && target <> "" then
+            commitDocumentUpdate editor (Doc.insertHyperlink target (if isNull (box text) then "" else text) editor.Doc)
+
+    /// The hyperlink the caret is in: { Target, BlockId, StartOffset,
+    /// EndOffset, Text }, or null.
+    let getHyperlink (editor: Editor) : obj =
+        match editor.Doc.Selection with
+        | None -> null
+        | Some selection ->
+            match Doc.findParagraph editor.Doc selection.Focus.BlockId with
+            | None -> null
+            | Some para ->
+                let offset = if selection.Anchor.BlockId = selection.Focus.BlockId then min selection.Anchor.Offset selection.Focus.Offset else selection.Focus.Offset
+                match Doc.hyperlinkAt para offset with
+                | Some (target, first, last) ->
+                    createObj [
+                        "Target" ==> target
+                        "BlockId" ==> para.Id
+                        "StartOffset" ==> first
+                        "EndOffset" ==> last
+                        "Text" ==> (TextBuf.toString para.Buffer).Substring(first, last - first)
+                    ]
+                | None -> null
+
+    /// Change the target of the hyperlink the caret is in (the whole link);
+    /// null or "" removes the link and keeps its text.
+    let setHyperlinkTarget (editor: Editor) (target: string) =
+        commitDocumentUpdate editor (Doc.setHyperlinkTarget (if isNull (box target) || target = "" then None else Some target) editor.Doc)
+
     /// Apply Heading 1-3 to the current block
     let setHeadingLevel (editor: Editor) (level: int) =
         let newDoc = Doc.setHeadingLevel level editor.Doc
@@ -1692,6 +1939,26 @@ module API =
     let insertTableColumnAfter (editor: Editor) =
         let newDoc = Doc.insertTableColumnAfterSelection editor.Doc
         commitDocumentUpdate editor newDoc
+
+    /// Insert a table row above the row containing the current selection
+    let insertTableRowBefore (editor: Editor) =
+        commitDocumentUpdate editor (Doc.insertTableRowBeforeSelection editor.Doc)
+
+    /// Insert a table column to the left of the column containing the current selection
+    let insertTableColumnBefore (editor: Editor) =
+        commitDocumentUpdate editor (Doc.insertTableColumnBeforeSelection editor.Doc)
+
+    /// Whether the selection spans several cells of one table (mergeTableCells would merge them).
+    let canMergeTableCells (editor: Editor) : bool =
+        Doc.canMergeSelectedTableCells editor.Doc
+
+    /// Merge the selected table cells into one.
+    let mergeTableCells (editor: Editor) =
+        commitDocumentUpdate editor (Doc.mergeSelectedTableCells editor.Doc)
+
+    /// Split the merged cell the caret is in back into single cells.
+    let splitTableCell (editor: Editor) =
+        commitDocumentUpdate editor (Doc.splitSelectedTableCell editor.Doc)
 
     /// Delete the table row containing the current selection
     let deleteTableRow (editor: Editor) =
@@ -1905,7 +2172,7 @@ module API =
     /// and margins. Hosts size the canvas from the last frame's Top + Height
     /// and the widest frame.
     let getPageFrames (editor: Editor) =
-        pageFramesToJs (Ren.pageFrames editor.Handler.RenderContext editor.Doc)
+        pageFramesToJs editor.Handler.RenderContext (Ren.pageFrames editor.Handler.RenderContext editor.Doc)
 
     let getPageCount (editor: Editor) =
         Ren.pageCount editor.Handler.RenderContext editor.Doc
@@ -2285,7 +2552,28 @@ module API =
             "selectNextRevision" ==> selectNextRevision
             "selectPreviousRevision" ==> selectPreviousRevision
             "setFontSize" ==> setFontSizeFor
+            "setFontSizePt" ==> setFontSizePt
             "setFontFamily" ==> setFontFamilyFor
+            "setFontFamilies" ==> setFontFamilies
+            "getFontFamilies" ==> getFontFamilies
+            "getStyles" ==> getStyles
+            "setLineSpacing" ==> setLineSpacing
+            "setSpacingBefore" ==> setSpacingBefore
+            "setSpacingAfter" ==> setSpacingAfter
+            "applyParagraphStyle" ==> applyParagraphStyle
+            "insertPageBreak" ==> insertPageBreak
+            "insertHyperlink" ==> insertHyperlink
+            "getHyperlink" ==> getHyperlink
+            "setHyperlinkTarget" ==> setHyperlinkTarget
+            "insertTableRowBefore" ==> insertTableRowBefore
+            "insertTableColumnBefore" ==> insertTableColumnBefore
+            "canMergeTableCells" ==> canMergeTableCells
+            "mergeTableCells" ==> mergeTableCells
+            "splitTableCell" ==> splitTableCell
+            "getRevision" ==> getRevision
+            "markSaved" ==> markSaved
+            "isModified" ==> isModified
+            "setTextPathPainterFactory" ==> setTextPathPainterFactory
             "setHeadingLevel" ==> setHeadingLevel
             "clearHeading" ==> clearHeading
             "selectAll" ==> selectAll

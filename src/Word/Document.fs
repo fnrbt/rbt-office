@@ -2013,6 +2013,144 @@ let insertTableColumnAfterSelection doc =
                                 |> List.mapi (fun i cell -> if i = colIndex then [cell; emptyTableCell ()] else [cell])
                                 |> List.concat }) })
 
+/// Insert a table row above the row containing the selection.
+let insertTableRowBeforeSelection doc =
+    match currentTableCell doc with
+    | None -> doc
+    | Some (tableId, rowIndex, _) ->
+        updateTable doc tableId (fun table ->
+            match List.tryItem rowIndex table.Rows with
+            | None -> table
+            | Some row ->
+                // A row like the one it is inserted next to: the same cells, empty.
+                let newRow = { row with Cells = row.Cells |> List.map (fun cell -> { emptyTableCell () with ColSpan = cell.ColSpan; Width = cell.Width; PreferredWidth = cell.PreferredWidth }); IsHeader = false }
+                { table with
+                    Rows =
+                        table.Rows
+                        |> List.mapi (fun i existing -> if i = rowIndex then [ newRow; existing ] else [ existing ])
+                        |> List.concat })
+
+/// Insert a table column to the left of the column containing the selection.
+let insertTableColumnBeforeSelection doc =
+    match currentTableCell doc with
+    | None -> doc
+    | Some (tableId, _, colIndex) ->
+        updateTable doc tableId (fun table ->
+            { table with
+                Rows =
+                    table.Rows
+                    |> List.map (fun row ->
+                        { row with
+                            Cells =
+                                row.Cells
+                                |> List.mapi (fun i cell -> if i = colIndex then [ emptyTableCell (); cell ] else [ cell ])
+                                |> List.concat }) })
+
+/// The table cells the selection spans: (table, first row, first cell, last
+/// row, last cell) when both ends of the selection are in cells of one table.
+let private selectedTableCells doc =
+    match doc.Selection with
+    | None -> None
+    | Some selection ->
+        match tryFindTableCellByParagraph doc selection.Anchor.BlockId, tryFindTableCellByParagraph doc selection.Focus.BlockId with
+        | Some (anchorTable, anchorRow, anchorCol), Some (focusTable, focusRow, focusCol) when anchorTable = focusTable ->
+            Some (anchorTable, min anchorRow focusRow, min anchorCol focusCol, max anchorRow focusRow, max anchorCol focusCol)
+        | _ -> None
+
+/// Whether the selection spans more than one cell of a table (so that
+/// `mergeSelectedTableCells` has something to merge).
+let canMergeSelectedTableCells doc =
+    match selectedTableCells doc with
+    | Some (_, firstRow, firstCol, lastRow, lastCol) -> firstRow <> lastRow || firstCol <> lastCol
+    | None -> false
+
+/// Merge the selected cells of a table into one: the cells of each selected
+/// row become one cell spanning their columns (holding the content of all of
+/// them), and the rows below the first are merged into it vertically.
+let mergeSelectedTableCells doc =
+    match selectedTableCells doc with
+    | Some (tableId, firstRow, firstCol, lastRow, lastCol) when firstRow <> lastRow || firstCol <> lastCol ->
+        let isEmptyParagraph (para: ParagraphBlock) = TextBuffer.length para.Buffer = 0
+        let merged =
+            updateTable doc tableId (fun table ->
+                // Everything the merged cells hold ends up in the first one.
+                let content =
+                    [ for rowIndex in firstRow .. lastRow do
+                        match List.tryItem rowIndex table.Rows with
+                        | Some row ->
+                            for colIndex in firstCol .. min lastCol (row.Cells.Length - 1) do
+                                yield! row.Cells.[colIndex].Content
+                        | None -> () ]
+                let kept =
+                    match content |> List.filter (fun para -> not (isEmptyParagraph para)) with
+                    | [] -> List.truncate 1 content
+                    | nonEmpty -> nonEmpty
+                { table with
+                    Rows =
+                        table.Rows
+                        |> List.mapi (fun rowIndex row ->
+                            if rowIndex < firstRow || rowIndex > lastRow || firstCol >= row.Cells.Length then row
+                            else
+                                let last = min lastCol (row.Cells.Length - 1)
+                                let span = row.Cells |> List.skip firstCol |> List.truncate (last - firstCol + 1)
+                                let first = List.head span
+                                let width =
+                                    if span |> List.forall (fun cell -> cell.Width.IsSome) then Some (span |> List.sumBy (fun cell -> cell.Width.Value)) else None
+                                let mergedCell =
+                                    { first with
+                                        ColSpan = span |> List.sumBy (fun cell -> max 1 cell.ColSpan)
+                                        Width = width
+                                        Content = (if rowIndex = firstRow then kept else [ { Id = nextBlockId (); Buffer = TextBuffer.empty; Metadata = defaultMetadata } ])
+                                        NestedTables = (if rowIndex = firstRow then span |> List.collect (fun cell -> cell.NestedTables) else [])
+                                        NestedTableAnchors = (if rowIndex = firstRow then first.NestedTableAnchors else [])
+                                        VerticalMerge =
+                                            if firstRow = lastRow then first.VerticalMerge
+                                            elif rowIndex = firstRow then Some RestartMerge
+                                            else Some ContinueMerge }
+                                { row with Cells = List.truncate firstCol row.Cells @ [ mergedCell ] @ List.skip (last + 1) row.Cells }) })
+        match tryGetTableCellParagraph merged tableId firstRow firstCol with
+        | Some para -> setCursor para.Id 0 merged
+        | None -> merged
+    | _ -> doc
+
+/// Split the cell the caret is in back into single cells: one per column it
+/// spans, and - for a vertically merged cell - one per row.
+let splitSelectedTableCell doc =
+    match currentTableCell doc with
+    | None -> doc
+    | Some (tableId, rowIndex, colIndex) ->
+        updateTable doc tableId (fun table ->
+            match List.tryItem rowIndex table.Rows |> Option.bind (fun row -> List.tryItem colIndex row.Cells) with
+            | None -> table
+            | Some cell ->
+                let span = max 1 cell.ColSpan
+                // The rows the cell is merged over: this one and the ones continuing it.
+                let lastRow =
+                    if cell.VerticalMerge <> Some RestartMerge then rowIndex
+                    else
+                        let mutable last = rowIndex
+                        let mutable continues = true
+                        while continues && last + 1 < table.Rows.Length do
+                            match List.tryItem colIndex table.Rows.[last + 1].Cells with
+                            | Some below when below.VerticalMerge = Some ContinueMerge -> last <- last + 1
+                            | _ -> continues <- false
+                        last
+                if span = 1 && lastRow = rowIndex then table
+                else
+                    { table with
+                        Rows =
+                            table.Rows
+                            |> List.mapi (fun index row ->
+                                if index < rowIndex || index > lastRow then row
+                                else
+                                    match List.tryItem colIndex row.Cells with
+                                    | None -> row
+                                    | Some target ->
+                                        let width = target.Width |> Option.map (fun total -> total / float (max 1 target.ColSpan))
+                                        let first = { target with ColSpan = 1; Width = width; VerticalMerge = None }
+                                        let rest = [ for _ in 2 .. max 1 target.ColSpan -> { emptyTableCell () with Width = width; BackgroundColor = target.BackgroundColor; Shading = target.Shading; Borders = target.Borders } ]
+                                        { row with Cells = List.truncate colIndex row.Cells @ (first :: rest) @ List.skip (colIndex + 1) row.Cells }) })
+
 let deleteSelectedTableRow doc =
     match currentTableCell doc with
     | None -> doc
@@ -3653,6 +3791,98 @@ let setCurrentParagraphStyle alignment indentLeft indentRight spacingBefore spac
                 |> flag lineSpacing.IsSome ParagraphExplicit.LineSpacing
                 |> flag firstLineIndent.IsSome ParagraphExplicit.FirstLineIndent
                 |> flag backgroundColor.IsSome ParagraphExplicit.BackgroundColor }) doc
+
+/// Set the line spacing of the selected paragraphs as a multiple of single
+/// spacing (1.0, 1.15, 1.5, 2.0 ...); None goes back to the style's.
+let setLineSpacing (lineSpacing: float option) doc =
+    mapSelectedMetadata (fun metadata ->
+        { metadata with
+            LineSpacing = lineSpacing
+            LineSpacingRule = (if lineSpacing.IsSome then Some "auto" else None)
+            Explicit = (if lineSpacing.IsSome then metadata.Explicit ||| ParagraphExplicit.LineSpacing else metadata.Explicit &&& ~~~ParagraphExplicit.LineSpacing) }) doc
+
+/// Set the space before the selected paragraphs (layout pixels); None goes back to the style's.
+let setSpacingBefore (spacing: float option) doc =
+    mapSelectedMetadata (fun metadata ->
+        { metadata with
+            SpacingBefore = spacing
+            Explicit = (if spacing.IsSome then metadata.Explicit ||| ParagraphExplicit.SpacingBefore else metadata.Explicit &&& ~~~ParagraphExplicit.SpacingBefore) }) doc
+
+/// Set the space after the selected paragraphs (layout pixels); None goes back to the style's.
+let setSpacingAfter (spacing: float option) doc =
+    mapSelectedMetadata (fun metadata ->
+        { metadata with
+            SpacingAfter = spacing
+            Explicit = (if spacing.IsSome then metadata.Explicit ||| ParagraphExplicit.SpacingAfter else metadata.Explicit &&& ~~~ParagraphExplicit.SpacingAfter) }) doc
+
+/// Insert a page break at the caret: the paragraph is split there and what
+/// follows starts a new page.
+let insertPageBreak doc =
+    let split = splitBlock doc
+    match split.Selection with
+    | Some selection when not (obj.ReferenceEquals(split, doc)) ->
+        match findParagraph split selection.Focus.BlockId with
+        | Some para -> replaceParagraph split para.Id { para with Metadata = { para.Metadata with PageBreakBefore = true } }
+        | None -> split
+    | _ -> split
+
+/// The extent of the hyperlink at an offset of a paragraph: (target, start,
+/// end) of the run of text that has the same target.
+let hyperlinkAt (para: ParagraphBlock) (offset: int) : (string * int * int) option =
+    let length = TextBuffer.length para.Buffer
+    let targetAt (index: int) =
+        if index < 0 || index >= length then None
+        else
+            let style = TextBuffer.getStyleAt index para.Buffer
+            style.Hyperlink |> Option.orElse style.InactiveHyperlink
+    // The character after the caret, or the one before it at the end of a link.
+    let probe =
+        match targetAt offset with
+        | Some _ -> offset
+        | None -> offset - 1
+    match targetAt probe with
+    | None -> None
+    | Some target ->
+        let mutable first = probe
+        while first > 0 && targetAt (first - 1) = Some target do first <- first - 1
+        let mutable last = probe + 1
+        while last < length && targetAt last = Some target do last <- last + 1
+        Some (target, first, last)
+
+/// Change the target of the hyperlink the caret is in (the whole link, not
+/// just the selected part); None removes the link and keeps its text. With a
+/// range selected that is not in a link, the range becomes a link.
+let setHyperlinkTarget (target: string option) doc =
+    match doc.Selection with
+    | None -> doc
+    | Some selection ->
+        let link =
+            if selection.Anchor.BlockId <> selection.Focus.BlockId then None
+            else findParagraph doc selection.Focus.BlockId |> Option.bind (fun para -> hyperlinkAt para (min selection.Anchor.Offset selection.Focus.Offset) |> Option.map (fun found -> para, found))
+        match link with
+        | Some (para, (_, first, last)) ->
+            let buffer = TextBuffer.applyStyle first (last - first) (fun style -> { style with Hyperlink = None; InactiveHyperlink = None }) para.Buffer
+            let buffer = match target with Some _ -> TextBuffer.setHyperlink first (last - first) target buffer | None -> buffer
+            replaceParagraph doc para.Id { para with Buffer = buffer }
+        | None -> if selection.IsCollapsed then doc else setHyperlink target doc
+
+/// Insert a hyperlink: with a range selected the range becomes the link;
+/// with a caret, `text` (or the target itself) is inserted as a link.
+let insertHyperlink (target: string) (text: string) doc =
+    match doc.Selection with
+    | None -> doc
+    | Some selection when not selection.IsCollapsed -> setHyperlink (Some target) doc
+    | Some selection ->
+        let shown = if System.String.IsNullOrEmpty text then target else text
+        let inserted = insertText shown doc
+        match inserted.Selection with
+        | Some after when after.Focus.BlockId = selection.Focus.BlockId && after.Focus.Offset >= shown.Length ->
+            let start = after.Focus.Offset - shown.Length
+            let linked =
+                { inserted with Selection = Some { Anchor = { after.Focus with Offset = start }; Focus = after.Focus } }
+                |> setHyperlink (Some target)
+            { linked with Selection = inserted.Selection }
+        | _ -> inserted
 
 let setCurrentSectionBreak sectionBreak doc =
     match doc.Selection with
