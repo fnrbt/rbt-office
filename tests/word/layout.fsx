@@ -1109,6 +1109,73 @@ check "section footnote sits at the bottom of the referencing page"
         && layout.Y + layout.Height <= secondPage.Top + secondPage.Height - secondPage.MarginBottom + 0.5))
     true
 
+// ---------------------------------------------------------------------------
+// A tall paragraph in a vertically merged cell spreads over the rows it spans
+// instead of inflating the restart row; only what does not fit grows the last
+// row. The plan, the block flow and the border painter agree on the heights.
+// ---------------------------------------------------------------------------
+let mergeFlowSettings = { settings with Width = 600.0; PageHeight = 100000.0 }
+let mergeFlowTable id (longText: string) merged : Doc.TableBlock =
+    let continuation index = if merged then tableCell [ paragraph (sprintf "%s-a%d" id index) "" ] (Some Doc.ContinueMerge) else tableCell [ paragraph (sprintf "%s-a%d" id index) "" ] None
+    { wideFastTable with
+        Id = id
+        Rows =
+            [ tableRow [ tableCell [ paragraph (id + "-a1") longText ] (if merged then Some Doc.RestartMerge else None); tableCell [ paragraph (id + "-b1") "b1" ] None ]
+              tableRow [ continuation 2; tableCell [ paragraph (id + "-b2") "b2" ] None ]
+              tableRow [ continuation 3; tableCell [ paragraph (id + "-b3") "b3" ] None ] ] }
+let mergeFlowHeights table =
+    (buildTableLayoutPlanForDocumentAt mergeFlowSettings measureText (rangeMeasurerFromTextMeasurer measureText) Doc.empty table 0.0).Rows
+    |> List.map (fun row -> System.Math.Round(row.Height, 3))
+let tallText = String.concat " " [ for index in 1 .. 60 -> sprintf "word%d" index ]
+let shortText = String.concat " " [ for index in 1 .. 9 -> sprintf "word%d" index ]
+let plainHeights = mergeFlowHeights (mergeFlowTable "mf-plain" "a1" false)
+let unmergedTallHeights = mergeFlowHeights (mergeFlowTable "mf-unmerged" tallText false)
+let mergedTallHeights = mergeFlowHeights (mergeFlowTable "mf-tall" tallText true)
+let mergedShortHeights = mergeFlowHeights (mergeFlowTable "mf-short" shortText true)
+check "unmerged tall cell inflates its row" (unmergedTallHeights.[0] > 3.0 * plainHeights.[0]) true
+check "merged tall cell leaves restart row alone" (mergedTallHeights.[0], mergedTallHeights.[1]) (plainHeights.[0], plainHeights.[1])
+check "merged tall cell grows the last spanned row" (mergedTallHeights.[2] > plainHeights.[2]) true
+check "merged rows together hold the content"
+    (abs (List.sum mergedTallHeights - unmergedTallHeights.[0]) < 0.01)
+    true
+check "merged content that fits changes no row" mergedShortHeights plainHeights
+let mergeFlowDoc table = { Doc.empty with Blocks = [ Doc.Table table ]; Selection = None }
+let mergeFlowLayouts = layoutDocument mergeFlowSettings measureText (mergeFlowDoc (mergeFlowTable "mf-tall" tallText true))
+let mergeFlowY id = (mergeFlowLayouts |> List.find (fun layout -> layout.BlockId = id)).Y
+check "block flow places rows by the merged heights"
+    (System.Math.Round(mergeFlowY "mf-tall-b2" - mergeFlowY "mf-tall-b1", 3), System.Math.Round(mergeFlowY "mf-tall-b3" - mergeFlowY "mf-tall-b2", 3))
+    (mergedTallHeights.[0], mergedTallHeights.[1])
+let unmergedFlowLayouts = layoutDocument mergeFlowSettings measureText (mergeFlowDoc (mergeFlowTable "mf-unmerged" tallText false))
+let linesOf (layouts: BlockLayout list) id = (layouts |> List.find (fun layout -> layout.BlockId = id)).Lines |> List.map (fun line -> System.Math.Round(line.Y, 3))
+check "merged paragraph keeps all its lines, flowing over the rows below"
+    (linesOf mergeFlowLayouts "mf-tall-a1")
+    (linesOf unmergedFlowLayouts "mf-unmerged-a1")
+check "merged paragraph has many lines" ((linesOf mergeFlowLayouts "mf-tall-a1").Length > 6) true
+let borderAdvance table = snd (tableBorderCommands mergeFlowSettings measureText table 0.0)
+// (reference rows hold an empty paragraph: the painter's single-line shortcut
+// does not take those, so both tables are measured the same way)
+let plainEmptyTable = mergeFlowTable "mf-plain-e" "" false
+check "border painter agrees on merged heights"
+    (abs ((borderAdvance (mergeFlowTable "mf-tall" tallText true) - List.sum mergedTallHeights)
+          - (borderAdvance plainEmptyTable - List.sum (mergeFlowHeights plainEmptyTable))) < 0.01)
+    true
+// Content spread over the merge by the importer keeps sizing its own rows.
+let distributedRows =
+    Rbt.Word.WordLayout.Table.distributeVerticalMergeContent
+        [ tableRow [ tableCell [ paragraph "mfd-1" tallText; paragraph "mfd-2" "two" ] (Some Doc.RestartMerge); tableCell [ paragraph "mfd-b1" "b1" ] None ]
+          tableRow [ tableCell [ paragraph "mfd-e" "" ] (Some Doc.ContinueMerge); tableCell [ paragraph "mfd-b2" "b2" ] None ] ]
+check "distributed merge content still sizes its row"
+    ((mergeFlowHeights { wideFastTable with Id = "mf-dist"; Rows = distributedRows }).[0] > 3.0 * plainHeights.[0])
+    true
+// A nested table gets the same treatment.
+let nestedMergeHost inner =
+    { wideFastTable with Id = "mf-host"; Rows = [ tableRow [ { tableCell [ paragraph "mf-host-p" "" ] None with NestedTables = [ inner ] } ] ] }
+let nestedHeight inner = (mergeFlowHeights (nestedMergeHost inner)).[0]
+check "nested merged table spreads content too"
+    (abs (nestedHeight (mergeFlowTable "mf-n-tall" tallText true) - nestedHeight (mergeFlowTable "mf-n-unmerged" tallText false)
+          + 2.0 * plainHeights.[1]) < 0.01)
+    true
+
 printfn ""
 printfn "Word layout tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

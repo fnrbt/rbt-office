@@ -228,6 +228,9 @@ type TableCellLayoutGroup = {
     PaddingTop: float
     PaddingBottom: float
     ContentHeight: float
+    /// Height the cell asks of its row(s): content, padding, borders, spacing.
+    /// A vertically merged cell asks it of all the rows it spans together.
+    RequiredHeight: float
     Layouts: BlockLayout list
 }
 
@@ -2785,17 +2788,126 @@ let private listCountersBeforeRow (numbering: TableListNumbering) (row: TableRow
         | true, counters -> ValueSome counters
         | false, _ -> ValueSome Map.empty
 
+/// The vertical merges of one table that cover more than one row. The content
+/// of such a cell lives in its w:vMerge="restart" cell but belongs to all the
+/// rows it spans: it must not inflate the restart row, and only what does not
+/// fit in the spanned rows together makes a row taller (the last one, as in Word).
+type internal TableVerticalMerges = {
+    MergeRows: TableRow array
+    /// Per row (by reference): for each cell, whether it is a restart cell
+    /// spanning further rows. Rows without such a cell are absent.
+    SpanningCells: System.Collections.Generic.Dictionary<TableRow, bool array>
+    RowIndexes: System.Collections.Generic.Dictionary<TableRow, int>
+    /// (restart row index, cell index, rows its content may flow over), > 1 only:
+    /// the restart row and the empty continuation cells directly below it.
+    Spans: struct (int * int * int) array
+}
+
+let internal tableVerticalMerges (rows: TableRow list) : TableVerticalMerges option =
+    let mutable hasRestart = false
+    for row in rows do
+        if not hasRestart then
+            for cell in row.Cells do
+                if cell.VerticalMerge = Some RestartMerge then hasRestart <- true
+    if not hasRestart then None
+    else
+        let rowArray = List.toArray rows
+        // Start column -> cell index of the continuation cells of each row.
+        let continuations =
+            rowArray
+            |> Array.map (fun row ->
+                let mutable lookup : System.Collections.Generic.Dictionary<int, int> = null
+                let mutable column = max 0 row.GridBefore
+                let mutable cellIndex = 0
+                for cell in row.Cells do
+                    // A continuation cell that holds text of its own (content the
+                    // importer spread over the merge, see distributeVerticalMergeContent)
+                    // is laid out in its own row and ends the stretch the restart
+                    // cell's content may flow over.
+                    if cell.VerticalMerge = Some ContinueMerge
+                       && cell.NestedTables.IsEmpty
+                       && cell.Content |> List.forall (fun para -> TextBuffer.isWhiteSpace para.Buffer) then
+                        if isNull lookup then lookup <- System.Collections.Generic.Dictionary<int, int>()
+                        lookup.[column] <- cellIndex
+                    column <- column + WordLayout.Table.cellSpan cell
+                    cellIndex <- cellIndex + 1
+                lookup)
+        let spans = ResizeArray<struct (int * int * int)>()
+        let spanningCells = System.Collections.Generic.Dictionary<TableRow, bool array>(HashIdentity.Reference)
+        let rowIndexes = System.Collections.Generic.Dictionary<TableRow, int>(HashIdentity.Reference)
+        for rowIndex = 0 to rowArray.Length - 1 do
+            let row = rowArray.[rowIndex]
+            if not (rowIndexes.ContainsKey row) then
+                rowIndexes.[row] <- rowIndex
+                let mutable column = max 0 row.GridBefore
+                let mutable cellIndex = 0
+                let mutable flags : bool array = null
+                for cell in row.Cells do
+                    if cell.VerticalMerge = Some RestartMerge then
+                        let mutable span = 1
+                        while rowIndex + span < rowArray.Length
+                              && not (isNull continuations.[rowIndex + span])
+                              && continuations.[rowIndex + span].ContainsKey column do
+                            span <- span + 1
+                        if span > 1 then
+                            if isNull flags then flags <- Array.zeroCreate row.Cells.Length
+                            flags.[cellIndex] <- true
+                            spans.Add(struct (rowIndex, cellIndex, span))
+                    column <- column + WordLayout.Table.cellSpan cell
+                    cellIndex <- cellIndex + 1
+                if not (isNull flags) then spanningCells.[row] <- flags
+        if spans.Count = 0 then None
+        else Some { MergeRows = rowArray; SpanningCells = spanningCells; RowIndexes = rowIndexes; Spans = spans.ToArray() }
+
+/// Extra height per row so that every merged cell fits in the rows it spans.
+/// `measurements` are the rows measured with the merged cells left out of their
+/// restart row's height. A deficit goes to the last row of the span; spans are
+/// settled in the order they end, so nested spans see what inner ones added.
+let private verticalMergeExtraHeights (merges: TableVerticalMerges) (measurements: TableRowMeasurement array) : float array =
+    let extra = Array.zeroCreate<float> measurements.Length
+    let groupArrays = Array.zeroCreate<TableCellLayoutGroup array> measurements.Length
+    let ordered = merges.Spans |> Array.sortBy (fun struct (rowIndex, _, span) -> rowIndex + span)
+    for struct (rowIndex, cellIndex, span) in ordered do
+        if rowIndex < measurements.Length then
+            if isNull groupArrays.[rowIndex] then
+                groupArrays.[rowIndex] <- List.toArray measurements.[rowIndex].CellGroups
+            let groups = groupArrays.[rowIndex]
+            if cellIndex < groups.Length then
+                let lastRow = min (measurements.Length - 1) (rowIndex + span - 1)
+                let mutable available = 0.0
+                for index = rowIndex to lastRow do
+                    available <- available + measurements.[index].Height + extra.[index]
+                let deficit = groups.[cellIndex].RequiredHeight - available
+                if deficit > 0.0 then
+                    extra.[lastRow] <- extra.[lastRow] + deficit
+    extra
+
+let private noSpanningCells : bool array = [||]
+
+/// Rows of a table with vertical merges, measured once row-locally (merged
+/// cells left out), plus the extra heights. Filled in by the first row
+/// measurement that needs it: it takes the measurer, which the scope is built
+/// without. It lives and dies with the scope of one pass over one table.
+type internal TableMergeMeasurements = {
+    Merges: TableVerticalMerges
+    mutable RowLocal: TableRowMeasurement array
+    mutable Extra: float array
+}
+
 /// What a row measurement needs besides geometry: the memo of the pass it
-/// belongs to (if any) and its table's list numbering.
+/// belongs to (if any), its table's list numbering and its vertical merges.
 type internal TableMeasureScope = {
     ScopeMemo: ParagraphLayoutMemo option
     ScopeNumbering: TableListNumbering
+    ScopeMerges: TableMergeMeasurements option
 }
 
 let internal tableMeasureScope (memo: ParagraphLayoutMemo option) (tableBlock: TableBlock) : TableMeasureScope =
-    { ScopeMemo = memo; ScopeNumbering = tableListNumbering tableBlock }
+    { ScopeMemo = memo
+      ScopeNumbering = tableListNumbering tableBlock
+      ScopeMerges = tableVerticalMerges tableBlock.Rows |> Option.map (fun merges -> { Merges = merges; RowLocal = null; Extra = null }) }
 
-let rec private measureTableRowWithStyleAtDepth nestedTableLayoutDepth (memo: ParagraphLayoutMemo option) (rowListCounters: ListCounters voption) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (tableBlock: TableBlock) (columnMetrics: TableColumnMetrics) (outerLeft: float) (tableLeftOffset: float) (row: TableRow) rowY tableContinuationHeaderHeight (paragraphStyleForParagraph: ParagraphBlock -> ParagraphStyle) (effectiveBufferForParagraph: ParagraphStyle -> TextBuffer -> TextBuffer) =
+let rec private measureTableRowWithStyleAtDepth nestedTableLayoutDepth (memo: ParagraphLayoutMemo option) (rowListCounters: ListCounters voption) (spanningCells: bool array) (mergeExtraHeight: float) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (tableBlock: TableBlock) (columnMetrics: TableColumnMetrics) (outerLeft: float) (tableLeftOffset: float) (row: TableRow) rowY tableContinuationHeaderHeight (paragraphStyleForParagraph: ParagraphBlock -> ParagraphStyle) (effectiveBufferForParagraph: ParagraphStyle -> TextBuffer -> TextBuffer) =
     let trackListCounters = rowListCounters.IsSome
     let mutable listCounters: ListCounters = match rowListCounters with ValueSome counters -> counters | ValueNone -> Map.empty
     let cellSettings = {
@@ -2815,6 +2927,7 @@ let rec private measureTableRowWithStyleAtDepth nestedTableLayoutDepth (memo: Pa
     let columnWidthPrefix = columnMetrics.Prefix
     let fallbackWidth = columnMetrics.FallbackWidth
     let mutable currentColumn = max 0 row.GridBefore
+    let mutable cellIndex = 0
     for cell in row.Cells do
         let startColumn = currentColumn
         let span = WordLayout.Table.cellSpan cell
@@ -2861,13 +2974,35 @@ let rec private measureTableRowWithStyleAtDepth nestedTableLayoutDepth (memo: Pa
                     let nestedHorizontalOffset = cellX + tableAlignmentOffset nestedTable.Alignment cellMaxWidth nestedTableWidth
                     let mutable nestedY = nestedTableY
                     let nestedLayouts = ResizeArray<BlockLayout>()
+                    // Vertical merges of the nested table: measure its rows once
+                    // with the merged cells left out to learn the extra heights.
+                    let nestedMerges = tableVerticalMerges nestedTable.Rows
+                    let nestedSpanning (nestedRow: TableRow) =
+                        match nestedMerges with
+                        | Some merges ->
+                            match merges.SpanningCells.TryGetValue nestedRow with
+                            | true, flags -> flags
+                            | _ -> noSpanningCells
+                        | None -> noSpanningCells
+                    let nestedExtra =
+                        match nestedMerges with
+                        | Some merges ->
+                            let nestedRowCounters = if trackListCounters then ValueSome listCounters else ValueNone
+                            merges.MergeRows
+                            |> Array.map (fun nestedRow ->
+                                measureTableRowWithStyleAtDepth (nestedTableLayoutDepth + 1) memo nestedRowCounters (nestedSpanning nestedRow) 0.0 cellSettings measureText measureRange nestedTable nestedColumnMetrics nestedOuterLeft nestedHorizontalOffset nestedRow nestedTableY 0.0 paragraphStyleForParagraph effectiveBufferForParagraph)
+                            |> verticalMergeExtraHeights merges
+                        | None -> [||]
+                    let mutable nestedRowIndex = 0
 
                     for nestedRow in nestedTable.Rows do
                         let nestedRowCounters = if trackListCounters then ValueSome listCounters else ValueNone
                         if trackListCounters then
                             listCounters <- advanceListCountersThroughRow listCounters nestedRow
+                        let nestedRowExtra = if nestedRowIndex < nestedExtra.Length then nestedExtra.[nestedRowIndex] else 0.0
+                        nestedRowIndex <- nestedRowIndex + 1
                         let measurement =
-                            measureTableRowWithStyleAtDepth (nestedTableLayoutDepth + 1) memo nestedRowCounters cellSettings measureText measureRange nestedTable nestedColumnMetrics nestedOuterLeft nestedHorizontalOffset nestedRow nestedY 0.0 paragraphStyleForParagraph effectiveBufferForParagraph
+                            measureTableRowWithStyleAtDepth (nestedTableLayoutDepth + 1) memo nestedRowCounters (nestedSpanning nestedRow) nestedRowExtra cellSettings measureText measureRange nestedTable nestedColumnMetrics nestedOuterLeft nestedHorizontalOffset nestedRow nestedY 0.0 paragraphStyleForParagraph effectiveBufferForParagraph
                         for group in measurement.CellGroups do
                             let offset = WordLayout.Table.verticalContentOffset group.VerticalAlignment measurement.Height group.PaddingTop group.PaddingBottom group.ContentHeight
                             let adjustedLayouts =
@@ -2915,9 +3050,15 @@ let rec private measureTableRowWithStyleAtDepth nestedTableLayoutDepth (memo: Pa
                     layoutCellParagraph rawPara
 
         let contentHeight = max 0.0 (paraY - contentStartY)
-        rowHeight <- max rowHeight (contentHeight + textPadding.Top + textPadding.Bottom + verticalMarginExcess + verticalBorderExtent + rowSpacingAdvance)
+        let requiredHeight = contentHeight + textPadding.Top + textPadding.Bottom + verticalMarginExcess + verticalBorderExtent + rowSpacingAdvance
+        // A merged cell's content belongs to all the rows it spans; what does
+        // not fit in them arrives as mergeExtraHeight on the span's last row.
+        let spansRows = cellIndex < spanningCells.Length && spanningCells.[cellIndex]
+        if not spansRows then
+            rowHeight <- max rowHeight requiredHeight
         let cellLayoutsList = resizeArrayToList cellLayouts
-        cellGroups <- { VerticalAlignment = cell.VerticalAlignment; PaddingTop = textPadding.Top; PaddingBottom = textPadding.Bottom; ContentHeight = contentHeight; Layouts = cellLayoutsList } :: cellGroups
+        cellGroups <- { VerticalAlignment = cell.VerticalAlignment; PaddingTop = textPadding.Top; PaddingBottom = textPadding.Bottom; ContentHeight = contentHeight; RequiredHeight = requiredHeight; Layouts = cellLayoutsList } :: cellGroups
+        cellIndex <- cellIndex + 1
         let mutable totalLines = 0
         for layout in cellLayoutsList do
             totalLines <- totalLines + layout.Lines.Length
@@ -2931,10 +3072,49 @@ let rec private measureTableRowWithStyleAtDepth nestedTableLayoutDepth (memo: Pa
             traces <- sprintf "c%d/%d w=%.2f cw=%.2f h=%.2f lines=%d text=%s" startColumn span colWidth cellMaxWidth contentHeight totalLines cellSnippet :: traces
         currentColumn <- currentColumn + span
 
-    { Height = rowHeight; CellGroups = List.rev cellGroups; Traces = List.rev traces }
+    { Height = rowHeight + mergeExtraHeight; CellGroups = List.rev cellGroups; Traces = List.rev traces }
 
+/// The one way a top-level table row is measured: every caller (the table
+/// plan, the block flow, and the two paint paths) goes through here with the
+/// table's scope, so they agree on row heights, vertical merges included.
 let internal measureTableRowWithStyleUsingMetrics (scope: TableMeasureScope) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (tableBlock: TableBlock) (columnMetrics: TableColumnMetrics) (outerLeft: float) (tableLeftOffset: float) (row: TableRow) rowY tableContinuationHeaderHeight (paragraphStyleForParagraph: ParagraphBlock -> ParagraphStyle) (effectiveBufferForParagraph: ParagraphStyle -> TextBuffer -> TextBuffer) =
-    measureTableRowWithStyleAtDepth 0 scope.ScopeMemo (listCountersBeforeRow scope.ScopeNumbering row) settings measureText measureRange tableBlock columnMetrics outerLeft tableLeftOffset row rowY tableContinuationHeaderHeight paragraphStyleForParagraph effectiveBufferForParagraph
+    match scope.ScopeMerges with
+    | None ->
+        measureTableRowWithStyleAtDepth 0 scope.ScopeMemo (listCountersBeforeRow scope.ScopeNumbering row) noSpanningCells 0.0 settings measureText measureRange tableBlock columnMetrics outerLeft tableLeftOffset row rowY tableContinuationHeaderHeight paragraphStyleForParagraph effectiveBufferForParagraph
+    | Some state ->
+        let merges = state.Merges
+        let spanningFor (tableRow: TableRow) =
+            match merges.SpanningCells.TryGetValue tableRow with
+            | true, flags -> flags
+            | _ -> noSpanningCells
+        let rowLocalSettings = {
+            settings with
+                PageHeight = unpagedMeasurementPageHeight
+                MarginBottom = 0.0
+                TableContinuationHeaderHeight = 0.0
+        }
+        if isNull state.RowLocal then
+            let rowLocal =
+                merges.MergeRows
+                |> Array.map (fun tableRow ->
+                    measureTableRowWithStyleAtDepth 0 scope.ScopeMemo (listCountersBeforeRow scope.ScopeNumbering tableRow) (spanningFor tableRow) 0.0 rowLocalSettings measureText measureRange tableBlock columnMetrics outerLeft tableLeftOffset tableRow 0.0 0.0 paragraphStyleForParagraph effectiveBufferForParagraph)
+            state.Extra <- verticalMergeExtraHeights merges rowLocal
+            state.RowLocal <- rowLocal
+        match merges.RowIndexes.TryGetValue row with
+        | true, rowIndex ->
+            let extra = state.Extra.[rowIndex]
+            let isRowLocal =
+                rowY = 0.0 && tableContinuationHeaderHeight = 0.0
+                && settings.PageHeight = unpagedMeasurementPageHeight && settings.MarginBottom = 0.0 && settings.TableContinuationHeaderHeight = 0.0
+            if isRowLocal then
+                // Exactly what the pre-pass measured; no need to lay the row out again.
+                let measured = state.RowLocal.[rowIndex]
+                if extra = 0.0 then measured else { measured with Height = measured.Height + extra }
+            else
+                measureTableRowWithStyleAtDepth 0 scope.ScopeMemo (listCountersBeforeRow scope.ScopeNumbering row) (spanningFor row) extra settings measureText measureRange tableBlock columnMetrics outerLeft tableLeftOffset row rowY tableContinuationHeaderHeight paragraphStyleForParagraph effectiveBufferForParagraph
+        | _ ->
+            // Not a row of this table (a header row copy, say): measured on its own.
+            measureTableRowWithStyleAtDepth 0 scope.ScopeMemo (listCountersBeforeRow scope.ScopeNumbering row) noSpanningCells 0.0 settings measureText measureRange tableBlock columnMetrics outerLeft tableLeftOffset row rowY tableContinuationHeaderHeight paragraphStyleForParagraph effectiveBufferForParagraph
 
 let measureTableRowWithStyle (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (tableBlock: TableBlock) (tableMaxWidth: float) (columnWidths: float list) (outerLeft: float) (tableLeftOffset: float) (row: TableRow) rowY tableContinuationHeaderHeight (paragraphStyleForParagraph: ParagraphBlock -> ParagraphStyle) (effectiveBufferForParagraph: ParagraphStyle -> TextBuffer -> TextBuffer) =
     let columnMetrics = tableColumnMetrics tableMaxWidth columnWidths
@@ -2948,7 +3128,9 @@ let internal tryMeasureTableRowHeightWithMetrics (settings: LayoutSettings) (mea
             TableContinuationHeaderHeight = 0.0
     }
     let numColumns = columnMetrics.Count
-    if numColumns = 0 then
+    // Rows taking part in a vertical merge depend on the other rows of the
+    // span, which only the scoped measurement knows about.
+    if numColumns = 0 || row.Cells |> List.exists (fun cell -> cell.VerticalMerge.IsSome) then
         None
     else
         let cellSpacing = WordLayout.Table.rowCellSpacing WordLayout.canvasScale tableBlock row
