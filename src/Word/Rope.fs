@@ -346,6 +346,18 @@ let sliceRope start len rope =
             let trimmedRight = delete boundedEnd (total - boundedEnd) rope
             delete 0 boundedStart trimmedRight
 
+/// Character at position, or '\000' when out of range (no allocation).
+let charAtOrNull pos rope =
+    if pos < 0 || pos >= length rope then '\000'
+    else
+        let rec loop pos = function
+            | Empty -> '\000'
+            | Leaf s -> s.[pos]
+            | Node (left, right, _) ->
+                let leftLength = length left
+                if pos < leftLength then loop pos left else loop (pos - leftLength) right
+        loop pos rope
+
 /// Get character at position
 let charAt pos rope =
     if pos < 0 || pos >= length rope then None

@@ -2170,6 +2170,32 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
                                 if remainingLength > 0 then flushLine ())
 
     flushLine ()
+    // Offset just after a line break that nothing visible follows (-1: none):
+    // the last run that is laid out is text ending in a break.
+    let trailingBreakOffset =
+        let mutable index = runs.Length - 1
+        let mutable result = -1
+        let mutable searching = true
+        while searching && index >= 0 do
+            match runs.[index] with
+            | TextBuffer.Text textRun when textRun.Style.Hidden || textRun.Length = 0 -> index <- index - 1
+            | TextBuffer.Text textRun ->
+                let last = Rope.charAtOrNull (textRun.Start + textRun.Length - 1) buffer.Rope
+                if last = '\n' || last = '\r' then result <- textRun.Start + textRun.Length
+                searching <- false
+            | TextBuffer.Image _ -> searching <- false
+        result
+    if trailingBreakOffset >= 0 then
+        // The paragraph ends in a line break: the break opens a last, empty
+        // line, where the caret sits after the break and typing continues.
+        lines <- {
+            Segments = []
+            Y = y
+            Width = 0.0
+            Height = settings.LineHeight
+            StartOffset = trailingBreakOffset
+            EndOffset = trailingBreakOffset
+        } :: lines
     List.rev lines, floatObstacles, placedBoxes
 
 let layoutLinesStyledWithObstacles (settings: LayoutSettings) (measureText: TextMeasurer) (buffer: TextBuffer.TextBuffer) (maxWidth: float) (contentY: float) (tabStops: TabStop list) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) =

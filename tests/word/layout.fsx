@@ -1005,6 +1005,25 @@ check "soft break blank line is between" (softBreakLines.[0].Y < softBreakLines.
 let softBreakPara = { paragraph "soft" "a\n\nb" with Metadata = { Doc.defaultMetadata with SpacingBefore = Some 0.0 } }
 let softBreakLayout, _ = layoutParagraphAtWithRange settings measureText (rangeMeasurerFromTextMeasurer measureText) 500.0 0.0 0.0 softBreakPara Map.empty
 check "caret on blank line finds that line" (lineForOffset softBreakLayout 2).Y softBreakLayout.Lines.[1].Y
+// A soft break at the very end of the paragraph opens a last, empty line for the caret.
+let trailingBreakLines = layoutLinesStyled settings measureText (ofString "a\n") 2000.0
+check "trailing soft break adds a line" trailingBreakLines.Length 2
+check "trailing soft break line offsets" (trailingBreakLines.[1].StartOffset, trailingBreakLines.[1].EndOffset, trailingBreakLines.[1].Segments.Length) (2, 2, 0)
+check "trailing soft break line is below" (trailingBreakLines.[1].Y > trailingBreakLines.[0].Y && trailingBreakLines.[1].Height > 0.0) true
+let trailingBreakPara text = { paragraph "trailing-soft" text with Metadata = { Doc.defaultMetadata with SpacingBefore = Some 0.0 } }
+let trailingBreakLayout text = layoutParagraphAtWithRange settings measureText (rangeMeasurerFromTextMeasurer measureText) 500.0 0.0 0.0 (trailingBreakPara text) Map.empty |> fst
+check "caret after a trailing soft break is on the new line"
+    ((lineForOffset (trailingBreakLayout "a\n") 2).Y, (lineForOffset (trailingBreakLayout "a\n") 1).Y)
+    ((trailingBreakLayout "a\n").Lines.[1].Y, (trailingBreakLayout "a\n").Lines.[0].Y)
+check "paragraph grows by the trailing line"
+    ((trailingBreakLayout "a\n").Height > (trailingBreakLayout "a").Height, (trailingBreakLayout "a\n").Lines.Length, (trailingBreakLayout "a\nb").Lines.Length)
+    (true, 2, 2)
+check "two trailing soft breaks make two empty lines"
+    ((layoutLinesStyled settings measureText (ofString "a\n\n") 2000.0) |> List.map (fun line -> line.StartOffset, line.EndOffset))
+    [ 0, 1; 2, 2; 3, 3 ]
+check "a lone soft break is two lines"
+    ((layoutLinesStyled settings measureText (ofString "\n") 2000.0) |> List.map (fun line -> line.StartOffset, line.EndOffset))
+    [ 0, 0; 1, 1 ]
 
 // ---------------------------------------------------------------------------
 // Numbered lists inside table cells count up.
