@@ -14,6 +14,7 @@
 //   ime              composition (CJK, dead keys), beforeinput/input, undo steps, dispose
 //   typing           real mouse click and keyboard typing through the input proxy
 //   track-changes    tracked typing and Enter through the keyboard, saved as w:ins and a tracked mark
+//   linked-images    a linked picture is not requested until the host allows it; unsafe links are inactive
 //
 // Environment (as tools/docx-roundtrip/roundtrip.mjs): PLAYWRIGHT, JSZIP_DIR, PORT (default 16022).
 // Exit code is non-zero when any check fails.
@@ -30,7 +31,7 @@ const args = process.argv.slice(2);
 const opt = (name) => { const i = args.indexOf(name); if (i < 0) return undefined; const v = args[i + 1]; args.splice(i, 2); return v; };
 const dist = path.resolve(opt('--dist') ?? path.join(repo, 'dist'));
 const port = Number(process.env.PORT ?? 16022);
-const all = ['explicit-format', 'page-frames', 'ime', 'typing', 'track-changes'];
+const all = ['explicit-format', 'page-frames', 'ime', 'typing', 'track-changes', 'linked-images'];
 const checks = args.length ? args : all;
 
 const jszipDir = [process.env.JSZIP_DIR, path.join(repo, 'node_modules/jszip'), path.resolve(repo, '../rbt-office/node_modules/jszip')].find((p) => p && fs.existsSync(p));
@@ -43,12 +44,16 @@ const page = (check) => `<!doctype html><meta charset="utf-8"><body style="margi
 <script src="/jszip.min.js"></script><script type="importmap">{"imports":{"jszip":"/jszip-shim.js"}}</script>
 <script type="module" src="/checks/${check}.js"></script>`;
 const mime = { '.js': 'text/javascript', '.mjs': 'text/javascript' };
+let externalProbes = 0;
 const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://x');
     const send = (code, type, body) => { res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store' }); res.end(body); };
     if (url.pathname === '/') return send(200, 'text/html', page(url.searchParams.get('check')));
     if (url.pathname === '/jszip.min.js') return send(200, 'text/javascript', fs.readFileSync(path.join(jszipDir, 'dist/jszip.min.js')));
     if (url.pathname === '/jszip-shim.js') return send(200, 'text/javascript', 'export default window.JSZip;');
+    // Stands in for an address a document names as the source of a linked picture.
+    if (url.pathname === '/external-probe.png') { externalProbes++; return send(200, 'image/png', Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64')); }
+    if (url.pathname === '/external-probe-count') return send(200, 'text/plain', String(externalProbes));
     if (url.pathname === '/fixture') { const data = fixtures.get(url.searchParams.get('name')); return data ? send(200, 'application/octet-stream', data) : send(404, 'text/plain', 'no fixture'); }
     for (const [prefix, root] of [['/checks/', path.join(here, 'checks')], ['/repo/', repo], ['/', dist]]) {
         if (!url.pathname.startsWith(prefix)) continue;
@@ -69,6 +74,7 @@ const browser = await (playwright.chromium ?? playwright.default.chromium).launc
 let failedChecks = 0;
 try {
     for (const check of checks) {
+        externalProbes = 0;
         const tab = await browser.newPage({ viewport: { width: 1100, height: 900 } });
         const errors = [];
         tab.on('pageerror', (e) => errors.push('page error: ' + e.message));

@@ -1848,6 +1848,30 @@ check "rejecting a deleted paragraph mark keeps them apart" (paragraphTexts (Doc
 let forwardJoin = Doc.trackDeleteForward "me" "d1" { twoParagraphs with Selection = Some { Anchor = pos "a" 5; Focus = pos "a" 5 } }
 check "tracked Delete at a paragraph end marks its mark as deleted" (markRevisions forwardJoin) [ Some ("delete", Some "me"); None ]
 
+// Only http, https, mailto, tel and anchors in the document are links.
+check "active hyperlink targets"
+    ([ "https://example.com"; "HTTP://EXAMPLE.COM/x"; "mailto:a@b.c"; "tel:+1555"; "#bookmark" ] |> List.map isActiveHyperlinkTarget)
+    [ true; true; true; true; true ]
+check "inactive hyperlink targets"
+    ([ "javascript:alert(1)"; " javascript:alert(1)"; "JaVaScRiPt:alert(1)"; "vbscript:x"; "data:text/html,x"; "file:///etc/passwd"; "relative/path.html"; "//host/path"; "#"; ""; "ftp://host/file" ]
+     |> List.map isActiveHyperlinkTarget |> List.distinct)
+    [ false ]
+let linkStyles target =
+    (ofString "link" |> setHyperlink 0 4 (Some target)).Runs
+    |> List.choose (function Text run -> Some (run.Style.Hyperlink, run.Style.InactiveHyperlink) | Image _ -> None)
+check "setting a safe hyperlink makes a link" (linkStyles "https://example.com") [ Some "https://example.com", None ]
+check "setting an unsafe hyperlink keeps it inactive" (linkStyles "javascript:alert(1)") [ None, Some "javascript:alert(1)" ]
+// A linked picture is not loaded unless the host allows it.
+let linkedImageRun =
+    match (empty |> insertImage 0 "https://tracker.example.com/pixel.png" (Some 10.0) (Some 10.0) None).Runs with
+    | [ Image image ] -> { image with Linked = true }
+    | _ -> failwith "expected one image run"
+check "linked picture shows a placeholder by default" (displayedImageSource linkedImageRun) "opaque:linked"
+check "embedded picture shows itself" (displayedImageSource { linkedImageRun with Linked = false; Src = "data:image/png;base64,AAAA" }) "data:image/png;base64,AAAA"
+allowLinkedImages <- true
+check "linked picture is loaded once the host opts in" (displayedImageSource linkedImageRun) "https://tracker.example.com/pixel.png"
+allowLinkedImages <- false
+
 // A surrogate pair is one character to the caret and to Backspace/Delete.
 let emoji = "\U0001F600"
 let emojiDoc offset = caretDoc "em" (ofString ("a" + emoji + "b")) offset

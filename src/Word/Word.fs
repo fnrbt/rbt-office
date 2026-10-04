@@ -1552,6 +1552,16 @@ module API =
         let newDoc = Docx.importFromEditorWithPageSetupAndHeaderFooterParts editorParagraphs pageSetup headerParts footerParts
         loadDocument editor newDoc
 
+    /// Whether linked (not embedded) pictures may be loaded from the address the
+    /// document gives. Off by default: a placeholder frame is shown instead.
+    let setAllowLinkedImages (editor: Editor) (allow: bool) =
+        if TextBuf.allowLinkedImages <> allow then
+            TextBuf.allowLinkedImages <- allow
+            Ren.clearLayoutCache editor.Handler.RenderContext
+            Ren.render editor.Handler.RenderContext editor.Doc
+
+    let getAllowLinkedImages (_: Editor) = TextBuf.allowLinkedImages
+
     let importFromDocxPackage (editor: Editor) (package: obj) =
         let newDoc = Docx.importFromEditorPackage package
         loadDocument editor newDoc
@@ -1928,6 +1938,8 @@ module API =
             "getInputElement" ==> getInputElement
             "getTrackChanges" ==> getTrackChanges
             "setTrackChanges" ==> setTrackChanges
+            "setAllowLinkedImages" ==> setAllowLinkedImages
+            "getAllowLinkedImages" ==> getAllowLinkedImages
             "setTrackChangesOptions" ==> setTrackChangesOptions
             "setTextMeasurer" ==> setTextMeasurer
             "setTextMeasurers" ==> setTextMeasurers

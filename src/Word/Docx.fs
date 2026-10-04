@@ -626,7 +626,13 @@ let private editorRunsToBuffer (runs: obj array) : TextBuffer =
                 let fontFamily = optionalString (run?FontFamily)
                 let color = optionalString (run?Color)
                 let highlight = optionalString (run?Highlight)
-                let hyperlink = optionalString (run?Hyperlink)
+                // Only a target that may be followed is a link; a package object that
+                // offers anything else as one (or says so itself) has it kept inactive.
+                let offeredHyperlink = optionalString (run?Hyperlink)
+                let hyperlink = offeredHyperlink |> Option.filter TextBuffer.isActiveHyperlinkTarget
+                let inactiveHyperlink =
+                    optionalString (run?InactiveHyperlink)
+                    |> Option.orElse (offeredHyperlink |> Option.filter (fun target -> not (TextBuffer.isActiveHyperlinkTarget target)))
                 let commentId = optionalString (run?CommentId)
                 let commentText = optionalString (run?CommentText)
                 let commentAuthor = optionalString (run?CommentAuthor)
@@ -677,7 +683,7 @@ let private editorRunsToBuffer (runs: obj array) : TextBuffer =
                     Style = styleId
                     Bold = bold
                     Italic = italic
-                    Underline = underline || hyperlink.IsSome
+                    Underline = underline || hyperlink.IsSome || inactiveHyperlink.IsSome
                     DoubleStrike = doubleStrike
                     Hidden = hidden
                     Position = position
@@ -693,6 +699,7 @@ let private editorRunsToBuffer (runs: obj array) : TextBuffer =
                     Color = color
                     Highlight = highlight
                     Hyperlink = hyperlink
+                    InactiveHyperlink = inactiveHyperlink
                     CommentId = commentId
                     CommentText = commentText
                     CommentAuthor = commentAuthor
@@ -1522,6 +1529,7 @@ let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) 
                     "Color" ==> tr.Style.Color
                     "Highlight" ==> tr.Style.Highlight
                     "Hyperlink" ==> tr.Style.Hyperlink
+                    "InactiveHyperlink" ==> tr.Style.InactiveHyperlink
                     "CommentId" ==> tr.Style.CommentId
                     "CommentText" ==> tr.Style.CommentText
                     "CommentAuthor" ==> tr.Style.CommentAuthor

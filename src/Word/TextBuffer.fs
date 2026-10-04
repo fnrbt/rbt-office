@@ -37,7 +37,13 @@ type TextStyle = {
     FontFamily: string option
     Color: string option
     Highlight: string option
+    /// The target of a link that may be followed: http, https, mailto, tel or an
+    /// anchor inside the document ("#bookmark"). See isActiveHyperlinkTarget.
     Hyperlink: string option
+    /// The target of a hyperlink of the file that is not followed (javascript:,
+    /// file:, data:, a relative path, ...): kept so that the document saves as it
+    /// was, never navigated.
+    InactiveHyperlink: string option
     CommentId: string option
     CommentText: string option
     CommentAuthor: string option
@@ -121,6 +127,7 @@ let defaultStyle = {
     Color = None
     Highlight = None
     Hyperlink = None
+    InactiveHyperlink = None
     CommentId = None
     CommentText = None
     CommentAuthor = None
@@ -144,6 +151,23 @@ let defaultStyle = {
     VertAlign = None
     Explicit = 0
 }
+
+/// Whether a hyperlink target may become an active link: http, https, mailto,
+/// tel, or an anchor inside the document. Everything else (javascript:,
+/// vbscript:, file:, data:, relative paths, anything with a scheme not listed)
+/// is kept as text and never followed.
+let isActiveHyperlinkTarget (target: string) =
+    if System.String.IsNullOrWhiteSpace target then false
+    else
+        let lower = target.ToLowerInvariant()
+        lower.StartsWith "http://" || lower.StartsWith "https://" || lower.StartsWith "mailto:" || lower.StartsWith "tel:"
+        || (lower.StartsWith "#" && lower.Length > 1)
+
+/// Pictures that are linked rather than embedded have a URL the document
+/// chose as their source. They are not loaded (a placeholder is shown) unless
+/// the host opts in: opening a document must not make requests to an address
+/// the document names.
+let mutable allowLinkedImages = false
 
 /// Tracked text that is shown as removed: a deletion, or the source of a move.
 let isRemovalRevision (style: TextStyle) =
@@ -270,6 +294,14 @@ and FormatChange =
     | SetColor of string
     | ClearColor
     | SetFontSize of float
+
+/// Src of a linked picture that is not loaded (see allowLinkedImages).
+let linkedImagePlaceholderSource = opaqueSourcePrefix + "linked"
+
+/// What an image run shows: its picture, or for a linked picture the host has
+/// not allowed, a placeholder.
+let displayedImageSource (image: ImageRun) =
+    if image.Linked && image.Opaque.IsNone && not allowLinkedImages then linkedImagePlaceholderSource else image.Src
 
 // Helper functions for Run type
 module Run =
@@ -517,6 +549,7 @@ let private clearRevisionFields (style: TextStyle) =
 /// character formatting.
 let private hasAnnotationIdentity (style: TextStyle) =
     style.Hyperlink.IsSome
+    || style.InactiveHyperlink.IsSome
     || style.CommentId.IsSome
     || style.CommentText.IsSome
     || style.CommentAuthor.IsSome
@@ -551,7 +584,7 @@ let private boundaryInsertStyle (style: TextStyle) (otherSide: TextStyle option)
     else
         let keepHyperlink =
             match otherSide with
-            | Some other -> style.Hyperlink.IsSome && other.Hyperlink = style.Hyperlink
+            | Some other -> (style.Hyperlink.IsSome || style.InactiveHyperlink.IsSome) && other.Hyperlink = style.Hyperlink && other.InactiveHyperlink = style.InactiveHyperlink
             | None -> false
         let keepComment =
             match otherSide with
@@ -559,6 +592,7 @@ let private boundaryInsertStyle (style: TextStyle) (otherSide: TextStyle option)
             | None -> false
         { style with
             Hyperlink = if keepHyperlink then style.Hyperlink else None
+            InactiveHyperlink = if keepHyperlink then style.InactiveHyperlink else None
             CommentId = if keepComment then style.CommentId else None
             CommentText = if keepComment then style.CommentText else None
             CommentAuthor = if keepComment then style.CommentAuthor else None
@@ -1487,11 +1521,17 @@ let setHighlight start len color buffer =
         applyStyle start len (fun style -> { style with Highlight = color }) buffer
 
 /// Set hyperlink target for range
-let setHyperlink start len target buffer =
-    if textRunsInRangeHaveHyperlink start len target buffer then
-        buffer
-    else
-        applyStyle start len (fun style -> { style with Hyperlink = target }) buffer
+let setHyperlink start len (target: string option) buffer =
+    match target with
+    // Only a target that may be followed becomes a link; anything else is kept
+    // on the text as an inactive target.
+    | Some value when not (isActiveHyperlinkTarget value) ->
+        applyStyle start len (fun style -> { style with Hyperlink = None; InactiveHyperlink = target }) buffer
+    | _ ->
+        if textRunsInRangeHaveHyperlink start len target buffer then
+            applyStyle start len (fun style -> if style.InactiveHyperlink.IsSome then { style with InactiveHyperlink = None } else style) buffer
+        else
+            applyStyle start len (fun style -> { style with Hyperlink = target; InactiveHyperlink = None }) buffer
 
 /// Set comment metadata for range
 let setComment start len commentId commentText author date buffer =
@@ -1772,6 +1812,7 @@ let clearFormatting start len buffer =
         {
             defaultStyle with
                 Hyperlink = style.Hyperlink
+                InactiveHyperlink = style.InactiveHyperlink
                 CommentId = style.CommentId
                 CommentText = style.CommentText
                 CommentAuthor = style.CommentAuthor

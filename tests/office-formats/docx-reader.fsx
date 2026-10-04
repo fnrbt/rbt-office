@@ -556,6 +556,34 @@ ok "tracked-paragraph-mark"
    (trackedMarks = [ Some ("insert", Some "12", Some "Ann"); None; None ])
    (sprintf "%A" trackedMarks)
 
+// ----- hostile hyperlink targets and linked pictures -------------------------
+let hostileDoc =
+    docxWithParts
+        ("<w:p><w:hyperlink r:id=\"rId1\"><w:r><w:t>bad</w:t></w:r></w:hyperlink><w:hyperlink r:id=\"rId2\"><w:r><w:t>good</w:t></w:r></w:hyperlink><w:hyperlink w:anchor=\"bm\"><w:r><w:t>inside</w:t></w:r></w:hyperlink></w:p>"
+         + sprintf "<w:p>%s</w:p>" (drawing "rId3"))
+        [ "word/_rels/document.xml.rels",
+          relsXml (sprintf "<Relationship Id=\"rId1\" Type=\"%s\" Target=\"javascript:alert(1)\" TargetMode=\"External\"/><Relationship Id=\"rId2\" Type=\"%s\" Target=\"https://example.com/\" TargetMode=\"External\"/><Relationship Id=\"rId3\" Type=\"%s\" Target=\"https://tracker.example.com/p.png\" TargetMode=\"External\"/>"
+                       (relType "hyperlink") (relType "hyperlink") (relType "image")) ]
+        []
+    |> DocxReader.loadBytesNative |> Option.get
+let hostileItems =
+    DocxReader.toEditorParagraphsWithStylesThemeAndNumbering
+        hostileDoc.Theme hostileDoc.Content hostileDoc.Images hostileDoc.Styles hostileDoc.NumberingDefinitions hostileDoc.Footnotes hostileDoc.Endnotes
+    |> Array.map (fun item -> item :?> System.Collections.Generic.Dictionary<string, obj>)
+let hostileRuns index = (hostileItems.[index].["Runs"] :?> obj array) |> Array.map (fun run -> run :?> System.Collections.Generic.Dictionary<string, obj>)
+let linkSummary =
+    hostileRuns 0 |> Array.map (fun run -> string run.["Text"], (run.["Hyperlink"] :?> string option), (run.["InactiveHyperlink"] :?> string option)) |> Array.toList
+ok "hyperlink-targets-are-allow-listed"
+   (linkSummary = [ "bad", None, Some "javascript:alert(1)"; "good", Some "https://example.com/", None; "inside", Some "#bm", None ])
+   (sprintf "%A" linkSummary)
+ok "external-image-is-marked-linked"
+   ((hostileRuns 1).[0].["ImageLinked"] = box true && (hostileRuns 1).[0].["ImageSrc"] = box "https://tracker.example.com/p.png")
+   (sprintf "%A %A" (hostileRuns 1).[0].["ImageLinked"] (hostileRuns 1).[0].["ImageSrc"])
+ok "active-hyperlink-target-rule"
+   ([ "https://a"; "http://a"; "mailto:a@b"; "tel:1"; "#x" ] |> List.forall DocxReader.isActiveHyperlinkTarget
+    && not ([ "javascript:alert(1)"; " javascript:x"; "file:///c:/x"; "data:text/html,x"; "vbscript:x"; "x.html"; "#" ] |> List.exists DocxReader.isActiveHyperlinkTarget))
+   "rule"
+
 printfn ""
 printfn "OfficeFormat DocxReader tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

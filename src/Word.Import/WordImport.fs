@@ -355,7 +355,9 @@ let private textStyle (run: EP.EditorRun) : Rbt.Word.TextBuffer.TextStyle =
             NoteId = run.NoteId
             NoteType = run.NoteType
             NoteText = run.NoteText
-            Hyperlink = run.Hyperlink
+            // Only a target that may be followed is a link (see DocxReader.isActiveHyperlinkTarget).
+            Hyperlink = run.Hyperlink |> Option.filter DocxReader.isActiveHyperlinkTarget
+            InactiveHyperlink = run.Hyperlink |> Option.filter (fun target -> not (DocxReader.isActiveHyperlinkTarget target))
             BookmarkStartId = run.BookmarkStartId
             BookmarkName = run.BookmarkName
             BookmarkEndId = run.BookmarkEndId
@@ -481,7 +483,8 @@ let private editorRunsToBufferWithImages (decorate: int -> Rbt.Word.TextBuffer.T
             bufferRuns.Add(Image {
                 Start = offset
                 Src = src
-                Linked = run.ImageLinked
+                // A picture whose source is an address rather than package data is linked.
+                Linked = run.ImageLinked || DocxReader.isExternalImageSource src
                 Width = run.ImageWidth
                 Height = run.ImageHeight
                 Alt = run.ImageAlt

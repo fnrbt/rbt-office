@@ -376,5 +376,18 @@ check "native explicit automatic colour"
     (paragraphsOfBlocks explicitNativeDoc.Blocks |> List.map (fun para -> runStyles para |> List.map (fun style -> Rbt.Word.TextBuffer.ExplicitFormat.has Rbt.Word.TextBuffer.ExplicitFormat.ColorAuto style)))
     [ [ false ]; [ true ] ]
 
+// ----- hostile hyperlink targets and linked pictures --------------------------
+let hostileNative =
+    importPackage
+        """<w:p><w:hyperlink r:id="rId1"><w:r><w:t>bad</w:t></w:r></w:hyperlink><w:hyperlink r:id="rId2"><w:r><w:t>good</w:t></w:r></w:hyperlink></w:p><w:p><w:r><w:drawing><wp:inline><wp:extent cx="914400" cy="457200"/><wp:docPr id="1" name="p"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:blipFill><a:blip r:embed="rId3"/></pic:blipFill><pic:spPr><a:prstGeom prst="rect"/></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>"""
+        [ "word/_rels/document.xml.rels", """<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="javascript:alert(1)" TargetMode="External"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.com/" TargetMode="External"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="https://tracker.example.com/p.png" TargetMode="External"/></Relationships>""" ]
+let hostileNativeRuns = paragraphsOfBlocks hostileNative.Blocks |> List.collect (fun para -> para.Buffer.Runs)
+check "native hyperlink targets are allow-listed"
+    (hostileNativeRuns |> List.choose (function Rbt.Word.TextBuffer.Text run -> Some (run.Style.Hyperlink, run.Style.InactiveHyperlink) | _ -> None))
+    [ None, Some "javascript:alert(1)"; Some "https://example.com/", None ]
+check "native external picture is linked and shows a placeholder"
+    (hostileNativeRuns |> List.choose (function Rbt.Word.TextBuffer.Image image -> Some (image.Linked, image.Src, Rbt.Word.TextBuffer.displayedImageSource image) | _ -> None))
+    [ true, "https://tracker.example.com/p.png", "opaque:linked" ]
+
 printfn "word import smoke: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

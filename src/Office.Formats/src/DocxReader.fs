@@ -1675,6 +1675,8 @@ module Docx =
 
     let private tokensFromHyperlink (hlNode: XmlNode) : RunToken list =
         let rId = Xml.attr "r:id" hlNode
+        // A link to a bookmark of the document itself (w:anchor): "#name".
+        let anchorTarget = attr "anchor" hlNode |> Option.filter (fun name -> name <> "") |> Option.map (fun name -> "#" + name)
         let tokens = wElems "r" hlNode |> List.collect tokensFromRun
 
         if tokens |> List.exists tokenHasField then
@@ -1707,7 +1709,7 @@ module Docx =
             [RunToken {
                 Content = Link {
                     Text = text
-                    Target = None  // Resolved from relationships later
+                    Target = anchorTarget  // The relationship target is resolved later
                     RelationshipId = rId
                     Properties = props
                 }
@@ -2771,7 +2773,10 @@ let resolveHyperlinkRun (relMap: Map<string, string>) (run: Run) : Run =
     match run.Content with
     | Link link ->
         match link.RelationshipId |> Option.bind (fun rId -> Map.tryFind rId relMap) with
-        | Some target -> { run with Content = Link { link with Target = Some target } }
+        | Some target ->
+            // With a w:anchor as well, the anchor is the fragment of the target.
+            let fragment = match link.Target with | Some (anchor: string) when anchor.StartsWith "#" && not (target.Contains "#") -> anchor | _ -> ""
+            { run with Content = Link { link with Target = Some (target + fragment) } }
         | None -> run
     | _ -> run
 
@@ -4384,6 +4389,23 @@ let private styleKeepProperties (styleMap: Map<string, StyleDefinition>) (para: 
     if para.Properties.KeepNext.IsNone && para.Properties.KeepLines.IsNone then effectiveParaProps
     else resolvedParagraphProperties styleMap { para.Properties with KeepNext = None; KeepLines = None }
 
+/// Whether a hyperlink target may become an active link: http, https, mailto,
+/// tel, or an anchor inside the document ("#bookmark"). A document can carry any
+/// string as a target (javascript:alert(1), file:///..., data:...); everything
+/// not on this list is delivered as an inactive target: kept so the document
+/// saves as it was, never offered as something to follow.
+let isActiveHyperlinkTarget (target: string) =
+    if String.IsNullOrWhiteSpace target then false
+    else
+        let lower = target.ToLowerInvariant()
+        lower.StartsWith "http://" || lower.StartsWith "https://" || lower.StartsWith "mailto:" || lower.StartsWith "tel:"
+        || (lower.StartsWith "#" && lower.Length > 1)
+
+/// A picture source that is an address the document names rather than data
+/// from the package: a linked picture, which is not loaded unless the host allows it.
+let isExternalImageSource (source: string) =
+    not (isNull source) && source.Contains "://" && not (source.StartsWith "data:")
+
 /// Source prefix of an opaque object that has no picture to show: the painter
 /// draws a placeholder frame for "opaque:<kind>".
 let opaqueSourcePrefix = "opaque:"
@@ -4479,7 +4501,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                         Some (objFromFields [
                             "IsImage" ==> true
                             "ImageSrc" ==> imageSrc
-                            "ImageLinked" ==> img.Linked
+                            "ImageLinked" ==> (img.Linked || isExternalImageSource imageSrc)
                             "ImageWidth" ==> img.Width
                             "ImageHeight" ==> img.Height
                             "ImageAlt" ==> img.Description
@@ -4538,7 +4560,8 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                             "Highlight" ==> effectiveRunProps.Highlight
                             "VertAlign" ==> effectiveRunProps.VertAlign
                             "IsImage" ==> false
-                            "Hyperlink" ==> link.Target
+                            "Hyperlink" ==> (link.Target |> Option.filter isActiveHyperlinkTarget)
+                            "InactiveHyperlink" ==> (link.Target |> Option.filter (fun target -> not (isActiveHyperlinkTarget target)))
                         ] @ bookmarkRunProps run))
                         | CommentReference id ->
                             Some (objFromFields [
@@ -4778,7 +4801,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                             Some (objFromFields [
                                 "IsImage" ==> true
                                 "ImageSrc" ==> imageSrc
-                                "ImageLinked" ==> img.Linked
+                                "ImageLinked" ==> (img.Linked || isExternalImageSource imageSrc)
                                 "ImageWidth" ==> img.Width
                                 "ImageHeight" ==> img.Height
                                 "ImageAlt" ==> img.Description
@@ -4837,7 +4860,8 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                                 "Highlight" ==> effectiveLinkProps.Highlight
                                 "VertAlign" ==> effectiveLinkProps.VertAlign
                                 "IsImage" ==> false
-                                "Hyperlink" ==> link.Target
+                                "Hyperlink" ==> (link.Target |> Option.filter isActiveHyperlinkTarget)
+                                "InactiveHyperlink" ==> (link.Target |> Option.filter (fun target -> not (isActiveHyperlinkTarget target)))
                             ] @ bookmarkRunProps run))
                         | CommentReference id ->
                             Some (objFromFields [

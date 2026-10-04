@@ -498,6 +498,36 @@ const docs = [
             { read: 'pkg.Paragraphs.4.Runs.1.RevisionType', equals: 'moveTo' }, { read: 'pkg.Paragraphs.4.Runs.1.RevisionMoveName', equals: 'move1' },
         ],
     },
+    {
+        // Hyperlink targets a document may carry. Only http, https, mailto, tel and
+        // anchors in the document are links; anything else is kept (the file saves as
+        // it was) but is inactive. A linked picture keeps its address and is marked linked.
+        name: 'synthetic/hostile-links',
+        body:
+            `<w:p>` + ['rId50', 'rId51', 'rId52', 'rId53', 'rId54', 'rId55', 'rId56', 'rId57'].map((id, i) => `<w:hyperlink r:id="${id}"><w:r><w:rPr><w:u w:val="single"/></w:rPr><w:t xml:space="preserve">link${i} </w:t></w:r></w:hyperlink>`).join('') +
+            `<w:hyperlink w:anchor="chapter2"><w:r><w:rPr><w:u w:val="single"/></w:rPr><w:t>to the bookmark</w:t></w:r></w:hyperlink></w:p>` +
+            `<w:p><w:bookmarkStart w:id="1" w:name="chapter2"/><w:r><w:t>Chapter 2</w:t></w:r><w:bookmarkEnd w:id="1"/></w:p>` +
+            `<w:p>${drawing('rId58', 457200, 457200).replace('r:embed', 'r:link')}${drawing('rId59', 457200, 457200)}</w:p>`,
+        rels: [['rId50', 'javascript:alert(1)'], ['rId51', 'https://example.com/ok'], ['rId52', 'mailto:someone@example.com'], ['rId53', 'tel:+15551234'],
+               ['rId54', 'file:///etc/passwd'], ['rId55', 'data:text/html,&lt;script&gt;alert(1)&lt;/script&gt;'], ['rId56', ' JavaScript:alert(2)'], ['rId57', 'vbscript:msgbox(1)']]
+            .map(([id, target]) => `<Relationship Id="${id}" Type="${REL}/hyperlink" Target="${target}" TargetMode="External"/>`).join('') +
+            `<Relationship Id="rId58" Type="${REL}/image" Target="https://tracker.example.com/pixel.png" TargetMode="External"/>` +
+            `<Relationship Id="rId59" Type="${REL}/image" Target="http://tracker.example.com/embedded-but-external.png" TargetMode="External"/>`,
+        expect: [
+            { read: 'pkg.Paragraphs.0.Runs.0.Hyperlink', equals: null }, { read: 'pkg.Paragraphs.0.Runs.0.InactiveHyperlink', equals: 'javascript:alert(1)' },
+            { read: 'pkg.Paragraphs.0.Runs.1.Hyperlink', equals: 'https://example.com/ok' }, { read: 'pkg.Paragraphs.0.Runs.1.InactiveHyperlink', equals: null },
+            { read: 'pkg.Paragraphs.0.Runs.2.Hyperlink', equals: 'mailto:someone@example.com' }, { read: 'pkg.Paragraphs.0.Runs.3.Hyperlink', equals: 'tel:+15551234' },
+            { read: 'pkg.Paragraphs.0.Runs.4.Hyperlink', equals: null }, { read: 'pkg.Paragraphs.0.Runs.4.InactiveHyperlink', equals: 'file:///etc/passwd' },
+            { read: 'pkg.Paragraphs.0.Runs.5.Hyperlink', equals: null }, { read: 'pkg.Paragraphs.0.Runs.6.Hyperlink', equals: null }, { read: 'pkg.Paragraphs.0.Runs.6.InactiveHyperlink', equals: ' JavaScript:alert(2)' },
+            { read: 'pkg.Paragraphs.0.Runs.7.Hyperlink', equals: null }, { read: 'pkg.Paragraphs.0.Runs.8.Hyperlink', equals: '#chapter2' },
+            { read: 'pkg.Paragraphs.2.Runs.0.ImageLinked', equals: true }, { read: 'pkg.Paragraphs.2.Runs.1.ImageLinked', equals: true },
+            // The targets are still in the saved file, where they were.
+            { part: 'word/_rels/document.xml.rels', has: 'Type="[^"]*/hyperlink" Target="javascript:alert\\(1\\)" TargetMode="External"' },
+            { part: 'word/_rels/document.xml.rels', has: 'Target="file:///etc/passwd" TargetMode="External"' }, { part: 'word/_rels/document.xml.rels', has: 'Target="https://example.com/ok"' },
+            { part: 'word/_rels/document.xml.rels', has: 'Type="[^"]*/image" Target="https://tracker.example.com/pixel.png" TargetMode="External"' },
+            { part: 'word/document.xml', has: '<w:hyperlink w:anchor="chapter2" w:history="1">' }, { part: 'word/document.xml', has: '<a:blip r:link="[^"]+"/>.*<a:blip r:link="[^"]+"/>' },
+        ],
+    },
     preservedParts('synthetic/preserved-parts', [
         // Everything the editor does not model comes back as it was.
         { same: 'word/theme/theme1.xml' }, { same: 'word/fontTable.xml' }, { same: 'word/webSettings.xml' },

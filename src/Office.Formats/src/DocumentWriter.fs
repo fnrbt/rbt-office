@@ -652,10 +652,18 @@ let rec private collectItemParagraphs (item: obj) : obj list =
                 @ (optionalArray (cell?NestedTables) |> Array.toList |> List.collect collectItemParagraphs)))
     | _ -> [item]
 
+/// The hyperlink target of a run: the active one, or a target the reader found
+/// but does not let anyone follow (InactiveHyperlink). Both are written back.
+let private runHyperlinkTarget (run: obj) =
+    optionalString (run?Hyperlink) |> Option.orElse (optionalString (run?InactiveHyperlink))
+
+/// Targets that need a relationship: everything but links to a bookmark of the
+/// document itself ("#name"), which are written as w:anchor.
 let private collectParagraphHyperlinks (para: obj) =
     optionalArray (para?Runs)
     |> Array.toList
-    |> List.choose (fun run -> optionalString (run?Hyperlink))
+    |> List.choose runHyperlinkTarget
+    |> List.filter (fun target -> not (target.StartsWith "#"))
 
 let private collectItemHyperlinks (item: obj) =
     collectItemParagraphs item |> List.collect collectParagraphHyperlinks
@@ -816,7 +824,7 @@ let private buildImageScope (mediaStartIndex: int) (items: obj array) =
                 nextMediaIndex <- nextMediaIndex + 1
                 { Src = src; RelId = relId; FileName = fileName; Extension = extension; ContentType = contentType; Data = Some data; Linked = false })
             |> Option.orElseWith (fun () ->
-                if src.StartsWith("http://") || src.StartsWith("https://") then
+                if src.Contains "://" && not (src.StartsWith "data:") && not (src.StartsWith "blob:") then
                     let relId = freshRelationshipId (sprintf "rIdImage%d" nextMediaIndex)
                     nextMediaIndex <- nextMediaIndex + 1
                     Some { Src = src; RelId = relId; FileName = ""; Extension = ""; ContentType = ""; Data = None; Linked = true }
@@ -1320,8 +1328,12 @@ let private generateParagraphWithHyperlinksAndImagesWithPageSetup (packageSetup:
                     }
                     generateReferenceRun runObj run
             let runXml = revisionWrappedRun runObj runXml
-            match optionalString (runObj?Hyperlink) |> Option.bind (fun url -> Map.tryFind url hyperlinks) with
-            | Some relId -> element "w:hyperlink" [("r:id", relId); ("w:history", "1")] [runXml]
+            match runHyperlinkTarget runObj with
+            | Some target when target.StartsWith "#" && target.Length > 1 -> element "w:hyperlink" [("w:anchor", target.Substring 1); ("w:history", "1")] [runXml]
+            | Some target ->
+                match Map.tryFind target hyperlinks with
+                | Some relId -> element "w:hyperlink" [("r:id", relId); ("w:history", "1")] [runXml]
+                | None -> runXml
             | None -> runXml
         )
     let runs =

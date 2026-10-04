@@ -23,10 +23,10 @@ const norm = (v) => {
 const pick = (o, keys) => { const r = {}; for (const k of keys) r[k] = norm(o[k]); return r; };
 
 const RUN_KEYS = ['Bold', 'Italic', 'Underline', 'UnderlineStyle', 'UnderlineColor', 'Strike', 'DoubleStrike', 'Hidden', 'AllCaps', 'SmallCaps',
-    'FontSize', 'CharacterSpacing', 'FontFamily', 'Color', 'Highlight', 'VertAlign', 'Position', 'EmphasisMark', 'Hyperlink',
+    'FontSize', 'CharacterSpacing', 'FontFamily', 'Color', 'Highlight', 'VertAlign', 'Position', 'EmphasisMark', 'Hyperlink', 'InactiveHyperlink',
     'RevisionType', 'RevisionAuthor', 'RevisionDate', 'InsertedRevisionId', 'InsertedRevisionAuthor', 'InsertedRevisionDate', 'RevisionMoveName',
     'FieldCode', 'NoteId', 'NoteType', 'CommentId', 'ExplicitColorAuto'];
-const IMAGE_KEYS = ['ImageWidth', 'ImageHeight', 'ImageFloating', 'ImageWrap', 'ImageWrapText', 'ImagePositionX', 'ImagePositionY',
+const IMAGE_KEYS = ['ImageLinked', 'ImageWidth', 'ImageHeight', 'ImageFloating', 'ImageWrap', 'ImageWrapText', 'ImagePositionX', 'ImagePositionY',
     'ImagePositionHRelativeFrom', 'ImagePositionVRelativeFrom', 'ImagePositionHAlign', 'ImagePositionVAlign', 'ImageBehindDoc', 'ImageRelativeHeight',
     'ImageDistanceLeft', 'ImageDistanceTop', 'ImageDistanceRight', 'ImageDistanceBottom', 'ImageCropLeft', 'ImageCropTop', 'ImageCropRight', 'ImageCropBottom',
     'ImageAllowOverlap', 'ImageLayoutInCell', 'ImageAlt', 'ImageTitle'];

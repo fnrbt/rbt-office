@@ -896,6 +896,8 @@ let private addParagraphCommandsWithBaselineOffset baselineOffset (settings: Lay
                         | "chart" -> Some "Chart"
                         | "diagram" -> Some "SmartArt"
                         | "ole" -> Some "Embedded object"
+                        // A linked picture the host has not allowed to be loaded.
+                        | "linked" -> Some "Linked picture"
                         | _ -> None
                     match label with
                     | Some text when width > 0.0 && height > 0.0 ->

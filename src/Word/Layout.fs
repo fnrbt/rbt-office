@@ -1989,7 +1989,7 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
             let floatingBox = if imgRun.AllowOverlap = Some false then WordLayout.Floating.avoidOverlap placedBoxes rawFloatingBox else rawFloatingBox
             let imageX = if imgRun.Floating then floatingBox.X else currentX
             let yOffset = if imgRun.Floating then floatingBox.Y - (contentY + (y - settings.PaddingTop)) else 0.0
-            let segment = ImageSegment (imgRun.Src, imageX, yOffset, imgWidth, imgHeight, imgRun.Start, imgRun.Floating, imgRun.Wrap, imgRun.RelativeHeight, imgRun.CropLeft, imgRun.CropTop, imgRun.CropRight, imgRun.CropBottom)
+            let segment = ImageSegment (TextBuffer.displayedImageSource imgRun, imageX, yOffset, imgWidth, imgHeight, imgRun.Start, imgRun.Floating, imgRun.Wrap, imgRun.RelativeHeight, imgRun.CropLeft, imgRun.CropTop, imgRun.CropRight, imgRun.CropBottom)
             currentSegments.Add segment
             if not imgRun.Floating then
                 currentHasFlowContent <- true
