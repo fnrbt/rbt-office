@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // Timings of the Word editor on a long document in headless Chromium, against
 // Fable output: the cost of a keystroke (typing in a plain paragraph in the
-// middle of the document), of a caret move and of a scroll frame.
+// middle of the document), of a caret move (through the API and by the arrow
+// keys), of Enter, of a Backspace that merges two paragraphs, of a short
+// string inserted and of a scroll frame.
 //
 // The document is tests/test-documents-wild/docx4j-getting-started.docx with
 // its body repeated (--repeat N, default 8: some 500 pages).
@@ -86,6 +88,31 @@ try {
         scroll(count, top) {
             const times = [];
             for (let i = 0; i < count; i++) { const t0 = performance.now(); Word.setViewport(editor, { scale: 1, devicePixelRatio: 1, scrollTop: top + i * 40, scrollLeft: 0, width: 1000, height: 800 }); times.push(performance.now() - t0); }
+            return stats(times);
+        },
+        // Caret moves through the API: the caret is put at other offsets of its paragraph.
+        carets(count) {
+            const sel = Word.getSelection(editor), times = [];
+            const builds = Word.getRenderStats(editor).FrameBuilds;
+            for (let i = 0; i < count; i++) { const at = 1 + (i % 5); const t0 = performance.now(); Word.setSelection(editor, sel.FocusBlockId, at, sel.FocusBlockId, at); times.push(performance.now() - t0); }
+            Word.setSelection(editor, sel.AnchorBlockId, sel.AnchorOffset, sel.FocusBlockId, sel.FocusOffset);
+            return { ...stats(times), builds: Word.getRenderStats(editor).FrameBuilds - builds };
+        },
+        // Keys through the editor's input element, as the keyboard sends them (each a list: pressed in turn, timed apart).
+        pressed(names, count) {
+            const input = Word.getInputElement(editor), times = names.map(() => []);
+            const builds = Word.getRenderStats(editor).FrameBuilds;
+            for (let i = 0; i < count; i++) names.forEach((name, k) => {
+                const shift = name.startsWith('Shift+'), key = shift ? name.slice(6) : name;
+                const t0 = performance.now();
+                input.dispatchEvent(new KeyboardEvent('keydown', { key, shiftKey: shift, bubbles: true, cancelable: true }));
+                times[k].push(performance.now() - t0);
+            });
+            return { times: times.map(stats), builds: Word.getRenderStats(editor).FrameBuilds - builds };
+        },
+        pastes(count, text) {
+            const times = [];
+            for (let i = 0; i < count; i++) { const t0 = performance.now(); Word.insertText(editor, text); times.push(performance.now() - t0); }
             return stats(times);
         },
         text() { return Word.getText(editor).length; },
@@ -173,6 +200,17 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
             for (const [key, time] of [...total.entries()].filter(([key]) => /word\//.test(key)).sort((a, b) => b[1] - a[1]).slice(0, 60)) console.log(`  ${(time / keys).toFixed(2).padStart(7)} ms  ${key}`);
         }
         console.log(`  a keystroke (insertText in a plain paragraph, page ${Math.floor(loaded.pages / 2) + 1}): ${line(typed)}`);
+        const carets = await tab.evaluate((n) => window.perf.carets(n), 40);
+        console.log(`  a caret move (setSelection):  ${line(carets)}; frame builds ${carets.builds} in 40`);
+        const arrows = await tab.evaluate(() => window.perf.pressed(['ArrowRight', 'ArrowLeft'], 20));
+        console.log(`  ArrowRight:  ${line(arrows.times[0])}; ArrowLeft: ${line(arrows.times[1])}; frame builds ${arrows.builds} in 40`);
+        const shifted = await tab.evaluate(() => window.perf.pressed(['Shift+ArrowRight', 'Shift+ArrowLeft'], 20));
+        console.log(`  Shift+ArrowRight:  ${line(shifted.times[0])}; frame builds ${shifted.builds} in 40`);
+        const split = await tab.evaluate(() => window.perf.pressed(['Enter', 'Backspace'], 15));
+        console.log(`  Enter:  ${line(split.times[0])}`);
+        console.log(`  Backspace (merging the paragraphs again):  ${line(split.times[1])}`);
+        const pasted = await tab.evaluate(() => window.perf.pastes(15, 'a short string '));
+        console.log(`  a short string inserted (15 characters):  ${line(pasted)}`);
         const scrolled = await tab.evaluate(([n, top]) => window.perf.scroll(n, top), [60, loaded.top]);
         console.log(`  a scroll frame (40 px):  ${line(scrolled)}`);
         console.log(`  render stats: ${JSON.stringify(await tab.evaluate(() => window.perf.renderStats()))}`);

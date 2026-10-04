@@ -45,6 +45,12 @@ type PaintFrame = {
     /// can differ in size and orientation), extended over the note areas.
     Pages: PageInfo list
     BodyCommands: PaintCommand list
+    /// Overlay that follows the document's content only (comment anchors):
+    /// kept with the body commands when just the selection changes.
+    StaticOverlay: PaintCommand list
+    /// Overlay that follows the selection and the pointer: selection
+    /// highlight, caret, the frame of the caret's content control, the hover
+    /// outline. Painted after the static overlay.
     OverlayCommands: PaintCommand list
     CanvasWidth: float
     CanvasHeight: float
@@ -62,7 +68,12 @@ type PaintFrame = {
     /// The viewport the frame was painted through (None: whole-canvas mode).
     Viewport: Viewport option
     mutable BodyIndex: CommandIndex option
-    mutable OverlayIndex: CommandIndex option
+    mutable StaticOverlayIndex: CommandIndex option
+    /// The first layout of each block, for the overlay of the next selection
+    /// (made when a frame is first reused for another selection).
+    mutable LayoutById: System.Collections.Generic.Dictionary<string, BlockLayout> option
+    /// The band the body's pictures are in (kept: found by walking every command).
+    mutable ImageBand: Choice<(float * float) option, unit> option
 }
 
 /// Rendering context
@@ -745,23 +756,55 @@ let private imageCommandRange commands =
         | _ :: rest -> loop rest current
     loop commands None
 
+let private imageBandOf (frame: PaintFrame) =
+    let band =
+        match frame.ImageBand with
+        | Some band -> band
+        | None ->
+            let band =
+                match imageCommandRange frame.BodyCommands with
+                | Choice1Of2 range -> Choice1Of2 (range |> Option.map (fun range -> range.Top, range.Bottom))
+                | Choice2Of2 () -> Choice2Of2 ()
+            frame.ImageBand <- Some band
+            band
+    match band with
+    | Choice1Of2 range -> Choice1Of2 (range |> Option.map (fun (top, bottom) -> { Top = top; Bottom = bottom }))
+    | Choice2Of2 () -> Choice2Of2 ()
+
 let private computeDirtyRange (previous: PaintFrame) (nextFrame: PaintFrame) (canvasBottom: float) =
-    match commandDiffRange previous.BodyCommands nextFrame.BodyCommands with
-    | Choice2Of2 () -> FullRepaint
-    | Choice1Of2 bodyRange ->
+    // A frame made from the previous one for another selection has the
+    // previous one's body commands and layouts - the same objects: nothing of
+    // the body is compared, and its pictures are painted already.
+    let sameBody = obj.ReferenceEquals(previous.BodyCommands, nextFrame.BodyCommands)
+    let sameDocument = obj.ReferenceEquals(previous.Document, nextFrame.Document)
+    let bodyDiff = if sameBody then Choice1Of2 None else commandDiffRange previous.BodyCommands nextFrame.BodyCommands
+    let staticDiff =
+        if obj.ReferenceEquals(previous.StaticOverlay, nextFrame.StaticOverlay) then Choice1Of2 None
+        else
+            match commandListRange previous.StaticOverlay, commandListRange nextFrame.StaticOverlay with
+            | Choice1Of2 oldRange, Choice1Of2 newRange -> Choice1Of2 (unionRange oldRange newRange)
+            | _ -> Choice2Of2 ()
+    match bodyDiff, staticDiff with
+    | Choice2Of2 (), _
+    | _, Choice2Of2 () -> FullRepaint
+    | Choice1Of2 bodyRange, Choice1Of2 staticRange ->
         match commandListRange previous.OverlayCommands, commandListRange nextFrame.OverlayCommands with
         | Choice2Of2 (), _
         | _, Choice2Of2 () -> FullRepaint
         | Choice1Of2 oldOverlayRange, Choice1Of2 newOverlayRange ->
-            match imageCommandRange previous.BodyCommands, imageCommandRange nextFrame.BodyCommands with
+            let images =
+                if sameBody && not sameDocument then Choice1Of2 None, Choice1Of2 None
+                else imageBandOf previous, imageBandOf nextFrame
+            match images with
             | Choice2Of2 (), _
             | _, Choice2Of2 () -> FullRepaint
             | Choice1Of2 oldImageRange, Choice1Of2 newImageRange ->
                 let previousLayouts: BlockLayout list = previous.Layouts
                 let nextLayouts: BlockLayout list = nextFrame.Layouts
                 let range =
-                    firstLayoutRange previousLayouts nextLayouts canvasBottom
+                    (if obj.ReferenceEquals(previousLayouts, nextLayouts) then None else firstLayoutRange previousLayouts nextLayouts canvasBottom)
                     |> unionRange bodyRange
+                    |> unionRange staticRange
                     |> unionRange oldOverlayRange
                     |> unionRange newOverlayRange
                     |> unionRange oldImageRange
@@ -798,6 +841,7 @@ let private renderFullFrame ctx doc frame =
 
     renderPages ctx frame.Pages
     renderCommandList ctx frame.BodyCommands
+    renderCommandList ctx frame.StaticOverlay
     renderCommandList ctx frame.OverlayCommands
 
     ctx.Ctx.fillStyle <- U3.Case1 "#000000"
@@ -815,10 +859,27 @@ let private renderPartialFrame ctx doc frame band =
 
     renderPages ctx frame.Pages
     renderCommandListInBand ctx band frame.BodyCommands
+    renderCommandListInBand ctx band frame.StaticOverlay
     renderCommandListInBand ctx band frame.OverlayCommands
 
     ctx.Ctx.restore()
     ctx.Ctx.fillStyle <- U3.Case1 "#000000"
+
+/// The overlay that follows the selection and the pointer.
+let private selectionOverlay (ctx: RenderContext) (settings: LayoutSettings) (doc: Document) (layouts: BlockLayout list) (tryFindLayout: (string -> BlockLayout option) option) hoveredImage =
+    match tryFindLayout with
+    | Some tryFind ->
+        List.concat [
+            selectionCommandsWithRangeLookup settings (measureRangeWithContext ctx) doc tryFind
+            markupMarkerCommands settings doc layouts
+            hoverCommandsLookup settings tryFind hoveredImage
+        ]
+    | None ->
+        List.concat [
+            selectionCommandsWithRange settings (measureRangeWithContext ctx) doc layouts
+            markupMarkerCommands settings doc layouts
+            hoverCommands settings layouts hoveredImage
+        ]
 
 let private buildFrame (ctx: RenderContext) (doc: Document) hoveredImage =
     ctx.FrameBuilds <- ctx.FrameBuilds + 1
@@ -827,19 +888,13 @@ let private buildFrame (ctx: RenderContext) (doc: Document) hoveredImage =
     let layouts, bodyCommands, _ =
         Rbt.Word.Layout.withTablePlanScope ctx.PlanScope (fun () ->
             collectDocumentCommandsWithLayoutsAndPages settings ctx.FontFamily (measureWithContext ctx) (measureRangeWithContext ctx) doc layouts pages)
-    let overlayCommands =
-        List.concat [
-            commentAnchorCommands ctx doc layouts
-            selectionCommandsWithRange settings (measureRangeWithContext ctx) doc layouts
-            markupMarkerCommands settings doc layouts
-            hoverCommands settings layouts hoveredImage
-        ]
     {
         Document = doc
         Layouts = layouts
         Pages = pageFramesForLayouts settings doc layouts pages
         BodyCommands = bodyCommands
-        OverlayCommands = overlayCommands
+        StaticOverlay = commentAnchorCommands ctx doc layouts
+        OverlayCommands = selectionOverlay ctx settings doc layouts None hoveredImage
         CanvasWidth = canvasWidth ctx
         CanvasHeight = canvasHeight ctx
         FontFamily = ctx.FontFamily
@@ -852,8 +907,43 @@ let private buildFrame (ctx: RenderContext) (doc: Document) hoveredImage =
         Hovered = hoveredImage
         Viewport = ctx.Viewport
         BodyIndex = None
-        OverlayIndex = None
+        StaticOverlayIndex = None
+        LayoutById = None
+        ImageBand = None
     }
+
+/// The first layout of a block of the frame, by id.
+let private frameLayoutLookup (frame: PaintFrame) =
+    let byId =
+        match frame.LayoutById with
+        | Some byId -> byId
+        | None ->
+            let byId = System.Collections.Generic.Dictionary<string, BlockLayout>()
+            for layout in frame.Layouts do
+                if not (byId.ContainsKey layout.BlockId) then byId.[layout.BlockId] <- layout
+            frame.LayoutById <- Some byId
+            byId
+    fun (blockId: string) ->
+        match byId.TryGetValue blockId with
+        | true, layout -> Some layout
+        | false, _ -> None
+
+/// The frame of a document: the previous frame when it shows this document,
+/// the previous frame with another overlay when only the selection (or the
+/// hover outline) differs - the body commands, the layouts, the pages and
+/// their index are the same objects - and a newly built frame otherwise.
+/// (The canvas size and the viewport are the caller's to compare.)
+let private frameFor (ctx: RenderContext) (doc: Document) hoveredImage =
+    match ctx.LastPaint with
+    | Some previous when not (frameInvalidated ctx { previous with CanvasWidth = canvasWidth ctx; CanvasHeight = canvasHeight ctx })
+                         && Rbt.Word.Layout.sameDocumentApartFromSelection previous.Document doc ->
+        if obj.ReferenceEquals(previous.Document, doc) && previous.Hovered = hoveredImage then previous
+        else
+            // The layout state follows the document on display (hit tests, the caret rectangle).
+            layoutDocumentWithPages ctx doc |> ignore
+            let overlay = selectionOverlay ctx (layoutSettings ctx doc) doc previous.Layouts (Some (frameLayoutLookup previous)) hoveredImage
+            { previous with Document = doc; Hovered = hoveredImage; OverlayCommands = overlay }
+    | _ -> buildFrame ctx doc hoveredImage
 
 // ---- viewport ---------------------------------------------------------------
 
@@ -886,12 +976,12 @@ let private bodyIndex (frame: PaintFrame) =
         frame.BodyIndex <- Some index
         index
 
-let private overlayIndex (frame: PaintFrame) =
-    match frame.OverlayIndex with
+let private staticOverlayIndex (frame: PaintFrame) =
+    match frame.StaticOverlayIndex with
     | Some index -> index
     | None ->
-        let index = indexCommands frame.OverlayCommands
-        frame.OverlayIndex <- Some index
+        let index = indexCommands frame.StaticOverlay
+        frame.StaticOverlayIndex <- Some index
         index
 
 let private renderIndexedInBand ctx (index: CommandIndex) top bottom =
@@ -1033,7 +1123,8 @@ let private renderViewportBand (ctx: RenderContext) (frame: PaintFrame) (vp: Vie
             ctx.Ctx.clip()
             renderPageSheet ctx page
             renderIndexedInBand ctx (bodyIndex frame) pageTop pageBottom
-            renderIndexedInBand ctx (overlayIndex frame) pageTop pageBottom
+            renderIndexedInBand ctx (staticOverlayIndex frame) pageTop pageBottom
+            renderCommandListInBand ctx { Top = pageTop; Bottom = pageBottom } frame.OverlayCommands
             ctx.Ctx.restore()
     ctx.Ctx.restore()
     ctx.Ctx.fillStyle <- U3.Case1 "#000000"
@@ -1042,11 +1133,9 @@ let private renderThroughViewport (ctx: RenderContext) (doc: Document) hoveredIm
     let resized = fitCanvasToViewport ctx vp
     // Scrolling and zooming show the same document: its commands are reused.
     let frame =
-        match ctx.LastPaint with
-        | Some previous when obj.ReferenceEquals(previous.Document, doc) && previous.Hovered = hoveredImage && not (frameInvalidated ctx { previous with CanvasWidth = canvasWidth ctx; CanvasHeight = canvasHeight ctx }) ->
-            if previous.Viewport = Some vp && not resized then previous
-            else { previous with Viewport = Some vp; CanvasWidth = canvasWidth ctx; CanvasHeight = canvasHeight ctx }
-        | _ -> buildFrame ctx doc hoveredImage
+        let frame = frameFor ctx doc hoveredImage
+        if frame.Viewport = Some vp && not resized then frame
+        else { frame with Viewport = Some vp; CanvasWidth = canvasWidth ctx; CanvasHeight = canvasHeight ctx }
     let visible = visibleBand vp
     // One layout pixel of slack either side: rounding the offset to device pixels can show a sliver more.
     let visible = { Top = visible.Top - 1.0; Bottom = visible.Bottom + 1.0 }
@@ -1067,7 +1156,10 @@ let private renderCore (ctx: RenderContext) (doc: Document) hoveredImage =
     match ctx.Viewport with
     | Some vp -> renderThroughViewport ctx doc hoveredImage vp
     | None ->
-    let frame = buildFrame ctx doc hoveredImage
+    let frame =
+        let frame = frameFor ctx doc hoveredImage
+        if frame.Viewport.IsNone && frame.CanvasWidth = canvasWidth ctx && frame.CanvasHeight = canvasHeight ctx then frame
+        else { frame with Viewport = None; CanvasWidth = canvasWidth ctx; CanvasHeight = canvasHeight ctx }
     match ctx.LastPaint with
     | None ->
         renderFullFrame ctx doc frame

@@ -5283,6 +5283,21 @@ let clearIncrementalLayoutState (state: IncrementalLayoutState) =
     state.Memo.MemoStyles <- []
     state.Memo.MemoStyleContext <- None
 
+/// True when two documents lay out (and paint, the selection overlay apart)
+/// alike without looking further: they are the same document or differ only
+/// in the selection - a caret move, a selection drag. Everything else is the
+/// same object in both.
+let sameDocumentApartFromSelection (left: Document) (right: Document) =
+    obj.ReferenceEquals(left, right)
+    || (obj.ReferenceEquals(left.Blocks, right.Blocks)
+        && obj.ReferenceEquals(left.PageSetup, right.PageSetup)
+        && obj.ReferenceEquals(left.Styles, right.Styles)
+        && obj.ReferenceEquals(left.Headers, right.Headers)
+        && obj.ReferenceEquals(left.Footers, right.Footers)
+        && obj.ReferenceEquals(left.HeaderParts, right.HeaderParts)
+        && obj.ReferenceEquals(left.FooterParts, right.FooterParts)
+        && obj.ReferenceEquals(left.Package, right.Package))
+
 /// Incremental document layout. Runs the same document pass as
 /// layoutDocumentPages (so the result is identical for every document —
 /// pagination, numbering, tables, footnotes, floats, sections and columns
@@ -5292,6 +5307,11 @@ let layoutDocumentPagesIncremental (state: IncrementalLayoutState) (settings: La
     match state.LastDocument, state.LastSettings, state.LastLayouts, state.LastPages with
     | Some cachedDoc, Some cachedSettings, Some layouts, Some pages
         when obj.ReferenceEquals(cachedDoc, doc) && cachedSettings = settings -> layouts, pages
+    | Some cachedDoc, Some cachedSettings, Some layouts, Some pages
+        when sameDocumentApartFromSelection cachedDoc doc && cachedSettings = settings ->
+        // The selection has no part in the layout: a caret move keeps it.
+        state.LastDocument <- Some doc
+        layouts, pages
     | _ ->
         let memo = state.Memo
         if not (obj.ReferenceEquals(memo.MemoStyles, doc.Styles)) then
