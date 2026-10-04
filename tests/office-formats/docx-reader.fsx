@@ -484,6 +484,27 @@ ok "self-contained-xml-keeps-attribute-order"
      = "<a:x b:k=\"2\" mc:Ignorable=\"b\" xmlns:a=\"urn:a\" xmlns:b=\"urn:b\" xmlns:mc=\"urn:mc\" z=\"1\"><a:y/></a:x>")
    (DocxReader.selfContainedXml (Map.ofList [ "xmlns:a", "urn:a"; "xmlns:b", "urn:b"; "xmlns:mc", "urn:mc"; "mc:Ignorable", "b z" ]) "<a:x z=\"1\" b:k=\"2\"><a:y/></a:x>")
 
+// ----- settings and styles are handed to the writer as they are --------------
+let settingsDoc =
+    docxPackage
+        [ "[Content_Types].xml", "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"/>"
+          "word/document.xml", sprintf "<w:document %s><w:body><w:p><w:r><w:t>x</w:t></w:r></w:p></w:body></w:document>" wNs
+          "word/_rels/document.xml.rels", relsXml (sprintf "<Relationship Id=\"rId1\" Type=\"%s\" Target=\"conf/settings.xml\"/><Relationship Id=\"rId2\" Type=\"%s\" Target=\"styles.xml\"/>" (relType "settings") (relType "styles"))
+          "word/conf/settings.xml", sprintf "<w:settings %s><w:evenAndOddHeaders/><w:defaultTabStop w:val=\"708\"/></w:settings>" wNs
+          "word/conf/_rels/settings.xml.rels", relsXml (sprintf "<Relationship Id=\"rId1\" Type=\"%s\" Target=\"file:///t.dotm\" TargetMode=\"External\"/>" (relType "attachedTemplate"))
+          "word/styles.xml", sprintf "<w:styles %s><w:latentStyles w:count=\"1\"/><w:style w:type=\"table\" w:styleId=\"Grid\"><w:name w:val=\"Grid\"/></w:style></w:styles>" wNs ]
+        []
+    |> DocxReader.loadBytesNative |> Option.get
+ok "original-settings-and-styles-kept-for-the-writer"
+   ((settingsDoc.Preserved.SettingsXml |> Option.exists (fun xml -> xml.Contains "w:defaultTabStop"))
+    && (settingsDoc.Preserved.StylesXml |> Option.exists (fun xml -> xml.Contains "latentStyles" && xml.Contains "Grid")))
+   (sprintf "%A" (settingsDoc.Preserved.SettingsXml, settingsDoc.Preserved.StylesXml))
+let settingsRels = Map.tryFind "settings" settingsDoc.Preserved.PartRelationships |> Option.defaultValue [] |> List.map (fun rel -> rel.Id, rel.Target, rel.External)
+ok "settings-relationships-kept" (settingsRels = [ "rId1", "file:///t.dotm", true ]) (sprintf "%A" settingsRels)
+ok "regenerated-parts-are-not-kept-as-parts"
+   (settingsDoc.Preserved.Parts |> List.map (fun part -> part.Path) = [])
+   (sprintf "%A" (settingsDoc.Preserved.Parts |> List.map (fun part -> part.Path)))
+
 printfn ""
 printfn "OfficeFormat DocxReader tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

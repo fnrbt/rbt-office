@@ -3476,7 +3476,9 @@ let parseFromSource (source: PartSource) : WordDocument option =
                   | None -> ()
               yield footnotesPartKey, keptRelationships (parentPath footnotesPath) footnotesRels (footnotes |> List.collect (fun note -> opaqueXmlOfBlocks note.Blocks))
               yield endnotesPartKey, keptRelationships (parentPath endnotesPath) endnotesRels (endnotes |> List.collect (fun note -> opaqueXmlOfBlocks note.Blocks))
-              yield commentsPartKey, keptRelationships (parentPath commentsPath) commentsRels (comments |> List.collect (fun comment -> opaqueXmlOfBlocks comment.Blocks)) ]
+              yield commentsPartKey, keptRelationships (parentPath commentsPath) commentsRels (comments |> List.collect (fun comment -> opaqueXmlOfBlocks comment.Blocks))
+              // The settings part is patched, not regenerated: all its relationships stay (an attached template).
+              yield "settings", keptRelationships (parentPath settingsPath) (source.Text (partRelsPath settingsPath) |> relationshipsOfXml) [] ]
             |> List.filter (fun (_, kept) -> not kept.IsEmpty)
         // Parts the writer produces itself are never carried over as they are.
         let regenerated =

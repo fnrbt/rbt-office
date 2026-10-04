@@ -34,6 +34,49 @@ const shapeAnchor = (id, name, o, spPr, text) =>
     `<a:graphic><a:graphicData uri="${WPS}"><wps:wsp><wps:cNvSpPr/><wps:spPr>${spPr}</wps:spPr>${text ? `<wps:txbx><w:txbxContent>${text}</w:txbxContent></wps:txbx>` : ''}<wps:bodyPr/></wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></mc:Choice>` +
     `<mc:Fallback><w:pict><v:shape xmlns:v="urn:schemas-microsoft-com:vml" id="vml${id}" type="#_x0000_t202" style="position:absolute;margin-left:10pt;margin-top:10pt;width:50pt;height:30pt"><v:textbox><w:txbxContent>${text || '<w:p/>'}</w:txbxContent></v:textbox></v:shape></w:pict></mc:Fallback></mc:AlternateContent></w:r>`;
 
+// A package with every kind of part the editor does not model.
+function preservedParts(name, expect) {
+    const PKG = 'http://schemas.openxmlformats.org/package/2006/relationships';
+    return {
+        name,
+        body: p('styled paragraph', '<w:pStyle w:val="Kept"/>') + p('plain paragraph'),
+        rels: `<Relationship Id="rId40" Type="${REL}/settings" Target="settings.xml"/><Relationship Id="rId41" Type="${REL}/theme" Target="theme/theme1.xml"/>` +
+            `<Relationship Id="rId42" Type="${REL}/fontTable" Target="fontTable.xml"/><Relationship Id="rId43" Type="${REL}/webSettings" Target="webSettings.xml"/>` +
+            `<Relationship Id="rId44" Type="${REL}/customXml" Target="../customXml/item1.xml"/>`,
+        rootRels: `<Relationship Id="rId2" Type="${PKG}/metadata/core-properties" Target="docProps/core.xml"/><Relationship Id="rId3" Type="${REL}/extended-properties" Target="docProps/app.xml"/>` +
+            `<Relationship Id="rId4" Type="${REL}/custom-properties" Target="docProps/custom.xml"/>`,
+        extra: {
+            'word/settings.xml': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<w:settings ${W}><w:zoom w:percent="120"/><w:attachedTemplate r:id="rId1"/><w:trackRevisions/><w:defaultTabStop w:val="708"/><w:footnotePr><w:footnote w:id="-1"/></w:footnotePr>` +
+                `<w:compat><w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="15"/></w:compat><w:rsids><w:rsidRoot w:val="00A1B2C3"/></w:rsids><w:themeFontLang w:val="en-US"/></w:settings>`,
+            'word/_rels/settings.xml.rels': `<Relationships xmlns="${PKG}"><Relationship Id="rId1" Type="${REL}/attachedTemplate" Target="file:///C:/Templates/Normal.dotm" TargetMode="External"/></Relationships>`,
+            'word/theme/theme1.xml': '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Kept theme"><a:themeElements><a:clrScheme name="Kept"><a:dk1><a:sysClr val="windowText" lastClr="000000"/></a:dk1></a:clrScheme><a:fontScheme name="Kept"><a:majorFont><a:latin typeface="Georgia"/></a:majorFont><a:minorFont><a:latin typeface="Verdana"/></a:minorFont></a:fontScheme></a:themeElements></a:theme>',
+            'word/fontTable.xml': `<w:fonts ${W}><w:font w:name="Verdana"><w:panose1 w:val="020B0604030504040204"/></w:font></w:fonts>`,
+            'word/webSettings.xml': `<w:webSettings ${W}><w:optimizeForBrowser/></w:webSettings>`,
+            'customXml/item1.xml': '<root xmlns="urn:example:data"><value>42</value></root>',
+            'customXml/itemProps1.xml': '<ds:datastoreItem xmlns:ds="http://schemas.openxmlformats.org/officeDocument/2006/customXml" ds:itemID="{11111111-2222-3333-4444-555555555555}"/>',
+            'customXml/_rels/item1.xml.rels': `<Relationships xmlns="${PKG}"><Relationship Id="rId1" Type="${REL}/customXmlProps" Target="itemProps1.xml"/></Relationships>`,
+            'docProps/core.xml': '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Kept title</dc:title><dc:creator>Ann Author</dc:creator></cp:coreProperties>',
+            'docProps/app.xml': '<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"><Application>Some Writer</Application><Company>Example</Company></Properties>',
+            'docProps/custom.xml': '<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/custom-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><property fmtid="{D5CDD505-2E9C-101B-9397-08002B2CF9AE}" pid="2" name="Case"><vt:lpwstr>A-17</vt:lpwstr></property></Properties>',
+            'word/styles.xml': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<w:styles ${W}><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:asciiTheme="minorHAnsi" w:hAnsiTheme="minorHAnsi"/><w:sz w:val="22"/><w:lang w:val="en-US" w:eastAsia="ja-JP"/></w:rPr></w:rPrDefault></w:docDefaults>` +
+                `<w:latentStyles w:defLockedState="0" w:defUIPriority="99" w:count="2"><w:lsdException w:name="Normal" w:uiPriority="0" w:qFormat="1"/><w:lsdException w:name="heading 1" w:uiPriority="9" w:qFormat="1"/></w:latentStyles>` +
+                `<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style>` +
+                `<w:style w:type="paragraph" w:styleId="Kept"><w:name w:val="Kept"/><w:basedOn w:val="Normal"/><w:pPr><w:suppressAutoHyphens/><w:spacing w:after="120"/></w:pPr><w:rPr><w:i/><w:lang w:val="de-DE"/></w:rPr></w:style>` +
+                `<w:style w:type="paragraph" w:styleId="Numbered"><w:name w:val="Numbered"/><w:basedOn w:val="Normal"/><w:pPr><w:numPr><w:numId w:val="3"/></w:numPr></w:pPr></w:style>` +
+                `<w:style w:type="table" w:styleId="TableGrid"><w:name w:val="Table Grid"/><w:tblPr><w:tblBorders><w:top w:val="single" w:sz="4" w:space="0" w:color="auto"/></w:tblBorders></w:tblPr><w:tblStylePr w:type="firstRow"><w:rPr><w:b/></w:rPr></w:tblStylePr></w:style></w:styles>`,
+        },
+        types: '<Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/>' +
+            '<Override PartName="/word/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>' +
+            '<Override PartName="/word/fontTable.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.fontTable+xml"/>' +
+            '<Override PartName="/word/webSettings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.webSettings+xml"/>' +
+            '<Override PartName="/customXml/itemProps1.xml" ContentType="application/vnd.openxmlformats-officedocument.customXmlProperties+xml"/>' +
+            '<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>' +
+            '<Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>' +
+            '<Override PartName="/docProps/custom.xml" ContentType="application/vnd.openxmlformats-officedocument.custom-properties+xml"/>',
+        expect,
+    };
+}
+
 const docs = [
     {
         name: 'synthetic/units',
@@ -389,6 +432,40 @@ const docs = [
             { read: 'pkg.HeaderParts.0.Paragraphs.0.Runs.0.OpaqueKind', equals: 'shape' },
         ],
     },
+    preservedParts('synthetic/preserved-parts', [
+        // Everything the editor does not model comes back as it was.
+        { same: 'word/theme/theme1.xml' }, { same: 'word/fontTable.xml' }, { same: 'word/webSettings.xml' },
+        { same: 'customXml/item1.xml' }, { same: 'customXml/itemProps1.xml' }, { same: 'customXml/_rels/item1.xml.rels' },
+        { same: 'docProps/core.xml' }, { same: 'docProps/app.xml' }, { same: 'docProps/custom.xml' },
+        { part: '_rels/.rels', has: 'Id="rId2" Type="[^"]*/core-properties" Target="/docProps/core.xml"' }, { part: '_rels/.rels', has: 'custom-properties' },
+        { part: 'word/_rels/document.xml.rels', has: 'Type="[^"]*/theme" Target="/word/theme/theme1.xml"' }, { part: 'word/_rels/document.xml.rels', has: 'Type="[^"]*/customXml" Target="/customXml/item1.xml"' },
+        { part: '[Content_Types].xml', has: 'PartName="/word/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme\\+xml"' },
+        { part: '[Content_Types].xml', has: 'PartName="/docProps/custom.xml"' },
+        // settings.xml: compatibility, default tab stop, track-revisions flag, footnote properties, attached template.
+        { part: 'word/settings.xml', has: '<w:trackRevisions/><w:defaultTabStop w:val="708"/>' }, { part: 'word/settings.xml', has: '<w:footnotePr><w:footnote w:id="-1"/></w:footnotePr>' },
+        { part: 'word/settings.xml', has: '<w:compat><w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="15"/></w:compat>' },
+        { part: 'word/settings.xml', has: '<w:attachedTemplate r:id="rId1"/>' }, { part: 'word/settings.xml', lacks: 'evenAndOddHeaders' },
+        { part: 'word/_rels/settings.xml.rels', has: 'Id="rId1" Type="[^"]*/attachedTemplate" Target="file:///C:/Templates/Normal.dotm" TargetMode="External"' },
+        // styles.xml: latent styles, a table style, a numbering-linked style and properties the editor has no model for.
+        { part: 'word/styles.xml', has: '<w:latentStyles [^>]*w:count="2"[^>]*><w:lsdException [^>]*w:name="Normal"' },
+        { part: 'word/styles.xml', has: '<w:style w:styleId="TableGrid" w:type="table">.*?<w:tblBorders>.*?</w:tblBorders>.*?<w:tblStylePr w:type="firstRow"><w:rPr><w:b/></w:rPr></w:tblStylePr></w:style>' },
+        { part: 'word/styles.xml', has: '<w:style w:styleId="Numbered" w:type="paragraph">.*?<w:numPr><w:numId w:val="3"/></w:numPr>' },
+        { part: 'word/styles.xml', has: '<w:style w:styleId="Kept" w:type="paragraph">.*?<w:suppressAutoHyphens/>.*?<w:lang w:val="de-DE"/>' },
+        { part: 'word/styles.xml', has: '<w:rPrDefault><w:rPr><w:rFonts w:asciiTheme="minorHAnsi" w:hAnsiTheme="minorHAnsi"/><w:sz w:val="22"/><w:lang w:eastAsia="ja-JP" w:val="en-US"/>' },
+        { part: 'word/document.xml', has: '<w:pStyle w:val="Kept"/>' },
+    ]),
+    preservedParts('synthetic/preserved-parts-edited', [
+        // Edits to what the editor owns are merged into the kept parts: even / odd
+        // headers go into the original settings (in schema position), a changed style
+        // replaces its original definition and the other styles stay untouched.
+        { mutate: 'pkg.PageSetup.EvenAndOddHeaders = true; const kept = pkg.Styles.find((s) => s.StyleId === "Kept"); kept.StyleBold = true; kept.StyleFontSize = 32; pkg.ChangedStyles = ["paragraph:Kept"];' },
+        { part: 'word/settings.xml', has: '<w:trackRevisions/><w:defaultTabStop w:val="708"/><w:evenAndOddHeaders/><w:footnotePr>' },
+        { part: 'word/settings.xml', has: '<w:compat>' },
+        { part: 'word/styles.xml', has: '<w:style w:type="paragraph" w:styleId="Kept">.*?<w:b/>.*?<w:sz w:val="48"/>' }, { part: 'word/styles.xml', lacks: 'suppressAutoHyphens' },
+        { part: 'word/styles.xml', has: '<w:style w:styleId="TableGrid" w:type="table">.*?<w:tblStylePr w:type="firstRow">' }, { part: 'word/styles.xml', has: '<w:latentStyles ' },
+        { part: 'word/styles.xml', has: '<w:style w:styleId="Numbered" w:type="paragraph">.*?<w:numPr><w:numId w:val="3"/></w:numPr>' },
+        { same: 'word/theme/theme1.xml' }, { same: 'customXml/item1.xml' }, { same: 'docProps/core.xml' },
+    ]),
 ];
 
 export async function syntheticFixtures(JSZip) {
@@ -396,7 +473,7 @@ export async function syntheticFixtures(JSZip) {
     for (const doc of docs) {
         const zip = new JSZip();
         zip.file('[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>${doc.types ?? ''}<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/></Types>`);
-        zip.file('_rels/.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${REL}/officeDocument" Target="word/document.xml"/></Relationships>`);
+        zip.file('_rels/.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${REL}/officeDocument" Target="word/document.xml"/>${doc.rootRels ?? ''}</Relationships>`);
         zip.file('word/_rels/document.xml.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId100" Type="${REL}/styles" Target="styles.xml"/><Relationship Id="rId101" Type="${REL}/numbering" Target="numbering.xml"/>${doc.rels ?? ''}</Relationships>`);
         zip.file('word/styles.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>${styles}`);
         zip.file('word/numbering.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>${numbering}`);
@@ -404,5 +481,12 @@ export async function syntheticFixtures(JSZip) {
         for (const [name, data] of Object.entries(doc.extra ?? {})) zip.file(name, data);
         out.push({ name: doc.name + '.docx', data: await zip.generateAsync({ type: 'nodebuffer' }), expect: doc.expect });
     }
+    // A document made from scratch (page.js builds it): no kept parts, still a valid package.
+    out.push({ name: 'scratch/new-document.docx', data: Buffer.alloc(0), expect: [
+        { part: '[Content_Types].xml', has: 'PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main\\+xml"' },
+        { part: '_rels/.rels', has: 'Target="word/document.xml"' }, { part: 'word/_rels/document.xml.rels', has: 'Target="styles.xml"' },
+        { part: 'word/styles.xml', has: '<w:docDefaults>' }, { part: 'word/document.xml', has: 'New document' }, { savedText: 'typed bold text' },
+        { absent: 'word/settings.xml' },
+    ] });
     return out;
 }

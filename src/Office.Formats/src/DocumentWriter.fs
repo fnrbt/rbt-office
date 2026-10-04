@@ -1053,12 +1053,18 @@ let private generateParaPropsWithPageSetup (packageSetup: PageSetupInfo) (para: 
             optionalString (para?ExplicitAlignment) |> Option.map InverseConversion.alignmentToWord
         else
             Some (para?Alignment |> stringOrDefault "left" |> InverseConversion.alignmentToWord)
+    // Spacing stated on the paragraph is a measure, never "automatic": a style
+    // with beforeAutospacing / afterAutospacing would otherwise override the value.
     let spacingAttributes = [
         match optionalFloat (para?SpacingBefore) with
-        | Some value -> yield ("w:before", InverseConversion.pointsToTwips value)
+        | Some value ->
+            yield ("w:before", InverseConversion.pointsToTwips value)
+            yield ("w:beforeAutospacing", "0")
         | None -> ()
         match optionalFloat (para?SpacingAfter) with
-        | Some value -> yield ("w:after", InverseConversion.pointsToTwips value)
+        | Some value ->
+            yield ("w:after", InverseConversion.pointsToTwips value)
+            yield ("w:afterAutospacing", "0")
         | None -> ()
         match optionalFloat (para?LineSpacing) with
         | Some value ->
@@ -2527,12 +2533,7 @@ let private docDefaultsFromStyle (style: StyleInfo option) =
     let pPrDefault = if pPr.IsEmpty then element "w:pPrDefault" [] [] else element "w:pPrDefault" [] [element "w:pPr" [] pPr]
     element "w:docDefaults" [] [rPrDefault; pPrDefault]
 
-let generateDefaultStylesWithStyles (styles: StyleInfo list) : string =
-    let docDefaults = styles |> List.tryFind (fun style -> style.StyleType = "defaults") |> docDefaultsFromStyle
-    let customStyles =
-        styles
-        |> List.filter (fun style -> style.StyleType <> "defaults")
-        |> List.map (fun style ->
+let private styleElement (style: StyleInfo) : string =
             let children = [
                 yield selfClosing "w:name" [("w:val", style.Name |> Option.defaultValue style.StyleId)]
                 match style.Aliases with
@@ -2559,9 +2560,70 @@ let generateDefaultStylesWithStyles (styles: StyleInfo list) : string =
                 if not rPr.IsEmpty then yield element "w:rPr" [] rPr
             ]
             let attrs = [("w:type", style.StyleType); ("w:styleId", style.StyleId)] @ (if style.IsDefault then [("w:default", "1")] else [])
-            element "w:style" attrs children)
+            element "w:style" attrs children
+
+let generateDefaultStylesWithStyles (styles: StyleInfo list) : string =
+    let docDefaults = styles |> List.tryFind (fun style -> style.StyleType = "defaults") |> docDefaultsFromStyle
+    let customStyles =
+        styles
+        |> List.filter (fun style -> style.StyleType <> "defaults")
+        |> List.map styleElement
     let root = element "w:styles" [("xmlns:w", Namespaces.word); ("xmlns:r", Namespaces.relationships)] (docDefaults :: customStyles)
     document root
+
+let private rootStartTag (name: string) (attrs: Map<string, string>) =
+    let attributes = attrs |> Map.toList |> List.map (fun (key, value) -> sprintf " %s=\"%s\"" key (escapeXmlAttribute value)) |> String.concat ""
+    "<" + name + attributes + ">"
+
+/// styles.xml of a document that was opened from a file: the original part
+/// with the styles the editor changed (or added) replaced by their current
+/// definition. Everything the editor has no model for stays as it was: table
+/// styles, latent styles, numbering-linked styles, and whatever an unchanged
+/// style says beyond the properties the editor knows (the style part used to be
+/// rewritten from the editor's catalog, which reduced every style to those).
+/// `changed` holds "type:id" keys; None = the caller does not know, all
+/// catalog styles are taken as changed.
+let private mergeStyles (originalXml: string) (changed: Set<string> option) (styles: StyleInfo list) : string =
+    match XmlDsl.parse originalXml with
+    | XmlDsl.Element (rootName, rootAttrs, children) ->
+        let isChanged (style: StyleInfo) =
+            match changed with
+            | Some keys -> Set.contains (style.StyleType + ":" + style.StyleId) keys
+            | None -> true
+        let localName node = XmlDsl.Xml.name node |> Option.map XmlDsl.Ns.stripNs
+        let styleKey node =
+            let attr name = XmlDsl.Xml.attr ("w:" + name) node |> Option.orElse (XmlDsl.Xml.attr name node)
+            (attr "type" |> Option.defaultValue "paragraph"), (attr "styleId" |> Option.defaultValue "")
+        let present =
+            children
+            |> List.choose (fun child -> if localName child = Some "style" then Some (styleKey child) else None)
+            |> Set.ofList
+        let hasDefaults = children |> List.exists (fun child -> localName child = Some "docDefaults")
+        let defaults = styles |> List.tryFind (fun style -> style.StyleType = "defaults")
+        let body =
+            [ // No docDefaults in the original: the catalog's, if it has any.
+              if not hasDefaults then
+                  match defaults with
+                  | Some _ -> yield docDefaultsFromStyle defaults
+                  | None -> ()
+              for child in children do
+                  match localName child with
+                  | Some "docDefaults" ->
+                      match defaults with
+                      | Some style when isChanged style -> yield docDefaultsFromStyle defaults
+                      | _ -> yield DocxReader.Docx.xmlToString child
+                  | Some "style" ->
+                      let styleType, styleId = styleKey child
+                      match styles |> List.tryFind (fun style -> style.StyleType = styleType && style.StyleId = styleId) with
+                      | Some style when isChanged style -> yield styleElement style
+                      | _ -> yield DocxReader.Docx.xmlToString child
+                  | Some _ -> yield DocxReader.Docx.xmlToString child
+                  | None -> ()
+              for style in styles do
+                  if style.StyleType <> "defaults" && not (Set.contains (style.StyleType, style.StyleId) present) then
+                      yield styleElement style ]
+        document (rootStartTag rootName rootAttrs + String.concat "" body + "</" + rootName + ">")
+    | _ -> generateDefaultStylesWithStyles styles
 
 let generateDefaultStyles () : string =
     generateDefaultStylesWithStyles []
@@ -2642,6 +2704,44 @@ let private generateSettings (pageSetup: PageSetupInfo option) =
     ]
     document (element "w:settings" [("xmlns:w", Namespaces.word)] children)
 
+/// Children of w:settings that come before w:evenAndOddHeaders in CT_Settings.
+let private settingsBeforeEvenAndOdd =
+    [ "writeProtection"; "view"; "zoom"; "removePersonalInformation"; "removeDateAndTime"; "doNotDisplayPageBoundaries"
+      "displayBackgroundShape"; "printPostScriptOverText"; "printFractionalCharacterWidth"; "printFormsData"; "embedTrueTypeFonts"
+      "embedSystemFonts"; "saveSubsetFonts"; "saveFormsData"; "mirrorMargins"; "alignBordersAndEdges"; "bordersDoNotSurroundHeader"
+      "bordersDoNotSurroundFooter"; "gutterAtTop"; "hideSpellingErrors"; "hideGrammaticalErrors"; "activeWritingStyle"; "proofState"
+      "formsDesign"; "attachedTemplate"; "linkStyles"; "stylePaneFormatFilter"; "stylePaneSortMethod"; "documentType"; "mailMerge"
+      "revisionView"; "trackRevisions"; "doNotTrackMoves"; "doNotTrackFormatting"; "documentProtection"; "autoFormatOverride"
+      "styleLockTheme"; "styleLockQFSet"; "defaultTabStop"; "autoHyphenation"; "consecutiveHyphenLimit"; "hyphenationZone"
+      "doNotHyphenateCaps"; "showEnvelope"; "summaryLength"; "clickAndTypeStyle"; "defaultTableStyle" ]
+    |> Set.ofList
+
+/// The original settings part with the one setting the editor owns, even and
+/// odd headers, brought up to date. Everything else (compatibility options,
+/// default tab stop, track-revisions flag, footnote properties, rsids, ...)
+/// stays: the part used to be dropped, or replaced by one holding this flag only.
+let private patchSettings (originalXml: string) (pageSetup: PageSetupInfo option) : string =
+    match XmlDsl.parse originalXml with
+    | XmlDsl.Element (rootName, rootAttrs, children) ->
+        let localName node = XmlDsl.Xml.name node |> Option.map XmlDsl.Ns.stripNs
+        let others = children |> List.filter (fun child -> localName child <> Some "evenAndOddHeaders")
+        let evenAndOdd = pageSetup |> Option.exists (fun setup -> setup.EvenAndOddHeaders)
+        let insertAt =
+            others
+            |> List.mapi (fun index child -> index, child)
+            |> List.filter (fun (_, child) -> localName child |> Option.exists (fun name -> Set.contains name settingsBeforeEvenAndOdd))
+            |> List.map fst
+            |> function
+               | [] -> 0
+               | indexes -> List.max indexes + 1
+        let prefix = if rootName.Contains ":" then rootName.Substring(0, rootName.IndexOf ':' + 1) else ""
+        let serialised = others |> List.map DocxReader.Docx.xmlToString
+        let body =
+            if evenAndOdd then (List.truncate insertAt serialised) @ [ selfClosing (prefix + "evenAndOddHeaders") [] ] @ (List.skip insertAt serialised)
+            else serialised
+        document (rootStartTag rootName rootAttrs + String.concat "" body + "</" + rootName + ">")
+    | _ -> generateSettings pageSetup
+
 /// Write DOCX from EditorFormat (Phase 2)
 let writeFromEditor (paragraphs: obj array) : Fable.Core.JS.Promise<obj> =
     nextShapeId <- 1000
@@ -2697,7 +2797,7 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
         xml
     let paragraphs = optionalArray (package?Paragraphs)
     let pageSetup = optionalPageSetup (package?PageSetup)
-    let hasSettings = pageSetup |> Option.exists (fun setup -> setup.EvenAndOddHeaders)
+    let hasSettings = preserved.SettingsXml.IsSome || (pageSetup |> Option.exists (fun setup -> setup.EvenAndOddHeaders))
     // Relationship ids some section refers to; the parts behind the others are
     // attached to the final section.
     let sectionReferenceIds =
@@ -2773,10 +2873,24 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
         yield { Path = "_rels/.rels"; Content = generateRootRelsPreserved preserved }
         yield { Path = "word/document.xml"; Content = withRelationshipsOf "document" (fun () -> generateDocumentXmlPackage paragraphs bodyImages pageSetup headerParts footerParts) }
         yield { Path = "word/_rels/document.xml.rels"; Content = generateDocumentRelsPreserved (keptFor "document") hasSettings hyperlinks hasComments hasFootnotes hasEndnotes headerParts footerParts bodyImages }
-        yield { Path = "word/styles.xml"; Content = generateDefaultStylesWithStyles styles }
+        yield { Path = "word/styles.xml"
+                Content =
+                    match preserved.StylesXml with
+                    | Some original ->
+                        let changed =
+                            if isNullOrUndefined package?ChangedStyles then None
+                            else Some (optionalArray (package?ChangedStyles) |> Array.map (fun key -> unbox<string> key) |> Set.ofArray)
+                        mergeStyles original changed styles
+                    | None -> generateDefaultStylesWithStyles styles }
         yield { Path = "word/numbering.xml"; Content = numberingXml }
         if hasSettings then
-            yield { Path = "word/settings.xml"; Content = generateSettings pageSetup }
+            yield { Path = "word/settings.xml"
+                    Content =
+                        match preserved.SettingsXml with
+                        | Some original -> patchSettings original pageSetup
+                        | None -> generateSettings pageSetup }
+            if not (keptFor "settings").IsEmpty then
+                yield { Path = "word/_rels/settings.xml.rels"; Content = generatePartRelsWithKept (keptFor "settings") Map.empty emptyImageScope }
         for header in headerPackages do
             yield { Path = "word/" + header.Info.Target; Content = withRelationshipsOf header.Info.RelId (fun () -> generateHeaderFooterXml "w:hdr" header.Hyperlinks header.Images header.Info.Blocks) }
             if partRelsNeeded header.Info.RelId header.Images header.Hyperlinks then

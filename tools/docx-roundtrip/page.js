@@ -321,7 +321,17 @@ window.roundTrip = async (name, expect) => {
     const problems = [];
     let stats = '', saved = [], xml = '';
     try {
-        const original = new Uint8Array(await (await fetch('/fixture?name=' + encodeURIComponent(name))).arrayBuffer());
+        let original = new Uint8Array(await (await fetch('/fixture?name=' + encodeURIComponent(name))).arrayBuffer());
+        // An empty fixture stands for a document made in the editor, with nothing
+        // kept from a file: what it saves is the document the round trip starts from.
+        if (original.length === 0) {
+            const run = (text, extra = {}) => ({ Text: text, FontSize: 14.667, FontFamily: 'Calibri', ...extra });
+            const fresh = Docx.importFromEditorPackage({ Paragraphs: [
+                { Type: 'Heading', HeadingLevel: 1, Runs: [run('New document')], Alignment: 'left' },
+                { Runs: [run('typed '), run('bold', { Bold: true, ExplicitBold: true }), run(' text')], Alignment: 'left', ListStyle: 'bullet', ListLevel: 1 },
+                { Runs: [run('second paragraph')], Alignment: 'center' } ] });
+            original = await save(fresh, null);
+        }
         const first = await open(original);
         const s0 = summarisePackage(first.pkg);
         const mutate = expect.find((e) => e.mutate);
@@ -338,7 +348,16 @@ window.roundTrip = async (name, expect) => {
         diff('save 2 vs save 1 (not a fixed point)', s1, s2, problems);
 
         const p1 = await parts(bytes1), p2 = await parts(bytes2), p3 = await parts(bytes3);
-        for (const part of Object.keys(p1)) checkXml(part, p1[part], problems);
+        // styles.xml and settings.xml keep what the original holds; a schema-order
+        // slip that was already in the original part is not this writer's.
+        const p0 = await parts(original);
+        for (const part of Object.keys(p1)) {
+            const found = [];
+            checkXml(part, p1[part], found);
+            const inherited = [];
+            if ((part === 'word/styles.xml' || part === 'word/settings.xml') && p0[part]) checkXml(part, p0[part], inherited);
+            for (const problem of found) if (!inherited.includes(problem)) problems.push(problem);
+        }
         // Byte-level fixed point from the second save on (the first save may still
         // normalise what the reader reports differently for a written file).
         for (const part of Object.keys(p2)) if (p2[part] !== p3[part]) problems.push(`${part} differs between save 2 and save 3`);
