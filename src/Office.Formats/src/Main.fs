@@ -224,7 +224,11 @@ module Processors =
             "StyleAlignment" ==> (style.ParagraphProperties |> Option.bind (fun props -> props.Alignment))
             "StyleIndentLeft" ==> (style.ParagraphProperties |> Option.bind (fun props -> wordTwipsToCssPixels props.IndentLeft))
             "StyleIndentRight" ==> (style.ParagraphProperties |> Option.bind (fun props -> wordTwipsToCssPixels props.IndentRight))
-            "StyleFirstLineIndent" ==> (style.ParagraphProperties |> Option.bind (fun props -> wordTwipsToCssPixels props.FirstLineIndent))
+            // A hanging indent is a negative first-line indent, as on a paragraph.
+            "StyleFirstLineIndent" ==> (style.ParagraphProperties
+                                        |> Option.bind (fun props ->
+                                            wordTwipsToCssPixels props.FirstLineIndent
+                                            |> Option.orElse (wordTwipsToCssPixels props.HangingIndent |> Option.map (fun hanging -> -hanging))))
             "StyleBackgroundColor" ==> (style.ParagraphProperties |> Option.bind (fun props -> wordColorToCss props.BackgroundColor))
             "StyleOutlineLevel" ==> (style.ParagraphProperties |> Option.bind (fun props -> wordInt props.OutlineLevel))
             "StyleKeepNext" ==> (style.ParagraphProperties |> Option.bind (fun props -> props.KeepNext))

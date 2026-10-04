@@ -3811,8 +3811,16 @@ let private bordersToEditor (borders: CellBorders option) =
         "InsideV" ==> borderToEditor value.InsideV
     ])
 
-let private paragraphLayoutProps fontSize defaultMissingSpacingToZero (borderAdvanceSource: ParagraphBorders option) (props: ParagraphProperties) =
+/// `props` are the effective paragraph properties, `direct` what the paragraph
+/// itself states (its own w:pPr). Next to each effective value the object
+/// carries ExplicitX: the value when the paragraph states it, null when it is
+/// inherited (from a style, the document defaults or the numbering level) or
+/// not set anywhere. The writer writes the explicit ones only, so a save does
+/// not turn inherited or unset formatting into direct formatting.
+let private paragraphLayoutProps fontSize defaultMissingSpacingToZero (borderAdvanceSource: ParagraphBorders option) (direct: ParagraphProperties) (props: ParagraphProperties) =
     let missingSpacingFallback = if defaultMissingSpacingToZero then Some 0.0 else None
+    let spacingBefore =
+        if props.SpacingBeforeAuto = Some true then Some wordAutoSpacing else wordSpacingTwipsToPoints props.SpacingBefore |> Option.orElse missingSpacingFallback
     let spacingAfter =
         if props.SpacingAfterAuto = Some true then Some wordAutoSpacing
         else wordSpacingTwipsToPoints props.SpacingAfter |> Option.orElse missingSpacingFallback
@@ -3821,7 +3829,22 @@ let private paragraphLayoutProps fontSize defaultMissingSpacingToZero (borderAdv
         | Some firstLine, _ -> Some firstLine
         | None, Some hanging -> Some -hanging
         | None, None -> None
+    let lineSpacing = wordLineSpacingToMultiple fontSize props.LineSpacing props.LineRule
+    let whenDirect (stated: bool) (value: 'a option) = if stated then value else None
     [
+        "ExplicitParagraphFormat" ==> true
+        "ExplicitSpacingBefore" ==> whenDirect (direct.SpacingBefore.IsSome || direct.SpacingBeforeAuto.IsSome) spacingBefore
+        "ExplicitSpacingAfter" ==> whenDirect (direct.SpacingAfter.IsSome || direct.SpacingAfterAuto.IsSome) spacingAfter
+        "ExplicitLineSpacing" ==> whenDirect direct.LineSpacing.IsSome lineSpacing
+        "ExplicitIndentLeft" ==> whenDirect direct.IndentLeft.IsSome (wordTwipsToPoints props.IndentLeft)
+        "ExplicitIndentRight" ==> whenDirect direct.IndentRight.IsSome (wordTwipsToPoints props.IndentRight)
+        "ExplicitFirstLineIndent" ==> whenDirect (direct.FirstLineIndent.IsSome || direct.HangingIndent.IsSome) firstLineIndent
+        "ExplicitContextualSpacing" ==> direct.ContextualSpacing
+        "ExplicitBackgroundColor" ==> whenDirect direct.BackgroundColor.IsSome (wordColorToCss props.BackgroundColor)
+        "ExplicitTabs" ==> not direct.TabStops.IsEmpty
+        // The paragraph mark has run properties of its own (w:pPr/w:rPr), and the size it states.
+        "HasMarkProperties" ==> direct.ParagraphRunProperties.IsSome
+        "ExplicitMarkFontSize" ==> (direct.ParagraphRunProperties |> Option.bind (fun mark -> mark.FontSize |> Option.map (fun _ -> wordFontSizeToPoints mark.FontSize)))
         "ContentControlId" ==> props.ContentControlId
         "ContentControlTag" ==> props.ContentControlTag
         "ContentControlAlias" ==> props.ContentControlAlias
@@ -3835,9 +3858,9 @@ let private paragraphLayoutProps fontSize defaultMissingSpacingToZero (borderAdv
                             objFromFields [ "Position" ==> wordTwipsToPoints (Some pos); "Alignment" ==> align; "Leader" ==> leader ])
                         |> List.toArray)
         "Rtl" ==> (props.Rtl |> Option.defaultValue false)
-        "SpacingBefore" ==> (if props.SpacingBeforeAuto = Some true then Some wordAutoSpacing else wordSpacingTwipsToPoints props.SpacingBefore |> Option.orElse missingSpacingFallback)
+        "SpacingBefore" ==> spacingBefore
         "SpacingAfter" ==> spacingAfter
-        "LineSpacing" ==> wordLineSpacingToMultiple fontSize props.LineSpacing props.LineRule
+        "LineSpacing" ==> lineSpacing
         "LineSpacingRule" ==> props.LineRule
         "BackgroundColor" ==> wordColorToCss props.BackgroundColor
         "ParagraphBorders" ==> paragraphBordersToEditor props.ParagraphBorders
@@ -4262,6 +4285,9 @@ let private explicitRunFields (styleMap: Map<string, StyleDefinition>) (paraProp
             (if props.FontSize.IsSome then Some (wordFontSizeToPoints props.FontSize)
              elif mark.FontSize.IsSome then Some (wordFontSizeToPoints effective.Value.FontSize)
              else None)
+        // w:color w:val="auto" on the run: no colour of its own, but it switches a
+        // style's colour (a table style's, say) off.
+        "ExplicitColorAuto" ==> ((props.Color |> Option.orElse mark.Color) = Some "auto")
     ]
 
 /// The paragraph properties its styles give without the paragraph's direct
@@ -4595,7 +4621,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                 "HeaderReferences" ==> referenceObjects effectiveParaProps.HeaderReferences
                 "FooterReferences" ==> referenceObjects effectiveParaProps.FooterReferences
                 "ParagraphMarkFontSize" ==> paragraphFontSize
-            ] @ paragraphLayoutProps paragraphFontSize defaultMissingSpacingToZero effectiveParaProps.ParagraphBorders layoutParaProps))
+            ] @ paragraphLayoutProps paragraphFontSize defaultMissingSpacingToZero effectiveParaProps.ParagraphBorders para.Properties layoutParaProps))
         | Tbl table ->
             // Convert table to editor format
             let convertCellParagraph defaultMissingSpacingToZero (para: Paragraph) : obj =
@@ -4877,7 +4903,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                     "HeaderReferences" ==> referenceObjects effectiveParaProps.HeaderReferences
                     "FooterReferences" ==> referenceObjects effectiveParaProps.FooterReferences
                     "ParagraphMarkFontSize" ==> paragraphFontSize
-                ] @ paragraphLayoutProps paragraphFontSize defaultMissingSpacingToZero effectiveParaProps.ParagraphBorders layoutParaProps)
+                ] @ paragraphLayoutProps paragraphFontSize defaultMissingSpacingToZero effectiveParaProps.ParagraphBorders para.Properties layoutParaProps)
 
             let tableStyle = resolveTableStyle styleMap table.StyleId
             let tableStyleProperties = tableStyle |> Option.bind (fun style -> style.TableProperties)
@@ -5062,6 +5088,19 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
             Some (objFromFields [
                 "Type" ==> "Table"
                 "Rows" ==> rows
+                // The table style and which of its conditional formats apply. Its
+                // formatting is resolved into the cells above; the reference is kept so
+                // a saved table still has its style.
+                "TableStyleId" ==> table.StyleId
+                "TableLook" ==> (table.Look
+                                 |> Option.map (fun look ->
+                                     objFromFields [
+                                         "FirstRow" ==> look.FirstRow
+                                         "LastRow" ==> look.LastRow
+                                         "FirstColumn" ==> look.FirstColumn
+                                         "LastColumn" ==> look.LastColumn
+                                         "HorizontalBanding" ==> look.HorizontalBanding
+                                         "VerticalBanding" ==> look.VerticalBanding ]))
                 "PreferredWidth" ==> table.Width
                 "PreferredWidthType" ==> table.WidthType
                 "TableAlignment" ==> table.Alignment
@@ -5160,6 +5199,15 @@ let private applyNumberingDefinitions (numberingDefinitions: NumberingDefinition
         | None -> ()
         match listDefinition with
         | Some def ->
+            // The level's own indents: where an indent the paragraph does not state
+            // comes from, and what the writer puts back into the numbering definition.
+            setProp item "HasListLevelIndents" true
+            setProp item "ListLevelIndentLeft" (wordTwipsToPoints def.IndentLeft)
+            setProp item "ListLevelFirstLineIndent"
+                (match wordTwipsToPoints def.FirstLineIndent, wordTwipsToPoints def.HangingIndent with
+                 | Some firstLine, _ -> Some firstLine
+                 | None, Some hanging -> Some -hanging
+                 | None, None -> None)
             if isMissing (getProp item "IndentLeft") then setProp item "IndentLeft" (wordTwipsToPoints def.IndentLeft)
             if isMissing (getProp item "FirstLineIndent") then
                 let firstLineIndent =

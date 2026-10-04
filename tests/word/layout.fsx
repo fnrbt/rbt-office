@@ -338,7 +338,9 @@ let wideFastTable : Doc.TableBlock =
       PaddingRight = None
       PaddingBottom = None
       PaddingLeft = None
-      Floating = false }
+      Floating = false
+      StyleId = None
+      Look = None }
 let nestedAnchorTableCount = 2500
 let nestedAnchorTables =
     [ for index in 0 .. nestedAnchorTableCount - 1 ->
@@ -760,7 +762,9 @@ let oversizedHeaderDepthTable : Doc.TableBlock =
       PaddingRight = None
       PaddingBottom = None
       PaddingLeft = None
-      Floating = false }
+      Floating = false
+      StyleId = None
+      Look = None }
 let oversizedHeaderDepthDoc =
     { Doc.empty with
         HeaderParts =

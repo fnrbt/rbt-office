@@ -475,6 +475,37 @@ let private metadataFromEditor (item: obj) =
             SectionColumns = sectionColumns
             HeaderReferences = headerReferences
             FooterReferences = footerReferences
+            // What the paragraph itself states. An object that does not say
+            // (ExplicitParagraphFormat missing) only has effective values, and all
+            // of them count as its own.
+            Explicit =
+                if boolOrDefault false (item?ExplicitParagraphFormat) then
+                    let flag (value: obj) (bit: int) = if isNullOrUndefined value then 0 else bit
+                    flag (item?ExplicitSpacingBefore) ParagraphExplicit.SpacingBefore
+                    ||| flag (item?ExplicitSpacingAfter) ParagraphExplicit.SpacingAfter
+                    ||| flag (item?ExplicitLineSpacing) ParagraphExplicit.LineSpacing
+                    ||| flag (item?ExplicitIndentLeft) ParagraphExplicit.IndentLeft
+                    ||| flag (item?ExplicitIndentRight) ParagraphExplicit.IndentRight
+                    ||| flag (item?ExplicitFirstLineIndent) ParagraphExplicit.FirstLineIndent
+                    ||| flag (item?ExplicitContextualSpacing) ParagraphExplicit.ContextualSpacing
+                    ||| flag (item?ExplicitBackgroundColor) ParagraphExplicit.BackgroundColor
+                    ||| (if boolOrDefault false (item?ExplicitTabs) then ParagraphExplicit.Tabs else 0)
+                else
+                    let flag (isSet: bool) (bit: int) = if isSet then bit else 0
+                    flag spacingBefore.IsSome ParagraphExplicit.SpacingBefore
+                    ||| flag spacingAfter.IsSome ParagraphExplicit.SpacingAfter
+                    ||| flag lineSpacing.IsSome ParagraphExplicit.LineSpacing
+                    ||| flag indentLeft.IsSome ParagraphExplicit.IndentLeft
+                    ||| flag indentRight.IsSome ParagraphExplicit.IndentRight
+                    ||| flag firstLineIndent.IsSome ParagraphExplicit.FirstLineIndent
+                    ||| flag (optionalBool (item?StyleContextualSpacing)).IsSome ParagraphExplicit.ContextualSpacing
+                    ||| flag backgroundColor.IsSome ParagraphExplicit.BackgroundColor
+                    ||| flag (not tabStops.IsEmpty || rightTabPosition.IsSome) ParagraphExplicit.Tabs
+            HasMarkProperties = boolOrDefault false (item?HasMarkProperties)
+            ExplicitMarkFontSize = optionalFloat (item?ExplicitMarkFontSize)
+            ListLevelIndents =
+                if boolOrDefault false (item?HasListLevelIndents) then Some (optionalFloat (item?ListLevelIndentLeft), optionalFloat (item?ListLevelFirstLineIndent))
+                else None
     }
 
 /// Convert EditorRun array to TextBuffer
@@ -634,6 +665,8 @@ let private editorRunsToBuffer (runs: obj array) : TextBuffer =
                         explicitFlags <- explicitFlags ||| ExplicitFormat.FontSize
                         value
                     | None -> fontSize
+                if boolOrDefault false (run?ExplicitColorAuto) && color.IsNone then
+                    explicitFlags <- explicitFlags ||| ExplicitFormat.ColorAuto
 
                 let style = {
                     Style = styleId
@@ -1115,6 +1148,17 @@ let rec private blockFromEditor (item: obj) =
             PaddingBottom = optionalDxaAsCanvasPixels (item?PaddingBottom)
             PaddingLeft = optionalDxaAsCanvasPixels (item?PaddingLeft)
             Floating = boolOrDefault false (item?Floating)
+            StyleId = optionalString (item?TableStyleId)
+            Look =
+                (let look = item?TableLook
+                 if isNullOrUndefined look then None
+                 else
+                     Some { FirstRow = boolOrDefault false (look?FirstRow)
+                            LastRow = boolOrDefault false (look?LastRow)
+                            FirstColumn = boolOrDefault false (look?FirstColumn)
+                            LastColumn = boolOrDefault false (look?LastColumn)
+                            HorizontalBanding = boolOrDefault false (look?HorizontalBanding)
+                            VerticalBanding = boolOrDefault false (look?VerticalBanding) })
         }
 
     | "Heading" ->
@@ -1347,6 +1391,38 @@ let private unsetFontSizePixels = 11.0 * 96.0 / 72.0
 /// left out of the file (ExplicitX = null) instead of being written on every run.
 let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) itemType headingLevel (para: ParagraphBlock) =
     let buffer = para.Buffer
+    let metadata = para.Metadata
+    // What the document's own styles give this paragraph (not the editor's
+    // built-in look, which the file does not hold).
+    let namedStyle =
+        context
+        |> Option.bind (fun ctx ->
+            metadata.Style
+            |> Option.orElse ctx.DefaultParagraphStyleId
+            |> Option.bind (fun styleId -> Map.tryFind styleId ctx.ResolvedParagraphStyles))
+    let fromStyles (pick: NamedStyle -> float option) =
+        namedStyle
+        |> Option.bind pick
+        |> Option.orElseWith (fun () -> context |> Option.bind (fun ctx -> ctx.Defaults) |> Option.bind pick)
+    // Direct formatting to write: a value the paragraph states, or one that
+    // neither the styles nor the list level produce (set in the editor, or
+    // resolved by the reader from something the model has no style for). An
+    // unset value and zero are the same paragraph.
+    let explicitMeasure (flag: int) (value: float option) (inherited: float option) : float option =
+        match value with
+        | None -> None
+        | Some v when ParagraphExplicit.has flag metadata -> Some v
+        | Some v ->
+            match inherited with
+            | Some i when abs (i - v) < 0.01 -> None
+            | None when abs v < 0.01 -> None
+            | _ -> Some v
+    let levelIndents = if metadata.ListStyle <> NoList then metadata.ListLevelIndents else None
+    let explicitIndent (flag: int) (value: float option) (styled: float option) (fromLevel: float option option) =
+        match value, fromLevel with
+        // An indent the paragraph does not state and its list level has is the level's.
+        | Some v, Some (Some level) when not (ParagraphExplicit.has flag metadata) && abs (v - level) < 0.01 -> None
+        | _ -> explicitMeasure flag value styled
     // The style the paragraph resolves to. An editor-made heading without a
     // style id is styled by the built-in heading look, which the file's
     // "HeadingN" style need not match, so nothing is treated as inherited there.
@@ -1369,9 +1445,9 @@ let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) 
     // With exact / at-least line spacing the writer pins the paragraph font
     // size on the paragraph mark, and the reader hands the mark's size to runs
     // without one; every run then states its size so it cannot pick that up.
-    let pinsMarkSize =
-        para.Metadata.LineSpacing.IsSome
-        && (para.Metadata.LineSpacingRule = Some "exact" || para.Metadata.LineSpacingRule = Some "atLeast")
+    // (The writer pins the mark size only for paragraph objects that do not
+    // tell their own formatting from the inherited; the ones exported here do.)
+    let pinsMarkSize = false
     let explicitFontSize (inherited: TextStyle option) (style: TextStyle) : float option =
         if ExplicitFormat.has ExplicitFormat.FontSize style then Some style.FontSize
         elif style.FontSize = TextBuffer.defaultStyle.FontSize then
@@ -1415,6 +1491,7 @@ let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) 
                     "ExplicitDoubleStrike" ==> explicitToggle ExplicitFormat.DoubleStrike (fun style -> style.DoubleStrike) inherited tr.Style
                     "ExplicitHidden" ==> explicitToggle ExplicitFormat.Hidden (fun style -> style.Hidden) inherited tr.Style
                     "ExplicitFontSize" ==> explicitFontSize inherited tr.Style
+                    "ExplicitColorAuto" ==> (ExplicitFormat.has ExplicitFormat.ColorAuto tr.Style && tr.Style.Color.IsNone)
                     "Style" ==> tr.Style.Style
                     "Bold" ==> tr.Style.Bold
                     "Italic" ==> tr.Style.Italic
@@ -1527,6 +1604,41 @@ let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) 
         "FirstLineIndent" ==> para.Metadata.FirstLineIndent
         "SpacingBefore" ==> para.Metadata.SpacingBefore
         "SpacingAfter" ==> para.Metadata.SpacingAfter
+        "ExplicitParagraphFormat" ==> true
+        "ExplicitSpacingBefore" ==> explicitMeasure ParagraphExplicit.SpacingBefore metadata.SpacingBefore (fromStyles (fun style -> style.SpacingBefore))
+        "ExplicitSpacingAfter" ==> explicitMeasure ParagraphExplicit.SpacingAfter metadata.SpacingAfter (fromStyles (fun style -> style.SpacingAfter))
+        // Exact / at-least spacing is held relative to the font size here and in px on a
+        // style; unless the paragraph states it, only "auto" spacing is compared.
+        "ExplicitLineSpacing" ==>
+            (match metadata.LineSpacing with
+             | Some value when ParagraphExplicit.has ParagraphExplicit.LineSpacing metadata -> Some value
+             | Some value ->
+                 let styleRule = namedStyle |> Option.bind (fun style -> style.LineSpacingRule)
+                 let isFixed (rule: string option) = rule = Some "exact" || rule = Some "atLeast"
+                 match fromStyles (fun style -> style.LineSpacing) with
+                 | Some inherited when not (isFixed metadata.LineSpacingRule) && not (isFixed styleRule) && abs (inherited - value) < 0.001 -> None
+                 | Some _ when isFixed metadata.LineSpacingRule && metadata.LineSpacingRule = styleRule -> None
+                 | _ -> Some value
+             | None -> None)
+        "ExplicitIndentLeft" ==> explicitIndent ParagraphExplicit.IndentLeft metadata.IndentLeft (fromStyles (fun style -> style.IndentLeft)) (levelIndents |> Option.map fst)
+        "ExplicitIndentRight" ==> explicitMeasure ParagraphExplicit.IndentRight metadata.IndentRight (fromStyles (fun style -> style.IndentRight))
+        "ExplicitFirstLineIndent" ==> explicitIndent ParagraphExplicit.FirstLineIndent metadata.FirstLineIndent (fromStyles (fun style -> style.FirstLineIndent)) (levelIndents |> Option.map snd)
+        "ExplicitContextualSpacing" ==>
+            (match metadata.ContextualSpacing with
+             | Some value when ParagraphExplicit.has ParagraphExplicit.ContextualSpacing metadata -> Some value
+             | _ -> None)
+        "ExplicitBackgroundColor" ==>
+            (match metadata.BackgroundColor with
+             | Some color when ParagraphExplicit.has ParagraphExplicit.BackgroundColor metadata -> Some color
+             | Some color when (namedStyle |> Option.bind (fun style -> style.BackgroundColor)) <> Some color -> Some color
+             | _ -> None)
+        "ExplicitTabs" ==> (ParagraphExplicit.has ParagraphExplicit.Tabs metadata)
+        "HasMarkProperties" ==> metadata.HasMarkProperties
+        "ExplicitMarkFontSize" ==> metadata.ExplicitMarkFontSize
+        // The indents of this paragraph's list level, for the numbering definition.
+        "ListLevelIndentLeft" ==> (levelIndents |> Option.bind fst)
+        "ListLevelFirstLineIndent" ==> (levelIndents |> Option.bind snd)
+        "HasListLevelIndents" ==> levelIndents.IsSome
         "StyleContextualSpacing" ==> para.Metadata.ContextualSpacing
         "LineSpacing" ==> para.Metadata.LineSpacing
         "LineSpacingRule" ==> para.Metadata.LineSpacingRule
@@ -1720,6 +1832,17 @@ let rec private blockToEditor (context: WordStyles.DocumentStyleContext option) 
             createObj [
                 "Type" ==> "Table"
                 "Rows" ==> rows
+                "TableStyleId" ==> table.StyleId
+                "TableLook" ==> (table.Look
+                                 |> Option.map (fun look ->
+                                     createObj [
+                                         "FirstRow" ==> look.FirstRow
+                                         "LastRow" ==> look.LastRow
+                                         "FirstColumn" ==> look.FirstColumn
+                                         "LastColumn" ==> look.LastColumn
+                                         "HorizontalBanding" ==> look.HorizontalBanding
+                                         "VerticalBanding" ==> look.VerticalBanding ])
+                                 |> Option.toObj)
                 "PreferredWidth" ==> tableWidthToEditor table.PreferredWidth
                 "PreferredWidthType" ==> tableWidthTypeToEditor table.PreferredWidth
                 "TableAlignment" ==> table.Alignment

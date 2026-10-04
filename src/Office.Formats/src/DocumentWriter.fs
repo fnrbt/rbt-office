@@ -285,6 +285,8 @@ type private RunExtras = {
     ExplicitDoubleStrike: bool option
     ExplicitHidden: bool option
     ExplicitFontSize: float option
+    /// w:color w:val="auto": the run has no colour and takes none from a style.
+    ExplicitColorAuto: bool
 }
 
 let private noRunExtras =
@@ -292,7 +294,7 @@ let private noRunExtras =
       UnderlineStyle = None; UnderlineColor = None; Position = 0.0; EmphasisMark = None
       HasExplicit = false; ExplicitBold = None; ExplicitItalic = None; ExplicitUnderline = None
       ExplicitAllCaps = None; ExplicitSmallCaps = None; ExplicitStrike = None; ExplicitDoubleStrike = None
-      ExplicitHidden = None; ExplicitFontSize = None }
+      ExplicitHidden = None; ExplicitFontSize = None; ExplicitColorAuto = false }
 
 /// An on/off property written as direct formatting. "Off" has to be an
 /// explicit w:val="0": leaving the element out hands the property back to the
@@ -331,7 +333,7 @@ let private orderedRunProps (extras: RunExtras) (run: EditorRun) : string list =
         yield! runToggle extras "w:vanish" extras.ExplicitHidden extras.Hidden
         match InverseConversion.cssColorToWord run.Color with
         | Some color -> yield selfClosing "w:color" [("w:val", color)]
-        | None -> ()
+        | None -> if extras.ExplicitColorAuto then yield selfClosing "w:color" [("w:val", "auto")]
         if abs run.CharacterSpacing >= 0.001 then
             yield selfClosing "w:spacing" [("w:val", InverseConversion.pixelsToTwips run.CharacterSpacing)]
         if abs extras.Position >= 0.001 then
@@ -436,6 +438,7 @@ let private runExtrasFromObject (runObj: obj) = {
     ExplicitDoubleStrike = optionalBool (runObj?ExplicitDoubleStrike)
     ExplicitHidden = optionalBool (runObj?ExplicitHidden)
     ExplicitFontSize = optionalFloat (runObj?ExplicitFontSize)
+    ExplicitColorAuto = boolOrDefault false (runObj?ExplicitColorAuto)
 }
 
 let private isDeletedRun (runObj: obj) =
@@ -965,6 +968,11 @@ let private paragraphSectionProperties (packageSetup: PageSetupInfo) (para: obj)
 
 let private defaultFontSizePixels = 11.0 * 96.0 / 72.0
 
+/// The reader's name for the document defaults (w:docDefaults) in its style
+/// list, and the style id it gives a table cell paragraph that only has those.
+/// It is not a style of the file: never written as w:pStyle or as a w:style.
+let private documentDefaultsStyleId = "__docDefaults"
+
 /// numIds used for list paragraphs that carry no ListId (lists made in the
 /// editor): (bullet, numbered). Chosen per document in numberingPlan so they
 /// never collide with a list id that came from the file.
@@ -1032,15 +1040,38 @@ let private tabStopsElement (para: obj) =
             | None -> []
     if stops.IsEmpty then None else Some (element "w:tabs" [] stops)
 
+/// A paragraph object that says which of its properties are its own
+/// (ExplicitParagraphFormat, with ExplicitSpacingBefore, ExplicitIndentLeft,
+/// ...): only those are written. An object without it has effective values
+/// only, and all of them are written (callers that predate the distinction).
+let private statesExplicitFormat (para: obj) = boolOrDefault false (para?ExplicitParagraphFormat)
+
+/// The value of a measure to write: the explicit one, or for an object that
+/// only has effective values, the effective one.
+let private writtenMeasure (para: obj) (explicitValue: obj) (effective: obj) : float option =
+    if statesExplicitFormat para then optionalFloat explicitValue else optionalFloat effective
+
 let private paragraphMarkRunProps (para: obj) =
     // Exact / at-least line spacing is stored relative to the paragraph font
     // size, so pin that size on the paragraph mark: the reader then divides by
     // the same number next time and the value is a fixed point.
-    match optionalString (para?LineSpacingRule), optionalFloat (para?LineSpacing) with
-    | Some rule, Some _ when rule = "exact" || rule = "atLeast" ->
-        let sz = InverseConversion.pixelsToHalfPoints (paragraphFontSize para)
+    // An object that tells its own formatting from the inherited keeps its run
+    // sizes as they are, so the reader divides by the same size again without a pin
+    // (a pin would give the paragraph mark formatting it did not have).
+    let pinned =
+        match optionalString (para?LineSpacingRule), writtenMeasure para (para?ExplicitLineSpacing) (para?LineSpacing) with
+        | Some rule, Some _ when (rule = "exact" || rule = "atLeast") && not (statesExplicitFormat para) -> Some (paragraphFontSize para)
+        | _ -> None
+    // A paragraph mark that had run properties keeps a w:rPr (with the size it
+    // stated): the mark's size sets the height of an empty paragraph.
+    let stated = if boolOrDefault false (para?HasMarkProperties) then Some (optionalFloat (para?ExplicitMarkFontSize)) else None
+    match pinned, stated with
+    | Some size, _
+    | None, Some (Some size) ->
+        let sz = InverseConversion.pixelsToHalfPoints size
         Some (element "w:rPr" [] [selfClosing "w:sz" [("w:val", sz)]; selfClosing "w:szCs" [("w:val", sz)]])
-    | _ -> None
+    | None, Some None -> Some (selfClosing "w:rPr" [])
+    | None, None -> None
 
 /// Paragraph properties in CT_PPr sequence order: pStyle, keepNext, keepLines,
 /// pageBreakBefore, widowControl, numPr, pBdr, shd, tabs, bidi, spacing, ind,
@@ -1056,17 +1087,17 @@ let private generateParaPropsWithPageSetup (packageSetup: PageSetupInfo) (para: 
     // Spacing stated on the paragraph is a measure, never "automatic": a style
     // with beforeAutospacing / afterAutospacing would otherwise override the value.
     let spacingAttributes = [
-        match optionalFloat (para?SpacingBefore) with
+        match writtenMeasure para (para?ExplicitSpacingBefore) (para?SpacingBefore) with
         | Some value ->
             yield ("w:before", InverseConversion.pointsToTwips value)
             yield ("w:beforeAutospacing", "0")
         | None -> ()
-        match optionalFloat (para?SpacingAfter) with
+        match writtenMeasure para (para?ExplicitSpacingAfter) (para?SpacingAfter) with
         | Some value ->
             yield ("w:after", InverseConversion.pointsToTwips value)
             yield ("w:afterAutospacing", "0")
         | None -> ()
-        match optionalFloat (para?LineSpacing) with
+        match writtenMeasure para (para?ExplicitLineSpacing) (para?LineSpacing) with
         | Some value ->
             match optionalString (para?LineSpacingRule) with
             | Some rule when rule = "exact" || rule = "atLeast" ->
@@ -1078,13 +1109,13 @@ let private generateParaPropsWithPageSetup (packageSetup: PageSetupInfo) (para: 
         | None -> ()
     ]
     let indentAttributes = [
-        match optionalFloat (para?IndentLeft) with
+        match writtenMeasure para (para?ExplicitIndentLeft) (para?IndentLeft) with
         | Some value -> yield ("w:left", InverseConversion.pixelsToTwips value)
         | None -> ()
-        match optionalFloat (para?IndentRight) with
+        match writtenMeasure para (para?ExplicitIndentRight) (para?IndentRight) with
         | Some value -> yield ("w:right", InverseConversion.pixelsToTwips value)
         | None -> ()
-        match optionalFloat (para?FirstLineIndent) with
+        match writtenMeasure para (para?ExplicitFirstLineIndent) (para?FirstLineIndent) with
         | Some value when value < 0.0 -> yield ("w:hanging", InverseConversion.pixelsToTwips -value)
         // An explicit 0 matters: it overrides a first-line indent from the style.
         | Some value -> yield ("w:firstLine", InverseConversion.pixelsToTwips value)
@@ -1101,7 +1132,8 @@ let private generateParaPropsWithPageSetup (packageSetup: PageSetupInfo) (para: 
 
     let children = [
         match optionalString (para?Style) with
-        | Some styleId when styleId <> "" -> yield selfClosing "w:pStyle" [("w:val", styleId)]
+        | Some styleId when styleId <> "" && styleId <> documentDefaultsStyleId -> yield selfClosing "w:pStyle" [("w:val", styleId)]
+        | Some styleId when styleId = documentDefaultsStyleId -> ()
         | _ when itemType = "Heading" && headingLevel >= 1 && headingLevel <= 3 ->
             yield selfClosing "w:pStyle" [("w:val", sprintf "Heading%d" headingLevel)]
         | _ -> ()
@@ -1126,18 +1158,19 @@ let private generateParaPropsWithPageSetup (packageSetup: PageSetupInfo) (para: 
         match paragraphBordersElement (para?ParagraphBorders) with
         | Some borders -> yield borders
         | None -> ()
-        match optionalString (para?BackgroundColor) with
+        match (if statesExplicitFormat para then optionalString (para?ExplicitBackgroundColor) else optionalString (para?BackgroundColor)) with
         | Some color ->
             let wordColor = InverseConversion.cssColorToWord (Some color) |> Option.defaultValue color
             yield selfClosing "w:shd" [("w:val", "clear"); ("w:color", "auto"); ("w:fill", wordColor)]
         | None -> ()
-        match tabStopsElement para with
+        // Tab stops a paragraph inherits from its style stay in the style.
+        match (if statesExplicitFormat para && not (boolOrDefault false (para?ExplicitTabs)) then None else tabStopsElement para) with
         | Some tabs -> yield tabs
         | None -> ()
         if boolOrDefault false (para?Rtl) then yield selfClosing "w:bidi" []
         if not spacingAttributes.IsEmpty then yield selfClosing "w:spacing" spacingAttributes
         if not indentAttributes.IsEmpty then yield selfClosing "w:ind" indentAttributes
-        yield! onOff "w:contextualSpacing" (para?StyleContextualSpacing)
+        yield! onOff "w:contextualSpacing" (if statesExplicitFormat para then para?ExplicitContextualSpacing else para?StyleContextualSpacing)
         match alignment with
         | Some value -> yield selfClosing "w:jc" [("w:val", value)]
         | None -> ()
@@ -1477,8 +1510,14 @@ and private generateTable (hyperlinks: Map<string, string>) (images: ImageScope)
         |> Array.map (generateTableRow hyperlinks images)
         |> String.concat ""
 
-    // CT_TblPr order: tblW, jc, tblCellSpacing, tblBorders, shd, tblLayout, tblCellMar.
+    // CT_TblPr order: tblStyle, tblW, jc, tblCellSpacing, tblBorders, shd, tblLayout, tblCellMar, tblLook.
     let tblPrChildren = [
+        // The table keeps its style: the reader resolves the style's formatting
+        // into the cells from the reference (and the style itself is kept in
+        // styles.xml), so dropping it changed how the saved table read back.
+        match optionalString (table?TableStyleId) with
+        | Some styleId -> yield selfClosing "w:tblStyle" [("w:val", styleId)]
+        | None -> ()
         match optionalTableWidth "w:tblW" (table?PreferredWidth) (table?PreferredWidthType) with
         | Some width -> yield width
         | None -> ()
@@ -1506,6 +1545,22 @@ and private generateTable (hyperlinks: Map<string, string>) (images: ImageScope)
         match cellMarginsElement "w:tblCellMar" table with
         | Some margins -> yield margins
         | None -> ()
+        let look = table?TableLook
+        if not (isNullOrUndefined look) then
+            let flag (value: obj) = boolOrDefault false value
+            let bits =
+                (if flag (look?FirstRow) then 0x0020 else 0) ||| (if flag (look?LastRow) then 0x0040 else 0)
+                ||| (if flag (look?FirstColumn) then 0x0080 else 0) ||| (if flag (look?LastColumn) then 0x0100 else 0)
+                ||| (if flag (look?HorizontalBanding) then 0 else 0x0200) ||| (if flag (look?VerticalBanding) then 0 else 0x0400)
+            let hexDigits = "0123456789ABCDEF"
+            let hex = System.String([| for shift in [ 12; 8; 4; 0 ] -> hexDigits.[(bits >>> shift) &&& 0xF] |])
+            let onOffAttr (isOn: bool) = if isOn then "1" else "0"
+            yield selfClosing "w:tblLook" [
+                ("w:val", hex)
+                ("w:firstRow", onOffAttr (flag (look?FirstRow))); ("w:lastRow", onOffAttr (flag (look?LastRow)))
+                ("w:firstColumn", onOffAttr (flag (look?FirstColumn))); ("w:lastColumn", onOffAttr (flag (look?LastColumn)))
+                ("w:noHBand", onOffAttr (not (flag (look?HorizontalBanding)))); ("w:noVBand", onOffAttr (not (flag (look?VerticalBanding))))
+            ]
     ]
 
     element "w:tbl" [] [
@@ -2187,7 +2242,18 @@ let private generateCommentsPart (generateBody: obj array -> string) (comments: 
             element "w:comment" attrs [body])
     document (element "w:comments" partRootAttributes children)
 
-type NumberingInfo = { NumId: string; Level: int; Format: string; LevelText: string; Start: int option; HasOverride: bool }
+type NumberingInfo = {
+    NumId: string
+    Level: int
+    Format: string
+    LevelText: string
+    Start: int option
+    HasOverride: bool
+    /// The level's own indents (px; a negative first-line indent is a hanging
+    /// one): what its paragraphs have without stating an indent themselves.
+    IndentLeft: float option
+    FirstLineIndent: float option
+}
 
 /// One entry per (list id, level) used in the document. The list id, number
 /// format, level text and start value all come from the paragraph: without
@@ -2209,7 +2275,12 @@ let private collectNumberingInfo (items: obj array) =
                 let levelText = optionalString (para?ListLevelText) |> Option.defaultValue (if format = "bullet" then "\u2022" else "%" + string (level + 1) + ".")
                 let start = optionalFloat (para?ListStart) |> Option.map roundToInt
                 let restart = boolOrDefault false (para?ListRestart) || boolOrDefault false (para?RestartNumbering)
-                { NumId = numId; Level = level; Format = format; LevelText = levelText; Start = start; HasOverride = restart }))
+                // Indents the paragraph has from its list level go into the level
+                // definition. A paragraph object that does not tell them apart from
+                // its own carries them as direct formatting instead.
+                let levelIndent (value: obj) = if boolOrDefault false (para?HasListLevelIndents) then optionalFloat value else None
+                { NumId = numId; Level = level; Format = format; LevelText = levelText; Start = start; HasOverride = restart
+                  IndentLeft = levelIndent (para?ListLevelIndentLeft); FirstLineIndent = levelIndent (para?ListLevelFirstLineIndent) }))
     |> List.distinctBy (fun info -> info.NumId, info.Level)
 
 /// Generate minimal styles.xml
@@ -2347,7 +2418,7 @@ let private styleInfoFromObject defaultType (value: obj) =
 let private styleIdFromParagraph (para: obj) =
     optionalString (para?Style)
     |> Option.bind (fun styleId ->
-        if styleId = "" then None
+        if styleId = "" || styleId = documentDefaultsStyleId then None
         else Some {
             emptyStyleInfo styleId "paragraph" with
                 Name = optionalString (para?StyleName)
@@ -2520,7 +2591,7 @@ let private styleParagraphProps style =
         match style.OutlineLevel with | Some value -> yield selfClosing "w:outlineLvl" [("w:val", string value)] | None -> ()
     ]
 
-let private defaultStyleId = "__docDefaults"
+let private defaultStyleId = documentDefaultsStyleId
 
 let private docDefaultsFromStyle (style: StyleInfo option) =
     let defaultRunStyle =
@@ -2641,7 +2712,15 @@ let private bulletFont (levelText: string) =
 /// list already carry the level indent as direct formatting (the reader folds
 /// it into IndentLeft), so repeating a guessed one here would add an indent to
 /// lists whose definition has none.
-let private numberingLevel (withIndent: bool) (level: int) (start: int option) (format: string) (levelText: string) =
+let private numberingLevelWithIndents (withIndent: bool) (indentLeft: float option) (firstLineIndent: float option) (level: int) (start: int option) (format: string) (levelText: string) =
+    let levelIndents =
+        [ match indentLeft with
+          | Some value -> yield ("w:left", InverseConversion.pixelsToTwips value)
+          | None -> ()
+          match firstLineIndent with
+          | Some value when value < 0.0 -> yield ("w:hanging", InverseConversion.pixelsToTwips -value)
+          | Some value -> yield ("w:firstLine", InverseConversion.pixelsToTwips value)
+          | None -> () ]
     element "w:lvl" [("w:ilvl", string level)] [
         match start with
         | Some value -> yield selfClosing "w:start" [("w:val", string value)]
@@ -2653,10 +2732,15 @@ let private numberingLevel (withIndent: bool) (level: int) (start: int option) (
             yield element "w:pPr" [] [
                 selfClosing "w:ind" [("w:left", string (720 * (level + 1))); ("w:hanging", "360")]
             ]
+        elif not levelIndents.IsEmpty then
+            yield element "w:pPr" [] [selfClosing "w:ind" levelIndents]
         match (if format = "bullet" then bulletFont levelText else None) with
         | Some font -> yield element "w:rPr" [] [selfClosing "w:rFonts" [("w:ascii", font); ("w:hAnsi", font); ("w:hint", "default")]]
         | None -> ()
     ]
+
+let private numberingLevel (withIndent: bool) (level: int) (start: int option) (format: string) (levelText: string) =
+    numberingLevelWithIndents withIndent None None level start format levelText
 
 let generateNumbering (customInfos: NumberingInfo list) : string =
     let usedIds =
@@ -2678,7 +2762,7 @@ let generateNumbering (customInfos: NumberingInfo list) : string =
               let levels =
                   infos
                   |> List.sortBy (fun info -> info.Level)
-                  |> List.map (fun info -> numberingLevel false info.Level info.Start info.Format info.LevelText)
+                  |> List.map (fun info -> numberingLevelWithIndents false info.IndentLeft info.FirstLineIndent info.Level info.Start info.Format info.LevelText)
               yield element "w:abstractNum" [("w:abstractNumId", numId)] levels ]
     let nums =
         [ yield element "w:num" [("w:numId", bulletId)] [selfClosing "w:abstractNumId" [("w:val", bulletId)]]
@@ -2862,6 +2946,9 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
     let styles =
         (collectPackageStyles (optionalArray (package?Styles)) @ collectStyles allBlocks)
         |> List.distinctBy (fun style -> style.StyleType, style.StyleId)
+        // The document defaults are not a style: a style of that name (inferred by
+        // the editor from table cell paragraphs) would take their place when read.
+        |> List.filter (fun style -> style.StyleId <> documentDefaultsStyleId || style.StyleType = "defaults")
     let hasComments = not comments.IsEmpty
     let hasFootnotes = not footnotes.IsEmpty
     let hasEndnotes = not endnotes.IsEmpty

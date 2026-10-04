@@ -505,6 +505,34 @@ ok "regenerated-parts-are-not-kept-as-parts"
    (settingsDoc.Preserved.Parts |> List.map (fun part -> part.Path) = [])
    (sprintf "%A" (settingsDoc.Preserved.Parts |> List.map (fun part -> part.Path)))
 
+// ----- what a paragraph states itself vs. what it inherits -------------------
+let explicitParaDoc =
+    docxWithParts
+        ("<w:p><w:r><w:t>nothing</w:t></w:r></w:p>"
+         + "<w:p><w:pPr><w:pStyle w:val=\"Spaced\"/></w:pPr><w:r><w:t>inherits</w:t></w:r></w:p>"
+         + "<w:p><w:pPr><w:pStyle w:val=\"Spaced\"/><w:spacing w:after=\"0\"/><w:ind w:left=\"720\"/></w:pPr><w:r><w:rPr><w:color w:val=\"auto\"/></w:rPr><w:t>states</w:t></w:r></w:p>")
+        [ "word/styles.xml", sprintf "<w:styles %s><w:style w:type=\"paragraph\" w:styleId=\"Spaced\"><w:name w:val=\"Spaced\"/><w:pPr><w:spacing w:before=\"100\" w:after=\"200\"/><w:ind w:hanging=\"180\"/></w:pPr></w:style></w:styles>" wNs ]
+        []
+    |> DocxReader.loadBytesNative |> Option.get
+let explicitParaItems =
+    DocxReader.toEditorParagraphsWithStylesThemeAndNumbering
+        explicitParaDoc.Theme explicitParaDoc.Content explicitParaDoc.Images explicitParaDoc.Styles explicitParaDoc.NumberingDefinitions explicitParaDoc.Footnotes explicitParaDoc.Endnotes
+    |> Array.map (fun item -> item :?> System.Collections.Generic.Dictionary<string, obj>)
+let floatField name (item: System.Collections.Generic.Dictionary<string, obj>) = fieldOf name item :?> float option
+let explicitParaSummary =
+    explicitParaItems
+    |> Array.map (fun item -> floatField "SpacingAfter" item, floatField "ExplicitSpacingAfter" item, floatField "SpacingBefore" item, floatField "ExplicitSpacingBefore" item, floatField "ExplicitIndentLeft" item, floatField "FirstLineIndent" item, floatField "ExplicitFirstLineIndent" item)
+    |> Array.toList
+ok "editor-paragraph-explicit-vs-inherited"
+   (explicitParaSummary =
+        [ None, None, None, None, None, None, None
+          Some 10.0, None, Some 5.0, None, None, Some -12.0, None
+          Some 0.0, Some 0.0, Some 5.0, None, Some 48.0, Some -12.0, None ])
+   (sprintf "%A" explicitParaSummary)
+ok "editor-run-explicit-automatic-colour"
+   ((explicitParaItems.[2].["Runs"] :?> obj array).[0] :?> System.Collections.Generic.Dictionary<string, obj> |> fun run -> run.["ExplicitColorAuto"] = box true)
+   "ExplicitColorAuto"
+
 printfn ""
 printfn "OfficeFormat DocxReader tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

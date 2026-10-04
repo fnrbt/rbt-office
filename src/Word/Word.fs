@@ -1707,7 +1707,9 @@ module API =
           PaddingRight = None
           PaddingBottom = None
           PaddingLeft = None
-          Floating = false }
+          Floating = false
+          StyleId = None
+          Look = None }
 
     let private imageParagraph id src alt width height : Doc.ParagraphBlock =
         { Id = id

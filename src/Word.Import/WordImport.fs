@@ -440,6 +440,7 @@ let private withSourceRunProps (paraProps: DocxReader.ParagraphProperties) (run:
         ||| flag sourceProps.DoubleStrike mark.DoubleStrike ExplicitFormat.DoubleStrike
         ||| flag sourceProps.Hidden mark.Hidden ExplicitFormat.Hidden
         ||| flag sourceProps.FontSize mark.FontSize ExplicitFormat.FontSize
+        ||| (if (sourceProps.Color |> Option.orElse mark.Color) = Some "auto" then ExplicitFormat.ColorAuto else 0)
     { style with
         Style = sourceProps.Style
         Explicit = explicitFlags
@@ -649,6 +650,21 @@ let private paraMetadata styleMap resolver useDocumentMarkForPureEmpty defaultMi
             RenderedPageBreakBefore = props.RenderedPageBreakBefore
             HeaderReferences = props.HeaderReferences |> List.map (fun ref -> ref.Kind, ref.RelationshipId)
             FooterReferences = props.FooterReferences |> List.map (fun ref -> ref.Kind, ref.RelationshipId)
+            // What the paragraph's own w:pPr states (the values above are effective).
+            Explicit =
+                let flag (isSet: bool) (bit: int) = if isSet then bit else 0
+                flag (props.SpacingBefore.IsSome || props.SpacingBeforeAuto.IsSome) ParagraphExplicit.SpacingBefore
+                ||| flag (props.SpacingAfter.IsSome || props.SpacingAfterAuto.IsSome) ParagraphExplicit.SpacingAfter
+                ||| flag props.LineSpacing.IsSome ParagraphExplicit.LineSpacing
+                ||| flag props.IndentLeft.IsSome ParagraphExplicit.IndentLeft
+                ||| flag props.IndentRight.IsSome ParagraphExplicit.IndentRight
+                ||| flag (props.FirstLineIndent.IsSome || props.HangingIndent.IsSome) ParagraphExplicit.FirstLineIndent
+                ||| flag props.ContextualSpacing.IsSome ParagraphExplicit.ContextualSpacing
+                ||| flag props.BackgroundColor.IsSome ParagraphExplicit.BackgroundColor
+                ||| flag (not props.TabStops.IsEmpty) ParagraphExplicit.Tabs
+            HasMarkProperties = props.ParagraphRunProperties.IsSome
+            ExplicitMarkFontSize = props.ParagraphRunProperties |> Option.bind (fun mark -> mark.FontSize |> Option.map (fun _ -> TC.fontSizeToPoints mark.FontSize))
+            ListLevelIndents = numberingDef |> Option.map (fun _ -> numberingIndentLeft, numberingFirstLineIndent)
             ListStyle =
                 match numberingDef with
                 | Some def when def.NumberFormat = "bullet" -> Bullet
@@ -827,6 +843,12 @@ and private tableBlock resolver images styleMap tableStyleMap comments notes (ta
         PaddingBottom = tablePadding (fun p -> p.PaddingBottom)
         PaddingLeft = tablePadding (fun p -> p.PaddingLeft)
         Floating = table.Floating
+        StyleId = table.StyleId
+        Look =
+            table.Look
+            |> Option.map (fun look ->
+                ({ FirstRow = look.FirstRow; LastRow = look.LastRow; FirstColumn = look.FirstColumn; LastColumn = look.LastColumn
+                   HorizontalBanding = look.HorizontalBanding; VerticalBanding = look.VerticalBanding }: Rbt.Word.Document.TableLook))
     }
 
 let private resolveThemeFontFamily (theme: DocxReader.Theme option) (themeFont: string option) =
@@ -891,7 +913,11 @@ let private namedStyle (theme: DocxReader.Theme option) (style: DocxReader.Style
         Alignment = para |> Option.bind (fun p -> p.Alignment) |> Option.map alignment
         IndentLeft = para |> Option.bind (fun p -> twipsToCanvasPixels p.IndentLeft)
         IndentRight = para |> Option.bind (fun p -> twipsToCanvasPixels p.IndentRight)
-        FirstLineIndent = para |> Option.bind (fun p -> twipsToCanvasPixels p.FirstLineIndent)
+        FirstLineIndent =
+            para
+            |> Option.bind (fun p ->
+                twipsToCanvasPixels p.FirstLineIndent
+                |> Option.orElse (twipsToCanvasPixels p.HangingIndent |> Option.map (fun hanging -> -hanging)))
         BackgroundColor = para |> Option.bind (fun p -> color p.BackgroundColor)
         OutlineLevel = para |> Option.bind (fun p -> intOpt p.OutlineLevel)
         KeepNext = para |> Option.bind (fun p -> p.KeepNext)

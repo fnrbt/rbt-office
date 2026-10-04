@@ -398,7 +398,8 @@ let effectiveTextStyle (paragraphStyle: ParagraphStyle) (runStyle: TextStyle) =
             FontSize = inheritFontSize inherited.FontSize runStyle
             CharacterSpacing = if abs runStyle.CharacterSpacing < 0.001 then paragraphStyle.Text.CharacterSpacing else runStyle.CharacterSpacing
             FontFamily = inheritFontFamily paragraphStyle.Text runStyle
-            Color = runStyle.Color |> Option.orElse paragraphStyle.Text.Color
+            // "Automatic" colour stated on the run: the style's colour does not apply.
+            Color = if ExplicitFormat.has ExplicitFormat.ColorAuto runStyle then runStyle.Color else runStyle.Color |> Option.orElse paragraphStyle.Text.Color
             Highlight = runStyle.Highlight |> Option.orElse paragraphStyle.Text.Highlight
     }
 

@@ -360,5 +360,21 @@ check "native chart: its part is kept"
     ((nativeChartDoc.Package.Preserved :?> DocxReader.PackagePreservation).Parts |> List.map (fun part -> part.Path))
     [ "word/charts/chart1.xml" ]
 
+// ----- what a paragraph states itself vs. what it inherits -------------------
+let explicitNativeDoc =
+    syntheticDocxWithStyles
+        """<w:style w:type="paragraph" w:styleId="Spaced"><w:name w:val="Spaced"/><w:pPr><w:spacing w:before="100" w:after="200"/></w:pPr></w:style>"""
+        ("""<w:p><w:pPr><w:pStyle w:val="Spaced"/></w:pPr><w:r><w:t>inherits</w:t></w:r></w:p>"""
+         + """<w:p><w:pPr><w:pStyle w:val="Spaced"/><w:spacing w:after="0"/><w:ind w:left="720"/><w:rPr><w:sz w:val="28"/></w:rPr></w:pPr><w:r><w:rPr><w:color w:val="auto"/></w:rPr><w:t>states</w:t></w:r></w:p>""")
+    |> DocxReader.loadBytesNative |> Option.get |> Rbt.Word.Import.importDoc
+check "native explicit paragraph formatting"
+    (paragraphsOfBlocks explicitNativeDoc.Blocks
+     |> List.map (fun para -> para.Metadata.SpacingAfter, para.Metadata.Explicit, para.Metadata.HasMarkProperties, para.Metadata.ExplicitMarkFontSize |> Option.map (fun size -> Math.Round(size, 2))))
+    [ Some 10.0, 0, false, None
+      Some 0.0, ParagraphExplicit.SpacingAfter ||| ParagraphExplicit.IndentLeft, true, Some 18.67 ]
+check "native explicit automatic colour"
+    (paragraphsOfBlocks explicitNativeDoc.Blocks |> List.map (fun para -> runStyles para |> List.map (fun style -> Rbt.Word.TextBuffer.ExplicitFormat.has Rbt.Word.TextBuffer.ExplicitFormat.ColorAuto style)))
+    [ [ false ]; [ true ] ]
+
 printfn "word import smoke: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

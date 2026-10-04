@@ -24,7 +24,7 @@ const pick = (o, keys) => { const r = {}; for (const k of keys) r[k] = norm(o[k]
 
 const RUN_KEYS = ['Bold', 'Italic', 'Underline', 'UnderlineStyle', 'UnderlineColor', 'Strike', 'DoubleStrike', 'Hidden', 'AllCaps', 'SmallCaps',
     'FontSize', 'CharacterSpacing', 'FontFamily', 'Color', 'Highlight', 'VertAlign', 'Position', 'EmphasisMark', 'Hyperlink',
-    'RevisionType', 'RevisionAuthor', 'FieldCode', 'NoteId', 'NoteType', 'CommentId'];
+    'RevisionType', 'RevisionAuthor', 'FieldCode', 'NoteId', 'NoteType', 'CommentId', 'ExplicitColorAuto'];
 const IMAGE_KEYS = ['ImageWidth', 'ImageHeight', 'ImageFloating', 'ImageWrap', 'ImageWrapText', 'ImagePositionX', 'ImagePositionY',
     'ImagePositionHRelativeFrom', 'ImagePositionVRelativeFrom', 'ImagePositionHAlign', 'ImagePositionVAlign', 'ImageBehindDoc', 'ImageRelativeHeight',
     'ImageDistanceLeft', 'ImageDistanceTop', 'ImageDistanceRight', 'ImageDistanceBottom', 'ImageCropLeft', 'ImageCropTop', 'ImageCropRight', 'ImageCropBottom',
@@ -36,8 +36,11 @@ const PARA_KEYS = ['Type', 'Style', 'Alignment', 'ListStyle', 'ListLevel', 'List
     'IndentLeft', 'IndentRight', 'FirstLineIndent', 'SpacingBefore', 'SpacingAfter', 'LineSpacing', 'LineSpacingRule',
     'TabStops', 'Rtl', 'BackgroundColor', 'ParagraphBorders', 'PageBreakBefore', 'PageBreakAfter', 'SectionBreak',
     'SectionPageNumberStart', 'SectionPageSetup', 'SectionColumns', 'StyleContextualSpacing',
-    'ContentControlTag', 'ContentControlAlias', 'KeepNext', 'KeepLines', 'HeaderReferences', 'FooterReferences'];
-const TABLE_KEYS = ['PreferredWidth', 'PreferredWidthType', 'TableAlignment', 'LayoutMode', 'GridColumns', 'Borders', 'BackgroundColor',
+    'ContentControlTag', 'ContentControlAlias', 'KeepNext', 'KeepLines', 'HeaderReferences', 'FooterReferences',
+    // What the paragraph itself states, as opposed to what it inherits.
+    'ExplicitSpacingBefore', 'ExplicitSpacingAfter', 'ExplicitLineSpacing', 'ExplicitIndentLeft', 'ExplicitIndentRight', 'ExplicitFirstLineIndent',
+    'ExplicitContextualSpacing', 'ExplicitBackgroundColor', 'ExplicitTabs', 'HasMarkProperties', 'ExplicitMarkFontSize'];
+const TABLE_KEYS = ['TableStyleId', 'TableLook', 'PreferredWidth', 'PreferredWidthType', 'TableAlignment', 'LayoutMode', 'GridColumns', 'Borders', 'BackgroundColor',
     'CellSpacing', 'PaddingTop', 'PaddingRight', 'PaddingBottom', 'PaddingLeft'];
 const ROW_KEYS = ['IsHeader', 'Height', 'HeightRule', 'CanSplit', 'CellSpacing', 'PaddingTop', 'PaddingRight', 'PaddingBottom', 'PaddingLeft'];
 const CELL_KEYS = ['ColSpan', 'BackgroundColor', 'Width', 'PreferredWidth', 'PreferredWidthType', 'Borders', 'VerticalAlignment', 'VerticalMerge',
@@ -114,10 +117,6 @@ function summarise(items, prefix, out) {
             summarise(item.Paragraphs, path + '.p', out);
         } else {
             const props = pick(item, PARA_KEYS);
-            // "No spacing anywhere" and an explicit 0 are the same paragraph; the reader
-            // reports the former as 0 once the paragraph has direct formatting, which a
-            // saved paragraph always has.
-            props.SpacingBefore ??= 0; props.SpacingAfter ??= 0;
             // A numbered paragraph whose list has no definition is shown, and saved, as decimal.
             if (props.ListStyle === 'numbered') { props.ListNumberFormat ??= 'decimal'; props.ListLevelText ??= `%${props.ListLevel}.`; }
             out.push({ path, kind: 'para', props, runs: runsSummary(item.Runs) });

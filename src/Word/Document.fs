@@ -147,7 +147,42 @@ type BlockMetadata = {
     SectionPageSetup: SectionPageSetup option
     HeaderReferences: (string * string) list
     FooterReferences: (string * string) list
+    /// Bit set of ParagraphExplicit flags: the properties stated on the paragraph
+    /// itself. The values above are the effective ones (the reader resolves
+    /// styles and numbering into them); an unflagged one is inherited or not
+    /// set anywhere, and a save leaves it out of the paragraph.
+    Explicit: int
+    /// The paragraph mark has run properties of its own, and the size they state.
+    HasMarkProperties: bool
+    ExplicitMarkFontSize: float option
+    /// The indents (left, first line; a negative first line is hanging) of the
+    /// paragraph's list level, when its list came from a file: where an indent
+    /// the paragraph does not state comes from.
+    ListLevelIndents: (float option * float option) option
 }
+
+/// Flags for BlockMetadata.Explicit.
+module ParagraphExplicit =
+    [<Literal>]
+    let SpacingBefore = 1
+    [<Literal>]
+    let SpacingAfter = 2
+    [<Literal>]
+    let LineSpacing = 4
+    [<Literal>]
+    let IndentLeft = 8
+    [<Literal>]
+    let IndentRight = 16
+    [<Literal>]
+    let FirstLineIndent = 32
+    [<Literal>]
+    let ContextualSpacing = 64
+    [<Literal>]
+    let BackgroundColor = 128
+    [<Literal>]
+    let Tabs = 256
+
+    let has (flag: int) (metadata: BlockMetadata) = metadata.Explicit &&& flag <> 0
 
 /// Default block metadata
 let defaultMetadata = {
@@ -192,6 +227,10 @@ let defaultMetadata = {
     SectionPageSetup = None
     HeaderReferences = []
     FooterReferences = []
+    Explicit = 0
+    HasMarkProperties = false
+    ExplicitMarkFontSize = None
+    ListLevelIndents = None
 }
 
 /// One segment of a vector path. Coordinates are in the path's own coordinate
@@ -252,6 +291,20 @@ and TableBlock = {
     PaddingBottom: float option
     PaddingLeft: float option
     Floating: bool
+    /// The table style (w:tblStyle) and the conditional formats of it that are
+    /// switched on (w:tblLook). The style's formatting is already resolved into
+    /// the cells; the reference is kept for the file.
+    StyleId: string option
+    Look: TableLook option
+}
+
+and TableLook = {
+    FirstRow: bool
+    LastRow: bool
+    FirstColumn: bool
+    LastColumn: bool
+    HorizontalBanding: bool
+    VerticalBanding: bool
 }
 
 and TextBoxBlock = {
@@ -1988,6 +2041,8 @@ let insertTable rows columns doc =
         PaddingBottom = None
         PaddingLeft = None
         Floating = false
+        StyleId = None
+        Look = None
     }
     let firstCellPara = table.Rows.Head.Cells.Head.Content.Head
     let tableBlock = Table table
@@ -3434,7 +3489,19 @@ let setCurrentParagraphStyle alignment indentLeft indentRight spacingBefore spac
             LineSpacing = lineSpacing
             LineSpacingRule = Some "auto"
             FirstLineIndent = firstLineIndent
-            BackgroundColor = backgroundColor }) doc
+            BackgroundColor = backgroundColor
+            // What the dialog states is the paragraph's own formatting; a value it
+            // leaves empty goes back to being inherited.
+            Explicit =
+                let flag (isSet: bool) (bit: int) (flags: int) = if isSet then flags ||| bit else flags &&& ~~~bit
+                metadata.Explicit
+                |> flag indentLeft.IsSome ParagraphExplicit.IndentLeft
+                |> flag indentRight.IsSome ParagraphExplicit.IndentRight
+                |> flag spacingBefore.IsSome ParagraphExplicit.SpacingBefore
+                |> flag spacingAfter.IsSome ParagraphExplicit.SpacingAfter
+                |> flag lineSpacing.IsSome ParagraphExplicit.LineSpacing
+                |> flag firstLineIndent.IsSome ParagraphExplicit.FirstLineIndent
+                |> flag backgroundColor.IsSome ParagraphExplicit.BackgroundColor }) doc
 
 let setCurrentSectionBreak sectionBreak doc =
     match doc.Selection with

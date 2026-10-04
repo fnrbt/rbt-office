@@ -78,6 +78,10 @@ module ExplicitFormat =
     let Hidden = 128
     [<Literal>]
     let FontSize = 256
+    /// The run states "automatic" colour (w:color w:val="auto"): Color is None,
+    /// and a colour from a style does not apply.
+    [<Literal>]
+    let ColorAuto = 512
 
     let has (flag: int) (style: TextStyle) = style.Explicit &&& flag <> 0
 

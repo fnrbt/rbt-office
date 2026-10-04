@@ -432,6 +432,44 @@ const docs = [
             { read: 'pkg.HeaderParts.0.Paragraphs.0.Runs.0.OpaqueKind', equals: 'shape' },
         ],
     },
+    {
+        // Formatting a paragraph inherits (from its style, the document defaults or its
+        // list level) or has nowhere at all is not written onto it: only what its own
+        // w:pPr states. The first save is a fixed point for unset and for zero.
+        name: 'synthetic/unset-spacing',
+        body:
+            p('nothing set') +
+            p('indent only', '<w:ind w:left="720"/>') +
+            p('inherits from its style', '<w:pStyle w:val="Spaced"/>') +
+            p('explicit zero under the style', '<w:pStyle w:val="Spaced"/><w:spacing w:before="0" w:after="0"/>') +
+            `<w:p><w:pPr><w:rPr><w:sz w:val="28"/></w:rPr></w:pPr></w:p>` +
+            li('list item, indent from its level', 7) + li('second item', 7) +
+            p('after'),
+        extra: {
+            'word/styles.xml': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles ${W}><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/><w:sz w:val="22"/></w:rPr></w:rPrDefault></w:docDefaults>` +
+                `<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style>` +
+                `<w:style w:type="paragraph" w:styleId="Spaced"><w:name w:val="Spaced"/><w:basedOn w:val="Normal"/><w:pPr><w:shd w:val="clear" w:color="auto" w:fill="EEEEEE"/><w:tabs><w:tab w:val="right" w:pos="5000"/></w:tabs><w:spacing w:before="100" w:after="200" w:line="360" w:lineRule="auto"/><w:ind w:left="360" w:hanging="180"/><w:contextualSpacing/></w:pPr></w:style></w:styles>`,
+            'word/numbering.xml': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:numbering ${W}><w:abstractNum w:abstractNumId="7"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr></w:lvl></w:abstractNum><w:num w:numId="7"><w:abstractNumId w:val="7"/></w:num></w:numbering>`,
+        },
+        expect: [
+            { part: 'word/document.xml', has: '<w:p><w:pPr/><w:r>(<w:rPr>.*?</w:rPr>)?<w:t[^>]*>nothing set' },
+            { part: 'word/document.xml', has: '<w:pPr><w:ind w:left="720"/></w:pPr><w:r>(<w:rPr>.*?</w:rPr>)?<w:t[^>]*>indent only' },
+            { part: 'word/document.xml', has: '<w:pPr><w:pStyle w:val="Spaced"/></w:pPr><w:r>(<w:rPr>.*?</w:rPr>)?<w:t[^>]*>inherits from its style' },
+            { part: 'word/document.xml', has: '<w:pStyle w:val="Spaced"/><w:spacing w:before="0" w:beforeAutospacing="0" w:after="0" w:afterAutospacing="0"/></w:pPr>' },
+            { part: 'word/document.xml', has: '<w:p><w:pPr><w:rPr><w:sz w:val="28"/><w:szCs w:val="28"/></w:rPr></w:pPr></w:p>' },
+            // One w:spacing (the explicit zero), one w:ind (the indent-only paragraph), no shading / tabs / contextual spacing copied from the style.
+            { part: 'word/document.xml', lacks: '<w:spacing .*<w:spacing ' }, { part: 'word/document.xml', lacks: '<w:ind .*<w:ind ' },
+            { part: 'word/document.xml', lacks: '<w:shd ' }, { part: 'word/document.xml', lacks: '<w:tabs>' }, { part: 'word/document.xml', lacks: 'contextualSpacing' },
+            { part: 'word/numbering.xml', has: '<w:abstractNum w:abstractNumId="7"><w:lvl w:ilvl="0">.*?<w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr>' },
+            { read: 'pkg.Paragraphs.0.SpacingAfter', equals: null }, { read: 'pkg.Paragraphs.0.ExplicitSpacingAfter', equals: null },
+            { read: 'pkg.Paragraphs.1.SpacingAfter', equals: 0 }, { read: 'pkg.Paragraphs.1.ExplicitSpacingAfter', equals: null }, { read: 'pkg.Paragraphs.1.ExplicitIndentLeft', equals: 48 },
+            { read: 'pkg.Paragraphs.2.SpacingAfter', equals: 10 }, { read: 'pkg.Paragraphs.2.ExplicitSpacingAfter', equals: null }, { read: 'pkg.Paragraphs.2.LineSpacing', equals: 1.5 },
+            { read: 'pkg.Paragraphs.2.FirstLineIndent', equals: -12 }, { read: 'pkg.Paragraphs.2.ExplicitFirstLineIndent', equals: null },
+            { read: 'pkg.Paragraphs.3.ExplicitSpacingAfter', equals: 0 }, { read: 'pkg.Paragraphs.3.ExplicitSpacingBefore', equals: 0 },
+            { read: 'pkg.Paragraphs.4.HasMarkProperties', equals: true }, { read: 'pkg.Paragraphs.4.ExplicitMarkFontSize', equals: 18.667 },
+            { read: 'pkg.Paragraphs.5.IndentLeft', equals: 48 }, { read: 'pkg.Paragraphs.5.ExplicitIndentLeft', equals: null }, { read: 'pkg.Paragraphs.5.ListLevelFirstLineIndent', equals: -24 },
+        ],
+    },
     preservedParts('synthetic/preserved-parts', [
         // Everything the editor does not model comes back as it was.
         { same: 'word/theme/theme1.xml' }, { same: 'word/fontTable.xml' }, { same: 'word/webSettings.xml' },
