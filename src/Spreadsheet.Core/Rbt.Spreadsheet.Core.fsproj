@@ -8,6 +8,7 @@
     <Compile Include="../Spreadsheet/NumberText.fs" />
     <Compile Include="../Spreadsheet/Model.fs" />
     <Compile Include="../Spreadsheet/CellText.fs" />
+    <Compile Include="../Spreadsheet/Input.fs" />
     <Compile Include="../Spreadsheet/Workbook.fs" />
     <Compile Include="../Spreadsheet/Pivot.fs" />
     <Compile Include="../Spreadsheet/Formula.fs" />

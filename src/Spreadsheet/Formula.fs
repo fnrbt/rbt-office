@@ -1707,21 +1707,6 @@ let rec moveExprReferences (move: CellMove) (expr: Expr) : Expr =
 let moveFormulaText (move: CellMove) (formula: string) : string =
     rewriteFormulaText (moveExprReferences move) formula
 
-/// Set by the evaluator further down (it is defined after the rewrites):
-/// evaluates a formula written for one cell at another cell of a sheet.
-let mutable private evaluateShifted : string -> int -> int -> SpreadsheetModel -> CellAddress -> CellValue =
-    fun _ _ _ _ _ -> CellValue.Error Err.name
-
-let private evaluateShiftedHook (formula: string) (rows: int) (cols: int) (model: SpreadsheetModel) (cell: CellAddress) : CellValue =
-    evaluateShifted formula rows cols model cell
-
-/// Installs the formula rewrites Model.fs needs for paste and row/column
-/// edits (it compiles before this file). Model.fs reads this value to force
-/// the installation on hosts that have not touched this module yet.
-let formulaHooksInstalled : bool =
-    installFormulaHooks { Shift = shiftFormulaText; Adjust = adjustFormulaTextForEdit; Move = moveFormulaText; Evaluate = evaluateShiftedHook }
-    true
-
 /// Replace every `NameRef` whose (case-insensitive) name is bound in `subst`
 /// with its bound expression. This is how LET inlines its names: a LET value
 /// expression is substituted as-is (not pre-evaluated), so a name bound to a
@@ -3554,12 +3539,12 @@ let private isThreeDSheet (sheet: string option) =
 let private indexMaySelectArea (args: Expr list) =
     let wholeLine e = match e with MissingArg | Number 0.0 -> true | _ -> false
     match args with
+    | [ CellRef _; _ ] -> false
+    | [ _; row ] when wholeLine row -> true
     | [ source; _ ] ->
         (match source with
          | RangeRef (a, b) -> a.Row <> b.Row && a.Col <> b.Col
-         | CellRef _ -> false
          | _ -> true)
-    | [ _; row ] when wholeLine row -> true
     | [ _; row; col ] -> wholeLine row || wholeLine col
     | _ -> false
 
@@ -13351,7 +13336,14 @@ let evaluateFormulaShifted (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
             if arr.Length > 0 && arr.[0].Length > 0 then unwrapValue arr.[0].[0] else CellValue.Error Err.value
         else unwrapValue (eval expr ctx)
 
-/// Hands `evaluateFormulaShifted` to Model.fs (see `evaluateShifted` above).
-let private evaluateShiftedInstalled : bool =
-    evaluateShifted <- evaluateFormulaShifted None None
+/// Installs what Model.fs needs from this file, which compiles after it: the
+/// formula rewrites for paste, fill and row/column edits, and the evaluator
+/// for validation and conditional-format formulas. Model.fs reads this value
+/// to force the installation on hosts that have not touched this module yet.
+let formulaHooksInstalled : bool =
+    installFormulaHooks
+        { Shift = shiftFormulaText
+          Adjust = adjustFormulaTextForEdit
+          Move = moveFormulaText
+          Evaluate = fun formula rows cols model cell -> evaluateFormulaShifted None None formula rows cols model cell }
     true

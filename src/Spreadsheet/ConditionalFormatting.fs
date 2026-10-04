@@ -382,10 +382,17 @@ let effectAt (ctx: Context) (addr: CellAddress) : CellEffect option =
 // A renderer holds only the sheet model. The context for the last sheet state
 // asked about is kept, so painting a viewport prepares the rules once.
 
-/// How the formulas in rules are evaluated when a renderer asks. A host with
-/// a workbook sets this so rules can read other sheets and defined names;
-/// the default evaluates on the sheet alone.
-let mutable formulaEvaluator : FormulaEvaluator = evaluateFormulaAt
+/// Holds the evaluator in a record: a function kept in a mutable binding
+/// loses its calling convention in the JavaScript build.
+type private EvaluatorHolder = { Run: FormulaEvaluator }
+
+let mutable private currentEvaluator : EvaluatorHolder = { Run = evaluateFormulaAt }
+
+/// Choose how the formulas in rules are evaluated when a renderer asks. A
+/// host with a workbook sets this so rules can read other sheets and defined
+/// names; the default evaluates on the sheet alone.
+let setFormulaEvaluator (evaluate: FormulaEvaluator) : unit =
+    currentEvaluator <- { Run = evaluate }
 
 let mutable private cachedCells : obj = null
 let mutable private cachedRules : obj = null
@@ -397,12 +404,12 @@ let contextFor (model: SpreadsheetModel) : Context =
     match cachedContext with
     | Some ctx when obj.ReferenceEquals(cachedCells, model.Cells)
                     && obj.ReferenceEquals(cachedRules, model.ConditionalFormats)
-                    && obj.ReferenceEquals(cachedEvaluator, formulaEvaluator) -> ctx
+                    && obj.ReferenceEquals(cachedEvaluator, currentEvaluator) -> ctx
     | _ ->
-        let ctx = createContext formulaEvaluator model
+        let ctx = createContext currentEvaluator.Run model
         cachedCells <- box model.Cells
         cachedRules <- box model.ConditionalFormats
-        cachedEvaluator <- box formulaEvaluator
+        cachedEvaluator <- box currentEvaluator
         cachedContext <- Some ctx
         ctx
 

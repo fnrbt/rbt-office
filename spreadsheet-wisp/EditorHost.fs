@@ -239,27 +239,24 @@ let extendFocus (st: EditorState) row col =
     ensureCellVisible st r c
 
 let cellEditText (model: M.SpreadsheetModel) row col =
-    match M.getCell { Row = row; Col = col } model with
-    | None -> ""
-    | Some data ->
-        match data.Value with
-        | M.Number n -> n.ToString("G", Globalization.CultureInfo.InvariantCulture)
-        | M.String s -> s
-        | M.Boolean b -> if b then "TRUE" else "FALSE"
-        | M.Formula (expr, _) -> "=" + expr
-        | M.Empty -> ""
-        | M.Error e -> if e.StartsWith "#" then e else "#" + e
+    // What, typed back unchanged, gives the same cell: the formula's text, a
+    // date as a date, forced text with its apostrophe.
+    Rbt.Spreadsheet.Input.editText (M.getCell { Row = row; Col = col } model)
 
+/// Typed text → cell value, read the way Excel reads input (shared with the
+/// web editor: `Rbt.Spreadsheet.Input`). This host stores formulas without
+/// the leading `=`.
 let parseCellInput (text: string) : M.CellValue =
-    let trimmed = text.Trim()
-    if trimmed = "" then M.Empty
-    elif trimmed.StartsWith "=" then M.Formula(trimmed.Substring 1, M.Empty)
-    elif String.Equals(trimmed, "TRUE", StringComparison.OrdinalIgnoreCase) then M.Boolean true
-    elif String.Equals(trimmed, "FALSE", StringComparison.OrdinalIgnoreCase) then M.Boolean false
-    else
-        match Double.TryParse(trimmed, Globalization.NumberStyles.Float, Globalization.CultureInfo.InvariantCulture) with
-        | true, n -> M.Number n
-        | _ -> M.String trimmed
+    match (Rbt.Spreadsheet.Input.parseInput text).Value with
+    | M.Formula (formula, cached) when formula.StartsWith "=" -> M.Formula (formula.Substring 1, cached)
+    | value -> value
+
+/// The cell's format after an entry: an entry written as a percentage, a
+/// currency amount, a date… gives a General cell the matching number format.
+let private formatAfterInput (text: string) (format: M.CellFormat) : M.CellFormat =
+    match (Rbt.Spreadsheet.Input.parseInput text).NumberFormat, format.NumberFormat with
+    | Some code, (None | Some "" | Some "General") -> { format with NumberFormat = Some code }
+    | _ -> format
 
 let private singleSheetWorkbook (name: string) (model: M.SpreadsheetModel) : Workbook.Workbook =
     let sheet : Workbook.Sheet = { Id = "sheet1"; Name = name; Model = model; Visible = true }
@@ -296,15 +293,15 @@ let private writeCell (st: EditorState) row col text model =
         let edited =
             match value, M.getCell addr model with
             | M.Empty, _ -> M.clearCell addr model
-            | v, Some existing -> M.setCell addr { existing with Value = v } model
-            | v, None -> M.setCell addr { Value = v; Format = M.defaultFormat; Comment = None } model
+            | v, Some existing -> M.setCell addr { existing with Value = v; Format = formatAfterInput text existing.Format } model
+            | v, None -> M.setCell addr { Value = v; Format = formatAfterInput text M.defaultFormat; Comment = None } model
         if Object.ReferenceEquals(model, edited) then model
         else
             let cellData =
                 match value, M.getCell addr model with
                 | M.Empty, _ -> ({ Value = M.Empty; Format = M.defaultFormat; Comment = None } : M.CellData)
-                | v, Some existing -> { existing with Value = v }
-                | v, None -> { Value = v; Format = M.defaultFormat; Comment = None }
+                | v, Some existing -> { existing with Value = v; Format = formatAfterInput text existing.Format }
+                | v, None -> { Value = v; Format = formatAfterInput text M.defaultFormat; Comment = None }
             let recomputed = recalcEditedCell st addr cellData edited model
             let target = sprintf "Range(\"%s%d\")" (M.columnToLetter col) (row + 1)
             let afterEvent = Rbt.Spreadsheet.Vba.fireEvent "Worksheet_Change" target recomputed

@@ -8,6 +8,7 @@
     <Compile Include="NumberText.fs" />
     <Compile Include="Model.fs" />
     <Compile Include="CellText.fs" />
+    <Compile Include="Input.fs" />
     <Compile Include="Workbook.fs" />
     <Compile Include="Pivot.fs" />
     <Compile Include="Formula.fs" />

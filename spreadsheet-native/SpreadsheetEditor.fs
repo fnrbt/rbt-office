@@ -270,27 +270,24 @@ let private pageRowJump (state: SpreadsheetEditorState) (fromRow: int) (directio
 /// Cell text shown in the formula bar / inline editor. Formula cells
 /// surface their `=expr` source; literal cells surface their typed value.
 let cellEditText (model: SpreadsheetModel) row col =
-    match getCell { Row = row; Col = col } model with
-    | None -> ""
-    | Some data ->
-        match data.Value with
-        | Number n -> string n
-        | String s -> s
-        | Boolean b -> if b then "TRUE" else "FALSE"
-        | Formula (expr, _) -> "=" + expr
-        | Empty -> ""
-        | Error e -> "#" + e
+    // What, typed back unchanged, gives the same cell: the formula's text, a
+    // date as a date, forced text with its apostrophe.
+    Rbt.Spreadsheet.Input.editText (getCell { Row = row; Col = col } model)
 
+/// Typed text → cell value, read the way Excel reads input (shared with the
+/// web editor: `Rbt.Spreadsheet.Input`). This host stores formulas without
+/// the leading `=`.
 let private parseCellInput (text: string) : CellValue =
-    let trimmed = text.Trim()
-    if trimmed = "" then Empty
-    elif trimmed.StartsWith "=" then Formula (trimmed.Substring(1), Empty)
-    elif System.String.Equals(trimmed, "TRUE", System.StringComparison.OrdinalIgnoreCase) then Boolean true
-    elif System.String.Equals(trimmed, "FALSE", System.StringComparison.OrdinalIgnoreCase) then Boolean false
-    else
-        match System.Double.TryParse trimmed with
-        | true, n -> Number n
-        | _ -> String trimmed
+    match (Rbt.Spreadsheet.Input.parseInput text).Value with
+    | Formula (formula, cached) when formula.StartsWith "=" -> Formula (formula.Substring 1, cached)
+    | value -> value
+
+/// The cell's format after an entry: an entry written as a percentage, a
+/// currency amount, a date… gives a General cell the matching number format.
+let private formatAfterInput (text: string) (format: CellFormat) : CellFormat =
+    match (Rbt.Spreadsheet.Input.parseInput text).NumberFormat, format.NumberFormat with
+    | Some code, (None | Some "" | Some "General") -> { format with NumberFormat = Some code }
+    | _ -> format
 
 let private singleSheetWorkbook (name: string) (model: SpreadsheetModel) : Rbt.Spreadsheet.Workbook.Workbook =
     let sheet : Rbt.Spreadsheet.Workbook.Sheet =
@@ -329,8 +326,8 @@ let private writeCell (state: SpreadsheetEditorState) (row: int) (col: int) (tex
         let edited =
             match value, getCell addr model with
             | Empty, _ -> clearCell addr model
-            | v, Some existing -> setCell addr { existing with Value = v } model
-            | v, None -> setCell addr { Value = v; Format = defaultFormat; Comment = None } model
+            | v, Some existing -> setCell addr { existing with Value = v; Format = formatAfterInput text existing.Format } model
+            | v, None -> setCell addr { Value = v; Format = formatAfterInput text defaultFormat; Comment = None } model
         if System.Object.ReferenceEquals(model, edited) then model
         else
             // Recompute formulas and (re)materialize dynamic-array spills so the edit
@@ -339,8 +336,8 @@ let private writeCell (state: SpreadsheetEditorState) (row: int) (col: int) (tex
             let cellData =
                 match value, getCell addr model with
                 | Empty, _ -> { Value = Empty; Format = defaultFormat; Comment = None }
-                | v, Some existing -> { existing with Value = v }
-                | v, None -> { Value = v; Format = defaultFormat; Comment = None }
+                | v, Some existing -> { existing with Value = v; Format = formatAfterInput text existing.Format }
+                | v, None -> { Value = v; Format = formatAfterInput text defaultFormat; Comment = None }
             let recomputed = recalcEditedCell state addr cellData edited model
             // Fire the workbook's Worksheet_Change handler (if any), passing the edited
             // cell as Target. A no-op unless the macro module defines the sub; its

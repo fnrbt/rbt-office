@@ -42,6 +42,7 @@ stages=(
     stage24-moves
     stage25-arrays3
     stage26-rules
+    stage27-input
     numbertext
 )
 

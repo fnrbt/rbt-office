@@ -108,6 +108,7 @@ eq "indirect-spills"     (spillOf "=INDIRECT(\"C1:C3\")")     [ [ N 10.0 ]; [ N 
 eq "range-spills"        (spillOf "=A1:B2")                   [ [ N 3.0; S "c" ]; [ N 1.0; S "a" ] ]
 eq "index-col-spills"    (spillOf "=INDEX(A1:C3,0,3)")        [ [ N 10.0 ]; [ N 20.0 ]; [ N 30.0 ] ]
 eq "index-row-spills"    (spillOf "=INDEX(A1:C3,2,0)")        [ [ N 1.0; S "a"; N 20.0 ] ]
+eq "index-zero-spills"   (spillOf "=INDEX(C1:C3,0)")          [ [ N 10.0 ]; [ N 20.0 ]; [ N 30.0 ] ]
 eq "offset-single-cell"  (spillOf "=OFFSET(A1,2,0)")          [ [ N 4.0 ] ]
 eq "array-const-spills"  (spillOf "={1,2;3,4}")               [ [ N 1.0; N 2.0 ]; [ N 3.0; N 4.0 ] ]
 // A spill that would land on an occupied cell is blocked.

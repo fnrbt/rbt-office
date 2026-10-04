@@ -526,6 +526,9 @@ let private isDateOrTimeFormat (code: string) =
         || lower.Contains "h"
         || (lower.Contains "s" && lower.Contains "m")
 
+/// Does this number format show its value as a date or a time?
+let isDateTimeNumberFormat (code: string) : bool = isDateOrTimeFormat code
+
 let private excelSerialToDate (serial: float) : System.DateTime =
     // Excel's 1900 calendar: serial 1 is 1900-01-01 but Excel also treats
     // 1900 as a leap year (it isn't). For serials >= 60 we subtract one to

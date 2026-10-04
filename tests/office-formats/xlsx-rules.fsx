@@ -143,6 +143,10 @@ let sheets =
 let out : XlsxWriter.XlsxWorkbookOut =
     { Sheets = sheets; ActiveSheetIndex = 0; DefinedNames = []; VbaProjectSource = None; Dxfs = List.ofSeq dxfs }
 let bytes = XlsxWriter.writeWorkbookPackageBytes out
+// Set RBT_DUMP_XLSX to keep the package (used to feed the browser importer).
+match System.Environment.GetEnvironmentVariable "RBT_DUMP_XLSX" with
+| null | "" -> ()
+| path -> System.IO.File.WriteAllBytes(path, bytes)
 
 match XlsxReader.loadBytesNative bytes with
 | None -> ok "package-reloads" false "reader returned None"

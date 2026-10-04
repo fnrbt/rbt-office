@@ -11,6 +11,7 @@ module SpreadsheetCalc = Rbt.Spreadsheet.Calc
 module SpreadsheetLayout = Rbt.Spreadsheet.Layout
 module SpreadsheetPaint = Rbt.Spreadsheet.Paint
 module SpreadsheetCellText = Rbt.Spreadsheet.CellText
+module SpreadsheetInput = Rbt.Spreadsheet.Input
 
 // Additional helpers
 [<Emit("$0.scrollLeft")>]
@@ -42,6 +43,27 @@ let private canvasSave (ctx: obj): unit = jsNative
 
 [<Emit("$0.restore()")>]
 let private canvasRestore (ctx: obj): unit = jsNative
+
+[<Emit("$0.setSelectionRange($0.value.length, $0.value.length)")>]
+let private caretToEnd (input: Element): unit = jsNative
+
+[<Emit("setTimeout($0, $1)")>]
+let private setTimeoutMs (callback: unit -> unit) (delay: int): int = jsNative
+
+[<Emit("clearTimeout($0)")>]
+let private clearTimeoutId (id: int): unit = jsNative
+
+[<Emit("($0 === document.activeElement || $0.contains(document.activeElement))")>]
+let private holdsFocus (el: Element): bool = jsNative
+
+[<Emit("$0.focus({ preventScroll: true })")>]
+let private focusQuietly (el: Element): unit = jsNative
+
+[<Emit("$0.stopPropagation()")>]
+let private stopPropagation (e: obj): unit = jsNative
+
+[<Emit("new Date().getFullYear()")>]
+let private currentYear (): int = jsNative
 
 [<Emit("$0.insertBefore($1, $0.firstChild)")>]
 let private prependChild (parent: Element) (child: Element): unit = jsNative
@@ -213,7 +235,7 @@ type Spreadsheet(container: Element) =
 
     let refreshRuleWorkbook () =
         ruleWorkbook <- Some (currentWorkbookSnapshot())
-        Rbt.Spreadsheet.ConditionalFormatting.formulaEvaluator <- ruleEvaluator
+        Rbt.Spreadsheet.ConditionalFormatting.setFormulaEvaluator ruleEvaluator
 
     let renderPortablePaintToCanvas (canvas: Element) =
         if not model.ConditionalFormats.IsEmpty then refreshRuleWorkbook()
@@ -678,96 +700,201 @@ type Spreadsheet(container: Element) =
             let visibleRows = getVisibleRows model
             Set.contains row visibleRows
 
-    /// Start editing a cell
-    let rec startEditing (row: int) (col: int) =
+    // --- Validation notices ---------------------------------------------------
+    // Excel answers an invalid entry with a modal alert. Here the answer never
+    // blocks: a "stop" rule refuses the entry (the cell keeps its old content
+    // and editing ends), "warning" and "information" rules accept it, and in
+    // every case a note with the rule's title and message appears in the grid
+    // and goes away by itself. Hosts can also listen for it.
+    let mutable validationNotice: (string * string * string * CellAddress) option = None   // style, title, message, cell
+    let mutable noticeTimer: int option = None
+    let validationListeners = System.Collections.Generic.List<string -> string -> string -> unit>()
+
+    /// The edit box of the cell being edited, as rendered last.
+    let mutable editInput: Element option = None
+
+    /// When true the edit box places the caret after the seeded text instead
+    /// of selecting it (typing a character over a cell starts the entry).
+    let mutable editCaretAtEnd = false
+
+    // Fill-handle drag state: the block being continued and where to.
+    let mutable isFilling = false
+    let mutable fillSource: (int * int * int * int) option = None
+    let mutable fillTarget: (SpreadsheetInput.FillDirection * int) option = None
+
+    let selectionBounds () =
+        match model.Selection with
+        | SingleCell (row, col) -> row, col, row, col
+        | Range (sr, sc, er, ec) -> min sr er, min sc ec, max sr er, max sc ec
+
+    /// The cell an edit applies to: the selected cell, or the top-left of a
+    /// selected range.
+    let activeCellAddress () =
+        let top, left, _, _ = selectionBounds()
+        { Row = top; Col = left }
+
+    /// Commit typed text to a cell: parse it the way Excel reads input, check
+    /// it against the cell's validation, store it and recalculate, as one
+    /// undoable step. False when a validation rule refused the entry.
+    let commitInput (addr: CellAddress) (text: string) (validate: bool) (undoable: bool) : bool =
+        let oldCellData = getCell addr model
+        if System.String.IsNullOrWhiteSpace text then
+            // Empty input clears the cell.
+            match oldCellData with
+            | Some old ->
+                model <- clearCell addr model
+                recalculateFormulas()
+                if undoable then
+                    model <- pushCommand { Undo = (fun m -> setCell addr old m)
+                                           Redo = (fun m -> clearCell addr m)
+                                           Description = sprintf "Clear cell %s" (formatCellRef addr.Row addr.Col) } model
+            | None -> ()
+            true
+        else
+            let parsed = SpreadsheetInput.cellFromInput (currentYear()) oldCellData text
+            let outcome =
+                if validate && not model.Validations.IsEmpty then
+                    refreshRuleWorkbook()
+                    checkEntryWith ruleEvaluator addr parsed.Value model
+                else EntryValid
+            let notify style title message =
+                let styleName =
+                    match style with
+                    | StopStyle -> "stop"
+                    | WarningStyle -> "warning"
+                    | InformationStyle -> "information"
+                validationNotice <- Some (styleName, defaultArg title "", message, addr)
+                for listener in validationListeners do listener styleName (defaultArg title "") message
+            match outcome with
+            | EntryInvalid (StopStyle, title, message) ->
+                notify StopStyle title message
+                false
+            | _ ->
+                (match outcome with
+                 | EntryInvalid (style, title, message) -> notify style title message
+                 | EntryValid -> validationNotice <- None)
+                let cellData =
+                    match parsed.Value with
+                    // Store a first result with the formula; the recalculation
+                    // that follows settles it and everything that reads it.
+                    | CellValue.Formula (formula, _) -> { parsed with Value = CellValue.Formula (formula, evaluateFormula formula model workbook) }
+                    | _ -> parsed
+                recalculateSingleCellEdit addr cellData
+                if undoable then
+                    model <- pushCommand { Undo = (fun m -> match oldCellData with
+                                                            | Some old -> setCell addr old m
+                                                            | None -> clearCell addr m)
+                                           Redo = (fun m -> setCell addr cellData m)
+                                           Description = sprintf "Edit cell %s" (formatCellRef addr.Row addr.Col) } model
+                true
+
+    /// Continue the block `source` in `direction` by `count` rows/columns as
+    /// one undoable step. `series` continues series (the fill handle);
+    /// without it the block is copied (Ctrl+D / Ctrl+R).
+    let fillFrom (source: int * int * int * int) (direction: SpreadsheetInput.FillDirection) (count: int) (series: bool) =
+        if count > 0 && not readOnly then
+            let targets = SpreadsheetInput.fillTargets source direction count
+            let oldCells = targets |> List.map (fun addr -> addr, getCell addr model)
+            model <- SpreadsheetInput.fillCells source direction count series model
+            recalculateFormulas()
+            let newCells = targets |> List.map (fun addr -> addr, getCell addr model)
+            let top, left, bottom, right = source
+            let selection =
+                match direction with
+                | SpreadsheetInput.FillDown -> Range (top, left, bottom + count, right)
+                | SpreadsheetInput.FillUp -> Range (max 0 (top - count), left, bottom, right)
+                | SpreadsheetInput.FillRight -> Range (top, left, bottom, right + count)
+                | SpreadsheetInput.FillLeft -> Range (top, max 0 (left - count), bottom, right)
+            model <- { model with Selection = selection }
+            model <- pushCommand { Undo = restoreCellOptions oldCells
+                                   Redo = restoreCellOptions newCells
+                                   Description = "Fill" } model
+
+    /// Ctrl+D / Ctrl+R: copy the first row (column) of the selection through
+    /// the rest of it; with one cell selected, copy its neighbour into it.
+    let fillSelection (down: bool) =
+        let top, left, bottom, right = selectionBounds()
+        if down then
+            if bottom > top then fillFrom (top, left, top, right) SpreadsheetInput.FillDown (bottom - top) false
+            elif top > 0 then
+                fillFrom (top - 1, left, top - 1, right) SpreadsheetInput.FillDown 1 false
+                model <- { model with Selection = (if left = right then SingleCell (top, left) else Range (top, left, top, right)) }
+        else
+            if right > left then fillFrom (top, left, bottom, left) SpreadsheetInput.FillRight (right - left) false
+            elif left > 0 then
+                fillFrom (top, left - 1, bottom, left - 1) SpreadsheetInput.FillRight 1 false
+                model <- { model with Selection = (if top = bottom then SingleCell (top, left) else Range (top, left, bottom, left)) }
+
+    /// Clear every cell of the selection as one undoable step.
+    let clearSelection () =
+        let selection = model.Selection
+        let oldCells = model.Cells
+        model <- clearSelectionCells selection model
+        if not (obj.ReferenceEquals(oldCells, model.Cells)) then
+            recalculateFormulas()
+            model <- pushCommand { Undo = (fun m -> restoreCellMap oldCells m)
+                                   Redo = (fun m -> clearSelectionCells selection m)
+                                   Description = "Delete" } model
+
+    /// Start editing a cell. `seed` replaces the cell's content in the edit
+    /// box — the character typed over the cell — instead of loading it.
+    let rec startEditingWith (row: int) (col: int) (seed: string option) =
         if not readOnly then
             let addr = { Row = row; Col = col }
-            let cellValue = getCellValue addr model
-            // Edit the formula itself, not its cached result, or committing
-            // the edit would replace the formula with a constant.
+            // Edit the formula itself, not its cached result, and a date as
+            // a date: what is shown must give the same cell when committed.
             let currentValue =
-                match cellValue with
-                | Formula (text, _) -> formulaText text
-                | other -> displayValue other
-
+                match seed with
+                | Some text -> text
+                | None -> SpreadsheetInput.editText (getCell addr model)
+            editCaretAtEnd <- seed.IsSome
+            validationNotice <- None
+            (match noticeTimer with Some id -> clearTimeoutId id | None -> ())
+            noticeTimer <- None
             model <- {
                 model with
+                    Selection = SingleCell (row, col)
                     EditingCell = Some addr
                     EditBuffer = currentValue
             }
             render()
 
-    /// Finish editing (save)
-    and finishEditing (save: bool) =
+    and startEditing (row: int) (col: int) = startEditingWith row col None
+
+    /// Finish editing. With `save` the entry is committed; the result is
+    /// false when a validation rule refused it (the cell is unchanged and a
+    /// notice says why).
+    and finishEditing (save: bool) : bool =
         match model.EditingCell with
-        | None -> ()
+        | None -> true
         | Some addr ->
-            if save && not (System.String.IsNullOrWhiteSpace model.EditBuffer) then
-                // Capture old cell value for undo
-                let oldCellData = getCell addr model
-
-                // Parse and save value
-                let value =
-                    if model.EditBuffer.StartsWith("=") then
-                        // Formula
-                        let result = evaluateFormula model.EditBuffer model workbook
-                        CellValue.Formula (model.EditBuffer, result)
-                    elif model.EditBuffer.ToLower() = "true" || model.EditBuffer.ToLower() = "false" then
-                        // Boolean
-                        CellValue.Boolean (model.EditBuffer.ToLower() = "true")
-                    else
-                        // Try to parse as number, otherwise string
-                        match tryParseNumber model.EditBuffer with
-                        | Some n -> CellValue.Number n
-                        | None -> CellValue.String model.EditBuffer
-
-                let cellData = {
-                    Value = value
-                    Format = defaultArg (oldCellData |> Option.map (fun cd -> cd.Format)) defaultFormat
-                    Comment = oldCellData |> Option.bind (fun cd -> cd.Comment)
-                }
-
-                // Create undo command
-                let command = {
-                    Undo = fun m ->
-                        match oldCellData with
-                        | Some old -> setCell addr old m
-                        | None -> clearCell addr m
-                    Redo = fun m -> setCell addr cellData m
-                    Description = sprintf "Edit cell %s" (formatCellRef addr.Row addr.Col)
-                }
-
-                recalculateSingleCellEdit addr cellData
-                model <- pushCommand command model
-
-            elif save then
-                // Empty input = clear cell
-                let oldCellData = getCell addr model
-                match oldCellData with
-                | Some old ->
-                    // Create undo command for clear
-                    let command = {
-                        Undo = fun m -> setCell addr old m
-                        Redo = fun m -> clearCell addr m
-                        Description = sprintf "Clear cell %s" (formatCellRef addr.Row addr.Col)
-                    }
-                    model <- clearCell addr model
-                    recalculateFormulas()
-                    model <- pushCommand command model
-                | None -> ()
-
+            let buffer = model.EditBuffer
             model <- { model with EditingCell = None; EditBuffer = "" }
+            let accepted = if save then commitInput addr buffer true true else true
+            scheduleNoticeDismiss()
             render()
+            accepted
+
+    /// A validation notice goes away by itself after a few seconds.
+    and scheduleNoticeDismiss () =
+        (match noticeTimer with Some id -> clearTimeoutId id | None -> ())
+        noticeTimer <- None
+        if validationNotice.IsSome then
+            noticeTimer <-
+                Some (setTimeoutMs (fun () ->
+                        noticeTimer <- None
+                        validationNotice <- None
+                        // Never redraw under an entry in progress.
+                        if model.EditingCell.IsNone then render()) 6000)
 
     /// Move selection
     and moveSelection (deltaRow: int) (deltaCol: int) =
-        match model.Selection with
-        | SingleCell (row, col) ->
-            let newRow = (row + deltaRow) |> max 0 |> min (model.RowCount - 1)
-            let newCol = (col + deltaCol) |> max 0 |> min (model.ColCount - 1)
-            model <- { model with Selection = SingleCell (newRow, newCol) }
-            render()
-        | _ -> ()
+        // A range collapses to its active (top-left) cell, then moves.
+        let active = activeCellAddress()
+        let newRow = (active.Row + deltaRow) |> max 0 |> min (model.RowCount - 1)
+        let newCol = (active.Col + deltaCol) |> max 0 |> min (model.ColCount - 1)
+        model <- { model with Selection = SingleCell (newRow, newCol) }
+        render()
 
     /// Handle keyboard events
     and handleKeyDown (e: obj) =
@@ -775,8 +902,8 @@ type Spreadsheet(container: Element) =
         let ctrlKey = getProp e "ctrlKey"
         let metaKey = getProp e "metaKey"
         let isModifier = (ctrlKey = box true) || (metaKey = box true)
-        let mutatingShortcut = isModifier && (key = "x" || key = "v" || key = "z" || key = "y")
-        let mutatingKey = key = "Delete" || key = "Backspace" || key = "Enter" || key = "F2"
+        let mutatingShortcut = isModifier && (key = "x" || key = "v" || key = "z" || key = "y" || key = "d" || key = "r")
+        let mutatingKey = key = "Delete" || key = "Backspace" || key = "Enter" || key = "F2" || (key.Length = 1 && not isModifier)
 
         if readOnly && (mutatingShortcut || mutatingKey) then
             preventDefault e
@@ -788,15 +915,14 @@ type Spreadsheet(container: Element) =
             match key with
             | "Enter" ->
                 preventDefault e
-                finishEditing true
-                moveSelection 1 0  // Move down
+                // A refused entry leaves the selection on its cell.
+                if finishEditing true then moveSelection 1 0  // Move down
             | "Escape" ->
                 preventDefault e
-                finishEditing false
+                finishEditing false |> ignore
             | "Tab" ->
                 preventDefault e
-                finishEditing true
-                moveSelection 0 1  // Move right
+                if finishEditing true then moveSelection 0 1  // Move right
             | _ -> ()
 
           | None ->
@@ -847,6 +973,18 @@ type Spreadsheet(container: Element) =
                     preventDefault e
                     showFindReplaceDialog()
 
+                | "d" ->
+                    // Fill down
+                    preventDefault e
+                    fillSelection true
+                    render()
+
+                | "r" ->
+                    // Fill right
+                    preventDefault e
+                    fillSelection false
+                    render()
+
                 | _ -> ()
             else
                 // Regular navigation keys
@@ -863,40 +1001,25 @@ type Spreadsheet(container: Element) =
                 | "ArrowRight" ->
                     preventDefault e
                     moveSelection 0 1
-                | "Enter" ->
+                | "Enter" | "F2" ->
                     preventDefault e
-                    match model.Selection with
-                    | SingleCell (row, col) -> startEditing row col
-                    | _ -> ()
-                | "F2" ->
-                    preventDefault e
-                    match model.Selection with
-                    | SingleCell (row, col) -> startEditing row col
-                    | _ -> ()
+                    let active = activeCellAddress()
+                    startEditing active.Row active.Col
                 | "Delete" | "Backspace" ->
                     preventDefault e
-                    match model.Selection with
-                    | SingleCell (row, col) ->
-                        let addr = { Row = row; Col = col }
-                        let oldCellData = getCell addr model
-                        match oldCellData with
-                        | Some old ->
-                            // Create undo command
-                            let command = {
-                                Undo = fun m -> setCell addr old m
-                                Redo = fun m -> clearCell addr m
-                                Description = sprintf "Delete cell %s" (formatCellRef row col)
-                            }
-                            model <- clearCell addr model
-                            recalculateFormulas()
-                            model <- pushCommand command model
-                            render()
-                        | None -> ()
-                    | _ -> ()
+                    clearSelection()
+                    render()
                 | "Tab" ->
                     preventDefault e
                     moveSelection 0 1
-                | _ -> ()
+                | _ ->
+                    // Type-to-edit: a printable character starts an entry
+                    // that replaces the cell's content, beginning with it.
+                    let altKey = getProp e "altKey"
+                    if key.Length = 1 && not (altKey = box true) then
+                        preventDefault e
+                        let active = activeCellAddress()
+                        startEditingWith active.Row active.Col (Some key)
 
     /// Handle input change (while editing)
     and handleInput (e: obj) =
@@ -1194,8 +1317,8 @@ type Spreadsheet(container: Element) =
                 ]
                 addEventListener input "input" handleInput
                 appendChild cell input
-                focus input
-                select input
+                // Focused once the cell is in the document (see `render`).
+                editInput <- Some input
                 Some cell
             else
                 // Render value
@@ -1361,6 +1484,8 @@ type Spreadsheet(container: Element) =
                     preventDefault e  // Prevent text selection
                     match hitTestEvent e with
                     | SpreadsheetLayout.Cell hitAddr ->
+                        // Clicking another cell commits the entry in progress.
+                        if model.EditingCell.IsSome then finishEditing true |> ignore
                         isDragging <- true
                         dragStartCell <- Some hitAddr
                         selectCellAddress hitAddr
@@ -1370,7 +1495,26 @@ type Spreadsheet(container: Element) =
 
                 // Mouse enter to expand selection while dragging
                 addEventListener cell "mouseenter" (fun e ->
-                    if isDragging then
+                    if isFilling then
+                        match fillSource, hitTestEvent e with
+                        | Some source, SpreadsheetLayout.Cell hitAddr ->
+                            let target = SpreadsheetInput.fillTowards source hitAddr.Row hitAddr.Col
+                            if target <> fillTarget then
+                                fillTarget <- target
+                                // Preview: the selection grows over the cells
+                                // the release will fill.
+                                let top, left, bottom, right = source
+                                let preview =
+                                    match target with
+                                    | Some (SpreadsheetInput.FillDown, n) -> Range (top, left, bottom + n, right)
+                                    | Some (SpreadsheetInput.FillUp, n) -> Range (top - n, left, bottom, right)
+                                    | Some (SpreadsheetInput.FillRight, n) -> Range (top, left, bottom, right + n)
+                                    | Some (SpreadsheetInput.FillLeft, n) -> Range (top, left - n, bottom, right)
+                                    | None -> if top = bottom && left = right then SingleCell (top, left) else Range (top, left, bottom, right)
+                                model <- { model with Selection = preview }
+                                render()
+                        | _ -> ()
+                    elif isDragging then
                         match dragStartCell with
                         | Some start ->
                             match hitTestEvent e with
@@ -1415,8 +1559,12 @@ type Spreadsheet(container: Element) =
         match contentElement with
         | None -> ()
         | Some content ->
+            // The edit box (and with it the keyboard focus) is rebuilt below;
+            // when the grid had the focus it keeps it.
+            let hadFocus = holdsFocus content
             // Clear content
             setInnerHTML content ""
+            editInput <- None
             cellPool.Clear()
             chromeNodes.Clear()
             if not model.ConditionalFormats.IsEmpty then refreshRuleWorkbook()
@@ -1467,7 +1615,97 @@ type Spreadsheet(container: Element) =
                         | Some cell -> appendBodyCell row col cell
                         | None -> ()  // Skip non-primary merged cells
 
+            renderOverlays content
+            match editInput with
+            | Some input when model.EditingCell.IsSome ->
+                // An element takes the focus only once it is attached.
+                focus input
+                if editCaretAtEnd then caretToEnd input else select input
+            | _ -> if hadFocus then focusQuietly content
             lastRenderedModel <- Some model
+
+    /// What sits on top of the cells: the selection's fill handle, the input
+    /// message of the selected cell's validation, and the validation notice.
+    and renderOverlays (content: Element) =
+        let top, left, bottom, right = selectionBounds()
+        let cornerX = getColumnX right + getColumnWidth right model
+        let cornerY = getRowY bottom + getRowHeight bottom model
+        if not readOnly && model.EditingCell.IsNone then
+            let handle = createElement "div"
+            setClassName handle "spreadsheet-fill-handle"
+            setStyles handle [
+                "position", "absolute"
+                "left", sprintf "%.0fpx" (cornerX - 4.0)
+                "top", sprintf "%.0fpx" (cornerY - 4.0)
+                "width", "7px"
+                "height", "7px"
+                "background", "#217346"
+                "border", "1px solid white"
+                "box-sizing", "border-box"
+                "cursor", "crosshair"
+                "z-index", "9"
+            ]
+            addEventListener handle "mousedown" (fun e ->
+                preventDefault e
+                stopPropagation e
+                isFilling <- true
+                fillSource <- Some (selectionBounds())
+                fillTarget <- None)
+            appendChild content handle
+            chromeNodes.Add handle
+        let note (className: string) (title: string) (message: string) (x: float) (y: float) (background: string) (border: string) =
+            let box = createElement "div"
+            setClassName box className
+            setStyles box [
+                "position", "absolute"
+                "left", sprintf "%.0fpx" x
+                "top", sprintf "%.0fpx" y
+                "max-width", "260px"
+                "padding", "4px 8px"
+                "background", background
+                "border", "1px solid " + border
+                "box-shadow", "0 2px 6px rgba(0,0,0,0.2)"
+                "font-family", "Arial, sans-serif"
+                "font-size", "11px"
+                "white-space", "pre-wrap"
+                "pointer-events", "none"
+                "z-index", "12"
+            ]
+            if title <> "" then
+                let heading = createElement "div"
+                setTextContent heading title
+                setStyle heading "font-weight" "bold"
+                appendChild box heading
+            let body = createElement "div"
+            setTextContent body message
+            appendChild box body
+            appendChild content box
+            chromeNodes.Add box
+        match validationNotice with
+        | Some (style, title, message, cell) ->
+            let left, cornerY = cell.Col, getRowY cell.Row + getRowHeight cell.Row model
+            let background, border =
+                match style with
+                | "stop" -> "#FDECEA", "#D93025"
+                | "warning" -> "#FFF4E5", "#F29900"
+                | _ -> "#E8F0FE", "#1A73E8"
+            setAttributeOnNote (fun box -> setAttribute box "data-style" style) (fun () ->
+                note "spreadsheet-validation-notice" title message (getColumnX left) (cornerY + 3.0) background border)
+        | None ->
+            // Excel's input message: shown while the cell is selected.
+            match model.Selection with
+            | SingleCell (row, col) ->
+                match getValidation { Row = row; Col = col } model with
+                | Some dv when dv.InputMessage.IsSome || dv.InputTitle.IsSome ->
+                    note "spreadsheet-input-message" (defaultArg dv.InputTitle "") (defaultArg dv.InputMessage "")
+                         (getColumnX left) (cornerY + 3.0) "#FFFFE1" "#B0B0B0"
+                | _ -> ()
+            | _ -> ()
+
+    and setAttributeOnNote (tag: Element -> unit) (build: unit -> unit) =
+        let before = chromeNodes.Count
+        build()
+        if chromeNodes.Count > before then tag chromeNodes.[chromeNodes.Count - 1]
 
     and renderScroll () =
         match contentElement with
@@ -2504,7 +2742,16 @@ type Spreadsheet(container: Element) =
 
         // Mouse up for both drag selection and resize
         addEventListener doc "mouseup" (fun _ ->
-            if isDragging then
+            if isFilling then
+                isFilling <- false
+                match fillSource, fillTarget with
+                | Some source, Some (direction, count) ->
+                    fillFrom source direction count true
+                | _ -> ()
+                fillSource <- None
+                fillTarget <- None
+                render()
+            elif isDragging then
                 isDragging <- false
                 dragStartCell <- None
             elif isResizingColumn then
@@ -2783,26 +3030,55 @@ type Spreadsheet(container: Element) =
                 "endCol" ==> endCol
             ]
 
-    /// Set cell value (for testing)
+    /// Set a cell from text, read the way typed input is (numbers, dates,
+    /// percentages, formulas, `'text`…). A programmatic write: it is not
+    /// checked against data validation and adds no undo step.
     member _.SetCell(row: int, col: int, value: string) =
-        let addr = { Row = row; Col = col }
-        let cellValue =
-            if value.StartsWith("=") then
-                let result = evaluateFormula value model workbook
-                CellValue.Formula (value, result)
-            else
-                match tryParseNumber value with
-                | Some n -> CellValue.Number n
-                | None -> CellValue.String value
+        commitInput { Row = row; Col = col } value false false |> ignore
+        render()
 
-        // Setting a value keeps the cell's formatting and comment.
-        let existing = getCell addr model
-        let cellData = {
-            Value = cellValue
-            Format = existing |> Option.map (fun cd -> cd.Format) |> Option.defaultValue defaultFormat
-            Comment = existing |> Option.bind (fun cd -> cd.Comment)
-        }
-        recalculateSingleCellEdit addr cellData
+    /// Enter text into a cell as the user would: validated, undoable. False
+    /// when a validation rule refused the entry.
+    member _.EnterText(row: int, col: int, text: string) : bool =
+        let accepted = commitInput { Row = row; Col = col } text true true
+        scheduleNoticeDismiss()
+        render()
+        accepted
+
+    /// The validation notice currently shown — `{ style, title, message }`
+    /// with style "stop" (entry refused), "warning" or "information" (entry
+    /// accepted) — or null.
+    member _.GetValidationNotice() : obj =
+        match validationNotice with
+        | Some (style, title, message, _) -> createObj [ "style" ==> style; "title" ==> title; "message" ==> message ]
+        | None -> null
+
+    /// Called with (style, title, message) whenever an entry fails validation.
+    member _.OnValidationNotice(listener: System.Action<string, string, string>) =
+        validationListeners.Add(fun style title message -> listener.Invoke(style, title, message))
+
+    /// Fill the selection down / right from its first row / column (Ctrl+D /
+    /// Ctrl+R).
+    member _.FillDown() =
+        fillSelection true
+        render()
+
+    member _.FillRight() =
+        fillSelection false
+        render()
+
+    /// Continue the selected block up to the cell (row, col), as dragging its
+    /// fill handle there does: series are detected and formulas shifted.
+    member _.AutoFill(row: int, col: int) =
+        let source = selectionBounds()
+        match SpreadsheetInput.fillTowards source row col with
+        | Some (direction, count) -> fillFrom source direction count true
+        | None -> ()
+        render()
+
+    /// Select a range programmatically.
+    member _.SelectRange(startRow: int, startCol: int, endRow: int, endCol: int) =
+        model <- { model with Selection = (if startRow = endRow && startCol = endCol then SingleCell (startRow, startCol) else Range (min startRow endRow, min startCol endCol, max startRow endRow, max startCol endCol)) }
         render()
 
     /// Select a specific cell programmatically
@@ -3179,56 +3455,20 @@ type Spreadsheet(container: Element) =
     /// Get the formula or value of the currently selected cell
     member _.GetCurrentCellFormula(): string =
         match model.Selection with
-        | SingleCell (row, col) ->
-            let addr = { Row = row; Col = col }
-            match Map.tryFind addr model.Cells with
-            | Some cellData ->
-                match cellData.Value with
-                | Formula (formula, _) -> formulaText formula
-                | other -> displayValue other
-            | None -> ""
+        | SingleCell (row, col) -> SpreadsheetInput.editText (getCell { Row = row; Col = col } model)
         | Range _ -> ""  // Can't edit range
 
-    /// Set the value of the currently selected cell from formula bar
-    member _.SetCurrentCellFromFormula(input: string) =
+    /// Set the value of the currently selected cell from formula bar. The
+    /// text is read like any typed entry and checked against the cell's
+    /// validation; false when the entry was refused.
+    member _.SetCurrentCellFromFormula(input: string) : bool =
         match model.Selection with
         | SingleCell (row, col) ->
-            let addr = { Row = row; Col = col }
-            let oldCell = Map.tryFind addr model.Cells
-
-            // Determine if input is formula or value (same logic as SetCell)
-            let cellValue =
-                if input.StartsWith("=") then
-                    let result = evaluateFormula input model workbook
-                    Formula (input, result)
-                else
-                    match System.Double.TryParse(input) with
-                    | true, n -> CellValue.Number n
-                    | false, _ -> CellValue.String input
-
-            // Update cell, preserving existing format
-            let format =
-                match oldCell with
-                | Some cell -> cell.Format
-                | None -> defaultFormat
-
-            let comment = match oldCell with | Some cell -> cell.Comment | None -> None
-            let newCellData = { Value = cellValue; Format = format; Comment = comment }
-            recalculateSingleCellEdit addr newCellData
-
-            // Create undo command
-            let command = {
-                Undo = fun m ->
-                    match oldCell with
-                    | Some cell -> setCell addr cell m
-                    | None -> clearCell addr m
-                Redo = fun m -> setCell addr newCellData m
-                Description = sprintf "Edit %s%d" (columnToLetter col) (row + 1)
-            }
-            model <- pushCommand command model
-
+            let accepted = commitInput { Row = row; Col = col } input true true
+            scheduleNoticeDismiss()
             render()
-        | Range _ -> ()  // Can't edit range
+            accepted
+        | Range _ -> false  // Can't edit range
 
     /// Undo last operation
     member _.Undo() =
