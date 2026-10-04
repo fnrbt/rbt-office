@@ -216,8 +216,15 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
     let deleteForwardForMode doc =
         if handler.TrackChanges then Doc.trackDeleteForward handler.TrackChangesAuthor handler.TrackChangesDate doc else Doc.deleteForward doc
 
+    /// Layout coordinates of a pointer event: through the viewport transform
+    /// when the renderer has one, one to one with canvas pixels otherwise.
+    let pointerPosition (me: MouseEvent) =
+        let rect = canvas.getBoundingClientRect()
+        viewportToLayout handler.RenderContext (me.clientX - rect.left) (me.clientY - rect.top)
+
     let isResizeHandle x y imageX imageY width height =
-        let handle = 10.0
+        // Ten pixels on screen, whatever the zoom.
+        let handle = 10.0 / viewportScale handler.RenderContext
         let nearLeft = abs (x - imageX) <= handle
         let nearRight = abs (x - (imageX + width)) <= handle
         let nearTop = abs (y - imageY) <= handle
@@ -517,10 +524,20 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         if proxyAttached then
             match caretRect handler.RenderContext doc with
             | Some (x, top, height) ->
-                // Mouse handling maps client to canvas coordinates one to one, so does this.
+                // The same mapping as mouse handling, the other way round: one
+                // to one in whole-canvas mode, through the viewport otherwise.
                 let rect = canvas.getBoundingClientRect()
-                proxy?style?left <- sprintf "%fpx" (rect.left + x)
-                proxy?style?top <- sprintf "%fpx" (rect.top + top)
+                let scale = viewportScale handler.RenderContext
+                let viewX, viewY = layoutToViewport handler.RenderContext x top
+                let height = height * scale
+                // A caret scrolled out of view keeps its proxy inside the canvas
+                // box, so focusing it never scrolls the page.
+                let viewX, viewY =
+                    match handler.RenderContext.Viewport with
+                    | Some vp -> max 0.0 (min (vp.Width - 2.0) viewX), max 0.0 (min (max 0.0 (vp.Height - height)) viewY)
+                    | None -> viewX, viewY
+                proxy?style?left <- sprintf "%fpx" (rect.left + viewX)
+                proxy?style?top <- sprintf "%fpx" (rect.top + viewY)
                 proxy?style?height <- sprintf "%fpx" (max 8.0 height)
                 proxy?style?fontSize <- sprintf "%fpx" (max 8.0 (height * 0.75))
             | None -> ()
@@ -620,9 +637,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
     // Handle mouse down - start selection or image resize
     canvas.addEventListener("mousedown", fun (e: Event) ->
         let me = e :?> MouseEvent
-        let rect = canvas.getBoundingClientRect()
-        let x = me.clientX - rect.left
-        let y = me.clientY - rect.top
+        let x, y = pointerPosition me
 
         // Check if clicking on an image first
         match hitTestForImage handler.RenderContext handler.Document x y with
@@ -656,9 +671,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
     // Handle mouse move - extend selection, resize image, or update hover
     canvas.addEventListener("mousemove", fun (e: Event) ->
         let me = e :?> MouseEvent
-        let rect = canvas.getBoundingClientRect()
-        let x = me.clientX - rect.left
-        let y = me.clientY - rect.top
+        let x, y = pointerPosition me
 
         if handler.IsMouseDown then
             match handler.ResizingImage with
@@ -707,9 +720,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
     let onMouseUp (e: Event) =
         if handler.IsMouseDown || handler.ResizingImage.IsSome || handler.DraggingImage.IsSome then
             let me = e :?> MouseEvent
-            let rect = canvas.getBoundingClientRect()
-            let x = me.clientX - rect.left
-            let y = me.clientY - rect.top
+            let x, y = pointerPosition me
 
             // A release that is still on the picked-up object is a click, not
             // a move: the object stays where it is, exactly as it was.
@@ -718,8 +729,9 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                 | Some (blockId, offset, _, _, _, _) -> blockId = dragState.BlockId && offset = dragState.Offset
                 | None -> false
 
+            let dragThreshold = 3.0 / viewportScale handler.RenderContext
             match handler.DraggingImage with
-            | Some dragState when (abs (x - dragState.InitialX) > 3.0 || abs (y - dragState.InitialY) > 3.0) && not (releasedOnDraggedImage dragState) ->
+            | Some dragState when (abs (x - dragState.InitialX) > dragThreshold || abs (y - dragState.InitialY) > dragThreshold) && not (releasedOnDraggedImage dragState) ->
                 let target =
                     match hitTest handler.RenderContext handler.Document x y with
                     | Some target -> target
@@ -772,6 +784,12 @@ let updateDocument (handler: InputHandler) (doc: Doc.Document) =
     handler.SyncInputProxy doc
     handler.OnChange doc
 
+/// Paint the current document again (after the viewport or the canvas
+/// changed) and put the input proxy back at the caret.
+let repaint (handler: InputHandler) =
+    renderWithHover handler.RenderContext handler.Document handler.HoveredImage
+    handler.SyncInputProxy handler.Document
+
 /// Apply a change made outside the keyboard (API call, toolbar, dialog) as
 /// one undo step.
 let applyEdit (handler: InputHandler) (description: string) (doc: Doc.Document) =
@@ -798,6 +816,7 @@ let dispose (handler: InputHandler) =
 type InputHandler = unit
 let create _ _ _ = ()
 let updateDocument _ _ = ()
+let repaint _ = ()
 let applyEdit _ _ _ = ()
 let loadDocument _ _ = ()
 let undo _ = false

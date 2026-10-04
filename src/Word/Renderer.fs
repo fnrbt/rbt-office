@@ -9,6 +9,35 @@ open Rbt.Word.TextBuffer
 open Rbt.Word.Layout
 open Rbt.Word.Paint
 
+/// What the canvas shows of the document when the host scrolls and zooms it
+/// (see `setViewport`). All lengths are CSS pixels; the document itself is
+/// laid out in layout pixels (CSS pixels at 100% zoom).
+type Viewport = {
+    /// Zoom: CSS pixels per layout pixel.
+    Scale: float
+    /// Backing-store pixels per CSS pixel.
+    DevicePixelRatio: float
+    /// Scroll position of the scrollable content the document sits in.
+    ScrollLeft: float
+    ScrollTop: float
+    /// Size of the visible area; the canvas is made exactly this large.
+    Width: float
+    Height: float
+    /// Where the document's top-left corner sits inside the scrollable
+    /// content (a host margin, or the offset that centres the pages).
+    OriginX: float
+    OriginY: float
+}
+
+/// The paint commands of a frame as arrays with their vertical extents, so a
+/// band of the document (the visible viewport, one page) is found without
+/// walking lists or recomputing extents.
+type CommandIndex = {
+    Commands: PaintCommand array
+    Tops: float array
+    Bottoms: float array
+}
+
 type PaintFrame = {
     Document: Document
     Layouts: BlockLayout list
@@ -25,6 +54,12 @@ type PaintFrame = {
     PaddingLeft: float
     PaddingTop: float
     TextPathPainter: obj option
+    /// The hover outline the overlay commands were built for.
+    Hovered: (string * int) option
+    /// The viewport the frame was painted through (None: whole-canvas mode).
+    Viewport: Viewport option
+    mutable BodyIndex: CommandIndex option
+    mutable OverlayIndex: CommandIndex option
 }
 
 /// Rendering context
@@ -36,12 +71,20 @@ type RenderContext = {
     LineHeight: float
     PaddingLeft: float
     PaddingTop: float
-    ImageCache: obj option  // Map of URL -> HTMLImageElement
+    /// Map of image source -> decoded HTMLImageElement. Images are drawn
+    /// synchronously, so a host decodes them first and puts them here.
+    mutable ImageCache: obj option
     mutable TextMeasurer: TextMeasurer option
     mutable TextRangeMeasurer: TextRangeMeasurer option
     mutable TextPathPainter: (string -> TextPaintStyle -> float -> float -> float -> bool) option
     LayoutState: IncrementalLayoutState
     mutable LastPaint: PaintFrame option
+    /// None: the canvas holds the whole document at layout scale and the host
+    /// sizes it (from pageFrames). Some: the canvas is the visible viewport,
+    /// sized and painted by the renderer.
+    mutable Viewport: Viewport option
+    /// Frame kept for renderPage when the document is not the one on the canvas.
+    mutable PageFrame: PaintFrame option
 }
 
 type CommentAnchor = {
@@ -91,6 +134,8 @@ let createContext (canvas: HTMLCanvasElement) = {
     TextPathPainter = None
     LayoutState = Rbt.Word.Layout.createIncrementalLayoutState ()
     LastPaint = None
+    Viewport = None
+    PageFrame = None
 }
 
 let private cssFontFamily (family: string) =
@@ -164,6 +209,7 @@ let cachedLayouts (ctx: RenderContext) (doc: Document) =
 let clearLayoutCache (ctx: RenderContext) =
     Rbt.Word.Layout.clearIncrementalLayoutState ctx.LayoutState
     ctx.LastPaint <- None
+    ctx.PageFrame <- None
 
 let layoutLookupFor (ctx: RenderContext) (doc: Document) =
     let layouts =
@@ -642,7 +688,7 @@ let private imageCommandRange commands =
         | _ :: rest -> loop rest current
     loop commands None
 
-let private computeDirtyRange (previous: PaintFrame) (nextFrame: PaintFrame) =
+let private computeDirtyRange (previous: PaintFrame) (nextFrame: PaintFrame) (canvasBottom: float) =
     match commandDiffRange previous.BodyCommands nextFrame.BodyCommands with
     | Choice2Of2 () -> FullRepaint
     | Choice1Of2 bodyRange ->
@@ -654,7 +700,6 @@ let private computeDirtyRange (previous: PaintFrame) (nextFrame: PaintFrame) =
             | Choice2Of2 (), _
             | _, Choice2Of2 () -> FullRepaint
             | Choice1Of2 oldImageRange, Choice1Of2 newImageRange ->
-                let canvasBottom = nextFrame.CanvasHeight
                 let previousLayouts: BlockLayout list = previous.Layouts
                 let nextLayouts: BlockLayout list = nextFrame.Layouts
                 let range =
@@ -743,21 +788,234 @@ let private buildFrame (ctx: RenderContext) (doc: Document) hoveredImage =
         PaddingLeft = ctx.PaddingLeft
         PaddingTop = ctx.PaddingTop
         TextPathPainter = currentTextPathPainter ctx
+        Hovered = hoveredImage
+        Viewport = ctx.Viewport
+        BodyIndex = None
+        OverlayIndex = None
     }
 
+// ---- viewport ---------------------------------------------------------------
+
+[<Emit("$0.setTransform($1, $2, $3, $4, $5, $6)")>]
+let private setTransform (_ctx: CanvasRenderingContext2D) (_a: float) (_b: float) (_c: float) (_d: float) (_e: float) (_f: float) : unit = jsNative
+
+[<Emit("$0.style.width = $1 + 'px'; $0.style.height = $2 + 'px'")>]
+let private setCanvasCssSize (_canvas: HTMLCanvasElement) (_width: float) (_height: float) : unit = jsNative
+
+let private indexCommands (commands: PaintCommand list) =
+    let items = List.toArray commands
+    let tops = Array.zeroCreate<float> items.Length
+    let bottoms = Array.zeroCreate<float> items.Length
+    for i = 0 to items.Length - 1 do
+        match commandYExtent items.[i] with
+        | Some (top, bottom) ->
+            tops.[i] <- top
+            bottoms.[i] <- bottom
+        | None ->
+            // No extent known: part of every band.
+            tops.[i] <- System.Double.NegativeInfinity
+            bottoms.[i] <- System.Double.PositiveInfinity
+    { Commands = items; Tops = tops; Bottoms = bottoms }
+
+let private bodyIndex (frame: PaintFrame) =
+    match frame.BodyIndex with
+    | Some index -> index
+    | None ->
+        let index = indexCommands frame.BodyCommands
+        frame.BodyIndex <- Some index
+        index
+
+let private overlayIndex (frame: PaintFrame) =
+    match frame.OverlayIndex with
+    | Some index -> index
+    | None ->
+        let index = indexCommands frame.OverlayCommands
+        frame.OverlayIndex <- Some index
+        index
+
+let private renderIndexedInBand ctx (index: CommandIndex) top bottom =
+    for i = 0 to index.Commands.Length - 1 do
+        if index.Bottoms.[i] >= top && index.Tops.[i] <= bottom then
+            renderPaintCommand ctx index.Commands.[i]
+
+/// Layout coordinates of a point given in CSS pixels relative to the canvas.
+/// Whole-canvas mode maps one to one (the host scales the canvas itself).
+let viewportToLayout (ctx: RenderContext) (x: float) (y: float) =
+    match ctx.Viewport with
+    | None -> x, y
+    | Some vp -> (x + vp.ScrollLeft - vp.OriginX) / vp.Scale, (y + vp.ScrollTop - vp.OriginY) / vp.Scale
+
+/// CSS pixels relative to the canvas of a point in layout coordinates.
+let layoutToViewport (ctx: RenderContext) (x: float) (y: float) =
+    match ctx.Viewport with
+    | None -> x, y
+    | Some vp -> x * vp.Scale + vp.OriginX - vp.ScrollLeft, y * vp.Scale + vp.OriginY - vp.ScrollTop
+
+/// CSS pixels per layout pixel on the canvas (1 in whole-canvas mode).
+let viewportScale (ctx: RenderContext) =
+    match ctx.Viewport with
+    | None -> 1.0
+    | Some vp -> vp.Scale
+
+/// The band of the document (layout coordinates) a viewport shows.
+let private visibleBand (vp: Viewport) =
+    { Top = (vp.ScrollTop - vp.OriginY) / vp.Scale; Bottom = (vp.ScrollTop - vp.OriginY + vp.Height) / vp.Scale }
+
+/// Make the canvas exactly as large as the viewport. True when the backing
+/// store was resized (which clears it).
+let private fitCanvasToViewport (ctx: RenderContext) (vp: Viewport) =
+    let width = max 1.0 (round (vp.Width * vp.DevicePixelRatio))
+    let height = max 1.0 (round (vp.Height * vp.DevicePixelRatio))
+    setCanvasCssSize ctx.Canvas vp.Width vp.Height
+    if ctx.Canvas.width <> width || ctx.Canvas.height <> height then
+        ctx.Canvas.width <- width
+        ctx.Canvas.height <- height
+        true
+    else
+        false
+
+let private deskColor = "#eef0f3"
+
+let private renderPagesInBand (ctx: RenderContext) (pages: PageInfo list) top bottom =
+    for page in pages do
+        if page.Top + page.Height >= top && page.Top <= bottom then
+            ctx.Ctx.fillStyle <- U3.Case1 "#ffffff"
+            ctx.Ctx.fillRect(0.0, page.Top, page.Width, page.Height)
+            ctx.Ctx.strokeStyle <- U3.Case1 "#d0d5dd"
+            ctx.Ctx.lineWidth <- 1.0
+            setLineDash ctx.Ctx [||]
+            ctx.Ctx.strokeRect(0.5, page.Top + 0.5, page.Width - 1.0, page.Height - 1.0)
+
+/// Paint a band of the document through the viewport transform: the desk,
+/// the pages and the commands that intersect it, and nothing else.
+let private renderViewportBand (ctx: RenderContext) (frame: PaintFrame) (vp: Viewport) (band: DirtyRange) =
+    let deviceScale = vp.Scale * vp.DevicePixelRatio
+    // Whole device pixels, so text and hairlines stay sharp while scrolling.
+    let offsetX = round ((vp.OriginX - vp.ScrollLeft) * vp.DevicePixelRatio)
+    let offsetY = round ((vp.OriginY - vp.ScrollTop) * vp.DevicePixelRatio)
+    let left = -offsetX / deviceScale
+    let width = float ctx.Canvas.width / deviceScale
+    let top = band.Top
+    let height = band.Bottom - band.Top
+    ctx.Ctx.save()
+    setTransform ctx.Ctx deviceScale 0.0 0.0 deviceScale offsetX offsetY
+    ctx.Ctx.beginPath()
+    ctx.Ctx.rect(left, top, width, height)
+    ctx.Ctx.clip()
+    ctx.Ctx.fillStyle <- U3.Case1 deskColor
+    ctx.Ctx.fillRect(left, top, width, height)
+    ctx.Ctx.font <- sprintf "%fpx %s" ctx.FontSize ctx.FontFamily
+    renderPagesInBand ctx frame.Pages top band.Bottom
+    renderIndexedInBand ctx (bodyIndex frame) top band.Bottom
+    renderIndexedInBand ctx (overlayIndex frame) top band.Bottom
+    ctx.Ctx.restore()
+    ctx.Ctx.fillStyle <- U3.Case1 "#000000"
+
+let private renderThroughViewport (ctx: RenderContext) (doc: Document) hoveredImage (vp: Viewport) =
+    let resized = fitCanvasToViewport ctx vp
+    // Scrolling and zooming show the same document: its commands are reused.
+    let frame =
+        match ctx.LastPaint with
+        | Some previous when obj.ReferenceEquals(previous.Document, doc) && previous.Hovered = hoveredImage && not (frameInvalidated ctx { previous with CanvasWidth = canvasWidth ctx; CanvasHeight = canvasHeight ctx }) ->
+            if previous.Viewport = Some vp && not resized then previous
+            else { previous with Viewport = Some vp; CanvasWidth = canvasWidth ctx; CanvasHeight = canvasHeight ctx }
+        | _ -> buildFrame ctx doc hoveredImage
+    let visible = visibleBand vp
+    // One layout pixel of slack either side: rounding the offset to device pixels can show a sliver more.
+    let visible = { Top = visible.Top - 1.0; Bottom = visible.Bottom + 1.0 }
+    match ctx.LastPaint with
+    | Some previous when obj.ReferenceEquals(previous, frame) -> ()
+    | Some previous when not resized && previous.Viewport = Some vp && not (frameInvalidated ctx previous) && previous.Pages = frame.Pages ->
+        match computeDirtyRange previous frame System.Double.MaxValue with
+        | NoRepaint -> ()
+        | FullRepaint -> renderViewportBand ctx frame vp visible
+        | PartialRepaint band ->
+            let top = max band.Top visible.Top
+            let bottom = min band.Bottom visible.Bottom
+            if bottom > top then renderViewportBand ctx frame vp { Top = top; Bottom = bottom }
+    | _ -> renderViewportBand ctx frame vp visible
+    ctx.LastPaint <- Some frame
+
 let private renderCore (ctx: RenderContext) (doc: Document) hoveredImage =
+    match ctx.Viewport with
+    | Some vp -> renderThroughViewport ctx doc hoveredImage vp
+    | None ->
     let frame = buildFrame ctx doc hoveredImage
     match ctx.LastPaint with
     | None ->
         renderFullFrame ctx doc frame
-    | Some previous when frameInvalidated ctx previous || previous.Pages <> frame.Pages ->
+    | Some previous when previous.Viewport.IsSome || frameInvalidated ctx previous || previous.Pages <> frame.Pages ->
         renderFullFrame ctx doc frame
     | Some previous ->
-        match computeDirtyRange previous frame with
+        match computeDirtyRange previous frame frame.CanvasHeight with
         | FullRepaint -> renderFullFrame ctx doc frame
         | NoRepaint -> ()
         | PartialRepaint band -> renderPartialFrame ctx doc frame band
     ctx.LastPaint <- Some frame
+
+/// Show the document through a viewport (or, with None, go back to the whole
+/// document on a host-sized canvas). The caller repaints afterwards.
+let setViewport (ctx: RenderContext) (viewport: Viewport option) =
+    match ctx.Viewport, viewport with
+    | Some _, None ->
+        // The canvas is the host's again; whatever is on it is stale.
+        setTransform ctx.Ctx 1.0 0.0 0.0 1.0 0.0 0.0
+        ctx.LastPaint <- None
+    | _ -> ()
+    ctx.Viewport <- viewport
+
+/// Size of the document in layout pixels: the widest page and the bottom of
+/// the last one. A host multiplies by its zoom to size the scrollable area.
+let documentSize (ctx: RenderContext) (doc: Document) =
+    let frames =
+        match ctx.LastPaint with
+        | Some frame when obj.ReferenceEquals(frame.Document, doc) -> frame.Pages
+        | _ ->
+            let layouts, pages = layoutDocumentWithPages ctx doc
+            pageFramesForLayouts (layoutSettings ctx doc) doc layouts pages
+    let mutable width = 0.0
+    let mutable height = 0.0
+    for page in frames do
+        width <- max width page.Width
+        height <- max height (page.Top + page.Height)
+    width, height, List.length frames
+
+/// Paint one page of the document onto a canvas of the host's, which is
+/// resized to the page at `scale` (backing-store pixels per layout pixel).
+/// Read-only: no selection, caret or hover is drawn. The document's paint
+/// commands are collected once and reused for every page, so painting all
+/// pages costs one pass over the document, not one per page.
+/// A text path painter installed on the context draws on the editor canvas
+/// and is not used here.
+let renderPage (ctx: RenderContext) (doc: Document) (canvas: HTMLCanvasElement) (pageIndex: int) (scale: float) =
+    let usable (frame: PaintFrame) =
+        obj.ReferenceEquals(frame.Document, doc)
+        && not (frameInvalidated ctx { frame with CanvasWidth = canvasWidth ctx; CanvasHeight = canvasHeight ctx })
+    let frame =
+        match ctx.LastPaint, ctx.PageFrame with
+        | Some frame, _ when usable frame -> frame
+        | _, Some frame when usable frame -> frame
+        | _ ->
+            let frame = buildFrame ctx doc None
+            ctx.PageFrame <- Some frame
+            frame
+    match List.tryItem pageIndex frame.Pages with
+    | None -> false
+    | Some page ->
+        canvas.width <- max 1.0 (round (page.Width * scale))
+        canvas.height <- max 1.0 (round (page.Height * scale))
+        let target = { ctx with Canvas = canvas; Ctx = canvas.getContext_2d(); TextPathPainter = None }
+        let bottom = page.Top + page.Height
+        target.Ctx.save()
+        setTransform target.Ctx scale 0.0 0.0 scale 0.0 (-page.Top * scale)
+        target.Ctx.beginPath()
+        target.Ctx.rect(0.0, page.Top, page.Width, page.Height)
+        target.Ctx.clip()
+        target.Ctx.font <- sprintf "%fpx %s" ctx.FontSize ctx.FontFamily
+        renderPagesInBand target [ page ] page.Top bottom
+        renderIndexedInBand target (bodyIndex frame) page.Top bottom
+        target.Ctx.restore()
+        true
 
 /// Render document to canvas
 let render (ctx: RenderContext) (doc: Document) =
@@ -822,6 +1080,12 @@ let render _ _ = ()
 let pageCount _ _ = 1
 let pageFrames _ _ = []
 let renderWithHover _ _ _ = ()
+let setViewport _ _ = ()
+let documentSize _ _ = 0.0, 0.0, 0
+let renderPage _ _ _ _ _ = false
+let viewportToLayout _ x y = x, y
+let layoutToViewport _ x y = x, y
+let viewportScale _ = 1.0
 let hitTest _ _ _ _ = None
 let hitTestForImage _ _ _ _ = None
 let caretRect _ _ = None

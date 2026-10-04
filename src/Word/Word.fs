@@ -109,16 +109,182 @@ module API =
 
         initializeCanvas canvas
 
-    /// Create a read-only viewer on an existing canvas element.
-    let createViewer (canvas: HTMLCanvasElement) =
-        let doc = Doc.empty
-        let ctx = Ren.createContext canvas
-        Ren.render ctx doc
+    let private pageFramesToJs (pages: Layout.PageInfo list) =
+        pages
+        |> List.map (fun page ->
+            createObj [
+                "Top" ==> page.Top
+                "Width" ==> page.Width
+                "Height" ==> page.Height
+                "MarginTop" ==> page.MarginTop
+                "MarginBottom" ==> page.MarginBottom
+                "MarginLeft" ==> page.MarginLeft
+                "MarginRight" ==> page.MarginRight
+            ])
+        |> List.toArray
+
+    let private numberField (value: obj) (name: string) (pascal: string) fallback =
+        let pick (key: string) =
+            let field = value?(key)
+            if isNull field || jsTypeof field <> "number" || System.Double.IsNaN (unbox<float> field) then None else Some (unbox<float> field)
+        pick name |> Option.orElse (pick pascal) |> Option.defaultValue fallback
+
+    /// { scale, devicePixelRatio, scrollTop, scrollLeft, width, height, originX, originY } -> Viewport.
+    /// null / undefined (or a viewport without a size) means whole-canvas mode.
+    let private viewportFromJs (value: obj) : Ren.Viewport option =
+        if isNull value || jsTypeof value <> "object" then None
+        else
+            let width = numberField value "width" "Width" 0.0
+            let height = numberField value "height" "Height" 0.0
+            if width <= 0.0 || height <= 0.0 then None
+            else
+                Some {
+                    Scale = max 0.01 (numberField value "scale" "Scale" 1.0)
+                    DevicePixelRatio = max 0.1 (numberField value "devicePixelRatio" "DevicePixelRatio" 1.0)
+                    ScrollLeft = numberField value "scrollLeft" "ScrollLeft" 0.0
+                    ScrollTop = numberField value "scrollTop" "ScrollTop" 0.0
+                    Width = width
+                    Height = height
+                    OriginX = numberField value "originX" "OriginX" 0.0
+                    OriginY = numberField value "originY" "OriginY" 0.0
+                }
+
+    let private viewportToJs (viewport: Ren.Viewport option) : obj =
+        match viewport with
+        | None -> null
+        | Some vp ->
+            createObj [
+                "scale" ==> vp.Scale
+                "devicePixelRatio" ==> vp.DevicePixelRatio
+                "scrollLeft" ==> vp.ScrollLeft
+                "scrollTop" ==> vp.ScrollTop
+                "width" ==> vp.Width
+                "height" ==> vp.Height
+                "originX" ==> vp.OriginX
+                "originY" ==> vp.OriginY
+            ]
+
+    let private documentSizeToJs (ctx: Ren.RenderContext) (doc: Doc.Document) =
+        let width, height, pageCount = Ren.documentSize ctx doc
+        let scale = Ren.viewportScale ctx
         createObj [
-            "canvas" ==> canvas
-            "document" ==> doc
-            "render" ==> fun (nextDoc: Doc.Document) -> Ren.render ctx nextDoc
+            "Width" ==> width
+            "Height" ==> height
+            "ScaledWidth" ==> width * scale
+            "ScaledHeight" ==> height * scale
+            "PageCount" ==> pageCount
         ]
+
+    /// Show the document through a viewport: the canvas becomes exactly as
+    /// large as the visible area (the engine sizes it: backing store
+    /// width x height x devicePixelRatio, CSS size width x height), and only
+    /// the pages and paint commands that intersect the visible band are drawn,
+    /// at scale x devicePixelRatio. Call it on scroll, resize and zoom.
+    ///
+    /// `viewport` is { scale, devicePixelRatio, scrollTop, scrollLeft, width,
+    /// height, originX?, originY? }, all in CSS pixels: scrollTop / scrollLeft
+    /// are the scroll position of the host's scrollable content, originX /
+    /// originY where the document's top-left corner sits in that content (a
+    /// margin, or the offset that centres the pages; default 0). Pointer
+    /// events, the caret and the IME proxy follow the transform. Passing null
+    /// goes back to whole-canvas mode, where the host sizes the canvas from
+    /// getPageFrames. Returns the document size (see getDocumentSize).
+    let setViewport (editor: Editor) (viewport: obj) =
+        let ctx = editor.Handler.RenderContext
+        Ren.setViewport ctx (viewportFromJs viewport)
+        Inp.repaint editor.Handler
+        documentSizeToJs ctx editor.Doc
+
+    /// The viewport set with setViewport, or null in whole-canvas mode.
+    let getViewport (editor: Editor) =
+        viewportToJs editor.Handler.RenderContext.Viewport
+
+    /// Total size of the document: { Width, Height } in layout pixels (widest
+    /// page, bottom of the last page), { ScaledWidth, ScaledHeight } in CSS
+    /// pixels at the viewport's scale (what a scroll spacer needs, plus the
+    /// host's own origin / margins), and PageCount.
+    let getDocumentSize (editor: Editor) =
+        documentSizeToJs editor.Handler.RenderContext editor.Doc
+
+    /// Layout (document) coordinates of a point given in CSS pixels relative
+    /// to the canvas' top-left corner. One to one in whole-canvas mode.
+    let viewportToDocument (editor: Editor) (x: float) (y: float) =
+        let layoutX, layoutY = Ren.viewportToLayout editor.Handler.RenderContext x y
+        createObj [ "X" ==> layoutX; "Y" ==> layoutY ]
+
+    /// CSS pixels relative to the canvas' top-left corner of a point in layout coordinates.
+    let documentToViewport (editor: Editor) (x: float) (y: float) =
+        let viewX, viewY = Ren.layoutToViewport editor.Handler.RenderContext x y
+        createObj [ "X" ==> viewX; "Y" ==> viewY ]
+
+    /// Where the caret is: { X, Y, Height } in layout coordinates and
+    /// { ViewportX, ViewportY, ViewportHeight } in CSS pixels relative to the
+    /// canvas. null without a selection.
+    let getCaretRect (editor: Editor) : obj =
+        let ctx = editor.Handler.RenderContext
+        match Ren.caretRect ctx editor.Doc with
+        | None -> null
+        | Some (x, top, height) ->
+            let viewX, viewY = Ren.layoutToViewport ctx x top
+            createObj [
+                "X" ==> x
+                "Y" ==> top
+                "Height" ==> height
+                "ViewportX" ==> viewX
+                "ViewportY" ==> viewY
+                "ViewportHeight" ==> height * Ren.viewportScale ctx
+            ]
+
+    /// Give the editor the decoded images of the document: a Map of image
+    /// source (as in the editor package) -> HTMLImageElement. Images are drawn
+    /// synchronously from it. Repaints.
+    let setImageCache (editor: Editor) (cache: obj) =
+        editor.Handler.RenderContext.ImageCache <- (if isNull cache then None else Some cache)
+        editor.Handler.RenderContext.LastPaint <- None
+        Inp.repaint editor.Handler
+
+    /// Paint everything again (the host resized or cleared the canvas, or
+    /// images finished loading).
+    let repaint (editor: Editor) =
+        editor.Handler.RenderContext.LastPaint <- None
+        Inp.repaint editor.Handler
+
+    /// Paint one page of the editor's document onto another canvas (thumbnails,
+    /// print preview). The canvas is resized to the page at `scale` backing
+    /// pixels per layout pixel. Read-only: no selection or caret. Returns false
+    /// when there is no such page.
+    let renderPage (editor: Editor) (canvas: HTMLCanvasElement) (pageIndex: int) (scale: float) =
+        Ren.renderPage editor.Handler.RenderContext editor.Doc canvas pageIndex scale
+
+    /// Create a read-only viewer. `canvas` is used for text measurement (and by
+    /// `render`, which paints the whole document onto it); pages are painted
+    /// onto canvases of the host's with `renderPage`.
+    ///   load(editorPackage)            show a package from Office.Formats (forEditorPackage)
+    ///   setImageCache(map)             Map of image source -> decoded HTMLImageElement
+    ///   getPageCount() / getPageFrames() / getDocumentSize()
+    ///   renderPage(canvas, pageIndex, scale)   paint one page (see API.renderPage)
+    ///   render(document)               paint a Document on the viewer's canvas (as before)
+    let createViewer (canvas: HTMLCanvasElement) =
+        let ctx = Ren.createContext canvas
+        let state = createObj [ "canvas" ==> canvas; "document" ==> Doc.empty ]
+        let current () : Doc.Document = unbox state?document
+        Ren.render ctx (current ())
+        state?render <- fun (nextDoc: Doc.Document) ->
+            state?document <- nextDoc
+            Ren.render ctx nextDoc
+        state?load <- fun (package: obj) ->
+            // A viewer shows no caret.
+            let doc = { Docx.importFromEditorPackage package with Selection = None }
+            state?document <- doc
+            Ren.clearLayoutCache ctx
+        state?setImageCache <- fun (cache: obj) ->
+            ctx.ImageCache <- (if isNull cache then None else Some cache)
+            ctx.LastPaint <- None
+        state?getPageFrames <- fun () -> pageFramesToJs (Ren.pageFrames ctx (current ()))
+        state?getPageCount <- fun () -> Ren.pageCount ctx (current ())
+        state?getDocumentSize <- fun () -> documentSizeToJs ctx (current ())
+        state?renderPage <- fun (target: HTMLCanvasElement) (pageIndex: int) (scale: float) -> Ren.renderPage ctx (current ()) target pageIndex scale
+        state
     
     /// Get document text
     let getText (editor: Editor) =
@@ -1628,23 +1794,21 @@ module API =
     /// and margins. Hosts size the canvas from the last frame's Top + Height
     /// and the widest frame.
     let getPageFrames (editor: Editor) =
-        Ren.pageFrames editor.Handler.RenderContext editor.Doc
-        |> List.map (fun page ->
-            createObj [
-                "Top" ==> page.Top
-                "Width" ==> page.Width
-                "Height" ==> page.Height
-                "MarginTop" ==> page.MarginTop
-                "MarginBottom" ==> page.MarginBottom
-                "MarginLeft" ==> page.MarginLeft
-                "MarginRight" ==> page.MarginRight
-            ])
-        |> List.toArray
+        pageFramesToJs (Ren.pageFrames editor.Handler.RenderContext editor.Doc)
 
     let getPageCount (editor: Editor) =
         Ren.pageCount editor.Handler.RenderContext editor.Doc
 
-    /// Document position under a canvas point, from the layout that is on screen.
+    /// Document position under a point in layout coordinates (canvas pixels in
+    /// whole-canvas mode; with a viewport, convert with viewportToDocument or
+    /// use hitTestViewport), from the layout that is on screen.
+    let hitTestViewport (editor: Editor) (x: float) (y: float) =
+        let layoutX, layoutY = Ren.viewportToLayout editor.Handler.RenderContext x y
+        match Ren.hitTest editor.Handler.RenderContext editor.Doc layoutX layoutY with
+        | Some (blockId, offset) -> createObj [ "BlockId" ==> blockId; "Offset" ==> offset ]
+        | None -> null
+
+    /// Document position under a point in layout coordinates.
     let hitTestPosition (editor: Editor) (x: float) (y: float) =
         match Ren.hitTest editor.Handler.RenderContext editor.Doc x y with
         | Some (blockId, offset) -> createObj [ "BlockId" ==> blockId; "Offset" ==> offset ]
@@ -1928,6 +2092,8 @@ module API =
     let exports =
         createObj [
             "initialize" ==> initialize
+            "initializeCanvas" ==> initializeCanvas
+            "initializeCanvasWithChange" ==> initializeCanvasWithChange
             "createViewer" ==> createViewer
             "getText" ==> getText
             "undo" ==> undo
@@ -1967,6 +2133,7 @@ module API =
             "replaceAllText" ==> replaceAllText
             "insertText" ==> insertTextAt
             "setContent" ==> setContent
+            "setParagraphs" ==> setParagraphs
             "testRope" ==> testRope
             "toggleBold" ==> toggleBold
             "toggleItalic" ==> toggleItalic
@@ -2039,6 +2206,16 @@ module API =
             "getPageFrames" ==> getPageFrames
             "getPageCount" ==> getPageCount
             "hitTestPosition" ==> hitTestPosition
+            "hitTestViewport" ==> hitTestViewport
+            "setViewport" ==> setViewport
+            "getViewport" ==> getViewport
+            "getDocumentSize" ==> getDocumentSize
+            "viewportToDocument" ==> viewportToDocument
+            "documentToViewport" ==> documentToViewport
+            "getCaretRect" ==> getCaretRect
+            "repaint" ==> repaint
+            "setImageCache" ==> setImageCache
+            "renderPage" ==> renderPage
             "setHeaderFooterText" ==> setHeaderFooterText
             "getHeaderFooterText" ==> getHeaderFooterText
             "setHeaderFooterTableText" ==> setHeaderFooterTableText

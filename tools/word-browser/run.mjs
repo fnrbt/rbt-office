@@ -16,6 +16,7 @@
 //   track-changes    tracked typing and Enter through the keyboard, saved as w:ins and a tracked mark
 //   linked-images    a linked picture is not requested until the host allows it; unsafe links are inactive
 //   opaque-click     clicking, dragging and typing next to a chart placeholder keeps the chart on export
+//   viewport         setViewport (zoom / devicePixelRatio / scroll): pixels and hit tests against whole-canvas mode, renderPage timing
 //
 // Environment (as tools/docx-roundtrip/roundtrip.mjs): PLAYWRIGHT, JSZIP_DIR, PORT (default 16022).
 // Exit code is non-zero when any check fails.
@@ -32,7 +33,7 @@ const args = process.argv.slice(2);
 const opt = (name) => { const i = args.indexOf(name); if (i < 0) return undefined; const v = args[i + 1]; args.splice(i, 2); return v; };
 const dist = path.resolve(opt('--dist') ?? path.join(repo, 'dist'));
 const port = Number(process.env.PORT ?? 16022);
-const all = ['explicit-format', 'page-frames', 'ime', 'typing', 'track-changes', 'linked-images', 'opaque-click'];
+const all = ['explicit-format', 'page-frames', 'ime', 'typing', 'track-changes', 'linked-images', 'opaque-click', 'viewport'];
 const checks = args.length ? args : all;
 
 const jszipDir = [process.env.JSZIP_DIR, path.join(repo, 'node_modules/jszip'), path.resolve(repo, '../rbt-office/node_modules/jszip')].find((p) => p && fs.existsSync(p));
@@ -80,7 +81,7 @@ try {
         const errors = [];
         tab.on('pageerror', (e) => errors.push('page error: ' + e.message));
         await tab.goto(`http://127.0.0.1:${port}/?check=${encodeURIComponent(check)}`);
-        await tab.waitForFunction('window.result !== undefined || window.drive !== undefined', null, { timeout: 60000 });
+        await tab.waitForFunction('window.result !== undefined || window.drive !== undefined', null, { timeout: 240000 });
         if (await tab.evaluate('window.drive !== undefined')) {
             // The check wants real input: [["click", x, y] | ["type", text] | ["press", key] | ["down", x, y] | ["move", x, y] | ["up"] | ["wheel", dx, dy] | ["eval", js]] ...
             for (const [action, a, b] of await tab.evaluate('window.drive')) {
@@ -94,7 +95,7 @@ try {
                 else if (action === 'eval') await tab.evaluate(a);
             }
             await tab.evaluate('window.finish()');
-            await tab.waitForFunction('window.result !== undefined', null, { timeout: 60000 });
+            await tab.waitForFunction('window.result !== undefined', null, { timeout: 240000 });
         }
         const result = await tab.evaluate('window.result');
         const problems = [...errors, ...result.log.filter((line) => process.env.VERBOSE || !line.startsWith("ok"))];
