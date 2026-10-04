@@ -1043,6 +1043,64 @@ module Excel =
     /// Get charts from a worksheet
     let charts (sheet: XlsxReader.Worksheet) = sheet.Charts
 
+    let private anchorObj (anchor: XlsxReader.SheetAnchor) : obj =
+        createObj [
+            "kind" ==> anchor.Kind
+            "fromCol" ==> anchor.FromCol
+            "fromColOffset" ==> anchor.FromColOffset
+            "fromRow" ==> anchor.FromRow
+            "fromRowOffset" ==> anchor.FromRowOffset
+            "toCol" ==> anchor.ToCol
+            "toColOffset" ==> anchor.ToColOffset
+            "toRow" ==> anchor.ToRow
+            "toRowOffset" ==> anchor.ToRowOffset
+            "x" ==> anchor.X
+            "y" ==> anchor.Y
+            // EMU, as in the file (9525 per px).
+            "width" ==> anchor.Width
+            "height" ==> anchor.Height
+            "editAs" ==> anchor.EditAs
+        ]
+
+    /// Pictures anchored to cells: { anchor, name, description, contentType, data (Uint8Array) }.
+    let images (sheet: XlsxReader.Worksheet) : obj array =
+        sheet.Extras.Images
+        |> List.map (fun image ->
+            createObj [
+                "anchor" ==> anchorObj image.Anchor
+                "name" ==> image.Name
+                "description" ==> image.Description
+                "contentType" ==> image.ContentType
+                "data" ==> image.Data
+            ])
+        |> List.toArray
+
+    /// Drawing objects that are kept, not modelled (charts, shapes): { anchor, kind, name }.
+    let drawingObjects (sheet: XlsxReader.Worksheet) : obj array =
+        sheet.Extras.Objects
+        |> List.map (fun item -> createObj [ "anchor" ==> anchorObj item.Anchor; "kind" ==> item.Kind; "name" ==> item.Name ])
+        |> List.toArray
+
+    /// Threaded comments: { ref, author, date, text, replies: [{ author, date, text }] }.
+    let threadedComments (sheet: XlsxReader.Worksheet) : obj array =
+        sheet.Extras.ThreadedComments
+        |> List.map (fun thread ->
+            createObj [
+                "ref" ==> sprintf "%s%d" thread.CellRef.Column thread.CellRef.Row
+                "author" ==> thread.Author
+                "date" ==> thread.Date
+                "text" ==> thread.Text
+                "replies" ==> (thread.Replies
+                               |> List.map (fun reply -> createObj [ "author" ==> reply.Author; "date" ==> reply.Date; "text" ==> reply.Text ])
+                               |> List.toArray)
+            ])
+        |> List.toArray
+
+    /// Write a workbook as read (pictures, kept chart parts, threaded comments,
+    /// named styles and theme included) back to an XLSX package.
+    let writeWorkbook (workbook: XlsxReader.Workbook) =
+        XlsxWriter.packageFromReaderWorkbook workbook |> XlsxWriter.writeWorkbookPackage
+
     /// Get pivot tables from a worksheet
     let pivotTables (sheet: XlsxReader.Worksheet) = sheet.PivotTables
 
@@ -1364,6 +1422,10 @@ let api () = {|
         conditionalFormats = Excel.conditionalFormats
         dataValidations = Excel.dataValidations
         charts = Excel.charts
+        images = Excel.images
+        drawingObjects = Excel.drawingObjects
+        threadedComments = Excel.threadedComments
+        writeWorkbook = Excel.writeWorkbook
         pivotTables = Excel.pivotTables
         namedRanges = Excel.namedRanges
         evaluateFormula = Excel.evaluateFormula
