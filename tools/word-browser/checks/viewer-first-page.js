@@ -23,6 +23,10 @@ try {
     const afterFirst = viewer.getRenderStats();
     check('the first page builds one frame', afterFirst.FrameBuilds - before.FrameBuilds, 1);
     check('and collects the commands of the paragraphs it shows, not of the document', [afterFirst.CollectedOnPaint > 0, afterFirst.CollectedOnPaint < afterFirst.Blocks / 8], [true, true]);
+    // Tables and the pages' headers and footers wait as paragraphs do: what the first page forces is what is
+    // on it and around it (a table's commands are made when a band within a page of it is painted).
+    note(`the first page collected ${afterFirst.CollectedOnPaint} of ${afterFirst.Blocks} blocks' and ${frames.length} pages' chunks`);
+    check('a handful of chunks for the first page: no table further down, no other page\'s header or footer', afterFirst.CollectedOnPaint < 80, true);
     check('the page is painted (ink on it)', (() => { let ink = 0; for (let i = 0; i < firstPixels.length; i += 4) if (firstPixels[i] < 100) ink++; return ink > 500; })(), true);
     // A page in the middle, then all of them.
     viewer.renderPage(target, 40, 1);
@@ -30,7 +34,7 @@ try {
     const times = [];
     for (let i = 0; i < frames.length; i++) { const t = performance.now(); viewer.renderPage(target, i, 1); times.push(performance.now() - t); }
     const afterAll = viewer.getRenderStats();
-    check('every page painted: still one frame, every paragraph collected once', [afterAll.FrameBuilds - before.FrameBuilds, afterAll.CollectedOnPaint > afterFirst.CollectedOnPaint, afterAll.CollectedOnPaint <= afterAll.Blocks], [1, true, true]);
+    check('every page painted: still one frame, every block and every page\'s header and footer collected once', [afterAll.FrameBuilds - before.FrameBuilds, afterAll.CollectedOnPaint > afterFirst.CollectedOnPaint, afterAll.CollectedOnPaint <= afterAll.Blocks + frames.length], [1, true, true]);
     viewer.renderPage(target, 0, 1);
     check('the first page painted again is the same pixels', same(pixels(), firstPixels), true);
     viewer.renderPage(target, 40, 1);
@@ -38,6 +42,6 @@ try {
     check('painting them again collects nothing more', viewer.getRenderStats().CollectedOnPaint, afterAll.CollectedOnPaint);
     times.sort((a, b) => a - b);
     note(`${frames.length} pages: the first renderPage ${first.toFixed(1)} ms (${afterFirst.CollectedOnPaint} of ${afterFirst.Blocks} blocks collected), a page after it median ${times[Math.floor(times.length / 2)].toFixed(1)} ms`);
-    check('the first page takes less than 150 ms at 75 pages', first < 150, true);
+    check('the first page takes less than 100 ms at 75 pages', first < 100, true);
 } catch (e) { fail(e); }
 finish();
