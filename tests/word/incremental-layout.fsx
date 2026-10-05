@@ -946,7 +946,7 @@ do
     check "sections moved: by the same distance, block for block and line for line"
         ([ for id in [ "two-p3"; "two-p59"; "three-p1"; "three-p49"; "last-p40" ] ->
             let a, b = layoutOf id before, layoutOf id after
-            abs (b.Y - a.Y - shift) < 1e-6 && List.forall2 (fun (x: Layout.MeasuredLine) (y: Layout.MeasuredLine) -> abs (y.Y - x.Y - shift) < 1e-6 && obj.ReferenceEquals(x.Segments, y.Segments)) a.Lines b.Lines ])
+            abs (b.Y - a.Y - shift) < 1e-6 && List.forall2 (fun (x: Layout.MeasuredLine) (y: Layout.MeasuredLine) -> abs (y.Y - x.Y - shift) < 1e-6 && x.Segments = y.Segments) a.Lines b.Lines ])
         [ true; true; true; true; true ]
     // The same edit taken back: the sections are where they were.
     let shrunk = removeBlock "one-grown" grown

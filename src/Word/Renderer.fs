@@ -65,6 +65,10 @@ type PaintFrame = {
     /// IncrementalLayoutState.LayoutSerial): a frame made while the start of a
     /// long document was laid out is not the frame of the layout that has more.
     LayoutSerial: int
+    /// Where the chunks of the pages' headers and footers start in Body (its
+    /// length when there are none): while a header is edited in place the
+    /// body is dimmed below them.
+    FurnitureStart: int
     /// The hover outline the overlay commands were built for.
     Hovered: (string * int) option
     /// The viewport the frame was painted through (None: whole-canvas mode).
@@ -90,6 +94,20 @@ type LayoutProgress = {
     mutable Notified: float
     /// Called once the whole document is laid out (whenLayoutComplete).
     Waiters: ResizeArray<unit -> unit>
+}
+
+/// A header or footer that is edited in place. The document the editor
+/// works on is then the story's own (its blocks are the header's blocks, its
+/// selection is in them); the renderer shows the whole document, dimmed,
+/// with the story's selection and caret where the page paints that header.
+type StoryView = {
+    /// The whole document (body, headers and footers - with the story's
+    /// blocks where they belong - and no selection) for a story document.
+    Whole: Document -> Document
+    PageIndex: int
+    IsHeader: bool
+    /// The name on the boundary ("Header", "First Page Footer", ...).
+    Label: string
 }
 
 /// Rendering context
@@ -149,6 +167,14 @@ type RenderContext = {
     /// Frame kept for renderPage when the document is not the one on the canvas.
     mutable PageFrame: PaintFrame option
     Progress: LayoutProgress
+    /// The header or footer being edited in place, if any (see StoryView).
+    mutable Story: StoryView option
+    /// The last paint showed a story (the next one repaints what is in view).
+    mutable StoryPainted: bool
+    /// The boundary, selection and caret of the story on display.
+    mutable StoryOverlay: PaintCommand list
+    /// The story's layouts, for the blocks and the place they were made for.
+    mutable StoryLayouts: (Block list * float * int * BlockLayout list) option
     /// The page frames of a layout pass (by its serial): a host asks for them with every change.
     mutable KnownPageFrames: (int * PageInfo list) option
 }
@@ -214,6 +240,10 @@ let createContext (canvas: HTMLCanvasElement) = {
     Viewport = None
     PageFrame = None
     Progress = { Scheduled = false; Epoch = 0; Chunk = 48; Notified = 0.0; Waiters = ResizeArray() }
+    Story = None
+    StoryPainted = false
+    StoryOverlay = []
+    StoryLayouts = None
     KnownPageFrames = None
 }
 
@@ -368,8 +398,38 @@ let layoutDocumentWithPages (ctx: RenderContext) (doc: Document) =
     resolveLayoutWaiters ctx
     result
 
+/// The document whose body is laid out and painted for a document on display:
+/// the document itself, or the whole document a story (a header or footer
+/// edited in place) belongs to.
+let bodyDocument (ctx: RenderContext) (doc: Document) =
+    match ctx.Story with
+    | Some story -> story.Whole doc
+    | None -> doc
+
+/// The layouts of a story's blocks where its page paints them.
+let private storyLayouts (ctx: RenderContext) (story: StoryView) (doc: Document) : BlockLayout list =
+    let whole = story.Whole doc
+    let settings = layoutSettings ctx whole
+    let _, pages = layoutDocumentWithPages ctx whole
+    match List.tryItem story.PageIndex pages with
+    | None -> []
+    | Some page ->
+        let startY = headerFooterStartY settings whole.PageSetup page story.IsHeader
+        match ctx.StoryLayouts with
+        | Some (blocks, y, version, layouts) when obj.ReferenceEquals(blocks, doc.Blocks) && y = startY && version = ctx.TextMeasurerVersion -> layouts
+        | _ ->
+            let layouts =
+                Rbt.Word.Layout.withTablePlanScope ctx.PlanScope (fun () ->
+                    storyBlockLayouts settings (measureWithContext ctx) (measureRangeWithContext ctx) startY doc.Blocks)
+            ctx.StoryLayouts <- Some (doc.Blocks, startY, ctx.TextMeasurerVersion, layouts)
+            layouts
+
+/// The layouts the caret and the pointer go by: the body's, or - while a
+/// header or footer is edited in place - those of its blocks on its page.
 let layoutDocument (ctx: RenderContext) (doc: Document) =
-    layoutDocumentWithPages ctx doc |> fst
+    match ctx.Story with
+    | Some story -> storyLayouts ctx story doc
+    | None -> layoutDocumentWithPages ctx doc |> fst
 
 /// From here on the whole document is laid out (by the next layout asked for).
 let completeLayout (ctx: RenderContext) =
@@ -509,6 +569,9 @@ let cancelScheduledLayout (ctx: RenderContext) =
 
 /// The layouts the state has of this very document, at the limit it is at.
 let cachedLayouts (ctx: RenderContext) (doc: Document) =
+    match ctx.Story with
+    | Some story -> Some (storyLayouts ctx story doc)
+    | None ->
     match ctx.LayoutState.LastDocument, ctx.LayoutState.LastLayouts with
     | Some cachedDoc, Some layouts when obj.ReferenceEquals(cachedDoc, doc) && Rbt.Word.Layout.incrementalLayoutIsCurrent ctx.LayoutState -> Some layouts
     | _ -> None
@@ -682,6 +745,7 @@ let private commentAnchorsForLayouts (ctx: RenderContext) (doc: Document) (layou
     |> List.rev
 
 let commentAnchors (ctx: RenderContext) (doc: Document) =
+    let doc = bodyDocument ctx doc
     commentAnchorsForLayouts ctx doc (layoutWholeDocument ctx doc)
 
 let private pageIndexForY settings y =
@@ -1157,6 +1221,21 @@ let private renderChunks ctx (chunks: PaintChunk array) =
         for command in (forceChunk chunk).Commands do
             renderPaintCommand ctx command
 
+/// The commands of the chunks first .. last - 1 that reach into a band (top .. bottom).
+let private renderChunkRangeInBand ctx (chunks: PaintChunk array) (first: int) (last: int) (top: float) (bottom: float) =
+    for index in first .. last - 1 do
+        let chunk = chunks.[index]
+        if chunk.Bottom >= top && chunk.Top <= bottom then
+            if chunk.Pending.IsSome then ctx.CollectedOnPaint <- ctx.CollectedOnPaint + 1
+            let chunk = forceChunk chunk
+            let commands = chunk.Commands
+            for i = 0 to commands.Length - 1 do
+                if chunk.Bottoms.[i] >= top && chunk.Tops.[i] <= bottom then
+                    renderPaintCommand ctx commands.[i]
+
+/// What is laid over the body while a header or footer is edited in place.
+let private storyDimColor = "rgba(255, 255, 255, 0.6)"
+
 /// The commands of the chunks that reach into a band (top .. bottom).
 let private renderChunksInBand ctx (chunks: PaintChunk array) (top: float) (bottom: float) =
     for chunk in chunks do
@@ -1181,9 +1260,21 @@ let private renderFullFrame ctx doc frame =
     ctx.Ctx.fillStyle <- U3.Case1 "#000000"
 
     renderPages ctx frame.Pages
-    renderChunks ctx frame.Body
-    renderCommandList ctx frame.StaticOverlay
-    renderCommandList ctx frame.OverlayCommands
+    match ctx.Story with
+    | Some _ ->
+        // The body, dimmed; over it the headers and footers and the story's boundary, selection and caret.
+        let furniture = min frame.FurnitureStart frame.Body.Length
+        renderChunkRangeInBand ctx frame.Body 0 furniture System.Double.NegativeInfinity System.Double.PositiveInfinity
+        renderCommandList ctx frame.StaticOverlay
+        for page in frame.Pages do
+            ctx.Ctx.fillStyle <- U3.Case1 storyDimColor
+            ctx.Ctx.fillRect(0.0, page.Top, page.Width, page.Height)
+        renderChunkRangeInBand ctx frame.Body furniture frame.Body.Length System.Double.NegativeInfinity System.Double.PositiveInfinity
+        renderCommandList ctx ctx.StoryOverlay
+    | None ->
+        renderChunks ctx frame.Body
+        renderCommandList ctx frame.StaticOverlay
+        renderCommandList ctx frame.OverlayCommands
 
     ctx.Ctx.fillStyle <- U3.Case1 "#000000"
 
@@ -1285,6 +1376,12 @@ let private buildFrame (ctx: RenderContext) (doc: Document) hoveredImage =
         PainterVersion = ctx.TextPathPainterVersion
         MeasurerVersion = ctx.TextMeasurerVersion
         LayoutSerial = ctx.LayoutState.LayoutSerial
+        FurnitureStart =
+            // (The chunks of the pages' headers and footers are the last ones, one per page of the layout.)
+            if ctx.LayoutState.LastSlices.IsSome && body.Length > 1
+               && not (doc.Headers.IsEmpty && doc.Footers.IsEmpty && doc.HeaderParts.IsEmpty && doc.FooterParts.IsEmpty) then
+                max 0 (body.Length - List.length pages)
+            else body.Length
         Hovered = hoveredImage
         Viewport = ctx.Viewport
         StaticOverlayIndex = None
@@ -1483,9 +1580,20 @@ let private renderViewportBand (ctx: RenderContext) (frame: PaintFrame) (vp: Vie
             ctx.Ctx.rect(0.0, pageTop, page.Width, pageBottom - pageTop)
             ctx.Ctx.clip()
             renderPageSheet ctx page
-            renderChunksInBand ctx frame.Body pageTop pageBottom
-            renderChunksInBand ctx [| staticOverlayIndex frame |] pageTop pageBottom
-            renderCommandListInBand ctx { Top = pageTop; Bottom = pageBottom } frame.OverlayCommands
+            match ctx.Story with
+            | Some _ ->
+                // The body, dimmed; over it the headers and footers and the story's boundary, selection and caret.
+                let furniture = min frame.FurnitureStart frame.Body.Length
+                renderChunkRangeInBand ctx frame.Body 0 furniture pageTop pageBottom
+                renderChunksInBand ctx [| staticOverlayIndex frame |] pageTop pageBottom
+                ctx.Ctx.fillStyle <- U3.Case1 storyDimColor
+                ctx.Ctx.fillRect(0.0, pageTop, page.Width, pageBottom - pageTop)
+                renderChunkRangeInBand ctx frame.Body furniture frame.Body.Length pageTop pageBottom
+                renderCommandListInBand ctx { Top = pageTop; Bottom = pageBottom } ctx.StoryOverlay
+            | None ->
+                renderChunksInBand ctx frame.Body pageTop pageBottom
+                renderChunksInBand ctx [| staticOverlayIndex frame |] pageTop pageBottom
+                renderCommandListInBand ctx { Top = pageTop; Bottom = pageBottom } frame.OverlayCommands
             ctx.Ctx.restore()
     ctx.Ctx.restore()
     ctx.Ctx.fillStyle <- U3.Case1 "#000000"
@@ -1513,6 +1621,8 @@ let private renderThroughViewport (ctx: RenderContext) (doc: Document) hoveredIm
     // One layout pixel of slack either side: rounding the offset to device pixels can show a sliver more.
     let visible = { Top = visible.Top - 1.0; Bottom = visible.Bottom + 1.0 }
     match ctx.LastPaint with
+    // (With a story on display, or just gone: what is in view is painted again - the dimming is not part of a frame.)
+    | _ when ctx.Story.IsSome || ctx.StoryPainted -> renderViewportBand ctx frame vp visible
     | Some previous when obj.ReferenceEquals(previous, frame) -> ()
     | Some previous when not resized && previous.Viewport = Some vp && not (frameInvalidated ctx previous) && previous.Pages = frame.Pages ->
         match computeDirtyRange previous frame System.Double.MaxValue with
@@ -1525,7 +1635,7 @@ let private renderThroughViewport (ctx: RenderContext) (doc: Document) hoveredIm
     | _ -> renderViewportBand ctx frame vp visible
     ctx.LastPaint <- Some frame
 
-let private renderCore (ctx: RenderContext) (doc: Document) hoveredImage =
+let private renderBody (ctx: RenderContext) (doc: Document) hoveredImage =
     match ctx.Viewport with
     | Some vp -> renderThroughViewport ctx doc hoveredImage vp
     | None ->
@@ -1536,6 +1646,8 @@ let private renderCore (ctx: RenderContext) (doc: Document) hoveredImage =
     match ctx.LastPaint with
     | None ->
         renderFullFrame ctx doc frame
+    | _ when ctx.Story.IsSome || ctx.StoryPainted ->
+        renderFullFrame ctx doc frame
     | Some previous when previous.Viewport.IsSome || frameInvalidated ctx previous || previous.Pages <> frame.Pages ->
         renderFullFrame ctx doc frame
     | Some previous ->
@@ -1544,6 +1656,55 @@ let private renderCore (ctx: RenderContext) (doc: Document) hoveredImage =
         | NoRepaint -> ()
         | PartialRepaint band -> renderPartialFrame ctx doc frame band
     ctx.LastPaint <- Some frame
+
+let private renderCore (ctx: RenderContext) (doc: Document) hoveredImage =
+    match ctx.Story with
+    | None ->
+        renderBody ctx doc hoveredImage
+        ctx.StoryPainted <- false
+    | Some story ->
+        // A header or footer edited in place: the whole document without a selection, and over
+        // it the story's boundary, its selection and its caret (see renderViewportBand).
+        let whole = story.Whole doc
+        let settings = layoutSettings ctx whole
+        let layouts = storyLayouts ctx story doc
+        let tryFind (blockId: string) = layouts |> List.tryFind (fun layout -> layout.BlockId = blockId)
+        let boundary =
+            let _, pages = layoutDocumentWithPages ctx whole
+            match List.tryItem story.PageIndex pages with
+            | Some page -> storyBoundaryCommands settings ctx.FontFamily page story.IsHeader story.Label
+            | None -> []
+        ctx.StoryOverlay <-
+            List.concat [ boundary
+                          selectionCommandsWithRangeLookup settings (measureRangeWithContext ctx) doc tryFind
+                          hoverCommandsLookup settings tryFind hoveredImage ]
+        renderBody ctx whole None
+        ctx.StoryPainted <- true
+
+/// The page a point (layout coordinates) is on and the part of it: "header"
+/// (above the body text), "footer" (below it) or "body". None between pages.
+let pageRegionAt (ctx: RenderContext) (doc: Document) (x: float) (y: float) : (int * string) option =
+    let doc = bodyDocument ctx doc
+    let _, pages = layoutDocumentWithPages ctx doc
+    let mutable found = None
+    let mutable index = 0
+    for page in pages do
+        if found.IsNone && y >= page.Top && y <= page.Top + page.Height then
+            let region =
+                if y < page.Top + page.MarginTop then "header"
+                elif y > page.Top + page.Height - page.MarginBottom then "footer"
+                else "body"
+            found <- Some (index, region)
+        index <- index + 1
+    found
+
+/// The header (or footer) a page shows, for editing it in place (see
+/// Paint.HeaderFooterTarget). The whole document is laid out for it.
+let headerFooterTarget (ctx: RenderContext) (doc: Document) (pageIndex: int) (isHeader: bool) : HeaderFooterTarget option =
+    let doc = bodyDocument ctx doc
+    let layouts, pages = layoutWholeDocumentWithPages ctx doc
+    let sectionEnds = layouts |> List.filter (fun layout -> endsSection layout.Metadata)
+    headerFooterTargetForPage (layoutSettings ctx doc) doc sectionEnds pages pageIndex isHeader
 
 /// Show the document through a viewport (or, with None, go back to the whole
 /// document on a host-sized canvas). The caller repaints afterwards.
@@ -1559,6 +1720,7 @@ let setViewport (ctx: RenderContext) (viewport: Viewport option) =
 /// Size of the document in layout pixels: the widest page and the bottom of
 /// the last one. A host multiplies by its zoom to size the scrollable area.
 let documentSize (ctx: RenderContext) (doc: Document) =
+    let doc = bodyDocument ctx doc
     let frames =
         match ctx.LastPaint with
         | Some frame when obj.ReferenceEquals(frame.Document, doc) && frame.LayoutSerial = ctx.LayoutState.LayoutSerial && Rbt.Word.Layout.incrementalLayoutIsCurrent ctx.LayoutState -> frame.Pages
@@ -1583,6 +1745,7 @@ let documentSize (ctx: RenderContext) (doc: Document) =
 /// (`TextPathPainterFactory`) makes for the target canvas, or with canvas
 /// text when there is none.
 let renderPage (ctx: RenderContext) (doc: Document) (canvas: HTMLCanvasElement) (pageIndex: int) (scale: float) =
+    let doc = bodyDocument ctx doc
     let usable (frame: PaintFrame) =
         obj.ReferenceEquals(frame.Document, doc)
         && frame.LayoutSerial = ctx.LayoutState.LayoutSerial
@@ -1641,6 +1804,7 @@ let private fontFacesToJs (faces: (string * bool * bool) list) : obj array =
 /// Paint.requiredFontFaces), as [{ family, bold, italic }], from the layout
 /// the renderer has.
 let requiredFonts (ctx: RenderContext) (doc: Document) : obj array =
+    let doc = bodyDocument ctx doc
     let layouts, pages = layoutWholeDocumentWithPages ctx doc
     Rbt.Word.Layout.withTablePlanScope ctx.PlanScope (fun () ->
         requiredFontFaces (layoutSettings ctx doc) ctx.FontFamily (measureWithContext ctx) (measureRangeWithContext ctx) doc (Some (layouts, pages)))
@@ -1678,6 +1842,7 @@ let render (ctx: RenderContext) (doc: Document) =
 /// While a long document is being laid out from its start these are the
 /// pages there are so far (see `layoutIsComplete`).
 let pageFrames (ctx: RenderContext) (doc: Document) =
+    let doc = bodyDocument ctx doc
     let layouts, pages = layoutDocumentWithPages ctx doc
     pageFramesForLayouts ctx (layoutSettings ctx doc) doc layouts pages
 
@@ -1691,6 +1856,20 @@ let pageCount (ctx: RenderContext) (doc: Document) =
 
 /// Convert mouse position to document position
 let hitTest (ctx: RenderContext) (doc: Document) (mouseX: float) (mouseY: float) =
+    match ctx.Story with
+    | Some story ->
+        // In the story: the position nearest to the point, wherever on the page it is.
+        let layouts = storyLayouts ctx story doc |> List.toArray
+        if layouts.Length = 0 then None
+        else
+            let mutable top = System.Double.PositiveInfinity
+            let mutable bottom = System.Double.NegativeInfinity
+            for layout in layouts do
+                top <- min top layout.Y
+                bottom <- max bottom (layout.Y + layout.Height)
+            let y = max (top + 0.5) (min (bottom - 0.5) mouseY)
+            hitTestLayoutArrayWithRange (measureRangeWithContext ctx) (layoutSettings ctx doc).PaddingLeft layouts mouseX y
+    | None ->
     // Same layout the last render produced (reused while the document is
     // unchanged) rather than a fresh full layout per mouse event.
     Rbt.Word.Layout.hitTestIncrementalWithRange ctx.LayoutState (layoutSettings ctx doc) (measureWithContext ctx) (measureRangeWithContext ctx) doc mouseX mouseY
@@ -1703,7 +1882,7 @@ let caretRect (ctx: RenderContext) (doc: Document) : (float * float * float) opt
     | Some selection ->
         let settings = layoutSettings ctx doc
         let offset = selection.Focus.Offset
-        coverSelection ctx doc
+        if ctx.Story.IsNone then coverSelection ctx doc
         // A paragraph continued in another column has one layout per fragment.
         let mutable found: BlockLayout option = None
         let mutable fallback: BlockLayout option = None
@@ -1730,6 +1909,9 @@ let caretRect (ctx: RenderContext) (doc: Document) : (float * float * float) opt
 
 /// Hit test for images - returns blockId, offset, and image dimensions if clicking on an image
 let hitTestForImage (ctx: RenderContext) (doc: Document) (mouseX: float) (mouseY: float) : (string * int * float * float * float * float) option =
+    match ctx.Story with
+    | Some story -> hitTestForImageLayouts (layoutSettings ctx doc).PaddingLeft (storyLayouts ctx story doc) mouseX mouseY
+    | None ->
     Rbt.Word.Layout.hitTestForImageIncremental ctx.LayoutState (layoutSettings ctx doc) (measureWithContext ctx) (measureRangeWithContext ctx) doc mouseX mouseY
 
 /// Render document with hover indicators for images

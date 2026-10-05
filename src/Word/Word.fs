@@ -48,7 +48,19 @@ module API =
         KnownRevisions: ResizeArray<Doc.Document * int>
         /// Font families the host's text stack can draw (see setFontFamilies).
         mutable FontFamilies: string array
+        /// The whole document as the listeners last heard of it. (While a
+        /// header or footer is edited in place `Doc` is the story's own
+        /// document; this is the body with that story in its part.)
+        mutable Whole: Doc.Document
     }
+
+    /// The whole document: what is saved, and what a revision is a state of.
+    let private wholeDocument (editor: Editor) : Doc.Document =
+        Inp.wholeDocument editor.Handler editor.Doc
+
+    /// What a double click does (into a header or footer, back to the body):
+    /// set further down, where the commands it needs are defined.
+    let private doubleClick : (Editor -> float -> float -> bool) ref = ref (fun _ _ _ -> false)
 
     /// Bring the revision in line with the document that is now shown: the
     /// same content keeps its number (a moved caret is not a new revision),
@@ -99,6 +111,7 @@ module API =
         Ren.beginProgressiveLayout editor.Handler.RenderContext
         Inp.loadDocument editor.Handler newDoc
         editor.Doc <- newDoc
+        editor.Whole <- newDoc
         // A loaded document is a new document: nothing of the old one can be
         // come back to, and it is as it was saved.
         editor.KnownRevisions.Clear()
@@ -186,7 +199,7 @@ module API =
     let private continueLayout (editor: Editor) =
         let ctx = editor.Handler.RenderContext
         if not (Ren.layoutIsComplete ctx) then
-            Ren.scheduleLayout ctx (fun () -> editor.Doc) (fun complete tell ->
+            Ren.scheduleLayout ctx (fun () -> Ren.bodyDocument ctx editor.Doc) (fun complete tell ->
                 // (What is on screen was laid out before it was shown: the frame is brought up to the layout at the end.)
                 if complete then Inp.repaint editor.Handler
                 if tell then notifyLayoutProgress editor)
@@ -345,15 +358,20 @@ module API =
         let mutable editor = Unchecked.defaultof<Editor>
 
         let onChange newDoc =
-            let previous = editor.Doc
+            // (Revisions and what the listeners hear are about the whole document: entering a
+            // header or footer changes the selection, not the content.)
+            let previous = editor.Whole
             editor.Doc <- newDoc
-            observeRevision editor newDoc
+            let whole = Inp.wholeDocument editor.Handler newDoc
+            editor.Whole <- whole
+            observeRevision editor whole
             afterChange ()
-            notifyListeners editor previous newDoc
+            notifyListeners editor previous whole
             continueLayout editor
 
         let handler = Inp.create canvas doc onChange
 
+        handler.OnDoubleClick <- fun x y -> doubleClick.Value editor x y
         editor <- {
             Handler = handler
             Doc = doc
@@ -366,6 +384,7 @@ module API =
             RevisionDocument = doc
             KnownRevisions = ResizeArray()
             FontFamilies = [||]
+            Whole = doc
         }
 
         editor
@@ -2031,13 +2050,244 @@ module API =
         let newDoc = Doc.insertTable rows columns editor.Doc
         commitDocumentUpdate editor newDoc
 
+    // ---- headers and footers edited in place ----------------------------------
+
+    let private storyLabel (isHeader: bool) (kind: string) =
+        (match kind with
+         | "first" -> "First Page "
+         | "even" -> "Even Page "
+         | _ -> "")
+        + (if isHeader then "Header" else "Footer")
+
+    /// The paragraphs that end the sections before the last one, in order.
+    let private sectionEnds (doc: Doc.Document) : Doc.ParagraphBlock list =
+        doc.Blocks
+        |> List.choose (function
+            | Doc.Paragraph para
+            | Doc.Heading (_, para) when para.Metadata.SectionBreak.IsSome -> Some para
+            | _ -> None)
+
+    /// The header (or footer) references a section states itself: (kind, relationship id).
+    let private sectionReferences (doc: Doc.Document) (section: int) (isHeader: bool) : (string * string) list =
+        match List.tryItem section (sectionEnds doc) with
+        | Some para -> if isHeader then para.Metadata.HeaderReferences else para.Metadata.FooterReferences
+        | None -> if isHeader then doc.PageSetup.HeaderReferences else doc.PageSetup.FooterReferences
+
+    let private withSectionReferences (doc: Doc.Document) (section: int) (isHeader: bool) (references: (string * string) list) : Doc.Document =
+        match List.tryItem section (sectionEnds doc) with
+        | Some para ->
+            let metadata = if isHeader then { para.Metadata with HeaderReferences = references } else { para.Metadata with FooterReferences = references }
+            Doc.replaceParagraph doc para.Id { para with Metadata = metadata }
+        | None ->
+            { doc with PageSetup = (if isHeader then { doc.PageSetup with HeaderReferences = references } else { doc.PageSetup with FooterReferences = references }) }
+
+    let private freshId (prefix: string) = prefix + System.Guid.NewGuid().ToString().Replace("-", "")
+
+    /// A relationship id no header or footer of the document has.
+    let private freshPartId (doc: Doc.Document) =
+        let used = System.Collections.Generic.HashSet<string>()
+        for part in doc.HeaderParts @ doc.FooterParts do
+            match part.RelationshipId with
+            | Some id -> used.Add id |> ignore
+            | None -> ()
+        let mutable number = 1
+        while used.Contains (sprintf "rIdRbtHf%d" number) do
+            number <- number + 1
+        sprintf "rIdRbtHf%d" number
+
+    /// The document with a new header (or footer) of `kind` for a section,
+    /// holding `blocks` (none: one empty paragraph), and the part's place.
+    let private withNewPart (doc: Doc.Document) (section: int) (isHeader: bool) (kind: string) (blocks: Doc.Block list) : Doc.Document * int =
+        let blocks =
+            if blocks.IsEmpty then
+                let para : Doc.ParagraphBlock =
+                    { Id = freshId (if isHeader then "header-" else "footer-")
+                      Buffer = TextBuf.empty
+                      Metadata = { Doc.defaultMetadata with Style = Some (if isHeader then "Header" else "Footer") } }
+                [ Doc.Paragraph para ]
+            else blocks
+        let id = freshPartId doc
+        let part : Doc.HeaderFooterPart = { Kind = kind; RelationshipId = Some id; Blocks = blocks }
+        let references = (sectionReferences doc section isHeader |> List.filter (fun (referenceKind, _) -> referenceKind <> kind)) @ [ kind, id ]
+        let doc = withSectionReferences doc section isHeader references
+        if isHeader then { doc with HeaderParts = doc.HeaderParts @ [ part ]; Headers = [] }, doc.HeaderParts.Length
+        else { doc with FooterParts = doc.FooterParts @ [ part ]; Footers = [] }, doc.FooterParts.Length
+
+    /// The blocks of a header or footer as a part of their own: the paragraphs with ids of their own.
+    let private copiedBlocks (isHeader: bool) (blocks: Doc.Block list) : Doc.Block list =
+        blocks |> Doc.mapParagraphsOfBlocks (fun para -> { para with Id = freshId (if isHeader then "header-" else "footer-") })
+
+    /// Back to the body from a header or footer that is edited in place
+    /// (Escape and a double click on the body do the same). The body's
+    /// selection is what it was. False when none was being edited.
+    let exitHeaderFooter (editor: Editor) : bool =
+        Inp.exitStory editor.Handler
+
+    /// Edit the header or the footer (`kind`: "header" | "footer") of a page
+    /// in place: the caret goes into it, the body is dimmed and a labelled
+    /// line marks where it ends. Which header that is follows the page - its
+    /// section, the first page of a section with a title page, an even page
+    /// of a document that tells even and odd pages apart; where the page
+    /// shows none, an empty one is made (one undo step). Typing, selection,
+    /// formatting, tables, pictures, fields (insertPageNumberField /
+    /// insertPageCountField), undo and redo then work there: the document
+    /// the commands act on is the header's own until exitHeaderFooter.
+    /// getCaretContext says so (InHeaderFooter, Story, HeaderFooter). False
+    /// when there is no such page.
+    let enterHeaderFooter (editor: Editor) (pageIndex: int) (kind: string) : bool =
+        let isHeader = kind <> "footer"
+        Inp.exitStory editor.Handler |> ignore
+        let ctx = editor.Handler.RenderContext
+        match Ren.headerFooterTarget ctx editor.Doc pageIndex isHeader with
+        | None -> false
+        | Some target ->
+            let doc = editor.Doc
+            let parts = if isHeader then doc.HeaderParts else doc.FooterParts
+            let existing =
+                match target.TargetPart with
+                // (A title page or an even page that has no header of its own shows an empty one to fill in.)
+                | Some part when part.Kind = target.TargetKind || target.TargetKind = "default" ->
+                    if part.Blocks.IsEmpty then None
+                    else parts |> List.tryFindIndex (fun candidate -> obj.ReferenceEquals(candidate, part))
+                | _ -> None
+            let partIndex =
+                match existing with
+                | Some index -> index
+                | None ->
+                    // No header here yet: one is made (the document's plain header paragraphs become its blocks).
+                    let seed =
+                        if target.TargetKind <> "default" || not parts.IsEmpty then []
+                        else (if isHeader then doc.Headers else doc.Footers) |> List.map Doc.Paragraph
+                    let withPart, index = withNewPart doc target.TargetSection isHeader target.TargetKind seed
+                    commitDocumentUpdate editor withPart
+                    index
+            let whole = editor.Doc
+            match List.tryItem partIndex (if isHeader then whole.HeaderParts else whole.FooterParts) with
+            | None -> false
+            | Some part ->
+                let pageCount = Ren.pageCount ctx whole
+                let session : Inp.StorySession =
+                    { IsHeader = isHeader
+                      PageIndex = min pageIndex (max 0 (pageCount - 1))
+                      Kind = target.TargetKind
+                      Section = target.TargetSection
+                      PartIndex = partIndex
+                      Label = storyLabel isHeader target.TargetKind
+                      Main = whole
+                      PartBlocks = part.Blocks
+                      EntryBlocks = Paint.blocksWithRunningFields (pageIndex + 1) pageCount part.Blocks
+                      Folded = ResizeArray() }
+                Inp.enterStory editor.Handler session None
+                true
+
+    /// What getCaretContext reports of the header or footer being edited:
+    /// { Kind "header" | "footer", Variant "default" | "first" | "even",
+    ///   PageIndex, Section (0-based), LinkedToPrevious (the section shows
+    ///   the header of the section before it: it states none of its own),
+    ///   CanLinkToPrevious (false in the first section) }; null in the body.
+    let private headerFooterInfo (editor: Editor) : obj =
+        match editor.Handler.Story with
+        | None -> null
+        | Some session ->
+            let whole = wholeDocument editor
+            let own = sectionReferences whole session.Section session.IsHeader |> List.exists (fun (kind, _) -> kind = session.Kind)
+            createObj [
+                "Kind" ==> (if session.IsHeader then "header" else "footer")
+                "Variant" ==> session.Kind
+                "PageIndex" ==> session.PageIndex
+                "Section" ==> session.Section
+                "LinkedToPrevious" ==> (session.Section > 0 && not own)
+                "CanLinkToPrevious" ==> (session.Section > 0)
+            ]
+
+    /// Whether the header or footer being edited is the one of the section
+    /// before it ("Link to Previous"). False in the body and in the first section.
+    let getHeaderFooterLinkToPrevious (editor: Editor) : bool =
+        match editor.Handler.Story with
+        | Some session when session.Section > 0 ->
+            not (sectionReferences (wholeDocument editor) session.Section session.IsHeader |> List.exists (fun (kind, _) -> kind = session.Kind))
+        | _ -> false
+
+    /// "Link to Previous" for the header or footer being edited. Off: the
+    /// section gets a header of its own, a copy of the one it showed. On: it
+    /// shows the header of the section before it again (its own is no longer
+    /// referred to). One undo step; the caret stays in the page's header.
+    /// False when nothing changed (the body, the first section, already so).
+    let setHeaderFooterLinkToPrevious (editor: Editor) (linked: bool) : bool =
+        match editor.Handler.Story with
+        | Some session when session.Section > 0 && getHeaderFooterLinkToPrevious editor <> linked ->
+            let pageIndex, kind, isHeader = session.PageIndex, session.Kind, session.IsHeader
+            Inp.exitStory editor.Handler |> ignore
+            let doc = editor.Doc
+            let next =
+                if linked then
+                    withSectionReferences doc session.Section isHeader (sectionReferences doc session.Section isHeader |> List.filter (fun (referenceKind, _) -> referenceKind <> kind))
+                else
+                    let shown = (if isHeader then doc.HeaderParts else doc.FooterParts) |> List.tryItem session.PartIndex |> Option.map (fun part -> part.Blocks) |> Option.defaultValue []
+                    withNewPart doc session.Section isHeader kind (copiedBlocks isHeader shown) |> fst
+            commitDocumentUpdate editor next
+            enterHeaderFooter editor pageIndex (if isHeader then "header" else "footer") |> ignore
+            true
+        | _ -> false
+
+    /// The page the caret is on (0-based): the page of the header or footer
+    /// being edited, or the page of the caret's line.
+    let private caretPageIndex (editor: Editor) : int =
+        match editor.Handler.Story with
+        | Some session -> session.PageIndex
+        | None ->
+            let ctx = editor.Handler.RenderContext
+            match Ren.caretRect ctx editor.Doc with
+            | Some (x, top, height) ->
+                match Ren.pageRegionAt ctx editor.Doc x (top + height / 2.0) with
+                | Some (pageIndex, _) -> pageIndex
+                | None -> 0
+            | None -> 0
+
+    /// Insert a page number field (PAGE) at the caret: every page shows its
+    /// own number where the field stands in a header or footer.
+    let insertPageNumberField (editor: Editor) =
+        commitDocumentUpdate editor (Doc.insertField "PAGE" (string (caretPageIndex editor + 1)) editor.Doc)
+
+    /// Insert a page count field (NUMPAGES) at the caret.
+    let insertPageCountField (editor: Editor) =
+        let ctx = editor.Handler.RenderContext
+        commitDocumentUpdate editor (Doc.insertField "NUMPAGES" (string (Ren.pageCount ctx editor.Doc)) editor.Doc)
+
+    /// A double click (layout coordinates): on a page's header or footer area
+    /// it is edited in place, with the caret where the click was; on the body
+    /// while one is edited, back to the body. True when the click was taken.
+    let private onDoubleClick (editor: Editor) (x: float) (y: float) : bool =
+        let ctx = editor.Handler.RenderContext
+        match Ren.pageRegionAt ctx editor.Doc x y, editor.Handler.Story with
+        | Some (_, "body"), Some _ -> Inp.exitStory editor.Handler
+        | Some (pageIndex, region), story when region = "header" || region = "footer" ->
+            let here =
+                match story with
+                | Some session -> session.PageIndex = pageIndex && session.IsHeader = (region = "header")
+                | None -> false
+            // (In the story that is being edited a double click selects a word, as anywhere.)
+            if here then false
+            elif enterHeaderFooter editor pageIndex region then
+                match Ren.hitTest ctx editor.Doc x y with
+                | Some (blockId, offset) -> Inp.updateDocument editor.Handler (Doc.setCursor blockId offset editor.Doc)
+                | None -> ()
+                true
+            else false
+        | _ -> false
+
+    do doubleClick.Value <- onDoubleClick
+
     /// What the caret is in, read off the document alone (no layout pass: a
     /// few microseconds whatever the document's length, where
     /// getSelectionInformation lays the caret's surroundings out):
     /// { InTable, Row, Column (0-based; -1 outside a table), RowCount,
     ///   ColumnCount, CanMergeCells (the selection spans several cells),
     ///   CanSplitCell (the caret's cell is a merged one), InHyperlink, InList,
-    ///   InHeaderFooter (always false: headers and footers are not edited in
+    ///   InHeaderFooter (a header or footer is being edited in place, see enterHeaderFooter),
+    ///   Story "body" | "header" | "footer", HeaderFooter (null in the body, else
+    ///   { Kind, Variant, PageIndex, Section, LinkedToPrevious, CanLinkToPrevious }),
+    ///   (before: InHeaderFooter was always false: headers and footers were not edited in
     ///   place), ImageSelected (the selection is one picture) }.
     let getCaretContext (editor: Editor) : obj =
         let context = Doc.caretContext editor.Doc
@@ -2051,7 +2301,11 @@ module API =
             "CanSplitCell" ==> context.CanSplitCell
             "InHyperlink" ==> context.InHyperlink
             "InList" ==> context.InList
-            "InHeaderFooter" ==> context.InHeaderFooter
+            "InHeaderFooter" ==> editor.Handler.Story.IsSome
+            "Story" ==> (match editor.Handler.Story with
+                         | Some session -> if session.IsHeader then "header" else "footer"
+                         | None -> "body")
+            "HeaderFooter" ==> headerFooterInfo editor
             "ImageSelected" ==> context.ImageSelected
         ]
 
@@ -2417,6 +2671,7 @@ module API =
         |> Option.defaultValue ""
 
     let setHeaderFooterText (editor: Editor) defaultHeader defaultFooter firstHeader firstFooter evenHeader evenFooter =
+        Inp.exitStory editor.Handler |> ignore
         let defaultHeaderParagraphs =
             let next = if System.String.IsNullOrWhiteSpace defaultHeader then [] else [paragraphFromText "header-default" defaultHeader]
             if next = editor.Doc.Headers then editor.Doc.Headers else next
@@ -2471,6 +2726,7 @@ module API =
         ]
 
     let setHeaderFooterTableText (editor: Editor) defaultHeaderLeft defaultHeaderRight defaultFooterLeft defaultFooterRight =
+        Inp.exitStory editor.Handler |> ignore
         let headerParts = editor.Doc.HeaderParts |> upsertDefaultTable "default-header-table" defaultHeaderLeft defaultHeaderRight
         let footerParts = editor.Doc.FooterParts |> upsertDefaultTable "default-footer-table" defaultFooterLeft defaultFooterRight
         let newDoc =
@@ -2490,6 +2746,7 @@ module API =
         | false, _ -> fallback
 
     let setHeaderFooterImageText (editor: Editor) defaultHeaderSrc defaultHeaderAlt defaultHeaderWidth defaultHeaderHeight defaultFooterSrc defaultFooterAlt defaultFooterWidth defaultFooterHeight =
+        Inp.exitStory editor.Handler |> ignore
         let headerParts = editor.Doc.HeaderParts |> upsertDefaultImage "default-header-image" defaultHeaderSrc defaultHeaderAlt (parseFloat 96.0 defaultHeaderWidth) (parseFloat 48.0 defaultHeaderHeight)
         let footerParts = editor.Doc.FooterParts |> upsertDefaultImage "default-footer-image" defaultFooterSrc defaultFooterAlt (parseFloat 96.0 defaultFooterWidth) (parseFloat 48.0 defaultFooterHeight)
         let newDoc =
@@ -2504,6 +2761,7 @@ module API =
         commitDocumentUpdate editor newDoc
 
     let setCurrentSectionHeaderFooterText (editor: Editor) headerText footerText =
+        Inp.exitStory editor.Handler |> ignore
         let headerRelationshipId = "section-header-current"
         let footerRelationshipId = "section-footer-current"
         let headerParts = upsertReferencedPart "header" headerRelationshipId headerText editor.Doc.HeaderParts
@@ -2522,12 +2780,12 @@ module API =
     /// Export document to EditorParagraphs (Office.Formats format)
     /// Use with: Office.Formats WordWriter.writeFromEditor()
     let exportToDocx (editor: Editor) : obj array =
-        Docx.exportToEditor editor.Doc
+        Docx.exportToEditor (wholeDocument editor)
 
     let exportDocumentPackage (editor: Editor) =
         // One export for save and for callers: Docx.exportDocumentPackage knows the
         // document's styles and so leaves inherited formatting out of header/footer runs too.
-        Docx.exportDocumentPackage editor.Doc
+        Docx.exportDocumentPackage (wholeDocument editor)
 
     /// Test rope operations
     let testRope () =
@@ -2589,6 +2847,12 @@ module API =
             "getRenderStats" ==> getRenderStats
             "getRequiredFonts" ==> getRequiredFonts
             "getCaretContext" ==> getCaretContext
+            "enterHeaderFooter" ==> enterHeaderFooter
+            "exitHeaderFooter" ==> exitHeaderFooter
+            "getHeaderFooterLinkToPrevious" ==> getHeaderFooterLinkToPrevious
+            "setHeaderFooterLinkToPrevious" ==> setHeaderFooterLinkToPrevious
+            "insertPageNumberField" ==> insertPageNumberField
+            "insertPageCountField" ==> insertPageCountField
             "moveToAdjacentTableCell" ==> moveToAdjacentTableCell
             "toggleTrackChanges" ==> toggleTrackChanges
             "getCommentAnchors" ==> getCommentAnchors

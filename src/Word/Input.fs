@@ -106,6 +106,34 @@ type CompositionState = {
     mutable Text: string
 }
 
+/// A header or footer that is edited in place (see `enterStory`). While it
+/// is, the document the handler works on is the story's own: its blocks are
+/// the header's blocks and its selection is in them, so typing, selecting,
+/// formatting, tables, pictures and fields work there as they do in the body.
+/// The whole document - the body with the story's blocks in their part - is
+/// what is painted (dimmed), saved and kept in the undo history.
+type StorySession = {
+    IsHeader: bool
+    PageIndex: int
+    /// "default" | "first" | "even".
+    Kind: string
+    /// The section the header is that of (0-based).
+    Section: int
+    /// The place of the part in the document's HeaderParts / FooterParts.
+    PartIndex: int
+    /// The name on the boundary.
+    Label: string
+    /// The whole document when the story was entered: its body, and the body's selection.
+    Main: Doc.Document
+    /// The part's blocks when the story was entered, and the story's blocks
+    /// then (the part's, with the page's number in the fields that show it).
+    PartBlocks: Doc.Block list
+    EntryBlocks: Doc.Block list
+    /// The parts with the story's blocks in their part, by those blocks: a
+    /// state of the story that comes back (undo, redo) is the same document again.
+    Folded: ResizeArray<struct (Doc.Block list * Doc.HeaderFooterPart list)>
+}
+
 /// Input handler state
 type InputHandler = {
     Canvas: HTMLCanvasElement
@@ -138,6 +166,13 @@ type InputHandler = {
     /// The column Up / Down / PageUp / PageDown keep to (layout x of the
     /// caret when the run of vertical moves started).
     mutable GoalX: float option
+    /// The header or footer that is edited in place, if any.
+    mutable Story: StorySession option
+    /// The story the undo / redo step in hand was made in (set by the step).
+    mutable HistoryStory: StorySession option
+    /// A double click at a point (layout coordinates): true when it was
+    /// taken (into a header or footer, or back to the body) - set by the editor.
+    mutable OnDoubleClick: float -> float -> bool
 }
 
 [<Emit("$0.focus({ preventScroll: true })")>]
@@ -158,13 +193,101 @@ let private proxyValue (_element: HTMLElement) : string = jsNative
 [<Emit("$0.value = $1")>]
 let private setProxyValue (_element: HTMLElement) (_value: string) : unit = jsNative
 
+// ---- a header or footer edited in place --------------------------------------
+
+/// The session's parts (the headers, or the footers) with `blocks` in the story's part.
+let private storyParts (session: StorySession) (blocks: Doc.Block list) : Doc.HeaderFooterPart list =
+    let parts = if session.IsHeader then session.Main.HeaderParts else session.Main.FooterParts
+    // (As entered: the part as it was - showing a header is not a change of the document.)
+    if obj.ReferenceEquals(blocks, session.EntryBlocks) then parts
+    else
+        let mutable found = Unchecked.defaultof<Doc.HeaderFooterPart list>
+        let mutable known = false
+        for struct (knownBlocks, knownParts) in session.Folded do
+            if not known && obj.ReferenceEquals(knownBlocks, blocks) then
+                found <- knownParts
+                known <- true
+        if known then found
+        else
+            let next = parts |> List.mapi (fun index part -> if index = session.PartIndex then { part with Blocks = blocks } else part)
+            if session.Folded.Count >= 256 then session.Folded.RemoveAt 0
+            session.Folded.Add(struct (blocks, next))
+            next
+
+/// The whole document a story document stands for: the body, the story's
+/// blocks in their part, the story's selection (and whatever else an edit of
+/// the story changed - the styles).
+let private foldStory (session: StorySession) (story: Doc.Document) : Doc.Document =
+    let parts = storyParts session story.Blocks
+    if session.IsHeader then { story with Blocks = session.Main.Blocks; HeaderParts = parts; FooterParts = session.Main.FooterParts }
+    else { story with Blocks = session.Main.Blocks; HeaderParts = session.Main.HeaderParts; FooterParts = parts }
+
+/// The story document of a whole document: the blocks of the story's part.
+let private unfoldStory (session: StorySession) (whole: Doc.Document) : Doc.Document =
+    let parts = if session.IsHeader then whole.HeaderParts else whole.FooterParts
+    let blocks =
+        match List.tryItem session.PartIndex parts with
+        | Some part -> if obj.ReferenceEquals(part.Blocks, session.PartBlocks) then session.EntryBlocks else part.Blocks
+        | None -> session.EntryBlocks
+    { whole with Blocks = blocks }
+
+/// The whole document (body, headers and footers) of the document the
+/// handler works on: that document, or - while a header or footer is edited
+/// in place - the document with the story's blocks in their part. This is
+/// what is saved, and what a revision is a state of.
+let wholeDocument (handler: InputHandler) (doc: Doc.Document) : Doc.Document =
+    match handler.Story with
+    | Some session -> foldStory session doc
+    | None -> doc
+
+/// An undo step made in a story. The history holds whole documents (a step
+/// can be undone after the story was left, or from another one): the inner
+/// command, which works on the story's document, is given that of the whole
+/// document and its result is put back in.
+type private StoryCommand(inner: ICommand, session: StorySession, stepped: StorySession -> unit) =
+    interface ICommand with
+        member _.Execute whole =
+            stepped session
+            foldStory session (inner.Execute (unfoldStory session whole))
+        member _.Undo whole =
+            stepped session
+            foldStory session (inner.Undo (unfoldStory session whole))
+        member _.Description = inner.Description
+
+/// A history with the step just added to it made a story's step when a story is being edited.
+let private storyHistory (handler: InputHandler) (before: CommandHistory) (after: CommandHistory) : CommandHistory =
+    match handler.Story, after.Undos with
+    | Some session, head :: rest when not (obj.ReferenceEquals(after.Undos, before.Undos)) ->
+        { after with Undos = (StoryCommand(head, session, fun stepped -> handler.HistoryStory <- Some stepped) :> ICommand) :: rest }
+    | _ -> after
+
+let private showStory (handler: InputHandler) (session: StorySession) =
+    let ctx = handler.RenderContext
+    // (The whole document for the story document last asked about: a caret move asks again and again.)
+    let last = ResizeArray<Doc.Document * Doc.Document>()
+    let whole (story: Doc.Document) =
+        if last.Count > 0 && sameContentObjects story (fst last.[0]) then snd last.[0]
+        else
+            let folded = { foldStory session story with Selection = None }
+            last.Clear()
+            last.Add((story, folded))
+            folded
+    handler.Story <- Some session
+    ctx.Story <- Some { Whole = whole; PageIndex = session.PageIndex; IsHeader = session.IsHeader; Label = session.Label }
+    ctx.StoryLayouts <- None
+
+let private hideStory (handler: InputHandler) =
+    handler.Story <- None
+    handler.RenderContext.Story <- None
+    handler.RenderContext.StoryLayouts <- None
+
 /// Record a finished change in the undo history as one step. Selection-only
 /// changes are not recorded.
 let private recordChange (handler: InputHandler) (description: string) (beforeDoc: Doc.Document) (afterDoc: Doc.Document) =
     if not (sameContent beforeDoc afterDoc) then
         let cmd = DeleteTextCommand(beforeDoc, afterDoc, description) :> ICommand
         let _, history = Cmd.execute cmd beforeDoc handler.History
-        handler.History <- history
+        handler.History <- storyHistory handler handler.History history
 
 let private showDocument (handler: InputHandler) (doc: Doc.Document) =
     handler.Document <- doc
@@ -172,12 +295,29 @@ let private showDocument (handler: InputHandler) (doc: Doc.Document) =
     handler.SyncInputProxy doc
     handler.OnChange doc
 
+/// One step back or forward in the history (`step`: Cmd.undo or Cmd.redo).
+/// The step is taken on the whole document; what comes back is the document
+/// to work on - the story's when the step was made in a header or footer
+/// (which is then the story on display), the whole document otherwise.
+let private historyStep (handler: InputHandler) (step: Doc.Document -> CommandHistory -> Doc.Document * CommandHistory) : Doc.Document * CommandHistory =
+    handler.HistoryStory <- None
+    let whole, history = step (wholeDocument handler handler.Document) handler.History
+    // (Nothing to step to: everything stays as it is.)
+    if obj.ReferenceEquals(history, handler.History) then handler.Document, history else
+    match handler.HistoryStory with
+    | Some session ->
+        showStory handler session
+        unfoldStory session whole, history
+    | None ->
+        if handler.Story.IsSome then hideStory handler
+        whole, history
+
 /// Undo the last recorded change. Returns false when there is nothing to undo.
 let undo (handler: InputHandler) =
     if handler.History.Undos.IsEmpty then
         false
     else
-        let doc, history = Cmd.undo handler.Document handler.History
+        let doc, history = historyStep handler Cmd.undo
         handler.History <- history
         showDocument handler doc
         true
@@ -187,9 +327,41 @@ let redo (handler: InputHandler) =
     if handler.History.Redos.IsEmpty then
         false
     else
-        let doc, history = Cmd.redo handler.Document handler.History
+        let doc, history = historyStep handler Cmd.redo
         handler.History <- history
         showDocument handler doc
+        true
+
+/// Edit a header or footer in place: `session` says which (see StorySession;
+/// its Main is the whole document as it is now), `selection` where the caret
+/// goes (None: the start of the story).
+let enterStory (handler: InputHandler) (session: StorySession) (selection: Doc.Selection option) =
+    let selection =
+        match selection with
+        | Some selection -> Some selection
+        | None ->
+            match Doc.paragraphsOfBlocks session.EntryBlocks with
+            | first :: _ ->
+                let position : Doc.Position = { BlockId = first.Id; Offset = 0 }
+                Some { Anchor = position; Focus = position }
+            | [] -> None
+    showStory handler session
+    handler.IsMouseDown <- false
+    handler.SelectionAnchor <- None
+    handler.GoalX <- None
+    showDocument handler { session.Main with Blocks = session.EntryBlocks; Selection = selection }
+
+/// Back to the body, with the selection it had. False when no header or footer was being edited.
+let exitStory (handler: InputHandler) : bool =
+    match handler.Story with
+    | None -> false
+    | Some session ->
+        let whole = { foldStory session handler.Document with Selection = session.Main.Selection }
+        hideStory handler
+        handler.IsMouseDown <- false
+        handler.SelectionAnchor <- None
+        handler.GoalX <- None
+        showDocument handler whole
         true
 
 let canUndo (handler: InputHandler) = not handler.History.Undos.IsEmpty
@@ -218,6 +390,9 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         SyncInputProxy = ignore
         Dispose = ignore
         GoalX = None
+        Story = None
+        HistoryStory = None
+        OnDoubleClick = fun _ _ -> false
     }
 
     // ---- caret movement over the layout that is on screen -------------------
@@ -548,6 +723,8 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         let mutable newDoc = handler.Document
         let mutable newHistory = handler.History
         let mutable useCommand = false
+        // An undo / redo step: the history it hands back holds no new command.
+        let mutable stepped = false
         // Up / Down / PageUp / PageDown keep their column from one to the next.
         let goalBefore = handler.GoalX
         let mutable keepGoal = false
@@ -564,23 +741,31 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             // Undo/Redo
             if ke.shiftKey then
                 // Redo (Ctrl+Shift+Z)
-                let (doc', hist') = Cmd.redo handler.Document handler.History
+                let (doc', hist') = historyStep handler Cmd.redo
                 newDoc <- doc'
                 newHistory <- hist'
                 useCommand <- true
+                stepped <- true
             else
                 // Undo (Ctrl+Z)
-                let (doc', hist') = Cmd.undo handler.Document handler.History
+                let (doc', hist') = historyStep handler Cmd.undo
                 newDoc <- doc'
                 newHistory <- hist'
                 useCommand <- true
+                stepped <- true
             e.preventDefault()
         | key when commandKey && keyEquals 'y' key ->
             // Redo (Ctrl+Y)
-            let (doc', hist') = Cmd.redo handler.Document handler.History
+            let (doc', hist') = historyStep handler Cmd.redo
             newDoc <- doc'
             newHistory <- hist'
             useCommand <- true
+            stepped <- true
+            e.preventDefault()
+        | "Escape" when handler.Story.IsSome ->
+            // Out of the header or footer, back to the body.
+            exitStory handler |> ignore
+            newDoc <- handler.Document
             e.preventDefault()
         | key when commandKey && keyEquals 'a' key ->
             newDoc <- Doc.selectAll handler.Document
@@ -688,7 +873,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                         let cmd = DeleteTextCommand(beforeDoc, doc', "Paste") :> ICommand
                         let doc'', hist' = Cmd.execute cmd beforeDoc handler.History
                         handler.Document <- doc''
-                        handler.History <- hist'
+                        handler.History <- storyHistory handler handler.History hist'
                         renderWithHover handler.RenderContext doc'' handler.HoveredImage
                         handler.OnChange doc''
             ) |> ignore
@@ -813,7 +998,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         if useCommand then
             // Also when the document compares equal (undoing a no-op step
             // must still pop it).
-            handler.History <- newHistory
+            handler.History <- (if stepped then newHistory else storyHistory handler handler.History newHistory)
         if not (documentsEqualForChange newDoc handler.Document) then
             if not useCommand then
                 // Shortcuts that changed the document without building a
@@ -967,6 +1152,11 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         let me = e :?> MouseEvent
         let x, y = pointerPosition me
 
+        // A double click on a page's header or footer edits it in place; one on the body goes back.
+        if int me.detail = 2 && handler.OnDoubleClick x y then
+            e.preventDefault()
+            canvas.focus()
+        else
         // Check if clicking on an image first
         match hitTestForImage handler.RenderContext handler.Document x y with
         | Some (blockId, offset, width, height, imageX, imageY) ->
@@ -1147,6 +1337,7 @@ let applyEdit (handler: InputHandler) (description: string) (doc: Doc.Document) 
 /// Replace the document with a newly loaded one. Undo history belongs to the
 /// previous document and is discarded.
 let loadDocument (handler: InputHandler) (doc: Doc.Document) =
+    hideStory handler
     handler.History <- Cmd.empty
     handler.PointerStartDocument <- None
     handler.IsMouseDown <- false

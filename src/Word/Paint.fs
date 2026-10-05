@@ -1493,18 +1493,26 @@ type private HeaderFooterPartIndex = {
     First: HeaderFooterPart option
 }
 
-let private buildHeaderFooterPartIndex (parts: HeaderFooterPart list) =
+/// `referenced`: the relationship ids the document's sections refer to. A
+/// part a section refers to is that section's (and of the sections that
+/// follow it without one of their own); only a part no section refers to is
+/// found by its kind, for every page.
+let private buildHeaderFooterPartIndexFor (referenced: HashSet<string>) (parts: HeaderFooterPart list) =
     let byRelationshipId = Dictionary<string, HeaderFooterPart>()
     let byKind = Dictionary<string, HeaderFooterPart>()
     let mutable first = None
     for part in parts do
-        if first.IsNone then
+        let ofASection =
+            match part.RelationshipId with
+            | Some relationshipId -> referenced.Contains relationshipId
+            | None -> false
+        if first.IsNone && not ofASection then
             first <- Some part
         match part.RelationshipId with
         | Some relationshipId when not (byRelationshipId.ContainsKey relationshipId) ->
             byRelationshipId.[relationshipId] <- part
         | _ -> ()
-        if not (byKind.ContainsKey part.Kind) then
+        if not ofASection && not (byKind.ContainsKey part.Kind) then
             byKind.[part.Kind] <- part
     { Parts = parts; ByRelationshipId = byRelationshipId; ByKind = byKind; First = first }
 
@@ -1570,13 +1578,20 @@ let private buildSectionReferenceIndex (pages: PageInfo array) (layouts: BlockLa
         if endsSection layout.Metadata then
             let refs = if isHeader then layout.Metadata.HeaderReferences else layout.Metadata.FooterReferences
             effective <- inheritSectionReferences effective refs
-            if not effective.IsEmpty then
-                let endPage = pageIndexForY pages (layout.Y + layout.Height)
-                let lastIndex = endPages.Count - 1
-                if lastIndex < 0 || endPages.[lastIndex] <> endPage then
-                    endPages.Add endPage
-                    references.Add effective
+            // (Also a section that shows no header: its pages are its own, not those of the section after it.)
+            let endPage = pageIndexForY pages (layout.Y + layout.Height)
+            let lastIndex = endPages.Count - 1
+            if lastIndex < 0 || endPages.[lastIndex] <> endPage then
+                endPages.Add endPage
+                references.Add effective
     { EndPages = endPages.ToArray(); References = references.ToArray(); Final = inheritSectionReferences effective finalReferences }
+
+let private referencedPartIds (index: SectionReferenceIndex) : HashSet<string> =
+    let ids = HashSet<string>()
+    for references in index.References do
+        for (_, id) in references do ids.Add id |> ignore
+    for (_, id) in index.Final do ids.Add id |> ignore
+    ids
 
 // For a target page we want the section with the smallest end-page that still
 // contains it; a page after every section end belongs to the final section.
@@ -1592,22 +1607,74 @@ let private sectionRefsForPage (index: SectionReferenceIndex) pageIndex =
             hi <- mid
     if lo < pages.Length then index.References.[lo] else index.Final
 
-let private blocksForPage (settings: LayoutSettings) (pageSetup: PageSetup) pageIndex fallbackBlocks (parts: HeaderFooterPartIndex) sectionRefs =
+/// The sections of a document by the pages they are on: where each one
+/// ends and starts, and whether its first page has a header and footer of
+/// its own (w:titlePg). The last entry is the final section.
+type private SectionPageIndex = {
+    SectionEndPages: int array
+    SectionStartPages: int array
+    SectionTitlePage: bool array
+    SectionEvenOdd: bool array
+}
+
+/// `sectionEnds`: the layouts of the paragraphs that end a section, in order.
+let private buildSectionPageIndex (pages: PageInfo array) (sectionEnds: BlockLayout seq) (pageSetup: PageSetup) : SectionPageIndex =
+    let ends = ResizeArray<int>()
+    let titles = ResizeArray<bool>()
+    let evenOdd = ResizeArray<bool>()
+    // (How a section starts is said by its own properties: a continuous one starts on the page the one before it ends on.)
+    let continuous = ResizeArray<bool>()
+    let mutable lastId = ""
+    for layout in sectionEnds do
+        if layout.Metadata.SectionBreak.IsSome && layout.BlockId = lastId then
+            // (A paragraph that runs on in another column or on another page: the section ends where its last part does.)
+            ends.[ends.Count - 1] <- pageIndexForY pages (layout.Y + layout.Height)
+        elif layout.Metadata.SectionBreak.IsSome then
+            lastId <- layout.BlockId
+            ends.Add (pageIndexForY pages (layout.Y + layout.Height))
+            titles.Add (match layout.Metadata.SectionPageSetup with Some setup -> setup.DifferentFirstPage | None -> false)
+            evenOdd.Add (match layout.Metadata.SectionPageSetup with Some setup -> setup.EvenAndOddHeaders | None -> false)
+            continuous.Add (layout.Metadata.SectionBreak = Some "continuous")
+    ends.Add (max 0 (pages.Length - 1))
+    titles.Add pageSetup.DifferentFirstPage
+    evenOdd.Add pageSetup.EvenAndOddHeaders
+    continuous.Add (pageSetup.SectionStart = Some "continuous")
+    let starts = Array.zeroCreate<int> ends.Count
+    for index in 1 .. ends.Count - 1 do
+        starts.[index] <- if continuous.[index] then ends.[index - 1] else ends.[index - 1] + 1
+    { SectionEndPages = ends.ToArray(); SectionStartPages = starts; SectionTitlePage = titles.ToArray(); SectionEvenOdd = evenOdd.ToArray() }
+
+/// The section a page's header and footer are those of: the first that ends on or after the page.
+let private sectionOfPage (index: SectionPageIndex) pageIndex =
+    let ends = index.SectionEndPages
+    let mutable lo = 0
+    let mutable hi = ends.Length - 1
+    while lo < hi do
+        let mid = lo + (hi - lo) / 2
+        if ends.[mid] < pageIndex then lo <- mid + 1 else hi <- mid
+    lo
+
+/// Which header / footer a page shows: "first" on the first page of a
+/// section that has a title page, "even" on even pages when the document
+/// tells even and odd pages apart, else "default".
+let private headerFooterKindOfPage (index: SectionPageIndex) (pageSetup: PageSetup) pageIndex =
+    let section = sectionOfPage index pageIndex
+    if index.SectionTitlePage.[section] && pageIndex = index.SectionStartPages.[section] then "first"
+    elif (pageIndex + 1) % 2 = 0 && (pageSetup.EvenAndOddHeaders || index.SectionEvenOdd.[section]) then "even"
+    else "default"
+
+let private partForPage (preferredKind: string) pageIndex (parts: HeaderFooterPartIndex) sectionRefs =
+    let refs = sectionRefsForPage sectionRefs pageIndex
+    partForReferences preferredKind refs parts
+    |> Option.orElseWith (fun () -> tryFindPartByKind preferredKind parts)
+    |> Option.orElseWith (fun () -> tryFindPartByKind "default" parts)
+    |> Option.orElseWith (fun () -> parts.First)
+
+let private blocksForPage (preferredKind: string) pageIndex fallbackBlocks (parts: HeaderFooterPartIndex) sectionRefs =
     if parts.Parts.IsEmpty then
         fallbackBlocks ()
     else
-        let pageNumber = pageIndex + 1
-        let preferredKind =
-            if pageNumber = 1 && pageSetup.DifferentFirstPage then "first"
-            elif pageNumber % 2 = 0 && pageSetup.EvenAndOddHeaders then "even"
-            else "default"
-        let refs = sectionRefsForPage sectionRefs pageIndex
-        let part =
-            partForReferences preferredKind refs parts
-            |> Option.orElseWith (fun () -> tryFindPartByKind preferredKind parts)
-            |> Option.orElseWith (fun () -> tryFindPartByKind "default" parts)
-            |> Option.orElseWith (fun () -> parts.First)
-        match part with
+        match partForPage preferredKind pageIndex parts sectionRefs with
         | Some part -> part.Blocks
         | None -> fallbackBlocks ()
 
@@ -1754,14 +1821,14 @@ let private headerFooterPageSources (cache: HeaderFooterCache option) (settings:
                 fallbackFooters <- ValueSome blocks
                 blocks
         let pagesArray = List.toArray pages
-        let headerParts = buildHeaderFooterPartIndex doc.HeaderParts
-        let footerParts = buildHeaderFooterPartIndex doc.FooterParts
         let headerRefs =
             if doc.Headers.IsEmpty && doc.HeaderParts.IsEmpty then { EndPages = [||]; References = [||]; Final = [] }
             else buildSectionReferenceIndex pagesArray layouts doc.PageSetup.HeaderReferences true
         let footerRefs =
             if doc.Footers.IsEmpty && doc.FooterParts.IsEmpty then { EndPages = [||]; References = [||]; Final = [] }
             else buildSectionReferenceIndex pagesArray layouts doc.PageSetup.FooterReferences false
+        let headerParts = buildHeaderFooterPartIndexFor (referencedPartIds headerRefs) doc.HeaderParts
+        let footerParts = buildHeaderFooterPartIndexFor (referencedPartIds footerRefs) doc.FooterParts
         // (Looked up by reference in short lists: a document's pages share a handful of block lists.)
         let runningFields =
             match cache with
@@ -1802,10 +1869,12 @@ let private headerFooterPageSources (cache: HeaderFooterCache option) (settings:
                     originCommands <- repeatedBlockCommands settings fontFamily measureText measureRange pageNumber pageCount 0.0 blocks
                     staticRepeatedCommands.Add(struct (blocks, originCommands))
                 shiftCommandsY startY originCommands
+        let sectionPages = buildSectionPageIndex pagesArray layouts doc.PageSetup
         let sourceOf (pageIndex: int) : HeaderFooterPageSource =
             let info = pagesArray.[pageIndex]
-            let headers = blocksForPage settings doc.PageSetup pageIndex fallbackHeaderBlocks headerParts headerRefs
-            let footers = blocksForPage settings doc.PageSetup pageIndex fallbackFooterBlocks footerParts footerRefs
+            let kind = headerFooterKindOfPage sectionPages doc.PageSetup pageIndex
+            let headers = blocksForPage kind pageIndex fallbackHeaderBlocks headerParts headerRefs
+            let footers = blocksForPage kind pageIndex fallbackFooterBlocks footerParts footerRefs
             { SourceHeaders = headers; SourceFooters = footers
               SourceHeaderY = info.Top + max 8.0 doc.PageSetup.HeaderDistance
               SourceFooterY = info.Top + info.Height - max 16.0 doc.PageSetup.FooterDistance - settings.LineHeight * 0.78
@@ -1870,6 +1939,126 @@ let private headerFooterCommands (settings: LayoutSettings) fontFamily measureTe
     for pageCommands in headerFooterCommandsByPage None settings fontFamily measureText measureRange doc layouts pages do
         commands.AddRange pageCommands
     resizeArrayToList commands
+
+// ---- a page's header or footer as a story of its own (edited in place) ------
+
+/// Where a page's header and footer blocks start.
+let headerFooterStartY (settings: LayoutSettings) (pageSetup: PageSetup) (page: PageInfo) (isHeader: bool) =
+    if isHeader then page.Top + max 8.0 pageSetup.HeaderDistance
+    else page.Top + page.Height - max 16.0 pageSetup.FooterDistance - settings.LineHeight * 0.78
+
+/// The header (or footer) a page shows, for editing it in place.
+type HeaderFooterTarget = {
+    TargetIsHeader: bool
+    TargetPageIndex: int
+    /// "default" | "first" | "even": which of its section's headers the page shows.
+    TargetKind: string
+    /// The section the page's header is that of (0-based), and how many sections there are.
+    TargetSection: int
+    TargetSectionCount: int
+    /// The first page of that section.
+    TargetSectionStartPage: int
+    /// The part whose blocks the page shows; None when it shows none (or the
+    /// document's plain header paragraphs, which are not a part).
+    TargetPart: HeaderFooterPart option
+    /// Whether the section names a part of this kind itself (false: it shows
+    /// the one of the section before it - "link to previous" - or none).
+    TargetOwn: bool
+    /// The references of the section, as it states them (kind, relationship id).
+    TargetReferences: (string * string) list
+    /// Where the blocks start on the page.
+    TargetY: float
+}
+
+/// `sectionEnds`: the layouts of the paragraphs that end a section, in order.
+let headerFooterTargetForPage (settings: LayoutSettings) (doc: Document) (sectionEnds: BlockLayout seq) (pages: PageInfo list) (pageIndex: int) (isHeader: bool) : HeaderFooterTarget option =
+    let pagesArray = List.toArray pages
+    if pageIndex < 0 || pageIndex >= pagesArray.Length then None
+    else
+        let sectionPages = buildSectionPageIndex pagesArray sectionEnds doc.PageSetup
+        let kind = headerFooterKindOfPage sectionPages doc.PageSetup pageIndex
+        let section = sectionOfPage sectionPages pageIndex
+        let refs = buildSectionReferenceIndex pagesArray sectionEnds (if isHeader then doc.PageSetup.HeaderReferences else doc.PageSetup.FooterReferences) isHeader
+        let parts = buildHeaderFooterPartIndexFor (referencedPartIds refs) (if isHeader then doc.HeaderParts else doc.FooterParts)
+        // What the section itself states (the n-th paragraph that ends a section, or the page setup for the last).
+        let own =
+            let mutable found : (string * string) list option = None
+            let mutable ordinal = 0
+            let mutable lastId = ""
+            for layout in sectionEnds do
+                if layout.Metadata.SectionBreak.IsSome && layout.BlockId <> lastId then
+                    lastId <- layout.BlockId
+                    if ordinal = section && found.IsNone then
+                        found <- Some (if isHeader then layout.Metadata.HeaderReferences else layout.Metadata.FooterReferences)
+                    ordinal <- ordinal + 1
+            match found with
+            | Some references -> references
+            | None -> if isHeader then doc.PageSetup.HeaderReferences else doc.PageSetup.FooterReferences
+        Some {
+            TargetIsHeader = isHeader
+            TargetPageIndex = pageIndex
+            TargetKind = kind
+            TargetSection = section
+            TargetSectionCount = sectionPages.SectionEndPages.Length
+            TargetSectionStartPage = sectionPages.SectionStartPages.[section]
+            TargetPart = if parts.Parts.IsEmpty then None else partForPage kind pageIndex parts refs
+            TargetOwn = own |> List.exists (fun (referenceKind, _) -> referenceKind = kind)
+            TargetReferences = own
+            TargetY = headerFooterStartY settings doc.PageSetup pagesArray.[pageIndex] isHeader
+        }
+
+/// The blocks of a header or footer with the page number and the page count
+/// in the fields that show them (what a page paints).
+let blocksWithRunningFields (pageNumber: int) (pageCount: int) (blocks: Block list) : Block list =
+    let mutable changed = false
+    let mapped =
+        blocks |> List.map (fun block ->
+            let next, blockChanged = blockWithRunningFields pageNumber pageCount block
+            if blockChanged then changed <- true
+            next)
+    if changed then mapped else blocks
+
+/// The layouts of a header's or footer's blocks where a page paints them
+/// (from `startY` down, as `repeatedBlockCommands` places them): what the
+/// caret, the selection and the pointer go by while it is edited in place.
+let storyBlockLayouts (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (startY: float) (blocks: Block list) : BlockLayout list =
+    let repeatedSettings = { settings with MarginBottom = 0.0 }
+    let maxWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
+    let layouts = ResizeArray<BlockLayout>()
+    let mutable y = startY
+    for block in blocks do
+        match block with
+        | Paragraph para
+        | Heading (_, para) ->
+            let safePara = { para with Metadata = { para.Metadata with PageBreakAfter = false } }
+            let layout, _ = layoutParagraphAtWithRange repeatedSettings measureText measureRange maxWidth y 0.0 safePara Map.empty
+            layouts.Add layout
+            y <- layout.Y + layout.Height
+        | Table table ->
+            let _, nextY = tableBorderCommandsWithRange repeatedSettings measureText measureRange table y
+            let measureSettings = { repeatedSettings with PageHeight = max repeatedSettings.PageHeight 1000000.0 }
+            let tableDoc = { Rbt.Word.Document.empty with Blocks = [ Table table ]; Selection = None }
+            let dy = y - measureSettings.PaddingTop
+            for layout in layoutDocumentWithRange measureSettings measureText measureRange tableDoc do
+                if not (layout.BlockId.StartsWith footnoteBlockIdPrefix) && not (layout.BlockId.StartsWith endnoteBlockIdPrefix) then
+                    layouts.Add { layout with Y = layout.Y + dy; Lines = layout.Lines |> List.map (fun line -> { line with Y = line.Y + dy }) }
+            y <- nextY
+        | TextBox _ -> ()
+    resizeArrayToList layouts
+
+/// The boundary of the header or footer that is being edited: a dashed line
+/// across the page where the body text begins (ends), and a tab with its name.
+let storyBoundaryCommands (settings: LayoutSettings) fontFamily (page: PageInfo) (isHeader: bool) (label: string) : PaintCommand list =
+    let y = if isHeader then page.Top + page.MarginTop else page.Top + page.Height - page.MarginBottom
+    let tabWidth = 14.0 + float label.Length * 6.6
+    let tabHeight = 20.0
+    let tabX = max 8.0 (page.MarginLeft - 4.0)
+    let tabY = if isHeader then y else y - tabHeight
+    let style = { defaultPaintStyle 12.0 fontFamily with Color = "#1f4e99" }
+    [ StrokeLine ("#5b9bd5", 1.0, 2, 0.0, 0.0, y, page.Width, y)
+      FillRect ("#ffffff", tabX, tabY, tabWidth, tabHeight)
+      StrokeRect ("#5b9bd5", 1.0, tabX + 0.5, tabY + 0.5, tabWidth - 1.0, tabHeight - 1.0)
+      DrawText (label, style, tabX + 7.0, tabY + 14.0, 0.0) ]
 
 let private textBoxCommands (settings: LayoutSettings) fontFamily measureText measureRange (textBox: TextBoxBlock) =
     let floatingBox = WordLayout.Floating.textBoxCanvasBox settings.PaddingLeft settings.PaddingTop textBox

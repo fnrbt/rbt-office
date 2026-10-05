@@ -5598,7 +5598,7 @@ let private sectionLayoutsAt (memo: ParagraphLayoutMemo option) (slot: string) (
 /// Each section is flowed from y = 0 at the top of its first page and its
 /// layouts are then moved to where that page stands (see sectionLayoutsAt).
 /// Returns the layouts plus the per-page geometry.
-let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) sections =
+let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (headerReferences: (string * string) list array) sections =
     let results = ResizeArray<BlockLayout>()
     // Where each block's layouts start in the results (see LayoutSlices).
     let blockStarts = ResizeArray<int>()
@@ -5620,9 +5620,23 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
         while pageSettings.Count <= page do pageSettings.Add s
         pageTops.[page] <- top
         pageSettings.[page] <- s
+    // The header each section shows (its own, or the one of the section before it).
+    let mutable shownHeader : (string * string) list = []
     sections
     |> List.iteri (fun i (blocks, columns, geometry, breakType, isFinal) ->
+        shownHeader <- inheritSectionReferences shownHeader (if i < headerReferences.Length then headerReferences.[i] else [])
         let secSettings = settingsForGeometry settings geometry
+        // The body starts below the section's header when that reaches below the top margin.
+        let secSettings =
+            match WordLayout.Page.referencedHeaderBlocks "default" shownHeader doc with
+            | Some headerBlocks ->
+                let marginTop, headerDistance =
+                    match geometry with
+                    | Some g -> g.MarginTop, g.HeaderDistance
+                    | None -> doc.PageSetup.MarginTop, doc.PageSetup.HeaderDistance
+                let top = WordLayout.Page.bodyTopBelowHeader marginTop headerDistance headerBlocks
+                if top = secSettings.PaddingTop then secSettings else { secSettings with PaddingTop = top }
+            | None -> secSettings
         let secStride = pageHeight secSettings + pageGap
         // Stitch before this section.
         if not started then
@@ -5810,7 +5824,17 @@ let private layoutDocumentPagesWithMemo (memo: ParagraphLayoutMemo option) (limi
                     secondPass
         layouts, uniformPageInfos settings layouts
     | _ ->
-        layoutSections memo settings measureText measureRange doc sections
+        // (What each section says of its header: from the whole document, whatever part of it is laid out.)
+        let headerReferences =
+            allSections
+            |> List.map (fun (blocks, _, _, _, isFinal) ->
+                if isFinal then whole.PageSetup.HeaderReferences
+                else
+                    match List.tryLast blocks |> Option.bind tryGetParagraph with
+                    | Some para -> para.Metadata.HeaderReferences
+                    | None -> [])
+            |> List.toArray
+        layoutSections memo settings measureText measureRange doc headerReferences sections
 
 /// True when the document has more than one section, i.e. its pages need not
 /// all have the body PageSetup's geometry.
