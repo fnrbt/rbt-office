@@ -58,6 +58,7 @@ stages=(
     stage40-annotations
     stage41-find
     stage42-tables
+    stage43-status
     numbertext
 )
 

@@ -2776,3 +2776,76 @@ let setTableStyle (memberName: string) (name: string) (style: TableStyle option)
               HeaderRowCount = (if table.HasHeaders then 1 else 0); Style = style
               AutoFilter = (if table.HasHeaders then Some (table.StartCol + 1, table.EndCol + 1) else None); HasTotals = table.HasTotals }
         { Book = withSheetModel table.SheetId { model with Tables = model.Tables @ [ own ] } workbook; Cells = [] }
+
+// ---------------------------------------------------------------------------
+// The status bar: what a selection adds up to
+// ---------------------------------------------------------------------------
+
+/// What a status bar says of a selection, as Excel's does: `Count` cells
+/// that hold something, `NumericCount` of them numbers (a formula counts by
+/// its result; text, booleans and errors are not numbers), and the sum,
+/// smallest and largest of the numbers (0 / None when there is none). Rows
+/// an AutoFilter hides are left out.
+type SelectionStatus = {
+    Count: int
+    NumericCount: int
+    Sum: float
+    Min: float option
+    Max: float option
+}
+
+/// The status of a block of cells. A block larger than the sheet's cells
+/// costs one pass over the cells that exist.
+let selectionStatus (model: SpreadsheetModel) (top: int, left: int, bottom: int, right: int) : SelectionStatus =
+    let mutable count = 0
+    let mutable numeric = 0
+    let mutable sum = 0.0
+    let mutable lowest = System.Double.PositiveInfinity
+    let mutable highest = System.Double.NegativeInfinity
+    let filtered = model.FilterHiddenRows.Length > 0 && not (Map.isEmpty model.Filters)
+    let add (row: int) (cell: CellData) =
+        match unwrapFormulaValue cell.Value with
+        | CellValue.Empty -> ()
+        | CellValue.String "" -> ()
+        | value ->
+            if not (filtered && isFilterHiddenRow row model) then
+                count <- count + 1
+                match value with
+                | CellValue.Number number ->
+                    numeric <- numeric + 1
+                    sum <- sum + number
+                    if number < lowest then lowest <- number
+                    if number > highest then highest <- number
+                | _ -> ()
+    let area = float (bottom - top + 1) * float (right - left + 1)
+    if area <= cellByCellLimit then
+        for row in top .. bottom do
+            for col in left .. right do
+                match Map.tryFind { Row = row; Col = col } model.Cells with
+                | Some cell -> add row cell
+                | None -> ()
+    else
+        for KeyValue(addr, cell) in model.Cells do
+            if addr.Row >= top && addr.Row <= bottom && addr.Col >= left && addr.Col <= right then add addr.Row cell
+    { Count = count; NumericCount = numeric; Sum = sum
+      Min = (if numeric > 0 then Some lowest else None)
+      Max = (if numeric > 0 then Some highest else None) }
+
+/// The smallest range that holds every cell of the sheet with a value, a
+/// format or a comment and every merged cell (Excel's UsedRange: it need not
+/// start at A1). None for an empty sheet.
+let usedExtent (model: SpreadsheetModel) : CellRange option =
+    let mutable any = false
+    let mutable top = System.Int32.MaxValue
+    let mutable left = System.Int32.MaxValue
+    let mutable bottom = -1
+    let mutable right = -1
+    let take (r0: int) (c0: int) (r1: int) (c1: int) =
+        any <- true
+        if r0 < top then top <- r0
+        if c0 < left then left <- c0
+        if r1 > bottom then bottom <- r1
+        if c1 > right then right <- c1
+    for KeyValue(addr, _) in model.Cells do take addr.Row addr.Col addr.Row addr.Col
+    for merge in model.MergedCells do take merge.StartRow merge.StartCol merge.EndRow merge.EndCol
+    if any then Some { From = { Row = top; Col = left }; To = { Row = bottom; Col = right } } else None

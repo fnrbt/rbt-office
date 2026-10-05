@@ -176,6 +176,32 @@ let private nodeContains (root: Element) (node: obj): bool = jsNative
 
 let private sameRef (a: 'T) (b: 'T) = obj.ReferenceEquals(a, b)
 
+/// A DOM handler that reports what the handler throws and throws it on; it
+/// remembers the handler it stands for (see `wrapsHandler`).
+[<Emit("(function (handler, report) { const guarded = function (e) { try { return handler(e); } catch (error) { report(error); throw error; } }; guarded.__rbtHandler = handler; return guarded; })($0, $1)")>]
+let private guardedHandler (handler: obj) (report: obj -> unit): obj = jsNative
+
+[<Emit("($0 === $1 || $0.__rbtHandler === $1)")>]
+let private wrapsHandler (registered: obj) (handler: obj): bool = jsNative
+
+[<Emit("(($0 && typeof $0.message === 'string') ? $0.message : String($0))")>]
+let private errorMessageOf (error: obj): string = jsNative
+
+/// A promise that tells `report` why it was rejected, and stays rejected.
+[<Emit("$0.catch(function (error) { $1(error); throw error; })")>]
+let private reportRejection (promise: JS.Promise<'T>) (report: obj -> unit): JS.Promise<'T> = jsNative
+
+/// A payload property worked out when it is first read.
+[<Emit("Object.defineProperty($0, $1, { enumerable: true, configurable: true, get: function () { const value = $2(); Object.defineProperty(this, $1, { enumerable: true, configurable: true, writable: true, value: value }); return value; } })")>]
+let private defineLazy (target: obj) (key: string) (compute: unit -> obj): unit = jsNative
+
+[<Emit("Date.now()")>]
+let private nowMs (): float = jsNative
+
+/// The middle of an element on the page: [clientX, clientY].
+[<Emit("(function (el) { const r = el.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })($0)")>]
+let private clientCenterOf (el: Element): float array = jsNative
+
 /// What the package writer resolves to (a Blob in the browser) as bytes.
 [<Emit("$0.then((written) => (written instanceof Uint8Array ? written : (written && typeof written.arrayBuffer === 'function' ? written.arrayBuffer().then((buffer) => new Uint8Array(buffer)) : new Uint8Array(written))))")>]
 let private packageBytes (written: JS.Promise<obj>): JS.Promise<byte[]> = jsNative
@@ -493,9 +519,24 @@ type Spreadsheet(container: Element) =
     /// Dispose removes them all, also those on nodes that are no longer in
     /// the page, so that nothing the component made holds on to it.
     let listeners = ResizeArray<obj * string * obj>()
+    /// OnError subscribers, and whether one of them is being told (an error
+    /// in a subscriber is not reported to the subscribers again).
+    let errorListeners = ResizeArray<obj -> unit>()
+    let mutable reportingError = false
+    /// Tell the OnError subscribers of an error the component caught:
+    /// `source` names where (a subscription such as "OnChange", a DOM event
+    /// such as "event:mousedown", "ImportXlsx" ...).
+    let reportError (source: string) (error: obj) =
+        if errorListeners.Count > 0 && not reportingError then
+            reportingError <- true
+            let payload = createObj [ "source" ==> source; "message" ==> errorMessageOf error; "error" ==> error ]
+            for listener in errorListeners.ToArray() do
+                if errorListeners.Contains listener then (try listener payload with _ -> ())
+            reportingError <- false
     /// Register a listener (the same function object is kept for removal).
+    /// What the handler throws is reported to OnError and thrown on.
     let listen (target: Element) (eventName: string) (handler: obj -> unit) =
-        let boxed = box handler
+        let boxed = guardedHandler (box handler) (fun error -> reportError ("event:" + eventName) error)
         addListenerRaw target eventName boxed
         listeners.Add((box target, eventName, boxed))
     let unlisten (target: Element) (eventName: string) (handler: obj -> unit) =
@@ -504,7 +545,7 @@ type Spreadsheet(container: Element) =
         for index = listeners.Count - 1 downto 0 do
             let known, name, boxed = listeners.[index]
             if obj.ReferenceEquals(known, target) && name = eventName
-               && (obj.ReferenceEquals(boxed, box handler) || listeners |> Seq.filter (fun (t, n, _) -> obj.ReferenceEquals(t, target) && n = eventName) |> Seq.length = 1) then
+               && (wrapsHandler boxed (box handler) || listeners |> Seq.filter (fun (t, n, _) -> obj.ReferenceEquals(t, target) && n = eventName) |> Seq.length = 1) then
                 removeListenerRaw target eventName boxed
                 listeners.RemoveAt index
     /// Take a dialog or dropdown out of the page and drop the listeners on its nodes.
@@ -515,6 +556,27 @@ type Spreadsheet(container: Element) =
             if nodeContains popup known then
                 removeListenerRaw (unbox known) name boxed
                 listeners.RemoveAt index
+    // --- context menus ------------------------------------------------------------
+    // The component has no menu of its own. With an OnContextMenu subscriber
+    // a right click (or the menu key / Shift+F10) selects what it is on, as
+    // Excel does, and tells the subscriber where; the browser's menu is held
+    // back. Without one, nothing changes: the browser shows its menu.
+    let contextListeners = ResizeArray<obj -> unit>()
+    /// When the keyboard last asked for the menu (the browser may follow it
+    /// with a `contextmenu` event of its own, which is then not a second request).
+    let mutable keyboardMenuAt = 0.0
+    /// Tell the OnContextMenu subscribers. False when there is none.
+    let raiseContextMenu (target: string) (row: int) (col: int) (picture: int option) (inSelection: bool) (clientX: float) (clientY: float) (sheetIndex: int) : bool =
+        if contextListeners.Count = 0 then false
+        else
+            let payload =
+                createObj [ "target" ==> target; "row" ==> row; "col" ==> col; "sheetIndex" ==> sheetIndex
+                            "clientX" ==> clientX; "clientY" ==> clientY
+                            "pictureId" ==> (match picture with Some id -> box id | None -> null)
+                            "inSelection" ==> inSelection ]
+            for listener in contextListeners.ToArray() do
+                if contextListeners.Contains listener then (try listener payload with error -> reportError "OnContextMenu" (box error))
+            true
     let mutable workbook: Workbook option = None  // Optional workbook for table references
     /// The XLSX file the current workbook was imported from, for ExportXlsx:
     /// what the editor does not model is carried over from it.
@@ -2121,6 +2183,32 @@ type Spreadsheet(container: Element) =
     let mutable selectionFormatFor : (obj * obj * (int * int * int * int)) option = None
     let mutable selectionFormatObj : obj = null
 
+    /// What GetStatus last answered and for what (the sheet's cells, the rows
+    /// its filter hides and the selection).
+    let mutable statusFor : (obj * obj * (int * int * int * int)) option = None
+    let mutable statusObj : obj = null
+    /// The status of the selection (see GetStatus).
+    let selectionStatusObj () : obj =
+        let top, left, bottom, right = selectionBounds()
+        let block = top, left, min bottom (model.RowCount - 1), min right (model.ColCount - 1)
+        match statusFor with
+        | Some (cells, hidden, known) when sameRef cells (box model.Cells) && sameRef hidden (box model.FilterHiddenRows) && known = block -> statusObj
+        | _ ->
+            let status = SheetOps.selectionStatus model block
+            let numbers = status.NumericCount > 0
+            let made =
+                createObj [
+                    "sum" ==> (if numbers then box status.Sum else null)
+                    "average" ==> (if numbers then box (status.Sum / float status.NumericCount) else null)
+                    "count" ==> status.Count
+                    "numericCount" ==> status.NumericCount
+                    "min" ==> Host.orNull status.Min
+                    "max" ==> Host.orNull status.Max
+                ]
+            statusFor <- Some (box model.Cells, box model.FilterHiddenRows, block)
+            statusObj <- made
+            made
+
     /// The model of the sheet at `index` (converting a sheet of an opened
     /// file that was not needed so far).
     let sheetModelAt (index: int) : SpreadsheetModel =
@@ -2252,7 +2340,7 @@ type Spreadsheet(container: Element) =
         if order.[active] <> activeBefore then
             scrollHome ()
             for listener in sheetChangedListeners do
-                try listener active with _ -> ()
+                try listener active with error -> reportError "OnSheetChanged" (box error)
 
     /// The formulas of the workbook stand as they are, but the workbook they
     /// were calculated in is another one (sheets renamed, moved, added): the
@@ -2405,7 +2493,7 @@ type Spreadsheet(container: Element) =
                 notifiedSheetList <- text
                 let infos = sheetInfos ()
                 for listener in sheetsListeners.ToArray() do
-                    if sheetsListeners.Contains listener then (try listener (box infos) with _ -> ())
+                    if sheetsListeners.Contains listener then (try listener (box infos) with error -> reportError "OnSheetsChange" (box error))
 
     /// The format a toggle (bold, italic ...) goes by: the active cell's.
     let activeFormat () : CellFormat =
@@ -2425,7 +2513,7 @@ type Spreadsheet(container: Element) =
                     | Some (addr, text) -> createObj [ "Editing" ==> true; "Row" ==> addr.Row; "Col" ==> addr.Col; "Text" ==> text; "SheetIndex" ==> activeSheetIndex ]
                     | None -> createObj [ "Editing" ==> false; "Row" ==> -1; "Col" ==> -1; "Text" ==> ""; "SheetIndex" ==> activeSheetIndex ]
                 for listener in editStateListeners.ToArray() do
-                    if editStateListeners.Contains listener then (try listener state with _ -> ())
+                    if editStateListeners.Contains listener then (try listener state with error -> reportError "OnEditStateChange" (box error))
 
     /// Start editing a cell. `seed` replaces the cell's content in the edit
     /// box — the character typed over the cell — instead of loading it.
@@ -2581,6 +2669,32 @@ type Spreadsheet(container: Element) =
                 true
             | _ -> false
         if onPicture then () else
+
+        // The menu key / Shift+F10: the context menu of the active cell (of
+        // the selected picture), when a host shows one.
+        let onMenu =
+            if contextListeners.Count > 0 && model.EditingCell.IsNone && (key = "ContextMenu" || (key = "F10" && shift)) then
+                preventDefault e
+                keyboardMenuAt <- nowMs ()
+                let active = activeCellAddress()
+                let pointOf (selector: string) =
+                    match contentElement, gridContainer with
+                    | Some content, Some grid ->
+                        let node = queryOne content selector
+                        if isNull (box node) then [| getBoundingLeft grid + 8.0; getBoundingTop grid + 8.0 |] else clientCenterOf node
+                    | _ -> [| 0.0; 0.0 |]
+                match selectedPicture |> Option.bind (fun id -> SheetOps.drawingById id model) with
+                | Some drawing ->
+                    let point = pointOf (sprintf ".spreadsheet-picture[data-drawing-id=\"%d\"]" drawing.Id)
+                    raiseContextMenu "picture" drawing.Anchor.FromRow drawing.Anchor.FromCol (Some drawing.Id) true point.[0] point.[1] activeSheetIndex |> ignore
+                | None ->
+                    revealCell active.Row active.Col
+                    render()
+                    let point = pointOf (sprintf ".spreadsheet-cell[data-row=\"%d\"][data-col=\"%d\"]" active.Row active.Col)
+                    raiseContextMenu "cell" active.Row active.Col None true point.[0] point.[1] activeSheetIndex |> ignore
+                true
+            else false
+        if onMenu then () else
 
         match model.EditingCell with
         | Some _ ->
@@ -3608,7 +3722,7 @@ type Spreadsheet(container: Element) =
                         "Modified" ==> (revision <> savedRevision)
                     ]
                 for listener in changeListeners.ToArray() do
-                    if changeListeners.Contains listener then (try listener change with _ -> ())
+                    if changeListeners.Contains listener then (try listener change with error -> reportError "OnChange" (box error))
             if selectionChanged then
                 let active = activeCellAddress()
                 let change =
@@ -3620,8 +3734,10 @@ type Spreadsheet(container: Element) =
                         "ActiveCol" ==> active.Col
                         "Picture" ==> (match selectedPicture with Some id -> box id | None -> null)
                     ]
+                // (Worked out when a subscriber reads it: see GetStatus.)
+                defineLazy change "Status" selectionStatusObj
                 for listener in selectionListeners.ToArray() do
-                    if selectionListeners.Contains listener then (try listener change with _ -> ())
+                    if selectionListeners.Contains listener then (try listener change with error -> reportError "OnSelectionChange" (box error))
 
     /// The selection as an A1 reference ("B2" or "B2:D5").
     and selectionRefText () =
@@ -5057,6 +5173,66 @@ type Spreadsheet(container: Element) =
                         selectCellAddress hitAddr
                     render()
                 | _ -> ())
+        listen content "contextmenu" (fun e ->
+            let target = getEventTarget e
+            // (In the edit box the browser's menu stays: spelling, paste.)
+            if contextListeners.Count > 0 && not (within target ".spreadsheet-edit-input") then
+                preventDefault e
+                // (The menu key was answered at its keydown.)
+                if nowMs () - keyboardMenuAt > 400.0 then
+                    let top, left, bottom, right = selectionBounds()
+                    let lastRow = max 0 (model.RowCount - 1)
+                    let lastCol = max 0 (model.ColCount - 1)
+                    let tell (kind: string) (row: int) (col: int) (picture: int option) (inSelection: bool) =
+                        raiseContextMenu kind row col picture inSelection (getClientX e) (getClientY e) activeSheetIndex |> ignore
+                    // What is under the pointer becomes the selection, unless it is part of it.
+                    let take (select: unit -> unit) =
+                        if model.EditingCell.IsSome then finishEditing true |> ignore
+                        if not (holdsFocus content) then focusQuietly content
+                        selectedPicture <- None
+                        select ()
+                        render()
+                    if within target ".spreadsheet-picture-handle, .spreadsheet-picture-frame, .spreadsheet-picture" then
+                        let holder = closest target "[data-drawing-id]"
+                        match (if isNull (box holder) then (false, 0) else System.Int32.TryParse (getAttribute holder "data-drawing-id")) with
+                        | true, id ->
+                            match SheetOps.drawingById id model with
+                            | Some drawing ->
+                                if selectedPicture <> Some id then
+                                    selectedPicture <- Some id
+                                    render()
+                                tell "picture" drawing.Anchor.FromRow drawing.Anchor.FromCol (Some id) true
+                            | None -> ()
+                        | _ -> ()
+                    elif within target ".spreadsheet-corner" then
+                        tell "corner" -1 -1 None (selectedPicture.IsNone && top = 0 && left = 0 && bottom >= lastRow && right >= lastCol)
+                    elif within target ".spreadsheet-col-header" then
+                        match headerIndex target ".spreadsheet-col-header" "data-col" with
+                        | Some col ->
+                            let inside = selectedPicture.IsNone && top = 0 && bottom >= lastRow && col >= left && col <= right
+                            if not inside then
+                                take (fun () ->
+                                    anchorCell <- { Row = 0; Col = col }
+                                    model <- { model with Selection = Range (0, col, lastRow, col) })
+                            tell "colHeader" -1 col None inside
+                        | None -> ()
+                    elif within target ".spreadsheet-row-header" then
+                        match headerIndex target ".spreadsheet-row-header" "data-row" with
+                        | Some row ->
+                            let inside = selectedPicture.IsNone && left = 0 && right >= lastCol && row >= top && row <= bottom
+                            if not inside then
+                                take (fun () ->
+                                    anchorCell <- { Row = row; Col = 0 }
+                                    model <- { model with Selection = Range (row, 0, row, lastCol) })
+                            tell "rowHeader" row -1 None inside
+                        | None -> ()
+                    else
+                        match hitTestEvent e with
+                        | SpreadsheetLayout.Cell addr ->
+                            let inside = selectedPicture.IsNone && addr.Row >= top && addr.Row <= bottom && addr.Col >= left && addr.Col <= right
+                            if not inside then take (fun () -> selectCellAddress addr)
+                            tell "cell" addr.Row addr.Col None inside
+                        | SpreadsheetLayout.HitColumnHeader _ | SpreadsheetLayout.HitRowHeader _ | SpreadsheetLayout.Corner | SpreadsheetLayout.Empty -> ())
         listen content "dblclick" (fun e ->
             let target = getEventTarget e
             // A double click on a resize handle fits the column / row to its
@@ -5222,7 +5398,7 @@ type Spreadsheet(container: Element) =
                 let drag = pictureDrag.Value
                 pictureDrag <- None
                 if drag.Moved then
-                    (try placePictureAt "picture" (if drag.Handle = "move" then "Move picture" else "Resize picture") drag.Id drag.Current |> ignore with _ -> ())
+                    (try placePictureAt "picture" (if drag.Handle = "move" then "Move picture" else "Resize picture") drag.Id drag.Current |> ignore with error -> reportError "picture" (box error))
                     // (Drawn again from the model, whatever came of it.)
                     renderedDrawings <- null
                 render()
@@ -5388,7 +5564,9 @@ type Spreadsheet(container: Element) =
         System.Action(fun () -> changeListeners.Remove listener |> ignore)
 
     /// Call `callback` after the selection changed (another cell or range, or
-    /// another sheet). It receives { SheetIndex, Selection: "B2" | "B2:D5" }.
+    /// another sheet). It receives { SheetIndex, Selection: "B2" | "B2:D5",
+    /// ActiveCell, ActiveRow, ActiveCol, Picture (id of the selected picture
+    /// or null), Status (what GetStatus() gives for the new selection) }.
     /// Returns a function that removes the subscription.
     member _.OnSelectionChange(callback: System.Action<obj>) : System.Action =
         let listener = callback.Invoke
@@ -5503,7 +5681,7 @@ type Spreadsheet(container: Element) =
             resetScroll ()
             render()
             for listener in sheetChangedListeners do
-                try listener index with _ -> ()
+                try listener index with error -> reportError "OnSheetChanged" (box error)
 
     /// Register a callback invoked after every successful sheet switch.
     /// Chrome uses this to update its tab-strip selection highlight when
@@ -5835,7 +6013,7 @@ type Spreadsheet(container: Element) =
             if not disposed && incrementalRecalculation && generation = engineGeneration && recalcEngine.IsNone then
                 ensureRecalcEngine () |> ignore) 250 |> ignore
         for listener in sheetChangedListeners do
-            try listener safeIndex with _ -> ()
+            try listener safeIndex with error -> reportError "OnSheetChanged" (box error)
 
     /// The four edges of a cell of the active sheet as they are drawn - one
     /// line per edge, shared with the neighbouring cell: { Top, Right,
@@ -5903,8 +6081,10 @@ type Spreadsheet(container: Element) =
     /// rejects when the file cannot be read; the current workbook is then
     /// left untouched.
     member this.ImportXlsx(data: obj): JS.Promise<unit> =
-        (loadReaderWorkbook data None).``then``(fun readerWorkbook ->
-            this.InstallImportedWorkbook(Rbt.Spreadsheet.XlsxBridge.Import.importWorkbookLazy (fun _ -> false) readerWorkbook, -1))
+        reportRejection
+            ((loadReaderWorkbook data None).``then``(fun readerWorkbook ->
+                this.InstallImportedWorkbook(Rbt.Spreadsheet.XlsxBridge.Import.importWorkbookLazy (fun _ -> false) readerWorkbook, -1)))
+            (reportError "ImportXlsx")
 
     /// Whether the sheet at `index` has been converted to a model. After
     /// ImportXlsx only the sheet on display is; the others are converted when
@@ -6325,6 +6505,90 @@ type Spreadsheet(container: Element) =
                 Array.init cols (fun c ->
                     let addr = { Row = range.From.Row + r; Col = range.From.Col + c }
                     Host.cellToObj source addr (cellText (getCell addr source))))
+
+    /// What a status bar shows of the selection: { sum, average, count,
+    /// numericCount, min, max }. `count` is the number of cells that hold
+    /// something, `numericCount` how many of them are numbers (dates are
+    /// numbers; a formula counts by its result; text, booleans and errors
+    /// are not numbers), and sum / average / min / max are of the numbers -
+    /// null when there is none. Rows an AutoFilter hides are left out, as in
+    /// Excel's status bar; rows hidden by hand are counted. A selection of
+    /// whole rows, columns or the sheet costs one pass over the cells that
+    /// exist, and asking again for the same selection of unchanged cells
+    /// costs nothing. The same object is the `Status` property of the
+    /// OnSelectionChange payload (worked out when it is first read). The
+    /// selection event is not raised when the cells of an unchanged
+    /// selection change: read GetStatus() from OnChange for that.
+    member _.GetStatus() : obj = selectionStatusObj ()
+
+    /// The used range of a sheet (the active one, or `sheetIndex`): the
+    /// smallest range that holds every cell with a value, a format or a
+    /// comment and every merged cell, as Excel's UsedRange (it need not
+    /// start at A1) - { range: "B2:F40", firstRow, firstCol, lastRow,
+    /// lastCol } (0-based), or null for an empty sheet. A sheet of an opened
+    /// file that was not needed so far is converted by this call.
+    member _.GetUsedRange(?sheetIndex: obj) : obj =
+        let source = sheetArg "GetUsedRange" (defaultArg sheetIndex null)
+        match SheetOps.usedExtent source with
+        | None -> null
+        | Some range ->
+            createObj [ "range" ==> SheetOps.rangeText range
+                        "firstRow" ==> range.From.Row; "firstCol" ==> range.From.Col
+                        "lastRow" ==> range.To.Row; "lastCol" ==> range.To.Col ]
+
+    /// Call `callback` when the user asks for a context menu: a right click
+    /// in the grid, or the menu key / Shift+F10 (for the active cell or the
+    /// selected picture). It receives { target: "cell" | "rowHeader" |
+    /// "colHeader" | "corner" | "picture" | "sheetTab", row, col (0-based;
+    /// -1 where the target has none: a column header has no row, the corner
+    /// neither; for a picture its anchor cell), sheetIndex, clientX, clientY
+    /// (where to open the menu: the pointer, or the middle of the cell for
+    /// the keyboard), pictureId (number | null), inSelection (whether the
+    /// target was part of the selection already) }. As in Excel, a right
+    /// click outside the selection first selects what it is on - the cell,
+    /// the whole row or column of a header, the picture - and one inside the
+    /// selection keeps it; OnSelectionChange is told before the callback
+    /// runs. While a subscriber is registered the browser's own menu is held
+    /// back in the grid (not in the edit box of a cell); the component has no
+    /// menu of its own, and without a subscriber nothing changes. "sheetTab"
+    /// comes from RaiseSheetTabContextMenu only. Returns a function that
+    /// removes the subscription.
+    member _.OnContextMenu(callback: System.Action<obj>) : System.Action =
+        let listener = callback.Invoke
+        contextListeners.Add listener
+        System.Action(fun () -> contextListeners.Remove listener |> ignore)
+
+    /// For a tab strip (the component draws none): tell the OnContextMenu
+    /// subscribers of a right click on the tab of sheet `sheetIndex` at
+    /// (clientX, clientY) - { target: "sheetTab", row: -1, col: -1,
+    /// sheetIndex, clientX, clientY, pictureId: null, inSelection (the sheet
+    /// is the one on display) }. The sheet on display is not changed. True
+    /// when a subscriber was told. Throws for a sheet that is not there.
+    member _.RaiseSheetTabContextMenu(sheetIndex: obj, clientX: obj, clientY: obj) : bool =
+        let memberName = "RaiseSheetTabContextMenu"
+        let index = Host.intArg memberName "sheetIndex" sheetIndex
+        if index < 0 || index >= sheets.Length then Host.hostFail memberName (sprintf "there is no sheet %d (the workbook has %d)" index sheets.Length)
+        let x = Host.numberArg memberName "clientX" clientX
+        let y = Host.numberArg memberName "clientY" clientY
+        raiseContextMenu "sheetTab" -1 -1 None (index = activeSheetIndex) x y index
+
+    /// Call `callback` with errors the component catches instead of letting
+    /// them reach the host: { source, message, error }. `source` says where:
+    /// the name of a subscription whose callback threw ("OnChange",
+    /// "OnSelectionChange", "OnSheetsChange", "OnSheetChanged",
+    /// "OnEditStateChange", "OnHyperlinkActivate", "OnContextMenu"),
+    /// "event:<name>" for an error in the grid's handling of a DOM event
+    /// (a key, the pointer, scrolling, paste: it is reported and then thrown
+    /// on, so the browser's console shows it as before), "picture" (a
+    /// picture drag that could not be applied) or "ImportXlsx" (the file
+    /// could not be read: the promise is rejected as well). What a member
+    /// called by the host throws is thrown to the caller and is not reported
+    /// here. An error thrown by an OnError callback is dropped. Returns a
+    /// function that removes the subscription.
+    member _.OnError(callback: System.Action<obj>) : System.Action =
+        let listener = callback.Invoke
+        errorListeners.Add listener
+        System.Action(fun () -> errorListeners.Remove listener |> ignore)
 
     /// What the cells of the selection have in common, for a toolbar: the
     /// `format` object of GetCell with "mixed" in place of every property in
@@ -6798,7 +7062,7 @@ type Spreadsheet(container: Element) =
             else
                 let event = payload false
                 for listener in hyperlinkListeners.ToArray() do
-                    if hyperlinkListeners.Contains listener then (try listener event with _ -> ())
+                    if hyperlinkListeners.Contains listener then (try listener event with error -> reportError "OnHyperlinkActivate" (box error))
                 event
 
     /// The comment on a cell of the active sheet, or null:
@@ -8004,15 +8268,17 @@ type Spreadsheet(container: Element) =
     member this.ImportXlsxFromBuffer(buffer: JS.ArrayBuffer, sheetName: string option): JS.Promise<unit> =
         // The promise rejects when the file cannot be read; the current
         // workbook is left untouched in that case.
-        (importWorkbookPromise buffer).``then``(fun imported ->
-            // Land on the requested sheet, else the first one Excel shows.
-            let active =
-                match sheetName with
-                | Some n -> imported.Sheets |> Array.tryFindIndex (fun sheet -> sheet.Name = n) |> Option.defaultValue -1
-                | None -> -1
-            // The imported context (defined names, tables, hidden sheets) is
-            // what lets later recalculation resolve cross-sheet references.
-            this.InstallImportedWorkbook(imported, active))
+        reportRejection
+            ((importWorkbookPromise buffer).``then``(fun imported ->
+                // Land on the requested sheet, else the first one Excel shows.
+                let active =
+                    match sheetName with
+                    | Some n -> imported.Sheets |> Array.tryFindIndex (fun sheet -> sheet.Name = n) |> Option.defaultValue -1
+                    | None -> -1
+                // The imported context (defined names, tables, hidden sheets) is
+                // what lets later recalculation resolve cross-sheet references.
+                this.InstallImportedWorkbook(imported, active)))
+            (reportError "ImportXlsx")
 
     /// Get list of sheet names from XLSX buffer (returns Promise). Hidden
     /// sheets are included; see GetXlsxSheetInfos.

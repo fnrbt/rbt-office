@@ -2607,3 +2607,210 @@ checks['api-tables'] = async () => {
     close();
     return lines;
 };
+
+// Events and state: OnContextMenu, RaiseSheetTabContextMenu, OnError, GetStatus (also in the
+// OnSelectionChange payload), GetUsedRange.
+checks['api-events'] = async () => {
+    const { lines, check, note } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        const centre = (element) => { const r = element.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; };
+        const cellNode = (row, col) => host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"]`);
+        // A right click at a point of the page: on what is there. Returns whether the browser's menu was held back.
+        const rightClickAt = (x, y) => {
+            const target = document.elementFromPoint(x, y);
+            const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 2 });
+            target.dispatchEvent(event);
+            return event.defaultPrevented;
+        };
+        const rightClick = (element) => rightClickAt(...centre(element));
+        const menus = [], take = () => menus.splice(0).map((m) => [m.target, m.row, m.col, m.sheetIndex, m.pictureId, m.inSelection]);
+        for (let r = 0; r < 6; r++) for (let c = 0; c < 4; c++) grid.SetCell(r, c, String((r + 1) * (c + 1)));
+        grid.SelectCell(0, 0);
+        await frame();
+
+        // ---- no subscriber: nothing changes ----
+        check('without a subscriber the browser keeps its menu and the selection stays', [rightClick(cellNode(3, 2)), grid.GetSelectionRef()], [false, 'A1']);
+
+        // ---- OnContextMenu ----
+        const off = grid.OnContextMenu((menu) => menus.push(menu));
+        const selections = [];
+        const offSelection = grid.OnSelectionChange((change) => selections.push(change.Selection + (menus.length ? ' after the menu' : '')));
+        const [x32, y32] = centre(cellNode(3, 2));
+        check('a right click on a cell outside the selection: the menu is held back', rightClickAt(x32, y32), true);
+        check('... the cell is selected first, then the subscriber is told where', [take(), grid.GetSelectionRef(), selections.splice(0)], [[['cell', 3, 2, 0, null, false]], 'C4', ['C4']]);
+        const [x32b, y32b] = centre(cellNode(3, 2)).map(Math.round);
+        rightClickAt(x32b, y32b);
+        check('the payload has the pointer position', (() => { const m = menus[menus.length - 1]; return [m.clientX, m.clientY]; })(), [x32b, y32b]);
+        check('a right click on the selected cell keeps the selection', [take(), grid.GetSelectionRef()], [[['cell', 3, 2, 0, null, true]], 'C4']);
+        grid.SelectRange(1, 1, 4, 3); selections.splice(0);
+        rightClick(cellNode(2, 2));
+        check('... inside a selected range it keeps the range', [take(), grid.GetSelectionRef(), selections.splice(0)], [[['cell', 2, 2, 0, null, true]], 'B2:D5', []]);
+        rightClick(cellNode(5, 0));
+        check('... outside it the cell becomes the selection', [take(), grid.GetSelectionRef()], [[['cell', 5, 0, 0, null, false]], 'A6']);
+
+        // Headers and the corner.
+        const colHeader = (col) => host.querySelector(`.spreadsheet-col-header[data-col="${col}"]`), rowHeader = (row) => host.querySelector(`.spreadsheet-row-header[data-row="${row}"]`);
+        const lastRow = grid.GetModel().RowCount, lastCol = grid.GetModel().ColCount;
+        check('a column header: the whole column is selected', [rightClick(colHeader(2)), take(), grid.GetSelectionRef()], [true, [['colHeader', -1, 2, 0, null, false]], `C1:C${lastRow}`]);
+        check('... again: it is the selection already', [rightClick(colHeader(2)), take(), grid.GetSelectionRef()], [true, [['colHeader', -1, 2, 0, null, true]], `C1:C${lastRow}`]);
+        grid.SelectRange(0, 1, lastRow - 1, 3);
+        check('... a header among several selected columns keeps them', [rightClick(colHeader(2)), take(), grid.GetSelectionRef()], [true, [['colHeader', -1, 2, 0, null, true]], `B1:D${lastRow}`]);
+        const lastLetter = (await import('/spreadsheet/Model.js')).columnToLetter(lastCol - 1);
+        check('a row header: the whole row', [rightClick(rowHeader(4)), take(), grid.GetSelectionRef()], [true, [['rowHeader', 4, -1, 0, null, false]], `A5:${lastLetter}5`]);
+        check('the corner', [rightClick(host.querySelector('.spreadsheet-corner')), take(), grid.GetSelectionRef()], [true, [['corner', -1, -1, 0, null, false]], `A5:${lastLetter}5`]);
+        grid.SelectAll();
+        check('... with the sheet selected it is part of the selection', [rightClick(host.querySelector('.spreadsheet-corner')), take()], [true, [['corner', -1, -1, 0, null, true]]]);
+
+        // A picture.
+        const canvas = document.createElement('canvas'); canvas.width = 60; canvas.height = 40; canvas.getContext('2d').fillRect(0, 0, 60, 40);
+        const pictureId = grid.InsertPicture(canvas.toDataURL('image/png'), 'F3');
+        grid.SelectCell(0, 0); await frame();
+        const image = host.querySelector(`.spreadsheet-picture[data-drawing-id="${pictureId}"]`);
+        check('a picture: it is selected and named', [rightClick(image), take(), grid.GetSelectedPicture()], [true, [['picture', 2, 5, 0, pictureId, true]], pictureId]);
+        rightClick(cellNode(1, 1));
+        check('a cell after a picture: the picture is no longer selected', [take(), grid.GetSelectedPicture(), grid.GetSelectionRef()], [[['cell', 1, 1, 0, null, false]], null, 'B2']);
+
+        // The keyboard: the menu key and Shift+F10 ask for the menu of the active cell.
+        grid.SelectCell(2, 1); await frame();
+        const [kx, ky] = centre(cellNode(2, 1));
+        const keyEvent = new KeyboardEvent('keydown', { key: 'ContextMenu', bubbles: true, cancelable: true });
+        host.querySelector('.spreadsheet-content').dispatchEvent(keyEvent);
+        const byKey = menus[menus.length - 1];
+        check('the menu key: the active cell, at its middle', [keyEvent.defaultPrevented, take(), Math.round(byKey.clientX) === Math.round(kx), Math.round(byKey.clientY) === Math.round(ky)], [true, [['cell', 2, 1, 0, null, true]], true, true]);
+        check('... the contextmenu event the browser sends after it is not a second request', [rightClick(cellNode(4, 3)), take(), grid.GetSelectionRef()], [true, [], 'B3']);
+        await new Promise((r) => setTimeout(r, 450));
+        press(host, 'F10', { shiftKey: true });
+        check('Shift+F10 likewise', take(), [['cell', 2, 1, 0, null, true]]);
+        await new Promise((r) => setTimeout(r, 450));
+        press(host, 'F10');
+        check('F10 alone is not', take(), []);
+
+        // Zoom, frozen panes, hidden headers: the cell under the pointer is the one named.
+        grid.SetZoom(1.5); grid.FreezeAt(1, 1); await frame();
+        const scroller = host.querySelector('.spreadsheet-container');
+        scroller.scrollTop = 25 * 20 * 1.5; scroller.scrollLeft = 100 * 2 * 1.5; await frame();
+        const shown = [...host.querySelectorAll('.spreadsheet-cell')].map((node) => [Number(node.getAttribute('data-row')), Number(node.getAttribute('data-col')), node])
+            .filter(([row, col, node]) => { const [x, y] = centre(node); return row > 22 && col > 3 && document.elementFromPoint(x, y)?.closest('.spreadsheet-cell') === node; }).sort((a, b) => a[0] - b[0] || a[1] - b[1])[0];
+        rightClick(shown[2]);
+        check('zoomed and scrolled with frozen panes: the cell under the pointer', [take(), grid.GetSelectionRef() === (await import('/spreadsheet/Model.js')).formatCellRef(shown[0], shown[1])], [[['cell', shown[0], shown[1], 0, null, false]], true]);
+        rightClick(cellNode(0, 0));
+        check('... a frozen cell', take(), [['cell', 0, 0, 0, null, false]]);
+        check('... a column header under zoom', [rightClick(colHeader(shown[1])), take()], [true, [['colHeader', -1, shown[1], 0, null, false]]]);
+        grid.SetShowHeaders(false); grid.SelectCell(shown[0], shown[1]); await frame();
+        rightClick(cellNode(0, 0));
+        check('... with the headers hidden', take(), [['cell', 0, 0, 0, null, false]]);
+        grid.SetShowHeaders(true); grid.SetZoom(1); grid.Unfreeze(); scroller.scrollTop = 0; scroller.scrollLeft = 0; await frame();
+
+        // In the edit box of a cell the browser's menu stays.
+        grid.SelectCell(1, 1); grid.StartEdit(); await frame();
+        check('in the edit box the browser keeps its menu', [rightClick(host.querySelector('.spreadsheet-edit-input')), take()], [false, []]);
+        grid.CancelEdit();
+
+        // A tab strip tells of its tabs.
+        grid.AddSheet('Two'); grid.SwitchSheet(0);
+        check('RaiseSheetTabContextMenu', [grid.RaiseSheetTabContextMenu(1, 300, 580), menus.splice(0).map((m) => [m.target, m.row, m.col, m.sheetIndex, m.clientX, m.clientY, m.inSelection]), grid.GetActiveSheetIndex()],
+            [true, [['sheetTab', -1, -1, 1, 300, 580, false]], 0]);
+        check('... throws for a sheet that is not there', [thrown(() => grid.RaiseSheetTabContextMenu(7, 0, 0)), thrown(() => grid.RaiseSheetTabContextMenu('x', 0, 0)) !== null], ['RaiseSheetTabContextMenu: there is no sheet 7 (the workbook has 2)', true]);
+
+        off();
+        check('unsubscribed: the browser has its menu back and nothing is told', [rightClick(cellNode(4, 2)), take(), grid.RaiseSheetTabContextMenu(1, 1, 1), grid.GetSelectionRef()], [false, [], false, 'B2']);
+        offSelection();
+
+        // ---- OnError ----
+        const errors = [];
+        const offError = grid.OnError((error) => errors.push([error.source, error.message, error.error instanceof Error]));
+        const offBad = grid.OnChange(() => { throw new Error('the host slipped'); });
+        const heard = [];
+        const offGood = grid.OnChange((change) => heard.push(change.Sheets.join(',')));
+        grid.SetCell(8, 0, 'x');
+        check('a callback that throws is reported, and the other subscribers are still told', [errors.splice(0), heard.splice(0), grid.GetCell(8, 0).value], [[['OnChange', 'the host slipped', true]], ['0'], 'x']);
+        offBad();
+        const offBadSelection = grid.OnSelectionChange(() => { throw new Error('selection slipped'); });
+        grid.SelectCell(3, 3);
+        check('likewise a selection callback', errors.splice(0), [['OnSelectionChange', 'selection slipped', true]]);
+        offBadSelection();
+        const offBadMenu = grid.OnContextMenu(() => { throw new Error('menu slipped'); });
+        rightClick(cellNode(1, 1));
+        check('... and a context menu callback', errors.splice(0), [['OnContextMenu', 'menu slipped', true]]);
+        offBadMenu();
+        let rejected = null;
+        try { await grid.ImportXlsx(new Uint8Array([1, 2, 3, 4])); } catch (e) { rejected = true; }
+        check('a file that cannot be read: reported, and the promise still rejects', [rejected, errors.map((e) => e[0]), errors.splice(0).every((e) => e[1].length > 0), grid.GetCell(8, 0).value], [true, ['ImportXlsx'], true, 'x']);
+        check('what a member throws to its caller is not reported', [thrown(() => grid.GetRange('nowhere!')) !== null, errors.splice(0)], [true, []]);
+        const offThrowing = grid.OnError(() => { throw new Error('the error handler slipped'); });
+        const offBad2 = grid.OnChange(() => { throw new Error('again'); });
+        grid.SetCell(8, 1, 'y');
+        check('an error in an OnError callback is dropped; the others hear the error', errors.splice(0), [['OnChange', 'again', true]]);
+        offThrowing(); offError();
+        grid.SetCell(8, 2, 'z');
+        check('unsubscribed: nothing is told', errors, []);
+        offBad2(); offGood();
+
+        // ---- GetStatus ----
+        grid.SetCell(0, 5, 'Region'); grid.SetCell(0, 6, 'Amount');
+        [['East', '10'], ['West', '-4.5'], ['East', '=G2*3'], ['North', 'TRUE'], ['South', '=1/0'], ['East', '2024-03-05']].forEach(([region, amount], i) => { grid.SetCell(i + 1, 5, region); grid.SetCell(i + 1, 6, amount); });
+        grid.SelectRange(1, 6, 3, 6);
+        check('GetStatus: numbers', grid.GetStatus(), { sum: 35.5, average: 35.5 / 3, count: 3, numericCount: 3, min: -4.5, max: 30 });
+        check('... the same object while nothing changed', grid.GetStatus() === grid.GetStatus(), true);
+        grid.SelectRange(1, 5, 5, 6);
+        check('text, booleans and errors count but are not numbers', grid.GetStatus(), { sum: 35.5, average: 35.5 / 3, count: 10, numericCount: 3, min: -4.5, max: 30 });
+        grid.SelectRange(1, 5, 5, 5);
+        check('no numbers: null', grid.GetStatus(), { sum: null, average: null, count: 5, numericCount: 0, min: null, max: null });
+        grid.SelectCell(6, 6);
+        check('a date is a number', [grid.GetStatus().numericCount, grid.GetStatus().sum], [1, 45356]);
+        grid.SelectCell(30, 8);
+        check('an empty cell', grid.GetStatus(), { sum: null, average: null, count: 0, numericCount: 0, min: null, max: null });
+        grid.SelectRange(1, 6, 3, 6);
+        const before = grid.GetStatus();
+        grid.SetCell(1, 6, '100');
+        check('it follows the cells', [grid.GetStatus() === before, grid.GetStatus().sum, grid.GetStatus().max], [false, 395.5, 300]);
+        grid.SetCell(1, 6, '10');
+        // The selection event carries it.
+        const told = [];
+        const offStatus = grid.OnSelectionChange((change) => told.push(change));
+        grid.SelectRange(1, 6, 2, 6);
+        check('OnSelectionChange carries the status of the new selection', [told.length, told[0].Selection, told[0].Status, told[0].Status === grid.GetStatus()], [1, 'G2:G3', { sum: 5.5, average: 2.75, count: 2, numericCount: 2, min: -4.5, max: 10 }, true]);
+        offStatus();
+        // Rows the filter hides are left out.
+        grid.SetAutoFilter('F1:G7'); grid.SetFilter(5, { values: ['East'] });
+        grid.SelectRange(1, 6, 6, 6);
+        check('rows the filter hides are not counted', pick(grid.GetStatus(), ['count', 'numericCount', 'sum']), { count: 3, numericCount: 3, sum: 10 + 30 + 45356 });
+        grid.SelectAll();
+        check('... nor in a selection of the whole sheet', pick(grid.GetStatus(), ['numericCount', 'sum']), { numericCount: 3 + 12, sum: 10 + 30 + 45356 + [1, 2, 4].reduce((n, r) => n + r * 10, 0) });
+        grid.ClearAutoFilter(); grid.SelectCell(0, 0);
+
+        // ---- GetUsedRange ----
+        check('GetUsedRange: the sheet on display', grid.GetUsedRange(), { range: 'A1:G9', firstRow: 0, firstCol: 0, lastRow: 8, lastCol: 6 });
+        check('an empty sheet has none', grid.GetUsedRange(1), null);
+        grid.SwitchSheet(1); grid.SetCell(3, 2, 'x'); grid.SelectCell(9, 4); grid.ApplyBgColor('#ffee00'); grid.SwitchSheet(0);
+        check('it need not start at A1, and a formatted cell is used', grid.GetUsedRange(1), { range: 'C4:E10', firstRow: 3, firstCol: 2, lastRow: 9, lastCol: 4 });
+        check('throws for a sheet that is not there', thrown(() => grid.GetUsedRange(5)), 'GetUsedRange: there is no sheet 5 (the workbook has 2)');
+
+        // On an opened file: a sheet that was not needed yet is converted by the call, and the whole-sheet status is quick.
+        const again = mountGrid();
+        await again.grid.ImportXlsx(await bytesOf('tests/real-world/dashboard-sales-analysis.xlsx'));
+        const dataIndex = again.grid.GetSheetNames().indexOf('Data');
+        const wasLoaded = again.grid.IsSheetLoaded(dataIndex);
+        const used = again.grid.GetUsedRange(dataIndex);
+        check('GetUsedRange of a sheet of an opened file that was not shown yet', [wasLoaded, again.grid.IsSheetLoaded(dataIndex), used.firstRow, used.firstCol, used.lastRow > 70000, /^A1:[A-Z]+\d+$/.test(used.range)], [false, true, 0, 0, true, true]);
+        again.grid.SwitchSheet(dataIndex); again.grid.SelectAll();
+        let started = performance.now();
+        const whole = again.grid.GetStatus();
+        const first = performance.now() - started;
+        started = performance.now();
+        again.grid.GetStatus();
+        const repeated = performance.now() - started;
+        check('GetStatus of the whole "Data" sheet', [whole.count > 800000, whole.numericCount > 0, first < 1500, repeated < 2], [true, true, true, true]);
+        note(`GetStatus on a whole-sheet selection of ${whole.count} cells: ${first.toFixed(0)} ms, asked again ${repeated.toFixed(3)} ms`);
+        const selectionTimes = [];
+        const offTimed = again.grid.OnSelectionChange(() => {});
+        started = performance.now(); again.grid.SelectCell(5, 5); selectionTimes.push(performance.now() - started);
+        started = performance.now(); again.grid.SelectAll(); selectionTimes.push(performance.now() - started);
+        offTimed();
+        note(`a selection change with a subscriber that does not read Status: ${selectionTimes.map((t) => t.toFixed(1)).join(' / ')} ms`);
+        again.close();
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
