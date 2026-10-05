@@ -67,6 +67,9 @@ let private focusQuietly (el: Element): unit = jsNative
 [<Emit("$0.stopPropagation()")>]
 let private stopPropagation (e: obj): unit = jsNative
 
+[<Emit("new Date().toISOString().slice(0, 22)")>]
+let private commentDateNow (): string = jsNative
+
 [<Emit("new Date().getFullYear()")>]
 let private currentYear (): int = jsNative
 
@@ -1770,12 +1773,13 @@ type Spreadsheet(container: Element) =
         let oldCells = model.Cells
         let oldSpill = model.Spill
         let oldRuns = model.RichRuns
+        let oldThreads = model.Threads
         let cleared = SheetOps.clearCells what block model
         if obj.ReferenceEquals(cleared, model) then false
         else
             model <- cleared
             let command =
-                { Undo = (fun m -> { restoreCellMapWithSpill oldCells oldSpill m with RichRuns = oldRuns })
+                { Undo = (fun m -> { restoreCellMapWithSpill oldCells oldSpill m with RichRuns = oldRuns; Threads = oldThreads })
                   Redo = SheetOps.clearCells what block
                   Description = description }
             if what = SheetOps.ClearFormats then pushValueNeutral command
@@ -1826,6 +1830,24 @@ type Spreadsheet(container: Element) =
                                Redo = (fun m -> { m with Validations = after })
                                Description = description }
             true
+
+    /// Change the comments of the active sheet (notes are on the cells,
+    /// threads beside them) as one undoable step; no value changes. False
+    /// when nothing changed.
+    let changeComments (description: string) (change: SpreadsheetModel -> SpreadsheetModel) : bool =
+        let cellsBefore, threadsBefore = model.Cells, model.Threads
+        let changed = change model
+        let cellsAfter, threadsAfter = changed.Cells, changed.Threads
+        if sameRef cellsBefore cellsAfter && (sameRef threadsBefore threadsAfter || threadsBefore = threadsAfter) then false
+        else
+            model <- { model with Cells = cellsAfter; Threads = threadsAfter }
+            pushValueNeutral { Undo = (fun m -> { m with Cells = cellsBefore; Threads = threadsBefore })
+                               Redo = (fun m -> { m with Cells = cellsAfter; Threads = threadsAfter })
+                               Description = description }
+            true
+    /// The author of a comment as a host gives it: a text, or nothing.
+    let commentAuthorArg (memberName: string) (value: obj) : string option =
+        Host.optionalArg (Host.stringArg memberName "the author") value |> Option.filter (fun name -> name.Trim() <> "")
 
     /// The workbook context, made now for a grid that has none yet.
     let ensureWorkbook () : Workbook =
@@ -1992,6 +2014,13 @@ type Spreadsheet(container: Element) =
         else
             convertInPlace index
             sheets.[index]
+
+    /// The model of the sheet a host names by an optional index (none: the active sheet).
+    let sheetArg (memberName: string) (sheetIndex: obj) : SpreadsheetModel =
+        match Host.optionalArg (Host.intArg memberName "sheetIndex") sheetIndex with
+        | None -> model
+        | Some index when index >= 0 && index < sheets.Length -> sheetModelAt index
+        | Some index -> Host.hostFail memberName (sprintf "there is no sheet %d (the workbook has %d)" index sheets.Length)
 
     // --- the list of sheets ---------------------------------------------------------
     // Adding, deleting, renaming, moving, copying, hiding and colouring a sheet
@@ -5738,7 +5767,7 @@ type Spreadsheet(container: Element) =
     ///             borders: { top, bottom, left, right, diagonal: { style, color } | null, diagonalUp, diagonalDown: boolean } }
     ///           - the cell's own format, else its column's default style, else the default (conditional formats are not applied),
     ///   isMerged: boolean, mergeRange: "B2:C3" | null (the merged cell it is part of; its content is in the first cell),
-    ///   comment: { text, author: string | null } | null (see GetCommentThread for replies),
+    ///   comment: { text, author: string | null, thread } | null (see GetComment),
     ///   hyperlink: { target, isInternal: boolean, range } | null,
     ///   validation: the rule object of the validation on the cell with its `id` and `range`
     ///               (see GetValidations / GetValidationAt) | null }.
@@ -6159,28 +6188,85 @@ type Spreadsheet(container: Element) =
                                Description = "Unmerge cells" }
         render()
 
-    /// Add or update comment on a cell
-    member _.SetComment(row: int, col: int, text: string, author: string option) =
-        let addr = { Row = row; Col = col }
-        let cellData = getCell addr model |> Option.defaultValue {
-            Value = CellValue.Empty
-            Format = defaultFormat
-            Comment = None
-        }
-        let comment = { Text = text; Author = author }
-        let newCellData = { cellData with Comment = Some comment }
-        model <- setCell addr newCellData model
-        render()
+    /// The comment on a cell of the active sheet, or null:
+    /// { text, author: string | null, thread } - `thread` is null for a note
+    /// and, for a comment thread, { id, author, date, text, resolved,
+    /// replies: [{ id, author, date, text }] } (`text` and `author` are then
+    /// those of the thread's first comment). GetCell's `comment` is the same object.
+    member _.GetComment(row: obj, col: obj) : obj =
+        let addr = { Row = Host.rowArg "GetComment" model row; Col = Host.colArg "GetComment" model col }
+        match SheetOps.commentAt model addr with
+        | Some info -> Host.commentToObj info
+        | None -> null
 
-    /// Remove comment from a cell
-    member _.RemoveComment(row: int, col: int) =
-        let addr = { Row = row; Col = col }
-        match getCell addr model with
-        | Some cellData ->
-            let newCellData = { cellData with Comment = None }
-            model <- setCell addr newCellData model
+    /// Every comment of a sheet (the active one, or the one at `sheetIndex`),
+    /// row by row: [{ row, col, address, text, author, thread }] (see GetComment).
+    member _.GetComments(sheetIndex: obj) : obj array =
+        SheetOps.allComments (sheetArg "GetComments" sheetIndex)
+        |> List.map (fun info ->
+            createObj [ "row" ==> info.Cell.Row; "col" ==> info.Cell.Col; "address" ==> formatCellRef info.Cell.Row info.Cell.Col
+                        "text" ==> info.Text; "author" ==> Host.orNull info.Author
+                        "thread" ==> Host.getKey (Host.commentToObj info) "thread" ])
+        |> List.toArray
+
+    /// Put a comment on a cell of the active sheet (one undo step). A cell
+    /// without a comment, or with a note, gets a note with this text and
+    /// author. On a cell with a comment thread the text of the thread's first
+    /// comment changes (and its author, when one is given); the replies stay.
+    /// Throws when the text is empty (DeleteComment removes a comment).
+    member _.SetComment(row: obj, col: obj, text: obj, author: obj) =
+        let addr = { Row = Host.rowArg "SetComment" model row; Col = Host.colArg "SetComment" model col }
+        let text = Host.stringArg "SetComment" "the text" text
+        if System.String.IsNullOrWhiteSpace text then Host.hostFail "SetComment" "the text is empty (DeleteComment removes a comment)"
+        let author = commentAuthorArg "SetComment" author
+        if changeComments "Comment" (SheetOps.setComment addr text author) then render()
+
+    /// Remove the comment of a cell of the active sheet - a note, or a thread
+    /// with its replies - as one undo step. True when the cell had one.
+    member _.DeleteComment(row: obj, col: obj) : bool =
+        let addr = { Row = Host.rowArg "DeleteComment" model row; Col = Host.colArg "DeleteComment" model col }
+        let removed = changeComments "Delete comment" (SheetOps.deleteComment addr)
+        if removed then render()
+        removed
+
+    /// The same as DeleteComment (the older name).
+    member this.RemoveComment(row: obj, col: obj) : unit = this.DeleteComment(row, col) |> ignore
+
+    /// Reply to the comment of a cell of the active sheet (one undo step) and
+    /// return the reply's id. A note becomes the first comment of a thread, as
+    /// Excel's "convert to comments" does. The reply is dated now. Throws when
+    /// the cell has no comment or the text is empty.
+    member _.AddCommentReply(row: obj, col: obj, text: obj, author: obj) : string =
+        let addr = { Row = Host.rowArg "AddCommentReply" model row; Col = Host.colArg "AddCommentReply" model col }
+        let text = Host.stringArg "AddCommentReply" "the text" text
+        if System.String.IsNullOrWhiteSpace text then Host.hostFail "AddCommentReply" "the text is empty"
+        let author = commentAuthorArg "AddCommentReply" author
+        match SheetOps.addCommentReply addr text author (Some (commentDateNow ())) model with
+        | Result.Error message -> Host.hostFail "AddCommentReply" message
+        | Ok (changed, id) ->
+            changeComments "Reply to comment" (fun _ -> changed) |> ignore
             render()
-        | None -> ()
+            id
+
+    /// Remove one reply (by its id, see GetComment) from the comment thread
+    /// of a cell of the active sheet, as one undo step. Throws when the cell
+    /// has no thread or the thread no such reply.
+    member _.DeleteCommentReply(row: obj, col: obj, replyId: obj) : unit =
+        let addr = { Row = Host.rowArg "DeleteCommentReply" model row; Col = Host.colArg "DeleteCommentReply" model col }
+        match SheetOps.deleteCommentReply addr (Host.stringArg "DeleteCommentReply" "the reply id" replyId) model with
+        | Result.Error message -> Host.hostFail "DeleteCommentReply" message
+        | Ok changed ->
+            changeComments "Delete reply" (fun _ -> changed) |> ignore
+            render()
+
+    /// Mark the comment thread of a cell resolved (the default) or open again,
+    /// as one undo step. Throws when the cell has no thread (a note cannot be resolved).
+    member _.ResolveComment(row: obj, col: obj, resolved: obj) : unit =
+        let addr = { Row = Host.rowArg "ResolveComment" model row; Col = Host.colArg "ResolveComment" model col }
+        let resolved = Host.optionalArg (Host.boolArg "ResolveComment" "resolved") resolved |> Option.defaultValue true
+        match SheetOps.setCommentResolved addr resolved model with
+        | Result.Error message -> Host.hostFail "ResolveComment" message
+        | Ok changed -> if changeComments "Resolve comment" (fun _ -> changed) then render()
 
     /// Set workbook context for table reference support.
     member _.SetWorkbookContext(wb: Workbook) =

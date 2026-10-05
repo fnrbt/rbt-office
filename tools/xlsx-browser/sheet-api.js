@@ -57,9 +57,9 @@ checks['api-read'] = async () => {
         check('another cell of it', pick(grid.GetCell(11, 3), ['value', 'isMerged', 'mergeRange']), { value: null, isMerged: true, mergeRange: 'B11:D12' });
         check('the cell beside it', pick(grid.GetCell(11, 4), ['isMerged', 'mergeRange']), { isMerged: false, mergeRange: null });
         grid.SetComment(2, 0, 'look here', 'Ada');
-        check('a comment', grid.GetCell(2, 0).comment, { text: 'look here', author: 'Ada' });
+        check('a comment', grid.GetCell(2, 0).comment, { text: 'look here', author: 'Ada', thread: null });
         grid.SetComment(1, 0, 'anonymous', undefined);
-        check('a comment without an author', grid.GetCell(1, 0).comment, { text: 'anonymous', author: null });
+        check('a comment without an author', grid.GetCell(1, 0).comment, { text: 'anonymous', author: null, thread: null });
 
         // Invalid input.
         check('a row outside the sheet throws', thrown(() => grid.GetCell(-1, 0)), 'GetCell: row -1 is outside the sheet (0 to 999)');
@@ -1843,6 +1843,117 @@ checks['api-sortfilter'] = async () => {
             check('in reasonable time', listed < 5000 && filtered < 5000 && sorted < 10000, true);
             note(`dashboard "Data" (${rows} rows): SetAutoFilter + GetFilterValues ${Math.round(listed)} ms, SetFilter ${Math.round(filtered)} ms (${state.hiddenRowCount} rows hidden), SortRange of the ${state.visibleRowCount} shown rows ${Math.round(sorted)} ms, two undos ${Math.round(undone)} ms`);
         } finally { big.close(); }
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
+
+// Comments: notes and threads with replies, as undo steps and through XLSX.
+checks['api-comments'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        const node = (row, col) => host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"]`);
+        const title = (row, col) => node(row, col)?.getAttribute('title') ?? null;
+        const changes = [];
+        const off = grid.OnChange((change) => changes.push(change));
+        grid.SetCell(1, 1, '42');
+        check('no comment yet', [grid.GetComment(1, 1), grid.GetComments()], [null, []]);
+        const r0 = grid.GetRevision(); changes.length = 0;
+
+        // ---- a note ----
+        grid.SetComment(1, 1, 'look here', 'Ada');
+        check('a note', grid.GetComment(1, 1), { text: 'look here', author: 'Ada', thread: null });
+        await frame();
+        check('the cell shows it: a marker and a tooltip', [node(1, 1).children.length > 0, title(1, 1)], [true, 'Ada:\nlook here']);
+        check('it is a change with a new revision, and the value stays', [changes.length, grid.GetRevision() !== r0, grid.GetCell(1, 1).value, grid.GetCell(1, 1).comment.text], [1, true, 42, 'look here']);
+        grid.Undo();
+        await frame();
+        check('undo takes it away, back at the revision before', [grid.GetComment(1, 1), title(1, 1), grid.GetRevision() === r0], [null, null, true]);
+        grid.Redo();
+        check('redo puts it back', grid.GetComment(1, 1)?.text, 'look here');
+        grid.SetComment(1, 1, 'look again');
+        check('a note is replaced (no author given: none)', grid.GetComment(1, 1), { text: 'look again', author: null, thread: null });
+        grid.Undo();
+        grid.SetComment(4, 3, 'on an empty cell', null);
+        check('a note on an empty cell', [grid.GetComment(4, 3).text, grid.GetCell(4, 3).value], ['on an empty cell', null]);
+        check('GetComments lists them row by row', grid.GetComments().map((c) => [c.address, c.row, c.col, c.text, c.author, c.thread]), [['B2', 1, 1, 'look here', 'Ada', null], ['D5', 4, 3, 'on an empty cell', null, null]]);
+        check('deleting a comment says whether there was one', [grid.DeleteComment(4, 3), grid.DeleteComment(4, 3), grid.GetComment(4, 3)], [true, false, null]);
+        grid.Undo();
+        check('... one undo step', grid.GetComment(4, 3)?.text, 'on an empty cell');
+        grid.RemoveComment(4, 3);
+        check('RemoveComment is the older name of it', grid.GetComment(4, 3), null);
+
+        // ---- replies: a thread ----
+        const replyId = grid.AddCommentReply(1, 1, 'done', 'Bob');
+        const threaded = grid.GetComment(1, 1);
+        check('a reply turns the note into a thread', [threaded.text, threaded.author, threaded.thread.text, threaded.thread.resolved, threaded.thread.replies.map((r) => [r.id, r.text, r.author, /^\d{4}-\d\d-\d\dT/.test(r.date)])],
+            ['look here', 'Ada', 'look here', false, [[replyId, 'done', 'Bob', true]]]);
+        await frame();
+        check('the tooltip has the reply', title(1, 1).includes('look here') && title(1, 1).includes('done'), true);
+        grid.Undo();
+        check('... one undo step: a note again', grid.GetComment(1, 1), { text: 'look here', author: 'Ada', thread: null });
+        grid.Redo();
+        const second = grid.AddCommentReply(1, 1, 'thanks');
+        check('a second reply follows the first', grid.GetComment(1, 1).thread.replies.map((r) => [r.text, r.author]), [['done', 'Bob'], ['thanks', null]]);
+        grid.SetComment(1, 1, 'look there');
+        check('SetComment on a thread edits its first comment and keeps the replies', [grid.GetComment(1, 1).text, grid.GetComment(1, 1).author, grid.GetComment(1, 1).thread.replies.length], ['look there', 'Ada', 2]);
+        grid.ResolveComment(1, 1);
+        check('a thread is resolved', grid.GetComment(1, 1).thread.resolved, true);
+        grid.ResolveComment(1, 1, false);
+        check('... and opened again', grid.GetComment(1, 1).thread.resolved, false);
+        grid.ResolveComment(1, 1, true);
+        grid.DeleteCommentReply(1, 1, replyId);
+        check('a reply is deleted by its id', grid.GetComment(1, 1).thread.replies.map((r) => r.id), [second]);
+        grid.Undo();
+        check('... one undo step', grid.GetComment(1, 1).thread.replies.length, 2);
+
+        // ---- with the cells ----
+        grid.InsertRows(0, 2);
+        check('comments move with their rows', grid.GetComments().map((c) => c.address), ['B4']);
+        grid.Undo();
+        check('... and back', grid.GetComments().map((c) => c.address), ['B2']);
+
+        // ---- what is refused ----
+        check('an empty text', thrown(() => grid.SetComment(1, 1, '  ')), 'SetComment: the text is empty (DeleteComment removes a comment)');
+        check('a cell outside the sheet', /^GetComment: /.test(thrown(() => grid.GetComment(-1, 0)) ?? ''), true);
+        check('a reply where there is no comment', thrown(() => grid.AddCommentReply(9, 9, 'hello')), 'AddCommentReply: the cell J10 has no comment to reply to');
+        check('an unknown reply', /no reply with the id/.test(thrown(() => grid.DeleteCommentReply(1, 1, '{x}')) ?? ''), true);
+        grid.SetComment(6, 0, 'a plain note', 'Cy');
+        check('resolving a note', thrown(() => grid.ResolveComment(6, 0)), 'ResolveComment: the cell A7 has no comment thread (a note cannot be resolved)');
+        check('a sheet that is not there', /^GetComments: there is no sheet 5/.test(thrown(() => grid.GetComments(5)) ?? ''), true);
+
+        // ---- through XLSX ----
+        const before = grid.GetComments();
+        const again = await reopened(grid);
+        try {
+            check('notes and threads come back from the file', again.grid.GetComments(), before);
+            // Edited again in the reopened workbook, and saved again.
+            again.grid.DeleteComment(6, 0);
+            const third = again.grid.AddCommentReply(1, 1, 'closing', 'Ada');
+            const twice = await reopened(again.grid);
+            try {
+                check('... and so do the edits of the reopened one', twice.grid.GetComments().map((c) => [c.address, c.text, c.thread?.resolved, c.thread?.replies.map((r) => [r.text, r.author])]),
+                    [['B2', 'look there', true, [['done', 'Bob'], ['thanks', null], ['closing', 'Ada']]]]);
+                check('the new reply kept its id', twice.grid.GetComment(1, 1).thread.replies[2].id, third);
+            } finally { twice.close(); }
+        } finally { again.close(); }
+
+        // ---- a file with a comment thread ----
+        const file = mountGrid();
+        try {
+            await file.grid.ImportXlsx(await bytesOf('tests/test-documents-excel/synthetic-drawing-extras.xlsx'));
+            const imported = file.grid.GetComment(1, 1);
+            check('a thread of a file', [imported.text, imported.author, imported.thread.replies.map((r) => [r.text, r.author])], ['Is this right?', 'Ann Author', [['Yes & checked', 'Bob Reply']]]);
+            file.grid.AddCommentReply(1, 1, 'Good', 'Ann Author');
+            file.grid.SetComment(3, 0, 'new note', 'Ann Author');
+            const saved = await reopened(file.grid);
+            try {
+                check('... replied to and saved', [saved.grid.GetComment(1, 1).thread.replies.map((r) => [r.text, r.author]), saved.grid.GetComment(3, 0)?.text, saved.grid.GetDrawings().map((d) => d.kind)],
+                    [[['Yes & checked', 'Bob Reply'], ['Good', 'Ann Author']], 'new note', ['picture', 'chart']]);
+            } finally { saved.close(); }
+        } finally { file.close(); }
+        off();
     } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
     close();
     return lines;

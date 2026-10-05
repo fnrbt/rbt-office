@@ -524,8 +524,14 @@ let clearCells (what: ClearWhat) (top: int, left: int, bottom: int, right: int) 
     else
         for KeyValue(addr, data) in model.Cells do
             if addr.Row >= top && addr.Row <= bottom && addr.Col >= left && addr.Col <= right && not (isFilterHiddenRow addr.Row model) then change addr data
-    if obj.ReferenceEquals(cells, model.Cells) && obj.ReferenceEquals(runs, model.RichRuns) then model
-    else { model with Cells = cells; RichRuns = runs } |> invalidateFilterProjection
+    // Comment threads are beside the cells: "clear all" takes them too.
+    let threads =
+        if what <> ClearEverything || Map.isEmpty model.Threads then model.Threads
+        else
+            let kept = model.Threads |> Map.filter (fun addr _ -> not (addr.Row >= top && addr.Row <= bottom && addr.Col >= left && addr.Col <= right && not (isFilterHiddenRow addr.Row model)))
+            if kept.Count = model.Threads.Count then model.Threads else kept
+    if obj.ReferenceEquals(cells, model.Cells) && obj.ReferenceEquals(runs, model.RichRuns) && obj.ReferenceEquals(threads, model.Threads) then model
+    else { model with Cells = cells; RichRuns = runs; Threads = threads } |> invalidateFilterProjection
 
 // ---------------------------------------------------------------------------
 // Several areas in one reference
@@ -1837,3 +1843,123 @@ let autoFilterRange (memberName: string) (range: CellRange) (model: SpreadsheetM
     match clipRange model.RowCount model.ColCount range with
     | Some clipped -> clipped
     | None -> failwith (sprintf "%s: the range %s is outside the sheet" memberName (rangeText range))
+
+// --- comments ------------------------------------------------------------------
+// A cell has a note (`CellData.Comment`: a text and an author), a comment
+// thread (`SpreadsheetModel.Threads`: a first comment with replies), or
+// neither. A thread wins where a cell has both: a file keeps a note beside
+// every thread for the applications that cannot show threads.
+
+/// The comment of a cell, as a host sees it.
+type CommentInfo = {
+    Cell: CellAddress
+    /// The note's text, or the text of the thread's first comment.
+    Text: string
+    Author: string option
+    Thread: CommentThread option
+}
+
+/// The comment on a cell: its thread when it has one, else its note.
+let commentAt (model: SpreadsheetModel) (addr: CellAddress) : CommentInfo option =
+    match (if Map.isEmpty model.Threads then None else Map.tryFind addr model.Threads) with
+    | Some thread -> Some { Cell = addr; Text = thread.Text; Author = thread.Author; Thread = Some thread }
+    | None ->
+        match Map.tryFind addr model.Cells with
+        | Some { Comment = Some note } -> Some { Cell = addr; Text = note.Text; Author = note.Author; Thread = None }
+        | _ -> None
+
+/// Every comment of a sheet, row by row.
+let allComments (model: SpreadsheetModel) : CommentInfo list =
+    let cells = System.Collections.Generic.HashSet<CellAddress>()
+    for KeyValue(addr, _) in model.Threads do cells.Add addr |> ignore
+    for KeyValue(addr, data) in model.Cells do
+        if data.Comment.IsSome then cells.Add addr |> ignore
+    cells
+    |> Seq.sortBy (fun addr -> addr.Row, addr.Col)
+    |> Seq.choose (commentAt model)
+    |> List.ofSeq
+
+/// The cell at `addr` with its note set or taken away, and the marker flag
+/// of its format saying whether the cell has a comment of either kind.
+let private withNote (addr: CellAddress) (note: CellComment option) (marked: bool) (model: SpreadsheetModel) : SpreadsheetModel =
+    match Map.tryFind addr model.Cells with
+    | Some data ->
+        if data.Comment = note && data.Format.HasComment = marked then model
+        else
+            let format = if data.Format.HasComment = marked then data.Format else { data.Format with HasComment = marked }
+            let changed = { data with Comment = note; Format = format }
+            // (A cell that was only there for its comment goes with it.)
+            if changed.Value = CellValue.Empty && changed.Comment.IsNone && changed.Format = defaultFormat then { model with Cells = Map.remove addr model.Cells }
+            else { model with Cells = Map.add addr changed model.Cells }
+    | None ->
+        if note.IsNone && not marked then model
+        else { model with Cells = Map.add addr { Value = CellValue.Empty; Format = { defaultFormat with HasComment = marked }; Comment = note } model.Cells }
+
+/// Put a comment on a cell. A cell without one, or with a note, gets the
+/// note; on a cell with a thread the text (and, when given, the author) of
+/// the thread's first comment changes and the replies stay.
+let setComment (addr: CellAddress) (text: string) (author: string option) (model: SpreadsheetModel) : SpreadsheetModel =
+    match Map.tryFind addr model.Threads with
+    | Some thread ->
+        let edited = { thread with Text = text; Author = (match author with Some _ -> author | None -> thread.Author); PersonId = (if author.IsSome && author <> thread.Author then None else thread.PersonId) }
+        if edited = thread then model else { model with Threads = Map.add addr edited model.Threads }
+    | None -> withNote addr (Some { Text = text; Author = author }) true model
+
+/// Take the comment off a cell: its note and its thread. The same model when it had neither.
+let deleteComment (addr: CellAddress) (model: SpreadsheetModel) : SpreadsheetModel =
+    let cleared = withNote addr None false model
+    if Map.containsKey addr cleared.Threads then { cleared with Threads = Map.remove addr cleared.Threads } else cleared
+
+/// An id for a new comment of a thread: the form the file wants (a GUID in
+/// braces), not used by any comment of the sheet.
+let freshCommentId (model: SpreadsheetModel) : string =
+    let used = System.Collections.Generic.HashSet<string>()
+    for KeyValue(_, thread) in model.Threads do
+        used.Add (thread.Id.ToUpperInvariant()) |> ignore
+        for reply in thread.Replies do used.Add (reply.Id.ToUpperInvariant()) |> ignore
+    let mutable n = used.Count + 1
+    let make (n: int) = sprintf "{5C0FFEE5-0000-4000-8000-%012d}" n
+    while used.Contains (make n) do n <- n + 1
+    make n
+
+/// Add a reply to the comment of a cell; the changed model and the reply's
+/// id. A note becomes the first comment of a thread (as Excel's "convert to
+/// comments" does) and the reply follows it. `date` is the time of the
+/// reply ("2024-03-31T14:30:00.00"). An Error when the cell has no comment.
+let addCommentReply (addr: CellAddress) (text: string) (author: string option) (date: string option) (model: SpreadsheetModel) : Result<SpreadsheetModel * string, string> =
+    match commentAt model addr with
+    | None -> Result.Error (sprintf "the cell %s has no comment to reply to" (formatCellRef addr.Row addr.Col))
+    | Some info ->
+        let model, thread =
+            match info.Thread with
+            | Some thread -> model, thread
+            | None ->
+                let root = { Id = freshCommentId model; Author = info.Author; PersonId = None; Date = date; Text = info.Text; Replies = []; Done = false }
+                // (The note goes: the file gets one written for the thread.)
+                let converted = withNote addr None true model
+                { converted with Threads = Map.add addr root converted.Threads }, root
+        let id = freshCommentId model
+        let reply = { Id = id; Author = author; PersonId = None; Date = date; Text = text; Replies = []; Done = false }
+        Ok ({ model with Threads = Map.add addr { thread with Replies = thread.Replies @ [ reply ] } model.Threads }, id)
+
+/// Take one reply out of the thread of a cell. An Error when the cell has
+/// no thread or the thread no such reply.
+let deleteCommentReply (addr: CellAddress) (replyId: string) (model: SpreadsheetModel) : Result<SpreadsheetModel, string> =
+    match Map.tryFind addr model.Threads with
+    | None -> Result.Error (sprintf "the cell %s has no comment thread" (formatCellRef addr.Row addr.Col))
+    | Some thread ->
+        let same (reply: CommentThread) = System.String.Equals(reply.Id, replyId, System.StringComparison.OrdinalIgnoreCase)
+        if not (thread.Replies |> List.exists same) then Result.Error (sprintf "the comment on %s has no reply with the id %s" (formatCellRef addr.Row addr.Col) replyId)
+        else Ok { model with Threads = Map.add addr { thread with Replies = thread.Replies |> List.filter (same >> not) } model.Threads }
+
+/// Mark the thread of a cell resolved or open again. An Error when the cell has no thread.
+let setCommentResolved (addr: CellAddress) (resolved: bool) (model: SpreadsheetModel) : Result<SpreadsheetModel, string> =
+    match Map.tryFind addr model.Threads with
+    | None -> Result.Error (sprintf "the cell %s has no comment thread (a note cannot be resolved)" (formatCellRef addr.Row addr.Col))
+    | Some thread -> Ok (if thread.Done = resolved then model else { model with Threads = Map.add addr { thread with Done = resolved } model.Threads })
+
+/// The note a file keeps beside a thread, for applications that only show notes.
+let threadPlaceholderNote (thread: CommentThread) : CellComment =
+    { Text = "[Threaded comment]\n\nYour version of Excel allows you to read this threaded comment; however, any edits to it will get removed if the file is opened in a newer version of Excel. Learn more: https://go.microsoft.com/fwlink/?linkid=870924\n\nComment:\n    " + thread.Text
+               + (thread.Replies |> List.map (fun reply -> "\nReply:\n    " + reply.Text) |> String.concat "")
+      Author = Some ("tc=" + thread.Id) }

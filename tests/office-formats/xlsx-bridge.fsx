@@ -403,7 +403,7 @@ ok "paint: a labelled frame for the chart" (painted |> List.exists (function Rbt
 eq "paint: the viewport items scroll the drawing with the body" (Rbt.Spreadsheet.Paint.buildViewportPaintItems extrasModel { paintViewport with ScrollY = 40.0 } |> List.choose (fun item -> match item.Item with Rbt.Spreadsheet.Paint.DrawImage (rect, _) -> Some (item.Zone, rect.Y) | _ -> None))
     [ Rbt.Spreadsheet.Layout.BodyZone, 30.0 + (pictureRect extrasModel).Y - 40.0 ]
 // A picture in a workbook made in the editor is written; threads too.
-let pictured = { fresh with Drawings = [ extrasModel.Drawings.[0] ]; Threads = Map.ofList [ addr 0 0, { Id = "{BBBBBBBB-0000-0000-0000-000000000001}"; Author = Some "New Author"; PersonId = None; Date = None; Text = "typed here"; Replies = [] } ] }
+let pictured = { fresh with Drawings = [ extrasModel.Drawings.[0] ]; Threads = Map.ofList [ addr 0 0, { Id = "{BBBBBBBB-0000-0000-0000-000000000001}"; Author = Some "New Author"; PersonId = None; Date = None; Text = "typed here"; Replies = []; Done = false } ] }
 let picturedBack = reread (Bridge.Export.toWorkbookOut { Sheets = [| pictured |]; Names = [| "First" |]; Visible = [| true |]; ActiveSheetIndex = 0; NameInfo = Map.empty; DefinedNames = Map.empty; Source = None; Macros = None })
 eq "fresh: picture and thread written" (picturedBack.Sheets.[0].Extras.Images |> List.map (fun image -> image.Data.Length, image.Anchor.FromRow), picturedBack.Sheets.[0].Extras.ThreadedComments |> List.map (fun thread -> thread.Author, thread.Text))
     ([ 154, 2 ], [ Some "New Author", "typed here" ])
@@ -626,6 +626,45 @@ eq "kept filter: in the model, with the rows the file hid" (keptModel.Filters |>
 eq "kept filter: applying the filters again leaves its rows hidden" (List.ofArray (reapplyFilter keptModel).FilterHiddenRows, List.ofArray (keptModel |> setColumnFilter 1 (FilterValues (Set.ofList [ "West" ], false))).FilterHiddenRows) ([ 3 ], [ 1; 3; 4; 6 ])
 let keptEdited = reread (Bridge.Export.toWorkbookOut (axesInput (keptModel |> setColumnFilter 1 (FilterValues (Set.ofList [ "West" ], false))) (Some keptImported.Source)))
 eq "kept filter: written back beside a new one" (keptEdited.Sheets.[0].Extras.AutoFilter |> Option.map (fun f -> f.Columns |> List.map (fun c -> c.ColId, c.Kind, c.Xml.Contains "dateGroupItem"))) (Some [ 0, "filters", false; 1, "other", true ])
+
+// ---- comments edited through the host API (SheetOps) --------------------------
+module Ops = Rbt.Spreadsheet.SheetOps
+let okOf (result: Result<'a, string>) = match result with Ok value -> value | Result.Error message -> failwith message
+let singleInput (model: SpreadsheetModel) (source: Bridge.XlsxSource option) : Bridge.ExportInput =
+    { Sheets = [| model |]; Names = [| "First" |]; Visible = [| true |]; ActiveSheetIndex = 0; NameInfo = Map.empty; DefinedNames = Map.empty; Source = source; Macros = None }
+let commentsOfModel (model: SpreadsheetModel) =
+    Ops.allComments model |> List.map (fun c -> c.Cell.Row, c.Cell.Col, c.Text, c.Author, c.Thread |> Option.map (fun t -> t.Done, t.Replies |> List.map (fun r -> r.Text, r.Author, r.Date)))
+// A fresh workbook: a note, and a note turned into a thread by a reply, resolved.
+let commented =
+    fresh
+    |> Ops.setComment (addr 0 0) "a note" (Some "Ann")
+    |> Ops.setComment (addr 6 2) "to discuss" (Some "Ann")
+    |> fun m -> Ops.addCommentReply (addr 6 2) "agreed" (Some "Bob") (Some "2026-01-02T03:04:05.00") m |> okOf |> fst
+    |> fun m -> Ops.setCommentResolved (addr 6 2) true m |> okOf
+let commentedBack = reread (Bridge.Export.toWorkbookOut (singleInput commented None))
+eq "comments: the thread is written with its reply, author persons and the resolved mark"
+    (commentedBack.Sheets.[0].Extras.ThreadedComments |> List.map (fun t -> t.CellRef.Column, t.CellRef.Row, t.Text, t.Author, t.Done, t.Replies |> List.map (fun r -> r.Text, r.Author, r.Date)))
+    [ "C", 7, "to discuss", Some "Ann", true, [ "agreed", Some "Bob", Some "2026-01-02T03:04:05.00" ] ]
+eq "comments: the note, and a note beside the thread for applications without threads"
+    (commentedBack.Sheets.[0].Comments |> List.map (fun c -> c.CellRef.Column, c.CellRef.Row, c.Text.StartsWith "[Threaded comment]" || c.Text = "a note", (defaultArg c.Author "").StartsWith "tc={" || c.Author = Some "Ann") |> List.sort)
+    [ "A", 1, true, true; "C", 7, true, true ]
+let commentedAgain = (Bridge.Import.importWorkbook commentedBack).Sheets.[0].Model
+eq "comments: read back as they were" (commentsOfModel commentedAgain) (commentsOfModel commented)
+// The re-imported sheet edited again: note deleted, reply removed, thread reopened.
+let replyIdAgain = commentedAgain.Threads.[addr 6 2].Replies.[0].Id
+let recommented =
+    commentedAgain
+    |> Ops.deleteComment (addr 0 0)
+    |> fun m -> Ops.deleteCommentReply (addr 6 2) replyIdAgain m |> okOf
+    |> fun m -> Ops.setCommentResolved (addr 6 2) false m |> okOf
+    |> Ops.setComment (addr 6 2) "discussed" None
+let recommentedBack = reread (Bridge.Export.toWorkbookOut (singleInput recommented (Some (Bridge.Import.importWorkbook commentedBack).Source)))
+eq "comments: edits of an imported sheet are written" (commentsOfModel (Bridge.Import.importWorkbook recommentedBack).Sheets.[0].Model)
+    [ 6, 2, "discussed", Some "Ann", Some (false, []) ]
+eq "comments: the deleted note is not in the file" (recommentedBack.Sheets.[0].Comments |> List.map (fun c -> c.CellRef.Column, c.CellRef.Row)) [ "C", 7 ]
+// Deleting the last thread drops the threaded comments of the sheet.
+let uncommentedBack = reread (Bridge.Export.toWorkbookOut (singleInput (recommented |> Ops.deleteComment (addr 6 2)) (Some (Bridge.Import.importWorkbook commentedBack).Source)))
+eq "comments: none left" (uncommentedBack.Sheets.[0].Comments.Length, uncommentedBack.Sheets.[0].Extras.ThreadedComments.Length) (0, 0)
 
 printfn ""
 printfn "XLSX bridge tests: %d passed, %d failed" pass fail

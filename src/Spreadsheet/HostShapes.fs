@@ -475,6 +475,24 @@ let validationOfObj (memberName: string) (value: obj) : ValidationDescription =
         ErrorMessage = text "errorMessage" }
 
 /// One cell as the host reads it (`GetCell`, `GetRange`):
+/// A comment of a cell: { text, author: string | null, thread } where
+/// `thread` is null for a note and, for a comment thread,
+/// { id, author, date, text, resolved: boolean, replies: [{ id, author, date, text }] }
+/// (`text` and `author` are then those of the thread's first comment).
+let commentToObj (info: CommentInfo) : obj =
+    let entry (comment: CommentThread) =
+        [ "id" ==> comment.Id; "author" ==> orNull comment.Author; "date" ==> orNull comment.Date; "text" ==> comment.Text ]
+    createObj [
+        "text" ==> info.Text
+        "author" ==> orNull info.Author
+        "thread" ==>
+            (match info.Thread with
+             | Some thread ->
+                createObj (entry thread @ [ "resolved" ==> thread.Done
+                                            "replies" ==> (thread.Replies |> List.map (fun reply -> createObj (entry reply)) |> List.toArray) ])
+             | None -> null)
+    ]
+
 /// { row, col, address: "B2", value, valueType, text, formula, format,
 ///   isMerged, mergeRange, comment, hyperlink, validation } - see GetCell.
 /// `text` is the display text the caller worked out for the cell.
@@ -482,11 +500,7 @@ let cellToObj (model: SpreadsheetModel) (addr: CellAddress) (text: string) : obj
     let data = Map.tryFind addr model.Cells
     let value = match data with Some data -> data.Value | None -> CellValue.Empty
     let merge = mergeRangeAt model addr
-    let comment : obj =
-        match data |> Option.bind (fun data -> data.Comment), Map.tryFind addr model.Threads with
-        | Some comment, _ -> createObj [ "text" ==> comment.Text; "author" ==> orNull comment.Author ]
-        | None, Some thread -> createObj [ "text" ==> thread.Text; "author" ==> orNull thread.Author ]
-        | None, None -> null
+    let comment : obj = match commentAt model addr with Some info -> commentToObj info | None -> null
     createObj [
         "row" ==> addr.Row
         "col" ==> addr.Col

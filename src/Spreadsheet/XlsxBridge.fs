@@ -281,7 +281,8 @@ let rec private threadOfReader (comment: XlsxReader.ThreadedComment) : CommentTh
       PersonId = comment.PersonId
       Date = comment.Date
       Text = comment.Text
-      Replies = comment.Replies |> List.map threadOfReader }
+      Replies = comment.Replies |> List.map threadOfReader
+      Done = comment.Done }
 
 let rec private threadToReader (addr: CellAddress) (thread: CommentThread) : XlsxReader.ThreadedComment =
     { CellRef = { Column = columnToLetter addr.Col; Row = addr.Row + 1 }
@@ -290,7 +291,8 @@ let rec private threadToReader (addr: CellAddress) (thread: CommentThread) : Xls
       PersonId = thread.PersonId
       Date = thread.Date
       Text = thread.Text
-      Replies = thread.Replies |> List.map (threadToReader addr) }
+      Replies = thread.Replies |> List.map (threadToReader addr)
+      Done = thread.Done }
 
 /// The `<from>` / `<to>` marker of a kept object's anchor element, rewritten
 /// for a new cell position. The element is otherwise written back unchanged.
@@ -776,6 +778,15 @@ module Import =
                         match runs with
                         | _ :: _ :: _ -> richRuns <- Map.add addr (runs |> List.map (fun (text, props) -> text, runOverride props)) richRuns
                         | _ -> ()
+
+        // A note on a cell the sheet data has no element for (a cell without
+        // a value or a style) is on the cell all the same.
+        for KeyValue((r, c), comment) in comments do
+            let addr : CellAddress = { Row = r; Col = c }
+            if r < 1048576 && c < 16384 && not (Map.containsKey addr cellMap) then
+                cellMap <- Map.add addr { Value = CellValue.Empty; Format = { defaultFormat with HasComment = true }; Comment = Some comment } cellMap
+                if r + 1 > rowCount then rowCount <- r + 1
+                if c + 1 > colCount then colCount <- c + 1
 
         // Column widths: file units are characters, the model's are pixels (~7 px per character).
         let defaultColWidth =
@@ -1398,7 +1409,12 @@ module Export =
           Col = addr.Col
           Value = value runs data.Value
           Format = cachedFormat cache data.Format
-          Comment = data.Comment |> Option.map (fun c -> c.Text, c.Author) }
+          Comment =
+            // A thread has a note beside it in the file (what applications
+            // without threads show): written from the thread as it is now.
+            match (if model.Threads.IsEmpty then None else Map.tryFind addr model.Threads) with
+            | Some thread -> let note = Rbt.Spreadsheet.SheetOps.threadPlaceholderNote thread in Some (note.Text, note.Author)
+            | None -> data.Comment |> Option.map (fun c -> c.Text, c.Author) }
 
     let private cellRangeText (r: CellRange) =
         if r.From = r.To then formatCellRef r.From.Row r.From.Col

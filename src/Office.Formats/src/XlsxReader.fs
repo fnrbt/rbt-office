@@ -631,6 +631,8 @@ type ThreadedComment = {
     Date: string option
     Text: string
     Replies: ThreadedComment list
+    /// The thread is resolved (`done="1"`, on the first comment of a thread).
+    Done: bool
 }
 
 /// A what-if data table (`<f t="dataTable" ref="B5:F10" dt2D="1" dtr="1" r1="B1" r2="B2"/>`
@@ -4552,7 +4554,8 @@ let private readThreadedComments (persons: (string * string * string * string) l
                         PersonId = personId
                         Date = Xml.attr "dT" node
                         Text = Ns.childNs "text" node |> Option.bind Xml.text |> Option.defaultValue ""
-                        Replies = [] })
+                        Replies = []
+                        Done = (match Xml.attr "done" node with Some ("1" | "true") -> true | _ -> false) })
             | _ -> None)
     all
     |> List.filter (fun (parent, _) -> parent.IsNone)

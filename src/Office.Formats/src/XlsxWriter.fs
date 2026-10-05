@@ -1584,11 +1584,12 @@ let private threadedCommentsXml (persons: (string * string * string * string) li
                 next <- next + 1
                 sprintf "{%08d-0000-4000-8000-%012d}" sheetIndex next
         let one (parent: string option) (comment: XlsxReader.ThreadedComment) (id: string) =
-            sprintf "<threadedComment ref=\"%s%d\"%s personId=\"%s\" id=\"%s\"%s><text>%s</text></threadedComment>"
+            sprintf "<threadedComment ref=\"%s%d\"%s personId=\"%s\" id=\"%s\"%s%s><text>%s</text></threadedComment>"
                 comment.CellRef.Column comment.CellRef.Row
                 (comment.Date |> Option.map (fun date -> " " + attr "dT" date) |> Option.defaultValue "")
                 (escaped (personId comment)) (escaped id)
                 (parent |> Option.map (fun parentId -> " " + attr "parentId" parentId) |> Option.defaultValue "")
+                (if parent.IsNone && comment.Done then " done=\"1\"" else "")
                 (escapedCellText comment.Text)
         let body =
             sheet.Extras.ThreadedComments

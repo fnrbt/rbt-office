@@ -736,6 +736,8 @@ type CommentThread = {
     Date: string option
     Text: string
     Replies: CommentThread list
+    /// The thread is marked resolved (`done="1"` on its first comment).
+    Done: bool
 }
 
 /// A hyperlink on a range of cells: an address, or a place in the workbook

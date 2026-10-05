@@ -97,7 +97,7 @@ let calc =
                 at 2 0, num 20.0; at 2 1, formula "=A3*2"; at 2 2, text "plain"
                 at 0 5, formula "=A1"; at 4 0, formula "=SUM(A1:A3)" ] with
         RichRuns = Map.ofList [ at 2 2, [ "plain", emptyRunOverride ] ]
-        Threads = Map.ofList [ at 0 0, { Id = "t1"; Author = None; PersonId = None; Date = None; Text = "thirty"; Replies = [] } ]
+        Threads = Map.ofList [ at 0 0, { Id = "t1"; Author = None; PersonId = None; Date = None; Text = "thirty"; Replies = []; Done = false } ]
         Hyperlinks = [ { Range = range 1 0 1 0; Target = "https://example.com"; IsInternal = false }; { Range = range 0 0 2 0; Target = "Sheet2!A1"; IsInternal = true } ]
         RowHeights = Map.ofList [ 0, 40.0 ] }
     |> setCell (at 1 0) { num 10.0 with Comment = Some { Text = "ten"; Author = None } }

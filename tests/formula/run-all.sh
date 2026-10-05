@@ -55,6 +55,7 @@ stages=(
     stage37-sheets
     stage38-rowcol
     stage39-sortfilter
+    stage40-annotations
     numbertext
 )
 
