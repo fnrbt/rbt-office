@@ -1751,12 +1751,13 @@ module Docx =
 
     // Paragraph extraction with functional composition
     let private paragraphWithRenderedBreakCounter (renderedBreakCounter: int ref option) (pNode: XmlNode) : Paragraph =
-        let hasRenderedPageBreak = Ns.descendantsNs "lastRenderedPageBreak" pNode |> List.isEmpty |> not
+        let renderedPageBreaks = Ns.descendantsNs "lastRenderedPageBreak" pNode
+        let hasRenderedPageBreak = not renderedPageBreaks.IsEmpty
         let renderedPageBreakBefore =
             match renderedBreakCounter with
             | Some counter ->
                 let beforeText = hasRenderedPageBreakBeforeText pNode
-                let breakCount = Ns.descendantsNs "lastRenderedPageBreak" pNode |> List.length
+                let breakCount = List.length renderedPageBreaks
                 let ordinal = if beforeText then Some (!counter + 1) else None
                 counter := !counter + breakCount
                 ordinal
@@ -2896,12 +2897,18 @@ module Revisions =
                     Text = text
                 }))
 
-    let parseRevisions (doc: XmlNode) : Revision list =
+    /// `mayHold name`: false when the part is known to hold no element of that local name.
+    let parseRevisionsWhere (mayHold: string -> bool) (doc: XmlNode) : Revision list =
         let revisionTypes = ["ins"; "del"; "rPrChange"; "moveFrom"; "moveTo"]
         revisionTypes
         |> List.collect (fun revType ->
-            Ns.descendantsNs revType doc
-            |> List.choose parseRevision)
+            if not (mayHold revType) then []
+            else
+                Ns.descendantsNs revType doc
+                |> List.choose parseRevision)
+
+    let parseRevisions (doc: XmlNode) : Revision list =
+        parseRevisionsWhere (fun _ -> true) doc
 
 // Footnotes and Endnotes parsing
 module Notes =
@@ -3467,7 +3474,10 @@ let parseFromSource (source: PartSource) : WordDocument option =
 
     docXml
     |> Option.map (fun xml ->
-        let doc = XmlDsl.parse xml
+        // (The main part of a long document is megabytes of XML: it is scanned
+        // straight into nodes, and what it holds no element of is not looked for.)
+        let doc, docNames = Ns.parseWithLocalNames xml
+        let docHolds (name: string) = docNames.Contains name
         let body = Ns.childNs "body" doc
         let rels = source.Text (partRelsPath mainPath) |> relationshipsOfXml
         let partPath typeSuffix fallback = partPathOfType docDir rels typeSuffix ((if docDir = "" then "" else docDir + "/") + fallback)
@@ -3494,8 +3504,12 @@ let parseFromSource (source: PartSource) : WordDocument option =
         let evenAndOddHeaders = parseSettings settingsXml
         let props = propsXml |> Option.map Properties.parseProperties
 
+        // (Header and footer references are children of section properties: one walk finds both kinds.)
+        let sectionProperties =
+            if docHolds "headerReference" || docHolds "footerReference" then Ns.descendantsNs "sectPr" doc else []
         let referenceTypes name =
-            Ns.descendantsNs name doc
+            sectionProperties
+            |> List.collect (fun sectPr -> Xml.children sectPr |> List.filter (fun child -> Xml.name child |> Option.map Ns.stripNs = Some name))
             |> List.choose (fun refNode ->
                 Xml.attr "r:id" refNode
                 |> Option.map (fun id -> (id, Docx.attr "type" refNode |> Option.defaultValue "default")))
@@ -3523,7 +3537,7 @@ let parseFromSource (source: PartSource) : WordDocument option =
             |> Option.defaultValue []
             |> completeOpaqueObjects doc
             |> dropModelledShapeRuns
-            |> withMoveNames doc
+            |> (fun blocks -> if docHolds "moveFrom" || docHolds "moveTo" then withMoveNames doc blocks else blocks)
 
         let pageSetup =
             body
@@ -3532,13 +3546,14 @@ let parseFromSource (source: PartSource) : WordDocument option =
 
         let comments =
             source.Text commentsPath |> Option.map Comments.parseComments |> Option.defaultValue [] |> List.map (resolveCommentHyperlinks commentsRels)
-        let revisions = Revisions.parseRevisions doc
+        let revisions = Revisions.parseRevisionsWhere docHolds doc
         let footnotes =
             source.Text footnotesPath |> Option.map Notes.parseNotes |> Option.defaultValue [] |> List.map (resolveNoteHyperlinks footnotesRels)
         let endnotes =
             source.Text endnotesPath |> Option.map Notes.parseNotes |> Option.defaultValue [] |> List.map (resolveNoteHyperlinks endnotesRels)
         let shapes =
-            Shapes.parseShapes doc
+            // (A modelled shape has text or a geometry: see Docx.isModelledShape.)
+            (if docHolds "txbxContent" || docHolds "prstGeom" || docHolds "custGeom" then Shapes.parseShapes doc else [])
             |> List.map (fun shape ->
                 { shape with Content = shape.Content |> List.map Para |> completeOpaqueObjects doc |> List.choose (function Para para -> Some para | Tbl _ -> None) })
 

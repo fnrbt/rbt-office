@@ -204,6 +204,228 @@ let parse (xmlString: string) : XmlNode =
     | root -> convertXNode None root
 #endif
 
+// ---------------------------------------------------------------------------
+// A scanner from the XML text straight to XmlNode, for the large parts of a
+// package (a long document's main part). `parse` goes through the platform's
+// parser and then walks its tree; on a document of several megabytes that is
+// most of the time the reader takes. The scanner reads what Office writes -
+// elements, attributes, text, CDATA, comments, processing instructions and
+// the predefined / numeric character references - and gives up (None) on
+// anything else (a DTD, an unknown entity, tags that do not match), which
+// the caller then hands to `parse`.
+// ---------------------------------------------------------------------------
+
+exception private ScanGiveUp
+
+let private scanGiveUp () : 'T = raise ScanGiveUp
+
+let private indexOfOrdinal (s: string) (value: string) (from: int) : int =
+#if FABLE_COMPILER
+    s.IndexOf(value, from)
+#else
+    s.IndexOf(value, from, System.StringComparison.Ordinal)
+#endif
+
+let private startsAt (s: string) (at: int) (value: string) : bool =
+    if at + value.Length > s.Length then false
+    else
+        let mutable same = true
+        let mutable k = 0
+        while same && k < value.Length do
+            if s.[at + k] <> value.[k] then same <- false
+            k <- k + 1
+        same
+
+let private decodeReferences (raw: string) : string =
+    let first = raw.IndexOf '&'
+    if first < 0 then raw
+    else
+        let sb = System.Text.StringBuilder()
+        let mutable i = 0
+        while i < raw.Length do
+            let amp = raw.IndexOf('&', i)
+            if amp < 0 then
+                sb.Append(raw.Substring i) |> ignore
+                i <- raw.Length
+            else
+                if amp > i then sb.Append(raw.Substring(i, amp - i)) |> ignore
+                let semi = raw.IndexOf(';', amp)
+                if semi < 0 || semi - amp > 10 || semi - amp < 2 then scanGiveUp ()
+                let entity = raw.Substring(amp + 1, semi - amp - 1)
+                match entity with
+                | "lt" -> sb.Append "<" |> ignore
+                | "gt" -> sb.Append ">" |> ignore
+                | "amp" -> sb.Append "&" |> ignore
+                | "quot" -> sb.Append "\"" |> ignore
+                | "apos" -> sb.Append "'" |> ignore
+                | _ when entity.[0] = '#' ->
+                    let mutable code = 0
+                    let hex = entity.Length > 1 && entity.[1] = 'x'
+                    let start = if hex then 2 else 1
+                    if entity.Length <= start then scanGiveUp ()
+                    for k in start .. entity.Length - 1 do
+                        let c = int entity.[k]
+                        let digit =
+                            if c >= 48 && c <= 57 then c - 48
+                            elif hex && c >= 97 && c <= 102 then c - 87
+                            elif hex && c >= 65 && c <= 70 then c - 55
+                            else scanGiveUp ()
+                        code <- code * (if hex then 16 else 10) + digit
+                        if code > 0x10FFFF then scanGiveUp ()
+                    // (Characters XML does not allow are an error of the part: the platform's parser reports it.)
+                    if code = 0 || (code < 32 && code <> 9 && code <> 10 && code <> 13) || (code >= 0xD800 && code <= 0xDFFF) || code = 0xFFFE || code = 0xFFFF then scanGiveUp ()
+                    if code < 0x10000 then sb.Append(string (char code)) |> ignore
+                    else
+                        let rest = code - 0x10000
+                        sb.Append(string (char (0xD800 + (rest >>> 10)))) |> ignore
+                        sb.Append(string (char (0xDC00 + (rest &&& 0x3FF)))) |> ignore
+                | _ -> scanGiveUp ()
+                i <- semi + 1
+        sb.ToString()
+
+let private scanDocument (source: string) (names: System.Collections.Generic.HashSet<string>) : XmlNode =
+    // Line ends are normalised before anything else (XML 1.0, 2.11).
+    let s = if source.IndexOf '\r' >= 0 then source.Replace("\r\n", "\n").Replace("\r", "\n") else source
+    let n = s.Length
+    let mutable pos = 0
+    let isSpace (c: char) = c = ' ' || c = '\n' || c = '\t'
+    // The open elements, innermost last: name, attributes, whether text keeps its whitespace, children (last first).
+    let openNames = ResizeArray<string>()
+    let openAttrs = ResizeArray<Map<string, string>>()
+    let openPreserve = ResizeArray<bool>()
+    let openChildren = ResizeArray<XmlNode list>()
+    let mutable root = Empty
+    let mutable rootSeen = false
+    let addChild (node: XmlNode) =
+        let top = openChildren.Count - 1
+        openChildren.[top] <- node :: openChildren.[top]
+    let closeElement (name: string) (attrs: Map<string, string>) (reversed: XmlNode list) =
+        let mutable children = []
+        let mutable rest = reversed
+        while not rest.IsEmpty do
+            children <- rest.Head :: children
+            rest <- rest.Tail
+        let node = Element (name, attrs, children)
+        if openNames.Count = 0 then
+            root <- node
+            rootSeen <- true
+        else addChild node
+    let addText (raw: string) =
+        if openNames.Count = 0 then
+            // Outside the root element only whitespace may stand.
+            if raw.Trim().Length > 0 then scanGiveUp ()
+        elif raw.Length > 0 then
+            let text = decodeReferences raw
+            if openPreserve.[openPreserve.Count - 1] then addChild (Text text)
+            else
+                let trimmed = text.Trim()
+                if trimmed.Length > 0 then addChild (Text trimmed)
+    while pos < n do
+        let lt = s.IndexOf('<', pos)
+        if lt < 0 then
+            addText (s.Substring pos)
+            pos <- n
+        else
+            if lt > pos then addText (s.Substring(pos, lt - pos))
+            if lt + 1 >= n then scanGiveUp ()
+            let c = s.[lt + 1]
+            if c = '/' then
+                let gt = s.IndexOf('>', lt + 2)
+                if gt < 0 || openNames.Count = 0 then scanGiveUp ()
+                let mutable nameEnd = gt
+                while nameEnd > lt + 2 && isSpace s.[nameEnd - 1] do nameEnd <- nameEnd - 1
+                let top = openNames.Count - 1
+                let name = openNames.[top]
+                if nameEnd - (lt + 2) <> name.Length || not (startsAt s (lt + 2) name) then scanGiveUp ()
+                let attrs = openAttrs.[top]
+                let children = openChildren.[top]
+                openNames.RemoveAt top
+                openAttrs.RemoveAt top
+                openPreserve.RemoveAt top
+                openChildren.RemoveAt top
+                closeElement name attrs children
+                pos <- gt + 1
+            elif c = '?' then
+                let close = indexOfOrdinal s "?>" (lt + 2)
+                if close < 0 then scanGiveUp ()
+                pos <- close + 2
+            elif c = '!' then
+                if startsAt s lt "<!--" then
+                    let close = indexOfOrdinal s "-->" (lt + 4)
+                    if close < 0 then scanGiveUp ()
+                    pos <- close + 3
+                elif startsAt s lt "<![CDATA[" then
+                    let close = indexOfOrdinal s "]]>" (lt + 9)
+                    if close < 0 || openNames.Count = 0 then scanGiveUp ()
+                    if close > lt + 9 then addChild (Text (s.Substring(lt + 9, close - lt - 9)))
+                    pos <- close + 3
+                else scanGiveUp ()
+            else
+                if rootSeen then scanGiveUp ()
+                // <name attribute="value" ...> or .../>
+                let mutable i = lt + 1
+                while i < n && (let ch = s.[i] in not (isSpace ch) && ch <> '>' && ch <> '/') do i <- i + 1
+                if i >= n || i = lt + 1 then scanGiveUp ()
+                let name = s.Substring(lt + 1, i - lt - 1)
+                names.Add name |> ignore
+                let mutable attrs : Map<string, string> = Map.empty
+                let mutable preserve = false
+                let mutable selfClosing = false
+                let mutable inTag = true
+                while inTag do
+                    while i < n && isSpace s.[i] do i <- i + 1
+                    if i >= n then scanGiveUp ()
+                    let ch = s.[i]
+                    if ch = '>' then
+                        inTag <- false
+                        i <- i + 1
+                    elif ch = '/' then
+                        if i + 1 >= n || s.[i + 1] <> '>' then scanGiveUp ()
+                        selfClosing <- true
+                        inTag <- false
+                        i <- i + 2
+                    else
+                        let nameStart = i
+                        while i < n && (let a = s.[i] in a <> '=' && not (isSpace a) && a <> '>' && a <> '/') do i <- i + 1
+                        let attrName = s.Substring(nameStart, i - nameStart)
+                        while i < n && isSpace s.[i] do i <- i + 1
+                        if i >= n || s.[i] <> '=' || attrName.Length = 0 then scanGiveUp ()
+                        i <- i + 1
+                        while i < n && isSpace s.[i] do i <- i + 1
+                        if i >= n then scanGiveUp ()
+                        let quote = s.[i]
+                        if quote <> '"' && quote <> '\'' then scanGiveUp ()
+                        let close = s.IndexOf(quote, i + 1)
+                        if close < 0 then scanGiveUp ()
+                        let raw = s.Substring(i + 1, close - i - 1)
+                        if raw.IndexOf '<' >= 0 then scanGiveUp ()
+                        // Literal tabs and line ends of an attribute value are spaces (XML 1.0, 3.3.3).
+                        let raw = if raw.IndexOf '\n' >= 0 || raw.IndexOf '\t' >= 0 then raw.Replace("\n", " ").Replace("\t", " ") else raw
+                        let value = decodeReferences raw
+                        if attrs.ContainsKey attrName then scanGiveUp ()
+                        if attrName = "xml:space" then preserve <- (value = "preserve")
+                        attrs <- Map.add attrName value attrs
+                        i <- close + 1
+                if selfClosing then closeElement name attrs []
+                else
+                    openNames.Add name
+                    openAttrs.Add attrs
+                    openPreserve.Add preserve
+                    openChildren.Add []
+                pos <- i
+    if openNames.Count > 0 || not rootSeen then scanGiveUp ()
+    root
+
+/// `parse` by the scanner above: Some node, with the element names of the
+/// part (as written, prefix included) added to `names`; None when the part
+/// holds something the scanner does not read - `parse` then says what.
+let tryScan (xmlString: string) (names: System.Collections.Generic.HashSet<string>) : XmlNode option =
+    let xmlString = xmlString.TrimStart(char 0xFEFF, char 0x200B)
+    try Some (scanDocument xmlString names)
+    with _ ->
+        names.Clear()
+        None
+
 // Namespace-aware helpers for Office Open XML
 module Ns =
     let stripNs (name: string) =
@@ -212,10 +434,12 @@ module Ns =
         | idx -> name.Substring(idx + 1)
 
     /// `stripNs name = localName`, without making the stripped name.
+    /// (A local name holds no colon: a name that ends with ":" + localName has it after its last colon.)
     let private hasLocalName (localName: string) (name: string) =
-        let colon = name.LastIndexOf(':')
-        if colon < 0 then name = localName
-        else name.Length - colon - 1 = localName.Length && name.EndsWith(localName, System.StringComparison.Ordinal)
+        let extra = name.Length - localName.Length
+        if extra = 0 then name = localName
+        elif extra < 2 then false
+        else name.[extra - 1] = ':' && name.EndsWith(localName, System.StringComparison.Ordinal)
 
     let childNs localName node =
         Xml.children node
@@ -240,3 +464,26 @@ module Ns =
         for i = found.Count - 1 downto 0 do
             result <- found.[i] :: result
         result
+
+    /// A large part parsed with the local names of its elements: asking whether
+    /// the part holds an element at all costs nothing, where `descendantsNs`
+    /// walks the whole tree to say there is none.
+    let parseWithLocalNames (xmlString: string) : XmlNode * System.Collections.Generic.HashSet<string> =
+        let names = System.Collections.Generic.HashSet<string>()
+        let node =
+            match tryScan xmlString names with
+            | Some node -> node
+            | None ->
+                let node = parse xmlString
+                let rec visit (current: XmlNode) =
+                    match current with
+                    | Element (name, _, kids) ->
+                        names.Add name |> ignore
+                        for kid in kids do visit kid
+                    | _ -> ()
+                visit node
+                node
+        let local = System.Collections.Generic.HashSet<string>()
+        for name in names do
+            local.Add (stripNs name) |> ignore
+        node, local
