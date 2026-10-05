@@ -2976,3 +2976,85 @@ checks['api-pagesetup'] = async () => {
     close();
     return lines;
 };
+
+// Dynamic arrays are recalculated incrementally: entering, changing and deleting a formula that
+// spills, a change of what it reads, typing into its cells and the undo of each. Every step is
+// compared with a second grid that recalculates the whole workbook at every edit.
+checks['api-recalc-spill'] = async () => {
+    const { lines, check, note } = makeLog();
+    const incremental = mountGrid(), full = mountGrid();
+    try {
+        full.grid.SetIncrementalRecalculation(false);
+        const grids = [incremental.grid, full.grid];
+        const both = (run) => { for (const grid of grids) run(grid); };
+        const values = (grid, r0, c0, r1, c1) => grid.GetRange(`${String.fromCharCode(65 + c0)}${r0 + 1}:${String.fromCharCode(65 + c1)}${r1 + 1}`).map((row) => row.map((cell) => cell.text));
+        const kinds = [];
+        // What both grids show in A1:H14, the kind of the last recalculation, and whether the two agree.
+        const state = () => {
+            const mine = values(incremental.grid, 0, 0, 13, 7), theirs = values(full.grid, 0, 0, 13, 7), stats = incremental.grid.GetRecalcStats();
+            kinds.push(stats.Kind);
+            return { kind: stats.Kind + (stats.Kind === 'full' ? ': ' + stats.Reason : ''), same: JSON.stringify(mine) === JSON.stringify(theirs), column: (col, rows = 6) => mine.slice(0, rows).map((row) => row[col]) };
+        };
+        both((grid) => { for (let row = 0; row < 6; row++) grid.SetCell(row, 0, String((row + 1) * 10)); grid.SetCell(0, 7, '3'); });
+        // (The first edit builds the dependency graph.)
+        both((grid) => grid.EnterText(8, 0, '=SUM(A1:A6)'));
+
+        both((grid) => grid.EnterText(0, 2, '=SEQUENCE($H$1)'));
+        let now = state();
+        check('a spilling formula entered: incremental, and it spilled', [now.kind, now.same, now.column(2)], ['incremental', true, ['1', '2', '3', '', '', '']]);
+        both((grid) => { grid.EnterText(0, 4, '=C2*10'); grid.EnterText(1, 4, '=SUM(C1:C9)'); grid.EnterText(2, 4, '=SUM(C1#)'); grid.EnterText(3, 4, '=A1:A3*2'); });
+        now = state();
+        check('formulas that read the spilled cells, and an array over a range', [now.kind, now.same, now.column(4)], ['incremental', true, ['20', '6', '6', '20', '40', '60']]);
+        both((grid) => grid.EnterText(0, 7, '5'));
+        now = state();
+        check('the array grows with the cell that gives its size', [now.kind, now.same, now.column(2), now.column(4, 3)], ['incremental', true, ['1', '2', '3', '4', '5', ''], ['20', '15', '15']]);
+        both((grid) => grid.Undo());
+        now = state();
+        check('... the undo', [now.kind, now.same, now.column(2), now.column(4, 3)], ['incremental', true, ['1', '2', '3', '', '', ''], ['20', '6', '6']]);
+        both((grid) => grid.EnterText(1, 0, '7'));
+        now = state();
+        check('a cell an array reads changed', [now.kind, now.same, now.column(4).slice(3)], ['incremental', true, ['20', '14', '60']]);
+
+        both((grid) => grid.EnterText(1, 2, '99'));
+        now = state();
+        check('typing into the array blocks it (#SPILL!), incrementally', [now.kind, now.same, now.column(2, 4), now.column(4, 3)], ['incremental', true, ['#SPILL!', '99', '', ''], ['990', '#SPILL!', '#SPILL!']]);
+        both((grid) => grid.Undo());
+        now = state();
+        check('... the undo: it spills again', [now.kind, now.same, now.column(2, 4), now.column(4, 3)], ['incremental', true, ['1', '2', '3', ''], ['20', '6', '6']]);
+        both((grid) => grid.Redo());
+        now = state();
+        check('... the redo', [now.kind, now.same, now.column(2, 2)], ['incremental', true, ['#SPILL!', '99']]);
+        both((grid) => { grid.SelectCell(1, 2); grid.ClearContents(); });
+        now = state();
+        check('the cell in its way cleared: it spills again', [now.kind, now.same, now.column(2, 4)], ['incremental', true, ['1', '2', '3', '']]);
+
+        both((grid) => { grid.SelectRange(0, 2, 2, 2); grid.ClearContents(); });
+        now = state();
+        check('the formula deleted with its cells', [now.kind, now.same, now.column(2, 4), now.column(4, 3)], ['incremental', true, ['', '', '', ''], ['0', '0', '0']]);
+        both((grid) => grid.Undo());
+        now = state();
+        check('... the undo: the array is back, incrementally', [now.kind, now.same, now.column(2, 4), now.column(4, 3)], ['incremental', true, ['1', '2', '3', ''], ['20', '6', '6']]);
+        both((grid) => grid.EnterText(0, 2, '=SEQUENCE(2,2)'));
+        now = state();
+        check('the formula changed to another array', [now.kind, now.same, values(incremental.grid, 0, 2, 2, 3)], ['incremental', true, [['1', '2'], ['3', '4'], ['', '']]]);
+        both((grid) => grid.EnterText(0, 2, '=A1+1'));
+        now = state();
+        check('... and to a plain formula: its cells are cleared', [now.kind, now.same, values(incremental.grid, 0, 2, 1, 3)], ['incremental', true, [['11', ''], ['', '']]]);
+        // On screen: the grid draws the cells the recalculation left.
+        both((grid) => grid.EnterText(0, 2, '=SEQUENCE($H$1)'));
+        await frame();
+        const shown = (row, col) => (incremental.host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"]`)?.textContent ?? '').trim();
+        check('the grid shows the array', [shown(0, 2), shown(1, 2), shown(2, 2), shown(3, 2)], ['1', '2', '3', '']);
+        check('no edit of a dynamic array was left to the full recalculation', kinds.filter((kind) => kind !== 'incremental'), []);
+        // Saved and opened again: the array is what it was, and goes on incrementally.
+        const again = await reopened(incremental.grid);
+        try {
+            again.grid.EnterText(0, 7, '4');
+            check('after a save and reopen the array follows its size (the first edit there builds the graph)', values(again.grid, 0, 2, 4, 2).map((row) => row[0]), ['1', '2', '3', '4', '']);
+            again.grid.EnterText(0, 7, '2');
+            check('... and then incrementally', [again.grid.GetRecalcStats().Kind, values(again.grid, 0, 2, 3, 2).map((row) => row[0])], ['incremental', ['1', '2', '', '']]);
+        } finally { again.close(); }
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    incremental.close(); full.close();
+    return lines;
+};

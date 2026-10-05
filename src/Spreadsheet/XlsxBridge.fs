@@ -376,7 +376,24 @@ let private extrasOfModel (original: XlsxReader.SheetExtras) (before: Spreadshee
         else
             axisOf model.RowHeights model.Axes.HiddenRowSizes model.Axes.RowLevels model.Axes.CollapsedRows 1.333,
             axisOf model.ColumnWidths model.Axes.HiddenColSizes model.Axes.ColLevels model.Axes.CollapsedCols 7.0
-    { original with Images = images; Objects = objects; ThreadedComments = threads; RowAxis = rowAxis; ColumnAxis = columnAxis }
+    // A formula that spilled is written as an array formula over the cells it
+    // fills: opened again (here or elsewhere), those cells are its results,
+    // not cells in its way.
+    let arrayFormulas =
+        if Map.isEmpty model.Spill then []
+        else
+            let bounds = System.Collections.Generic.Dictionary<CellAddress, CellAddress>()
+            for KeyValue (cell, anchor) in model.Spill do
+                if cell.Row >= anchor.Row && cell.Col >= anchor.Col then
+                    match bounds.TryGetValue anchor with
+                    | true, corner -> bounds.[anchor] <- { Row = max corner.Row cell.Row; Col = max corner.Col cell.Col }
+                    | false, _ -> bounds.[anchor] <- cell
+            [ for KeyValue (anchor, corner) in bounds do
+                match Map.tryFind anchor model.Cells with
+                | Some { Value = CellValue.Formula _ } ->
+                    yield formatCellRef anchor.Row anchor.Col, formatCellRef anchor.Row anchor.Col + ":" + formatCellRef corner.Row corner.Col
+                | _ -> () ]
+    { original with Images = images; Objects = objects; ThreadedComments = threads; RowAxis = rowAxis; ColumnAxis = columnAxis; ArrayFormulas = arrayFormulas }
 
 module Import =
 

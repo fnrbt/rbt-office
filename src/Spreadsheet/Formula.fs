@@ -13483,8 +13483,28 @@ let private spillArraysCore (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
         if Map.containsKey addr updatedCells then
             updatedCells <- Map.remove addr updatedCells
             changed <- true
+    // What a spill-range reference (`A1#`) reads while the arrays are laid out:
+    // the arrays laid out so far as they are now, the others as they were -
+    // a formula above the array it refers to sees the whole array too.
+    let readsSpillRanges = anchors |> Seq.exists (fun (_, _, formula, _) -> formula.IndexOf '#' >= 0)
+    let mutable viewSpill = previousSpill
+    let previousByAnchor = Dictionary<CellAddress, ResizeArray<CellAddress>>()
+    if readsSpillRanges then
+        previousSpill
+        |> Map.iter (fun spilled anchor ->
+            match previousByAnchor.TryGetValue anchor with
+            | true, cells -> cells.Add spilled
+            | false, _ ->
+                let cells = ResizeArray<CellAddress>()
+                cells.Add spilled
+                previousByAnchor.[anchor] <- cells)
     for (addr, cell, formula, expr) in anchors do
-        let updated = { model with Cells = updatedCells; Spill = spillMap }
+        // (Its own array is not there yet: a formula that refers to its own spill range reads its cell alone.)
+        if readsSpillRanges then
+            match previousByAnchor.TryGetValue addr with
+            | true, cells -> for spilled in cells do viewSpill <- Map.remove spilled viewSpill
+            | false, _ -> ()
+        let updated = { model with Cells = updatedCells; Spill = (if readsSpillRanges then viewSpill else spillMap) }
         let arr = evalArray expr { Model = updated; Workbook = workbook; Sheet = currentSheet; CurrentCell = Some addr }
         let nr = arr.Length
         let nc = if nr > 0 then arr.[0].Length else 0
@@ -13526,6 +13546,7 @@ let private spillArraysCore (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
                             let sa = { Row = addr.Row + r; Col = addr.Col + c }
                             setCellIfChanged sa { Value = arr.[r].[c]; Format = cell.Format; Comment = None }
                             spillMap <- Map.add sa addr spillMap
+                            if readsSpillRanges then viewSpill <- Map.add sa addr viewSpill
     previousSpill
     |> Map.iter (fun addr _ ->
         if not (Map.containsKey addr spillMap) then

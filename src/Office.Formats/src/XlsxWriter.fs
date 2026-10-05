@@ -1087,7 +1087,7 @@ let private escapedFast (value: string) =
     if plain then value else escaped value
 
 /// One `<c>` appended to `sb`. `rowText` is the row number as text.
-let private appendCellXml (sb: StringBuilder) (styles: StyleBook) (sharedIndex: string -> XlsxRichRun list -> int) (dataTables: Map<string, XlsxReader.DataTableFormula>) (rowText: string) (cell: XlsxCellOut) =
+let private appendCellXml (sb: StringBuilder) (styles: StyleBook) (sharedIndex: string -> XlsxRichRun list -> int) (dataTables: Map<string, XlsxReader.DataTableFormula>) (arrayFormulas: Map<string, string>) (rowText: string) (cell: XlsxCellOut) =
     let styleId = styles.StyleIdOf cell.Format
     let letters = columnLetters cell.Col
     let dataTable = if dataTables.IsEmpty then None else Map.tryFind (letters + rowText) dataTables
@@ -1114,7 +1114,11 @@ let private appendCellXml (sb: StringBuilder) (styles: StyleBook) (sharedIndex: 
     | None, XlsxFormula (formula, cached) ->
         let tAttr, cachedXml = cached |> Option.map (cachedValueXml sharedIndex) |> Option.defaultValue ("", "")
         openCell tAttr
-        sb.Append("><f>").Append(escapedFast formula).Append("</f>").Append(cachedXml).Append("</c>") |> ignore
+        // An array formula says which cells its results fill.
+        match (if arrayFormulas.IsEmpty then None else Map.tryFind (letters + rowText) arrayFormulas) with
+        | Some range -> sb.Append("><f t=\"array\" ref=\"").Append(range).Append("\">") |> ignore
+        | None -> sb.Append("><f>") |> ignore
+        sb.Append(escapedFast formula).Append("</f>").Append(cachedXml).Append("</c>") |> ignore
     | None, other ->
         let tAttr, valueXml = cachedValueXml sharedIndex other
         openCell tAttr
@@ -1242,6 +1246,7 @@ let private firstCellOfRange (range: string) =
 let private rowsXml (styles: StyleBook) (sharedIndex: string -> XlsxRichRun list -> int) (sheet: XlsxSheetOut) : string =
     // A data table is written on the first cell of its range.
     let dataTables = sheet.Extras.DataTables |> List.map (fun table -> firstCellOfRange table.Ref, table) |> Map.ofList
+    let arrayFormulas = Map.ofList sheet.Extras.ArrayFormulas
     let cells =
         let listed = List.toArray sheet.Cells
         if dataTables.IsEmpty then listed
@@ -1320,7 +1325,7 @@ let private rowsXml (styles: StyleBook) (sharedIndex: string -> XlsxRichRun list
         | None -> ()
         sb.Append('>') |> ignore
         while cellAt < cells.Length && cells.[cellAt].Row = row do
-            appendCellXml sb styles sharedIndex dataTables rowText cells.[cellAt]
+            appendCellXml sb styles sharedIndex dataTables arrayFormulas rowText cells.[cellAt]
             cellAt <- cellAt + 1
         sb.Append("</row>") |> ignore
     sb.ToString()
@@ -2420,6 +2425,12 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
                 { sheet.Extras with
                     Format = Some sheet.Format
                     Columns = sheet.Columns
+                    ArrayFormulas =
+                        [ for row in sheet.Rows do
+                            for cell in row.Cells do
+                                match cell.Formula, cell.ArrayRef with
+                                | Some _, Some range when range <> "" -> yield cell.Reference.Column + string cell.Reference.Row, range
+                                | _ -> () ]
                     RowAxis =
                         sheet.Rows
                         |> List.choose (fun row ->

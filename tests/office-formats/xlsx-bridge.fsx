@@ -871,6 +871,27 @@ ok "page setup: the printer's attributes stay when the setup is edited"
     (printerXml.Contains "orientation=\"portrait\"" && printerXml.Contains "horizontalDpi=\"600\"" && printerXml.Contains "verticalDpi=\"300\"" && printerXml.Contains "copies=\"2\"" && printerXml.Contains "draft=\"1\"" && printerXml.Contains "errors=\"dash\"")
     printerXml
 
+// A formula that spilled is written as an array formula over its cells: opened
+// again they are its results (the spill map), and a recalculation spills over
+// them instead of finding them in its way.
+let spilledModel =
+    let cellOf value = { Value = value; Format = defaultFormat; Comment = None }
+    createEmpty 50 8
+    |> setCell (addr 0 0) (cellOf (CellValue.Number 3.0))
+    |> setCell (addr 0 2) (cellOf (CellValue.Formula ("=SEQUENCE(A1,2)", CellValue.Empty)))
+    |> setCell (addr 6 0) (cellOf (CellValue.Formula ("=A1*2", CellValue.Empty)))
+    |> Rbt.Spreadsheet.Formula.recalcAndSpill None None
+let spilledBytes = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (printInput [| spilledModel; plainSheet |] None))
+let spilledXml = textOf spilledBytes "xl/worksheets/sheet1.xml"
+ok "spill: the formula is written as an array formula over the cells it fills, a plain formula as before"
+    (spilledXml.Contains "<f t=\"array\" ref=\"C1:D3\">SEQUENCE(A1,2)</f>" && spilledXml.Contains "<f>A1*2</f>") spilledXml
+let spilledBack = (Bridge.Import.importWorkbook (XlsxReader.loadBytesNative spilledBytes |> Option.get)).Sheets.[0].Model
+eq "spill: opened again, the cells belong to the formula" (spilledBack.Spill, spilledModel.Spill.Count) (spilledModel.Spill, 5)
+let respilled = spilledBack |> setCell (addr 0 0) { Value = CellValue.Number 2.0; Format = defaultFormat; Comment = None } |> Rbt.Spreadsheet.Formula.recalcAndSpill None None
+eq "spill: ... and a recalculation lays the array out again" ([ for row in 0 .. 2 -> getCellValue (addr row 2) respilled |> unwrapFormulaValue ], respilled.Spill.Count) ([ CellValue.Number 1.0; CellValue.Number 3.0; CellValue.Empty ], 3)
+let spilledAgain = Bridge.Export.toWorkbookOut { printInput [| spilledBack; plainSheet |] None with Source = None }
+ok "spill: a sheet opened from a file writes its array formulas back" ((textOf (XlsxWriter.writeWorkbookPackageBytes spilledAgain) "xl/worksheets/sheet1.xml").Contains "<f t=\"array\" ref=\"C1:D3\">") ""
+
 printfn ""
 printfn "XLSX bridge tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

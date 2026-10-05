@@ -758,12 +758,15 @@ type SheetExtras = {
     ColumnAxis: (int * float option * int * bool) list
     /// The sheet's own AutoFilter (a table's is part of the table).
     AutoFilter: SheetAutoFilter option
+    /// Array formulas for the writer: the cell that holds the formula and the
+    /// range its results fill ("C1", "C1:C3"), written as `<f t="array" ref>`.
+    ArrayFormulas: (string * string) list
 }
 
 let emptySheetExtras =
     { Images = []; Objects = []; ThreadedComments = []; DrawingRelationships = []; Format = None; Columns = []; ColumnStyles = []
       SheetId = None; KeptRelationships = []; KeptExtensions = []; PivotLocations = []; DataTables = []
-      KeptCellExtensions = []; PrinterSettingsRelId = None; RowAxis = []; ColumnAxis = []; AutoFilter = None }
+      KeptCellExtensions = []; PrinterSettingsRelId = None; RowAxis = []; ColumnAxis = []; AutoFilter = None; ArrayFormulas = [] }
 
 /// A named cell style (cellStyles / cellStyleXfs of styles.xml), with the
 /// font, fill, border and number format its xf refers to given as their XML so

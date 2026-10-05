@@ -25,14 +25,12 @@ open Rbt.Spreadsheet.Formula
 // calculated before the edit).
 //
 // It declines (None: the caller runs the full recalculation) when the edit
-// is not one of cells alone (names, tables, sheets, filters, structure), when
-// the formulas to evaluate are part of a cycle, and when the dynamic-array
-// pass is needed: a formula that spills is entered or reached, or a cell is
-// emptied / a spilled cell overwritten in a workbook that has spills.
-// Workbooks whose formulas choose their precedents while they are evaluated
-// (OFFSET, INDIRECT), or read through 3-D or spill-range references, are
-// always left to the full recalculation. Other volatile functions (NOW,
-// RAND ...) are evaluated again at every edit, with what reads them.
+// is not one of cells alone (names, tables, sheets, filters, structure) and
+// when the formulas to evaluate are part of a cycle. Workbooks whose formulas
+// choose their precedents while they are evaluated (OFFSET, INDIRECT), or read
+// through 3-D references, are always left to the full recalculation. Other
+// volatile functions (NOW, RAND ...) are evaluated again at every edit, with
+// what reads them. Dynamic arrays are part of the graph: see `recalculate`.
 
 /// A range some formulas read, with those formulas.
 type RangeGroup(sheet: SheetState, r0: int, c0: int, r1: int, c1: int, key: string) =
@@ -68,6 +66,13 @@ and Node(sheet: SheetState, row: int, col: int) =
     member val Pending = 0 with get, set
     member val NeedsEval = false with get, set
     member val Outs : ResizeArray<Node> = null with get, set
+    /// The cell's dynamic array has to be laid out again (its spilled cells written, cleared or blocked).
+    member val NeedsSpill = false with get, set
+    /// The node's place in the order of the pass in hand.
+    member val Order = -1 with get, set
+    /// Rows and columns of the array the formula last gave here (-1: not known).
+    member val ExtentRows = -1 with get, set
+    member val ExtentCols = -1 with get, set
     member val EdgeMark = 0 with get, set
     /// The value the cell had before the edit, when the edit changed the cell itself (BaselinePass = the pass).
     member val BaselinePass = 0 with get, set
@@ -84,6 +89,10 @@ and SheetState(id: SheetId) =
     member val ByRow = Dictionary<int, ResizeArray<RangeGroup>>() with get
     member val ByCol = Dictionary<int, ResizeArray<RangeGroup>>() with get
     member val Wide = ResizeArray<RangeGroup>() with get
+    /// The cells each dynamic array has spilled into, by the key of its formula's
+    /// cell: the sheet's spill map (`GhostsFor`) the other way round.
+    member val Ghosts = Dictionary<float, ResizeArray<CellAddress>>() with get
+    member val GhostsFor : obj = null with get, set
 
 /// What a pass did, for hosts and tests.
 type RecalcStats = {
@@ -299,7 +308,9 @@ let private wire (engine: Engine) (workbook: Workbook) (sheet: SheetState) (row:
         if exprSpillsStatically expr then
             node.Spills <- true
             engine.Spilling.Add node
-        if traits &&& 2 <> 0 || traits &&& 4 <> 0 || (traits &&& 8 <> 0 && containsThreeDReference expr) then
+        // (A spill-range reference `A1#` is a reference to its formula's cell: what
+        // reads it is evaluated whenever the array is laid out differently.)
+        if traits &&& 2 <> 0 || (traits &&& 8 <> 0 && containsThreeDReference expr) then
             node.Untracked <- true
             engine.UntrackedFormulas <- engine.UntrackedFormulas + 1
     | Result.Error _ ->
@@ -355,10 +366,9 @@ let lastStats (engine: Engine) = engine.LastStats
 /// Why `recalculate` last declined an edit.
 let lastDecline (engine: Engine) = engine.LastDecline
 
-/// The formulas that read a cell: on its own, or in a range.
-let private addReaders (engine: Engine) (sheet: SheetState) (row: int) (col: int) (explicit: ResizeArray<Node>) (into: ResizeArray<Node>) =
-    engine.EdgeMark <- engine.EdgeMark + 1
-    let mark = engine.EdgeMark
+/// The formulas that read a cell - on its own, or in a range - added to `into`
+/// once each under the edge mark `mark`.
+let private addReadersMarked (mark: int) (sheet: SheetState) (row: int) (col: int) (explicit: ResizeArray<Node>) (into: ResizeArray<Node>) =
     let add (reader: Node) =
         if reader.EdgeMark <> mark then
             reader.EdgeMark <- mark
@@ -376,6 +386,35 @@ let private addReaders (engine: Engine) (sheet: SheetState) (row: int) (col: int
     | true, groups -> inGroups groups
     | false, _ -> ()
     if sheet.Wide.Count > 0 then inGroups sheet.Wide
+
+/// The formulas that read a cell: on its own, or in a range.
+let private addReaders (engine: Engine) (sheet: SheetState) (row: int) (col: int) (explicit: ResizeArray<Node>) (into: ResizeArray<Node>) =
+    engine.EdgeMark <- engine.EdgeMark + 1
+    addReadersMarked engine.EdgeMark sheet row col explicit into
+
+/// The spill map of a sheet without converting a sheet that is not loaded.
+let private loadedSpill (model: SpreadsheetModel) : Map<CellAddress, CellAddress> =
+    match model.Deferred with
+    | Some deferred ->
+        match deferred.Loaded with
+        | Some loaded -> loaded.Spill
+        | None -> Map.empty
+    | None -> model.Spill
+
+/// The spilled cells of a sheet by the formula they belong to, for the spill map given.
+let private ghostsOf (state: SheetState) (spill: Map<CellAddress, CellAddress>) : Dictionary<float, ResizeArray<CellAddress>> =
+    if not (obj.ReferenceEquals(state.GhostsFor, spill)) then
+        state.Ghosts.Clear()
+        for KeyValue (cell, anchor) in spill do
+            let key = float anchor.Row * 16384.0 + float anchor.Col
+            match state.Ghosts.TryGetValue key with
+            | true, cells -> cells.Add cell
+            | false, _ ->
+                let cells = ResizeArray<CellAddress>()
+                cells.Add cell
+                state.Ghosts.[key] <- cells
+        state.GhostsFor <- box spill
+    state.Ghosts
 
 let private effectiveValue (cell: CellData voption) : CellValue =
     match cell with
@@ -400,10 +439,14 @@ type private CellChange = {
     After: CellData voption
 }
 
-/// The cells of a sheet that differ between two cell maps, by walking both in order.
-let private diffCells (state: SheetState) (before: Map<CellAddress, CellData>) (after: Map<CellAddress, CellData>) (changes: ResizeArray<CellChange>) =
+/// The cells of a sheet that differ between two cell maps, by walking both in
+/// order. A spilled cell (one in `spill`) that differs in more than its value -
+/// it was given a format - goes to `restyled`: its formula lays it out again.
+let private diffCells (state: SheetState) (before: Map<CellAddress, CellData>) (after: Map<CellAddress, CellData>) (spill: Map<CellAddress, CellAddress>)
+                      (changes: ResizeArray<CellChange>) (restyled: ResizeArray<struct (SheetState * CellAddress)>) =
     use left = (before :> seq<KeyValuePair<CellAddress, CellData>>).GetEnumerator()
     use right = (after :> seq<KeyValuePair<CellAddress, CellData>>).GetEnumerator()
+    let hasSpill = not (Map.isEmpty spill)
     let mutable hasLeft = left.MoveNext()
     let mutable hasRight = right.MoveNext()
     while hasLeft || hasRight do
@@ -419,19 +462,56 @@ let private diffCells (state: SheetState) (before: Map<CellAddress, CellData>) (
         if order = 0 then
             let was = left.Current.Value
             let now = right.Current.Value
-            if not (obj.ReferenceEquals(was, now)) && not (obj.ReferenceEquals(was.Value, now.Value)) && was.Value <> now.Value then
-                changes.Add { State = state; Row = left.Current.Key.Row; Col = left.Current.Key.Col; Before = ValueSome was; After = ValueSome now }
+            if not (obj.ReferenceEquals(was, now)) then
+                if not (obj.ReferenceEquals(was.Value, now.Value)) && was.Value <> now.Value then
+                    changes.Add { State = state; Row = left.Current.Key.Row; Col = left.Current.Key.Col; Before = ValueSome was; After = ValueSome now }
+                elif hasSpill && Map.containsKey left.Current.Key spill then
+                    restyled.Add (struct (state, left.Current.Key))
             hasLeft <- left.MoveNext()
             hasRight <- right.MoveNext()
         elif order < 0 then
             let was = left.Current.Value
             if was.Value <> CellValue.Empty then
                 changes.Add { State = state; Row = left.Current.Key.Row; Col = left.Current.Key.Col; Before = ValueSome was; After = ValueNone }
+            elif hasSpill && Map.containsKey left.Current.Key spill then
+                restyled.Add (struct (state, left.Current.Key))
             hasLeft <- left.MoveNext()
         else
             let now = right.Current.Value
             if now.Value <> CellValue.Empty then
                 changes.Add { State = state; Row = right.Current.Key.Row; Col = right.Current.Key.Col; Before = ValueNone; After = ValueSome now }
+            elif hasSpill && Map.containsKey right.Current.Key spill then
+                restyled.Add (struct (state, right.Current.Key))
+            hasRight <- right.MoveNext()
+
+/// The cells whose entry differs between two spill maps: each with the formula
+/// cells it belonged / belongs to.
+let private diffSpill (before: Map<CellAddress, CellAddress>) (after: Map<CellAddress, CellAddress>) (onAnchor: CellAddress -> unit) =
+    use left = (before :> seq<KeyValuePair<CellAddress, CellAddress>>).GetEnumerator()
+    use right = (after :> seq<KeyValuePair<CellAddress, CellAddress>>).GetEnumerator()
+    let mutable hasLeft = left.MoveNext()
+    let mutable hasRight = right.MoveNext()
+    while hasLeft || hasRight do
+        let order =
+            if not hasLeft then 1
+            elif not hasRight then -1
+            else
+                let a = left.Current.Key
+                let b = right.Current.Key
+                if a.Row <> b.Row then (if a.Row < b.Row then -1 else 1)
+                elif a.Col <> b.Col then (if a.Col < b.Col then -1 else 1)
+                else 0
+        if order = 0 then
+            if left.Current.Value <> right.Current.Value then
+                onAnchor left.Current.Value
+                onAnchor right.Current.Value
+            hasLeft <- left.MoveNext()
+            hasRight <- right.MoveNext()
+        elif order < 0 then
+            onAnchor left.Current.Value
+            hasLeft <- left.MoveNext()
+        else
+            onAnchor right.Current.Value
             hasRight <- right.MoveNext()
 
 let private sameFilterState (before: SpreadsheetModel) (after: SpreadsheetModel) =
@@ -453,14 +533,15 @@ let private sameSurroundings (engine: Engine) (edited: Workbook) =
                 obj.ReferenceEquals(before, after)
                 || (state.Name = sheet.Name
                     && before.StructureVersion = after.StructureVersion
-                    && (obj.ReferenceEquals(before.Spill, after.Spill) || (Map.isEmpty before.Spill && Map.isEmpty after.Spill))
                     && (obj.ReferenceEquals(before.Tables, after.Tables) || before.Tables = after.Tables)
                     && sameFilterState before after)
             | _ -> false))
 
 /// The cells an edit changed: those named by `hint`, or - without one - the
 /// cells of every sheet whose cell map is another one, compared cell by cell.
-let private collectChanges (engine: Engine) (edited: Workbook) (hint: (SheetId * CellAddress) list option) : ResizeArray<CellChange> =
+/// `restyled` takes the spilled cells that changed in their format alone.
+let private collectChanges (engine: Engine) (edited: Workbook) (hint: (SheetId * CellAddress) list option)
+                           (restyled: ResizeArray<struct (SheetState * CellAddress)>) : ResizeArray<CellChange> =
     let changes = ResizeArray<CellChange>()
     match hint with
     | Some cells ->
@@ -476,6 +557,13 @@ let private collectChanges (engine: Engine) (edited: Workbook) (hint: (SheetId *
                     | ValueSome was, ValueNone -> was.Value <> CellValue.Empty
                     | ValueNone, ValueSome now -> now.Value <> CellValue.Empty
                 if differs then changes.Add { State = state; Row = addr.Row; Col = addr.Col; Before = before; After = after }
+                else
+                    let same =
+                        match before, after with
+                        | ValueSome was, ValueSome now -> obj.ReferenceEquals(was, now)
+                        | ValueNone, ValueNone -> true
+                        | _ -> false
+                    if not same && Map.containsKey addr (loadedSpill sheet.Model) then restyled.Add (struct (state, addr))
             | _ -> ()
     | None ->
         for KeyValue (sheetId, sheet) in edited.Sheets do
@@ -487,7 +575,7 @@ let private collectChanges (engine: Engine) (edited: Workbook) (hint: (SheetId *
                 let beforeCells = if isLoaded before then loadedCells before else loadedCells after
                 let afterCells = loadedCells after
                 if not (obj.ReferenceEquals(beforeCells, afterCells)) then
-                    diffCells state beforeCells afterCells changes
+                    diffCells state beforeCells afterCells (loadedSpill after) changes restyled
     changes
 
 /// Make the graph follow the formulas among the changed cells. `onFormula`
@@ -529,8 +617,12 @@ let private holdWorkbook (engine: Engine) (workbook: Workbook) =
 let adopt (engine: Engine) (calculated: Workbook) : bool =
     if not (sameSurroundings engine calculated) then false
     else
-        let changes = collectChanges engine calculated None
+        let changes = collectChanges engine calculated None (ResizeArray())
         rewire engine calculated changes (fun _ _ -> ()) ignore
+        // (The arrays were laid out elsewhere: their sizes are not known here.)
+        for node in engine.Spilling do
+            node.ExtentRows <- -1
+            node.ExtentCols <- -1
         holdWorkbook engine calculated
         true
 
@@ -541,148 +633,389 @@ let adopt (engine: Engine) (calculated: Workbook) : bool =
 /// Some: the recalculated workbook - the engine now holds it. None: the edit
 /// needs the full recalculation; afterwards the engine is shown its result
 /// (`adopt`) or built again.
+///
+/// Dynamic arrays. A formula that spills owns the cells it spilled into (the
+/// sheet's spill map) as its outputs: what reads one of them is ordered after
+/// the formula. The formula is laid out again - its array evaluated, its
+/// cells written, cleared, or the formula blocked (#SPILL!) - when something
+/// it reads changed, when it was entered, changed or removed, when one of its
+/// cells was typed over, cleared or restyled, and when a cell in the way of a
+/// blocked formula changed. Laying it out can change which cells it owns: what
+/// reads a cell it newly covers, a formula it took a cell from (the formula
+/// further up / left wins a cell two arrays want, as in the full
+/// recalculation) and a blocked formula that wants a cell it gave up are
+/// calculated in the same pass when they come later in its order, else in a
+/// further round of the pass.
 let recalculate (engine: Engine) (edited: Workbook) (hint: (SheetId * CellAddress) list option) : Workbook option =
     let decline (reason: string) : Workbook option =
         engine.LastDecline <- reason
+        // (The spilled cells by formula may have been moved on by the rounds that ran.)
+        for KeyValue (_, state) in engine.Sheets do state.GhostsFor <- null
         None
-    if engine.UntrackedFormulas > 0 then decline "a formula chooses its precedents while it is evaluated (OFFSET, INDIRECT) or reads a 3-D or spill-range reference"
+    if engine.UntrackedFormulas > 0 then decline "a formula chooses its precedents while it is evaluated (OFFSET, INDIRECT) or reads a 3-D reference"
     elif not (sameSurroundings engine edited) then decline "more than cells changed (sheets, names, tables, filters, rows or columns)"
     else
-        let changes = collectChanges engine edited hint
-        // What the dynamic-array pass has to see: a spilled cell overwritten,
-        // and - while a spill is blocked (#SPILL!) - a cell emptied, which may free it.
-        let hasSpills =
-            engine.Spilling.Count > 0
-            || (edited.Sheets |> Map.exists (fun _ sheet -> not (Map.isEmpty sheet.Model.Spill)))
-        let mutable needsFull = false
-        if hasSpills then
-            // (A blocked spill runs right and down from its formula: a cell emptied there may free it.)
-            let blocked =
-                engine.Spilling |> Seq.filter (fun node ->
-                    match Map.tryFind { Row = node.Row; Col = node.Col } (loadedCells node.Sheet.Model) with
-                    | Some cell -> unwrapFormulaValue cell.Value = CellValue.Error Err.spill
-                    | None -> false)
-                |> Seq.toArray
-            let mayFree (change: CellChange) =
-                blocked |> Array.exists (fun node -> obj.ReferenceEquals(node.Sheet, change.State) && change.Row >= node.Row && change.Col >= node.Col)
-            for change in changes do
-                if not needsFull then
-                    let spill = change.State.Model.Spill
-                    // (A spilling formula changed or removed: its spilled cells go with it.)
-                    let spilling =
-                        match change.State.Nodes.TryGetValue (keyOf change.Row change.Col) with
-                        | true, node -> node.Spills
-                        | false, _ -> false
-                    if spilling then needsFull <- true
-                    elif blocked.Length > 0 && effectiveValue change.After = CellValue.Empty && isNull (formulaOf change.After) && mayFree change then needsFull <- true
-                    elif not (Map.isEmpty spill) && Map.containsKey { Row = change.Row; Col = change.Col } spill then needsFull <- true
-        if needsFull then decline "the edit touches a spill (a spilling formula, a spilled cell, or a cell that may free a blocked spill)"
-        else
+        let restyled = ResizeArray<struct (SheetState * CellAddress)>()
+        let changes = collectChanges engine edited hint restyled
+        let mutable workbook = edited
+        let models = Dictionary<SheetId, SpreadsheetModel>()
+        let touched = HashSet<SheetId>()
+        let modelOf (state: SheetState) =
+            match models.TryGetValue state.Id with
+            | true, model -> model
+            | false, _ ->
+                // (A formula is evaluated in its sheet, not in the sheet's stand-in.)
+                let model = resolveSheet (Map.find state.Id workbook.Sheets).Model
+                models.[state.Id] <- model
+                model
+        /// The sheet's spill map as the pass has it now (a sheet that is not loaded has none to speak of).
+        let spillOf (state: SheetState) : Map<CellAddress, CellAddress> =
+            match models.TryGetValue state.Id with
+            | true, model -> model.Spill
+            | false, _ ->
+                match Map.tryFind state.Id workbook.Sheets with
+                | Some sheet -> loadedSpill sheet.Model
+                | None -> Map.empty
+        let cellsOf (state: SheetState) : Map<CellAddress, CellData> =
+            match models.TryGetValue state.Id with
+            | true, model -> model.Cells
+            | false, _ ->
+                match Map.tryFind state.Id workbook.Sheets with
+                | Some sheet -> loadedCells sheet.Model
+                | None -> Map.empty
+
+        let mutable pass = 0
+        let mutable reached = ResizeArray<Node>()
+        let pending = Stack<Node>()
+        let reach (node: Node) =
+            if node.Pass <> pass then
+                node.Pass <- pass
+                node.Pending <- 0
+                node.NeedsEval <- false
+                node.NeedsSpill <- false
+                node.Order <- -1
+                node.Outs <- null
+                reached.Add node
+                pending.Push node
+        let newRound () =
             engine.Pass <- engine.Pass + 1
-            let pass = engine.Pass
-            let reached = ResizeArray<Node>()
-            let pending = Stack<Node>()
-            let reach (node: Node) =
-                if node.Pass <> pass then
-                    node.Pass <- pass
-                    node.Pending <- 0
-                    node.NeedsEval <- false
-                    node.Outs <- null
-                    reached.Add node
-                    pending.Push node
-            let readers = ResizeArray<Node>()
-            rewire engine edited changes
-                (fun node change ->
-                    reach node
-                    node.NeedsEval <- true
-                    node.BaselinePass <- pass
-                    node.Baseline <- effectiveValue change.Before)
-                (fun change ->
-                    // What reads the cell sees another value.
-                    let explicit =
-                        match change.State.Nodes.TryGetValue (keyOf change.Row change.Col) with
-                        | true, node -> node.Dependents
-                        | false, _ -> null
-                    readers.Clear()
-                    addReaders engine change.State change.Row change.Col explicit readers
-                    for reader in readers do
-                        reach reader
-                        reader.NeedsEval <- true)
-            if engine.UntrackedFormulas > 0 then decline "a formula whose precedents are not known beforehand was entered"
-            else
-                for node in engine.Volatile do
-                    reach node
-                    node.NeedsEval <- true
-                // Everything that reads what was reached, with the edges among them.
+            pass <- engine.Pass
+            reached <- ResizeArray<Node>()
+        newRound ()
+        let firstPass = pass
+
+        let readers = ResizeArray<Node>()
+        rewire engine edited changes
+            (fun node change ->
+                reach node
+                node.NeedsEval <- true
+                node.BaselinePass <- pass
+                node.Baseline <- effectiveValue change.Before)
+            (fun change ->
+                // What reads the cell sees another value.
+                let explicit =
+                    match change.State.Nodes.TryGetValue (keyOf change.Row change.Col) with
+                    | true, node -> node.Dependents
+                    | false, _ -> null
+                readers.Clear()
+                addReaders engine change.State change.Row change.Col explicit readers
+                for reader in readers do
+                    reach reader
+                    reader.NeedsEval <- true)
+        if engine.UntrackedFormulas > 0 then decline "a formula whose precedents are not known beforehand was entered"
+        else
+            // ---- the dynamic arrays the edit touches ----------------------------------
+            /// Formulas that show #SPILL! (or may), by sheet: a cell changed or given up in their way lays them out again.
+            let blockedBySheet = Dictionary<SheetId, ResizeArray<Node>>()
+            let noteBlocked (node: Node) =
+                match blockedBySheet.TryGetValue node.Sheet.Id with
+                | true, nodes -> if not (nodes.Contains node) then nodes.Add node
+                | false, _ ->
+                    let nodes = ResizeArray<Node>()
+                    nodes.Add node
+                    blockedBySheet.[node.Sheet.Id] <- nodes
+            let spillError = CellValue.Error Err.spill
+            for node in engine.Spilling do
+                match Map.tryFind { Row = node.Row; Col = node.Col } (cellsOf node.Sheet) with
+                | Some cell when unwrapFormulaValue cell.Value = spillError -> noteBlocked node
+                | _ -> ()
+            /// The blocked formulas whose array reaches a cell (as far as its size is known).
+            let blockedOver (state: SheetState) (row: int) (col: int) (onNode: Node -> unit) =
+                match blockedBySheet.TryGetValue state.Id with
+                | true, nodes ->
+                    for node in nodes do
+                        if node.Row <= row && node.Col <= col && not (node.Row = row && node.Col = col)
+                           && (node.ExtentRows < 0 || (row < node.Row + node.ExtentRows && col < node.Col + node.ExtentCols)) then
+                            onNode node
+                | false, _ -> ()
+            let seedSpill (node: Node) =
+                reach node
+                node.NeedsSpill <- true
+            let seedAnchor (state: SheetState) (anchor: CellAddress) = seedSpill (nodeAt state anchor.Row anchor.Col)
+            let anySpill =
+                engine.Spilling.Count > 0 || (edited.Sheets |> Map.exists (fun _ sheet -> not (Map.isEmpty (loadedSpill sheet.Model))))
+                || (engine.Sheets.Values |> Seq.exists (fun state -> not (isNull (box state.Model)) && not (Map.isEmpty (loadedSpill state.Model))))
+            if anySpill then
+                // Spilled cells that are another formula's now, or nobody's.
+                for KeyValue (sheetId, sheet) in edited.Sheets do
+                    match engine.Sheets.TryGetValue sheetId with
+                    | true, state when not (isNull (box state.Model)) && not (obj.ReferenceEquals(state.Model, sheet.Model)) ->
+                        let held = loadedSpill state.Model
+                        let now = loadedSpill sheet.Model
+                        if not (obj.ReferenceEquals(held, now)) && not (Map.isEmpty held && Map.isEmpty now) then
+                            diffSpill held now (seedAnchor state)
+                    | _ -> ()
+                for change in changes do
+                    let state = change.State
+                    let addr = { Row = change.Row; Col = change.Col }
+                    let now = spillOf state
+                    if not (Map.isEmpty now) then
+                        // The formula of a changed spilled cell; a changed cell that has spilled cells of its own.
+                        match Map.tryFind addr now with
+                        | Some anchor -> seedAnchor state anchor
+                        | None -> ()
+                        if (ghostsOf state now).ContainsKey (keyOf change.Row change.Col) then seedAnchor state addr
+                    let held = loadedSpill state.Model
+                    if not (Map.isEmpty held) then
+                        match Map.tryFind addr held with
+                        | Some anchor -> seedAnchor state anchor
+                        | None -> ()
+                    blockedOver state change.Row change.Col seedSpill
+                for struct (state, addr) in restyled do
+                    match Map.tryFind addr (spillOf state) with
+                    | Some anchor -> seedAnchor state anchor
+                    | None -> ()
+
+            for node in engine.Volatile do
+                reach node
+                node.NeedsEval <- true
+
+            let mutable reachedTotal = 0
+            let mutable evaluated = 0
+            let mutable failure : string = null
+            let mutable rounds = 0
+            let mutable nextEval = ResizeArray<Node>()
+            let mutable nextSpill = ResizeArray<Node>()
+            let mutable running = true
+            while running do
+                rounds <- rounds + 1
+                // Everything that reads what was reached - a cell itself or, of a
+                // formula that spilled, one of its spilled cells - with the edges among them.
                 while pending.Count > 0 do
                     let node = pending.Pop()
                     let outs = ResizeArray<Node>()
-                    addReaders engine node.Sheet node.Row node.Col node.Dependents outs
+                    engine.EdgeMark <- engine.EdgeMark + 1
+                    let mark = engine.EdgeMark
+                    addReadersMarked mark node.Sheet node.Row node.Col node.Dependents outs
+                    let spill = spillOf node.Sheet
+                    if not (Map.isEmpty spill) then
+                        match (ghostsOf node.Sheet spill).TryGetValue (keyOf node.Row node.Col) with
+                        | true, ghosts ->
+                            for ghost in ghosts do
+                                let explicit =
+                                    match node.Sheet.Nodes.TryGetValue (keyOf ghost.Row ghost.Col) with
+                                    | true, ghostNode -> ghostNode.Dependents
+                                    | false, _ -> null
+                                addReadersMarked mark node.Sheet ghost.Row ghost.Col explicit outs
+                        | false, _ -> ()
                     node.Outs <- outs
                     for reader in outs do
                         reach reader
                         reader.Pending <- reader.Pending + 1
-                let mutable spills = false
+                reachedTotal <- reachedTotal + reached.Count
+                // Dependency order: a formula is ready when everything reached that it reads is done.
+                let ready = Stack<Node>()
                 for node in reached do
-                    if node.Spills then spills <- true
-                if spills then decline "the edit reaches a spilling formula"
+                    if node.Pending = 0 then ready.Push node
+                let order = ResizeArray<Node>(reached.Count)
+                while ready.Count > 0 do
+                    let node = ready.Pop()
+                    node.Order <- order.Count
+                    order.Add node
+                    for reader in node.Outs do
+                        reader.Pending <- reader.Pending - 1
+                        if reader.Pending = 0 then ready.Push reader
+                // (Fewer in order than reached: a cycle among the formulas to evaluate.)
+                if order.Count < reached.Count then
+                    failure <- "a circular reference among the formulas to evaluate"
+                    running <- false
                 else
-                    // Dependency order: a formula is ready when everything reached that it reads is done.
-                    let ready = Stack<Node>()
-                    for node in reached do
-                        if node.Pending = 0 then ready.Push node
-                    let order = ResizeArray<Node>(reached.Count)
-                    while ready.Count > 0 do
-                        let node = ready.Pop()
-                        order.Add node
-                        for reader in node.Outs do
-                            reader.Pending <- reader.Pending - 1
-                            if reader.Pending = 0 then ready.Push reader
-                    // (Fewer in order than reached: a cycle among the formulas to evaluate.)
-                    if order.Count < reached.Count then decline "a circular reference among the formulas to evaluate"
-                    else
-                        let mutable workbook = edited
-                        let models = Dictionary<SheetId, SpreadsheetModel>()
-                        let touched = HashSet<SheetId>()
-                        let modelOf (state: SheetState) =
-                            match models.TryGetValue state.Id with
-                            | true, model -> model
-                            | false, _ ->
-                                // (A formula is evaluated in its sheet, not in the sheet's stand-in.)
-                                let model = resolveSheet (Map.find state.Id workbook.Sheets).Model
-                                models.[state.Id] <- model
-                                model
-                        let mutable evaluated = 0
-                        for node in order do
-                            if node.NeedsEval && node.IsFormula then
-                                evaluated <- evaluated + 1
-                                let state = node.Sheet
-                                let model = modelOf state
-                                let addr = { Row = node.Row; Col = node.Col }
-                                match Map.tryFind addr model.Cells with
-                                | Some cell ->
-                                    let result =
+                    nextEval <- ResizeArray<Node>()
+                    nextSpill <- ResizeArray<Node>()
+                    let mutable index = 0
+                    /// A formula has to be evaluated (again): later in this round when it is still to come, else in the next.
+                    let evalLater (reader: Node) =
+                        if reader.Pass = pass && reader.Order > index then reader.NeedsEval <- true
+                        else nextEval.Add reader
+                    let spillLater (node: Node) =
+                        if node.Pass = pass && node.Order > index then node.NeedsSpill <- true
+                        elif not (node.Pass = pass && node.Order = index) then nextSpill.Add node
+                    let cellReaders = ResizeArray<Node>()
+                    let readersChanged (state: SheetState) (cell: CellAddress) =
+                        let explicit =
+                            match state.Nodes.TryGetValue (keyOf cell.Row cell.Col) with
+                            | true, cellNode -> cellNode.Dependents
+                            | false, _ -> null
+                        cellReaders.Clear()
+                        addReaders engine state cell.Row cell.Col explicit cellReaders
+                        for reader in cellReaders do evalLater reader
+                    /// Lay out the dynamic array of a cell: evaluate it, write the cells it
+                    /// spills into, clear the ones it no longer covers. True when it is blocked.
+                    let layOut (node: Node) : bool =
+                        let state = node.Sheet
+                        let model = modelOf state
+                        let addr = { Row = node.Row; Col = node.Col }
+                        let key = keyOf node.Row node.Col
+                        let ghosts = ghostsOf state model.Spill
+                        let old = match ghosts.TryGetValue key with | true, cells -> cells.ToArray() | false, _ -> [||]
+                        let mutable cells = model.Cells
+                        let mutable spill = model.Spill
+                        let mutable blocked = false
+                        let mutable layoutChanged = false
+                        let covered = HashSet<float>()
+                        let current = ResizeArray<CellAddress>()
+                        let anchorCell =
+                            match Map.tryFind addr cells with
+                            | Some cell when node.IsFormula && node.Spills && node.Expr.IsSome ->
+                                (match cell.Value with CellValue.Formula _ -> Some cell | _ -> None)
+                            | _ -> None
+                        match anchorCell with
+                        | Some cell ->
+                            let arr = evalArray node.Expr.Value { Model = model; Workbook = Some workbook; Sheet = Some state.Id; CurrentCell = Some addr }
+                            let nr = arr.Length
+                            let nc = if nr > 0 then arr.[0].Length else 0
+                            node.ExtentRows <- nr
+                            node.ExtentCols <- nc
+                            if nr * nc > 1 then
+                                // In the way: a cell of the user's, or a cell of an array further up / left.
+                                let mutable r = 0
+                                while not blocked && r < nr do
+                                    let mutable c = 0
+                                    while not blocked && c < nc do
+                                        if not (r = 0 && c = 0) then
+                                            let target = { Row = addr.Row + r; Col = addr.Col + c }
+                                            match Map.tryFind target spill with
+                                            | Some owner when owner = addr -> ()
+                                            | Some owner ->
+                                                let ownerLive =
+                                                    match state.Nodes.TryGetValue (keyOf owner.Row owner.Col) with
+                                                    | true, ownerNode -> ownerNode.IsFormula && ownerNode.Spills
+                                                    | false, _ -> false
+                                                if ownerLive && (owner.Row < addr.Row || (owner.Row = addr.Row && owner.Col < addr.Col)) then blocked <- true
+                                            | None ->
+                                                match Map.tryFind target cells with
+                                                | Some existing when existing.Value <> CellValue.Empty -> blocked <- true
+                                                | _ -> ()
+                                        c <- c + 1
+                                    r <- r + 1
+                                if not blocked then
+                                    for r in 0 .. nr - 1 do
+                                        for c in 0 .. nc - 1 do
+                                            if not (r = 0 && c = 0) then
+                                                let target = { Row = addr.Row + r; Col = addr.Col + c }
+                                                let next = { Value = arr.[r].[c]; Format = cell.Format; Comment = None }
+                                                let existing = Map.tryFind target cells
+                                                match existing with
+                                                | Some known when known = next -> ()
+                                                | _ ->
+                                                    cells <- Map.add target next cells
+                                                    let before = match existing with Some known -> unwrapFormulaValue known.Value | None -> CellValue.Empty
+                                                    if before <> unwrapFormulaValue next.Value then
+                                                        layoutChanged <- true
+                                                        readersChanged state target
+                                                match Map.tryFind target spill with
+                                                | Some owner when owner = addr -> ()
+                                                | Some owner ->
+                                                    // Taken from the array of a formula further down / right: that one is blocked now.
+                                                    match ghosts.TryGetValue (keyOf owner.Row owner.Col) with
+                                                    | true, theirs -> theirs.Remove target |> ignore
+                                                    | false, _ -> ()
+                                                    spill <- Map.add target addr spill
+                                                    layoutChanged <- true
+                                                    spillLater (nodeAt state owner.Row owner.Col)
+                                                | None ->
+                                                    spill <- Map.add target addr spill
+                                                    layoutChanged <- true
+                                                covered.Add (keyOf target.Row target.Col) |> ignore
+                                                current.Add target
+                        | None -> ()
+                        // The cells it spilled into and no longer covers.
+                        for ghost in old do
+                            if not (covered.Contains (keyOf ghost.Row ghost.Col)) then
+                                spill <- Map.remove ghost spill
+                                layoutChanged <- true
+                                match Map.tryFind ghost cells with
+                                | Some known ->
+                                    match known.Value with
+                                    | CellValue.Formula _ -> ()
+                                    | value ->
+                                        cells <- Map.remove ghost cells
+                                        if value <> CellValue.Empty then readersChanged state ghost
+                                | None -> ()
+                                // A blocked formula that wants the cell can have it.
+                                blockedOver state ghost.Row ghost.Col (fun waiting -> if not (obj.ReferenceEquals(waiting, node)) then spillLater waiting)
+                        if current.Count > 0 then ghosts.[key] <- current else ghosts.Remove key |> ignore
+                        if not (obj.ReferenceEquals(cells, model.Cells)) || not (obj.ReferenceEquals(spill, model.Spill)) then
+                            let updated = { model with Cells = cells; Spill = spill }
+                            models.[state.Id] <- updated
+                            touched.Add state.Id |> ignore
+                            workbook <- updateSheetModel state.Id updated workbook
+                        state.GhostsFor <- box spill
+                        if blocked then noteBlocked node
+                        // What reads the array as a whole (`A1#`) sees another one: other cells, or other values in them.
+                        if layoutChanged then
+                            for reader in node.Dependents do evalLater reader
+                        blocked
+                    while index < order.Count do
+                        let node = order.[index]
+                        let lays = node.NeedsSpill || (node.NeedsEval && node.IsFormula && node.Spills)
+                        let blocked = if lays then layOut node else false
+                        if (node.NeedsEval || lays) && node.IsFormula then
+                            evaluated <- evaluated + 1
+                            let state = node.Sheet
+                            let model = modelOf state
+                            let addr = { Row = node.Row; Col = node.Col }
+                            match Map.tryFind addr model.Cells with
+                            | Some cell ->
+                                let result =
+                                    if blocked then spillError
+                                    else
                                         match node.Expr with
                                         | Some expr -> eval expr { Model = model; Workbook = Some workbook; Sheet = Some state.Id; CurrentCell = Some addr }
                                         | None -> CellValue.Error Err.syntax
-                                    let previous = match cell.Value with CellValue.Formula (_, cached) -> cached | other -> other
-                                    if previous <> result then
-                                        let updated = { model with Cells = Map.add addr { cell with Value = CellValue.Formula (node.Formula, result) } model.Cells }
-                                        models.[state.Id] <- updated
-                                        touched.Add state.Id |> ignore
-                                        workbook <- updateSheetModel state.Id updated workbook
-                                    // What reads it was calculated with the value it had before the edit.
-                                    let before = if node.BaselinePass = pass then node.Baseline else previous
-                                    if before <> result then
-                                        for reader in node.Outs do
-                                            reader.NeedsEval <- true
-                                | None -> ()
-                        // As the full recalculation leaves a sheet whose formulas gave other values.
-                        for sheetId in touched do
-                            let model = models.[sheetId]
-                            let projected = invalidateFilterProjection model
-                            if not (obj.ReferenceEquals(model, projected)) then
-                                workbook <- updateSheetModel sheetId projected workbook
-                        holdWorkbook engine workbook
-                        engine.LastStats <- { ChangedCells = changes.Count; ReachedFormulas = reached.Count; EvaluatedFormulas = evaluated }
-                        Some workbook
+                                let previous = match cell.Value with CellValue.Formula (_, cached) -> cached | other -> other
+                                if previous <> result then
+                                    let updated = { model with Cells = Map.add addr { cell with Value = CellValue.Formula (node.Formula, result) } model.Cells }
+                                    models.[state.Id] <- updated
+                                    touched.Add state.Id |> ignore
+                                    workbook <- updateSheetModel state.Id updated workbook
+                                // What reads it was calculated with the value it had before the edit.
+                                let before = if node.BaselinePass = pass && pass = firstPass then node.Baseline else previous
+                                if before <> result then
+                                    for reader in node.Outs do
+                                        reader.NeedsEval <- true
+                            | None -> ()
+                        index <- index + 1
+                    if nextEval.Count = 0 && nextSpill.Count = 0 then running <- false
+                    elif rounds >= 200 then
+                        failure <- "the dynamic arrays do not settle (a circular reference through spilled cells)"
+                        running <- false
+                    else
+                        newRound ()
+                        for node in nextEval do
+                            reach node
+                            node.NeedsEval <- true
+                        for node in nextSpill do
+                            reach node
+                            node.NeedsSpill <- true
+            if not (isNull failure) then decline failure
+            else
+                // As the full recalculation leaves a sheet whose formulas gave other values.
+                for sheetId in touched do
+                    let model = models.[sheetId]
+                    let projected = invalidateFilterProjection model
+                    if not (obj.ReferenceEquals(model, projected)) then
+                        workbook <- updateSheetModel sheetId projected workbook
+                holdWorkbook engine workbook
+                engine.LastStats <- { ChangedCells = changes.Count; ReachedFormulas = reachedTotal; EvaluatedFormulas = evaluated }
+                Some workbook

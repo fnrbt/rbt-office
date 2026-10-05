@@ -1059,8 +1059,8 @@ type Spreadsheet(container: Element) =
     /// evaluated (Recalc); the whole workbook is recalculated - every sheet:
     /// formulas, then dynamic-array spills, then formulas again so readers of
     /// spilled cells settle - when the edit is more than one of cells, when
-    /// it reaches a spill or a cycle, and before there is a calculated state
-    /// to start from.
+    /// it reaches a cycle, and before there is a calculated state to start
+    /// from. (Dynamic arrays are part of the incremental pass.)
     let recalculateAfterEdit (hint: (SheetId * CellAddress) list option) =
         let edited = currentWorkbookSnapshot()
         let incremental =
@@ -1661,6 +1661,13 @@ type Spreadsheet(container: Element) =
     /// undoable step. False when a validation rule refused the entry.
     let commitInput (addr: CellAddress) (text: string) (validate: bool) (undoable: bool) : bool =
         let oldCellData = getCell addr model
+        // A cell a dynamic array had spilled into is that array's cell again
+        // after the undo of an entry typed over it, not a cell in its way.
+        let spilledFrom = Map.tryFind addr model.Spill
+        let asItWas (m: SpreadsheetModel) =
+            match spilledFrom with
+            | Some anchor when not (Map.containsKey addr m.Spill) -> { m with Spill = Map.add addr anchor m.Spill }
+            | _ -> m
         if System.String.IsNullOrWhiteSpace text then
             // Empty input clears the cell.
             match oldCellData with
@@ -1705,9 +1712,9 @@ type Spreadsheet(container: Element) =
                     | _ -> parsed
                 recalculateSingleCellEdit addr cellData
                 if undoable then
-                    model <- pushCommand { Undo = (fun m -> match oldCellData with
-                                                            | Some old -> setCell addr old m
-                                                            | None -> clearCell addr m)
+                    model <- pushCommand { Undo = (fun m -> (match oldCellData with
+                                                             | Some old -> setCell addr old m
+                                                             | None -> clearCell addr m) |> asItWas)
                                            Redo = (fun m -> setCell addr cellData m)
                                            Description = sprintf "Edit cell %s" (formatCellRef addr.Row addr.Col) } model
                 true

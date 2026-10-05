@@ -51,7 +51,16 @@ let difference (left: Wb.Workbook) (right: Wb.Workbook) =
     |> List.tryPick (fun sheetId ->
         let a = (resolveSheet left.Sheets.[sheetId].Model).Cells
         let b = (resolveSheet right.Sheets.[sheetId].Model).Cells
-        if a = b then None
+        let spillA = (resolveSheet left.Sheets.[sheetId].Model).Spill
+        let spillB = (resolveSheet right.Sheets.[sheetId].Model).Spill
+        if a = b then
+            // The same cells spilled from the same formulas.
+            if spillA = spillB then None
+            else
+                let keys = Seq.append (spillA |> Seq.map (fun kv -> kv.Key)) (spillB |> Seq.map (fun kv -> kv.Key)) |> Seq.distinct
+                keys |> Seq.tryPick (fun key ->
+                    let x, y = Map.tryFind key spillA, Map.tryFind key spillB
+                    if x <> y then Some (sprintf "%s!R%dC%d spilled from %A vs %A" sheetId key.Row key.Col x y) else None)
         else
             let keys = Seq.append (a |> Seq.map (fun kv -> kv.Key)) (b |> Seq.map (fun kv -> kv.Key)) |> Seq.distinct
             keys |> Seq.tryPick (fun key ->
@@ -76,6 +85,8 @@ let fullRecalculation (wb: Wb.Workbook) =
 
 /// An edit both ways: incrementally, and by a full recalculation.
 type Outcome = Incremental of Recalc.RecalcStats | Declined
+/// How often the engine declined, by the reason it gave.
+let declines = System.Collections.Generic.Dictionary<string, int>()
 let mutable oneRunSteps = 0
 let mutable oneRunShort = 0
 let mutable engine = Unchecked.defaultof<Recalc.Engine>
@@ -99,6 +110,8 @@ let edit label (hint: (string * CellAddress) list option) (change: Wb.Workbook -
         Incremental (Recalc.lastStats engine)
     | None ->
         current <- full
+        let reason = Recalc.lastDecline engine
+        declines.[reason] <- (match declines.TryGetValue reason with | true, n -> n + 1 | _ -> 1)
         if not (Recalc.adopt engine full) then engine <- Recalc.build full
         Declined
 
@@ -164,14 +177,7 @@ ok "an edit elsewhere is incremental although a cycle exists" (edit "beside a cy
 declined "a cycle through two cells" (edit "cycle 2" None (setCells "sheet1" [ at 31 3, Some (formula "=D33"); at 32 3, Some (formula "=D32") ]))
 edit "the cycles removed" None (setCells "sheet1" [ at 30 3, None; at 31 3, None; at 32 3, None ]) |> ignore
 ok "then edits are incremental again" (edit "after the cycles" None (setCells "sheet1" [ at 0 0, Some (number 2.0) ]) <> Declined) ""
-declined "a spilling formula entered" (edit "spill" None (setCells "sheet1" [ at 40 5, Some (formula "=SEQUENCE(3)") ]))
-eq "the spill is there" (valueAt "sheet1" 42 5 current) (CellValue.Number 3.0)
-ok "an edit that does not reach the spill is incremental" (edit "beside a spill" None (setCells "sheet1" [ at 0 0, Some (number 3.0) ]) <> Declined) ""
-declined "a spilled cell overwritten" (edit "into the spill" None (setCells "sheet1" [ at 41 5, Some (number 9.0) ]))
-eq "the spill is blocked" (valueAt "sheet1" 40 5 current) (CellValue.Error Formula.Err.spill)
-declined "the blocking cell cleared" (edit "unblock" None (setCells "sheet1" [ at 41 5, None ]))
-eq "the spill is back" (valueAt "sheet1" 42 5 current) (CellValue.Number 3.0)
-edit "the spill removed" None (setCells "sheet1" [ at 40 5, None ]) |> ignore
+// (Dynamic arrays are calculated incrementally: see further down.)
 declined "OFFSET: precedents chosen while evaluating" (edit "offset" None (setCells "sheet1" [ at 45 5, Some (formula "=OFFSET(A1,1,0)") ]))
 ok "the workbook is unsupported while it holds one" (Recalc.isUnsupported engine) ""
 declined "every edit is left to the full recalculation" (edit "with offset" None (setCells "sheet1" [ at 0 0, Some (number 4.0) ]))
@@ -298,6 +304,169 @@ do
     let edited = current |> setCells "sheet1" [ at 0 0, Some (formula "=A2+1") ]
     eq "the input overwritten by a formula that reads what depends on it: declined, as a circular reference"
         (Recalc.recalculate engine edited None |> Option.isSome, Recalc.lastDecline engine) (false, "a circular reference among the formulas to evaluate")
+
+// ---- dynamic arrays ---------------------------------------------------------------
+// A formula that spills owns the cells it spilled into; entering, changing and
+// removing one, a change of what it reads, and typing into its cells are
+// calculated incrementally, with the cells and the spill map of the full pass.
+let incrementally label outcome = ok label (outcome <> Declined) (sprintf "declined: %s" (Recalc.lastDecline engine))
+let spillOf sheetId (wb: Wb.Workbook) = (resolveSheet wb.Sheets.[sheetId].Model).Spill
+do
+    let wb =
+        Wb.createWorkbook ()
+        |> setCells "sheet1" [ for row in 0 .. 9 -> at row 0, Some (number (float (10 - row))) ]
+        |> setCells "sheet1" [ at 0 11, Some (number 3.0); at 1 11, Some (number 4.0) ]
+    start wb
+    declines.Clear()
+    incrementally "a spilling formula entered" (edit "spill entered" (Some [ "sheet1", at 0 3 ]) (setCells "sheet1" [ at 0 3, Some (formula "=SEQUENCE($L$1)") ]))
+    eq "it spilled" ([ for row in 0 .. 3 -> valueAt "sheet1" row 3 current ], spillOf "sheet1" current |> Map.toList)
+        ([ CellValue.Number 1.0; CellValue.Number 2.0; CellValue.Number 3.0; CellValue.Empty ], [ at 1 3, at 0 3; at 2 3, at 0 3 ])
+    // Readers of the spilled cells: a cell, a range over them, the array as a whole, and a chain off one.
+    incrementally "readers entered" (edit "readers" None (setCells "sheet1" [ at 0 12, Some (formula "=D2*10"); at 1 12, Some (formula "=SUM(D1:D9)"); at 2 12, Some (formula "=SUM(D1#)"); at 3 12, Some (formula "=M1+M2"); at 4 12, Some (formula "=COUNT(D:D)") ]))
+    eq "they read the array" ([ for row in 0 .. 4 -> valueAt "sheet1" row 12 current ]) [ CellValue.Number 20.0; CellValue.Number 6.0; CellValue.Number 6.0; CellValue.Number 26.0; CellValue.Number 3.0 ]
+    let grown = edit "the array grows" (Some [ "sheet1", at 0 11 ]) (setCells "sheet1" [ at 0 11, Some (number 5.0) ])
+    incrementally "its size read from a cell: it grows" grown
+    eq "... and what reads the cells it newly covers follows" ([ for row in 1 .. 4 -> valueAt "sheet1" row 12 current ], valueAt "sheet1" 4 3 current, (spillOf "sheet1" current).Count)
+        ([ CellValue.Number 15.0; CellValue.Number 15.0; CellValue.Number 35.0; CellValue.Number 5.0 ], CellValue.Number 5.0, 4)
+    incrementally "it shrinks" (edit "the array shrinks" None (setCells "sheet1" [ at 0 11, Some (number 2.0) ]))
+    eq "... its cells are cleared" ([ for row in 0 .. 4 -> valueAt "sheet1" row 3 current ], valueAt "sheet1" 1 12 current, (spillOf "sheet1" current).Count)
+        ([ CellValue.Number 1.0; CellValue.Number 2.0; CellValue.Empty; CellValue.Empty; CellValue.Empty ], CellValue.Number 3.0, 1)
+    incrementally "it becomes one cell" (edit "the array is one cell" None (setCells "sheet1" [ at 0 11, Some (number 1.0) ]))
+    eq "... no spilled cells" (valueAt "sheet1" 1 3 current, spillOf "sheet1" current |> Map.isEmpty, valueAt "sheet1" 0 12 current) (CellValue.Empty, true, CellValue.Number 0.0)
+    edit "back to four" None (setCells "sheet1" [ at 0 11, Some (number 4.0) ]) |> ignore
+    // Typing into the array blocks it; clearing the cell lets it spill again.
+    incrementally "a spilled cell typed over" (edit "into the spill" (Some [ "sheet1", at 2 3 ]) (setCells "sheet1" [ at 2 3, Some (number 99.0) ]))
+    eq "the formula is blocked and its other cells are cleared" ([ for row in 0 .. 3 -> valueAt "sheet1" row 3 current ], spillOf "sheet1" current |> Map.isEmpty, valueAt "sheet1" 1 12 current)
+        ([ CellValue.Error Formula.Err.spill; CellValue.Empty; CellValue.Number 99.0; CellValue.Empty ], true, CellValue.Error Formula.Err.spill)
+    incrementally "an edit elsewhere while it is blocked" (edit "beside the blocked spill" None (setCells "sheet1" [ at 5 0, Some (number 1.0) ]))
+    incrementally "the blocking cell cleared" (edit "unblock" (Some [ "sheet1", at 2 3 ]) (setCells "sheet1" [ at 2 3, None ]))
+    eq "the array is back" ([ for row in 0 .. 3 -> valueAt "sheet1" row 3 current ], valueAt "sheet1" 1 12 current) ([ for n in 1 .. 4 -> CellValue.Number (float n) ], CellValue.Number 10.0)
+    // A spilled cell cleared (Delete on it) is written again; one restyled is the array's again.
+    incrementally "a spilled cell cleared" (edit "ghost cleared" None (setCells "sheet1" [ at 1 3, None ]))
+    eq "it is back" (valueAt "sheet1" 1 3 current) (CellValue.Number 2.0)
+    incrementally "a spilled cell restyled" (edit "ghost restyled" None (fun wb -> Wb.updateSheetModel "sheet1" (setCellBgColor (at 1 3) "#ff0000" wb.Sheets.["sheet1"].Model) wb))
+    eq "it has the formula's format, as after a full recalculation" ((getCell (at 1 3) (resolveSheet current.Sheets.["sheet1"].Model)).Value.Format.BgColor) None
+    // Arrays over edited ranges.
+    incrementally "FILTER, SORT, UNIQUE, array arithmetic, TRANSPOSE entered" (edit "arrays" None (setCells "sheet1"
+        [ at 12 3, Some (formula "=FILTER(A1:A10,A1:A10>$L$2)"); at 12 4, Some (formula "=SORT(A1:A6)"); at 12 5, Some (formula "=UNIQUE(A1:A10)")
+          at 12 6, Some (formula "=A1:A5*2"); at 24 3, Some (formula "=TRANSPOSE(A1:A4)"); at 26 3, Some (formula "=E13#+1"); at 5 12, Some (formula "=SUM(D13:G23)") ]))
+    eq "they are there" (valueAt "sheet1" 12 3 current, valueAt "sheet1" 12 4 current, valueAt "sheet1" 24 6 current, valueAt "sheet1" 26 3 current) (CellValue.Number 10.0, CellValue.Number 1.0, CellValue.Number 7.0, CellValue.Number 2.0)
+    incrementally "an input of all of them changed" (edit "input" (Some [ "sheet1", at 0 0 ]) (setCells "sheet1" [ at 0 0, Some (number 0.5) ]))
+    incrementally "the filter's threshold changed: the array is shorter" (edit "threshold" None (setCells "sheet1" [ at 1 11, Some (number 7.0) ]))
+    incrementally "a text among the inputs" (edit "text" None (setCells "sheet1" [ at 3 0, Some (text "x") ]))
+    incrementally "inputs cleared" (edit "cleared" None (setCells "sheet1" [ at 6 0, None; at 7 0, None ]))
+    // Two arrays that want the same cells: the one further up / left has them.
+    incrementally "an array entered across another" (edit "across" None (setCells "sheet1" [ at 14 2, Some (formula "=SEQUENCE(1,6)") ]))
+    eq "the later formula is blocked" (valueAt "sheet1" 14 2 current) (CellValue.Error Formula.Err.spill)
+    // An array further up / left takes the cells it wants from one further down / right, which is blocked then.
+    incrementally "a wide array entered" (edit "wide" None (setCells "sheet1" [ at 40 3, Some (formula "=SEQUENCE(3,3)") ]))
+    incrementally "an array entered above that takes one of its cells" (edit "above" None (setCells "sheet1" [ at 39 4, Some (formula "=SEQUENCE(2)") ]))
+    eq "the array below is blocked and its cells are cleared" (valueAt "sheet1" 40 3 current, valueAt "sheet1" 40 4 current, valueAt "sheet1" 41 4 current, valueAt "sheet1" 39 4 current) (CellValue.Error Formula.Err.spill, CellValue.Number 2.0, CellValue.Empty, CellValue.Number 1.0)
+    incrementally "the array above removed" (edit "above removed" (Some [ "sheet1", at 39 4 ]) (setCells "sheet1" [ at 39 4, None ]))
+    eq "the array below spills again" (valueAt "sheet1" 40 3 current, valueAt "sheet1" 42 5 current) (CellValue.Number 1.0, CellValue.Number 9.0)
+    incrementally "a spilling formula changed to a plain one" (edit "to plain" None (setCells "sheet1" [ at 12 4, Some (formula "=A1+1") ]))
+    eq "its cells are gone" (valueAt "sheet1" 13 4 current) (CellValue.Empty)
+    incrementally "a spilling formula removed" (edit "removed" None (setCells "sheet1" [ at 12 5, None ]))
+    // An undo that puts the cells and the spill map back as they were.
+    let before = current
+    incrementally "arrays deleted in a block" (edit "block deleted" None (setCells "sheet1" [ for row in 0 .. 27 do for col in 2 .. 7 -> at row col, None ]))
+    incrementally "the undo: cells and spill map put back" (edit "undo of the block" None (fun wb ->
+        let old = resolveSheet before.Sheets.["sheet1"].Model
+        Wb.updateSheetModel "sheet1" ({ wb.Sheets.["sheet1"].Model with Cells = old.Cells; Spill = old.Spill } |> invalidateFilterProjection) wb))
+    ok "the workbook is what it was" ((difference current before).IsNone) (sprintf "%A" (difference current before))
+    eq "none of these edits was left to the full recalculation" (declines |> Seq.map (fun kv -> kv.Key, kv.Value) |> List.ofSeq) []
+    // A formula that reads its own spilled cells is a circular reference.
+    edit "an array that reads what it spills into" None (setCells "sheet1" [ at 0 8, Some (formula "=SEQUENCE(3)+I3") ]) |> ignore
+    ok "... is declined as circular, not as a spill" (declines.Keys |> Seq.forall (fun reason -> reason.Contains "circular")) (sprintf "%A" (List.ofSeq declines.Keys))
+
+// Random sequences with dynamic arrays: sizes read from cells, arrays over
+// edited ranges, arrays side by side that block one another, typing into and
+// clearing spilled cells, removed formulas, readers of spilled cells, undos.
+let randomSpills (seed: int) (steps: int) =
+    let random = Random seed
+    let wb =
+        Wb.createWorkbook () |> Wb.addSheet "Other"
+    let other = wb.SheetOrder |> List.last
+    let wb =
+        wb
+        |> setCells "sheet1" [ for row in 0 .. 11 do
+                                  yield at row 0, Some (number (float (random.Next 20)))
+                                  yield at row 1, Some (if random.Next 3 = 0 then text (string (char (65 + random.Next 4))) else number (float (random.Next 4))) ]
+        |> setCells "sheet1" [ at 0 14, Some (number 3.0); at 1 14, Some (number 5.0); at 2 14, Some (number 2.0) ]
+        |> setCells "sheet1" [ at 4 14, Some (formula "=SUM(D1:K30)"); at 5 14, Some (formula "=COUNT(E:E)"); at 6 14, Some (formula "=F5*2+G7"); at 7 14, Some (formula "=O5+O6") ]
+        |> setCells other [ at 0 0, Some (formula "=SUM(Sheet1!D1:K30)"); at 1 0, Some (formula "=Sheet1!E4&\"\""); at 3 0, Some (formula "=Sheet1!A1:A3*2") ]
+    start wb
+    let snapshots = ResizeArray<SpreadsheetModel>()
+    let failuresBefore = fail
+    let mutable incremental = 0
+    for step in 1 .. steps do
+        if fail = failuresBefore then
+            let model = resolveSheet current.Sheets.["sheet1"].Model
+            let anchors = model.Spill |> Map.toList |> List.map snd |> List.distinct |> List.toArray
+            let ghosts = model.Spill |> Map.toArray |> Array.map fst
+            let spot () = at (random.Next 26) (3 + random.Next 8)
+            let refOf (addr: CellAddress) = sprintf "%s%d" (columnToLetter addr.Col) (addr.Row + 1)
+            let arrayFormula () =
+                match random.Next 12 with
+                | 0 -> "=SEQUENCE($O$1)"
+                | 1 -> "=SEQUENCE($O$3,$O$1)"
+                | 2 -> "=FILTER(A1:A12,A1:A12>$O$2)"
+                | 3 -> "=SORT(A1:A8)"
+                | 4 -> "=UNIQUE(B1:B12)"
+                | 5 -> "=A1:A5*2"
+                | 6 -> "=TRANSPOSE(A1:A4)"
+                | 7 -> "=SEQUENCE(2,3)"
+                | 8 when anchors.Length > 0 -> sprintf "=%s#*2" (refOf anchors.[random.Next anchors.Length])
+                | 9 when anchors.Length > 0 -> sprintf "=SORT(%s#,1,-1)" (refOf anchors.[random.Next anchors.Length])
+                | 10 -> "=FILTER(A1:B12,B1:B12=$O$3)"
+                | _ -> "=A1:A3+TRANSPOSE(A1:A3)"
+            let name, change =
+                match random.Next 16 with
+                | 0 | 1 -> "an input changed", setCells "sheet1" [ at (random.Next 12) (random.Next 2), Some (number (float (random.Next 20))) ]
+                | 2 -> "a size changed", setCells "sheet1" [ at (random.Next 3) 14, Some (number (float (1 + random.Next 5))) ]
+                | 3 | 4 | 5 -> "an array formula entered", setCells "sheet1" [ spot (), Some (formula (arrayFormula ())) ]
+                | 6 -> "a number typed in the arrays' area", setCells "sheet1" [ spot (), Some (number (float (random.Next 9))) ]
+                | 7 when ghosts.Length > 0 -> "a spilled cell typed over", setCells "sheet1" [ ghosts.[random.Next ghosts.Length], Some (number 77.0) ]
+                | 8 when ghosts.Length > 0 -> "a spilled cell cleared", setCells "sheet1" [ ghosts.[random.Next ghosts.Length], None ]
+                | 9 when anchors.Length > 0 -> "an array formula removed", setCells "sheet1" [ anchors.[random.Next anchors.Length], None ]
+                | 10 ->
+                    let origin = spot ()
+                    "a block cleared", setCells "sheet1" [ for r in 0 .. random.Next 5 do for c in 0 .. random.Next 3 -> at (origin.Row + r) (origin.Col + c), None ]
+                | 11 ->
+                    let target = spot ()
+                    "a reader entered", setCells "sheet1" [ at (8 + random.Next 12) (14 + random.Next 2), Some (formula (if random.Next 2 = 0 then sprintf "=%s+1" (refOf target) else sprintf "=SUM(%s:%s)" (refOf target) (refOf (at (target.Row + random.Next 6) (target.Col + random.Next 3))))) ]
+                | 12 when anchors.Length > 0 ->
+                    "a reader of a whole array entered", setCells "sheet1" [ at (8 + random.Next 12) 16, Some (formula (sprintf "=SUM(%s#)" (refOf anchors.[random.Next anchors.Length]))) ]
+                | 13 when snapshots.Count > 0 ->
+                    let old = snapshots.[random.Next snapshots.Count]
+                    "cells and spill map put back", (fun wb -> Wb.updateSheetModel "sheet1" ({ wb.Sheets.["sheet1"].Model with Cells = old.Cells; Spill = old.Spill } |> invalidateFilterProjection) wb)
+                | 14 -> "a text among the inputs", setCells "sheet1" [ at (random.Next 12) (random.Next 2), Some (text (string (char (65 + random.Next 4)))) ]
+                | _ -> "an input cleared", setCells "sheet1" [ at (random.Next 12) (random.Next 2), None ]
+            if step % 7 = 0 then snapshots.Add model
+            // (A single changed cell is named to the engine half of the time, as a typed entry is.)
+            let edited = change current
+            let hint =
+                let was, now = model.Cells, (resolveSheet edited.Sheets.["sheet1"].Model).Cells
+                let keys = Seq.append (was |> Seq.map (fun kv -> kv.Key)) (now |> Seq.map (fun kv -> kv.Key)) |> Seq.distinct |> Seq.filter (fun key -> Map.tryFind key was <> Map.tryFind key now) |> Seq.truncate 2 |> List.ofSeq
+                match keys with
+                | [ only ] when random.Next 2 = 0 -> Some [ "sheet1", only ]
+                | _ -> None
+            match edit (sprintf "spills seed %d step %d (%s)" seed step name) hint (fun _ -> edited) with
+            | Incremental _ -> incremental <- incremental + 1
+            | Declined -> ()
+    incremental
+
+declines.Clear()
+let mutable spillIncremental = 0
+let spillSeeds, spillSteps = (match Environment.GetEnvironmentVariable "SPILL_SEEDS" with null | "" -> 60 | text -> int text), 70
+for seed in 1 .. spillSeeds do
+    spillIncremental <- spillIncremental + randomSpills (100 + seed) spillSteps
+printfn "  dynamic arrays: %d of %d random edits incremental; left to the full recalculation: %s" spillIncremental (spillSeeds * spillSteps)
+    (if declines.Count = 0 then "none" else declines |> Seq.map (fun kv -> sprintf "%d x \"%s\"" kv.Value kv.Key) |> String.concat ", ")
+ok "no edit of a dynamic array is declined for being one (only circular references are)"
+    (declines.Keys |> Seq.forall (fun reason -> reason.Contains "circular"))
+    (sprintf "%A" (List.ofSeq declines.Keys))
+ok "the random edits of dynamic arrays were nearly all incremental" (spillIncremental * 10 > spillSeeds * spillSteps * 9) (sprintf "%d of %d" spillIncremental (spillSeeds * spillSteps))
 
 printfn "stage32-recalc: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
