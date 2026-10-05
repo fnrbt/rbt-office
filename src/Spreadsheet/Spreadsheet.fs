@@ -12,6 +12,8 @@ module SpreadsheetLayout = Rbt.Spreadsheet.Layout
 module SpreadsheetPaint = Rbt.Spreadsheet.Paint
 module SpreadsheetCellText = Rbt.Spreadsheet.CellText
 module SpreadsheetInput = Rbt.Spreadsheet.Input
+module SheetOps = Rbt.Spreadsheet.SheetOps
+module Host = Rbt.Spreadsheet.HostShapes
 
 // Additional helpers
 [<Emit("$0.scrollLeft")>]
@@ -1630,6 +1632,20 @@ type Spreadsheet(container: Element) =
 
     let formatSelection (description: string) (update: CellFormat -> CellFormat) : bool =
         formatSelectionAt description (fun _ _ format -> update format)
+
+    /// What GetSelectionFormat last gave, and what it gave it for (the cells,
+    /// the column styles and the selected block): asked again for the same,
+    /// it answers without looking at a cell.
+    let mutable selectionFormatFor : (obj * obj * (int * int * int * int)) option = None
+    let mutable selectionFormatObj : obj = null
+
+    /// The model of the sheet at `index` (converting a sheet of an opened
+    /// file that was not needed so far).
+    let sheetModelAt (index: int) : SpreadsheetModel =
+        if index = activeSheetIndex then model
+        else
+            convertInPlace index
+            sheets.[index]
 
     /// The format a toggle (bold, italic ...) goes by: the active cell's.
     let activeFormat () : CellFormat =
@@ -4689,6 +4705,86 @@ type Spreadsheet(container: Element) =
                 "endRow" ==> endRow
                 "endCol" ==> endCol
             ]
+
+    // ===== Reading cells (toolbars, host features) =====
+
+    /// One cell of the active sheet (`row`, `col` 0-based):
+    /// { row, col, address: "B2",
+    ///   value: number | string | boolean | null (empty) - of a formula, its result; an error is its text ("#DIV/0!"),
+    ///   valueType: "empty" | "number" | "string" | "boolean" | "error",
+    ///   text: string (what the cell shows: the value through its number format),
+    ///   formula: string | null (with the leading "="),
+    ///   format: { bold, italic, underline, doubleUnderline, strikethrough: boolean,
+    ///             fontFamily: string | null, fontSize: number | null (points; null = the default, 11),
+    ///             textColor, fill: "#RRGGBB" | null,
+    ///             horizontalAlign: "left" | "center" | "right" | "justify" | ... | null (general),
+    ///             verticalAlign: "top" | "middle" | "bottom" | null (bottom),
+    ///             wrap: boolean, indent: number, shrinkToFit: boolean,
+    ///             textRotation: number (degrees, -90..90; 255 = stacked),
+    ///             numberFormat: string | null (an Excel format code; null = General),
+    ///             borders: { top, bottom, left, right, diagonal: { style, color } | null, diagonalUp, diagonalDown: boolean } }
+    ///           - the cell's own format, else its column's default style, else the default (conditional formats are not applied),
+    ///   isMerged: boolean, mergeRange: "B2:C3" | null (the merged cell it is part of; its content is in the first cell),
+    ///   comment: { text, author: string | null } | null (see GetCommentThread for replies),
+    ///   hyperlink: { target, isInternal: boolean, range } | null,
+    ///   validation: { type, operator, formula1, formula2, values, allowBlank, showError, errorStyle,
+    ///                 errorTitle, errorMessage, inputTitle, inputMessage } | null }.
+    /// Throws when row / col are not whole numbers inside the sheet.
+    member _.GetCell(row: obj, col: obj) : obj =
+        let addr = { Row = Host.rowArg "GetCell" model row; Col = Host.colArg "GetCell" model col }
+        Host.cellToObj model addr (cellText (getCell addr model))
+
+    /// The cells of a range as rows of cell objects (see GetCell):
+    /// GetRange("B2:D5") -> [[B2, C2, D2], [B3, ...], ...]. `a1` is "B2",
+    /// "B2:D5", "A:C" or "3:5", of the active sheet or, with a sheet name in
+    /// front ("Data!A1:B2", "'My sheet'!A:A"), of that sheet. Whole columns
+    /// and rows are cut down to the used range of the sheet; a block is cut
+    /// at the sheet's last row and column. Throws when `a1` is not a range,
+    /// names a sheet that does not exist, or asks for more than a million cells.
+    member _.GetRange(a1: obj) : obj array array =
+        let sheetName, reference = SheetOps.splitSheetPrefix (Host.stringArg "GetRange" "the range" a1)
+        let source =
+            match sheetName with
+            | None -> model
+            | Some name ->
+                match sheetNames |> Array.tryFindIndex (fun known -> System.String.Equals(known, name, System.StringComparison.OrdinalIgnoreCase)) with
+                | Some index -> sheetModelAt index
+                | None -> Host.hostFail "GetRange" (sprintf "there is no sheet \"%s\"" name)
+        let range = SheetOps.parseRange "GetRange" reference
+        let range = if SheetOps.isWholeColumns range || SheetOps.isWholeRows range then SheetOps.clipToUsed source range else range
+        match SheetOps.clipRange source.RowCount source.ColCount range with
+        | None -> [||]
+        | Some range ->
+            let rows = range.To.Row - range.From.Row + 1
+            let cols = range.To.Col - range.From.Col + 1
+            if float rows * float cols > 1.0e6 then
+                Host.hostFail "GetRange" (sprintf "%s holds %g cells; ask for at most a million at a time" (SheetOps.rangeText range) (float rows * float cols))
+            Array.init rows (fun r ->
+                Array.init cols (fun c ->
+                    let addr = { Row = range.From.Row + r; Col = range.From.Col + c }
+                    Host.cellToObj source addr (cellText (getCell addr source))))
+
+    /// What the cells of the selection have in common, for a toolbar: the
+    /// `format` object of GetCell with "mixed" in place of every property in
+    /// which the cells differ - { bold, italic, underline, doubleUnderline,
+    /// strikethrough, fontFamily, fontSize, textColor, fill, horizontalAlign,
+    /// verticalAlign, wrap, indent, shrinkToFit, textRotation, numberFormat,
+    /// borders: { top, bottom, left, right, diagonal } } (each border side
+    /// { style, color }, null or "mixed"). Made to be called on every
+    /// selection change: a selection of whole rows, columns or the sheet
+    /// costs one pass over the cells that exist, and asking again for the
+    /// same selection of unchanged cells costs nothing.
+    member _.GetSelectionFormat() : obj =
+        let block = selectionBounds()
+        let top, left, bottom, right = block
+        let block = top, left, min bottom (model.RowCount - 1), min right (model.ColCount - 1)
+        match selectionFormatFor with
+        | Some (cells, styles, known) when sameRef cells (box model.Cells) && sameRef styles (box model.ColumnStyles) && known = block -> selectionFormatObj
+        | _ ->
+            let summary = Host.formatSummaryToObj (SheetOps.summarizeFormats model block)
+            selectionFormatFor <- Some (box model.Cells, box model.ColumnStyles, block)
+            selectionFormatObj <- summary
+            summary
 
     /// Set a cell from text, read the way typed input is (numbers, dates,
     /// percentages, formulas, `'text`…). A programmatic write: it is not

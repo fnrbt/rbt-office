@@ -48,6 +48,7 @@ stages=(
     stage30-overflow
     stage31-edits
     stage32-recalc
+    stage33-sheetops
     numbertext
 )
 
