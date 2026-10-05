@@ -1559,7 +1559,10 @@ type SheetRewrite =
     /// References to the sheet named `oldName` name it `newName`.
     | RenameSheetRefs of oldName: string * newName: string
     /// References to the sheet named `name` (it is deleted) become #REF!.
-    | DeleteSheetRefs of name: string
+    /// `sheets` are the names of every sheet in tab order, the deleted one
+    /// among them: a 3-D reference that ends at it ends at its neighbour
+    /// inside the span instead.
+    | DeleteSheetRefs of name: string * sheets: string list
     /// Structured references to the table `oldName` name it `newName`.
     | RenameTableRefs of oldName: string * newName: string
 

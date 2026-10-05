@@ -74,6 +74,8 @@ and Node(sheet: SheetState, row: int, col: int) =
     member val Dynamic = false with get, set
     /// The formula gives another value every time (RAND, NOW ...).
     member val Random = false with get, set
+    /// The formula reads a 3-D reference (`Jan:Mar!B1`), itself or through a name.
+    member val ThreeD = false with get, set
     // Strongly connected components of a round (the full pass marks cycles).
     member val SccPass = 0 with get, set
     member val SccIndex = 0 with get, set
@@ -145,6 +147,8 @@ type Engine = {
     /// What the defined names bring to a formula that uses them (see `classify`),
     /// by sheet and name: the names are those the graph was built with.
     NameTraits: Dictionary<string, int>
+    /// Formulas that read a 3-D reference: what they read depends on the order of the sheets.
+    mutable ThreeD: int
 }
 
 let private keyOf (row: int) (col: int) : float = float row * 16384.0 + float col
@@ -182,7 +186,8 @@ let private traitsOf (name: string) =
         traits
 
 /// One walk over a formula and the defined names it uses: 1 a function that
-/// gives another value every time, 2 references chosen while it is evaluated.
+/// gives another value every time, 2 references chosen while it is evaluated,
+/// 4 a 3-D reference.
 let rec private classifyWith (engine: Engine) (workbook: Workbook) (sheetId: SheetId) (seen: Set<string>) (expr: Expr) : int =
     let stack = ResizeArray<Expr>()
     stack.Add expr
@@ -192,6 +197,10 @@ let rec private classifyWith (engine: Engine) (workbook: Workbook) (sheetId: She
         let current = stack.[last]
         stack.RemoveAt last
         match current with
+        | CellRef r | SpillRef r | RangeRef (r, _) ->
+            match r.Sheet with
+            | Some qualifier when qualifier.IndexOf ':' >= 0 -> traits <- traits ||| 4
+            | _ -> ()
         | UnaryOp (_, inner) -> stack.Add inner
         | BinOp (left, _, right) ->
             stack.Add left
@@ -297,6 +306,7 @@ let private unwire (engine: Engine) (node: Node) =
     if node.Volatile then engine.Volatile.Remove node |> ignore
     if node.Spills then engine.Spilling.Remove node |> ignore
     if node.Dynamic then engine.Dynamic.Remove node |> ignore
+    if node.ThreeD then engine.ThreeD <- engine.ThreeD - 1
     if node.IsFormula then engine.Formulas <- engine.Formulas - 1
     node.Precedents <- [||]
     node.Ranges <- [||]
@@ -307,6 +317,7 @@ let private unwire (engine: Engine) (node: Node) =
     node.Spills <- false
     node.Dynamic <- false
     node.Random <- false
+    node.ThreeD <- false
     if node.Dependents.Count = 0 then
         node.Sheet.Nodes.Remove (keyOf node.Row node.Col) |> ignore
 
@@ -341,9 +352,12 @@ let private wire (engine: Engine) (workbook: Workbook) (sheet: SheetState) (row:
         node.Precedents <- precedents.ToArray()
         node.Ranges <- ranges.ToArray()
         let traits = classify engine workbook sheet.Id expr
-        if traits <> 0 then
+        if traits &&& 3 <> 0 then
             node.Volatile <- true
             engine.Volatile.Add node
+        if traits &&& 4 <> 0 then
+            node.ThreeD <- true
+            engine.ThreeD <- engine.ThreeD + 1
         node.Random <- traits &&& 1 <> 0
         if traits &&& 2 <> 0 then
             node.Dynamic <- true
@@ -375,6 +389,7 @@ let private buildGraph (unloadedToo: bool) (workbook: Workbook) : Engine =
         LastDecline = ""
         LastCyclic = 0
         NameTraits = Dictionary<string, int>()
+        ThreeD = 0
     }
     for KeyValue (sheetId, sheet) in workbook.Sheets do
         let state = sheetState engine sheetId
@@ -414,6 +429,10 @@ let isUnsupported (engine: Engine) = ignore engine; false
 /// reference: they show the cycle error, or - in a workbook with iterative
 /// calculation - were calculated until they settled.
 let cyclicCount (engine: Engine) = engine.LastCyclic
+
+/// Number of formulas that read a 3-D reference (`Jan:Mar!B1`): what they read
+/// changes with the order of the sheets, without any cell or formula changing.
+let threeDCount (engine: Engine) = engine.ThreeD
 
 /// Number of formulas that choose their precedents while they are evaluated.
 let dynamicCount (engine: Engine) = engine.Dynamic.Count

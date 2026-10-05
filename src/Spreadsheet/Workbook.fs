@@ -780,7 +780,8 @@ let removeSheet (sheetId: SheetId) (workbook: Workbook) : (Workbook * SheetRemov
     | None -> None
     | Some _ when Map.count workbook.Sheets <= 1 -> None
     | Some sheet ->
-        let change = DeleteSheetRefs sheet.Name
+        let tabNames = workbook.SheetOrder |> List.choose (fun id -> Map.tryFind id workbook.Sheets |> Option.map (fun known -> known.Name))
+        let change = DeleteSheetRefs (sheet.Name, tabNames)
         let rewrite (formula: string) =
             if formula.IndexOf(sheet.Name, System.StringComparison.OrdinalIgnoreCase) < 0 then formula
             else rewriteFormulaForSheets change formula

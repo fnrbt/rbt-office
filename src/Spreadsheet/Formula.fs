@@ -1829,8 +1829,12 @@ let rec mapExprReferences (leaf: Expr -> Expr) (expr: Expr) : Expr =
 
 /// Re-point references after a sheet was renamed or deleted, or a table
 /// renamed (see Model.SheetRewrite). Sheet names match whatever their case.
-/// A 3-D reference (`First:Last!A1`) follows the rename of either end; one
-/// that loses an end to a deleted sheet becomes #REF!.
+/// A 3-D reference (`First:Last!A1`) follows the rename of either end. One
+/// that loses an end to a deleted sheet ends at that sheet's neighbour inside
+/// the span, as in Excel (`Jan:Mar!A1` without Mar is `Jan:Feb!A1`; a span of
+/// two sheets is left with one, `Jan!A1`); with no sheet left it is #REF!.
+/// (A sheet deleted from the middle of a span, and sheets moved into or out
+/// of one, change what the reference reads, not how it is written.)
 let rewriteExprForSheets (change: SheetRewrite) (expr: Expr) : Expr =
     let same (a: string) (b: string) = String.Equals(a, b, StringComparison.OrdinalIgnoreCase)
     // The ends of a qualifier: one name, or the two of a 3-D reference.
@@ -1851,15 +1855,42 @@ let rewriteExprForSheets (change: SheetRewrite) (expr: Expr) : Expr =
             | SpillRef r -> SpillRef { r with Sheet = requalify r.Sheet }
             | RangeRef (a, b) -> RangeRef ({ a with Sheet = requalify a.Sheet }, { b with Sheet = requalify b.Sheet })
             | other -> other) expr
-    | DeleteSheetRefs name ->
-        let gone (sheet: string option) =
+    | DeleteSheetRefs (name, sheets) ->
+        let position (sheetName: string) = sheets |> List.tryFindIndex (same sheetName)
+        // What is left of a qualifier: itself, another one, or nothing (Error).
+        let remaining (sheet: string option) : Result<string option, unit> =
             match sheet with
-            | Some qualifier -> ends qualifier |> List.exists (same name)
-            | None -> false
+            | None -> Ok None
+            | Some qualifier ->
+                match ends qualifier with
+                | [ only ] -> if same only name then Result.Error () else Ok sheet
+                | [ first; last ] when same first name || same last name ->
+                    if same first name && same last name then Result.Error ()
+                    else
+                        // The end that stays, and the deleted end's neighbour towards it.
+                        let kept = if same first name then last else first
+                        match position name, position kept with
+                        | Some gone, Some stays ->
+                            let neighbour = List.item (if stays > gone then gone + 1 else gone - 1) sheets
+                            if same neighbour kept then Ok (Some kept)
+                            elif same first name then Ok (Some (neighbour + ":" + last))
+                            else Ok (Some (first + ":" + neighbour))
+                        | _ -> Result.Error ()
+                | _ -> Ok sheet
         mapExprReferences (fun reference ->
             match reference with
-            | CellRef r | SpillRef r when gone r.Sheet -> ErrorLit Err.ref
-            | RangeRef (a, b) when gone a.Sheet || gone b.Sheet -> ErrorLit Err.ref
+            | CellRef r ->
+                (match remaining r.Sheet with
+                 | Ok sheet -> if sheet = r.Sheet then reference else CellRef { r with Sheet = sheet }
+                 | Result.Error () -> ErrorLit Err.ref)
+            | SpillRef r ->
+                (match remaining r.Sheet with
+                 | Ok sheet -> if sheet = r.Sheet then reference else SpillRef { r with Sheet = sheet }
+                 | Result.Error () -> ErrorLit Err.ref)
+            | RangeRef (a, b) ->
+                (match remaining a.Sheet, remaining b.Sheet with
+                 | Ok first, Ok second -> if first = a.Sheet && second = b.Sheet then reference else RangeRef ({ a with Sheet = first }, { b with Sheet = second })
+                 | _ -> ErrorLit Err.ref)
             | other -> other) expr
     | RenameTableRefs (oldName, newName) ->
         mapExprReferences (fun reference ->

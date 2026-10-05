@@ -3139,6 +3139,25 @@ checks['api-recalc-order'] = async () => {
         off();
         check('arguments out of range throw', [thrown(() => grid.SetIterativeCalculation('yes')), thrown(() => grid.SetIterativeCalculation(true, 0)), thrown(() => grid.SetIterativeCalculation(true, 10, -1))].map((message) => /SetIterativeCalculation: /.test(message ?? '')), [true, true, true]);
 
+        // A 3-D reference and the sheets of its span: deleting the sheet it ends at re-points it to the neighbour, as Excel does.
+        const months = mountGrid();
+        try {
+            const book = months.grid;
+            book.RenameSheet(0, 'Jan'); book.SetCell(0, 1, '1');
+            book.AddSheet('Feb'); book.SetCell(0, 1, '10');
+            book.AddSheet('Mar'); book.SetCell(0, 1, '100');
+            book.AddSheet('Total'); book.EnterText(0, 0, '=SUM(Jan:Mar!B1)'); book.EnterText(1, 0, '=SUM(Feb:Mar!B1)');
+            check('a 3-D sum over three sheets', [book.GetCell(0, 0).value, book.GetCell(1, 0).value], [111, 110]);
+            book.DeleteSheet(2);
+            check('the last sheet of the span deleted: the span ends at the sheet before it; a span of two is one sheet', [book.GetSheetNames(), book.GetCell(0, 0).formula, book.GetCell(0, 0).value, book.GetCell(1, 0).formula, book.GetCell(1, 0).value], [['Jan', 'Feb', 'Total'], "=SUM('Jan:Feb'!B1)", 11, '=SUM(Feb!B1)', 10]);
+            book.Undo();
+            check('... undone', [book.GetSheetNames(), book.GetCell(0, 0).formula, book.GetCell(0, 0).value, book.GetCell(1, 0).value], [['Jan', 'Feb', 'Mar', 'Total'], '=SUM(Jan:Mar!B1)', 111, 110]);
+            book.MoveSheet(1, 3);
+            check('a sheet moved out of the span is no longer read; the text stays', [book.GetSheetNames(), book.GetSheetInfos().filter((sheet) => sheet.isActive).map((sheet) => sheet.name), book.GetRange('Total!A1:A2').map((row) => [row[0].formula, row[0].value])], [['Jan', 'Mar', 'Total', 'Feb'], ['Total'], [['=SUM(Jan:Mar!B1)', 101], ['=SUM(Feb:Mar!B1)', 110]]]);
+            const saved = await reopened(book);
+            try { check('saved and opened again', saved.grid.GetRange('Total!A1:A2').map((row) => [row[0].formula, row[0].value]), [['=SUM(Jan:Mar!B1)', 101], ['=SUM(Feb:Mar!B1)', 110]]); } finally { saved.close(); }
+        } finally { months.close(); }
+
         // A file with a deliberate circular reference across sheets (iterate="1"): an edit leaves its values as they were.
         const file = mountGrid();
         try {

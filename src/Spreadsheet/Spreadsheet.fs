@@ -5866,6 +5866,9 @@ type Spreadsheet(container: Element) =
 
     /// Move the sheet at index `from` so that it is at index `toIndex`
     /// afterwards. The sheet on display stays on display. One undo step.
+    /// No formula is rewritten; a 3-D reference (`Jan:Mar!B1`) reads the
+    /// sheets that are between its two ends afterwards, so a workbook that
+    /// has one is calculated again.
     /// Throws when either index is not a sheet's.
     member _.MoveSheet(from: obj, toIndex: obj) : unit =
         let memberName = "MoveSheet"
@@ -5879,6 +5882,11 @@ type Spreadsheet(container: Element) =
             let move (position: int) () =
                 installBook (Rbt.Spreadsheet.Workbook.moveSheet id position (bookSnapshot ()))
                 rebaseCalcEngine ()
+                // A 3-D reference (`Jan:Mar!B1`) reads the sheets between its two ends:
+                // other sheets now. (No formula and no cell changed otherwise.)
+                match (if incrementalRecalculation then ensureRecalcEngine () else None) with
+                | Some engine when SpreadsheetRecalc.threeDCount engine = 0 -> ()
+                | _ -> recalculateEverything ()
             runBookStep "Move sheet" (move target) (move from)
             render()
 

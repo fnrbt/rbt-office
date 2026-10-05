@@ -167,5 +167,54 @@ eq "3-D: an end renamed (written quoted, as Excel also reads it)" (formulaAt "sh
 eq "3-D: it still reads both sheets" (valueAt "sheet3" 0 0 (calc threeDRenamed), valueAt "sheet3" 0 0 (calc threeD)) (CellValue.Number 10.0, CellValue.Number 10.0)
 
 
+// ---- 3-D references and the sheets of their span -------------------------------------------------
+// Four sheets in tab order: Jan, Feb, Mar, Total. B1 holds 1, 10, 100.
+do
+    let month value = sheetOf [ at 0 1, num value; at 4 1, num (value * 2.0) ]
+    let total = sheetOf [ at 0 0, fml "=SUM(Jan:Mar!B1)"; at 1 0, fml "=SUM(Jan:Feb!B1)+SUM(Feb:Mar!B1)"; at 2 0, fml "=SUM(Mar:Jan!B1:B5)"; at 3 0, fml "=SUM(Feb:Feb!B1)+Feb!B1" ]
+    let book : Wb.Workbook =
+        { wbBare with
+            Sheets = Map.ofList [ sheetEntry "sheet1" "Jan" (month 1.0); sheetEntry "sheet2" "Feb" (month 10.0); sheetEntry "sheet3" "Mar" (month 100.0); sheetEntry "sheet4" "Total" total ]
+            SheetOrder = [ "sheet1"; "sheet2"; "sheet3"; "sheet4" ] }
+        |> Wb.setDefinedName None "Quarter" "SUM(Jan:Mar!$B$1)" None
+    let totals (wb: Wb.Workbook) = [ for row in 0 .. 3 -> valueAt "sheet4" row 0 (calc wb) ]
+    let formulas (wb: Wb.Workbook) = [ for row in 0 .. 3 -> formulaAt "sheet4" row 0 wb ]
+    eq "3-D: calculated" (totals book) [ CellValue.Number 111.0; CellValue.Number 121.0; CellValue.Number 333.0; CellValue.Number 20.0 ]
+    // The last sheet of a span deleted: the span ends at the sheet before it. A span of two is left with one sheet.
+    let noMar = fst (Wb.removeSheet "sheet3" book).Value
+    eq "3-D: the last sheet of the span deleted" (formulas noMar) [ "=SUM('Jan:Feb'!B1)"; "=SUM('Jan:Feb'!B1)+SUM(Feb!B1)"; "=SUM('Feb:Jan'!B1:B5)"; "=SUM(Feb:Feb!B1)+Feb!B1" ]
+    eq "3-D: ... and what it reads" (totals noMar) [ CellValue.Number 11.0; CellValue.Number 21.0; CellValue.Number 33.0; CellValue.Number 20.0 ]
+    eq "3-D: ... in a defined name too" (Wb.getName None "Quarter" noMar) (Some "SUM('Jan:Feb'!$B$1)")
+    // The first sheet deleted: the span starts at the sheet after it.
+    let noJan = fst (Wb.removeSheet "sheet1" book).Value
+    eq "3-D: the first sheet of the span deleted" (formulas noJan) [ "=SUM('Feb:Mar'!B1)"; "=SUM(Feb!B1)+SUM('Feb:Mar'!B1)"; "=SUM('Mar:Feb'!B1:B5)"; "=SUM(Feb:Feb!B1)+Feb!B1" ]
+    eq "3-D: ... and what it reads" (totals noJan) [ CellValue.Number 110.0; CellValue.Number 120.0; CellValue.Number 330.0; CellValue.Number 20.0 ]
+    // A sheet from the middle: the reference is written as before and reads one sheet less; a span that was that sheet alone is #REF!.
+    let noFeb = fst (Wb.removeSheet "sheet2" book).Value
+    eq "3-D: a sheet deleted from the middle; a span of that sheet alone" (formulas noFeb) [ "=SUM(Jan:Mar!B1)"; "=SUM(Jan!B1)+SUM(Mar!B1)"; "=SUM(Mar:Jan!B1:B5)"; "=SUM(#REF!)+#REF!" ]
+    eq "3-D: ... and what it reads" (totals noFeb |> List.truncate 3) [ CellValue.Number 101.0; CellValue.Number 101.0; CellValue.Number 303.0 ]
+    // Undo of the deletion puts the formulas back.
+    eq "3-D: the deletion undone" (formulas (Wb.restoreSheet (snd (Wb.removeSheet "sheet3" book).Value) noMar)) (formulas book)
+    // Sheets moved: the reference is written as before; the sheets between its two ends are what it reads.
+    let febLast = Wb.moveSheet "sheet2" 3 book          // Jan, Mar, Total, Feb
+    eq "3-D: a sheet moved out of the span" (formulas febLast, (totals febLast).[0]) (formulas book, CellValue.Number 101.0)
+    let totalInside = Wb.moveSheet "sheet4" 1 book       // Jan, Total, Feb, Mar
+    eq "3-D: the formulas' own sheet moved into the span (its B1 is empty)" ((totals totalInside).[0]) (CellValue.Number 111.0)
+    let marFirst = Wb.moveSheet "sheet3" 0 book          // Mar, Jan, Feb, Total: Jan:Mar is Mar and Jan
+    eq "3-D: an end moved to the other side of the other end" ((totals marFirst).[0], (totals marFirst).[1]) (CellValue.Number 101.0, CellValue.Number 122.0)
+    // A sheet added inside the span is read.
+    let added = Wb.insertSheet { Id = "sheet9"; Name = "Extra"; Model = month 1000.0; Visible = true } 1 book
+    eq "3-D: a sheet added inside the span" ((totals added).[0]) (CellValue.Number 1111.0)
+    // Rows inserted on one sheet of a span: the reference stays as it is written, as in Excel (it is
+    // the same cells on every sheet of the span; only an insertion on all of them at once - sheets
+    // grouped - would move it). It reads that sheet's cell as it now is.
+    let inserted, undo = Wb.applyStructureEdit "sheet2" (InsertRows (0, 2)) book
+    eq "3-D: rows inserted on a sheet of the span: the reference is not re-pointed" (formulas inserted |> List.truncate 3) (formulas book |> List.truncate 3)
+    eq "3-D: ... it reads what is at B1 on each sheet now" (totals inserted) [ CellValue.Number 101.0; CellValue.Number 101.0; CellValue.Number 313.0; CellValue.Number 10.0 ]
+    eq "3-D: ... a plain reference to that sheet beside it is re-pointed" (formulaAt "sheet4" 3 0 inserted) "=SUM('Feb:Feb'!B1)+Feb!B3"
+    eq "3-D: ... undone" (formulas (Wb.undoStructureEdit undo inserted), totals (Wb.undoStructureEdit undo inserted)) (formulas book, totals book)
+    let cols, _ = Wb.applyStructureEdit "sheet4" (InsertCols (0, 1)) book
+    eq "3-D: columns inserted on the formulas' own sheet, outside the span" (formulaAt "sheet4" 0 1 cols, valueAt "sheet4" 0 1 (calc cols)) ("=SUM(Jan:Mar!B1)", CellValue.Number 111.0)
+
 printfn "\nSheet tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
