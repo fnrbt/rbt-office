@@ -1000,3 +1000,207 @@ checks['api-names'] = async () => {
     close();
     return lines;
 };
+
+// Freeze panes and the view: FreezeAt / Unfreeze / GetFrozen, SetZoom / GetZoom, grid lines,
+// headers, formulas, zeros.
+checks['api-view'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        const scroller = host.querySelector('.spreadsheet-container');
+        const node = (row, col) => host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"]`);
+        const round = (rect) => [rect.left, rect.top, rect.width, rect.height].map((v) => Math.round(v));
+        const origin = () => { const box = scroller.getBoundingClientRect(); return [box.left + scroller.clientLeft, box.top + scroller.clientTop]; };
+        // Where a cell of the default 100 x 25 grid is on the page at a zoom, scrolled or not.
+        const expected = (row, col, zoom, frozen = [0, 0], headers = [50, 30]) => {
+            const [ox, oy] = origin();
+            const x = (headers[0] + col * 100) * zoom - (col < frozen[1] ? 0 : scroller.scrollLeft), y = (headers[1] + row * 25) * zoom - (row < frozen[0] ? 0 : scroller.scrollTop);
+            return [ox + x, oy + y, 100 * zoom, 25 * zoom].map((v) => Math.round(v));
+        };
+        const near = (got, want, slack = 1) => got.length === want.length && got.every((v, i) => Math.abs(v - want[i]) <= slack);
+        const click = (x, y, type = 'mousedown') => {
+            const target = document.elementFromPoint(x, y) ?? host.querySelector('.spreadsheet-content');
+            target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 }));
+            if (type === 'mousedown') document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: x, clientY: y }));
+        };
+        const active = () => { const cell = grid.GetActiveCell(); return [cell.Row, cell.Col]; };
+        const pixel = async (x, y) => {
+            const image = new Image();
+            image.src = 'data:image/png;base64,' + await window.screenshotRegion(Math.round(x), Math.round(y), 1, 1);
+            await image.decode();
+            const canvas = document.createElement('canvas'); canvas.width = 1; canvas.height = 1;
+            const context = canvas.getContext('2d'); context.drawImage(image, 0, 0);
+            return [...context.getImageData(0, 0, 1, 1).data.slice(0, 3)];
+        };
+        grid.SetCell(0, 0, '5'); grid.SetCell(1, 0, '=A1*2'); grid.SetCell(2, 0, '0'); grid.SetCell(3, 0, '=A1-5'); grid.SetCell(4, 0, 'text'); grid.SetCell(5, 3, 'far');
+        grid.SelectCell(7, 2); grid.ApplyBgColor('#ff0000'); grid.SelectCell(0, 0);
+        const changes = [];
+        grid.OnChange((change) => changes.push(change));
+        await frame();
+
+        // ---- freeze panes ----
+        check('nothing frozen at first', [grid.GetFrozen(), grid.GetViewOptions()], [{ rows: 0, cols: 0 }, { zoom: 1, showGridLines: true, showHeaders: true, showFormulas: false, showZeros: true, frozen: { rows: 0, cols: 0 } }]);
+        const r0 = grid.GetRevision();
+        grid.FreezeAt(2, 1);
+        check('FreezeAt freezes the rows above and the columns left of the cell', [grid.GetFrozen(), grid.GetModel().FrozenRows, grid.GetModel().FrozenCols], [{ rows: 2, cols: 1 }, 2, 1]);
+        check('it is a change with an undo step', [changes.splice(0).length, grid.GetRevision() !== r0, grid.CanUndo()], [1, true, true]);
+        grid.ScrollToCell(60, 12); await frame();
+        check('frozen rows and columns stay while the rest scrolls', [scroller.scrollTop > 500, scroller.scrollLeft > 100, near(round(node(0, 0).getBoundingClientRect()), expected(0, 0, 1, [2, 1])), near(round(node(1, 5).getBoundingClientRect()), expected(1, 5, 1, [2, 1])),
+            near(round(node(55, 0).getBoundingClientRect()), expected(55, 0, 1, [2, 1]))], [true, true, true, true, true]);
+        grid.Undo();
+        check('undo unfreezes, redo freezes again', [grid.GetFrozen(), (grid.Redo(), grid.GetFrozen()), grid.GetRevision() !== r0], [{ rows: 0, cols: 0 }, { rows: 2, cols: 1 }, true]);
+        grid.Unfreeze();
+        check('Unfreeze', [grid.GetFrozen(), grid.CanUndo()], [{ rows: 0, cols: 0 }, true]);
+        const steps = grid.GetRevision();
+        grid.Unfreeze(); grid.FreezeAt(0, 0);
+        check('unfreezing what is not frozen is nothing', grid.GetRevision(), steps);
+        grid.FreezeAt(1, 0);
+        check('the first row alone', grid.GetFrozen(), { rows: 1, cols: 0 });
+        check('a cell that is not on the sheet', [thrown(() => grid.FreezeAt(-1, 0)), thrown(() => grid.FreezeAt(0, 99999)) !== null, thrown(() => grid.FreezeAt('a', 0)) !== null], ['FreezeAt: row -1 is not on the sheet (0..999)', true, true]);
+        grid.Unfreeze();
+        grid.ScrollToCell(0, 0); await frame();
+
+        // ---- zoom ----
+        const saved = grid.GetRevision();
+        grid.MarkSaved();
+        changes.splice(0);
+        const shownRows = () => [...host.querySelectorAll('.spreadsheet-row-header')].filter((header) => header.style.display !== 'none').length;
+        const rows100 = shownRows();
+        for (const zoom of [0.5, 1.25, 2]) {
+            grid.SetZoom(zoom); await frame();
+            check(`zoom ${zoom}: GetZoom and the model`, [grid.GetZoom(), grid.GetModel().Zoom], [zoom, zoom]);
+            check(`zoom ${zoom}: cells are scaled and placed`, [round(node(0, 0).getBoundingClientRect()), round(node(5, 3).getBoundingClientRect())], [expected(0, 0, zoom), expected(5, 3, zoom)]);
+            const header = host.querySelector('.spreadsheet-col-header[data-col="2"]').getBoundingClientRect(), rowHeader = host.querySelector('.spreadsheet-row-header[data-row="4"]').getBoundingClientRect();
+            check(`zoom ${zoom}: the headers too`, [near(round(header), [origin()[0] + (50 + 200) * zoom, origin()[1], 100 * zoom, 30 * zoom].map(Math.round)), near(round(rowHeader), [origin()[0], origin()[1] + (30 + 100) * zoom, 50 * zoom, 25 * zoom].map(Math.round))], [true, true]);
+            check(`zoom ${zoom}: text is laid out at the zoomed size (not a scaled bitmap)`, Math.abs(parseFloat(getComputedStyle(node(4, 0)).fontSize) * zoom - node(4, 0).getBoundingClientRect().height * 11 / 25) < 0.6, true);
+            check(`zoom ${zoom}: the scroll extent is the zoomed sheet`, [Math.abs(scroller.scrollHeight - (30 + 1000 * 25) * zoom) <= 2, Math.abs(scroller.scrollWidth - (50 + 26 * 100) * zoom) <= 2], [true, true]);
+            // Hit testing: a click in the middle of where a cell is drawn selects it.
+            const target = expected(4, 2, zoom);
+            click(target[0] + target[2] / 2, target[1] + target[3] / 2);
+            check(`zoom ${zoom}: a click lands on the cell under it`, active(), [4, 2]);
+            const edge = expected(6, 1, zoom);
+            click(edge[0] + 2, edge[1] + 2); const first = active();
+            click(edge[0] + edge[2] - 2, edge[1] + edge[3] - 2);
+            check(`zoom ${zoom}: ... also just inside its corners`, [first, active()], [[6, 1], [6, 1]]);
+            await frame();
+            const outline = [...host.querySelectorAll('.spreadsheet-active-cell')].find((overlay) => overlay.style.display !== 'none').getBoundingClientRect();
+            check(`zoom ${zoom}: the active-cell outline sits on the cell`, near(round(outline), expected(6, 1, zoom), 3), true);
+            const fill = expected(7, 2, zoom);
+            check(`zoom ${zoom}: a filled cell is painted where it is`, [await pixel(fill[0] + fill[2] / 2, fill[1] + fill[3] / 2), await pixel(fill[0] + fill[2] / 2, fill[1] + fill[3] + 4 * zoom)], [[255, 0, 0], [255, 255, 255]]);
+            // The edit box covers the cell being edited.
+            grid.SelectCell(5, 3); grid.StartEdit(); await frame();
+            const box = host.querySelector('.spreadsheet-edit-input').getBoundingClientRect();
+            check(`zoom ${zoom}: the edit box covers its cell`, near(round(box), expected(5, 3, zoom), 3), true);
+            grid.CancelEdit();
+            // Scrolled: the far cell comes into view, is where it should be, and takes clicks.
+            grid.ScrollToCell(400, 20); await frame();
+            const far = node(400, 20).getBoundingClientRect(), view = scroller.getBoundingClientRect();
+            check(`zoom ${zoom}: ScrollToCell brings a far cell into view`, [far.top >= view.top + 30 * zoom - 1, far.bottom <= view.bottom + 1, far.left >= view.left + 50 * zoom - 1, far.right <= view.right + 1], [true, true, true, true]);
+            check(`zoom ${zoom}: scrolled cells are placed by the scroll offset`, near(round(far), expected(400, 20, zoom)), true);
+            click(far.left + far.width / 2, far.top + far.height / 2);
+            check(`zoom ${zoom}: a click after scrolling`, active(), [400, 20]);
+            // Frozen panes while scrolled.
+            grid.FreezeAt(2, 1); await frame();
+            check(`zoom ${zoom}: frozen panes stay put while scrolled`, [near(round(node(1, 0).getBoundingClientRect()), expected(1, 0, zoom, [2, 1])), near(round(node(400, 0).getBoundingClientRect()), expected(400, 0, zoom, [2, 1])), near(round(node(1, 20).getBoundingClientRect()), expected(1, 20, zoom, [2, 1]))], [true, true, true]);
+            const pinned = expected(1, 0, zoom, [2, 1]);
+            click(pinned[0] + pinned[2] / 2, pinned[1] + pinned[3] / 2);
+            check(`zoom ${zoom}: a click on a frozen cell`, active(), [1, 0]);
+            grid.Undo();
+            grid.ScrollToCell(0, 0); await frame();
+        }
+        check('more rows are drawn zoomed out, fewer zoomed in', [(grid.SetZoom(0.5), await frame(), shownRows()) > rows100, (grid.SetZoom(2), await frame(), shownRows()) < rows100], [true, true]);
+        // The cell in the top-left corner stays there when the zoom changes.
+        grid.SetZoom(1); grid.ScrollToCell(0, 0); await frame();
+        changes.splice(0);
+        scroller.scrollTop = 200 * 25; scroller.scrollLeft = 300; await frame(); await frame();
+        grid.SetZoom(1.5); await frame();
+        check('zooming keeps the top-left cell in place', [scroller.scrollTop, scroller.scrollLeft], [200 * 25 * 1.5, 450]);
+        check('zooming is not an edit: no revision, no change event, no undo step of its own', [grid.GetRevision() === saved, grid.IsModified(), changes.length], [true, false, 0]);
+        check('a factor out of range', [thrown(() => grid.SetZoom(0)), thrown(() => grid.SetZoom(5)) !== null, thrown(() => grid.SetZoom('big')) !== null, thrown(() => grid.SetZoom(NaN)) !== null, grid.GetZoom()],
+            ['SetZoom: the factor has to be between 0.1 and 4 (1 = 100%), not 0', true, true, true, 1.5]);
+        // A drag of a column's resize handle follows the pointer at any zoom.
+        grid.ScrollToCell(0, 0); await frame();
+        const handle = host.querySelector('.spreadsheet-col-header[data-col="1"] .col-resize-handle').getBoundingClientRect();
+        host.querySelector('.spreadsheet-col-header[data-col="1"] .col-resize-handle').dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: handle.left + 1, clientY: handle.top + 5, button: 0 }));
+        document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: handle.left + 1 + 60, clientY: handle.top + 5 }));
+        document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+        await frame(); await frame();
+        check('dragging a column edge 60 px at 150 % widens the column by 40', [Math.round(node(0, 1).getBoundingClientRect().width), (await import('/spreadsheet/Model.js')).getColumnWidth(1, grid.GetModel())], [210, 140]);
+        // Each sheet has its own zoom.
+        const { createEmpty } = await import('/spreadsheet/Model.js');
+        grid.InstallWorkbook([grid.GetModel(), createEmpty(100, 10)], ['One', 'Two'], 0, undefined);
+        grid.SwitchSheet(1); await frame();
+        check('another sheet has its own zoom', [grid.GetZoom(), round(node(1, 1).getBoundingClientRect())], [1, expected(1, 1, 1)]);
+        grid.SetZoom(0.75); grid.SwitchSheet(0); await frame();
+        check('... and coming back the first has its own', [grid.GetZoom(), Math.round(node(0, 0).getBoundingClientRect().height * 10) / 10], [1.5, 37.5]);
+
+        // ---- pictures scale with the sheet ----
+        const pictured = mountGrid();
+        try {
+            await pictured.grid.ImportXlsx(await bytesOf('tests/test-documents-excel/synthetic-drawing-extras.xlsx'));
+            pictured.grid.SetZoom(2); await frame();
+            const picture = pictured.grid.GetDrawings().find((drawing) => drawing.kind === 'picture'), image = pictured.host.querySelector('.spreadsheet-picture').getBoundingClientRect();
+            const box = pictured.host.querySelector('.spreadsheet-container'), left = box.getBoundingClientRect().left + box.clientLeft, top = box.getBoundingClientRect().top + box.clientTop;
+            check('a picture is drawn at twice its place and size at 200 %', near(round(image), [left + (50 + picture.x) * 2, top + (30 + picture.y) * 2, picture.width * 2, picture.height * 2].map(Math.round), 2), true);
+            check('opening and zooming leaves the workbook unmodified', pictured.grid.IsModified(), false);
+        } finally { pictured.close(); }
+
+        // ---- what the view shows ----
+        grid.SetZoom(1); await frame();
+        const text = (row, col) => node(row, col).textContent;
+        check('values at first', [text(1, 0), text(2, 0), text(3, 0)], ['10', '0', '0']);
+        const beforeOptions = grid.GetRevision();
+        changes.splice(0);
+        grid.SetShowFormulas(true); await frame();
+        check('formulas are shown as text, left-aligned; values stay values', [text(0, 0), text(1, 0), text(3, 0), getComputedStyle(node(1, 0)).textAlign !== 'right', grid.GetCell(1, 0).value, grid.GetShowFormulas()], ['5', '=A1*2', '=A1-5', true, 10, true]);
+        grid.Undo(); await frame();
+        check('undo shows the results again', [text(1, 0), grid.GetShowFormulas(), grid.GetRevision() === beforeOptions], ['10', false, true]);
+        grid.SetShowZeros(false); await frame();
+        check('zeros are hidden: typed and calculated; other values stay', [text(2, 0), text(3, 0), text(0, 0), text(1, 0), grid.GetCell(2, 0).value, grid.GetShowZeros()], ['', '', '5', '10', 0, false]);
+        grid.SetCell(0, 0, '0'); await frame();
+        check('a result that becomes zero disappears', [text(0, 0), text(1, 0), text(3, 0)], ['', '', '-5']);
+        grid.SetCell(0, 0, '5');
+        grid.SetShowZeros(true); await frame();
+        check('and zeros are back', [text(2, 0), text(3, 0)], ['0', '0']);
+        grid.SelectCell(20, 5);
+        check('grid lines at first', [grid.GetCellEdges(3, 3).Top, grid.GetShowGridLines()], ['grid', true]);
+        grid.SetShowGridLines(false); await frame();
+        const between = expected(3, 3, 1);
+        check('no grid lines: the edges are gone, in the model and on screen', [grid.GetCellEdges(3, 3).Top, grid.GetModel().ShowGridLines, await pixel(between[0] + 50, between[1])], [null, false, [255, 255, 255]]);
+        grid.Undo(); await frame();
+        check('undo draws them again', [grid.GetCellEdges(3, 3).Top, (await pixel(between[0] + 50, between[1]))[0] < 250], ['grid', true]);
+        grid.SetShowHeaders(false); await frame();
+        const [ox, oy] = origin();
+        check('without headers the cells start at the corner', [round(node(0, 0).getBoundingClientRect()), getComputedStyle(host.querySelector('.spreadsheet-col-headers')).display, getComputedStyle(host.querySelector('.spreadsheet-row-headers')).display,
+            getComputedStyle(host.querySelector('.spreadsheet-frozen-headers')).display, scroller.scrollHeight], [[ox, oy, 100, 25].map(Math.round), 'none', 'none', 'none', 1000 * 25]);
+        click(ox + 250, oy + 60);
+        check('a click lands on the cell under it', active(), [2, 2]);
+        grid.SetZoom(2); await frame();
+        click(ox + 250, oy + 60);
+        check('... also zoomed', [active(), round(node(1, 1).getBoundingClientRect())], [[1, 1], [ox + 200, oy + 50, 280, 50].map(Math.round)]);
+        grid.SetZoom(1);
+        grid.Undo(); await frame();
+        check('undo shows the headers again', [grid.GetShowHeaders(), round(node(0, 0).getBoundingClientRect()), getComputedStyle(host.querySelector('.spreadsheet-col-headers')).display !== 'none', !!host.querySelector('.spreadsheet-col-header[data-col="0"]')], [true, expected(0, 0, 1), true, true]);
+        check('each option was a change', changes.length >= 6, true);
+        check('not booleans', [thrown(() => grid.SetShowHeaders('no')) !== null, thrown(() => grid.SetShowZeros()) !== null, thrown(() => grid.SetShowFormulas(1)) !== null, thrown(() => grid.SetShowGridLines(null)) !== null], [true, true, true, true]);
+
+        // ---- through a file ----
+        grid.SetShowHeaders(false); grid.SetShowFormulas(true); grid.SetShowZeros(false); grid.SetShowGridLines(false); grid.FreezeAt(3, 2); grid.SetZoom(1.35);
+        grid.SwitchSheet(1); grid.SetCell(0, 0, 'second');
+        const again = await reopened(grid);
+        try {
+            check('the file keeps the view of each sheet', [again.grid.GetViewOptions(), (again.grid.SwitchSheet(1), again.grid.GetViewOptions())],
+                [{ zoom: 1.35, showGridLines: false, showHeaders: false, showFormulas: true, showZeros: false, frozen: { rows: 3, cols: 2 } }, { zoom: 0.75, showGridLines: true, showHeaders: true, showFormulas: false, showZeros: true, frozen: { rows: 0, cols: 0 } }]);
+            again.grid.SwitchSheet(0); await frame();
+            const cell = again.host.querySelector('.spreadsheet-cell[data-row="1"][data-col="0"]');
+            check('and the reopened grid shows it: formulas, no headers, zoomed', [cell.textContent, Math.abs(cell.getBoundingClientRect().height - (await import('/spreadsheet/Model.js')).getRowHeight(1, again.grid.GetModel()) * 1.35) < 0.5, getComputedStyle(again.host.querySelector('.spreadsheet-col-headers')).display], ['=A1*2', true, 'none']);
+            check('a reopened workbook is unmodified', again.grid.IsModified(), false);
+        } finally { again.close(); }
+        // After Dispose and Mount the view is applied to the new nodes.
+        grid.SwitchSheet(0);
+        grid.Dispose(); grid.Mount(); await frame();
+        check('mounted again: zoom and hidden headers are applied', [Math.round(node(0, 0).getBoundingClientRect().height * 100) / 100, getComputedStyle(host.querySelector('.spreadsheet-col-headers')).display], [33.75, 'none']);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};

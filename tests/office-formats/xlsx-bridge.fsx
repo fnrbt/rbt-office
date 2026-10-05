@@ -218,6 +218,24 @@ let hiddenOut = Bridge.Export.toWorkbookOut (namedInput hiddenBook None)
 eq "names: a hidden name" ((reread hiddenOut).NamedRanges |> List.filter (fun n -> n.Hidden) |> List.map (fun n -> n.Name, n.Scope)) [ "Secret", Some "0" ]
 eq "names: ... is hidden after the import too" ((Bridge.Import.importWorkbook (reread hiddenOut)).Context |> Wb.tryFindDefinedName (fst filterKey) "secret" |> Option.map (fun n -> n.Hidden)) (Some true)
 
+// ---- the view of a sheet: zoom, headers, formulas, zeros, grid lines, panes ----
+let viewed = { fresh with Zoom = 1.35; ShowHeaders = false; ShowFormulas = true; ShowZeros = false; ShowGridLines = false; FrozenRows = 3; FrozenCols = 2 }
+let viewOut =
+    Bridge.Export.toWorkbookOut
+        { Sheets = [| viewed; createEmpty 10 5 |]; Names = [| "Viewed"; "Plain" |]; Visible = [| true; true |]; ActiveSheetIndex = 0
+          NameInfo = Map.empty; DefinedNames = Map.empty; Source = None; Macros = None }
+let viewBack = reread viewOut
+eq "view: written to the sheet view" (viewBack.Sheets |> List.map (fun s -> s.View, s.ShowZeros, s.ShowGridLines, s.FrozenPane))
+    [ { XlsxReader.ShowRowColHeaders = false; ShowFormulas = true; ZoomScale = 135 }, false, false, Some { XlsxReader.XSplit = 2; YSplit = 3 }
+      XlsxReader.defaultSheetView, true, true, None ]
+let viewAgain = (Bridge.Import.importWorkbook viewBack).Sheets |> Array.map (fun sheet -> sheet.Model)
+eq "view: the import has what the export had"
+    (viewAgain |> Array.map (fun m -> m.Zoom, m.ShowHeaders, m.ShowFormulas, m.ShowZeros, m.ShowGridLines, m.FrozenRows, m.FrozenCols))
+    [| 1.35, false, true, false, false, 3, 2; 1.0, true, false, true, true, 0, 0 |]
+// (The lazy import converts a sheet later: the view comes with it.)
+let viewLazy = (Bridge.Import.importWorkbookLazy (fun _ -> false) viewBack).Sheets.[0].Model |> resolveSheet
+eq "view: a sheet converted on demand" (viewLazy.Zoom, viewLazy.ShowHeaders, viewLazy.ShowFormulas, viewLazy.ShowZeros) (1.35, false, true, false)
+
 // ---- every property of a cell format set in the editor comes back ----------
 let dressed =
     { defaultFormat with

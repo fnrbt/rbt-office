@@ -399,6 +399,18 @@ type TableDefinition = {
 }
 
 /// `<pane xSplit ySplit state="frozen" topLeftCell=…/>` inside a sheet's
+/// What a `<sheetView>` says besides its panes, grid lines and zeros.
+type SheetViewOptions = {
+    /// `showRowColHeaders="0"` hides the row numbers and column letters.
+    ShowRowColHeaders: bool
+    /// `showFormulas="1"`: cells show their formulas instead of the results.
+    ShowFormulas: bool
+    /// `zoomScale`, in percent (100 when absent).
+    ZoomScale: int
+}
+
+let defaultSheetView : SheetViewOptions = { ShowRowColHeaders = true; ShowFormulas = false; ZoomScale = 100 }
+
 /// `<sheetView>`. xSplit / ySplit are the column / row counts that stay
 /// pinned (NOT pixel offsets — Excel treats them as integer cell counts
 /// when state="frozen"). Sheets without a frozen pane omit this entirely.
@@ -748,6 +760,8 @@ type Worksheet = {
     ShowZeros: bool
     /// `<sheetView showGridLines="0"/>`. False = hide the screen gridlines.
     ShowGridLines: bool
+    /// Headers, formula view and zoom of the first `<sheetView>`.
+    View: SheetViewOptions
     Hyperlinks: Hyperlink list
     /// `<pageSetup>` + `<sheetPr><pageSetUpPr>`. None when neither is present.
     PageSetup: PageSetup option
@@ -2089,6 +2103,22 @@ module Xlsx =
         |> Option.map (fun v -> not (v = "0" || v = "false"))
         |> Option.defaultValue true
 
+    /// Headers, formula view and zoom of the first `<sheetView>`.
+    let private sheetViewOptions (sheet: XmlNode) : SheetViewOptions =
+        match sElem "sheetViews" sheet |> Option.bind (sElem "sheetView") with
+        | None -> defaultSheetView
+        | Some view ->
+            let flag name fallback =
+                match Xml.attr name view with
+                | Some v -> not (v = "0" || v = "false")
+                | None -> fallback
+            { ShowRowColHeaders = flag "showRowColHeaders" true
+              ShowFormulas = flag "showFormulas" false
+              ZoomScale =
+                (match Xml.attr "zoomScale" view |> Option.bind tryParseInt with
+                 | Some percent when percent >= 10 && percent <= 400 -> percent
+                 | _ -> 100) }
+
     /// `<sheetView showGridLines="0"/>`. Excel's default is true; polished
     /// workbooks turn it off and rely on explicit cell borders.
     let private showGridLines (sheet: XmlNode) : bool =
@@ -2473,6 +2503,7 @@ module Xlsx =
         let mutable showZerosValue = true
         let mutable showGridLinesValue = true
         let mutable pane = None
+        let mutable view = defaultSheetView
         let mutable sheetViewDepth = -1
         let mutable sawSheetView = false
         if not reader.IsEmptyElement then
@@ -2484,6 +2515,13 @@ module Xlsx =
                     sawSheetView <- true
                     showZerosValue <- nativeBoolAttrDefault true reader "showZeros"
                     showGridLinesValue <- nativeBoolAttrDefault true reader "showGridLines"
+                    view <-
+                        { ShowRowColHeaders = nativeBoolAttrDefault true reader "showRowColHeaders"
+                          ShowFormulas = nativeBoolAttrDefault false reader "showFormulas"
+                          ZoomScale =
+                            (match nativeFloatAttr reader "zoomScale" |> Option.map int with
+                             | Some percent when percent >= 10 && percent <= 400 -> percent
+                             | _ -> 100) }
                     if not reader.IsEmptyElement then
                         sheetViewDepth <- reader.Depth
                 | System.Xml.XmlNodeType.Element when reader.LocalName = "pane" && sheetViewDepth >= 0 ->
@@ -2502,7 +2540,7 @@ module Xlsx =
                 | System.Xml.XmlNodeType.EndElement when reader.Depth = depth ->
                     doneReading <- true
                 | _ -> ()
-        showZerosValue, showGridLinesValue, pane
+        showZerosValue, showGridLinesValue, pane, view
 
     let private fitToPageNative (reader: System.Xml.XmlReader) =
         let mutable fit = false
@@ -2676,6 +2714,7 @@ module Xlsx =
             let mutable format = emptySheetFormat
             let mutable frozenPaneValue = None
             let mutable showZerosValue = true
+            let mutable viewValue = defaultSheetView
             let mutable showGridLinesValue = true
             let mutable fitToPage = false
             let mutable pageSetupValue = None
@@ -2697,7 +2736,8 @@ module Xlsx =
                     | "sheetPr" ->
                         fitToPage <- fitToPageNative reader
                     | "sheetViews" ->
-                        let showZeros, showGridLines, frozenPane = sheetViewsNative reader
+                        let showZeros, showGridLines, frozenPane, view = sheetViewsNative reader
+                        viewValue <- view
                         showZerosValue <- showZeros
                         showGridLinesValue <- showGridLines
                         frozenPaneValue <- frozenPane
@@ -2756,6 +2796,7 @@ module Xlsx =
                 FrozenPane = frozenPaneValue
                 ShowZeros = showZerosValue
                 ShowGridLines = showGridLinesValue
+                View = viewValue
                 Hyperlinks = resizeListToList hyperlinks
                 PageSetup = pageSetupFinal
                 PageMargins = pageMarginsValue
@@ -2811,6 +2852,7 @@ module Xlsx =
             FrozenPane = frozenPane sheet
             ShowZeros = showZeros sheet
             ShowGridLines = showGridLines sheet
+            View = sheetViewOptions sheet
             Hyperlinks = hyperlinks resolveRel sheet
             PageSetup = pageSetup sheet
             PageMargins = pageMargins sheet

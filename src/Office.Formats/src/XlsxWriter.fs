@@ -422,6 +422,20 @@ type XlsxHyperlink = {
     IsInternal: bool
 }
 
+/// What a sheet's view shows besides panes and grid lines.
+type XlsxSheetViewOut = {
+    /// False: cells with the number 0 show nothing.
+    ShowZeros: bool
+    /// False: no row numbers and column letters.
+    ShowHeaders: bool
+    /// True: cells show their formulas.
+    ShowFormulas: bool
+    /// Zoom in percent (10..400).
+    ZoomScale: int
+}
+
+let defaultSheetViewOut : XlsxSheetViewOut = { ShowZeros = true; ShowHeaders = true; ShowFormulas = false; ZoomScale = 100 }
+
 type XlsxSheetOut = {
     Name: string
     /// Visible, hidden, or very hidden (only un-hidable from VBA).
@@ -433,6 +447,8 @@ type XlsxSheetOut = {
     FrozenRows: int
     FrozenCols: int
     ShowGridLines: bool
+    /// The rest of the sheet view: zeros, headers, formula view, zoom.
+    View: XlsxSheetViewOut
     Tables: XlsxTableOut list
     DataValidations: XlsxDataValidation list
     /// Conditional formatting, in the reader's shape. A rule's `DxfId`
@@ -1173,8 +1189,14 @@ let private colsXml (styles: StyleBook) (sheet: XlsxSheetOut) =
 
 let private sheetViewsXml (sheet: XlsxSheetOut) active =
     let attrs = [
+        if sheet.View.ShowFormulas then yield "showFormulas=\"1\""
         if not sheet.ShowGridLines then yield "showGridLines=\"0\""
+        if not sheet.View.ShowHeaders then yield "showRowColHeaders=\"0\""
+        if not sheet.View.ShowZeros then yield "showZeros=\"0\""
         if active then yield "tabSelected=\"1\""
+        if sheet.View.ZoomScale <> 100 then
+            yield sprintf "zoomScale=\"%d\"" sheet.View.ZoomScale
+            yield sprintf "zoomScaleNormal=\"%d\"" sheet.View.ZoomScale
         yield "workbookViewId=\"0\""
     ]
     let pane =
@@ -2024,6 +2046,7 @@ let private formattedToWorkbook (sheets: FormattedSheet list) =
               FrozenRows = 0
               FrozenCols = 0
               ShowGridLines = true
+              View = defaultSheetViewOut
               Tables = []
               DataValidations = []
               ConditionalFormats = []
@@ -2186,6 +2209,7 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
               FrozenRows = sheet.FrozenPane |> Option.map (fun p -> p.YSplit) |> Option.defaultValue 0
               FrozenCols = sheet.FrozenPane |> Option.map (fun p -> p.XSplit) |> Option.defaultValue 0
               ShowGridLines = sheet.ShowGridLines
+              View = { ShowZeros = sheet.ShowZeros; ShowHeaders = sheet.View.ShowRowColHeaders; ShowFormulas = sheet.View.ShowFormulas; ZoomScale = sheet.View.ZoomScale }
               Tables =
                 sheet.Tables
                 |> List.map (fun t ->

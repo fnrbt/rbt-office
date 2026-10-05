@@ -162,5 +162,20 @@ eq "a whole column costs the cells that exist" (shape (Ops.clearCells Ops.ClearC
 eq "nothing to clear: the same model" (obj.ReferenceEquals(Ops.clearCells Ops.ClearFormats (10, 0, 20, 3) toClear, toClear)) true
 eq "rich text goes with the contents" (Ops.clearCells Ops.ClearContents (0, 0, 0, 0) { toClear with RichRuns = Map.ofList [ at 0 0, [ "1", emptyRunOverride ] ] }).RichRuns.IsEmpty true
 
+// ---- what a cell shows under the sheet's view options --------------------------------
+let viewSheet = createEmpty 10 5
+let shownAs (m: SpreadsheetModel) (v: CellValue) = viewedValue m v
+let sum = CellValue.Formula ("=A1-5", CellValue.Number 0.0)
+eq "the default view shows values as they are" (shownAs viewSheet sum, shownAs viewSheet (CellValue.Number 0.0)) (sum, CellValue.Number 0.0)
+eq "formulas shown: the formula text, with its =" (shownAs { viewSheet with ShowFormulas = true } sum, shownAs { viewSheet with ShowFormulas = true } (CellValue.Formula ("A1*2", CellValue.Number 4.0)))
+    (CellValue.String "=A1-5", CellValue.String "=A1*2")
+eq "formulas shown: other cells are unchanged" (shownAs { viewSheet with ShowFormulas = true } (CellValue.Number 3.0)) (CellValue.Number 3.0)
+let noZeros = { viewSheet with ShowZeros = false }
+eq "zeros hidden: a typed and a calculated zero" (shownAs noZeros (CellValue.Number 0.0), shownAs noZeros sum) (CellValue.Empty, CellValue.Empty)
+eq "zeros hidden: everything else stays" (shownAs noZeros (CellValue.Number 0.5), shownAs noZeros (CellValue.String "0"), shownAs noZeros (CellValue.Formula ("=1", CellValue.Number 1.0)))
+    (CellValue.Number 0.5, CellValue.String "0", CellValue.Formula ("=1", CellValue.Number 1.0))
+eq "both: formulas win over hidden zeros" (shownAs { noZeros with ShowFormulas = true } sum) (CellValue.String "=A1-5")
+eq "a new sheet: 100 %, headers, values, zeros" (viewSheet.Zoom, viewSheet.ShowHeaders, viewSheet.ShowFormulas, viewSheet.ShowZeros) (1.0, true, false, true)
+
 printfn "stage33-sheetops: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

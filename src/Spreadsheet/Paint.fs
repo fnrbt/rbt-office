@@ -623,6 +623,8 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
 
         // Pass 3: text on top of all strokes/borders.
         for (cell, format, value, _selected, _background, zone) in states do
+            // (The sheet's view options: formulas as text, no zeros.)
+            let value = viewedValue model value
             let fontPt = format.FontSize |> Option.map float |> Option.defaultValue 11.0
             // Build the real-font measurer first so cellDisplayText can size
             // its ##### overflow run against the glyph the renderer will

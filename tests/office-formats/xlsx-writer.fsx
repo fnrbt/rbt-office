@@ -222,6 +222,7 @@ let syntheticSheet : XlsxWriter.XlsxSheetOut =
       FrozenRows = 1
       FrozenCols = 1
       ShowGridLines = false
+      View = { XlsxWriter.defaultSheetViewOut with ShowZeros = false; ShowHeaders = false; ShowFormulas = true; ZoomScale = 85 }
       Tables =
         [ { Name = "Table1"; StartRow = 1; StartCol = 1; EndRow = 2; EndCol = 2; Columns = [ "Header"; "Value" ]; HeaderRowCount = 1; TotalsRowCount = 0; AutoFilter = Some (1, 2); Style = Some { Name = "TableStyleMedium2"; ShowFirstColumn = false; ShowLastColumn = false; ShowRowStripes = true; ShowColumnStripes = false } } ]
       DataValidations =
@@ -255,6 +256,7 @@ match synthetic |> XlsxWriter.writeWorkbookPackageBytes |> XlsxReader.loadBytesN
     ok "synthetic-style" (s.Rows.[0].Cells.[0].Style |> Option.exists (fun st -> st.Bold && st.FontName = Some "Arial" && st.FillColor = Some "E2F0D9" && st.NumberFormat = Some "0.00")) (sprintf "%A" s.Rows.[0].Cells.[0].Style)
     ok "synthetic-merge" (mergeSig s = [ "A1:B1" ]) (sprintf "%A" (mergeSig s))
     ok "synthetic-freeze" (s.FrozenPane = Some { XlsxReader.XSplit = 1; YSplit = 1 }) (sprintf "%A" s.FrozenPane)
+    ok "synthetic-view" ((s.ShowZeros, s.ShowGridLines, s.View) = (false, false, { XlsxReader.ShowRowColHeaders = false; ShowFormulas = true; ZoomScale = 85 })) (sprintf "%A" (s.ShowZeros, s.View))
     ok "synthetic-table" (s.Tables.Length = 1 && s.Tables.[0].Name = "Table1") (sprintf "%A" s.Tables)
     ok "synthetic-validation" (s.DataValidations.Length = 1 && s.DataValidations.[0].ValidationType = "decimal") (sprintf "%A" s.DataValidations)
     ok "synthetic-comment" (s.Comments.Length = 1 && s.Comments.[0].Text = "Note text") (sprintf "%A" s.Comments)

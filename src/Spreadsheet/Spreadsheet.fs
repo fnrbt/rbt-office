@@ -197,6 +197,9 @@ let private sameSheetContent (a: SpreadsheetModel) (b: SpreadsheetModel) =
         && a.FrozenRows = b.FrozenRows
         && a.FrozenCols = b.FrozenCols
         && a.ShowGridLines = b.ShowGridLines
+        && a.ShowHeaders = b.ShowHeaders
+        && a.ShowFormulas = b.ShowFormulas
+        && a.ShowZeros = b.ShowZeros
         && sameRef a.Drawings b.Drawings
         && sameRef a.Threads b.Threads
         && a.Macros = b.Macros)
@@ -489,8 +492,27 @@ type Spreadsheet(container: Element) =
 
     let rowHeight = 25.0
     let colWidth = 100.0
-    let headerHeight = 30.0
-    let rowHeaderWidth = 50.0
+    /// The room the column letters and row numbers take: none on a sheet
+    /// that hides them (see syncView).
+    let mutable headerHeight = 30.0
+    let mutable rowHeaderWidth = 50.0
+    let mutable appliedHeaders = true
+    /// The zoom the grid is drawn at (the zoom of the sheet on display, see
+    /// syncView). The scrolled content - cells, headers, overlays, pictures,
+    /// the edit box - is laid out at 100 % in sheet pixels and scaled as a
+    /// whole by the browser (CSS `zoom`, which scales layout and text, not a
+    /// bitmap). Everything in the component is in sheet pixels; what is read
+    /// from or written to the page (scroll offsets, the size of the grid,
+    /// pointer positions) is converted here.
+    let mutable appliedZoom = 1.0
+    let gridScrollTop (grid: Element) = getScrollTop grid / appliedZoom
+    let gridScrollLeft (grid: Element) = getScrollLeft grid / appliedZoom
+    let gridClientWidth (grid: Element) = getClientWidth grid / appliedZoom
+    let gridClientHeight (grid: Element) = getClientHeight grid / appliedZoom
+    let setGridScrollTop (grid: Element) (value: float) = setScrollTop grid (value * appliedZoom)
+    let setGridScrollLeft (grid: Element) (value: float) = setScrollLeft grid (value * appliedZoom)
+    let pointerX (e: obj) (grid: Element) = (getClientX e - getBoundingLeft grid) / appliedZoom
+    let pointerY (e: obj) (grid: Element) = (getClientY e - getBoundingTop grid) / appliedZoom
 
     let mutable gridContainer: Element option = None
     let mutable contentElement: Element option = None
@@ -1157,10 +1179,10 @@ type Spreadsheet(container: Element) =
         | None -> SpreadsheetLayout.Empty
         | Some grid ->
             // Where the grid is scrolled to now (the scroll event may not have arrived yet).
-            scrollTop <- getScrollTop grid
-            scrollLeft <- getScrollLeft grid
-            let x = getClientX e - getBoundingLeft grid
-            let y = getClientY e - getBoundingTop grid
+            scrollTop <- gridScrollTop grid
+            scrollLeft <- gridScrollLeft grid
+            let x = pointerX e grid
+            let y = pointerY e grid
             SpreadsheetLayout.hitTest model (currentViewport()) x y
 
     /// The cell under the pointer, or the nearest one when the pointer is over
@@ -1169,12 +1191,12 @@ type Spreadsheet(container: Element) =
         match gridContainer with
         | None -> None
         | Some grid ->
-            scrollTop <- getScrollTop grid
-            scrollLeft <- getScrollLeft grid
-            let width = getClientWidth grid
-            let height = getClientHeight grid
-            let x = getClientX e - getBoundingLeft grid |> max (rowHeaderWidth + 1.0) |> min (width - 1.0)
-            let y = getClientY e - getBoundingTop grid |> max (headerHeight + 1.0) |> min (height - 1.0)
+            scrollTop <- gridScrollTop grid
+            scrollLeft <- gridScrollLeft grid
+            let width = gridClientWidth grid
+            let height = gridClientHeight grid
+            let x = pointerX e grid |> max (rowHeaderWidth + 1.0) |> min (width - 1.0)
+            let y = pointerY e grid |> max (headerHeight + 1.0) |> min (height - 1.0)
             match SpreadsheetLayout.hitTest model (currentViewport()) x y with
             | SpreadsheetLayout.Cell addr -> Some addr
             | _ ->
@@ -1281,10 +1303,42 @@ type Spreadsheet(container: Element) =
             | Some merge -> not (merge.StartRow = top && merge.StartCol = left && merge.EndRow = bottom && merge.EndCol = right)
             | None -> true
 
+    /// Bring the page in line with the view options of the sheet on display:
+    /// its zoom (the content is scaled; the cell in the top-left corner stays
+    /// there) and whether it shows its headers.
+    let syncView () =
+        if model.ShowHeaders <> appliedHeaders then
+            appliedHeaders <- model.ShowHeaders
+            headerHeight <- if appliedHeaders then 30.0 else 0.0
+            rowHeaderWidth <- if appliedHeaders then 50.0 else 0.0
+            match layers with
+            | Some layer ->
+                let display = if appliedHeaders then "" else "none"
+                setStyle layer.ColHeaders "display" display
+                setStyle layer.RowHeaders "display" display
+                setStyle layer.FrozenHeaders "display" display
+            | None -> ()
+        let zoom = if model.Zoom >= 0.1 && model.Zoom <= 4.0 then model.Zoom else 1.0
+        if zoom <> appliedZoom then
+            match contentElement, gridContainer with
+            | Some content, Some grid ->
+                let top = gridScrollTop grid
+                let left = gridScrollLeft grid
+                appliedZoom <- zoom
+                setStyle content "zoom" (if zoom = 1.0 then "" else string zoom)
+                containerHeight <- gridClientHeight grid
+                containerWidth <- gridClientWidth grid
+                setGridScrollTop grid top
+                setGridScrollLeft grid left
+                scrollTop <- gridScrollTop grid
+                scrollLeft <- gridScrollLeft grid
+            | _ -> appliedZoom <- zoom
+
     /// Give the scrolled content the extent of the active sheet, so that
     /// every row and column can be scrolled to. Done whenever the sheet's
     /// size or the size of a row / column changes.
     let syncExtent () =
+        syncView ()
         match contentElement, gridContainer with
         | Some content, Some grid ->
             let metrics = SpreadsheetLayout.metricsOf model
@@ -1296,8 +1350,8 @@ type Spreadsheet(container: Element) =
                 setStyle content "width" (string (System.Math.Round width) + "px")
                 setStyle content "height" (string (System.Math.Round height) + "px")
                 // A smaller sheet may have pulled the scroll position back.
-                scrollTop <- getScrollTop grid
-                scrollLeft <- getScrollLeft grid
+                scrollTop <- gridScrollTop grid
+                scrollLeft <- gridScrollLeft grid
         | _ -> ()
 
     /// Scroll the grid so that a cell is in view (frozen rows and columns
@@ -1315,26 +1369,26 @@ type Spreadsheet(container: Element) =
                     let frozen = metrics.ColPrefix.[max 0 (min metrics.ColCount model.FrozenCols)]
                     let left = metrics.ColPrefix.[col]
                     let right = metrics.ColPrefix.[col + 1]
-                    let width = getClientWidth grid - rowHeaderWidth
-                    let current = getScrollLeft grid
+                    let width = gridClientWidth grid - rowHeaderWidth
+                    let current = gridScrollLeft grid
                     let wanted =
                         if left < current + frozen then left - frozen
                         elif right > current + width then min (left - frozen) (right - width)
                         else current
-                    if wanted <> current then setScrollLeft grid (max 0.0 wanted)
+                    if wanted <> current then setGridScrollLeft grid (max 0.0 wanted)
                 if row >= model.FrozenRows then
                     let frozen = metrics.RowPrefix.[max 0 (min metrics.RowCount model.FrozenRows)]
                     let top = metrics.RowPrefix.[row]
                     let bottom = metrics.RowPrefix.[row + 1]
-                    let height = getClientHeight grid - headerHeight
-                    let current = getScrollTop grid
+                    let height = gridClientHeight grid - headerHeight
+                    let current = gridScrollTop grid
                     let wanted =
                         if top < current + frozen then top - frozen
                         elif bottom > current + height then min (top - frozen) (bottom - height)
                         else current
-                    if wanted <> current then setScrollTop grid (max 0.0 wanted)
-                scrollTop <- getScrollTop grid
-                scrollLeft <- getScrollLeft grid
+                    if wanted <> current then setGridScrollTop grid (max 0.0 wanted)
+                scrollTop <- gridScrollTop grid
+                scrollLeft <- gridScrollLeft grid
 
     // --- keyboard movement ------------------------------------------------------
 
@@ -1793,6 +1847,21 @@ type Spreadsheet(container: Element) =
             model <- pushCommand { Undo = restore before; Redo = restore after; Description = description } model
             true
 
+    /// Change the active sheet's frozen panes and what its view shows (grid
+    /// lines, headers, formulas, zeros) as one undoable step (no value
+    /// changes). False when nothing changed.
+    let changeSheetView (description: string) (change: SpreadsheetModel -> SpreadsheetModel) : bool =
+        let state (m: SpreadsheetModel) = m.FrozenRows, m.FrozenCols, m.ShowGridLines, m.ShowHeaders, m.ShowFormulas, m.ShowZeros
+        let before = state model
+        let after = state (change model)
+        if before = after then false
+        else
+            let put (rows, cols, gridLines, headers, formulas, zeros) (m: SpreadsheetModel) =
+                { m with FrozenRows = rows; FrozenCols = cols; ShowGridLines = gridLines; ShowHeaders = headers; ShowFormulas = formulas; ShowZeros = zeros }
+            model <- put after model
+            pushValueNeutral { Undo = put before; Redo = put after; Description = description }
+            true
+
     /// The highest validation id the component has handed out (see lastRuleId).
     let mutable lastValidationId = 0
 
@@ -2145,6 +2214,15 @@ type Spreadsheet(container: Element) =
     and drawCell (layer: GridLayers) (node: CellNode) (row: int) (col: int) (x: float) (y: float) (w: float) (h: float) (pane: int)
                  (cellData: CellData option) (tables: Rbt.Spreadsheet.Workbook.Table list) =
         let cell = node.Element
+        // What the cell shows under the sheet's view options (formulas as
+        // text, no zeros); `storedData` is the cell itself.
+        let storedData = cellData
+        let cellData =
+            if model.ShowZeros && not model.ShowFormulas then cellData
+            else
+                cellData |> Option.map (fun data ->
+                    let shown = viewedValue model data.Value
+                    if obj.ReferenceEquals(shown, data.Value) then data else { data with Value = shown })
         if node.Pane <> pane || not (isChildOf cell layer.Panes.[pane]) then appendChild layer.Panes.[pane] cell
         let addr = { Row = row; Col = col }
         // What every cell has in common is in the grid's style sheet (see
@@ -2562,7 +2640,7 @@ type Spreadsheet(container: Element) =
                 removeAttribute cell "title"
                 node.HasTitle <- false
         node.Pane <- pane
-        node.Data <- (match cellData with Some data -> box data | None -> null)
+        node.Data <- (match storedData with Some data -> box data | None -> null)
         let near (data: CellData option) = match data with Some data -> box data | None -> null
         node.NearAbove <- near aboveData
         node.NearLeft <- near leftData
@@ -2662,6 +2740,7 @@ type Spreadsheet(container: Element) =
                 | None -> []
             let styleInputs : obj array =
                 [| box model.ConditionalFormats; box model.Threads; box model.MergedCells; box model.ShowGridLines
+                   box model.ShowHeaders; box model.ShowFormulas; box model.ShowZeros
                    box (match workbook with Some wb -> box wb.Tables | None -> null); box activeSheetIndex; box readOnly
                    (if model.ConditionalFormats.IsEmpty then null else box model.Cells)
                    // (Text of a frozen column is cut at the frozen edge once the columns beside it are scrolled away.)
@@ -3180,7 +3259,7 @@ type Spreadsheet(container: Element) =
                     match findMergedCell addr model with
                     | Some merge -> min (metrics.ColCount - 1) merge.EndCol
                     | None -> addr.Col
-                let w = metrics.ColPrefix.[rightCol + 1] - metrics.ColPrefix.[addr.Col]
+                let w = (metrics.ColPrefix.[rightCol + 1] - metrics.ColPrefix.[addr.Col]) * appliedZoom
                 pageRight layer.ListButton - 17.0 - w, pageBottom layer.ListButton, w + 17.0
             setCssText dropdown
                 ("position:absolute;left:" + string (System.Math.Round x) + "px;top:" + string (System.Math.Round y) + "px;min-width:" + string (System.Math.Round (max 60.0 width))
@@ -4094,8 +4173,8 @@ type Spreadsheet(container: Element) =
         match gridContainer with
         | Some grid ->
             syncExtent()
-            setScrollTop grid 0.0
-            setScrollLeft grid 0.0
+            setGridScrollTop grid 0.0
+            setGridScrollLeft grid 0.0
         | None -> ()
         scrollTop <- 0.0
         scrollLeft <- 0.0
@@ -4103,8 +4182,8 @@ type Spreadsheet(container: Element) =
     /// Handle scroll
     let handleScroll (e: obj) =
         let target = getCurrentTarget e
-        scrollTop <- getScrollTop target
-        scrollLeft <- getScrollLeft target
+        scrollTop <- gridScrollTop target
+        scrollLeft <- gridScrollLeft target
         if not scrollRenderScheduled then
             scrollRenderScheduled <- true
             requestAnimationFrame (fun () ->
@@ -4338,7 +4417,7 @@ type Spreadsheet(container: Element) =
                 match resizeColumnIndex with
                 | Some col ->
                     let currentX = getProp e "clientX" |> unbox<float>
-                    let delta = currentX - resizeStartPos
+                    let delta = (currentX - resizeStartPos) / appliedZoom
                     let newWidth = max 30.0 (resizeStartSize + delta)
                     model <- setColumnWidth col newWidth model
 
@@ -4354,7 +4433,7 @@ type Spreadsheet(container: Element) =
                 match resizeRowIndex with
                 | Some row ->
                     let currentY = getProp e "clientY" |> unbox<float>
-                    let delta = currentY - resizeStartPos
+                    let delta = (currentY - resizeStartPos) / appliedZoom
                     let newHeight = max 20.0 (resizeStartSize + delta)
                     model <- setRowHeight row newHeight model
 
@@ -4440,18 +4519,23 @@ type Spreadsheet(container: Element) =
         disposed <- false
         extentWidth <- -1.0
         extentHeight <- -1.0
+        // (The new nodes are at 100 % with their headers shown: see syncView.)
+        appliedZoom <- 1.0
+        appliedHeaders <- true
+        headerHeight <- 30.0
+        rowHeaderWidth <- 50.0
 
         // Initial render
-        containerHeight <- getClientHeight gridDiv
-        containerWidth <- getClientWidth gridDiv
+        containerHeight <- gridClientHeight gridDiv
+        containerWidth <- gridClientWidth gridDiv
         render()
 
         // Follow the container: the visible range depends on the grid's size.
         let stopObserving =
             observeResize gridDiv (fun () ->
                 if not disposed then
-                    let height = getClientHeight gridDiv
-                    let width = getClientWidth gridDiv
+                    let height = gridClientHeight gridDiv
+                    let width = gridClientWidth gridDiv
                     if height <> containerHeight || width <> containerWidth then
                         containerHeight <- height
                         containerWidth <- width
@@ -5953,6 +6037,86 @@ type Spreadsheet(container: Element) =
         if invalidCircles.Count > 0 then
             invalidCircles.Clear()
             render()
+
+    // ===== Freeze panes and view =====
+
+    /// Freeze the rows above `row` and the columns left of `col` (0-based),
+    /// as Excel's "Freeze Panes" with that cell selected: FreezeAt(1, 0)
+    /// freezes the first row, FreezeAt(0, 1) the first column, FreezeAt(2, 3)
+    /// two rows and three columns. FreezeAt(0, 0) unfreezes. The panes are
+    /// counted from the first row and column, wherever the grid is scrolled
+    /// to. One undo step. Throws when the cell is not on the sheet.
+    member _.FreezeAt(row: obj, col: obj) : unit =
+        let rows = Host.intArg "FreezeAt" "row" row
+        let cols = Host.intArg "FreezeAt" "col" col
+        if rows < 0 || rows >= model.RowCount then Host.hostFail "FreezeAt" (sprintf "row %d is not on the sheet (0..%d)" rows (model.RowCount - 1))
+        if cols < 0 || cols >= model.ColCount then Host.hostFail "FreezeAt" (sprintf "column %d is not on the sheet (0..%d)" cols (model.ColCount - 1))
+        if changeSheetView "Freeze panes" (fun m -> { m with FrozenRows = rows; FrozenCols = cols }) then render()
+
+    /// Unfreeze the panes of the active sheet (one undo step; nothing when none are frozen).
+    member _.Unfreeze() : unit =
+        if changeSheetView "Unfreeze panes" (fun m -> { m with FrozenRows = 0; FrozenCols = 0 }) then render()
+
+    /// The frozen panes of the active sheet: { rows, cols } (0 = none).
+    member _.GetFrozen() : obj =
+        createObj [ "rows" ==> model.FrozenRows; "cols" ==> model.FrozenCols ]
+
+    /// Zoom the active sheet: `factor` 0.1 .. 4 (1 = 100 %; rounded to a whole
+    /// percent). Cells, headers, pictures and the edit box scale; the cell in
+    /// the top-left corner stays there; pointer positions and scrolling follow.
+    /// Each sheet has its own zoom, saved with it (sheetView zoomScale). As in
+    /// Excel, zooming is not an edit: no undo step, no new revision, no
+    /// OnChange. Throws when `factor` is not a number in that range.
+    member _.SetZoom(factor: obj) : unit =
+        let factor = Host.numberArg "SetZoom" "factor" factor
+        if not (factor >= 0.1 && factor <= 4.0) then Host.hostFail "SetZoom" (sprintf "the factor has to be between 0.1 and 4 (1 = 100%%), not %s" (string factor))
+        let zoom = System.Math.Round (factor * 100.0) / 100.0
+        if zoom <> model.Zoom then
+            model <- { model with Zoom = zoom }
+            render()
+
+    /// The zoom of the active sheet (1 = 100 %).
+    member _.GetZoom() : float = model.Zoom
+
+    /// Show or hide the active sheet's grid lines (one undo step).
+    member _.SetShowGridLines(show: obj) : unit =
+        let show = Host.boolArg "SetShowGridLines" "show" show
+        if changeSheetView "Grid lines" (fun m -> { m with ShowGridLines = show }) then render()
+
+    /// Show or hide the active sheet's row numbers and column letters (one
+    /// undo step). Without them the cells start at the grid's top-left corner.
+    member _.SetShowHeaders(show: obj) : unit =
+        let show = Host.boolArg "SetShowHeaders" "show" show
+        if changeSheetView "Headers" (fun m -> { m with ShowHeaders = show }) then render()
+
+    /// Show formulas instead of their results on the active sheet (Excel's
+    /// Ctrl+`): a formula cell shows its text, left-aligned. One undo step.
+    /// What cells hold and what GetCell reports is unchanged.
+    member _.SetShowFormulas(show: obj) : unit =
+        let show = Host.boolArg "SetShowFormulas" "show" show
+        if changeSheetView "Show formulas" (fun m -> { m with ShowFormulas = show }) then render()
+
+    /// Show or hide zero values on the active sheet: with `false` a cell
+    /// holding the number 0 (typed or calculated) shows nothing. One undo step.
+    member _.SetShowZeros(show: obj) : unit =
+        let show = Host.boolArg "SetShowZeros" "show" show
+        if changeSheetView "Show zeros" (fun m -> { m with ShowZeros = show }) then render()
+
+    member _.GetShowGridLines() : bool = model.ShowGridLines
+    member _.GetShowHeaders() : bool = model.ShowHeaders
+    member _.GetShowFormulas() : bool = model.ShowFormulas
+    member _.GetShowZeros() : bool = model.ShowZeros
+
+    /// The view of the active sheet: { zoom, showGridLines, showHeaders,
+    /// showFormulas, showZeros, frozen: { rows, cols } }.
+    member _.GetViewOptions() : obj =
+        createObj [
+            "zoom" ==> model.Zoom
+            "showGridLines" ==> model.ShowGridLines
+            "showHeaders" ==> model.ShowHeaders
+            "showFormulas" ==> model.ShowFormulas
+            "showZeros" ==> model.ShowZeros
+            "frozen" ==> createObj [ "rows" ==> model.FrozenRows; "cols" ==> model.FrozenCols ] ]
 
     // ===== Defined names =====
 

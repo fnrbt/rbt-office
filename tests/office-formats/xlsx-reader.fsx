@@ -122,6 +122,7 @@ let mkSheetWithColumns columns rows : XlsxReader.Worksheet =
         FrozenPane = None
         ShowZeros = true
         ShowGridLines = true
+        View = XlsxReader.defaultSheetView
         Hyperlinks = []
         PageSetup = None
         PageMargins = None

@@ -898,6 +898,21 @@ type SpreadsheetModel = {
     /// cell borders, so the renderer must suppress the always-on grid.
     ShowGridLines: bool
 
+    /// Whether the row numbers and column letters are shown (sheetView
+    /// `showRowColHeaders`, default true).
+    ShowHeaders: bool
+
+    /// Cells show their formulas instead of the results (sheetView
+    /// `showFormulas`, Excel's Ctrl+`).
+    ShowFormulas: bool
+
+    /// False: a cell holding the number 0 shows nothing (sheetView `showZeros`).
+    ShowZeros: bool
+
+    /// The sheet's zoom: 1.0 = 100 % (sheetView `zoomScale`). View state that
+    /// is saved with the sheet; changing it is not an edit of the document.
+    Zoom: float
+
     /// Dynamic-array spill ownership: each spilled (ghost) cell mapped to its
     /// anchor formula cell. Maintained by the recalc+spill pass so stale
     /// spilled cells are cleared before a re-spill. Empty for non-spilling
@@ -1017,6 +1032,10 @@ let createEmpty rowCount colCount = {
     Tables = []
     CfBoldCells = Set.empty
     ShowGridLines = true
+    ShowHeaders = true
+    ShowFormulas = false
+    ShowZeros = true
+    Zoom = 1.0
     Spill = Map.empty
     Validations = []
     Macros = ""
@@ -1319,6 +1338,21 @@ let getCellValue (addr: CellAddress) (model: SpreadsheetModel): CellValue =
     match getCell addr model with
     | Some cell -> cell.Value
     | None -> Empty
+
+/// The value a cell shows under the sheet's view options: its formula as
+/// text when formulas are shown, nothing for the number 0 when zeros are
+/// hidden, else the value itself.
+let viewedValue (model: SpreadsheetModel) (value: CellValue) : CellValue =
+    if model.ShowZeros && not model.ShowFormulas then value
+    else
+        match value with
+        | Formula (text, _) when model.ShowFormulas -> String (if text.StartsWith "=" then text else "=" + text)
+        | _ ->
+            if model.ShowZeros then value
+            else
+                match unwrapFormulaValue value with
+                | Number 0.0 -> Empty
+                | _ -> value
 
 let private dataRows (model: SpreadsheetModel): Set<int> =
     model.Cells
