@@ -1687,7 +1687,8 @@ type Spreadsheet(container: Element) =
                     | WarningStyle -> "warning"
                     | InformationStyle -> "information"
                 validationNotice <- Some (styleName, defaultArg title "", message, addr)
-                for listener in validationListeners do listener styleName (defaultArg title "") message
+                for listener in validationListeners.ToArray() do
+                    try listener styleName (defaultArg title "") message with error -> reportError "OnValidationNotice" (box error)
             match outcome with
             | EntryInvalid (StopStyle, title, message) ->
                 notify StopStyle title message

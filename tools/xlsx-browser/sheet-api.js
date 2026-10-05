@@ -2734,6 +2734,11 @@ checks['api-events'] = async () => {
         rightClick(cellNode(1, 1));
         check('... and a context menu callback', errors.splice(0), [['OnContextMenu', 'menu slipped', true]]);
         offBadMenu();
+        const offBadNotice = grid.OnValidationNotice(() => { throw new Error('notice slipped'); });
+        grid.SetValidation('K1', { type: 'whole', operator: 'between', formula1: 1, formula2: 5 });
+        errors.splice(0);
+        check('... and a validation notice callback (the entry is refused all the same)', [grid.EnterText(0, 10, '99'), errors.splice(0)], [false, [['OnValidationNotice', 'notice slipped', true]]]);
+        offBadNotice();
         let rejected = null;
         try { await grid.ImportXlsx(new Uint8Array([1, 2, 3, 4])); } catch (e) { rejected = true; }
         check('a file that cannot be read: reported, and the promise still rejects', [rejected, errors.map((e) => e[0]), errors.splice(0).every((e) => e[1].length > 0), grid.GetCell(8, 0).value], [true, ['ImportXlsx'], true, 'x']);

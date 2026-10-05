@@ -230,7 +230,7 @@ let syntheticSheet : XlsxWriter.XlsxSheetOut =
       ConditionalFormats = []
       Hyperlinks = [ { Range = "A1"; Target = "https://example.com"; IsInternal = false; Tooltip = None; Display = None } ]
       PageMargins = Some { Top = 0.5; Bottom = 0.5; Left = 0.6; Right = 0.6; Header = 0.2; Footer = 0.2 }
-      PageSetup = Some { Orientation = Some "landscape"; FitToPage = true; FitToWidth = 1; FitToHeight = 1; Scale = 90; PaperSize = Some 9; FirstPageNumber = 3; UseFirstPageNumber = true; PageOrder = Some "overThenDown"; BlackAndWhite = false; CellComments = Some "asDisplayed" }
+      PageSetup = Some { Orientation = Some "landscape"; FitToPage = true; FitToWidth = 1; FitToHeight = 1; Scale = 90; PaperSize = Some 9; FirstPageNumber = 3; UseFirstPageNumber = true; PageOrder = Some "overThenDown"; BlackAndWhite = false; CellComments = Some "asDisplayed"; Kept = [] }
       PrintOptions = Some { GridLines = true; Headings = true; HorizontalCentered = true; VerticalCentered = false }
       HeaderFooter = Some { OddHeader = Some "&CReport"; OddFooter = Some "&P"; EvenHeader = None; EvenFooter = None; FirstHeader = None; FirstFooter = None; DifferentOddEven = false; DifferentFirst = false; ScaleWithDoc = true }
       RowBreaks = [ 3 ]

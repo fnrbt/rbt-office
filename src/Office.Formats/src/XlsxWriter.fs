@@ -399,6 +399,8 @@ type XlsxPageSetup = {
     PageOrder: string option
     BlackAndWhite: bool
     CellComments: string option
+    /// Printer attributes kept from the file (XlsxReader.PageSetup.Kept).
+    Kept: (string * string) list
 }
 
 type XlsxPrintOptions = {
@@ -1466,6 +1468,7 @@ let private pagePartsXml (sheet: XlsxSheetOut) =
                 match p.PageOrder with Some po -> yield attr "pageOrder" po | None -> ()
                 if p.BlackAndWhite then yield "blackAndWhite=\"1\""
                 match p.CellComments with Some cc -> yield attr "cellComments" cc | None -> ()
+                for name, value in p.Kept do yield attr name value
                 // The printer settings part of the file the sheet came from.
                 match sheet.Extras.PrinterSettingsRelId with Some id -> yield attr "r:id" id | None -> ()
             ]
@@ -2403,7 +2406,8 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
                         match p.CellComments with
                         | XlsxReader.CellCommentsAsDisplayed -> Some "asDisplayed"
                         | XlsxReader.CellCommentsAtEnd -> Some "atEnd"
-                        | _ -> None })
+                        | _ -> None
+                      Kept = p.Kept })
               PrintOptions = Some { GridLines = sheet.PrintOptions.GridLines; Headings = sheet.PrintOptions.Headings; HorizontalCentered = sheet.PrintOptions.HorizontalCentered; VerticalCentered = sheet.PrintOptions.VerticalCentered }
               HeaderFooter =
                 Some { OddHeader = sheet.HeaderFooter.OddHeader; OddFooter = sheet.HeaderFooter.OddFooter; EvenHeader = sheet.HeaderFooter.EvenHeader; EvenFooter = sheet.HeaderFooter.EvenFooter; FirstHeader = sheet.HeaderFooter.FirstHeader; FirstFooter = sheet.HeaderFooter.FirstFooter; DifferentOddEven = sheet.HeaderFooter.DifferentOddEven; DifferentFirst = sheet.HeaderFooter.DifferentFirst; ScaleWithDoc = sheet.HeaderFooter.ScaleWithDoc }

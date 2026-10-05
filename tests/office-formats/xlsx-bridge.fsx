@@ -850,6 +850,27 @@ eq "page setup: ... the titles' name is gone, the area's stays"
     (printNamesOf reprintedBytes |> List.map (fun (name, _, _) -> name))
     [ "_xlnm.Print_Area" ]
 
+// What the file says about the printer stays through an edit of the setup.
+let withPrinter =
+    let stream = new MemoryStream()
+    stream.Write(printedBytes, 0, printedBytes.Length)
+    (use archive = new System.IO.Compression.ZipArchive(stream, System.IO.Compression.ZipArchiveMode.Update, true)
+     let entry = archive.GetEntry "xl/worksheets/sheet1.xml"
+     let text = (use reader = new StreamReader(entry.Open()) in reader.ReadToEnd())
+     entry.Delete()
+     let fresh = archive.CreateEntry "xl/worksheets/sheet1.xml"
+     use writer = new StreamWriter(fresh.Open())
+     writer.Write(text.Replace("<pageSetup ", "<pageSetup horizontalDpi=\"600\" verticalDpi=\"300\" copies=\"2\" draft=\"1\" errors=\"dash\" ")))
+    stream.ToArray()
+let printerBack = Bridge.Import.importWorkbook (XlsxReader.loadBytesNative withPrinter |> Option.get)
+let printerEdited =
+    let model = printerBack.Sheets.[0].Model
+    { model with PageSetup = Ops.applyPageSetupChanges "SetPageSetup" [ Ops.SetOrientation PortraitOrientation ] model.PageSetup }
+let printerXml = textOf (XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (printInput [| printerEdited; printerBack.Sheets.[1].Model |] (Some printerBack.Source)))) "xl/worksheets/sheet1.xml"
+ok "page setup: the printer's attributes stay when the setup is edited"
+    (printerXml.Contains "orientation=\"portrait\"" && printerXml.Contains "horizontalDpi=\"600\"" && printerXml.Contains "verticalDpi=\"300\"" && printerXml.Contains "copies=\"2\"" && printerXml.Contains "draft=\"1\"" && printerXml.Contains "errors=\"dash\"")
+    printerXml
+
 printfn ""
 printfn "XLSX bridge tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

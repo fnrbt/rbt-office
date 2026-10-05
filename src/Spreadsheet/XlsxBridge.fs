@@ -1396,7 +1396,8 @@ module Export =
             match p.CellComments with
             | CellCommentsAsDisplayed -> Some "asDisplayed"
             | CellCommentsAtEnd -> Some "atEnd"
-            | CellCommentsNone -> None }
+            | CellCommentsNone -> None
+          Kept = [] }
 
     let private printOptions (p: PrintOptions) : XlsxWriter.XlsxPrintOptions =
         { GridLines = p.GridLines; Headings = p.Headings; HorizontalCentered = p.HorizontalCentered; VerticalCentered = p.VerticalCentered }
@@ -1634,7 +1635,17 @@ module Export =
             PageMargins = if before.PageSetup.Margins = model.PageSetup.Margins then original.PageMargins else fromModel.PageMargins
             PageSetup =
                 if unchanged (fun m -> m.PageSetup) then original.PageSetup
-                else Some (pageSetup model.PageSetup)
+                else
+                    // What the file says about the printer (resolution, draft,
+                    // copies ...) stays through an edit of the setup; a custom
+                    // paper's dimensions go when the paper was changed.
+                    let kept =
+                        match original.PageSetup with
+                        | Some known ->
+                            if before.PageSetup.PaperSize = model.PageSetup.PaperSize then known.Kept
+                            else known.Kept |> List.filter (fun (name, _) -> name <> "paperHeight" && name <> "paperWidth")
+                        | None -> []
+                    Some { pageSetup model.PageSetup with Kept = kept }
             PrintOptions = if before.PageSetup.Options = model.PageSetup.Options then original.PrintOptions else fromModel.PrintOptions
             HeaderFooter = if before.PageSetup.HeaderFooter = model.PageSetup.HeaderFooter then original.HeaderFooter else fromModel.HeaderFooter
             PrintArea = if before.PageSetup.PrintArea = model.PageSetup.PrintArea then original.PrintArea else fromModel.PrintArea

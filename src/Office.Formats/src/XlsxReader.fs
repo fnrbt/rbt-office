@@ -496,9 +496,17 @@ type CellCommentsPrint =
     | CellCommentsAsDisplayed
     | CellCommentsAtEnd
 
+/// The `<pageSetup>` attributes that are kept as read (see `PageSetup.Kept`).
+let keptPageSetupAttributes =
+    [ "paperHeight"; "paperWidth"; "usePrinterDefaults"; "draft"; "errors"; "horizontalDpi"; "verticalDpi"; "copies" ]
+
 /// `<pageSetup>` plus `<sheetPr><pageSetUpPr fitToPage>`. PaperSize is
 /// OOXML's enum (1 = Letter, 9 = A4, …); None when unspecified.
 type PageSetup = {
+    /// What `<pageSetup>` says about the printer and is not modelled
+    /// (resolution, draft quality, how errors print, copies, a custom paper):
+    /// (attribute, value) pairs, written back as they were read.
+    Kept: (string * string) list
     PaperSize: int option
     Orientation: PrintOrientation
     /// `fitToWidth` / `fitToHeight` — only meaningful when FitToPage = true.
@@ -2298,6 +2306,10 @@ module Xlsx =
                 | Some "overThenDown" -> OverThenDown
                 | _ -> DownThenOver
             Some {
+                Kept =
+                    match n with
+                    | Some e -> keptPageSetupAttributes |> List.choose (fun name -> Xml.attr name e |> Option.map (fun value -> name, value))
+                    | None -> []
                 PaperSize = n |> Option.bind (fun e -> parseIntAttr e "paperSize")
                 Orientation = orientation
                 FitToWidth = intOr 1 "fitToWidth"
@@ -2664,6 +2676,7 @@ module Xlsx =
 
     let private defaultPageSetupNative fit =
         {
+            Kept = []
             PaperSize = None
             Orientation = OrientationDefault
             FitToWidth = 1
@@ -2685,6 +2698,7 @@ module Xlsx =
                 | Some "landscape" -> OrientationLandscape
                 | _ -> OrientationDefault
         {
+            Kept = keptPageSetupAttributes |> List.choose (fun name -> nativeAttr reader name |> Option.map (fun value -> name, value))
             PaperSize = nativeIntAttr reader "paperSize"
             Orientation = orientation
             FitToWidth = nativeIntAttr reader "fitToWidth" |> Option.defaultValue 1
