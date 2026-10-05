@@ -204,6 +204,13 @@ let private sameBookContent (a: BookContent) (b: BookContent) =
     && (sameRef a.NameInfo b.NameInfo || a.NameInfo = b.NameInfo)
     && a.Hidden = b.Hidden
 
+/// The search a host started with Find: FindNext / FindPrevious /
+/// ReplaceMatch go by it.
+type private HostSearch = {
+    Finder: SheetOps.Finder
+    Request: Host.FindRequest
+}
+
 /// Whether two models of a sheet hold the same document content: everything
 /// that is part of the workbook, as opposed to view and editing state
 /// (selection, edit buffer, clipboard, search, undo history).
@@ -2124,6 +2131,40 @@ type Spreadsheet(container: Element) =
         | None -> model
         | Some index when index >= 0 && index < sheets.Length -> sheetModelAt index
         | Some index -> Host.hostFail memberName (sprintf "there is no sheet %d (the workbook has %d)" index sheets.Length)
+
+    // --- find and replace ---------------------------------------------------------
+    /// The search Find started (None: none, or StartSearch started one since).
+    let mutable hostSearch : HostSearch option = None
+    /// The matches of that search on each sheet, for the cells they were found in.
+    let searchCache = System.Collections.Generic.Dictionary<SheetId, obj * (CellAddress * string) list>()
+
+    /// Whether the sheet at an index has a tab.
+    let sheetHasTab (index: int) : bool =
+        match workbook |> Option.bind (fun wb -> Map.tryFind (sheetIdForIndex index) wb.Sheets) with
+        | Some sheet -> sheet.Visible
+        | None -> true
+
+    /// The sheets a search reads: the one on display, or every sheet with a tab.
+    let searchedSheets (search: HostSearch) : int list =
+        if search.Request.Workbook then [ for index in 0 .. sheets.Length - 1 do if index = activeSheetIndex || sheetHasTab index then yield index ]
+        else [ activeSheetIndex ]
+
+    /// The matches of a search on one sheet (found again when its cells changed).
+    let sheetMatches (search: HostSearch) (index: int) : (CellAddress * string) list =
+        let sheetModel = sheetModelAt index
+        let id = sheetIdForIndex index
+        match searchCache.TryGetValue id with
+        | true, (cells, found) when obj.ReferenceEquals(cells, sheetModel.Cells) -> found
+        | _ ->
+            let found = SheetOps.findInSheet search.Finder search.Request.Options search.Request.Range sheetModel
+            searchCache.[id] <- (box sheetModel.Cells, found)
+            found
+
+    /// Every match of a search as (sheet index, cell, text), sheet by sheet in tab order.
+    let allMatches (search: HostSearch) : (int * CellAddress * string) array =
+        [| for index in searchedSheets search do
+            for addr, text in sheetMatches search index do
+                yield index, addr, text |]
 
     /// The picture of the active sheet a host names by its id.
     let pictureArg (memberName: string) (id: obj) : SheetDrawing =
@@ -6866,19 +6907,133 @@ type Spreadsheet(container: Element) =
             applyStructureEdit (DeleteCols (at, count)) (if count = 1 then sprintf "Delete column %s" (columnToLetter at) else sprintf "Delete %d columns from %s" count (columnToLetter at))
             render()
 
-    /// Start a search
+    /// Start a search of the active sheet the old way (text contained in a
+    /// cell's value or formula): FindNext() then steps through the results
+    /// and answers true / false. Hosts use Find.
     member _.StartSearch(query: string, caseSensitive: bool) =
+        hostSearch <- None
+        searchCache.Clear()
         model <- startSearch query caseSensitive model
         render()
 
-    /// Find next occurrence
-    member _.FindNext() =
-        match nextSearchResult model with
-        | Some newModel ->
-            model <- newModel
+    /// Search the workbook. `text` is what to look for; `options` (all
+    /// optional) is { matchCase: boolean (false), wholeCell: boolean (false:
+    /// a part of the cell's text is enough), regex: boolean (false; `text`
+    /// is then a regular expression - a JavaScript one in the browser),
+    /// lookIn: "values" (what cells show; the default) | "formulas" (what
+    /// was entered: a formula with its "=", any other cell as it would be
+    /// typed), scope: "sheet" (the sheet on display; the default) |
+    /// "workbook" (every sheet with a tab, hidden sheets left out),
+    /// range: "B2:D9" (on the sheet on display; not with scope "workbook") }.
+    /// Returns the matches, [{ sheetIndex, row, col, address, text (the
+    /// text that was searched: shown or entered) }], row by row, sheets in
+    /// tab order starting at the one on display. Nothing is selected yet:
+    /// the search is remembered and FindNext() / FindPrevious() /
+    /// ReplaceMatch() go by it (and find again in cells that changed
+    /// since). A workbook search converts the sheets of an opened file that
+    /// were not needed so far. Throws for an empty text, an unreadable
+    /// regular expression and unknown options.
+    member _.Find(text: obj, options: obj) : obj array =
+        let memberName = "Find"
+        let text = Host.stringArg memberName "text" text
+        let request = Host.findRequestOfObj memberName options
+        let search = { Finder = SheetOps.finderOf memberName text request.Options; Request = request }
+        hostSearch <- Some search
+        searchCache.Clear()
+        let found = allMatches search
+        // (From the sheet on display on, then the sheets before it.)
+        Array.append (found |> Array.filter (fun (index, _, _) -> index >= activeSheetIndex)) (found |> Array.filter (fun (index, _, _) -> index < activeSheetIndex))
+        |> Array.map (fun (index, addr, text) -> Host.findMatchToObj index addr text)
+
+    /// Step from the active cell to the next (`forward`) or previous match of
+    /// the search Find started: the match's sheet is shown, its cell selected
+    /// and scrolled into view. null when nothing matches.
+    member private this.StepSearch(search: HostSearch, forward: bool) : obj =
+        if model.EditingCell.IsSome then finishEditing true |> ignore
+        let found = allMatches search
+        let active = activeCellAddress ()
+        let places = found |> Array.map (fun (index, addr, _) -> index, addr.Row, addr.Col)
+        match SheetOps.stepMatch forward (activeSheetIndex, active.Row, active.Col) places with
+        | None -> null
+        | Some at ->
+            let index, addr, text = found.[at]
+            if index <> activeSheetIndex then this.SwitchSheet index
+            selectCellAddress addr
+            revealCell addr.Row addr.Col
             render()
-            true
-        | None -> false
+            Host.findMatchToObj index addr text
+
+    /// Go to the next match. After Find: the first match after the active
+    /// cell (row by row, then the following sheets for a workbook search,
+    /// starting over after the last one); its sheet is shown and its cell
+    /// selected; returns the match { sheetIndex, row, col, address, text },
+    /// or null when nothing matches. After StartSearch (the old search):
+    /// selects the next result and returns true, or false when there is none.
+    member this.FindNext() : obj =
+        match hostSearch with
+        | Some search -> this.StepSearch(search, true)
+        | None ->
+            match nextSearchResult model with
+            | Some newModel ->
+                model <- newModel
+                render()
+                box true
+            | None -> box false
+
+    /// Go to the match before the active cell of the search Find started
+    /// (the last one after the first): returns the match, or null when
+    /// nothing matches. Throws when Find was not called.
+    member this.FindPrevious() : obj =
+        match hostSearch with
+        | Some search -> this.StepSearch(search, false)
+        | None -> Host.hostFail "FindPrevious" "there is no search (call Find first)"
+
+    /// Replace in the active cell when it is a match of the search Find
+    /// started, then go to the next match. Returns { replaced: boolean,
+    /// next: match | null }. `replacement` replaces every occurrence in the
+    /// cell's text ($1, $2 ... are the groups of a regular expression); the
+    /// result is read the way typed input is (a number, a date, a formula)
+    /// and the cell keeps its format; it is not checked against data
+    /// validation. Searching "formulas" the replacement is made in the
+    /// formula text; searching "values" a formula cell is skipped (replaced:
+    /// false) and the replacement is made in the text other cells show. One
+    /// undo step. When the active cell is not a match nothing is replaced
+    /// and the next match is selected. Throws when Find was not called.
+    member this.ReplaceMatch(replacement: obj) : obj =
+        let memberName = "ReplaceMatch"
+        let replacement = Host.stringArg memberName "replacement" replacement
+        match hostSearch with
+        | None -> Host.hostFail memberName "there is no search (call Find first)"
+        | Some search ->
+            if model.EditingCell.IsSome then finishEditing true |> ignore
+            let addr = activeCellAddress ()
+            let inRange =
+                match search.Request.Range with
+                | Some range -> addr.Row >= range.From.Row && addr.Row <= range.To.Row && addr.Col >= range.From.Col && addr.Col <= range.To.Col
+                | None -> true
+            let changed =
+                match getCell addr model with
+                | Some data when inRange && not (Map.containsKey addr model.Spill) ->
+                    SheetOps.replaceInCell search.Finder search.Request.Options replacement (currentYear()) data
+                | _ -> None
+            let replaced =
+                match changed with
+                | Some cellData ->
+                    let old = getCell addr model
+                    let cellData =
+                        match cellData.Value with
+                        | CellValue.Formula (formula, _) -> { cellData with Value = CellValue.Formula (formula, evaluateFormula formula model workbook) }
+                        | _ -> cellData
+                    recalculateSingleCellEdit addr cellData
+                    let after = getCell addr model
+                    model <- pushCommand { Undo = restoreCellOptions [ addr, old ]
+                                           Redo = restoreCellOptions [ addr, after ]
+                                           Description = "Replace" } model
+                    true
+                | None -> false
+            let next = this.StepSearch(search, true)
+            if isNull next then render()
+            createObj [ "replaced" ==> replaced; "next" ==> next ]
 
     /// Replace current selection
     member _.Replace(findText: string, replaceText: string, caseSensitive: bool) =
@@ -6886,10 +7041,67 @@ type Spreadsheet(container: Element) =
         if replaced then render()
         replaced
 
-    /// Replace all occurrences
-    member _.ReplaceAll(findText: string, replaceText: string, caseSensitive: bool) =
-        replaceEverywhere findText replaceText caseSensitive |> ignore
-        render()
+    /// Replace every match and return how many cells changed, as ONE undo
+    /// step - also across sheets. `ReplaceAll(text, replacement, options)`
+    /// takes the options of Find ({ matchCase, wholeCell, regex, lookIn,
+    /// scope, range }) and replaces as ReplaceMatch does (formula cells only
+    /// when looking in formulas; the cells of a spilled array never). With
+    /// scope "workbook" every sheet with a tab is changed and one Undo() on
+    /// the sheet on display restores them all. Formulas are recalculated.
+    /// The old call `ReplaceAll(text, replacement, caseSensitive: boolean)`
+    /// keeps working: the active sheet, text contained in a cell's value or
+    /// formula. Throws as Find does.
+    member _.ReplaceAll(findText: obj, replaceText: obj, options: obj) : int =
+        let memberName = "ReplaceAll"
+        if Host.jsTypeOf options = "boolean" then
+            let count = replaceEverywhere (Host.stringArg memberName "text" findText) (Host.stringArg memberName "replacement" replaceText) (unbox<bool> options)
+            render()
+            count
+        else
+            let text = Host.stringArg memberName "text" findText
+            let replacement = Host.stringArg memberName "replacement" replaceText
+            let request = Host.findRequestOfObj memberName options
+            let finder = SheetOps.finderOf memberName text request.Options
+            if model.EditingCell.IsSome then finishEditing true |> ignore
+            let year = currentYear()
+            let changesOf (index: int) =
+                SheetOps.replaceInSheet finder request.Options replacement year request.Range (sheetModelAt index)
+            let put (index: int) (cells: (CellAddress * CellData option) list) =
+                if index = activeSheetIndex then model <- restoreCellOptions cells model
+                else sheets.[index] <- restoreCellOptions cells (sheetModelAt index)
+            if not request.Workbook then
+                let changes = changesOf activeSheetIndex
+                if not changes.IsEmpty then
+                    let oldCells = changes |> List.map (fun (addr, before, _) -> addr, Some before)
+                    put activeSheetIndex (changes |> List.map (fun (addr, _, after) -> addr, Some after))
+                    recalculateFormulas()
+                    let newCells = changes |> List.map (fun (addr, _, _) -> addr, getCell addr model)
+                    model <- pushCommand { Undo = restoreCellOptions oldCells
+                                           Redo = restoreCellOptions newCells
+                                           Description = "Replace All" } model
+                render()
+                changes.Length
+            else
+                // (Formulas of every sheet may read the cells that change.)
+                convertFormulaSheets ()
+                let changes =
+                    [ for index in 0 .. sheets.Length - 1 do
+                        if index = activeSheetIndex || sheetHasTab index then
+                            match changesOf index with
+                            | [] -> ()
+                            | found -> yield sheetIdForIndex index, found ]
+                let count = changes |> List.sumBy (fun (_, found) -> found.Length)
+                if count > 0 then
+                    let apply (pick: CellAddress * CellData * CellData -> CellAddress * CellData option) () =
+                        for id, found in changes do
+                            let index = sheetIndexOfId id
+                            if index >= 0 then put index (found |> List.map pick)
+                        recalculateFormulas()
+                    runBookStep "Replace All"
+                        (apply (fun (addr, _, after) -> addr, Some after))
+                        (apply (fun (addr, before, _) -> addr, Some before))
+                render()
+                count
 
     /// Get search results count
     member _.GetSearchResultsCount() =

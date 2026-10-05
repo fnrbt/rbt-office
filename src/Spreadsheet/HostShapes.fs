@@ -881,3 +881,45 @@ let drawingToObj (drawing: SheetDrawing) (x: float) (y: float) (width: float) (h
         "width" ==> width
         "height" ==> height
     ]
+
+// ---------------------------------------------------------------------------
+// Find and replace
+// ---------------------------------------------------------------------------
+
+/// What a host says about a search besides its text: the options, whether
+/// every sheet is searched, and the range searched when one is given.
+type FindRequest = {
+    Options: FindOptions
+    Workbook: bool
+    Range: CellRange option
+}
+
+let private findKeys = [ "matchCase"; "wholeCell"; "regex"; "lookIn"; "scope"; "range" ]
+
+/// The search options of { matchCase?, wholeCell?, regex?, lookIn?:
+/// "values" | "formulas", scope?: "sheet" | "workbook", range? } (all
+/// optional; no object at all is the defaults).
+let findRequestOfObj (memberName: string) (value: obj) : FindRequest =
+    if isNullish value then { Options = defaultFindOptions; Workbook = false; Range = None }
+    elif not (isJsObject value) then hostFail memberName "the options are not an object ({ matchCase, wholeCell, regex, lookIn, scope, range })"
+    else
+        for key in keysOf value do
+            if not (List.contains key findKeys) then hostFail memberName (sprintf "the options have no \"%s\" (they have %s)" key (String.concat ", " findKeys))
+        let flag (key: string) = optionalArg (boolArg memberName key) (getKey value key) |> Option.defaultValue false
+        let lookIn = optionalArg (oneOf memberName "lookIn" [ "values"; "formulas" ]) (getKey value "lookIn") |> Option.defaultValue "values"
+        let scope = optionalArg (oneOf memberName "scope" [ "sheet"; "workbook" ]) (getKey value "scope") |> Option.defaultValue "sheet"
+        let range = optionalArg (rangeArg memberName) (getKey value "range")
+        if scope = "workbook" && range.IsSome then hostFail memberName "a range is searched on one sheet: leave out the range or the workbook scope"
+        { Options = { MatchCase = flag "matchCase"; WholeCell = flag "wholeCell"; Regex = flag "regex"; InFormulas = (lookIn = "formulas") }
+          Workbook = (scope = "workbook")
+          Range = range }
+
+/// A match as hosts get it: { sheetIndex, row, col, address, text }.
+let findMatchToObj (sheetIndex: int) (addr: CellAddress) (text: string) : obj =
+    createObj [
+        "sheetIndex" ==> sheetIndex
+        "row" ==> addr.Row
+        "col" ==> addr.Col
+        "address" ==> (columnToLetter addr.Col + string (addr.Row + 1))
+        "text" ==> text
+    ]

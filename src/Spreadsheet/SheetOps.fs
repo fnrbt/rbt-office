@@ -2218,3 +2218,141 @@ let describePicture (id: int) (name: string option) (description: string option)
         { drawing with
             Name = (match name with Some _ -> name | None -> drawing.Name)
             Description = (match description with Some "" -> None | Some _ -> description | None -> drawing.Description) }) model
+
+// ---------------------------------------------------------------------------
+// Find and replace
+// ---------------------------------------------------------------------------
+
+/// How a search reads the cells.
+type FindOptions = {
+    /// Upper and lower case are different letters.
+    MatchCase: bool
+    /// The whole text of the cell has to match, not a part of it.
+    WholeCell: bool
+    /// The text searched for is a regular expression.
+    Regex: bool
+    /// Search what was entered (the formula of a formula cell, the entry of
+    /// any other) instead of what the cell shows.
+    InFormulas: bool
+}
+
+let defaultFindOptions = { MatchCase = false; WholeCell = false; Regex = false; InFormulas = false }
+
+/// A search text made ready: whether a text matches, and the text with
+/// every match replaced.
+type Finder = {
+    IsMatch: string -> bool
+    Replace: string -> string -> string
+}
+
+/// The finder of a search text. Throws (naming `memberName`) for an empty
+/// text and for a regular expression that cannot be read.
+let finderOf (memberName: string) (text: string) (options: FindOptions) : Finder =
+    if String.IsNullOrEmpty text then failwith (sprintf "%s: there is no text to search for" memberName)
+    if options.Regex then
+        let flags =
+            if options.MatchCase then Text.RegularExpressions.RegexOptions.None
+            else Text.RegularExpressions.RegexOptions.IgnoreCase
+        let regex =
+            try
+                // (The whole cell: the pattern from the first character to the last.)
+                let made = Text.RegularExpressions.Regex((if options.WholeCell then "^(?:" + text + ")$" else text), flags)
+                // (A pattern is read when it is first used in the browser.)
+                made.IsMatch "" |> ignore
+                made
+            with error -> failwith (sprintf "%s: \"%s\" is not a regular expression (%s)" memberName text error.Message)
+        { IsMatch = (fun candidate -> regex.IsMatch candidate)
+          Replace = (fun candidate replacement -> regex.Replace(candidate, replacement)) }
+    else
+        let needle = if options.MatchCase then text else text.ToLowerInvariant()
+        let fold (candidate: string) = if options.MatchCase then candidate else candidate.ToLowerInvariant()
+        let isMatch (candidate: string) =
+            if options.WholeCell then fold candidate = needle else (fold candidate).Contains needle
+        let replace (candidate: string) (replacement: string) =
+            if options.WholeCell then (if fold candidate = needle then replacement else candidate)
+            else
+                let folded = fold candidate
+                // (Folding keeps the length of every letter the grid can hold a match in.)
+                if folded.Length <> candidate.Length then candidate.Replace(text, replacement)
+                else
+                    let sb = Text.StringBuilder()
+                    let mutable at = 0
+                    let mutable next = folded.IndexOf(needle, 0, StringComparison.Ordinal)
+                    while next >= 0 do
+                        sb.Append(candidate.Substring(at, next - at)).Append(replacement) |> ignore
+                        at <- next + needle.Length
+                        next <- if at <= folded.Length - needle.Length then folded.IndexOf(needle, at, StringComparison.Ordinal) else -1
+                    sb.Append(candidate.Substring at).ToString()
+        { IsMatch = isMatch; Replace = replace }
+
+/// The text of a cell a search reads: what it shows, or (in formulas) what
+/// was entered - the formula with its `=`, a date as a date, text as it is.
+let searchText (options: FindOptions) (data: CellData) : string =
+    if options.InFormulas then
+        match data.Value with
+        | String text -> text
+        | _ -> Rbt.Spreadsheet.Input.editText (Some data)
+    else Rbt.Spreadsheet.CellText.cellDisplayText None 1.0e6 data.Format data.Value
+
+/// The cells of a sheet (of `range` when given) that match, row by row,
+/// each with the text that matched.
+let findInSheet (finder: Finder) (options: FindOptions) (range: CellRange option) (model: SpreadsheetModel) : (CellAddress * string) list =
+    let inside (addr: CellAddress) =
+        match range with
+        | Some area -> addr.Row >= area.From.Row && addr.Row <= area.To.Row && addr.Col >= area.From.Col && addr.Col <= area.To.Col
+        | None -> true
+    let found = ResizeArray<CellAddress * string>()
+    // (The cell map is in row order, columns in order within a row.)
+    for KeyValue(addr, data) in model.Cells do
+        match data.Value with
+        | Empty -> ()
+        | _ ->
+            if inside addr then
+                let text = searchText options data
+                if text <> "" && finder.IsMatch text then found.Add((addr, text))
+    List.ofSeq found
+
+/// A cell with every match replaced, read again the way typed input is
+/// (the cell keeps its format); None when the cell does not match or cannot
+/// take the replacement. Searching what cells show, a formula cell is left
+/// alone (its value is not its own to change) and the replacement is made
+/// in the text shown; searching formulas it is made in the formula text.
+let replaceInCell (finder: Finder) (options: FindOptions) (replacement: string) (currentYear: int) (data: CellData) : CellData option =
+    match data.Value with
+    | Empty -> None
+    | Formula _ when not options.InFormulas -> None
+    | _ ->
+        let text = searchText options data
+        if text = "" || not (finder.IsMatch text) then None
+        else
+            let replaced = finder.Replace text replacement
+            if replaced = text then None
+            elif replaced = "" then Some { data with Value = Empty }
+            else Some (Rbt.Spreadsheet.Input.cellFromInput currentYear (Some data) replaced)
+
+/// Every cell of a sheet (of `range` when given) a replace-all changes:
+/// (address, the cell before, the cell after). The cells a dynamic array
+/// spilled into are not changed (they are their formula's).
+let replaceInSheet (finder: Finder) (options: FindOptions) (replacement: string) (currentYear: int) (range: CellRange option) (model: SpreadsheetModel) : (CellAddress * CellData * CellData) list =
+    findInSheet finder options range model
+    |> List.choose (fun (addr, _) ->
+        match Map.tryFind addr model.Cells with
+        | Some _ when Map.containsKey addr model.Spill -> None
+        | Some data -> replaceInCell finder options replacement currentYear data |> Option.map (fun changed -> addr, data, changed)
+        | None -> None)
+
+/// The match a step from a place leads to. `matches` are in search order,
+/// each with its place as (sheet position in the search order, row,
+/// column); `from` is the place the step starts at. Forward: the first
+/// match after it, else the first of all; backward: the last before it,
+/// else the last of all. None when there is no match.
+let stepMatch (forward: bool) (from: int * int * int) (places: (int * int * int) array) : int option =
+    if places.Length = 0 then None
+    elif forward then
+        match places |> Array.tryFindIndex (fun place -> place > from) with
+        | Some index -> Some index
+        | None -> Some 0
+    else
+        match places |> Array.tryFindIndexBack (fun place -> place < from) with
+        | Some index -> Some index
+        | None -> Some (places.Length - 1)

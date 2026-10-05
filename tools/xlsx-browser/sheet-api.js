@@ -2297,3 +2297,170 @@ checks['api-pictures'] = async () => {
     close();
     return lines;
 };
+
+// Find and replace across the workbook: Find, FindNext, FindPrevious, ReplaceMatch, ReplaceAll.
+checks['api-find'] = async () => {
+    const { lines, check, note } = makeLog();
+    const { grid, close } = mountGrid();
+    try {
+        const refs = (matches) => matches.map((m) => `${m.sheetIndex}:${m.address}`);
+        const where = () => `${grid.GetActiveSheetIndex()}:${grid.GetSelectionRef()}`;
+        const ref = (match) => match === null ? null : `${match.sheetIndex}:${match.address}`;
+        const value = (a1) => grid.GetRange(a1)[0][0].value, formula = (a1) => grid.GetRange(a1)[0][0].formula;
+        // Three sheets: data, more data, and a hidden one.
+        grid.SetCell(0, 0, 'Apple pie'); grid.SetCell(0, 1, 'apple'); grid.SetCell(1, 0, '1234.5'); grid.SetCell(2, 0, '=LEN(B1)*100'); grid.SetCell(2, 2, 'pineapple');
+        grid.SelectRange(1, 0, 1, 0); grid.SetNumberFormat('#,##0.00'); grid.SelectCell(0, 0);
+        grid.AddSheet('Two'); grid.SetCell(1, 1, 'Apple tart'); grid.SetCell(3, 0, '=Sheet1!A3+1'); grid.SetCell(4, 0, '=LEN(Sheet1!B1)');
+        grid.AddSheet('Hidden'); grid.SetCell(0, 0, 'apple in hiding'); grid.SetSheetVisibility(2, 'hidden');
+        grid.SwitchSheet(0); grid.SelectCell(0, 0);
+
+        // ---- Find ----
+        const found = grid.Find('apple');
+        check('Find: the matches of the sheet on display, row by row, with what the cells show', found, [
+            { sheetIndex: 0, row: 0, col: 0, address: 'A1', text: 'Apple pie' }, { sheetIndex: 0, row: 0, col: 1, address: 'B1', text: 'apple' }, { sheetIndex: 0, row: 2, col: 2, address: 'C3', text: 'pineapple' }]);
+        check('Find selects nothing', where(), '0:A1');
+        check('matchCase, wholeCell', [refs(grid.Find('apple', { matchCase: true })), refs(grid.Find('APPLE', { wholeCell: true })), refs(grid.Find('APPLE', { wholeCell: true, matchCase: true }))], [['0:B1', '0:C3'], ['0:B1'], []]);
+        check('values are what cells show; formulas what was entered', [refs(grid.Find('1,234')), refs(grid.Find('1,234', { lookIn: 'formulas' })), refs(grid.Find('500')), refs(grid.Find('LEN(')), grid.Find('len(', { lookIn: 'formulas' }).map((m) => m.text)],
+            [['0:A2'], [], ['0:A3'], [], ['=LEN(B1)*100']]);
+        check('a regular expression', [refs(grid.Find('^a.*e$', { regex: true })), refs(grid.Find('^[a-z]+$', { regex: true, matchCase: true })), refs(grid.Find('p{2}le', { regex: true, wholeCell: true }))], [['0:A1', '0:B1'], ['0:B1', '0:C3'], []]);
+        check('a range', refs(grid.Find('apple', { range: 'B1:C3' })), ['0:B1', '0:C3']);
+        check('the workbook: every sheet with a tab, from the one on display on', refs(grid.Find('apple', { scope: 'workbook' })), ['0:A1', '0:B1', '0:C3', '1:B2']);
+        grid.SwitchSheet(1);
+        check('... starting at the sheet on display', refs(grid.Find('apple', { scope: 'workbook' })), ['1:B2', '0:A1', '0:B1', '0:C3']);
+        check('... formulas of another sheet too', refs(grid.Find('Sheet1!', { scope: 'workbook', lookIn: 'formulas' })), ['1:A4', '1:A5']);
+        grid.SwitchSheet(0); grid.SelectCell(0, 0);
+
+        // ---- stepping ----
+        grid.Find('apple', { scope: 'workbook' });
+        const steps = [];
+        for (let i = 0; i < 5; i++) { const match = grid.FindNext(); steps.push(ref(match) + '=' + where()); }
+        check('FindNext: after the active cell, on to the next sheet, then from the start again', steps, ['0:B1=0:B1', '0:C3=0:C3', '1:B2=1:B2', '0:A1=0:A1', '0:B1=0:B1']);
+        const back = [];
+        for (let i = 0; i < 3; i++) back.push(ref(grid.FindPrevious()));
+        check('FindPrevious: before the active cell, back through the sheets', [back, where()], [['0:A1', '1:B2', '0:C3'], '0:C3']);
+        grid.SelectCell(1, 4);
+        check('a step starts at the active cell wherever it is', [ref(grid.FindNext()), (grid.SelectCell(1, 4), ref(grid.FindPrevious()))], ['0:C3', '0:B1']);
+        grid.SetCell(5, 5, 'crab apple');
+        check('a cell entered since the search is found', [refs([grid.FindNext(), grid.FindNext()]), where()], [['0:C3', '0:F6'], '0:F6']);
+        grid.SetCell(5, 5, '');
+        grid.Find('zebra');
+        check('nothing matches: null, the selection stays', [grid.FindNext(), grid.FindPrevious(), where()], [null, null, '0:F6']);
+        // The old search still answers true / false.
+        grid.StartSearch('apple', false);
+        check('after StartSearch FindNext answers as it did', [grid.FindNext(), grid.GetSearchResultsCount(), thrown(() => grid.FindPrevious())], [true, 3, 'FindPrevious: there is no search (call Find first)']);
+
+        // ---- ReplaceMatch ----
+        grid.SelectCell(0, 0);
+        grid.Find('apple', { scope: 'workbook' });
+        const r0 = grid.GetRevision();
+        let result = grid.ReplaceMatch('cherry');
+        check('ReplaceMatch: the active cell when it matches, then on to the next match', [result.replaced, ref(result.next), value('A1'), where(), grid.GetRevision() !== r0], [true, '0:B1', 'cherry pie', '0:B1', true]);
+        result = grid.ReplaceMatch('pear');
+        check('... a formula that reads the cell is recalculated, here and on the other sheet', [result.replaced, ref(result.next), value('B1'), value('A3'), value('Two!A4'), value('Two!A5')], [true, '0:C3', 'pear', 400, 401, 4]);
+        grid.Undo();
+        check('one undo step per replacement', [value('B1'), value('A1'), value('A3'), value('Two!A5')], ['apple', 'cherry pie', 500, 5]);
+        grid.Redo();
+        check('redo', [value('B1'), value('A3')], ['pear', 400]);
+        grid.Undo(); grid.Undo();
+        check('both undone', [value('A1'), value('B1')], ['Apple pie', 'apple']);
+        grid.SelectCell(1, 4);
+        result = grid.ReplaceMatch('x');
+        check('not on a match: nothing replaced, the next match selected', [result.replaced, ref(result.next), value('A1'), where()], [false, '0:C3', 'Apple pie', '0:C3']);
+        // Values of formula cells are not replaced; their formulas are, looking in formulas.
+        grid.Find('500'); grid.SelectCell(2, 0);
+        result = grid.ReplaceMatch('7');
+        check('values: a formula cell is skipped', [result.replaced, formula('A3'), value('A3')], [false, '=LEN(B1)*100', 500]);
+        grid.Find('*100', { lookIn: 'formulas' }); grid.SelectCell(2, 0);
+        result = grid.ReplaceMatch('*2');
+        check('formulas: the formula text is replaced and the cell recalculated', [result.replaced, result.next, formula('A3'), value('A3'), value('Two!A4')], [true, null, '=LEN(B1)*2', 10, 11]);
+        grid.Undo();
+        grid.Find('(\\w+) pie', { regex: true }); grid.SelectCell(0, 0);
+        check('a regular expression with groups', [grid.ReplaceMatch('pie of $1').replaced, value('A1')], [true, 'pie of Apple']);
+        grid.Undo();
+        grid.Find('1,234'); grid.SelectCell(1, 0);
+        check('the result is read as typed input (a number stays a number)', [grid.ReplaceMatch('2,345').replaced, value('A2'), grid.GetCell(1, 0).text], [true, 2345.5, '2,345.50']);
+        grid.Undo();
+
+        // ---- ReplaceAll ----
+        const before = grid.GetRevision();
+        check('ReplaceAll on the sheet: the count', [grid.ReplaceAll('apple', 'plum', {}), value('A1'), value('B1'), value('C3'), value('A3'), value('Two!B2')], [3, 'plum pie', 'plum', 'pineplum', 400, 'Apple tart']);
+        check('... one undo step', [(grid.Undo(), [value('A1'), value('B1'), value('C3'), value('A3')]), grid.GetRevision() === before], [['Apple pie', 'apple', 'pineapple', 500], true]);
+        check('... redo', (grid.Redo(), [value('A1'), value('C3'), value('A3')]), ['plum pie', 'pineplum', 400]);
+        grid.Undo();
+        check('nothing to replace: 0 and no undo step', [grid.ReplaceAll('zebra', 'x', { scope: 'workbook' }), grid.GetRevision() === before], [0, true]);
+        check('options: matchCase and range', [grid.ReplaceAll('apple', 'fig', { matchCase: true, range: 'A1:B1' }), value('A1'), value('B1'), value('C3')], [1, 'Apple pie', 'fig', 'pineapple']);
+        grid.Undo();
+        const changes = [];
+        const off = grid.OnChange((change) => changes.push(change.Sheets.join(',')));
+        check('ReplaceAll across the workbook: every sheet with a tab', [grid.ReplaceAll('apple', 'kiwi', { scope: 'workbook' }), value('A1'), value('B1'), value('C3'), value('Two!B2'), value('Hidden!A1'), value('A3'), value('Two!A4'), value('Two!A5')],
+            [4, 'kiwi pie', 'kiwi', 'pinekiwi', 'kiwi tart', 'apple in hiding', 400, 401, 4]);
+        check('... one change that names both sheets', changes.splice(0), ['0,1']);
+        grid.Undo();
+        check('... ONE undo restores every sheet', [value('A1'), value('B1'), value('C3'), value('Two!B2'), value('A3'), value('Two!A5'), grid.GetRevision() === before, changes.splice(0)], ['Apple pie', 'apple', 'pineapple', 'Apple tart', 500, 5, true, ['0,1']]);
+        grid.Redo();
+        check('... and one redo changes them again', [value('A1'), value('Two!B2'), value('Two!A5')], ['kiwi pie', 'kiwi tart', 4]);
+        grid.SwitchSheet(1);
+        grid.SwitchSheet(1);
+        check('... the step is on the history of the sheet it was made from', [grid.CanUndo(), (grid.SwitchSheet(0), grid.CanUndo())], [true, true]);
+        off();
+        check('formulas across the workbook', [grid.ReplaceAll('Sheet1!', 'Sheet1!$', { scope: 'workbook', lookIn: 'formulas' }), formula('Two!A4'), value('Two!A4')], [2, '=Sheet1!$A3+1', 401]);
+        grid.Undo();
+        check('the old call still works and now answers the count', [grid.ReplaceAll('kiwi', 'apple', false), value('A1'), value('C3')], [3, 'apple pie', 'pineapple']);
+
+        // ---- through a file ----
+        const again = await reopened(grid);
+        check('replaced cells are in the exported file', [again.grid.GetRange('A1:C3').map((row) => row.map((c) => c.value)), refs(again.grid.Find('apple', { scope: 'workbook' }))], [[['apple pie', 'apple', null], [1234.5, null, null], [500, null, 'pineapple']], ['0:A1', '0:B1', '0:C3']]);
+        again.close();
+
+        // ---- what is refused ----
+        check('bad input throws', [thrown(() => grid.Find('')), thrown(() => grid.Find(5)), thrown(() => grid.Find('(', { regex: true })).slice(0, 44), thrown(() => grid.Find('a', { lookIn: 'comments' })), thrown(() => grid.Find('a', { scope: 'workbook', range: 'A1:B2' })),
+            thrown(() => grid.Find('a', { caseSensitive: true })).slice(0, 44), thrown(() => grid.ReplaceAll('a')), thrown(() => grid.ReplaceAll('', 'x', {})), thrown(() => grid.Find('a', { range: 'nowhere' })) !== null],
+            ['Find: there is no text to search for', 'Find: text must be a string, got 5', 'Find: "(" is not a regular expression (Inval', 'Find: lookIn must be one of "values", "formulas", got "comments"', 'Find: a range is searched on one sheet: leave out the range or the workbook scope',
+             'Find: the options have no "caseSensitive" (t', 'ReplaceAll: replacement must be a string, got null', 'ReplaceAll: there is no text to search for', true]);
+        check('ReplaceMatch needs a search', (() => { const other = mountGrid(); const message = thrown(() => other.grid.ReplaceMatch('x')); other.close(); return message; })(), 'ReplaceMatch: there is no search (call Find first)');
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+
+    // An opened file: a search of the workbook reads every sheet (those not converted yet are), one of the sheet only that sheet.
+    const opened = mountGrid();
+    try {
+        const g = opened.grid;
+        await g.ImportXlsx(await bytesOf('tests/real-world/milk-street-office.xlsx'));
+        const count = g.GetSheetNames().length, loaded = () => g.GetSheetNames().map((_, i) => g.IsSheetLoaded(i)).filter(Boolean).length;
+        const active = g.GetActiveSheetIndex(), loadedBefore = loaded();
+        const here = g.Find('total');
+        check('an opened file: a search of the sheet converts no other sheet', [here.length > 0, here.every((m) => m.sheetIndex === active), loaded()], [true, true, loadedBefore]);
+        const everywhere = g.Find('total', { scope: 'workbook' });
+        const sheetsHit = new Set(everywhere.map((m) => m.sheetIndex));
+        check('... a search of the workbook finds on other sheets too', [everywhere.length > here.length, sheetsHit.size > 1, everywhere.slice(0, here.length).every((m) => m.sheetIndex === active)], [true, true, true]);
+        const first = g.FindNext();
+        check('... FindNext selects a match', [first !== null, g.GetActiveCell().Row === first.row, g.GetActiveCell().Col === first.col], [true, true, true]);
+        const target = everywhere.find((m) => m.sheetIndex !== active);
+        let reached = false;
+        for (let i = 0; i < everywhere.length + 1 && !reached; i++) { const match = g.FindNext(); reached = match.sheetIndex !== active; }
+        check('... and steps on to another sheet, which is then on display', [reached, g.GetActiveSheetIndex() !== active, !!target], [true, true, true]);
+        note(`milk-street: ${here.length} matches on the sheet, ${everywhere.length} in ${sheetsHit.size} of ${count} sheets`);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    opened.close();
+
+    // A large sheet: how long a search of 846 000 cells takes.
+    const large = mountGrid();
+    try {
+        const g = large.grid;
+        await g.ImportXlsx(await bytesOf('tests/real-world/dashboard-sales-analysis.xlsx'));
+        g.SwitchSheet(g.GetSheetNames().indexOf('Data'));
+        let started = performance.now();
+        const values = g.Find('north');
+        const valuesTime = performance.now() - started;
+        started = performance.now();
+        const formulas = g.Find('north', { lookIn: 'formulas', wholeCell: true });
+        const formulasTime = performance.now() - started;
+        started = performance.now();
+        const next = g.FindNext();
+        const stepTime = performance.now() - started;
+        check('a large sheet is searched in a few seconds, and a step does not search again', [valuesTime < 8000, formulasTime < 8000, stepTime < 500, next === null || next.sheetIndex === g.GetActiveSheetIndex()], [true, true, true, true]);
+        note(`dashboard "Data" (846 241 cells): Find in values ${Math.round(valuesTime)} ms (${values.length} matches), in formulas ${Math.round(formulasTime)} ms (${formulas.length}), FindNext ${Math.round(stepTime)} ms`);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    large.close();
+    return lines;
+};

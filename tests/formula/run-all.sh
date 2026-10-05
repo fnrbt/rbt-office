@@ -56,6 +56,7 @@ stages=(
     stage38-rowcol
     stage39-sortfilter
     stage40-annotations
+    stage41-find
     numbertext
 )
 
