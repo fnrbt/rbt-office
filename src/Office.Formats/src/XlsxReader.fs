@@ -824,12 +824,15 @@ type WorkbookPreservation = {
     /// The cell ranges pivot caches read (`<worksheetSource ref sheet>`):
     /// cache definition part, sheet name, range.
     PivotCacheSources: (string * string * string) list
+    /// Iterative calculation of circular references (`<calcPr iterate="1">`):
+    /// most iterations and the largest change that ends them. None: off.
+    CalcIteration: (int * float) option
 }
 
 let emptyWorkbookPreservation =
     { Parts = []; Defaults = []; Overrides = []; ThemePath = None; NamedStyles = []; Persons = []; CellXfNamedStyles = [||]
       WorkbookRelationships = []; ExternalReferencesXml = ""; PivotCachesXml = ""; WorkbookExtLstXml = ""
-      RootRelationships = []; CalcChain = None; PivotCacheSources = [] }
+      RootRelationships = []; CalcChain = None; PivotCacheSources = []; CalcIteration = None }
 
 type Worksheet = {
     Name: string
@@ -3808,6 +3811,23 @@ module Xlsx =
         State: SheetState
     }
 
+    /// `<calcPr iterate="1" iterateCount iterateDelta>`: iterative calculation
+    /// of circular references - (most iterations, largest change that ends
+    /// them), with Excel's defaults 100 and 0.001 - or None.
+    let calcIteration (wbNode: XmlNode) : (int * float) option =
+        match sElem "calcPr" wbNode with
+        | Some calcPr when (Xml.attr "iterate" calcPr |> Option.map isTrueText |> Option.defaultValue false) ->
+            let count =
+                match Xml.attr "iterateCount" calcPr |> Option.map System.Int32.TryParse with
+                | Some (true, n) when n > 0 -> n
+                | _ -> 100
+            let delta =
+                match Xml.attr "iterateDelta" calcPr |> Option.map (fun text -> System.Double.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture)) with
+                | Some (true, d) when d >= 0.0 -> d
+                | _ -> 0.001
+            Some (count, delta)
+        | _ -> None
+
     /// `<workbookPr date1904="1"/>`: serial 0 is 1904-01-01, not 1899-12-30.
     let date1904 (wbNode: XmlNode) : bool =
         sElem "workbookPr" wbNode
@@ -4368,6 +4388,7 @@ type private WorkbookHeader = {
     ExternalReferencesXml: string
     PivotCachesXml: string
     ExtLstXml: string
+    CalcIteration: (int * float) option
 }
 
 /// Relationship types of the workbook part whose targets are kept as they are.
@@ -4418,6 +4439,7 @@ let private readWorkbookHeader (source: PartSource) (workbookPath: string) : Wor
             ExternalReferencesXml = keptChild "externalReferences"
             PivotCachesXml = keptChild "pivotCaches"
             ExtLstXml = extLst
+            CalcIteration = Xlsx.calcIteration wb
             WorkbookPath = workbookPath
             Rels = rels
             SheetInfos = Xlsx.sheets wb
@@ -5061,7 +5083,8 @@ let private buildWorkbook (scanRows: bool) (source: PartSource) (header: Workboo
           WorkbookExtLstXml = header.ExtLstXml
           RootRelationships = rootRels
           CalcChain = calcChain
-          PivotCacheSources = pivotCacheSources }
+          PivotCacheSources = pivotCacheSources
+          CalcIteration = header.CalcIteration }
 
     {
         Sheets = worksheets

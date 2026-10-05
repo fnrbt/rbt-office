@@ -45,6 +45,14 @@ type DefinedNameInfo = {
     Hidden: bool
 }
 
+/// Iterative calculation of circular references (see `Workbook.Iteration`).
+type IterativeCalculation = {
+    /// Excel's default: 100.
+    MaxIterations: int
+    /// Excel's default: 0.001.
+    MaxChange: float
+}
+
 /// Workbook containing multiple sheets
 type Workbook = {
     Sheets: Map<SheetId, Sheet>
@@ -59,6 +67,11 @@ type Workbook = {
     /// The spelling, comment and hidden flag of defined names, by the key
     /// of `Names`. A name without an entry is spelled as its key.
     NameInfo: Map<SheetId option * string, DefinedNameInfo>
+    /// Excel's "enable iterative calculation" (`<calcPr iterate="1">`): the
+    /// formulas of a circular reference are calculated again and again from
+    /// the values they have, until none changes by `MaxChange` or more, or
+    /// `MaxIterations` times. None (the default): they show the cycle error.
+    Iteration: IterativeCalculation option
 }
 
 /// Create empty workbook with one sheet
@@ -77,6 +90,7 @@ let createWorkbook (): Workbook =
         Tables = Map.empty
         Names = Map.empty
         NameInfo = Map.empty
+        Iteration = None
     }
 
 /// Look up a defined name's refers-to text, scoped to the current sheet: a

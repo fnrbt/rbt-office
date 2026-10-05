@@ -26,11 +26,20 @@ open Rbt.Spreadsheet.Formula
 //
 // It declines (None: the caller runs the full recalculation) when the edit
 // is not one of cells alone (names, tables, sheets, filters, structure) and
-// when the formulas to evaluate are part of a cycle. Workbooks whose formulas
-// choose their precedents while they are evaluated (OFFSET, INDIRECT), or read
-// through 3-D references, are always left to the full recalculation. Other
-// volatile functions (NOW, RAND ...) are evaluated again at every edit, with
-// what reads them. Dynamic arrays are part of the graph: see `recalculate`.
+// when the formulas to evaluate are part of a cycle. Volatile functions (NOW,
+// RAND ...) are evaluated again at every edit, with what reads them. A 3-D
+// reference reads its range on every sheet of its span (in the tab order the
+// graph was built for; another order is "more than cells" and builds it
+// again). Formulas that choose their precedents while they are evaluated
+// (OFFSET, INDIRECT, the range and intersection operators) are evaluated at
+// every edit too, and once more whenever a value changed after they were:
+// see `recalculate`. Dynamic arrays are part of the graph: see there.
+//
+// The full recalculation of a workbook (`recalculateAll`, what
+// Formula.recalculateWorkbook runs) is a pass of the same graph over every
+// formula: one dependency order for the whole workbook, so one run reaches
+// the values however they travel between sheets, and the formulas on a
+// circular reference - also one that crosses sheets - show the cycle error.
 
 /// A range some formulas read, with those formulas.
 type RangeGroup(sheet: SheetState, r0: int, c0: int, r1: int, c1: int, key: string) =
@@ -59,8 +68,21 @@ and Node(sheet: SheetState, row: int, col: int) =
     member val Dependents = ResizeArray<Node>() with get
     member val Volatile = false with get, set
     member val Spills = false with get, set
-    /// The formula's precedents are not the graph's to know (see `Engine.Unsupported`).
-    member val Untracked = false with get, set
+    /// The formula chooses precedents while it is evaluated (OFFSET, INDIRECT,
+    /// a range or intersection operator): the graph knows only the references it
+    /// spells out.
+    member val Dynamic = false with get, set
+    /// The formula gives another value every time (RAND, NOW ...).
+    member val Random = false with get, set
+    // Strongly connected components of a round (the full pass marks cycles).
+    member val SccPass = 0 with get, set
+    member val SccIndex = 0 with get, set
+    member val SccLow = 0 with get, set
+    member val SccOn = false with get, set
+    /// The round in which the formula was seen to read itself.
+    member val SelfPass = 0 with get, set
+    /// The first round of the full pass that found the formula on a circular reference.
+    member val CyclicPass = 0 with get, set
     // State of the pass in hand.
     member val Pass = 0 with get, set
     member val Pending = 0 with get, set
@@ -107,19 +129,22 @@ type RecalcStats = {
 type Engine = {
     Sheets: Dictionary<SheetId, SheetState>
     mutable Workbook: Workbook
-    /// Formulas whose precedents the graph cannot know (OFFSET / INDIRECT, 3-D and
-    /// spill-range references): while there is one, the workbook is left to the
-    /// full recalculation.
-    mutable UntrackedFormulas: int
     /// Formulas that spill.
     Spilling: ResizeArray<Node>
     Volatile: ResizeArray<Node>
+    /// Formulas that choose precedents while they are evaluated.
+    Dynamic: ResizeArray<Node>
     mutable Pass: int
     mutable EdgeMark: int
     mutable Formulas: int
     mutable LastStats: RecalcStats
     /// Why the last edit was left to the full recalculation.
     mutable LastDecline: string
+    /// Formulas the last full pass found on a circular reference.
+    mutable LastCyclic: int
+    /// What the defined names bring to a formula that uses them (see `classify`),
+    /// by sheet and name: the names are those the graph was built with.
+    NameTraits: Dictionary<string, int>
 }
 
 let private keyOf (row: int) (col: int) : float = float row * 16384.0 + float col
@@ -141,23 +166,24 @@ let private loadedCells (model: SpreadsheetModel) : Map<CellAddress, CellData> =
         | None -> Map.empty
     | None -> model.Cells
 
-/// What a function does to the formula that calls it (1: volatile, 2: its
-/// precedents are chosen while it is evaluated), by its name as written -
-/// asked of Formula once per name.
+/// What a function does to the formula that calls it (1: it gives another
+/// value every time - RAND, NOW; 2: its precedents are chosen while it is
+/// evaluated - OFFSET, INDIRECT, the range and intersection operators), by
+/// its name as written - asked of Formula once per name.
 let private functionTraits = Dictionary<string, int>()
 let private traitsOf (name: string) =
     match functionTraits.TryGetValue name with
     | true, known -> known
     | false, _ ->
         let call = Function (name, [])
-        let traits = (if containsVolatile call then 1 else 0) ||| (if containsDynamicReference call then 2 else 0)
+        let traits = if containsDynamicReference call then 2 elif containsVolatile call then 1 else 0
         if functionTraits.Count > 4096 then functionTraits.Clear()
         functionTraits.[name] <- traits
         traits
 
-/// One walk over a formula: 1 volatile, 2 dynamic references, 4 a spill-range
-/// reference, 8 a reference that names a sheet (a 3-D one is looked for then).
-let private classify (expr: Expr) : int =
+/// One walk over a formula and the defined names it uses: 1 a function that
+/// gives another value every time, 2 references chosen while it is evaluated.
+let rec private classifyWith (engine: Engine) (workbook: Workbook) (sheetId: SheetId) (seen: Set<string>) (expr: Expr) : int =
     let stack = ResizeArray<Expr>()
     stack.Add expr
     let mutable traits = 0
@@ -166,11 +192,6 @@ let private classify (expr: Expr) : int =
         let current = stack.[last]
         stack.RemoveAt last
         match current with
-        | SpillRef r ->
-            traits <- traits ||| 4
-            if r.Sheet.IsSome then traits <- traits ||| 8
-        | CellRef r -> if r.Sheet.IsSome then traits <- traits ||| 8
-        | RangeRef (a, _) -> if a.Sheet.IsSome then traits <- traits ||| 8
         | UnaryOp (_, inner) -> stack.Add inner
         | BinOp (left, _, right) ->
             stack.Add left
@@ -179,8 +200,25 @@ let private classify (expr: Expr) : int =
             traits <- traits ||| traitsOf name
             for arg in args do
                 stack.Add arg
+        | NameRef name ->
+            let upper = name.ToUpperInvariant()
+            let key = sheetId + "|" + upper
+            match engine.NameTraits.TryGetValue key with
+            | true, known -> traits <- traits ||| known
+            | false, _ ->
+                if not (Set.contains upper seen) then
+                    let ofName =
+                        match resolveNameExpr name (Some sheetId) workbook with
+                        | Some resolved -> classifyWith engine workbook sheetId (Set.add upper seen) resolved
+                        | None -> 0
+                    // (A name met inside its own definition is not settled yet.)
+                    if Set.isEmpty seen then engine.NameTraits.[key] <- ofName
+                    traits <- traits ||| ofName
         | _ -> ()
     traits
+
+let private classify (engine: Engine) (workbook: Workbook) (sheetId: SheetId) (expr: Expr) : int =
+    classifyWith engine workbook sheetId Set.empty expr
 
 let private sheetState (engine: Engine) (sheetId: SheetId) : SheetState =
     match engine.Sheets.TryGetValue sheetId with
@@ -258,7 +296,7 @@ let private unwire (engine: Engine) (node: Node) =
         if group.Owners.Count = 0 then dropGroup group.Sheet group
     if node.Volatile then engine.Volatile.Remove node |> ignore
     if node.Spills then engine.Spilling.Remove node |> ignore
-    if node.Untracked then engine.UntrackedFormulas <- engine.UntrackedFormulas - 1
+    if node.Dynamic then engine.Dynamic.Remove node |> ignore
     if node.IsFormula then engine.Formulas <- engine.Formulas - 1
     node.Precedents <- [||]
     node.Ranges <- [||]
@@ -267,7 +305,8 @@ let private unwire (engine: Engine) (node: Node) =
     node.IsFormula <- false
     node.Volatile <- false
     node.Spills <- false
-    node.Untracked <- false
+    node.Dynamic <- false
+    node.Random <- false
     if node.Dependents.Count = 0 then
         node.Sheet.Nodes.Remove (keyOf node.Row node.Col) |> ignore
 
@@ -301,38 +340,41 @@ let private wire (engine: Engine) (workbook: Workbook) (sheet: SheetState) (row:
                     group.Owners.Add node)
         node.Precedents <- precedents.ToArray()
         node.Ranges <- ranges.ToArray()
-        let traits = classify expr
-        if traits &&& 1 <> 0 then
+        let traits = classify engine workbook sheet.Id expr
+        if traits <> 0 then
             node.Volatile <- true
             engine.Volatile.Add node
-        if exprSpillsStatically expr then
+        node.Random <- traits &&& 1 <> 0
+        if traits &&& 2 <> 0 then
+            node.Dynamic <- true
+            engine.Dynamic.Add node
+        // (OFFSET / INDIRECT may give a range: the benefit of the doubt, as in
+        // the layout of the arrays. One cell is laid out as no array.)
+        if (if node.Dynamic then exprSpills expr else exprSpillsStatically expr) then
             node.Spills <- true
             engine.Spilling.Add node
         // (A spill-range reference `A1#` is a reference to its formula's cell: what
         // reads it is evaluated whenever the array is laid out differently.)
-        if traits &&& 2 <> 0 || (traits &&& 8 <> 0 && containsThreeDReference expr) then
-            node.Untracked <- true
-            engine.UntrackedFormulas <- engine.UntrackedFormulas + 1
     | Result.Error _ ->
         node.Expr <- None
     node
 
 let private noStats = { ChangedCells = 0; ReachedFormulas = 0; EvaluatedFormulas = 0 }
 
-/// Build the dependency graph of a workbook. The formulas' cached values are
-/// taken as they are: the workbook is the calculated state edits start from.
-let build (workbook: Workbook) : Engine =
+let private buildGraph (unloadedToo: bool) (workbook: Workbook) : Engine =
     let engine = {
         Sheets = Dictionary<SheetId, SheetState>()
         Workbook = workbook
-        UntrackedFormulas = 0
         Spilling = ResizeArray<Node>()
         Volatile = ResizeArray<Node>()
+        Dynamic = ResizeArray<Node>()
         Pass = 0
         EdgeMark = 0
         Formulas = 0
         LastStats = noStats
         LastDecline = ""
+        LastCyclic = 0
+        NameTraits = Dictionary<string, int>()
     }
     for KeyValue (sheetId, sheet) in workbook.Sheets do
         let state = sheetState engine sheetId
@@ -344,22 +386,37 @@ let build (workbook: Workbook) : Engine =
         | Some deferred when deferred.Loaded.IsNone ->
             // A sheet nothing has asked for yet: its formulas are read off the
             // file. It is converted when one of them has to be evaluated.
-            for addr, formula in deferred.Formulas () do
-                wire engine workbook state addr.Row addr.Col formula |> ignore
+            if unloadedToo then
+                for addr, formula in deferred.Formulas () do
+                    wire engine workbook state addr.Row addr.Col formula |> ignore
         | _ ->
-            for KeyValue (addr, cell) in loadedCells sheet.Model do
+            // (Map.iter: walking a large sheet's cells with an enumerator takes twice as long.)
+            loadedCells sheet.Model
+            |> Map.iter (fun addr cell ->
                 match cell.Value with
                 | CellValue.Formula (formula, _) -> wire engine workbook state addr.Row addr.Col formula |> ignore
-                | _ -> ()
+                | _ -> ())
     engine
+
+/// Build the dependency graph of a workbook. The formulas' cached values are
+/// taken as they are: the workbook is the calculated state edits start from.
+let build (workbook: Workbook) : Engine = buildGraph true workbook
 
 /// Number of formula cells in the graph.
 let formulaCount (engine: Engine) = engine.Formulas
 
-/// True while the workbook holds a formula whose precedents the graph cannot
-/// know (OFFSET / INDIRECT, a 3-D or a spill-range reference): every edit is
-/// left to the full recalculation.
-let isUnsupported (engine: Engine) = engine.UntrackedFormulas > 0
+/// Whether the workbook holds formulas the graph cannot follow, so that every
+/// edit is left to the full recalculation. No formula is of that kind any
+/// more (OFFSET / INDIRECT and 3-D references are part of the graph): false.
+let isUnsupported (engine: Engine) = ignore engine; false
+
+/// Number of formulas the last full pass (`recalculateAll`) found on a circular
+/// reference: they show the cycle error, or - in a workbook with iterative
+/// calculation - were calculated until they settled.
+let cyclicCount (engine: Engine) = engine.LastCyclic
+
+/// Number of formulas that choose their precedents while they are evaluated.
+let dynamicCount (engine: Engine) = engine.Dynamic.Count
 
 let lastStats (engine: Engine) = engine.LastStats
 
@@ -524,6 +581,7 @@ let private sameSurroundings (engine: Engine) (edited: Workbook) =
     (obj.ReferenceEquals(known.Tables, edited.Tables) || known.Tables = edited.Tables)
     && (obj.ReferenceEquals(known.Names, edited.Names) || known.Names = edited.Names)
     && (obj.ReferenceEquals(known.SheetOrder, edited.SheetOrder) || known.SheetOrder = edited.SheetOrder)
+    && known.Iteration = edited.Iteration
     && known.Sheets.Count = edited.Sheets.Count
     && (edited.Sheets |> Map.forall (fun sheetId sheet ->
             match engine.Sheets.TryGetValue sheetId with
@@ -646,17 +704,36 @@ let adopt (engine: Engine) (calculated: Workbook) : bool =
 /// recalculation) and a blocked formula that wants a cell it gave up are
 /// calculated in the same pass when they come later in its order, else in a
 /// further round of the pass.
-let recalculate (engine: Engine) (edited: Workbook) (hint: (SheetId * CellAddress) list option) : Workbook option =
+///
+/// Precedents chosen while a formula is evaluated (OFFSET, INDIRECT). Such a
+/// formula is evaluated in every pass, at the place its spelled-out references
+/// give it. A cell it turns out to read may be calculated after it: whenever
+/// a value changes after the first of these formulas was evaluated, they are
+/// all evaluated once more in a further round (what reads them follows when
+/// their value changed), until a round changes nothing after them.
+///
+/// `full`: the pass is the full recalculation - every formula is evaluated,
+/// whatever the engine held, and formulas on a circular reference are given
+/// the cycle error instead of the pass being declined (the strongly connected
+/// components of what is left when the order cannot go on: a formula that
+/// reads itself, or two or more that read one another, also across sheets).
+/// A formula marked so stays marked for the rest of the pass. In a workbook
+/// with iterative calculation (`Workbook.Iteration`, Excel's setting) the
+/// formulas of each such component are instead calculated again and again,
+/// from the values they have, in the order they were met - until a sweep
+/// changes no value by the workbook's largest change or more (that sweep is
+/// dropped, so a workbook that had settled is left exactly as it is), or the
+/// workbook's number of iterations is reached.
+let private run (full: bool) (engine: Engine) (edited: Workbook) (hint: (SheetId * CellAddress) list option) : Workbook option =
     let decline (reason: string) : Workbook option =
         engine.LastDecline <- reason
         // (The spilled cells by formula may have been moved on by the rounds that ran.)
         for KeyValue (_, state) in engine.Sheets do state.GhostsFor <- null
         None
-    if engine.UntrackedFormulas > 0 then decline "a formula chooses its precedents while it is evaluated (OFFSET, INDIRECT) or reads a 3-D reference"
-    elif not (sameSurroundings engine edited) then decline "more than cells changed (sheets, names, tables, filters, rows or columns)"
+    if not full && not (sameSurroundings engine edited) then decline "more than cells changed (sheets, names, tables, filters, rows or columns)"
     else
         let restyled = ResizeArray<struct (SheetState * CellAddress)>()
-        let changes = collectChanges engine edited hint restyled
+        let changes = if full then ResizeArray<CellChange>() else collectChanges engine edited hint restyled
         let mutable workbook = edited
         let models = Dictionary<SheetId, SpreadsheetModel>()
         let touched = HashSet<SheetId>()
@@ -722,8 +799,7 @@ let recalculate (engine: Engine) (edited: Workbook) (hint: (SheetId * CellAddres
                 for reader in readers do
                     reach reader
                     reader.NeedsEval <- true)
-        if engine.UntrackedFormulas > 0 then decline "a formula whose precedents are not known beforehand was entered"
-        else
+        if true then
             // ---- the dynamic arrays the edit touches ----------------------------------
             /// Formulas that show #SPILL! (or may), by sheet: a cell changed or given up in their way lays them out again.
             let blockedBySheet = Dictionary<SheetId, ResizeArray<Node>>()
@@ -789,6 +865,29 @@ let recalculate (engine: Engine) (edited: Workbook) (hint: (SheetId * CellAddres
             for node in engine.Volatile do
                 reach node
                 node.NeedsEval <- true
+            if full then
+                // Every formula, and every array there is or was.
+                for KeyValue (_, state) in engine.Sheets do
+                    for node in List.ofSeq state.Nodes.Values do
+                        if node.IsFormula then
+                            reach node
+                            node.NeedsEval <- true
+                    if not (isNull (box state.Model)) then
+                        for KeyValue (_, anchor) in loadedSpill state.Model do seedAnchor state anchor
+
+            /// Formulas found on a circular reference (the full pass).
+            let iteration = if full then edited.Iteration else None
+            let isCyclic (node: Node) = full && iteration.IsNone && node.CyclicPass >= firstPass
+            let mutable cyclicCount = 0
+            // Precedents chosen while evaluating: see the doc comment.
+            let hasDynamic = engine.Dynamic.Count > 0
+            /// Every such formula is part of the round in hand / one of them was evaluated in it /
+            /// a value changed that one of them may have read before.
+            let mutable dynamicSeeded = true
+            let mutable dynamicSeen = false
+            let mutable dynamicStale = false
+            let valueChanged () =
+                if hasDynamic && (dynamicSeen || not dynamicSeeded) then dynamicStale <- true
 
             let mutable reachedTotal = 0
             let mutable evaluated = 0
@@ -828,13 +927,77 @@ let recalculate (engine: Engine) (edited: Workbook) (hint: (SheetId * CellAddres
                 for node in reached do
                     if node.Pending = 0 then ready.Push node
                 let order = ResizeArray<Node>(reached.Count)
-                while ready.Count > 0 do
-                    let node = ready.Pop()
-                    node.Order <- order.Count
-                    order.Add node
-                    for reader in node.Outs do
-                        reader.Pending <- reader.Pending - 1
-                        if reader.Pending = 0 then ready.Push reader
+                let drain () =
+                    while ready.Count > 0 do
+                        let node = ready.Pop()
+                        if node.Order < 0 then
+                            node.Order <- order.Count
+                            order.Add node
+                            for reader in node.Outs do
+                                reader.Pending <- reader.Pending - 1
+                                if reader.Pending = 0 && reader.Order < 0 then ready.Push reader
+                drain ()
+                /// The circular references of the round, as stretches of the order: first index -> last.
+                let blocks = Dictionary<int, int>()
+                if full && order.Count < reached.Count then
+                    // What is left reads a cycle or is on one. On one: the strongly
+                    // connected components of more than one formula, and formulas that
+                    // read themselves (Tarjan's algorithm, without recursion). It gives
+                    // the components readers first: taken from the last to the first they
+                    // are the rest of the order.
+                    let components = ResizeArray<ResizeArray<Node>>()
+                    let circular = ResizeArray<bool>()
+                    let stacked = Stack<Node>()
+                    let work = Stack<struct (Node * int)>()
+                    let mutable counter = 0
+                    for root in reached do
+                        if root.Order < 0 && root.SccPass <> pass then
+                            work.Push (struct (root, 0))
+                            while work.Count > 0 do
+                                let struct (node, start) = work.Pop()
+                                if start = 0 then
+                                    node.SccPass <- pass
+                                    node.SccIndex <- counter
+                                    node.SccLow <- counter
+                                    counter <- counter + 1
+                                    stacked.Push node
+                                    node.SccOn <- true
+                                else
+                                    let child = node.Outs.[start - 1]
+                                    if child.SccLow < node.SccLow then node.SccLow <- child.SccLow
+                                let mutable next = start
+                                let mutable descended = false
+                                while not descended && next < node.Outs.Count do
+                                    let out = node.Outs.[next]
+                                    next <- next + 1
+                                    if out.Order < 0 && out.Pass = pass then
+                                        if obj.ReferenceEquals(out, node) then node.SelfPass <- pass
+                                        if out.SccPass <> pass then
+                                            work.Push (struct (node, next))
+                                            work.Push (struct (out, 0))
+                                            descended <- true
+                                        elif out.SccOn && out.SccIndex < node.SccLow then node.SccLow <- out.SccIndex
+                                if not descended && node.SccLow = node.SccIndex then
+                                    let members = ResizeArray<Node>()
+                                    let mutable popping = true
+                                    while popping do
+                                        let memberNode = stacked.Pop()
+                                        memberNode.SccOn <- false
+                                        members.Add memberNode
+                                        if obj.ReferenceEquals(memberNode, node) then popping <- false
+                                    // (In the order they were met: a formula before most of what reads it.)
+                                    members.Reverse()
+                                    components.Add members
+                                    circular.Add (members.Count > 1 || node.SelfPass = pass)
+                    for at = components.Count - 1 downto 0 do
+                        let first = order.Count
+                        for node in components.[at] do
+                            node.Order <- order.Count
+                            order.Add node
+                            if circular.[at] && node.CyclicPass < firstPass then
+                                node.CyclicPass <- pass
+                                cyclicCount <- cyclicCount + 1
+                        if circular.[at] then blocks.[first] <- order.Count - 1
                 // (Fewer in order than reached: a cycle among the formulas to evaluate.)
                 if order.Count < reached.Count then
                     failure <- "a circular reference among the formulas to evaluate"
@@ -876,7 +1039,7 @@ let recalculate (engine: Engine) (edited: Workbook) (hint: (SheetId * CellAddres
                         let current = ResizeArray<CellAddress>()
                         let anchorCell =
                             match Map.tryFind addr cells with
-                            | Some cell when node.IsFormula && node.Spills && node.Expr.IsSome ->
+                            | Some cell when node.IsFormula && node.Spills && node.Expr.IsSome && not (isCyclic node) ->
                                 (match cell.Value with CellValue.Formula _ -> Some cell | _ -> None)
                             | _ -> None
                         match anchorCell with
@@ -956,6 +1119,7 @@ let recalculate (engine: Engine) (edited: Workbook) (hint: (SheetId * CellAddres
                                 blockedOver state ghost.Row ghost.Col (fun waiting -> if not (obj.ReferenceEquals(waiting, node)) then spillLater waiting)
                         if current.Count > 0 then ghosts.[key] <- current else ghosts.Remove key |> ignore
                         if not (obj.ReferenceEquals(cells, model.Cells)) || not (obj.ReferenceEquals(spill, model.Spill)) then
+                            if not (obj.ReferenceEquals(cells, model.Cells)) then valueChanged ()
                             let updated = { model with Cells = cells; Spill = spill }
                             models.[state.Id] <- updated
                             touched.Add state.Id |> ignore
@@ -967,6 +1131,75 @@ let recalculate (engine: Engine) (edited: Workbook) (hint: (SheetId * CellAddres
                             for reader in node.Dependents do evalLater reader
                         blocked
                     while index < order.Count do
+                        // A circular reference of a workbook with iterative calculation.
+                        (match iteration with
+                         | Some setting when blocks.ContainsKey index ->
+                            let last = blocks.[index]
+                            let cachedOf (node: Node) =
+                                match Map.tryFind { Row = node.Row; Col = node.Col } (modelOf node.Sheet).Cells with
+                                | Some cell -> (match cell.Value with CellValue.Formula (_, cached) -> cached | other -> other)
+                                | None -> CellValue.Empty
+                            let before = [| for at in index .. last -> cachedOf order.[at] |]
+                            // (A formula that showed the cycle error - iteration was off - starts from nothing, as in Excel.)
+                            for at in index .. last do
+                                let node = order.[at]
+                                if node.IsFormula && before.[at - index] = CellValue.Error Err.cycle then
+                                    let model = modelOf node.Sheet
+                                    let addr = { Row = node.Row; Col = node.Col }
+                                    match Map.tryFind addr model.Cells with
+                                    | Some cell ->
+                                        let updated = { model with Cells = Map.add addr { cell with Value = CellValue.Formula (node.Formula, CellValue.Empty) } model.Cells }
+                                        models.[node.Sheet.Id] <- updated
+                                        touched.Add node.Sheet.Id |> ignore
+                                        workbook <- updateSheetModel node.Sheet.Id updated workbook
+                                    | None -> ()
+                            let mutable sweeps = 0
+                            let mutable going = true
+                            while going && sweeps < max 1 setting.MaxIterations do
+                                sweeps <- sweeps + 1
+                                let heldWorkbook = workbook
+                                let heldModels = [| for KeyValue (sheetId, held) in models -> sheetId, held |]
+                                let mutable change = 0.0
+                                for at in index .. last do
+                                    let node = order.[at]
+                                    if node.IsFormula then
+                                        evaluated <- evaluated + 1
+                                        let state = node.Sheet
+                                        let model = modelOf state
+                                        let addr = { Row = node.Row; Col = node.Col }
+                                        match Map.tryFind addr model.Cells with
+                                        | Some cell ->
+                                            let result =
+                                                match node.Expr with
+                                                | Some expr -> eval expr { Model = model; Workbook = Some workbook; Sheet = Some state.Id; CurrentCell = Some addr }
+                                                | None -> CellValue.Error Err.syntax
+                                            let previous = match cell.Value with CellValue.Formula (_, cached) -> cached | other -> other
+                                            if previous <> result then
+                                                change <-
+                                                    match previous, result with
+                                                    | CellValue.Number a, CellValue.Number b -> max change (abs (a - b))
+                                                    | _ -> System.Double.PositiveInfinity
+                                                let updated = { model with Cells = Map.add addr { cell with Value = CellValue.Formula (node.Formula, result) } model.Cells }
+                                                models.[state.Id] <- updated
+                                                touched.Add state.Id |> ignore
+                                                workbook <- updateSheetModel state.Id updated workbook
+                                        | None -> ()
+                                if change < setting.MaxChange || change = 0.0 then
+                                    // Settled: the sweep's last small steps are not kept.
+                                    going <- false
+                                    if change > 0.0 then
+                                        workbook <- heldWorkbook
+                                        models.Clear()
+                                        for sheetId, held in heldModels do models.[sheetId] <- held
+                            for at in index .. last do
+                                let node = order.[at]
+                                node.NeedsEval <- false
+                                if node.Dynamic then dynamicSeen <- true
+                                if cachedOf node <> before.[at - index] then
+                                    valueChanged ()
+                                    for reader in node.Outs do
+                                        if reader.Order > last then reader.NeedsEval <- true
+                         | _ -> ())
                         let node = order.[index]
                         let lays = node.NeedsSpill || (node.NeedsEval && node.IsFormula && node.Spills)
                         let blocked = if lays then layOut node else false
@@ -978,13 +1211,15 @@ let recalculate (engine: Engine) (edited: Workbook) (hint: (SheetId * CellAddres
                             match Map.tryFind addr model.Cells with
                             | Some cell ->
                                 let result =
-                                    if blocked then spillError
+                                    if isCyclic node then CellValue.Error Err.cycle
+                                    elif blocked then spillError
                                     else
                                         match node.Expr with
                                         | Some expr -> eval expr { Model = model; Workbook = Some workbook; Sheet = Some state.Id; CurrentCell = Some addr }
                                         | None -> CellValue.Error Err.syntax
                                 let previous = match cell.Value with CellValue.Formula (_, cached) -> cached | other -> other
                                 if previous <> result then
+                                    valueChanged ()
                                     let updated = { model with Cells = Map.add addr { cell with Value = CellValue.Formula (node.Formula, result) } model.Cells }
                                     models.[state.Id] <- updated
                                     touched.Add state.Id |> ignore
@@ -995,13 +1230,31 @@ let recalculate (engine: Engine) (edited: Workbook) (hint: (SheetId * CellAddres
                                     for reader in node.Outs do
                                         reader.NeedsEval <- true
                             | None -> ()
+                            if node.Dynamic then dynamicSeen <- true
                         index <- index + 1
-                    if nextEval.Count = 0 && nextSpill.Count = 0 then running <- false
+                    if nextEval.Count = 0 && nextSpill.Count = 0 && not dynamicStale then running <- false
                     elif rounds >= 200 then
-                        failure <- "the dynamic arrays do not settle (a circular reference through spilled cells)"
+                        // The full pass has no one to hand the workbook to: it stops with what it has.
+                        // (This is the one bound left in it. The layout of a dynamic array can depend
+                        // on the layout of another - one takes a cell, another is blocked and gives
+                        // up cells a third wants - and OFFSET / INDIRECT can read what was calculated
+                        // after them; both are settled by rounds over the formulas concerned, which
+                        // end unless the dependence is circular.)
+                        if not full then
+                            failure <-
+                                if nextEval.Count = 0 && nextSpill.Count = 0 then "formulas that choose their precedents (OFFSET, INDIRECT) do not settle (a circular reference through them)"
+                                else "the dynamic arrays do not settle (a circular reference through spilled cells)"
                         running <- false
                     else
                         newRound ()
+                        dynamicSeeded <- dynamicStale
+                        dynamicSeen <- false
+                        if dynamicStale then
+                            dynamicStale <- false
+                            for node in engine.Dynamic do
+                                if not node.Random then
+                                    reach node
+                                    node.NeedsEval <- true
                         for node in nextEval do
                             reach node
                             node.NeedsEval <- true
@@ -1018,4 +1271,31 @@ let recalculate (engine: Engine) (edited: Workbook) (hint: (SheetId * CellAddres
                         workbook <- updateSheetModel sheetId projected workbook
                 holdWorkbook engine workbook
                 engine.LastStats <- { ChangedCells = changes.Count; ReachedFormulas = reachedTotal; EvaluatedFormulas = evaluated }
+                if full then engine.LastCyclic <- cyclicCount
                 Some workbook
+        else None
+
+/// See `run`.
+let recalculate (engine: Engine) (edited: Workbook) (hint: (SheetId * CellAddress) list option) : Workbook option =
+    run false engine edited hint
+
+/// The full recalculation of a workbook: every formula of every sheet (of the
+/// sheets that are converted; the stand-in of a sheet nothing asked for has no
+/// cells to calculate), in one dependency order across the sheets - see `run`.
+/// Gives the recalculated workbook and the engine that now holds it, for the
+/// edits that follow.
+let recalculateAll (workbook: Workbook) : Workbook * Engine =
+    let engine = buildGraph false workbook
+    // (Nothing to calculate: no formula, and no cell left behind by an array.)
+    let hasWork = engine.Formulas > 0 || (workbook.Sheets |> Map.exists (fun _ sheet -> not (Map.isEmpty (loadedSpill sheet.Model))))
+    if not hasWork then workbook, engine
+    else
+        match run true engine workbook None with
+        | Some recalculated -> recalculated, engine
+        | None -> workbook, engine
+
+/// Formula.recalculateWorkbook runs `recalculateAll` once this is read (it
+/// reads it itself on .NET; in the browser the module is loaded with the grid).
+let workbookPassInstalled : bool =
+    installWorkbookPass { Run = fun workbook -> fst (recalculateAll workbook) }
+    true

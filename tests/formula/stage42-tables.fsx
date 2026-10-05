@@ -44,7 +44,7 @@ let other = sheetOf [ at 0 0, fml "=SUM(Sales[Amount2])"; at 1 0, fml "=Sales[[#
 let sheetEntry id name model : Wb.SheetId * Wb.Sheet = id, { Id = id; Name = name; Model = model; Visible = true }
 let wbBare : Wb.Workbook =
     { Sheets = Map.ofList [ sheetEntry "sheet1" "Data" data; sheetEntry "sheet2" "Other" other ]
-      SheetOrder = [ "sheet1"; "sheet2" ]; ActiveSheet = "sheet1"; Tables = Map.empty; Names = Map.empty; NameInfo = Map.empty }
+      SheetOrder = [ "sheet1"; "sheet2" ]; ActiveSheet = "sheet1"; Tables = Map.empty; Names = Map.empty; NameInfo = Map.empty; Iteration = None }
 let wb0 = wbBare |> Wb.setDefinedName None "Big" "Sales[Amount2]" None
 let formulaAt sheet row col (wb: Wb.Workbook) =
     match getCellValue (at row col) wb.Sheets.[sheet].Model with

@@ -1351,6 +1351,20 @@ and referencesRangedAt (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
         cellSet <- Set.add cell cellSet
     (cellSet, resizeArrayToList rects)
 
+/// The sheets of a 3-D reference's qualifier (`First:Last`): every sheet from
+/// the first to the last named, in tab order as it is now. Empty when one of
+/// the two does not exist.
+let threeDSheetIds (wb: Rbt.Spreadsheet.Workbook.Workbook) (qualifier: string) : Rbt.Spreadsheet.Workbook.SheetId list =
+    let cut = qualifier.IndexOf ':'
+    if cut < 0 then []
+    else
+        let position (sheetName: string) =
+            Rbt.Spreadsheet.Workbook.resolveSheetName sheetName wb
+            |> Option.bind (fun id -> wb.SheetOrder |> List.tryFindIndex (fun other -> other = id))
+        match position (qualifier.Substring(0, cut)), position (qualifier.Substring(cut + 1)) with
+        | Some i, Some j -> wb.SheetOrder |> List.skip (min i j) |> List.truncate (abs (i - j) + 1)
+        | _ -> []
+
 /// The areas a formula reads, one call per reference: the sheet and the
 /// inclusive bounds (a single cell is a 1 x 1 area). The references are those
 /// of `referencesRangedAt` - defined names and structured references resolved
@@ -1361,10 +1375,22 @@ let iterReferenceAreas (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
                        (cell: CellAddress option)
                        (expr: Expr)
                        (onArea: Rbt.Spreadsheet.Workbook.SheetId -> int -> int -> int -> int -> unit) : unit =
-    let sheetIdOf (name: string option) =
+    // The sheets a reference is on: its own, the one it names, or - a 3-D
+    // reference (`Sheet1:Sheet3!A1`) - every sheet from the first to the last
+    // it names, in tab order.
+    let onSheets (name: string option) (visit: Rbt.Spreadsheet.Workbook.SheetId -> unit) =
         match name with
-        | None -> Some homeSheet
-        | Some n -> workbook |> Option.bind (Rbt.Spreadsheet.Workbook.resolveSheetName n)
+        | None -> visit homeSheet
+        | Some n ->
+            match workbook with
+            | None -> ()
+            | Some wb ->
+                if n.IndexOf ':' >= 0 then
+                    for sid in threeDSheetIds wb n do visit sid
+                else
+                    match Rbt.Spreadsheet.Workbook.resolveSheetName n wb with
+                    | Some sid -> visit sid
+                    | None -> ()
     let stack = ResizeArray<struct (Set<string> * Expr)>()
     stack.Add(struct (Set.empty, expr))
     while stack.Count > 0 do
@@ -1384,15 +1410,10 @@ let iterReferenceAreas (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
                 | Some resolved -> stack.Add(struct (Set.add key seen, resolved))
                 | None -> ()
         | CellRef r | SpillRef r ->
-            match sheetIdOf r.Sheet with
-            | Some sid -> onArea sid r.Row r.Col r.Row r.Col
-            | None -> ()
+            onSheets r.Sheet (fun sid -> onArea sid r.Row r.Col r.Row r.Col)
         | RangeRef (a, b) ->
-            match sheetIdOf a.Sheet with
-            | Some sid ->
-                let sr, sc, er, ec = normalizeRange a b
-                onArea sid sr sc er ec
-            | None -> ()
+            let sr, sc, er, ec = normalizeRange a b
+            onSheets a.Sheet (fun sid -> onArea sid sr sc er ec)
         | UnaryOp (_, inner) -> stack.Add(struct (seen, inner))
         | BinOp (l, _, r) ->
             stack.Add(struct (seen, l))
@@ -13584,12 +13605,15 @@ let recalcAndSpill (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
     else
         spilled
 
-/// Recalculate every sheet of a workbook (formulas + spills). A formula may
-/// read another sheet, and sheets are visited in tab order, so the pass is
-/// repeated until nothing changes — bounded, because volatile functions
-/// (RAND, NOW) never settle and a cross-sheet chain is rarely deeper than the
-/// number of sheets that hold formulas.
-let recalculateWorkbook (workbook: Rbt.Spreadsheet.Workbook.Workbook) : Rbt.Spreadsheet.Workbook.Workbook =
+/// The full recalculation as it was before the workbook had one dependency
+/// order (see `recalculateWorkbook`): every sheet on its own (formulas +
+/// spills), in tab order, the pass repeated until nothing changes — bounded,
+/// because volatile functions (RAND, NOW) never settle. One run can leave a
+/// long chain through several sheets short of its values, and a circular
+/// reference that crosses sheets is not marked. Kept as the reference the
+/// tests check the ordered pass against, and for a host that never loaded
+/// the Recalc module.
+let recalculateWorkbookSettling (workbook: Rbt.Spreadsheet.Workbook.Workbook) : Rbt.Spreadsheet.Workbook.Workbook =
     let needsCalc (sheet: Rbt.Spreadsheet.Workbook.Sheet) =
         not (Map.isEmpty sheet.Model.Spill) || cellsHaveFormulaCells sheet.Model.Cells
     let formulaSheets =
@@ -13620,6 +13644,36 @@ let recalculateWorkbook (workbook: Rbt.Spreadsheet.Workbook.Workbook) : Rbt.Spre
             | None -> ()
         pass <- pass + 1
     wb
+
+/// The workbook-wide recalculation, installed by Recalc (which compiles after
+/// this file): held in a record, as mutable function values are not reliable
+/// in Fable.
+type WorkbookPass = { Run: Rbt.Spreadsheet.Workbook.Workbook -> Rbt.Spreadsheet.Workbook.Workbook }
+let mutable private workbookPass : WorkbookPass option = None
+let installWorkbookPass (pass: WorkbookPass) : unit = workbookPass <- Some pass
+
+/// Recalculate every sheet of a workbook: every formula of every sheet in
+/// one dependency order that follows references across sheets, defined names,
+/// structured references and the cells dynamic arrays spill into, so that one
+/// run reaches the values (see Recalc.recalculateAll). Formulas on a circular
+/// reference - within a sheet or across sheets - show the cycle error.
+let recalculateWorkbook (workbook: Rbt.Spreadsheet.Workbook.Workbook) : Rbt.Spreadsheet.Workbook.Workbook =
+    if workbookPass.IsNone then
+#if !FABLE_COMPILER
+        // (A .NET library initialises a file when one of its values is first
+        // read: reading Recalc.workbookPassInstalled installs the pass.)
+        try
+            let recalcModule = typeof<Expr>.Assembly.GetType "Rbt.Spreadsheet.Recalc"
+            if not (isNull recalcModule) then
+                let installed = recalcModule.GetProperty "workbookPassInstalled"
+                if not (isNull installed) then installed.GetValue(null, null) |> ignore
+        with _ -> ()
+#else
+        ()
+#endif
+    match workbookPass with
+    | Some pass -> pass.Run workbook
+    | None -> recalculateWorkbookSettling workbook
 
 /// Evaluate a formula written for one cell as if it stood `rows` / `cols`
 /// away, at `cell`: relative references move, `$`-locked ones stay. This is

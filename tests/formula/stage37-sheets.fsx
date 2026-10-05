@@ -41,7 +41,7 @@ let other = sheetOf [ at 0 0, num 5.0; at 1 0, fml "=Summary!A1+1" ]
 let sheetEntry id name model : Wb.SheetId * Wb.Sheet = id, { Id = id; Name = name; Model = model; Visible = true }
 let wbBare : Wb.Workbook =
     { Sheets = Map.ofList [ sheetEntry "sheet1" "Data" data; sheetEntry "sheet2" "Summary" summary; sheetEntry "sheet3" "Other" other ]
-      SheetOrder = [ "sheet1"; "sheet2"; "sheet3" ]; ActiveSheet = "sheet1"; Tables = Map.empty; Names = Map.empty; NameInfo = Map.empty }
+      SheetOrder = [ "sheet1"; "sheet2"; "sheet3" ]; ActiveSheet = "sheet1"; Tables = Map.empty; Names = Map.empty; NameInfo = Map.empty; Iteration = None }
 let wb0 : Wb.Workbook =
     wbBare
     |> Wb.setDefinedName None "DataTotal" "Data!$A$1:$A$3" None
@@ -165,6 +165,7 @@ let threeD = { wb0 with Sheets = wb0.Sheets |> Map.add "sheet3" { wb0.Sheets.["s
 let threeDRenamed = Wb.renameSheetEverywhere "sheet2" "Sums" threeD
 eq "3-D: an end renamed (written quoted, as Excel also reads it)" (formulaAt "sheet3" 0 0 threeDRenamed) "=SUM('Data:Sums'!B1)"
 eq "3-D: it still reads both sheets" (valueAt "sheet3" 0 0 (calc threeDRenamed), valueAt "sheet3" 0 0 (calc threeD)) (CellValue.Number 10.0, CellValue.Number 10.0)
+
 
 printfn "\nSheet tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

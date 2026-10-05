@@ -128,7 +128,7 @@ ok "indirect-follows-edit" (valueOf 0 0 lag2 = n 71.0 && valueOf 1 0 lag2 = n 14
 // Same through the incremental engine: INDIRECT and OFFSET cells are volatile.
 let wbOf (m: SpreadsheetModel) : Workbook =
     { Sheets = Map.ofList [ "sheet1", { Id = "sheet1"; Name = "Sheet1"; Model = m; Visible = true } ]
-      SheetOrder = [ "sheet1" ]; ActiveSheet = "sheet1"; Tables = Map.empty; Names = Map.empty; NameInfo = Map.empty }
+      SheetOrder = [ "sheet1" ]; ActiveSheet = "sheet1"; Tables = Map.empty; Names = Map.empty; NameInfo = Map.empty; Iteration = None }
 let incWb0 = wbOf lag1
 match trySingleCellEdit { Sheet = "sheet1"; Cell = at 3 0 } (cell (n 9.0)) incWb0 None with
 | IncrementalApplied (wb, _) ->

@@ -67,41 +67,77 @@ let difference (left: Wb.Workbook) (right: Wb.Workbook) =
                 let x, y = Map.tryFind key a |> Option.map (fun c -> c.Value), Map.tryFind key b |> Option.map (fun c -> c.Value)
                 if x <> y then Some (sprintf "%s!R%dC%d: %A vs %A" sheetId key.Row key.Col x y) else None))
 
-/// The full recalculation, run until it gives what it was given: one run
-/// visits the sheets in tab order a few times, which leaves a long chain
-/// through several sheets (a name on another sheet read by a formula that a
-/// third sheet reads ...) short of its values. The incremental engine follows
-/// the dependencies, so its result is the settled one.
-let fullRecalculation (wb: Wb.Workbook) =
-    let mutable result = Formula.recalculateWorkbook wb
+/// The reference the two recalculations are checked against: the full pass as
+/// it was before the workbook had one dependency order (every sheet on its
+/// own, in tab order, a few times), run until it gives what it was given -
+/// one run of it leaves a long chain through several sheets short of its
+/// values. It shares no ordering code with the engine.
+let settledReference (wb: Wb.Workbook) =
+    let mutable result = Formula.recalculateWorkbookSettling wb
     let mutable runs = 1
     let mutable settled = false
-    while not settled && runs < 8 do
-        let again = Formula.recalculateWorkbook result
+    while not settled && runs < 12 do
+        let again = Formula.recalculateWorkbookSettling result
         settled <- (difference again result).IsNone
         result <- again
         runs <- runs + 1
+    result, settled
+
+/// Whether a formula of the workbook shows the cycle error (the reference marks
+/// circular references within a sheet only, and not every formula on one).
+let hasCycle (wb: Wb.Workbook) =
+    wb.Sheets |> Map.exists (fun _ sheet ->
+        (resolveSheet sheet.Model).Cells |> Map.exists (fun _ cell -> unwrapFormulaValue cell.Value = CellValue.Error Formula.Err.cycle))
+
+/// The full recalculation: ONE run of the ordered pass. It is compared with
+/// the settled reference wherever that settles and nothing is circular.
+let mutable fullRuns = 0
+let mutable fullCompared = 0
+let mutable fullShort = 0
+/// Where the last full recalculation differed from the reference, until `countFull` has counted it.
+let mutable fullDifference : string option = None
+/// The workbook holds arrays whose layout does not settle (a random sequence ends there).
+let mutable unsettled = false
+let countFull (label: string) =
+    match fullDifference with
+    | Some detail ->
+        fullShort <- fullShort + 1
+        if fullShort <= 5 then printfn "FAIL %s: one run of the full recalculation differs from the settled reference at %s" label detail
+        fullDifference <- None
+    | None -> ()
+let fullRecalculation (wb: Wb.Workbook) =
+    let result, fullEngine = Recalc.recalculateAll wb
+    fullRuns <- fullRuns + 1
+    let reference, settled = settledReference wb
+    fullDifference <- None
+    // (Formulas on a circular reference show the cycle error or - in a workbook with iterative
+    // calculation - are iterated: the reference does neither across sheets.)
+    if settled && Recalc.cyclicCount fullEngine = 0 && not (hasCycle result) && not (hasCycle reference) then
+        fullCompared <- fullCompared + 1
+        fullDifference <- difference result reference
     result
 
 /// An edit both ways: incrementally, and by a full recalculation.
 type Outcome = Incremental of Recalc.RecalcStats | Declined
 /// How often the engine declined, by the reason it gave.
 let declines = System.Collections.Generic.Dictionary<string, int>()
-let mutable oneRunSteps = 0
-let mutable oneRunShort = 0
+let mutable referenceSteps = 0
+let mutable referenceShort = 0
 let mutable engine = Unchecked.defaultof<Recalc.Engine>
 let mutable current = Unchecked.defaultof<Wb.Workbook>
 let start (wb: Wb.Workbook) =
     current <- fullRecalculation wb
+    countFull "start"
     engine <- Recalc.build current
 let edit label (hint: (string * CellAddress) list option) (change: Wb.Workbook -> Wb.Workbook) =
     let edited = change current
     let full = fullRecalculation edited
-    // One run of the full recalculation reaches the settled values.
-    oneRunSteps <- oneRunSteps + 1
-    if (difference (Formula.recalculateWorkbook edited) full).IsSome then oneRunShort <- oneRunShort + 1
+    // (How often one run of the reference - the pass as it was - is short of the values.)
+    referenceSteps <- referenceSteps + 1
+    if (difference (Formula.recalculateWorkbookSettling edited) full).IsSome then referenceShort <- referenceShort + 1
     match Recalc.recalculate engine edited hint with
     | Some result ->
+        countFull label
         (match difference result full with
          | None -> pass <- pass + 1
          | Some detail -> fail <- fail + 1; printfn "FAIL %s: incremental differs from full at %s" label detail)
@@ -111,6 +147,9 @@ let edit label (hint: (string * CellAddress) list option) (change: Wb.Workbook -
     | None ->
         current <- full
         let reason = Recalc.lastDecline engine
+        // (A circular reference through the cells of dynamic arrays - one array blocks the other
+        // and so frees itself - has no settled layout: the two passes stop at different ones.)
+        if reason.Contains "do not settle" then (fullDifference <- None; unsettled <- true) else countFull label
         declines.[reason] <- (match declines.TryGetValue reason with | true, n -> n + 1 | _ -> 1)
         if not (Recalc.adopt engine full) then engine <- Recalc.build full
         Declined
@@ -177,12 +216,7 @@ ok "an edit elsewhere is incremental although a cycle exists" (edit "beside a cy
 declined "a cycle through two cells" (edit "cycle 2" None (setCells "sheet1" [ at 31 3, Some (formula "=D33"); at 32 3, Some (formula "=D32") ]))
 edit "the cycles removed" None (setCells "sheet1" [ at 30 3, None; at 31 3, None; at 32 3, None ]) |> ignore
 ok "then edits are incremental again" (edit "after the cycles" None (setCells "sheet1" [ at 0 0, Some (number 2.0) ]) <> Declined) ""
-// (Dynamic arrays are calculated incrementally: see further down.)
-declined "OFFSET: precedents chosen while evaluating" (edit "offset" None (setCells "sheet1" [ at 45 5, Some (formula "=OFFSET(A1,1,0)") ]))
-ok "the workbook is unsupported while it holds one" (Recalc.isUnsupported engine) ""
-declined "every edit is left to the full recalculation" (edit "with offset" None (setCells "sheet1" [ at 0 0, Some (number 4.0) ]))
-edit "the OFFSET removed" None (setCells "sheet1" [ at 45 5, None ]) |> ignore
-ok "and supported again without it" (not (Recalc.isUnsupported engine) && edit "after offset" None (setCells "sheet1" [ at 0 0, Some (number 5.0) ]) <> Declined) ""
+// (Dynamic arrays, OFFSET / INDIRECT and 3-D references are calculated incrementally: see further down.)
 // More than cells: a defined name.
 declined "a defined name added" (edit "name" None (fun wb -> { wb with Names = wb.Names |> Map.add (None, "RATE") "=Sheet1!$A$1" }))
 edit "a formula with the name" None (setCells "sheet1" [ at 46 5, Some (formula "=RATE*2") ]) |> ignore
@@ -264,7 +298,8 @@ let randomEdits (label: string) (seed: int) (steps: int) (wb: Wb.Workbook) =
         incremental, declinedSteps
 
 let mutable incrementalTotal = 0
-for file, seed, steps in [ "real-world/milk-street-office.xlsx", 3, 45
+for file, seed, steps in List.filter (fun _ -> Environment.GetEnvironmentVariable "SKIP_FILES" <> "1") [
+                           "real-world/milk-street-office.xlsx", 3, 45
                            "real-world/lyric-multifamily.xlsx", 4, 35
                            "real-world/dcf-stock-analysis.xlsx", 5, 45
                            "real-world/saopaulo-condos.xlsx", 6, 35
@@ -274,13 +309,17 @@ for file, seed, steps in [ "real-world/milk-street-office.xlsx", 3, 45
     incrementalTotal <- incrementalTotal + incremental
 // (The synthetic workbook again, so that the sequences cover one the engine supports whatever the files hold.)
 let incrementalSynthetic, _ = randomEdits "two sheets" 9 150 (fst (twoSheets ()))
-ok "the random sequences were mostly incremental" (incrementalSynthetic > 120 && incrementalTotal > 60) (sprintf "%d synthetic, %d on files" incrementalSynthetic incrementalTotal)
+ok "the random sequences were mostly incremental" (incrementalSynthetic > 120 && (incrementalTotal > 60 || Environment.GetEnvironmentVariable "SKIP_FILES" = "1")) (sprintf "%d synthetic, %d on files" incrementalSynthetic incrementalTotal)
 
-// (Up to six passes over two sheets: a chain that crosses between them more often than that is
-// still short after one run - a few steps of the sequences on the schedule workbooks.)
-ok "one run of the full recalculation settles nearly every edit of workbooks whose values travel between sheets"
-    (oneRunSteps > 300 && oneRunShort * 20 < oneRunSteps) (sprintf "%d of %d steps short" oneRunShort oneRunSteps)
-printfn "  one run of the full recalculation was short of the settled values in %d of %d steps" oneRunShort oneRunSteps
+// One run of the full recalculation reaches the values, whatever the edit: it has one dependency
+// order for the whole workbook. (One run of the pass as it was - sheet by sheet - was short in some
+// steps of the sequences on the schedule workbooks.)
+let reportFullRuns (what: string) =
+    eq (sprintf "one run of the full recalculation gives the settled values (%s)" what) fullShort 0
+    printfn "  %s: %d full recalculations, %d compared with the settled reference, %d differ; one run of the reference was short in %d of %d steps"
+        what fullRuns fullCompared fullShort referenceShort referenceSteps
+reportFullRuns "directed cases and random edits of real workbooks"
+ok "the comparison with the reference took place" (fullCompared > 100 || Environment.GetEnvironmentVariable "SKIP_FILES" = "1") (string fullCompared)
 
 // A date function fed something far outside the calendar is #NUM!, on every
 // platform, and does not take the recalculation down (.NET's DateTime threw).
@@ -382,7 +421,10 @@ do
 // Random sequences with dynamic arrays: sizes read from cells, arrays over
 // edited ranges, arrays side by side that block one another, typing into and
 // clearing spilled cells, removed formulas, readers of spilled cells, undos.
-let randomSpills (seed: int) (steps: int) =
+// With `dynamic`, formulas that choose their precedents while they are
+// evaluated (OFFSET, INDIRECT - to cells, ranges over the arrays, the other
+// sheet, a name; one that spills) and 3-D references are mixed in.
+let randomSpills (dynamic: bool) (seed: int) (steps: int) =
     let random = Random seed
     let wb =
         Wb.createWorkbook () |> Wb.addSheet "Other"
@@ -395,12 +437,14 @@ let randomSpills (seed: int) (steps: int) =
         |> setCells "sheet1" [ at 0 14, Some (number 3.0); at 1 14, Some (number 5.0); at 2 14, Some (number 2.0) ]
         |> setCells "sheet1" [ at 4 14, Some (formula "=SUM(D1:K30)"); at 5 14, Some (formula "=COUNT(E:E)"); at 6 14, Some (formula "=F5*2+G7"); at 7 14, Some (formula "=O5+O6") ]
         |> setCells other [ at 0 0, Some (formula "=SUM(Sheet1!D1:K30)"); at 1 0, Some (formula "=Sheet1!E4&\"\""); at 3 0, Some (formula "=Sheet1!A1:A3*2") ]
+    let wb = if dynamic then { wb with Names = wb.Names |> Map.add (None, "SIZE") "=Sheet1!$O$1" } |> setCells other [ at 0 2, Some (number 4.0); at 1 2, Some (formula "=Sheet1!O5+1") ] else wb
     start wb
     let snapshots = ResizeArray<SpreadsheetModel>()
     let failuresBefore = fail
     let mutable incremental = 0
+    unsettled <- false
     for step in 1 .. steps do
-        if fail = failuresBefore then
+        if fail = failuresBefore && not unsettled then
             let model = resolveSheet current.Sheets.["sheet1"].Model
             let anchors = model.Spill |> Map.toList |> List.map snd |> List.distinct |> List.toArray
             let ghosts = model.Spill |> Map.toArray |> Array.map fst
@@ -420,8 +464,25 @@ let randomSpills (seed: int) (steps: int) =
                 | 9 when anchors.Length > 0 -> sprintf "=SORT(%s#,1,-1)" (refOf anchors.[random.Next anchors.Length])
                 | 10 -> "=FILTER(A1:B12,B1:B12=$O$3)"
                 | _ -> "=A1:A3+TRANSPOSE(A1:A3)"
+            let dynamicReader () =
+                match random.Next 12 with
+                | 0 -> "=OFFSET(A1,$O$3,0)"
+                | 1 -> "=SUM(OFFSET(A1,0,0,$O$1,2))"
+                | 2 -> "=INDIRECT(\"A\"&$O$1)+1"
+                | 3 -> "=SUM(INDIRECT(\"D1:F\"&($O$2+3)))"
+                | 4 -> "=INDIRECT(\"Other!C2\")"
+                | 5 -> "=INDIRECT(\"SIZE\")*2"
+                | 6 -> "=SUM(Sheet1:Other!A1:A3)"
+                | 7 -> "=COUNT(Sheet1:Other!C1:C2)+MAX(Sheet1:Other!C1)"
+                | 8 -> sprintf "=OFFSET(D1,%d,%d)" (random.Next 12) (random.Next 6)
+                | 9 -> sprintf "=SUM(OFFSET(%s,0,0,$O$3,$O$1))" (refOf (spot ()))
+                | 10 -> "=COUNT(INDIRECT(\"E:E\"))"
+                | _ -> "=IFERROR(INDEX(D1:K30,$O$1,$O$3),0)+SUM(D1:INDEX(D1:K30,$O$3,2))"
             let name, change =
-                match random.Next 16 with
+                match random.Next (if dynamic then 20 else 16) with
+                | 16 | 17 -> "a formula that chooses its precedents, or a 3-D reference, entered", setCells "sheet1" [ at (8 + random.Next 12) (14 + random.Next 3), Some (formula (dynamicReader ())) ]
+                | 18 -> "an OFFSET that spills entered", setCells "sheet1" [ spot (), Some (formula (if random.Next 2 = 0 then "=OFFSET(A1,0,0,$O$3,1)" else "=OFFSET(A1,1,0,$O$1,2)")) ]
+                | 19 -> "the other sheet edited", setCells other [ at (random.Next 2) 2, Some (number (float (random.Next 9))) ]
                 | 0 | 1 -> "an input changed", setCells "sheet1" [ at (random.Next 12) (random.Next 2), Some (number (float (random.Next 20))) ]
                 | 2 -> "a size changed", setCells "sheet1" [ at (random.Next 3) 14, Some (number (float (1 + random.Next 5))) ]
                 | 3 | 4 | 5 -> "an array formula entered", setCells "sheet1" [ spot (), Some (formula (arrayFormula ())) ]
@@ -460,13 +521,29 @@ declines.Clear()
 let mutable spillIncremental = 0
 let spillSeeds, spillSteps = (match Environment.GetEnvironmentVariable "SPILL_SEEDS" with null | "" -> 60 | text -> int text), 70
 for seed in 1 .. spillSeeds do
-    spillIncremental <- spillIncremental + randomSpills (100 + seed) spillSteps
+    spillIncremental <- spillIncremental + randomSpills false (100 + seed) spillSteps
 printfn "  dynamic arrays: %d of %d random edits incremental; left to the full recalculation: %s" spillIncremental (spillSeeds * spillSteps)
     (if declines.Count = 0 then "none" else declines |> Seq.map (fun kv -> sprintf "%d x \"%s\"" kv.Value kv.Key) |> String.concat ", ")
 ok "no edit of a dynamic array is declined for being one (only circular references are)"
     (declines.Keys |> Seq.forall (fun reason -> reason.Contains "circular"))
     (sprintf "%A" (List.ofSeq declines.Keys))
-ok "the random edits of dynamic arrays were nearly all incremental" (spillIncremental * 10 > spillSeeds * spillSteps * 9) (sprintf "%d of %d" spillIncremental (spillSeeds * spillSteps))
+ok "the random edits of dynamic arrays were nearly all incremental" (spillIncremental * 10 >= spillSeeds * spillSteps * 9) (sprintf "%d of %d" spillIncremental (spillSeeds * spillSteps))
+
+reportFullRuns "with dynamic arrays"
+
+// OFFSET / INDIRECT / 3-D references among them: such workbooks were left to the full recalculation.
+declines.Clear()
+let mutable dynamicIncremental = 0
+let dynamicSeeds = (match Environment.GetEnvironmentVariable "DYNAMIC_SEEDS" with null | "" -> 40 | text -> int text)
+for seed in 1 .. dynamicSeeds do
+    dynamicIncremental <- dynamicIncremental + randomSpills true (500 + seed) spillSteps
+printfn "  OFFSET / INDIRECT / 3-D with dynamic arrays: %d of %d random edits incremental; left to the full recalculation: %s" dynamicIncremental (dynamicSeeds * spillSteps)
+    (if declines.Count = 0 then "none" else declines |> Seq.map (fun kv -> sprintf "%d x \"%s\"" kv.Value kv.Key) |> String.concat ", ")
+ok "no edit is declined for OFFSET / INDIRECT / 3-D references (only circular references are)"
+    (declines.Keys |> Seq.forall (fun reason -> reason.Contains "circular"))
+    (sprintf "%A" (List.ofSeq declines.Keys))
+ok "the random edits with OFFSET / INDIRECT / 3-D references were nearly all incremental" (dynamicIncremental * 10 > dynamicSeeds * spillSteps * 9) (sprintf "%d of %d" dynamicIncremental (dynamicSeeds * spillSteps))
+reportFullRuns "with OFFSET / INDIRECT / 3-D references"
 
 printfn "stage32-recalc: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

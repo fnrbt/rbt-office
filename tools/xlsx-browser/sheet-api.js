@@ -3058,3 +3058,100 @@ checks['api-recalc-spill'] = async () => {
     incremental.close(); full.close();
     return lines;
 };
+
+// The order of calculation across sheets: OFFSET / INDIRECT / 3-D references are calculated
+// incrementally (such workbooks were left to the full recalculation), a circular reference
+// that crosses sheets shows the cycle error, and iterative calculation - Excel's setting for
+// workbooks with a deliberate circular reference - is a setting of the workbook.
+checks['api-recalc-order'] = async () => {
+    const { lines, check, note } = makeLog();
+    const incremental = mountGrid(), full = mountGrid();
+    try {
+        full.grid.SetIncrementalRecalculation(false);
+        const grids = [incremental.grid, full.grid];
+        const both = (run) => { for (const grid of grids) run(grid); };
+        const texts = (grid, range) => grid.GetRange(range).map((row) => row.map((cell) => cell.text));
+        const shown = (range) => {
+            const mine = texts(incremental.grid, range), theirs = texts(full.grid, range), stats = incremental.grid.GetRecalcStats();
+            return { kind: stats.Kind + (stats.Kind === 'full' ? ': ' + stats.Reason : ''), same: JSON.stringify(mine) === JSON.stringify(theirs), rows: mine };
+        };
+        both((grid) => {
+            grid.SetCell(0, 0, '1'); grid.SetCell(1, 0, '2'); grid.SetCell(2, 0, '3'); grid.SetCell(0, 2, '5');
+            grid.AddSheet('Two'); grid.SetCell(0, 0, '10'); grid.SetCell(0, 2, '50'); grid.SetCell(0, 1, '=Sheet1!B1+1');
+            grid.AddSheet('Three'); grid.SetCell(0, 2, '500');
+            grid.SwitchSheet(0);
+            grid.EnterText(0, 1, '=OFFSET(A1,1,0)*2'); grid.EnterText(1, 1, '=INDIRECT("Two!A1")+1'); grid.EnterText(2, 1, '=SUM(Two:Three!C1)'); grid.EnterText(3, 1, '=INDIRECT("A"&A1)');
+        });
+        let now = shown('Sheet1!A1:B4');
+        check('OFFSET, INDIRECT and a 3-D sum entered: calculated incrementally', [now.kind, now.same, now.rows.map((row) => row[1]), texts(incremental.grid, 'Two!B1')[0][0]], ['incremental', true, ['4', '11', '550', '1'], '5']);
+        both((grid) => grid.EnterText(1, 0, '20'));
+        now = shown('Sheet1!A1:B4');
+        check('the cell an OFFSET lands on changed: it and its reader on the other sheet follow', [now.kind, now.same, now.rows[0][1], texts(incremental.grid, 'Two!B1')[0][0], texts(full.grid, 'Two!B1')[0][0]], ['incremental', true, '40', '41', '41']);
+        both((grid) => grid.EnterText(0, 0, '3'));
+        now = shown('Sheet1!A1:B4');
+        check('the cell INDIRECT builds its reference from changed', [now.kind, now.same, now.rows[3][1]], ['incremental', true, '3']);
+        both((grid) => { grid.SwitchSheet(2); grid.EnterText(0, 2, '600'); grid.SwitchSheet(1); grid.EnterText(0, 0, '11'); grid.SwitchSheet(0); });
+        now = shown('Sheet1!A1:B4');
+        check('cells of other sheets a 3-D reference and an INDIRECT read', [now.kind, now.same, now.rows[2][1], now.rows[1][1]], ['incremental', true, '650', '12']);
+        both((grid) => grid.Undo());
+        note('recalculation after the edits: ' + JSON.stringify(incremental.grid.GetRecalcStats()));
+
+        // A circular reference across two sheets.
+        both((grid) => { grid.EnterText(0, 3, '=Two!D1+1'); grid.EnterText(1, 3, '=D1*2'); grid.EnterText(2, 3, '=1+1'); grid.SwitchSheet(1); grid.EnterText(0, 3, '=Sheet1!D1+1'); grid.SwitchSheet(0); });
+        now = shown('Sheet1!D1:D3');
+        const cycleText = now.rows[0][0];
+        check('a formula that reads itself through another sheet: both show the cycle error, what reads them too, others are calculated',
+            [now.kind.startsWith('full'), now.same, /CYCLE/.test(cycleText), now.rows.map((row) => row[0]), texts(incremental.grid, 'Two!D1')[0][0]], [true, true, true, [cycleText, cycleText, '2'], cycleText]);
+        both((grid) => grid.EnterText(5, 0, '7'));
+        check('an edit beside the cycle is incremental', [shown('Sheet1!A6:A6').kind, texts(incremental.grid, 'Sheet1!D1')[0][0]], ['incremental', cycleText]);
+        both((grid) => { grid.SwitchSheet(1); grid.EnterText(0, 3, '4'); grid.SwitchSheet(0); });
+        now = shown('Sheet1!D1:D3');
+        check('the cycle broken: the values are there', [now.same, now.rows.map((row) => row[0])], [true, ['5', '10', '2']]);
+
+        // Iterative calculation: a loan whose interest is part of what it finances.
+        const grid = incremental.grid;
+        check('iterative calculation is off in a new workbook', grid.GetIterativeCalculation(), { enabled: false, maxIterations: 100, maxChange: 0.001 });
+        grid.EnterText(0, 5, '1000'); grid.EnterText(0, 6, '=F1+Two!F1'); grid.SwitchSheet(1); grid.EnterText(0, 5, '=Sheet1!G1*0.1'); grid.SwitchSheet(0);
+        check('a loan and its interest without it: the cycle error', [texts(grid, 'Sheet1!G1')[0][0], texts(grid, 'Two!F1')[0][0]], [cycleText, cycleText]);
+        const revision = grid.GetRevision();
+        let changes = 0;
+        const off = grid.OnChange(() => changes++);
+        grid.SetIterativeCalculation(true);
+        const near = (text, value) => Math.abs(Number(String(text).replace(/,/g, '')) - value) < 0.01;
+        check('switched on: the cycle settles (1000 + 10% of the total)', [grid.GetIterativeCalculation(), near(grid.GetCell(0, 6).value, 1111.111), near(grid.GetRange('Two!F1')[0][0].value, 111.111)], [{ enabled: true, maxIterations: 100, maxChange: 0.001 }, true, true]);
+        check('... one change, a new revision', [changes, grid.GetRevision() !== revision], [1, true]);
+        grid.EnterText(0, 5, '2000');
+        check('an input of the cycle edited: it settles again', near(grid.GetCell(0, 6).value, 2222.222), true);
+        grid.Undo();
+        check('... undone', near(grid.GetCell(0, 6).value, 1111.111), true);
+        const again = await reopened(grid);
+        try {
+            check('saved and opened again: the setting and the values', [again.grid.GetIterativeCalculation().enabled, near(again.grid.GetCell(0, 6).value, 1111.111)], [true, true]);
+            again.grid.EnterText(0, 5, '3000');
+            check('... and the cycle goes on being calculated there', near(again.grid.GetCell(0, 6).value, 3333.333), true);
+        } finally { again.close(); }
+        grid.SetIterativeCalculation(true, 5, 0.5);
+        check('other numbers', grid.GetIterativeCalculation(), { enabled: true, maxIterations: 5, maxChange: 0.5 });
+        grid.Undo(); grid.Undo();
+        check('the setting undone: off, the cycle error again', [grid.GetIterativeCalculation().enabled, texts(grid, 'Sheet1!G1')[0][0], grid.GetRevision() === revision], [false, cycleText, true]);
+        grid.Redo();
+        check('... redone', [grid.GetIterativeCalculation().enabled, near(grid.GetCell(0, 6).value, 1111.111)], [true, true]);
+        off();
+        check('arguments out of range throw', [thrown(() => grid.SetIterativeCalculation('yes')), thrown(() => grid.SetIterativeCalculation(true, 0)), thrown(() => grid.SetIterativeCalculation(true, 10, -1))].map((message) => /SetIterativeCalculation: /.test(message ?? '')), [true, true, true]);
+
+        // A file with a deliberate circular reference across sheets (iterate="1"): an edit leaves its values as they were.
+        const file = mountGrid();
+        try {
+            await file.grid.ImportXlsx(await bytesOf('tests/real-world/saopaulo-condos.xlsx'));
+            check('a workbook with iterative calculation says so', file.grid.GetIterativeCalculation().enabled, true);
+            const before = file.grid.GetRange('Assumptions!E57:E60').map((row) => row[0].value);
+            file.grid.EnterText(200, 30, '1');
+            file.grid.InsertRows(300, 1);
+            const after = file.grid.GetRange('Assumptions!E57:E60').map((row) => row[0].value);
+            check('its circular model keeps its values through a full recalculation', [file.grid.GetRecalcStats().Kind, after.every((value, i) => typeof value === 'number' && Math.abs(value - before[i]) <= 0.01 * Math.abs(before[i]))], ['full', true]);
+            note('Assumptions!E57:E60 ' + JSON.stringify(before) + ' -> ' + JSON.stringify(after));
+        } finally { file.close(); }
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    incremental.close(); full.close();
+    return lines;
+};

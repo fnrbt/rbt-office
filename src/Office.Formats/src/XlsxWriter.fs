@@ -1901,7 +1901,16 @@ let private workbookXmlFull (workbook: XlsxWorkbookOut) =
     let hasUncachedFormula =
         workbook.Sheets
         |> List.exists (fun s -> s.Cells |> List.exists (fun c -> match c.Value with XlsxFormula (_, None) -> true | _ -> false))
-    let calcPr = if hasUncachedFormula then "<calcPr fullCalcOnLoad=\"1\"/>" else ""
+    // Iterative calculation of circular references is a setting of the workbook: without it Excel
+    // opens a workbook that has them with a warning and zeros.
+    let calcPr =
+        let iteration =
+            match workbook.Preserved.CalcIteration with
+            | Some (count, delta) ->
+                " iterate=\"1\"" + (if count <> 100 then sprintf " iterateCount=\"%d\"" count else "")
+                + (if delta <> 0.001 then " iterateDelta=\"" + numberText delta + "\"" else "")
+            | None -> ""
+        if hasUncachedFormula || iteration <> "" then "<calcPr" + iteration + (if hasUncachedFormula then " fullCalcOnLoad=\"1\"" else "") + "/>" else ""
     // Child order is fixed by CT_Workbook: sheets, externalReferences,
     // definedNames, calcPr, pivotCaches, extLst.
     let kept = workbook.Preserved

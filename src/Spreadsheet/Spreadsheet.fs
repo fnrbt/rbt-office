@@ -217,6 +217,8 @@ type private BookContent = {
     Hidden: SheetId list
     /// The tables as structured references read them (name, place, columns).
     Tables: Map<string, Rbt.Spreadsheet.Workbook.Table>
+    /// Iterative calculation of circular references.
+    Iteration: IterativeCalculation option
 }
 
 let private bookContentOf (workbook: Workbook option) : BookContent =
@@ -225,14 +227,16 @@ let private bookContentOf (workbook: Workbook option) : BookContent =
         { Names = wb.Names
           NameInfo = wb.NameInfo
           Hidden = wb.SheetOrder |> List.filter (fun id -> match Map.tryFind id wb.Sheets with Some sheet -> not sheet.Visible | None -> false)
-          Tables = wb.Tables }
-    | None -> { Names = Map.empty; NameInfo = Map.empty; Hidden = []; Tables = Map.empty }
+          Tables = wb.Tables
+          Iteration = wb.Iteration }
+    | None -> { Names = Map.empty; NameInfo = Map.empty; Hidden = []; Tables = Map.empty; Iteration = None }
 
 let private sameBookContent (a: BookContent) (b: BookContent) =
     (sameRef a.Names b.Names || a.Names = b.Names)
     && (sameRef a.NameInfo b.NameInfo || a.NameInfo = b.NameInfo)
     && a.Hidden = b.Hidden
     && (sameRef a.Tables b.Tables || a.Tables = b.Tables)
+    && a.Iteration = b.Iteration
 
 /// The search a host started with Find: FindNext / FindPrevious /
 /// ReplaceMatch go by it.
@@ -825,7 +829,8 @@ type Spreadsheet(container: Element) =
               ActiveSheet = activeSheet
               Tables = Map.empty
               Names = Map.empty
-              NameInfo = Map.empty }
+              NameInfo = Map.empty
+              Iteration = None }
 
     let installWorkbookSnapshot (wb: Workbook) =
         for i in 0 .. sheets.Length - 1 do
@@ -1040,10 +1045,6 @@ type Spreadsheet(container: Element) =
                 | _ -> ()
             canvasRestore ctx
 
-    /// Full recalculation of the whole workbook. A formula on any sheet can
-    /// read the sheet that was just edited, so every sheet is recalculated
-    /// (formulas, then dynamic-array spills, then formulas again so readers of
-    /// spilled cells settle), not only the visible one.
     /// The engine for the workbook as it was last calculated, built now when there is none yet.
     let ensureRecalcEngine () =
         match recalcEngine, calculatedWorkbook with
@@ -1056,11 +1057,10 @@ type Spreadsheet(container: Element) =
 
     /// Recalculate after an edit. `hint` names the cells the edit touched
     /// when they are known. The formulas that read the changed cells are
-    /// evaluated (Recalc); the whole workbook is recalculated - every sheet:
-    /// formulas, then dynamic-array spills, then formulas again so readers of
-    /// spilled cells settle - when the edit is more than one of cells, when
-    /// it reaches a cycle, and before there is a calculated state to start
-    /// from. (Dynamic arrays are part of the incremental pass.)
+    /// evaluated (Recalc); every formula of the workbook is - in one
+    /// dependency order across the sheets, circular references marked - when
+    /// the edit is more than one of cells, when it reaches a cycle, and before
+    /// there is a calculated state to start from.
     let recalculateAfterEdit (hint: (SheetId * CellAddress) list option) =
         let edited = currentWorkbookSnapshot()
         let incremental =
@@ -1086,12 +1086,11 @@ type Spreadsheet(container: Element) =
             // Every sheet with formulas is recalculated: those not converted yet are now.
             convertFormulaSheets ()
             let edited = currentWorkbookSnapshot()
-            let recalculated = recalculateWorkbook edited
+            // (The full recalculation is a pass over the workbook's dependency graph:
+            // the graph it built is the one the edits that follow go on from.)
+            let recalculated, engine = SpreadsheetRecalc.recalculateAll edited
             installWorkbookSnapshot recalculated
-            // The engine goes on from the result, or is built again at the next edit.
-            match recalcEngine with
-            | Some engine when not (SpreadsheetRecalc.adopt engine recalculated) -> recalcEngine <- None
-            | _ -> ()
+            recalcEngine <- (if incrementalRecalculation then Some engine else None)
             calculatedWorkbook <- Some recalculated
         adoptConvertedSheets ()
 
@@ -1105,12 +1104,13 @@ type Spreadsheet(container: Element) =
     let recalculateEverything () =
         invalidateCalcEngine()
         convertFormulaSheets ()
-        let recalculated = currentWorkbookSnapshot() |> recalculateWorkbook
+        let recalculated, engine = currentWorkbookSnapshot() |> SpreadsheetRecalc.recalculateAll
         installWorkbookSnapshot recalculated
         lastRecalculation <- "full"
         lastFullReason <- "rows, columns, sheets or names changed"
         adoptConvertedSheets ()
-        calculatedWorkbook <- Some (currentWorkbookSnapshot())
+        recalcEngine <- (if incrementalRecalculation then Some engine else None)
+        calculatedWorkbook <- Some recalculated
 
     /// Insert or delete rows/columns on the active sheet as one undoable
     /// step. The edit and its undo both go through the workbook so formulas on
@@ -6165,6 +6165,8 @@ type Spreadsheet(container: Element) =
               Source = xlsxSource
               // A VBA project of the opened file is one of its kept parts.
               Macros = None }
+        // (Iterative calculation is a setting of the workbook, not of what was kept of its file.)
+        |> Rbt.Spreadsheet.XlsxBridge.Export.withIteration (workbook |> Option.bind (fun wb -> wb.Iteration))
 
     /// Write the editor's current workbook as XLSX: every sheet with its
     /// values, formulas and their cached values, formats, column widths and
@@ -8315,6 +8317,47 @@ type Spreadsheet(container: Element) =
                  | None -> sprintf "the workbook has no name \"%s\" (a sheet-level name needs its sheet index)" name)
         | Some _ ->
             if changeDefinedName "Delete name" scope name (fun current -> Rbt.Spreadsheet.Workbook.deleteDefinedName scope name current |> Option.defaultValue current) then render()
+
+    /// How the workbook calculates circular references: { enabled,
+    /// maxIterations, maxChange } - Excel's "Enable iterative calculation"
+    /// (File > Options > Formulas), kept in the file. Off (the default, and
+    /// what a new workbook has): the formulas on a circular reference show
+    /// the cycle error (`#CYCLE!`), whether the cycle stays on one sheet or
+    /// crosses sheets, and what reads them has that error. On: they are
+    /// calculated again and again from the values they have until none
+    /// changes by `maxChange` or more, at most `maxIterations` times (100 and
+    /// 0.001 when off), as financial models with a deliberate circular
+    /// reference need.
+    member _.GetIterativeCalculation() : obj =
+        match workbook |> Option.bind (fun wb -> wb.Iteration) with
+        | Some setting -> createObj [ "enabled" ==> true; "maxIterations" ==> setting.MaxIterations; "maxChange" ==> setting.MaxChange ]
+        | None -> createObj [ "enabled" ==> false; "maxIterations" ==> 100; "maxChange" ==> 0.001 ]
+
+    /// Switch the iterative calculation of circular references on or off
+    /// (see GetIterativeCalculation). `maxIterations` (1 .. 32767, default
+    /// 100) and `maxChange` (0 or more, default 0.001) are Excel's two
+    /// numbers. The workbook is calculated again. One undo step; saved with
+    /// the workbook. Throws on arguments out of range.
+    member _.SetIterativeCalculation(enabled: obj, maxIterations: obj, maxChange: obj) : unit =
+        let memberName = "SetIterativeCalculation"
+        let enabled = Host.boolArg memberName "enabled" enabled
+        let count = Host.optionalArg (Host.intArg memberName "maxIterations") maxIterations |> Option.defaultValue 100
+        let change = Host.optionalArg (Host.numberArg memberName "maxChange") maxChange |> Option.defaultValue 0.001
+        if count < 1 || count > 32767 then Host.hostFail memberName (sprintf "maxIterations is 1 to 32767, not %d" count)
+        if not (change >= 0.0) then Host.hostFail memberName "maxChange is 0 or more"
+        let wb = ensureWorkbook ()
+        let before = wb.Iteration
+        let after = if enabled then Some { MaxIterations = count; MaxChange = change } else None
+        if before <> after then
+            if model.EditingCell.IsSome then finishEditing true |> ignore
+            let put (setting: IterativeCalculation option) (m: SpreadsheetModel) =
+                workbook <- workbook |> Option.map (fun current -> { current with Iteration = setting })
+                invalidateCalcEngine()
+                m
+            put after model |> ignore
+            recalculateEverything()
+            model <- pushCommand { Undo = put before; Redo = put after; Description = "Iterative calculation" } model
+            render()
 
     /// Go to a place, as the name box does: a reference ("B3", "B3:C9",
     /// "A:A", "Sheet2!B3:C9", "'My sheet'!A1"), a defined name that refers

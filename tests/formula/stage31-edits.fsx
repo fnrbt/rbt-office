@@ -65,7 +65,7 @@ eq "case-insensitive search past a sharp s" (value 7 1) (CellValue.Number 12.0)
 // ---- a single-cell edit in a workbook without formulas, and with a cycle ------------
 let workbookOf (model: SpreadsheetModel) : Wb.Workbook =
     { Sheets = Map.ofList [ "sheet1", ({ Id = "sheet1"; Name = "Sheet1"; Model = model; Visible = true } : Wb.Sheet) ]
-      SheetOrder = [ "sheet1" ]; ActiveSheet = "sheet1"; Tables = Map.empty; Names = Map.empty; NameInfo = Map.empty }
+      SheetOrder = [ "sheet1" ]; ActiveSheet = "sheet1"; Tables = Map.empty; Names = Map.empty; NameInfo = Map.empty; Iteration = None }
 let cellOf row col : Wb.SheetCell = { Sheet = "sheet1"; Cell = at row col }
 let applied result = match result with Calc.IncrementalApplied _ -> "applied" | Calc.IncrementalFallback why -> "fallback: " + why
 eq "plain data: an edit is applied incrementally" (applied (Calc.trySingleCellEdit (cellOf 5 5) (number 9.0) (workbookOf sheet) None)) "applied"

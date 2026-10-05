@@ -215,7 +215,8 @@ let buildWorkbookContext (models: SpreadsheetModel array) (names: string array) 
       ActiveSheet = sheetIdOfIndex (max 0 (min (models.Length - 1) activeIndex))
       Tables = Map.ofList tables
       Names = definedNames
-      NameInfo = Map.empty }
+      NameInfo = Map.empty
+      Iteration = None }
 
 /// Pixels at 100% per EMU (the unit drawing anchors use in the file).
 let private emuPerPixel = 9525.0
@@ -1053,6 +1054,10 @@ module Import =
         |> Wb.namesOfTriples
 
     /// Spelling, comment and hidden flag of a reader workbook's defined names.
+    /// The file's iterative calculation of circular references (`<calcPr iterate>`).
+    let private iterationOf (wb: XlsxReader.Workbook) : Wb.IterativeCalculation option =
+        wb.Preserved.CalcIteration |> Option.map (fun (count, delta) -> { Wb.IterativeCalculation.MaxIterations = count; MaxChange = delta })
+
     let private definedNameInfo (wb: XlsxReader.Workbook) : Map<Wb.SheetId option * string, Wb.DefinedNameInfo> =
         wb.NamedRanges
         |> List.map (fun entry ->
@@ -1088,7 +1093,7 @@ module Import =
             imports |> Array.fold (fun acc import -> Map.fold (fun m k v -> Map.add k v m) acc import.TableColumns) Map.empty
         let firstVisible = visible |> Array.tryFindIndex id |> Option.defaultValue 0
         let context =
-            { buildWorkbookContext models names visible tableColumns names' firstVisible with NameInfo = definedNameInfo wb }
+            { buildWorkbookContext models names visible tableColumns names' firstVisible with NameInfo = definedNameInfo wb; Iteration = iterationOf wb }
             |> computeUncachedFormulas
         let finalModels =
             Array.init names.Length (fun index ->
@@ -1187,7 +1192,7 @@ module Import =
             let visible = readerSheets |> Array.map (fun sheet -> sheetStateText sheet.State = "visible")
             let firstVisible = visible |> Array.tryFindIndex id |> Option.defaultValue 0
             let models = standIns |> Array.mapi (fun index standIn -> if convertNow index then convert index else standIn)
-            let context = { buildWorkbookContext models names visible tableColumns names' firstVisible with NameInfo = definedNameInfo wb }
+            let context = { buildWorkbookContext models names visible tableColumns names' firstVisible with NameInfo = definedNameInfo wb; Iteration = iterationOf wb }
             { Sheets =
                 names
                 |> Array.mapi (fun index name ->
@@ -1867,3 +1872,8 @@ module Export =
                                     path, Text.Encoding.UTF8.GetBytes rewritten
                                 | None -> path, data) }
             | None -> XlsxReader.emptyWorkbookPreservation }
+
+    /// The workbook to write with the workbook's setting for the iterative
+    /// calculation of circular references (`Workbook.Iteration`).
+    let withIteration (iteration: Wb.IterativeCalculation option) (workbook: XlsxWriter.XlsxWorkbookOut) : XlsxWriter.XlsxWorkbookOut =
+        { workbook with Preserved = { workbook.Preserved with CalcIteration = iteration |> Option.map (fun setting -> setting.MaxIterations, setting.MaxChange) } }

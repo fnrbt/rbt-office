@@ -60,6 +60,7 @@ stages=(
     stage42-tables
     stage43-status
     stage44-pagesetup
+    stage45-order
     numbertext
 )
 

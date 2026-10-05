@@ -892,6 +892,34 @@ eq "spill: ... and a recalculation lays the array out again" ([ for row in 0 .. 
 let spilledAgain = Bridge.Export.toWorkbookOut { printInput [| spilledBack; plainSheet |] None with Source = None }
 ok "spill: a sheet opened from a file writes its array formulas back" ((textOf (XlsxWriter.writeWorkbookPackageBytes spilledAgain) "xl/worksheets/sheet1.xml").Contains "<f t=\"array\" ref=\"C1:D3\">") ""
 
+// ---- iterative calculation of circular references (<calcPr iterate>) --------
+do
+    let wb = load "real-world/saopaulo-condos.xlsx"
+    let imported = Bridge.Import.importWorkbook wb
+    eq "iteration: read from the file (Excel's defaults)" imported.Context.Iteration (Some { Wb.IterativeCalculation.MaxIterations = 100; MaxChange = 0.001 })
+    let out = Bridge.Export.toWorkbookOut (inputOf imported (modelsOf imported) imported.Context.Names)
+    let bytes = XlsxWriter.writeWorkbookPackageBytes out
+    ok "iteration: an opened workbook keeps it when written" ((textOf bytes "xl/workbook.xml").Contains "<calcPr iterate=\"1\"") ""
+    eq "iteration: ... and when read again" (Bridge.Import.importWorkbook (XlsxReader.loadBytesNative bytes |> Option.get)).Context.Iteration imported.Context.Iteration
+    // Switched off in the editor, and set with other numbers.
+    let off = XlsxWriter.writeWorkbookPackageBytes (out |> Bridge.Export.withIteration None)
+    ok "iteration: switched off, no calcPr says iterate" (not ((textOf off "xl/workbook.xml").Contains "iterate")) ""
+    let custom = out |> Bridge.Export.withIteration (Some { MaxIterations = 50; MaxChange = 0.01 }) |> reread
+    eq "iteration: other numbers written and read" custom.Preserved.CalcIteration (Some (50, 0.01))
+    let plain = Bridge.Import.importWorkbook (load "real-world/chart-zoo.xlsx")
+    eq "iteration: a workbook without it" plain.Context.Iteration None
+    // The circular reference of the file is calculated as Excel left it: nothing moves.
+    let recalculated = Rbt.Spreadsheet.Formula.recalculateWorkbook imported.Context
+    let moved =
+        imported.Context.SheetOrder |> List.sumBy (fun id ->
+            let before, after = imported.Context.Sheets.[id].Model.Cells, recalculated.Sheets.[id].Model.Cells
+            before |> Map.toSeq |> Seq.filter (fun (cellAddr, cell) ->
+                match unwrapFormulaValue cell.Value, unwrapFormulaValue after.[cellAddr].Value with
+                | CellValue.Number x, CellValue.Number y -> abs (x - y) > 0.01 * (1.0 + abs x)
+                | CellValue.Number _, CellValue.Error "CYCLE" -> true
+                | _ -> false) |> Seq.length)
+    eq "iteration: the file's circular model keeps its values through a full recalculation" moved 0
+
 printfn ""
 printfn "XLSX bridge tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

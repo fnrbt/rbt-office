@@ -35,7 +35,7 @@ let wbOf (sheets: (string * string * SpreadsheetModel) list) : Workbook =
       ActiveSheet = (let (id, _, _) = List.head sheets in id)
       Tables = Map.empty
       Names = Map.empty
-      NameInfo = Map.empty }
+      NameInfo = Map.empty; Iteration = None }
 let sheetModel id (wb: Workbook) = wb.Sheets.[id].Model
 
 // --- 1. Print area, print titles and manual breaks follow the edit ----------
