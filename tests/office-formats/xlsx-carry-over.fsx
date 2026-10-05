@@ -222,9 +222,9 @@ do
     let wb = loadBytes (bytesOf "real-world/dcf-stock-analysis.xlsx")
     let package = XlsxWriter.packageFromReaderWorkbook wb
     let links : XlsxWriter.XlsxHyperlink list =
-        [ { Range = "B4"; Target = "https://example.com/a"; IsInternal = false }
-          { Range = "C6:D7"; Target = "https://example.com/b?x=1&y=2"; IsInternal = false }
-          { Range = "A10"; Target = "Sheet1!A1"; IsInternal = true } ]
+        [ { Range = "B4"; Target = "https://example.com/a"; IsInternal = false; Tooltip = None; Display = None }
+          { Range = "C6:D7"; Target = "https://example.com/b?x=1&y=2"; IsInternal = false; Tooltip = None; Display = None }
+          { Range = "A10"; Target = "Sheet1!A1"; IsInternal = true; Tooltip = None; Display = None } ]
     let withLinks = { package with Sheets = package.Sheets |> List.mapi (fun i sheet -> if i = 0 then { sheet with Hyperlinks = links } else sheet) }
     let bytes = XlsxWriter.writeWorkbookPackageBytes withLinks
     let imported = Bridge.Import.importWorkbook (loadBytes bytes)

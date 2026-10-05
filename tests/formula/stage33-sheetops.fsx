@@ -108,8 +108,8 @@ eq "small blocks see column styles too" (Ops.summarizeFormats partly (0, 2, 3, 6
 let merged = addMergedCell 2 1 3 4 sheet
 eq "a cell of a merged cell" (Ops.mergeRangeAt merged (at 3 3) |> Option.map Ops.rangeText) (Some "B3:E4")
 eq "a cell outside it" (Ops.mergeRangeAt merged (at 4 3)) None
-let linked = { sheet with Hyperlinks = [ { Range = block 0 0 2 2; Target = "https://example.com/"; IsInternal = false }
-                                         { Range = block 1 1 1 1; Target = "Sheet2!A1"; IsInternal = true } ] }
+let linked = { sheet with Hyperlinks = [ { Range = block 0 0 2 2; Target = "https://example.com/"; IsInternal = false; Tooltip = None; Display = None }
+                                         { Range = block 1 1 1 1; Target = "Sheet2!A1"; IsInternal = true; Tooltip = None; Display = None } ] }
 eq "the last link on a cell wins" (Ops.hyperlinkAt linked (at 1 1) |> Option.map (fun link -> link.Target)) (Some "Sheet2!A1")
 eq "a link on a range" (Ops.hyperlinkAt linked (at 2 0) |> Option.map (fun link -> link.Target)) (Some "https://example.com/")
 eq "no link" (Ops.hyperlinkAt linked (at 5 5)) None

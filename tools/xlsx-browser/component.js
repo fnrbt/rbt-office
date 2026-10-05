@@ -830,14 +830,14 @@ const cellAtPoint = (host, x, y) => {
     return node ? node.className : null;
 };
 // Where a cell is on screen (centre), from the grid's own geometry.
-const pointOfCell = async (grid, host, row, col) => {
+export const pointOfCell = async (grid, host, row, col) => {
     const { columnLeft, rowTop } = await import('/spreadsheet/Layout.js');
     const model = grid.GetModel(), { scroller } = parts(host);
     const x = 50 + (columnLeft(model, col) + columnLeft(model, col + 1)) / 2 - (col < model.FrozenCols ? 0 : scroller.scrollLeft);
     const y = 30 + (rowTop(model, row) + rowTop(model, row + 1)) / 2 - (row < model.FrozenRows ? 0 : scroller.scrollTop);
     return [x, y];
 };
-const mouse = async (grid, host, type, row, col, options = {}) => {
+export const mouse = async (grid, host, type, row, col, options = {}) => {
     const [x, y] = await pointOfCell(grid, host, row, col), box = host.getBoundingClientRect();
     const target = type === 'mousemove' || type === 'mouseup' ? document : (document.elementFromPoint(box.left + x, box.top + y) ?? parts(host).content);
     target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, clientX: box.left + x, clientY: box.top + y, button: 0, ...options }));

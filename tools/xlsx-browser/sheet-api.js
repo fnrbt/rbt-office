@@ -1,7 +1,7 @@
 // Browser side of run.mjs, third part: the host API of the Spreadsheet component - what a host
 // application builds its toolbars, dialogs and panels on. One check per group of members
 // ("api-..."). Each check returns a list of "ok ..." / "FAIL ..." lines.
-import { checks, makeLog, mountGrid, bytesOf, frame, OF, createSpreadsheet, container } from '/component.js';
+import { checks, makeLog, mountGrid, bytesOf, frame, OF, createSpreadsheet, container, mouse, pointOfCell, partsOf } from '/component.js';
 
 // The message of what a call throws, or null when it returns.
 export const thrown = (run) => { try { run(); return null; } catch (e) { return String(e && e.message || e); } };
@@ -1953,6 +1953,137 @@ checks['api-comments'] = async () => {
                     [[['Yes & checked', 'Bob Reply'], ['Good', 'Ann Author']], 'new note', ['picture', 'chart']]);
             } finally { saved.close(); }
         } finally { file.close(); }
+        off();
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
+
+// Hyperlinks: set, read and removed as undo steps; followed inside the workbook, handed to the
+// host when they lead out of it (the grid never navigates); through XLSX.
+checks['api-hyperlinks'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        const { createEmpty } = await import('/spreadsheet/Model.js');
+        grid.InstallWorkbook([grid.GetModel(), createEmpty(200, 20)], ['Data', 'Other sheet'], 0, undefined);
+        const node = (row, col) => host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"]`);
+        const link = (row, col) => grid.GetHyperlink(row, col);
+        grid.SetCell(0, 0, 'our site'); grid.SetCell(5, 0, '=LEN(A2)');
+        check('no link yet', [link(0, 0), grid.GetHyperlinks()], [null, []]);
+        const changes = []; const off = grid.OnChange((change) => changes.push(change));
+        const r0 = grid.GetRevision();
+
+        // ---- set ----
+        grid.SetHyperlink('A1', 'https://example.com/page?a=1&b=2', undefined, 'Opens the site');
+        check('a link to an address', link(0, 0), { range: 'A1', target: 'https://example.com/page?a=1&b=2', isInternal: false, tooltip: 'Opens the site', display: null, safe: true });
+        check('GetCell has the same object', grid.GetCell(0, 0).hyperlink, link(0, 0));
+        await frame();
+        const style = getComputedStyle(node(0, 0));
+        check('the cell keeps its text and looks like a link: blue, underlined, with the screen tip', [node(0, 0).textContent, style.color, style.textDecorationLine.includes('underline') || node(0, 0).innerHTML.includes('underline'), node(0, 0).getAttribute('title'), node(0, 0).getAttribute('data-link')],
+            ['our site', 'rgb(5, 99, 193)', true, 'Opens the site', 'external']);
+        check('it is a change with a new revision', [changes.length, grid.GetRevision() !== r0], [1, true]);
+        grid.Undo();
+        await frame();
+        check('undo: no link, no look, the revision before', [link(0, 0), grid.GetCell(0, 0).format.underline, grid.GetCell(0, 0).format.textColor, node(0, 0).getAttribute('data-link'), grid.GetRevision() === r0], [null, false, null, null, true]);
+        grid.Redo();
+        check('redo', link(0, 0)?.target, 'https://example.com/page?a=1&b=2');
+        grid.SetHyperlink('A2', 'mailto:someone@example.com');
+        check('an empty cell shows the target; what reads the cell is recalculated', [grid.GetCell(1, 0).value, grid.GetCell(5, 0).value, link(1, 0).safe], ['mailto:someone@example.com', 26, true]);
+        grid.Undo();
+        check('... one undo step, values too', [grid.GetCell(1, 0).value, grid.GetCell(5, 0).value, link(1, 0)], [null, 0, null]);
+        grid.SetHyperlink('A2', 'mailto:someone@example.com', 'Write to us');
+        check('display becomes the text of the cell', [grid.GetCell(1, 0).value, link(1, 0).display, grid.GetCell(5, 0).value], ['Write to us', 'Write to us', 11]);
+        grid.SetHyperlink('A3', "'Other sheet'!C5:D6", 'Go to the other sheet');
+        grid.SetHyperlink('A4', '#B10');
+        grid.SetDefinedName('Corner', "='Other sheet'!$F$8");
+        grid.SetHyperlink('B4', 'Corner', 'the corner');
+        check('places in the workbook: another sheet, this sheet, a defined name', [link(2, 0), link(3, 0), link(3, 1)].map((l) => [l.target, l.isInternal, l.safe]), [["'Other sheet'!C5:D6", true, false], ['B10', true, false], ['Corner', true, false]]);
+        grid.SetHyperlink('A7', 'javascript:alert(document.cookie)', 'click me');
+        grid.SetHyperlink('A8', 'file:///etc/passwd', 'a file');
+        check('any address is stored, only http / https / mailto / tel are safe', [link(6, 0), link(7, 0)].map((l) => [l.target, l.isInternal, l.safe]), [['javascript:alert(document.cookie)', false, false], ['file:///etc/passwd', false, false]]);
+        grid.SetHyperlink('C10:D11 F10', 'tel:+15550100', 'call');
+        check('a link on several areas', grid.GetHyperlinks().filter((l) => l.target === 'tel:+15550100').map((l) => l.range), ['C10:D11', 'F10']);
+        check('every cell of a range has it', [link(10, 3)?.range, link(9, 5)?.range, link(11, 3)], ['C10:D11', 'F10', null]);
+
+        // ---- activation: the grid follows links inside the workbook and never navigates ----
+        const activated = []; const offLink = grid.OnHyperlinkActivate((event) => activated.push(event));
+        const opened = []; const realOpen = window.open; window.open = (...args) => { opened.push(args); return null; };
+        const href = location.href;
+        let navigations = 0; const onUnload = () => { navigations++; }; window.addEventListener('beforeunload', onUnload);
+        const click = async (row, col, options = {}) => { await mouse(grid, host, 'mousedown', row, col, options); await mouse(grid, host, 'mouseup', row, col, options); await mouse(grid, host, 'click', row, col, options); await frame(); };
+        await click(0, 0);
+        check('a plain click selects the cell and activates nothing', [grid.GetSelectionRef(), activated.length], ['A1', 0]);
+        await click(0, 0, { ctrlKey: true });
+        check('Ctrl+click on an address hands it to the host', activated.splice(0), [{ target: 'https://example.com/page?a=1&b=2', row: 0, col: 0, sheetIndex: 0, isInternal: false, safe: true, tooltip: 'Opens the site', followed: false }]);
+        await click(6, 0, { metaKey: true });
+        check('a javascript: address is reported as unsafe', activated.splice(0).map((e) => [e.target, e.safe]), [['javascript:alert(document.cookie)', false]]);
+        check('... and nothing was opened, run or navigated to', [opened.length, location.href === href, navigations, document.querySelectorAll('a[href^="javascript"]').length], [0, true, 0, 0]);
+        await click(3, 0, { ctrlKey: true });
+        check('Ctrl+click on a place of this sheet goes there', [grid.GetActiveSheetIndex(), grid.GetSelectionRef(), activated.length], [0, 'B10', 0]);
+        await click(2, 0, { ctrlKey: true });
+        check('... of another sheet: the sheet is switched to and the range selected', [grid.GetActiveSheetIndex(), grid.GetSelectionRef(), activated.length], [1, 'C5:D6', 0]);
+        grid.SwitchSheet(0);
+        check('ActivateHyperlink does the same: a defined name', [pick(grid.ActivateHyperlink(3, 1), ['target', 'isInternal', 'followed']), grid.GetActiveSheetIndex(), grid.GetSelectionRef()], [{ target: 'Corner', isInternal: true, followed: true }, 1, 'F8']);
+        grid.SwitchSheet(0);
+        check('... an address: the event, returned too', [grid.ActivateHyperlink(1, 0).target, activated.splice(0).map((e) => e.target)], ['mailto:someone@example.com', ['mailto:someone@example.com']]);
+        check('... a cell without a link: null', grid.ActivateHyperlink(20, 5), null);
+        // Read-only: a plain click follows.
+        grid.SetReadOnly(true);
+        await frame();
+        check('in a viewer the pointer says so', getComputedStyle(node(0, 0)).cursor, 'pointer');
+        await click(7, 0);
+        check('a plain click in read-only mode activates', activated.splice(0).map((e) => [e.target, e.safe]), [['file:///etc/passwd', false]]);
+        await click(3, 0);
+        check('... and follows a place in the workbook', grid.GetSelectionRef(), 'B10');
+        await click(4, 4);
+        check('... a cell without a link is just selected', [grid.GetSelectionRef(), activated.length], ['E5', 0]);
+        grid.SetReadOnly(false);
+        offLink();
+        await click(0, 0, { ctrlKey: true });
+        check('no event after unsubscribing', [activated.length, opened.length, location.href === href, navigations], [0, 0, true, 0]);
+        window.open = realOpen; window.removeEventListener('beforeunload', onUnload);
+
+        // ---- with sheets and cells ----
+        grid.RenameSheet(1, 'Elsewhere');
+        check('a renamed sheet: links to it follow', link(2, 0).target, 'Elsewhere!C5:D6');
+        grid.Undo();
+        grid.InsertRows(0, 1);
+        check('links move with their rows', [link(1, 0)?.target, link(0, 0)], ['https://example.com/page?a=1&b=2', null]);
+        grid.Undo();
+
+        // ---- remove ----
+        const underlined = () => [grid.GetCell(0, 0).format.underline, grid.GetCell(0, 0).format.textColor, grid.GetCell(0, 0).value];
+        check('RemoveHyperlink: how many, and the look goes while the text stays', [grid.RemoveHyperlink('A1'), link(0, 0), underlined()], [1, null, [false, null, 'our site']]);
+        grid.Undo();
+        check('... one undo step', [link(0, 0)?.target, underlined()], ['https://example.com/page?a=1&b=2', [true, '#0563C1', 'our site']]);
+        check('part of a linked range: the rest keeps the link', [grid.RemoveHyperlink('C10:C11'), link(9, 2), link(9, 3)?.range, grid.RemoveHyperlink('M1:N2')], [1, null, 'D10:D11', 0]);
+
+        // ---- what is refused ----
+        check('no range', /^SetHyperlink: /.test(thrown(() => grid.SetHyperlink(undefined, 'https://a.b')) ?? ''), true);
+        check('not a range', /is not a range/.test(thrown(() => grid.SetHyperlink('nowhere!', 'https://a.b')) ?? ''), true);
+        check('an empty target', thrown(() => grid.SetHyperlink('A1', '  ')), 'SetHyperlink: the target is empty (RemoveHyperlink removes a link)');
+        check('a tooltip that is not a text', /^SetHyperlink: /.test(thrown(() => grid.SetHyperlink('A1', 'https://a.b', null, 5)) ?? ''), true);
+        check('a cell outside the sheet', /^GetHyperlink: /.test(thrown(() => grid.GetHyperlink(0, -1)) ?? ''), true);
+
+        // ---- through XLSX ----
+        const before = grid.GetHyperlinks();
+        const bytes = await grid.ExportXlsx();
+        const sheetParts = await partsOf(bytes, /^xl\/worksheets\/(_rels\/)?sheet1\.xml(\.rels)?$/);
+        const relsText = atob(Object.entries(sheetParts).find(([name]) => name.endsWith('.rels'))[1]);
+        check('addresses are external relationships of the sheet', [(relsText.match(/TargetMode="External"/g) ?? []).length, /Target="javascript:alert\(document\.cookie\)" TargetMode="External"/.test(relsText)], [before.filter((l) => !l.isInternal).length, true]);
+        const again = mountGrid();
+        try {
+            await again.grid.ImportXlsx(bytes);
+            check('the links come back from the file', again.grid.GetHyperlinks(), before);
+            check('... with the text and the look of their cells', [again.grid.GetCell(1, 0).value, again.grid.GetCell(1, 0).format.underline, again.grid.GetCell(0, 0).value], ['Write to us', true, 'our site']);
+            again.grid.RemoveHyperlink('A2');
+            again.grid.SetHyperlink('E1', 'https://example.org/', 'new', 'tip');
+            const twice = await reopened(again.grid);
+            try {
+                check('... and so do the edits of the reopened workbook', [twice.grid.GetHyperlink(1, 0), twice.grid.GetHyperlink(0, 4), twice.grid.GetHyperlinks().length], [null, { range: 'E1', target: 'https://example.org/', isInternal: false, tooltip: 'tip', display: 'new', safe: true }, before.length]);
+            } finally { twice.close(); }
+        } finally { again.close(); }
         off();
     } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
     close();

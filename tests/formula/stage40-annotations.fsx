@@ -79,5 +79,44 @@ let shifted = applyStructureEdit (InsertRows (0, 2)) (Ops.setComment (at 0 3) "f
 eq "insert rows: notes and threads move" (Ops.allComments shifted |> List.map (fun c -> c.Cell)) [ at 2 3; at 3 1 ]
 eq "delete the row: the comments go" (applyStructureEdit (DeleteRows (1, 1)) replied2 |> Ops.allComments) []
 
+// ---- hyperlinks -----------------------------------------------------------------
+let linkOf target isInternal : SheetHyperlink = { Range = range 0 0 0 0; Target = target; IsInternal = isInternal; Tooltip = None; Display = None }
+eq "scheme" ([ "https://example.com"; "MAILTO:a@b.c"; "tel:+1"; "javascript:alert(1)"; "Sheet2!A1"; "no scheme"; "C:\\file.txt"; "" ] |> List.map Ops.hyperlinkScheme)
+    [ "https"; "mailto"; "tel"; "javascript"; ""; ""; "c"; "" ]
+eq "safe: http, https, mailto, tel and nothing else" ([ "http://a"; "HTTPS://a"; "mailto:a@b.c"; "tel:1"; "javascript:alert(1)"; "data:text/html,x"; "file:///etc/passwd"; "ftp://a"; "vbscript:x"; "example.com" ] |> List.map (fun t -> Ops.hyperlinkIsSafe (linkOf t false)))
+    [ true; true; true; true; false; false; false; false; false; false ]
+eq "safe: a place in the workbook is not an address" (Ops.hyperlinkIsSafe (linkOf "Sheet2!A1" true)) false
+let classify = Ops.classifyHyperlinkTarget (fun name -> name = "Totals")
+eq "classify" ([ "https://example.com/x#y"; "#Sheet2!A1"; "Sheet2!A1"; "'My sheet'!B2:C3"; "A1"; "Totals"; "#Totals"; "mailto:a@b.c"; "example.com/page"; "javascript:alert(1)"; " tel:5 " ] |> List.map classify)
+    [ "https://example.com/x#y", false; "Sheet2!A1", true; "Sheet2!A1", true; "'My sheet'!B2:C3", true; "A1", true; "Totals", true; "Totals", true; "mailto:a@b.c", false; "example.com/page", false; "javascript:alert(1)", false; "tel:5", false ]
+let linkBase = sheetOf [ at 0 0, cell (CellValue.String "site"); at 2 0, cell (CellValue.Number 5.0); at 3 0, { cell (CellValue.String "red") with Format = { defaultFormat with TextColor = Some "#FF0000" } } ]
+let linkedOnce = Ops.setHyperlink [ range 0 0 0 0 ] "https://example.com" false None (Some "the site") linkBase
+eq "set: the link" (linkedOnce.Hyperlinks |> List.map (fun l -> l.Range, l.Target, l.IsInternal, l.Tooltip, l.Display)) [ range 0 0 0 0, "https://example.com", false, Some "the site", None ]
+eq "set: the text stays, the cell looks like a link" (getCell (at 0 0) linkedOnce |> Option.map (fun d -> d.Value, d.Format.TextColor, d.Format.Underline)) (Some (CellValue.String "site", Some "#0563C1", true))
+let linkedEmpty = Ops.setHyperlink [ range 1 1 1 1 ] "https://example.com/a" false None None linkBase
+eq "set: an empty cell shows the target" (getCell (at 1 1) linkedEmpty |> Option.map (fun d -> d.Value)) (Some (CellValue.String "https://example.com/a"))
+let linkedShown = Ops.setHyperlink [ range 2 0 2 0 ] "Sheet2!A1" true (Some "go") None linkBase
+eq "set: display replaces the text" (getCell (at 2 0) linkedShown |> Option.map (fun d -> d.Value), linkedShown.Hyperlinks.[0].Display, linkedShown.Hyperlinks.[0].IsInternal) (Some (CellValue.String "go"), Some "go", true)
+eq "set: a cell with a colour of its own keeps it" (Ops.setHyperlink [ range 3 0 3 0 ] "https://x.y" false None None linkBase |> getCell (at 3 0) |> Option.map (fun d -> d.Format.TextColor, d.Format.Underline)) (Some (Some "#FF0000", false))
+let linkedBlock = Ops.setHyperlink [ range 0 0 3 1 ] "https://example.com/block" false None None linkedOnce
+eq "set over a link: the new one replaces it" (linkedBlock.Hyperlinks |> List.map (fun l -> l.Range, l.Target)) [ range 0 0 3 1, "https://example.com/block" ]
+eq "set on a block: only cells that hold something are styled, none is made but the first" (linkedBlock.Cells |> Map.toList |> List.map (fun (a, d) -> a, d.Format.Underline)) [ at 0 0, true; at 2 0, true; at 3 0, false ]
+eq "lookup: the block's cells have the link, others none" (Ops.hyperlinkAt linkedBlock (at 2 1) |> Option.map (fun l -> l.Target), Ops.hyperlinkAt linkedBlock (at 4 0)) (Some "https://example.com/block", None)
+let overlaid = Ops.setHyperlink [ range 1 0 1 0 ] "Sheet2!B2" true None None linkedBlock
+eq "set inside a block: the block is cut around the cell" (overlaid.Hyperlinks |> List.map (fun l -> l.Range, l.Target) |> List.sort)
+    ([ range 0 0 0 1, "https://example.com/block"; range 1 1 1 1, "https://example.com/block"; range 2 0 3 1, "https://example.com/block"; range 1 0 1 0, "Sheet2!B2" ] |> List.sort)
+eq "lookup: the cell's own link" (Ops.hyperlinkAt overlaid (at 1 0) |> Option.map (fun l -> l.Target), Ops.hyperlinkAt overlaid (at 1 1) |> Option.map (fun l -> l.Target)) (Some "Sheet2!B2", Some "https://example.com/block")
+let unlinked, removedCount = Ops.removeHyperlinks [ range 0 0 0 0 ] linkedOnce
+eq "remove: the link and its look go, the text stays" (removedCount, unlinked.Hyperlinks, getCell (at 0 0) unlinked |> Option.map (fun d -> d.Value, d.Format.TextColor, d.Format.Underline)) (1, [], Some (CellValue.String "site", None, false))
+let partly, partlyCount = Ops.removeHyperlinks [ range 0 0 1 1 ] linkedBlock
+eq "remove part of a block: the rest keeps the link" (partlyCount, partly.Hyperlinks |> List.map (fun l -> l.Range), getCell (at 2 0) partly |> Option.map (fun d -> d.Format.Underline), getCell (at 0 0) partly |> Option.map (fun d -> d.Format.Underline)) (1, [ range 2 0 3 1 ], Some true, Some false)
+eq "remove where there is none: the same model" (Ops.removeHyperlinks [ range 8 8 9 9 ] linkedOnce |> fun (m, n) -> obj.ReferenceEquals(m, linkedOnce), n) (true, 0)
+eq "remove: the target shown in an empty cell stays as text" (Ops.removeHyperlinks [ range 1 1 1 1 ] linkedEmpty |> fst |> getCell (at 1 1) |> Option.map (fun d -> d.Value, d.Format.Underline)) (Some (CellValue.String "https://example.com/a", false))
+eq "a whole column: no cell is made" (Ops.setHyperlink [ { From = at 0 5; To = at Ops.maxSheetRow 5 } ] "https://example.com" false None None (createEmpty 60 10) |> fun m -> m.Cells.Count, m.Hyperlinks.Length) (1, 1)
+eq "links follow rows" ((applyStructureEdit (InsertRows (0, 3)) overlaid).Hyperlinks |> List.map (fun l -> l.Range.From.Row) |> List.sort) [ 3; 4; 4; 5 ]
+// (Many single-cell links are looked up by cell.)
+let manyLinks = { createEmpty 3000 10 with Hyperlinks = [ for row in 0 .. 1999 -> { Range = range row 1 row 1; Target = sprintf "https://example.com/%d" row; IsInternal = false; Tooltip = None; Display = None } ] }
+eq "lookup among many" ([ 0; 1234; 1999; 2000 ] |> List.map (fun row -> Ops.hyperlinkAt manyLinks (at row 1) |> Option.map (fun l -> l.Target))) [ Some "https://example.com/0"; Some "https://example.com/1234"; Some "https://example.com/1999"; None ]
+
 printfn "\nAnnotation tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

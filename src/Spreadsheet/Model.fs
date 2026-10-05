@@ -746,6 +746,11 @@ type SheetHyperlink = {
     Range: CellRange
     Target: string
     IsInternal: bool
+    /// The screen tip shown while the pointer is over the link (`tooltip`).
+    Tooltip: string option
+    /// The text the file says the link shows (`display`); the cells hold
+    /// their own text, this is carried beside them.
+    Display: string option
 }
 
 /// The default cell style of a run of columns (`<col min max style>`): what

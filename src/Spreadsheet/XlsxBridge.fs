@@ -903,7 +903,9 @@ module Import =
                 |> Option.map (fun (sr, sc, er, ec) ->
                     ({ Range = { From = { Row = sr; Col = sc }; To = { Row = er; Col = ec } }
                        Target = link.Target
-                       IsInternal = link.IsInternal } : SheetHyperlink)))
+                       IsInternal = link.IsInternal
+                       Tooltip = link.Tooltip
+                       Display = link.Display } : SheetHyperlink)))
         // Default cell styles of columns, in the order `XlsxWriter.
         // packageFromReaderWorkbook` lists them (`Source` is that position).
         let columnStyles =
@@ -1422,7 +1424,7 @@ module Export =
 
     let private hyperlinks (model: SpreadsheetModel) : XlsxWriter.XlsxHyperlink list =
         model.Hyperlinks
-        |> List.map (fun link -> ({ Range = cellRangeText link.Range; Target = link.Target; IsInternal = link.IsInternal } : XlsxWriter.XlsxHyperlink))
+        |> List.map (fun link -> ({ Range = cellRangeText link.Range; Target = link.Target; IsInternal = link.IsInternal; Tooltip = link.Tooltip; Display = link.Display } : XlsxWriter.XlsxHyperlink))
 
     let private dataTables (model: SpreadsheetModel) : XlsxReader.DataTableFormula list =
         model.DataTables

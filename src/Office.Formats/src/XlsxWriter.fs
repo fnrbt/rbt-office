@@ -420,6 +420,8 @@ type XlsxHyperlink = {
     Range: string
     Target: string
     IsInternal: bool
+    Tooltip: string option
+    Display: string option
 }
 
 /// What a sheet's view shows besides panes and grid lines.
@@ -1415,10 +1417,13 @@ let private hyperlinksXml hyperlinks =
         let body =
             hyperlinks
             |> List.mapi (fun i h ->
+                let extra =
+                    (match h.Tooltip with Some tip -> " " + attr "tooltip" tip | None -> "")
+                    + (match h.Display with Some text -> " " + attr "display" text | None -> "")
                 if h.IsInternal then
-                    sprintf "<hyperlink %s %s/>" (attr "ref" h.Range) (attr "location" h.Target)
+                    sprintf "<hyperlink %s %s%s/>" (attr "ref" h.Range) (attr "location" h.Target) extra
                 else
-                    sprintf "<hyperlink %s r:id=\"rIdHyperlink%d\"/>" (attr "ref" h.Range) (i + 1))
+                    sprintf "<hyperlink %s r:id=\"rIdHyperlink%d\"%s/>" (attr "ref" h.Range) (i + 1) extra)
             |> String.concat ""
         "<hyperlinks>" + body + "</hyperlinks>"
 
@@ -2347,7 +2352,7 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
                       ShowErrorMessage = dv.ShowErrorMessage
                       ShowInputMessage = dv.ShowInputMessage })
               ConditionalFormats = sheet.ConditionalFormats
-              Hyperlinks = sheet.Hyperlinks |> List.map (fun h -> { Range = h.Range; Target = h.Target; IsInternal = h.IsInternal })
+              Hyperlinks = sheet.Hyperlinks |> List.map (fun h -> { Range = h.Range; Target = h.Target; IsInternal = h.IsInternal; Tooltip = h.Tooltip; Display = h.Display })
               PageMargins =
                 sheet.PageMargins |> Option.map (fun m -> { Top = m.Top; Bottom = m.Bottom; Left = m.Left; Right = m.Right; Header = m.Header; Footer = m.Footer })
               PageSetup =

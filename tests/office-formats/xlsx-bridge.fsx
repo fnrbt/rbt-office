@@ -666,6 +666,34 @@ eq "comments: the deleted note is not in the file" (recommentedBack.Sheets.[0].C
 let uncommentedBack = reread (Bridge.Export.toWorkbookOut (singleInput (recommented |> Ops.deleteComment (addr 6 2)) (Some (Bridge.Import.importWorkbook commentedBack).Source)))
 eq "comments: none left" (uncommentedBack.Sheets.[0].Comments.Length, uncommentedBack.Sheets.[0].Extras.ThreadedComments.Length) (0, 0)
 
+// ---- hyperlinks set through the host API (SheetOps) ----------------------------
+let cellRange a b c d : CellRange = { From = addr a b; To = addr c d }
+let linksOfModel (model: SpreadsheetModel) = model.Hyperlinks |> List.map (fun l -> l.Range, l.Target, l.IsInternal, l.Tooltip, l.Display)
+let linkedModel =
+    fresh
+    |> Ops.setHyperlink [ cellRange 0 0 0 0 ] "https://example.com/a?x=1&y=2#part" false None (Some "the \"site\" & more")
+    |> Ops.setHyperlink [ cellRange 6 1 7 2 ] "'Hidden one'!A1" true (Some "go there") None
+    |> Ops.setHyperlink [ cellRange 9 0 9 0 ] "mailto:someone@example.com" false (Some "write") (Some "mail")
+let linkedInput (model: SpreadsheetModel) (source: Bridge.XlsxSource option) : Bridge.ExportInput =
+    { Sheets = [| model; createEmpty 10 5 |]; Names = [| "First"; "Hidden one" |]; Visible = [| true; true |]; ActiveSheetIndex = 0; NameInfo = Map.empty; DefinedNames = Map.empty; Source = source; Macros = None }
+let linkedBack = reread (Bridge.Export.toWorkbookOut (linkedInput linkedModel None))
+eq "links: written with target, tooltip and display"
+    (linkedBack.Sheets.[0].Hyperlinks |> List.map (fun l -> l.Range, l.Target, l.IsInternal, l.Tooltip, l.Display))
+    [ "A1", "https://example.com/a?x=1&y=2#part", false, Some "the \"site\" & more", None
+      "B7:C8", "'Hidden one'!A1", true, None, Some "go there"
+      "A10", "mailto:someone@example.com", false, Some "mail", Some "write" ]
+let linkedImported = Bridge.Import.importWorkbook linkedBack
+let linkedAgain = linkedImported.Sheets.[0].Model
+eq "links: read back as they were" (linksOfModel linkedAgain) (linksOfModel linkedModel)
+eq "links: the display text is the cell's text, with the look of a link" (getCell (addr 6 1) linkedAgain |> Option.map (fun d -> d.Value, d.Format.TextColor, d.Format.Underline)) (Some (CellValue.String "go there", Some "#0563C1", true))
+// Edited in the imported workbook: one removed, one re-pointed, one untouched.
+let relinked = linkedAgain |> Ops.removeHyperlinks [ cellRange 9 0 9 0 ] |> fst |> Ops.setHyperlink [ cellRange 6 1 6 1 ] "tel:+15550100" false None None
+let relinkedBack = reread (Bridge.Export.toWorkbookOut (linkedInput relinked (Some linkedImported.Source)))
+eq "links: edits of an imported sheet are written"
+    (relinkedBack.Sheets.[0].Hyperlinks |> List.map (fun l -> l.Range, l.Target, l.IsInternal) |> List.sort)
+    ([ "A1", "https://example.com/a?x=1&y=2#part", false; "C7", "'Hidden one'!A1", true; "B8:C8", "'Hidden one'!A1", true; "B7", "tel:+15550100", false ] |> List.sort)
+eq "links: none left when all are removed" ((reread (Bridge.Export.toWorkbookOut (linkedInput (Ops.removeHyperlinks [ cellRange 0 0 20 5 ] relinked |> fst) (Some linkedImported.Source)))).Sheets.[0].Hyperlinks) []
+
 printfn ""
 printfn "XLSX bridge tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

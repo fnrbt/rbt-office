@@ -228,7 +228,7 @@ let syntheticSheet : XlsxWriter.XlsxSheetOut =
       DataValidations =
         [ { Sqref = "A2"; ValidationType = "decimal"; Operator = Some "between"; Formula1 = Some "1"; Formula2 = Some "100"; AllowBlank = true; ShowDropDown = true; ErrorMessage = Some "No"; InputMessage = Some "Pick"; ErrorTitle = Some "Bad"; PromptTitle = Some "Hint"; ErrorStyle = Some "warning"; ShowErrorMessage = true; ShowInputMessage = true } ]
       ConditionalFormats = []
-      Hyperlinks = [ { Range = "A1"; Target = "https://example.com"; IsInternal = false } ]
+      Hyperlinks = [ { Range = "A1"; Target = "https://example.com"; IsInternal = false; Tooltip = None; Display = None } ]
       PageMargins = Some { Top = 0.5; Bottom = 0.5; Left = 0.6; Right = 0.6; Header = 0.2; Footer = 0.2 }
       PageSetup = Some { Orientation = Some "landscape"; FitToPage = true; FitToWidth = 1; FitToHeight = 1; Scale = 90; PaperSize = Some 9; FirstPageNumber = 3; UseFirstPageNumber = true; PageOrder = Some "overThenDown"; BlackAndWhite = false; CellComments = Some "asDisplayed" }
       PrintOptions = Some { GridLines = true; Headings = true; HorizontalCentered = true; VerticalCentered = false }

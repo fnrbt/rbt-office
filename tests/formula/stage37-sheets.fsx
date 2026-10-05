@@ -33,7 +33,7 @@ let data =
     { sheetOf [ at 0 0, num 1.0; at 1 0, num 2.0; at 2 0, num 3.0; at 3 0, fml "=SUM(A1:A3)"; at 4 0, fml "=Data!A1+Summary!B1" ] with
         ConditionalFormats = [ { Id = 1; Ranges = [ range 0 0 2 0 ]; Format = { Rule = Expression "Summary!$B$1>Data!$A$1"; Style = defaultFormat }; Priority = 1; StopIfTrue = false } ]
         Validations = [ { Id = 1; Ranges = [ range 0 2 5 2 ]; Validation = validationOf (ListSource "Summary!$B$1:$B$3") } ]
-        Hyperlinks = [ { Range = range 6 0 6 0; Target = "Summary!A1"; IsInternal = true }; { Range = range 7 0 7 0; Target = "https://example.com/Summary!A1"; IsInternal = false } ] }
+        Hyperlinks = [ { Range = range 6 0 6 0; Target = "Summary!A1"; IsInternal = true; Tooltip = None; Display = None }; { Range = range 7 0 7 0; Target = "https://example.com/Summary!A1"; IsInternal = false; Tooltip = None; Display = None } ] }
 let summary =
     sheetOf [ at 0 0, fml "=SUM(Data!A1:A3)"; at 1 0, fml "=Data!$A$4*2"; at 2 0, fml "=COUNT(data!A:A)+Rate"; at 3 0, fml "=\"Data!A1\"&Other!A1"
               at 0 1, num 10.0; at 4 0, fml "=SUM(DataTotal)"; at 5 0, fml "=Local" ]

@@ -362,9 +362,12 @@ let valueKind (value: CellValue) : string =
     | CellValue.Error _ -> "error"
     | CellValue.Formula _ -> "empty"
 
-/// A hyperlink: { target, isInternal, range }.
+/// A hyperlink: { range, target, isInternal, tooltip, display, safe } -
+/// `isInternal`: a place in the workbook ("Sheet2!A1", a defined name), else
+/// an address; `safe`: an address a host may open (http, https, mailto, tel).
 let hyperlinkToObj (link: SheetHyperlink) : obj =
-    createObj [ "target" ==> link.Target; "isInternal" ==> link.IsInternal; "range" ==> rangeText link.Range ]
+    createObj [ "range" ==> rangeText link.Range; "target" ==> link.Target; "isInternal" ==> link.IsInternal
+                "tooltip" ==> orNull link.Tooltip; "display" ==> orNull link.Display; "safe" ==> hyperlinkIsSafe link ]
 
 // --- data validation ---------------------------------------------------------
 // The `rule` object of a validation, the same in both directions (`type` says

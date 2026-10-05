@@ -217,6 +217,7 @@ let private sameSheetContent (a: SpreadsheetModel) (b: SpreadsheetModel) =
         && a.VeryHidden = b.VeryHidden
         && sameRef a.Drawings b.Drawings
         && sameRef a.Threads b.Threads
+        && (sameRef a.Hyperlinks b.Hyperlinks || a.Hyperlinks = b.Hyperlinks)
         && a.Macros = b.Macros)
 
 /// A comment thread as the text of a tooltip: the comment, then its replies.
@@ -366,6 +367,7 @@ type private CellNode = {
     /// The render pass that last wanted the node.
     mutable Seen: int
     mutable HasTitle: bool
+    mutable HasLink: bool
     /// The cell's text is wider than the cell: how it is drawn (run over the
     /// empty cells beside it, or cut off) depends on its neighbours.
     mutable Wide: bool
@@ -1849,6 +1851,32 @@ type Spreadsheet(container: Element) =
     let commentAuthorArg (memberName: string) (value: obj) : string option =
         Host.optionalArg (Host.stringArg memberName "the author") value |> Option.filter (fun name -> name.Trim() <> "")
 
+    // --- hyperlinks ---------------------------------------------------------------
+    let hyperlinkListeners = ResizeArray<obj -> unit>()
+    /// Change the hyperlinks of the active sheet, with the text and the look
+    /// of the linked cells, as one undoable step. False when nothing changed.
+    let changeHyperlinks (description: string) (change: SpreadsheetModel -> SpreadsheetModel) : bool =
+        let cellsBefore, spillBefore, linksBefore = model.Cells, model.Spill, model.Hyperlinks
+        let changed = change model
+        let cellsAfter, linksAfter = changed.Cells, changed.Hyperlinks
+        if sameRef cellsBefore cellsAfter && (sameRef linksBefore linksAfter || linksBefore = linksAfter) then false
+        else
+            model <- { model with Cells = cellsAfter; Hyperlinks = linksAfter } |> invalidateFilterProjection
+            let command =
+                { Undo = (fun m -> { restoreCellMapWithSpill cellsBefore spillBefore m with Hyperlinks = linksBefore })
+                  Redo = (fun m -> { restoreCellMap cellsAfter m with Hyperlinks = linksAfter })
+                  Description = description }
+            // (A link can give its first cell a text: what reads the cell follows.)
+            let sameValues =
+                sameRef cellsBefore cellsAfter
+                || (cellsBefore.Count = cellsAfter.Count
+                    && Seq.forall2 (fun (KeyValue(a, before: CellData)) (KeyValue(b, after: CellData)) -> a = b && (sameRef before after || before.Value = after.Value)) cellsBefore cellsAfter)
+            if sameValues then pushValueNeutral command
+            else
+                recalculateFormulas()
+                model <- pushCommand command model
+            true
+
     /// The workbook context, made now for a grid that has none yet.
     let ensureWorkbook () : Workbook =
         match workbook with
@@ -2934,6 +2962,19 @@ type Spreadsheet(container: Element) =
             appendChild cell indicator
             setAttribute cell "title" tooltip
             node.HasTitle <- true
+        // A linked cell says where it leads (its screen tip, else the
+        // target) unless it has a comment to show; in a viewer the pointer
+        // shows that a click follows it.
+        let link = if model.Hyperlinks.IsEmpty then None else SheetOps.hyperlinkAt model addr
+        (match link with
+         | Some link ->
+            setAttribute cell "data-link" (if link.IsInternal then "internal" else "external")
+            if readOnly then setStyle cell "cursor" "pointer"
+            node.HasLink <- true
+         | None ->
+            if node.HasLink then
+                removeAttribute cell "data-link"
+                node.HasLink <- false)
         match thread, cellData with
         | Some thread, _ -> marker "#7b61ff" (threadText thread)
         | None, Some { Comment = Some comment } ->
@@ -2941,9 +2982,14 @@ type Spreadsheet(container: Element) =
                               | Some author -> author + ":\n" + comment.Text
                               | None -> comment.Text)
         | _ ->
-            if node.HasTitle then
-                removeAttribute cell "title"
-                node.HasTitle <- false
+            match link with
+            | Some link ->
+                setAttribute cell "title" (link.Tooltip |> Option.defaultValue link.Target)
+                node.HasTitle <- true
+            | None ->
+                if node.HasTitle then
+                    removeAttribute cell "title"
+                    node.HasTitle <- false
         node.Pane <- pane
         node.Data <- (match storedData with Some data -> box data | None -> null)
         let near (data: CellData option) = match data with Some data -> box data | None -> null
@@ -3044,7 +3090,7 @@ type Spreadsheet(container: Element) =
                 | Some wb -> wb.Tables |> Map.toList |> List.map snd |> List.filter (fun table -> table.SheetId = activeSheetId)
                 | None -> []
             let styleInputs : obj array =
-                [| box model.ConditionalFormats; box model.Threads; box model.MergedCells; box model.ShowGridLines
+                [| box model.ConditionalFormats; box model.Threads; box model.Hyperlinks; box model.MergedCells; box model.ShowGridLines
                    box model.ShowHeaders; box model.ShowFormulas; box model.ShowZeros
                    box (match workbook with Some wb -> box wb.Tables | None -> null); box activeSheetIndex; box readOnly
                    (if model.ConditionalFormats.IsEmpty then null else box model.Cells)
@@ -3124,7 +3170,7 @@ type Spreadsheet(container: Element) =
                             else
                                 let element = createElement "div"
                                 setClassName element "spreadsheet-cell"
-                                { Element = element; Key = key; Pane = -1; Data = null; NearAbove = null; NearLeft = null; NearCorner = null; X = 0.0; Y = 0.0; W = 0.0; H = 0.0; Epoch = -1; Seen = 0; HasTitle = false; Wide = false }
+                                { Element = element; Key = key; Pane = -1; Data = null; NearAbove = null; NearLeft = null; NearCorner = null; X = 0.0; Y = 0.0; W = 0.0; H = 0.0; Epoch = -1; Seen = 0; HasTitle = false; HasLink = false; Wide = false }
                         node.Key <- key
                         node.Seen <- generation
                         cellNodes.[key] <- node
@@ -4507,7 +4553,7 @@ type Spreadsheet(container: Element) =
             )
 
     /// Mount the spreadsheet
-    member _.Mount() =
+    member this.Mount() =
         // Create container
         let gridDiv = createElement "div"
         setClassName gridDiv "spreadsheet-container"
@@ -4704,6 +4750,16 @@ type Spreadsheet(container: Element) =
                 | _ -> ())
         listen content "click" (fun e ->
             let target = getEventTarget e
+            // A link is followed by Ctrl+click (Cmd+click), in a viewer by a
+            // plain click: to a place in the workbook the grid goes itself,
+            // an address is handed to the host (OnHyperlinkActivate).
+            if mouseButton e = 0 && (readOnly || eventFlag e "ctrlKey" || eventFlag e "metaKey") && not model.Hyperlinks.IsEmpty
+               && not (within target ".spreadsheet-edit-input, .spreadsheet-col-header, .spreadsheet-row-header, .spreadsheet-corner, .spreadsheet-fill-handle, .spreadsheet-list-button") then
+                match hitTestEvent e with
+                | SpreadsheetLayout.Cell hitAddr when (SheetOps.hyperlinkAt model hitAddr).IsSome ->
+                    preventDefault e
+                    this.ActivateHyperlink (box hitAddr.Row, box hitAddr.Col) |> ignore
+                | _ -> ()
             if readOnly then ()
             elif within target ".col-filter-btn" then
                 preventDefault e
@@ -6187,6 +6243,99 @@ type Spreadsheet(container: Element) =
                                Redo = (fun m -> { m with MergedCells = after })
                                Description = "Unmerge cells" }
         render()
+
+    /// The hyperlink on a cell of the active sheet, or null:
+    /// { range: "B2" | "B2:C3", target, isInternal, tooltip: string | null,
+    ///   display: string | null, safe } - `isInternal`: the target is a place
+    /// in the workbook ("Sheet2!A1", a defined name), else an address;
+    /// `safe`: an address with a scheme a host may open (http, https, mailto,
+    /// tel). GetCell's `hyperlink` is the same object.
+    member _.GetHyperlink(row: obj, col: obj) : obj =
+        let addr = { Row = Host.rowArg "GetHyperlink" model row; Col = Host.colArg "GetHyperlink" model col }
+        match SheetOps.hyperlinkAt model addr with
+        | Some link -> Host.hyperlinkToObj link
+        | None -> null
+
+    /// Every hyperlink of a sheet (the active one, or the one at
+    /// `sheetIndex`), in the order they were defined (see GetHyperlink).
+    member _.GetHyperlinks(sheetIndex: obj) : obj array =
+        (sheetArg "GetHyperlinks" sheetIndex).Hyperlinks |> List.map Host.hyperlinkToObj |> List.toArray
+
+    /// Put a hyperlink on cells of the active sheet, in place of whatever
+    /// links they had (one undo step). `range`: "B2", "B2:C3" or several
+    /// areas. `target`: an address ("https://example.com", "mailto:a@b.c";
+    /// any text is stored, but only http, https, mailto and tel addresses are
+    /// ever reported `safe`), or a place in the workbook: "Sheet2!A1",
+    /// "'My sheet'!B2:C3", "A1" (this sheet), a defined name, or any of them
+    /// after "#". `display` (optional) becomes the text of the first cell;
+    /// without it an empty first cell shows the target. `tooltip` (optional)
+    /// is the screen tip. The cells get the look of a link (blue,
+    /// underlined) unless they have a text colour of their own. Throws when
+    /// the range or the target is missing or empty.
+    member _.SetHyperlink(range: obj, target: obj, display: obj, tooltip: obj) : unit =
+        let ranges = SheetOps.parseRanges "SetHyperlink" (Host.stringArg "SetHyperlink" "the range" range)
+        let target = (Host.stringArg "SetHyperlink" "the target" target).Trim()
+        if target = "" || target = "#" then Host.hostFail "SetHyperlink" "the target is empty (RemoveHyperlink removes a link)"
+        let display = Host.optionalArg (Host.stringArg "SetHyperlink" "display") display |> Option.filter (fun text -> text <> "")
+        let tooltip = Host.optionalArg (Host.stringArg "SetHyperlink" "tooltip") tooltip |> Option.filter (fun text -> text <> "")
+        let isName (name: string) =
+            let prefix, rest = SheetOps.splitSheetPrefix name
+            let home = match prefix with Some sheetName -> sheetIndexOfName sheetName | None -> activeSheetIndex
+            home >= 0 && (workbook |> Option.bind (Rbt.Spreadsheet.Workbook.getName (Some (sheetIdForIndex home)) rest)).IsSome
+        let stored, isInternal = SheetOps.classifyHyperlinkTarget isName target
+        if changeHyperlinks "Hyperlink" (SheetOps.setHyperlink ranges stored isInternal display tooltip) then render()
+
+    /// Take the hyperlinks off cells of the active sheet (one undo step), and
+    /// with them the look of a link, as Excel's "Remove Hyperlink" does; the
+    /// texts stay. A link that covered more cells keeps the others. Returns
+    /// how many links were removed or cut.
+    member _.RemoveHyperlink(range: obj) : int =
+        let ranges = SheetOps.parseRanges "RemoveHyperlink" (Host.stringArg "RemoveHyperlink" "the range" range)
+        let mutable count = 0
+        let changed = changeHyperlinks "Remove hyperlink" (fun m -> let removed, n = SheetOps.removeHyperlinks ranges m in count <- n; removed)
+        if changed then render()
+        count
+
+    /// Call `callback` when the user activates a link that leads out of the
+    /// workbook (Ctrl+click or Cmd+click on its cell, a plain click in
+    /// read-only mode, or ActivateHyperlink), with
+    /// { target, row, col, sheetIndex, isInternal: false, safe, tooltip }.
+    /// The grid never opens an address itself: the host decides, and should
+    /// open only what is `safe` (http, https, mailto, tel; a "javascript:"
+    /// address is reported with safe: false). Links to a place in the
+    /// workbook are followed by the grid and not reported. Returns a
+    /// function that removes the subscription.
+    member _.OnHyperlinkActivate(callback: System.Action<obj>) : System.Action =
+        let listener = callback.Invoke
+        hyperlinkListeners.Add listener
+        System.Action(fun () -> hyperlinkListeners.Remove listener |> ignore)
+
+    /// Activate the hyperlink on a cell of the active sheet, as a Ctrl+click
+    /// on it does. A link to a place in the workbook is followed (the sheet
+    /// switched to, the place selected and scrolled to); a link out of the
+    /// workbook is handed to the OnHyperlinkActivate subscribers and nothing
+    /// else happens. Returns { target, row, col, sheetIndex, isInternal,
+    /// safe, tooltip, followed } - `followed`: the grid went to the place -
+    /// or null when the cell has no link.
+    member this.ActivateHyperlink(row: obj, col: obj) : obj =
+        let addr = { Row = Host.rowArg "ActivateHyperlink" model row; Col = Host.colArg "ActivateHyperlink" model col }
+        match SheetOps.hyperlinkAt model addr with
+        | None -> null
+        | Some link ->
+            let sheetIndex = activeSheetIndex
+            let payload (followed: bool) =
+                createObj [ "target" ==> link.Target; "row" ==> addr.Row; "col" ==> addr.Col; "sheetIndex" ==> sheetIndex
+                            "isInternal" ==> link.IsInternal; "safe" ==> SheetOps.hyperlinkIsSafe link
+                            "tooltip" ==> Host.orNull link.Tooltip; "followed" ==> followed ]
+            if link.IsInternal then
+                // (A link to a place that is not there any more leads nowhere.)
+                let followed = try this.GoTo (box link.Target) |> ignore; true with _ -> false
+                payload followed
+            else
+                let event = payload false
+                for listener in hyperlinkListeners.ToArray() do
+                    if hyperlinkListeners.Contains listener then (try listener event with _ -> ())
+                event
 
     /// The comment on a cell of the active sheet, or null:
     /// { text, author: string | null, thread } - `thread` is null for a note

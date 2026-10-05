@@ -321,9 +321,46 @@ let mergeRangeAt (model: SpreadsheetModel) (addr: CellAddress) : CellRange optio
     findMergedCell addr model
     |> Option.map (fun merge -> { From = { Row = merge.StartRow; Col = merge.StartCol }; To = { Row = merge.EndRow; Col = merge.EndCol } })
 
+/// The hyperlinks of a sheet laid out for looking one up by cell: the links
+/// on a single cell by that cell, the others in a list (a sheet can have
+/// thousands of links, and the grid asks for every cell it draws).
+type private HyperlinkIndex = {
+    Source: SheetHyperlink list
+    Single: System.Collections.Generic.Dictionary<float, SheetHyperlink>
+    Wide: SheetHyperlink array
+}
+
+let mutable private hyperlinkIndexCache : HyperlinkIndex list = []
+
+let private hyperlinkIndexOf (links: SheetHyperlink list) : HyperlinkIndex =
+    match hyperlinkIndexCache |> List.tryFind (fun index -> obj.ReferenceEquals(index.Source, links)) with
+    | Some index -> index
+    | None ->
+        let single = System.Collections.Generic.Dictionary<float, SheetHyperlink>()
+        let wide = ResizeArray<SheetHyperlink>()
+        // (In order, so that of two links on a cell the later one is found.)
+        for link in links do
+            if link.Range.From = link.Range.To then single.[float link.Range.From.Row * 16384.0 + float link.Range.From.Col] <- link
+            else wide.Add link
+        let index = { Source = links; Single = single; Wide = wide.ToArray() }
+        hyperlinkIndexCache <- index :: (hyperlinkIndexCache |> List.truncate 3)
+        index
+
 /// The hyperlink on a cell: the last one defined whose range holds it.
 let hyperlinkAt (model: SpreadsheetModel) (addr: CellAddress) : SheetHyperlink option =
-    model.Hyperlinks |> List.tryFindBack (fun link -> cellRangeContains addr link.Range)
+    if model.Hyperlinks.IsEmpty then None
+    else
+        let index = hyperlinkIndexOf model.Hyperlinks
+        // (A link over a range defined after a single-cell one wins only by
+        // position in the list; single cells are the common case and are
+        // looked at first when no range holds the cell.)
+        let fromWide = if index.Wide.Length = 0 then None else index.Wide |> Array.tryFindBack (fun link -> cellRangeContains addr link.Range)
+        match index.Single.TryGetValue (float addr.Row * 16384.0 + float addr.Col) with
+        | true, single ->
+            (match fromWide with
+             | Some wide when (model.Hyperlinks |> List.findIndexBack (fun link -> obj.ReferenceEquals(link, wide))) > (model.Hyperlinks |> List.findIndexBack (fun link -> obj.ReferenceEquals(link, single))) -> Some wide
+             | _ -> Some single)
+        | false, _ -> fromWide
 
 // ---------------------------------------------------------------------------
 // Number format codes
@@ -1963,3 +2000,114 @@ let threadPlaceholderNote (thread: CommentThread) : CellComment =
     { Text = "[Threaded comment]\n\nYour version of Excel allows you to read this threaded comment; however, any edits to it will get removed if the file is opened in a newer version of Excel. Learn more: https://go.microsoft.com/fwlink/?linkid=870924\n\nComment:\n    " + thread.Text
                + (thread.Replies |> List.map (fun reply -> "\nReply:\n    " + reply.Text) |> String.concat "")
       Author = Some ("tc=" + thread.Id) }
+
+// --- hyperlinks -----------------------------------------------------------------
+// A link is on a range of cells and points out of the workbook (an address)
+// or at a place in it (a reference or a defined name). The editor never
+// opens an address itself; a host does, and only for the schemes below.
+
+/// The scheme of an address ("https" of "https://example.com"), lower case; "" when it has none.
+let hyperlinkScheme (target: string) : string =
+    let target = if isNull target then "" else target.Trim()
+    let colon = target.IndexOf ':'
+    if colon <= 0 then ""
+    else
+        let scheme = target.Substring(0, colon)
+        let letter (ch: char) = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')
+        if letter scheme.[0] && scheme |> Seq.forall (fun ch -> letter ch || (ch >= '0' && ch <= '9') || ch = '+' || ch = '.' || ch = '-') then scheme.ToLowerInvariant() else ""
+
+/// Whether a host may open the address: http, https, mailto and tel only.
+/// A place in the workbook is not an address to open.
+let hyperlinkIsSafe (link: SheetHyperlink) : bool =
+    not link.IsInternal
+    && (match hyperlinkScheme link.Target with
+        | "http" | "https" | "mailto" | "tel" -> true
+        | _ -> false)
+
+/// Read a target as a host gives it: (target as stored, is a place in the
+/// workbook). "#Sheet2!A1" and anything that reads as a reference, with or
+/// without a sheet, or that `isName` knows as a defined name, is a place in
+/// the workbook; everything else is an address.
+let classifyHyperlinkTarget (isName: string -> bool) (target: string) : string * bool =
+    let target = target.Trim()
+    if target.StartsWith "#" then target.Substring 1, true
+    elif hyperlinkScheme target <> "" && (tryParseRange target).IsNone then target, false
+    else
+        let _, reference = splitSheetPrefix target
+        if (tryParseRange reference).IsSome || isName target then target, true
+        else target, false
+
+let private linkColor = "#0563C1"
+
+/// The hyperlinks without the cells of `ranges`: a link that covered more
+/// keeps the rest (as up to four links).
+let private hyperlinksWithout (ranges: CellRange list) (links: SheetHyperlink list) : SheetHyperlink list =
+    let remaining =
+        links
+        |> List.collect (fun link ->
+            let parts = ranges |> List.fold (fun parts hole -> parts |> List.collect (subtractCellRange hole)) [ link.Range ]
+            if parts = [ link.Range ] then [ link ] else parts |> List.map (fun part -> { link with Range = part }))
+    if remaining = links then links else remaining
+
+/// The cells of some ranges that exist or are few enough to be made (a link
+/// on a whole column changes the look of the cells it has).
+let private linkCells (ranges: CellRange list) (model: SpreadsheetModel) : CellAddress list =
+    [ for range in ranges do
+        match clipRange model.RowCount model.ColCount range with
+        | None -> ()
+        | Some range ->
+            let area = float (range.To.Row - range.From.Row + 1) * float (range.To.Col - range.From.Col + 1)
+            if area <= 4096.0 then
+                for row in range.From.Row .. range.To.Row do
+                    for col in range.From.Col .. range.To.Col -> { Row = row; Col = col }
+            else
+                for KeyValue(addr, _) in model.Cells do
+                    if cellRangeContains addr range then yield addr ]
+
+/// Put a hyperlink on ranges, in place of whatever links their cells had.
+/// `display`, when given, becomes the text of the first cell; without it an
+/// empty first cell shows the target, as in Excel. The cells get the look of
+/// a link (blue, underlined) unless they have a text colour of their own.
+let setHyperlink (ranges: CellRange list) (target: string) (isInternal: bool) (display: string option) (tooltip: string option) (model: SpreadsheetModel) : SpreadsheetModel =
+    let links = hyperlinksWithout ranges model.Hyperlinks @ (ranges |> List.map (fun range -> { Range = range; Target = target; IsInternal = isInternal; Tooltip = tooltip; Display = display }))
+    let mutable cells = model.Cells
+    let first = match ranges with range :: _ -> Some range.From | [] -> None
+    for addr in linkCells ranges model do
+        let existing = Map.tryFind addr cells
+        let isFirst = (Some addr = first)
+        let data = existing |> Option.defaultValue { Value = CellValue.Empty; Format = defaultFormat; Comment = None }
+        let value =
+            if not isFirst then data.Value
+            else
+                match display with
+                | Some text -> CellValue.String text
+                | None -> (match data.Value with CellValue.Empty | CellValue.String "" -> CellValue.String target | value -> value)
+        // (Only cells that hold something, and the first one, are given the look.)
+        if existing.IsSome || isFirst then
+            let format =
+                if data.Format.TextColor.IsSome && data.Format.TextColor <> Some linkColor then data.Format
+                elif data.Format.TextColor = Some linkColor && data.Format.Underline then data.Format
+                else { data.Format with TextColor = Some linkColor; Underline = true }
+            let changed = { data with Value = value; Format = format }
+            if existing <> Some changed then cells <- Map.add addr changed cells
+    let withCells = if obj.ReferenceEquals(cells, model.Cells) then model else { model with Cells = cells } |> invalidateFilterProjection
+    { withCells with Hyperlinks = links }
+
+/// Take the hyperlinks off the cells of ranges, and with them the look of a
+/// link (Excel's "Remove Hyperlink"); the texts stay. The changed model and
+/// how many links were removed or cut. The same model when there was none.
+let removeHyperlinks (ranges: CellRange list) (model: SpreadsheetModel) : SpreadsheetModel * int =
+    let touched = model.Hyperlinks |> List.filter (fun link -> ranges |> List.exists (fun range -> (subtractCellRange range link.Range) <> [ link.Range ]))
+    if touched.IsEmpty then model, 0
+    else
+        let mutable cells = model.Cells
+        let linked (addr: CellAddress) = touched |> List.exists (fun link -> cellRangeContains addr link.Range)
+        for addr in linkCells ranges model do
+            match Map.tryFind addr cells with
+            | Some data when linked addr && data.Format.TextColor = Some linkColor && data.Format.Underline ->
+                let plain = { data with Format = { data.Format with TextColor = None; Underline = false } }
+                if plain.Value = CellValue.Empty && plain.Comment.IsNone && plain.Format = defaultFormat then cells <- Map.remove addr cells
+                else cells <- Map.add addr plain cells
+            | _ -> ()
+        let withCells = if obj.ReferenceEquals(cells, model.Cells) then model else { model with Cells = cells } |> invalidateFilterProjection
+        { withCells with Hyperlinks = hyperlinksWithout ranges model.Hyperlinks }, touched.Length

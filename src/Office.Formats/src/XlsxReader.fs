@@ -452,6 +452,9 @@ type Hyperlink = {
     Range: string
     Target: string
     IsInternal: bool
+    /// `tooltip` (the screen tip) and `display` (the text the link shows).
+    Tooltip: string option
+    Display: string option
 }
 
 /// Print-related sheet metadata, parsed from <pageSetup>, <pageMargins>,
@@ -2165,13 +2168,14 @@ module Xlsx =
                 let location = Xml.attr "location" node
                 let rid = relationshipId node
                 let target, isInternal =
-                    match location with
-                    | Some loc -> loc, true
-                    | None ->
-                        match rid |> Option.bind resolveRel with
-                        | Some url -> url, false
-                        | None -> rid |> Option.defaultValue "", false
-                Some { Range = range; Target = target; IsInternal = isInternal })
+                    // A link out of the workbook is a relationship; `location`
+                    // is then the place inside what it points at.
+                    match rid |> Option.bind resolveRel, location with
+                    | Some url, Some loc when loc <> "" -> url + "#" + loc, false
+                    | Some url, _ -> url, false
+                    | None, Some loc -> loc, true
+                    | None, None -> rid |> Option.defaultValue "", false
+                Some { Range = range; Target = target; IsInternal = isInternal; Tooltip = Xml.attr "tooltip" node; Display = Xml.attr "display" node })
 
     /// `<sheetView showZeros="false"/>`. Excel's default is true; opt-out
     /// hides numeric-zero cells while keeping other content intact.
@@ -2782,13 +2786,12 @@ module Xlsx =
             let location = nativeAttr reader "location"
             let rid = nativeRelId reader
             let target, isInternal =
-                match location with
-                | Some loc -> loc, true
-                | None ->
-                    match rid |> Option.bind resolveRel with
-                    | Some url -> url, false
-                    | None -> rid |> Option.defaultValue "", false
-            { Range = range; Target = target; IsInternal = isInternal })
+                match rid |> Option.bind resolveRel, location with
+                | Some url, Some loc when loc <> "" -> url + "#" + loc, false
+                | Some url, _ -> url, false
+                | None, Some loc -> loc, true
+                | None, None -> rid |> Option.defaultValue "", false
+            { Range = range; Target = target; IsInternal = isInternal; Tooltip = nativeAttr reader "tooltip"; Display = nativeAttr reader "display" })
 
     let private worksheetFastNativeSupported (sheetXml: string) =
         sheetXml.Length >= worksheetFastNativeThreshold
