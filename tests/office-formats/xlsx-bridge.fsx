@@ -788,6 +788,68 @@ eq "tables: untouched, they are written as the file had them"
     (tableUntouched.Sheets.[0].Tables |> List.map (fun t -> t.Name, t.Columns, t.Totals, t.AutoFilter))
     (tableBack.Sheets.[0].Tables |> List.map (fun t -> t.Name, t.Columns, t.Totals, t.AutoFilter))
 
+// ---- page setup ---------------------------------------------------------------
+// Everything a host sets through SetPageSetup / SetPageBreaks is written and read back.
+let printed =
+    let setup =
+        Ops.applyPageSetupChanges "SetPageSetup"
+            [ Ops.SetOrientation LandscapeOrientation; Ops.SetPaper 9
+              Ops.SetMargin ("top", 1.0); Ops.SetMargin ("bottom", 0.9); Ops.SetMargin ("left", 0.5); Ops.SetMargin ("right", 0.6); Ops.SetMargin ("header", 0.4); Ops.SetMargin ("footer", 0.2)
+              Ops.SetFitTo (Some 1, Some 0)
+              Ops.SetPrintArea (Some { From = addr 0 0; To = addr 39 5 }); Ops.SetRepeatRows (Some (0, 1)); Ops.SetRepeatCols (Some (0, 0))
+              Ops.SetHeaderFooterText ("header", Some "&LLeft && more&C&\"Arial,Bold\"Title&R&D"); Ops.SetHeaderFooterText ("footer", Some "&CPage &P of &N")
+              Ops.SetHeaderFooterText ("firstHeader", Some "&CFirst"); Ops.SetHeaderFooterText ("evenFooter", Some "&REven &P")
+              Ops.SetDifferentFirst true; Ops.SetDifferentOddEven true; Ops.SetScaleWithDocument false
+              Ops.SetPrintGridLines true; Ops.SetPrintHeadings true; Ops.SetCenterHorizontally true; Ops.SetCenterVertically true
+              Ops.SetPageOrder OverThenDown; Ops.SetBlackAndWhite true; Ops.SetFirstPageNumber (Some 3); Ops.SetCommentsPrint CellCommentsAtEnd ]
+            defaultPageSetup
+        |> Ops.setPageBreaks "SetPageBreaks" [ 20; 30 ] [ 3 ]
+    { createEmpty 100 12 with PageSetup = setup } |> setCell (addr 0 0) { Value = CellValue.String "x"; Format = defaultFormat; Comment = None }
+let plainSheet = createEmpty 50 8 |> setCell (addr 0 0) { Value = CellValue.Number 1.0; Format = defaultFormat; Comment = None }
+let printInput (sheets: SpreadsheetModel array) (source: Bridge.XlsxSource option) : Bridge.ExportInput =
+    { Sheets = sheets; Names = [| "Print me"; "Plain" |]; Visible = [| true; true |]; ActiveSheetIndex = 0; NameInfo = Map.empty; DefinedNames = Map.empty; Source = source; Macros = None }
+let printedBytes = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (printInput [| printed; plainSheet |] None))
+let printedFile = XlsxReader.loadBytesNative printedBytes |> Option.get
+let printedBack = Bridge.Import.importWorkbook printedFile
+eq "page setup: every field is read back" printedBack.Sheets.[0].Model.PageSetup printed.PageSetup
+eq "page setup: a sheet without one keeps the defaults" printedBack.Sheets.[1].Model.PageSetup defaultPageSetup
+eq "page setup: the lazy import gives the same" ((Bridge.Import.importWorkbookLazy (fun _ -> false) printedFile).Sheets.[0].Model |> resolveSheet).PageSetup printed.PageSetup
+let textOf (bytes: byte[]) (entry: string) =
+    use archive = new System.IO.Compression.ZipArchive(new MemoryStream(bytes))
+    use reader = new StreamReader(archive.GetEntry(entry).Open())
+    reader.ReadToEnd()
+let printNamesOf (bytes: byte[]) =
+    System.Text.RegularExpressions.Regex.Matches(textOf bytes "xl/workbook.xml", "<definedName name=\"(_xlnm\\.Print[^\"]*)\"([^>]*)>([^<]*)</definedName>")
+    |> Seq.cast<System.Text.RegularExpressions.Match>
+    |> Seq.map (fun m -> m.Groups.[1].Value, m.Groups.[3].Value.Replace("&apos;", "'"), m.Groups.[2].Value.Contains "localSheetId=\"0\"")
+    |> List.ofSeq |> List.sort
+eq "page setup: the print area and titles are the sheet's built-in names"
+    (printNamesOf printedBytes) [ "_xlnm.Print_Area", "'Print me'!$A$1:$F$40", true; "_xlnm.Print_Titles", "'Print me'!$1:$2,'Print me'!$A:$A", true ]
+let printedXml = textOf printedBytes "xl/worksheets/sheet1.xml"
+ok "page setup: the sheet says paper, orientation and fit" (printedXml.Contains "paperSize=\"9\"" && printedXml.Contains "orientation=\"landscape\"" && printedXml.Contains "<pageSetUpPr fitToPage=\"1\"/>" && printedXml.Contains "fitToHeight=\"0\"") printedXml
+ok "page setup: and its breaks" (printedXml.Contains "<rowBreaks count=\"2\" manualBreakCount=\"2\"><brk id=\"20\"" && printedXml.Contains "<colBreaks count=\"1\"") printedXml
+// Untouched, it goes out as the file had it.
+let printedUntouched = Bridge.Export.toWorkbookOut (printInput (modelsOf printedBack) (Some printedBack.Source))
+let printedOriginal = XlsxWriter.packageFromReaderWorkbook printedFile
+eq "page setup: untouched, it is written as the file had it"
+    (printedUntouched.Sheets |> List.map (fun s -> s.PageSetup, s.PageMargins, s.PrintOptions, s.HeaderFooter, s.RowBreaks, s.ColBreaks, s.PrintArea, s.PrintTitleRows, s.PrintTitleCols))
+    (printedOriginal.Sheets |> List.map (fun s -> s.PageSetup, s.PageMargins, s.PrintOptions, s.HeaderFooter, s.RowBreaks, s.ColBreaks, s.PrintArea, s.PrintTitleRows, s.PrintTitleCols))
+// Changed after opening: another paper (one the editor has no name for), a scale, other breaks, no titles.
+let reprinted =
+    let model = printedBack.Sheets.[0].Model
+    let setup =
+        Ops.applyPageSetupChanges "SetPageSetup" [ Ops.SetPaper 41; Ops.SetScale 80; Ops.SetRepeatRows None; Ops.SetRepeatCols None; Ops.SetHeaderFooterText ("header", None); Ops.SetOrientation PortraitOrientation ] model.PageSetup
+        |> Ops.setPageBreaks "SetPageBreaks" [ 25 ] []
+    { model with PageSetup = setup }
+let reprintedBytes = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (printInput [| reprinted; printedBack.Sheets.[1].Model |] (Some printedBack.Source)))
+let reprintedFile = XlsxReader.loadBytesNative reprintedBytes |> Option.get
+let reprintedBack = (Bridge.Import.importWorkbook reprintedFile).Sheets.[0].Model.PageSetup
+eq "page setup: changed after opening, the file follows" reprintedBack reprinted.PageSetup
+eq "page setup: ... a paper without a name keeps its code" (reprintedBack.PaperSize, reprintedBack.FitToPage, reprintedBack.Scale, reprintedBack.ManualRowBreaks, reprintedBack.ManualColBreaks) (Some 41, false, 80, [ 25 ], [])
+eq "page setup: ... the titles' name is gone, the area's stays"
+    (printNamesOf reprintedBytes |> List.map (fun (name, _, _) -> name))
+    [ "_xlnm.Print_Area" ]
+
 printfn ""
 printfn "XLSX bridge tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

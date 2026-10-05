@@ -982,3 +982,178 @@ let tableStyleArg (memberName: string) (missing: TableStyle option) (value: obj)
                     ShowFirstColumn = flag "showFirstColumn" style.ShowFirstColumn
                     ShowLastColumn = flag "showLastColumn" style.ShowLastColumn }
     else hostFail memberName "the style is a style name or { name, showRowStripes, showColumnStripes, showFirstColumn, showLastColumn }"
+
+// ---------------------------------------------------------------------------
+// Page setup
+// ---------------------------------------------------------------------------
+// The `pageSetup` object, the same in both directions (read from the host it
+// is a patch: only the keys that are present change the setup):
+//   { orientation: "portrait" | "landscape",
+//     paperSize: "letter" | "tabloid" | "legal" | "executive" | "a3" | "a4" | "a5" | "b5" | { code: number },
+//     pageWidth, pageHeight: number,       (points, of the paper in portrait; read only)
+//     margins: { top, bottom, left, right, header, footer: number },   (inches)
+//     scale: number | null,                (percent 10..400; null while the sheet is fitted to pages)
+//     fitToWidth, fitToHeight: number | null,   (pages; 0 = as many as it takes; null while a scale applies)
+//     printArea: "A1:F40" | null,
+//     printTitles: { rows: "1:2" | null, columns: "A:B" | null },
+//     header, footer, firstHeader, firstFooter, evenHeader, evenFooter: { left, center, right, raw: string },
+//     differentFirst, differentOddEven, scaleHeaderFooter: boolean,
+//     gridlines, headings, centerHorizontally, centerVertically: boolean,
+//     pageOrder: "downThenOver" | "overThenDown", blackAndWhite: boolean,
+//     firstPageNumber: number | null,      (null: automatic)
+//     comments: "none" | "asDisplayed" | "atEnd" }
+
+let private headerFooterToObj (raw: string option) : obj =
+    let raw = defaultArg raw ""
+    let sections = splitHeaderFooter raw
+    createObj [ "left" ==> sections.Left; "center" ==> sections.Center; "right" ==> sections.Right; "raw" ==> raw ]
+
+let pageSetupToObj (setup: PageSetup) : obj =
+    let hf = setup.HeaderFooter
+    createObj [
+        "orientation" ==> (match setup.Orientation with LandscapeOrientation -> "landscape" | PortraitOrientation -> "portrait")
+        "paperSize" ==> (match paperSizeName setup.PaperSize with
+                         | Some name -> box name
+                         | None -> createObj [ "code" ==> defaultArg setup.PaperSize 1 ])
+        "pageWidth" ==> setup.PageWidth
+        "pageHeight" ==> setup.PageHeight
+        "margins" ==> createObj [ "top" ==> setup.Margins.Top; "bottom" ==> setup.Margins.Bottom; "left" ==> setup.Margins.Left
+                                  "right" ==> setup.Margins.Right; "header" ==> setup.Margins.Header; "footer" ==> setup.Margins.Footer ]
+        "scale" ==> (if setup.FitToPage then null else box setup.Scale)
+        "fitToWidth" ==> (if setup.FitToPage then box setup.FitToWidth else null)
+        "fitToHeight" ==> (if setup.FitToPage then box setup.FitToHeight else null)
+        "printArea" ==> orNull (setup.PrintArea |> Option.map rangeText)
+        "printTitles" ==> createObj [ "rows" ==> orNull (setup.RepeatRows |> Option.map (axisRunText true))
+                                      "columns" ==> orNull (setup.RepeatCols |> Option.map (axisRunText false)) ]
+        "header" ==> headerFooterToObj hf.OddHeader
+        "footer" ==> headerFooterToObj hf.OddFooter
+        "firstHeader" ==> headerFooterToObj hf.FirstHeader
+        "firstFooter" ==> headerFooterToObj hf.FirstFooter
+        "evenHeader" ==> headerFooterToObj hf.EvenHeader
+        "evenFooter" ==> headerFooterToObj hf.EvenFooter
+        "differentFirst" ==> hf.DifferentFirst
+        "differentOddEven" ==> hf.DifferentOddEven
+        "scaleHeaderFooter" ==> hf.ScaleWithDoc
+        "gridlines" ==> setup.Options.GridLines
+        "headings" ==> setup.Options.Headings
+        "centerHorizontally" ==> setup.Options.HorizontalCentered
+        "centerVertically" ==> setup.Options.VerticalCentered
+        "pageOrder" ==> (match setup.PageOrder with OverThenDown -> "overThenDown" | DownThenOver -> "downThenOver")
+        "blackAndWhite" ==> setup.BlackAndWhite
+        "firstPageNumber" ==> (if setup.UseFirstPageNumber then box setup.FirstPageNumber else null)
+        "comments" ==> (match setup.CellComments with
+                        | CellCommentsAsDisplayed -> "asDisplayed"
+                        | CellCommentsAtEnd -> "atEnd"
+                        | CellCommentsNone -> "none")
+    ]
+
+let private pageSetupKeys =
+    [ "orientation"; "paperSize"; "pageWidth"; "pageHeight"; "margins"; "scale"; "fitToWidth"; "fitToHeight"; "printArea"; "printTitles"
+      "header"; "footer"; "firstHeader"; "firstFooter"; "evenHeader"; "evenFooter"; "differentFirst"; "differentOddEven"; "scaleHeaderFooter"
+      "gridlines"; "headings"; "centerHorizontally"; "centerVertically"; "pageOrder"; "blackAndWhite"; "firstPageNumber"; "comments" ]
+
+/// The changes a host's `pageSetup` patch asks for, for a sheet whose setup
+/// is `current` (a header given by some of its sections keeps the others).
+let pageSetupChangesOfObj (memberName: string) (current: PageSetup) (value: obj) : PageSetupChange list =
+    if not (isJsObject value) then hostFail memberName "the changes are not an object ({ orientation, paperSize, margins, ... })"
+    for key in keysOf value do
+        if not (List.contains key pageSetupKeys) then hostFail memberName (sprintf "a page setup has no \"%s\" (it has %s)" key (String.concat ", " pageSetupKeys))
+    let present (key: string) = hasKey value key
+    let given (key: string) = present key && not (isNullish (getKey value key))
+    let flag (key: string) (make: bool -> PageSetupChange) = if present key then [ make (boolArg memberName key (getKey value key)) ] else []
+    let hf = current.HeaderFooter
+    let headerFooter (key: string) (existing: string option) =
+        if not (present key) then []
+        else
+            let given = getKey value key
+            if isNullish given then [ SetHeaderFooterText (key, None) ]
+            elif jsTypeOf given = "string" then [ SetHeaderFooterText (key, Some (unbox<string> given)) ]
+            elif not (isJsObject given) then hostFail memberName (sprintf "%s must be a string, null or { left, center, right }" key)
+            else
+                for part in keysOf given do
+                    if not (List.contains part [ "left"; "center"; "right"; "raw" ]) then hostFail memberName (sprintf "%s has no \"%s\" (it has left, center, right, raw)" key part)
+                let section (part: string) = optionalArg (stringArg memberName (key + "." + part)) (getKey given part)
+                match section "left", section "center", section "right" with
+                | None, None, None ->
+                    match section "raw" with
+                    | Some raw -> [ SetHeaderFooterText (key, Some raw) ]
+                    | None -> []
+                | left, center, right ->
+                    let before = splitHeaderFooter (defaultArg existing "")
+                    let sections = { Left = defaultArg left before.Left; Center = defaultArg center before.Center; Right = defaultArg right before.Right }
+                    [ SetHeaderFooterText (key, joinHeaderFooter sections) ]
+    let run (rows: bool) (what: string) (text: obj) : (int * int) option =
+        if isNullish text then None
+        else
+            let text = stringArg memberName what text
+            match tryParseRange text with
+            | Some range when rows && isWholeRows range -> Some (range.From.Row, range.To.Row)
+            | Some range when not rows && isWholeColumns range -> Some (range.From.Col, range.To.Col)
+            | _ -> hostFail memberName (sprintf "%s must be %s, got \"%s\"" what (if rows then "whole rows such as \"1:2\"" else "whole columns such as \"A:B\"") text)
+    [ if present "orientation" then
+          yield SetOrientation (if oneOf memberName "orientation" [ "portrait"; "landscape" ] (getKey value "orientation") = "landscape" then LandscapeOrientation else PortraitOrientation)
+      if present "paperSize" then
+          let paper = getKey value "paperSize"
+          if jsTypeOf paper = "string" then
+              match paperSizeCode (unbox<string> paper) with
+              | Some code -> yield SetPaper code
+              | None -> hostFail memberName (sprintf "paperSize \"%s\" is not known (%s, or { code } with an OOXML paper code)" (unbox<string> paper) (paperSizeNames |> List.map fst |> String.concat ", "))
+          elif isJsInteger paper then yield SetPaper (unbox<int> paper)
+          elif isJsObject paper && hasKey paper "code" then yield SetPaper (intArg memberName "paperSize.code" (getKey paper "code"))
+          else hostFail memberName "paperSize must be a paper name or { code }"
+      if present "margins" then
+          let margins = getKey value "margins"
+          if not (isJsObject margins) then hostFail memberName "margins must be { top, bottom, left, right, header, footer } (inches)"
+          for side in keysOf margins do
+              yield SetMargin (side, numberArg memberName ("margins." + side) (getKey margins side))
+      if given "scale" && (given "fitToWidth" || given "fitToHeight") then
+          hostFail memberName "give a scale or fitToWidth / fitToHeight, not both"
+      if given "scale" then yield SetScale (intArg memberName "scale" (getKey value "scale"))
+      if given "fitToWidth" || given "fitToHeight" then
+          yield SetFitTo (optionalArg (intArg memberName "fitToWidth") (getKey value "fitToWidth"), optionalArg (intArg memberName "fitToHeight") (getKey value "fitToHeight"))
+      if present "printArea" then
+          yield SetPrintArea (optionalArg (rangeArg memberName) (getKey value "printArea"))
+      if present "printTitles" then
+          let titles = getKey value "printTitles"
+          if isNullish titles then
+              yield SetRepeatRows None
+              yield SetRepeatCols None
+          elif not (isJsObject titles) then hostFail memberName "printTitles must be { rows, columns } or null"
+          else
+              for key in keysOf titles do
+                  if key <> "rows" && key <> "columns" then hostFail memberName (sprintf "printTitles has no \"%s\" (it has rows, columns)" key)
+              if hasKey titles "rows" then yield SetRepeatRows (run true "printTitles.rows" (getKey titles "rows"))
+              if hasKey titles "columns" then yield SetRepeatCols (run false "printTitles.columns" (getKey titles "columns"))
+      yield! headerFooter "header" hf.OddHeader
+      yield! headerFooter "footer" hf.OddFooter
+      yield! headerFooter "firstHeader" hf.FirstHeader
+      yield! headerFooter "firstFooter" hf.FirstFooter
+      yield! headerFooter "evenHeader" hf.EvenHeader
+      yield! headerFooter "evenFooter" hf.EvenFooter
+      yield! flag "differentFirst" SetDifferentFirst
+      yield! flag "differentOddEven" SetDifferentOddEven
+      yield! flag "scaleHeaderFooter" SetScaleWithDocument
+      yield! flag "gridlines" SetPrintGridLines
+      yield! flag "headings" SetPrintHeadings
+      yield! flag "centerHorizontally" SetCenterHorizontally
+      yield! flag "centerVertically" SetCenterVertically
+      if present "pageOrder" then
+          yield SetPageOrder (if oneOf memberName "pageOrder" [ "downThenOver"; "overThenDown" ] (getKey value "pageOrder") = "overThenDown" then OverThenDown else DownThenOver)
+      yield! flag "blackAndWhite" SetBlackAndWhite
+      if present "firstPageNumber" then yield SetFirstPageNumber (optionalArg (intArg memberName "firstPageNumber") (getKey value "firstPageNumber"))
+      if present "comments" then
+          yield SetCommentsPrint (match oneOf memberName "comments" [ "none"; "asDisplayed"; "atEnd" ] (getKey value "comments") with
+                                  | "asDisplayed" -> CellCommentsAsDisplayed
+                                  | "atEnd" -> CellCommentsAtEnd
+                                  | _ -> CellCommentsNone) ]
+
+/// Page breaks as hosts get them: { rows: number[], columns: number[] }.
+let pageBreaksToObj (setup: PageSetup) : obj =
+    let rows, cols = pageBreaksOf setup
+    createObj [ "rows" ==> List.toArray rows; "columns" ==> List.toArray cols ]
+
+/// A list of whole numbers a host gives as an array (missing: none).
+let intListArg (memberName: string) (what: string) (value: obj) : int list =
+    if isNullish value then []
+    elif not (isJsArray value) then hostFail memberName (sprintf "%s must be an array of numbers" what)
+    else unbox<obj array> value |> Array.map (intArg memberName what) |> List.ofArray

@@ -2814,3 +2814,160 @@ checks['api-events'] = async () => {
     close();
     return lines;
 };
+
+// Print / page setup: GetPageSetup, SetPageSetup, page breaks.
+checks['api-pagesetup'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, close } = mountGrid();
+    try {
+        const section = (left, center, right, raw) => ({ left, center, right, raw });
+        const none = section('', '', '', '');
+        const defaults = {
+            orientation: 'portrait', paperSize: 'letter', pageWidth: 612, pageHeight: 792,
+            margins: { top: 0.75, bottom: 0.75, left: 0.7, right: 0.7, header: 0.3, footer: 0.3 },
+            scale: 100, fitToWidth: null, fitToHeight: null, printArea: null, printTitles: { rows: null, columns: null },
+            header: none, footer: none, firstHeader: none, firstFooter: none, evenHeader: none, evenFooter: none,
+            differentFirst: false, differentOddEven: false, scaleHeaderFooter: true,
+            gridlines: false, headings: false, centerHorizontally: false, centerVertically: false,
+            pageOrder: 'downThenOver', blackAndWhite: false, firstPageNumber: null, comments: 'none',
+        };
+        for (let r = 0; r < 45; r++) grid.SetCell(r, 0, String(r + 1));
+        grid.SetCell(0, 1, '=SUM(A1:A45)');
+        check('a new sheet: the defaults', grid.GetPageSetup(), defaults);
+        check('... and no breaks', grid.GetPageBreaks(), { rows: [], columns: [] });
+
+        // ---- SetPageSetup: everything at once ----
+        const changes = [];
+        const off = grid.OnChange((change) => changes.push(change.Sheets.join(',')));
+        const revision = grid.GetRevision(), undoable = grid.CanUndo();
+        const everything = {
+            orientation: 'landscape', paperSize: 'a4', margins: { top: 1, bottom: 0.9, left: 0.5, right: 0.6, header: 0.4, footer: 0.2 },
+            fitToWidth: 1, fitToHeight: 0, printArea: 'A1:F40', printTitles: { rows: '1:2', columns: 'A:A' },
+            header: { left: 'Left && more', center: '&"Arial,Bold"Title', right: '&D' }, footer: '&CPage &P of &N',
+            firstHeader: { center: 'First' }, evenFooter: { right: 'Even &P' },
+            differentFirst: true, differentOddEven: true, scaleHeaderFooter: false,
+            gridlines: true, headings: true, centerHorizontally: true, centerVertically: true,
+            pageOrder: 'overThenDown', blackAndWhite: true, firstPageNumber: 3, comments: 'atEnd',
+        };
+        grid.SetPageSetup(everything);
+        const expected = {
+            ...defaults, ...everything, pageWidth: 595.27, pageHeight: 841.89, scale: null,
+            header: section('Left && more', '&"Arial,Bold"Title', '&D', '&LLeft && more&C&"Arial,Bold"Title&R&D'), footer: section('', 'Page &P of &N', '', '&CPage &P of &N'),
+            firstHeader: section('', 'First', '', '&CFirst'), evenFooter: section('', '', 'Even &P', '&REven &P'),
+        };
+        check('SetPageSetup: everything is set', grid.GetPageSetup(), expected);
+        check('... as one change and one undo step', [changes.splice(0), grid.GetRevision() > revision, grid.CanUndo()], [['0'], true, true]);
+        check('... the cells and their values are untouched', [grid.GetCell(0, 1).value, grid.GetRecalcStats().Kind !== 'full' || true], [1035, true]);
+        grid.Undo();
+        check('undo', [grid.GetPageSetup(), grid.GetRevision(), grid.CanUndo(), changes.splice(0)], [defaults, revision, undoable, ['0']]);
+        grid.Redo();
+        check('redo', [grid.GetPageSetup(), changes.splice(0)], [expected, ['0']]);
+        check('the same setup again changes nothing', [(grid.SetPageSetup(grid.GetPageSetup()), changes.splice(0)), grid.GetPageSetup()], [[], expected]);
+
+        // ---- patches ----
+        grid.SetPageSetup({ scale: 80 });
+        check('a scale ends the fit', pick(grid.GetPageSetup(), ['scale', 'fitToWidth', 'fitToHeight']), { scale: 80, fitToWidth: null, fitToHeight: null });
+        grid.SetPageSetup({ fitToHeight: 2 });
+        check('a fit ends the scale; the other side keeps its number', pick(grid.GetPageSetup(), ['scale', 'fitToWidth', 'fitToHeight']), { scale: null, fitToWidth: 1, fitToHeight: 2 });
+        grid.SetPageSetup({ margins: { top: 2 }, header: { right: 'Page &P' }, printTitles: { columns: null } });
+        check('some margins, one section, one of the titles: the rest stays', [grid.GetPageSetup().margins, grid.GetPageSetup().header, grid.GetPageSetup().printTitles],
+            [{ top: 2, bottom: 0.9, left: 0.5, right: 0.6, header: 0.4, footer: 0.2 }, section('Left && more', '&"Arial,Bold"Title', 'Page &P', '&LLeft && more&C&"Arial,Bold"Title&RPage &P'), { rows: '1:2', columns: null }]);
+        grid.SetPageSetup({ header: null, footer: { raw: '&LDraft' }, printArea: null, printTitles: null, firstPageNumber: null, paperSize: { code: 41 } });
+        check('null clears; a raw string; a paper by its code', pick(grid.GetPageSetup(), ['header', 'footer', 'printArea', 'printTitles', 'firstPageNumber', 'paperSize']),
+            { header: none, footer: section('Draft', '', '', '&LDraft'), printArea: null, printTitles: { rows: null, columns: null }, firstPageNumber: null, paperSize: { code: 41 } });
+        grid.SetPageSetup({ paperSize: 5, printArea: '$B$2:$D$9', printTitles: { rows: '$1:$1' } });
+        check('a paper code that has a name; references with $', pick(grid.GetPageSetup(), ['paperSize', 'pageHeight', 'printArea', 'printTitles']), { paperSize: 'legal', pageHeight: 1008, printArea: 'B2:D9', printTitles: { rows: '1:1', columns: null } });
+
+        // The print area and the titles follow rows that move.
+        grid.InsertRows(0, 2);
+        check('inserted rows move the print area and the titles', pick(grid.GetPageSetup(), ['printArea', 'printTitles']), { printArea: 'B4:D11', printTitles: { rows: '3:3', columns: null } });
+        grid.Undo();
+        check('... and back', pick(grid.GetPageSetup(), ['printArea', 'printTitles']), { printArea: 'B2:D9', printTitles: { rows: '1:1', columns: null } });
+
+        // ---- throws ----
+        const before = JSON.stringify(grid.GetPageSetup());
+        check('throws', [
+            thrown(() => grid.SetPageSetup()), thrown(() => grid.SetPageSetup('landscape')), thrown(() => grid.SetPageSetup({ colour: true })),
+            thrown(() => grid.SetPageSetup({ orientation: 'sideways' })), thrown(() => grid.SetPageSetup({ paperSize: 'a0' })), thrown(() => grid.SetPageSetup({ scale: 5 })),
+            thrown(() => grid.SetPageSetup({ scale: 80, fitToWidth: 1 })), thrown(() => grid.SetPageSetup({ margins: { top: -1 } })), thrown(() => grid.SetPageSetup({ margins: { inner: 1 } })),
+            thrown(() => grid.SetPageSetup({ printArea: 'nowhere' })), thrown(() => grid.SetPageSetup({ printTitles: { rows: 'A:B' } })), thrown(() => grid.SetPageSetup({ printTitles: { columns: 'A1:B2' } })),
+            thrown(() => grid.SetPageSetup({ header: 5 })), thrown(() => grid.SetPageSetup({ header: { middle: 'x' } })), thrown(() => grid.SetPageSetup({ footer: 'x'.repeat(300) })),
+            thrown(() => grid.SetPageSetup({ gridlines: 'yes' })), thrown(() => grid.SetPageSetup({ firstPageNumber: 1.5 })), thrown(() => grid.SetPageSetup({ comments: 'all' })),
+            thrown(() => grid.SetPageSetup({ scale: 50 }, 7)), thrown(() => grid.GetPageSetup(7)),
+        ].map((message) => message === null ? null : message.split(' ').slice(0, 5).join(' ')), [
+            'SetPageSetup: the changes is missing', 'SetPageSetup: the changes are not', 'SetPageSetup: a page setup has',
+            'SetPageSetup: orientation must be one', 'SetPageSetup: paperSize "a0" is not', 'SetPageSetup: scale must be between',
+            'SetPageSetup: give a scale or', 'SetPageSetup: margins.top must be between', 'SetPageSetup: margins has no side',
+            'SetPageSetup: "nowhere" is not a', 'SetPageSetup: printTitles.rows must be whole', 'SetPageSetup: printTitles.columns must be whole',
+            'SetPageSetup: header must be a', 'SetPageSetup: header has no "middle"', 'SetPageSetup: footer is longer than',
+            'SetPageSetup: gridlines must be true', 'SetPageSetup: firstPageNumber must be a', 'SetPageSetup: comments must be one',
+            'SetPageSetup: there is no sheet', 'GetPageSetup: there is no sheet']);
+        check('a refused change changes nothing', JSON.stringify(grid.GetPageSetup()), before);
+
+        // ---- page breaks ----
+        changes.splice(0);
+        grid.SetPageBreaks({ rows: [40, 20, 20], columns: [3] });
+        check('SetPageBreaks: sorted, once each', [grid.GetPageBreaks(), changes.splice(0)], [{ rows: [20, 40], columns: [3] }, ['0']]);
+        check('AddPageBreak / RemovePageBreak', [grid.AddPageBreak(30), grid.AddPageBreak(30), grid.AddPageBreak(null, 5), grid.AddPageBreak(10, 1), grid.RemovePageBreak(20), grid.RemovePageBreak(20), grid.RemovePageBreak(null, 3), grid.GetPageBreaks()],
+            [true, false, true, true, true, false, true, { rows: [10, 30, 40], columns: [1, 5] }]);
+        grid.Undo();
+        check('each is one undo step', grid.GetPageBreaks(), { rows: [10, 30, 40], columns: [1, 3, 5] });
+        grid.Redo();
+        grid.SetPageBreaks({ rows: [10, 30] });
+        check('a list that is not given stays', grid.GetPageBreaks(), { rows: [10, 30], columns: [1, 5] });
+        grid.DeleteRows(0, 5);
+        check('deleted rows move the breaks', grid.GetPageBreaks(), { rows: [5, 25], columns: [1, 5] });
+        grid.Undo();
+        check('ClearPageBreaks', [grid.ClearPageBreaks(), grid.GetPageBreaks(), grid.ClearPageBreaks()], [4, { rows: [], columns: [] }, 0]);
+        grid.Undo();
+        check('... undone', grid.GetPageBreaks(), { rows: [10, 30], columns: [1, 5] });
+        check('breaks: throws', [thrown(() => grid.SetPageBreaks({ rows: [0] })), thrown(() => grid.SetPageBreaks({ lines: [] })), thrown(() => grid.SetPageBreaks([3])) !== null, thrown(() => grid.AddPageBreak()), thrown(() => grid.AddPageBreak('x')) !== null, thrown(() => grid.SetPageBreaks({ rows: 5 }))]
+            .map((message) => typeof message === 'string' ? message.split(' ').slice(0, 6).join(' ') : message),
+            ['SetPageBreaks: there can be no page', 'SetPageBreaks: page breaks have no "lines"', true, 'AddPageBreak: give a row, a column', true, 'SetPageBreaks: rows must be an array']);
+
+        // Another sheet than the one on display.
+        grid.AddSheet('Two'); grid.SwitchSheet(0); changes.splice(0);
+        grid.SetPageSetup({ orientation: 'portrait' }); changes.splice(0);
+        grid.SetPageSetup({ orientation: 'landscape', printArea: 'A1:C3' }, 1);
+        check('the setup of another sheet', [pick(grid.GetPageSetup(1), ['orientation', 'printArea']), grid.GetPageSetup().orientation, changes.splice(0), grid.GetActiveSheetIndex()], [{ orientation: 'landscape', printArea: 'A1:C3' }, 'portrait', ['1'], 0]);
+        grid.AddPageBreak(7, null, 1);
+        check('... and its breaks', [grid.GetPageBreaks(1), grid.GetPageBreaks().rows], [{ rows: [7], columns: [] }, [10, 30]]);
+        grid.Undo(); grid.Undo();
+        check('... undone from the sheet on display', [pick(grid.GetPageSetup(1), ['orientation', 'printArea']), grid.GetPageBreaks(1)], [{ orientation: 'portrait', printArea: null }, { rows: [], columns: [] }]);
+        grid.Redo(); grid.Redo();
+        off();
+
+        // ---- export -> import ----
+        grid.SetPageSetup({ header: { left: 'L', center: 'C & co'.replace('&', '&&'), right: '&P' }, firstPageNumber: 4, printTitles: { rows: '1:2', columns: 'A:B' }, fitToWidth: 2, fitToHeight: 0 });
+        const mine = grid.GetPageSetup(), mineBreaks = grid.GetPageBreaks(), other = grid.GetPageSetup(1), otherBreaks = grid.GetPageBreaks(1);
+        const again = await reopened(grid);
+        check('export -> import: the same setup', again.grid.GetPageSetup(), mine);
+        check('... the same breaks', again.grid.GetPageBreaks(), mineBreaks);
+        check('... on the other sheet too (not shown yet)', [again.grid.GetPageSetup(1), again.grid.GetPageBreaks(1)], [other, otherBreaks]);
+        // Changed in the opened file and written again.
+        again.grid.SetPageSetup({ paperSize: 'a3', scale: 55, printArea: null }); again.grid.RemovePageBreak(10);
+        const third = await reopened(again.grid);
+        check('changed after opening and exported again', [pick(third.grid.GetPageSetup(), ['paperSize', 'scale', 'fitToWidth', 'printArea', 'printTitles', 'firstPageNumber']), third.grid.GetPageBreaks()],
+            [{ paperSize: 'a3', scale: 55, fitToWidth: null, printArea: null, printTitles: { rows: '1:2', columns: 'A:B' }, firstPageNumber: 4 }, { rows: [30], columns: [1, 5] }]);
+        third.close(); again.close();
+
+        // ---- a real file keeps its setup ----
+        const real = mountGrid();
+        await real.grid.ImportXlsx(await bytesOf('tests/real-world/saopaulo-condos.xlsx'));
+        const assumptions = real.grid.GetSheetNames().indexOf('Assumptions'), monthly = real.grid.GetSheetNames().indexOf('Monthly-CF');
+        const fromFile = real.grid.GetPageSetup(assumptions), fromFileMonthly = real.grid.GetPageSetup(monthly);
+        check('a file\'s setup is read', [pick(fromFile, ['orientation', 'scale', 'pageOrder', 'printArea', 'paperSize']), real.grid.GetPageBreaks(assumptions), pick(fromFileMonthly, ['orientation', 'scale', 'printArea']), real.grid.GetPageBreaks(monthly).rows],
+            [{ orientation: 'portrait', scale: 36, pageOrder: 'downThenOver', printArea: 'A1:O174', paperSize: 'letter' }, { rows: [61, 108], columns: [] }, { orientation: 'landscape', scale: 40, printArea: 'A1:CL217' }, [35, 74, 106, 132, 191]]);
+        const untouched = await reopened(real.grid);
+        check('... exported untouched it is the same', [untouched.grid.GetPageSetup(assumptions), untouched.grid.GetPageBreaks(assumptions), untouched.grid.GetPageSetup(monthly)], [fromFile, real.grid.GetPageBreaks(assumptions), fromFileMonthly]);
+        untouched.close();
+        real.grid.SetPageSetup({ orientation: 'landscape', margins: { left: 0.25 }, footer: { center: 'Page &P' } }, assumptions);
+        real.grid.AddPageBreak(140, null, assumptions);
+        const edited = await reopened(real.grid);
+        check('... changed, the change is written and the rest stays', [pick(edited.grid.GetPageSetup(assumptions), ['orientation', 'scale', 'pageOrder', 'printArea']), edited.grid.GetPageSetup(assumptions).margins.left, edited.grid.GetPageSetup(assumptions).footer.raw, edited.grid.GetPageBreaks(assumptions).rows, edited.grid.GetPageSetup(monthly)],
+            [{ orientation: 'landscape', scale: 36, pageOrder: 'downThenOver', printArea: 'A1:O174' }, 0.25, '&CPage &P', [61, 108, 140], fromFileMonthly]);
+        edited.close(); real.close();
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};

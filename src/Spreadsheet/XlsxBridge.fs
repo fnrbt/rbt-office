@@ -591,6 +591,7 @@ module Import =
                 { defaultPageSetup with
                     PageWidth = w
                     PageHeight = h
+                    PaperSize = p.PaperSize
                     Orientation = (match p.Orientation with XlsxReader.OrientationLandscape -> LandscapeOrientation | _ -> PortraitOrientation)
                     FitToPage = p.FitToPage
                     FitToWidth = p.FitToWidth
@@ -1380,13 +1381,13 @@ module Export =
     let private margins (m: PageMargins) : XlsxWriter.XlsxPageMargins =
         { Top = m.Top; Bottom = m.Bottom; Left = m.Left; Right = m.Right; Header = m.Header; Footer = m.Footer }
 
-    let private pageSetup (paperSize: int option) (p: PageSetup) : XlsxWriter.XlsxPageSetup =
+    let private pageSetup (p: PageSetup) : XlsxWriter.XlsxPageSetup =
         { Orientation = Some (match p.Orientation with LandscapeOrientation -> "landscape" | PortraitOrientation -> "portrait")
           FitToPage = p.FitToPage
           FitToWidth = p.FitToWidth
           FitToHeight = p.FitToHeight
           Scale = p.Scale
-          PaperSize = paperSize
+          PaperSize = p.PaperSize
           FirstPageNumber = p.FirstPageNumber
           UseFirstPageNumber = p.UseFirstPageNumber
           PageOrder = Some (match p.PageOrder with OverThenDown -> "overThenDown" | DownThenOver -> "downThenOver")
@@ -1531,7 +1532,7 @@ module Export =
           ConditionalFormats = conditionalFormats dxfIndex model
           Hyperlinks = hyperlinks model
           PageMargins = Some (margins model.PageSetup.Margins)
-          PageSetup = Some (pageSetup None model.PageSetup)
+          PageSetup = Some (pageSetup model.PageSetup)
           PrintOptions = Some (printOptions model.PageSetup.Options)
           HeaderFooter = Some (headerFooter model.PageSetup.HeaderFooter)
           RowBreaks = model.PageSetup.ManualRowBreaks
@@ -1633,7 +1634,7 @@ module Export =
             PageMargins = if before.PageSetup.Margins = model.PageSetup.Margins then original.PageMargins else fromModel.PageMargins
             PageSetup =
                 if unchanged (fun m -> m.PageSetup) then original.PageSetup
-                else Some (pageSetup (readerSheet.PageSetup |> Option.bind (fun p -> p.PaperSize)) model.PageSetup)
+                else Some (pageSetup model.PageSetup)
             PrintOptions = if before.PageSetup.Options = model.PageSetup.Options then original.PrintOptions else fromModel.PrintOptions
             HeaderFooter = if before.PageSetup.HeaderFooter = model.PageSetup.HeaderFooter then original.HeaderFooter else fromModel.HeaderFooter
             PrintArea = if before.PageSetup.PrintArea = model.PageSetup.PrintArea then original.PrintArea else fromModel.PrintArea

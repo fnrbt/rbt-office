@@ -59,6 +59,7 @@ stages=(
     stage41-find
     stage42-tables
     stage43-status
+    stage44-pagesetup
     numbertext
 )
 

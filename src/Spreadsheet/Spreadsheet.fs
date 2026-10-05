@@ -2362,6 +2362,32 @@ type Spreadsheet(container: Element) =
         if bookSteps.Count > 400 then bookSteps.RemoveAt 0
         model <- pushCommand step model
 
+    /// Change the page setup of a sheet (the active one, or the one a host
+    /// names) as one undoable step. False when nothing changed. A step on
+    /// another sheet than the one on display is a step of the workbook.
+    let changePageSetup (memberName: string) (sheetIndex: obj) (description: string) (change: PageSetup -> PageSetup) : bool =
+        let index =
+            match Host.optionalArg (Host.intArg memberName "sheetIndex") sheetIndex with
+            | None -> activeSheetIndex
+            | Some index when index >= 0 && index < sheets.Length -> index
+            | Some index -> Host.hostFail memberName (sprintf "there is no sheet %d (the workbook has %d)" index sheets.Length)
+        let before = (sheetModelAt index).PageSetup
+        let after = change before
+        if after = before then false
+        elif index = activeSheetIndex then
+            model <- { model with PageSetup = after }
+            pushValueNeutral { Undo = (fun m -> { m with PageSetup = before }); Redo = (fun m -> { m with PageSetup = after }); Description = description }
+            true
+        else
+            let id = sheetIdForIndex index
+            let put (value: PageSetup) () =
+                let current = bookSnapshot ()
+                match Map.tryFind id current.Sheets with
+                | Some sheet -> installBook { current with Sheets = Map.add id { sheet with Model = { sheet.Model with PageSetup = value } } current.Sheets }
+                | None -> ()
+            runBookStep description (put after) (put before)
+            true
+
     /// Run a change of the workbook's tables as one undoable step of the
     /// workbook (see above): `op` gives the changed workbook and the cells
     /// it wrote. The step keeps what differs - those cells, the tables, and
@@ -6535,6 +6561,119 @@ type Spreadsheet(container: Element) =
             createObj [ "range" ==> SheetOps.rangeText range
                         "firstRow" ==> range.From.Row; "firstCol" ==> range.From.Col
                         "lastRow" ==> range.To.Row; "lastCol" ==> range.To.Col ]
+
+    /// The page setup of a sheet (the active one, or `sheetIndex`), for a
+    /// print dialog:
+    /// { orientation: "portrait" | "landscape",
+    ///   paperSize: "letter" | "tabloid" | "legal" | "executive" | "a3" | "a4" | "a5" | "b5" | { code } (any other OOXML paper code),
+    ///   pageWidth, pageHeight (points, of the paper in portrait; read only),
+    ///   margins: { top, bottom, left, right, header, footer } (inches),
+    ///   scale (percent, 10..400; null while the sheet is fitted to pages),
+    ///   fitToWidth, fitToHeight (pages, 0 = as many as it takes; null while a scale applies),
+    ///   printArea: "A1:F40" | null (one area),
+    ///   printTitles: { rows: "1:2" | null, columns: "A:B" | null },
+    ///   header, footer, firstHeader, firstFooter, evenHeader, evenFooter:
+    ///     { left, center, right, raw } - the three sections and the whole
+    ///     string, in Excel's codes (&P page, &N pages, &D date, &T time,
+    ///     &F file, &A sheet, && an ampersand, &"Font,Style", &12 a size);
+    ///     the first / even ones apply when differentFirst / differentOddEven,
+    ///   differentFirst, differentOddEven, scaleHeaderFooter,
+    ///   gridlines, headings, centerHorizontally, centerVertically,
+    ///   pageOrder: "downThenOver" | "overThenDown", blackAndWhite,
+    ///   firstPageNumber (number | null: automatic),
+    ///   comments: "none" | "asDisplayed" | "atEnd" }.
+    /// Manual page breaks are GetPageBreaks.
+    member _.GetPageSetup(?sheetIndex: obj) : obj =
+        Host.pageSetupToObj (sheetArg "GetPageSetup" (defaultArg sheetIndex null)).PageSetup
+
+    /// Change the page setup of a sheet (the active one, or `sheetIndex`):
+    /// `changes` is the object of GetPageSetup with only the keys to change
+    /// (the whole object may be handed back). One undo step. `scale` switches
+    /// fitting to pages off and `fitToWidth` / `fitToHeight` switch it on
+    /// (both in one call throws); `margins` may name some sides; a header or
+    /// footer is a string (the raw text with its codes), null (none) or
+    /// { left?, center?, right? } (sections that are not given stay);
+    /// `printArea` and the print titles are A1 references or null;
+    /// `paperSize` a name, a code or { code }. `pageWidth` / `pageHeight` are
+    /// ignored. Throws for an unknown key or a value Excel does not take.
+    /// The print area and titles follow inserted and deleted rows / columns.
+    member _.SetPageSetup(changes: obj, ?sheetIndex: obj) : unit =
+        let memberName = "SetPageSetup"
+        if model.EditingCell.IsSome then finishEditing true |> ignore
+        let changes = requiredArg memberName "the changes" changes
+        let changed =
+            changePageSetup memberName (defaultArg sheetIndex null) "Page setup" (fun setup ->
+                SheetOps.applyPageSetupChanges memberName (Host.pageSetupChangesOfObj memberName setup changes) setup)
+        if changed then render()
+
+    /// The manual page breaks of a sheet (the active one, or `sheetIndex`):
+    /// { rows: number[], columns: number[] } - the 0-based rows / columns
+    /// BEFORE which a break sits (rows: [20] starts a new page at row 20,
+    /// the 21st), in ascending order.
+    member _.GetPageBreaks(?sheetIndex: obj) : obj =
+        Host.pageBreaksToObj (sheetArg "GetPageBreaks" (defaultArg sheetIndex null)).PageSetup
+
+    /// Replace the manual page breaks of a sheet with { rows?, columns? }
+    /// (as GetPageBreaks gives them; a list that is not given stays). One
+    /// undo step. Throws for a break before row / column 0 or outside the sheet.
+    member _.SetPageBreaks(breaks: obj, ?sheetIndex: obj) : unit =
+        let memberName = "SetPageBreaks"
+        if model.EditingCell.IsSome then finishEditing true |> ignore
+        let breaks = requiredArg memberName "the breaks" breaks
+        if not (Host.isJsObject breaks) then Host.hostFail memberName "the breaks must be { rows, columns }"
+        for key in Host.keysOf breaks do
+            if key <> "rows" && key <> "columns" then Host.hostFail memberName (sprintf "page breaks have no \"%s\" (they have rows, columns)" key)
+        let changed =
+            changePageSetup memberName (defaultArg sheetIndex null) "Page breaks" (fun setup ->
+                let rows = if Host.hasKey breaks "rows" then Host.intListArg memberName "rows" (Host.getKey breaks "rows") else setup.ManualRowBreaks
+                let cols = if Host.hasKey breaks "columns" then Host.intListArg memberName "columns" (Host.getKey breaks "columns") else setup.ManualColBreaks
+                SheetOps.setPageBreaks memberName rows cols setup)
+        if changed then render()
+
+    /// Add a manual page break before row `row` and / or before column `col`
+    /// (0-based; null for none of that kind) on a sheet. One undo step.
+    /// False when the breaks were there already. Throws when neither is given.
+    member _.AddPageBreak(row: obj, ?col: obj, ?sheetIndex: obj) : bool =
+        let memberName = "AddPageBreak"
+        if model.EditingCell.IsSome then finishEditing true |> ignore
+        let row = Host.optionalArg (Host.intArg memberName "row") row
+        let col = Host.optionalArg (Host.intArg memberName "col") (defaultArg col null)
+        if row.IsNone && col.IsNone then Host.hostFail memberName "give a row, a column or both"
+        let changed =
+            changePageSetup memberName (defaultArg sheetIndex null) "Page break" (fun setup ->
+                SheetOps.setPageBreaks memberName (Option.toList row @ setup.ManualRowBreaks) (Option.toList col @ setup.ManualColBreaks) setup)
+        if changed then render()
+        changed
+
+    /// Remove the manual page break before row `row` and / or before column
+    /// `col` (0-based; null for none of that kind). One undo step. False
+    /// when there was no such break.
+    member _.RemovePageBreak(row: obj, ?col: obj, ?sheetIndex: obj) : bool =
+        let memberName = "RemovePageBreak"
+        if model.EditingCell.IsSome then finishEditing true |> ignore
+        let row = Host.optionalArg (Host.intArg memberName "row") row
+        let col = Host.optionalArg (Host.intArg memberName "col") (defaultArg col null)
+        if row.IsNone && col.IsNone then Host.hostFail memberName "give a row, a column or both"
+        let changed =
+            changePageSetup memberName (defaultArg sheetIndex null) "Page break" (fun setup ->
+                { setup with
+                    ManualRowBreaks = (match row with Some row -> setup.ManualRowBreaks |> List.filter (fun known -> known <> row) | None -> setup.ManualRowBreaks)
+                    ManualColBreaks = (match col with Some col -> setup.ManualColBreaks |> List.filter (fun known -> known <> col) | None -> setup.ManualColBreaks) })
+        if changed then render()
+        changed
+
+    /// Remove every manual page break of a sheet. One undo step. Returns
+    /// how many there were.
+    member _.ClearPageBreaks(?sheetIndex: obj) : int =
+        let memberName = "ClearPageBreaks"
+        if model.EditingCell.IsSome then finishEditing true |> ignore
+        let mutable count = 0
+        let changed =
+            changePageSetup memberName (defaultArg sheetIndex null) "Clear page breaks" (fun setup ->
+                count <- setup.ManualRowBreaks.Length + setup.ManualColBreaks.Length
+                if count = 0 then setup else { setup with ManualRowBreaks = []; ManualColBreaks = [] })
+        if changed then render()
+        count
 
     /// Call `callback` when the user asks for a context menu: a right click
     /// in the grid, or the menu key / Shift+F10 (for the active cell or the

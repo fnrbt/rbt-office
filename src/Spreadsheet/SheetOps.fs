@@ -2849,3 +2849,200 @@ let usedExtent (model: SpreadsheetModel) : CellRange option =
     for KeyValue(addr, _) in model.Cells do take addr.Row addr.Col addr.Row addr.Col
     for merge in model.MergedCells do take merge.StartRow merge.StartCol merge.EndRow merge.EndCol
     if any then Some { From = { Row = top; Col = left }; To = { Row = bottom; Col = right } } else None
+
+// ---------------------------------------------------------------------------
+// Page setup
+// ---------------------------------------------------------------------------
+
+/// The three sections of a header or footer. Each is text in Excel's code
+/// syntax: `&P` page number, `&N` pages, `&D` date, `&T` time, `&F` file,
+/// `&A` sheet name, `&&` an ampersand, `&"Font,Style"`, `&12` a size ...
+type HeaderFooterSections = {
+    Left: string
+    Center: string
+    Right: string
+}
+
+/// Split a header / footer string (`&LLeft&CCentre&RRight`) into its
+/// sections. Text before the first section marker belongs to the centre, as
+/// in Excel; a section named twice is the two texts joined.
+let splitHeaderFooter (raw: string) : HeaderFooterSections =
+    let left = System.Text.StringBuilder()
+    let center = System.Text.StringBuilder()
+    let right = System.Text.StringBuilder()
+    let mutable current = center
+    let text = if isNull raw then "" else raw
+    let mutable i = 0
+    while i < text.Length do
+        let ch = text.[i]
+        if ch = '&' && i + 1 < text.Length then
+            match text.[i + 1] with
+            | 'L' | 'l' -> current <- left; i <- i + 2
+            | 'C' | 'c' -> current <- center; i <- i + 2
+            | 'R' | 'r' -> current <- right; i <- i + 2
+            | '"' ->
+                // A font name: up to the closing quote, whatever letters it holds.
+                let close = text.IndexOf('"', i + 2)
+                let stop = if close < 0 then text.Length else close + 1
+                current.Append(text.Substring(i, stop - i)) |> ignore
+                i <- stop
+            | next ->
+                current.Append(ch).Append(next) |> ignore
+                i <- i + 2
+        else
+            current.Append(ch) |> ignore
+            i <- i + 1
+    { Left = left.ToString(); Center = center.ToString(); Right = right.ToString() }
+
+/// The header / footer string of three sections; None when all are empty.
+let joinHeaderFooter (sections: HeaderFooterSections) : string option =
+    let part (marker: string) (text: string) = if System.String.IsNullOrEmpty text then "" else marker + text
+    match part "&L" sections.Left + part "&C" sections.Center + part "&R" sections.Right with
+    | "" -> None
+    | joined -> Some joined
+
+/// The papers a host names; any other is given by its OOXML code.
+let paperSizeNames : (string * int) list =
+    [ "letter", 1; "tabloid", 3; "legal", 5; "executive", 7; "a3", 8; "a4", 9; "a5", 11; "b5", 13 ]
+
+/// The name of a paper-size code ("a4"), when it has one. No code is Letter.
+let paperSizeName (code: int option) : string option =
+    match code with
+    | None -> Some "letter"
+    | Some code -> paperSizeNames |> List.tryFind (fun (_, known) -> known = code) |> Option.map fst
+
+let paperSizeCode (name: string) : int option =
+    let wanted = (if isNull name then "" else name).Trim().ToLowerInvariant()
+    paperSizeNames |> List.tryFind (fun (known, _) -> known = wanted) |> Option.map snd
+
+/// One change of a sheet's page setup, as a host asks for it.
+type PageSetupChange =
+    | SetOrientation of PrintOrientation
+    /// An OOXML paper-size code.
+    | SetPaper of int
+    /// "top" | "bottom" | "left" | "right" | "header" | "footer", in inches.
+    | SetMargin of side: string * inches: float
+    /// A scale in percent; the sheet is no longer fitted to pages.
+    | SetScale of int
+    /// Fit to this many pages wide / tall (0: as many as it takes). A side
+    /// that is not given keeps its number.
+    | SetFitTo of width: int option * height: int option
+    | SetPrintArea of CellRange option
+    | SetRepeatRows of (int * int) option
+    | SetRepeatCols of (int * int) option
+    /// "header" | "footer" | "firstHeader" | "firstFooter" | "evenHeader" | "evenFooter".
+    | SetHeaderFooterText of slot: string * raw: string option
+    | SetDifferentFirst of bool
+    | SetDifferentOddEven of bool
+    | SetScaleWithDocument of bool
+    | SetPrintGridLines of bool
+    | SetPrintHeadings of bool
+    | SetCenterHorizontally of bool
+    | SetCenterVertically of bool
+    | SetPageOrder of PageOrder
+    | SetBlackAndWhite of bool
+    /// None: numbered from 1 (automatic).
+    | SetFirstPageNumber of int option
+    | SetCommentsPrint of CellCommentsPrint
+
+/// Apply one change to a page setup. Throws (naming `memberName`) for a
+/// value Excel does not take.
+let applyPageSetupChange (memberName: string) (setup: PageSetup) (change: PageSetupChange) : PageSetup =
+    let fail (message: string) = failwith (memberName + ": " + message)
+    match change with
+    | SetOrientation orientation -> { setup with Orientation = orientation }
+    | SetPaper code ->
+        if code < 1 || code > 32767 then fail (sprintf "paperSize code %d is not a paper size" code)
+        let width, height = paperSizePoints code
+        { setup with PaperSize = Some code; PageWidth = width; PageHeight = height }
+    | SetMargin (side, inches) ->
+        if System.Double.IsNaN inches || inches < 0.0 || inches > 49.0 then fail (sprintf "margins.%s must be between 0 and 49 inches" side)
+        let margins = setup.Margins
+        let changed =
+            match side with
+            | "top" -> { margins with Top = inches }
+            | "bottom" -> { margins with Bottom = inches }
+            | "left" -> { margins with Left = inches }
+            | "right" -> { margins with Right = inches }
+            | "header" -> { margins with Header = inches }
+            | "footer" -> { margins with Footer = inches }
+            | other -> fail (sprintf "margins has no side \"%s\"" other)
+        { setup with Margins = changed }
+    | SetScale percent ->
+        if percent < 10 || percent > 400 then fail "scale must be between 10 and 400 (percent)"
+        { setup with Scale = percent; FitToPage = false }
+    | SetFitTo (width, height) ->
+        let check (what: string) (pages: int option) =
+            match pages with
+            | Some pages when pages < 0 || pages > 32767 -> fail (sprintf "%s must be between 0 and 32767 (pages; 0 = as many as it takes)" what)
+            | _ -> ()
+        check "fitToWidth" width
+        check "fitToHeight" height
+        { setup with FitToPage = true; FitToWidth = defaultArg width setup.FitToWidth; FitToHeight = defaultArg height setup.FitToHeight }
+    | SetPrintArea area ->
+        match area with
+        | Some range when range.From.Row < 0 || range.From.Col < 0 || range.To.Row > maxSheetRow || range.To.Col > maxSheetCol || range.To.Row < range.From.Row || range.To.Col < range.From.Col ->
+            fail "printArea is not a range of the sheet"
+        | _ -> { setup with PrintArea = area }
+    | SetRepeatRows rows ->
+        match rows with
+        | Some (first, last) when first < 0 || last < first || last > maxSheetRow -> fail "printTitles.rows is not a run of rows"
+        | _ -> { setup with RepeatRows = rows }
+    | SetRepeatCols cols ->
+        match cols with
+        | Some (first, last) when first < 0 || last < first || last > maxSheetCol -> fail "printTitles.columns is not a run of columns"
+        | _ -> { setup with RepeatCols = cols }
+    | SetHeaderFooterText (slot, raw) ->
+        let raw = raw |> Option.filter (fun text -> text <> "")
+        match raw with
+        | Some text when text.Length > 255 -> fail (sprintf "%s is longer than 255 characters (with its codes)" slot)
+        | _ -> ()
+        let hf = setup.HeaderFooter
+        let changed =
+            match slot with
+            | "header" -> { hf with OddHeader = raw }
+            | "footer" -> { hf with OddFooter = raw }
+            | "firstHeader" -> { hf with FirstHeader = raw }
+            | "firstFooter" -> { hf with FirstFooter = raw }
+            | "evenHeader" -> { hf with EvenHeader = raw }
+            | "evenFooter" -> { hf with EvenFooter = raw }
+            | other -> fail (sprintf "there is no header or footer \"%s\"" other)
+        { setup with HeaderFooter = changed }
+    | SetDifferentFirst on -> { setup with HeaderFooter = { setup.HeaderFooter with DifferentFirst = on } }
+    | SetDifferentOddEven on -> { setup with HeaderFooter = { setup.HeaderFooter with DifferentOddEven = on } }
+    | SetScaleWithDocument on -> { setup with HeaderFooter = { setup.HeaderFooter with ScaleWithDoc = on } }
+    | SetPrintGridLines on -> { setup with Options = { setup.Options with GridLines = on } }
+    | SetPrintHeadings on -> { setup with Options = { setup.Options with Headings = on } }
+    | SetCenterHorizontally on -> { setup with Options = { setup.Options with HorizontalCentered = on } }
+    | SetCenterVertically on -> { setup with Options = { setup.Options with VerticalCentered = on } }
+    | SetPageOrder order -> { setup with PageOrder = order }
+    | SetBlackAndWhite on -> { setup with BlackAndWhite = on }
+    | SetFirstPageNumber number ->
+        match number with
+        | Some number when number < -32765 || number > 32767 -> fail "firstPageNumber must be between -32765 and 32767"
+        | Some number -> { setup with FirstPageNumber = number; UseFirstPageNumber = true }
+        | None -> { setup with FirstPageNumber = 1; UseFirstPageNumber = false }
+    | SetCommentsPrint comments -> { setup with CellComments = comments }
+
+/// Apply the changes in order (a later one wins).
+let applyPageSetupChanges (memberName: string) (changes: PageSetupChange list) (setup: PageSetup) : PageSetup =
+    changes |> List.fold (applyPageSetupChange memberName) setup
+
+/// Manual page breaks as hosts see them: the 0-based rows / columns BEFORE
+/// which a break sits (a break before row 20 puts row 20 on a new page).
+/// The model - like the file - keeps the 1-based number of the row the break
+/// comes after, which is the same number.
+let pageBreaksOf (setup: PageSetup) : int list * int list =
+    List.sort setup.ManualRowBreaks, List.sort setup.ManualColBreaks
+
+/// Replace the manual page breaks. Throws for a break before the first row
+/// / column or outside the sheet.
+let setPageBreaks (memberName: string) (rows: int list) (cols: int list) (setup: PageSetup) : PageSetup =
+    for row in rows do
+        if row < 1 || row > maxSheetRow then failwith (sprintf "%s: there can be no page break before row %d (rows 1 to %d, 0-based)" memberName row maxSheetRow)
+    for col in cols do
+        if col < 1 || col > maxSheetCol then failwith (sprintf "%s: there can be no page break before column %d (columns 1 to %d, 0-based)" memberName col maxSheetCol)
+    let rows = rows |> List.distinct |> List.sort
+    let cols = cols |> List.distinct |> List.sort
+    if rows = setup.ManualRowBreaks && cols = setup.ManualColBreaks then setup
+    else { setup with ManualRowBreaks = rows; ManualColBreaks = cols }

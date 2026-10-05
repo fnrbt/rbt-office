@@ -587,6 +587,11 @@ type Table = {
 type PageSetup = {
     PageWidth: float
     PageHeight: float
+    /// The OOXML paper-size code the dimensions stand for (1 = Letter,
+    /// 9 = A4 ...; see `paperSizePoints`), kept so that a size the editor
+    /// has no dimensions for goes back to the file as it came. None: the
+    /// file names no paper (Excel then takes Letter).
+    PaperSize: int option
     Orientation: PrintOrientation
     Margins: PageMargins
     /// When `FitToPage` is true, the printed range is scaled to fit at
@@ -651,6 +656,7 @@ let defaultPageSetup = {
     // US Letter at 72 DPI = 612 × 792 pt.
     PageWidth = 612.0
     PageHeight = 792.0
+    PaperSize = None
     Orientation = PortraitOrientation
     Margins = defaultPageMargins
     FitToPage = false
@@ -676,6 +682,8 @@ let defaultPageSetup = {
 let paperSizePoints (code: int) : float * float =
     match code with
     | 1 -> 612.0, 792.0      // Letter   (8.5 × 11 in)
+    | 3 -> 792.0, 1224.0     // Tabloid  (11 × 17 in)
+    | 7 -> 522.0, 756.0      // Executive (7.25 × 10.5 in)
     | 5 -> 612.0, 1008.0     // Legal    (8.5 × 14 in)
     | 8 -> 841.68, 1190.55   // A3       (297 × 420 mm)
     | 9 -> 595.27, 841.89    // A4       (210 × 297 mm)
