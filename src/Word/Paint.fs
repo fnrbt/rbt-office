@@ -2770,6 +2770,98 @@ let collectDocumentChunksWith (deferCollection: bool) (cache: PaintCache) (setti
 let collectDocumentChunks (cache: PaintCache) (settings: LayoutSettings) fontFamily (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (slices: LayoutSlices) (pages: PageInfo list) : PaintChunk array option =
     collectDocumentChunksWith true cache settings fontFamily measureText measureRange doc slices pages
 
+/// What of a paragraph decides the faces its text and its list marker are
+/// set in: its style, its list and the formatting of its runs. (The text
+/// itself, and everything about spacing and position, has no part in it.)
+let private fontFaceSignature (kind: string) (para: ParagraphBlock) : string option =
+    let metadata = para.Metadata
+    // A paragraph that ends a section stays (the section's headers and footers hang on it);
+    // so does one with a picture, an equation or a field that is not a page number.
+    if metadata.SectionBreak.IsSome then None
+    else
+        let sb = System.Text.StringBuilder()
+        let text (value: string option) = match value with Some v -> v | None -> ""
+        sb.Append(kind).Append("\u0001").Append(text metadata.Style).Append("\u0001")
+          .Append(string metadata.ListStyle).Append("\u0001").Append(string metadata.ListLevel).Append("\u0001")
+          .Append(text metadata.ListId).Append("\u0001").Append(text metadata.ListNumberFormat).Append("\u0001")
+          .Append(text metadata.ListLevelText).Append("\u0001").Append(if metadata.HasMarkProperties then "m" else "") |> ignore
+        let mutable plain = true
+        let mutable last = ""
+        for run in para.Buffer.Runs do
+            match run with
+            | Image _ -> plain <- false
+            | Text run ->
+                let style = run.Style
+                if style.EquationXml.IsSome then plain <- false
+                else
+                    let field =
+                        match style.FieldCode with
+                        | Some code ->
+                            let code = code.Trim()
+                            let space = code.IndexOf ' '
+                            if space < 0 then code else code.Substring(0, space)
+                        | None -> ""
+                    let own =
+                        text style.Style + "\u0003" + text style.FontFamily + "\u0003" + (if style.Bold then "b" else "") + (if style.Italic then "i" else "")
+                        + "\u0003" + string style.Explicit + "\u0003" + text style.VertAlign + "\u0003" + text style.NoteType + (if style.NoteId.IsSome then "n" else "")
+                        + "\u0003" + field + (if style.Hidden then "h" else "") + (if style.AllCaps then "c" else "") + (if style.SmallCaps then "s" else "")
+                    if own <> last then
+                        sb.Append("\u0002").Append(own) |> ignore
+                        last <- own
+        if plain then Some (sb.ToString()) else None
+
+/// A document with the blocks of `doc` that can bring a font face of their
+/// own: of the body's paragraphs and tables that are alike in what decides
+/// their faces (see fontFaceSignature) the first stays. The blocks of every
+/// header and footer are added to the body, so their faces are found whatever
+/// pages the sample has. A long document's faces are those of this sample,
+/// which is laid out in a fraction of the time.
+let private fontFaceSample (doc: Document) : Document =
+    let seen = HashSet<string>()
+    let rec tableSignature (sb: System.Text.StringBuilder) (table: TableBlock) : bool =
+        let mutable plain = true
+        sb.Append("T").Append(match table.StyleId with Some id -> id | None -> "") |> ignore
+        for row in table.Rows do
+            sb.Append("\u0004") |> ignore
+            for cell in row.Cells do
+                sb.Append("\u0005") |> ignore
+                for para in cell.Content do
+                    match fontFaceSignature "c" para with
+                    | Some signature -> sb.Append(signature).Append("\u0006") |> ignore
+                    | None -> plain <- false
+                for nested in cell.NestedTables do
+                    if not (tableSignature sb nested) then plain <- false
+        plain
+    let keep (block: Block) =
+        match block with
+        | Paragraph para ->
+            match fontFaceSignature "p" para with
+            | Some signature -> seen.Add signature
+            | None -> true
+        | Heading (level, para) ->
+            match fontFaceSignature ("h" + string level) para with
+            | Some signature -> seen.Add signature
+            | None -> true
+        | Table table ->
+            let sb = System.Text.StringBuilder()
+            if tableSignature sb table then seen.Add (sb.ToString()) else true
+        | TextBox _ -> true
+    let body = doc.Blocks |> List.filter keep
+    let furniture =
+        [ for part in doc.HeaderParts @ doc.FooterParts do
+            for block in part.Blocks do
+                // (Part of the body here: without what makes a paragraph end a section.)
+                match block with
+                | Paragraph para when para.Metadata.SectionBreak.IsSome -> ()
+                | Heading (_, para) when para.Metadata.SectionBreak.IsSome -> ()
+                | _ -> if keep block then yield block ]
+    // (Before the body's last block: the body's final paragraph stays the final one.)
+    let blocks =
+        match List.rev body with
+        | last :: before -> List.rev before @ furniture @ [ last ]
+        | [] -> furniture
+    { doc with Blocks = blocks; Selection = None }
+
 /// The font faces a document's text is set in, after styles are resolved:
 /// (family, bold, italic) of every run of the body, of table cells, text
 /// boxes, footnotes and endnotes, of headers and footers, and of what the
@@ -2778,17 +2870,21 @@ let collectDocumentChunks (cache: PaintCache) (settings: LayoutSettings) fontFam
 /// without a family of its own is in `defaultFamily`. A host fetches exactly
 /// these faces before it measures and paints the document.
 /// `known`: the layouts and pages of a pass over the document, when there is
-/// one; otherwise the document is laid out here (the faces do not depend on
-/// what the measurers say).
+/// one; otherwise a sample of the document is laid out here (the faces do not
+/// depend on what the measurers say, nor on where a block stands).
 let requiredFontFaces (settings: LayoutSettings) (defaultFamily: string) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (known: (BlockLayout list * PageInfo list) option) : (string * bool * bool) list =
     let faces = HashSet<string * bool * bool>()
     let add (family: string option) (bold: bool) (italic: bool) =
         let family = family |> Option.filter (fun name -> name.Trim() <> "") |> Option.defaultValue defaultFamily
         faces.Add ((family, bold, italic)) |> ignore
-    let layouts, pages =
+    let doc, layouts, pages =
         match known with
-        | Some (layouts, pages) -> layouts, pages
-        | None -> layoutDocumentPages settings measureText measureRange doc
+        | Some (layouts, pages) -> doc, layouts, pages
+        | None ->
+            // No layout to read the faces from: one is made, of the blocks that can bring a face of their own.
+            let reduced = fontFaceSample doc
+            let layouts, pages = layoutDocumentPages settings measureText measureRange reduced
+            reduced, layouts, pages
     // The lines of the body, of table cells and of the note areas: every run, whitespace too
     // (it is measured in its face), and the list markers.
     for layout in layouts do
