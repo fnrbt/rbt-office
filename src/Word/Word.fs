@@ -87,10 +87,33 @@ module API =
                 editor.Revision <- editor.LastRevision
             editor.RevisionDocument <- doc
 
+    /// The frames of the pages of the layout the layout queries read (set by
+    /// `notePages` when a query begins): which page a y is on, and where that
+    /// page starts, follow the pages as they are - sections differ in page
+    /// height, so a page is not found by dividing by one page's height.
+    let mutable private pagesInUse : Layout.PageInfo array = [||]
+
+    let private notePages (editor: Editor) =
+        Ren.completeLayout editor.Handler.RenderContext
+        pagesInUse <- Ren.pageFrames editor.Handler.RenderContext editor.Doc |> List.toArray
+
+    /// The page (0-based) a layout y is on: the last one that starts at or above it.
+    let private pageIndexAt (y: float) =
+        let mutable lo = 0
+        let mutable hi = pagesInUse.Length - 1
+        let mutable found = 0
+        while lo <= hi do
+            let mid = lo + (hi - lo) / 2
+            if pagesInUse.[mid].Top <= y then
+                found <- mid
+                lo <- mid + 1
+            else hi <- mid - 1
+        found
+
     /// The layouts of the whole document (what the commands that read the
     /// layout want: any block may be asked about).
     let private layoutsForEditor (editor: Editor) =
-        Ren.completeLayout editor.Handler.RenderContext
+        notePages editor
         Ren.cachedLayouts editor.Handler.RenderContext editor.Doc
         |> Option.defaultWith (fun () -> Ren.layoutDocument editor.Handler.RenderContext editor.Doc)
 
@@ -782,7 +805,8 @@ module API =
         doc.PageSetup.PageHeight + WordLayout.Page.gap
 
     let private pageForYInDoc (doc: Doc.Document) y =
-        int (floor (max 0.0 y / pageStride doc)) + 1
+        if pagesInUse.Length = 0 then int (floor (max 0.0 y / pageStride doc)) + 1
+        else pageIndexAt y + 1
 
     let private pageCountFromLines (doc: Doc.Document) (layouts: Layout.BlockLayout list) =
         let mutable pageCount = 1
@@ -792,7 +816,8 @@ module API =
         pageCount
 
     let private pageTopForYInDoc (doc: Doc.Document) y =
-        floor (max 0.0 y / pageStride doc) * pageStride doc
+        if pagesInUse.Length = 0 then floor (max 0.0 y / pageStride doc) * pageStride doc
+        else pagesInUse.[pageIndexAt y].Top
 
     let private paragraphMap (doc: Doc.Document) =
         let paragraphs = Dictionary<string, Doc.ParagraphBlock>()
@@ -1151,6 +1176,7 @@ module API =
             if found then Some (left, top, right - left, bottom - top) else None
 
     let getRangeBounds (editor: Editor) (blockId: string) (startOffset: int) (endOffset: int) =
+        notePages editor
         let tryFindLayout = Ren.layoutLookupFor editor.Handler.RenderContext editor.Doc
         let measureRange = measureRangeForEditor editor
         match rangeBounds editor.Doc tryFindLayout measureRange blockId startOffset endOffset with
