@@ -885,7 +885,8 @@ let private stylesXml (book: StyleBook) =
                 | None -> ""
             let font =
                 let body =
-                    flag "b" d.Bold + flag "i" d.Italic
+                    flag "b" d.Bold + flag "i" d.Italic + flag "strike" d.Strike
+                    + (match d.Underline with Some true -> "<u/>" | Some false -> "<u val=\"none\"/>" | None -> "")
                     + (d.FontColor |> xmlColor |> Option.map (fun c -> sprintf "<color rgb=\"%s\"/>" c) |> Option.defaultValue "")
                 if body = "" then "" else "<font>" + body + "</font>"
             let fill =
@@ -1322,6 +1323,7 @@ let private conditionalFormattingXml (dxfCount: int) (formats: XlsxReader.Condit
                     if rule.Bottom then yield "bottom=\"1\""
                     match rule.Operator with Some op -> yield attr "operator" op | None -> ()
                     match rule.Text with Some t -> yield attr "text" t | None -> ()
+                    match rule.TimePeriod with Some period -> yield attr "timePeriod" period | None -> ()
                     match rule.Rank with Some r -> yield sprintf "rank=\"%d\"" r | None -> ()
                     match rule.StdDev with Some d -> yield sprintf "stdDev=\"%d\"" d | None -> ()
                     if rule.EqualAverage then yield "equalAverage=\"1\""

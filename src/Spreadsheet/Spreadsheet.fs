@@ -1660,6 +1660,32 @@ type Spreadsheet(container: Element) =
                 model <- pushCommand command model
             true
 
+    /// The highest conditional-format id the component has handed out: a new
+    /// rule gets one above it and above every id on its sheet, so that the id
+    /// of a removed rule is not given to another.
+    let mutable lastRuleId = 0
+
+    /// Change the active sheet's conditional formats as one undoable step
+    /// (no value changes: no recalculation). False when nothing changed.
+    let changeConditionalFormats (description: string) (change: SpreadsheetModel -> SpreadsheetModel) : bool =
+        let before = model.ConditionalFormats
+        let changed = change model
+        let after = changed.ConditionalFormats
+        if obj.ReferenceEquals(before, after) || before = after then false
+        else
+            model <- { model with ConditionalFormats = after }
+            pushValueNeutral { Undo = (fun m -> { m with ConditionalFormats = before })
+                               Redo = (fun m -> { m with ConditionalFormats = after })
+                               Description = description }
+            true
+
+    /// Add a conditional format to the active sheet as one undoable step; its id.
+    let addRule (ranges: CellRange list) (stopIfTrue: bool) (format: ConditionalFormat) : int =
+        let id = (max lastRuleId (SheetOps.highestConditionalFormatId model)) + 1
+        lastRuleId <- id
+        changeConditionalFormats "Conditional format" (SheetOps.addConditionalFormatWithId id ranges stopIfTrue format) |> ignore
+        id
+
     /// What GetSelectionFormat last gave, and what it gave it for (the cells,
     /// the column styles and the selected block): asked again for the same,
     /// it answers without looking at a cell.
@@ -3779,8 +3805,8 @@ type Spreadsheet(container: Element) =
                             Style = format
                         }
 
-                        // Apply to cell
-                        model <- addConditionalFormat addr conditionalFormat model
+                        // Apply to cell (one undo step)
+                        addRule [ { From = addr; To = addr } ] false conditionalFormat |> ignore
 
                         // Close dialog
                         closePopup overlay
@@ -3805,7 +3831,7 @@ type Spreadsheet(container: Element) =
                 "font-size", "13px"
             ]
             listen clearBtn "click" (fun _ ->
-                model <- removeConditionalFormats addr model
+                changeConditionalFormats "Clear conditional formats" (removeConditionalFormats addr) |> ignore
                 closePopup overlay
                 render()
             )
@@ -5408,31 +5434,173 @@ type Spreadsheet(container: Element) =
     member _.GetSearchIndex() =
         model.SearchIndex
 
-    /// Add a conditional format rule to a cell or range
-    member _.AddConditionalFormat(row: int, col: int, ruleType: string, threshold: float, bgColor: string) =
-        let addr = { Row = row; Col = col }
-        let rule =
-            match ruleType with
-            | "greaterThan" -> GreaterThan threshold
-            | "lessThan" -> LessThan threshold
-            | "equal" -> Equal threshold
-            | _ -> GreaterThan threshold
+    /// The conditional formats of a sheet (the active one, or the sheet at
+    /// `sheetIndex`), in order of precedence:
+    /// [{ id: number, range: "A1:A9" | "A:A" | "A1:A5 C1:C5" (areas separated
+    ///    by spaces), priority: number (1 = first: where two matching rules
+    ///    set the same property, the first wins), stopIfTrue: boolean (a
+    ///    match hides the rules after it), rule }].
+    /// `id` names a rule on its sheet while the workbook is open: it stays
+    /// with the rule through edits, undo / redo and inserted or deleted rows
+    /// and columns. A file holds no ids: after ImportXlsx a sheet's rules are
+    /// numbered 1, 2, 3 ... in order of precedence, so read them again.
+    /// `rule` (the same object AddConditionalFormat takes; `type` says which keys it has):
+    ///   { type: "cellIs", operator: "greaterThan" | "lessThan" | "greaterThanOrEqual" | "lessThanOrEqual"
+    ///            | "equal" | "notEqual" | "between" | "notBetween", formula1, formula2 (between / notBetween), format }
+    ///   { type: "expression", formula, format }                 (formatted where the formula is true)
+    ///   { type: "containsText" | "notContainsText" | "beginsWith" | "endsWith", text, format }
+    ///   { type: "top", rank: number, percent: boolean, bottom: boolean, format }      (top / bottom N, or N percent)
+    ///   { type: "aboveAverage", above: boolean, orEqual: boolean, stdDev: 0..3, format }
+    ///   { type: "duplicateValues" | "uniqueValues" | "blanks" | "noBlanks" | "errors" | "noErrors", format }
+    ///   { type: "dateOccurring", period: "today" | "yesterday" | "tomorrow" | "last7Days" | "thisWeek" | "lastWeek"
+    ///            | "nextWeek" | "thisMonth" | "lastMonth" | "nextMonth", format }      (weeks start on Sunday)
+    ///   { type: "colorScale", stops: [{ type, value, color: "#RRGGBB" }] }           (2 or 3 stops, lowest first)
+    ///   { type: "dataBar", min: { type, value }, max: { type, value }, color: "#RRGGBB" }
+    ///   { type: "iconSet", iconSet: "3Arrows" | "3TrafficLights1" | "4Rating" | "5Quarters" | ..., thresholds: [{ type, value }]
+    ///            (one per icon, the first is the floor), reverse: boolean }
+    /// A threshold's `type` is "min" | "max" | "number" | "percent" | "percentile" | "formula"; `value` a number (a formula's
+    /// text for "formula", null for min and max). Formulas come without the leading "=" and are written for the top-left
+    /// cell of the rule's first range: a number ("10"), a quoted text ("\"north\""), a reference ("$C$1") or any formula.
+    /// `format` is { textColor, fill: "#RRGGBB" | null, bold, italic, underline, strikethrough: boolean } - what a
+    /// conditional format can apply; it is null for colour scales, data bars and icon sets, which draw by themselves.
+    /// Rules of a kind the editor does not model (the x14 extensions of a file) are not listed.
+    member _.GetConditionalFormats(sheetIndex: obj) : obj array =
+        let source =
+            match Host.optionalArg (Host.intArg "GetConditionalFormats" "sheetIndex") sheetIndex with
+            | None -> model
+            | Some index when index >= 0 && index < sheets.Length -> sheetModelAt index
+            | Some index -> Host.hostFail "GetConditionalFormats" (sprintf "there is no sheet %d (the workbook has %d)" index sheets.Length)
+        SheetOps.conditionalFormatsInOrder source
+        |> List.mapi (fun index entry -> Host.conditionalFormatToObj (index + 1) entry)
+        |> List.toArray
 
-        let format = {
-            Rule = rule
-            Style = { defaultFormat with BgColor = Some bgColor }
-        }
-
-        model <- addConditionalFormat addr format model
+    /// Add a conditional format to cells of the active sheet (one undo step)
+    /// and return its id: `AddConditionalFormat(range, rule, options)`.
+    /// `range`: "B2:B20", "A:A", or several areas ("A1:A5 C1:C5"). `rule`:
+    /// the rule object of GetConditionalFormats; keys with a default may be
+    /// left out (percent, bottom: false; above: true; orEqual: false;
+    /// stdDev: 0; a data bar's min / max / color; an icon set's thresholds;
+    /// `format`: nothing). `options` (optional): { stopIfTrue: boolean }.
+    /// The new rule takes precedence over the sheet's other rules, as one
+    /// made in Excel does (ReorderConditionalFormats changes that). Throws
+    /// on a range that is not one, an unknown rule type or key, a missing
+    /// operand, a colour that is not "#RRGGBB".
+    /// The older form `AddConditionalFormat(row, col, ruleType, threshold,
+    /// bgColor)` - one cell, ruleType "greaterThan" | "lessThan" | "equal", a
+    /// fill - still works (and is an undo step too).
+    member _.AddConditionalFormat(target: obj, second: obj, third: obj, threshold: obj, bgColor: obj) : int =
+        let name = "AddConditionalFormat"
+        let id =
+            if Host.isJsNumber target then
+                let addr = { Row = Host.rowArg name model target; Col = Host.colArg name model second }
+                let threshold = Host.numberArg name "threshold" threshold
+                let rule =
+                    match Host.stringArg name "ruleType" third with
+                    | "greaterThan" -> GreaterThan threshold
+                    | "lessThan" -> LessThan threshold
+                    | "equal" -> Equal threshold
+                    | other -> Host.hostFail name (sprintf "ruleType must be \"greaterThan\", \"lessThan\" or \"equal\", got \"%s\" (for other rules: AddConditionalFormat(range, rule))" other)
+                addRule [ { From = addr; To = addr } ] false { Rule = rule; Style = { defaultFormat with BgColor = Some (Host.colorArg name "bgColor" bgColor) } }
+            else
+                let ranges = SheetOps.parseRanges name (Host.stringArg name "the range" target)
+                let format = SheetOps.ruleOfDescription name defaultFormat (Host.ruleOfObj name defaultFormat (requiredArg name "the rule" second))
+                let stopIfTrue =
+                    if Host.isNullish third then false
+                    elif not (Host.isJsObject third) then Host.hostFail name "options must be an object { stopIfTrue }"
+                    else
+                        for key in Host.keysOf third do
+                            if key <> "stopIfTrue" then Host.hostFail name (sprintf "options has an unknown key \"%s\" (known: stopIfTrue)" key)
+                        Host.optionalArg (Host.boolArg name "options.stopIfTrue") (Host.getKey third "stopIfTrue") |> Option.defaultValue false
+                addRule ranges stopIfTrue format
         render()
+        id
 
-    /// Remove conditional formatting from a cell
+    /// Change a conditional format of the active sheet (one undo step).
+    /// `changes` has one or more of: `range` (as in AddConditionalFormat),
+    /// `priority` (its new place in the order of precedence, 1 = first; the
+    /// other rules keep their order), `stopIfTrue`, `rule` (a whole rule
+    /// object: it replaces the rule; without a `format` key the rule keeps
+    /// the format it has) and `format` (a change to the format alone: only
+    /// the keys given change). Throws on an unknown id or key and on what
+    /// AddConditionalFormat refuses.
+    member _.UpdateConditionalFormat(id: obj, changes: obj) : unit =
+        let name = "UpdateConditionalFormat"
+        let id = Host.intArg name "id" id
+        let existing =
+            match SheetOps.tryFindConditionalFormat id model with
+            | Some entry -> entry
+            | None -> Host.hostFail name (sprintf "the sheet has no conditional format with id %d" id)
+        if not (Host.isJsObject changes) then Host.hostFail name "changes must be an object { range, priority, stopIfTrue, rule, format }"
+        for key in Host.keysOf changes do
+            if not (List.contains key [ "range"; "priority"; "stopIfTrue"; "rule"; "format" ]) then
+                Host.hostFail name (sprintf "changes has an unknown key \"%s\" (known: range, priority, stopIfTrue, rule, format)" key)
+        let given (key: string) = let value = Host.getKey changes key in if Host.isNullish value then None else Some value
+        let ranges = given "range" |> Option.map (fun value -> SheetOps.parseRanges name (Host.stringArg name "changes.range" value))
+        let stopIfTrue = given "stopIfTrue" |> Option.map (Host.boolArg name "changes.stopIfTrue")
+        let priority = given "priority" |> Option.map (Host.intArg name "changes.priority")
+        let format =
+            match given "rule" with
+            | Some rule -> SheetOps.ruleOfDescription name existing.Format.Style (Host.ruleOfObj name existing.Format.Style rule)
+            | None -> existing.Format
+        let format =
+            match given "format" with
+            | None -> format
+            | Some _ when SheetOps.isVisualRule format.Rule -> Host.hostFail name "a colour scale, data bar or icon set draws by itself and takes no format"
+            | Some patch -> { format with Style = SheetOps.ruleStyleOf (Host.ruleFormatPatchOfObj name "changes.format" patch format.Style) }
+        let change (sheet: SpreadsheetModel) =
+            let updated =
+                SheetOps.updateConditionalFormat name id (fun entry ->
+                    { entry with
+                        Ranges = defaultArg ranges entry.Ranges
+                        StopIfTrue = defaultArg stopIfTrue entry.StopIfTrue
+                        Format = format }) sheet
+            match priority with
+            | Some place -> SheetOps.moveConditionalFormat name id place updated
+            | None -> updated
+        if changeConditionalFormats "Edit conditional format" change then render()
+
+    /// Remove the conditional format with an id from the active sheet (one
+    /// undo step). Throws when the sheet has none with that id.
+    member _.RemoveConditionalFormat(id: obj) : unit =
+        let id = Host.intArg "RemoveConditionalFormat" "id" id
+        if changeConditionalFormats "Remove conditional format" (SheetOps.removeConditionalFormat "RemoveConditionalFormat" id) then render()
+
+    /// Put the active sheet's conditional formats in a new order of
+    /// precedence (one undo step): `ids` lists every rule of the sheet once,
+    /// the one that takes precedence first. Throws on an unknown or repeated
+    /// id and when a rule is left out.
+    member _.ReorderConditionalFormats(ids: obj) : unit =
+        let name = "ReorderConditionalFormats"
+        if not (Host.isJsArray ids) then Host.hostFail name "ids must be an array of rule ids"
+        let ids = unbox<obj array> ids |> Array.map (Host.intArg name "an id") |> Array.toList
+        if changeConditionalFormats "Reorder conditional formats" (SheetOps.reorderConditionalFormats name ids) then render()
+
+    /// Take the conditional formats off the active sheet (no argument), or
+    /// off the cells of `range` (areas as in AddConditionalFormat): a rule
+    /// that covers more cells keeps them, a rule left with none is removed.
+    /// One undo step. Returns how many rules were removed or cut.
+    member _.ClearConditionalFormats(range: obj) : int =
+        let name = "ClearConditionalFormats"
+        let holes = Host.optionalArg (fun value -> SheetOps.parseRanges name (Host.stringArg name "the range" value)) range
+        let before = model.ConditionalFormats
+        if changeConditionalFormats "Clear conditional formats" (SheetOps.clearConditionalFormats holes) then
+            let after = model.ConditionalFormats
+            render()
+            before |> List.filter (fun entry -> not (after |> List.exists (fun kept -> kept.Id = entry.Id && kept.Ranges = entry.Ranges))) |> List.length
+        else 0
+
+    /// Remove the conditional formats from one cell of the active sheet (one
+    /// undo step): a rule covering more than the cell keeps the rest of its range.
     member _.RemoveConditionalFormats(row: int, col: int) =
         let addr = { Row = row; Col = col }
-        model <- removeConditionalFormats addr model
-        render()
+        if changeConditionalFormats "Clear conditional formats" (removeConditionalFormats addr) then render()
 
-    /// Show conditional formatting dialog for current selection
+    /// Show the built-in conditional formatting dialog for the active cell.
+    /// The dialog offers five kinds of rule (greater than, less than,
+    /// between, equal to, text contains) on one cell; hosts that want the
+    /// other kinds, ranges, priorities and stop-if-true build their own
+    /// dialog on GetConditionalFormats / AddConditionalFormat /
+    /// UpdateConditionalFormat / RemoveConditionalFormat.
     member _.ShowConditionalFormattingDialog() =
         showConditionalFormattingDialog()
 

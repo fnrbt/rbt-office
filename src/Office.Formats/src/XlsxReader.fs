@@ -234,6 +234,8 @@ type ConditionalFormatRule = {
     IconSetCfvo: (string * string option) list
     /// `iconSet` reverse flag — the icons run from best to worst.
     IconSetReverse: bool
+    /// `timePeriod` of a "date occurring" rule ("today", "last7Days", ...).
+    TimePeriod: string option
     /// `top10` rank — the N in "top/bottom N". When Percent is set, N
     /// is a percentage of the range count. None for non-top10 rules.
     Rank: int option
@@ -269,6 +271,9 @@ type Dxf = {
     FillColor: string option
     Bold: bool option
     Italic: bool option
+    /// `<u/>` (any kind but "none") and `<strike/>` of the dxf's font.
+    Underline: bool option
+    Strike: bool option
 }
 
 type DataValidation = {
@@ -3794,6 +3799,7 @@ module ConditionalFormats =
             IconSet = iconSet
             IconSetCfvo = iconSetCfvo
             IconSetReverse = iconSetReverse
+            TimePeriod = Xml.attr "timePeriod" ruleNode
             Rank = rank
             Percent = percent
             Bottom = bottom
@@ -3851,6 +3857,11 @@ module ConditionalFormats =
                 FillColor = fillColor
                 Bold = boolChild "b"
                 Italic = boolChild "i"
+                Underline =
+                    Xlsx.sElem "font" dxf
+                    |> Option.bind (Xlsx.sElem "u")
+                    |> Option.map (fun node -> Xml.attr "val" node <> Some "none")
+                Strike = boolChild "strike"
             })
         |> List.toArray
 

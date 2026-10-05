@@ -30,7 +30,7 @@ let range r0 c0 r1 c1 : CellRange = { From = at r0 c0; To = at r1 c1 }
 let wholeColumn c : CellRange = { From = at 0 c; To = at 1048575 c }
 let fill color = { defaultFormat with BgColor = Some color }
 let rule ranges r style priority : ConditionalFormatRange =
-    { Ranges = ranges; Format = { Rule = r; Style = style }; Priority = priority; StopIfTrue = false }
+    { Id = priority; Ranges = ranges; Format = { Rule = r; Style = style }; Priority = priority; StopIfTrue = false }
 let withRules rules (m: SpreadsheetModel) = { m with ConditionalFormats = rules }
 /// The conditional fill of a cell, if any.
 let fillAt r c (m: SpreadsheetModel) =

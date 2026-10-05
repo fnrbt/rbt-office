@@ -515,6 +515,7 @@ module Import =
                        IconSet = rule.IconSet
                        IconSetCfvo = rule.IconSetCfvo
                        IconSetReverse = rule.IconSetReverse
+                       TimePeriod = rule.TimePeriod
                        Priority = rule.Priority
                        StopIfTrue = rule.StopIfTrue
                        Style =
@@ -522,7 +523,9 @@ module Import =
                             ({ FontColor = d.FontColor |> Option.bind hexColor
                                FillColor = d.FillColor |> Option.bind hexColor
                                Bold = (d.Bold = Some true)
-                               Italic = (d.Italic = Some true) } : CF.OoxmlStyle)) } : CF.OoxmlRule)) } : CF.OoxmlConditionalFormat))
+                               Italic = (d.Italic = Some true)
+                               Underline = (d.Underline = Some true)
+                               Strikethrough = (d.Strike = Some true) } : CF.OoxmlStyle)) } : CF.OoxmlRule)) } : CF.OoxmlConditionalFormat))
         |> CF.ofOoxml
 
     let private validationOoxml (dv: XlsxReader.DataValidation) : CF.OoxmlValidation =
@@ -1277,7 +1280,9 @@ module Export =
                             dxfIndex { FontColor = style.FontColor |> Option.map (fun c -> c.TrimStart '#')
                                        FillColor = style.FillColor |> Option.map (fun c -> c.TrimStart '#')
                                        Bold = (if style.Bold then Some true else None)
-                                       Italic = (if style.Italic then Some true else None) })
+                                       Italic = (if style.Italic then Some true else None)
+                                       Underline = (if style.Underline then Some true else None)
+                                       Strike = (if style.Strikethrough then Some true else None) })
                        ColorScale = rule.ColorScale |> List.map (fun (kind, stopValue, color) -> ({ CfvoType = kind; CfvoValue = stopValue; Color = color } : XlsxReader.CfColorStop))
                        DataBarColor = rule.DataBarColor
                        DataBarCfvo = rule.DataBarCfvo
@@ -1285,6 +1290,7 @@ module Export =
                        IconSet = rule.IconSet
                        IconSetCfvo = rule.IconSetCfvo
                        IconSetReverse = rule.IconSetReverse
+                       TimePeriod = rule.TimePeriod
                        Rank = rule.Rank
                        Percent = rule.Percent
                        Bottom = rule.Bottom

@@ -524,3 +524,389 @@ let clearCells (what: ClearWhat) (top: int, left: int, bottom: int, right: int) 
             if addr.Row >= top && addr.Row <= bottom && addr.Col >= left && addr.Col <= right then change addr data
     if obj.ReferenceEquals(cells, model.Cells) && obj.ReferenceEquals(runs, model.RichRuns) then model
     else { model with Cells = cells; RichRuns = runs } |> invalidateFilterProjection
+
+// ---------------------------------------------------------------------------
+// Several areas in one reference
+// ---------------------------------------------------------------------------
+
+/// Read a reference of one or more areas separated by spaces or commas
+/// ("A1:A5 C1:C5", "A:A,C3"). None when a part is not a range, or there is none.
+let tryParseRanges (text: string) : CellRange list option =
+    if isNull text then None
+    else
+        let parts = text.Split([| ' '; ','; ';' |], StringSplitOptions.RemoveEmptyEntries)
+        let ranges = parts |> Array.choose tryParseRange
+        if parts.Length = 0 || ranges.Length <> parts.Length then None else Some (List.ofArray ranges)
+
+/// `tryParseRanges`, or an error that names the member the host called.
+let parseRanges (memberName: string) (text: string) : CellRange list =
+    match tryParseRanges text with
+    | Some ranges -> ranges
+    | None -> failwith (sprintf "%s: \"%s\" is not a range (expected A1 notation such as \"B2:D5\", or several areas: \"A1:A5 C1:C5\")" memberName (if isNull text then "" else text))
+
+/// Some areas as one reference, separated by spaces ("A1:A5 C1:C5").
+let rangesText (ranges: CellRange list) : string =
+    ranges |> List.map rangeText |> String.concat " "
+
+/// What is left of a range when the cells of `hole` are taken out of it: up
+/// to four ranges (above, left, right, below), the range itself when the two
+/// do not meet, nothing when the hole covers it.
+let subtractRange (hole: CellRange) (range: CellRange) : CellRange list =
+    let meets =
+        hole.From.Row <= range.To.Row && hole.To.Row >= range.From.Row
+        && hole.From.Col <= range.To.Col && hole.To.Col >= range.From.Col
+    if not meets then [ range ]
+    else
+        let top = max hole.From.Row range.From.Row
+        let bottom = min hole.To.Row range.To.Row
+        [ if range.From.Row < top then
+              yield { From = range.From; To = { Row = top - 1; Col = range.To.Col } }
+          if range.From.Col < hole.From.Col then
+              yield { From = { Row = top; Col = range.From.Col }; To = { Row = bottom; Col = hole.From.Col - 1 } }
+          if range.To.Col > hole.To.Col then
+              yield { From = { Row = top; Col = hole.To.Col + 1 }; To = { Row = bottom; Col = range.To.Col } }
+          if range.To.Row > bottom then
+              yield { From = { Row = bottom + 1; Col = range.From.Col }; To = range.To } ]
+
+// ---------------------------------------------------------------------------
+// Conditional formats
+// ---------------------------------------------------------------------------
+// A host describes a rule in plain data (`RuleDescription`: the fields of the
+// `rule` object of the host API); `ruleOfDescription` checks it and gives the
+// model's rule, `describeRule` goes the other way. The rules of a sheet are
+// addressed by their `Id`.
+
+/// Where a colour-scale stop, a data-bar end or an icon-set step sits:
+/// `Kind` is "min" | "max" | "number" | "percent" | "percentile" | "formula";
+/// `Value` the number / percentage / formula (none for min and max).
+type ThresholdDescription = {
+    Kind: string
+    Value: string option
+}
+
+/// A conditional-format rule in plain data. `Type` says which fields count:
+///   "cellIs"            Operator, Formula1 (and Formula2 for between / notBetween)
+///   "expression"        Formula1
+///   "containsText" | "notContainsText" | "beginsWith" | "endsWith"    Text
+///   "top"               Rank, Percent, Bottom
+///   "aboveAverage"      Above, OrEqual, StdDev
+///   "duplicateValues" | "uniqueValues" | "blanks" | "noBlanks" | "errors" | "noErrors"
+///   "dateOccurring"     Period ("today", "last7Days", "nextMonth" ...: `ConditionalFormatting.timePeriods`)
+///   "colorScale"        Stops (2 or 3, each with its colour)
+///   "dataBar"           Low, High, Color
+///   "iconSet"           IconSet, Thresholds, Reverse
+/// `Style` is the format of a matching cell (not for the last three, which
+/// draw by themselves); None leaves the choice to the caller.
+type RuleDescription = {
+    Type: string
+    Operator: string option
+    Formula1: string option
+    Formula2: string option
+    Text: string option
+    Rank: int
+    Percent: bool
+    Bottom: bool
+    Above: bool
+    OrEqual: bool
+    StdDev: int
+    Stops: (ThresholdDescription * string) list
+    Low: ThresholdDescription option
+    High: ThresholdDescription option
+    Color: string option
+    IconSet: string option
+    Thresholds: ThresholdDescription list
+    Reverse: bool
+    /// The period of a "dateOccurring" rule.
+    Period: string option
+    Style: CellFormat option
+}
+
+let emptyRuleDescription (kind: string) : RuleDescription =
+    { Type = kind; Operator = None; Formula1 = None; Formula2 = None; Text = None; Rank = 10; Percent = false; Bottom = false
+      Above = true; OrEqual = false; StdDev = 0; Stops = []; Low = None; High = None; Color = None; IconSet = None
+      Thresholds = []; Reverse = false; Period = None; Style = None }
+
+/// The rule types a host can name.
+let ruleTypes =
+    [ "cellIs"; "expression"; "containsText"; "notContainsText"; "beginsWith"; "endsWith"; "top"; "aboveAverage"
+      "duplicateValues"; "uniqueValues"; "blanks"; "noBlanks"; "errors"; "noErrors"; "dateOccurring"; "colorScale"; "dataBar"; "iconSet" ]
+
+/// The icon sets a workbook file can name in a rule.
+let iconSetNames =
+    [ "3Arrows"; "3ArrowsGray"; "3Flags"; "3TrafficLights1"; "3TrafficLights2"; "3Signs"; "3Symbols"; "3Symbols2"
+      "4Arrows"; "4ArrowsGray"; "4RedToBlack"; "4Rating"; "4TrafficLights"; "5Arrows"; "5ArrowsGray"; "5Rating"; "5Quarters" ]
+
+/// Whether a rule draws by itself (colour scale, data bar, icon set) instead
+/// of applying a format.
+let isVisualRule (rule: ConditionalFormatRule) : bool =
+    match rule with
+    | ColorScale _ | DataBar _ | IconSet _ -> true
+    | _ -> false
+
+/// The properties of a format a conditional format applies (and a file
+/// keeps): text colour, fill, bold, italic, underline, strikethrough.
+let ruleStyleOf (format: CellFormat) : CellFormat =
+    { defaultFormat with
+        TextColor = format.TextColor; BgColor = format.BgColor; Bold = format.Bold; Italic = format.Italic
+        Underline = format.Underline; Strikethrough = format.Strikethrough }
+
+let private thresholdKindText (kind: CfThresholdKind) : string =
+    match kind with
+    | CfvoMin -> "min"
+    | CfvoMax -> "max"
+    | CfvoNumber -> "number"
+    | CfvoPercent -> "percent"
+    | CfvoPercentile -> "percentile"
+    | CfvoFormula -> "formula"
+
+let private describeThreshold (threshold: CfThreshold) : ThresholdDescription =
+    { Kind = thresholdKindText threshold.Kind
+      Value = (match threshold.Kind with CfvoMin | CfvoMax -> None | _ -> threshold.Value) }
+
+/// A formula as a host reads and writes it: without the leading "=".
+let private formulaBody (text: string) : string =
+    let text = text.Trim()
+    if text.StartsWith "=" then text.Substring(1).Trim() else text
+
+let private numberOperand (value: float) : string =
+    if value = Math.Floor value && abs value < 1e15 then string (int64 value)
+    else Rbt.Spreadsheet.NumberText.numberToString "G" value
+
+/// A model rule (with its style) in plain data. The literal rules the old
+/// dialog makes are described as the general ones they are equal to.
+let describeRule (format: ConditionalFormat) : RuleDescription =
+    let styled (description: RuleDescription) = { description with Style = Some (ruleStyleOf format.Style) }
+    let cellIs (op: CompareOperator) (first: string) (second: string option) =
+        styled { emptyRuleDescription "cellIs" with
+                    Operator = Some (Rbt.Spreadsheet.ConditionalFormatting.operatorText op)
+                    Formula1 = Some (formulaBody first); Formula2 = second |> Option.map formulaBody }
+    let text (kind: string) (value: string) = styled { emptyRuleDescription kind with Text = Some value }
+    match format.Rule with
+    | GreaterThan n -> cellIs OpGreaterThan (numberOperand n) None
+    | LessThan n -> cellIs OpLessThan (numberOperand n) None
+    | Equal n -> cellIs OpEqual (numberOperand n) None
+    | Between (lo, hi) -> cellIs OpBetween (numberOperand lo) (Some (numberOperand hi))
+    | CellIs (op, first, second) -> cellIs op first second
+    | Expression formula -> styled { emptyRuleDescription "expression" with Formula1 = Some (formulaBody formula) }
+    | ContainsText value | TextRule (TextContains, value) -> text "containsText" value
+    | TextRule (TextNotContains, value) -> text "notContainsText" value
+    | TextRule (TextBeginsWith, value) -> text "beginsWith" value
+    | TextRule (TextEndsWith, value) -> text "endsWith" value
+    | TopBottom (rank, percent, bottom) -> styled { emptyRuleDescription "top" with Rank = rank; Percent = percent; Bottom = bottom }
+    | AboveAverage (above, orEqual, stdDev) -> styled { emptyRuleDescription "aboveAverage" with Above = above; OrEqual = orEqual; StdDev = stdDev }
+    | DuplicateValues -> styled (emptyRuleDescription "duplicateValues")
+    | UniqueValues -> styled (emptyRuleDescription "uniqueValues")
+    | Blanks true -> styled (emptyRuleDescription "blanks")
+    | Blanks false -> styled (emptyRuleDescription "noBlanks")
+    | Errors true -> styled (emptyRuleDescription "errors")
+    | Errors false -> styled (emptyRuleDescription "noErrors")
+    | TimePeriod period -> styled { emptyRuleDescription "dateOccurring" with Period = Some period }
+    | ColorScale stops ->
+        { emptyRuleDescription "colorScale" with Stops = stops |> List.map (fun (threshold, color) -> describeThreshold threshold, color) }
+    | DataBar (low, high, color) ->
+        { emptyRuleDescription "dataBar" with Low = Some (describeThreshold low); High = Some (describeThreshold high); Color = Some color }
+    | IconSet (family, thresholds, reverse) ->
+        { emptyRuleDescription "iconSet" with IconSet = Some family; Thresholds = thresholds |> List.map describeThreshold; Reverse = reverse }
+
+let private isNumberText (text: string) =
+    match Double.TryParse(text.Trim(), Globalization.NumberStyles.Float, Globalization.CultureInfo.InvariantCulture) with
+    | true, number -> not (Double.IsNaN number || Double.IsInfinity number)
+    | _ -> false
+
+let private isHexColor (text: string) =
+    not (isNull text) && text.Length = 7 && text.[0] = '#'
+    && text.Substring 1 |> Seq.forall (fun c -> isAsciiDigit c || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))
+
+/// The percentages icon sets start with: three icons at 0 / 33 / 67, four at
+/// 0 / 25 / 50 / 75, five at 0 / 20 / 40 / 60 / 80.
+let defaultIconThresholds (count: int) : ThresholdDescription list =
+    let steps =
+        match count with
+        | 4 -> [ 0; 25; 50; 75 ]
+        | 5 -> [ 0; 20; 40; 60; 80 ]
+        | _ -> [ 0; 33; 67 ]
+    steps |> List.map (fun percent -> { Kind = "percent"; Value = Some (string percent) })
+
+/// The model rule a description stands for, checked: an error naming
+/// `memberName` says what is missing or wrong. `fallbackStyle` is the format
+/// of a rule whose description has none.
+let ruleOfDescription (memberName: string) (fallbackStyle: CellFormat) (description: RuleDescription) : ConditionalFormat =
+    let fail (message: string) = failwith (memberName + ": " + message)
+    let kind = description.Type
+    let threshold (what: string) (allowed: string list) (source: ThresholdDescription) : CfThreshold =
+        if not (List.contains source.Kind allowed) then
+            fail (sprintf "%s.type must be one of %s, got \"%s\"" what (allowed |> List.map (fun name -> "\"" + name + "\"") |> String.concat ", ") source.Kind)
+        let value = source.Value |> Option.map (fun text -> text.Trim()) |> Option.filter (fun text -> text <> "")
+        match source.Kind, value with
+        | "min", _ -> { Kind = CfvoMin; Value = None }
+        | "max", _ -> { Kind = CfvoMax; Value = None }
+        | "formula", Some text -> { Kind = CfvoFormula; Value = Some (formulaBody text) }
+        | "formula", None -> fail (sprintf "%s.value is missing (a formula)" what)
+        | _, None -> fail (sprintf "%s.value is missing (a number)" what)
+        | other, Some text ->
+            if not (isNumberText text) then fail (sprintf "%s.value must be a number, got \"%s\"" what text)
+            let number = Double.Parse(text, Globalization.CultureInfo.InvariantCulture)
+            if other <> "number" && (number < 0.0 || number > 100.0) then fail (sprintf "%s.value must be between 0 and 100, got %s" what text)
+            { Kind = (match other with "percent" -> CfvoPercent | "percentile" -> CfvoPercentile | _ -> CfvoNumber); Value = Some text }
+    let color (what: string) (value: string) : string =
+        if isHexColor value then value.ToUpperInvariant() else fail (sprintf "%s must be a colour like \"#RRGGBB\", got \"%s\"" what value)
+    let formula (what: string) (value: string option) : string =
+        match value |> Option.map formulaBody with
+        | Some text when text <> "" -> text
+        | _ -> fail (sprintf "a \"%s\" rule needs %s" kind what)
+    let anyKind = [ "min"; "max"; "number"; "percent"; "percentile"; "formula" ]
+    let rule =
+        match kind with
+        | "cellIs" ->
+            let op =
+                match description.Operator |> Option.bind Rbt.Spreadsheet.ConditionalFormatting.parseOperator with
+                | Some op -> op
+                | None ->
+                    fail (sprintf "rule.operator must be one of \"greaterThan\", \"lessThan\", \"greaterThanOrEqual\", \"lessThanOrEqual\", \"equal\", \"notEqual\", \"between\", \"notBetween\", got %s"
+                            (match description.Operator with Some text -> "\"" + text + "\"" | None -> "nothing"))
+            let first = formula "rule.formula1 (a number, a quoted text or a formula)" description.Formula1
+            (match op with
+             | OpBetween | OpNotBetween -> CellIs (op, first, Some (formula "rule.formula2 (the other bound)" description.Formula2))
+             | _ ->
+                if description.Formula2 |> Option.exists (fun text -> formulaBody text <> "") then
+                    fail (sprintf "rule.formula2 is only for \"between\" and \"notBetween\" (operator is \"%s\")" (Rbt.Spreadsheet.ConditionalFormatting.operatorText op))
+                CellIs (op, first, None))
+        | "expression" -> Expression (formula "rule.formula" description.Formula1)
+        | "containsText" | "notContainsText" | "beginsWith" | "endsWith" ->
+            let text =
+                match description.Text with
+                | Some text when text <> "" -> text
+                | _ -> fail (sprintf "a \"%s\" rule needs rule.text" kind)
+            TextRule ((match kind with
+                       | "containsText" -> TextContains
+                       | "notContainsText" -> TextNotContains
+                       | "beginsWith" -> TextBeginsWith
+                       | _ -> TextEndsWith), text)
+        | "top" ->
+            let limit = if description.Percent then 100 else 1000
+            if description.Rank < 1 || description.Rank > limit then
+                fail (sprintf "rule.rank must be between 1 and %d, got %d" limit description.Rank)
+            TopBottom (description.Rank, description.Percent, description.Bottom)
+        | "aboveAverage" ->
+            if description.StdDev < 0 || description.StdDev > 3 then fail (sprintf "rule.stdDev must be between 0 and 3, got %d" description.StdDev)
+            AboveAverage (description.Above, description.OrEqual, description.StdDev)
+        | "duplicateValues" -> DuplicateValues
+        | "uniqueValues" -> UniqueValues
+        | "blanks" -> Blanks true
+        | "noBlanks" -> Blanks false
+        | "errors" -> Errors true
+        | "noErrors" -> Errors false
+        | "dateOccurring" ->
+            let periods = Rbt.Spreadsheet.ConditionalFormatting.timePeriods
+            (match description.Period with
+             | Some period when List.contains period periods -> TimePeriod period
+             | other ->
+                fail (sprintf "rule.period must be one of %s, got %s" (periods |> List.map (fun name -> "\"" + name + "\"") |> String.concat ", ")
+                        (match other with Some text -> "\"" + text + "\"" | None -> "nothing")))
+        | "colorScale" ->
+            let count = description.Stops.Length
+            if count <> 2 && count <> 3 then fail (sprintf "a colour scale has 2 or 3 stops, got %d" count)
+            ColorScale (description.Stops |> List.mapi (fun index (stop, stopColor) ->
+                let what = sprintf "rule.stops[%d]" index
+                threshold what anyKind stop, color (what + ".color") stopColor))
+        | "dataBar" ->
+            let low = description.Low |> Option.defaultValue { Kind = "min"; Value = None }
+            let high = description.High |> Option.defaultValue { Kind = "max"; Value = None }
+            DataBar (threshold "rule.min" anyKind low, threshold "rule.max" anyKind high,
+                     color "rule.color" (description.Color |> Option.defaultValue "#638EC6"))
+        | "iconSet" ->
+            let family = description.IconSet |> Option.defaultValue "3TrafficLights1"
+            if not (List.contains family iconSetNames) then
+                fail (sprintf "rule.iconSet must be one of %s, got \"%s\"" (String.concat ", " iconSetNames) family)
+            let count = int family.[0] - int '0'
+            let thresholds = if description.Thresholds.IsEmpty then defaultIconThresholds count else description.Thresholds
+            if thresholds.Length <> count then
+                fail (sprintf "icon set \"%s\" needs %d thresholds (one per icon, the first is the floor), got %d" family count thresholds.Length)
+            IconSet (family, thresholds |> List.mapi (fun index source -> threshold (sprintf "rule.thresholds[%d]" index) [ "number"; "percent"; "percentile"; "formula" ] source),
+                     description.Reverse)
+        | other ->
+            fail (sprintf "unknown rule type \"%s\" (known: %s)" other (String.concat ", " ruleTypes))
+    if isVisualRule rule then
+        if description.Style.IsSome then fail (sprintf "a \"%s\" rule draws by itself and takes no format" kind)
+        { Rule = rule; Style = defaultFormat }
+    else
+        { Rule = rule; Style = ruleStyleOf (description.Style |> Option.defaultValue fallbackStyle) }
+
+/// A sheet's rules in order of precedence (the first wins where two set the
+/// same property).
+let conditionalFormatsInOrder (model: SpreadsheetModel) : ConditionalFormatRange list =
+    model.ConditionalFormats |> List.sortBy (fun entry -> entry.Priority)
+
+let tryFindConditionalFormat (id: int) (model: SpreadsheetModel) : ConditionalFormatRange option =
+    model.ConditionalFormats |> List.tryFind (fun entry -> entry.Id = id)
+
+let private findConditionalFormat (memberName: string) (id: int) (model: SpreadsheetModel) : ConditionalFormatRange =
+    match tryFindConditionalFormat id model with
+    | Some entry -> entry
+    | None -> failwith (sprintf "%s: the sheet has no conditional format with id %d" memberName id)
+
+/// The highest rule id on a sheet (0 when it has no rule).
+let highestConditionalFormatId (model: SpreadsheetModel) : int =
+    model.ConditionalFormats |> List.fold (fun highest entry -> max highest entry.Id) 0
+
+/// Add a rule with the given id. Like a rule made in Excel's dialog it takes
+/// precedence over the rules already there.
+let addConditionalFormatWithId (id: int) (ranges: CellRange list) (stopIfTrue: bool) (format: ConditionalFormat) (model: SpreadsheetModel) : SpreadsheetModel =
+    let priority =
+        match model.ConditionalFormats with
+        | [] -> 1
+        | existing -> (existing |> List.map (fun entry -> entry.Priority) |> List.min) - 1
+    { model with
+        ConditionalFormats = { Id = id; Ranges = ranges; Format = format; Priority = priority; StopIfTrue = stopIfTrue } :: model.ConditionalFormats }
+
+/// Change the rule with an id; an error when the sheet has none.
+let updateConditionalFormat (memberName: string) (id: int) (change: ConditionalFormatRange -> ConditionalFormatRange) (model: SpreadsheetModel) : SpreadsheetModel =
+    let existing = findConditionalFormat memberName id model
+    let changed = { change existing with Id = id }
+    if changed = existing then model
+    else { model with ConditionalFormats = model.ConditionalFormats |> List.map (fun entry -> if entry.Id = id then changed else entry) }
+
+/// Remove the rule with an id; an error when the sheet has none.
+let removeConditionalFormat (memberName: string) (id: int) (model: SpreadsheetModel) : SpreadsheetModel =
+    findConditionalFormat memberName id model |> ignore
+    { model with ConditionalFormats = model.ConditionalFormats |> List.filter (fun entry -> entry.Id <> id) }
+
+/// Put the rules in the order of `ids` (the first takes precedence): every
+/// rule of the sheet is named once. Priorities become 1, 2, 3 ...
+let reorderConditionalFormats (memberName: string) (ids: int list) (model: SpreadsheetModel) : SpreadsheetModel =
+    let known = model.ConditionalFormats |> List.map (fun entry -> entry.Id)
+    for id in ids do
+        if not (List.contains id known) then failwith (sprintf "%s: the sheet has no conditional format with id %d" memberName id)
+    if (List.distinct ids).Length <> ids.Length then failwith (sprintf "%s: an id is listed twice" memberName)
+    if ids.Length <> known.Length then
+        failwith (sprintf "%s: every conditional format of the sheet must be listed once (%d listed, the sheet has %d: %s)"
+                    memberName ids.Length known.Length (conditionalFormatsInOrder model |> List.map (fun entry -> string entry.Id) |> String.concat ", "))
+    let reordered =
+        ids |> List.mapi (fun index id ->
+            let entry = model.ConditionalFormats |> List.find (fun entry -> entry.Id = id)
+            if entry.Priority = index + 1 then entry else { entry with Priority = index + 1 })
+    if reordered = conditionalFormatsInOrder model then model else { model with ConditionalFormats = reordered }
+
+/// Move the rule with an id to a place in the order of precedence (1 = first).
+let moveConditionalFormat (memberName: string) (id: int) (position: int) (model: SpreadsheetModel) : SpreadsheetModel =
+    findConditionalFormat memberName id model |> ignore
+    let others = conditionalFormatsInOrder model |> List.map (fun entry -> entry.Id) |> List.filter (fun other -> other <> id)
+    if position < 1 || position > others.Length + 1 then
+        failwith (sprintf "%s: priority must be between 1 and %d, got %d" memberName (others.Length + 1) position)
+    reorderConditionalFormats memberName (List.take (position - 1) others @ [ id ] @ List.skip (position - 1) others) model
+
+/// Take conditional formats off cells: off every cell of the sheet (None),
+/// or off the cells of some ranges - a rule that covers more keeps the rest
+/// of its range, a rule left with no cell is gone.
+let clearConditionalFormats (holes: CellRange list option) (model: SpreadsheetModel) : SpreadsheetModel =
+    match holes with
+    | None -> if model.ConditionalFormats.IsEmpty then model else { model with ConditionalFormats = [] }
+    | Some holes ->
+        let remaining =
+            model.ConditionalFormats
+            |> List.choose (fun entry ->
+                let ranges = holes |> List.fold (fun ranges hole -> ranges |> List.collect (subtractRange hole)) entry.Ranges
+                match ranges with
+                | [] -> None
+                | ranges -> Some (if ranges = entry.Ranges then entry else { entry with Ranges = ranges }))
+        if remaining = model.ConditionalFormats then model else { model with ConditionalFormats = remaining }

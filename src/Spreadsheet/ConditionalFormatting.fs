@@ -239,6 +239,31 @@ let private cellIsHolds (op: CompareOperator) (value: CellValue) (first: CellVal
         // Different kinds of value are never equal, and have no order.
         | _ -> op = OpNotEqual
 
+/// The periods of a "date occurring" rule (`TimePeriod`).
+let timePeriods =
+    [ "today"; "yesterday"; "tomorrow"; "last7Days"; "thisWeek"; "lastWeek"; "nextWeek"; "thisMonth"; "lastMonth"; "nextMonth" ]
+
+/// The formula that is true when the cell `cell` ("A1") holds a date in a
+/// period: what Excel writes into the file beside the period, and what
+/// decides the rule here. None for a period that is not one.
+let timePeriodFormula (period: string) (cell: string) : string option =
+    let day = sprintf "FLOOR(%s,1)" cell
+    let month (offset: int) =
+        let today = if offset = 0 then "TODAY()" else sprintf "EDATE(TODAY(),%d)" offset
+        sprintf "AND(ISNUMBER(%s),MONTH(%s)=MONTH(%s),YEAR(%s)=YEAR(%s))" cell cell today cell today
+    match period with
+    | "today" -> Some (sprintf "%s=TODAY()" day)
+    | "yesterday" -> Some (sprintf "%s=TODAY()-1" day)
+    | "tomorrow" -> Some (sprintf "%s=TODAY()+1" day)
+    | "last7Days" -> Some (sprintf "AND(TODAY()-%s<=6,%s<=TODAY())" day day)
+    | "thisWeek" -> Some (sprintf "AND(TODAY()-%s<=WEEKDAY(TODAY())-1,%s-TODAY()<=7-WEEKDAY(TODAY()))" day day)
+    | "lastWeek" -> Some (sprintf "AND(TODAY()-%s>=WEEKDAY(TODAY()),TODAY()-%s<WEEKDAY(TODAY())+7)" day day)
+    | "nextWeek" -> Some (sprintf "AND(%s-TODAY()>7-WEEKDAY(TODAY()),%s-TODAY()<15-WEEKDAY(TODAY()))" day day)
+    | "thisMonth" -> Some (month 0)
+    | "lastMonth" -> Some (month -1)
+    | "nextMonth" -> Some (month 1)
+    | _ -> None
+
 /// Does this rule match the cell? Visual rules (scale, bar, icons) "match"
 /// every number in their range; what they paint is computed separately.
 let private ruleMatches (ctx: Context) (rule: PreparedRule) (addr: CellAddress) (raw: CellValue) : bool =
@@ -250,6 +275,11 @@ let private ruleMatches (ctx: Context) (rule: PreparedRule) (addr: CellAddress) 
     | GreaterThan _ | LessThan _ | Between _ | Equal _ -> evaluateRule rule.Entry.Format.Rule value
     | CellIs (op, first, second) -> cellIsHolds op value (formulaAt first) (second |> Option.map formulaAt)
     | Expression formula -> isTruthy (formulaAt formula)
+    | TimePeriod period ->
+        // (Dates are numbers; the period's formula is written for the rule's first cell.)
+        (match value, timePeriodFormula period (formatCellRef rule.Anchor.Row rule.Anchor.Col) with
+         | Number _, Some formula -> isTruthy (formulaAt formula)
+         | _ -> false)
     | TextRule (kind, text) ->
         let shown = displayValue value
         let found = text <> "" && shown.IndexOf(text, StringComparison.OrdinalIgnoreCase) >= 0
@@ -442,6 +472,8 @@ type OoxmlStyle = {
     FillColor: string option
     Bold: bool
     Italic: bool
+    Underline: bool
+    Strikethrough: bool
 }
 
 /// One `<cfRule>`: its attributes and children as they are in the file.
@@ -467,6 +499,8 @@ type OoxmlRule = {
     IconSet: string option
     IconSetCfvo: (string * string option) list
     IconSetReverse: bool
+    /// `timePeriod` of a "date occurring" rule ("today", "last7Days" ...).
+    TimePeriod: string option
     Priority: int option
     StopIfTrue: bool
     Style: OoxmlStyle option
@@ -481,7 +515,7 @@ type OoxmlConditionalFormat = {
 let emptyOoxmlRule (kind: string) : OoxmlRule =
     { Type = kind; Operator = None; Formulas = []; Text = None; Rank = None; Percent = false; Bottom = false
       AboveAverage = true; EqualAverage = false; StdDev = None; ColorScale = []; DataBarColor = None; DataBarCfvo = []
-      IconSet = None; IconSetCfvo = []; IconSetReverse = false; Priority = None; StopIfTrue = false; Style = None }
+      IconSet = None; IconSetCfvo = []; IconSetReverse = false; TimePeriod = None; Priority = None; StopIfTrue = false; Style = None }
 
 [<Literal>]
 let private lastRow = 1048575
@@ -599,7 +633,7 @@ let private cssColor (color: string) : string =
 let private formulaBody (text: string) = if text.StartsWith "=" then text.Substring 1 else text
 
 /// The model rule for one `<cfRule>`, or None for a rule type the model does
-/// not express (timePeriod, x14 extensions).
+/// not express (x14 extensions).
 let private ruleOfOoxml (rule: OoxmlRule) : ConditionalFormatRule option =
     let formula index = rule.Formulas |> List.tryItem index
     match rule.Type with
@@ -620,6 +654,7 @@ let private ruleOfOoxml (rule: OoxmlRule) : ConditionalFormatRule option =
     | "notContainsBlanks" -> Some (Blanks false)
     | "containsErrors" -> Some (Errors true)
     | "notContainsErrors" -> Some (Errors false)
+    | "timePeriod" -> rule.TimePeriod |> Option.filter (fun period -> List.contains period timePeriods) |> Option.map TimePeriod
     | "colorScale" when rule.ColorScale.Length >= 2 ->
         Some (ColorScale (rule.ColorScale |> List.map (fun (kind, value, color) -> thresholdOf (kind, value), cssColor color)))
     | "dataBar" ->
@@ -651,13 +686,19 @@ let ofOoxml (formats: OoxmlConditionalFormat list) : ConditionalFormatRange list
                             TextColor = s.FontColor |> Option.map cssColor
                             BgColor = s.FillColor |> Option.map cssColor
                             Bold = s.Bold
-                            Italic = s.Italic }
+                            Italic = s.Italic
+                            Underline = s.Underline
+                            Strikethrough = s.Strikethrough }
                     | None -> defaultFormat
-                yield { Ranges = ranges
+                yield { Id = 0
+                        Ranges = ranges
                         Format = { Rule = modelRule; Style = style }
                         Priority = (match rule.Priority with Some p -> p | None -> 100000 + sequence)
                         StopIfTrue = rule.StopIfTrue }
             | _ -> () ]
+    // (Ids: 1, 2, 3 ... in order of precedence, the same for the same file.)
+    |> List.sortBy (fun entry -> entry.Priority)
+    |> List.mapi (fun index entry -> { entry with Id = index + 1 })
 
 let private numberText (value: float) =
     if value = Math.Floor value && abs value < 1e15 then (int64 value).ToString(CultureInfo.InvariantCulture)
@@ -704,6 +745,8 @@ let private ooxmlOfRule (anchor: CellAddress) (rule: ConditionalFormatRule) : Oo
     | Blanks false -> { emptyOoxmlRule "notContainsBlanks" with Formulas = [ sprintf "LEN(TRIM(%s))>0" cellText ] }
     | Errors true -> { emptyOoxmlRule "containsErrors" with Formulas = [ sprintf "ISERROR(%s)" cellText ] }
     | Errors false -> { emptyOoxmlRule "notContainsErrors" with Formulas = [ sprintf "NOT(ISERROR(%s))" cellText ] }
+    | TimePeriod period ->
+        { emptyOoxmlRule "timePeriod" with TimePeriod = Some period; Formulas = timePeriodFormula period cellText |> Option.toList }
     | ColorScale stops ->
         { emptyOoxmlRule "colorScale" with
             ColorScale = stops |> List.map (fun (threshold, color) -> let kind, value = cfvoOf threshold in kind, value, color.TrimStart('#')) }
@@ -725,7 +768,7 @@ let toOoxml (formats: ConditionalFormatRange list) : OoxmlConditionalFormat list
             let sqref = sqrefText entry.Ranges
             let style = entry.Format.Style
             let hasStyle =
-                style.TextColor.IsSome || style.BgColor.IsSome || style.Bold || style.Italic
+                style.TextColor.IsSome || style.BgColor.IsSome || style.Bold || style.Italic || style.Underline || style.Strikethrough
             let visual =
                 match entry.Format.Rule with
                 | ColorScale _ | DataBar _ | IconSet _ -> true
@@ -736,7 +779,8 @@ let toOoxml (formats: ConditionalFormatRange list) : OoxmlConditionalFormat list
                     StopIfTrue = entry.StopIfTrue
                     Style =
                         if visual || not hasStyle then None
-                        else Some { FontColor = style.TextColor; FillColor = style.BgColor; Bold = style.Bold; Italic = style.Italic } }
+                        else Some { FontColor = style.TextColor; FillColor = style.BgColor; Bold = style.Bold; Italic = style.Italic
+                                    Underline = style.Underline; Strikethrough = style.Strikethrough } }
             match blocks |> Seq.tryFind (fun (key, _) -> key = sqref) with
             | Some (_, rules) -> rules.Add rule
             | None ->

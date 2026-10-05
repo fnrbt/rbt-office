@@ -273,7 +273,7 @@ let partText (bytes: byte[]) (name: string) =
 
 let cfRule (kind: string) : XlsxReader.ConditionalFormatRule =
     { Type = kind; Operator = None; Formulas = []; DxfId = None; ColorScale = []; DataBarColor = None; DataBarCfvo = []
-      Text = None; IconSet = None; IconSetCfvo = []; IconSetReverse = false; Rank = None; Percent = false; Bottom = false
+      Text = None; IconSet = None; IconSetCfvo = []; IconSetReverse = false; TimePeriod = None; Rank = None; Percent = false; Bottom = false
       AboveAverage = true; EqualAverage = false; StdDev = None; Priority = None; StopIfTrue = false }
 
 let nastySheet : XlsxWriter.XlsxSheetOut =
@@ -309,7 +309,7 @@ let nastyWorkbook : XlsxWriter.XlsxWorkbookOut =
       ActiveSheetIndex = 0
       DefinedNames = []
       VbaProjectSource = None
-      Dxfs = [ { FontColor = Some "9C0006"; FillColor = Some "FFC7CE"; Bold = Some true; Italic = None } ]
+      Dxfs = [ { FontColor = Some "9C0006"; FillColor = Some "FFC7CE"; Bold = Some true; Italic = None; Underline = None; Strike = None } ]
       Preserved = XlsxReader.emptyWorkbookPreservation }
 let nastyBytes = XlsxWriter.writeWorkbookPackageBytes nastyWorkbook
 

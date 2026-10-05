@@ -157,7 +157,7 @@ let dressed =
         MergedCells = [ { StartRow = 3; StartCol = 0; EndRow = 5; EndCol = 1 } ]
         RowHeights = Map.ofList [ 4, 40.0 ]
         ColumnWidths = Map.ofList [ 1, 150.0 ]
-        ConditionalFormats = [ { Ranges = [ { From = at 4 1; To = at 4 1 } ]; Format = { Rule = GreaterThan 0.0; Style = defaultFormat }; Priority = 1; StopIfTrue = false } ]
+        ConditionalFormats = [ { Id = 1; Ranges = [ { From = at 4 1; To = at 4 1 } ]; Format = { Rule = GreaterThan 0.0; Style = defaultFormat }; Priority = 1; StopIfTrue = false } ]
         Validations = Map.ofList [ at 6 2, validationOf (ListValues [ "x" ]) ]
         Spill = Map.ofList [ at 7 0, at 6 0 ]
         Tables = [ { Name = "T"; StartRow = 4; StartCol = 2; EndRow = 8; EndCol = 3; HeaderRowCount = 1; Style = None; AutoFilter = Some (2, 3); HasTotals = false } ] }

@@ -22,7 +22,7 @@ let range r0 c0 r1 c1 : CellRange = { From = at r0 c0; To = at r1 c1 }
 let wholeColumn c : CellRange = { From = at 0 c; To = at 1048575 c }
 let cfvo kind value : CfThreshold = { Kind = kind; Value = value }
 let rule ranges r style priority stop : ConditionalFormatRange =
-    { Ranges = ranges; Format = { Rule = r; Style = style }; Priority = priority; StopIfTrue = stop }
+    { Id = priority; Ranges = ranges; Format = { Rule = r; Style = style }; Priority = priority; StopIfTrue = stop }
 
 // ---- the two small mappings a host needs (see spreadsheet-wisp) -------------
 let toWriter (dxfs: ResizeArray<XlsxReader.Dxf>) (formats: ConditionalFormatRange list) : XlsxReader.ConditionalFormat list =
@@ -38,10 +38,10 @@ let toWriter (dxfs: ResizeArray<XlsxReader.Dxf>) (formats: ConditionalFormatRang
                 ({ Type = r.Type; Operator = r.Operator; Formulas = r.Formulas
                    DxfId = r.Style |> Option.map (fun s ->
                        dxfIndex { FontColor = s.FontColor |> Option.map (fun c -> c.TrimStart '#'); FillColor = s.FillColor |> Option.map (fun c -> c.TrimStart '#')
-                                  Bold = (if s.Bold then Some true else None); Italic = (if s.Italic then Some true else None) })
+                                  Bold = (if s.Bold then Some true else None); Italic = (if s.Italic then Some true else None); Underline = (if s.Underline then Some true else None); Strike = (if s.Strikethrough then Some true else None) })
                    ColorScale = r.ColorScale |> List.map (fun (k, v, c) -> ({ CfvoType = k; CfvoValue = v; Color = c } : XlsxReader.CfColorStop))
                    DataBarColor = r.DataBarColor; DataBarCfvo = r.DataBarCfvo; Text = r.Text
-                   IconSet = r.IconSet; IconSetCfvo = r.IconSetCfvo; IconSetReverse = r.IconSetReverse
+                   IconSet = r.IconSet; IconSetCfvo = r.IconSetCfvo; IconSetReverse = r.IconSetReverse; TimePeriod = r.TimePeriod
                    Rank = r.Rank; Percent = r.Percent; Bottom = r.Bottom
                    AboveAverage = r.AboveAverage; EqualAverage = r.EqualAverage; StdDev = r.StdDev
                    Priority = r.Priority; StopIfTrue = r.StopIfTrue } : XlsxReader.ConditionalFormatRule)) } : XlsxReader.ConditionalFormat))
@@ -58,9 +58,9 @@ let fromReader (wb: XlsxReader.Workbook) (sheet: XlsxReader.Worksheet) : Conditi
                    AboveAverage = r.AboveAverage; EqualAverage = r.EqualAverage; StdDev = r.StdDev
                    ColorScale = r.ColorScale |> List.map (fun s -> s.CfvoType, s.CfvoValue, s.Color)
                    DataBarColor = r.DataBarColor; DataBarCfvo = r.DataBarCfvo
-                   IconSet = r.IconSet; IconSetCfvo = r.IconSetCfvo; IconSetReverse = r.IconSetReverse
+                   IconSet = r.IconSet; IconSetCfvo = r.IconSetCfvo; IconSetReverse = r.IconSetReverse; TimePeriod = r.TimePeriod
                    Priority = r.Priority; StopIfTrue = r.StopIfTrue
-                   Style = dxf |> Option.map (fun d -> ({ FontColor = d.FontColor; FillColor = d.FillColor; Bold = (d.Bold = Some true); Italic = (d.Italic = Some true) } : CF.OoxmlStyle)) } : CF.OoxmlRule)) } : CF.OoxmlConditionalFormat))
+                   Style = dxf |> Option.map (fun d -> ({ FontColor = d.FontColor; FillColor = d.FillColor; Bold = (d.Bold = Some true); Italic = (d.Italic = Some true); Underline = (d.Underline = Some true); Strikethrough = (d.Strike = Some true) } : CF.OoxmlStyle)) } : CF.OoxmlRule)) } : CF.OoxmlConditionalFormat))
     |> CF.ofOoxml
 
 let validationsOut (validations: Map<CellAddress, DataValidation>) : XlsxWriter.XlsxDataValidation list =
@@ -105,7 +105,7 @@ let rules =
     [ rule colA (CellIs (OpGreaterOrEqual, "10", None)) { defaultFormat with BgColor = Some "#FFC7CE"; TextColor = Some "#9C0006"; Bold = true } 1 false
       rule colA (CellIs (OpLessOrEqual, "B1", None)) (fill "#C6EFCE") 2 false
       rule colA (CellIs (OpNotEqual, "5", None)) (fill "#FFEB9C") 3 true
-      rule colA (CellIs (OpNotBetween, "1", Some "9")) { defaultFormat with Italic = true; TextColor = Some "#0000FF" } 4 false
+      rule colA (CellIs (OpNotBetween, "1", Some "9")) { defaultFormat with Italic = true; Underline = true; Strikethrough = true; TextColor = Some "#0000FF" } 4 false
       rule [ wholeColumn 2; range 0 4 3 5 ] (Expression "AND($A1>0,MOD(ROW(),2)=0)") (fill "#DDEBF7") 5 false
       rule colA (TopBottom (3, false, false)) (fill "#FFC7CE") 6 false
       rule colA (TopBottom (25, true, true)) (fill "#FFC7CE") 7 false
@@ -121,7 +121,9 @@ let rules =
       rule colA (ColorScale [ lo, "#F8696B"; cfvo CfvoPercentile (Some "50"), "#FFEB84"; cfvo CfvoNumber (Some "90"), "#63BE7B" ]) defaultFormat 17 false
       rule colA (DataBar (lo, hi, "#638EC6")) defaultFormat 18 false
       rule colA (IconSet ("3TrafficLights1", [ cfvo CfvoPercent (Some "0"); cfvo CfvoPercent (Some "33"); cfvo CfvoPercent (Some "67") ], false)) defaultFormat 19 false
-      rule colA (IconSet ("5Arrows", [ for p in [ "0"; "20"; "40"; "60"; "80" ] -> cfvo CfvoPercent (Some p) ], true)) defaultFormat 20 false ]
+      rule colA (IconSet ("5Arrows", [ for p in [ "0"; "20"; "40"; "60"; "80" ] -> cfvo CfvoPercent (Some p) ], true)) defaultFormat 20 false
+      rule colA (TimePeriod "last7Days") (fill "#FFEB9C") 21 true
+      rule colA (TimePeriod "nextMonth") (fill "#FFEB9C") 22 false ]
 
 let dv r = validationOf r
 let validations =

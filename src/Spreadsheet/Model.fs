@@ -344,6 +344,11 @@ type ConditionalFormatRule =
     | Blanks of bool
     /// Cells holding an error (true) / no error (false).
     | Errors of bool
+    /// `timePeriod` ("a date occurring"): the cell holds a date in the
+    /// period, counted from today - "today", "yesterday", "tomorrow",
+    /// "last7Days", "thisWeek", "lastWeek", "nextWeek" (weeks start on
+    /// Sunday), "thisMonth", "lastMonth", "nextMonth".
+    | TimePeriod of string
     /// 2- or 3-colour scale: stops in ascending order with their colours.
     | ColorScale of (CfThreshold * string) list
     /// Data bar from `low` to `high`, drawn in `color`.
@@ -503,7 +508,12 @@ type CellRange = {
 /// cell. A whole-column rule is the range from row 0 to the last sheet row —
 /// it is never clipped to the used range. Rules apply in ascending
 /// `Priority`; a matching rule with `StopIfTrue` hides the rules after it.
+/// `Id` names the rule on its sheet for as long as the workbook is open: it
+/// stays with the rule through edits of it and of the other rules, through
+/// undo and redo and through inserted and deleted rows. A file has no ids:
+/// an imported sheet's rules are numbered 1, 2, 3 ... in order of precedence.
 type ConditionalFormatRange = {
+    Id: int
     Ranges: CellRange list
     Format: ConditionalFormat
     Priority: int
@@ -2494,8 +2504,9 @@ let addConditionalFormatRange (ranges: CellRange list) (format: ConditionalForma
         match model.ConditionalFormats with
         | [] -> 1
         | existing -> (existing |> List.map (fun entry -> entry.Priority) |> List.min) - 1
+    let id = (model.ConditionalFormats |> List.fold (fun highest entry -> max highest entry.Id) 0) + 1
     { model with
-        ConditionalFormats = { Ranges = ranges; Format = format; Priority = priority; StopIfTrue = false } :: model.ConditionalFormats }
+        ConditionalFormats = { Id = id; Ranges = ranges; Format = format; Priority = priority; StopIfTrue = false } :: model.ConditionalFormats }
 
 /// Add a conditional format rule to a cell
 let addConditionalFormat (addr: CellAddress) (format: ConditionalFormat) (model: SpreadsheetModel): SpreadsheetModel =

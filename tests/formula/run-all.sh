@@ -49,6 +49,7 @@ stages=(
     stage31-edits
     stage32-recalc
     stage33-sheetops
+    stage34-cfapi
     numbertext
 )
 

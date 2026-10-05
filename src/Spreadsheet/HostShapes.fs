@@ -418,3 +418,184 @@ let cellToObj (model: SpreadsheetModel) (addr: CellAddress) (text: string) : obj
         "hyperlink" ==> (match hyperlinkAt model addr with Some link -> hyperlinkToObj link | None -> null)
         "validation" ==> (match getValidation addr model with Some validation -> validationToObj validation | None -> null)
     ]
+
+// ---------------------------------------------------------------------------
+// Conditional formats
+// ---------------------------------------------------------------------------
+// The `rule` object, the same in both directions (`type` says which keys count):
+//   { type: "cellIs", operator: "greaterThan" | "lessThan" | "greaterThanOrEqual" | "lessThanOrEqual" | "equal" | "notEqual"
+//                               | "between" | "notBetween",
+//     formula1, formula2 (between / notBetween only), format }
+//   { type: "expression", formula, format }
+//   { type: "containsText" | "notContainsText" | "beginsWith" | "endsWith", text, format }
+//   { type: "top", rank: number, percent: boolean, bottom: boolean, format }
+//   { type: "aboveAverage", above: boolean, orEqual: boolean, stdDev: 0..3, format }
+//   { type: "duplicateValues" | "uniqueValues" | "blanks" | "noBlanks" | "errors" | "noErrors", format }
+//   { type: "dateOccurring", period: "today" | "yesterday" | "tomorrow" | "last7Days" | "thisWeek" | "lastWeek" | "nextWeek"
+//                                    | "thisMonth" | "lastMonth" | "nextMonth", format }
+//   { type: "colorScale", stops: [threshold + { color: "#RRGGBB" }] (2 or 3, ascending) }
+//   { type: "dataBar", min: threshold, max: threshold, color: "#RRGGBB" }
+//   { type: "iconSet", iconSet: "3TrafficLights1" | ..., thresholds: [threshold] (one per icon), reverse: boolean }
+// threshold: { type: "min" | "max" | "number" | "percent" | "percentile" | "formula", value: number | string | null }
+// Formulas are written without the leading "=" (one is accepted and dropped):
+// a number, a quoted text ("\"north\""), a reference or any formula, written
+// for the top-left cell of the rule's first range. A number may be given as one.
+// `format` is a `format` object of which a conditional format applies
+// textColor, fill, bold, italic, underline and strikethrough.
+
+let private ruleFormatKeys = [ "textColor"; "fill"; "bold"; "italic"; "underline"; "strikethrough" ]
+
+/// The format a rule applies, as a `format` object with the keys a rule has.
+let ruleFormatToObj (format: CellFormat) : obj =
+    createObj [
+        "textColor" ==> orNull format.TextColor
+        "fill" ==> orNull format.BgColor
+        "bold" ==> format.Bold
+        "italic" ==> format.Italic
+        "underline" ==> format.Underline
+        "strikethrough" ==> format.Strikethrough
+    ]
+
+/// Read the `format` of a rule as a change to a rule's format; other keys
+/// of the `format` object are refused (a rule cannot apply them).
+let ruleFormatPatchOfObj (memberName: string) (what: string) (value: obj) : CellFormat -> CellFormat =
+    if not (isJsObject value) then hostFail memberName (sprintf "%s must be a format object, got %s" what (describe value))
+    for key in keysOf value do
+        if not (List.contains key ruleFormatKeys) then
+            hostFail memberName (sprintf "%s.%s: a conditional format applies only %s" what key (String.concat ", " ruleFormatKeys))
+    formatPatchOfObj memberName what value
+
+let private thresholdToObj (threshold: ThresholdDescription) (color: string option) : obj =
+    let value : obj =
+        match threshold.Value with
+        | Some text when threshold.Kind <> "formula" ->
+            (match System.Double.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture) with
+             | true, number -> box number
+             | _ -> box text)
+        | Some text -> box text
+        | None -> null
+    createObj [
+        yield "type" ==> threshold.Kind
+        yield "value" ==> value
+        match color with
+        | Some color -> yield "color" ==> color
+        | None -> () ]
+
+/// A rule description as the `rule` object.
+let ruleToObj (rule: RuleDescription) : obj =
+    let format : obj = match rule.Style with Some style -> ruleFormatToObj style | None -> null
+    createObj [
+        yield "type" ==> rule.Type
+        match rule.Type with
+        | "cellIs" ->
+            yield "operator" ==> orNull rule.Operator
+            yield "formula1" ==> orNull rule.Formula1
+            yield "formula2" ==> orNull rule.Formula2
+        | "expression" -> yield "formula" ==> orNull rule.Formula1
+        | "containsText" | "notContainsText" | "beginsWith" | "endsWith" -> yield "text" ==> orNull rule.Text
+        | "dateOccurring" -> yield "period" ==> orNull rule.Period
+        | "top" ->
+            yield "rank" ==> rule.Rank
+            yield "percent" ==> rule.Percent
+            yield "bottom" ==> rule.Bottom
+        | "aboveAverage" ->
+            yield "above" ==> rule.Above
+            yield "orEqual" ==> rule.OrEqual
+            yield "stdDev" ==> rule.StdDev
+        | "colorScale" ->
+            yield "stops" ==> (rule.Stops |> List.map (fun (threshold, color) -> thresholdToObj threshold (Some color)) |> List.toArray)
+        | "dataBar" ->
+            yield "min" ==> (match rule.Low with Some low -> thresholdToObj low None | None -> null)
+            yield "max" ==> (match rule.High with Some high -> thresholdToObj high None | None -> null)
+            yield "color" ==> orNull rule.Color
+        | "iconSet" ->
+            yield "iconSet" ==> orNull rule.IconSet
+            yield "thresholds" ==> (rule.Thresholds |> List.map (fun threshold -> thresholdToObj threshold None) |> List.toArray)
+            yield "reverse" ==> rule.Reverse
+        | _ -> ()
+        yield "format" ==> format ]
+
+/// A conditional format of a sheet: { id, range, priority, stopIfTrue, rule }.
+/// `priority` is its place in the order of precedence (1 = first).
+let conditionalFormatToObj (place: int) (entry: ConditionalFormatRange) : obj =
+    createObj [
+        "id" ==> entry.Id
+        "range" ==> rangesText entry.Ranges
+        "priority" ==> place
+        "stopIfTrue" ==> entry.StopIfTrue
+        "rule" ==> ruleToObj (describeRule entry.Format)
+    ]
+
+/// A number or a string of a rule, as text.
+let private operandText (memberName: string) (what: string) (value: obj) : string =
+    if isJsNumber value then string (unbox<float> value)
+    elif jsTypeOf value = "string" then unbox<string> value
+    else hostFail memberName (sprintf "%s must be a number or a string, got %s" what (describe value))
+
+let private thresholdOfObj (memberName: string) (what: string) (allowColor: bool) (value: obj) : ThresholdDescription * string option =
+    if not (isJsObject value) then hostFail memberName (sprintf "%s must be { type, value%s }, got %s" what (if allowColor then ", color" else "") (describe value))
+    for key in keysOf value do
+        if not (key = "type" || key = "value" || (allowColor && key = "color")) then
+            hostFail memberName (sprintf "%s has an unknown key \"%s\"" what key)
+    let kind = stringArg memberName (what + ".type") (getKey value "type")
+    let text = optionalArg (operandText memberName (what + ".value")) (getKey value "value")
+    let color = if allowColor then Some (colorArg memberName (what + ".color") (getKey value "color")) else None
+    { Kind = kind; Value = text }, color
+
+/// Read a `rule` object. Types and keys are checked here; what the rule
+/// needs is checked by `SheetOps.ruleOfDescription`. The description's
+/// `Style` is the `format` key applied to `baseStyle`, or None without one.
+let ruleOfObj (memberName: string) (baseStyle: CellFormat) (value: obj) : RuleDescription =
+    if not (isJsObject value) then hostFail memberName (sprintf "rule must be an object { type, ... }, got %s" (describe value))
+    let kind = stringArg memberName "rule.type" (getKey value "type")
+    let keys =
+        match kind with
+        | "cellIs" -> [ "operator"; "formula1"; "formula2" ]
+        | "expression" -> [ "formula" ]
+        | "containsText" | "notContainsText" | "beginsWith" | "endsWith" -> [ "text" ]
+        | "dateOccurring" -> [ "period" ]
+        | "top" -> [ "rank"; "percent"; "bottom" ]
+        | "aboveAverage" -> [ "above"; "orEqual"; "stdDev" ]
+        | "colorScale" -> [ "stops" ]
+        | "dataBar" -> [ "min"; "max"; "color" ]
+        | "iconSet" -> [ "iconSet"; "thresholds"; "reverse" ]
+        | other when List.contains other ruleTypes -> []
+        | other -> hostFail memberName (sprintf "unknown rule type \"%s\" (known: %s)" other (String.concat ", " ruleTypes))
+    for key in keysOf value do
+        if key <> "type" && key <> "format" && not (List.contains key keys) then
+            hostFail memberName (sprintf "a \"%s\" rule has no key \"%s\" (it takes: %s)" kind key (String.concat ", " ("type" :: keys @ [ "format" ])))
+    let get (key: string) = getKey value key
+    let text (key: string) = optionalArg (operandText memberName ("rule." + key)) (get key)
+    let flag (key: string) (fallback: bool) = optionalArg (boolArg memberName ("rule." + key)) (get key) |> Option.defaultValue fallback
+    let whole (key: string) (fallback: int) = optionalArg (intArg memberName ("rule." + key)) (get key) |> Option.defaultValue fallback
+    let list (key: string) : obj array =
+        let items = get key
+        if isNullish items then [||]
+        elif isJsArray items then unbox<obj array> items
+        else hostFail memberName (sprintf "rule.%s must be an array, got %s" key (describe items))
+    let empty = emptyRuleDescription kind
+    { empty with
+        Operator = optionalArg (stringArg memberName "rule.operator") (get "operator")
+        Formula1 = (if kind = "expression" then text "formula" else text "formula1")
+        Formula2 = text "formula2"
+        Text = optionalArg (stringArg memberName "rule.text") (get "text")
+        Rank = whole "rank" 10
+        Percent = flag "percent" false
+        Bottom = flag "bottom" false
+        Above = flag "above" true
+        OrEqual = flag "orEqual" false
+        StdDev = whole "stdDev" 0
+        Stops =
+            list "stops"
+            |> Array.mapi (fun index stop ->
+                let threshold, color = thresholdOfObj memberName (sprintf "rule.stops[%d]" index) true stop
+                threshold, defaultArg color "")
+            |> Array.toList
+        Low = optionalArg (fun low -> fst (thresholdOfObj memberName "rule.min" false low)) (get "min")
+        High = optionalArg (fun high -> fst (thresholdOfObj memberName "rule.max" false high)) (get "max")
+        Color = optionalArg (colorArg memberName "rule.color") (get "color")
+        IconSet = optionalArg (stringArg memberName "rule.iconSet") (get "iconSet")
+        Thresholds = list "thresholds" |> Array.mapi (fun index item -> fst (thresholdOfObj memberName (sprintf "rule.thresholds[%d]" index) false item)) |> Array.toList
+        Reverse = flag "reverse" false
+        Period = optionalArg (stringArg memberName "rule.period") (get "period")
+        Style = optionalArg (fun format -> ruleFormatPatchOfObj memberName "rule.format" format baseStyle) (get "format") }

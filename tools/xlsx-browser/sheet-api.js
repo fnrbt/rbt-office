@@ -416,3 +416,250 @@ checks['api-format'] = async () => {
     close();
     return lines;
 };
+
+// Conditional formats: GetConditionalFormats, AddConditionalFormat, UpdateConditionalFormat,
+// RemoveConditionalFormat, ReorderConditionalFormats, ClearConditionalFormats.
+checks['api-cf'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        const node = (row, col) => host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"]`);
+        const fillOf = (row, col) => getComputedStyle(node(row, col)).backgroundColor;
+        const rgb = (hex) => `rgb(${parseInt(hex.slice(1, 3), 16)}, ${parseInt(hex.slice(3, 5), 16)}, ${parseInt(hex.slice(5, 7), 16)})`;
+        const list = (g = grid, sheet) => g.GetConditionalFormats(sheet).map((cf) => ({ ...cf, rule: { ...cf.rule } }));
+        const brief = (g = grid) => g.GetConditionalFormats().map((cf) => `${cf.id}:${cf.rule.type}@${cf.range}`);
+        const today = Math.floor((Date.UTC(new Date().getFullYear(), new Date().getMonth(), new Date().getDate()) - Date.UTC(1899, 11, 30)) / 86400000);
+        // A1:A6 numbers, B1:B6 text, C1:C3 dates around today.
+        [10, 20, 30, 40, 50, 20].forEach((n, row) => grid.SetCell(row, 0, String(n)));
+        ['north', 'south', 'northern', 'East', '', 'west'].forEach((text, row) => grid.SetCell(row, 1, text));
+        [today, today - 1, today + 40].forEach((serial, row) => grid.SetCell(row, 2, String(serial)));
+        grid.SetCell(0, 4, '25');
+        check('no conditional formats to begin with', grid.GetConditionalFormats(), []);
+        const format = { fill: '#FFC7CE', textColor: '#9C0006', bold: true };
+        const fullFormat = { textColor: '#9C0006', fill: '#FFC7CE', bold: true, italic: false, underline: false, strikethrough: false };
+        const changes = [];
+        const off = grid.OnChange((change) => changes.push(change.Revision));
+
+        // ---- one rule: add, read, the grid shows it, undo / redo ----
+        const revision = grid.GetRevision();
+        const first = grid.AddConditionalFormat('A1:A6', { type: 'cellIs', operator: 'greaterThan', formula1: 25, format });
+        await frame();
+        check('AddConditionalFormat returns the id', [typeof first, first > 0], ['number', true]);
+        check('GetConditionalFormats gives the rule back', list(), [{ id: first, range: 'A1:A6', priority: 1, stopIfTrue: false,
+            rule: { type: 'cellIs', operator: 'greaterThan', formula1: '25', formula2: null, format: fullFormat } }]);
+        check('the grid shows it', [0, 1, 2, 3, 4, 5].map((row) => fillOf(row, 0) === rgb('#FFC7CE')), [false, false, true, true, true, false]);
+        check('... with the text colour and weight', [getComputedStyle(node(2, 0)).color, Number(getComputedStyle(node(2, 0)).fontWeight) >= 600, Number(getComputedStyle(node(0, 0)).fontWeight) >= 600], [rgb('#9C0006'), true, false]);
+        check('it is a change with a new revision', [changes.length, grid.GetRevision() !== revision, grid.IsModified()], [1, true, true]);
+        grid.Undo(); await frame();
+        check('undo takes the rule away', [grid.GetConditionalFormats().length, fillOf(2, 0) === rgb('#FFC7CE'), grid.GetRevision()], [0, false, revision]);
+        grid.Redo(); await frame();
+        check('redo brings it back with its id', [brief(), fillOf(2, 0) === rgb('#FFC7CE')], [[`${first}:cellIs@A1:A6`], true]);
+
+        // ---- every kind ----
+        grid.ClearConditionalFormats();
+        const kinds = [
+            ['A1:A6', { type: 'cellIs', operator: 'between', formula1: '=$E$1', formula2: 45, format }],
+            ['A1:A6', { type: 'cellIs', operator: 'notBetween', formula1: 15, formula2: 45, format }],
+            ['A1:A6', { type: 'cellIs', operator: 'greaterThanOrEqual', formula1: 30, format }],
+            ['A1:A6', { type: 'cellIs', operator: 'lessThanOrEqual', formula1: 20, format }],
+            ['A1:A6', { type: 'cellIs', operator: 'lessThan', formula1: 20, format }],
+            ['A1:A6', { type: 'cellIs', operator: 'equal', formula1: 20, format }],
+            ['A1:A6', { type: 'cellIs', operator: 'notEqual', formula1: 20, format }],
+            ['B1:B6', { type: 'cellIs', operator: 'equal', formula1: '"north"', format }],
+            ['A1:B6', { type: 'expression', formula: '=AND($A1>15,MOD(ROW(),2)=0)', format }],
+            ['B1:B6', { type: 'containsText', text: 'north', format }],
+            ['B1:B6', { type: 'notContainsText', text: 'north', format }],
+            ['B1:B6', { type: 'beginsWith', text: 'no', format }],
+            ['B1:B6', { type: 'endsWith', text: 'st', format }],
+            ['A1:A6', { type: 'top', rank: 2, format }],
+            ['A1:A6', { type: 'top', rank: 2, bottom: true, format }],
+            ['A1:A6', { type: 'top', rank: 50, percent: true, format }],
+            ['A1:A6', { type: 'aboveAverage', format }],
+            ['A1:A6', { type: 'aboveAverage', above: false, orEqual: true, stdDev: 1, format }],
+            ['A1:A6', { type: 'duplicateValues', format }],
+            ['A1:A6', { type: 'uniqueValues', format }],
+            ['B1:B6', { type: 'blanks', format }],
+            ['B1:B6', { type: 'noBlanks', format }],
+            ['A1:A6', { type: 'errors', format }],
+            ['A1:A6', { type: 'noErrors', format }],
+            ['C1:C3', { type: 'dateOccurring', period: 'today', format }],
+            ['C1:C3', { type: 'dateOccurring', period: 'last7Days', format }],
+            ['A1:A6', { type: 'colorScale', stops: [{ type: 'min', color: '#F8696B' }, { type: 'max', color: '#63BE7B' }] }],
+            ['A1:A6', { type: 'colorScale', stops: [{ type: 'min', color: '#F8696B' }, { type: 'percentile', value: 50, color: '#FFEB84' }, { type: 'number', value: 45, color: '#63BE7B' }] }],
+            ['A1:A6', { type: 'dataBar', color: '#638EC6' }],
+            ['A1:A6', { type: 'dataBar', min: { type: 'number', value: 0 }, max: { type: 'formula', value: '=$E$1*4' }, color: '#FF0000' }],
+            ['A1:A6', { type: 'iconSet', iconSet: '3TrafficLights1' }],
+            ['A1:A6', { type: 'iconSet', iconSet: '5Arrows', thresholds: [0, 20, 40, 60, 80].map((value) => ({ type: 'percentile', value })), reverse: true }],
+        ];
+        // Which cells of the rule's first column (rows 1..6) a rule formats, for the kinds with a format.
+        const expected = [
+            [0, 0, 1, 1, 0, 0], [1, 0, 0, 0, 1, 0], [0, 0, 1, 1, 1, 0], [1, 1, 0, 0, 0, 1], [1, 0, 0, 0, 0, 0], [0, 1, 0, 0, 0, 1], [1, 0, 1, 1, 1, 0],
+            [1, 0, 0, 0, 0, 0], [0, 1, 0, 1, 0, 1], [1, 0, 1, 0, 0, 0], [0, 1, 0, 1, 1, 1], [1, 0, 1, 0, 0, 0], [0, 0, 0, 1, 0, 1],
+            [0, 0, 0, 1, 1, 0], [1, 1, 0, 0, 0, 1], [0, 0, 1, 1, 1, 0], [0, 0, 1, 1, 1, 0], [1, 0, 0, 0, 0, 0], [0, 1, 0, 0, 0, 1], [1, 0, 1, 1, 1, 0],
+            [0, 0, 0, 0, 1, 0], [1, 1, 1, 1, 0, 1], [0, 0, 0, 0, 0, 0], [1, 1, 1, 1, 1, 1], [1, 0, 0], [1, 1, 0],
+        ];
+        const shown = [], back = [];
+        for (const [range, rule] of kinds) {
+            const id = grid.AddConditionalFormat(range, rule);
+            await frame();
+            const col = range.startsWith('A') ? 0 : range.startsWith('B') ? 1 : 2, rows = range.startsWith('C') ? 3 : 6;
+            shown.push(Array.from({ length: rows }, (_, row) => (fillOf(row, col) === rgb('#FFC7CE') ? 1 : 0)));
+            back.push(grid.GetConditionalFormats().find((cf) => cf.id === id).rule);
+            grid.RemoveConditionalFormat(id);
+        }
+        kinds.forEach(([range, rule], index) => { if (index < expected.length) check(`${rule.type}${rule.operator ? ' ' + rule.operator : ''}${rule.period ? ' ' + rule.period : ''}${rule.bottom ? ' bottom' : ''}${rule.percent ? ' percent' : ''}${rule.above === false ? ' below' : ''} formats the cells it should`, shown[index], expected[index]); });
+        check('every kind reads back as its type', back.map((rule) => rule.type), kinds.map(([, rule]) => rule.type));
+        check('defaults are filled in', [back[13], back[16], back[28], back[30].thresholds],
+            [{ type: 'top', rank: 2, percent: false, bottom: false, format: fullFormat }, { type: 'aboveAverage', above: true, orEqual: false, stdDev: 0, format: fullFormat },
+             { type: 'dataBar', min: { type: 'min', value: null }, max: { type: 'max', value: null }, color: '#638EC6', format: null },
+             [{ type: 'percent', value: 0 }, { type: 'percent', value: 33 }, { type: 'percent', value: 67 }]]);
+        check('formulas come back without the =', [back[0].formula1, back[0].formula2, back[8].formula, back[29].max], ['$E$1', '45', 'AND($A1>15,MOD(ROW(),2)=0)', { type: 'formula', value: '$E$1*4' }]);
+        check('a colour scale reads back', back[27], { type: 'colorScale', stops: [{ type: 'min', value: null, color: '#F8696B' }, { type: 'percentile', value: 50, color: '#FFEB84' }, { type: 'number', value: 45, color: '#63BE7B' }], format: null });
+        check('no rule is left', grid.GetConditionalFormats(), []);
+
+        // ---- what the visual rules draw ----
+        const scale = grid.AddConditionalFormat('A1:A6', kinds[26][1]); await frame();
+        check('a colour scale: the lowest and the highest value get the end colours', [fillOf(0, 0), fillOf(4, 0)], [rgb('#F8696B'), rgb('#63BE7B')]);
+        grid.RemoveConditionalFormat(scale);
+        const bar = grid.AddConditionalFormat('A1:A6', kinds[29][1]); await frame();
+        check('a data bar: 10 and 50 of 0..100', [0, 4].map((row) => /linear-gradient\(to right, rgb\(255, 0, 0\) (\d+)%/.exec(getComputedStyle(node(row, 0)).backgroundImage)?.[1]), ['10', '50']);
+        grid.RemoveConditionalFormat(bar);
+        const icons = grid.AddConditionalFormat('A1:A6', kinds[30][1]); await frame();
+        check('an icon set: an icon in every cell with a number, the lowest and the highest differ', [host.querySelectorAll('[data-cf-icon]').length >= 6, node(0, 0).querySelector('[data-cf-icon]')?.getAttribute('data-cf-icon'), node(4, 0).querySelector('[data-cf-icon]')?.getAttribute('data-cf-icon')], [true, '0', '2']);
+        grid.RemoveConditionalFormat(icons);
+
+        // ---- several rules: order, stop if true, update, reorder, clear ----
+        const red = grid.AddConditionalFormat('A1:A6', { type: 'cellIs', operator: 'greaterThan', formula1: 15, format: { fill: '#FF0000' } });
+        const green = grid.AddConditionalFormat('A1:A6 B1:B3', { type: 'cellIs', operator: 'greaterThan', formula1: 35, format: { fill: '#00FF00', italic: true } }, { stopIfTrue: true });
+        const blue = grid.AddConditionalFormat('A:A', { type: 'top', rank: 1, format: { fill: '#0000FF', underline: true, strikethrough: true } });
+        await frame();
+        check('the newest rule takes precedence', [brief(), fillOf(4, 0), fillOf(3, 0), fillOf(1, 0), fillOf(0, 0) === rgb('#FF0000')], [[`${blue}:top@A:A`, `${green}:cellIs@A1:A6 B1:B3`, `${red}:cellIs@A1:A6`], rgb('#0000FF'), rgb('#00FF00'), rgb('#FF0000'), false]);
+        check('priorities are 1, 2, 3 and stopIfTrue is told', list().map((cf) => [cf.priority, cf.stopIfTrue]), [[1, false], [2, true], [3, false]]);
+        check('ids are not reused', new Set([first, scale, bar, icons, red, green, blue]).size, 7);
+        check('underline and strikethrough of a rule are drawn', /underline/.test(getComputedStyle(node(4, 0)).textDecorationLine) && /line-through/.test(getComputedStyle(node(4, 0)).textDecorationLine), true);
+        let before = grid.GetRevision();
+        grid.ReorderConditionalFormats([red, green, blue]); await frame();
+        check('ReorderConditionalFormats: the first id wins', [brief().map((entry) => entry.split(':')[0]), fillOf(4, 0), fillOf(3, 0)], [[red, green, blue].map(String), rgb('#FF0000'), rgb('#FF0000')]);
+        grid.Undo(); await frame();
+        check('... one undo step', [brief().map((entry) => entry.split(':')[0]), fillOf(4, 0), grid.GetRevision()], [[blue, green, red].map(String), rgb('#0000FF'), before]);
+        grid.Redo();
+        check('reordering refuses a list that is not the sheet\'s rules', [thrown(() => grid.ReorderConditionalFormats([red, green])), thrown(() => grid.ReorderConditionalFormats([red, green, 999])), thrown(() => grid.ReorderConditionalFormats([red, green, green])), thrown(() => grid.ReorderConditionalFormats('all'))].map((m) => /^ReorderConditionalFormats: /.test(m ?? '')), [true, true, true, true]);
+
+        grid.UpdateConditionalFormat(blue, { priority: 1 }); await frame();
+        check('UpdateConditionalFormat priority: the rule moves, the others keep their order', brief().map((entry) => entry.split(':')[0]), [blue, red, green].map(String));
+        before = grid.GetRevision();
+        grid.UpdateConditionalFormat(red, { range: 'A1:A2', stopIfTrue: true, format: { fill: '#FFFF00', bold: true } }); await frame();
+        const redNow = list().find((cf) => cf.id === red);
+        check('UpdateConditionalFormat range, stopIfTrue and format: the rule itself stays', [redNow.range, redNow.stopIfTrue, redNow.rule.operator, redNow.rule.formula1, redNow.rule.format.fill, redNow.rule.format.bold], ['A1:A2', true, 'greaterThan', '15', '#FFFF00', true]);
+        check('... the grid follows', [fillOf(1, 0), fillOf(3, 0)], [rgb('#FFFF00'), rgb('#00FF00')]);
+        grid.Undo(); await frame();
+        check('... one undo step', [list().find((cf) => cf.id === red).range, fillOf(1, 0), grid.GetRevision()], ['A1:A6', rgb('#FF0000'), before]);
+        grid.Redo();
+        grid.UpdateConditionalFormat(red, { rule: { type: 'cellIs', operator: 'lessThan', formula1: 15 } }); await frame();
+        check('UpdateConditionalFormat rule without a format keeps the format', [list().find((cf) => cf.id === red).rule, fillOf(0, 0), fillOf(1, 0) === rgb('#FFFF00')],
+            [{ type: 'cellIs', operator: 'lessThan', formula1: '15', formula2: null, format: { textColor: null, fill: '#FFFF00', bold: true, italic: false, underline: false, strikethrough: false } }, rgb('#FFFF00'), false]);
+        grid.UpdateConditionalFormat(red, { rule: { type: 'dataBar', color: '#00AA00' } });
+        check('a rule can become a visual one (its format goes)', list().find((cf) => cf.id === red).rule.format, null);
+        grid.Undo();
+        check('an update that changes nothing is no change', (() => { const r = grid.GetRevision(); grid.UpdateConditionalFormat(red, { stopIfTrue: true }); return grid.GetRevision() === r; })(), true);
+        check('UpdateConditionalFormat refuses', [thrown(() => grid.UpdateConditionalFormat(999, { stopIfTrue: true })), thrown(() => grid.UpdateConditionalFormat(red, { colour: 'red' })), thrown(() => grid.UpdateConditionalFormat(red, { priority: 9 })),
+            thrown(() => grid.UpdateConditionalFormat(red, { range: 'nowhere' })), thrown(() => grid.UpdateConditionalFormat(red)), thrown(() => grid.UpdateConditionalFormat(red, { format: { fontSize: 20 } })), thrown(() => grid.UpdateConditionalFormat('1', {}))],
+            ['UpdateConditionalFormat: the sheet has no conditional format with id 999', 'UpdateConditionalFormat: changes has an unknown key "colour" (known: range, priority, stopIfTrue, rule, format)', 'UpdateConditionalFormat: priority must be between 1 and 3, got 9',
+             'UpdateConditionalFormat: "nowhere" is not a range (expected A1 notation such as "B2:D5", or several areas: "A1:A5 C1:C5")', 'UpdateConditionalFormat: changes must be an object { range, priority, stopIfTrue, rule, format }',
+             'UpdateConditionalFormat: changes.format.fontSize: a conditional format applies only textColor, fill, bold, italic, underline, strikethrough', 'UpdateConditionalFormat: id must be a whole number, got "1"']);
+
+        before = grid.GetRevision();
+        check('ClearConditionalFormats(range) says how many rules it touched', grid.ClearConditionalFormats('A1:A2 B1:B3'), 3);
+        check('... a rule that covers more keeps the rest, a rule left with no cell is gone', brief(), [`${blue}:top@A3:A1048576`, `${green}:cellIs@A3:A6`]);
+        grid.Undo();
+        check('... one undo step', [brief().length, grid.GetRevision()], [3, before]);
+        grid.Redo();
+        check('clearing where there is none is no change', [grid.ClearConditionalFormats('H1:J9'), grid.GetRevision() === grid.GetRevision()], [0, true]);
+        check('RemoveConditionalFormat refuses an unknown id', [thrown(() => grid.RemoveConditionalFormat(999)), thrown(() => grid.RemoveConditionalFormat())].map((m) => /^RemoveConditionalFormat: /.test(m ?? '')), [true, true]);
+        grid.RemoveConditionalFormat(green);
+        check('RemoveConditionalFormat', brief(), [`${blue}:top@A3:A1048576`]);
+        grid.Undo();
+        check('... one undo step', brief().length, 2);
+
+        // ---- the older members ----
+        const legacy = grid.AddConditionalFormat(8, 3, 'greaterThan', 5, '#ABCDEF');
+        check('the older AddConditionalFormat(row, col, ruleType, threshold, bgColor) still works', [typeof legacy, list().find((cf) => cf.id === legacy).range, list().find((cf) => cf.id === legacy).rule.formula1, list().find((cf) => cf.id === legacy).rule.format.fill], ['number', 'D9', '5', '#ABCDEF']);
+        grid.Undo();
+        check('... and is an undo step now', list().some((cf) => cf.id === legacy), false);
+        grid.Redo();
+        grid.RemoveConditionalFormats(8, 3);
+        check('RemoveConditionalFormats(row, col) still works', list().some((cf) => cf.range === 'D9'), false);
+        grid.Undo();
+        check('... and is an undo step now', list().some((cf) => cf.range === 'D9'), true);
+        grid.RemoveConditionalFormats(8, 3);
+
+        // ---- what AddConditionalFormat refuses ----
+        const refused = [
+            [() => grid.AddConditionalFormat('A1:', { type: 'blanks' }), /^AddConditionalFormat: "A1:" is not a range/],
+            [() => grid.AddConditionalFormat('A1'), /^AddConditionalFormat: the rule is missing/],
+            [() => grid.AddConditionalFormat('A1', 'blanks'), /^AddConditionalFormat: rule must be an object/],
+            [() => grid.AddConditionalFormat('A1', {}), /^AddConditionalFormat: rule\.type must be a string/],
+            [() => grid.AddConditionalFormat('A1', { type: 'sparkle' }), /^AddConditionalFormat: unknown rule type "sparkle" \(known: cellIs, expression/],
+            [() => grid.AddConditionalFormat('A1', { type: 'cellIs', operator: 'above', formula1: 1 }), /^AddConditionalFormat: rule\.operator must be one of/],
+            [() => grid.AddConditionalFormat('A1', { type: 'cellIs', operator: 'between', formula1: 1 }), /^AddConditionalFormat: a "cellIs" rule needs rule\.formula2/],
+            [() => grid.AddConditionalFormat('A1', { type: 'cellIs', operator: 'equal', formula1: true }), /^AddConditionalFormat: rule\.formula1 must be a number or a string/],
+            [() => grid.AddConditionalFormat('A1', { type: 'expression' }), /^AddConditionalFormat: a "expression" rule needs rule\.formula/],
+            [() => grid.AddConditionalFormat('A1', { type: 'expression', formula: '=A1', text: 'x' }), /^AddConditionalFormat: a "expression" rule has no key "text" \(it takes: type, formula, format\)/],
+            [() => grid.AddConditionalFormat('A1', { type: 'containsText' }), /^AddConditionalFormat: a "containsText" rule needs rule\.text/],
+            [() => grid.AddConditionalFormat('A1', { type: 'top', rank: 0 }), /^AddConditionalFormat: rule\.rank must be between 1 and 1000/],
+            [() => grid.AddConditionalFormat('A1', { type: 'top', rank: 2.5 }), /^AddConditionalFormat: rule\.rank must be a whole number/],
+            [() => grid.AddConditionalFormat('A1', { type: 'dateOccurring', period: 'someday' }), /^AddConditionalFormat: rule\.period must be one of "today"/],
+            [() => grid.AddConditionalFormat('A1', { type: 'colorScale', stops: [{ type: 'min', color: '#FF0000' }] }), /^AddConditionalFormat: a colour scale has 2 or 3 stops, got 1/],
+            [() => grid.AddConditionalFormat('A1', { type: 'colorScale', stops: [{ type: 'min', color: 'red' }, { type: 'max', color: '#00FF00' }] }), /^AddConditionalFormat: rule\.stops\[0\]\.color must be a colour/],
+            [() => grid.AddConditionalFormat('A1', { type: 'colorScale', stops: [{ type: 'min', color: '#FF0000' }, { type: 'percent', color: '#00FF00' }] }), /^AddConditionalFormat: rule\.stops\[1\]\.value is missing/],
+            [() => grid.AddConditionalFormat('A1', { type: 'dataBar', color: 'blue' }), /^AddConditionalFormat: rule\.color must be a colour/],
+            [() => grid.AddConditionalFormat('A1', { type: 'dataBar', format }), /^AddConditionalFormat: a "dataBar" rule draws by itself/],
+            [() => grid.AddConditionalFormat('A1', { type: 'iconSet', iconSet: '3Stars' }), /^AddConditionalFormat: rule\.iconSet must be one of 3Arrows/],
+            [() => grid.AddConditionalFormat('A1', { type: 'iconSet', iconSet: '5Rating', thresholds: [{ type: 'percent', value: 0 }] }), /^AddConditionalFormat: icon set "5Rating" needs 5 thresholds/],
+            [() => grid.AddConditionalFormat('A1', { type: 'blanks', format: { fill: 'red' } }), /^AddConditionalFormat: rule\.format\.fill must be a colour/],
+            [() => grid.AddConditionalFormat('A1', { type: 'blanks', format: { wrap: true } }), /^AddConditionalFormat: rule\.format\.wrap: a conditional format applies only/],
+            [() => grid.AddConditionalFormat('A1', { type: 'blanks' }, { stop: true }), /^AddConditionalFormat: options has an unknown key "stop"/],
+            [() => grid.AddConditionalFormat(0, 0, 'between', 1, '#FF0000'), /^AddConditionalFormat: ruleType must be "greaterThan", "lessThan" or "equal"/],
+            [() => grid.GetConditionalFormats(5), /^GetConditionalFormats: there is no sheet 5/],
+        ];
+        const count = grid.GetConditionalFormats().length, quiet = grid.GetRevision();
+        check('invalid input throws with a message that says what is wrong', refused.map(([run, pattern]) => { const message = thrown(run); return pattern.test(message ?? '') ? true : message; }), refused.map(() => true));
+        check('... and changes nothing', [grid.GetConditionalFormats().length, grid.GetRevision()], [count, quiet]);
+
+        // ---- rules follow their cells ----
+        const moving = grid.AddConditionalFormat('B2:B4', { type: 'expression', formula: '=$A2>B$1', format });
+        grid.InsertRows(0, 2);
+        check('inserted rows: range and formula move, the id stays', (() => { const cf = list().find((entry) => entry.id === moving); return [cf.range, cf.rule.formula]; })(), ['B4:B6', '$A4>B$3']);
+        grid.Undo();
+        check('... and come back with undo', (() => { const cf = list().find((entry) => entry.id === moving); return [cf.range, cf.rule.formula]; })(), ['B2:B4', '$A2>B$1']);
+        grid.RemoveConditionalFormat(moving);
+
+        // ---- through a file ----
+        grid.ClearConditionalFormats();
+        const saved = kinds.map(([range, rule], index) => grid.AddConditionalFormat(range, rule, { stopIfTrue: index % 5 === 0 }));
+        grid.AddConditionalFormat('A:A D2:E3', { type: 'uniqueValues', format: { fill: '#112233', textColor: '#445566', bold: true, italic: true, underline: true, strikethrough: true } });
+        const mine = list().map(({ id, ...rest }) => rest);
+        const again = await reopened(grid);
+        const theirs = list(again.grid).map(({ id, ...rest }) => rest);
+        check('every rule comes back from an exported file: count', theirs.length, kinds.length + 1);
+        for (let index = 0; index < mine.length; index++)
+            if (JSON.stringify(mine[index]) !== JSON.stringify(theirs[index])) check(`rule ${index + 1} (${mine[index].rule.type}) after a file`, theirs[index], mine[index]);
+        check('... each as it was (range, priority, stopIfTrue, rule, format)', JSON.stringify(theirs) === JSON.stringify(mine), true);
+        check('a file\'s rules are numbered in order of precedence', again.grid.GetConditionalFormats().map((cf) => cf.id), mine.map((_, index) => index + 1));
+        await frame();
+        const node2 = again.host.querySelector('.spreadsheet-cell[data-row="0"][data-col="0"]');
+        check('... and the opened grid draws them', getComputedStyle(node2).backgroundColor, rgb('#112233'));
+        // A sheet that is not on display yet.
+        const { createEmpty } = await import('/spreadsheet/Model.js');
+        again.grid.ClearConditionalFormats('A:A');
+        const second = await reopened(again.grid);
+        check('cleared rules stay cleared in the file', second.grid.GetConditionalFormats().some((cf) => /(^| )A/.test(cf.range)), false);
+        second.close(); again.close();
+        grid.InstallWorkbook([grid.GetModel(), createEmpty(50, 10)], ['One', 'Two'], 1, undefined);
+        check('GetConditionalFormats(sheetIndex) reads another sheet', [grid.GetConditionalFormats().length, grid.GetConditionalFormats(0).length, grid.GetConditionalFormats(1).length], [0, kinds.length + 1, 0]);
+        check('ids on a new sheet are above those handed out', grid.AddConditionalFormat('A1', { type: 'blanks' }) > Math.max(...saved), true);
+        off();
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
