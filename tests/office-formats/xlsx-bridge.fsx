@@ -187,6 +187,34 @@ eq "fresh: defined names" (freshBack.NamedRanges |> List.map (fun n -> n.Name.To
 let freshAgain = Bridge.Import.importWorkbook freshBack
 eq "fresh: import of the export" (freshAgain.Sheets.[0].Model.Cells |> Map.map (fun _ cell -> cell.Value)) (fresh.Cells |> Map.map (fun _ cell -> match cell.Value with CellValue.Formula (text, cached) -> CellValue.Formula (text.TrimStart '=', cached) | value -> value))
 
+// ---- every property of a cell format set in the editor comes back ----------
+let dressed =
+    { defaultFormat with
+        Bold = true; Italic = true; Underline = true; UnderlineDouble = true; Strikethrough = true
+        FontName = Some "Georgia"; FontSize = Some 14; TextColor = Some "#112233"; BgColor = Some "#FFEEDD"
+        HorizontalAlign = Some "right"; VerticalAlign = Some "top"; WrapText = true; Indent = 2; ShrinkToFit = false; TextRotation = 45
+        NumberFormat = Some "#,##0.000"
+        BorderTop = Some { Style = "thin"; Color = Some "#FF0000" }; BorderBottom = Some { Style = "double"; Color = Some "#00FF00" }
+        BorderLeft = Some { Style = "dashed"; Color = Some "#0000FF" }; BorderRight = Some { Style = "thick"; Color = Some "#000000" } }
+let shrunk = { defaultFormat with ShrinkToFit = true; TextRotation = 135; VerticalAlign = Some "middle"; HorizontalAlign = Some "center"; NumberFormat = Some "0.00%" }
+let dressedSheet =
+    createEmpty 20 6
+    |> setCell (addr 0 0) { Value = CellValue.Number 1234.5; Format = dressed; Comment = None }
+    |> setCell (addr 1 1) { Value = CellValue.String "shrunk"; Format = shrunk; Comment = None }
+let dressedBack =
+    Bridge.Export.toWorkbookOut { Sheets = [| dressedSheet |]; Names = [| "Formats" |]; Visible = [| true |]; ActiveSheetIndex = 0; DefinedNames = Map.empty; Source = None; Macros = None }
+    |> reread |> Bridge.Import.importWorkbook
+let dressedFormat row col = dressedBack.Sheets.[0].Model.Cells.[addr row col].Format
+let sameColors (format: CellFormat) =
+    let upper = Option.map (fun (color: string) -> color.ToUpperInvariant())
+    let border = Option.map (fun (b: BorderStyle) -> { b with Color = upper b.Color })
+    { format with TextColor = upper format.TextColor; BgColor = upper format.BgColor; BorderTop = border format.BorderTop; BorderBottom = border format.BorderBottom
+                  BorderLeft = border format.BorderLeft; BorderRight = border format.BorderRight
+                  VerticalAlign = (match format.VerticalAlign with Some "center" -> Some "middle" | other -> other) }
+eq "formats: font, colours, alignment, wrap, indent, rotation, number format and borders round trip" (sameColors (dressedFormat 0 0)) dressed
+// (A cell without a font of its own comes back with the workbook's default font spelled out.)
+eq "formats: shrink to fit, a clockwise rotation, middle / centre, a percent format" { sameColors (dressedFormat 1 1) with FontName = None; FontSize = None } shrunk
+
 // ---- pictures, kept objects and threaded comments are in the model ---------
 // synthetic-drawing-extras.xlsx: a picture B3..D7 (two-cell, editAs oneCell), a
 // chart at F (one-cell) in front of it, a threaded comment with a reply on B2.

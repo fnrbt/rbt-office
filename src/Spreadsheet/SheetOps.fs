@@ -324,3 +324,203 @@ let mergeRangeAt (model: SpreadsheetModel) (addr: CellAddress) : CellRange optio
 /// The hyperlink on a cell: the last one defined whose range holds it.
 let hyperlinkAt (model: SpreadsheetModel) (addr: CellAddress) : SheetHyperlink option =
     model.Hyperlinks |> List.tryFindBack (fun link -> cellRangeContains addr link.Range)
+
+// ---------------------------------------------------------------------------
+// Number format codes
+// ---------------------------------------------------------------------------
+
+/// The sections of a format code (split at `;` outside quotes, brackets and escapes).
+let private formatSections (code: string) : string list =
+    let sections = ResizeArray<string>()
+    let sb = System.Text.StringBuilder()
+    let mutable i = 0
+    let mutable quoted = false
+    let mutable bracket = false
+    while i < code.Length do
+        let c = code.[i]
+        if not quoted && not bracket && (c = '\\' || c = '_' || c = '*') && i + 1 < code.Length then
+            sb.Append(c).Append(code.[i + 1]) |> ignore
+            i <- i + 2
+        else
+            if c = '"' && not bracket then quoted <- not quoted
+            elif c = '[' && not quoted then bracket <- true
+            elif c = ']' && not quoted then bracket <- false
+            if c = ';' && not quoted && not bracket then
+                sections.Add (sb.ToString())
+                sb.Clear() |> ignore
+            else sb.Append c |> ignore
+            i <- i + 1
+    sections.Add (sb.ToString())
+    List.ofSeq sections
+
+/// What is wrong with a number format code as a host hands it over, or None:
+/// empty, longer than Excel takes (255), an open quote or bracket, a
+/// dangling escape, more than four sections, or a code the formatter fails on.
+let numberFormatProblem (code: string) : string option =
+    if isNull code || code.Trim() = "" then Some "the format code is empty"
+    elif code.Length > 255 then Some "the format code is longer than 255 characters"
+    else
+        let mutable quoted = false
+        let mutable bracket = false
+        let mutable dangling = false
+        let mutable strayClose = false
+        let mutable i = 0
+        while i < code.Length do
+            let c = code.[i]
+            if not quoted && not bracket && (c = '\\' || c = '_' || c = '*') then
+                if i + 1 >= code.Length then dangling <- true
+                i <- i + 2
+            else
+                if c = '"' && not bracket then quoted <- not quoted
+                elif c = '[' && not quoted then bracket <- true
+                elif c = ']' && not quoted then (if bracket then bracket <- false else strayClose <- true)
+                i <- i + 1
+        if quoted then Some "a quote (\") is not closed"
+        elif bracket then Some "a bracket ([) is not closed"
+        elif strayClose then Some "a bracket (]) has no opening bracket"
+        elif dangling then Some "the code ends in \\, _ or * with nothing after it"
+        elif (formatSections code).Length > 4 then Some "a format code has at most four sections (positive;negative;zero;text)"
+        else
+            try
+                Rbt.Spreadsheet.CellText.formatNumberWithCode code 1234.5 |> ignore
+                Rbt.Spreadsheet.CellText.formatNumberWithCode code -0.25 |> ignore
+                None
+            with _ -> Some "the formatter cannot read the code"
+
+/// One section of a number format with a decimal place more (`delta` > 0)
+/// or fewer; unchanged when it has no number in it (text, a fraction).
+let private sectionWithDecimals (delta: int) (section: string) : string =
+    // Where the placeholders of the number are: outside quotes, brackets and
+    // escapes, before an exponent.
+    let plain = Array.create section.Length false
+    let mutable i = 0
+    let mutable quoted = false
+    let mutable bracket = false
+    let mutable exponentAt = -1
+    let mutable fraction = false
+    while i < section.Length do
+        let c = section.[i]
+        if not quoted && not bracket && (c = '\\' || c = '_' || c = '*') then i <- i + 2
+        else
+            if c = '"' && not bracket then quoted <- not quoted
+            elif c = '[' && not quoted then bracket <- true
+            elif c = ']' && not quoted then bracket <- false
+            elif not quoted && not bracket then
+                plain.[i] <- true
+                if c = '/' then fraction <- true
+                if exponentAt < 0 && (c = 'E' || c = 'e') && i + 1 < section.Length && (section.[i + 1] = '+' || section.[i + 1] = '-') then exponentAt <- i
+            i <- i + 1
+    let limit = if exponentAt >= 0 then exponentAt else section.Length
+    let isPlaceholder (index: int) = index < limit && plain.[index] && (section.[index] = '0' || section.[index] = '#' || section.[index] = '?')
+    let mutable lastDigit = -1
+    let mutable point = -1
+    for index in 0 .. limit - 1 do
+        if isPlaceholder index then lastDigit <- index
+        elif plain.[index] && section.[index] = '.' && point < 0 then point <- index
+    let isGeneral = section.Trim().Equals("General", System.StringComparison.OrdinalIgnoreCase)
+    if fraction || lastDigit < 0 || isGeneral then section
+    else
+        // The decimals: the placeholders right after the point.
+        let mutable decimals = 0
+        if point >= 0 then
+            while isPlaceholder (point + 1 + decimals) do decimals <- decimals + 1
+        if delta > 0 then
+            if decimals >= 30 then section
+            elif point >= 0 && decimals > 0 then section.Substring(0, point + 1 + decimals) + "0" + section.Substring(point + 1 + decimals)
+            elif point >= 0 then section.Substring(0, point + 1) + "0" + section.Substring(point + 1)
+            else section.Substring(0, lastDigit + 1) + ".0" + section.Substring(lastDigit + 1)
+        else
+            if point < 0 || decimals = 0 then section
+            elif decimals = 1 then section.Substring(0, point) + section.Substring(point + 2)
+            else section.Substring(0, point + decimals) + section.Substring(point + decimals + 1)
+
+/// The Excel format code behind one of the editor's older named formats.
+let private namedFormatCode (name: string) : string option =
+    match name with
+    | "currency" -> Some "$#,##0.00"
+    | "percentage" | "percent" -> Some "0.00%"
+    | "decimal2" -> Some "0.00"
+    | "number" -> Some "#,##0.00"
+    | _ -> None
+
+/// The number format a cell gets from "increase decimal" (`delta` = 1) or
+/// "decrease decimal" (-1), given the format it has and the value it shows:
+/// every section of its code gains or loses a decimal place; a cell in the
+/// General format starts from the decimals its value shows (12.5 -> "0.00"
+/// / "0"). None when nothing changes: a date or time format, a fraction,
+/// text, no decimals left to take away, or a cell that holds no number.
+let changeDecimals (delta: int) (format: string option) (value: CellValue) : string option =
+    let current =
+        match format with
+        | Some code when code.Trim() <> "" && not (code.Trim().Equals("General", System.StringComparison.OrdinalIgnoreCase)) ->
+            (match namedFormatCode code with Some known -> Some known | None -> Some code)
+        | _ -> None
+    match current with
+    | Some "date" -> None
+    | Some code when Rbt.Spreadsheet.CellText.isDateTimeNumberFormat code -> None
+    | Some code ->
+        let changed = formatSections code |> List.map (sectionWithDecimals delta) |> String.concat ";"
+        if changed = code && format = Some code then None else Some changed
+    | None ->
+        match unwrapFormulaValue value with
+        | CellValue.Number number ->
+            let shown = Rbt.Spreadsheet.CellText.formatNumberWithCode "General" number
+            if shown.IndexOf 'E' >= 0 then None
+            else
+                let point = shown.IndexOf '.'
+                let decimals = if point < 0 then 0 else shown.Length - point - 1
+                let wanted = max 0 (min 30 (decimals + delta))
+                // (Fewer decimals than none: nothing to take away.)
+                if decimals + delta < 0 then None
+                else Some (if wanted = 0 then "0" else "0." + System.String('0', wanted))
+        | _ -> None
+
+// ---------------------------------------------------------------------------
+// Clearing cells
+// ---------------------------------------------------------------------------
+
+/// What "Clear" takes out of cells.
+type ClearWhat =
+    /// Values and formulas (and rich-text runs); formats and comments stay.
+    | ClearContents
+    /// Formats: the cells show with the default format again.
+    | ClearFormats
+    /// Contents, formats and cell comments: the cells are empty cells again.
+    | ClearEverything
+
+/// A format with what the cell's look says cleared: what the importer derived
+/// from other things (filter button, comment marker, dropdown) stays.
+let private clearedFormat (format: CellFormat) : CellFormat =
+    if not format.FilterButton && not format.HasComment && not format.HasListDropdown then defaultFormat
+    else { defaultFormat with FilterButton = format.FilterButton; HasComment = format.HasComment; HasListDropdown = format.HasListDropdown }
+
+/// Clear the cells of a block. Only cells that exist are touched (a whole
+/// column costs one pass over the sheet's cells); a cell left with nothing -
+/// no value, the default format, no comment - is dropped from the map. The
+/// model is returned as it is when nothing changed.
+let clearCells (what: ClearWhat) (top: int, left: int, bottom: int, right: int) (model: SpreadsheetModel) : SpreadsheetModel =
+    let mutable cells = model.Cells
+    let mutable runs = model.RichRuns
+    let change (addr: CellAddress) (data: CellData) =
+        let updated =
+            match what with
+            | ClearContents -> { data with Value = CellValue.Empty }
+            | ClearFormats -> { data with Format = clearedFormat data.Format }
+            | ClearEverything -> { Value = CellValue.Empty; Format = defaultFormat; Comment = None }
+        let nothingLeft = updated.Value = CellValue.Empty && updated.Comment.IsNone && updated.Format = defaultFormat
+        if nothingLeft then cells <- Map.remove addr cells
+        elif updated <> data then cells <- Map.add addr updated cells
+        if what <> ClearFormats && not (Map.isEmpty runs) && Map.containsKey addr runs then runs <- Map.remove addr runs
+    let area = float (bottom - top + 1) * float (right - left + 1)
+    if area <= cellByCellLimit then
+        for row in top .. bottom do
+            for col in left .. right do
+                let addr = { Row = row; Col = col }
+                match Map.tryFind addr model.Cells with
+                | Some data -> change addr data
+                | None -> ()
+    else
+        for KeyValue(addr, data) in model.Cells do
+            if addr.Row >= top && addr.Row <= bottom && addr.Col >= left && addr.Col <= right then change addr data
+    if obj.ReferenceEquals(cells, model.Cells) && obj.ReferenceEquals(runs, model.RichRuns) then model
+    else { model with Cells = cells; RichRuns = runs } |> invalidateFilterProjection

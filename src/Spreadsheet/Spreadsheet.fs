@@ -1597,8 +1597,7 @@ type Spreadsheet(container: Element) =
     /// Apply `update` to the format of every cell of the selection as one
     /// undoable step. A selection too large to give every cell a format of
     /// its own (whole rows or columns) changes the cells that exist.
-    let formatSelectionAt (description: string) (updateAt: int * int * int * int -> CellAddress -> CellFormat -> CellFormat) : bool =
-        let top, left, bottom, right = selectionBounds()
+    let formatBlockAt (description: string) (top: int, left: int, bottom: int, right: int) (updateAt: int * int * int * int -> CellAddress -> CellFormat -> CellFormat) : bool =
         let bottom = min bottom (model.RowCount - 1)
         let right = min right (model.ColCount - 1)
         let block = top, left, bottom, right
@@ -1630,8 +1629,36 @@ type Spreadsheet(container: Element) =
                                Description = description }
             true
 
+    let formatSelectionAt (description: string) (updateAt: int * int * int * int -> CellAddress -> CellFormat -> CellFormat) : bool =
+        formatBlockAt description (selectionBounds()) updateAt
+
     let formatSelection (description: string) (update: CellFormat -> CellFormat) : bool =
         formatSelectionAt description (fun _ _ format -> update format)
+
+    /// An argument a host must give: throws when it is undefined or null.
+    let requiredArg (memberName: string) (what: string) (value: obj) : obj =
+        if Host.isNullish value then Host.hostFail memberName (what + " is missing") else value
+
+    /// Clear the cells of a block (their contents, their formats, or both and
+    /// their comments) as one undoable step; what read the cleared values is
+    /// recalculated. False when there was nothing to clear.
+    let clearBlock (description: string) (what: SheetOps.ClearWhat) (block: int * int * int * int) : bool =
+        let oldCells = model.Cells
+        let oldSpill = model.Spill
+        let oldRuns = model.RichRuns
+        let cleared = SheetOps.clearCells what block model
+        if obj.ReferenceEquals(cleared, model) then false
+        else
+            model <- cleared
+            let command =
+                { Undo = (fun m -> { restoreCellMapWithSpill oldCells oldSpill m with RichRuns = oldRuns })
+                  Redo = SheetOps.clearCells what block
+                  Description = description }
+            if what = SheetOps.ClearFormats then pushValueNeutral command
+            else
+                recalculateFormulas()
+                model <- pushCommand command model
+            true
 
     /// What GetSelectionFormat last gave, and what it gave it for (the cells,
     /// the column styles and the selected block): asked again for the same,
@@ -2016,19 +2043,54 @@ type Spreadsheet(container: Element) =
             let format = data.Format
             if format.Bold then add "font-weight" "bold"
             if format.Italic then add "font-style" "italic"
-            if format.Underline then add "text-decoration" "underline"
+            if format.Underline || format.UnderlineDouble || format.Strikethrough then
+                let lines =
+                    (if format.Underline || format.UnderlineDouble then "underline " else "")
+                    + (if format.Strikethrough then "line-through " else "")
+                    + (if format.UnderlineDouble then "double" else "")
+                add "text-decoration" (lines.TrimEnd())
+            match format.FontName with
+            // (A name is all a family can be here: nothing that ends the declaration.)
+            | Some family when family <> "" -> add "font-family" ("'" + family.Replace("'", "").Replace(";", "").Replace("\\", "") + "', Arial, sans-serif")
+            | _ -> ()
             match format.TextColor with Some color -> add "color" color | None -> ()
             match format.BgColor with Some color -> add "background-color" color | None -> ()
             match format.FontSize with Some size -> add "font-size" (string size + "px") | None -> ()
-            match format.HorizontalAlign with Some align -> add "text-align" align | None -> ()
-            match format.VerticalAlign with
-            | Some "top" -> add "vertical-align" "top"
-            | Some "bottom" -> add "vertical-align" "bottom"
-            | Some "middle" | Some "center" -> add "vertical-align" "middle"
-            | _ -> ()
+            match format.HorizontalAlign with
+            | Some "centerContinuous" -> add "text-align" "center"
+            | Some "distributed" -> add "text-align" "justify"
+            | Some "fill" | Some "general" -> ()
+            | Some align -> add "text-align" align
+            | None -> ()
+            // Where the text sits in the height of the cell. One line of text
+            // is centred by the cell's line height (the node's default look);
+            // top and bottom give the line its own height and, for bottom,
+            // push it down. Wrapped text is a column of lines, placed as a
+            // block (at the bottom unless the format says otherwise, as Excel does).
+            let lineHeight = System.Math.Round (float (defaultArg format.FontSize 11) * 1.3)
             if format.WrapText then
                 add "white-space" "normal"
                 add "word-wrap" "break-word"
+                add "line-height" (px lineHeight)
+                add "display" "flex"
+                add "flex-direction" "column"
+                add "justify-content"
+                    (match format.VerticalAlign with
+                     | Some "top" -> "flex-start"
+                     | Some "middle" | Some "center" -> "center"
+                     | _ -> "flex-end")
+            else
+                match format.VerticalAlign with
+                | Some "top" -> add "line-height" (px lineHeight)
+                | Some "bottom" ->
+                    add "line-height" (px lineHeight)
+                    add "padding-top" (px (max 3.0 (h - 3.0 - lineHeight)))
+                | _ -> ()
+            // An indent pads the edge the text is aligned to.
+            if format.Indent > 0 then
+                let indent = float format.Indent * SpreadsheetCellText.mdwPx (float (defaultArg format.FontSize 11)) * 1.4
+                if format.HorizontalAlign = Some "right" then add "padding-right" (px (5.0 + indent))
+                elif format.HorizontalAlign <> Some "center" then add "padding-left" (px (5.0 + indent))
         | None -> ()
         // Borders and grid lines: one line per edge. A cell draws the edge
         // above it and the edge to its left - each the one border the two
@@ -2224,12 +2286,27 @@ type Spreadsheet(container: Element) =
                 match unwrapFormulaValue data.Value with
                 | CellValue.Number _ ->
                     let text = SpreadsheetCellText.cellDisplayText None 1.0e6 data.Format data.Value
-                    if float text.Length * fontPx * 0.7 <= w - 10.0 || measureText text <= w - 9.0 then text
+                    // (Shrunk or turned text is not measured against the cell's width.)
+                    if data.Format.ShrinkToFit || data.Format.TextRotation <> 0 then text
+                    elif float text.Length * fontPx * 0.7 <= w - 10.0 || measureText text <= w - 9.0 then text
                     else
                         let hash = max 1.0 (measureText "#")
                         System.String('#', max 1 (int ((w - 10.0) / hash)))
                 | _ -> SpreadsheetCellText.cellDisplayText None 1.0e6 data.Format data.Value
             | None -> ""
+        // Shrink to fit: one line of text wider than its cell is drawn smaller
+        // (never larger), down to what fits between the cell's paddings.
+        match cellData with
+        | Some data when data.Format.ShrinkToFit && not data.Format.WrapText && data.Format.TextRotation = 0 && displayText <> "" ->
+            let indent = if data.Format.Indent > 0 then float data.Format.Indent * SpreadsheetCellText.mdwPx fontPx * 1.4 else 0.0
+            let room = w - 10.0 - indent
+            let width = measureText displayText
+            if room > 0.0 && width > room then
+                add "font-size" (string (System.Math.Floor (max 1.0 (fontPx * room / width * 0.98) * 100.0) / 100.0) + "px")
+        | _ -> ()
+        // Turned text: a line through the middle of the cell at the format's
+        // angle (stacked text: upright letters one under the other).
+        let rotation = match cellData with Some data when displayText <> "" -> data.Format.TextRotation | _ -> 0
         // Text overflow: text wider than its cell runs over the empty cells
         // beside it (to the right when left-aligned, to the left when
         // right-aligned, both ways when centred) up to the first cell that
@@ -2289,7 +2366,17 @@ type Spreadsheet(container: Element) =
         setAttribute cell "data-col" (string col)
         if bar >= 0 then setAttribute cell "data-cf-bar" (string bar) else removeAttribute cell "data-cf-bar"
         // (This also drops the icon and comment marker of the node's previous cell.)
-        setTextContent cell displayText
+        if rotation = 0 then setTextContent cell displayText
+        else
+            setTextContent cell ""
+            let turned = createElement "span"
+            setClassName turned "spreadsheet-rotated"
+            setTextContent turned displayText
+            let transform =
+                if rotation = 255 then "writing-mode:vertical-rl;text-orientation:upright;letter-spacing:-2px;transform:translate(-50%,-50%)"
+                else "transform:translate(-50%,-50%) rotate(" + string (-(Host.rotationDegrees rotation)) + "deg)"
+            setCssText turned ("position:absolute;left:50%;top:50%;white-space:nowrap;line-height:normal;text-decoration:inherit;pointer-events:none;" + transform)
+            appendChild cell turned
         // The weaker edge first: where two meet, the stronger is on top.
         if edgeChildren.Count > 0 then
             for _, style in edgeChildren |> Seq.sortBy fst do
@@ -4909,23 +4996,194 @@ type Spreadsheet(container: Element) =
         render()
 
     /// Apply a format command to every cell of the selection, as one change
-    /// and one undo step: "bold" | "italic" | "underline" (toggled by the
-    /// active cell: on for all when it is off there, off for all otherwise),
-    /// "fontIncrease" | "fontDecrease", "alignLeft" | "alignCenter" | "alignRight".
-    member _.ApplyFormat(formatType: string) =
+    /// and one undo step. Toggles go by the active cell (on for all when it
+    /// is off there, off for all otherwise): "bold" | "italic" | "underline" |
+    /// "doubleUnderline" | "strikethrough" | "wrap" | "shrinkToFit". Steps:
+    /// "fontIncrease" | "fontDecrease" (2 points), "indentIncrease" |
+    /// "indentDecrease", "decimalIncrease" | "decimalDecrease" (see
+    /// IncreaseDecimals). Alignment: "alignLeft" | "alignCenter" |
+    /// "alignRight" | "alignJustify" | "alignGeneral" (back to the default),
+    /// "alignTop" | "alignMiddle" | "alignBottom". Throws on any other command.
+    member this.ApplyFormat(formatType: string) =
         let active = activeFormat ()
+        let toggle (description: string) (isOn: CellFormat -> bool) (set: bool -> CellFormat -> CellFormat) =
+            let on = not (isOn active)
+            formatSelection description (fun format -> if isOn format = on then format else set on format)
+        let horizontal (description: string) (align: string option) =
+            formatSelection description (fun format -> if format.HorizontalAlign = align then format else { format with HorizontalAlign = align })
+        let vertical (description: string) (align: string) =
+            formatSelection description (fun format -> if format.VerticalAlign = Some align then format else { format with VerticalAlign = Some align })
         let changed =
             match formatType with
-            | "bold" -> let on = not active.Bold in formatSelection "Bold" (fun format -> if format.Bold = on then format else { format with Bold = on })
-            | "italic" -> let on = not active.Italic in formatSelection "Italic" (fun format -> if format.Italic = on then format else { format with Italic = on })
-            | "underline" -> let on = not active.Underline in formatSelection "Underline" (fun format -> if format.Underline = on then format else { format with Underline = on })
-            | "fontIncrease" -> formatSelection "Font size" (fun format -> { format with FontSize = Some (defaultArg format.FontSize 11 + 2) })
+            | "bold" -> toggle "Bold" (fun format -> format.Bold) (fun on format -> { format with Bold = on })
+            | "italic" -> toggle "Italic" (fun format -> format.Italic) (fun on format -> { format with Italic = on })
+            | "underline" -> toggle "Underline" (fun format -> format.Underline) (fun on format -> if on then { format with Underline = true } else { format with Underline = false; UnderlineDouble = false })
+            | "doubleUnderline" -> toggle "Double underline" (fun format -> format.UnderlineDouble) (fun on format -> if on then { format with Underline = true; UnderlineDouble = true } else { format with UnderlineDouble = false })
+            | "strikethrough" -> toggle "Strikethrough" (fun format -> format.Strikethrough) (fun on format -> { format with Strikethrough = on })
+            | "wrap" -> toggle "Wrap text" (fun format -> format.WrapText) (fun on format -> { format with WrapText = on })
+            | "shrinkToFit" -> toggle "Shrink to fit" (fun format -> format.ShrinkToFit) (fun on format -> { format with ShrinkToFit = on })
+            | "fontIncrease" -> formatSelection "Font size" (fun format -> { format with FontSize = Some (min 409 (defaultArg format.FontSize 11 + 2)) })
             | "fontDecrease" -> formatSelection "Font size" (fun format -> { format with FontSize = Some (max 8 (defaultArg format.FontSize 11 - 2)) })
-            | "alignLeft" -> formatSelection "Align left" (fun format -> { format with HorizontalAlign = Some "left" })
-            | "alignCenter" -> formatSelection "Align center" (fun format -> { format with HorizontalAlign = Some "center" })
-            | "alignRight" -> formatSelection "Align right" (fun format -> { format with HorizontalAlign = Some "right" })
-            | _ -> false
+            | "indentIncrease" -> formatSelection "Increase indent" (fun format -> if format.Indent >= 250 then format else { format with Indent = format.Indent + 1 })
+            | "indentDecrease" -> formatSelection "Decrease indent" (fun format -> if format.Indent <= 0 then format else { format with Indent = format.Indent - 1 })
+            | "decimalIncrease" -> this.IncreaseDecimals(); false
+            | "decimalDecrease" -> this.DecreaseDecimals(); false
+            | "alignLeft" -> horizontal "Align left" (Some "left")
+            | "alignCenter" -> horizontal "Align center" (Some "center")
+            | "alignRight" -> horizontal "Align right" (Some "right")
+            | "alignJustify" -> horizontal "Justify" (Some "justify")
+            | "alignGeneral" -> horizontal "General alignment" None
+            | "alignTop" -> vertical "Align top" "top"
+            | "alignMiddle" -> vertical "Align middle" "middle"
+            | "alignBottom" -> vertical "Align bottom" "bottom"
+            | other -> Host.hostFail "ApplyFormat" (sprintf "unknown command \"%s\"" (if isNull other then "null" else other))
         if changed then render()
+
+    /// Change the format of every cell of the selection (one undo step):
+    /// `format` is a `format` object as GetCell gives it, read as a patch -
+    /// the keys that are present are set, the others stay as each cell has
+    /// them, and null puts a property back to its default. E.g.
+    /// ApplyFormatPatch({ bold: true, fill: "#FFF2CC", borders: { bottom: { style: "thin", color: "#000000" } } }).
+    /// Throws on an unknown key or a value of the wrong kind. A selection of
+    /// more than 20 000 cells (whole rows / columns) changes the cells that
+    /// exist; empty cells of it keep the default format.
+    member _.ApplyFormatPatch(format: obj) =
+        let patch = Host.formatPatchOfObj "ApplyFormatPatch" "format" format
+        if formatSelection "Format" patch then render()
+
+    /// The font of the selection: a family name ("Georgia"), or null for the default font.
+    member _.SetFontFamily(family: obj) =
+        if formatSelection "Font" (Host.formatPatchOfObj "SetFontFamily" "format" (createObj [ "fontFamily" ==> (if Host.isNullish family then null else family) ])) then render()
+
+    /// The font size of the selection in points (1 to 409; whole points are
+    /// kept), or null for the default size (11).
+    member _.SetFontSize(points: obj) =
+        if formatSelection "Font size" (Host.formatPatchOfObj "SetFontSize" "format" (createObj [ "fontSize" ==> (if Host.isNullish points then null else points) ])) then render()
+
+    /// Strike the text of the selection through, or not.
+    member _.SetStrikethrough(on: obj) =
+        if formatSelection "Strikethrough" (Host.formatPatchOfObj "SetStrikethrough" "format" (createObj [ "strikethrough" ==> requiredArg "SetStrikethrough" "true or false" on ])) then render()
+
+    /// Horizontal alignment of the selection: "left" | "center" | "right" |
+    /// "justify" | "fill" | "centerContinuous" | "distributed", or "general" /
+    /// null for the default (text left, numbers right).
+    member _.SetHorizontalAlign(align: obj) =
+        if formatSelection "Horizontal alignment" (Host.formatPatchOfObj "SetHorizontalAlign" "format" (createObj [ "horizontalAlign" ==> (if Host.isNullish align then null else align) ])) then render()
+
+    /// Vertical alignment of the selection: "top" | "middle" | "bottom" |
+    /// "justify" | "distributed", or null for the default.
+    member _.SetVerticalAlign(align: obj) =
+        if formatSelection "Vertical alignment" (Host.formatPatchOfObj "SetVerticalAlign" "format" (createObj [ "verticalAlign" ==> (if Host.isNullish align then null else align) ])) then render()
+
+    /// Wrap the text of the selection inside its cells, or not.
+    member _.SetWrapText(on: obj) =
+        if formatSelection "Wrap text" (Host.formatPatchOfObj "SetWrapText" "format" (createObj [ "wrap" ==> requiredArg "SetWrapText" "true or false" on ])) then render()
+
+    /// The indent of the selection (0 to 250 steps from the edge the text is aligned to).
+    member _.SetIndent(indent: obj) =
+        if formatSelection "Indent" (Host.formatPatchOfObj "SetIndent" "format" (createObj [ "indent" ==> requiredArg "SetIndent" "the indent" indent ])) then render()
+
+    /// One indent step more / fewer for every cell of the selection.
+    member this.IncreaseIndent() = this.ApplyFormat "indentIncrease"
+    member this.DecreaseIndent() = this.ApplyFormat "indentDecrease"
+
+    /// Rotate the text of the selection: degrees from -90 (reading downwards)
+    /// to 90 (reading upwards), 0 for none, 255 for stacked letters.
+    member _.SetTextRotation(degrees: obj) =
+        if formatSelection "Text rotation" (Host.formatPatchOfObj "SetTextRotation" "format" (createObj [ "textRotation" ==> requiredArg "SetTextRotation" "the angle" degrees ])) then render()
+
+    /// Shrink text that is wider than its cell to fit it, or not.
+    member _.SetShrinkToFit(on: obj) =
+        if formatSelection "Shrink to fit" (Host.formatPatchOfObj "SetShrinkToFit" "format" (createObj [ "shrinkToFit" ==> requiredArg "SetShrinkToFit" "true or false" on ])) then render()
+
+    /// A number format for the selection: an Excel format code ("0.00",
+    /// "#,##0;[Red]-#,##0", "yyyy-mm-dd", "0.0%", "@"), or null / "General"
+    /// for none. Throws when the code is not one a format can be (empty, an
+    /// open quote or bracket, more than four sections, over 255 characters).
+    member _.SetNumberFormat(code: obj) =
+        let code =
+            Host.optionalArg (Host.stringArg "SetNumberFormat" "the format code") code
+            |> Option.filter (fun code -> not (code.Trim().Equals("General", System.StringComparison.OrdinalIgnoreCase)))
+        match code |> Option.bind SheetOps.numberFormatProblem with
+        | Some problem -> Host.hostFail "SetNumberFormat" problem
+        | None -> ()
+        if formatSelection "Number format" (fun format -> if format.NumberFormat = code then format else { format with NumberFormat = code }) then render()
+
+    /// One decimal place more for the numbers of the selection (one undo
+    /// step): every cell that holds a number gets its own number format with
+    /// a decimal more in each section ("0.0" -> "0.00", "0%" -> "0.0%"); a
+    /// cell in the General format starts from the decimals its value shows
+    /// (12.5 -> "0.00"). Dates, times, fractions and text are left alone.
+    member _.IncreaseDecimals() =
+        let step (addr: CellAddress) (format: CellFormat) =
+            match getCell addr model with
+            | Some data ->
+                match SheetOps.changeDecimals 1 format.NumberFormat data.Value with
+                | Some code -> { format with NumberFormat = Some code }
+                | None -> format
+            | None -> format
+        if formatSelectionAt "Increase decimals" (fun _ addr format -> step addr format) then render()
+
+    /// One decimal place fewer (see IncreaseDecimals); a number without
+    /// decimals stays as it is.
+    member _.DecreaseDecimals() =
+        let step (addr: CellAddress) (format: CellFormat) =
+            match getCell addr model with
+            | Some data ->
+                match SheetOps.changeDecimals -1 format.NumberFormat data.Value with
+                | Some code -> { format with NumberFormat = Some code }
+                | None -> format
+            | None -> format
+        if formatSelectionAt "Decrease decimals" (fun _ addr format -> step addr format) then render()
+
+    /// The format of a cell, for a format painter: the `format` object of the
+    /// first cell of `a1` ("B2", or a range: its top-left cell), as GetCell
+    /// gives it. Hand it to ApplyFormatTo.
+    member _.GetFormatOf(a1: obj) : obj =
+        let range = Host.rangeArg "GetFormatOf" a1
+        if range.From.Row >= model.RowCount || range.From.Col >= model.ColCount then Host.hostFail "GetFormatOf" (sprintf "%s is outside the sheet" (SheetOps.rangeText range))
+        Host.formatToObj (SheetOps.effectiveFormat model range.From)
+
+    /// Give every cell of the range `a1` the format `format` (one undo step):
+    /// the whole format is replaced - keys left out of `format` are the
+    /// defaults, not what the cells had - which is what a format painter
+    /// does with GetFormatOf's result. Values, comments and merged cells are
+    /// not touched. A range of more than 20 000 cells changes the cells that
+    /// exist. Throws when `a1` is not a range of the active sheet or `format`
+    /// is not a format object.
+    member _.ApplyFormatTo(a1: obj, format: obj) =
+        let range = Host.rangeArg "ApplyFormatTo" a1
+        let wanted = Host.formatOfObj "ApplyFormatTo" "format" format
+        if range.From.Row >= model.RowCount || range.From.Col >= model.ColCount then Host.hostFail "ApplyFormatTo" (sprintf "%s is outside the sheet" (SheetOps.rangeText range))
+        let paint (existing: CellFormat) =
+            // (What the cell shows because of other things - a filter button, a comment marker - stays.)
+            { wanted with FilterButton = existing.FilterButton; HasComment = existing.HasComment; HasListDropdown = existing.HasListDropdown
+                          DataBar = existing.DataBar; IconSet = existing.IconSet }
+        if formatBlockAt "Paint format" (range.From.Row, range.From.Col, range.To.Row, range.To.Col) (fun _ _ existing -> paint existing) then render()
+
+    /// Clear the formats of the selection, or of the range `a1` when given
+    /// (one undo step): font, colours, alignment, number format and borders
+    /// go back to the default; values, comments, merged cells and conditional
+    /// formats stay.
+    member _.ClearFormats(?a1: obj) =
+        let block = match a1 with Some a1 when not (Host.isNullish a1) -> (let range = Host.rangeArg "ClearFormats" a1 in range.From.Row, range.From.Col, range.To.Row, range.To.Col) | _ -> selectionBounds()
+        if clearBlock "Clear formats" SheetOps.ClearFormats block then render()
+
+    /// Clear the contents of the selection, or of the range `a1` (one undo
+    /// step): values and formulas go, formats and comments stay; formulas
+    /// that read the cells are recalculated, and a spilled array whose
+    /// formula goes is taken back.
+    member _.ClearContents(?a1: obj) =
+        let block = match a1 with Some a1 when not (Host.isNullish a1) -> (let range = Host.rangeArg "ClearContents" a1 in range.From.Row, range.From.Col, range.To.Row, range.To.Col) | _ -> selectionBounds()
+        if clearBlock "Clear contents" SheetOps.ClearContents block then render()
+
+    /// Clear the selection, or the range `a1`, altogether (one undo step):
+    /// contents, formats and cell comments. Merged cells, conditional
+    /// formats, validations, hyperlinks and comment threads have their own
+    /// members and stay.
+    member _.ClearAll(?a1: obj) =
+        let block = match a1 with Some a1 when not (Host.isNullish a1) -> (let range = Host.rangeArg "ClearAll" a1 in range.From.Row, range.From.Col, range.To.Row, range.To.Col) | _ -> selectionBounds()
+        if clearBlock "Clear all" SheetOps.ClearEverything block then render()
 
     /// Apply text color to every cell of the selection (one undo step).
     member _.ApplyTextColor(color: string) =

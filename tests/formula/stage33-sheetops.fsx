@@ -114,5 +114,53 @@ eq "the last link on a cell wins" (Ops.hyperlinkAt linked (at 1 1) |> Option.map
 eq "a link on a range" (Ops.hyperlinkAt linked (at 2 0) |> Option.map (fun link -> link.Target)) (Some "https://example.com/")
 eq "no link" (Ops.hyperlinkAt linked (at 5 5)) None
 
+// ---- number format codes: decimals, validity ----------------------------------------
+let num x = CellValue.Number x
+eq "more decimals: General starts from the value" (Ops.changeDecimals 1 None (num 12.5)) (Some "0.00")
+eq "fewer decimals: General" (Ops.changeDecimals -1 None (num 12.5)) (Some "0")
+eq "a whole number in General gains one" (Ops.changeDecimals 1 None (num 7.0)) (Some "0.0")
+eq "a whole number in General has none to lose" (Ops.changeDecimals -1 None (num 7.0)) None
+eq "the result of a formula counts" (Ops.changeDecimals 1 (Some "General") (CellValue.Formula ("=1/4", num 0.25))) (Some "0.000")
+eq "text has no decimals" (Ops.changeDecimals 1 None (CellValue.String "abc")) None
+eq "more decimals of a code" (Ops.changeDecimals 1 (Some "0.00") (num 1.0)) (Some "0.000")
+eq "fewer decimals of a code" (Ops.changeDecimals -1 (Some "0.00") (num 1.0)) (Some "0.0")
+eq "the last decimal takes the point with it" (Ops.changeDecimals -1 (Some "#,##0.0") (num 1.0)) (Some "#,##0")
+eq "none to lose" (Ops.changeDecimals -1 (Some "#,##0") (num 1.0)) None
+eq "a first decimal" (Ops.changeDecimals 1 (Some "#,##0") (num 1.0)) (Some "#,##0.0")
+eq "a percent" (Ops.changeDecimals 1 (Some "0%") (num 0.5)) (Some "0.0%")
+eq "every section" (Ops.changeDecimals 1 (Some "#,##0.00;[Red]-#,##0.00;\"-\";@") (num 1.0)) (Some "#,##0.000;[Red]-#,##0.000;\"-\";@")
+eq "text in quotes and escapes is not the number" (Ops.changeDecimals 1 (Some "\"No. 0.0\" 0 \\0") (num 1.0)) (Some "\"No. 0.0\" 0.0 \\0")
+eq "an exponent keeps its digits" (Ops.changeDecimals 1 (Some "0.00E+00") (num 1.0)) (Some "0.000E+00")
+eq "a currency with a locale tag" (Ops.changeDecimals -1 (Some "[$€-407] #,##0.00") (num 1.0)) (Some "[$€-407] #,##0.0")
+eq "a date format is left alone" (Ops.changeDecimals 1 (Some "yyyy-mm-dd") (num 45000.0)) None
+eq "a fraction is left alone" (Ops.changeDecimals 1 (Some "# ?/?") (num 1.5)) None
+eq "the editor's named formats become codes" (Ops.changeDecimals 1 (Some "currency") (num 1.0)) (Some "$#,##0.000")
+eq "at most thirty decimals" (Ops.changeDecimals 1 (Some ("0." + System.String('0', 30))) (num 1.0)) None
+eq "a good code" (Ops.numberFormatProblem "#,##0.00;[Red]-#,##0.00") None
+eq "a date code" (Ops.numberFormatProblem "dd/mm/yyyy hh:mm") None
+eq "an empty code" (Ops.numberFormatProblem "  ").IsSome true
+eq "an open quote" (Ops.numberFormatProblem "0.0 \"units").IsSome true
+eq "an open bracket" (Ops.numberFormatProblem "[Red 0.0").IsSome true
+eq "a dangling escape" (Ops.numberFormatProblem "0.0\\").IsSome true
+eq "five sections" (Ops.numberFormatProblem "0;0;0;@;0").IsSome true
+
+// ---- clearing cells ----------------------------------------------------------------
+let boldFormat = { defaultFormat with Bold = true }
+let toClear =
+    createEmpty 100 10
+    |> setCell (at 0 0) (cell (num 1.0) boldFormat)
+    |> setCell (at 1 0) (cell (num 2.0) defaultFormat)
+    |> setCell (at 2 0) { Value = CellValue.String "noted"; Format = boldFormat; Comment = Some { Text = "why"; Author = None } }
+    |> setCell (at 5 5) (cell (num 9.0) boldFormat)
+let shape (m: SpreadsheetModel) = m.Cells |> Map.toList |> List.map (fun (a, c) -> (a.Row, a.Col), c.Value, c.Format.Bold, c.Comment.IsSome)
+eq "clear contents keeps formats and comments" (shape (Ops.clearCells Ops.ClearContents (0, 0, 2, 0) toClear))
+    [ (0, 0), CellValue.Empty, true, false; (2, 0), CellValue.Empty, true, true; (5, 5), num 9.0, true, false ]
+eq "clear formats keeps values and comments" (shape (Ops.clearCells Ops.ClearFormats (0, 0, 2, 0) toClear))
+    [ (0, 0), num 1.0, false, false; (1, 0), num 2.0, false, false; (2, 0), CellValue.String "noted", false, true; (5, 5), num 9.0, true, false ]
+eq "clear all leaves empty cells" (shape (Ops.clearCells Ops.ClearEverything (0, 0, 2, 0) toClear)) [ (5, 5), num 9.0, true, false ]
+eq "a whole column costs the cells that exist" (shape (Ops.clearCells Ops.ClearContents (0, 0, Ops.maxSheetRow, 0) toClear)) (shape (Ops.clearCells Ops.ClearContents (0, 0, 2, 0) toClear))
+eq "nothing to clear: the same model" (obj.ReferenceEquals(Ops.clearCells Ops.ClearFormats (10, 0, 20, 3) toClear, toClear)) true
+eq "rich text goes with the contents" (Ops.clearCells Ops.ClearContents (0, 0, 0, 0) { toClear with RichRuns = Map.ofList [ at 0 0, [ "1", emptyRunOverride ] ] }).RichRuns.IsEmpty true
+
 printfn "stage33-sheetops: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

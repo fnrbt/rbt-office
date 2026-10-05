@@ -169,3 +169,250 @@ checks['api-read'] = async () => {
     close();
     return lines;
 };
+
+// Formatting: the setters, ApplyFormat's commands, ApplyFormatPatch, the format painter,
+// decimals, number format codes and the three kinds of Clear.
+checks['api-format'] = async () => {
+    const { lines, check, note } = makeLog();
+    const { grid, host, close } = mountGrid();
+    const node = (row, col) => host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"]`);
+    const css = (row, col) => getComputedStyle(node(row, col));
+    const fmt = (row, col) => grid.GetCell(row, col).format;
+    try {
+        for (let row = 0; row < 12; row++) { grid.SetCell(row, 0, 'text ' + row); grid.SetCell(row, 1, String(1234.5 + row)); }
+        const changes = [];
+        grid.OnChange((change) => changes.push(change.Revision));
+
+        // ---- font ----
+        grid.SelectRange(0, 0, 1, 1);
+        let revision = grid.GetRevision();
+        grid.SetFontFamily('Georgia');
+        await frame();
+        check('SetFontFamily: every cell of the selection', [fmt(0, 0).fontFamily, fmt(1, 1).fontFamily, fmt(2, 0).fontFamily], ['Georgia', 'Georgia', null]);
+        check('... is drawn in that font', /Georgia/.test(css(0, 0).fontFamily), true);
+        check('... one change, a new revision', [changes.length, grid.GetRevision() !== revision], [1, true]);
+        grid.Undo();
+        check('... one undo step, back at the revision', [fmt(0, 0).fontFamily, fmt(1, 1).fontFamily, grid.GetRevision()], [null, null, revision]);
+        grid.Redo();
+        check('... redo', [fmt(0, 0).fontFamily, fmt(1, 1).fontFamily], ['Georgia', 'Georgia']);
+        grid.SetFontFamily(null);
+        check('SetFontFamily(null): the default font again', fmt(0, 0).fontFamily, null);
+        grid.SetFontSize(16);
+        await frame();
+        check('SetFontSize', [fmt(0, 0).fontSize, fmt(1, 1).fontSize, css(0, 0).fontSize], [16, 16, '16px']);
+        grid.SetFontSize(null);
+        check('SetFontSize(null): the default size', fmt(0, 0).fontSize, null);
+        check('SetFontSize refuses a size that is none', [thrown(() => grid.SetFontSize(0)), thrown(() => grid.SetFontSize('big'))].map((m) => /^SetFontSize: /.test(m ?? '')), [true, true]);
+        check('SetFontFamily refuses an empty name', /^SetFontFamily: /.test(thrown(() => grid.SetFontFamily('  ')) ?? ''), true);
+
+        // ---- strikethrough, underline ----
+        grid.SelectCell(2, 0);
+        grid.SetStrikethrough(true);
+        await frame();
+        check('SetStrikethrough', [fmt(2, 0).strikethrough, /line-through/.test(css(2, 0).textDecorationLine)], [true, true]);
+        grid.ApplyFormat('underline');
+        await frame();
+        check('with an underline both lines are drawn', [/line-through/.test(css(2, 0).textDecorationLine), /underline/.test(css(2, 0).textDecorationLine)], [true, true]);
+        grid.ApplyFormat('doubleUnderline');
+        await frame();
+        check('a double underline', [fmt(2, 0).doubleUnderline, fmt(2, 0).underline, css(2, 0).textDecorationStyle], [true, true, 'double']);
+        grid.ApplyFormat('underline');
+        check('underline off takes the double underline with it', [fmt(2, 0).underline, fmt(2, 0).doubleUnderline], [false, false]);
+        grid.ApplyFormat('strikethrough');
+        check("ApplyFormat('strikethrough') toggles by the active cell", fmt(2, 0).strikethrough, false);
+        check('SetStrikethrough needs true or false', [thrown(() => grid.SetStrikethrough()), thrown(() => grid.SetStrikethrough('yes'))].map((m) => /^SetStrikethrough: /.test(m ?? '')), [true, true]);
+
+        // ---- alignment ----
+        grid.SelectRange(3, 0, 3, 1);
+        grid.SetHorizontalAlign('right');
+        await frame();
+        check('SetHorizontalAlign', [fmt(3, 0).horizontalAlign, fmt(3, 1).horizontalAlign, css(3, 0).textAlign], ['right', 'right', 'right']);
+        grid.SetHorizontalAlign('general');
+        check("'general' is the default alignment", fmt(3, 0).horizontalAlign, null);
+        for (const [command, want] of [['alignCenter', 'center'], ['alignJustify', 'justify'], ['alignLeft', 'left'], ['alignGeneral', null]]) { grid.ApplyFormat(command); check(`ApplyFormat('${command}')`, fmt(3, 1).horizontalAlign, want); }
+        check('SetHorizontalAlign refuses what is no alignment', /^SetHorizontalAlign: .*"middle"/.test(thrown(() => grid.SetHorizontalAlign('middle')) ?? ''), true);
+        // Vertical: in a tall row the text is at the top, in the middle, at the bottom.
+        const { setRowHeight } = await import('/spreadsheet/Model.js');
+        const textTop = (row, col) => { const range = document.createRange(); range.selectNodeContents(node(row, col)); const box = range.getBoundingClientRect(), cell = node(row, col).getBoundingClientRect(); return Math.round(box.top + box.height / 2 - cell.top); };
+        grid.InstallWorkbook([setRowHeight(4, 80, grid.GetModel())], ['Sheet1'], 0, undefined);
+        grid.SelectCell(4, 0);
+        const places = {};
+        for (const align of ['top', 'middle', 'bottom']) { grid.SetVerticalAlign(align); await frame(); places[align] = textTop(4, 0); check(`SetVerticalAlign('${align}')`, fmt(4, 0).verticalAlign, align); }
+        check('the text is drawn at the top, in the middle, at the bottom of an 80 px row', [places.top < 20, Math.abs(places.middle - 40) <= 4, places.bottom > 60], [true, true, true]);
+        note(`centre of the text in the 80 px row: top ${places.top}, middle ${places.middle}, bottom ${places.bottom}`);
+        grid.ApplyFormat('alignTop'); check("ApplyFormat('alignTop')", fmt(4, 0).verticalAlign, 'top');
+        grid.SetVerticalAlign(null); check('SetVerticalAlign(null)', fmt(4, 0).verticalAlign, null);
+        check('SetVerticalAlign refuses what is no alignment', /^SetVerticalAlign: /.test(thrown(() => grid.SetVerticalAlign('left')) ?? ''), true);
+
+        // ---- wrap ----
+        grid.SetCell(4, 2, 'several words that are wider than one column of the grid and wrap');
+        grid.SelectCell(4, 2);
+        grid.SetWrapText(true);
+        await frame();
+        const wrapped = (() => { const range = document.createRange(); range.selectNodeContents(node(4, 2)); return range.getBoundingClientRect(); })();
+        check('SetWrapText: the text takes several lines inside its cell', [fmt(4, 2).wrap, wrapped.height > 30, wrapped.width <= node(4, 2).getBoundingClientRect().width], [true, true, true]);
+        check('... at the bottom of the cell, as Excel puts it', wrapped.bottom > node(4, 2).getBoundingClientRect().bottom - 8, true);
+        grid.SetVerticalAlign('top');
+        await frame();
+        const wrappedTop = (() => { const range = document.createRange(); range.selectNodeContents(node(4, 2)); return range.getBoundingClientRect(); })();
+        check('... and at the top when aligned so', wrappedTop.top < node(4, 2).getBoundingClientRect().top + 8, true);
+        grid.ApplyFormat('wrap');
+        check("ApplyFormat('wrap') toggles", fmt(4, 2).wrap, false);
+
+        // ---- indent ----
+        grid.SelectCell(5, 0);
+        const paddingBefore = parseFloat(css(5, 0).paddingLeft);
+        grid.SetIndent(2);
+        await frame();
+        check('SetIndent', [fmt(5, 0).indent, parseFloat(css(5, 0).paddingLeft) > paddingBefore + 10], [2, true]);
+        grid.IncreaseIndent(); grid.IncreaseIndent(); grid.DecreaseIndent();
+        check('IncreaseIndent / DecreaseIndent', fmt(5, 0).indent, 3);
+        grid.SetIndent(0); grid.DecreaseIndent();
+        check('no indent below none', fmt(5, 0).indent, 0);
+        grid.SetHorizontalAlign('right'); grid.SetIndent(1);
+        await frame();
+        check('a right-aligned cell is indented from the right', [parseFloat(css(5, 0).paddingRight) > 10, parseFloat(css(5, 0).paddingLeft)], [true, paddingBefore]);
+        check('SetIndent refuses what is no indent', [thrown(() => grid.SetIndent(-1)), thrown(() => grid.SetIndent(1.5)), thrown(() => grid.SetIndent(251))].map((m) => /^SetIndent: /.test(m ?? '')), [true, true, true]);
+
+        // ---- rotation ----
+        grid.SelectCell(6, 0);
+        grid.SetTextRotation(45);
+        await frame();
+        const turned = node(6, 0).querySelector('.spreadsheet-rotated');
+        check('SetTextRotation: the text is drawn turned', [fmt(6, 0).textRotation, turned?.textContent, /rotate\(-45deg\)/.test(turned?.style.transform ?? '')], [45, 'text 6', true]);
+        grid.SetTextRotation(-90);
+        await frame();
+        check('clockwise', [fmt(6, 0).textRotation, /rotate\(90deg\)/.test(node(6, 0).querySelector('.spreadsheet-rotated')?.style.transform ?? '')], [-90, true]);
+        grid.SetTextRotation(255);
+        await frame();
+        check('stacked', [fmt(6, 0).textRotation, node(6, 0).querySelector('.spreadsheet-rotated')?.style.writingMode], [255, 'vertical-rl']);
+        grid.SetTextRotation(0);
+        await frame();
+        check('and back', [fmt(6, 0).textRotation, node(6, 0).querySelector('.spreadsheet-rotated'), node(6, 0).textContent], [0, null, 'text 6']);
+        check('SetTextRotation refuses an angle that is none', [thrown(() => grid.SetTextRotation(120)), thrown(() => grid.SetTextRotation())].map((m) => /^SetTextRotation: /.test(m ?? '')), [true, true]);
+
+        // ---- shrink to fit ----
+        grid.SetCell(7, 2, 'a text much wider than the column it is in'); grid.SetCell(7, 3, 'next');
+        grid.SelectCell(7, 2);
+        grid.SetShrinkToFit(true);
+        await frame();
+        const shrunkWidth = (() => { const range = document.createRange(); range.selectNodeContents(node(7, 2)); return range.getBoundingClientRect().width; })();
+        check('SetShrinkToFit: the text is drawn smaller and fits', [fmt(7, 2).shrinkToFit, parseFloat(css(7, 2).fontSize) < 11, shrunkWidth <= node(7, 2).getBoundingClientRect().width], [true, true, true]);
+        grid.ApplyFormat('shrinkToFit');
+        await frame();
+        check("ApplyFormat('shrinkToFit') toggles", [fmt(7, 2).shrinkToFit, css(7, 2).fontSize], [false, '11px']);
+
+        // ---- number formats, decimals ----
+        grid.SelectRange(8, 1, 9, 1);
+        grid.SetNumberFormat('#,##0.00');
+        await frame();
+        check('SetNumberFormat', [fmt(8, 1).numberFormat, grid.GetCell(8, 1).text, node(9, 1).textContent], ['#,##0.00', '1,242.50', '1,243.50']);
+        grid.IncreaseDecimals();
+        check('IncreaseDecimals', [fmt(8, 1).numberFormat, grid.GetCell(9, 1).text], ['#,##0.000', '1,243.500']);
+        grid.DecreaseDecimals(); grid.DecreaseDecimals(); grid.DecreaseDecimals();
+        check('DecreaseDecimals down to none', [fmt(8, 1).numberFormat, grid.GetCell(8, 1).text], ['#,##0', '1,243']);
+        const beforeNone = grid.GetRevision();
+        grid.DecreaseDecimals();
+        check('nothing left to take away: no change', [fmt(8, 1).numberFormat, grid.GetRevision()], ['#,##0', beforeNone]);
+        grid.SetNumberFormat('General');
+        check("'General' is no number format", fmt(8, 1).numberFormat, null);
+        grid.ApplyFormat('decimalIncrease');
+        check('a General number starts from the decimals it shows', [fmt(8, 1).numberFormat, grid.GetCell(8, 1).text, fmt(8, 0).numberFormat], ['0.00', '1242.50', null]);
+        grid.Undo();
+        check('... one undo step for the selection', [fmt(8, 1).numberFormat, fmt(9, 1).numberFormat], [null, null]);
+        grid.SetNumberFormat('yyyy-mm-dd');
+        grid.IncreaseDecimals();
+        check('a date format has no decimals to add', fmt(8, 1).numberFormat, 'yyyy-mm-dd');
+        check('SetNumberFormat refuses codes no format can be', [thrown(() => grid.SetNumberFormat('0.0 "open')), thrown(() => grid.SetNumberFormat('[Red 0')), thrown(() => grid.SetNumberFormat('')), thrown(() => grid.SetNumberFormat(5)), thrown(() => grid.SetNumberFormat('0;0;0;0;0'))].map((m) => /^SetNumberFormat: /.test(m ?? '')), [true, true, true, true, true]);
+        grid.SetNumberFormat(null);
+
+        // ---- ApplyFormatPatch ----
+        grid.SelectRange(10, 0, 11, 1);
+        revision = grid.GetRevision();
+        grid.SelectCell(10, 0); grid.ApplyFormat('italic'); grid.SelectRange(10, 0, 11, 1);
+        grid.ApplyFormatPatch({ bold: true, fill: '#fff2cc', textColor: '#C00000', borders: { bottom: { style: 'medium', color: '#000000' } } });
+        await frame();
+        check('ApplyFormatPatch sets its keys and leaves the others', [fmt(10, 0).bold, fmt(10, 0).italic, fmt(11, 1).bold, fmt(11, 1).italic, fmt(11, 1).fill, fmt(11, 1).textColor, fmt(11, 1).borders.bottom, fmt(11, 1).borders.top],
+            [true, true, true, false, '#FFF2CC', '#C00000', { style: 'medium', color: '#000000' }, null]);
+        check('... and is drawn', [css(11, 1).fontWeight, css(11, 1).backgroundColor, css(11, 1).color], ['700', 'rgb(255, 242, 204)', 'rgb(192, 0, 0)']);
+        grid.Undo();
+        check('... as one undo step', [fmt(10, 0).bold, fmt(10, 0).italic, fmt(11, 1).fill], [false, true, null]);
+        grid.Redo();
+        check('ApplyFormatPatch refuses unknown keys and wrong values', [thrown(() => grid.ApplyFormatPatch({ colour: 'red' })), thrown(() => grid.ApplyFormatPatch({ bold: 'yes' })), thrown(() => grid.ApplyFormatPatch('bold')), thrown(() => grid.ApplyFormatPatch({ fill: 'reddish' }))].map((m) => /^ApplyFormatPatch: /.test(m ?? '')), [true, true, true, true]);
+        check("ApplyFormat refuses an unknown command", /^ApplyFormat: unknown command "sparkle"/.test(thrown(() => grid.ApplyFormat('sparkle')) ?? ''), true);
+
+        // ---- format painter ----
+        const picked = grid.GetFormatOf('B12');
+        check('GetFormatOf gives the format of GetCell', picked, fmt(11, 1));
+        grid.SelectCell(0, 3); grid.SetCell(0, 3, 'painted'); grid.SetCell(1, 4, '7'); grid.SelectCell(1, 4); grid.ApplyFormat('italic'); grid.SetNumberFormat('0.0');
+        revision = grid.GetRevision();
+        grid.ApplyFormatTo('D1:E3', picked);
+        await frame();
+        check('ApplyFormatTo gives every cell of the range that format, whatever it had', [fmt(0, 3), fmt(1, 4), fmt(2, 3)], [picked, picked, picked]);
+        check('... values stay, the selection too', [grid.GetCell(0, 3).value, grid.GetCell(1, 4).value, grid.GetSelectionRef()], ['painted', 7, 'E2']);
+        grid.Undo();
+        check('... one undo step', [fmt(0, 3).bold, fmt(1, 4).italic, fmt(1, 4).numberFormat, fmt(2, 3).fill, grid.GetRevision()], [false, true, '0.0', null, revision]);
+        grid.Redo();
+        check('GetFormatOf of a range is its first cell', grid.GetFormatOf('D1:E3'), picked);
+        check('the painter refuses what is no range or no format', [thrown(() => grid.ApplyFormatTo('D0', picked)), thrown(() => grid.ApplyFormatTo('D1', null)), thrown(() => grid.GetFormatOf(7)), thrown(() => grid.ApplyFormatTo('D1', { bold: 1 }))].map((m) => /^(ApplyFormatTo|GetFormatOf): /.test(m ?? '')), [true, true, true, true]);
+        // A whole column of this 1 000-row sheet is 1 000 cells: each gets the format. (Over 20 000
+        // cells - a whole column of a large sheet - only the cells that exist are changed.)
+        let t0 = performance.now();
+        grid.ApplyFormatTo('A:A', { italic: true });
+        const wholeColumn = performance.now() - t0;
+        check('a whole column', [fmt(0, 0).italic, fmt(11, 0).italic, fmt(500, 0).italic, fmt(0, 0).bold, fmt(0, 1).italic, wholeColumn < 200], [true, true, true, false, false, true]);
+        grid.Undo();
+
+        // ---- export, re-import ----
+        grid.SelectCell(2, 0); grid.SetStrikethrough(true); grid.SetFontFamily('Georgia'); grid.SetFontSize(14);
+        grid.SelectCell(3, 0); grid.SetHorizontalAlign('right'); grid.SetVerticalAlign('top'); grid.SetWrapText(true); grid.SetIndent(2);
+        grid.SelectCell(6, 0); grid.SetTextRotation(-30);
+        grid.SelectCell(7, 2); grid.SetShrinkToFit(true);
+        grid.SelectCell(9, 1); grid.SetNumberFormat('#,##0.0;[Red]-#,##0.0');
+        const keys = ['bold', 'italic', 'strikethrough', 'fontFamily', 'fontSize', 'textColor', 'fill', 'horizontalAlign', 'verticalAlign', 'wrap', 'indent', 'shrinkToFit', 'textRotation', 'numberFormat'];
+        const cells = [[2, 0], [3, 0], [6, 0], [7, 2], [9, 1], [11, 1], [0, 3]];
+        // (A file names the default font where the editor leaves it out.)
+        const snapshot = (g) => cells.map(([row, col]) => { const format = pick(g.GetCell(row, col).format, keys); if (format.fontFamily === 'Calibri') format.fontFamily = null; if (format.fontSize === 11) format.fontSize = null; return [format, g.GetCell(row, col).format.borders.bottom]; });
+        const before = snapshot(grid);
+        const again = await reopened(grid);
+        check('every format comes back from an exported file', snapshot(again.grid), before);
+        check('... and the texts they give', cells.map(([row, col]) => again.grid.GetCell(row, col).text), cells.map(([row, col]) => grid.GetCell(row, col).text));
+        again.close();
+
+        // ---- clear ----
+        grid.SetCell(14, 0, '5'); grid.SetCell(15, 0, '=A15*2'); grid.SetCell(16, 0, '=A16+1');
+        grid.SelectRange(14, 0, 15, 0); grid.ApplyFormat('bold'); grid.SetComment(14, 0, 'a note', 'Ada');
+        revision = grid.GetRevision();
+        grid.ClearContents();
+        await frame();
+        check('ClearContents: values and formulas go, formats and comments stay', [grid.GetCell(14, 0).value, grid.GetCell(15, 0).formula, fmt(14, 0).bold, fmt(15, 0).bold, grid.GetCell(14, 0).comment?.text], [null, null, true, true, 'a note']);
+        check('... what read them is recalculated', grid.GetCell(16, 0).value, 1);
+        grid.Undo();
+        check('... one undo step', [grid.GetCell(14, 0).value, grid.GetCell(15, 0).formula, grid.GetCell(16, 0).value, grid.GetRevision()], [5, '=A15*2', 11, revision]);
+        grid.ClearFormats();
+        check('ClearFormats: formats go, values and comments stay', [fmt(14, 0).bold, fmt(15, 0).bold, grid.GetCell(14, 0).value, grid.GetCell(15, 0).value, grid.GetCell(14, 0).comment?.text], [false, false, 5, 10, 'a note']);
+        grid.Undo();
+        check('... one undo step', [fmt(14, 0).bold, fmt(15, 0).bold], [true, true]);
+        grid.ClearAll();
+        check('ClearAll: contents, formats and comments', [grid.GetCell(14, 0).value, fmt(14, 0).bold, grid.GetCell(14, 0).comment, grid.GetCell(15, 0).value, grid.GetCell(16, 0).value], [null, false, null, null, 1]);
+        grid.Undo();
+        check('... one undo step', [grid.GetCell(14, 0).value, fmt(14, 0).bold, grid.GetCell(14, 0).comment?.text, grid.GetCell(16, 0).value], [5, true, 'a note', 11]);
+        grid.SelectCell(20, 5);
+        grid.ClearContents('A15:A16');
+        check('Clear takes a range instead of the selection', [grid.GetCell(14, 0).value, grid.GetCell(15, 0).value, fmt(14, 0).bold, grid.GetSelectionRef()], [null, null, true, 'F21']);
+        grid.Undo();
+        const quiet = grid.GetRevision();
+        grid.ClearAll('H30:J40');
+        check('clearing empty cells changes nothing', [grid.GetRevision(), grid.CanRedo()], [quiet, true]);
+        check('Clear refuses what is no range', [thrown(() => grid.ClearContents('nowhere')), thrown(() => grid.ClearFormats(3)), thrown(() => grid.ClearAll('A0'))].map((m) => /^Clear(Contents|Formats|All): /.test(m ?? '')), [true, true, true]);
+        // A spilled array goes with its formula.
+        grid.SetCell(20, 0, '=SEQUENCE(3)');
+        check('(a formula spilled)', [grid.GetCell(21, 0).value, grid.GetCell(22, 0).value], [2, 3]);
+        grid.ClearContents('A21');
+        check('ClearContents of a spilling formula takes its array back', [grid.GetCell(20, 0).value, grid.GetCell(21, 0).value, grid.GetCell(22, 0).value], [null, null, null]);
+        grid.Undo();
+        check('... and undo spills again', [grid.GetCell(20, 0).value, grid.GetCell(21, 0).value, grid.GetCell(22, 0).value], [1, 2, 3]);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
