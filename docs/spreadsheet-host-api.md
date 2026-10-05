@@ -1,0 +1,643 @@
+# Host API reference (@rbt/office spreadsheet component)
+
+## Conventions
+
+- Rows, columns and sheet indices are 0-based numbers. Ranges are A1 strings: `"B2"`, `"B2:D5"`, `"A:C"` (whole columns), `"3:5"` (whole rows); `$` signs are accepted and ignored.
+- Objects returned by the members below use camelCase keys; an absent value is `null`. (The older event payloads - `OnChange`, `OnSelectionChange`, `GetActiveCell` - keep their PascalCase keys.)
+- Invalid input throws an `Error` whose message starts with the member's name, e.g. `GetCell: row -1 is outside the sheet (0 to 999)`.
+- Members act on the active sheet unless they take a sheet index or a sheet-qualified range.
+
+### The `format` object
+
+Used wherever a cell format is read or written (GetCell, GetSelectionFormat, and the formatting / conditional-format members):
+
+```ts
+type Border = { style: BorderStyleName; color: string /* "#RRGGBB" */ } | null;
+type BorderStyleName = "thin" | "medium" | "thick" | "dashed" | "dotted" | "double" | "hair" | "mediumDashed"
+                     | "dashDot" | "mediumDashDot" | "dashDotDot" | "mediumDashDotDot" | "slantDashDot";
+type Format = {
+  bold: boolean; italic: boolean;
+  underline: boolean;          // true for a single or a double underline
+  doubleUnderline: boolean;
+  strikethrough: boolean;
+  fontFamily: string | null;   // null: the default font
+  fontSize: number | null;     // points; null: the default (11)
+  textColor: string | null;    // "#RRGGBB"; null: automatic
+  fill: string | null;         // "#RRGGBB"; null: no fill
+  horizontalAlign: "left" | "center" | "right" | "justify" | "fill" | "centerContinuous" | "distributed" | null; // null: general
+  verticalAlign: "top" | "middle" | "bottom" | "justify" | "distributed" | null;                             // null: bottom
+  wrap: boolean; indent: number /* 0..250 */; shrinkToFit: boolean;
+  textRotation: number;        // degrees: 1..90 counter-clockwise, -1..-90 clockwise, 0 none, 255 stacked
+  numberFormat: string | null; // an Excel format code ("0.00", "#,##0", "yyyy-mm-dd"); null: General
+  borders: { top: Border; bottom: Border; left: Border; right: Border; diagonal: Border; diagonalUp: boolean; diagonalDown: boolean };
+};
+```
+
+Returned formats have every key. Where a member takes a format, it is a patch: only the keys present are applied, `null` resets a nullable property, colours may be `"#RGB"` / `"RRGGBB"`, `horizontalAlign: "general"` equals `null`, a border may be `{ style: "none" }`. Unknown keys and values of the wrong type throw.
+
+## Reading cells
+
+### `GetCell(row: number, col: number): Cell`
+
+```ts
+type Cell = {
+  row: number; col: number; address: string;          // "B2"
+  value: number | string | boolean | null;            // of a formula: its result; an error is its text ("#DIV/0!"); dates are serial numbers
+  valueType: "empty" | "number" | "string" | "boolean" | "error";
+  text: string;                                       // what the cell shows (value through its number format)
+  formula: string | null;                             // with the leading "="
+  format: Format;                                     // the cell's own format, else its column's default style, else the default; conditional formats are NOT applied
+  isMerged: boolean; mergeRange: string | null;       // "B2:C3": the merged cell it is part of (content lives in the first cell)
+  comment: { text: string; author: string | null } | null;   // replies: GetCommentThread(row, col)
+  hyperlink: { target: string; isInternal: boolean; range: string } | null;
+  validation: {
+    type: "list" | "whole" | "decimal" | "date" | "time" | "textLength" | "custom";
+    operator: "between" | "notBetween" | "equal" | "notEqual" | "greaterThan" | "lessThan" | "greaterThanOrEqual" | "lessThanOrEqual" | null;
+    formula1: string | null; formula2: string | null;  // operands (numbers or formulas without "="); of a list, its source
+    values: string[] | null;                           // entries of a list written out in the rule
+    allowBlank: boolean; showError: boolean; errorStyle: "stop" | "warning" | "information";
+    errorTitle: string | null; errorMessage: string | null; inputTitle: string | null; inputMessage: string | null;
+  } | null;
+};
+```
+
+Throws when `row` / `col` are not whole numbers inside the sheet. Read-only; no undo step, no change event.
+
+### `GetRange(a1: string): Cell[][]`
+
+Rows of `Cell` for a range of the active sheet, or of another sheet when qualified (`"Data!A1:B2"`, `"'My sheet'!A:A"`; a lazily loaded sheet is converted, which is not a document change). Whole columns / rows are clipped to the sheet's used range; a block is clipped to the sheet's last row / column (a block entirely outside gives `[]`). Throws when `a1` is not a string or not a range, when the sheet does not exist, or when the range holds more than 1 000 000 cells.
+
+### `GetSelectionFormat(): SelectionFormat`
+
+The `Format` of the selection with the string `"mixed"` in place of every property in which the selected cells differ. `borders` is `{ top, bottom, left, right, diagonal }`, each `Border`, `null` or `"mixed"` (no diagonalUp/Down). Empty cells count with their column style / the default format. Cheap: blocks up to 20 000 cells are read cell by cell (1 ms for 1 000 cells); larger selections cost one pass over the existing cells (84 ms for a sheet of 846 000 cells); the result is cached until the cells or the selection change (the same object is returned: do not mutate it). Safe to call from an `OnSelectionChange` listener.
+
+
+## Formatting
+
+All of these act on the selection (unless they take a range), are ONE undo step, bump the revision and fire `OnChange`; a call that changes nothing adds no step. They do not recalculate (except the Clear members that remove values). A selection of up to 20 000 cells gives every cell the format (empty ones too); a larger one (whole rows / columns of a big sheet) changes only the cells that exist. All formats survive `ExportXlsx` → `ImportXlsx` (a re-imported cell without a font of its own reports the workbook's default font, e.g. `fontFamily: "Calibri", fontSize: 11`, instead of `null`).
+
+### `ApplyFormat(command: string): void`
+- toggles (by the active cell: on for all if off there, else off for all): `"bold"`, `"italic"`, `"underline"`, `"doubleUnderline"`, `"strikethrough"`, `"wrap"`, `"shrinkToFit"`
+- steps: `"fontIncrease"`, `"fontDecrease"` (2 pt, 8..409), `"indentIncrease"`, `"indentDecrease"`, `"decimalIncrease"`, `"decimalDecrease"`
+- alignment: `"alignLeft"`, `"alignCenter"`, `"alignRight"`, `"alignJustify"`, `"alignGeneral"`, `"alignTop"`, `"alignMiddle"`, `"alignBottom"`
+- Throws `ApplyFormat: unknown command "..."` for anything else (it used to ignore unknown commands).
+
+### Setters
+| Member | Argument |
+|---|---|
+| `SetFontFamily(family)` | string, or `null` for the default font. Throws on an empty name. |
+| `SetFontSize(points)` | number 1..409 (rounded to whole points), or `null` for the default (11). |
+| `SetStrikethrough(on)` | boolean (required). |
+| `SetHorizontalAlign(align)` | `"left" \| "center" \| "right" \| "justify" \| "fill" \| "centerContinuous" \| "distributed"`, or `"general"` / `null`. |
+| `SetVerticalAlign(align)` | `"top" \| "middle" \| "bottom" \| "justify" \| "distributed"`, or `null`. |
+| `SetWrapText(on)` | boolean. |
+| `SetIndent(indent)` | whole number 0..250. `IncreaseIndent()` / `DecreaseIndent()` step by one. |
+| `SetTextRotation(degrees)` | whole number -90..90 (positive = counter-clockwise), `0` none, `255` stacked. |
+| `SetShrinkToFit(on)` | boolean. |
+| `SetNumberFormat(code)` | an Excel format code, or `null` / `"General"`. Throws when the code is empty, over 255 characters, has an open quote / bracket, a dangling `\`, `_`, `*`, or more than four sections. (`ApplyNumberFormat(code)` remains and does not validate.) |
+| `ApplyTextColor(color)`, `ApplyBgColor(color)`, `ApplyBorder(side, style, color)` | unchanged. |
+
+Each throws `<Member>: ...` on a value of the wrong type or out of range.
+
+### `ApplyFormatPatch(format: Partial<Format>): void`
+Sets the keys present in `format` on every cell of the selection and leaves the cells' other properties alone (`null` resets a property). Throws on unknown keys / wrong values.
+
+### `IncreaseDecimals(): void`, `DecreaseDecimals(): void`
+Per cell holding a number: its number format gains / loses a decimal place in every section (`"0.0"` → `"0.00"`, `"0%"` → `"0.0%"`, `"#,##0.00;[Red]-#,##0.00"` → both sections). A General cell starts from the decimals its value shows (12.5 → `"0.00"` / `"0"`). Date / time formats, fractions, text and empty cells are left alone; up to 30 decimals. (Excel applies the active cell's new format to the whole selection; here every cell steps from its own.)
+
+### Format painter: `GetFormatOf(a1: string): Format`, `ApplyFormatTo(a1: string, format: Format): void`
+`GetFormatOf` returns the `Format` of the first cell of `a1` (same as `GetCell(...).format`). `ApplyFormatTo` REPLACES the format of every cell of the range with `format` (keys left out are defaults, unlike `ApplyFormatPatch`); values, comments and merges are untouched; the selection does not move. Ranges are of the active sheet. Throws when `a1` is not a range inside the sheet or `format` is not a format object.
+
+### `ClearContents(a1?: string)`, `ClearFormats(a1?: string)`, `ClearAll(a1?: string)`
+Act on the selection, or on the range `a1`.
+- `ClearContents`: values and formulas (and rich-text runs) go; formats and comments stay; dependants are recalculated; clearing a spilling formula takes its spilled array back.
+- `ClearFormats`: the cells' formats go back to the default (font, colours, alignment, number format, borders). Merged cells and conditional formats stay.
+- `ClearAll`: contents, formats and cell comments (notes). Merged cells, conditional formats, validations, hyperlinks and threaded comments stay (they have their own members).
+Throw when `a1` is not a range. Clearing cells that hold nothing is not a change.
+
+### Cell styles
+Not available: the model has no named cell styles (a file's named styles are carried through export untouched for cells whose format was not edited, but cannot be listed or applied).
+
+### What the grid draws
+Font family, size, bold / italic, single / double underline, strikethrough, colours, horizontal alignment, vertical alignment (top / middle / bottom; a cell without one is drawn centred in its row), wrapped text (several lines, bottom-aligned unless the format says otherwise), indent, shrink to fit, and text rotation (drawn through the centre of the cell — an approximation of Excel's placement; stacked text as upright letters).
+
+## Conditional formats
+
+All members act on the active sheet, except `GetConditionalFormats(sheetIndex)` which can read any sheet. Every mutating member is one undo step (no recalculation), bumps the revision and fires `OnChange`; a call that changes nothing is not a change. Rules follow inserted / deleted rows and columns (ranges and the formulas inside rules), and round-trip through `ExportXlsx` → `ImportXlsx`.
+
+### `GetConditionalFormats(sheetIndex?: number): ConditionalFormat[]`
+The sheet's rules in order of precedence:
+```
+ConditionalFormat = {
+  id: number,          // names the rule on its sheet while the workbook is open (see "Ids")
+  range: string,       // "A1:A9", "A:A", or several areas separated by spaces: "A1:A5 C1:C5"
+  priority: number,    // 1 = first. Where two matching rules set the same property, the first wins
+  stopIfTrue: boolean, // a match hides the rules after it
+  rule: Rule
+}
+```
+Throws on a `sheetIndex` that is not a sheet.
+
+### The `rule` object (the same in both directions; `type` says which keys it has)
+```
+{ type: "cellIs", operator: "greaterThan" | "lessThan" | "greaterThanOrEqual" | "lessThanOrEqual" | "equal" | "notEqual" | "between" | "notBetween",
+  formula1: string | number, formula2: string | number | null   /* between / notBetween only */, format }
+{ type: "expression", formula: string, format }                               // formatted where the formula is true
+{ type: "containsText" | "notContainsText" | "beginsWith" | "endsWith", text: string, format }     // case-insensitive
+{ type: "top", rank: number, percent: boolean, bottom: boolean, format }      // top / bottom N values, or N percent of the range
+{ type: "aboveAverage", above: boolean, orEqual: boolean, stdDev: 0 | 1 | 2 | 3, format }          // above: false = below average
+{ type: "duplicateValues" | "uniqueValues" | "blanks" | "noBlanks" | "errors" | "noErrors", format }
+{ type: "dateOccurring", period: "today" | "yesterday" | "tomorrow" | "last7Days" | "thisWeek" | "lastWeek" | "nextWeek"
+                                 | "thisMonth" | "lastMonth" | "nextMonth", format }               // weeks start on Sunday
+{ type: "colorScale", stops: [{ type, value, color: "#RRGGBB" }, ...] }       // 2 or 3 stops, lowest first; format is null
+{ type: "dataBar", min: Threshold, max: Threshold, color: "#RRGGBB" }         // format is null
+{ type: "iconSet", iconSet: string, thresholds: Threshold[], reverse: boolean }   // one threshold per icon, the first is the floor; format is null
+
+Threshold = { type: "min" | "max" | "number" | "percent" | "percentile" | "formula", value: number | string | null }
+            // value: a number (0..100 for percent / percentile), the formula text for "formula", null for min / max.
+            // icon-set thresholds cannot be "min" / "max".
+format    = { textColor: "#RRGGBB" | null, fill: "#RRGGBB" | null, bold, italic, underline, strikethrough: boolean }
+            // the part of the `format` object a conditional format can apply; other format keys are refused.
+iconSet   = "3Arrows" | "3ArrowsGray" | "3Flags" | "3TrafficLights1" | "3TrafficLights2" | "3Signs" | "3Symbols" | "3Symbols2"
+          | "4Arrows" | "4ArrowsGray" | "4RedToBlack" | "4Rating" | "4TrafficLights" | "5Arrows" | "5ArrowsGray" | "5Rating" | "5Quarters"
+```
+- Formulas (`formula`, `formula1`, `formula2`, a threshold's formula) are returned WITHOUT the leading `=`; on input a leading `=` is accepted and dropped. They are formula text: a number (`"10"`, or the number `10`), a quoted text (`"\"north\""`), a reference (`"$C$1"`) or any formula, written for the top-left cell of the rule's first range (relative references move with each cell, `$` ones stay).
+- Numbers read back as strings in `formula1` / `formula2` (`"25"`); threshold values read back as numbers.
+- On input, keys with a default may be left out: `percent`, `bottom`, `orEqual`, `reverse`: false; `above`: true; `stdDev`: 0; `rank`: 10; a data bar's `min` (min), `max` (max), `color` (`#638EC6`); an icon set's `iconSet` (`3TrafficLights1`) and `thresholds` (percent 0/33/67, 0/25/50/75, 0/20/40/60/80); `format`: no formatting. On output every key of the rule's type is present.
+- Rules the old built-in dialog made (greater than / less than / between / equal with a literal number, text contains) read back as the `cellIs` / `containsText` rules they are equal to.
+- Not modelled: the x14 extension rules of a file (icon sets `3Stars`, `3Triangles`, `5Boxes`, data bars with negative-value / gradient settings, rules referring to other sheets). They are not listed, and they are kept in the file only while the sheet's conditional formats are not edited: the first edit of a sheet's rules writes the sheet's rules from the model, without them. A data bar keeps its two ends and colour only.
+
+### `AddConditionalFormat(range: string, rule: Rule, options?: { stopIfTrue?: boolean }): number`
+Adds a rule to the cells of `range` and returns its id. The new rule takes precedence over the sheet's other rules (as in Excel); use `ReorderConditionalFormats` / `UpdateConditionalFormat(id, { priority })` to change that.
+Throws `AddConditionalFormat: ...` on: a range that is not one; a missing / non-object rule; an unknown `type`; a key the type does not have; a missing operand (`formula1`, `formula2` for between, `formula`, `text`, `period`); an unknown operator, period or icon set; `rank` outside 1..1000 (1..100 for percent); `stdDev` outside 0..3; a colour scale without 2 or 3 stops; a threshold of an unknown type, without its value, with a value that is not a number or a percentage outside 0..100; an icon set with the wrong number of thresholds; a colour that is not `#RRGGBB` / `#RGB`; a `format` on a colour scale / data bar / icon set; a `format` key a rule cannot apply; an unknown `options` key.
+Legacy form, still supported: `AddConditionalFormat(row, col, ruleType: "greaterThan" | "lessThan" | "equal", threshold: number, bgColor)` → id (one cell, a fill). It is an undo step now, and throws on an unknown `ruleType` (it used to fall back to "greaterThan").
+
+### `UpdateConditionalFormat(id: number, changes: { range?, priority?, stopIfTrue?, rule?, format? }): void`
+- `range`: new range(s). `stopIfTrue`: boolean.
+- `priority`: the rule's new place in the order of precedence (1..number of rules); the other rules keep their relative order.
+- `rule`: a whole `Rule`; it replaces the rule. Without a `format` key the rule keeps the format it has.
+- `format`: a patch of the rule's format (only the keys given change). Refused for colour scales, data bars and icon sets.
+Throws on an unknown id, an unknown key of `changes`, and everything `AddConditionalFormat` refuses.
+
+### `RemoveConditionalFormat(id: number): void`
+Throws when the sheet has no rule with that id.
+
+### `ReorderConditionalFormats(ids: number[]): void`
+`ids` lists EVERY rule of the active sheet exactly once, the one that takes precedence first. Throws on an unknown id, a repeated id, or a rule left out (the message lists the sheet's ids).
+
+### `ClearConditionalFormats(range?: string): number`
+Without an argument: removes every rule of the active sheet. With a range (several areas allowed): takes the rules off those cells: a rule covering more cells keeps the rest of its range (as up to four areas per hole), a rule left with no cell is removed. Returns how many rules were removed or cut (0: nothing changed).
+
+### `RemoveConditionalFormats(row: number, col: number): void` (existing)
+The same for one cell. Now an undo step.
+
+### `ShowConditionalFormattingDialog(): void` (existing, unchanged)
+The built-in dialog offers five kinds (greater than, less than, between, equal to, text contains) on the active cell only. It was left as it is: hosts should build their own rule manager on the members above. Rules made in the dialog are undo steps now and show up in `GetConditionalFormats`.
+
+### Ids
+An id is unique on its sheet and stays with its rule through edits of the rule and of other rules, undo / redo, and inserted / deleted rows and columns; the component does not hand the id of a removed rule to a new one. A file stores no ids: after `ImportXlsx` each sheet's rules are numbered 1, 2, 3 ... in order of precedence (the same file gives the same ids), so a host re-reads `GetConditionalFormats` after opening a file. Ids of different sheets may coincide.
+
+## Data validation
+
+Validations belong to a sheet and are stored by range: a whole column (`"A:A"`) is one validation, no cell is made for it, and it is written to
+XLSX as `A1:A1048576`. A cell is covered by at most one validation. All mutating members act on the active sheet, are one undo step each (no
+recalculation), bump the revision and fire `OnChange`. Validations follow inserted / deleted rows and columns (ranges move, the formulas in
+the rules are re-pointed) and round-trip through `ExportXlsx` / `ImportXlsx`.
+
+### `GetValidations(sheetIndex?: number): { id: number, range: string, rule: ValidationRule }[]`
+The validations of the active sheet (or of the sheet at `sheetIndex`; a lazily loaded sheet is converted), in the order they were made.
+`range`: the areas it covers, separated by spaces (`"B2:B9 D2:D9"`, `"A:A"`). Throws `GetValidations: there is no sheet N ...`.
+
+### The `ValidationRule` object (the same in both directions; `type` says which keys count, the others read back as `null`)
+```
+{ type: "any" }                                   every value is allowed (carries an input message only)
+{ type: "list", values: string[], dropdown? }      the allowed values written out (no commas inside a value)
+{ type: "list", source: string, dropdown? }        read from cells when needed: "$A$1:$A$9", "Lists!$B$2:$B$20", "$H:$H" or a defined name
+{ type: "whole" | "decimal" | "date" | "time" | "textLength",
+  operator: "between" | "notBetween"                                   (formula1 and formula2)
+          | "equal" | "notEqual" | "greaterThan" | "lessThan" | "greaterThanOrEqual" | "lessThanOrEqual",   (formula1)
+  formula1, formula2 }
+{ type: "custom", formula }                        valid where the formula is true
+```
+plus, for every type (defaults in brackets):
+`allowBlank` [true], `showInput` [true], `inputTitle`, `inputMessage` (shown beside the cell while it is selected),
+`showError` [true] (false: the rule is advisory, nothing is refused), `errorStyle`: `"stop"` [default; the entry is refused] | `"warning"` |
+`"information"` (the entry is accepted and the user told), `errorTitle`, `errorMessage`; for lists `dropdown` [true] (the in-cell dropdown button).
+
+- `formula1` / `formula2` / `formula` / `source` are texts without the leading `=` (one is accepted and dropped): a number (`"10"`), a
+  reference (`"$K$1"`) or any formula, written for the top-left cell of the validation's first range; relative references move with the cell.
+- On input an operand may be a number; a `"date"` operand may be `"2024-03-31"`, `"2024-03-31T14:30"` or a JS `Date`, a `"time"` operand `"14:30"` /
+  `"14:30:15"`. They read back as serial numbers (`"45292"`, `"0.5"`). `value1` / `value2` are accepted as aliases of `formula1` / `formula2`.
+- `between` with two plain numbers, `equal`, `greaterThanOrEqual` and `lessThanOrEqual` with a plain number read back exactly as given.
+- List matching is case-insensitive; an empty entry is always accepted; a list whose `source` cannot be read refuses nothing.
+
+### `GetValidationAt(row: number, col: number): (ValidationRule & { id: number, range: string }) | null`
+The validation on a cell of the active sheet. The object can be handed to `SetValidation` for other cells (`id` and `range` are ignored there).
+`GetCell(row, col).validation` is this same object. Throws when row / col are outside the sheet.
+
+### `SetValidation(range: string, rule: ValidationRule): number`
+Puts a validation on the cells of `range` (`"B2:B20"`, `"A:A"`, several areas `"A1:A5 C1:C5"`), replacing whatever validation those cells had (a
+validation that covered more cells keeps the rest). Returns the new validation's id. Existing values are not checked (see `CircleInvalid`).
+Throws (message starts `SetValidation:`) for a missing / invalid range, a missing rule, an unknown `type`, `operator`, `errorStyle` or key, a key of
+the wrong type, a missing operand (`formula1`, `formula2` for between / notBetween), a custom rule without `formula`, a list without `values` or
+`source` (or with both), and a list value containing a comma.
+
+### `ClearValidation(range: string): number`
+Takes the validations off the cells of `range`; a validation that covers more keeps the rest, one left with no cell is removed. Returns how many
+validations were removed or cut (0: nothing changed, no undo step). Throws for a missing / invalid range.
+
+### `GetValidationList(row: number, col: number): string[] | null`
+The values the list validation on a cell offers, in order (a `source` range is read now, from another sheet if need be); `null` when the cell has no
+list validation or the source cannot be read. For hosts that draw their own dropdown.
+
+### `ShowValidationList(): boolean`
+Opens the built-in dropdown of the active cell's list validation (what the button beside the cell and Alt+Down do); picking a value enters it
+like typed input (validated, one undo step). `false` when the cell has no list or the grid is read-only. The popup is `#validation-list-dropdown`
+with `.validation-list-item` children; the button is `.spreadsheet-list-button` (shown beside the active cell when its list has `dropdown: true`).
+
+### `CircleInvalid(draw?: boolean): { row, col, address, value, text, errorStyle, errorTitle, errorMessage }[]`
+The filled cells of the active sheet whose current value breaks the validation on them (Excel's "Circle Invalid Data"), in row order. Rules with
+`showError: false` count too; empty cells never do; only existing cells are looked at (a whole-column rule costs what the column holds). Unless
+`draw` is `false`, the grid draws a red ellipse (`.spreadsheet-invalid-circle`, up to 2000) around each until `ClearInvalidCircles()`, the next
+`CircleInvalid()`, a change of the sheet's validations through the API, or a new workbook. The circles are view state: no undo step, no revision, not saved, and they
+do not follow later edits of the cells.
+
+### `ClearInvalidCircles(): void`
+Removes the circles (on every sheet).
+
+### Entering values
+`EnterText`, `CommitEdit`, `SetCurrentCellFromFormula` and typing validate (`false` when a "stop" rule refused the entry; `OnValidationNotice(style,
+title, message)` and `GetValidationNotice()` report it). `SetCell`, paste, fill and `ImportCSV` do not validate.
+
+### Ids
+A validation's `id` is stable for the life of the workbook in the component (through undo / redo and edits of other validations; ids are not
+reused). They are not stored in the file: at each import a sheet's validations are numbered 1, 2, ... in file order.
+
+## Defined names
+
+Names live in the workbook, not in a sheet. A change of them is a document change: one undo step (on the active sheet's undo stack), a new
+revision, and `OnChange` fires with the new key `WorkbookChanged: true` (its `Sheets` lists the sheets whose values changed with it).
+Print areas and print titles (`_xlnm.Print_Area` / `_xlnm.Print_Titles`) are not names here: they belong to the page setup.
+
+### `GetDefinedNames(): DefinedName[]`
+`{ name: string, refersTo: string, scope: number | null, scopeName: string | null, comment: string | null, isBuiltIn: boolean, hidden: boolean }`
+- `name` as it was written (lookups ignore case); `refersTo` the formula without a leading `=` (`"Data!$A$1:$A$3"`, `"0.19"`).
+- `scope`: 0-based index of the sheet a sheet-level name belongs to, `null` for a workbook-level name; `scopeName` that sheet's name.
+- `isBuiltIn`: an `_xlnm.` name; `hidden`: the file hides it from the name manager (kept through a save).
+Workbook-level names first, then sheet-level ones by sheet, each group by name (upper-cased order).
+
+### `SetDefinedName(name: string, refersTo: string, scopeSheetIndex?: number | null, comment?: string | null): void`
+Defines a name or replaces the one of the same scope (names differ by more than case; the new spelling and comment replace the old ones).
+`refersTo` is a reference or formula with or without `=`; a reference without a sheet is read on the sheet of the formula that uses the name.
+Every formula is recalculated. One undo step. Defining a name exactly as it is does nothing (no step).
+Throws: name empty / longer than 255 / not starting with a letter, `_` or `\` / holding anything but letters, digits, `_ . \ ?` / reading as a
+cell reference (`A1`, `R1C1`, `R`, `C`) or `TRUE` / `FALSE`; a built-in `_xlnm.` name; the name of a table; `refersTo` empty or not a formula;
+a sheet index that does not exist; arguments of the wrong type.
+
+### `DeleteDefinedName(name: string, scope?: number | null): void`
+Deletes the workbook-level name, or with `scope` that sheet's. Formulas using it show `#NAME?` (or fall back to the workbook-level name when a
+sheet-level one is deleted). One undo step. Throws when there is no such name in that scope, for a built-in name, or a sheet index that does not exist.
+
+### `GoTo(nameOrRef: string): { sheetIndex: number, range: string }`
+The name box: a reference (`"B3"`, `"$B$2:$D$5"`, `"A:A"`, `"Sheet2!B3:C9"`, `"'My sheet'!A1"`), a defined name that refers to a range (the
+active sheet's own name before a workbook-level one; `"Sheet2!Name"` for another sheet's; of several areas the first), or a table name.
+Switches the sheet if needed, selects the range (clipped to the sheet's rows and columns), scrolls its first cell into view; an entry in
+progress is committed. Not a document change. Throws when the text is not a reference, name or table, names a sheet that does not exist, lies
+outside the sheet, or is a name that does not refer to a range (a constant or formula).
+
+## Freeze panes and view
+
+All of these act on the active sheet; each sheet has its own panes, zoom and view options, saved with it (XLSX `sheetView`).
+
+### `FreezeAt(row: number, col: number): void`
+Freezes the rows above `row` and the columns left of `col` (0-based), like Excel's "Freeze Panes" with that cell selected:
+`FreezeAt(1, 0)` = first row, `FreezeAt(0, 1)` = first column, `FreezeAt(2, 3)` = two rows and three columns; `FreezeAt(0, 0)` unfreezes.
+Panes are always counted from row 0 / column 0 (not from where the grid is scrolled to). One undo step. Throws when the cell is not on the sheet.
+
+### `Unfreeze(): void`
+Removes the panes. One undo step (nothing when none are frozen).
+
+### `GetFrozen(): { rows: number, cols: number }`
+
+### `SetZoom(factor: number): void` / `GetZoom(): number`
+`factor` 0.1 .. 4 (1 = 100 %), rounded to a whole percent. Cells, headers, selection, pictures, the edit box and the validation button scale;
+hit-testing, `ScrollToCell`, resize drags and the scroll extent follow; the cell in the top-left corner stays there. Text is laid out at the
+zoomed size (CSS `zoom` on the grid's content, not a bitmap scale). **Zooming is not an edit** (as in Excel): no undo step, no new revision,
+no `OnChange`, `IsModified()` unchanged; the zoom is nevertheless written by `ExportXlsx` (`zoomScale`) and read by `ImportXlsx`.
+A host zoom control should re-read `GetZoom()` on `OnSelectionChange` when `SheetIndex` changes (each sheet has its own zoom).
+Throws when `factor` is not a number in the range.
+
+### `SetShowGridLines(show: boolean)`, `SetShowHeaders(show: boolean)`, `SetShowFormulas(show: boolean)`, `SetShowZeros(show: boolean)`
+Each is one undo step, a new revision and an `OnChange`; each throws when `show` is not a boolean.
+- grid lines: the light cell grid (borders stay).
+- headers: row numbers and column letters; without them cells start at the grid's top-left corner (and there are no header resize handles,
+  filter buttons or header clicks).
+- formulas: a formula cell shows its text (`=A1*2`) instead of its result (Excel's Ctrl+`). `GetCell().text` / clipboard text still give results.
+- zeros: with `false` a cell holding the number 0 (typed or calculated) shows nothing.
+### `GetShowGridLines()`, `GetShowHeaders()`, `GetShowFormulas()`, `GetShowZeros()`: boolean
+### `GetViewOptions(): { zoom, showGridLines, showHeaders, showFormulas, showZeros, frozen: { rows, cols } }`
+
+## Sheets (group 7)
+
+Sheets are addressed by 0-based index in tab order. Every mutating member below is ONE undo step, gives a new revision, and is
+reported by `OnChange` (with `StructureChanged: true`) and `OnSheetsChange`. All throw `Error("Member: reason")` on invalid input.
+
+**Where the undo step lives.** Undo histories are per sheet (`Undo()` / `CanUndo()` act on the sheet on display). A sheet-list step is put
+on the history of the sheet that is on display once the operation is done: the new sheet after `AddSheet` / `DuplicateSheet`, the sheet that
+took a deleted (or hidden) sheet's place, otherwise the sheet that was on display. So `Undo()` right after any of these calls takes it back.
+When undoing / redoing changes which sheet is on display (undoing `AddSheet` removes the sheet on display), the step moves to the history of
+the sheet then on display, so `Redo()` finds it there. After the user switches to another sheet, `Undo()` acts on that sheet's own history.
+
+| Member | Arguments | Returns | Notes |
+|---|---|---|---|
+| `GetSheetInfos()` | | `[{ index, id, name, visibility: "visible"\|"hidden"\|"veryHidden", tabColor: "#RRGGBB"\|null, isLoaded, isActive }]` | `id` stays with the sheet through renames, moves and other sheets being added / deleted (new sheets get an id never used before). `isLoaded`: see `IsSheetLoaded`. A tab colour a file gives as a theme colour is reported as the Office theme's colour without its tint; an indexed colour as null (both are written back as the file had them). |
+| `OnSheetsChange(cb)` | `cb(infos)` gets the `GetSheetInfos()` array | unsubscribe function | Fires after the list changed: a sheet added, deleted, renamed, moved, copied, hidden / shown, tab colour; by a call, by undo / redo, or by `InstallWorkbook` / `ImportXlsx`. Not for a mere switch of the sheet on display (`OnSelectionChange` / `OnSheetChanged`). Fires while the grid is mounted. |
+| `AddSheet(name?, atIndex?)` | `name` string (default: first free "Sheet1", "Sheet2", ...); `atIndex` 0..count (default: at the end) | index of the new sheet | The new sheet (1000 x 26) is shown. Throws on an invalid / duplicate name or a position outside 0..count. Formulas that named a sheet of that name before it existed are recalculated. |
+| `RenameSheet(index, name)` | | | Formulas of every sheet (cells, conditional formats, validations incl. list sources), defined names and internal hyperlinks follow, quoted where needed (`'My Sheet'!A1`, `'It''s'!A1`). Throws: empty, > 31 chars, any of `: \ / ? * [ ]`, leading / trailing apostrophe, "History", a duplicate (case-insensitive; changing only the case of the sheet's own name is allowed), no such sheet. Values are not recalculated (nothing changes) - see limits. |
+| `DeleteSheet(index)` | | | References to the sheet in other sheets' formulas, rules and defined names become `#REF!`; names scoped to it and its tables go with it; what the file kept for it (pictures, charts, pivot tables, comments) is dropped from the exported package. If it was on display, the nearest visible sheet is shown. Undo restores the sheet, the names, the tables and the references (a formula edited in between keeps the edit). Throws when it is the only visible sheet, or no such sheet. |
+| `MoveSheet(from, to)` | `to` = index the sheet has afterwards (0..count-1) | | The sheet on display stays on display. |
+| `DuplicateSheet(index)` | | index of the copy | The copy is placed right after the original, named "Name (2)" ("(3)", ...; cut to 31 chars) and shown. Copied: cells, formats, sizes, merges, comments, validations, conditional formats, pictures, page setup, sheet-scoped names, tables (as "Table_2"; the copy's structured references follow). The copy's formulas that named the original sheet name the copy. NOT copied: charts / shapes / other drawing objects the editor only keeps from the file, pivot tables, named cell styles (they stay with the original). |
+| `SetSheetVisibility(index, visibility)` | `"visible"` \| `"hidden"` \| `"veryHidden"` | | Hiding the sheet on display shows the nearest visible one. Throws when it would leave no visible sheet. `SheetVisibility()` (bool per sheet) keeps working. |
+| `SetSheetTabColor(index, color)` | `"#RRGGBB"` or null (none) | | The component draws no tab strip; the colour is workbook content (GetSheetInfos, the saved file's `<tabColor>`). |
+
+Existing members that keep working: `GetSheetNames()`, `SheetNames()`, `SheetVisibility()`, `GetActiveSheetIndex()`, `SwitchSheet(index)`,
+`OnSheetChanged(cb(index))` (now also fires when a sheet-list operation or its undo changes the sheet on display), `IsSheetLoaded(index)`.
+
+Lazy sheets: `MoveSheet`, `SetSheetVisibility`, `SetSheetTabColor` convert no sheet. `RenameSheet` / `DeleteSheet` / `AddSheet` convert the sheets
+that have formulas (as any first edit does); plain-data sheets stay unconverted. `DuplicateSheet` converts the sheet it copies.
+
+Limits: a rename does not recalculate (a formula that builds the sheet's name as text - `INDIRECT("Old!A1")` - keeps its value until the
+next recalculation and then no longer finds the sheet, as in Excel); internal hyperlinks on a sheet that is not converted yet are not
+re-pointed; chart series and pivot-cache sources kept from the file still name the old sheet name after a rename (Excel shows their
+cached data; a refresh of that pivot / chart will not find the sheet); 3-D references follow a rename of either end sheet but are not
+adjusted when sheets are moved or an end sheet is deleted (-> `#REF!`).
+
+## Rows and columns (group 8)
+
+Sizes are **sheet pixels at 100 % zoom** (a new sheet: columns 100, rows 25; an opened file: what the file says). Where a member takes
+"`target`" it takes a 0-based row / column **number** or an **A1 string** whose rows / columns are meant: `"2:5"`, `"B:D"`, or any range
+(`"B2:D9"` = rows 2..9 or columns B..D); ranges are clipped to the sheet. All members act on the active sheet. Every mutating member is one
+undo step, a new revision and one `OnChange`; a call that changes nothing is none of these. All of it follows inserted / deleted rows and
+columns and is written to / read from XLSX (`<row ht hidden outlineLevel collapsed>`, `<col width hidden outlineLevel collapsed>`).
+
+| Member | Arguments | Returns | Notes |
+|---|---|---|---|
+| `SetColumnWidth(target, px)` | `px` number 0..1785 | | 0 hides (as `HideColumns`); any other width also shows a hidden column. Throws on a column off the sheet, a bad range, a width outside the limits. |
+| `SetRowHeight(target, px)` | `px` number 0..546 | | 0 hides. Throws likewise. |
+| `GetColumnWidth(col)` | 0-based | number | 0 when hidden. Throws when the column is not on the sheet. |
+| `GetRowHeight(row)` | 0-based | number | 0 when hidden (by `HideRows`, a collapsed group, or a filter). |
+| `AutoFitColumns(target?)` | default: the columns of the selection | | Each column gets the width of its widest cell: the text the cell displays (number format applied), measured in the cell's font (family, size, bold, italic), plus indent and the cell's 10 px padding; at most 1785. A wrapped cell counts with its longest line (as broken by line breaks in the text); text turned 90 degrees counts a line high; cells merged across columns do not count; hidden rows are left out; hidden columns stay hidden; a column without text keeps its width. |
+| `AutoFitRows(target?)` | default: the rows of the selection | | Each row gets the height of its tallest cell: lines x line height (round(font px x 1.3)) + 6; wrapped text takes the lines it needs at the width of its column (or of its merged columns); at least 20 (one line of the default font), at most 546; a row without text gets 20. Cells merged across rows do not count; hidden rows stay hidden. |
+| `HideRows(target, count?)` | number (+ `count` rows from it, default 1) or A1 range | | A hidden row keeps its height for `UnhideRows`. |
+| `UnhideRows(target, count?)` | | | Shows the hidden rows among those named at the height they had. Rows hidden by a filter are the filter's (not shown by this). |
+| `HideColumns(target, count?)` / `UnhideColumns(target, count?)` | | | Likewise. |
+| `GetHiddenRows()` | | `string[]`: `["3:5", "9:9"]` | Runs of hidden rows in order; rows hidden by a filter are not listed. |
+| `GetHiddenColumns()` | | `string[]`: `["B:D"]` | |
+| `GroupRows(target, count?)` / `GroupColumns(target, count?)` | | | Excel's Data > Group: the outline level of each row / column named goes up by one (max 7). |
+| `UngroupRows(target, count?)` / `UngroupColumns(target, count?)` | | | The level goes down by one (rows in no group are left alone). |
+| `SetGroupCollapsed(axis, index, collapsed)` | `axis` `"rows"` \| `"columns"`; `index` 0-based row / column inside the group; `collapsed` boolean | | Acts on the group the row / column is in at its own level (its neighbours at that level or deeper). Collapsing hides the group's rows; expanding shows them, except those of groups inside it that are collapsed themselves. The row / column after the group is its summary and carries the collapsed mark (Excel's default "summary below / right"). Throws when the row / column is in no group, or `axis` is not one of the two. |
+| `GetOutline()` | | `{ rows: [group], columns: [group], rowLevels, columnLevels }` with `group = { first, last, range: "3:7" \| "B:D", level: 1..7, collapsed }` | Outer groups come before the groups inside them; `rowLevels` / `columnLevels` are the deepest level (0 = no groups). |
+
+In the grid: dragging a header's resize handle is now one undo step (it was none); a **double click on a resize handle** fits that column /
+row (`AutoFitColumns` / `AutoFitRows`), and when whole columns / rows are selected and the handle is one of theirs, all of them. Arrow keys,
+selection, drawing anchors, the portable painter and the PDF path treat hidden rows / columns as before (size 0).
+
+Limits: the grid draws **no outline gutter** (no +/- buttons, no level buttons): a host draws its own from `GetOutline()` and calls
+`SetGroupCollapsed`. Summary rows are always "below / right" (the sheet's `outlinePr` is not modelled; a file that says otherwise keeps its
+`sheetPr` only while written from the file). Auto-fit looks only at the cells that exist; on a very large sheet a whole column costs a
+pass over the sheet's cells (dashboard "Data", 846 000 cells: one column 0.46 s, eleven columns 3.4 s, all 76 931 rows 0.9 s).
+Auto-fit does not account for conditional-format icons / data bars, filter buttons, or rotation other than 90 degrees.
+A row that was hidden in an opened file without a height of its own is written with the file's default height once the sheet's rows change.
+
+## Sort and filter
+
+All act on the active sheet (except `GetFilters(sheetIndex)`); each mutating member is one undo step, a new revision and one `OnChange`.
+A **column** argument is a 0-based sheet column number or its letters (`2` or `"C"`).
+
+| Member | Arguments | Returns | Notes |
+|---|---|---|---|
+| `SortRange(range, keys, options?)` | `range` A1 (`"A1:D20"`; `"A:D"` is clipped to the used rows). `keys`: `[{ column, descending?: boolean, by?: "value" \| "cellColor" \| "fontColor", color?: "#RRGGBB" \| null }]` (one key object or a bare column is accepted too). `options`: `{ hasHeader?: boolean, caseSensitive?: boolean }` (both false by default) | | See "Sort semantics". Throws on a bad range / key / option key, a key column outside the range, merged cells among the rows to sort, a dynamic array (spilling formula or spilled cells) among them. |
+| `SortCurrentColumnAsc()` / `SortCurrentColumnDesc()` | | | Unchanged: sorts the block of data around the selection's column (its first row a header when it is all text), then applies the filter again. |
+| `SetAutoFilter(range)` | A1 range; its first row is the header row | | Gives the sheet its AutoFilter (one per sheet), replacing the one it has; column filters inside the new range stay, others go. Throws on a bad range or one outside the sheet. |
+| `ClearAutoFilter()` | | | Removes the AutoFilter and its column filters; every row it hid is shown. |
+| `SetFilter(column, criteria)` | see "Filter criteria" | | Replaces the column's filter; rows failing it are hidden (rows failing any column's filter are). Without an AutoFilter the sheet gets an implicit one over the block of data around the column (it goes away with its last column filter). Throws on a column outside the AutoFilter's range and on criteria that are not understood. |
+| `ClearFilter(column?)` | | | Takes the filter off one column, or off all; the AutoFilter (range) stays. |
+| `ReapplyFilter()` | | | Works the hidden rows out again from the cells as they are now. An undo step only when the hidden rows change. |
+| `GetFilters(sheetIndex?)` | | `null` or `{ range: "A1:D20", columns: [{ column, letter, criteria }], hiddenRows: number[], hiddenRowCount, visibleRowCount }` | `hiddenRows` are 0-based rows the filter hides; `visibleRowCount` counts the shown rows below the header (down to the last used row of the range). Throws on a sheet index that does not exist. |
+| `GetFilterValues(column)` | | `{ values: string[], blanks: boolean }` | The distinct texts the column's cells show in the filter's rows (number format applied; numbers first, in order, then text A-Z) and whether it has blank cells there: what a checklist offers. Without an AutoFilter: the block of data around the column, below its first row. |
+
+### Filter criteria (given to `SetFilter`, returned by `GetFilters`)
+One of:
+- `{ values: string[], blanks?: boolean }`: the cells showing one of the texts (compared without case; the cell's displayed text, or its unformatted value), plus the blank cells when `blanks` (an `""` among the values means the same).
+- `{ conditions: [{ operator, value }], and?: boolean }`: one or two comparisons, joined by AND (default) or OR. `operator`: `"equals"`, `"notEquals"`, `"greaterThan"`, `"greaterOrEqual"`, `"lessThan"`, `"lessOrEqual"`, `"contains"`, `"notContains"`, `"beginsWith"`, `"endsWith"`. `value`: a number, a text, a `Date`, or a date written `"2024-03-31"` (optionally with a time; it is compared as the date's serial number). With `equals` / `notEquals` a text may hold the wildcards `*` and `?` (`~*`, `~?`, `~~` for the characters themselves), as in Excel's custom filter; the four text operators take their text literally. `equals ""` is the blank cells. Numbers compare with number cells, text with text cells (case-insensitive). "Between" is two conditions.
+- `{ top: { count, percent?: boolean, bottom?: boolean } }`: the `count` largest (or smallest) numbers of the column, or that percentage of its numbers (at least one); ties with the last one are let through.
+- `{ color: "#RRGGBB" | null, by?: "cellColor" | "fontColor" }`: cells with that fill (default) or text colour; `null` = no fill / the automatic colour. (The cell's own format: conditional-format colours do not count.)
+- `{ dynamic: "aboveAverage" | "belowAverage" }`.
+- read only: `{ kept: true }`: a filter of an opened file that the editor does not evaluate (date groups, icon filters, the other dynamic filters). It is written back as it was; the rows the file had hidden stay hidden until the column gets another filter.
+
+Criteria are read back in the same shape; `contains` etc. come back as such, text patterns that are more than that as `equals` with the pattern.
+
+### Filter semantics
+- Filtered rows are **hidden, not removed**: `GetCell` still reads them, `GetRowHeight` gives 0, the grid does not draw them and keeps the row numbers of the others. They are separate from rows hidden with `HideRows` (those are not listed in `hiddenRows`, are not shown by `ClearFilter`, and `GetHiddenRows` does not list filtered rows).
+- As in Excel, the rows are worked out when a filter is set (or `ReapplyFilter()` is called), **not** when a cell changes: an edited row stays visible / hidden until then. Inserted and deleted rows and columns move the range, the column filters and the hidden rows; a new row is visible.
+- On a selection that spans filtered rows, these act on the **visible rows only**: `GetSelectionText` / `GetSelectionHtml` / `Copy` (the copy holds the visible rows one after the other and pastes as one block), `Cut` and the Delete key, `ClearContents` / `ClearFormats` / `ClearAll`, every format command (`ApplyFormat`, `ApplyFormatPatch`, `ApplyBorder`, ...), `FillDown` / `FillRight` / `AutoFill`, and `SortRange` (hidden rows stay where they are). A **paste** into a filtered range is not filtered: it fills the rows one after the other, hidden ones included (Excel does the same). `SetCell` / `EnterText` write to any cell.
+- `SUBTOTAL` / `AGGREGATE` leave out the rows a filter hides; setting a filter recalculates.
+- XLSX: `<autoFilter ref>` with a `<filterColumn>` per filtered column (`<filters>`, `<customFilters>`, `<top10>`, `<colorFilter>` with its `<dxf>`, `<dynamicFilter>`), the hidden rows as `<row hidden="1">` (with their height), and the hidden sheet-scoped name `_xlnm._FilterDatabase`. An opened file with a filtered sheet opens filtered, with the rows the file hides inside the filter's range as the filter's rows; a sheet whose filter was not touched is written back as the file states it. (Before this the sheet-level `<autoFilter>` of a file was dropped on export.) The built-in name is derived from the filter and is not listed by `GetDefinedNames`.
+- The grid's own column-header filter buttons open a checklist of `GetFilterValues` and set a `{ values }` filter (now an undo step). The grid draws no filter buttons in the header cells of the AutoFilter range: a host draws its own from `GetFilters()`.
+- One AutoFilter per sheet. A table's own filter (Excel allows one per table besides the sheet's) is not modelled separately: filter a table by `SetAutoFilter(<table range>)`.
+
+### Sort semantics
+- Whole rows **of the range** move; cells beside the range stay. The first key decides, later keys break ties, rows equal on every key keep their order (stable).
+- Value order ascending: numbers, text (case-insensitive; with `caseSensitive` lower case before upper case among otherwise equal texts), FALSE, TRUE, errors. `descending` reverses that. **Blank cells are last in either direction.** A formula sorts by its value.
+- Colour keys: rows whose key cell has `color` as fill (`cellColor`) / text colour (`fontColor`) come first (last with `descending`); the others keep their order.
+- What moves with a cell: value / formula, format, cell comment, rich-text runs, threaded comment, a hyperlink on that single cell. What stays in place: row heights, validations, conditional formats, merged cells (none are allowed in the rows), hyperlinks over several cells.
+- Formulas: a formula that moves is re-pointed as Excel does on a sort, i.e. like a copy of it to the new row: relative row references shift by the rows it moved (`=B2*2` in row 2 becomes `=B7*2` in row 7; a reference pushed off the sheet becomes `#REF!`), `$`-locked rows stay. Formulas elsewhere that refer to the sorted cells are **not** re-pointed (they see the new order). The workbook is recalculated.
+- Rows hidden by the AutoFilter are not sorted (they keep their place); rows hidden with `HideRows` are sorted like any other.
+- The first key sets the header's sort arrow (`SortState`).
+
+## Comments (group 10a)
+All on the active sheet unless a sheet index is taken. Every mutating member is one undo step (no recalculation), bumps the revision and fires `OnChange`.
+
+| Member | Arguments | Returns | Notes |
+|---|---|---|---|
+| `GetComment(row, col)` | 0-based | comment object \| `null` | Also what `GetCell(...).comment` is. |
+| `GetComments(sheetIndex?)` | | `[{ row, col, address, text, author, thread }]` | Row by row. Throws for a sheet that is not there. |
+| `SetComment(row, col, text, author?)` | | | A cell without a comment, or with a note, gets a note. On a cell with a thread the first comment's text (and author, when given) changes; replies stay. Throws on an empty text. (Was not an undo step before.) |
+| `DeleteComment(row, col)` | | `boolean` (there was one) | Removes the note or the whole thread. `RemoveComment(row, col)` is the older name (returns nothing). |
+| `AddCommentReply(row, col, text, author?)` | | the reply's id (string) | A note becomes the first comment of a thread (Excel's "convert to comments"). Dated now (UTC). Throws when the cell has no comment or the text is empty. |
+| `DeleteCommentReply(row, col, replyId)` | | | Throws when the cell has no thread / no such reply. |
+| `ResolveComment(row, col, resolved = true)` | | | Marks a thread resolved / open. Throws on a note. |
+| `GetCommentThread(row, col)` | | `{ author, date, text, replies }` \| `null` | Older member, kept; prefer `GetComment`. |
+
+Comment object: `{ text, author: string | null, thread }`; `thread` is `null` for a note, else `{ id, author, date: "2026-01-02T03:04:05.00" | null, text, resolved: boolean, replies: [{ id, author, date, text }] }` (then `text` / `author` are the first comment's).
+
+- The cell shows a corner marker (red for a note, violet for a thread) and the comment as its tooltip.
+- Comments move with inserted / deleted rows and columns and with `SortRange`; `ClearAll` removes notes and threads; `ClearContents` / `ClearFormats` keep them.
+- XLSX: notes go to the comments part, threads to the threaded-comments part with their persons and the `done` mark, plus the note Excel keeps beside each thread for old versions. Ids of thread comments survive a save; a note has no id.
+
+## Hyperlinks (group 10b)
+On the active sheet unless a sheet index is taken. `SetHyperlink` / `RemoveHyperlink` are one undo step each, bump the revision and fire `OnChange`.
+
+| Member | Arguments | Returns | Notes |
+|---|---|---|---|
+| `GetHyperlink(row, col)` | 0-based | hyperlink object \| `null` | Also `GetCell(...).hyperlink`. |
+| `GetHyperlinks(sheetIndex?)` | | hyperlink objects, in the order defined | |
+| `SetHyperlink(range, target, display?, tooltip?)` | `range`: `"B2"`, `"B2:C3"`, several areas `"A1:A3 C1"` | | Replaces the links of those cells (a link that covered more keeps the rest). `target`: an address (`"https://…"`, `"mailto:…"`; any text is stored) or a place in the workbook: `"Sheet2!A1"`, `"'My sheet'!B2:C3"`, `"A1"`, a defined name, or any of these after `#`. `display` becomes the text of the first cell; without it an empty first cell shows the target. `tooltip` is the screen tip. Cells get the link look (text colour `#0563C1`, underline) unless they have a text colour of their own. Throws on a missing / invalid range, an empty target, a non-text display / tooltip. |
+| `RemoveHyperlink(range)` | | number of links removed or cut | Also removes the link look (Excel's "Remove Hyperlink"); the texts stay. |
+| `ActivateHyperlink(row, col)` | | `{ target, row, col, sheetIndex, isInternal, safe, tooltip, followed }` \| `null` (no link) | What Ctrl+click does: an internal link is followed (`followed: true`; false when the place no longer exists), an external one is handed to `OnHyperlinkActivate` subscribers. |
+| `OnHyperlinkActivate(cb)` | `cb({ target, row, col, sheetIndex, isInternal: false, safe, tooltip, followed: false })` | unsubscribe function | Only for links that lead out of the workbook. |
+
+Hyperlink object: `{ range, target, isInternal: boolean, tooltip: string | null, display: string | null, safe: boolean }`.
+
+- **The grid never navigates.** No `window.open`, no `location` change, no anchor element: an external link only raises `OnHyperlinkActivate`. `safe` is true only for `http:`, `https:`, `mailto:` and `tel:` addresses; a host should open nothing else (`javascript:`, `file:`, `data:` … are reported with `safe: false`).
+- Activation: Ctrl+click (Cmd+click) on a linked cell; a plain click in read-only mode (cursor is a pointer there). Internal links go through `GoTo` (sheet switch, selection, scroll).
+- A linked cell has `title` = tooltip (else the target) unless it has a comment, and `data-link="internal" | "external"`.
+- Links move with rows / columns, follow `RenameSheet`, and (single-cell links) `SortRange`.
+- XLSX: `<hyperlink ref location | r:id tooltip display>`; addresses are external relationships of the sheet. Tooltip and display are new in the model and round trip.
+
+## Pictures (group 10c)
+On the active sheet. Every mutating member is one undo step (no recalculation), bumps the revision and fires `OnChange`.
+
+| Member | Arguments | Returns | Notes |
+|---|---|---|---|
+| `GetPictures()` | | `[{ id, kind: "picture", name, description, contentType, row, col, x, y, width, height }]` back to front | `x`, `y`, `width`, `height` in sheet pixels at 100% from the sheet's top-left cell; `row`, `col` the anchor cell. |
+| `GetDrawings()` | | the same objects for every drawing object (`kind`: `"picture"`, `"chart"`, `"shape"`, `"other"`; `contentType` null for non-pictures) | Now with `id` and `contentType`; `name` / `description` are `null` when absent. |
+| `InsertPicture(source, anchorCell, size?, name?)` | `source`: `Uint8Array`, `ArrayBuffer` or a data URL; `anchorCell`: `"B3"` or `{ row, col }`; `size`: `{ width?, height? }` px | the new id (number) | PNG, JPEG, GIF only, recognised from the bytes (an SVG / BMP / WebP / anything else throws, whatever the data URL's type says). Without `size` the picture's own pixel size; with one side the other keeps the proportions. Put in front; one-cell anchor (moves with the cell, keeps its size). Default name `"Picture <id>"`. |
+| `MovePicture(id, place)` | `place`: `"B3"` / `{ row, col }` (top-left corner to the cell's) or `{ x, y }` sheet pixels | | Size stays. Throws for an unknown id, a chart / kept object, a bad place. |
+| `ResizePicture(id, { width?, height? })` | | | One side alone keeps the present proportions. Top-left corner stays. |
+| `DeletePicture(id)` | | | |
+| `SetPictureAltText(id, description, name?)` | | | `""` removes the description. |
+| `GetSelectedPicture()` | | id \| `null` | |
+| `SelectPicture(id \| null)` | | | Shows the frame with 8 handles; `null` deselects. |
+
+- Ids: a number per sheet, stable through undo / redo, moves and re-stacking; never reused while a higher one exists. When a file is opened its drawing objects (pictures and charts alike) are numbered 1..n back to front, so ids are stable across save / reopen as long as the order of the objects is.
+- In the grid (not in read-only mode, where pictures let clicks through to the cells): click selects a picture (frame + 8 handles: `.spreadsheet-picture-frame`, `.spreadsheet-picture-handle[data-handle]`; the image is `.spreadsheet-picture[data-drawing-id]`), drag moves it, a handle sizes it (corners keep the proportions, Shift frees them; sides change one dimension; minimum 8 px), Delete / Backspace removes it, Escape or a click on a cell deselects. Each drag is one undo step. Correct under zoom and when scrolled.
+- `OnSelectionChange` payload has `Picture: id | null` and fires when the picture selection changes.
+- Charts and other kept objects are not movable through this API (the members throw); they keep following their cells.
+- XLSX: pictures are written into the sheet's drawing part beside the kept charts (which stay byte for byte); identical image data is one media part; deleting the last drawing object of a sheet drops its drawing part and media.
+
+## Find and replace (group 11)
+A search reads the sheet on display, or every sheet that has a tab. Replacing is an undo step; searching and stepping are not changes.
+
+| Member | Arguments | Returns | Notes |
+|---|---|---|---|
+| `Find(text, options?)` | `options`: `{ matchCase?: boolean (false), wholeCell?: boolean (false), regex?: boolean (false), lookIn?: "values" \| "formulas" ("values"), scope?: "sheet" \| "workbook" ("sheet"), range?: "B2:D9" }` | `[{ sheetIndex, row, col, address, text }]` | Matches row by row, sheets in tab order starting at the sheet on display. Selects nothing; the search is remembered for the three members below. `text` of a match is the text that was searched (shown, or entered). Throws for an empty text, a non-string, an unreadable regular expression, unknown option keys / values, `range` together with `scope: "workbook"`. |
+| `FindNext()` | | match \| `null` (after `Find`); `true` / `false` (after the old `StartSearch`) | The first match after the active cell (then the following sheets for a workbook search; after the last match the first again). Shows its sheet, selects and scrolls to the cell. |
+| `FindPrevious()` | | match \| `null` | The match before the active cell (before the first: the last). Throws when `Find` was not called. |
+| `ReplaceMatch(replacement)` | string | `{ replaced: boolean, next: match \| null }` | Replaces in the active cell when it matches, then steps to the next match. One undo step, recalculates. Not on a match: nothing replaced, the next match is selected. Throws when `Find` was not called. |
+| `ReplaceAll(text, replacement, options)` | `options` as for `Find` (an object; `{}` for the defaults) | number of cells changed | ONE undo step, also with `scope: "workbook"` (one `Undo()` on the sheet it was called from restores every sheet; `OnChange` names every changed sheet). 0 matches: no step. The old call `ReplaceAll(text, replacement, caseSensitive: boolean)` still works (active sheet, text contained in value or formula text) and now also returns the count. |
+| `StartSearch(query, caseSensitive)`, `Replace(find, replace, caseSensitive)`, `GetSearchResultsCount()`, `GetSearchIndex()`, `ShowFindReplaceDialog()` | | | The earlier single-sheet search, unchanged (the built-in dialog uses it). `StartSearch` ends a search started by `Find`. |
+
+- `lookIn: "values"` searches what cells show (number formats applied: `1,234.50`); a formula cell matches by its result. `lookIn: "formulas"` searches what was entered: a formula with its `=`, a number / date as it would be typed, text as it is.
+- `wholeCell`: the whole text has to match (for a regular expression: from the first to the last character).
+- `regex`: in the browser the pattern is a JavaScript regular expression (`new RegExp(text, "g" + (matchCase ? "" : "i"))`); `$1`, `$2` in a replacement are its groups. Without `regex` the text and the replacement are literal (`$` is a dollar sign).
+- Replacing: every occurrence in the cell's text is replaced and the result is read the way typed input is (a number, a date, a boolean, a formula when it starts with `=`); the cell keeps its format and note; an empty result empties the cell. It is NOT checked against data validation. Looking in values, formula cells are skipped and the replacement is made in the text shown (`1,234.50` with `1,234` -> `2,345` gives the number 2345.5); looking in formulas it is made in the formula text. The cells a dynamic array spilled into are never changed.
+- Hidden / very hidden sheets are not searched (unless one is on display); the cells of hidden rows and filtered-out rows are.
+- A workbook search converts the sheets of an opened file that were not converted yet (`IsSheetLoaded`); a sheet search converts none.
+- Matches are found again for a sheet whose cells changed since (`FindNext` after an edit sees the edit); stepping is always relative to the active cell.
+- Cost: 846 000 cells are searched in about 1 s (values) / under 2 s (formulas); a step afterwards costs nothing until cells change.
+
+## Tables (group 12)
+A table has a name (unique in the workbook, also against defined names), a range on one sheet (header row, data rows, optional total row), named columns and a style. Structured references (`Sales[Amount]`, `Sales[@Amount]`, `Sales[[#Totals],[Amount]]`, `Sales[#Headers]`, `Sales[#All]`, `Sales[[A]:[B]]`) read it from any sheet. Every mutating member is ONE undo step of the workbook (it sits on the history of the sheet on display, like sheet operations), bumps the revision, fires `OnChange`, recalculates every formula and is written to / read from XLSX (`xl/tables/tableN.xml`).
+
+| Member | Arguments | Returns | Notes |
+|---|---|---|---|
+| `GetTables()` | | `[{ name, sheetIndex, range, hasHeaders, hasTotals, columns: string[], style: { name, showRowStripes, showColumnStripes, showFirstColumn, showLastColumn } \| null, hasAutoFilter }]` | Sheet by sheet in tab order, each sheet's from the top left. `range` includes header and total row. `hasAutoFilter`: the header cells carry filter buttons in the file. |
+| `DefineTable(range, name?, hasHeaders?, style?)` | `range` `"A1:D9"` on the active sheet; `name` default the first free `"TableN"`; `hasHeaders` default `true`; `style`: style name, `{ name, showRowStripes?, showColumnStripes?, showFirstColumn?, showLastColumn? }` or `"none"` (default `"TableStyleMedium2"`) | the table's name | With headers: blank header cells become `ColumnN`, a repeated name gets a number appended (`Amount`, `Amount2`), and header cells become text (written into the cells). Without headers: columns are `Column1..`, every row is data, NO header row is inserted (Excel inserts one). Throws: invalid / taken name (rules of defined names), range outside the sheet, whole rows / columns, overlap with another table, merged cells in the range, a header row with no row below, unknown style name. |
+| `DefineTable(name, startRow, startCol, endRow, endCol, columns, hasHeaders)` | the earlier call (0-based, `columns` a string array) | the name | Still works: registers the table for structured references only (no style, no header changes, not written as a table part unless a style is set later). Now an undo step. |
+| `ResizeTable(name, range)` | | | The first row stays in its row; the new range overlaps the old one; with a total row the range includes it (it moves to the new last row, which must be free). New columns are named by their header cells. Throws for an unknown table or a bad range. |
+| `RenameTable(name, newName)` | | | Structured references in every formula of the workbook (cells, conditional formats, validations, defined names) follow. Throws for an unknown table, an invalid or taken name. |
+| `DeleteTable(name, keepData?)` | `keepData` default `true` | | `true`: convert to range - cells stay, every structured reference becomes the plain absolute reference it stood for (`=SUM(Sales[Amount])` -> `=SUM($B$2:$B$9)`, with the sheet name on other sheets; a this-row reference becomes the cell of its row; one that selects nothing becomes `#REF!`). `false`: the table's cells are emptied too (formats stay) and references to the table show `#REF!` (their text is left). |
+| `SetTableTotalRow(name, show)` | boolean | | Shown: the row below the data gets `Total` in the first column and, in the last, `=SUBTOTAL(109,Table[Col])` when that column holds numbers, else `=SUBTOTAL(103,...)` (a count). The row below must be empty (nothing is moved down: throws otherwise). Removed: the row's cells are emptied. |
+| `SetTableStyle(name, style)` | style name, style object, or `null` / `"none"` | | |
+| `GetTableNames()` | | the names (an F# list, kept for older hosts; use `GetTables`) | |
+
+- Filtering a table: `SetAutoFilter(table.range without the total row)` + `SetFilter` (group 9; one filter per sheet). `SUBTOTAL` totals leave filtered rows out.
+- Rows / columns inserted or deleted inside a table grow / shrink it (a new column is `ColumnN`); deleting its header row removes the table. Typing below the last row does not extend a table. Editing a header cell does not rename the column (use the cell text only as a label; column names are fixed at `DefineTable` / `ResizeTable`).
+- The grid draws a styled table's header fill (white bold text) and row bands in the colours of the Office theme by style number (`TableStyleMedium2` blue, `...3` orange, ...); column stripes, first / last column emphasis and the Light / Dark variations are not drawn. A total row is bold.
+- XLSX: columns, `headerRowCount`, `totalsRowCount`, per-column `totalsRowLabel` / `totalsRowFunction` / `totalsRowFormula`, `autoFilter` (header + data), `tableStyleInfo`. Tables of an opened file that were not touched are written as the file had them; a deleted table's part is not written.
+- `DuplicateSheet` copies a sheet's tables under new names (`Sales_2`), `DeleteSheet` removes them, `RenameSheet` leaves them.
+
+## Events and state (group 13)
+
+| Member | Arguments | Returns | Notes |
+|---|---|---|---|
+| `OnContextMenu(cb)` | `cb({ target, row, col, sheetIndex, clientX, clientY, pictureId, inSelection })` | unsubscribe function | `target`: `"cell"` \| `"rowHeader"` \| `"colHeader"` \| `"corner"` \| `"picture"` \| `"sheetTab"`. `row` / `col` 0-based, `-1` where the target has none (a column header has no row, the corner neither; a picture gives its anchor cell; a tab gives `-1, -1`). `clientX` / `clientY`: where to open the menu (the pointer; for the keyboard the middle of the active cell / picture). `pictureId`: number \| null. `inSelection`: the target was part of the selection already. |
+| `RaiseSheetTabContextMenu(sheetIndex, clientX, clientY)` | | `true` when a subscriber was told | For a tab strip (the component draws none): raises `{ target: "sheetTab", row: -1, col: -1, sheetIndex, clientX, clientY, pictureId: null, inSelection: sheet is on display }`. Does not switch sheets. Throws for a sheet that is not there. |
+| `OnError(cb)` | `cb({ source, message, error })` | unsubscribe function | Errors the component catches instead of letting them reach the host. |
+| `GetStatus()` | | `{ sum, average, count, numericCount, min, max }` | Of the selection of the active sheet. |
+| `GetUsedRange(sheetIndex?)` | | `{ range: "B2:F40", firstRow, firstCol, lastRow, lastCol }` \| `null` (empty sheet) | |
+
+- Context menu: raised by a right click (`contextmenu`) in the grid and by the menu key / Shift+F10 (active cell, or the selected picture). As in Excel a right click outside the selection first selects what it is on (the cell; the whole row / column of a header; the picture) and one inside the selection keeps it; `OnSelectionChange` fires before the callback. A right click on the corner selects nothing. While at least one subscriber is registered the browser's own menu is prevented in the grid, except in the edit box of a cell being edited (spelling / paste menu stays). The component has no built-in menu; without a subscriber nothing changes (the browser menu shows, nothing is selected). Works in read-only mode too (the host decides what to offer). Correct under zoom, frozen panes and hidden headers (the cell is the one under the pointer).
+- `OnError` sources: the name of the subscription whose callback threw (`"OnChange"`, `"OnSelectionChange"`, `"OnSheetsChange"`, `"OnSheetChanged"`, `"OnEditStateChange"`, `"OnHyperlinkActivate"`, `"OnContextMenu"`; the other subscribers are still told); `"event:<dom event>"` (`event:keydown`, `event:mousedown`, `event:paste`, `event:scroll` ...) for an error while the grid handles a DOM event: it is reported and then thrown on, so the console shows it as before; `"picture"` (a picture drag that could not be applied); `"ImportXlsx"` (also `ImportXlsxFromBuffer`): the file could not be read; the returned promise still rejects. NOT reported: what a member called by the host throws (it is thrown to the caller); a clipboard the browser refuses (Copy / Cut / Paste resolve to `false`); an OnValidationNotice callback that throws (it propagates to the caller of the entry). An error thrown inside an OnError callback is dropped.
+- `GetStatus`: `count` = cells that hold something (empty text and format-only cells do not count), `numericCount` = numbers among them (dates are numbers; a formula counts by its result; text, booleans and errors are not numbers), `sum` / `average` / `min` / `max` over the numbers, `null` when there is none. Rows hidden by the AutoFilter are left out (Excel's status bar); rows hidden by hand are counted. Cached: the same object is returned until the sheet's cells, the filter's hidden rows or the selection change. Cost: a selection up to 20 000 cells is walked cell by cell (well under 1 ms for typical selections); larger ones (whole rows / columns / sheet) cost one pass over the cells that exist: about 100 ms for the whole 846 000-cell dashboard "Data" sheet, once.
+- `OnSelectionChange` payload gained `Status`: the `GetStatus()` object of the new selection, worked out when the property is first read (a subscriber that does not read it pays nothing: a selection change on the 846k-cell sheet stays under 1 ms). The selection event does not fire when the cells of an unchanged selection change: call `GetStatus()` from `OnChange` to keep a status bar current.
+- `GetUsedRange`: the smallest range holding every cell with a value, a format or a note and every merged cell, as Excel's `UsedRange` (it need not start at A1; it does not shrink for cells that were emptied but keep a format). A sheet of an opened file that was not converted yet (`IsSheetLoaded`) is converted by the call.
+
+## Print / page setup (group 14)
+Page setup is per sheet. Every setter is ONE undo step (on the sheet on display; for another sheet a step of the workbook that is undone from the sheet on display), bumps the revision, fires `OnChange` naming the sheet, changes no cell, and is written to / read from XLSX (`pageSetup`, `pageMargins`, `printOptions`, `headerFooter`, `sheetPr/pageSetUpPr`, `rowBreaks` / `colBreaks`, and the sheet's `_xlnm.Print_Area` / `_xlnm.Print_Titles` names). `sheetIndex` is optional everywhere (default: the active sheet).
+
+| Member | Arguments | Returns | Notes |
+|---|---|---|---|
+| `GetPageSetup(sheetIndex?)` | | the `pageSetup` object below | |
+| `SetPageSetup(changes, sheetIndex?)` | a `pageSetup` object with only the keys to change | | A patch. `SetPageSetup(GetPageSetup())` changes nothing (and makes no undo step). Throws for an unknown key or a bad value; nothing is changed then. |
+| `GetPageBreaks(sheetIndex?)` | | `{ rows: number[], columns: number[] }` | Manual breaks: the 0-based rows / columns BEFORE which a break sits (`rows: [20]` = row 21 starts a page), ascending. |
+| `SetPageBreaks({ rows?, columns? }, sheetIndex?)` | | | Replaces the lists given; one not given stays. Duplicates are dropped. Throws for a break before row / column 0 or outside the sheet. |
+| `AddPageBreak(row \| null, col?, sheetIndex?)` | 0-based | `true` when a break was added | Throws when neither is given. |
+| `RemovePageBreak(row \| null, col?, sheetIndex?)` | | `true` when one was removed | |
+| `ClearPageBreaks(sheetIndex?)` | | how many there were | |
+
+The `pageSetup` object:
+```
+{ orientation: "portrait" | "landscape",
+  paperSize: "letter" | "tabloid" | "legal" | "executive" | "a3" | "a4" | "a5" | "b5" | { code: number },   // { code }: any other OOXML paper code (kept as is)
+  pageWidth, pageHeight: number,          // points, of the paper in portrait; read only (ignored by SetPageSetup)
+  margins: { top, bottom, left, right, header, footer: number },   // INCHES (as the file and Excel's dialog); 0..49
+  scale: number | null,                   // percent 10..400; null while the sheet is fitted to pages
+  fitToWidth, fitToHeight: number | null, // pages, 0 = as many as it takes; null while a scale applies
+  printArea: "A1:F40" | null,             // one area
+  printTitles: { rows: "1:2" | null, columns: "A:B" | null },
+  header, footer, firstHeader, firstFooter, evenHeader, evenFooter: { left, center, right, raw: string },
+  differentFirst, differentOddEven, scaleHeaderFooter: boolean,
+  gridlines, headings, centerHorizontally, centerVertically: boolean,
+  pageOrder: "downThenOver" | "overThenDown", blackAndWhite: boolean,
+  firstPageNumber: number | null,         // null: automatic
+  comments: "none" | "asDisplayed" | "atEnd" }
+```
+- Setting: `scale` (a number) switches fitting off; `fitToWidth` and / or `fitToHeight` switch it on (the side not given keeps its number, initially 1); giving a scale and a fit in one call throws; `null` for any of the three is ignored (so the object of `GetPageSetup` can be handed back). `paperSize`: a name, a code number or `{ code }`. `margins` may name some sides. `printArea`: an A1 range (`$` allowed) or `null`. `printTitles`: `{ rows?, columns? }` (whole rows `"1:2"` / whole columns `"A:B"`, `null` clears that one) or `null` (clears both). `firstPageNumber: null` = automatic.
+- Headers and footers are text in Excel's code syntax: `&P` page number, `&N` number of pages, `&D` date, `&T` time, `&F` file name, `&A` sheet name, `&&` a literal ampersand, `&"Font,Style"`, `&12` font size, `&K RRGGBB` colour, `&B` `&I` `&U` toggles. `left` / `center` / `right` are the sections of `raw` (`&L...&C...&R...`; text before the first marker belongs to the centre). To set one: a string (the raw text), `null` (none), `{ raw }`, or `{ left?, center?, right? }` (sections not given stay as they are). At most 255 characters with the codes. `firstHeader` / `firstFooter` apply when `differentFirst`, `evenHeader` / `evenFooter` when `differentOddEven` (the flags are separate keys and are not set implicitly).
+- The print area, the print titles and the breaks follow inserted and deleted rows / columns (and their undo); the print names follow a sheet rename (they are written from the page setup, not stored as defined names: `GetDefinedNames` does not list them and `SetDefinedName` refuses `_xlnm.` names).
+- XLSX: a sheet of an opened file whose setup was not changed is written exactly as the file had it (also a multi-area print area and printer settings the editor does not model). Once the page setup of a sheet is changed, the `<pageSetup>` element is written from the model: `horizontalDpi` / `verticalDpi`, the printer-settings relationship (`r:id`), `draft`, `errors`, `copies` and `autoPageBreaks` are not written for that sheet.
+- No page count / page rectangles: pagination lives in the PDF exporter (`Rbt.Spreadsheet.Pdf`, .NET only) and is not part of the browser bundle.
+
+## Calculation (groups 15 / 16)
+Nothing to call for the recalculation itself: every edit recalculates what it has to. What a host can read and set:
+
+- `GetRecalcStats()` -> `{ Kind: "incremental" | "full" | "none", Reason, ChangedCells, ReachedFormulas, EvaluatedFormulas, Formulas }` (existing; PascalCase keys).
+  After an edit of cells the kind is "incremental" - also in workbooks with dynamic arrays, OFFSET / INDIRECT and 3-D references. It is "full" (every formula of
+  the workbook, in one dependency order across the sheets) with one of these reasons:
+  - "more than cells changed (sheets, names, tables, filters, rows or columns)"
+  - "rows, columns, sheets or names changed" (a member that always recalculates everything)
+  - "a circular reference among the formulas to evaluate" (the edit makes, or reaches, a circular reference)
+  - "the dynamic arrays do not settle (a circular reference through spilled cells)"
+  - "formulas that choose their precedents (OFFSET, INDIRECT) do not settle (a circular reference through them)"
+  - "no calculated state to start from" / "incremental recalculation is switched off"
+- `SetIncrementalRecalculation(enabled: boolean)` (existing): off = every edit is a full recalculation.
+- Circular references. The formulas ON a circular reference - within a sheet, across sheets, through a defined name, a 3-D reference or the cells of a
+  dynamic array - have the engine's cycle error as their value (GetCell: `{ value: "#CYCLE", valueType: "error" }`; it is not one of Excel's error values - Excel shows 0 and a warning); a formula that only reads one has that error as any formula
+  reading an error has (IFERROR catches it). This is the same after every edit and whatever the order of the sheets.
+- `GetIterativeCalculation()` -> `{ enabled: boolean, maxIterations: number, maxChange: number }`. Excel's "Enable iterative calculation" (File > Options >
+  Formulas), a setting of the workbook that is read from and written to the file (`<calcPr iterate iterateCount iterateDelta>`). When off: `{ enabled: false,
+  maxIterations: 100, maxChange: 0.001 }`. When on, the formulas of a circular reference are not errors: they are calculated again and again, from the
+  values they have, until none changes by `maxChange` or more, at most `maxIterations` times per recalculation (as in Excel a cycle that does not converge
+  moves on by that many steps at every recalculation that reaches it). Financial models with a deliberate circular reference (interest on a loan that
+  finances the interest) need it: four of the six real-world workbooks in the test corpus have it on.
+- `SetIterativeCalculation(enabled: boolean, maxIterations?: number = 100, maxChange?: number = 0.001)` -> void. Recalculates the workbook. ONE undo step
+  (on the active sheet's history, like the other workbook-level steps), bumps the revision, fires OnChange with `WorkbookChanged: true`. Throws
+  `SetIterativeCalculation: ...` when `enabled` is not a boolean, `maxIterations` is not 1..32767 or `maxChange` is negative.
+- 3-D references (`=SUM(Jan:Mar!B2)`): read the range on every sheet between the two named sheets in tab order, whatever the order they are named in.
+  `MoveSheet` / `AddSheet` / `DeleteSheet` of a sheet inside the span change what is read, not the text. `DeleteSheet` of a sheet a span ends at re-points
+  the span to that sheet's neighbour inside it (`Jan:Mar` without Mar is `'Jan:Feb'`, a span of two is left as a plain reference to the one sheet, a span
+  of that one sheet is `#REF!`), as Excel does; undo restores the text. `RenameSheet` re-points either end. Inserting or deleting rows / columns on ONE
+  sheet of the span does not re-point a 3-D reference (Excel does not either: it is the same cells on every sheet of the span); it reads whatever is at
+  those cells afterwards.
