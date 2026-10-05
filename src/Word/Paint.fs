@@ -539,7 +539,11 @@ let private tableFillCommands backgroundColor shading x y width height =
         | Some color -> [FillRect (color, x, y, width, height)]
         | None -> []
 
-let private borderJoinEpsilon = 0.01
+/// How near two border segments' coordinates are for the segments to meet.
+/// (Half a pixel: the rows of a table do not all start to the hundredth of a
+/// pixel where the row above ends, and borders that miss each other by that
+/// much were drawn as if nothing crossed them.)
+let private borderJoinEpsilon = 0.5
 
 let private segmentIsHorizontal (segment: RedBat.BorderGrid.Segment) =
     abs (segment.Y1 - segment.Y2) < borderJoinEpsilon
@@ -590,27 +594,118 @@ let private indexedPerpendicularHalfWidth (segmentsByCoordinate: Dictionary<int,
                     maxWidth <- max maxWidth (candidate.Stroke.Width / 2.0)
     maxWidth
 
-let private tableBorderJoinCaps (index: TableBorderJoinIndex) (segment: RedBat.BorderGrid.Segment) =
-    let perpendicularHalfWidth x y =
-        if segmentIsHorizontal segment then
-            indexedPerpendicularHalfWidth index.Vertical x (fun candidate ->
-                abs (candidate.X1 - x) < borderJoinEpsilon
-                && coversCoordinate y candidate.Y1 candidate.Y2)
-        elif segmentIsVertical segment then
-            indexedPerpendicularHalfWidth index.Horizontal y (fun candidate ->
-                abs (candidate.Y1 - y) < borderJoinEpsilon
-                && coversCoordinate x candidate.X1 candidate.X2)
+/// What a border segment meets at one of its ends: the border that crosses
+/// its line there on the side of the lower coordinates (above a horizontal
+/// segment, left of a vertical one) and on the other side, and whether its
+/// own line goes on past the end in a segment of its own.
+[<Struct>]
+type private BorderJoin = {
+    Before: RedBat.BorderGrid.Stroke voption
+    After: RedBat.BorderGrid.Stroke voption
+    Continues: bool
+}
+
+let private noBorderJoin : BorderJoin = { Before = ValueNone; After = ValueNone; Continues = false }
+
+let private widerStroke (current: RedBat.BorderGrid.Stroke voption) (candidate: RedBat.BorderGrid.Stroke) =
+    match current with
+    | ValueSome known when known.Width >= candidate.Width -> current
+    | _ -> ValueSome candidate
+
+let private tableBorderJoinCaps (index: TableBorderJoinIndex) (segment: RedBat.BorderGrid.Segment) : BorderJoin * BorderJoin =
+    let horizontal = segmentIsHorizontal segment
+    let vertical = segmentIsVertical segment
+    // `along`: the coordinate along the segment's line, `across`: the line's own.
+    let joinAt (x: float) (y: float) (atStart: bool) : BorderJoin =
+        if not horizontal && not vertical then noBorderJoin
         else
-            0.0
+            let along, across = if horizontal then x, y else y, x
+            let crossing = if horizontal then index.Vertical else index.Horizontal
+            let own = if horizontal then index.Horizontal else index.Vertical
+            let mutable before = ValueNone
+            let mutable after = ValueNone
+            let mutable continues = false
+            let alongKey = borderJoinCoordinateKey along
+            for delta in -1 .. 1 do
+                match crossing.TryGetValue(alongKey + delta) with
+                | false, _ -> ()
+                | true, candidates ->
+                    for candidate in candidates do
+                        let fixedAt, first, second = if horizontal then candidate.X1, candidate.Y1, candidate.Y2 else candidate.Y1, candidate.X1, candidate.X2
+                        if abs (fixedAt - along) < borderJoinEpsilon && coversCoordinate across first second then
+                            if min first second < across - borderJoinEpsilon then before <- widerStroke before candidate.Stroke
+                            if max first second > across + borderJoinEpsilon then after <- widerStroke after candidate.Stroke
+            let acrossKey = borderJoinCoordinateKey across
+            for delta in -1 .. 1 do
+                match own.TryGetValue(acrossKey + delta) with
+                | false, _ -> ()
+                | true, candidates ->
+                    for candidate in candidates do
+                        if not (obj.ReferenceEquals(candidate, segment)) then
+                            let fixedAt, first, second = if horizontal then candidate.Y1, candidate.X1, candidate.X2 else candidate.X1, candidate.Y1, candidate.Y2
+                            if abs (fixedAt - across) < borderJoinEpsilon then
+                                if atStart then
+                                    if min first second < along - borderJoinEpsilon && max first second >= along - borderJoinEpsilon then continues <- true
+                                elif max first second > along + borderJoinEpsilon && min first second <= along + borderJoinEpsilon then continues <- true
+            { Before = before; After = after; Continues = continues }
+    joinAt segment.X1 segment.Y1 true, joinAt segment.X2 segment.Y2 false
 
-    perpendicularHalfWidth segment.X1 segment.Y1, perpendicularHalfWidth segment.X2 segment.Y2
+/// How far one line of a border segment runs past the segment's end (less
+/// than nothing: it stops short of it), so that the lines of compound
+/// borders meet as Word draws them. `partOffset`: where the line lies across
+/// the border (below zero: on the side of the lower coordinates).
+///
+/// A border that crosses is itself one or more lines. A line on a side where
+/// a border crosses turns into that border's nearest line (the inner lines
+/// of a double border meet at a corner, and both stop at the first line of a
+/// border they run into); a line on a side where none crosses goes straight
+/// on when its border continues, and otherwise runs round the outside of
+/// the corner, out to the far line of the border on the other side. With
+/// single lines all of this is the old rule: half the crossing border's width.
+let private borderLineCap (join: BorderJoin) (partOffset: float) (atStart: bool) : float =
+    let lines (stroke: RedBat.BorderGrid.Stroke) =
+        let width = max 0.25 stroke.Width
+        let parts = RedBat.BorderGrid.strokePattern stroke.Style
+        let firstOffset, firstWidth = List.head parts
+        let lastOffset, lastWidth = List.last parts
+        struct (firstOffset * width, max 0.25 (firstWidth * width), lastOffset * width, max 0.25 (lastWidth * width))
+    // (At its start a segment lies after the junction: the crossing border's last line is the nearest.)
+    let near (stroke: RedBat.BorderGrid.Stroke) =
+        let struct (firstOffset, firstWidth, lastOffset, lastWidth) = lines stroke
+        if atStart then lastWidth / 2.0 - lastOffset else firstOffset + firstWidth / 2.0
+    let far (stroke: RedBat.BorderGrid.Stroke) =
+        let struct (firstOffset, firstWidth, lastOffset, lastWidth) = lines stroke
+        if atStart then firstWidth / 2.0 - firstOffset else lastOffset + lastWidth / 2.0
+    let side (own: RedBat.BorderGrid.Stroke voption) (other: RedBat.BorderGrid.Stroke voption) =
+        match own with
+        | ValueSome stroke -> near stroke
+        | ValueNone ->
+            if join.Continues then 0.0
+            else
+                match other with
+                | ValueSome stroke -> far stroke
+                | ValueNone -> 0.0
+    if partOffset < -0.001 then side join.Before join.After
+    elif partOffset > 0.001 then side join.After join.Before
+    else
+        // A line in the middle of its border (a single line): it ends at the first line of a border that
+        // runs through, and covers the corner of one it turns into.
+        match join.Before, join.After with
+        | ValueSome before, ValueSome after ->
+            let stroke = if before.Width >= after.Width then before else after
+            if join.Continues then far stroke else near stroke
+        | ValueSome stroke, ValueNone
+        | ValueNone, ValueSome stroke -> far stroke
+        | ValueNone, ValueNone -> 0.0
 
-let private addStrokeTableBorderCommands (commands: ResizeArray<PaintCommand>) color width style x1 y1 x2 y2 startCap endCap =
+let private addStrokeTableBorderCommands (commands: ResizeArray<PaintCommand>) color width style x1 y1 x2 y2 (startJoin: BorderJoin) (endJoin: BorderJoin) =
     let width = max 0.25 width
     let dashStyle = dashStyleForTableBorderStyle style
-    for offset, partWidth in RedBat.BorderGrid.strokePattern style do
-        let offset = offset * width
+    for patternOffset, partWidth in RedBat.BorderGrid.strokePattern style do
+        let offset = patternOffset * width
         let partWidth = max 0.25 (partWidth * width)
+        let startCap = borderLineCap startJoin patternOffset true
+        let endCap = borderLineCap endJoin patternOffset false
         if y1 = y2 then
             commands.Add(StrokeLine (color, partWidth, dashStyle, 0.0, x1 - startCap, y1 + offset, x2 + endCap, y2 + offset))
         else
@@ -655,6 +750,8 @@ let tableFragmentPaintCommands (plan: TableLayoutPlan) =
     let tableBackgroundX = plan.TableX - tableSpacing * 2.0
     let cellFragments = tableCellPaintFragmentPlans plan
     let mutable remainingCellFragments = cellFragments
+    // The row fragments that are painted, in order: page, y, height, the fills, the border segments.
+    let painted = ResizeArray<struct (int * float * float * ResizeArray<PaintCommand> * RedBat.BorderGrid.Segment list)>()
 
     for row in plan.Rows do
         for fragment in row.Fragments do
@@ -676,22 +773,37 @@ let tableFragmentPaintCommands (plan: TableLayoutPlan) =
                 && fragment.ConsumedLineStart = fragment.ConsumedLineEnd
                 && fragment.ConsumedLineStart > 0
             if not alreadyConsumedEmptyContinuation then
+                let fills = ResizeArray<PaintCommand>()
                 tableFillCommands plan.Table.BackgroundColor plan.Table.Shading tableBackgroundX fragment.Y plan.TableWidth fragment.Height
-                |> List.iter commands.Add
+                |> List.iter fills.Add
+                let borderSegments =
+                    if rowFragments.Count > 0 then
+                        for cellFragment in rowFragments do
+                            tableFillCommands cellFragment.CellBackgroundColor cellFragment.CellShading (cellFragment.CellX - cellFragment.CellSpacing) cellFragment.CellY cellFragment.CellWidth cellFragment.CellHeight
+                            |> List.iter fills.Add
+                        tableFragmentBorderCells rowFragments |> RedBat.BorderGrid.resolveResizeArray
+                    else []
+                painted.Add(struct (fragment.Page, fragment.Y, fragment.Height, fills, borderSegments))
 
-                if rowFragments.Count > 0 then
-                    for cellFragment in rowFragments do
-                        tableFillCommands cellFragment.CellBackgroundColor cellFragment.CellShading (cellFragment.CellX - cellFragment.CellSpacing) cellFragment.CellY cellFragment.CellWidth cellFragment.CellHeight
-                        |> List.iter commands.Add
-
-                    let borderSegments =
-                        tableFragmentBorderCells rowFragments
-                        |> RedBat.BorderGrid.resolveResizeArray
-                    let joinIndex = tableBorderJoinIndex borderSegments
-
-                    for segment in borderSegments do
-                        let startCap, endCap = tableBorderJoinCaps joinIndex segment
-                        addStrokeTableBorderCommands commands segment.Stroke.Color segment.Stroke.Width segment.Stroke.Style segment.X1 segment.Y1 segment.X2 segment.Y2 startCap endCap
+    // A row's borders are drawn with the row, and meet the borders of the rows next to it on
+    // the page: where a line of a compound border ends depends on what crosses it there, and
+    // at the bottom of a row that is the row below.
+    for index in 0 .. painted.Count - 1 do
+        let struct (page, y, height, fills, borderSegments) = painted.[index]
+        commands.AddRange fills
+        if not borderSegments.IsEmpty then
+            let neighbours =
+                [ if index > 0 then
+                    let struct (otherPage, otherY, otherHeight, _, others) = painted.[index - 1]
+                    if otherPage = page && abs (otherY + otherHeight - y) < 1.0 then yield! others
+                  yield! borderSegments
+                  if index + 1 < painted.Count then
+                    let struct (otherPage, otherY, _, _, others) = painted.[index + 1]
+                    if otherPage = page && abs (y + height - otherY) < 1.0 then yield! others ]
+            let joinIndex = tableBorderJoinIndex neighbours
+            for segment in borderSegments do
+                let startCap, endCap = tableBorderJoinCaps joinIndex segment
+                addStrokeTableBorderCommands commands segment.Stroke.Color segment.Stroke.Width segment.Stroke.Style segment.X1 segment.Y1 segment.X2 segment.Y2 startCap endCap
 
     let bottomSpacing = WordLayout.Table.cellSpacing WordLayout.canvasScale plan.Table
     if bottomSpacing > 0.0 then
@@ -1272,8 +1384,8 @@ let rec private tableBorderCommandsCoreAt nestedTablePaintDepth (styleContext: D
                         if segment.Y1 >= fragmentY && segment.Y1 <= fragmentY + fragmentHeight then
                             addStrokeTableBorderCommands commands segment.Stroke.Color segment.Stroke.Width segment.Stroke.Style segment.X1 segment.Y1 segment.X2 segment.Y2 startCap endCap
                     elif y2 > y1 then
-                        let clippedStartCap = if abs (y1 - segment.Y1) < borderJoinEpsilon then startCap else 0.0
-                        let clippedEndCap = if abs (y2 - segment.Y2) < borderJoinEpsilon then endCap else 0.0
+                        let clippedStartCap = if abs (y1 - segment.Y1) < borderJoinEpsilon then startCap else noBorderJoin
+                        let clippedEndCap = if abs (y2 - segment.Y2) < borderJoinEpsilon then endCap else noBorderJoin
                         addStrokeTableBorderCommands commands segment.Stroke.Color segment.Stroke.Width segment.Stroke.Style segment.X1 y1 segment.X2 y2 clippedStartCap clippedEndCap
 
             // Row-level tblPrEx override (BordersOverride): paint the row's
@@ -1302,7 +1414,7 @@ let rec private tableBorderCommandsCoreAt nestedTablePaintDepth (styleContext: D
                             else
                                 let width = b.Width |> Option.defaultValue 0.5
                                 let color = b.Color |> Option.defaultValue "#000000"
-                                addStrokeTableBorderCommands commands color width b.Style x1 y1 x2 y2 0.0 0.0
+                                addStrokeTableBorderCommands commands color width b.Style x1 y1 x2 y2 noBorderJoin noBorderJoin
                     paintOuterBorder overrideBorders.Top outerLeft outerTop outerRight outerTop
                     paintOuterBorder overrideBorders.Bottom outerLeft outerBottom outerRight outerBottom
                     paintOuterBorder overrideBorders.Left outerLeft outerTop outerLeft outerBottom
