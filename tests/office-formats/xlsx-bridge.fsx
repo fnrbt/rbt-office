@@ -226,7 +226,7 @@ let viewOut =
           NameInfo = Map.empty; DefinedNames = Map.empty; Source = None; Macros = None }
 let viewBack = reread viewOut
 eq "view: written to the sheet view" (viewBack.Sheets |> List.map (fun s -> s.View, s.ShowZeros, s.ShowGridLines, s.FrozenPane))
-    [ { XlsxReader.ShowRowColHeaders = false; ShowFormulas = true; ZoomScale = 135 }, false, false, Some { XlsxReader.XSplit = 2; YSplit = 3 }
+    [ { XlsxReader.ShowRowColHeaders = false; ShowFormulas = true; ZoomScale = 135; TabColor = None }, false, false, Some { XlsxReader.XSplit = 2; YSplit = 3 }
       XlsxReader.defaultSheetView, true, true, None ]
 let viewAgain = (Bridge.Import.importWorkbook viewBack).Sheets |> Array.map (fun sheet -> sheet.Model)
 eq "view: the import has what the export had"
@@ -449,6 +449,65 @@ match arrayAnchor with
 let roomy = Bridge.Import.importWorkbookWith Bridge.editorImportOptions wb
 ok "editor options leave room to grow" (roomy.Sheets.[0].Model.RowCount >= imported.Sheets.[0].Model.RowCount + 100 && roomy.Sheets.[0].Model.ColCount >= imported.Sheets.[0].Model.ColCount + 20) "model is not larger"
 eq "the cells are the same either way" (roomy.Sheets.[0].Model.Cells = imported.Sheets.[0].Model.Cells) true
+
+// ---- the list of sheets: tab colours, hidden and very hidden, sheets renamed / moved / deleted / copied ----
+let tabbed =
+    [| { fresh with TabColor = Some "#FF8800" }; { createEmpty 10 5 with VeryHidden = true }; { createEmpty 10 5 with TabColor = Some "theme:4:-0.249977111117893" }
+       { createEmpty 10 5 with TabColor = Some "indexed:10"; VeryHidden = true } |]
+let tabbedInput (sheets: SpreadsheetModel array) (names: string array) (visible: bool array) (source: Bridge.XlsxSource option) : Bridge.ExportInput =
+    { Sheets = sheets; Names = names; Visible = visible; ActiveSheetIndex = 0; NameInfo = Map.empty; DefinedNames = Map.empty; Source = source; Macros = None }
+let tabbedBytes = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (tabbedInput tabbed [| "One"; "Two"; "Three"; "Four" |] [| true; false; true; true |] None))
+let tabbedBack = XlsxReader.loadBytesNative tabbedBytes |> Option.get
+eq "sheets: tab colours and states are written"
+    (tabbedBack.Sheets |> List.map (fun s -> s.Name, s.State, s.View.TabColor))
+    [ "One", XlsxReader.SheetVisible, Some "#FF8800"; "Two", XlsxReader.SheetVeryHidden, None; "Three", XlsxReader.SheetVisible, Some "theme:4:-0.249977111117893"
+      // (A sheet with a tab is not very hidden, whatever its model says.)
+      "Four", XlsxReader.SheetVisible, Some "indexed:10" ]
+let tabbedImport = Bridge.Import.importWorkbook tabbedBack
+eq "sheets: ... and read" (tabbedImport.Sheets |> Array.map (fun s -> s.Visible, s.Model.VeryHidden, s.Model.TabColor))
+    [| true, false, Some "#FF8800"; false, true, None; true, false, Some "theme:4:-0.249977111117893"; true, false, Some "indexed:10" |]
+let tabbedLazy = Bridge.Import.importWorkbookLazy (fun index -> index = 0) tabbedBack
+eq "sheets: a sheet that is not converted yet knows its colour and whether it is very hidden"
+    (tabbedLazy.Sheets |> Array.map (fun s -> isDeferredSheet s.Model, s.Model.VeryHidden, s.Model.TabColor))
+    [| false, false, Some "#FF8800"; true, true, None; true, false, Some "theme:4:-0.249977111117893"; true, false, Some "indexed:10" |]
+// Colour and visibility change on the stand-in; the sheet is written without being converted.
+let recoloured =
+    tabbedLazy.Sheets |> Array.mapi (fun index s ->
+        match index with
+        | 1 -> { s.Model with VeryHidden = false }
+        | 2 -> { s.Model with TabColor = Some "#112233" }
+        | 3 -> { s.Model with TabColor = None }
+        | _ -> s.Model)
+let recolouredBack =
+    XlsxReader.loadBytesNative (XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (tabbedInput recoloured [| "One"; "Renamed"; "Three"; "Four" |] [| true; false; true; false |] (Some tabbedLazy.Source)))) |> Option.get
+eq "sheets: changed without converting"
+    (recolouredBack.Sheets |> List.map (fun s -> s.Name, s.State, s.View.TabColor), recoloured |> Array.map isDeferredSheet)
+    ([ "One", XlsxReader.SheetVisible, Some "#FF8800"; "Renamed", XlsxReader.SheetHidden, None; "Three", XlsxReader.SheetVisible, Some "#112233"; "Four", XlsxReader.SheetHidden, None ],
+     [| false; true; true; true |])
+// Renamed, moved, one deleted, one copied: through the workbook operations, then the file.
+let listed =
+    let models = [| fresh |> setCell (addr 5 0) { Value = CellValue.Formula ("=Second!A1+1", CellValue.Number 8.0); Format = defaultFormat; Comment = None }
+                    createEmpty 10 5 |> setCell (addr 0 0) { Value = CellValue.Number 7.0; Format = defaultFormat; Comment = None }
+                                     |> setCell (addr 1 0) { Value = CellValue.Formula ("=First!A2*2", CellValue.Number 6.0); Format = defaultFormat; Comment = None }
+                    createEmpty 10 5 |> setCell (addr 0 0) { Value = CellValue.Formula ("=Second!A1+First!A2", CellValue.Number 10.0); Format = defaultFormat; Comment = None } |]
+    Bridge.buildWorkbookContext models [| "First"; "Second"; "Third" |] [| true; true; true |] Map.empty Map.empty 0
+    |> Wb.setDefinedName None "Seven" "Second!$A$1" None
+let relisted =
+    listed
+    |> Wb.renameSheetEverywhere "sheet2" "Number 2"
+    |> Wb.moveSheet "sheet3" 0
+    |> Wb.duplicateSheet "sheet1" "sheet4" "First (2)" 2
+    |> fun wb -> fst (Wb.removeSheet "sheet1" wb).Value
+    |> Wb.setSheetVisibility "sheet3" false true
+let relistedOrder = List.toArray relisted.SheetOrder
+let relistedBack =
+    XlsxReader.loadBytesNative (XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut
+        { Sheets = relistedOrder |> Array.map (fun id -> relisted.Sheets.[id].Model); Names = relistedOrder |> Array.map (fun id -> relisted.Sheets.[id].Name)
+          Visible = relistedOrder |> Array.map (fun id -> relisted.Sheets.[id].Visible); ActiveSheetIndex = 1; NameInfo = relisted.NameInfo; DefinedNames = relisted.Names; Source = None; Macros = None })) |> Option.get
+eq "sheets: the list after the operations" (relistedBack.Sheets |> List.map (fun s -> s.Name, s.State)) [ "Third", XlsxReader.SheetVeryHidden; "First (2)", XlsxReader.SheetVisible; "Number 2", XlsxReader.SheetVisible ]
+let formulasOf (sheet: XlsxReader.Worksheet) = sheet.Rows |> List.collect (fun r -> r.Cells |> List.choose (fun c -> c.Formula))
+eq "sheets: formulas name the sheets as they are now" (relistedBack.Sheets |> List.map formulasOf) [ [ "'Number 2'!A1+#REF!" ]; [ "A2*2"; "'Number 2'!A1+1" ]; [ "#REF!*2" ] ]
+eq "sheets: so do defined names" (relistedBack.NamedRanges |> List.map (fun n -> n.Name.ToUpperInvariant(), n.RefersTo)) [ "SEVEN", "'Number 2'!$A$1" ]
 
 printfn ""
 printfn "XLSX bridge tests: %d passed, %d failed" pass fail

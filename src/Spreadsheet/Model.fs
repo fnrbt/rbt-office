@@ -948,6 +948,15 @@ type SpreadsheetModel = {
     /// Ranges of things the editor does not model (pivot tables).
     KeptRanges: KeptRange list
 
+    /// The colour of the sheet's tab: "#RRGGBB", or a colour of the file's
+    /// theme / palette as the file names it ("theme:4", "theme:4:-0.25",
+    /// "indexed:10"). None = no colour.
+    TabColor: string option
+
+    /// A sheet without a tab (the workbook says which sheets have one) that
+    /// is "very hidden": Excel does not offer to unhide it.
+    VeryHidden: bool
+
     /// Which sheet of the opened file this model is, when it came from one.
     /// It stays with the model through renames, reordering and added or
     /// removed sheets, so a save can carry over what the editor does not
@@ -1045,6 +1054,8 @@ let createEmpty rowCount colCount = {
     ColumnStyles = []
     DataTables = []
     KeptRanges = []
+    TabColor = None
+    VeryHidden = false
     SourceSheet = None
     StructureVersion = 0
     Deferred = None
@@ -1482,6 +1493,15 @@ type CellMove = {
 
 /// Formula-text rewrites. They need the formula parser and printer, which
 /// compile after this module (Formula.fs), so Formula.fs installs them here.
+/// A change of the workbook's sheets or tables that the text of formulas has to follow.
+type SheetRewrite =
+    /// References to the sheet named `oldName` name it `newName`.
+    | RenameSheetRefs of oldName: string * newName: string
+    /// References to the sheet named `name` (it is deleted) become #REF!.
+    | DeleteSheetRefs of name: string
+    /// Structured references to the table `oldName` name it `newName`.
+    | RenameTableRefs of oldName: string * newName: string
+
 type FormulaHooks = {
     /// Shift every relative reference by (rows, cols) — copy/paste and fill.
     Shift: int -> int -> string -> string
@@ -1494,6 +1514,8 @@ type FormulaHooks = {
     /// away, at `cell` of `model` — how validation and conditional-format
     /// formulas are applied to each cell of their range.
     Evaluate: string -> int -> int -> SpreadsheetModel -> CellAddress -> CellValue
+    /// Re-point references after a sheet was renamed or deleted, or a table renamed.
+    Sheets: SheetRewrite -> string -> string
 }
 
 let mutable private formulaHooks : FormulaHooks option = None
@@ -1543,6 +1565,14 @@ let adjustFormulaForEdit (edit: StructureEdit) (targetsEditedSheet: string optio
 let moveFormulaReferences (move: CellMove) (formula: string) : string =
     match currentFormulaHooks () with
     | Some hooks -> hooks.Move move formula
+    | None -> formula
+
+/// Re-point a formula's references after a sheet was renamed or deleted, or
+/// a table renamed. Text that does not parse, or that does not mention the
+/// sheet / table, is returned as it was.
+let rewriteFormulaForSheets (change: SheetRewrite) (formula: string) : string =
+    match currentFormulaHooks () with
+    | Some hooks -> hooks.Sheets change formula
     | None -> formula
 
 /// Evaluate `formula` (written for a cell `rows`/`cols` before `cell`) at
@@ -2009,6 +2039,57 @@ let rewriteFormulasForEdit (edit: StructureEdit) (targetsEditedSheet: string opt
                 changed <- true
         | _ -> ()
     if changed then { model with Cells = cells } |> invalidateFilterProjection else model
+
+/// Apply `rewrite` to every formula a sheet holds: its formula cells, the
+/// formulas of its conditional formats and of its validations. The model
+/// itself when nothing changed.
+let mapModelFormulas (rewrite: string -> string) (model: SpreadsheetModel) : SpreadsheetModel =
+    let mutable cells = model.Cells
+    for KeyValue(addr, cellData) in model.Cells do
+        match cellData.Value with
+        | Formula (formula, cached) ->
+            let rewritten = rewrite formula
+            if rewritten <> formula then cells <- Map.add addr { cellData with Value = Formula (rewritten, cached) } cells
+        | _ -> ()
+    let threshold (value: CfThreshold) =
+        match value.Kind with
+        | CfvoFormula -> { value with Value = value.Value |> Option.map rewrite }
+        | _ -> value
+    let conditionalFormats =
+        model.ConditionalFormats
+        |> List.map (fun entry ->
+            let rule =
+                match entry.Format.Rule with
+                | CellIs (op, first, second) -> CellIs (op, rewrite first, second |> Option.map rewrite)
+                | Expression formula -> Expression (rewrite formula)
+                | ColorScale stops -> ColorScale (stops |> List.map (fun (stop, color) -> threshold stop, color))
+                | DataBar (low, high, color) -> DataBar (threshold low, threshold high, color)
+                | IconSet (family, thresholds, reverse) -> IconSet (family, thresholds |> List.map threshold, reverse)
+                | other -> other
+            if rule = entry.Format.Rule then entry else { entry with Format = { entry.Format with Rule = rule } })
+    let validations =
+        model.Validations
+        |> List.map (fun entry ->
+            let rule =
+                match entry.Validation.Rule with
+                | Comparison (kind, op, first, second) -> Comparison (kind, op, rewrite first, second |> Option.map rewrite)
+                | CustomFormula formula -> CustomFormula (rewrite formula)
+                | ListSource source ->
+                    let rewritten = rewrite ("=" + source)
+                    ListSource (if rewritten.StartsWith "=" then rewritten.Substring 1 else rewritten)
+                | other -> other
+            if rule = entry.Validation.Rule then entry else { entry with Validation = { entry.Validation with Rule = rule } })
+    let sameCells = obj.ReferenceEquals(cells, model.Cells)
+    let sameFormats = conditionalFormats = model.ConditionalFormats
+    let sameValidations = validations = model.Validations
+    if sameCells && sameFormats && sameValidations then model
+    else
+        let changed =
+            { model with
+                Cells = cells
+                ConditionalFormats = (if sameFormats then model.ConditionalFormats else conditionalFormats)
+                Validations = (if sameValidations then model.Validations else validations) }
+        if sameCells then changed else invalidateFilterProjection changed
 
 /// Insert or delete rows/columns on a sheet. `targetsEditedSheet` tells which
 /// sheet qualifiers in this sheet's own formulas refer back to it (always the

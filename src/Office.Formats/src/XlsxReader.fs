@@ -407,9 +407,25 @@ type SheetViewOptions = {
     ShowFormulas: bool
     /// `zoomScale`, in percent (100 when absent).
     ZoomScale: int
+    /// The colour of the sheet's tab (`<sheetPr><tabColor/>`; it is kept here
+    /// with the other things a sheet says about how it is shown): "#RRGGBB"
+    /// for an rgb colour, else "theme:N" / "theme:N:tint" / "indexed:N" as
+    /// the file has it. None = no colour.
+    TabColor: string option
 }
 
-let defaultSheetView : SheetViewOptions = { ShowRowColHeaders = true; ShowFormulas = false; ZoomScale = 100 }
+let defaultSheetView : SheetViewOptions = { ShowRowColHeaders = true; ShowFormulas = false; ZoomScale = 100; TabColor = None }
+
+/// The colour of a `<tabColor>` element from its attributes (see SheetViewOptions.TabColor).
+let tabColorOfAttributes (rgb: string option) (theme: string option) (tint: string option) (indexed: string option) : string option =
+    match rgb, theme, indexed with
+    | Some value, _, _ when value.Length = 8 || value.Length = 6 -> Some ("#" + value.Substring(value.Length - 6).ToUpperInvariant())
+    | _, Some index, _ when index <> "" ->
+        (match tint with
+         | Some tint when tint <> "" && tint <> "0" -> Some ("theme:" + index + ":" + tint)
+         | _ -> Some ("theme:" + index))
+    | _, _, Some index when index <> "" -> Some ("indexed:" + index)
+    | _ -> None
 
 /// `<sheetView>`. xSplit / ySplit are the column / row counts that stay
 /// pinned (NOT pixel offsets — Excel treats them as integer cell counts
@@ -2117,7 +2133,14 @@ module Xlsx =
               ZoomScale =
                 (match Xml.attr "zoomScale" view |> Option.bind tryParseInt with
                  | Some percent when percent >= 10 && percent <= 400 -> percent
-                 | _ -> 100) }
+                 | _ -> 100)
+              TabColor = None }
+
+    /// `<sheetPr><tabColor rgb | theme tint | indexed/></sheetPr>`.
+    let private tabColorOf (sheet: XmlNode) : string option =
+        sElem "sheetPr" sheet
+        |> Option.bind (sElem "tabColor")
+        |> Option.bind (fun node -> tabColorOfAttributes (Xml.attr "rgb" node) (Xml.attr "theme" node) (Xml.attr "tint" node) (Xml.attr "indexed" node))
 
     /// `<sheetView showGridLines="0"/>`. Excel's default is true; polished
     /// workbooks turn it off and rely on explicit cell borders.
@@ -2521,7 +2544,8 @@ module Xlsx =
                           ZoomScale =
                             (match nativeFloatAttr reader "zoomScale" |> Option.map int with
                              | Some percent when percent >= 10 && percent <= 400 -> percent
-                             | _ -> 100) }
+                             | _ -> 100)
+                          TabColor = None }
                     if not reader.IsEmptyElement then
                         sheetViewDepth <- reader.Depth
                 | System.Xml.XmlNodeType.Element when reader.LocalName = "pane" && sheetViewDepth >= 0 ->
@@ -2542,8 +2566,10 @@ module Xlsx =
                 | _ -> ()
         showZerosValue, showGridLinesValue, pane, view
 
-    let private fitToPageNative (reader: System.Xml.XmlReader) =
+    /// What `<sheetPr>` holds: the fit-to-page flag and the tab colour.
+    let private fitToPageNative (reader: System.Xml.XmlReader) : bool * string option =
         let mutable fit = false
+        let mutable tabColor = None
         if not reader.IsEmptyElement then
             let depth = reader.Depth
             let mutable doneReading = false
@@ -2551,10 +2577,13 @@ module Xlsx =
                 match reader.NodeType with
                 | System.Xml.XmlNodeType.Element when reader.LocalName = "pageSetUpPr" ->
                     fit <- nativeBoolAttr reader "fitToPage"
+                | System.Xml.XmlNodeType.Element when reader.LocalName = "tabColor" ->
+                    let attribute (name: string) = match reader.GetAttribute name with null -> None | value -> Some value
+                    tabColor <- tabColorOfAttributes (attribute "rgb") (attribute "theme") (attribute "tint") (attribute "indexed")
                 | System.Xml.XmlNodeType.EndElement when reader.Depth = depth ->
                     doneReading <- true
                 | _ -> ()
-        fit
+        fit, tabColor
 
     let private defaultPageSetupNative fit =
         {
@@ -2717,6 +2746,7 @@ module Xlsx =
             let mutable viewValue = defaultSheetView
             let mutable showGridLinesValue = true
             let mutable fitToPage = false
+            let mutable tabColorValue = None
             let mutable pageSetupValue = None
             let mutable pageMarginsValue = None
             let mutable printOptionsValue = defaultPrintOptions
@@ -2734,7 +2764,9 @@ module Xlsx =
                 | System.Xml.XmlNodeType.Element ->
                     match reader.LocalName with
                     | "sheetPr" ->
-                        fitToPage <- fitToPageNative reader
+                        let fit, tabColor = fitToPageNative reader
+                        fitToPage <- fit
+                        tabColorValue <- tabColor
                     | "sheetViews" ->
                         let showZeros, showGridLines, frozenPane, view = sheetViewsNative reader
                         viewValue <- view
@@ -2796,7 +2828,7 @@ module Xlsx =
                 FrozenPane = frozenPaneValue
                 ShowZeros = showZerosValue
                 ShowGridLines = showGridLinesValue
-                View = viewValue
+                View = { viewValue with TabColor = tabColorValue }
                 Hyperlinks = resizeListToList hyperlinks
                 PageSetup = pageSetupFinal
                 PageMargins = pageMarginsValue
@@ -2852,7 +2884,7 @@ module Xlsx =
             FrozenPane = frozenPane sheet
             ShowZeros = showZeros sheet
             ShowGridLines = showGridLines sheet
-            View = sheetViewOptions sheet
+            View = { sheetViewOptions sheet with TabColor = tabColorOf sheet }
             Hyperlinks = hyperlinks resolveRel sheet
             PageSetup = pageSetup sheet
             PageMargins = pageMargins sheet

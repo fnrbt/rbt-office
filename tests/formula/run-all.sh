@@ -52,6 +52,7 @@ stages=(
     stage34-cfapi
     stage35-validations
     stage36-names
+    stage37-sheets
     numbertext
 )
 

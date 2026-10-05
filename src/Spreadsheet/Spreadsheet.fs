@@ -166,16 +166,23 @@ let private packageBytes (written: JS.Promise<obj>): JS.Promise<byte[]> = jsNati
 type private BookContent = {
     Names: Map<SheetId option * string, string>
     NameInfo: Map<SheetId option * string, DefinedNameInfo>
+    /// The sheets without a tab, in tab order (the sheets themselves, their
+    /// names and their order are compared sheet by sheet).
+    Hidden: SheetId list
 }
 
 let private bookContentOf (workbook: Workbook option) : BookContent =
     match workbook with
-    | Some wb -> { Names = wb.Names; NameInfo = wb.NameInfo }
-    | None -> { Names = Map.empty; NameInfo = Map.empty }
+    | Some wb ->
+        { Names = wb.Names
+          NameInfo = wb.NameInfo
+          Hidden = wb.SheetOrder |> List.filter (fun id -> match Map.tryFind id wb.Sheets with Some sheet -> not sheet.Visible | None -> false) }
+    | None -> { Names = Map.empty; NameInfo = Map.empty; Hidden = [] }
 
 let private sameBookContent (a: BookContent) (b: BookContent) =
     (sameRef a.Names b.Names || a.Names = b.Names)
     && (sameRef a.NameInfo b.NameInfo || a.NameInfo = b.NameInfo)
+    && a.Hidden = b.Hidden
 
 /// Whether two models of a sheet hold the same document content: everything
 /// that is part of the workbook, as opposed to view and editing state
@@ -200,6 +207,8 @@ let private sameSheetContent (a: SpreadsheetModel) (b: SpreadsheetModel) =
         && a.ShowHeaders = b.ShowHeaders
         && a.ShowFormulas = b.ShowFormulas
         && a.ShowZeros = b.ShowZeros
+        && a.TabColor = b.TabColor
+        && a.VeryHidden = b.VeryHidden
         && sameRef a.Drawings b.Drawings
         && sameRef a.Threads b.Threads
         && a.Macros = b.Macros)
@@ -595,7 +604,12 @@ type Spreadsheet(container: Element) =
         if index >= 0 && index < sheets.Length then
             match sheets.[index].Deferred with
             | Some _ ->
-                let loaded = resolveSheet sheets.[index]
+                let standIn = sheets.[index]
+                let converted = resolveSheet standIn
+                // (What was changed on the sheet while it was not converted.)
+                let loaded =
+                    if converted.TabColor = standIn.TabColor && converted.VeryHidden = standIn.VeryHidden then converted
+                    else { converted with TabColor = standIn.TabColor; VeryHidden = standIn.VeryHidden }
                 sheets.[index] <- loaded
                 if index < revisionSheets.Length && revisionSheets.[index].Deferred.IsSome then revisionSheets.[index] <- loaded
                 if index < notifiedSheets.Length && notifiedSheets.[index].Deferred.IsSome then notifiedSheets.[index] <- loaded
@@ -1879,6 +1893,148 @@ type Spreadsheet(container: Element) =
             convertInPlace index
             sheets.[index]
 
+    // --- the list of sheets ---------------------------------------------------------
+    // Adding, deleting, renaming, moving, copying, hiding and colouring a sheet
+    // are steps of the workbook, not of one sheet, while undo histories are
+    // kept per sheet (Undo acts on the sheet on display). Such a step is put
+    // on the history of the sheet that is on display once it is done - the new
+    // sheet after AddSheet, the sheet that took a deleted one's place - so
+    // that Undo right after it takes it back. Undoing or redoing it can change
+    // which sheet is on display (undoing AddSheet removes the sheet on
+    // display): the step then moves to the history of the sheet that is on
+    // display afterwards, so that Redo / Undo find it there.
+
+    /// The steps that change the list of sheets (see above), by identity.
+    let bookSteps = ResizeArray<Command>()
+    let isBookStep (command: Command) = bookSteps |> Seq.exists (fun known -> obj.ReferenceEquals(known, command))
+    /// Every sheet id the workbook has had: a new sheet gets one that was
+    /// never used, since undo brings a deleted sheet back under its id.
+    let usedSheetIds = System.Collections.Generic.HashSet<SheetId>()
+    let sheetsListeners = ResizeArray<obj -> unit>()
+    /// What the OnSheetsChange subscribers were last told (the list as one text).
+    let mutable notifiedSheetList : string = ""
+
+    /// Put the grid at the top-left corner of the sheet.
+    let scrollHome () =
+        match gridContainer with
+        | Some grid ->
+            syncExtent()
+            setGridScrollTop grid 0.0
+            setGridScrollLeft grid 0.0
+        | None -> ()
+        scrollTop <- 0.0
+        scrollLeft <- 0.0
+
+    /// The workbook with the list of its sheets as the component holds it now.
+    let bookSnapshot () : Workbook =
+        ensureWorkbook () |> ignore
+        currentWorkbookSnapshot ()
+
+    /// Make `wb` the workbook: its sheets in its order with their names, its
+    /// active sheet on display. Each sheet keeps its active cell.
+    let installBook (wb: Workbook) =
+        let origin = { Row = 0; Col = 0 }
+        let anchors = System.Collections.Generic.Dictionary<SheetId, CellAddress>()
+        for index in 0 .. sheets.Length - 1 do
+            anchors.[sheetIdForIndex index] <-
+                (if index = activeSheetIndex then anchorCell elif index < sheetAnchors.Length then sheetAnchors.[index] else origin)
+        let activeBefore = sheetIdForIndex activeSheetIndex
+        let order = wb.SheetOrder |> List.filter (fun id -> Map.containsKey id wb.Sheets) |> List.toArray
+        sheets <- order |> Array.map (fun id -> wb.Sheets.[id].Model)
+        sheetNames <- order |> Array.map (fun id -> wb.Sheets.[id].Name)
+        sheetAnchors <- order |> Array.map (fun id -> match anchors.TryGetValue id with | true, anchor -> anchor | _ -> origin)
+        let active = max 0 (System.Array.IndexOf(order, wb.ActiveSheet))
+        activeSheetIndex <- active
+        workbook <- Some { wb with SheetOrder = List.ofArray order; ActiveSheet = order.[active] }
+        for id in order do usedSheetIds.Add id |> ignore
+        convertInPlace active
+        model <- sheets.[active]
+        anchorCell <- sheetAnchors.[active]
+        lookedUpCells.Clear()
+        if order.[active] <> activeBefore then
+            scrollHome ()
+            for listener in sheetChangedListeners do
+                try listener active with _ -> ()
+
+    /// The formulas of the workbook stand as they are, but the workbook they
+    /// were calculated in is another one (sheets renamed, moved, added): the
+    /// dependency graph is built again from the workbook as it is now.
+    let rebaseCalcEngine () =
+        invalidateCalcEngine ()
+        calculatedWorkbook <- Some (currentWorkbookSnapshot ())
+
+    /// Run a change of the list of sheets as one undoable step (see above).
+    /// `forward` makes the change and `back` takes it back; each reads the
+    /// workbook as it is when it runs, installs the changed one and
+    /// recalculates what it has to.
+    let runBookStep (description: string) (forward: unit -> unit) (back: unit -> unit) =
+        // The sheet on display is in `sheets` as it is now.
+        sheets.[activeSheetIndex] <- model
+        forward ()
+        let step = { Undo = (fun m -> back (); m); Redo = (fun m -> forward (); m); Description = description }
+        bookSteps.Add step
+        if bookSteps.Count > 400 then bookSteps.RemoveAt 0
+        model <- pushCommand step model
+
+    /// The sheet with an id as the workbook has it now, or None.
+    let sheetOfId (id: SheetId) (wb: Workbook) = Map.tryFind id wb.Sheets
+
+    /// The sheet list as GetSheetInfos gives it.
+    let tabColorHex (color: string option) : string option =
+        match color with
+        | Some value when value.StartsWith "#" -> Some value
+        | Some value when value.StartsWith "theme:" ->
+            // The colours of the Office theme, for a colour the file names by
+            // its place in the theme (the tint is left out).
+            let palette = [| "#FFFFFF"; "#000000"; "#E7E6E6"; "#44546A"; "#4472C4"; "#ED7D31"; "#A5A5A5"; "#FFC000"; "#5B9BD5"; "#70AD47" |]
+            (match System.Int32.TryParse (value.Split(':').[1]) with
+             | true, index when index >= 0 && index < palette.Length -> Some palette.[index]
+             | _ -> None)
+        | _ -> None
+
+    let sheetInfos () : obj array =
+        Array.init sheets.Length (fun index ->
+            let id = sheetIdForIndex index
+            let sheetModel = if index = activeSheetIndex then model else sheets.[index]
+            let visible =
+                match workbook |> Option.bind (fun wb -> Map.tryFind id wb.Sheets) with
+                | Some sheet -> sheet.Visible
+                | None -> true
+            createObj [
+                "index" ==> index
+                "id" ==> id
+                "name" ==> sheetNames.[index]
+                "visibility" ==> (if visible then "visible" elif sheetModel.VeryHidden then "veryHidden" else "hidden")
+                "tabColor" ==> Host.orNull (tabColorHex sheetModel.TabColor)
+                "isLoaded" ==> (index = activeSheetIndex || not (isDeferredSheet sheets.[index]))
+                "isActive" ==> (index = activeSheetIndex)
+            ])
+
+    /// The list of sheets as one text: which sheets, their names, order, visibility and tab colours.
+    let sheetListText () : string =
+        Array.init sheets.Length (fun index ->
+            let id = sheetIdForIndex index
+            let sheetModel = if index = activeSheetIndex then model else sheets.[index]
+            let visible =
+                match workbook |> Option.bind (fun wb -> Map.tryFind id wb.Sheets) with
+                | Some sheet -> sheet.Visible
+                | None -> true
+            id + "\u0001" + sheetNames.[index] + "\u0001" + (if visible then "v" elif sheetModel.VeryHidden then "x" else "h")
+            + "\u0001" + defaultArg sheetModel.TabColor "")
+        |> String.concat "\u0002"
+
+    /// Tell the OnSheetsChange subscribers when the list of sheets (which
+    /// sheets, their names, order, visibility, tab colours) is not what they
+    /// were last told.
+    let notifySheetList () =
+        if sheetsListeners.Count > 0 then
+            let text = sheetListText ()
+            if text <> notifiedSheetList then
+                notifiedSheetList <- text
+                let infos = sheetInfos ()
+                for listener in sheetsListeners.ToArray() do
+                    if sheetsListeners.Contains listener then (try listener (box infos) with _ -> ())
+
     /// The format a toggle (bold, italic ...) goes by: the active cell's.
     let activeFormat () : CellFormat =
         match getCell (activeCellAddress()) model with
@@ -2183,6 +2339,17 @@ type Spreadsheet(container: Element) =
     and undoStep () =
         observeRevision ()
         let command = List.tryHead model.History.Past
+        match command with
+        | Some step when isBookStep step ->
+            // A step of the sheet list: it leaves this sheet's history, is
+            // taken back, and waits for Redo on the sheet then on display.
+            model <- { model with History = { model.History with Past = List.tail model.History.Past } }
+            sheets.[activeSheetIndex] <- model
+            step.Undo model |> ignore
+            model <- { model with History = { model.History with Future = step :: model.History.Future } }
+            observeRevisionAfter 1 command
+            render()
+        | _ ->
         match undo model with
         | Some undoneModel ->
             model <- undoneModel
@@ -2194,6 +2361,15 @@ type Spreadsheet(container: Element) =
     and redoStep () =
         observeRevision ()
         let command = List.tryHead model.History.Future
+        match command with
+        | Some step when isBookStep step ->
+            model <- { model with History = { model.History with Future = List.tail model.History.Future } }
+            sheets.[activeSheetIndex] <- model
+            step.Redo model |> ignore
+            model <- { model with History = { model.History with Past = step :: model.History.Past } }
+            observeRevisionAfter 2 command
+            render()
+        | _ ->
         match redo model with
         | Some redoneModel ->
             model <- redoneModel
@@ -2982,15 +3158,19 @@ type Spreadsheet(container: Element) =
     /// callback that causes another render is not told twice.
     and notifyChanges () =
         observeRevision ()
+        notifySheetList ()
         if changeListeners.Count > 0 || selectionListeners.Count > 0 then
             let current = Array.init sheets.Length (fun i -> if i = activeSheetIndex then model else sheets.[i])
-            let structureChanged = current.Length <> notifiedSheets.Length || sheetNames <> notifiedNames
+            let book = bookContentOf workbook
+            // (The list of sheets: which there are, their names, their order, which have a tab and its colour.)
+            let structureChanged =
+                current.Length <> notifiedSheets.Length || sheetNames <> notifiedNames || book.Hidden <> notifiedBook.Hidden
+                || Array.exists2 (fun (a: SpreadsheetModel) (b: SpreadsheetModel) -> a.TabColor <> b.TabColor || a.VeryHidden <> b.VeryHidden) current notifiedSheets
             let changedSheets =
                 [| for i in 0 .. current.Length - 1 do
                     if i >= notifiedSheets.Length || not (sameSheetContent current.[i] notifiedSheets.[i]) then yield i |]
             let selection = Some (activeSheetIndex, model.Selection, activeCellAddress())
             let selectionChanged = selection <> notifiedSelection
-            let book = bookContentOf workbook
             let bookChanged = not (sameBookContent book notifiedBook)
             notifiedSheets <- current
             notifiedNames <- Array.copy sheetNames
@@ -4757,6 +4937,263 @@ type Spreadsheet(container: Element) =
     member _.OnSheetChanged(listener: System.Action<int>) =
         sheetChangedListeners.Add(listener.Invoke)
 
+    // ===== Sheets =====
+    // Every member below that changes the list of sheets is ONE undo step,
+    // gives a new revision and is reported by OnChange (StructureChanged) and
+    // OnSheetsChange. The step is undone from the sheet that is on display
+    // once it is done (the new sheet after AddSheet / DuplicateSheet, the
+    // sheet that took a deleted one's place, else the sheet that was on
+    // display): CanUndo() / Undo() there take it back. Undo histories stay
+    // per sheet: after switching to another sheet, Undo acts on that sheet.
+
+    /// The sheets in tab order: [{ index, id (stays with the sheet when it is
+    /// renamed or moved), name, visibility: "visible" | "hidden" |
+    /// "veryHidden", tabColor: "#RRGGBB" | null, isLoaded (see
+    /// IsSheetLoaded), isActive }].
+    member _.GetSheetInfos() : obj array = sheetInfos ()
+
+    /// Call `callback` with the list of sheets (as GetSheetInfos gives it)
+    /// after it changed: a sheet added, deleted, renamed, moved, copied,
+    /// hidden, shown or given a tab colour - by a call, by undo / redo or by
+    /// another workbook being installed. (Which sheet is on display is not
+    /// part of it: OnSelectionChange / OnSheetChanged tell that.) Returns a
+    /// function that removes the subscription.
+    member _.OnSheetsChange(callback: System.Action<obj>) : System.Action =
+        let listener = callback.Invoke
+        // Changes are reported from here on.
+        if sheetsListeners.Count = 0 then notifiedSheetList <- sheetListText ()
+        sheetsListeners.Add listener
+        System.Action(fun () -> sheetsListeners.Remove listener |> ignore)
+
+    /// Add an empty sheet and show it. `name`: its name (omitted or null:
+    /// the first of "Sheet1", "Sheet2", ... that is free); `atIndex`: its
+    /// position in the tab order, 0-based (omitted or null: after the last
+    /// sheet). Returns the new sheet's index. One undo step. Throws on an
+    /// invalid or duplicate name (see RenameSheet) or a position outside
+    /// 0 .. number of sheets.
+    member _.AddSheet(name: obj, atIndex: obj) : int =
+        let memberName = "AddSheet"
+        if model.EditingCell.IsSome then finishEditing true |> ignore
+        let wb = bookSnapshot ()
+        let name =
+            match Host.optionalArg (Host.stringArg memberName "name") name with
+            | Some name ->
+                (match Rbt.Spreadsheet.Workbook.sheetNameProblem name with
+                 | Some problem -> Host.hostFail memberName problem
+                 | None -> ())
+                if Rbt.Spreadsheet.Workbook.sheetNameTaken None name wb then Host.hostFail memberName (sprintf "there is already a sheet named \"%s\"" name)
+                name
+            | None -> Rbt.Spreadsheet.Workbook.nextSheetName wb
+        let at =
+            match Host.optionalArg (Host.intArg memberName "atIndex") atIndex with
+            | Some at when at < 0 || at > sheets.Length -> Host.hostFail memberName (sprintf "atIndex %d is outside 0 to %d" at sheets.Length)
+            | Some at -> at
+            | None -> sheets.Length
+        let id = Rbt.Spreadsheet.Workbook.freshSheetId usedSheetIds.Contains wb
+        usedSheetIds.Add id |> ignore
+        let sheet : Rbt.Spreadsheet.Workbook.Sheet = { Id = id; Name = name; Model = createEmpty 1000 26; Visible = true }
+        let activeBefore = wb.ActiveSheet
+        // (Once undone, redo puts back the sheet as the undo took it away.)
+        let removed : Rbt.Spreadsheet.Workbook.SheetRemoval option ref = ref None
+        runBookStep "Add sheet"
+            (fun () ->
+                let current = bookSnapshot ()
+                (match removed.Value with
+                 | Some removal -> { Rbt.Spreadsheet.Workbook.restoreSheet removal current with ActiveSheet = id }
+                 | None -> Rbt.Spreadsheet.Workbook.insertSheet sheet at current)
+                |> installBook
+                // (A formula that named a sheet of this name before there was one reads it now.)
+                recalculateEverything ())
+            (fun () ->
+                match Rbt.Spreadsheet.Workbook.removeSheet id (bookSnapshot ()) with
+                | Some (without, removal) ->
+                    removed.Value <- Some removal
+                    installBook (if Map.containsKey activeBefore without.Sheets then { without with ActiveSheet = activeBefore } else without)
+                    recalculateEverything ()
+                | None -> ())
+        render()
+        activeSheetIndex
+
+    /// Rename the sheet at `index`. Everything that names the sheet follows:
+    /// the formulas of every sheet (cells, conditional formats, validations),
+    /// defined names and hyperlinks into the sheet, the new name quoted where
+    /// a reference needs it ('My Sheet'!A1). One undo step. Throws when the
+    /// name is empty, longer than 31 characters, contains any of : \ / ? * [ ],
+    /// begins or ends with an apostrophe, is "History", or is the name of
+    /// another sheet (whatever the case); and when there is no such sheet.
+    member _.RenameSheet(index: obj, name: obj) : unit =
+        let memberName = "RenameSheet"
+        let index = Host.intArg memberName "index" index
+        if index < 0 || index >= sheets.Length then Host.hostFail memberName (sprintf "there is no sheet %d (the workbook has %d)" index sheets.Length)
+        let name = Host.stringArg memberName "name" name
+        (match Rbt.Spreadsheet.Workbook.sheetNameProblem name with
+         | Some problem -> Host.hostFail memberName problem
+         | None -> ())
+        if model.EditingCell.IsSome then finishEditing true |> ignore
+        let wb = bookSnapshot ()
+        let id = sheetIdForIndex index
+        if Rbt.Spreadsheet.Workbook.sheetNameTaken (Some id) name wb then Host.hostFail memberName (sprintf "there is already a sheet named \"%s\"" name)
+        let oldName = sheetNames.[index]
+        if oldName <> name then
+            let rename (newName: string) () =
+                // The formulas of every sheet follow: those not converted yet are now.
+                convertFormulaSheets ()
+                installBook (Rbt.Spreadsheet.Workbook.renameSheetEverywhere id newName (bookSnapshot ()))
+                rebaseCalcEngine ()
+            runBookStep "Rename sheet" (rename name) (rename oldName)
+            render()
+
+    /// Delete the sheet at `index`. As in Excel, references to it in the
+    /// formulas of the other sheets and in defined names become #REF!; the
+    /// names of its scope, its tables and what the opened file kept for it
+    /// (pictures, charts, pivot tables) go with it. When it was on display
+    /// the nearest visible sheet is shown. One undo step (undo brings the
+    /// sheet and the references back). Throws when there is no such sheet or
+    /// when it is the only visible one.
+    member _.DeleteSheet(index: obj) : unit =
+        let memberName = "DeleteSheet"
+        let index = Host.intArg memberName "index" index
+        if index < 0 || index >= sheets.Length then Host.hostFail memberName (sprintf "there is no sheet %d (the workbook has %d)" index sheets.Length)
+        if model.EditingCell.IsSome then finishEditing true |> ignore
+        let id = sheetIdForIndex index
+        (match Rbt.Spreadsheet.Workbook.lastVisibleSheetProblem id (bookSnapshot ()) with
+         | Some problem -> Host.hostFail memberName problem
+         | None -> ())
+        let removed : Rbt.Spreadsheet.Workbook.SheetRemoval option ref = ref None
+        runBookStep "Delete sheet"
+            (fun () ->
+                convertFormulaSheets ()
+                match Rbt.Spreadsheet.Workbook.removeSheet id (bookSnapshot ()) with
+                | Some (without, removal) ->
+                    removed.Value <- Some removal
+                    installBook without
+                    recalculateEverything ()
+                | None -> ())
+            (fun () ->
+                match removed.Value with
+                | Some removal ->
+                    installBook (Rbt.Spreadsheet.Workbook.restoreSheet removal (bookSnapshot ()))
+                    recalculateEverything ()
+                | None -> ())
+        render()
+
+    /// Move the sheet at index `from` so that it is at index `toIndex`
+    /// afterwards. The sheet on display stays on display. One undo step.
+    /// Throws when either index is not a sheet's.
+    member _.MoveSheet(from: obj, toIndex: obj) : unit =
+        let memberName = "MoveSheet"
+        let from = Host.intArg memberName "from" from
+        let target = Host.intArg memberName "to" toIndex
+        if from < 0 || from >= sheets.Length then Host.hostFail memberName (sprintf "there is no sheet %d (the workbook has %d)" from sheets.Length)
+        if target < 0 || target >= sheets.Length then Host.hostFail memberName (sprintf "to %d is outside 0 to %d" target (sheets.Length - 1))
+        if from <> target then
+            if model.EditingCell.IsSome then finishEditing true |> ignore
+            let id = sheetIdForIndex from
+            let move (position: int) () =
+                installBook (Rbt.Spreadsheet.Workbook.moveSheet id position (bookSnapshot ()))
+                rebaseCalcEngine ()
+            runBookStep "Move sheet" (move target) (move from)
+            render()
+
+    /// Copy the sheet at `index`; the copy is put right after it, named
+    /// "Name (2)" (then "(3)", ...) and shown. Returns the copy's index. The
+    /// copy's formulas that named the sheet itself name the copy; the names
+    /// of the sheet's scope and its tables are copied (a table under a new
+    /// name, "Sales_2", which the copy's structured references follow), and
+    /// so are its pictures, comments, formats, validations and conditional
+    /// formats. What an opened file only kept for the sheet - charts and
+    /// other drawing objects the editor does not model, pivot tables, named
+    /// cell styles - stays with the original: the copy has none of it. One
+    /// undo step. Throws when there is no such sheet.
+    member _.DuplicateSheet(index: obj) : int =
+        let memberName = "DuplicateSheet"
+        let index = Host.intArg memberName "index" index
+        if index < 0 || index >= sheets.Length then Host.hostFail memberName (sprintf "there is no sheet %d (the workbook has %d)" index sheets.Length)
+        if model.EditingCell.IsSome then finishEditing true |> ignore
+        // (The copy is one of the sheet as it is: a sheet not converted yet is now.)
+        sheetModelAt index |> ignore
+        let wb = bookSnapshot ()
+        let sourceId = sheetIdForIndex index
+        let id = Rbt.Spreadsheet.Workbook.freshSheetId usedSheetIds.Contains wb
+        usedSheetIds.Add id |> ignore
+        let name = Rbt.Spreadsheet.Workbook.copySheetName sheetNames.[index] wb
+        let activeBefore = wb.ActiveSheet
+        let removed : Rbt.Spreadsheet.Workbook.SheetRemoval option ref = ref None
+        runBookStep "Copy sheet"
+            (fun () ->
+                let current = bookSnapshot ()
+                (match removed.Value with
+                 | Some removal -> { Rbt.Spreadsheet.Workbook.restoreSheet removal current with ActiveSheet = id }
+                 | None -> Rbt.Spreadsheet.Workbook.duplicateSheet sourceId id name (Rbt.Spreadsheet.Workbook.sheetIndex sourceId current + 1) current)
+                |> installBook
+                rebaseCalcEngine ())
+            (fun () ->
+                match Rbt.Spreadsheet.Workbook.removeSheet id (bookSnapshot ()) with
+                | Some (without, removal) ->
+                    removed.Value <- Some removal
+                    installBook (if Map.containsKey activeBefore without.Sheets then { without with ActiveSheet = activeBefore } else without)
+                    recalculateEverything ()
+                | None -> ())
+        render()
+        activeSheetIndex
+
+    /// Show or hide the tab of the sheet at `index`: "visible", "hidden" or
+    /// "veryHidden" (Excel does not offer to unhide such a sheet; the API
+    /// does). A hidden sheet stays part of the workbook: formulas read it.
+    /// Hiding the sheet on display shows the nearest visible one. One undo
+    /// step. Throws on another word, when there is no such sheet, and when
+    /// the sheet is the only visible one.
+    member _.SetSheetVisibility(index: obj, visibility: obj) : unit =
+        let memberName = "SetSheetVisibility"
+        let index = Host.intArg memberName "index" index
+        if index < 0 || index >= sheets.Length then Host.hostFail memberName (sprintf "there is no sheet %d (the workbook has %d)" index sheets.Length)
+        let visible, veryHidden =
+            match Host.stringArg memberName "visibility" visibility with
+            | "visible" -> true, false
+            | "hidden" -> false, false
+            | "veryHidden" -> false, true
+            | other -> Host.hostFail memberName (sprintf "visibility must be \"visible\", \"hidden\" or \"veryHidden\", got \"%s\"" other)
+        if model.EditingCell.IsSome then finishEditing true |> ignore
+        let wb = bookSnapshot ()
+        let id = sheetIdForIndex index
+        match Map.tryFind id wb.Sheets with
+        | None -> ()
+        | Some sheet ->
+            let before = sheet.Visible, (not sheet.Visible && sheet.Model.VeryHidden)
+            if before <> (visible, veryHidden) then
+                if not visible then
+                    match Rbt.Spreadsheet.Workbook.lastVisibleSheetProblem id wb with
+                    | Some problem when sheet.Visible -> Host.hostFail memberName problem
+                    | _ -> ()
+                let activeBefore = wb.ActiveSheet
+                runBookStep (if visible then "Unhide sheet" else "Hide sheet")
+                    (fun () -> installBook (Rbt.Spreadsheet.Workbook.setSheetVisibility id visible veryHidden (bookSnapshot ())))
+                    (fun () ->
+                        let restored = Rbt.Spreadsheet.Workbook.setSheetVisibility id (fst before) (snd before) (bookSnapshot ())
+                        installBook (if Map.containsKey activeBefore restored.Sheets then { restored with ActiveSheet = activeBefore } else restored))
+                render()
+
+    /// Give the tab of the sheet at `index` a colour ("#RRGGBB"), or none
+    /// (null). The component draws no tabs itself: the colour is part of the
+    /// workbook (GetSheetInfos, the saved file). One undo step. Throws on a
+    /// malformed colour or when there is no such sheet.
+    member _.SetSheetTabColor(index: obj, color: obj) : unit =
+        let memberName = "SetSheetTabColor"
+        let index = Host.intArg memberName "index" index
+        if index < 0 || index >= sheets.Length then Host.hostFail memberName (sprintf "there is no sheet %d (the workbook has %d)" index sheets.Length)
+        let color = Host.optionalArg (Host.colorArg memberName "color") color
+        if model.EditingCell.IsSome then finishEditing true |> ignore
+        let id = sheetIdForIndex index
+        let before = (if index = activeSheetIndex then model else sheets.[index]).TabColor
+        if before <> color then
+            let put (value: string option) () =
+                let current = bookSnapshot ()
+                match Map.tryFind id current.Sheets with
+                | Some sheet -> installBook { current with Sheets = Map.add id { sheet with Model = { sheet.Model with TabColor = value } } current.Sheets }
+                | None -> ()
+            runBookStep "Tab colour" (put color) (put before)
+            render()
+
     /// Replace the entire workbook content. Used after loading an XLSX
     /// (or other multi-sheet source) to install all sheets in one shot.
     /// `activeIndex` selects which sheet shows first; out-of-range values
@@ -4805,6 +5242,11 @@ type Spreadsheet(container: Element) =
         // The steps of the previous workbook cannot be undone into this one.
         appliedSteps.Clear()
         undoneSteps.Clear()
+        bookSteps.Clear()
+        usedSheetIds.Clear()
+        for index in 0 .. sheets.Length - 1 do usedSheetIds.Add (sheetIdForIndex index) |> ignore
+        // (The subscribers of OnSheetsChange are told of the new workbook's sheets.)
+        notifiedSheetList <- ""
         resetScroll ()
         render()
         // The workbook as it is installed is the calculated state edits start
@@ -4904,6 +5346,22 @@ type Spreadsheet(container: Element) =
     /// The editor's workbook in the XLSX writer's shape (what ExportXlsx writes).
     member _.ToXlsxWorkbook() : XlsxWriter.XlsxWorkbookOut =
         let current = Array.init sheets.Length (fun i -> if i = activeSheetIndex then model else sheets.[i])
+        // The export names the scope of a defined name by the sheet's place
+        // ("sheet1" is the first sheet). Sheets keep their ids when they are
+        // moved, added or deleted, so the scopes are put by place here.
+        let byPlace (names: Map<SheetId option * string, 'T>) : Map<SheetId option * string, 'T> =
+            let inPlace = Seq.forall (fun i -> sheetIdForIndex i = Rbt.Spreadsheet.XlsxBridge.sheetIdOfIndex i) (seq { 0 .. sheets.Length - 1 })
+            if inPlace then names
+            else
+                names
+                |> Map.toSeq
+                |> Seq.choose (fun ((scope, name), value) ->
+                    match scope with
+                    | None -> Some ((None, name), value)
+                    | Some id ->
+                        let index = sheetIndexOfId id
+                        if index < 0 then None else Some ((Some (Rbt.Spreadsheet.XlsxBridge.sheetIdOfIndex index), name), value))
+                |> Map.ofSeq
         Rbt.Spreadsheet.XlsxBridge.Export.toWorkbookOut
             { Sheets = current
               Names = Array.copy sheetNames
@@ -4913,8 +5371,8 @@ type Spreadsheet(container: Element) =
                     | Some sheet -> sheet.Visible
                     | None -> true)
               ActiveSheetIndex = activeSheetIndex
-              DefinedNames = (match workbook with Some wb -> wb.Names | None -> Map.empty)
-              NameInfo = (match workbook with Some wb -> wb.NameInfo | None -> Map.empty)
+              DefinedNames = (match workbook with Some wb -> byPlace wb.Names | None -> Map.empty)
+              NameInfo = (match workbook with Some wb -> byPlace wb.NameInfo | None -> Map.empty)
               Source = xlsxSource
               // A VBA project of the opened file is one of its kept parts.
               Macros = None }

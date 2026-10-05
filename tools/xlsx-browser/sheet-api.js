@@ -1204,3 +1204,239 @@ checks['api-view'] = async () => {
     close();
     return lines;
 };
+
+// The list of sheets: AddSheet, RenameSheet, DeleteSheet, MoveSheet, DuplicateSheet,
+// SetSheetVisibility, SetSheetTabColor, GetSheetInfos, OnSheetsChange.
+checks['api-sheets'] = async () => {
+    const { lines, check, note } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        const infos = () => grid.GetSheetInfos().map((s) => `${s.index}:${s.name}:${s.visibility}${s.tabColor ? ':' + s.tabColor : ''}${s.isActive ? '*' : ''}`);
+        const at = (ref) => { const cell = grid.GetRange(ref)[0][0]; return [cell.formula, cell.value]; };
+        const changes = [], lists = [];
+        const offChange = grid.OnChange((change) => changes.push(change));
+        const offSheets = grid.OnSheetsChange((list) => lists.push(list.map((s) => s.name + (s.visibility === 'visible' ? '' : '(' + s.visibility + ')')).join(',')));
+        const take = () => changes.splice(0).map((c) => `${c.Sheets.join(',')}${c.StructureChanged ? ' structure' : ''}`);
+        const takeLists = () => lists.splice(0);
+
+        // ---- add ----
+        grid.SetCell(0, 0, '1'); grid.SetCell(1, 0, '2'); grid.SetCell(2, 0, '3'); grid.SetCell(3, 0, '=Summary!A1*2');
+        check('one sheet to start with', [infos(), grid.GetSheetInfos()[0].id, at('A4')[1]], [['0:Sheet1:visible*'], 'sheet1', '#REF!']);
+        take();
+        const r0 = grid.GetRevision();
+        check('AddSheet returns the index of the new sheet, which is shown', [grid.AddSheet('Summary'), grid.GetActiveSheetIndex(), infos()], [1, 1, ['0:Sheet1:visible', '1:Summary:visible*']]);
+        check('it is a change of the structure, a new revision, and OnSheetsChange hears it', [take().some((c) => c.endsWith('structure')), grid.GetRevision() !== r0, takeLists()], [true, true, ['Sheet1,Summary']]);
+        check('a formula that named the sheet before it was there reads it now', grid.GetRange('Sheet1!A4')[0][0].value, 0);
+        grid.SetCell(0, 0, '=SUM(Sheet1!A1:A3)'); grid.SetCell(1, 0, '=Sheet1!$A$2*10'); grid.SetCell(2, 0, '=SUM(Total)');
+        grid.SetDefinedName('Total', 'Sheet1!$A$1:$A$3');
+        check('formulas across sheets', [at('A1'), at('A2'), at('A3'), grid.GetRange('Sheet1!A4')[0][0].value], [['=SUM(Sheet1!A1:A3)', 6], ['=Sheet1!$A$2*10', 20], ['=SUM(Total)', 6], 12]);
+        check('the default name is the first free SheetN; a position can be given', [grid.AddSheet(undefined, 0), infos()], [0, ['0:Sheet2:visible*', '1:Sheet1:visible', '2:Summary:visible']]);
+        check('the step is undone from the new sheet', [grid.CanUndo(), (grid.Undo(), infos()), grid.CanRedo()], [true, ['0:Sheet1:visible', '1:Summary:visible*'], true]);
+        check('... and redone from the sheet then on display', [(grid.Redo(), infos()), grid.CanUndo(), grid.GetSheetInfos().map((s) => s.id)], [['0:Sheet2:visible*', '1:Sheet1:visible', '2:Summary:visible'], true, ['sheet3', 'sheet1', 'sheet2']]);
+        grid.Undo();
+        check('undone again: two sheets, the sheet that was on display is back', [infos(), grid.GetSheetNames(), grid.SheetVisibility()], [['0:Sheet1:visible', '1:Summary:visible*'], ['Sheet1', 'Summary'], [true, true]]);
+        takeLists(); take();
+        check('AddSheet rejects bad names and positions', [thrown(() => grid.AddSheet('summary')), thrown(() => grid.AddSheet('a/b')), thrown(() => grid.AddSheet('x', 7)), thrown(() => grid.AddSheet(5))],
+            ['AddSheet: there is already a sheet named "summary"', 'AddSheet: a sheet name cannot contain any of : \\ / ? * [ ]', 'AddSheet: atIndex 7 is outside 0 to 2', 'AddSheet: name must be a string, got 5']);
+
+        // ---- rename ----
+        const beforeRename = grid.GetRevision();
+        grid.RenameSheet(0, 'My Data');
+        check('RenameSheet: formulas of every sheet follow, quoted; values stand', [grid.GetSheetNames(), at('A1'), at('A2'), at('A3')], [['My Data', 'Summary'], ["=SUM('My Data'!A1:A3)", 6], ["='My Data'!$A$2*10", 20], ['=SUM(Total)', 6]]);
+        check('... and defined names', grid.GetDefinedNames().map((n) => [n.name, n.refersTo]), [['Total', "'My Data'!$A$1:$A$3"]]);
+        check('... one change, one notification', [take().length, takeLists()], [1, ['My Data,Summary']]);
+        grid.SetCell(4, 0, '5');
+        check('an edit still recalculates through the renamed sheet', (grid.SwitchSheet(0), grid.SetCell(0, 0, '11'), grid.SwitchSheet(1), [at('A1')[1], at('A3')[1]]), [16, 16]);
+        grid.SwitchSheet(0); grid.SetCell(0, 0, '1'); grid.SwitchSheet(1);
+        grid.Undo();
+        check('undo: the name, the formulas and the revision are back', [grid.GetSheetNames(), at('A1'), grid.GetDefinedNames()[0].refersTo], [['Sheet1', 'Summary'], ['=SUM(Sheet1!A1:A3)', 6], 'Sheet1!$A$1:$A$3']);
+        grid.Redo();
+        check('redo', [grid.GetSheetNames(), at('A2')[0]], [['My Data', 'Summary'], "='My Data'!$A$2*10"]);
+        check('RenameSheet rejects invalid and duplicate names',
+            [thrown(() => grid.RenameSheet(0, '')), thrown(() => grid.RenameSheet(0, 'x'.repeat(32))), thrown(() => grid.RenameSheet(0, "'quoted")), thrown(() => grid.RenameSheet(0, 'History')),
+             thrown(() => grid.RenameSheet(0, 'SUMMARY')), thrown(() => grid.RenameSheet(5, 'x')), thrown(() => grid.RenameSheet(0)), thrown(() => grid.RenameSheet(0, 'my data'))],
+            ['RenameSheet: a sheet name cannot be empty', 'RenameSheet: a sheet name cannot be longer than 31 characters', 'RenameSheet: a sheet name cannot begin or end with an apostrophe', 'RenameSheet: "History" is a reserved sheet name',
+             'RenameSheet: there is already a sheet named "SUMMARY"', 'RenameSheet: there is no sheet 5 (the workbook has 2)', 'RenameSheet: name must be a string, got null', null]);
+        check('a rename that only changes the case', [grid.GetSheetNames(), at('A1')], [['my data', 'Summary'], ["=SUM('my data'!A1:A3)", 6]]);
+        grid.RenameSheet(0, 'Data');
+        take(); takeLists();
+
+        // ---- delete ----
+        const beforeDelete = grid.GetRevision();
+        grid.DeleteSheet(0);
+        check('DeleteSheet: references become #REF!', [infos(), at('A1'), at('A2'), at('A3')[1], grid.GetDefinedNames().map((n) => n.refersTo)], [['0:Summary:visible*'], ['=SUM(#REF!)', '#REF!'], ['=#REF!*10', '#REF!'], '#REF!', ['#REF!']]);
+        check('... a change of the structure', [take().some((c) => c.endsWith('structure')), takeLists(), grid.GetRevision() !== beforeDelete], [true, ['Summary'], true]);
+        check('the last visible sheet cannot be deleted', [thrown(() => grid.DeleteSheet(0)), thrown(() => grid.DeleteSheet(3)), thrown(() => grid.DeleteSheet('0'))],
+            ['DeleteSheet: a workbook must keep at least one visible sheet', 'DeleteSheet: there is no sheet 3 (the workbook has 1)', 'DeleteSheet: index must be a whole number, got "0"']);
+        grid.Undo();
+        check('undo: the sheet, the references, the values and the revision are back', [infos(), at('A1'), at('A2'), at('A3'), grid.GetDefinedNames().map((n) => n.refersTo), grid.GetRange('Data!A1:A4').map((row) => row[0].value), grid.GetRevision() === beforeDelete],
+            [['0:Data:visible', '1:Summary:visible*'], ['=SUM(Data!A1:A3)', 6], ['=Data!$A$2*10', 20], ['=SUM(Total)', 6], ['Data!$A$1:$A$3'], [1, 2, 3, 12], true]);
+        grid.Redo();
+        check('redo deletes it again', [infos(), at('A1')[1]], [['0:Summary:visible*'], '#REF!']);
+        grid.Undo();
+        // Deleting the sheet on display shows its neighbour, and the step is undone from there.
+        grid.SwitchSheet(0);
+        grid.DeleteSheet(0);
+        check('deleting the sheet on display shows the next one', [infos(), grid.CanUndo()], [['0:Summary:visible*'], true]);
+        grid.Undo();
+        check('... and undo shows it again', [infos(), grid.GetCell(3, 0).value], [['0:Data:visible*', '1:Summary:visible'], 12]);
+        take(); takeLists();
+
+        // ---- move ----
+        grid.AddSheet('Third');
+        grid.SetCell(0, 0, '=Data!A1+Summary!A1');
+        grid.MoveSheet(2, 0);
+        check('MoveSheet: the order, the ids, the sheet on display', [infos(), grid.GetSheetInfos().map((s) => s.id).join(), grid.GetCell(0, 0).value], [['0:Third:visible*', '1:Data:visible', '2:Summary:visible'], 'sheet4,sheet1,sheet2', 7]);
+        check('... told once', [take().some((c) => c.endsWith('structure')), takeLists().slice(-1)], [true, ['Third,Data,Summary']]);
+        grid.SwitchSheet(1); grid.SetCell(0, 0, '4'); grid.SwitchSheet(0);
+        check('an edit after a move recalculates the right sheets', [grid.GetCell(0, 0).value, grid.GetRange('Summary!A1')[0][0].value], [13, 9]);
+        grid.SwitchSheet(1); grid.SetCell(0, 0, '1'); grid.SwitchSheet(0);
+        grid.Undo();
+        check('undo moves it back', infos(), ['0:Data:visible', '1:Summary:visible', '2:Third:visible*']);
+        grid.Redo();
+        check('MoveSheet rejects positions that are no sheet', [thrown(() => grid.MoveSheet(0, 3)), thrown(() => grid.MoveSheet(-1, 0)), thrown(() => grid.MoveSheet(1, 1))], ['MoveSheet: to 3 is outside 0 to 2', 'MoveSheet: there is no sheet -1 (the workbook has 3)', null]);
+
+        // ---- visibility, tab colour ----
+        grid.SetSheetVisibility(2, 'hidden');
+        check('SetSheetVisibility: hidden', [infos(), grid.SheetVisibility(), grid.GetCell(0, 0).value], [['0:Third:visible*', '1:Data:visible', '2:Summary:hidden'], [true, true, false], 7]);
+        grid.SetSheetVisibility(0, 'veryHidden');
+        check('hiding the sheet on display shows the nearest visible one', infos(), ['0:Third:veryHidden', '1:Data:visible*', '2:Summary:hidden']);
+        check('the only visible sheet can be neither hidden nor deleted', [thrown(() => grid.SetSheetVisibility(1, 'hidden')), thrown(() => grid.DeleteSheet(1)), thrown(() => grid.SetSheetVisibility(1, 'gone'))],
+            ['SetSheetVisibility: a workbook must keep at least one visible sheet', 'DeleteSheet: a workbook must keep at least one visible sheet', 'SetSheetVisibility: visibility must be "visible", "hidden" or "veryHidden", got "gone"']);
+        grid.Undo();
+        check('undo: visible and on display again', infos(), ['0:Third:visible*', '1:Data:visible', '2:Summary:hidden']);
+        grid.Redo();
+        grid.SetSheetTabColor(1, '#ff8800'); grid.SetSheetTabColor(2, '#00AA55');
+        check('SetSheetTabColor', infos(), ['0:Third:veryHidden', '1:Data:visible:#FF8800*', '2:Summary:hidden:#00AA55']);
+        grid.Undo();
+        check('undo takes the colour away, redo gives it back', [infos()[2], (grid.Redo(), infos()[2])], ['2:Summary:hidden', '2:Summary:hidden:#00AA55']);
+        check('a malformed colour is refused; null clears', [thrown(() => grid.SetSheetTabColor(1, 'orange')) !== null, (grid.SetSheetTabColor(2, null), infos()[2]), (grid.Undo(), infos()[2])], [true, '2:Summary:hidden', '2:Summary:hidden:#00AA55']);
+        check('each of these was told', [take().length >= 5, takeLists().slice(-1)], [true, ['Third(veryHidden),Data,Summary(hidden)']]);
+
+        // ---- duplicate ----
+        grid.SelectCell(5, 0); grid.SetComment(5, 0, 'a note', 'me');
+        grid.SetCell(6, 0, '=Data!A1+1');
+        grid.SetDefinedName('Local', 'Data!$A$1', 1);
+        grid.SetValidation('C1:C5', { type: 'list', values: ['a', 'b'] });
+        grid.SelectRange(0, 1, 2, 1); grid.ApplyBgColor('#FFEE00');
+        check('DuplicateSheet returns the index of the copy, which is shown beside the original', [grid.DuplicateSheet(1), infos()], [2, ['0:Third:veryHidden', '1:Data:visible:#FF8800', '2:Data (2):visible:#FF8800*', '3:Summary:hidden:#00AA55']]);
+        check('the copy has the cells, formats, comments and validations', [grid.GetRange('A1:A4').map((row) => row[0].value), grid.GetCell(0, 1).format.fill, grid.GetCell(5, 0).comment && grid.GetCell(5, 0).comment.text, grid.GetValidations().length], [[1, 2, 3, 12], '#FFEE00', 'a note', 1]);
+        check('its formulas that named the sheet name the copy; its names are copied', [grid.GetCell(6, 0).formula, grid.GetDefinedNames().filter((n) => n.name === 'Local').map((n) => [n.scope, n.refersTo])], ["='Data (2)'!A1+1", [[1, 'Data!$A$1'], [2, "'Data (2)'!$A$1"]]]);
+        grid.SetCell(0, 0, '100');
+        check('the copy is a sheet of its own', [grid.GetCell(6, 0).value, grid.GetRange('Data!A7')[0][0].value, grid.GetRange('Summary!A1')[0][0].value], [101, 2, 6]);
+        grid.Undo();
+        check('undo removes the copy and its names', [infos(), grid.GetDefinedNames().filter((n) => n.name === 'Local').length], [['0:Third:veryHidden', '1:Data:visible:#FF8800*', '2:Summary:hidden:#00AA55'], 1]);
+        grid.Redo();
+        check('redo brings it back', [infos()[2], grid.GetCell(6, 0).formula, grid.DuplicateSheet(1), infos()[2]], ['2:Data (2):visible:#FF8800*', "='Data (2)'!A1+1", 2, '2:Data (3):visible:#FF8800*']);
+        grid.Undo();
+
+        // ---- the file ----
+        const again = await reopened(grid);
+        try {
+            const reinfos = again.grid.GetSheetInfos().map((s) => `${s.index}:${s.name}:${s.visibility}${s.tabColor ? ':' + s.tabColor : ''}${s.isActive ? '*' : ''}`);
+            check('saved and opened again: names, order, visibility, tab colours', reinfos, ['0:Third:veryHidden', '1:Data:visible:#FF8800*', '2:Data (2):visible:#FF8800', '3:Summary:hidden:#00AA55']);
+            check('... formulas and names', [again.grid.GetRange("'Data (2)'!A7")[0][0].formula, again.grid.GetRange('Summary!A1:A3').map((row) => [row[0].formula, row[0].value]), again.grid.GetDefinedNames().map((n) => [n.name, n.scope, n.refersTo]).sort()],
+                ["='Data (2)'!A1+1", [['=SUM(Data!A1:A3)', 6], ['=Data!$A$2*10', 20], ['=SUM(Total)', 6]], [['Local', 1, 'Data!$A$1'], ['Local', 2, "'Data (2)'!$A$1"], ['Total', null, 'Data!$A$1:$A$3']]]);
+            again.grid.SetSheetVisibility(0, 'visible');
+            check('a very hidden sheet of a file can be shown', again.grid.GetSheetInfos()[0].visibility, 'visible');
+        } finally { again.close(); }
+        take(); takeLists(); offChange(); offSheets();
+        grid.AddSheet('Unheard');
+        check('no events after unsubscribing', [changes.length, lists.length], [0, 0]);
+
+        // ---- a file with charts, pictures and pivot tables, its sheets converted when needed ----
+        const count = (wb, key) => OF.excel.sheetNames(wb).map((name) => `${name}:${OF.excel[key](OF.excel.sheet(name, wb)).length}`);
+        const describe = async (bytes) => { const wb = await OF.excel.load(bytes); return { names: OF.excel.sheetNames(wb), states: OF.excel.sheetStates(wb), objects: count(wb, 'drawingObjects'), images: count(wb, 'images') }; };
+        const chartParts = async (bytes) => Object.keys((await window.JSZip.loadAsync(bytes)).files).filter((path) => /^xl\/(charts\/chart|pivotTables\/pivotTable|drawings\/drawing)\d+\.xml$/.test(path)).length;
+        for (const file of ['tests/real-world/dashboard-ecommerce-sales.xlsx', 'tests/real-world/dashboard-sales-analysis.xlsx']) {
+            const label = file.split('/').pop().replace('.xlsx', '');
+            const original = await bytesOf(file);
+            const before = await describe(original);
+            const book = mountGrid();
+            try {
+                await book.grid.ImportXlsx(original);
+                const g = book.grid, n = g.GetSheetNames().length;
+                const loaded = () => g.GetSheetInfos().map((s) => s.isLoaded ? 1 : 0).join('');
+                const loadedAtOpen = loaded();
+                note(`${label}: ${n} sheets (${before.names.join(', ')}), objects ${before.objects.join(' ')}, loaded at open ${loadedAtOpen}`);
+                // Moving, hiding and colouring convert no sheet.
+                const last = n - 1;
+                g.MoveSheet(last, 0); g.SetSheetTabColor(2, '#123456'); g.SetSheetVisibility(2, 'hidden');   // (the sheet on display is at 1 now)
+                check(`${label}: moving, colouring and hiding sheets converts none`, [...loaded()].filter((c) => c === '1').length, [...loadedAtOpen].filter((c) => c === '1').length);
+                g.Undo(); g.Undo(); g.Undo();
+                check(`${label}: undone`, [g.GetSheetNames(), g.SheetVisibility().every((v, i) => v === (before.states[i] === 'visible'))], [before.names, true]);
+                // Renamed and moved: every sheet keeps its pictures and charts.
+                const target = Math.min(1, last);
+                g.RenameSheet(target, "It's renamed");
+                g.MoveSheet(target, last);
+                const moved = await describe(await g.ExportXlsx());
+                const expectNames = before.names.filter((_, i) => i !== target).concat(["It's renamed"]);
+                const byName = (list, renameFrom) => (list.map((entry) => { const cut = entry.lastIndexOf(':'); const name = entry.slice(0, cut); return (name === renameFrom ? "It's renamed" : name) + ':' + entry.slice(cut + 1); })).sort().join(' ');
+                check(`${label}: renamed and moved: the sheets`, moved.names, expectNames);
+                check(`${label}: ... each with its own drawing objects and pictures`, [byName(moved.objects), byName(moved.images)], [byName(before.objects, before.names[target]), byName(before.images, before.names[target])]);
+                g.Undo(); g.Undo();
+                check(`${label}: undone: the names of the file`, g.GetSheetNames(), before.names);
+                // Deleted: what the file kept for the sheet is dropped from the package.
+                const partsBefore = await chartParts(await g.ExportXlsx());
+                note(`${label}: ${await chartParts(original)} chart, drawing and pivot table parts in the file, ${partsBefore} in an export of it`);
+                const richest = before.objects.map((entry, i) => [Number(entry.slice(entry.lastIndexOf(':') + 1)), i]).sort((a, b) => b[0] - a[0])[0][1];
+                g.DeleteSheet(richest);
+                const withoutBytes = await g.ExportXlsx();
+                const without = await describe(withoutBytes);
+                check(`${label}: deleted "${before.names[richest]}": the other sheets keep their objects`, [without.names, without.objects], [before.names.filter((_, i) => i !== richest), before.objects.filter((_, i) => i !== richest)]);
+                const partsAfter = await chartParts(withoutBytes);
+                check(`${label}: ... and its chart / drawing / pivot parts are gone from the package`, partsAfter < partsBefore, true);
+                note(`${label}: ${partsBefore} such parts in an export, ${partsAfter} without "${before.names[richest]}"`);
+                g.Undo();
+                const restored = await describe(await g.ExportXlsx());
+                check(`${label}: undo: the sheet is back with everything`, [restored.names, restored.objects, restored.images, await chartParts(await g.ExportXlsx())], [before.names, before.objects, before.images, partsBefore]);
+                // A copy: pictures come along; the charts stay with the original.
+                const copyIndex = g.DuplicateSheet(richest);
+                const copied = await describe(await g.ExportXlsx());
+                check(`${label}: a copy of it is written, the original keeps its objects`, [copied.names.length, copied.names[copyIndex], copied.objects.filter((_, i) => i !== copyIndex), copied.images[copyIndex].endsWith(':' + before.images[richest].slice(before.images[richest].lastIndexOf(':') + 1))],
+                    [n + 1, g.GetSheetNames()[copyIndex], before.objects, true]);
+                g.AddSheet('Brand new', 0);
+                const added = await describe(await g.ExportXlsx());
+                check(`${label}: an added sheet is written too`, [added.names[0], added.names.length], ['Brand new', n + 2]);
+            } finally { book.close(); }
+        }
+        // ---- formulas of a file across its sheets: rename, delete, undo ----
+        const street = mountGrid();
+        try {
+            const g = street.grid;
+            await g.ImportXlsx(await bytesOf('tests/real-world/milk-street-office.xlsx'));
+            const names = g.GetSheetNames();
+            // A formula of one sheet that reads the other.
+            let found = null;
+            for (const home of [0, 1]) {
+                const other = names[1 - home];
+                const rows = g.GetRange(`'${names[home]}'!A1:AZ400`);
+                for (const row of rows) for (const cell of row) if (!found && cell.formula && cell.formula.includes(other + '!') && typeof cell.value === 'number') found = { home, other: 1 - home, ref: `'${names[home]}'!${cell.address}`, formula: cell.formula, value: cell.value };
+                if (found) break;
+            }
+            check('milk-street: a formula of one sheet reads the other', found !== null, true);
+            if (found) {
+                const read = () => { const cell = g.GetRange(found.ref)[0][0]; return [cell.formula, cell.value]; };
+                const errors = () => g.GetRange(`'${names[found.home]}'!A1:AZ400`).flat().filter((cell) => typeof cell.value === 'string' && cell.value.startsWith('#')).length;
+                const errorsBefore = errors();
+                g.SwitchSheet(found.home);
+                g.RenameSheet(found.other, 'Other Sheet');
+                check('milk-street: renamed: the formula names the new name, its value stands', [read()[0], read()[1], errors()], [found.formula.split(names[found.other] + '!').join("'Other Sheet'!"), found.value, errorsBefore]);
+                const renamedBack = await reopened(g);
+                try {
+                    const index = renamedBack.grid.GetSheetNames().indexOf('Other Sheet');
+                    const cell = renamedBack.grid.GetRange(found.ref)[0][0];
+                    check('milk-street: saved and opened again', [index, cell.formula, cell.value], [found.other, found.formula.split(names[found.other] + '!').join("'Other Sheet'!"), found.value]);
+                } finally { renamedBack.close(); }
+                g.DeleteSheet(found.other);
+                check('milk-street: deleted: the formula reads #REF! and is an error', [g.GetSheetNames(), read()[0].includes('#REF!'), String(read()[1]).startsWith('#'), errors() > errorsBefore], [[names[found.home]], true, true, true]);
+                g.Undo();
+                check('milk-street: undo: the sheet and the values are back', [g.GetSheetNames()[found.other], read()[1], errors()], ['Other Sheet', found.value, errorsBefore]);
+                g.Undo();
+                check('milk-street: undo: the name of the file', [g.GetSheetNames(), read()], [names, [found.formula, found.value]]);
+            }
+        } finally { street.close(); }
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};

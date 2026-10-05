@@ -1781,6 +1781,74 @@ let rec moveExprReferences (move: CellMove) (expr: Expr) : Expr =
 let moveFormulaText (move: CellMove) (formula: string) : string =
     rewriteFormulaText (moveExprReferences move) formula
 
+/// Apply `leaf` to every reference of an expression (cell, range, spill and
+/// table references), leaving the rest as it is.
+let rec mapExprReferences (leaf: Expr -> Expr) (expr: Expr) : Expr =
+    let recurse = mapExprReferences leaf
+    match expr with
+    | CellRef _ | RangeRef _ | SpillRef _ | TableRef _ -> leaf expr
+    | Number _ | Str _ | Bool _ | ErrorLit _ | NameRef _ | ArrayLit _ | MissingArg -> expr
+    | UnaryOp (op, operand) -> UnaryOp (op, recurse operand)
+    | BinOp _ ->
+        let operations = ResizeArray<struct (string * Expr)>()
+        let mutable current = expr
+        let mutable collecting = true
+        while collecting do
+            match current with
+            | BinOp (left, op, right) ->
+                operations.Add(struct (op, right))
+                current <- left
+            | _ -> collecting <- false
+        let mutable result = recurse current
+        for index = operations.Count - 1 downto 0 do
+            let struct (op, right) = operations.[index]
+            result <- BinOp (result, op, recurse right)
+        result
+    | Function (name, args) -> Function (name, args |> List.map recurse)
+
+/// Re-point references after a sheet was renamed or deleted, or a table
+/// renamed (see Model.SheetRewrite). Sheet names match whatever their case.
+/// A 3-D reference (`First:Last!A1`) follows the rename of either end; one
+/// that loses an end to a deleted sheet becomes #REF!.
+let rewriteExprForSheets (change: SheetRewrite) (expr: Expr) : Expr =
+    let same (a: string) (b: string) = String.Equals(a, b, StringComparison.OrdinalIgnoreCase)
+    // The ends of a qualifier: one name, or the two of a 3-D reference.
+    let ends (qualifier: string) =
+        match qualifier.IndexOf ':' with
+        | -1 -> [ qualifier ]
+        | colon -> [ qualifier.Substring(0, colon); qualifier.Substring(colon + 1) ]
+    match change with
+    | RenameSheetRefs (oldName, newName) ->
+        let requalify (sheet: string option) =
+            match sheet with
+            | Some qualifier when ends qualifier |> List.exists (same oldName) ->
+                Some (ends qualifier |> List.map (fun name -> if same name oldName then newName else name) |> String.concat ":")
+            | other -> other
+        mapExprReferences (fun reference ->
+            match reference with
+            | CellRef r -> CellRef { r with Sheet = requalify r.Sheet }
+            | SpillRef r -> SpillRef { r with Sheet = requalify r.Sheet }
+            | RangeRef (a, b) -> RangeRef ({ a with Sheet = requalify a.Sheet }, { b with Sheet = requalify b.Sheet })
+            | other -> other) expr
+    | DeleteSheetRefs name ->
+        let gone (sheet: string option) =
+            match sheet with
+            | Some qualifier -> ends qualifier |> List.exists (same name)
+            | None -> false
+        mapExprReferences (fun reference ->
+            match reference with
+            | CellRef r | SpillRef r when gone r.Sheet -> ErrorLit Err.ref
+            | RangeRef (a, b) when gone a.Sheet || gone b.Sheet -> ErrorLit Err.ref
+            | other -> other) expr
+    | RenameTableRefs (oldName, newName) ->
+        mapExprReferences (fun reference ->
+            match reference with
+            | TableRef selection when same selection.Table oldName -> TableRef { selection with Table = newName }
+            | other -> other) expr
+
+let rewriteFormulaTextForSheets (change: SheetRewrite) (formula: string) : string =
+    rewriteFormulaText (rewriteExprForSheets change) formula
+
 /// Replace every `NameRef` whose (case-insensitive) name is bound in `subst`
 /// with its bound expression. This is how LET inlines its names: a LET value
 /// expression is substituted as-is (not pre-evaluated), so a name bound to a
@@ -13508,5 +13576,6 @@ let formulaHooksInstalled : bool =
         { Shift = shiftFormulaText
           Adjust = adjustFormulaTextForEdit
           Move = moveFormulaText
-          Evaluate = fun formula rows cols model cell -> evaluateFormulaShifted None None formula rows cols model cell }
+          Evaluate = fun formula rows cols model cell -> evaluateFormulaShifted None None formula rows cols model cell
+          Sheets = rewriteFormulaTextForSheets }
     true

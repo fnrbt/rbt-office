@@ -632,6 +632,348 @@ let undoRepointMovedCells (undo: CellMoveUndo) (workbook: Workbook) : Workbook =
             if Map.tryFind key acc = Some after then Map.add key before acc else acc) workbook.Names
     { workbook with Sheets = sheets; Names = definedNames }
 
+// --- Sheets: names, renaming, deleting, moving, copying -----------------------
+
+/// What is wrong with a sheet name, or None: Excel's rules (1 to 31
+/// characters, none of : \ / ? * [ ], no apostrophe at either end, not the
+/// reserved "History").
+let sheetNameProblem (name: string) : string option =
+    if isNull name || name.Trim() = "" then Some "a sheet name cannot be empty"
+    elif name.Length > 31 then Some "a sheet name cannot be longer than 31 characters"
+    elif name.IndexOfAny [| ':'; '\\'; '/'; '?'; '*'; '['; ']' |] >= 0 then Some "a sheet name cannot contain any of : \\ / ? * [ ]"
+    elif name.StartsWith "'" || name.EndsWith "'" then Some "a sheet name cannot begin or end with an apostrophe"
+    elif name.Equals("History", System.StringComparison.OrdinalIgnoreCase) then Some "\"History\" is a reserved sheet name"
+    else None
+
+/// Whether a sheet other than `except` has the name (whatever the case).
+let sheetNameTaken (except: SheetId option) (name: string) (workbook: Workbook) : bool =
+    workbook.Sheets
+    |> Map.exists (fun id sheet -> Some id <> except && sheet.Name.Equals(name, System.StringComparison.OrdinalIgnoreCase))
+
+/// The first of "Sheet1", "Sheet2", ... no sheet has.
+let nextSheetName (workbook: Workbook) : string =
+    let mutable number = 1
+    while sheetNameTaken None (sprintf "Sheet%d" number) workbook do number <- number + 1
+    sprintf "Sheet%d" number
+
+/// The name of a copy of the sheet `name`: "Name (2)", "Name (3)", ... (the
+/// name cut short where it would pass 31 characters).
+let copySheetName (name: string) (workbook: Workbook) : string =
+    let named (number: int) =
+        let suffix = sprintf " (%d)" number
+        let stem = if name.Length + suffix.Length > 31 then name.Substring(0, 31 - suffix.Length) else name
+        // (A name may not end with an apostrophe; the suffix never does.)
+        stem + suffix
+    let mutable number = 2
+    while sheetNameTaken None (named number) workbook do number <- number + 1
+    named number
+
+/// The position of a sheet in the tab order, or -1.
+let sheetIndex (sheetId: SheetId) (workbook: Workbook) : int =
+    workbook.SheetOrder |> List.tryFindIndex ((=) sheetId) |> Option.defaultValue -1
+
+/// A sheet id no sheet of the workbook has and that is not in `used` (ids
+/// that were given out before: a deleted sheet's id comes back with an undo).
+let freshSheetId (used: SheetId -> bool) (workbook: Workbook) : SheetId =
+    let mutable number = Map.count workbook.Sheets + 1
+    while Map.containsKey (sprintf "sheet%d" number) workbook.Sheets || used (sprintf "sheet%d" number) do number <- number + 1
+    sprintf "sheet%d" number
+
+/// Rename a sheet, with everything that names it following: the formulas of
+/// every sheet (cells, conditional formats, validations), the defined names
+/// and the hyperlinks into the sheet. The new name is written quoted where a
+/// reference needs it. (The name is not checked: see sheetNameProblem.)
+let renameSheetEverywhere (sheetId: SheetId) (newName: string) (workbook: Workbook) : Workbook =
+    match Map.tryFind sheetId workbook.Sheets with
+    | None -> workbook
+    | Some sheet when sheet.Name = newName -> workbook
+    | Some sheet ->
+        let oldName = sheet.Name
+        let change = RenameSheetRefs (oldName, newName)
+        // (Most formulas do not mention the sheet: those are not parsed.)
+        let rewrite (formula: string) =
+            if formula.IndexOf(oldName, System.StringComparison.OrdinalIgnoreCase) < 0 then formula
+            else rewriteFormulaForSheets change formula
+        let rewriteLink (link: SheetHyperlink) =
+            if not link.IsInternal then link
+            else
+                let rewritten = rewrite ("=" + link.Target)
+                let target = if rewritten.StartsWith "=" then rewritten.Substring 1 else rewritten
+                if target = link.Target then link else { link with Target = target }
+        let sheets =
+            workbook.Sheets
+            |> Map.map (fun id other ->
+                let model = mapModelFormulas rewrite other.Model
+                let links = model.Hyperlinks |> List.map rewriteLink
+                let model = if links = model.Hyperlinks then model else { model with Hyperlinks = links }
+                if id = sheetId then { other with Name = newName; Model = model }
+                elif obj.ReferenceEquals(model, other.Model) then other
+                else { other with Model = model })
+        let names = workbook.Names |> Map.map (fun _ refersTo -> rewrite refersTo)
+        { workbook with Sheets = sheets; Names = (if names = workbook.Names then workbook.Names else names) }
+
+/// What `removeSheet` took out of a workbook and changed in it, for `restoreSheet`.
+type SheetRemoval = {
+    Sheet: Sheet
+    /// Where the sheet was in the tab order.
+    Index: int
+    /// The sheet that was active.
+    ActiveBefore: SheetId
+    /// Formula cells of other sheets that referred to it: (sheet, cell, before, after).
+    Cells: (SheetId * CellAddress * CellData * CellData) list
+    /// Conditional formats and validations of other sheets whose formulas referred to it: (sheet, before, after).
+    Formats: (SheetId * ConditionalFormatRange list * ConditionalFormatRange list) list
+    Validations: (SheetId * ValidationRange list * ValidationRange list) list
+    /// Defined names that referred to it: (key, before, after).
+    Names: ((SheetId option * string) * string * string) list
+    /// The names of its own scope, gone with it: (key, refers-to, spelling and comment).
+    ScopedNames: ((SheetId option * string) * string * DefinedNameInfo option) list
+    /// Its structured-reference tables, gone with it.
+    Tables: (string * Table) list
+}
+
+/// Why a sheet cannot be deleted (or hidden), or None: a workbook keeps at
+/// least one visible sheet.
+let lastVisibleSheetProblem (sheetId: SheetId) (workbook: Workbook) : string option =
+    match Map.tryFind sheetId workbook.Sheets with
+    | None -> Some "no such sheet"
+    | Some sheet ->
+        let otherVisible = workbook.Sheets |> Map.exists (fun id other -> id <> sheetId && other.Visible)
+        if sheet.Visible && not otherVisible then Some "a workbook must keep at least one visible sheet"
+        elif Map.count workbook.Sheets <= 1 then Some "a workbook must keep at least one sheet"
+        else None
+
+/// The visible sheet nearest to position `index` of the tab order (the one
+/// after it first), leaving out `except`.
+let private nearestVisibleSheet (index: int) (except: SheetId) (workbook: Workbook) : SheetId option =
+    let order = List.toArray workbook.SheetOrder
+    let visible (id: SheetId) = id <> except && (match Map.tryFind id workbook.Sheets with Some sheet -> sheet.Visible | None -> false)
+    let after = order |> Array.mapi (fun i id -> i, id) |> Array.tryFind (fun (i, id) -> i >= index && visible id)
+    let before = order |> Array.mapi (fun i id -> i, id) |> Array.tryFindBack (fun (i, id) -> i < index && visible id)
+    match after, before with
+    | Some (_, id), _ -> Some id
+    | None, Some (_, id) -> Some id
+    | None, None -> order |> Array.tryFind (fun id -> id <> except)
+
+/// Delete a sheet as Excel does: references to it in the formulas of the
+/// other sheets (cells, conditional formats, validations) and in defined
+/// names become #REF!, the names of its own scope and its tables go with it,
+/// and when it was the active sheet the nearest visible one becomes active.
+/// None when the sheet is not there or is the only one. (Whether it may be
+/// deleted - the last visible sheet may not - is lastVisibleSheetProblem.)
+let removeSheet (sheetId: SheetId) (workbook: Workbook) : (Workbook * SheetRemoval) option =
+    match Map.tryFind sheetId workbook.Sheets with
+    | None -> None
+    | Some _ when Map.count workbook.Sheets <= 1 -> None
+    | Some sheet ->
+        let change = DeleteSheetRefs sheet.Name
+        let rewrite (formula: string) =
+            if formula.IndexOf(sheet.Name, System.StringComparison.OrdinalIgnoreCase) < 0 then formula
+            else rewriteFormulaForSheets change formula
+        let cells = ResizeArray<SheetId * CellAddress * CellData * CellData>()
+        let formats = ResizeArray<SheetId * ConditionalFormatRange list * ConditionalFormatRange list>()
+        let validations = ResizeArray<SheetId * ValidationRange list * ValidationRange list>()
+        let sheets =
+            workbook.Sheets
+            |> Map.remove sheetId
+            |> Map.map (fun id other ->
+                let model = mapModelFormulas rewrite other.Model
+                if obj.ReferenceEquals(model, other.Model) then other
+                else
+                    if not (obj.ReferenceEquals(model.Cells, other.Model.Cells)) then
+                        for KeyValue(addr, after) in model.Cells do
+                            match Map.tryFind addr other.Model.Cells with
+                            | Some before when not (obj.ReferenceEquals(before, after)) && before <> after -> cells.Add((id, addr, before, after))
+                            | _ -> ()
+                    if not (obj.ReferenceEquals(model.ConditionalFormats, other.Model.ConditionalFormats)) then
+                        formats.Add((id, other.Model.ConditionalFormats, model.ConditionalFormats))
+                    if not (obj.ReferenceEquals(model.Validations, other.Model.Validations)) then
+                        validations.Add((id, other.Model.Validations, model.Validations))
+                    { other with Model = model })
+        let scoped = workbook.Names |> Map.toList |> List.filter (fun ((scope, _), _) -> scope = Some sheetId)
+        let nameChanges = ResizeArray<(SheetId option * string) * string * string>()
+        let names =
+            workbook.Names
+            |> Map.filter (fun (scope, _) _ -> scope <> Some sheetId)
+            |> Map.map (fun key refersTo ->
+                let rewritten = rewrite refersTo
+                if rewritten <> refersTo then nameChanges.Add((key, refersTo, rewritten))
+                rewritten)
+        let tables = workbook.Tables |> Map.toList |> List.filter (fun (_, table) -> table.SheetId = sheetId)
+        let index = sheetIndex sheetId workbook
+        let active =
+            if workbook.ActiveSheet <> sheetId then workbook.ActiveSheet
+            else nearestVisibleSheet index sheetId workbook |> Option.defaultValue workbook.ActiveSheet
+        Some ({ workbook with
+                  Sheets = sheets
+                  SheetOrder = workbook.SheetOrder |> List.filter ((<>) sheetId)
+                  ActiveSheet = active
+                  Names = names
+                  NameInfo = workbook.NameInfo |> Map.filter (fun (scope, _) _ -> scope <> Some sheetId)
+                  Tables = workbook.Tables |> Map.filter (fun _ table -> table.SheetId <> sheetId) },
+              { Sheet = sheet
+                Index = index
+                ActiveBefore = workbook.ActiveSheet
+                Cells = List.ofSeq cells
+                Formats = List.ofSeq formats
+                Validations = List.ofSeq validations
+                Names = List.ofSeq nameChanges
+                ScopedNames = scoped |> List.map (fun (key, refersTo) -> key, refersTo, Map.tryFind key workbook.NameInfo)
+                Tables = tables })
+
+/// Put a removed sheet back where it was, with its names and tables, and
+/// give the formulas that `removeSheet` turned into #REF! their references
+/// back - those nobody changed since. The sheet that was active is active again.
+let restoreSheet (removal: SheetRemoval) (workbook: Workbook) : Workbook =
+    let sheetId = removal.Sheet.Id
+    if Map.containsKey sheetId workbook.Sheets then workbook
+    else
+        let sheets =
+            workbook.Sheets
+            |> Map.map (fun id sheet ->
+                let mutable model = sheet.Model
+                for (owner, addr, before, after) in removal.Cells do
+                    if owner = id then
+                        match Map.tryFind addr model.Cells with
+                        | Some current ->
+                            let sameFormula =
+                                match current.Value, after.Value with
+                                | Formula (a, _), Formula (b, _) -> a = b
+                                | _ -> false
+                            if sameFormula then model <- setCell addr before model
+                        | None -> ()
+                for (owner, before, after) in removal.Formats do
+                    if owner = id && model.ConditionalFormats = after then model <- { model with ConditionalFormats = before }
+                for (owner, before, after) in removal.Validations do
+                    if owner = id && model.Validations = after then model <- { model with Validations = before }
+                if obj.ReferenceEquals(model, sheet.Model) then sheet else { sheet with Model = model })
+            |> Map.add sheetId removal.Sheet
+        let order =
+            let current = workbook.SheetOrder
+            let at = max 0 (min (List.length current) removal.Index)
+            List.take at current @ [ sheetId ] @ List.skip at current
+        let names =
+            removal.Names
+            |> List.fold (fun acc (key, before, after) -> if Map.tryFind key acc = Some after then Map.add key before acc else acc) workbook.Names
+        let names = removal.ScopedNames |> List.fold (fun acc (key, refersTo, _) -> Map.add key refersTo acc) names
+        let nameInfo =
+            removal.ScopedNames
+            |> List.fold (fun acc (key, _, info) -> match info with Some info -> Map.add key info acc | None -> acc) workbook.NameInfo
+        let tables =
+            removal.Tables |> List.fold (fun acc (key, table) -> if Map.containsKey key acc then acc else Map.add key table acc) workbook.Tables
+        { workbook with
+            Sheets = sheets
+            SheetOrder = order
+            ActiveSheet = (if Map.containsKey removal.ActiveBefore sheets then removal.ActiveBefore else workbook.ActiveSheet)
+            Names = names
+            NameInfo = nameInfo
+            Tables = tables }
+
+/// Put a new sheet at position `index` of the tab order (clamped) and make it active.
+let insertSheet (sheet: Sheet) (index: int) (workbook: Workbook) : Workbook =
+    if Map.containsKey sheet.Id workbook.Sheets then workbook
+    else
+        let at = max 0 (min (List.length workbook.SheetOrder) index)
+        { workbook with
+            Sheets = Map.add sheet.Id sheet workbook.Sheets
+            SheetOrder = List.take at workbook.SheetOrder @ [ sheet.Id ] @ List.skip at workbook.SheetOrder
+            ActiveSheet = sheet.Id }
+
+/// Move a sheet to position `toIndex` of the tab order (the position it has
+/// afterwards, clamped). Nothing refers to a sheet by its position but 3-D
+/// references, which name their first and last sheet.
+let moveSheet (sheetId: SheetId) (toIndex: int) (workbook: Workbook) : Workbook =
+    if not (Map.containsKey sheetId workbook.Sheets) then workbook
+    else
+        let rest = workbook.SheetOrder |> List.filter ((<>) sheetId)
+        let at = max 0 (min (List.length rest) toIndex)
+        let order = List.take at rest @ [ sheetId ] @ List.skip at rest
+        if order = workbook.SheetOrder then workbook else { workbook with SheetOrder = order }
+
+/// Show or hide a sheet's tab. `veryHidden` (with `visible` false) is
+/// Excel's "very hidden". Hiding the active sheet makes the nearest visible
+/// one active. (Whether it may be hidden: lastVisibleSheetProblem.)
+let setSheetVisibility (sheetId: SheetId) (visible: bool) (veryHidden: bool) (workbook: Workbook) : Workbook =
+    match Map.tryFind sheetId workbook.Sheets with
+    | None -> workbook
+    | Some sheet ->
+        let veryHidden = veryHidden && not visible
+        if sheet.Visible = visible && sheet.Model.VeryHidden = veryHidden then workbook
+        else
+            let model = if sheet.Model.VeryHidden = veryHidden then sheet.Model else { sheet.Model with VeryHidden = veryHidden }
+            let changed = { workbook with Sheets = Map.add sheetId { sheet with Visible = visible; Model = model } workbook.Sheets }
+            if visible || workbook.ActiveSheet <> sheetId then changed
+            else
+                match nearestVisibleSheet (sheetIndex sheetId workbook) sheetId changed with
+                | Some active -> { changed with ActiveSheet = active }
+                | None -> changed
+
+/// "visible", "hidden" or "veryHidden".
+let sheetVisibility (sheet: Sheet) : string =
+    if sheet.Visible then "visible" elif sheet.Model.VeryHidden then "veryHidden" else "hidden"
+
+/// A name for a copy of a table that no table has: "Name_2", "Name_3", ...
+let private copyTableName (name: string) (taken: string -> bool) : string =
+    let mutable number = 2
+    while taken (sprintf "%s_%d" name number) do number <- number + 1
+    sprintf "%s_%d" name number
+
+/// Copy a sheet as Excel does: the copy `newId`, named `newName`, is put at
+/// position `index` and made active. Its formulas that named the source
+/// sheet name the copy; the names of the source's scope are copied to the
+/// copy's; its tables are copied under new names ("Sales_2"), which the
+/// copy's structured references follow. Pictures are copied. What the editor
+/// only keeps of a file for the source (charts and other kept drawing
+/// objects, pivot tables) stays with the source: the copy has none.
+let duplicateSheet (sourceId: SheetId) (newId: SheetId) (newName: string) (index: int) (workbook: Workbook) : Workbook =
+    match Map.tryFind sourceId workbook.Sheets with
+    | None -> workbook
+    | Some _ when Map.containsKey newId workbook.Sheets -> workbook
+    | Some source ->
+        let sourceModel = resolveSheet source.Model
+        let mutable taken = workbook.Tables |> Map.toList |> List.map (fun (name, _) -> name.ToUpperInvariant()) |> Set.ofList
+        let tableNames =
+            sourceModel.Tables
+            |> List.filter (fun table -> table.Name <> "")
+            |> List.map (fun table ->
+                let copyName = copyTableName table.Name (fun name -> Set.contains (name.ToUpperInvariant()) taken)
+                taken <- Set.add (copyName.ToUpperInvariant()) taken
+                table.Name, copyName)
+        let rewrites = RenameSheetRefs (source.Name, newName) :: (tableNames |> List.map RenameTableRefs)
+        let rewrite (formula: string) = rewrites |> List.fold (fun text change -> rewriteFormulaForSheets change text) formula
+        let renamedTable (name: string) =
+            tableNames |> List.tryFind (fun (was, _) -> was = name) |> Option.map snd |> Option.defaultValue name
+        let model =
+            { mapModelFormulas rewrite sourceModel with
+                Tables = sourceModel.Tables |> List.map (fun table -> { table with Name = renamedTable table.Name })
+                Drawings = sourceModel.Drawings |> List.filter (fun drawing -> match drawing.Content with Picture _ -> true | KeptObject _ -> false)
+                KeptRanges = []
+                SourceSheet = None
+                Deferred = None
+                History = emptyHistory
+                Clipboard = None
+                EditingCell = None
+                EditBuffer = "" }
+        let tables =
+            workbook.Tables
+            |> Map.fold (fun acc _ table ->
+                if table.SheetId <> sourceId then acc
+                else
+                    let name = renamedTable table.Name
+                    if name = table.Name then acc else Map.add name { table with Name = name; SheetId = newId } acc) workbook.Tables
+        let scoped = workbook.Names |> Map.toList |> List.filter (fun ((scope, _), _) -> scope = Some sourceId)
+        let names = scoped |> List.fold (fun acc ((_, key), refersTo) -> Map.add (Some newId, key) (rewrite refersTo) acc) workbook.Names
+        let nameInfo =
+            scoped
+            |> List.fold (fun acc ((_, key), _) ->
+                match Map.tryFind (Some sourceId, key) workbook.NameInfo with
+                | Some info -> Map.add (Some newId, key) info acc
+                | None -> acc) workbook.NameInfo
+        { insertSheet { Id = newId; Name = newName; Model = model; Visible = true } index workbook with
+            Tables = tables
+            Names = names
+            NameInfo = nameInfo }
+
 /// Get all sheet names
 let getSheetNames (workbook: Workbook): (SheetId * string) list =
     workbook.SheetOrder

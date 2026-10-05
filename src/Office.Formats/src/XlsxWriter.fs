@@ -432,9 +432,12 @@ type XlsxSheetViewOut = {
     ShowFormulas: bool
     /// Zoom in percent (10..400).
     ZoomScale: int
+    /// The tab's colour, as XlsxReader.SheetViewOptions.TabColor has it
+    /// ("#RRGGBB", "theme:N", "theme:N:tint" or "indexed:N").
+    TabColor: string option
 }
 
-let defaultSheetViewOut : XlsxSheetViewOut = { ShowZeros = true; ShowHeaders = true; ShowFormulas = false; ZoomScale = 100 }
+let defaultSheetViewOut : XlsxSheetViewOut = { ShowZeros = true; ShowHeaders = true; ShowFormulas = false; ZoomScale = 100; TabColor = None }
 
 type XlsxSheetOut = {
     Name: string
@@ -1586,7 +1589,21 @@ let private sheetFormatXml (sheet: XlsxSheetOut) =
 
 let private worksheetXml (styles: StyleBook) sharedIndex sheetIndex active (sheet: XlsxSheetOut) =
     let hasFitToPage = sheet.PageSetup |> Option.exists (fun p -> p.FitToPage)
-    let sheetPr = if hasFitToPage then "<sheetPr><pageSetUpPr fitToPage=\"1\"/></sheetPr>" else ""
+    // (CT_SheetPr: tabColor comes before pageSetUpPr.)
+    let tabColor =
+        match sheet.View.TabColor with
+        | Some color when color.StartsWith "#" && color.Length = 7 -> sprintf "<tabColor rgb=\"FF%s\"/>" (color.Substring(1).ToUpperInvariant())
+        | Some color when color.StartsWith "theme:" ->
+            (match color.Split(':') with
+             | [| _; index |] -> sprintf "<tabColor theme=\"%s\"/>" (escaped index)
+             | [| _; index; tint |] -> sprintf "<tabColor theme=\"%s\" tint=\"%s\"/>" (escaped index) (escaped tint)
+             | _ -> "")
+        | Some color when color.StartsWith "indexed:" -> sprintf "<tabColor indexed=\"%s\"/>" (escaped (color.Substring 8))
+        | _ -> ""
+    let sheetPr =
+        if hasFitToPage || tabColor <> "" then
+            "<sheetPr>" + tabColor + (if hasFitToPage then "<pageSetUpPr fitToPage=\"1\"/>" else "") + "</sheetPr>"
+        else ""
     declaration + "\n"
     + sprintf "<worksheet xmlns=\"%s\" xmlns:r=\"%s\">" Namespaces.spreadsheet Namespaces.relationships
     + sheetPr
@@ -2209,7 +2226,7 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
               FrozenRows = sheet.FrozenPane |> Option.map (fun p -> p.YSplit) |> Option.defaultValue 0
               FrozenCols = sheet.FrozenPane |> Option.map (fun p -> p.XSplit) |> Option.defaultValue 0
               ShowGridLines = sheet.ShowGridLines
-              View = { ShowZeros = sheet.ShowZeros; ShowHeaders = sheet.View.ShowRowColHeaders; ShowFormulas = sheet.View.ShowFormulas; ZoomScale = sheet.View.ZoomScale }
+              View = { ShowZeros = sheet.ShowZeros; ShowHeaders = sheet.View.ShowRowColHeaders; ShowFormulas = sheet.View.ShowFormulas; ZoomScale = sheet.View.ZoomScale; TabColor = sheet.View.TabColor }
               Tables =
                 sheet.Tables
                 |> List.map (fun t ->

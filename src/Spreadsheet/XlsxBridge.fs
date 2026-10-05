@@ -853,6 +853,8 @@ module Import =
                 ShowFormulas = sheet.View.ShowFormulas
                 ShowZeros = sheet.ShowZeros
                 Zoom = float sheet.View.ZoomScale / 100.0
+                TabColor = sheet.View.TabColor
+                VeryHidden = (sheet.State = XlsxReader.SheetVeryHidden)
                 Validations = rules
                 ConditionalFormats = conditionalFormats wb sheet
                 PageSetup = pageSetup sheet
@@ -1028,6 +1030,9 @@ module Import =
                     standIns.[index] <-
                         { createEmpty options.MinRows options.MinCols with
                             Tables = sheetTables
+                            // (What can change without the sheet being converted.)
+                            TabColor = sheet.View.TabColor
+                            VeryHidden = (sheet.State = XlsxReader.SheetVeryHidden)
                             SourceSheet = Some { Book = sourceId; Sheet = index }
                             Deferred =
                                 Some { Loaded = None
@@ -1322,7 +1327,8 @@ module Export =
             { ShowZeros = model.ShowZeros
               ShowHeaders = model.ShowHeaders
               ShowFormulas = model.ShowFormulas
-              ZoomScale = max 10 (min 400 (int (System.Math.Round (model.Zoom * 100.0)))) }
+              ZoomScale = max 10 (min 400 (int (System.Math.Round (model.Zoom * 100.0))))
+              TabColor = model.TabColor }
           Tables = model.Tables |> List.map (table model)
           DataValidations = validations model
           ConditionalFormats = conditionalFormats dxfIndex model
@@ -1526,6 +1532,11 @@ module Export =
         let cache = newFormatCache ()
         let nameOf index = if index < input.Names.Length then input.Names.[index] else sprintf "Sheet%d" (index + 1)
         let visibleAt index = index >= input.Visible.Length || input.Visible.[index]
+        // A sheet without a tab is hidden, or very hidden when its model says so.
+        let stateOf index (model: SpreadsheetModel) =
+            if visibleAt index then XlsxReader.SheetVisible
+            elif model.VeryHidden then XlsxReader.SheetVeryHidden
+            else XlsxReader.SheetHidden
         // A sheet of the source is found by the identity its model carries
         // (`SourceSheet`: which sheet of the file it was imported as), so the
         // carry-over survives renames, reordering and added or removed
@@ -1553,17 +1564,13 @@ module Export =
                 let name = nameOf index
                 match sourceOf index with
                 | Some (readerSheet, outSheet, before) ->
-                    // Hidden and very hidden are both "no tab" to the editor.
-                    let state =
-                        match visibleAt index, readerSheet.State with
-                        | true, _ -> XlsxReader.SheetVisible
-                        | false, XlsxReader.SheetVisible -> XlsxReader.SheetHidden
-                        | false, hidden -> hidden
-                    // A sheet that was never converted goes back as the file had it.
-                    if isDeferredSheet model then { outSheet with Name = name; State = state }
-                    else sourcedSheet cache dxfIndex name state outSheet readerSheet before model
+                    // A sheet that was never converted goes back as the file had
+                    // it (but for its name, visibility and tab colour, which
+                    // change without converting it).
+                    if isDeferredSheet model then { outSheet with Name = name; State = stateOf index model; View = { outSheet.View with TabColor = model.TabColor } }
+                    else sourcedSheet cache dxfIndex name (stateOf index model) outSheet readerSheet before model
                 | None ->
-                    modelSheet cache dxfIndex name (if visibleAt index then XlsxReader.SheetVisible else XlsxReader.SheetHidden) model)
+                    modelSheet cache dxfIndex name (stateOf index model) model)
             |> Array.toList
         { Sheets = sheets
           ActiveSheetIndex = max 0 (min (input.Sheets.Length - 1) input.ActiveSheetIndex)
