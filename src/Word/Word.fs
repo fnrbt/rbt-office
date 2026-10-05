@@ -75,7 +75,10 @@ module API =
                 editor.Revision <- editor.LastRevision
             editor.RevisionDocument <- doc
 
+    /// The layouts of the whole document (what the commands that read the
+    /// layout want: any block may be asked about).
     let private layoutsForEditor (editor: Editor) =
+        Ren.completeLayout editor.Handler.RenderContext
         Ren.cachedLayouts editor.Handler.RenderContext editor.Doc
         |> Option.defaultWith (fun () -> Ren.layoutDocument editor.Handler.RenderContext editor.Doc)
 
@@ -91,6 +94,9 @@ module API =
     /// previous document wholesale, so the undo history is cleared rather
     /// than letting Ctrl+Z swap the old document back in.
     let private loadDocument (editor: Editor) newDoc =
+        // Through a viewport the start of the document is laid out and shown
+        // first; the rest follows in idle slices (see isLayoutComplete).
+        Ren.beginProgressiveLayout editor.Handler.RenderContext
         Inp.loadDocument editor.Handler newDoc
         editor.Doc <- newDoc
         // A loaded document is a new document: nothing of the old one can be
@@ -118,6 +124,7 @@ module API =
     /// input element. Call when the canvas is removed.
     let dispose (editor: Editor) =
         editor.Listeners.Clear()
+        Ren.cancelScheduledLayout editor.Handler.RenderContext
         Inp.dispose editor.Handler
 
     /// The hidden text input that holds the keyboard focus while the editor is
@@ -149,16 +156,75 @@ module API =
                         "CanRedo" ==> canRedoNow
                         "Revision" ==> editor.Revision
                         "Modified" ==> (editor.Revision <> editor.SavedRevision)
+                        "LayoutChanged" ==> false
+                        "LayoutComplete" ==> Ren.layoutIsComplete editor.Handler.RenderContext
                     ]
                 // A listener may unsubscribe (or subscribe) while being called.
                 for listener in editor.Listeners.ToArray() do
                     if editor.Listeners.Contains listener then listener change
 
+    /// Tell the onChange listeners that more of a long document is laid out
+    /// (more pages, a larger document size), or all of it.
+    let private notifyLayoutProgress (editor: Editor) =
+        if editor.Listeners.Count > 0 then
+            let change =
+                createObj [
+                    "DocumentChanged" ==> false
+                    "SelectionChanged" ==> false
+                    "CanUndo" ==> Inp.canUndo editor.Handler
+                    "CanRedo" ==> Inp.canRedo editor.Handler
+                    "Revision" ==> editor.Revision
+                    "Modified" ==> (editor.Revision <> editor.SavedRevision)
+                    "LayoutChanged" ==> true
+                    "LayoutComplete" ==> Ren.layoutIsComplete editor.Handler.RenderContext
+                ]
+            for listener in editor.Listeners.ToArray() do
+                if editor.Listeners.Contains listener then listener change
+
+    /// Lay out the rest of a long document in idle slices (nothing to do, and
+    /// nothing scheduled, when the whole document is laid out).
+    let private continueLayout (editor: Editor) =
+        let ctx = editor.Handler.RenderContext
+        if not (Ren.layoutIsComplete ctx) then
+            Ren.scheduleLayout ctx (fun () -> editor.Doc) (fun complete tell ->
+                // (What is on screen was laid out before it was shown: the frame is brought up to the layout at the end.)
+                if complete then Inp.repaint editor.Handler
+                if tell then notifyLayoutProgress editor)
+
+    /// Whether the whole document is laid out. A document loaded through a
+    /// viewport (setViewport before the import) shows its first screens at
+    /// once; the rest is laid out in idle slices, during which
+    /// getDocumentSize / getPageFrames report the pages there are so far and
+    /// the onChange listeners are told as they grow ({ LayoutChanged: true,
+    /// LayoutComplete }). Commands that need the whole layout (getPageCount,
+    /// the layout queries, find and go to, renderPage of a later page, a
+    /// selection further down) lay the rest out at once.
+    let isLayoutComplete (editor: Editor) : bool =
+        Ren.layoutIsComplete editor.Handler.RenderContext
+
+    /// A promise that resolves (with the document size, see getDocumentSize)
+    /// once the whole document is laid out; at once when it is.
+    let whenLayoutComplete (editor: Editor) : JS.Promise<obj> =
+        let ctx = editor.Handler.RenderContext
+        JS.Constructors.Promise.Create(fun resolve _ ->
+            Ren.whenLayoutComplete ctx (fun () -> resolve (Viewer.documentSizeToJs ctx editor.Doc))
+            continueLayout editor)
+
+    /// Lay out the rest of the document now (what getPageCount does, without the count).
+    let completeLayout (editor: Editor) : unit =
+        let ctx = editor.Handler.RenderContext
+        if not (Ren.layoutIsComplete ctx && ctx.LayoutState.LastWasWhole) then
+            Ren.completeLayout ctx
+            Inp.repaint editor.Handler
+            notifyLayoutProgress editor
+
     /// Call `callback` after every change of the document or the selection
     /// (typing, pointer, toolbar / API commands, undo, redo, loading a
     /// document). It receives { DocumentChanged, SelectionChanged, CanUndo,
-    /// CanRedo, Revision, Modified } (see getRevision / isModified). Returns a
-    /// function that removes the subscription.
+    /// CanRedo, Revision, Modified, LayoutChanged, LayoutComplete } (see
+    /// getRevision / isModified / isLayoutComplete; LayoutChanged is set when
+    /// the call says that more of a long document is laid out and nothing
+    /// else changed). Returns a function that removes the subscription.
     let onChange (editor: Editor) (callback: obj -> unit) : unit -> unit =
         editor.Listeners.Add callback
         editor.NotifiedCanUndo <- Inp.canUndo editor.Handler
@@ -284,6 +350,7 @@ module API =
             observeRevision editor newDoc
             afterChange ()
             notifyListeners editor previous newDoc
+            continueLayout editor
 
         let handler = Inp.create canvas doc onChange
 
@@ -378,6 +445,7 @@ module API =
         let ctx = editor.Handler.RenderContext
         Ren.setViewport ctx (viewportFromJs viewport)
         Inp.repaint editor.Handler
+        continueLayout editor
         documentSizeToJs ctx editor.Doc
 
     /// The viewport set with setViewport, or null in whole-canvas mode.
@@ -433,6 +501,7 @@ module API =
     let repaint (editor: Editor) =
         editor.Handler.RenderContext.LastPaint <- None
         Inp.repaint editor.Handler
+        continueLayout editor
 
     /// Paint one page of the editor's document onto another canvas (thumbnails,
     /// print preview). The canvas is resized to the page at `scale` backing
@@ -469,6 +538,7 @@ module API =
         let ctx = editor.Handler.RenderContext
         Ren.setTextMeasurers ctx (if isNull (box measureText) then None else Some measureText) ctx.TextRangeMeasurer
         Ren.render ctx editor.Doc
+        continueLayout editor
 
     /// As setTextMeasurer, with `measureRange(text, style, start, length)`
     /// for the width of a part of a shaped run.
@@ -476,11 +546,13 @@ module API =
         let ctx = editor.Handler.RenderContext
         Ren.setTextMeasurers ctx (if isNull (box measureText) then None else Some measureText) (if isNull (box measureRange) then None else Some measureRange)
         Ren.render ctx editor.Doc
+        continueLayout editor
 
     let setTextRangeMeasurer (editor: Editor) (measureRange: Layout.TextRangeMeasurer) =
         let ctx = editor.Handler.RenderContext
         Ren.setTextMeasurers ctx ctx.TextMeasurer (if isNull (box measureRange) then None else Some measureRange)
         Ren.render ctx editor.Doc
+        continueLayout editor
 
     /// Paint text with `paintText(text, style, x, baseline, width)` - a plain
     /// JavaScript function returning true when it painted the text - instead
@@ -492,6 +564,7 @@ module API =
         let ctx = editor.Handler.RenderContext
         Ren.setTextPathPainter ctx (if isNull (box paintText) then None else Some paintText) None
         Ren.render ctx editor.Doc
+        continueLayout editor
 
     /// As setTextPathPainter, for every canvas the editor paints on:
     /// `painterFor(context2d)` returns the painter for that canvas context, so
@@ -500,17 +573,20 @@ module API =
         let ctx = editor.Handler.RenderContext
         Ren.setTextPathPainterFactory ctx painterFor
         Ren.render ctx editor.Doc
+        continueLayout editor
 
     let clearTextPathPainter (editor: Editor) =
         let ctx = editor.Handler.RenderContext
         Ren.setTextPathPainter ctx None None
         Ren.render ctx editor.Doc
+        continueLayout editor
 
     let clearTextMeasurer (editor: Editor) =
         let ctx = editor.Handler.RenderContext
         Ren.setTextPathPainter ctx None None
         Ren.setTextMeasurers ctx None None
         Ren.render ctx editor.Doc
+        continueLayout editor
 
     /// Counters of the editor's renderer, for hosts and checks:
     /// { FrameBuilds (times a paint frame was built: the document was laid
@@ -541,6 +617,7 @@ module API =
             Ren.requiredFontsOfDocument (Docx.importFromEditorPackage target)
 
     let getCachedLayouts (editor: Editor) =
+        Ren.completeLayout editor.Handler.RenderContext
         Ren.cachedLayouts editor.Handler.RenderContext editor.Doc
 
     let toggleTrackChanges (editor: Editor) =
@@ -2492,6 +2569,9 @@ module API =
             "canUndo" ==> canUndo
             "canRedo" ==> canRedo
             "onChange" ==> onChange
+            "isLayoutComplete" ==> isLayoutComplete
+            "whenLayoutComplete" ==> whenLayoutComplete
+            "completeLayout" ==> completeLayout
             "getSelectionFormat" ==> getSelectionFormat
             "dispose" ==> dispose
             "getInputElement" ==> getInputElement

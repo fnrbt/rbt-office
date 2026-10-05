@@ -96,6 +96,54 @@ let compare label state doc =
     check (label + " pages") incPages coldPages
     coldLayouts
 
+/// The start of a document laid out before the rest (IncrementalLayoutState.BlockLimit):
+/// with the limit raised in steps - and the edits made in between - every
+/// result is the layout of that many blocks on their own, and the last one,
+/// with the limit at the whole document, is the layout of the whole document.
+let mutable progressiveSteps = 0
+let assertProgressive label (doc: Doc.Document) (edits: (string * (Doc.Document -> Doc.Document)) list) =
+    let state = Layout.createIncrementalLayoutState ()
+    let mutable seed = 17 + String.length label * 31
+    let next bound =
+        seed <- (seed * 1103515245 + 12345) &&& 0x3fffffff
+        1 + (seed >>> 8) % bound
+    let comparePart name limit (current: Doc.Document) =
+        progressiveSteps <- progressiveSteps + 1
+        state.BlockLimit <- limit
+        let coldLayouts, coldPages = Layout.layoutDocumentPagesUpTo limit settings measureText measureRange current
+        let incLayouts, incPages = Layout.layoutDocumentPagesIncremental state settings measureText measureRange current
+        if incLayouts = coldLayouts && incPages = coldPages then pass <- pass + 1
+        else
+            fail <- fail + 1
+            printfn "FAIL %s: the first %d blocks %s differ from those blocks laid out on their own: %s" label limit name (describeDifference incLayouts coldLayouts)
+        // (Asked again, the result is handed back as it is.)
+        let againLayouts, _ = Layout.layoutDocumentPagesIncremental state settings measureText measureRange current
+        checkTrue (sprintf "%s: the first %d blocks %s, asked again" label limit name) (obj.ReferenceEquals(againLayouts, incLayouts))
+    let mutable current = doc
+    let mutable limit = 0
+    let step name =
+        let count = current.Blocks.Length
+        limit <- min (limit + next (max 1 (count / 4 + 1))) (count + 2)
+        comparePart name limit current
+        checkTrue (sprintf "%s: complete only with every block %s (%d of %d)" label name limit count) (Layout.incrementalLayoutIsWhole state = (limit >= count))
+    step "at first"
+    step "then"
+    for name, edit in edits do
+        current <- edit current
+        // (The edit at the limit the state had, then a step further.)
+        if not (Layout.incrementalLayoutIsWhole state) then comparePart ("after " + name) limit current
+        step ("past " + name)
+    while limit < current.Blocks.Length do step "further"
+    // The whole document: what a pass over all of it makes.
+    state.BlockLimit <- System.Int32.MaxValue
+    let coldLayouts, coldPages = Layout.layoutDocumentPages settings measureText measureRange current
+    let incLayouts, incPages = Layout.layoutDocumentPagesIncremental state settings measureText measureRange current
+    if incLayouts = coldLayouts && incPages = coldPages then pass <- pass + 1
+    else
+        fail <- fail + 1
+        printfn "FAIL %s: laid out in parts, the whole differs from the whole laid out at once: %s" label (describeDifference incLayouts coldLayouts)
+    checkTrue (label + ": complete") (Layout.incrementalLayoutIsWhole state)
+
 /// Lay the document out cold and incrementally, then again after every edit
 /// (the incremental state is carried across edits, as in the editor).
 let assertEquivalent label doc (edits: (string * (Doc.Document -> Doc.Document)) list) =
@@ -105,6 +153,8 @@ let assertEquivalent label doc (edits: (string * (Doc.Document -> Doc.Document))
     for name, edit in edits do
         current <- edit current
         compare (sprintf "%s after %s" label name) state current |> ignore
+    assertProgressive label doc edits
+    assertProgressive (label + " (edited)") current []
     state, initial, current
 
 let typeIn blockId offset text doc =
@@ -684,6 +734,66 @@ for seed, sections, twoColumns, steps in [ 11, false, false, 140; 12, true, fals
         doc <- edited
         compareAll (sprintf "step %d (%s)" step name)
         if state.Memo.MemoKeptPass then keptPasses <- keptPasses + 1
+// The same, with the document laid out and painted in parts: the limit is
+// raised between the edits (as a host raises it in idle slices while the
+// user already types). Every result is the layout of that many blocks on
+// their own, its chunks hold the commands of that layout, and the whole is
+// the whole laid out at once.
+let mutable partPaints = 0
+for seed, sections, twoColumns, steps in [ 21, false, false, 60; 22, true, false, 60; 23, true, false, 60; 24, false, true, 30; 25, true, false, 60 ] do
+    let random = System.Random seed
+    let state = Layout.createIncrementalLayoutState ()
+    let mutable doc = randomDocument random sections twoColumns
+    let mutable failed = false
+    let mutable limit = 0
+    let paintCache = Paint.createPaintCache ()
+    let compareAll label =
+        if not failed then
+            state.BlockLimit <- limit
+            let coldLayouts, coldPages = Layout.layoutDocumentPagesUpTo limit settings measureText measureRange doc
+            let incLayouts, incPages = Layout.withTablePlanScope paintScope (fun () -> Layout.layoutDocumentPagesIncremental state settings measureText measureRange doc)
+            if incLayouts <> coldLayouts || incPages <> coldPages then
+                failed <- true
+                fail <- fail + 1
+                printfn "FAIL random %d %s (the first %d of %d blocks): in parts differs from those blocks on their own: %s" seed label limit doc.Blocks.Length (describeDifference incLayouts coldLayouts)
+            else
+                pass <- pass + 1
+                // (The commands of the blocks that are laid out: of the document cut there.)
+                let coldCommands = commandsOf { doc with Blocks = List.truncate limit doc.Blocks } coldLayouts coldPages
+                match state.LastSlices with
+                | Some slices ->
+                    match Layout.withTablePlanScope paintScope (fun () -> Paint.collectDocumentChunks paintCache settings "Calibri" measureText measureRange doc slices incPages) with
+                    | Some chunks ->
+                        partPaints <- partPaints + 1
+                        let chunkCommands = Paint.commandsOfChunks chunks
+                        if chunkCommands <> coldCommands then
+                            failed <- true
+                            fail <- fail + 1
+                            printfn "FAIL random %d %s (the first %d of %d blocks): the commands in chunks differ (%d vs %d commands)" seed label limit doc.Blocks.Length chunkCommands.Length coldCommands.Length
+                        else pass <- pass + 1
+                    | None -> ()
+                | None -> ()
+    let further () = limit <- min (limit + 1 + random.Next (doc.Blocks.Length / 6 + 1)) (doc.Blocks.Length + 3)
+    further ()
+    compareAll "initial"
+    for step in 1 .. steps do
+        let name, edited = randomEdit random doc
+        doc <- edited
+        compareAll (sprintf "step %d (%s)" step name)
+        if random.Next 3 = 0 then
+            further ()
+            compareAll (sprintf "step %d, further" step)
+    while limit < doc.Blocks.Length do
+        further ()
+        compareAll "to the end"
+    limit <- System.Int32.MaxValue
+    compareAll "the whole"
+    if not failed then
+        let wholeLayouts, wholePages = Layout.layoutDocumentPages settings measureText measureRange doc
+        let incLayouts, incPages = Layout.layoutDocumentPagesIncremental state settings measureText measureRange doc
+        check (sprintf "random %d: laid out in parts, the whole is the whole laid out at once" seed) (incLayouts = wholeLayouts, incPages = wholePages, Layout.incrementalLayoutIsWhole state) (true, true, true)
+checkTrue (sprintf "the documents laid out in parts were painted in chunks (%d)" partPaints) (partPaints > 200)
+
 checkTrue (sprintf "most passes of the random sequences kept layouts of the pass before (%d)" keptPasses) (keptPasses > 400)
 checkTrue (sprintf "the paints in chunks (%d) collected a fraction of the blocks anew (%d of %d)" chunkedPaints blocksCollected blocksPainted) (chunkedPaints > 400 && blocksCollected * 3 < blocksPainted)
 checkTrue (sprintf "paragraphs' commands were collected when wanted (%d chunks), within the band they stood for" deferredChunks) (deferredChunks > 1000)

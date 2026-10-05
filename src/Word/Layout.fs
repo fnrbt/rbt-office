@@ -5659,9 +5659,36 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
         | _ -> pageInfosCoveringBottom (maxLineBottom 0.0 endnotes) pages
     resizeArrayToList results, pages
 
+/// The first `limit` blocks of a list of sections: the section the limit
+/// falls in is cut short and keeps what it is laid out with (its own page
+/// geometry, columns and start), the sections after it are left out.
+let private sectionsUpTo (limit: int) (sections: (Block list * SectionColumns option * SectionPageSetup option * string option * bool) list) =
+    let kept = ResizeArray<Block list * SectionColumns option * SectionPageSetup option * string option * bool>()
+    let mutable left = max 1 limit
+    for (blocks, columns, geometry, breakType, isFinal) in sections do
+        if left > 0 then
+            let count = List.length blocks
+            if count <= left then
+                kept.Add (blocks, columns, geometry, breakType, isFinal)
+                left <- left - count
+            else
+                kept.Add (List.truncate left blocks, columns, geometry, breakType, isFinal)
+                left <- 0
+    resizeArrayToList kept
+
 /// Lay out a document, returning the layouts and the per-page geometry.
-let private layoutDocumentPagesWithMemo (memo: ParagraphLayoutMemo option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) : BlockLayout list * PageInfo list =
-    match splitIntoSections doc with
+/// `limit`: the number of top-level blocks to lay out (System.Int32.MaxValue:
+/// the whole document) - the start of a long document is laid out and shown
+/// before the rest, see IncrementalLayoutState.BlockLimit. What is laid out of
+/// a part is laid out as it is in the whole, up to the blocks around the cut
+/// (a paragraph kept with the next, a balanced section), which a pass with a
+/// larger limit lays out again.
+let private layoutDocumentPagesWithMemo (memo: ParagraphLayoutMemo option) (limit: int) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (whole: Document) : BlockLayout list * PageInfo list =
+    let allSections = splitIntoSections whole
+    let limited = limit < System.Int32.MaxValue
+    let doc = if limited then { whole with Blocks = List.truncate (max 1 limit) whole.Blocks } else whole
+    let sections = if limited then sectionsUpTo limit allSections else allSections
+    match allSections with
     | [ (_, columns, _, _, _) ] ->
         // Single section: keep the existing path; uniform page list.
         let layouts =
@@ -5711,7 +5738,7 @@ let private layoutDocumentPagesWithMemo (memo: ParagraphLayoutMemo option) (sett
                     keepSlices secondRecord secondNotes
                     secondPass
         layouts, uniformPageInfos settings layouts
-    | sections ->
+    | _ ->
         layoutSections memo settings measureText measureRange doc sections
 
 /// True when the document has more than one section, i.e. its pages need not
@@ -5734,7 +5761,12 @@ let pageIndexForYInPages (pages: PageInfo list) (y: float) =
 
 /// Lay out a document, returning the layouts and the per-page geometry.
 let layoutDocumentPages (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) : BlockLayout list * PageInfo list =
-    layoutDocumentPagesWithMemo None settings measureText measureRange doc
+    layoutDocumentPagesWithMemo None System.Int32.MaxValue settings measureText measureRange doc
+
+/// The layout of the first `limit` top-level blocks of a document, on its
+/// own (see IncrementalLayoutState.BlockLimit, which gives the same).
+let layoutDocumentPagesUpTo (limit: int) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) : BlockLayout list * PageInfo list =
+    layoutDocumentPagesWithMemo None limit settings measureText measureRange doc
 
 let layoutDocumentWithRange (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) =
     layoutDocumentPages settings measureText measureRange doc |> fst
@@ -5753,6 +5785,18 @@ type IncrementalLayoutState = {
     mutable LastSlices: LayoutSlices option
     mutable MeasuredBlockCount: int
     mutable MemoSweepThreshold: int
+    /// How many top-level blocks are laid out: System.Int32.MaxValue for the
+    /// whole document, less while the start of a long document is shown and
+    /// the rest is still to come (a host raises it in slices; the layouts of
+    /// the blocks laid out so far stand from one limit to the next, as they do
+    /// from one edit to the next). The result with the limit at the whole
+    /// document is the layout a pass over the whole document makes.
+    mutable BlockLimit: int
+    /// The limit the last result was made with, and whether it covered the document.
+    mutable LastLimit: int
+    mutable LastWasWhole: bool
+    /// Counts the passes that made a result (a result handed back as it was is not one).
+    mutable LayoutSerial: int
     Memo: ParagraphLayoutMemo
 }
 
@@ -5764,6 +5808,10 @@ let createIncrementalLayoutState () = {
     LastSlices = None
     MeasuredBlockCount = 0
     MemoSweepThreshold = 256
+    BlockLimit = System.Int32.MaxValue
+    LastLimit = System.Int32.MaxValue
+    LastWasWhole = true
+    LayoutSerial = 0
     Memo = createParagraphLayoutMemo ()
 }
 
@@ -5779,6 +5827,14 @@ let incrementalLayoutMeasuredBlockCount (state: IncrementalLayoutState) =
 /// blocks kept the layouts of the pass before.
 let incrementalLayoutBlocksLaidOut (state: IncrementalLayoutState) =
     state.Memo.MemoBlocksLaidOut
+
+/// Whether the last result covers the whole document (see IncrementalLayoutState.BlockLimit).
+let incrementalLayoutIsWhole (state: IncrementalLayoutState) =
+    state.BlockLimit = System.Int32.MaxValue || (state.LastDocument.IsSome && state.LastWasWhole && state.BlockLimit >= state.LastLimit)
+
+/// Whether the last result is what the state would hand back for the limit it is at.
+let incrementalLayoutIsCurrent (state: IncrementalLayoutState) =
+    state.LastDocument.IsSome && (state.LastLimit = state.BlockLimit || (state.LastWasWhole && state.BlockLimit >= state.LastLimit))
 
 let clearIncrementalLayoutState (state: IncrementalLayoutState) =
     state.LastDocument <- None
@@ -5817,11 +5873,13 @@ let sameDocumentApartFromSelection (left: Document) (right: Document) =
 /// included) handing it this state's paragraph memo, so only paragraphs whose own
 /// inputs changed are measured and paginated again.
 let layoutDocumentPagesIncremental (state: IncrementalLayoutState) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) : BlockLayout list * PageInfo list =
+    // (A result that covered the whole document stands whatever the limit was raised to since.)
+    let sameLimit = state.LastLimit = state.BlockLimit || (state.LastWasWhole && state.BlockLimit >= state.LastLimit)
     match state.LastDocument, state.LastSettings, state.LastLayouts, state.LastPages with
     | Some cachedDoc, Some cachedSettings, Some layouts, Some pages
-        when obj.ReferenceEquals(cachedDoc, doc) && cachedSettings = settings -> layouts, pages
+        when sameLimit && obj.ReferenceEquals(cachedDoc, doc) && cachedSettings = settings -> layouts, pages
     | Some cachedDoc, Some cachedSettings, Some layouts, Some pages
-        when sameDocumentApartFromSelection cachedDoc doc && cachedSettings = settings ->
+        when sameLimit && sameDocumentApartFromSelection cachedDoc doc && cachedSettings = settings ->
         // The selection has no part in the layout: a caret move keeps it.
         state.LastDocument <- Some doc
         layouts, pages
@@ -5841,7 +5899,22 @@ let layoutDocumentPagesIncremental (state: IncrementalLayoutState) (settings: La
         memo.MemoKeptPass <- false
         memo.MemoBlocksLaidOut <- 0
         memo.MemoSlices <- None
-        let layouts, pages = layoutDocumentPagesWithMemo (Some memo) settings measureText measureRange doc
+        // A limit at or past the last block is no limit.
+        let limit =
+            if state.BlockLimit = System.Int32.MaxValue then state.BlockLimit
+            else
+                let mutable count = 0
+                let mutable rest = doc.Blocks
+                while count < state.BlockLimit && not rest.IsEmpty do
+                    count <- count + 1
+                    rest <- rest.Tail
+                if rest.IsEmpty then System.Int32.MaxValue else state.BlockLimit
+        let layouts, pages = layoutDocumentPagesWithMemo (Some memo) limit settings measureText measureRange doc
+        // (The whole document laid out: blocks an edit adds are laid out with it.)
+        state.BlockLimit <- limit
+        state.LastLimit <- limit
+        state.LastWasWhole <- (limit = System.Int32.MaxValue)
+        state.LayoutSerial <- state.LayoutSerial + 1
         state.MeasuredBlockCount <- state.MeasuredBlockCount + memo.LineBreakCount
         // (Numbered, with the number of the pass before: what was kept was kept from that one.)
         let before = match state.LastSlices with Some slices -> slices.SliceGeneration | None -> 0

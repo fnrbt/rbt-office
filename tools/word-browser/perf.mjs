@@ -9,11 +9,15 @@
 // its body repeated (--repeat N, default 8: some 500 pages).
 //
 // Usage:
-//   node tools/word-browser/perf.mjs --dist $DIST [--repeat N] [--keys N] [--profile keys] [--callers FUNCTION] [--painter]
+//   node tools/word-browser/perf.mjs --dist $DIST [--repeat N] [--keys N] [--profile keys] [--callers FUNCTION] [--painter] [--measure-cost MICROSECONDS]
 // --profile keys prints the functions with the most self time while typing, and the time under each
 // function (--profile enter: the time under each function while Enter and Backspace alternate;
 // --profile load: where opening the document spends its time); --callers FUNCTION adds the time under that function by its chain of callers.
 // --painter installs a (trivial) text path painter and measurers first.
+// --measure-cost N (implies --painter) makes the measurers cost what a host's shaped text stack costs: a key is
+// made of the style and the text for every call, widths are kept in a map of 5000 entries that is emptied when
+// full (as the host's caches are), and a run that is not in it takes N microseconds to shape. With N = 300 the
+// 600-page document is laid out in the time the host's real text stack takes (some 2.3 s).
 // Environment: PLAYWRIGHT, JSZIP_DIR, PORT (default 16125).
 import http from 'node:http';
 import fs from 'node:fs';
@@ -30,7 +34,10 @@ const dist = path.resolve(opt('--dist') ?? path.join(repo, 'dist'));
 const repeat = Number(opt('--repeat') ?? 8);
 const keys = Number(opt('--keys') ?? 40);
 const profile = opt('--profile');
-const painter = flag('--painter');
+const measureCost = Number(opt('--measure-cost') ?? 0);
+const painter = flag('--painter') || measureCost > 0;
+// --one-shot: the rest of the document is laid out at once after the first paint (completeLayout), not in idle slices.
+const oneShot = flag('--one-shot');
 const pathsOf = opt('--callers');
 const port = Number(process.env.PORT ?? 16125);
 const jszipDir = [process.env.JSZIP_DIR, path.join(repo, 'node_modules/jszip'), path.resolve(repo, '../rbt-office/node_modules/jszip')].find((p) => p && fs.existsSync(p));
@@ -58,7 +65,7 @@ try {
     const editor = Word.initializeCanvas(document.getElementById('c'));
     const stats = (times) => { const sorted = times.slice().sort((a, b) => a - b); return { mean: times.reduce((a, b) => a + b, 0) / times.length, median: sorted[Math.floor(sorted.length / 2)], max: sorted[sorted.length - 1] }; };
     window.perf = {
-        async load(usePainter) {
+        async load(usePainter, measureCost, oneShot) {
             const bytes = new Uint8Array(await (await fetch('/long.docx')).arrayBuffer());
             const t0 = performance.now();
             const editorPackage = await OF.processors.forEditorPackage(bytes);
@@ -69,7 +76,34 @@ try {
             const fonts = performance.now() - t2;
             // As a host does: the measurers and the painter first, then the document (laid out once).
             let t1 = performance.now();
-            if (usePainter) {
+            if (usePainter && measureCost > 0) {
+                // A host's shaped text stack, in what it costs (see the header).
+                const styleKey = (style) => [style?.FontFamily ?? '', style?.FontSize ?? '', style?.Bold ? 'b' : '', style?.Italic ? 'i' : '', style?.SmallCaps ? 'sc' : '', style?.AllCaps ? 'ac' : ''].join('|');
+                const texts = new Map(), ranges = new Map(), shapes = new Map();
+                const keep = (cache, key, value) => { if (cache.size >= 5000) cache.clear(); cache.set(key, value); return value; };
+                const shape = (text, style) => {
+                    const key = styleKey(style) + '|' + text;
+                    if (shapes.has(key)) return shapes.get(key);
+                    window.perfMeasure.shaped += 1;
+                    const until = performance.now() + measureCost / 1000;
+                    while (performance.now() < until) { /* shaping */ }
+                    return keep(shapes, key, text.length * style.FontSize * 0.5);
+                };
+                window.perfMeasure = { shaped: 0, calls: 0 };
+                Word.setTextMeasurers(editor, (text, style) => {
+                    window.perfMeasure.calls += 1;
+                    const key = styleKey(style) + '|' + text;
+                    if (texts.has(key)) return texts.get(key);
+                    return keep(texts, key, shape(text, style));
+                }, (text, style, start, length) => {
+                    window.perfMeasure.calls += 1;
+                    const key = styleKey(style) + '|' + start + '|' + length + '|' + text;
+                    if (ranges.has(key)) return ranges.get(key);
+                    shape(text, style);
+                    return keep(ranges, key, Math.max(0, Math.min(length, text.length - start)) * style.FontSize * 0.5);
+                });
+                Word.setTextPathPainter(editor, (text, style, x, baseline, width) => false);
+            } else if (usePainter) {
                 Word.setTextMeasurers(editor, (text, style) => text.length * style.FontSize * 0.5, (text, style, start, length) => Math.max(0, Math.min(length, text.length - start)) * style.FontSize * 0.5);
                 Word.setTextPathPainter(editor, (text, style, x, baseline, width) => false);
             }
@@ -79,6 +113,22 @@ try {
             t1 = performance.now();
             Word.importFromDocxPackage(editor, editorPackage);
             const imported = performance.now() - t1;
+            // What is on screen now is the first paint: the first screens are laid out, the rest follows in idle slices.
+            const firstPaint = performance.now() - t0;
+            const firstSize = Word.getDocumentSize(editor);
+            const firstBlocks = Word.getRenderStats(editor).LaidOutLimit;
+            const pixels = document.getElementById('c').getContext('2d').getImageData(0, 0, 1000, 800).data;
+            let ink = 0;
+            for (let i = 0; i < pixels.length; i += 4) if (pixels[i] < 100 && pixels[i + 1] < 100 && pixels[i + 2] < 100) ink += 1;
+            let notices = 0, longest = 0, last = performance.now();
+            const off = Word.onChange ? Word.onChange(editor, (change) => { if (change.LayoutChanged) notices += 1; }) : () => {};
+            // (How long the page could not answer while the rest was laid out: the longest gap between two timer ticks.)
+            const ticker = setInterval(() => { const now = performance.now(); longest = Math.max(longest, now - last); last = now; }, 4);
+            t1 = performance.now();
+            if (oneShot && Word.completeLayout) Word.completeLayout(editor);
+            if (Word.whenLayoutComplete) await Word.whenLayoutComplete(editor);
+            const rest = performance.now() - t1;
+            clearInterval(ticker); off();
             const loaded = performance.now() - t0;
             const size = Word.getDocumentSize(editor);
             // The caret in a plain paragraph near the middle of the document.
@@ -87,7 +137,8 @@ try {
             const framesTime = performance.now() - t1;
             const target = frames[Math.floor(frames.length / 2)];
             Word.setViewport(editor, { scale: 1, devicePixelRatio: 1, scrollTop: target.Top, scrollLeft: 0, width: 1000, height: 800 });
-            return { loaded, read, imported, installed, fonts, faces, frames: framesTime, pages: size.PageCount, top: target.Top };
+            return { loaded, read, imported, installed, fonts, faces, frames: framesTime, pages: size.PageCount, top: target.Top, measured: window.perfMeasure ?? null,
+                firstPaint, firstPages: firstSize.PageCount, firstBlocks, firstComplete: firstSize.LayoutComplete, ink, rest, notices, longest, passes: Word.getRenderStats(editor).LayoutPasses };
         },
         // Put the caret into a paragraph of plain text on the page in view (by clicking at a point of the canvas).
         caretAt(x, y) { return Word.getSelectionInformation ? JSON.stringify(Word.getCaretRect(editor)) : null; },
@@ -200,7 +251,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
         if (loadError) throw new Error('page failed to load modules: ' + loadError);
         const cdpLoad = await tab.context().newCDPSession(tab);
         if (profile === 'load') { await cdpLoad.send('Profiler.enable'); await cdpLoad.send('Profiler.setSamplingInterval', { interval: 500 }); await cdpLoad.send('Profiler.start'); }
-        const loaded = await tab.evaluate((usePainter) => window.perf.load(usePainter), painter);
+        const loaded = await tab.evaluate(([usePainter, cost, atOnce]) => window.perf.load(usePainter, cost, atOnce), [painter, measureCost, oneShot]);
         if (profile === 'load') {
             // Where opening the document spends its time: self time, and time under each function.
             const { profile: cpu } = await cdpLoad.send('Profiler.stop');
@@ -229,6 +280,8 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
         }
         console.log(`  getRequiredFonts(package): ${loaded.fonts.toFixed(0)} ms (${loaded.faces} faces), before the import`);
         console.log(`  opening: read the package ${(loaded.read / 1000).toFixed(2)} s, import and first paint ${(loaded.imported / 1000).toFixed(2)} s${painter ? `, measurers and painter installed ${(loaded.installed / 1000).toFixed(2)} s` : ''}, page frames ${loaded.frames.toFixed(0)} ms`);
+        console.log(`  first paint ${(loaded.firstPaint / 1000).toFixed(2)} s after the bytes (${loaded.firstBlocks} blocks, ${loaded.firstPages} pages laid out, ${loaded.ink} dark pixels on the first screen${loaded.firstComplete ? '; the whole document' : ''}); the rest of the layout ${(loaded.rest / 1000).toFixed(2)} s in ${loaded.passes} passes, ${loaded.notices} notices to onChange, the longest time without an answer ${loaded.longest.toFixed(0)} ms`);
+        if (loaded.measured) console.log(`  measurers: ${loaded.measured.calls} calls, ${loaded.measured.shaped} runs shaped at ${measureCost} microseconds`);
         console.log(`docx4j-getting-started x ${repeat}: ${loaded.pages} pages, loaded in ${(loaded.loaded / 1000).toFixed(2)} s${painter ? ' (text path painter and measurers installed)' : ''}`);
         // A click into the text of the page in view puts the caret there.
         await tab.mouse.click(400, 300);

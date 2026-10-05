@@ -45,12 +45,23 @@ module Viewer =
             "ScaledWidth" ==> width * scale
             "ScaledHeight" ==> height * scale
             "PageCount" ==> pageCount
+            // False while a long document is still being laid out from its
+            // start: the size and the page count are of what is laid out so far.
+            "LayoutComplete" ==> Ren.layoutIsComplete ctx
         ]
 
     /// Create a read-only viewer. `canvas` is used for text measurement (and by
     /// `render`, which paints the whole document onto it); pages are painted
     /// onto canvases of the host's with `renderPage`.
-    ///   load(editorPackage)            show a package from Office.Formats (forEditorPackage)
+    ///   load(editorPackage, options?)  show a package from Office.Formats (forEditorPackage).
+    ///                                  options { progressive: true }: the start of the document is laid out
+    ///                                  first and the rest in idle slices - getPageFrames / getDocumentSize
+    ///                                  then give the pages there are so far (see onLayoutProgress), and
+    ///                                  getPageCount, or renderPage of a later page, lays the rest out at once.
+    ///                                  Without it everything is laid out by the first call that asks.
+    ///   isLayoutComplete() / whenLayoutComplete() (a promise of the page frames) /
+    ///   onLayoutProgress(callback)     callback({ PageCount, LayoutComplete }) as pages are added; returns
+    ///                                  the function that ends the subscription
     ///   setImageCache(map)             Map of image source -> decoded HTMLImageElement
     ///   getPageCount() / getPageFrames() / getDocumentSize()
     ///   renderPage(canvas, pageIndex, scale)   paint one page (see API.renderPage)
@@ -70,11 +81,36 @@ module Viewer =
         state?render <- fun (nextDoc: Doc.Document) ->
             state?document <- nextDoc
             Ren.render ctx nextDoc
-        state?load <- fun (package: obj) ->
+        let progressListeners = ResizeArray<obj -> unit>()
+        // The rest of a document that is laid out from its start, in idle slices.
+        let continueLayout () =
+            if not (Ren.layoutIsComplete ctx) then
+                Ren.scheduleLayout ctx current (fun complete tell ->
+                    if tell && progressListeners.Count > 0 then
+                        let progress = createObj [ "PageCount" ==> List.length (Ren.pageFrames ctx (current ())); "LayoutComplete" ==> complete ]
+                        for listener in progressListeners.ToArray() do
+                            if progressListeners.Contains listener then listener progress)
+        state?load <- fun (package: obj) (options: obj) ->
             // A viewer shows no caret.
             let doc = { Docx.importFromEditorPackage package with Selection = None }
             state?document <- doc
             Ren.clearLayoutCache ctx
+            Ren.cancelScheduledLayout ctx
+            let progressive = not (isNull options) && not (isNull (options?progressive)) && unbox<bool> (options?progressive)
+            if progressive then
+                ctx.LayoutState.BlockLimit <- 48
+                ctx.Progress.Chunk <- 48
+                continueLayout ()
+            else Ren.completeLayout ctx
+        state?isLayoutComplete <- fun () -> Ren.layoutIsComplete ctx
+        state?whenLayoutComplete <- fun () ->
+            JS.Constructors.Promise.Create(fun (resolve: obj -> unit) _ ->
+                Ren.whenLayoutComplete ctx (fun () -> resolve (box (pageFramesToJs ctx (Ren.pageFrames ctx (current ())))))
+                continueLayout ())
+        state?onLayoutProgress <- fun (callback: obj -> unit) ->
+            progressListeners.Add callback
+            continueLayout ()
+            fun () -> progressListeners.Remove callback |> ignore
         state?setImageCache <- fun (cache: obj) ->
             ctx.ImageCache <- (if isNull cache then None else Some cache)
             ctx.LastPaint <- None
@@ -93,7 +129,9 @@ module Viewer =
         state?clearTextMeasurer <- fun () ->
             Ren.setTextPathPainter ctx None None
             Ren.setTextMeasurers ctx None None
-        state?getPageFrames <- fun () -> pageFramesToJs ctx (Ren.pageFrames ctx (current ()))
+        state?getPageFrames <- fun () ->
+            continueLayout ()
+            pageFramesToJs ctx (Ren.pageFrames ctx (current ()))
         state?getPageCount <- fun () -> Ren.pageCount ctx (current ())
         state?getDocumentSize <- fun () -> documentSizeToJs ctx (current ())
         state?renderPage <- fun (target: HTMLCanvasElement) (pageIndex: int) (scale: float) -> Ren.renderPage ctx (current ()) target pageIndex scale

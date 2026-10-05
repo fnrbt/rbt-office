@@ -61,6 +61,10 @@ type PaintFrame = {
     /// with, by the context's version counters (see RenderContext).
     PainterVersion: int
     MeasurerVersion: int
+    /// The pass of the layout state the frame's layouts are from (see
+    /// IncrementalLayoutState.LayoutSerial): a frame made while the start of a
+    /// long document was laid out is not the frame of the layout that has more.
+    LayoutSerial: int
     /// The hover outline the overlay commands were built for.
     Hovered: (string * int) option
     /// The viewport the frame was painted through (None: whole-canvas mode).
@@ -71,6 +75,21 @@ type PaintFrame = {
     mutable LayoutById: System.Collections.Generic.Dictionary<string, BlockLayout> option
     /// The band the body's pictures are in (kept: found by walking every command).
     mutable ImageBand: Choice<(float * float) option, unit> option
+}
+
+/// A long document is laid out from its start, in slices (see
+/// `beginProgressiveLayout`, `scheduleLayout`): what a context remembers of it.
+type LayoutProgress = {
+    /// A slice is waiting for an idle moment.
+    mutable Scheduled: bool
+    /// Raised to call off the slices that are waiting (the context is disposed of).
+    mutable Epoch: int
+    /// Top-level blocks the next slice adds: what the last ones say fits a slice's time.
+    mutable Chunk: int
+    /// When the hosts' listeners were last told (they are not told with every slice).
+    mutable Notified: float
+    /// Called once the whole document is laid out (whenLayoutComplete).
+    Waiters: ResizeArray<unit -> unit>
 }
 
 /// Rendering context
@@ -129,6 +148,9 @@ type RenderContext = {
     mutable Viewport: Viewport option
     /// Frame kept for renderPage when the document is not the one on the canvas.
     mutable PageFrame: PaintFrame option
+    Progress: LayoutProgress
+    /// The page frames of a layout pass (by its serial): a host asks for them with every change.
+    mutable KnownPageFrames: (int * PageInfo list) option
 }
 
 type CommentAnchor = {
@@ -191,6 +213,8 @@ let createContext (canvas: HTMLCanvasElement) = {
     LastPaint = None
     Viewport = None
     PageFrame = None
+    Progress = { Scheduled = false; Epoch = 0; Chunk = 48; Notified = 0.0; Waiters = ResizeArray() }
+    KnownPageFrames = None
 }
 
 let private cssFontFamily (family: string) =
@@ -312,18 +336,181 @@ let measureRangeWithContext ctx text style start length =
     | Some measureRange -> measureRange text style start length
     | None -> rangeMeasurerFromTextMeasurer (measureWithContext ctx) text style start length
 
-let layoutDocument (ctx: RenderContext) (doc: Document) =
-    Rbt.Word.Layout.withTablePlanScope ctx.PlanScope (fun () ->
-        Rbt.Word.Layout.layoutDocumentIncrementalWithRange ctx.LayoutState (layoutSettings ctx doc) (measureWithContext ctx) (measureRangeWithContext ctx) doc)
+// ---- a long document is laid out from its start ------------------------------
+//
+// The layout state lays out the first BlockLimit top-level blocks (see
+// Layout.IncrementalLayoutState). A newly loaded document starts with a few
+// (`beginProgressiveLayout`), a render raises the limit until what is in view
+// is laid out (`coverViewport`, `coverSelection`), and idle slices raise it to
+// the end (`scheduleLayout`). Whatever needs the layout of the whole document
+// asks for it (`completeLayout`): the result is then the layout a pass over
+// the whole document makes.
 
-/// Layouts plus the per-page geometry of the same (incremental) layout pass.
+[<Emit("performance.now()")>]
+let private nowMs () : float = jsNative
+
+/// Whether the layout the context has (or makes next) is of the whole document.
+let layoutIsComplete (ctx: RenderContext) =
+    Rbt.Word.Layout.incrementalLayoutIsWhole ctx.LayoutState
+
+let private resolveLayoutWaiters (ctx: RenderContext) =
+    if ctx.Progress.Waiters.Count > 0 && layoutIsComplete ctx then
+        let waiters = ctx.Progress.Waiters.ToArray()
+        ctx.Progress.Waiters.Clear()
+        for waiter in waiters do waiter ()
+
+/// Layouts plus the per-page geometry of the same (incremental) layout pass:
+/// of the blocks the layout state's limit covers.
 let layoutDocumentWithPages (ctx: RenderContext) (doc: Document) =
-    Rbt.Word.Layout.withTablePlanScope ctx.PlanScope (fun () ->
-        Rbt.Word.Layout.layoutDocumentPagesIncremental ctx.LayoutState (layoutSettings ctx doc) (measureWithContext ctx) (measureRangeWithContext ctx) doc)
+    let result =
+        Rbt.Word.Layout.withTablePlanScope ctx.PlanScope (fun () ->
+            Rbt.Word.Layout.layoutDocumentPagesIncremental ctx.LayoutState (layoutSettings ctx doc) (measureWithContext ctx) (measureRangeWithContext ctx) doc)
+    resolveLayoutWaiters ctx
+    result
 
+let layoutDocument (ctx: RenderContext) (doc: Document) =
+    layoutDocumentWithPages ctx doc |> fst
+
+/// From here on the whole document is laid out (by the next layout asked for).
+let completeLayout (ctx: RenderContext) =
+    ctx.LayoutState.BlockLimit <- System.Int32.MaxValue
+
+/// The layout of the whole document, with its pages.
+let layoutWholeDocumentWithPages (ctx: RenderContext) (doc: Document) =
+    completeLayout ctx
+    layoutDocumentWithPages ctx doc
+
+/// The layout of the whole document.
+let layoutWholeDocument (ctx: RenderContext) (doc: Document) =
+    layoutWholeDocumentWithPages ctx doc |> fst
+
+/// Call `callback` once the whole document is laid out (at once when it is).
+let whenLayoutComplete (ctx: RenderContext) (callback: unit -> unit) =
+    if layoutIsComplete ctx then callback ()
+    else ctx.Progress.Waiters.Add callback
+
+/// A document was loaded: its start is laid out first. (Only through a
+/// viewport, where a part of the document is what is shown; a whole-canvas
+/// host sizes its canvas from all the pages.)
+let beginProgressiveLayout (ctx: RenderContext) =
+    match ctx.Viewport with
+    | Some _ ->
+        ctx.LayoutState.BlockLimit <- 40
+        ctx.Progress.Chunk <- 48
+    | None -> completeLayout ctx
+
+/// The bottom of what is laid out of the body.
+let private laidOutBottom (ctx: RenderContext) (layouts: BlockLayout list) =
+    match ctx.LayoutState.LastSlices with
+    | Some slices when slices.SliceLayouts.Length > 0 ->
+        let last = slices.SliceLayouts.[slices.SliceLayouts.Length - 1]
+        last.Y + last.Height
+    | _ ->
+        let mutable bottom = 0.0
+        for layout in layouts do
+            bottom <- max bottom (layout.Y + layout.Height)
+        bottom
+
+/// Lay out as much of the document as reaches down to `bottom` (layout y).
+let private coverDown (ctx: RenderContext) (doc: Document) (bottom: float) =
+    let mutable more = not (layoutIsComplete ctx)
+    while more do
+        let layouts, _ = layoutDocumentWithPages ctx doc
+        if layoutIsComplete ctx || laidOutBottom ctx layouts >= bottom then more <- false
+        else
+            // (In steps of a third: a pass over a few more blocks costs little, the blocks themselves cost their measuring.)
+            let limit = ctx.LayoutState.BlockLimit
+            ctx.LayoutState.BlockLimit <- (if limit > 1000000 then System.Int32.MaxValue else limit + max 16 (limit / 3))
+
+/// What a viewport shows, and a screen below it, is laid out.
+let private coverViewport (ctx: RenderContext) (doc: Document) (vp: Viewport) =
+    if not (layoutIsComplete ctx) then
+        let top = (vp.ScrollTop - vp.OriginY) / vp.Scale
+        let height = vp.Height / vp.Scale
+        coverDown ctx doc (top + 2.0 * height)
+
+/// The blocks the selection is in are laid out, and some after them (the
+/// caret moves down by lines that must be there).
+let private coverSelection (ctx: RenderContext) (doc: Document) =
+    if not (layoutIsComplete ctx) then
+        match doc.Selection with
+        | None -> ()
+        | Some selection ->
+            let indexOf (blockId: string) =
+                match locateBlock doc blockId with
+                | ValueSome (struct (index, _)) -> index
+                | ValueNone -> -1
+            let last = max (indexOf selection.Focus.BlockId) (indexOf selection.Anchor.BlockId)
+            if last + 24 >= ctx.LayoutState.BlockLimit then
+                ctx.LayoutState.BlockLimit <- last + 96
+
+/// One slice of the layout of the rest of the document: blocks are added for
+/// about `budget` milliseconds. True when the whole document is laid out.
+let advanceLayout (ctx: RenderContext) (doc: Document) (budget: float) : bool =
+    let progress = ctx.Progress
+    let started = nowMs ()
+    let target = max 4.0 (min budget 30.0)
+    let mutable more = not (layoutIsComplete ctx)
+    while more do
+        let passStart = nowMs ()
+        let limit = ctx.LayoutState.BlockLimit
+        // (Never a sliver of what is laid out already: a pass has a cost of its own that grows with the document.)
+        let chunk = max progress.Chunk (limit / 128)
+        ctx.LayoutState.BlockLimit <- limit + chunk
+        layoutDocumentWithPages ctx doc |> ignore
+        let took = max 0.25 (nowMs () - passStart)
+        progress.Chunk <- max 8 (min (chunk * 2) (int (float chunk * target / took)))
+        if layoutIsComplete ctx || nowMs () - started + took * 0.6 > budget then more <- false
+    layoutIsComplete ctx
+
+[<Emit("(typeof document !== 'undefined' && document.hidden === true)")>]
+let private pageIsHidden () : bool = jsNative
+
+// The next slice runs as a task of its own right after the current one:
+// input events and frames the browser has waiting come first, and no time is
+// spent waiting for an idle period (which comes once per frame at best - a
+// long document would take a second longer to lay out).
+[<Emit("""(function (run) {
+    if (typeof scheduler !== 'undefined' && scheduler && typeof scheduler.postTask === 'function') { scheduler.postTask(run, { priority: 'user-visible' }); return; }
+    if (typeof MessageChannel === 'function') { var channel = new MessageChannel(); channel.port1.onmessage = function () { channel.port1.close(); run(); }; channel.port2.postMessage(0); return; }
+    setTimeout(run, 0);
+})($0)""")>]
+let private afterThisTask (_callback: unit -> unit) : unit = jsNative
+
+/// Lay out the rest of the document in slices (tasks of about 24 ms that let
+/// input and frames in between), until it is whole.
+/// `currentDocument` gives the document on display (it changes while the
+/// user types), `afterSlice complete tell` is called after every slice: the
+/// host repaints when it has to and, when `tell` is set (not with every
+/// slice), tells its listeners that there are more pages.
+let rec scheduleLayout (ctx: RenderContext) (currentDocument: unit -> Document) (afterSlice: bool -> bool -> unit) : unit =
+    let progress = ctx.Progress
+    if not progress.Scheduled && not (layoutIsComplete ctx) then
+        progress.Scheduled <- true
+        let epoch = progress.Epoch
+        afterThisTask (fun () ->
+            progress.Scheduled <- false
+            if epoch = progress.Epoch then
+                if not (layoutIsComplete ctx) then
+                    // A page that is not shown gets its tasks rarely: longer slices then.
+                    let budget = if pageIsHidden () then 250.0 else 24.0
+                    let complete = advanceLayout ctx (currentDocument ()) budget
+                    let now = nowMs ()
+                    let tell = complete || now - progress.Notified > 150.0
+                    if tell then progress.Notified <- now
+                    afterSlice complete tell
+                scheduleLayout ctx currentDocument afterSlice)
+
+/// Call off the slices that are waiting (the context is not used any more).
+let cancelScheduledLayout (ctx: RenderContext) =
+    ctx.Progress.Epoch <- ctx.Progress.Epoch + 1
+    ctx.Progress.Scheduled <- false
+    ctx.Progress.Waiters.Clear()
+
+/// The layouts the state has of this very document, at the limit it is at.
 let cachedLayouts (ctx: RenderContext) (doc: Document) =
     match ctx.LayoutState.LastDocument, ctx.LayoutState.LastLayouts with
-    | Some cachedDoc, Some layouts when obj.ReferenceEquals(cachedDoc, doc) -> Some layouts
+    | Some cachedDoc, Some layouts when obj.ReferenceEquals(cachedDoc, doc) && Rbt.Word.Layout.incrementalLayoutIsCurrent ctx.LayoutState -> Some layouts
     | _ -> None
 
 let clearLayoutCache (ctx: RenderContext) =
@@ -366,6 +553,8 @@ let setTextMeasurers (ctx: RenderContext) (measureText: TextMeasurer option) (me
     clearLayoutCache ctx
 
 let layoutLookupFor (ctx: RenderContext) (doc: Document) =
+    // (Asked for by commands that may name any block: the whole document.)
+    completeLayout ctx
     let layouts =
         cachedLayouts ctx doc
         |> Option.defaultWith (fun () -> layoutDocument ctx doc)
@@ -493,7 +682,7 @@ let private commentAnchorsForLayouts (ctx: RenderContext) (doc: Document) (layou
     |> List.rev
 
 let commentAnchors (ctx: RenderContext) (doc: Document) =
-    commentAnchorsForLayouts ctx doc (layoutDocument ctx doc)
+    commentAnchorsForLayouts ctx doc (layoutWholeDocument ctx doc)
 
 let private pageIndexForY settings y =
     let stride = pageHeight settings + pageGap
@@ -563,11 +752,25 @@ let private documentHeightWithNotes (settings: LayoutSettings) (layouts: BlockLa
 
 /// The page frames to show: the pages of the layout pass, each with its own
 /// section's size, plus pages for note areas that reach below the last one.
-let private pageFramesForLayouts (settings: LayoutSettings) (doc: Document) (layouts: BlockLayout list) (pages: PageInfo list) =
+let private pageFramesOfLayouts (settings: LayoutSettings) (doc: Document) (layouts: BlockLayout list) (pages: PageInfo list) =
     let bottom =
         if documentHasSections doc then bodyBottom settings layouts
         else documentHeightWithNotes settings layouts
     pageInfosCoveringBottom bottom pages
+
+/// `pageFramesOfLayouts` for the layouts and pages the layout state made
+/// last: kept for that pass (a host asks for the document's size with every change).
+let private pageFramesForLayouts (ctx: RenderContext) (settings: LayoutSettings) (doc: Document) (layouts: BlockLayout list) (pages: PageInfo list) =
+    let current =
+        match ctx.LayoutState.LastLayouts with
+        | Some known -> obj.ReferenceEquals(known, layouts)
+        | None -> false
+    match ctx.KnownPageFrames with
+    | Some (serial, frames) when current && serial = ctx.LayoutState.LayoutSerial -> frames
+    | _ ->
+        let frames = pageFramesOfLayouts settings doc layouts pages
+        if current then ctx.KnownPageFrames <- Some (ctx.LayoutState.LayoutSerial, frames)
+        frames
 
 let private renderPages (ctx: RenderContext) (pages: PageInfo list) =
     ctx.Ctx.fillStyle <- U3.Case1 "#eef0f3"
@@ -1067,7 +1270,7 @@ let private buildFrame (ctx: RenderContext) (doc: Document) hoveredImage =
     {
         Document = doc
         Layouts = layouts
-        Pages = pageFramesForLayouts settings doc layouts pages
+        Pages = pageFramesForLayouts ctx settings doc layouts pages
         Body = body
         StaticOverlay = commentAnchorCommands ctx doc layouts
         OverlayCommands = overlay
@@ -1081,6 +1284,7 @@ let private buildFrame (ctx: RenderContext) (doc: Document) hoveredImage =
         PaddingTop = ctx.PaddingTop
         PainterVersion = ctx.TextPathPainterVersion
         MeasurerVersion = ctx.TextMeasurerVersion
+        LayoutSerial = ctx.LayoutState.LayoutSerial
         Hovered = hoveredImage
         Viewport = ctx.Viewport
         StaticOverlayIndex = None
@@ -1110,8 +1314,17 @@ let private frameLayoutLookup (frame: PaintFrame) =
 /// their index are the same objects - and a newly built frame otherwise.
 /// (The canvas size and the viewport are the caller's to compare.)
 let private frameFor (ctx: RenderContext) (doc: Document) hoveredImage =
+    // While a long document is being laid out from its start: what is in view
+    // and what the selection is in are laid out before they are shown.
+    if not (ctx.LayoutState.LastWasWhole && layoutIsComplete ctx) then
+        coverSelection ctx doc
+        match ctx.Viewport with
+        | Some vp -> coverViewport ctx doc vp
+        | None -> ()
+        layoutDocumentWithPages ctx doc |> ignore
     match ctx.LastPaint with
     | Some previous when not (frameInvalidated ctx { previous with CanvasWidth = canvasWidth ctx; CanvasHeight = canvasHeight ctx })
+                         && previous.LayoutSerial = ctx.LayoutState.LayoutSerial
                          && Rbt.Word.Layout.sameDocumentApartFromSelection previous.Document doc ->
         if obj.ReferenceEquals(previous.Document, doc) && previous.Hovered = hoveredImage then previous
         else
@@ -1348,10 +1561,10 @@ let setViewport (ctx: RenderContext) (viewport: Viewport option) =
 let documentSize (ctx: RenderContext) (doc: Document) =
     let frames =
         match ctx.LastPaint with
-        | Some frame when obj.ReferenceEquals(frame.Document, doc) -> frame.Pages
+        | Some frame when obj.ReferenceEquals(frame.Document, doc) && frame.LayoutSerial = ctx.LayoutState.LayoutSerial && Rbt.Word.Layout.incrementalLayoutIsCurrent ctx.LayoutState -> frame.Pages
         | _ ->
             let layouts, pages = layoutDocumentWithPages ctx doc
-            pageFramesForLayouts (layoutSettings ctx doc) doc layouts pages
+            pageFramesForLayouts ctx (layoutSettings ctx doc) doc layouts pages
     let mutable width = 0.0
     let mutable height = 0.0
     for page in frames do
@@ -1372,8 +1585,10 @@ let documentSize (ctx: RenderContext) (doc: Document) =
 let renderPage (ctx: RenderContext) (doc: Document) (canvas: HTMLCanvasElement) (pageIndex: int) (scale: float) =
     let usable (frame: PaintFrame) =
         obj.ReferenceEquals(frame.Document, doc)
+        && frame.LayoutSerial = ctx.LayoutState.LayoutSerial
+        && Rbt.Word.Layout.incrementalLayoutIsCurrent ctx.LayoutState
         && not (frameInvalidated ctx { frame with CanvasWidth = canvasWidth ctx; CanvasHeight = canvasHeight ctx })
-    let frame =
+    let frameNow () =
         match ctx.LastPaint, ctx.PageFrame with
         | Some frame, _ when usable frame -> frame
         | _, Some frame when usable frame -> frame
@@ -1381,6 +1596,13 @@ let renderPage (ctx: RenderContext) (doc: Document) (canvas: HTMLCanvasElement) 
             let frame = buildFrame ctx doc None
             ctx.PageFrame <- Some frame
             frame
+    let frame =
+        let frame = frameNow ()
+        // A page past what is laid out of a long document so far: the whole document is.
+        if pageIndex >= List.length frame.Pages && pageIndex >= 0 && not (layoutIsComplete ctx && ctx.LayoutState.LastWasWhole) then
+            completeLayout ctx
+            frameNow ()
+        else frame
     match List.tryItem pageIndex frame.Pages with
     | None -> false
     | Some page ->
@@ -1419,7 +1641,7 @@ let private fontFacesToJs (faces: (string * bool * bool) list) : obj array =
 /// Paint.requiredFontFaces), as [{ family, bold, italic }], from the layout
 /// the renderer has.
 let requiredFonts (ctx: RenderContext) (doc: Document) : obj array =
-    let layouts, pages = layoutDocumentWithPages ctx doc
+    let layouts, pages = layoutWholeDocumentWithPages ctx doc
     Rbt.Word.Layout.withTablePlanScope ctx.PlanScope (fun () ->
         requiredFontFaces (layoutSettings ctx doc) ctx.FontFamily (measureWithContext ctx) (measureRangeWithContext ctx) doc (Some (layouts, pages)))
     |> fontFacesToJs
@@ -1442,22 +1664,29 @@ let renderStats (ctx: RenderContext) (doc: Document) : obj =
         "Blocks", box (List.length doc.Blocks)
         "PainterVersion", box ctx.TextPathPainterVersion
         "MeasurerVersion", box ctx.TextMeasurerVersion
+        "LayoutComplete", box (layoutIsComplete ctx)
+        "LayoutPasses", box ctx.LayoutState.LayoutSerial
+        "LaidOutLimit", box (if layoutIsComplete ctx then List.length doc.Blocks else min ctx.LayoutState.BlockLimit (List.length doc.Blocks))
     ]
 
 /// Render document to canvas
 let render (ctx: RenderContext) (doc: Document) =
     renderCore ctx doc None
 
-/// Number of pages the document lays out to, including footnote/endnote areas.
-/// Hosts use it to size the canvas (pages are stacked at pageHeight + pageGap).
+/// The frames of the pages laid out, including footnote/endnote areas. Hosts
+/// use them to size the canvas (pages are stacked with pageGap between them).
+/// While a long document is being laid out from its start these are the
+/// pages there are so far (see `layoutIsComplete`).
 let pageFrames (ctx: RenderContext) (doc: Document) =
     let layouts, pages = layoutDocumentWithPages ctx doc
-    pageFramesForLayouts (layoutSettings ctx doc) doc layouts pages
+    pageFramesForLayouts ctx (layoutSettings ctx doc) doc layouts pages
 
 /// Number of pages the document lays out to, including footnote/endnote areas.
 /// Pages are stacked with pageGap between them, but need not be the same size
-/// (sections); hosts size the canvas from pageFrames.
+/// (sections); hosts size the canvas from pageFrames. The whole document is
+/// laid out for it.
 let pageCount (ctx: RenderContext) (doc: Document) =
+    completeLayout ctx
     List.length (pageFrames ctx doc)
 
 /// Convert mouse position to document position
@@ -1474,6 +1703,7 @@ let caretRect (ctx: RenderContext) (doc: Document) : (float * float * float) opt
     | Some selection ->
         let settings = layoutSettings ctx doc
         let offset = selection.Focus.Offset
+        coverSelection ctx doc
         // A paragraph continued in another column has one layout per fragment.
         let mutable found: BlockLayout option = None
         let mutable fallback: BlockLayout option = None

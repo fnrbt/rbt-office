@@ -32,6 +32,8 @@
 //   caret-frames     a caret move / selection change builds no paint frame (getRenderStats().FrameBuilds); the pixels are those of a new frame
 //   viewer-first-page  the viewer's getRenderStats; the first renderPage collects the commands of the page's paragraphs only; pages are the same pixels in any order
 //   required-fonts   getRequiredFonts(package | editor), viewer.getRequiredFonts(), the viewer module's function: the faces text is measured and painted in
+//   progressive-layout  a long document through a viewport: the first screens at once, the rest in slices (isLayoutComplete / whenLayoutComplete / onChange), the whole as laid out at once; the viewer's { progressive: true }
+//   xml-scan         the DOCX reader's XML scanner gives the nodes the browser's parser gives, for every part of the test documents
 //
 // Environment (as tools/docx-roundtrip/roundtrip.mjs): PLAYWRIGHT, JSZIP_DIR, PORT (default 16022).
 // Exit code is non-zero when any check fails.
@@ -49,7 +51,7 @@ const opt = (name) => { const i = args.indexOf(name); if (i < 0) return undefine
 const dist = path.resolve(opt('--dist') ?? path.join(repo, 'dist'));
 const port = Number(process.env.PORT ?? 16022);
 const all = ['explicit-format', 'page-frames', 'ime', 'typing', 'track-changes', 'linked-images', 'opaque-click', 'viewport', 'selection-format',
-    'placeholder-and-frames', 'caret-movement', 'revision', 'viewer-measurers', 'page-centering', 'commands', 'image-handles', 'painter-frames', 'viewer-entry', 'keystroke-long', 'table-tools', 'caret-frames', 'viewer-first-page', 'required-fonts'];
+    'placeholder-and-frames', 'caret-movement', 'revision', 'viewer-measurers', 'page-centering', 'commands', 'image-handles', 'painter-frames', 'viewer-entry', 'keystroke-long', 'table-tools', 'caret-frames', 'viewer-first-page', 'required-fonts', 'progressive-layout', 'xml-scan'];
 const checks = args.length ? args : all;
 
 const jszipDir = [process.env.JSZIP_DIR, path.join(repo, 'node_modules/jszip'), path.resolve(repo, '../rbt-office/node_modules/jszip')].find((p) => p && fs.existsSync(p));
@@ -72,6 +74,13 @@ const server = http.createServer((req, res) => {
     // Stands in for an address a document names as the source of a linked picture.
     if (url.pathname === '/external-probe.png') { externalProbes++; return send(200, 'image/png', Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64')); }
     if (url.pathname === '/external-probe-count') return send(200, 'text/plain', String(externalProbes));
+    // The DOCX files under tests/ (paths relative to the repository).
+    if (url.pathname === '/corpus-list') {
+        const found = [];
+        const walk = (dir) => { for (const entry of fs.readdirSync(dir, { withFileTypes: true })) { const full = path.join(dir, entry.name); if (entry.isDirectory()) walk(full); else if (entry.name.endsWith('.docx')) found.push(path.relative(repo, full)); } };
+        for (const entry of fs.readdirSync(path.join(repo, 'tests'), { withFileTypes: true })) if (entry.isDirectory() && entry.name.startsWith('test-documents')) walk(path.join(repo, 'tests', entry.name));
+        return send(200, 'application/json', JSON.stringify(found.sort()));
+    }
     if (url.pathname === '/fixture') { const data = fixtures.get(url.searchParams.get('name')); return data ? send(200, 'application/octet-stream', data) : send(404, 'text/plain', 'no fixture'); }
     for (const [prefix, root] of [['/checks/', path.join(here, 'checks')], ['/repo/', repo], ['/', dist]]) {
         if (!url.pathname.startsWith(prefix)) continue;
