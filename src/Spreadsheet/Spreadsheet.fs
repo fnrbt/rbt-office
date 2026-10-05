@@ -211,6 +211,12 @@ let private pageRight (el: Element): float = jsNative
 [<Emit("$0.getBoundingClientRect().bottom + window.scrollY")>]
 let private pageBottom (el: Element): float = jsNative
 
+[<Emit("window.scrollX")>]
+let private windowScrollX (): float = jsNative
+
+[<Emit("window.scrollY")>]
+let private windowScrollY (): float = jsNative
+
 [<Emit("($0.button || 0)")>]
 let private mouseButton (e: obj): int = jsNative
 
@@ -358,6 +364,8 @@ type private GridLayers = {
     EditInput: Element
     Notice: Element
     InputMessage: Element
+    /// The button beside the active cell that opens its validation list.
+    ListButton: Element
 }
 
 /// Spreadsheet component — interactively edits a Workbook (a collection
@@ -685,6 +693,26 @@ type Spreadsheet(container: Element) =
     let refreshRuleWorkbook () =
         ruleWorkbook <- Some (currentWorkbookSnapshot())
         Rbt.Spreadsheet.ConditionalFormatting.setFormulaEvaluator ruleEvaluator
+
+    /// Reads the source of a list validation of the active sheet: a range on
+    /// it or on another sheet (which is converted when it was not needed so
+    /// far), or a defined name that is one.
+    let listReader : ListSourceReader =
+        SheetOps.listSourceReader
+            (fun name ->
+                sheetNames
+                |> Array.tryFindIndex (fun known -> System.String.Equals(known, name, System.StringComparison.OrdinalIgnoreCase))
+                |> Option.map (fun index ->
+                    if index = activeSheetIndex then model
+                    else
+                        convertInPlace index
+                        sheets.[index]))
+            (fun name -> workbook |> Option.bind (fun wb -> Rbt.Spreadsheet.Workbook.getName (Some (sheetIdForIndex activeSheetIndex)) name wb))
+
+    /// The cells CircleInvalid circled on each sheet (parallel to `sheets`
+    /// by the sheet's model identity is not possible, so: by sheet index).
+    let invalidCircles = System.Collections.Generic.Dictionary<int, CellAddress array>()
+    let circleNodes = ResizeArray<Element>()
 
     let renderPortablePaintToCanvas (canvas: Element) =
         if not model.ConditionalFormats.IsEmpty then refreshRuleWorkbook()
@@ -1454,7 +1482,7 @@ type Spreadsheet(container: Element) =
             let outcome =
                 if validate && not model.Validations.IsEmpty then
                     refreshRuleWorkbook()
-                    checkEntryWith ruleEvaluator addr parsed.Value model
+                    checkEntryIn listReader ruleEvaluator addr parsed.Value model
                 else EntryValid
             let notify style title message =
                 let styleName =
@@ -1685,6 +1713,26 @@ type Spreadsheet(container: Element) =
         lastRuleId <- id
         changeConditionalFormats "Conditional format" (SheetOps.addConditionalFormatWithId id ranges stopIfTrue format) |> ignore
         id
+
+    /// Change the active sheet's validations as one undoable step (no value
+    /// changes: no recalculation). The circles of CircleInvalid go: they
+    /// showed what the earlier validations made of the cells. False when
+    /// nothing changed.
+    let changeValidations (description: string) (change: SpreadsheetModel -> SpreadsheetModel) : bool =
+        let before = model.Validations
+        let changed = change model
+        let after = changed.Validations
+        if obj.ReferenceEquals(before, after) || before = after then false
+        else
+            model <- { model with Validations = after }
+            invalidCircles.Remove activeSheetIndex |> ignore
+            pushValueNeutral { Undo = (fun m -> { m with Validations = before })
+                               Redo = (fun m -> { m with Validations = after })
+                               Description = description }
+            true
+
+    /// The highest validation id the component has handed out (see lastRuleId).
+    let mutable lastValidationId = 0
 
     /// What GetSelectionFormat last gave, and what it gave it for (the cells,
     /// the column styles and the selected block): asked again for the same,
@@ -1940,6 +1988,10 @@ type Spreadsheet(container: Element) =
                 | _ -> ()
             else
                 match key with
+                // Alt+Down opens the list of a list validation, as in Excel.
+                | "ArrowDown" when eventFlag e "altKey" && not readOnly && showsListDropdown active model ->
+                    preventDefault e
+                    showValidationList () |> ignore
                 | "ArrowUp" -> travel (fun from -> stepFrom from -1 0)
                 | "ArrowDown" -> travel (fun from -> stepFrom from 1 0)
                 | "ArrowLeft" -> travel (fun from -> stepFrom from 0 -1)
@@ -2957,6 +3009,50 @@ type Spreadsheet(container: Element) =
             setCssText layer.FillHandle
                 ("position:absolute;left:" + px (cornerX - 4.0) + ";top:" + px (cornerY - 4.0)
                  + ";width:7px;height:7px;background:#217346;border:1px solid white;box-sizing:border-box;cursor:crosshair;z-index:9")
+        // The button that opens the list of a list validation, beside the active cell.
+        if readOnly || model.EditingCell.IsSome || rowCount = 0 || colCount = 0 || active.Row >= rowCount || active.Col >= colCount
+           || model.Validations.IsEmpty || not (showsListDropdown active model) then hide layer.ListButton
+        else
+            place layer.ListButton activePane
+            let cellRight = rowHeaderWidth + colPrefix.[min colCount (activeRight + 1)]
+            let cellTop = headerHeight + rowPrefix.[activeTop]
+            let cellHeight = rowPrefix.[min rowCount (activeBottom + 1)] - rowPrefix.[activeTop]
+            setCssText layer.ListButton
+                ("position:absolute;left:" + px cellRight + ";top:" + px (cellTop + max 0.0 (cellHeight - 20.0)) + ";width:17px;height:" + px (min 20.0 (max 12.0 cellHeight))
+                 + ";box-sizing:border-box;border:1px solid #8a8a8a;background:#f3f3f3;color:#444;font-size:9px;line-height:" + px (min 18.0 (max 10.0 (cellHeight - 2.0)))
+                 + ";text-align:center;cursor:pointer;user-select:none;z-index:9")
+            if getAttribute layer.ListButton "data-drawn" <> "1" then
+                setAttribute layer.ListButton "data-drawn" "1"
+                setTextContent layer.ListButton "\u25BC"
+        // The circles of CircleInvalid: a red ellipse around each cell, in the cell's pane.
+        let circled =
+            match invalidCircles.TryGetValue activeSheetIndex with
+            | true, cells -> cells
+            | false, _ -> [||]
+        let mutable used = 0
+        for cell in circled do
+            if used < 2000 && cell.Row < rowCount && cell.Col < colCount then
+                let w = colPrefix.[cell.Col + 1] - colPrefix.[cell.Col]
+                let h = rowPrefix.[cell.Row + 1] - rowPrefix.[cell.Row]
+                if w > 0.0 && h > 0.0 then
+                    let node =
+                        if used < circleNodes.Count then circleNodes.[used]
+                        else
+                            let node = createElement "div"
+                            setClassName node "spreadsheet-invalid-circle"
+                            circleNodes.Add node
+                            node
+                    used <- used + 1
+                    place node (paneOf cell.Row cell.Col)
+                    setAttribute node "data-row" (string cell.Row)
+                    setAttribute node "data-col" (string cell.Col)
+                    setCssText node
+                        ("position:absolute;left:" + px (rowHeaderWidth + colPrefix.[cell.Col] - 3.0) + ";top:" + px (headerHeight + rowPrefix.[cell.Row] - 3.0)
+                         + ";width:" + px (w + 6.0) + ";height:" + px (h + 6.0)
+                         + ";box-sizing:border-box;border:2px solid #E00000;border-radius:50%;pointer-events:none;z-index:6")
+        while circleNodes.Count > used do
+            detach circleNodes.[circleNodes.Count - 1]
+            circleNodes.RemoveAt (circleNodes.Count - 1)
         // Notes: the validation notice, else the input message of the selected cell.
         let note (target: Element) (title: string) (message: string) (x: float) (y: float) (background: string) (border: string) =
             setCssText target
@@ -2989,13 +3085,64 @@ type Spreadsheet(container: Element) =
             match model.Selection with
             | SingleCell (row, col) ->
                 match getValidation { Row = row; Col = col } model with
-                | Some dv when dv.InputMessage.IsSome || dv.InputTitle.IsSome ->
+                | Some dv when dv.ShowInput && (dv.InputMessage.IsSome || dv.InputTitle.IsSome) ->
                     note layer.InputMessage (defaultArg dv.InputTitle "") (defaultArg dv.InputMessage "") (leftOf left) (below bottom) "#FFFFE1" "#B0B0B0"
                 | _ -> hide layer.InputMessage
             | _ -> hide layer.InputMessage
 
     /// A scroll draws the rows / columns that came into view.
     and renderScroll () = render ()
+
+    /// Open the list of the active cell's list validation under the cell:
+    /// a click on a value enters it (validated, one undo step). False when
+    /// the cell has no list to offer.
+    and showValidationList () : bool =
+        let existing = getElementById "validation-list-dropdown"
+        if not (isNull existing) then closePopup existing
+        let addr = activeCellAddress()
+        match (if readOnly then None else SheetOps.listValuesAt listReader addr model), layers with
+        | Some values, Some layer when not values.IsEmpty ->
+            if model.EditingCell.IsSome then finishEditing false |> ignore
+            let dropdown = createElement "div"
+            setAttribute dropdown "id" "validation-list-dropdown"
+            // Under the cell: the button sits at the cell's bottom-right corner.
+            let x, y, width =
+                let metrics = SpreadsheetLayout.metricsOf model
+                let rightCol =
+                    match findMergedCell addr model with
+                    | Some merge -> min (metrics.ColCount - 1) merge.EndCol
+                    | None -> addr.Col
+                let w = metrics.ColPrefix.[rightCol + 1] - metrics.ColPrefix.[addr.Col]
+                pageRight layer.ListButton - 17.0 - w, pageBottom layer.ListButton, w + 17.0
+            setCssText dropdown
+                ("position:absolute;left:" + string (System.Math.Round x) + "px;top:" + string (System.Math.Round y) + "px;min-width:" + string (System.Math.Round (max 60.0 width))
+                 + "px;max-height:220px;overflow-y:auto;background:white;border:1px solid #8a8a8a;box-shadow:0 3px 8px rgba(0,0,0,0.25);font-family:Arial, sans-serif;font-size:12px;z-index:1000")
+            let current = SpreadsheetCellText.cellDisplayText None 1.0e6 defaultFormat (getCellValue addr model)
+            for value in values do
+                let item = createElement "div"
+                setClassName item "validation-list-item"
+                setAttribute item "data-value" value
+                setTextContent item value
+                setCssText item ("padding:3px 8px;cursor:pointer;white-space:nowrap;" + (if value = current then "background:#d9ead3;" else ""))
+                listen item "mousedown" (fun e ->
+                    preventDefault e
+                    closePopup dropdown
+                    commitInput addr value true true |> ignore
+                    scheduleNoticeDismiss ()
+                    render ())
+                appendChild dropdown item
+            appendChild (getBody()) dropdown
+            let rec closeList = fun (e: obj) ->
+                let target = getEventTarget e
+                if not (contains dropdown target) then
+                    closePopup dropdown
+                    unlisten (getDocument()) "mousedown" closeList
+            JS.setTimeout (fun () -> if not disposed then listen (getDocument()) "mousedown" closeList) 0 |> ignore
+            cleanups.Add(fun () ->
+                unlisten (getDocument()) "mousedown" closeList
+                closePopup dropdown)
+            true
+        | _ -> false
 
     /// Show filter dropdown for column
     and showFilterDropdown (col: int) (x: float) (y: float) =
@@ -3999,7 +4146,8 @@ type Spreadsheet(container: Element) =
                    FillHandle = overlay "spreadsheet-fill-handle" content
                    EditInput = editBox
                    Notice = overlay "spreadsheet-validation-notice" content
-                   InputMessage = overlay "spreadsheet-input-message" content }
+                   InputMessage = overlay "spreadsheet-input-message" content
+                   ListButton = overlay "spreadsheet-list-button" content }
 
         // Add event listeners
         listen gridDiv "scroll" handleScroll
@@ -4018,6 +4166,10 @@ type Spreadsheet(container: Element) =
         listen content "mousedown" (fun e ->
             let target = getEventTarget e
             if within target ".spreadsheet-edit-input" then ()   // placing the caret in the edit box
+            elif within target ".spreadsheet-list-button" then
+                preventDefault e
+                stopPropagation e
+                showValidationList () |> ignore
             elif within target ".spreadsheet-fill-handle" then
                 preventDefault e
                 if not readOnly then
@@ -4062,7 +4214,7 @@ type Spreadsheet(container: Element) =
                 | _ -> ())
         listen content "dblclick" (fun e ->
             let target = getEventTarget e
-            if not (within target ".spreadsheet-edit-input, .spreadsheet-col-header, .spreadsheet-row-header, .spreadsheet-corner, .spreadsheet-fill-handle") then
+            if not (within target ".spreadsheet-edit-input, .spreadsheet-col-header, .spreadsheet-row-header, .spreadsheet-corner, .spreadsheet-fill-handle, .spreadsheet-list-button") then
                 match hitTestEvent e with
                 | SpreadsheetLayout.Cell hitAddr -> startEditing hitAddr.Row hitAddr.Col
                 | _ -> ())
@@ -4466,6 +4618,7 @@ type Spreadsheet(container: Element) =
     member _.InstallWorkbook(newSheets: SpreadsheetModel array, names: string array, activeIndex: int, context: Workbook option) =
         if newSheets.Length = 0 then () else
         invalidateCalcEngine()
+        invalidCircles.Clear()
         // The file the previous workbook came from stays the source as long as
         // one of the new sheets is a sheet of it (sheets renamed, reordered,
         // added or removed by the host): each model says which file and sheet
@@ -4840,8 +4993,8 @@ type Spreadsheet(container: Element) =
     ///   isMerged: boolean, mergeRange: "B2:C3" | null (the merged cell it is part of; its content is in the first cell),
     ///   comment: { text, author: string | null } | null (see GetCommentThread for replies),
     ///   hyperlink: { target, isInternal: boolean, range } | null,
-    ///   validation: { type, operator, formula1, formula2, values, allowBlank, showError, errorStyle,
-    ///                 errorTitle, errorMessage, inputTitle, inputMessage } | null }.
+    ///   validation: the rule object of the validation on the cell with its `id` and `range`
+    ///               (see GetValidations / GetValidationAt) | null }.
     /// Throws when row / col are not whole numbers inside the sheet.
     member _.GetCell(row: obj, col: obj) : obj =
         let addr = { Row = Host.rowArg "GetCell" model row; Col = Host.colArg "GetCell" model col }
@@ -5594,6 +5747,140 @@ type Spreadsheet(container: Element) =
     member _.RemoveConditionalFormats(row: int, col: int) =
         let addr = { Row = row; Col = col }
         if changeConditionalFormats "Clear conditional formats" (removeConditionalFormats addr) then render()
+
+    // ===== Data validation =====
+
+    /// The data validations of a sheet (the active one, or the one at
+    /// `sheetIndex`), in the order they were made:
+    /// [{ id, range, rule }]. `id` names the validation on its sheet (stable
+    /// through undo / redo and edits of other validations; a file's
+    /// validations are numbered 1, 2, ... in file order at each import).
+    /// `range` is what it covers, areas separated by spaces ("B2:B9 D2:D9";
+    /// a whole column is "A:A"). `rule` (`type` says which keys count; the
+    /// others are null):
+    ///   { type: "any" }                                  every value (an input message only)
+    ///   { type: "list", values: string[], dropdown }      the allowed values written out
+    ///   { type: "list", source, dropdown }                read from cells: "$A$1:$A$9", "Lists!$B$2:$B$20" or a defined name
+    ///   { type: "whole" | "decimal" | "date" | "time" | "textLength", operator, formula1, formula2 }
+    ///       operator: "between" | "notBetween" (formula1 and formula2) | "equal" | "notEqual" | "greaterThan"
+    ///                 | "lessThan" | "greaterThanOrEqual" | "lessThanOrEqual" (formula1)
+    ///   { type: "custom", formula }                       valid where the formula is true
+    /// plus, for every type: allowBlank, showInput, inputTitle, inputMessage,
+    /// showError, errorStyle ("stop" refuses the entry, "warning" and
+    /// "information" accept it and tell), errorTitle, errorMessage.
+    /// Operands and formulas are texts without the leading "=": a number
+    /// ("10"), a reference or any formula, written for the top-left cell of
+    /// the validation's first range (relative references move with the cell).
+    /// Dates and times read back as serial numbers.
+    member _.GetValidations(sheetIndex: obj) : obj array =
+        let source =
+            match Host.optionalArg (Host.intArg "GetValidations" "sheetIndex") sheetIndex with
+            | None -> model
+            | Some index when index >= 0 && index < sheets.Length -> sheetModelAt index
+            | Some index -> Host.hostFail "GetValidations" (sprintf "there is no sheet %d (the workbook has %d)" index sheets.Length)
+        source.Validations |> List.map Host.validationEntryToObj |> List.toArray
+
+    /// The validation on a cell of the active sheet: its rule object (see
+    /// GetValidations) with two more keys, `id` and `range`; null when the
+    /// cell has none. The object can be given to SetValidation for other
+    /// cells (`id` and `range` are ignored there). GetCell's `validation` is
+    /// the same object.
+    member _.GetValidationAt(row: obj, col: obj) : obj =
+        let addr = { Row = Host.rowArg "GetValidationAt" model row; Col = Host.colArg "GetValidationAt" model col }
+        match validationEntryAt addr model with
+        | Some entry -> Host.validationAtToObj entry
+        | None -> null
+
+    /// Put a validation on cells of the active sheet, in place of whatever
+    /// validation they had (one undo step; a validation that covered more
+    /// cells keeps them), and return its id. `range`: "B2:B20", a whole
+    /// column "A:A" (no cell is made for it), or several areas
+    /// ("A1:A5 C1:C5"). `rule`: the rule object of GetValidations; keys with
+    /// a default may be left out (allowBlank true, showInput true, showError
+    /// true, errorStyle "stop", dropdown true). Operands may be numbers; a
+    /// "date" operand may be "2024-03-31" or a Date, a "time" operand
+    /// "14:30"; `value1` / `value2` are accepted for formula1 / formula2.
+    /// Cells that already hold a value are not checked (see CircleInvalid).
+    /// Throws for an invalid range, an unknown type, operator or key, a
+    /// missing operand, formula, list or source, and a list value with a comma.
+    member _.SetValidation(range: obj, rule: obj) : int =
+        let name = "SetValidation"
+        let ranges = SheetOps.parseRanges name (Host.stringArg name "the range" (requiredArg name "the range" range))
+        let validation = SheetOps.validationOfDescription name (Host.validationOfObj name (requiredArg name "the rule" rule))
+        let id = (max lastValidationId (nextValidationId model - 1)) + 1
+        lastValidationId <- id
+        if changeValidations "Data validation" (setValidationRangesWithId id ranges validation) then render()
+        id
+
+    /// Take the validations off cells of the active sheet (one undo step):
+    /// a validation that covers more cells keeps them, one left with no cell
+    /// is removed. `range` as in SetValidation. Returns how many validations
+    /// were removed or cut.
+    member _.ClearValidation(range: obj) : int =
+        let name = "ClearValidation"
+        let holes = SheetOps.parseRanges name (Host.stringArg name "the range" (requiredArg name "the range" range))
+        let before = model.Validations
+        if changeValidations "Clear validation" (clearValidationRanges holes) then
+            let after = model.Validations
+            render()
+            before |> List.filter (fun entry -> not (after |> List.exists (fun kept -> kept.Id = entry.Id && kept.Ranges = entry.Ranges))) |> List.length
+        else 0
+
+    /// The values the list validation on a cell of the active sheet offers,
+    /// in order (a source range is read now), or null when the cell has no
+    /// list validation or its source cannot be read.
+    member _.GetValidationList(row: obj, col: obj) : obj =
+        let addr = { Row = Host.rowArg "GetValidationList" model row; Col = Host.colArg "GetValidationList" model col }
+        match SheetOps.listValuesAt listReader addr model with
+        | Some values -> box (List.toArray values)
+        | None -> null
+
+    /// Open the built-in dropdown of the active cell's list validation (what
+    /// the button beside the cell and Alt+Down do). False when the cell has
+    /// no list to offer or the grid is read-only.
+    member _.ShowValidationList() : bool = showValidationList ()
+
+    /// The filled cells of the active sheet whose value breaks the
+    /// validation on them (Excel's "Circle Invalid Data"):
+    /// [{ row, col, address: "B4", value, text, errorStyle, errorTitle, errorMessage }],
+    /// in row order. Rules whose error alert is switched off count too;
+    /// empty cells never do. The grid draws a red circle around each (up to
+    /// 2000) until ClearInvalidCircles(), the next CircleInvalid() or a
+    /// change of the sheet's validations; the circles are not part of the
+    /// document (no undo step, not saved) and do not follow later edits of
+    /// the cells. Pass `false` to get the list without drawing.
+    member _.CircleInvalid(draw: obj) : obj array =
+        let draw = Host.optionalArg (Host.boolArg "CircleInvalid" "draw") draw |> Option.defaultValue true
+        refreshRuleWorkbook ()
+        let found = invalidCells listReader ruleEvaluator model
+        if draw then
+            invalidCircles.[activeSheetIndex] <- found |> List.map fst |> List.toArray
+            render()
+        found
+        |> List.map (fun (addr, outcome) ->
+            let data = getCell addr model
+            let style, title, message =
+                match outcome with
+                | EntryInvalid (style, title, message) ->
+                    (match style with StopStyle -> "stop" | WarningStyle -> "warning" | InformationStyle -> "information"), title, message
+                | EntryValid -> "stop", None, ""
+            createObj [
+                "row" ==> addr.Row
+                "col" ==> addr.Col
+                "address" ==> formatCellRef addr.Row addr.Col
+                "value" ==> Host.valueToObj (match data with Some data -> data.Value | None -> CellValue.Empty)
+                "text" ==> cellText data
+                "errorStyle" ==> style
+                "errorTitle" ==> Host.orNull title
+                "errorMessage" ==> message
+            ])
+        |> List.toArray
+
+    /// Remove the circles CircleInvalid drew (on every sheet).
+    member _.ClearInvalidCircles() : unit =
+        if invalidCircles.Count > 0 then
+            invalidCircles.Clear()
+            render()
 
     /// Show the built-in conditional formatting dialog for the active cell.
     /// The dialog offers five kinds of rule (greater than, less than,

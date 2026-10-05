@@ -265,22 +265,24 @@ eq "v-edit-still-works"   (invalid (checkEntry (at 5 1) (V 10.0) vEdited), inval
 
 // OOXML shape of validations.
 let ov kind op f1 f2 : OoxmlValidation =
-    { Type = kind; Operator = op; Formula1 = f1; Formula2 = f2; AllowBlank = true; ShowErrorMessage = true; ShowInputMessage = true
+    { Type = kind; Operator = op; Formula1 = f1; Formula2 = f2; AllowBlank = true; ShowErrorMessage = true; ShowInputMessage = true; ShowDropDown = true
       ErrorStyle = Some "warning"; ErrorTitle = Some "T"; Error = Some "E"; PromptTitle = Some "PT"; Prompt = Some "P" }
 eq "vo-not-between" (validationRuleOfOoxml (ov "whole" (Some "notBetween") (Some "1") (Some "5"))) (Some (Comparison (WholeKind, OpNotBetween, "1", Some "5")))
 eq "vo-between"     (validationRuleOfOoxml (ov "decimal" None (Some "1") (Some "5"))) (Some (DecimalRange (Some 1.0, Some 5.0)))
 eq "vo-custom"      (validationRuleOfOoxml (ov "custom" None (Some "A1>0") None)) (Some (CustomFormula "A1>0"))
 eq "vo-time"        (validationRuleOfOoxml (ov "time" (Some "greaterThan") (Some "0.5") None)) (Some (Comparison (TimeKind, OpGreaterThan, "0.5", None)))
 eq "vo-list"        (validationRuleOfOoxml (ov "list" None (Some "\"Yes, No\"") None)) (Some (ListValues [ "Yes"; "No" ]))
-eq "vo-list-range"  (validationRuleOfOoxml (ov "list" None (Some "$A$1:$A$3") None)) None
+eq "vo-list-range"  (validationRuleOfOoxml (ov "list" None (Some "$A$1:$A$3") None)) (Some (ListSource "$A$1:$A$3"))
+eq "vo-any"         (validationRuleOfOoxml (ov "none" None None None)) (Some AnyValue)
 let dvFull = validationWithOoxml (at 2 3) (ov "textLength" (Some "notEqual") (Some "4") None) (Comparison (TextLengthKind, OpNotEqual, "4", None))
 eq "vo-alert-fields" (dvFull.Style, dvFull.ErrorTitle, dvFull.ErrorMessage, dvFull.InputTitle, dvFull.InputMessage, dvFull.Anchor)
                      (WarningStyle, Some "T", Some "E", Some "PT", Some "P", Some (at 2 3))
 eq "vo-round-trip"   (ooxmlOfValidation dvFull) (ov "textLength" (Some "notEqual") (Some "4") None)
 let grouped =
-    Map.ofList [ for r in 1 .. 3 do for c in 1 .. 2 -> at r c, dvFull ] |> Map.add (at 9 9) (validationOf (CustomFormula "=TRUE"))
+    [ { Id = 1; Ranges = [ { From = at 1 1; To = at 3 2 }; { From = at 0 0; To = at 1048575 0 } ]; Validation = dvFull }
+      { Id = 2; Ranges = [ { From = at 9 9; To = at 9 9 } ]; Validation = validationOf (CustomFormula "=TRUE") } ]
     |> validationsToOoxml |> List.map fst |> List.sort
-eq "vo-grouped-sqref" grouped [ "B2:C4"; "J10" ]
+eq "vo-ranges-sqref" grouped [ "B2:C4 A1:A1048576"; "J10" ]
 
 printfn ""
 printfn "Stage 26 rule tests: %d passed, %d failed" pass fail

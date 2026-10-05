@@ -2,7 +2,7 @@
 #r "../../src/Spreadsheet/bin/Debug/netstandard2.0/Rbt.Spreadsheet.dll"
 
 // Data validation: rule enforcement (list / whole / decimal / textLength /
-// date), plus setValidation flagging the dropdown.
+// date), plus a list validation offering its dropdown.
 
 open Rbt.Spreadsheet.Model
 
@@ -53,7 +53,7 @@ let model =
 check "validateEdit ok"    (ok (validateEdit { Row=0; Col=0 } (N 7.0) model)) true
 check "validateEdit reject" (ok (validateEdit { Row=0; Col=0 } (N 99.0) model)) false
 check "validateEdit message" (match validateEdit { Row=0; Col=0 } (N 99.0) model with Result.Error m -> m = "Only 1-10!" | _ -> false) true
-check "list sets dropdown" (match getCell { Row=1; Col=0 } model with Some cd -> cd.Format.HasListDropdown | None -> false) true
+check "list sets dropdown" (showsListDropdown { Row=1; Col=0 } model && not (showsListDropdown { Row=0; Col=0 } model)) true
 check "no rule → ok"       (ok (validateEdit { Row=5; Col=5 } (S "anything") model)) true
 
 printfn ""

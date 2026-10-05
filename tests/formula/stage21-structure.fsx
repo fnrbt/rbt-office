@@ -158,21 +158,21 @@ let dressed =
         RowHeights = Map.ofList [ 4, 40.0 ]
         ColumnWidths = Map.ofList [ 1, 150.0 ]
         ConditionalFormats = [ { Id = 1; Ranges = [ { From = at 4 1; To = at 4 1 } ]; Format = { Rule = GreaterThan 0.0; Style = defaultFormat }; Priority = 1; StopIfTrue = false } ]
-        Validations = Map.ofList [ at 6 2, validationOf (ListValues [ "x" ]) ]
+        Validations = [ { Id = 1; Ranges = [ { From = at 6 2; To = at 6 2 } ]; Validation = validationOf (ListValues [ "x" ]) } ]
         Spill = Map.ofList [ at 7 0, at 6 0 ]
         Tables = [ { Name = "T"; StartRow = 4; StartCol = 2; EndRow = 8; EndCol = 3; HeaderRowCount = 1; Style = None; AutoFilter = Some (2, 3); HasTotals = false } ] }
 let dressedIns = insertRow 4 dressed
 eq "insert-merge-grows"   dressedIns.MergedCells [ { StartRow = 3; StartCol = 0; EndRow = 6; EndCol = 1 } ]
 eq "insert-row-heights"   dressedIns.RowHeights (Map.ofList [ 5, 40.0 ])
 eq "insert-cond-formats"  (conditionalFormatsAt (at 5 1) dressedIns |> List.length, conditionalFormatsAt (at 4 1) dressedIns |> List.length) (1, 0)
-eq "insert-validations"   (Map.containsKey (at 7 2) dressedIns.Validations) true
+eq "insert-validations"   ((getValidation (at 7 2) dressedIns).IsSome, (getValidation (at 6 2) dressedIns).IsSome) (true, false)
 eq "insert-spill-map"     dressedIns.Spill (Map.ofList [ at 8 0, at 7 0 ])
 eq "insert-table-grows"   (dressedIns.Tables |> List.map (fun t -> t.StartRow, t.EndRow)) [ 4, 9 ]
 let dressedDel = deleteRow 4 dressed
 eq "delete-merge-shrinks" dressedDel.MergedCells [ { StartRow = 3; StartCol = 0; EndRow = 4; EndCol = 1 } ]
 eq "delete-row-heights"   dressedDel.RowHeights Map.empty
 eq "delete-cond-formats"  dressedDel.ConditionalFormats []
-eq "delete-validations"   (Map.containsKey (at 5 2) dressedDel.Validations) true
+eq "delete-validations"   ((getValidation (at 5 2) dressedDel).IsSome, (getValidation (at 6 2) dressedDel).IsSome) (true, false)
 eq "delete-spill-map"     dressedDel.Spill (Map.ofList [ at 6 0, at 5 0 ])
 eq "delete-table-shrinks" (dressedDel.Tables |> List.map (fun t -> t.StartRow, t.EndRow)) [ 4, 7 ]
 let dressedCol = insertColumn 1 dressed

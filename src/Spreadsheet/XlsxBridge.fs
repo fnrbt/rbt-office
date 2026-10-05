@@ -349,18 +349,8 @@ let private extrasOfModel (original: XlsxReader.SheetExtras) (before: Spreadshee
 
 module Import =
 
-    /// A list validation whose source is a range or a defined name rather than
-    /// a literal; it can only be resolved once the sheets it may point at exist.
-    type private PendingList = {
-        Bounds: (int * int * int * int) array
-        Source: string
-        /// The validation without its values (alert texts, style).
-        Template: DataValidation
-    }
-
     type private SheetImport = {
         Model: SpreadsheetModel
-        PendingLists: PendingList list
         /// `<tableColumn>` names per table, for structured references.
         TableColumns: Map<string, string list>
         State: string
@@ -536,39 +526,27 @@ module Import =
           AllowBlank = dv.AllowBlank
           ShowErrorMessage = dv.ShowErrorMessage
           ShowInputMessage = dv.ShowInputMessage
+          ShowDropDown = dv.ShowDropDown
           ErrorStyle = dv.ErrorStyle
           ErrorTitle = dv.ErrorTitle
           Error = dv.ErrorMessage
           PromptTitle = dv.PromptTitle
           Prompt = dv.Prompt }
 
-    /// Validations with a literal definition become rules now; list validations
-    /// that point at a range or a name are returned as pending.
-    let private validations (maxRow: int) (maxCol: int) (sheet: XlsxReader.Worksheet) : Map<CellAddress, DataValidation> * PendingList list =
-        let mutable rules = Map.empty<CellAddress, DataValidation>
-        let pending = ResizeArray<PendingList>()
-        for dv in sheet.DataValidations do
-            let bounds = parseSqref maxRow maxCol dv.Range
-            let anchor : CellAddress =
-                if bounds.Length > 0 then (let (sr, sc, _, _) = bounds.[0] in { Row = sr; Col = sc })
-                else { Row = 0; Col = 0 }
-            let ooxml = validationOoxml dv
-            match CF.validationRuleOfOoxml ooxml with
-            | Some rule ->
-                let validation = CF.validationWithOoxml anchor ooxml rule
-                for (sr, sc, er, ec) in bounds do
-                    for r in sr .. er do
-                        for c in sc .. ec do
-                            rules <- Map.add { Row = r; Col = c } validation rules
-            | None ->
-                match ooxml.Type, ooxml.Formula1 with
-                | "list", Some source ->
-                    // The alert settings travel with the pending list; its
-                    // values are filled in once the source can be read.
-                    pending.Add { Bounds = bounds; Source = source.Trim()
-                                  Template = CF.validationWithOoxml anchor ooxml (ListValues []) }
-                | _ -> ()
-        rules, List.ofSeq pending
+    /// The sheet's validations, each for the ranges the file gives it (a
+    /// whole column stays a whole column), numbered in file order. A list
+    /// whose values come from a range or a name keeps its source; it is read
+    /// when the values are needed.
+    let private validations (sheet: XlsxReader.Worksheet) : ValidationRange list =
+        [ for dv in sheet.DataValidations do
+            match CF.parseSqref dv.Range with
+            | [] -> ()
+            | ranges ->
+                let ooxml = validationOoxml dv
+                match CF.validationRuleOfOoxml ooxml with
+                | Some rule -> yield ranges, CF.validationWithOoxml ranges.Head.From ooxml rule
+                | None -> () ]
+        |> List.mapi (fun index (ranges, validation) -> { Id = index + 1; Ranges = ranges; Validation = { validation with Anchor = None } })
 
     let private pageSetup (sheet: XlsxReader.Worksheet) : PageSetup =
         let setup =
@@ -647,16 +625,6 @@ module Import =
                 // The first comment of a cell is the one shown.
                 if not (comments.ContainsKey((r, col))) && not (String.IsNullOrWhiteSpace c.Text) then
                     comments.[(r, col)] <- { Text = c.Text; Author = c.Author }
-        let dropdownRanges =
-            [| for dv in sheet.DataValidations do
-                if dv.ValidationType = "list" then
-                    for range in dv.Range.Split([| ' ' |], StringSplitOptions.RemoveEmptyEntries) do
-                        match parsePlainRange range with
-                        | Some bounds -> yield bounds
-                        | None -> () |]
-        let hasListDropdown row col =
-            dropdownRanges |> Array.exists (fun (sr, sc, er, ec) -> row >= sr && row <= er && col >= sc && col <= ec)
-
         // One CellFormat per style of the workbook, shared by every cell that uses it.
         let styleCache = Collections.Generic.Dictionary<int, CellFormat>()
         let styleFormat (cell: XlsxReader.Cell) =
@@ -697,16 +665,13 @@ module Import =
                     let value = cellValue wb cell
                     let baseFormat = styleFormat cell
                     let hasComment = commentCells.Contains((r, c))
-                    let hasDropdown = hasListDropdown r c
                     let comment =
                         match comments.TryGetValue((r, c)) with
                         | true, found -> Some found
                         | false, _ -> None
                     let cellFormat =
-                        if (hasComment || comment.IsSome) <> baseFormat.HasComment || hasDropdown <> baseFormat.HasListDropdown then
-                            { baseFormat with
-                                HasComment = baseFormat.HasComment || hasComment || comment.IsSome
-                                HasListDropdown = baseFormat.HasListDropdown || hasDropdown }
+                        if (hasComment || comment.IsSome) <> baseFormat.HasComment then
+                            { baseFormat with HasComment = baseFormat.HasComment || hasComment || comment.IsSome }
                         else baseFormat
                     // Keep style-only cells: Excel renders fills, borders, comment
                     // markers and validation dropdowns even when the cell has no value.
@@ -775,11 +740,7 @@ module Import =
         let modelRows = max (rowCount + options.ExtraRows) options.MinRows
         let modelCols = max (colCount + options.ExtraCols) options.MinCols
 
-        // Rules over whole columns / rows are stored per cell, so they are
-        // clipped to the used range plus room to grow.
-        let ruleRows = max rowCount 100 + 200 - 1
-        let ruleCols = max colCount 26 + 50 - 1
-        let rules, pendingLists = validations ruleRows ruleCols sheet
+        let rules = validations sheet
         let sheetTables, tableColumns = tables wb sheet
 
         // Link cells are shown the way Excel styles them.
@@ -892,54 +853,8 @@ module Import =
                 Threads = threads
                 Spill = spill }
         { Model = model
-          PendingLists = pendingLists
           TableColumns = tableColumns
           State = sheetStateText sheet.State }
-
-    /// Values of a list validation's source range. `lookupSheet None` is the
-    /// sheet that owns the validation.
-    let private resolveListSource (lookupSheet: string option -> SpreadsheetModel option) (lookupName: string -> string option) (source: string) : string list option =
-        let rec resolve (depth: int) (text: string) =
-            let text = (if text.StartsWith "=" then text.Substring 1 else text).Trim()
-            let sheetName, rangeText =
-                match text.LastIndexOf '!' with
-                | -1 -> None, text
-                | idx ->
-                    let raw = text.Substring(0, idx)
-                    let name =
-                        if raw.Length >= 2 && raw.StartsWith "'" && raw.EndsWith "'" then raw.Substring(1, raw.Length - 2).Replace("''", "'")
-                        else raw
-                    Some name, text.Substring(idx + 1)
-            match lookupSheet sheetName with
-            | None -> None
-            | Some model ->
-                match parseRangeClipped (model.RowCount - 1) (model.ColCount - 1) rangeText with
-                | Some (sr, sc, er, ec) ->
-                    [ for r in sr .. er do
-                        for c in sc .. ec do
-                            let shown = displayValue (getCellValue { Row = r; Col = c } model)
-                            if shown <> "" then yield shown ]
-                    |> Some
-                | None ->
-                    // Not a range: a defined name whose refers-to is one.
-                    if depth > 0 || sheetName.IsSome then None
-                    else lookupName text |> Option.bind (resolve (depth + 1))
-        resolve 0 source
-
-    let private applyPendingLists (lookupSheet: string option -> SpreadsheetModel option) (lookupName: string -> string option) (pending: PendingList list) (model: SpreadsheetModel) : SpreadsheetModel =
-        let mutable rules = model.Validations
-        let mutable changed = false
-        for item in pending do
-            match resolveListSource lookupSheet lookupName item.Source with
-            | Some values when not (List.isEmpty values) ->
-                let validation = { item.Template with Rule = ListValues values }
-                for (sr, sc, er, ec) in item.Bounds do
-                    for r in sr .. er do
-                        for c in sc .. ec do
-                            rules <- Map.add { Row = r; Col = c } validation rules
-                            changed <- true
-            | _ -> ()
-        if changed then { model with Validations = rules } else model
 
     let private isUncached (cell: CellData) =
         match cell.Value with
@@ -1002,22 +917,7 @@ module Import =
                 { import with Model = { import.Model with SourceSheet = Some { Book = sourceId; Sheet = index } } })
         let names' = definedNames wb
 
-        // List validations that point at a range or a name, now that every sheet exists.
-        let lookupName (index: int) (name: string) =
-            let key = name.ToUpperInvariant()
-            Map.tryFind (Some (sheetIdOfIndex index), key) names'
-            |> Option.orElse (Map.tryFind (None, key) names')
-        let models =
-            imports
-            |> Array.mapi (fun index import ->
-                let lookupSheet (name: string option) =
-                    match name with
-                    | None -> Some import.Model
-                    | Some name ->
-                        names
-                        |> Array.tryFindIndex (fun n -> String.Equals(n, name, StringComparison.OrdinalIgnoreCase))
-                        |> Option.map (fun i -> imports.[i].Model)
-                applyPendingLists lookupSheet (lookupName index) import.PendingLists import.Model)
+        let models = imports |> Array.map (fun import -> import.Model)
 
         let visible = imports |> Array.map (fun import -> import.State = "visible")
         let tableColumns =
@@ -1085,31 +985,15 @@ module Import =
             let names = readerSheets |> Array.map (fun sheet -> sheet.Name)
             let sourceId = nextSourceId ()
             let names' = definedNames wb
-            let lookupName (index: int) (name: string) =
-                let key = name.ToUpperInvariant()
-                Map.tryFind (Some (sheetIdOfIndex index), key) names'
-                |> Option.orElse (Map.tryFind (None, key) names')
             let baseline : SpreadsheetModel array = Array.zeroCreate readerSheets.Length
             let standIns : SpreadsheetModel array = Array.zeroCreate readerSheets.Length
-            // A sheet being converted (a list validation of one sheet can read another).
-            let converting = Array.create readerSheets.Length false
             let rec convert (index: int) : SpreadsheetModel =
                 let deferred = standIns.[index].Deferred.Value
                 match deferred.Loaded with
                 | Some loaded -> loaded
                 | None ->
-                    converting.[index] <- true
                     let import = importSheet options wb readerSheets.[index]
-                    let own = { import.Model with SourceSheet = Some { Book = sourceId; Sheet = index } }
-                    let lookupSheet (name: string option) =
-                        match name with
-                        | None -> Some own
-                        | Some name ->
-                            names
-                            |> Array.tryFindIndex (fun n -> String.Equals(n, name, StringComparison.OrdinalIgnoreCase))
-                            |> Option.bind (fun other -> if other = index then Some own elif converting.[other] then None else Some (convert other))
-                    let model = applyPendingLists lookupSheet (lookupName index) import.PendingLists own
-                    converting.[index] <- false
+                    let model = { import.Model with SourceSheet = Some { Book = sourceId; Sheet = index } }
                     deferred.Loaded <- Some model
                     // What an export compares the sheet with: as it was opened.
                     baseline.[index] <- model
@@ -1152,8 +1036,7 @@ module Import =
     /// `importWorkbook` when other sheets or defined names matter.
     let importSheetWith (options: ImportOptions) (wb: XlsxReader.Workbook) (sheet: XlsxReader.Worksheet) : SpreadsheetModel =
         let import = importSheet options wb sheet
-        let model =
-            applyPendingLists (fun name -> if name.IsNone then Some import.Model else None) (fun _ -> None) import.PendingLists import.Model
+        let model = import.Model
         let context =
             buildWorkbookContext [| model |] [| sheet.Name |] [| true |] import.TableColumns Map.empty 0
             |> computeUncachedFormulas
@@ -1253,7 +1136,7 @@ module Export =
                Formula1 = dv.Formula1
                Formula2 = dv.Formula2
                AllowBlank = dv.AllowBlank
-               ShowDropDown = true
+               ShowDropDown = dv.ShowDropDown
                ErrorMessage = dv.Error
                InputMessage = dv.Prompt
                ErrorTitle = dv.ErrorTitle

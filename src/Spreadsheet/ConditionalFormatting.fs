@@ -804,6 +804,9 @@ type OoxmlValidation = {
     AllowBlank: bool
     ShowErrorMessage: bool
     ShowInputMessage: bool
+    /// A list offers its values in the cell (the file's `showDropDown`
+    /// attribute says the opposite: set, it hides the dropdown).
+    ShowDropDown: bool
     /// stop (default), warning, information.
     ErrorStyle: string option
     ErrorTitle: string option
@@ -820,8 +823,8 @@ let literalListValues (source: string) : string list option =
         Some (source.Substring(1, source.Length - 2).Split(',') |> Array.map (fun v -> v.Trim()) |> Array.toList)
     else None
 
-/// The model rule of a validation; None for a list whose source is not a
-/// literal and for types the model does not know.
+/// The model rule of a validation; None for types the model does not know.
+/// A list whose source is not written out keeps its source (`ListSource`).
 let validationRuleOfOoxml (validation: OoxmlValidation) : ValidationRule option =
     let op = validation.Operator |> Option.bind parseOperator |> Option.defaultValue OpBetween
     let kind =
@@ -833,7 +836,13 @@ let validationRuleOfOoxml (validation: OoxmlValidation) : ValidationRule option 
         | "textLength" -> Some TextLengthKind
         | _ -> None
     match validation.Type, kind, validation.Formula1 with
-    | "list", _, Some source -> literalListValues source |> Option.map ListValues
+    | "list", _, Some source ->
+        (match literalListValues source with
+         | Some values -> Some (ListValues values)
+         | None ->
+            let source = source.Trim()
+            Some (ListSource (if source.StartsWith "=" then source.Substring 1 else source)))
+    | "none", _, _ -> Some AnyValue
     | "custom", _, Some formula -> Some (CustomFormula formula)
     | _, Some kind, Some first ->
         // Inclusive bounds given as plain numbers keep the simple range rules.
@@ -857,9 +866,9 @@ let validationRuleOfOoxml (validation: OoxmlValidation) : ValidationRule option 
 let validationWithOoxml (anchor: CellAddress) (validation: OoxmlValidation) (rule: ValidationRule) : DataValidation =
     { Rule = rule
       ErrorMessage = validation.Error
-      InputMessage = (if validation.ShowInputMessage then validation.Prompt else None)
+      InputMessage = validation.Prompt
       ErrorTitle = validation.ErrorTitle
-      InputTitle = (if validation.ShowInputMessage then validation.PromptTitle else None)
+      InputTitle = validation.PromptTitle
       Style =
         (match validation.ErrorStyle with
          | Some "warning" -> WarningStyle
@@ -869,6 +878,8 @@ let validationWithOoxml (anchor: CellAddress) (validation: OoxmlValidation) (rul
       // are advisory.
       ShowError = validation.ShowErrorMessage
       AllowBlank = validation.AllowBlank
+      ShowInput = validation.ShowInputMessage
+      ShowDropdown = validation.ShowDropDown
       Anchor = Some anchor }
 
 /// The `<dataValidation>` for a model validation.
@@ -898,13 +909,16 @@ let ooxmlOfValidation (validation: DataValidation) : OoxmlValidation =
                 | TextLengthKind -> "textLength"
             name, Some (operatorText op), Some (formulaBody firstOperand), secondOperand |> Option.map formulaBody
         | CustomFormula formula -> "custom", None, Some (formulaBody formula), None
+        | ListSource source -> "list", None, Some (formulaBody source), None
+        | AnyValue -> "none", None, None, None
     { Type = kind
       Operator = op
       Formula1 = first
       Formula2 = second
       AllowBlank = validation.AllowBlank
       ShowErrorMessage = validation.ShowError
-      ShowInputMessage = validation.InputMessage.IsSome || validation.InputTitle.IsSome
+      ShowInputMessage = validation.ShowInput
+      ShowDropDown = validation.ShowDropdown
       ErrorStyle =
         (match validation.Style with
          | StopStyle -> None
@@ -915,33 +929,32 @@ let ooxmlOfValidation (validation: DataValidation) : OoxmlValidation =
       PromptTitle = validation.InputTitle
       Prompt = validation.InputMessage }
 
-/// Validations grouped back into ranges for writing: cells that share a rule
-/// become one `<dataValidation>` whose sqref lists maximal column runs.
-let validationsToOoxml (validations: Map<CellAddress, DataValidation>) : (string * OoxmlValidation) list =
-    let groups = ResizeArray<DataValidation * ResizeArray<CellAddress>>()
-    for KeyValue(addr, validation) in validations do
-        match groups |> Seq.tryFind (fun (key, _) -> key = validation) with
-        | Some (_, cells) -> cells.Add addr
-        | None ->
-            let cells = ResizeArray<CellAddress>()
-            cells.Add addr
-            groups.Add((validation, cells))
-    [ for (validation, cells) in groups do
-        // Vertical runs per column, then neighbouring columns with the same
-        // run merge into one rectangle.
-        let runs = ResizeArray<int * int * int>()   // col, first row, last row
-        for (col, rows) in cells |> Seq.groupBy (fun cell -> cell.Col) |> Seq.sortBy fst do
-            let sorted = rows |> Seq.map (fun cell -> cell.Row) |> Seq.sort |> Seq.toArray
-            let mutable start = sorted.[0]
-            for i in 1 .. sorted.Length do
-                if i = sorted.Length || sorted.[i] <> sorted.[i - 1] + 1 then
-                    runs.Add((col, start, sorted.[i - 1]))
-                    if i < sorted.Length then start <- sorted.[i]
-        let rectangles = ResizeArray<CellRange>()
-        for (col, first, last) in runs do
-            let joined =
-                rectangles |> Seq.tryFindIndex (fun r -> r.To.Col = col - 1 && r.From.Row = first && r.To.Row = last)
-            match joined with
-            | Some index -> rectangles.[index] <- { rectangles.[index] with To = { Row = last; Col = col } }
-            | None -> rectangles.Add { From = { Row = first; Col = col }; To = { Row = last; Col = col } }
-        yield sqrefText (List.ofSeq rectangles), ooxmlOfValidation validation ]
+/// The validations of a sheet for writing: one `<dataValidation>` each, its
+/// sqref the validation's ranges (a whole column is `A1:A1048576`). The
+/// formulas of a rule are written for the top-left cell of its first range,
+/// as the file format has them.
+let validationsToOoxml (validations: ValidationRange list) : (string * OoxmlValidation) list =
+    [ for entry in validations do
+        match entry.Ranges with
+        | [] -> ()
+        | first :: _ ->
+            let anchor = validationAnchor entry
+            let deltaRow, deltaCol = first.From.Row - anchor.Row, first.From.Col - anchor.Col
+            let validation =
+                if deltaRow = 0 && deltaCol = 0 then entry.Validation
+                else
+                    let shift (formula: string) =
+                        let shifted = shiftFormulaReferences deltaRow deltaCol ("=" + formulaBody formula)
+                        if formula.StartsWith "=" then shifted else shifted.TrimStart('=')
+                    let rule =
+                        match entry.Validation.Rule with
+                        | Comparison (kind, op, firstOperand, secondOperand) -> Comparison (kind, op, shift firstOperand, secondOperand |> Option.map shift)
+                        | CustomFormula formula -> CustomFormula (shift formula)
+                        | ListSource source -> ListSource (shift source)
+                        | other -> other
+                    { entry.Validation with Rule = rule }
+            // (Whole columns and rows are written out, as Excel writes them.)
+            let area (range: CellRange) =
+                if range.From = range.To then formatCellRef range.From.Row range.From.Col
+                else formatCellRef range.From.Row range.From.Col + ":" + formatCellRef range.To.Row range.To.Col
+            yield (entry.Ranges |> List.map area |> String.concat " "), ooxmlOfValidation validation ]

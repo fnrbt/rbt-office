@@ -366,29 +366,113 @@ let valueKind (value: CellValue) : string =
 let hyperlinkToObj (link: SheetHyperlink) : obj =
     createObj [ "target" ==> link.Target; "isInternal" ==> link.IsInternal; "range" ==> rangeText link.Range ]
 
-/// A data validation, in the terms of the file format:
-/// { type: "list" | "whole" | "decimal" | "date" | "time" | "textLength" | "custom",
-///   operator: "between" | "notBetween" | "equal" | "notEqual" | "greaterThan" | "lessThan" | "greaterThanOrEqual" | "lessThanOrEqual" | null,
-///   formula1, formula2: string | null (operands: numbers or formulas without "="; of a list, its source),
-///   values: string[] | null (the entries of a list written out in the rule),
-///   allowBlank, showError: boolean, errorStyle: "stop" | "warning" | "information",
-///   errorTitle, errorMessage, inputTitle, inputMessage: string | null }.
+// --- data validation ---------------------------------------------------------
+// The `rule` object of a validation, the same in both directions (`type` says
+// which keys count):
+//   { type: "any" }                                          (every value; carries an input message only)
+//   { type: "list", values: string[], dropdown }             (the allowed values written out)
+//   { type: "list", source: "$A$1:$A$9" | "Lists!$B$2:$B$20" | "NameOfARange", dropdown }   (read from cells when needed)
+//   { type: "whole" | "decimal" | "date" | "time" | "textLength",
+//     operator: "between" | "notBetween" | "equal" | "notEqual" | "greaterThan" | "lessThan" | "greaterThanOrEqual" | "lessThanOrEqual",
+//     formula1, formula2 (between / notBetween only) }
+//   { type: "custom", formula }
+// and for every type:
+//   allowBlank (true), showInput (true), inputTitle, inputMessage,
+//   showError (true), errorStyle: "stop" (default) | "warning" | "information", errorTitle, errorMessage.
+// formula1 / formula2 / formula are a number or a formula without the leading
+// "=" (one is accepted and dropped), written for the top-left cell of the
+// validation's first range; a relative reference moves with the cell. A date
+// may be given as "2024-03-31" or a Date, a time as "14:30"; both are read
+// back as serial numbers. `value1` / `value2` are accepted for formula1 / formula2.
+
+[<Emit("($0 instanceof Date)")>]
+let private isJsDate (value: obj) : bool = jsNative
+
+[<Emit("((d) => { const p = (n) => String(n).padStart(2, '0'); const day = d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()); return (d.getHours() || d.getMinutes() || d.getSeconds()) ? day + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds()) : day; })($0)")>]
+let private jsDateText (value: obj) : string = jsNative
+
+/// A validation as its `rule` object (see above); the keys that do not
+/// count for its type are null.
 let validationToObj (validation: DataValidation) : obj =
-    let ooxml = Rbt.Spreadsheet.ConditionalFormatting.ooxmlOfValidation validation
+    let d = describeValidation validation
+    let custom = d.Type = "custom"
     createObj [
-        "type" ==> ooxml.Type
-        "operator" ==> orNull ooxml.Operator
-        "formula1" ==> orNull ooxml.Formula1
-        "formula2" ==> orNull ooxml.Formula2
-        "values" ==> (match validation.Rule with ListValues values -> box (List.toArray values) | _ -> null)
-        "allowBlank" ==> validation.AllowBlank
-        "showError" ==> validation.ShowError
-        "errorStyle" ==> (match validation.Style with StopStyle -> "stop" | WarningStyle -> "warning" | InformationStyle -> "information")
-        "errorTitle" ==> orNull validation.ErrorTitle
-        "errorMessage" ==> orNull validation.ErrorMessage
-        "inputTitle" ==> orNull validation.InputTitle
-        "inputMessage" ==> orNull validation.InputMessage
+        "type" ==> d.Type
+        "operator" ==> orNull d.Operator
+        "formula1" ==> (if custom then null else orNull d.Formula1)
+        "formula2" ==> orNull d.Formula2
+        "formula" ==> (if custom then orNull d.Formula1 else null)
+        "values" ==> (match d.Values with Some values -> box (List.toArray values) | None -> null)
+        "source" ==> orNull d.Source
+        "dropdown" ==> (if d.Type = "list" then box d.Dropdown else null)
+        "allowBlank" ==> d.AllowBlank
+        "showInput" ==> d.ShowInput
+        "inputTitle" ==> orNull d.InputTitle
+        "inputMessage" ==> orNull d.InputMessage
+        "showError" ==> d.ShowError
+        "errorStyle" ==> d.ErrorStyle
+        "errorTitle" ==> orNull d.ErrorTitle
+        "errorMessage" ==> orNull d.ErrorMessage
     ]
+
+/// A validation of a sheet: { id, range: "B2:B9" (areas separated by spaces), rule }.
+let validationEntryToObj (entry: ValidationRange) : obj =
+    createObj [ "id" ==> entry.Id; "range" ==> rangesText entry.Ranges; "rule" ==> validationToObj entry.Validation ]
+
+/// The validation on a cell: its `rule` object with two more keys, `id` and
+/// `range` (which `validationOfObj` ignores, so that the object can be given
+/// back to SetValidation for other cells).
+let validationAtToObj (entry: ValidationRange) : obj =
+    let rule = validationToObj entry.Validation
+    rule?id <- entry.Id
+    rule?range <- rangesText entry.Ranges
+    rule
+
+let private validationKeys =
+    [ "type"; "operator"; "formula1"; "formula2"; "value1"; "value2"; "formula"; "values"; "source"; "dropdown"
+      "allowBlank"; "showInput"; "inputTitle"; "inputMessage"; "showError"; "errorStyle"; "errorTitle"; "errorMessage"; "id"; "range" ]
+
+/// Read a validation `rule` object. Types and keys are checked here; what
+/// the rule needs is checked by `SheetOps.validationOfDescription`.
+let validationOfObj (memberName: string) (value: obj) : ValidationDescription =
+    if not (isJsObject value) then hostFail memberName (sprintf "rule must be an object { type, ... }, got %s" (describe value))
+    for key in keysOf value do
+        if not (List.contains key validationKeys) then
+            hostFail memberName (sprintf "a validation rule has no key \"%s\" (it takes: %s)" key (String.concat ", " validationKeys))
+    let get (key: string) = getKey value key
+    let kind = stringArg memberName "rule.type" (get "type")
+    let operand (key: string) (alias: string) : string option =
+        let given = if isNullish (get key) then get alias else get key
+        if isNullish given then None
+        elif isJsNumber given then Some (string (unbox<float> given))
+        elif jsTypeOf given = "string" then Some (unbox<string> given)
+        elif isJsDate given then Some (jsDateText given)
+        else hostFail memberName (sprintf "rule.%s must be a number, a string or a Date, got %s" key (describe given))
+    let text (key: string) = optionalArg (stringArg memberName ("rule." + key)) (get key)
+    let flag (key: string) (fallback: bool) = optionalArg (boolArg memberName ("rule." + key)) (get key) |> Option.defaultValue fallback
+    let values =
+        let items = get "values"
+        if isNullish items then None
+        elif isJsArray items then
+            Some [ for item in unbox<obj array> items ->
+                    if isJsNumber item then string (unbox<float> item)
+                    else stringArg memberName "an item of rule.values" item ]
+        else hostFail memberName (sprintf "rule.values must be an array of texts, got %s" (describe items))
+    { emptyValidationDescription kind with
+        Operator = text "operator"
+        Formula1 = (if kind = "custom" then (match operand "formula" "formula1" with Some f -> Some f | None -> None) else operand "formula1" "value1")
+        Formula2 = operand "formula2" "value2"
+        Values = values
+        Source = text "source"
+        Dropdown = flag "dropdown" true
+        AllowBlank = flag "allowBlank" true
+        ShowInput = flag "showInput" true
+        InputTitle = text "inputTitle"
+        InputMessage = text "inputMessage"
+        ShowError = flag "showError" true
+        ErrorStyle = (text "errorStyle" |> Option.defaultValue "stop")
+        ErrorTitle = text "errorTitle"
+        ErrorMessage = text "errorMessage" }
 
 /// One cell as the host reads it (`GetCell`, `GetRange`):
 /// { row, col, address: "B2", value, valueType, text, formula, format,
@@ -416,7 +500,7 @@ let cellToObj (model: SpreadsheetModel) (addr: CellAddress) (text: string) : obj
         "mergeRange" ==> (match merge with Some range -> box (rangeText range) | None -> null)
         "comment" ==> comment
         "hyperlink" ==> (match hyperlinkAt model addr with Some link -> hyperlinkToObj link | None -> null)
-        "validation" ==> (match getValidation addr model with Some validation -> validationToObj validation | None -> null)
+        "validation" ==> (match validationEntryAt addr model with Some entry -> validationAtToObj entry | None -> null)
     ]
 
 // ---------------------------------------------------------------------------

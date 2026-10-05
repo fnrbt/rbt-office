@@ -940,8 +940,9 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
         // inside the cell's right edge, vertically centered, in gray.
         // FilterButton already owns the dropdown styling for table
         // header cells; skip those to avoid doubled triangles.
+        let hasValidations = not model.Validations.IsEmpty
         for (cell, format, _value, _selected, _background, zone) in states do
-            if format.HasListDropdown && not format.FilterButton then
+            if (format.HasListDropdown || (hasValidations && showsListDropdown cell.Address model)) && not format.FilterButton then
                 let color = "#666666"
                 let buttonWidth = 16.0
                 let centerX = cell.Rect.X + cell.Rect.Width - buttonWidth / 2.0

@@ -663,3 +663,218 @@ checks['api-cf'] = async () => {
     close();
     return lines;
 };
+
+// Data validation: GetValidations, GetValidationAt, SetValidation, ClearValidation, GetValidationList,
+// ShowValidationList, CircleInvalid, ClearInvalidCircles.
+checks['api-validation'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        const { createEmpty, cellCount } = await import('/spreadsheet/Model.js');
+        const brief = (g = grid, sheet) => g.GetValidations(sheet).map((v) => `${v.id}:${v.rule.type}@${v.range}`);
+        const shape = (rule) => Object.fromEntries(Object.entries(rule).filter(([, value]) => value !== null));
+        const defaults = { allowBlank: true, showInput: true, showError: true, errorStyle: 'stop' };
+        const notices = [];
+        const offNotice = grid.OnValidationNotice((style, title, message) => notices.push(`${style}|${title}|${message}`));
+        const changes = [];
+        const off = grid.OnChange((change) => changes.push(change.Revision));
+        check('no validations to begin with', [grid.GetValidations(), grid.GetValidationAt(0, 0), grid.GetCell(0, 0).validation], [[], null, null]);
+
+        // ---- one validation: set, read, enforced, undo / redo ----
+        const revision = grid.GetRevision();
+        const first = grid.SetValidation('A1:A10', { type: 'whole', operator: 'between', formula1: 1, formula2: 10, errorTitle: 'Range', errorMessage: 'From 1 to 10' });
+        check('SetValidation returns the id', [typeof first, first > 0], ['number', true]);
+        check('GetValidations gives it back', grid.GetValidations().map((v) => ({ ...v, rule: shape(v.rule) })),
+            [{ id: first, range: 'A1:A10', rule: { type: 'whole', operator: 'between', formula1: '1', formula2: '10', ...defaults, errorTitle: 'Range', errorMessage: 'From 1 to 10' } }]);
+        check('GetValidationAt is the rule with its id and range', shape(grid.GetValidationAt(4, 0)),
+            { type: 'whole', operator: 'between', formula1: '1', formula2: '10', ...defaults, errorTitle: 'Range', errorMessage: 'From 1 to 10', id: first, range: 'A1:A10' });
+        check('GetCell has the same', [JSON.stringify(grid.GetCell(4, 0).validation) === JSON.stringify(grid.GetValidationAt(4, 0)), grid.GetCell(10, 0).validation, grid.GetValidationAt(4, 1)], [true, null, null]);
+        check('it is one change with a new revision', [changes.length, grid.GetRevision() !== revision, grid.IsModified()], [1, true, true]);
+        check('an entry inside the rule is accepted', [grid.EnterText(0, 0, '5'), grid.GetCell(0, 0).value, notices.length], [true, 5, 0]);
+        check('one outside is refused and the notice raised', [grid.EnterText(0, 0, '50'), grid.GetCell(0, 0).value, notices.splice(0), grid.GetValidationNotice()?.style], [false, 5, ['stop|Range|From 1 to 10'], 'stop']);
+        check('SetCell is not validated', [grid.SetCell(1, 0, '99'), grid.GetCell(1, 0).value], [undefined, 99]);
+        grid.Undo();
+        check('undo of the entry, then of the validation', [grid.GetCell(0, 0).value, brief()], [null, [`${first}:whole@A1:A10`]]);
+        grid.SetCell(1, 0, '');
+        const steps = changes.length;
+        // (SetCell is not an undo step: the step on top is the validation.)
+        grid.Undo();
+        check('undo takes the validation away', [brief(), grid.GetValidationAt(0, 0), grid.CanRedo()], [[], null, true]);
+        grid.Redo();
+        check('redo brings it back under its id', [brief(), grid.EnterText(0, 0, '50')], [[`${first}:whole@A1:A10`], false]);
+        notices.splice(0);
+        check('undo and redo are changes', changes.length > steps, true);
+
+        // ---- one validation per cell: a new one replaces what its cells had ----
+        const second = grid.SetValidation('A3:A4', { type: 'list', values: ['Yes', 'No'] });
+        check('a validation over part of another cuts it', brief(), [`${first}:whole@A1:A2 A5:A10`, `${second}:list@A3:A4`]);
+        check('ClearValidation returns what it removed or cut', [grid.ClearValidation('A1:A3'), brief()], [2, [`${first}:whole@A5:A10`, `${second}:list@A4`]]);
+        check('clearing where there is none is no change', [grid.ClearValidation('F1:G9'), brief().length], [0, 2]);
+        grid.Undo();
+        check('ClearValidation is one undo step', brief(), [`${first}:whole@A1:A2 A5:A10`, `${second}:list@A3:A4`]);
+        grid.ClearValidation('A:Z');
+        check('cleared', brief(), []);
+
+        // ---- every kind ----
+        const kinds = [
+            ['B1:B5', { type: 'any', inputTitle: 'Note', inputMessage: 'Anything goes' }, { type: 'any', inputTitle: 'Note', inputMessage: 'Anything goes' }],
+            ['C1:C5', { type: 'list', values: ['Red', 'Green', 'Blue'] }, { type: 'list', values: ['Red', 'Green', 'Blue'], dropdown: true }],
+            ['D1:D5', { type: 'list', source: '=$J$1:$J$4', dropdown: false }, { type: 'list', source: '$J$1:$J$4', dropdown: false }],
+            ['E1:E5', { type: 'decimal', operator: 'notBetween', formula1: 1.5, formula2: '=$K$1' }, { type: 'decimal', operator: 'notBetween', formula1: '1.5', formula2: '$K$1' }],
+            ['F1:F5', { type: 'date', operator: 'greaterThanOrEqual', formula1: '2024-01-01' }, { type: 'date', operator: 'greaterThanOrEqual', formula1: '45292' }],
+            ['G1:G5', { type: 'time', operator: 'lessThan', value1: '12:00' }, { type: 'time', operator: 'lessThan', formula1: '0.5' }],
+            ['H1:H5', { type: 'textLength', operator: 'lessThanOrEqual', formula1: 3, errorStyle: 'warning', errorMessage: 'Long' }, { type: 'textLength', operator: 'lessThanOrEqual', formula1: '3', errorStyle: 'warning', errorMessage: 'Long' }],
+            ['I1:I5', { type: 'custom', formula: '=ISNUMBER(I1)', errorStyle: 'information', showError: true, allowBlank: false }, { type: 'custom', formula: 'ISNUMBER(I1)', errorStyle: 'information', allowBlank: false }],
+            ['L1:L5 N1:N5', { type: 'whole', operator: 'equal', formula1: 7, showError: false, showInput: false, inputMessage: 'hidden' }, { type: 'whole', operator: 'equal', formula1: '7', showError: false, showInput: false, inputMessage: 'hidden' }],
+        ];
+        for (const operator of ['between', 'notBetween', 'equal', 'notEqual', 'greaterThan', 'lessThan', 'greaterThanOrEqual', 'lessThanOrEqual']) {
+            const two = operator === 'between' || operator === 'notBetween';
+            kinds.push([`P${kinds.length}`, { type: 'whole', operator, formula1: '$K$1', ...(two ? { formula2: '$K$2' } : {}) }, { type: 'whole', operator, formula1: '$K$1', ...(two ? { formula2: '$K$2' } : {}) }]);
+        }
+        const ids = kinds.map(([range, rule]) => grid.SetValidation(range, rule));
+        check('every kind is set under its own id', [new Set(ids).size, grid.GetValidations().length], [kinds.length, kinds.length]);
+        const listed = grid.GetValidations();
+        kinds.forEach(([range, , expected], index) => {
+            const want = { ...defaults, ...expected };
+            const got = shape(listed[index].rule);
+            if (listed[index].range !== range || JSON.stringify(Object.entries(got).sort()) !== JSON.stringify(Object.entries(want).sort())) check(`kind ${index} (${expected.type}) reads back`, [listed[index].range, got], [range, want]);
+        });
+        check('... each reads back as it was set', listed.length, kinds.length);
+
+        // ---- they are enforced ----
+        ['Red', 'Amber'].forEach((text, row) => grid.SetCell(row, 9, text));
+        grid.SetCell(0, 10, '5'); grid.SetCell(1, 10, '9');
+        check('any value', grid.EnterText(0, 1, 'whatever'), true);
+        check('a written-out list (case does not matter)', [grid.EnterText(0, 2, 'green'), grid.EnterText(1, 2, 'Pink')], [true, false]);
+        check('a list read from cells', [grid.EnterText(0, 3, 'Amber'), grid.EnterText(1, 3, 'Green')], [true, false]);
+        grid.SetCell(2, 9, 'Green');
+        check('... follows the cells', [grid.EnterText(1, 3, 'Green'), grid.GetValidationList(1, 3), grid.GetValidationList(0, 2), grid.GetValidationList(0, 1), grid.GetValidationList(20, 20)], [true, ['Red', 'Amber', 'Green'], ['Red', 'Green', 'Blue'], null, null]);
+        check('a decimal outside a range with a formula bound', [grid.EnterText(0, 4, '3'), grid.EnterText(1, 4, '7.5'), grid.EnterText(2, 4, '1')], [false, true, true]);
+        check('a date on or after', [grid.EnterText(0, 5, '2023-12-31'), grid.EnterText(1, 5, '2024-06-01')], [false, true]);
+        check('a text length, as a warning: accepted and told', [grid.EnterText(0, 7, 'toolong'), notices.some((n) => n.startsWith('warning||Long'))], [true, true]);
+        check('a custom formula written for the first cell', [grid.EnterText(2, 8, 'text'), grid.EnterText(3, 8, '12')], [true, true]);
+        check('... as information it is accepted and told', notices.some((n) => n.startsWith('information|')), true);
+        check('no alert: nothing refused', grid.EnterText(0, 11, '8'), true);
+        notices.splice(0);
+
+        // ---- the dropdown of a list ----
+        const button = () => host.querySelector('.spreadsheet-list-button');
+        const shown = (node) => !!node && getComputedStyle(node).display !== 'none';
+        grid.SelectCell(2, 2); await frame();
+        const cell = host.querySelector('.spreadsheet-cell[data-row="2"][data-col="2"]').getBoundingClientRect();
+        check('a list cell shows the dropdown button at its right edge', [shown(button()), Math.round(button().getBoundingClientRect().left - cell.right) <= 1, Math.abs(button().getBoundingClientRect().bottom - cell.bottom) <= 2], [true, true, true]);
+        grid.SelectCell(2, 3); await frame();
+        check('not with dropdown: false, nor on other cells', [shown(button()), (grid.SelectCell(2, 4), await frame(), shown(button()))], [false, false]);
+        grid.SelectCell(2, 2); await frame();
+        button().dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+        const items = () => [...document.querySelectorAll('#validation-list-dropdown .validation-list-item')];
+        check('a click on it opens the list under the cell', [items().map((item) => item.textContent), Math.abs(document.getElementById('validation-list-dropdown').getBoundingClientRect().top - cell.bottom) <= 3], [['Red', 'Green', 'Blue'], true]);
+        items()[2].dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+        check('picking a value enters it and closes the list', [grid.GetCell(2, 2).value, document.getElementById('validation-list-dropdown')], ['Blue', null]);
+        grid.Undo();
+        check('... as one undo step', grid.GetCell(2, 2).value, null);
+        check('ShowValidationList opens it too; a click elsewhere closes it', [grid.ShowValidationList(), items().length, (await new Promise((r) => setTimeout(r, 20)), document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })), document.getElementById('validation-list-dropdown'))], [true, 3, null]);
+        grid.SelectCell(1, 3);
+        check('a list without its dropdown still has values for a host', [grid.ShowValidationList(), grid.GetValidationList(1, 3).length], [true, 3]);
+        document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+        await new Promise((r) => setTimeout(r, 20)); document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+        grid.SetReadOnly(true); grid.SelectCell(2, 2); await frame();
+        check('no button and no list in read-only mode', [shown(button()), grid.ShowValidationList()], [false, false]);
+        grid.SetReadOnly(false);
+        // The input message of the selected cell.
+        grid.SelectCell(1, 1); await frame();
+        const message = host.querySelector('.spreadsheet-input-message');
+        check('the input message shows while the cell is selected', [shown(message), message.textContent], [true, 'NoteAnything goes']);
+        grid.SelectCell(1, 11); await frame();
+        check('not when showInput is off', shown(message), false);
+
+        // ---- circle invalid data ----
+        grid.SetCell(3, 2, 'Pink'); grid.SetCell(4, 4, '2'); grid.SetCell(0, 11, '8'); grid.SetCell(4, 5, 'soon');
+        const invalid = grid.CircleInvalid();
+        await frame();
+        check('CircleInvalid lists the cells that break their rule', invalid.map((c) => c.address).sort(), ['C4', 'E5', 'F5', 'H1', 'I3', 'L1']);
+        check('... with row, col, text and the alert', invalid.filter((c) => c.address === 'H1').map((c) => [c.row, c.col, c.text, c.errorMessage]), [[0, 7, 'toolong', 'Long']]);
+        const circles = () => [...host.querySelectorAll('.spreadsheet-invalid-circle')].filter(shown).map((node) => `${node.getAttribute('data-row')},${node.getAttribute('data-col')}`).sort();
+        check('the grid circles them', circles(), ['0,11', '0,7', '2,8', '3,2', '4,4', '4,5']);
+        const circle = host.querySelector('.spreadsheet-invalid-circle[data-row="3"][data-col="2"]').getBoundingClientRect();
+        const circledCell = host.querySelector('.spreadsheet-cell[data-row="3"][data-col="2"]').getBoundingClientRect();
+        check('a circle is around its cell', [circle.left < circledCell.left, circle.right > circledCell.right, circle.top < circledCell.top, circle.bottom > circledCell.bottom, getComputedStyle(host.querySelector('.spreadsheet-invalid-circle')).borderTopColor], [true, true, true, true, 'rgb(224, 0, 0)']);
+        const beforeCircles = grid.GetRevision();
+        check('circles are not a change of the document', [grid.CircleInvalid(false).length, grid.GetRevision()], [6, beforeCircles]);
+        grid.ClearInvalidCircles(); await frame();
+        check('ClearInvalidCircles removes them', circles(), []);
+        grid.CircleInvalid(); grid.ClearValidation('C1:C5'); await frame();
+        check('a change of the validations removes them too', [circles(), grid.CircleInvalid(false).map((c) => c.address).includes('C4')], [[], false]);
+        grid.Undo();
+
+        // ---- invalid input ----
+        check('throws: no range', thrown(() => grid.SetValidation(undefined, { type: 'any' })), 'SetValidation: the range is missing');
+        check('throws: a bad range', /^SetValidation: "A1:" is not a range/.test(thrown(() => grid.SetValidation('A1:', { type: 'any' }))), true);
+        check('throws: no rule', thrown(() => grid.SetValidation('A1')), 'SetValidation: the rule is missing');
+        check('throws: an unknown type', thrown(() => grid.SetValidation('A1', { type: 'sparkle' })), 'SetValidation: unknown validation type "sparkle" (any, list, whole, decimal, date, time, textLength, custom)');
+        check('throws: an unknown key', /^SetValidation: a validation rule has no key "colour"/.test(thrown(() => grid.SetValidation('A1', { type: 'any', colour: 1 }))), true);
+        check('throws: an unknown operator', /^SetValidation: unknown operator "gt"/.test(thrown(() => grid.SetValidation('A1', { type: 'whole', operator: 'gt', formula1: 1 }))), true);
+        check('throws: a missing operand', /^SetValidation: a "whole" rule needs formula2/.test(thrown(() => grid.SetValidation('A1', { type: 'whole', operator: 'between', formula1: 1 }))), true);
+        check('throws: a list without values', /^SetValidation: a list rule needs values/.test(thrown(() => grid.SetValidation('A1', { type: 'list' }))), true);
+        check('throws: values that are not an array', /^SetValidation: rule.values must be an array/.test(thrown(() => grid.SetValidation('A1', { type: 'list', values: 'a,b' }))), true);
+        check('throws: a wrong type of key', /^SetValidation: rule.allowBlank must be true or false/.test(thrown(() => grid.SetValidation('A1', { type: 'any', allowBlank: 'yes' }))), true);
+        check('throws: a bad error style', /^SetValidation: unknown errorStyle "loud"/.test(thrown(() => grid.SetValidation('A1', { type: 'any', errorStyle: 'loud' }))), true);
+        check('throws: ClearValidation without a range', thrown(() => grid.ClearValidation()), 'ClearValidation: the range is missing');
+        check('throws: a cell outside the sheet', /^GetValidationAt: row 5000000 is outside the sheet/.test(thrown(() => grid.GetValidationAt(5000000, 0))), true);
+        check('throws: an unknown sheet', /^GetValidations: there is no sheet 7/.test(thrown(() => grid.GetValidations(7))), true);
+        check('nothing was changed by the refused calls', grid.GetValidations().length, kinds.length);
+        // The rule of a cell can be put on other cells as it is.
+        const copied = grid.SetValidation('R1:R3', grid.GetValidationAt(0, 7));
+        check('GetValidationAt can be given back to SetValidation', [grid.GetValidations().find((v) => v.id === copied).range, JSON.stringify(grid.GetValidations().find((v) => v.id === copied).rule) === JSON.stringify(grid.GetValidations().find((v) => v.range === 'H1:H5').rule)], ['R1:R3', true]);
+        grid.ClearValidation('R1:R3');
+
+        // ---- rows inserted: ranges and formulas follow ----
+        grid.InsertRows(0, 2);
+        check('validations follow inserted rows', [grid.GetValidations()[0].range, grid.GetValidations()[3].rule.formula2, grid.GetValidations()[2].rule.source], ['B3:B7', '$K$3', '$J$3:$J$6']);
+        grid.Undo();
+        check('... and come back with an undo', [grid.GetValidations()[0].range, grid.GetValidations()[3].rule.formula2], ['B1:B5', '$K$1']);
+
+        // ---- through a file ----
+        const mine = grid.GetValidations().map(({ id, ...rest }) => rest);
+        const bytes = await grid.ExportXlsx();
+        const again = mountGrid();
+        await again.grid.ImportXlsx(bytes);
+        const theirs = again.grid.GetValidations().map(({ id, ...rest }) => rest);
+        for (let index = 0; index < mine.length; index++)
+            if (JSON.stringify(mine[index]) !== JSON.stringify(theirs[index])) check(`validation ${index + 1} (${mine[index].rule.type}) after a file`, theirs[index], mine[index]);
+        check('every validation comes back from an exported file', [theirs.length, JSON.stringify(theirs) === JSON.stringify(mine)], [mine.length, true]);
+        check('a file\'s validations are numbered in file order', again.grid.GetValidations().map((v) => v.id), mine.map((_, index) => index + 1));
+        check('... and are enforced', [again.grid.EnterText(3, 2, 'Pink'), again.grid.EnterText(3, 2, 'Red'), again.grid.EnterText(3, 3, 'Amber'), again.grid.EnterText(3, 3, 'Mauve')], [false, true, true, false]);
+        again.close();
+
+        // ---- a whole column: no cell is made, a far row is covered, the file says A1:A1048576 ----
+        const big = mountGrid();
+        big.grid.InstallWorkbook([createEmpty(60000, 12), createEmpty(50, 5)], ['Data', 'Lists'], 0, undefined);
+        big.grid.SwitchSheet(1); big.grid.SetCell(0, 0, 'North'); big.grid.SetCell(1, 0, 'South'); big.grid.SwitchSheet(0);
+        const cellsBefore = cellCount(big.grid.GetModel());
+        const whole = big.grid.SetValidation('A:A', { type: 'decimal', operator: 'greaterThan', formula1: 0, errorMessage: 'Positive' });
+        big.grid.SetValidation('C:D', { type: 'list', source: 'Lists!$A$1:$A$9' });
+        check('a whole-column validation makes no cell', [cellCount(big.grid.GetModel()) - cellsBefore, brief(big.grid)], [0, [`${whole}:decimal@A:A`, `${whole + 1}:list@C:D`]]);
+        check('a far row is covered', [big.grid.GetValidationAt(50000, 0)?.id, big.grid.EnterText(50000, 0, '-4'), big.grid.EnterText(50000, 0, '4'), big.grid.GetCell(50000, 0).value], [whole, false, true, 4]);
+        check('a list read from another sheet', [big.grid.GetValidationList(40000, 3), big.grid.EnterText(40000, 3, 'East'), big.grid.EnterText(40000, 3, 'south')], [['North', 'South'], false, true]);
+        big.grid.SelectCell(40000, 2); await frame();
+        check('the dropdown button on a far cell of the column', shown(big.host.querySelector('.spreadsheet-list-button')), true);
+        check('GetValidations(sheetIndex) reads another sheet', [big.grid.GetValidations(1), big.grid.GetValidations(0).length], [[], 2]);
+        const bigBytes = await big.grid.ExportXlsx();
+        const sheetXml = await (await window.JSZip.loadAsync(bigBytes)).file('xl/worksheets/sheet1.xml').async('string');
+        check('the file has the whole columns as ranges', [...sheetXml.matchAll(/<dataValidation [^>]*sqref="([^"]*)"/g)].map((m) => m[1]), ['A1:A1048576', 'C1:D1048576']);
+        const bigAgain = mountGrid();
+        await bigAgain.grid.ImportXlsx(bigBytes);
+        check('re-imported it is one validation per rule, on whole columns', bigAgain.grid.GetValidations().map((v) => [v.id, v.range, v.rule.type, v.rule.source]), [[1, 'A:A', 'decimal', null], [2, 'C:D', 'list', 'Lists!$A$1:$A$9']]);
+        check('... still without a cell per row, and enforced far down', [cellCount(bigAgain.grid.GetModel()), bigAgain.grid.EnterText(55000, 0, '-1'), bigAgain.grid.EnterText(55000, 2, 'North'), bigAgain.grid.EnterText(55001, 2, 'West')], [2, false, true, false]);
+        check('... the other sheet was read for the list only when it was needed', bigAgain.grid.GetValidationList(3, 3), ['North', 'South']);
+        // Unedited validations of a file go back as the file had them.
+        const third = mountGrid();
+        await third.grid.ImportXlsx(await bigAgain.grid.ExportXlsx());
+        check('a second trip keeps them', third.grid.GetValidations().map((v) => [v.range, v.rule.type]), [['A:A', 'decimal'], ['C:D', 'list']]);
+        third.close(); bigAgain.close(); big.close();
+        off(); offNotice();
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};

@@ -551,22 +551,7 @@ let rangesText (ranges: CellRange list) : string =
 /// What is left of a range when the cells of `hole` are taken out of it: up
 /// to four ranges (above, left, right, below), the range itself when the two
 /// do not meet, nothing when the hole covers it.
-let subtractRange (hole: CellRange) (range: CellRange) : CellRange list =
-    let meets =
-        hole.From.Row <= range.To.Row && hole.To.Row >= range.From.Row
-        && hole.From.Col <= range.To.Col && hole.To.Col >= range.From.Col
-    if not meets then [ range ]
-    else
-        let top = max hole.From.Row range.From.Row
-        let bottom = min hole.To.Row range.To.Row
-        [ if range.From.Row < top then
-              yield { From = range.From; To = { Row = top - 1; Col = range.To.Col } }
-          if range.From.Col < hole.From.Col then
-              yield { From = { Row = top; Col = range.From.Col }; To = { Row = bottom; Col = hole.From.Col - 1 } }
-          if range.To.Col > hole.To.Col then
-              yield { From = { Row = top; Col = hole.To.Col + 1 }; To = { Row = bottom; Col = range.To.Col } }
-          if range.To.Row > bottom then
-              yield { From = { Row = bottom + 1; Col = range.From.Col }; To = range.To } ]
+let subtractRange (hole: CellRange) (range: CellRange) : CellRange list = subtractCellRange hole range
 
 // ---------------------------------------------------------------------------
 // Conditional formats
@@ -910,3 +895,197 @@ let clearConditionalFormats (holes: CellRange list option) (model: SpreadsheetMo
                 | [] -> None
                 | ranges -> Some (if ranges = entry.Ranges then entry else { entry with Ranges = ranges }))
         if remaining = model.ConditionalFormats then model else { model with ConditionalFormats = remaining }
+
+// ---------------------------------------------------------------------------
+// Data validation
+// ---------------------------------------------------------------------------
+// A host describes a validation in plain data (`ValidationDescription`: the
+// fields of the `rule` object of the host API); `validationOfDescription`
+// checks it and gives the model's validation, `describeValidation` goes the
+// other way. A sheet's validations are stored by range (`Model.ValidationRange`)
+// and addressed by their `Id`.
+
+module CF = Rbt.Spreadsheet.ConditionalFormatting
+
+/// A validation as plain data.
+type ValidationDescription = {
+    /// "any" | "list" | "whole" | "decimal" | "date" | "time" | "textLength" | "custom".
+    Type: string
+    /// Of the comparison types: "between" | "notBetween" | "equal" | "notEqual"
+    /// | "greaterThan" | "lessThan" | "greaterThanOrEqual" | "lessThanOrEqual".
+    Operator: string option
+    /// The operands of a comparison (a number, or a formula without its `=`;
+    /// for "date" also "2024-03-31", for "time" also "14:30"), or the formula
+    /// of a "custom" rule.
+    Formula1: string option
+    Formula2: string option
+    /// A list written out in the rule.
+    Values: string list option
+    /// A list read from cells: a range ("$A$1:$A$9", "Lists!$B$2:$B$20") or
+    /// a defined name.
+    Source: string option
+    /// A list offers its values in the cell.
+    Dropdown: bool
+    AllowBlank: bool
+    ShowInput: bool
+    InputTitle: string option
+    InputMessage: string option
+    ShowError: bool
+    /// "stop" | "warning" | "information".
+    ErrorStyle: string
+    ErrorTitle: string option
+    ErrorMessage: string option
+}
+
+let emptyValidationDescription (kind: string) : ValidationDescription =
+    { Type = kind; Operator = None; Formula1 = None; Formula2 = None; Values = None; Source = None; Dropdown = true
+      AllowBlank = true; ShowInput = true; InputTitle = None; InputMessage = None
+      ShowError = true; ErrorStyle = "stop"; ErrorTitle = None; ErrorMessage = None }
+
+/// The validation types and operators a host can name.
+let validationTypes = [ "any"; "list"; "whole"; "decimal"; "date"; "time"; "textLength"; "custom" ]
+let validationOperators =
+    [ "between"; "notBetween"; "equal"; "notEqual"; "greaterThan"; "lessThan"; "greaterThanOrEqual"; "lessThanOrEqual" ]
+
+/// A model validation as plain data.
+let describeValidation (validation: DataValidation) : ValidationDescription =
+    let ooxml = CF.ooxmlOfValidation validation
+    let common =
+        { emptyValidationDescription (if ooxml.Type = "none" then "any" else ooxml.Type) with
+            Dropdown = validation.ShowDropdown
+            AllowBlank = validation.AllowBlank
+            ShowInput = validation.ShowInput
+            InputTitle = validation.InputTitle
+            InputMessage = validation.InputMessage
+            ShowError = validation.ShowError
+            ErrorStyle = (match validation.Style with StopStyle -> "stop" | WarningStyle -> "warning" | InformationStyle -> "information")
+            ErrorTitle = validation.ErrorTitle
+            ErrorMessage = validation.ErrorMessage }
+    match validation.Rule with
+    | AnyValue -> common
+    | ListValues values -> { common with Values = Some values }
+    | ListSource source -> { common with Source = Some (formulaBody source) }
+    | CustomFormula _ -> { common with Formula1 = ooxml.Formula1 }
+    | _ ->
+        // (A comparison without an operator in the file is a "between".)
+        { common with Operator = Some (defaultArg ooxml.Operator "between"); Formula1 = ooxml.Formula1; Formula2 = ooxml.Formula2 }
+
+/// "2024-03-31" (optionally with " 14:30[:15]" or "T14:30[:15]") as a date
+/// serial, "14:30[:15]" as a fraction of a day; None for anything else.
+let private dateOrTimeSerial (text: string) : float option =
+    let text = text.Trim()
+    let number (part: string) =
+        if part.Length > 0 && part |> Seq.forall isAsciiDigit then Some (int part) else None
+    let time (part: string) : float option =
+        match part.Split(':') |> Array.map number with
+        | [| Some h; Some m |] when h < 24 && m < 60 -> Some ((float h * 3600.0 + float m * 60.0) / 86400.0)
+        | [| Some h; Some m; Some s |] when h < 24 && m < 60 && s < 60 -> Some ((float h * 3600.0 + float m * 60.0 + float s) / 86400.0)
+        | _ -> None
+    let date (part: string) : float option =
+        match part.Split('-') |> Array.map number with
+        | [| Some y; Some m; Some d |] when part.Length = 10 && y >= 1900 && m >= 1 && m <= 12 && d >= 1 && d <= 31 ->
+            Some (Rbt.Spreadsheet.Input.dateSerial y m d)
+        | _ -> None
+    match text.Split([| 'T'; ' ' |]) with
+    | [| one |] -> (match date one with Some serial -> Some serial | None -> time one)
+    | [| day; clock |] -> (match date day, time clock with Some d, Some t -> Some (d + t) | _ -> None)
+    | _ -> None
+
+/// Check a described validation and give the model's validation. Throws
+/// (naming `memberName`) for an unknown type or operator, a missing operand,
+/// formula, list or source, a list value with a comma in it, and an unknown
+/// error style.
+let validationOfDescription (memberName: string) (description: ValidationDescription) : DataValidation =
+    let fail (message: string) = failwith (sprintf "%s: %s" memberName message)
+    let present (text: string option) = match text with Some text when text.Trim() <> "" -> true | _ -> false
+    let style =
+        match description.ErrorStyle with
+        | "stop" -> StopStyle
+        | "warning" -> WarningStyle
+        | "information" -> InformationStyle
+        | other -> fail (sprintf "unknown errorStyle \"%s\" (stop, warning or information)" other)
+    let operand (kind: string) (what: string) (text: string option) : string =
+        match text with
+        | Some text when text.Trim() <> "" ->
+            let body = formulaBody (text.Trim())
+            (match (if kind = "date" || kind = "time" then dateOrTimeSerial body else None) with
+             | Some serial -> numberOperand serial
+             | None -> body)
+        | _ -> fail (sprintf "a \"%s\" rule needs %s" kind what)
+    let rule =
+        match description.Type with
+        | "any" -> AnyValue
+        | "list" ->
+            (match description.Values, description.Source with
+             | Some _, Some source when source.Trim() <> "" -> fail "a list rule takes either values or a source, not both"
+             | Some values, _ ->
+                let values = values |> List.map (fun value -> value.Trim()) |> List.filter (fun value -> value <> "")
+                if values.IsEmpty then fail "a list rule needs at least one value"
+                match values |> List.tryFind (fun value -> value.Contains ",") with
+                | Some value -> fail (sprintf "the list value \"%s\" holds a comma; a list with such values has to come from a source range" value)
+                | None -> ListValues values
+             | None, Some source when source.Trim() <> "" -> ListSource (formulaBody (source.Trim()))
+             | _ -> fail "a list rule needs values (an array of texts) or a source (a range or a name)")
+        | "custom" ->
+            if not (present description.Formula1) then fail "a \"custom\" rule needs a formula"
+            CustomFormula (formulaBody (description.Formula1.Value.Trim()))
+        | "whole" | "decimal" | "date" | "time" | "textLength" as kind ->
+            let operator =
+                match description.Operator with
+                | Some operator when List.contains operator validationOperators -> operator
+                | Some operator -> fail (sprintf "unknown operator \"%s\" (%s)" operator (String.concat ", " validationOperators))
+                | None -> fail (sprintf "a \"%s\" rule needs an operator (%s)" kind (String.concat ", " validationOperators))
+            let two = operator = "between" || operator = "notBetween"
+            let first = operand kind (if two then "formula1 (the lower bound)" else "formula1 (the value to compare with)") description.Formula1
+            let second = if two then Some (operand kind "formula2 (the upper bound)" description.Formula2) else None
+            let ooxml : CF.OoxmlValidation =
+                { Type = kind; Operator = Some operator; Formula1 = Some first; Formula2 = second
+                  AllowBlank = true; ShowErrorMessage = true; ShowInputMessage = true; ShowDropDown = true
+                  ErrorStyle = None; ErrorTitle = None; Error = None; PromptTitle = None; Prompt = None }
+            (match CF.validationRuleOfOoxml ooxml with
+             | Some rule -> rule
+             | None -> fail (sprintf "the \"%s\" rule could not be read" kind))
+        | other -> fail (sprintf "unknown validation type \"%s\" (%s)" other (String.concat ", " validationTypes))
+    { Rule = rule
+      ErrorMessage = description.ErrorMessage
+      InputMessage = description.InputMessage
+      ErrorTitle = description.ErrorTitle
+      InputTitle = description.InputTitle
+      Style = style
+      ShowError = description.ShowError
+      AllowBlank = description.AllowBlank
+      ShowInput = description.ShowInput
+      ShowDropdown = description.Dropdown
+      Anchor = None }
+
+/// The validation with an id.
+let tryFindValidation (id: int) (model: SpreadsheetModel) : ValidationRange option =
+    model.Validations |> List.tryFind (fun entry -> entry.Id = id)
+
+/// Reads the source of a list rule in a workbook: a range of the rule's own
+/// sheet or of another one (`lookupSheet` gives a sheet by name), or a
+/// defined name (`lookupName` gives what it refers to) that is such a range.
+let listSourceReader (lookupSheet: string -> SpreadsheetModel option) (lookupName: string -> string option) : ListSourceReader =
+    fun model deltaRow deltaCol source ->
+        let rec resolve (depth: int) (text: string) : string list option =
+            let text = formulaBody (text.Trim())
+            match splitSheetPrefix text with
+            | Some sheetName, rest -> lookupSheet sheetName |> Option.bind (fun other -> sameSheetListValues other deltaRow deltaCol rest)
+            | None, rest ->
+                match (if depth < 4 then lookupName rest else None) with
+                | Some refersTo -> resolve (depth + 1) refersTo
+                | None -> sameSheetListValues model deltaRow deltaCol rest
+        resolve 0 source
+
+/// The values the list validation on a cell offers (in order, as texts), or
+/// None when the cell has no list validation or its source cannot be read.
+let listValuesAt (reader: ListSourceReader) (addr: CellAddress) (model: SpreadsheetModel) : string list option =
+    match validationEntryAt addr model with
+    | Some entry ->
+        (match entry.Validation.Rule with
+         | ListValues values -> Some values
+         | ListSource source ->
+            let anchor = validationAnchor entry
+            reader model (addr.Row - anchor.Row) (addr.Col - anchor.Col) source
+         | _ -> None)
+    | None -> None

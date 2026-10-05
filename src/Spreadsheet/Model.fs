@@ -388,6 +388,14 @@ type ValidationRule =
     | Comparison of ValidationKind * CompareOperator * string * string option
     /// The entry is valid when this formula is true.
     | CustomFormula of string
+    /// Allowed values read from cells when they are needed: a range
+    /// (`$A$1:$A$9`, `Lists!$B$2:$B$20`) or a defined name, as a formula
+    /// without the leading `=`. A relative range is written for the rule's
+    /// anchor cell, like any formula of a rule.
+    | ListSource of string
+    /// Every value is allowed (Excel's "any value"): the validation only
+    /// carries an input message.
+    | AnyValue
 
 /// What happens when an entry fails validation. Excel's "stop" refuses the
 /// entry; "warning" and "information" only tell the user and accept it.
@@ -412,6 +420,12 @@ type DataValidation = {
     /// Excel's "ignore blank". Carried for round trips: an emptied cell is
     /// accepted either way.
     AllowBlank: bool
+    /// Excel's "show input message when cell is selected". When off the
+    /// input title and message are kept but not shown.
+    ShowInput: bool
+    /// A list rule's "in-cell dropdown": whether the cell offers its values
+    /// in a dropdown (the rule holds either way).
+    ShowDropdown: bool
     /// The cell the rule's formulas are written for (the top-left of the
     /// validated range); None = the validated cell itself.
     Anchor: CellAddress option
@@ -420,7 +434,7 @@ type DataValidation = {
 /// A validation with the given rule and Excel's defaults for the rest.
 let validationOf (rule: ValidationRule) : DataValidation =
     { Rule = rule; ErrorMessage = None; InputMessage = None; ErrorTitle = None; InputTitle = None
-      Style = StopStyle; ShowError = true; AllowBlank = true; Anchor = None }
+      Style = StopStyle; ShowError = true; AllowBlank = true; ShowInput = true; ShowDropdown = true; Anchor = None }
 
 /// Merged cell range (primary cell is top-left)
 type MergedCell = {
@@ -518,6 +532,22 @@ type ConditionalFormatRange = {
     Format: ConditionalFormat
     Priority: int
     StopIfTrue: bool
+}
+
+/// A data validation as it is defined: for one or more ranges, not per cell.
+/// A whole-column validation is the range from row 0 to the last sheet row -
+/// it is never clipped to the used range, and no cell is made for it. A cell
+/// is covered by at most one validation. The formulas of the rule are written
+/// for `Validation.Anchor`, or for the top-left cell of the first range when
+/// that is None.
+type ValidationRange = {
+    /// Names the validation among those of its sheet (the host API addresses
+    /// validations by it). Unique within the sheet; never reused while the
+    /// sheet lives. Validations read from a file are numbered 1, 2, ... in
+    /// file order.
+    Id: int
+    Ranges: CellRange list
+    Validation: DataValidation
 }
 
 /// Excel table style reference (e.g. `TableStyleMedium7` + show-stripes
@@ -874,8 +904,9 @@ type SpreadsheetModel = {
     /// workbooks.
     Spill: Map<CellAddress, CellAddress>
 
-    /// Data-validation rules keyed by cell.
-    Validations: Map<CellAddress, DataValidation>
+    /// Data validations, by range (see `ValidationRange`). `getValidation`
+    /// gives the one on a cell.
+    Validations: ValidationRange list
 
     /// VBA/VBScript module source attached to the workbook (the "VBA project").
     /// Empty when there are no macros. Event subs (Worksheet_Change /
@@ -987,7 +1018,7 @@ let createEmpty rowCount colCount = {
     CfBoldCells = Set.empty
     ShowGridLines = true
     Spill = Map.empty
-    Validations = Map.empty
+    Validations = []
     Macros = ""
     Drawings = []
     Threads = Map.empty
@@ -2096,31 +2127,44 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
                 if ranges = entry.Ranges && rule = entry.Format.Rule then Some entry
                 else Some { entry with Ranges = ranges; Format = { entry.Format with Rule = rule } })
 
-    // Validations move with their cells; the formulas in their rules are
-    // re-pointed and their anchors follow.
+    // Validations follow their ranges, as conditional formats do; one left
+    // with no range is gone. The formulas in their rules are re-pointed and
+    // their anchors follow.
     let validations =
         let adjust (formula: string) = adjustFormulaForEdit edit targetsEditedSheet formula
-        let cache = System.Collections.Generic.Dictionary<DataValidation, DataValidation>(HashIdentity.Reference)
-        let moveValidation (validation: DataValidation) =
-            match cache.TryGetValue validation with
-            | true, moved -> moved
-            | false, _ ->
+        let moveRange (range: CellRange) =
+            if onRows then
+                if range.From.Row = 0 && range.To.Row >= 1048575 then Some range
+                else
+                    moveSpan range.From.Row range.To.Row
+                    |> Option.map (fun (lo, hi) -> { From = { range.From with Row = lo }; To = { range.To with Row = hi } })
+            else
+                if range.From.Col = 0 && range.To.Col >= 16383 then Some range
+                else
+                    moveSpan range.From.Col range.To.Col
+                    |> Option.map (fun (lo, hi) -> { From = { range.From with Col = lo }; To = { range.To with Col = hi } })
+        model.Validations
+        |> List.choose (fun entry ->
+            match entry.Ranges |> List.choose moveRange with
+            | [] -> None
+            | ranges ->
+                let validation = entry.Validation
                 let rule =
                     match validation.Rule with
                     | Comparison (kind, op, first, second) -> Comparison (kind, op, adjust first, second |> Option.map adjust)
                     | CustomFormula formula -> CustomFormula (adjust formula)
+                    | ListSource source ->
+                        // (A defined name is not a reference: it stays as it is.)
+                        let adjusted = adjust ("=" + source)
+                        ListSource (if adjusted.StartsWith "=" then adjusted.Substring 1 else adjusted)
                     | other -> other
-                let anchor = validation.Anchor |> Option.bind moveAddr
-                let moved =
-                    if rule = validation.Rule && anchor = validation.Anchor then validation
-                    else { validation with Rule = rule; Anchor = anchor }
-                cache.[validation] <- moved
-                moved
-        model.Validations
-        |> Map.fold (fun acc addr validation ->
-            match moveAddr addr with
-            | Some moved -> Map.add moved (moveValidation validation) acc
-            | None -> acc) Map.empty
+                // The formulas stay written for the cell they were written
+                // for; when that cell is deleted, for the first cell left.
+                let oldAnchor = defaultArg validation.Anchor entry.Ranges.Head.From
+                let newAnchor = moveAddr oldAnchor |> Option.defaultValue ranges.Head.From
+                let anchor = if validation.Anchor.IsNone && newAnchor = ranges.Head.From then None else Some newAnchor
+                if ranges = entry.Ranges && rule = validation.Rule && anchor = validation.Anchor then Some entry
+                else Some { entry with Ranges = ranges; Validation = { validation with Rule = rule; Anchor = anchor } })
 
     // Drawing objects follow their anchor cells. An object whose anchor row
     // or column is deleted is not deleted with it: it moves to where the
@@ -2644,10 +2688,12 @@ let compareHolds (op: CompareOperator) (x: float) (first: float) (second: float 
     | OpBetween -> x >= lo - eps && x <= hi + eps
     | OpNotBetween -> x < lo - eps || x > hi + eps
 
-/// Check a value against a validation rule whose formulas are evaluated by
-/// `evaluate` (formula text → value at the validated cell). Blank is always
-/// allowed (clearing a cell is never refused). Returns Ok or a reason.
-let validateValueWith (evaluate: string -> CellValue) (rule: ValidationRule) (value: CellValue) : Result<unit, string> =
+/// Check a value against a validation rule. `evaluate` gives the value of a
+/// formula of the rule at the validated cell; `listValues` the current values
+/// of a list rule's source range (None when it cannot be read: the rule then
+/// refuses nothing). Blank is always allowed (clearing a cell is never
+/// refused). Returns Ok or a reason.
+let validateValueIn (listValues: string -> string list option) (evaluate: string -> CellValue) (rule: ValidationRule) (value: CellValue) : Result<unit, string> =
     let v = unwrapVal value
     let isBlank = match v with Empty -> true | String "" -> true | _ -> false
     let within lo hi x =
@@ -2662,13 +2708,20 @@ let validateValueWith (evaluate: string -> CellValue) (rule: ValidationRule) (va
             | Number number -> Some number
             | Boolean flag -> Some (if flag then 1.0 else 0.0)
             | _ -> None
+    let inList (vs: string list) =
+        let t = (displayText v).Trim().ToLowerInvariant()
+        if vs |> List.exists (fun a -> a.Trim().ToLowerInvariant() = t) then Result.Ok()
+        else Result.Error(sprintf "Value must be one of: %s" (String.concat ", " vs))
     if isBlank then Result.Ok()
     else
         match rule with
-        | ListValues vs ->
-            let t = (displayText v).Trim().ToLowerInvariant()
-            if vs |> List.exists (fun a -> a.Trim().ToLowerInvariant() = t) then Result.Ok()
-            else Result.Error(sprintf "Value must be one of: %s" (String.concat ", " vs))
+        | AnyValue -> Result.Ok()
+        | ListValues vs -> inList vs
+        | ListSource source ->
+            (match listValues source with
+             | Some vs -> inList vs
+             // A source that cannot be read does not lock the cell.
+             | None -> Result.Ok())
         | WholeNumber (lo, hi) ->
             (match v with
              | Number n when n = floor n -> if within lo hi n then Result.Ok() else Result.Error "Enter a whole number within the allowed range."
@@ -2720,22 +2773,192 @@ let validateValueWith (evaluate: string -> CellValue) (rule: ValidationRule) (va
             | Error _ -> Result.Ok()
             | _ -> Result.Error "This value does not meet the validation rule set for this cell."
 
+/// `validateValueIn` for a rule whose list (if it is one) is written out.
+let validateValueWith (evaluate: string -> CellValue) (rule: ValidationRule) (value: CellValue) : Result<unit, string> =
+    validateValueIn (fun _ -> None) evaluate rule value
+
 /// Check a value against a validation rule without a sheet to evaluate
 /// formulas on: operands must be literal numbers, and a custom-formula rule
 /// accepts everything. Use `checkEntry` to validate an entry in a cell.
 let validateValue (rule: ValidationRule) (value: CellValue) : Result<unit, string> =
     validateValueWith (fun _ -> Error "NAME?") rule value
 
-let getValidation (addr: CellAddress) (model: SpreadsheetModel) : DataValidation option =
-    Map.tryFind addr model.Validations
+// --- The validations of a sheet, by range ------------------------------------
 
-/// Attach a validation rule to a cell. A list rule also flags the cell so the
-/// renderer paints the dropdown arrow.
+/// What is left of a range when the cells of `hole` are taken out of it: up
+/// to four ranges (above, left, right, below), the range itself when the two
+/// do not meet, nothing when the hole covers it.
+let subtractCellRange (hole: CellRange) (range: CellRange) : CellRange list =
+    let meets =
+        hole.From.Row <= range.To.Row && hole.To.Row >= range.From.Row
+        && hole.From.Col <= range.To.Col && hole.To.Col >= range.From.Col
+    if not meets then [ range ]
+    else
+        let top = max hole.From.Row range.From.Row
+        let bottom = min hole.To.Row range.To.Row
+        [ if range.From.Row < top then
+              yield { From = range.From; To = { Row = top - 1; Col = range.To.Col } }
+          if range.From.Col < hole.From.Col then
+              yield { From = { Row = top; Col = range.From.Col }; To = { Row = bottom; Col = hole.From.Col - 1 } }
+          if range.To.Col > hole.To.Col then
+              yield { From = { Row = top; Col = hole.To.Col + 1 }; To = { Row = bottom; Col = range.To.Col } }
+          if range.To.Row > bottom then
+              yield { From = { Row = bottom + 1; Col = range.From.Col }; To = range.To } ]
+
+/// The validations of a sheet laid out for looking one up by cell: every
+/// range with the position of its validation, and the box around them all.
+type private ValidationIndex = {
+    Source: ValidationRange list
+    Entries: ValidationRange array
+    /// r0, c0, r1, c1, entry - five numbers per range.
+    Boxes: int array
+    Top: int
+    Left: int
+    Bottom: int
+    Right: int
+}
+
+/// The index of the validation list looked up last (a sheet's list is a
+/// value that is replaced when it changes, so it is known by identity; a few
+/// are kept because renders of several sheets interleave).
+let mutable private validationIndexCache : ValidationIndex list = []
+
+let private buildValidationIndex (validations: ValidationRange list) : ValidationIndex =
+    let entries = List.toArray validations
+    let boxes = ResizeArray<int>()
+    let mutable top = System.Int32.MaxValue
+    let mutable left = System.Int32.MaxValue
+    let mutable bottom = -1
+    let mutable right = -1
+    entries |> Array.iteri (fun index entry ->
+        for range in entry.Ranges do
+            boxes.Add range.From.Row; boxes.Add range.From.Col; boxes.Add range.To.Row; boxes.Add range.To.Col; boxes.Add index
+            top <- min top range.From.Row
+            left <- min left range.From.Col
+            bottom <- max bottom range.To.Row
+            right <- max right range.To.Col)
+    { Source = validations; Entries = entries; Boxes = boxes.ToArray(); Top = top; Left = left; Bottom = bottom; Right = right }
+
+let private validationIndexOf (validations: ValidationRange list) : ValidationIndex =
+    match validationIndexCache |> List.tryFind (fun index -> obj.ReferenceEquals(index.Source, validations)) with
+    | Some index -> index
+    | None ->
+        let index = buildValidationIndex validations
+        validationIndexCache <- index :: (validationIndexCache |> List.truncate 3)
+        index
+
+/// The validation whose ranges cover a cell, as it is stored.
+let validationEntryAt (addr: CellAddress) (model: SpreadsheetModel) : ValidationRange option =
+    if model.Validations.IsEmpty then None
+    else
+        let index = validationIndexOf model.Validations
+        if addr.Row < index.Top || addr.Row > index.Bottom || addr.Col < index.Left || addr.Col > index.Right then None
+        else
+            let boxes = index.Boxes
+            let mutable found = -1
+            let mutable i = 0
+            while found < 0 && i < boxes.Length do
+                if addr.Row >= boxes.[i] && addr.Row <= boxes.[i + 2] && addr.Col >= boxes.[i + 1] && addr.Col <= boxes.[i + 3] then found <- boxes.[i + 4]
+                i <- i + 5
+            if found < 0 then None else Some index.Entries.[found]
+
+/// The cell the formulas of a validation are written for.
+let validationAnchor (entry: ValidationRange) : CellAddress =
+    match entry.Validation.Anchor, entry.Ranges with
+    | Some anchor, _ -> anchor
+    | None, first :: _ -> first.From
+    | None, [] -> { Row = 0; Col = 0 }
+
+/// The validation on a cell, with `Anchor` saying which cell its formulas
+/// are written for.
+let getValidation (addr: CellAddress) (model: SpreadsheetModel) : DataValidation option =
+    validationEntryAt addr model
+    |> Option.map (fun entry ->
+        match entry.Validation.Anchor with
+        | Some _ -> entry.Validation
+        | None -> { entry.Validation with Anchor = Some (validationAnchor entry) })
+
+/// The id a new validation of the sheet gets.
+let nextValidationId (model: SpreadsheetModel) : int =
+    (model.Validations |> List.fold (fun highest entry -> max highest entry.Id) 0) + 1
+
+/// Take ranges out of every validation of the sheet. A validation that
+/// loses its first cell keeps the cell its formulas are written for; one
+/// left with no range is gone.
+let clearValidationRanges (holes: CellRange list) (model: SpreadsheetModel) : SpreadsheetModel =
+    let remaining =
+        model.Validations
+        |> List.choose (fun entry ->
+            let ranges = holes |> List.fold (fun ranges hole -> ranges |> List.collect (subtractCellRange hole)) entry.Ranges
+            if ranges = entry.Ranges then Some entry
+            elif ranges.IsEmpty then None
+            else Some { entry with Ranges = ranges; Validation = { entry.Validation with Anchor = Some (validationAnchor entry) } })
+    if remaining = model.Validations then model else { model with Validations = remaining }
+
+/// Put a validation on ranges, in place of whatever validations their cells
+/// had, under the id given. No cell is made or changed.
+let setValidationRangesWithId (id: int) (ranges: CellRange list) (validation: DataValidation) (model: SpreadsheetModel) : SpreadsheetModel =
+    let cleared = clearValidationRanges ranges model
+    { cleared with Validations = cleared.Validations @ [ { Id = id; Ranges = ranges; Validation = validation } ] }
+
+/// `setValidationRangesWithId` under the next free id.
+let setValidationRanges (ranges: CellRange list) (validation: DataValidation) (model: SpreadsheetModel) : SpreadsheetModel =
+    setValidationRangesWithId (nextValidationId model) ranges validation model
+
+/// Attach a validation rule to one cell.
 let setValidation (addr: CellAddress) (dv: DataValidation) (model: SpreadsheetModel) : SpreadsheetModel =
-    let m = { model with Validations = Map.add addr dv model.Validations }
-    match dv.Rule with
-    | ListValues _ -> updateFormat addr (fun f -> { f with HasListDropdown = true }) m
-    | _ -> m
+    setValidationRanges [ { From = addr; To = addr } ] dv model
+
+/// The values a list rule's source gives when it is a range of the sheet
+/// itself, shifted by (deltaRow, deltaCol) where it is relative: the texts
+/// its filled cells show. None for anything else (another sheet, a name).
+let sameSheetListValues (model: SpreadsheetModel) (deltaRow: int) (deltaCol: int) (source: string) : string list option =
+    let shifted = shiftFormulaReferences deltaRow deltaCol ("=" + source.Trim().TrimStart('='))
+    let text = shifted.TrimStart('=').Replace("$", "").Trim()
+    let parts = text.Split(':')
+    // A corner: its row and its column, either of which a whole-column /
+    // whole-row reference leaves out.
+    let corner (part: string) : (int option * int option) option =
+        let part = part.Trim()
+        let mutable i = 0
+        while i < part.Length && Char.IsLetter part.[i] do i <- i + 1
+        let letters = part.Substring(0, i)
+        let digits = part.Substring i
+        if part.Length = 0 || letters.Length > 3 || not (digits |> Seq.forall Char.IsDigit) then None
+        else
+            Some ((if digits.Length > 0 then Some (int digits - 1) else None),
+                  (if letters.Length > 0 then Some (letterToColumn (letters.ToUpperInvariant())) else None))
+    if text.Contains "!" || text.Contains "(" || parts.Length = 0 || parts.Length > 2 then None
+    else
+        match corner parts.[0], corner parts.[parts.Length - 1] with
+        | Some (r0, c0), Some (r1, c1) ->
+            let usedRow, usedCol = usedBounds model |> Option.defaultValue (0, 0)
+            let rowLo, rowHi =
+                match r0, r1 with
+                | Some a, Some b -> min a b, min (max a b) usedRow
+                | _ -> 0, usedRow
+            let colLo, colHi =
+                match c0, c1 with
+                | Some a, Some b -> min a b, min (max a b) usedCol
+                | _ -> 0, usedCol
+            if rowLo < 0 || colLo < 0 || (r0.IsNone && c0.IsNone) then None
+            else
+                Some [ for row in rowLo .. rowHi do
+                        for col in colLo .. colHi do
+                            match Map.tryFind { Row = row; Col = col } model.Cells with
+                            | Some cell ->
+                                let shown = displayText (unwrapVal cell.Value)
+                                if shown <> "" then yield shown
+                            | None -> () ]
+        | _ -> None
+
+/// Whether a cell offers the values of a list validation in a dropdown.
+let showsListDropdown (addr: CellAddress) (model: SpreadsheetModel) : bool =
+    match validationEntryAt addr model with
+    | Some entry ->
+        entry.Validation.ShowDropdown
+        && (match entry.Validation.Rule with ListValues _ | ListSource _ -> true | _ -> false)
+    | None -> false
 
 /// What validating an entry found.
 type ValidationOutcome =
@@ -2745,15 +2968,20 @@ type ValidationOutcome =
     /// the other styles are advisory — the entry is kept and the user told.
     | EntryInvalid of style: ValidationStyle * title: string option * message: string
 
-/// Validate a prospective entry against the cell's rule, the way Excel does
-/// when the edit is committed. `evaluate` runs a formula written for one cell
-/// at another (see `evaluateFormulaAt`); the rule's formulas see the sheet
-/// with the entry already in place, so `=COUNTIF($A:$A,A1)=1` counts it.
-let checkEntryWith (evaluate: string -> int -> int -> SpreadsheetModel -> CellAddress -> CellValue)
-                   (addr: CellAddress) (value: CellValue) (model: SpreadsheetModel) : ValidationOutcome =
+/// Reads the values of a list rule's source for a cell of a sheet: the
+/// sheet, how far the cell is from the rule's anchor (rows, columns), the
+/// source text. None when the source cannot be read.
+type ListSourceReader = SpreadsheetModel -> int -> int -> string -> string list option
+
+/// Judge a value for a cell against the cell's rule. With `always` the rule
+/// is applied even when its error alert is switched off (what Excel's
+/// "circle invalid data" does).
+let private judgeEntry (always: bool) (listValues: ListSourceReader)
+                       (evaluate: string -> int -> int -> SpreadsheetModel -> CellAddress -> CellValue)
+                       (addr: CellAddress) (value: CellValue) (model: SpreadsheetModel) : ValidationOutcome =
     match getValidation addr model with
     | None -> EntryValid
-    | Some dv when not dv.ShowError -> EntryValid
+    | Some dv when not dv.ShowError && not always -> EntryValid
     | Some dv ->
         let existing = getCell addr model
         let trialCell (v: CellValue) =
@@ -2766,17 +2994,55 @@ let checkEntryWith (evaluate: string -> int -> int -> SpreadsheetModel -> CellAd
             | Formula (formula, Empty) ->
                 Formula (formula, evaluate formula 0 0 (setCell addr (trialCell value) model) addr |> unwrapVal)
             | other -> other
-        let trial = setCell addr (trialCell entered) model
+        let trial =
+            match existing with
+            | Some cellData when obj.ReferenceEquals(cellData.Value, entered) || cellData.Value = entered -> model
+            | _ -> setCell addr (trialCell entered) model
         let anchor = defaultArg dv.Anchor addr
+        let deltaRow, deltaCol = addr.Row - anchor.Row, addr.Col - anchor.Col
         let evaluateRuleFormula (formula: string) =
-            evaluate formula (addr.Row - anchor.Row) (addr.Col - anchor.Col) trial addr
-        match validateValueWith evaluateRuleFormula dv.Rule entered with
+            evaluate formula deltaRow deltaCol trial addr
+        match validateValueIn (listValues trial deltaRow deltaCol) evaluateRuleFormula dv.Rule entered with
         | Result.Ok () -> EntryValid
         | Result.Error fallback -> EntryInvalid (dv.Style, dv.ErrorTitle, dv.ErrorMessage |> Option.defaultValue fallback)
+
+/// Validate a prospective entry against the cell's rule, the way Excel does
+/// when the edit is committed. `evaluate` runs a formula written for one cell
+/// at another (see `evaluateFormulaAt`); the rule's formulas see the sheet
+/// with the entry already in place, so `=COUNTIF($A:$A,A1)=1` counts it.
+/// `listValues` reads the source of a list rule.
+let checkEntryIn (listValues: ListSourceReader)
+                 (evaluate: string -> int -> int -> SpreadsheetModel -> CellAddress -> CellValue)
+                 (addr: CellAddress) (value: CellValue) (model: SpreadsheetModel) : ValidationOutcome =
+    judgeEntry false listValues evaluate addr value model
+
+/// `checkEntryIn` with list sources read from the sheet itself.
+let checkEntryWith (evaluate: string -> int -> int -> SpreadsheetModel -> CellAddress -> CellValue)
+                   (addr: CellAddress) (value: CellValue) (model: SpreadsheetModel) : ValidationOutcome =
+    checkEntryIn sameSheetListValues evaluate addr value model
 
 /// `checkEntryWith` on a stand-alone sheet (formulas cannot reach other sheets).
 let checkEntry (addr: CellAddress) (value: CellValue) (model: SpreadsheetModel) : ValidationOutcome =
     checkEntryWith evaluateFormulaAt addr value model
+
+/// The filled cells whose value breaks the validation on them (Excel's
+/// "circle invalid data"), in row order, each with the alert of its rule. A
+/// rule whose alert is switched off counts too. Only the cells that exist
+/// are looked at: a whole-column validation costs what the column holds.
+let invalidCells (listValues: ListSourceReader)
+                 (evaluate: string -> int -> int -> SpreadsheetModel -> CellAddress -> CellValue)
+                 (model: SpreadsheetModel) : (CellAddress * ValidationOutcome) list =
+    if model.Validations.IsEmpty then []
+    else
+        [ for KeyValue(addr, cell) in model.Cells do
+            match unwrapVal cell.Value with
+            | Empty | String "" -> ()
+            | _ ->
+                // (The other cells of a spilled array belong to its formula.)
+                if not (Map.containsKey addr model.Spill) && (validationEntryAt addr model).IsSome then
+                    match judgeEntry true listValues evaluate addr cell.Value model with
+                    | EntryValid -> ()
+                    | invalid -> yield addr, invalid ]
 
 /// Validate a prospective edit against the cell's rule (if any). Error only
 /// when the entry must be refused: a rule whose style is warning or

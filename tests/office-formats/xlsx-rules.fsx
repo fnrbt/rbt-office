@@ -63,31 +63,27 @@ let fromReader (wb: XlsxReader.Workbook) (sheet: XlsxReader.Worksheet) : Conditi
                    Style = dxf |> Option.map (fun d -> ({ FontColor = d.FontColor; FillColor = d.FillColor; Bold = (d.Bold = Some true); Italic = (d.Italic = Some true); Underline = (d.Underline = Some true); Strikethrough = (d.Strike = Some true) } : CF.OoxmlStyle)) } : CF.OoxmlRule)) } : CF.OoxmlConditionalFormat))
     |> CF.ofOoxml
 
-let validationsOut (validations: Map<CellAddress, DataValidation>) : XlsxWriter.XlsxDataValidation list =
+let validationsOut (validations: ValidationRange list) : XlsxWriter.XlsxDataValidation list =
     CF.validationsToOoxml validations
     |> List.map (fun (sqref, dv) ->
         ({ Sqref = sqref; ValidationType = dv.Type; Operator = dv.Operator; Formula1 = dv.Formula1; Formula2 = dv.Formula2
-           AllowBlank = dv.AllowBlank; ShowDropDown = true; ErrorMessage = dv.Error; InputMessage = dv.Prompt
+           AllowBlank = dv.AllowBlank; ShowDropDown = dv.ShowDropDown; ErrorMessage = dv.Error; InputMessage = dv.Prompt
            ErrorTitle = dv.ErrorTitle; PromptTitle = dv.PromptTitle; ErrorStyle = dv.ErrorStyle
            ShowErrorMessage = dv.ShowErrorMessage; ShowInputMessage = dv.ShowInputMessage } : XlsxWriter.XlsxDataValidation))
 
-let validationsIn (sheet: XlsxReader.Worksheet) : Map<CellAddress, DataValidation> =
-    let mutable result = Map.empty
-    for dv in sheet.DataValidations do
+let validationsIn (sheet: XlsxReader.Worksheet) : ValidationRange list =
+    [ for dv in sheet.DataValidations do
         let ooxml : CF.OoxmlValidation =
             { Type = dv.ValidationType; Operator = dv.Operator; Formula1 = dv.Formula1; Formula2 = dv.Formula2
               AllowBlank = dv.AllowBlank; ShowErrorMessage = dv.ShowErrorMessage; ShowInputMessage = dv.ShowInputMessage
+              ShowDropDown = dv.ShowDropDown
               ErrorStyle = dv.ErrorStyle; ErrorTitle = dv.ErrorTitle; Error = dv.ErrorMessage
               PromptTitle = dv.PromptTitle; Prompt = dv.Prompt }
-        for area in CF.parseSqref dv.Range do
-            match CF.validationRuleOfOoxml ooxml with
-            | Some rule ->
-                let validation = CF.validationWithOoxml area.From ooxml rule
-                for r in area.From.Row .. area.To.Row do
-                    for c in area.From.Col .. area.To.Col do
-                        result <- Map.add (at r c) validation result
-            | None -> ()
-    result
+        let ranges = CF.parseSqref dv.Range
+        match CF.validationRuleOfOoxml ooxml with
+        | Some rule -> yield ranges, { CF.validationWithOoxml ranges.Head.From ooxml rule with Anchor = None }
+        | None -> () ]
+    |> List.mapi (fun index (ranges, validation) -> { Id = index + 1; Ranges = ranges; Validation = validation })
 
 let blankSheet name state cfs dvs : XlsxWriter.XlsxSheetOut =
     { Name = name; State = state
@@ -126,16 +122,20 @@ let rules =
       rule colA (TimePeriod "nextMonth") (fill "#FFEB9C") 22 false ]
 
 let dv r = validationOf r
+let cellRange r c = [ range r c r c ]
 let validations =
-    Map.ofList
-        [ for r in 0 .. 4 -> at r 1, { dv (Comparison (WholeKind, OpNotBetween, "1", Some "5")) with Anchor = Some (at 0 1); ErrorTitle = Some "Range"; ErrorMessage = Some "Not 1 to 5"; Style = WarningStyle }
-          yield at 0 2, { dv (Comparison (DecimalKind, OpNotEqual, "0", None)) with Anchor = Some (at 0 2); Style = InformationStyle }
-          yield at 0 3, { dv (CustomFormula "ISNUMBER(D1)") with Anchor = Some (at 0 3); InputTitle = Some "Hint"; InputMessage = Some "A number" }
-          yield at 0 4, { dv (Comparison (TimeKind, OpGreaterThan, "0.5", None)) with Anchor = Some (at 0 4) }
-          yield at 0 5, { dv (Comparison (TextLengthKind, OpLessThan, "8", None)) with Anchor = Some (at 0 5); ShowError = false; AllowBlank = false }
-          yield at 0 6, { dv (Comparison (DateKind, OpGreaterOrEqual, "TODAY()", None)) with Anchor = Some (at 0 6) }
-          yield at 0 7, { dv (ListValues [ "Yes"; "No" ]) with Anchor = Some (at 0 7) }
-          yield at 0 8, { dv (WholeNumber (Some 1.0, Some 10.0)) with Anchor = Some (at 0 8) } ]
+    [ [ range 0 1 4 1 ], { dv (Comparison (WholeKind, OpNotBetween, "1", Some "5")) with ErrorTitle = Some "Range"; ErrorMessage = Some "Not 1 to 5"; Style = WarningStyle }
+      cellRange 0 2, { dv (Comparison (DecimalKind, OpNotEqual, "0", None)) with Style = InformationStyle }
+      cellRange 0 3, { dv (CustomFormula "ISNUMBER(D1)") with InputTitle = Some "Hint"; InputMessage = Some "A number" }
+      cellRange 0 4, dv (Comparison (TimeKind, OpGreaterThan, "0.5", None))
+      cellRange 0 5, { dv (Comparison (TextLengthKind, OpLessThan, "8", None)) with ShowError = false; AllowBlank = false }
+      cellRange 0 6, dv (Comparison (DateKind, OpGreaterOrEqual, "TODAY()", None))
+      cellRange 0 7, dv (ListValues [ "Yes"; "No" ])
+      cellRange 0 8, dv (WholeNumber (Some 1.0, Some 10.0))
+      // A whole column and a second area; a list read from cells, without its dropdown; an input message alone, switched off.
+      [ wholeColumn 9; range 0 11 3 12 ], { dv (ListSource "Tucked!$A$1:$A$9") with ShowDropdown = false }
+      cellRange 0 10, { dv AnyValue with InputTitle = Some "Note"; InputMessage = Some "Anything goes"; ShowInput = false } ]
+    |> List.mapi (fun index (ranges, validation) -> { Id = index + 1; Ranges = ranges; Validation = validation })
 
 let dxfs = ResizeArray<XlsxReader.Dxf>()
 let sheets =
@@ -174,9 +174,11 @@ match XlsxReader.loadBytesNative bytes with
     eq "cf-same-effects" (effects after) (effects before)
     // 10. Validations: kinds, operators, formulas, alert texts and styles.
     let dvBack = validationsIn sheet
-    eq "dv-count" (Map.count dvBack) (Map.count validations)
-    for KeyValue(addr, expected) in validations do
-        eq (sprintf "dv-%s" (formatCellRef addr.Row addr.Col)) (Map.tryFind addr dvBack) (Some expected)
+    eq "dv-count" dvBack.Length validations.Length
+    for (got, expected) in List.zip dvBack validations do
+        eq (sprintf "dv-%d-%s" expected.Id (CF.sqrefText expected.Ranges)) got expected
+    eq "dv-whole-column-written-out" (sheet.DataValidations |> List.exists (fun d -> d.Range = "J1:J1048576 L1:M4" && d.ValidationType = "list" && d.Formula1 = Some "Tucked!$A$1:$A$9" && not d.ShowDropDown)) true
+    eq "dv-any" (sheet.DataValidations |> List.exists (fun d -> d.ValidationType = "none" && d.Prompt = Some "Anything goes" && not d.ShowInputMessage)) true
     eq "dv-grouped" (sheet.DataValidations |> List.exists (fun d -> d.Range = "B1:B5" && d.Operator = Some "notBetween" && d.ErrorStyle = Some "warning")) true
     eq "dv-custom"  (sheet.DataValidations |> List.exists (fun d -> d.ValidationType = "custom" && d.Formula1 = Some "ISNUMBER(D1)" && d.Prompt = Some "A number" && d.PromptTitle = Some "Hint")) true
     eq "dv-time"    (sheet.DataValidations |> List.exists (fun d -> d.ValidationType = "time" && d.Operator = Some "greaterThan")) true

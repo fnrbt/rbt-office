@@ -215,6 +215,43 @@ eq "formats: font, colours, alignment, wrap, indent, rotation, number format and
 // (A cell without a font of its own comes back with the workbook's default font spelled out.)
 eq "formats: shrink to fit, a clockwise rotation, middle / centre, a percent format" { sameColors (dressedFormat 1 1) with FontName = None; FontSize = None } shrunk
 
+// ---- validations are kept by range: a whole column is not clipped, nothing is made per cell ----
+let area r0 c0 r1 c1 : CellRange = { From = addr r0 c0; To = addr r1 c1 }
+let wholeCol c = area 0 c 1048575 c
+let validated =
+    createEmpty 60 12
+    |> setCell (addr 0 0) { Value = CellValue.Number 4.0; Format = defaultFormat; Comment = None }
+    |> setValidationRanges [ wholeCol 0 ] { validationOf (WholeNumber (Some 1.0, Some 10.0)) with ErrorTitle = Some "Range"; ErrorMessage = Some "1 to 10"; Style = WarningStyle }
+    |> setValidationRanges [ area 1 1 20 1; area 1 3 20 3 ] { validationOf (ListSource "Lists!$A$1:$A$3") with ShowDropdown = false }
+    |> setValidationRanges [ area 0 2 0 2 ] (validationOf (ListValues [ "Yes"; "No" ]))
+    |> setValidationRanges [ area 2 4 9 4 ] { validationOf (CustomFormula "E3>$A$1") with InputTitle = Some "Hint"; InputMessage = Some "More than A1"; ShowInput = false }
+    |> setValidationRanges [ area 0 5 0 5 ] { validationOf AnyValue with InputMessage = Some "Free text" }
+    |> setValidationRanges [ area 0 6 5 6 ] (validationOf (Comparison (DateKind, OpNotBetween, "45000", Some "45100")))
+let lists =
+    createEmpty 10 3
+    |> setCell (addr 0 0) { Value = CellValue.String "North"; Format = defaultFormat; Comment = None }
+    |> setCell (addr 1 0) { Value = CellValue.String "South"; Format = defaultFormat; Comment = None }
+let validatedOut =
+    Bridge.Export.toWorkbookOut { Sheets = [| validated; lists |]; Names = [| "Data"; "Lists" |]; Visible = [| true; true |]; ActiveSheetIndex = 0; DefinedNames = Map.empty; Source = None; Macros = None }
+let validatedFile = reread validatedOut
+eq "validations: the sqrefs of the file (a whole column written out)" (validatedFile.Sheets.[0].DataValidations |> List.map (fun dv -> dv.Range, dv.ValidationType))
+   [ "A1:A1048576", "whole"; "B2:B21 D2:D21", "list"; "C1", "list"; "E3:E10", "custom"; "F1", "none"; "G1:G6", "date" ]
+let validatedBack = Bridge.Import.importWorkbook validatedFile
+let backModel = validatedBack.Sheets.[0].Model
+eq "validations: every kind comes back for the same ranges, under ids 1.." backModel.Validations validated.Validations
+eq "validations: a whole column makes no cell" (backModel.Cells.Count, (getValidation (addr 1048575 0) backModel).IsSome, (getValidation (addr 500000 1) backModel).IsSome) (1, true, false)
+eq "validations: the lazy import gives the same" ((Bridge.Import.importWorkbookLazy (fun _ -> false) validatedFile).Sheets |> Array.map (fun sheet -> (resolveSheet sheet.Model).Validations)) [| validated.Validations; [] |]
+// Unedited, the file's validations are written as the file had them; edited, from the model.
+let unedited = Bridge.Export.toWorkbookOut (inputOf validatedBack (modelsOf validatedBack) validatedBack.Context.Names)
+eq "validations: unedited, as in the file" unedited.Sheets.[0].DataValidations (XlsxWriter.packageFromReaderWorkbook validatedFile).Sheets.[0].DataValidations
+let editedModel = backModel |> setValidationRanges [ area 0 0 4 0 ] (validationOf (ListValues [ "a" ])) |> clearValidationRanges [ wholeCol 6 ]
+let editedValidations =
+    Bridge.Export.toWorkbookOut (inputOf validatedBack [| editedModel; validatedBack.Sheets.[1].Model |] validatedBack.Context.Names) |> reread
+eq "validations: edited ones are written from the model" (editedValidations.Sheets.[0].DataValidations |> List.map (fun dv -> dv.Range, dv.ValidationType))
+   [ "A6:A1048576", "whole"; "B2:B21 D2:D21", "list"; "C1", "list"; "E3:E10", "custom"; "F1", "none"; "A1:A5", "list" ]
+eq "validations: and read back the same" ((Bridge.Import.importWorkbook editedValidations).Sheets.[0].Model.Validations |> List.map (fun v -> v.Ranges, v.Validation.Rule))
+   (editedModel.Validations |> List.map (fun v -> v.Ranges, v.Validation.Rule))
+
 // ---- pictures, kept objects and threaded comments are in the model ---------
 // synthetic-drawing-extras.xlsx: a picture B3..D7 (two-cell, editAs oneCell), a
 // chart at F (one-cell) in front of it, a threaded comment with a reply on B2.
