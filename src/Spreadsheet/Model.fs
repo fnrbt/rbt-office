@@ -721,6 +721,10 @@ type DrawingContent =
 
 /// A picture or other drawing object on a sheet.
 type SheetDrawing = {
+    /// What the object is known by on its sheet: it keeps the number while
+    /// it is moved, sized or restacked. A file's objects are numbered 1..n
+    /// back to front when it is opened; 0 = not numbered.
+    Id: int
     Anchor: DrawingAnchor
     Name: string option
     Description: string option

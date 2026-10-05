@@ -261,19 +261,21 @@ let private drawingsOfExtras (extras: XlsxReader.SheetExtras) : SheetDrawing lis
     (extras.Images
      |> List.map (fun image ->
         image.Anchor.Order, 0,
-        ({ Anchor = anchorOfReader image.Anchor
+        ({ Id = 0
+           Anchor = anchorOfReader image.Anchor
            Name = image.Name
            Description = image.Description
            Content = Picture (image.ContentType, image.Extension, image.Data) } : SheetDrawing)))
     @ (extras.Objects
        |> List.map (fun item ->
         item.Anchor.Order, 1,
-        ({ Anchor = anchorOfReader item.Anchor
+        ({ Id = 0
+           Anchor = anchorOfReader item.Anchor
            Name = item.Name
            Description = None
            Content = KeptObject (item.Kind, item.Xml) } : SheetDrawing)))
     |> List.sortBy (fun (order, kind, _) -> order, kind)
-    |> List.map (fun (_, _, drawing) -> drawing)
+    |> List.mapi (fun index (_, _, drawing) -> { drawing with Id = index + 1 })
 
 let rec private threadOfReader (comment: XlsxReader.ThreadedComment) : CommentThread =
     { Id = comment.Id

@@ -67,6 +67,23 @@ let private focusQuietly (el: Element): unit = jsNative
 [<Emit("$0.stopPropagation()")>]
 let private stopPropagation (e: obj): unit = jsNative
 
+[<Emit("$0.querySelector($1)")>]
+let private queryOne (root: Element) (selector: string): Element = jsNative
+
+/// A picture being moved or sized with the mouse.
+type private PictureDrag = {
+    Id: int
+    /// "move", or the handle: "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w".
+    Handle: string
+    /// Where the pointer went down (page pixels).
+    StartX: float
+    StartY: float
+    /// The picture's rectangle then, and where the drag has it now (sheet pixels).
+    Start: SpreadsheetLayout.Rect
+    mutable Current: SpreadsheetLayout.Rect
+    mutable Moved: bool
+}
+
 [<Emit("new Date().toISOString().slice(0, 22)")>]
 let private commentDateNow (): string = jsNative
 
@@ -433,6 +450,13 @@ type Spreadsheet(container: Element) =
     let mutable notifiedNames: string array = [||]
     let mutable notifiedBook: BookContent = bookContentOf None
     let mutable notifiedSelection: (int * Selection * CellAddress) option = None
+    /// The picture of the active sheet that is selected (its id), and what
+    /// the selection listeners were last told of it.
+    let mutable selectedPicture: int option = None
+    let mutable notifiedPicture: int option = None
+    let mutable pictureDrag: PictureDrag option = None
+    let mutable pictureFrame: Element option = None
+    let mutable renderedDrawingsReadOnly = false
     // --- revisions ----------------------------------------------------------------
     // The revision is a number that names the workbook's content: every
     // change gives a new one, and undo / redo bring back the number the
@@ -1877,6 +1901,57 @@ type Spreadsheet(container: Element) =
                 model <- pushCommand command model
             true
 
+    // --- pictures -------------------------------------------------------------------
+    /// Change the drawing objects of the active sheet as one undoable step
+    /// (no value changes). False when nothing changed.
+    let changeDrawings (description: string) (change: SpreadsheetModel -> SpreadsheetModel) : bool =
+        let before = model.Drawings
+        let after = (change model).Drawings
+        if sameRef before after || before = after then false
+        else
+            model <- { model with Drawings = after }
+            pushValueNeutral { Undo = (fun m -> { m with Drawings = before })
+                               Redo = (fun m -> { m with Drawings = after })
+                               Description = description }
+            true
+    /// The cell a point of the sheet (pixels at 100%) is in, and how far into it.
+    let cellAtSheetPoint (x: float) (y: float) : CellAddress * float * float =
+        let metrics = SpreadsheetLayout.metricsOf model
+        let x, y = max 0.0 x, max 0.0 y
+        let col = max 0 (min (metrics.ColCount - 1) (SpreadsheetLayout.indexAtOffset metrics.ColPrefix metrics.ColCount x))
+        let row = max 0 (min (metrics.RowCount - 1) (SpreadsheetLayout.indexAtOffset metrics.RowPrefix metrics.RowCount y))
+        { Row = row; Col = col }, x - metrics.ColPrefix.[col], y - metrics.RowPrefix.[row]
+    /// Give a picture a rectangle of the sheet as one undoable step: it is
+    /// anchored to the cell its top-left corner is in. Throws (as the member
+    /// named) when there is no such picture.
+    let placePictureAt (memberName: string) (description: string) (id: int) (rect: SpreadsheetLayout.Rect) : bool =
+        let cell, offsetX, offsetY = cellAtSheetPoint rect.X rect.Y
+        match SheetOps.placePicture id cell offsetX offsetY (max 1.0 rect.Width) (max 1.0 rect.Height) model with
+        | Result.Error message -> Host.hostFail memberName message
+        | Ok changed -> changeDrawings description (fun _ -> changed)
+    /// The rectangle a drag has taken a picture to: moved by the pointer's
+    /// travel, or sized from the handle held - a corner keeps the picture's
+    /// proportions unless `free` (Shift), a side changes one dimension.
+    let draggedRect (drag: PictureDrag) (dx: float) (dy: float) (free: bool) : SpreadsheetLayout.Rect =
+        let start = drag.Start
+        if drag.Handle = "move" then { start with X = max 0.0 (start.X + dx); Y = max 0.0 (start.Y + dy) }
+        else
+            let west, east = drag.Handle.Contains "w", drag.Handle.Contains "e"
+            let north, south = drag.Handle.Contains "n", drag.Handle.Contains "s"
+            let least = 8.0
+            let mutable width = if east then start.Width + dx elif west then start.Width - dx else start.Width
+            let mutable height = if south then start.Height + dy elif north then start.Height - dy else start.Height
+            width <- max least width
+            height <- max least height
+            if drag.Handle.Length = 2 && not free && start.Width > 0.0 && start.Height > 0.0 then
+                let scale = max (width / start.Width) (height / start.Height)
+                width <- max least (start.Width * scale)
+                height <- max least (start.Height * scale)
+            // (The side opposite the handle stays where it is.)
+            let x = if west then max 0.0 (start.X + start.Width - width) else start.X
+            let y = if north then max 0.0 (start.Y + start.Height - height) else start.Y
+            { X = x; Y = y; Width = width; Height = height }
+
     /// The workbook context, made now for a grid that has none yet.
     let ensureWorkbook () : Workbook =
         match workbook with
@@ -2049,6 +2124,27 @@ type Spreadsheet(container: Element) =
         | None -> model
         | Some index when index >= 0 && index < sheets.Length -> sheetModelAt index
         | Some index -> Host.hostFail memberName (sprintf "there is no sheet %d (the workbook has %d)" index sheets.Length)
+
+    /// The picture of the active sheet a host names by its id.
+    let pictureArg (memberName: string) (id: obj) : SheetDrawing =
+        match SheetOps.pictureById (Host.intArg memberName "the picture id" id) model with
+        | Ok drawing -> drawing
+        | Result.Error message -> Host.hostFail memberName message
+    /// A size { width, height } a host gives for a picture that is `width0`
+    /// by `height0`: one of the two alone keeps the proportions, none (the
+    /// argument left out) gives the picture's own size.
+    let pictureSizeArg (memberName: string) (size: obj) (width0: float) (height0: float) : float * float =
+        if Host.isNullish size then width0, height0
+        elif not (Host.isJsObject size) then Host.hostFail memberName "the size is not an object ({ width, height })"
+        else
+            let read (key: string) =
+                Host.optionalArg (Host.numberArg memberName key) (Host.getKey size key)
+                |> Option.map (fun value -> if value > 0.0 && value <= 100000.0 then value else Host.hostFail memberName (sprintf "%s must be above 0 (sheet pixels)" key))
+            match read "width", read "height" with
+            | Some width, Some height -> width, height
+            | Some width, None -> width, (if width0 > 0.0 then height0 * width / width0 else height0)
+            | None, Some height -> (if height0 > 0.0 then width0 * height / height0 else width0), height
+            | None, None -> Host.hostFail memberName "the size has neither a width nor a height"
 
     // --- the list of sheets ---------------------------------------------------------
     // Adding, deleting, renaming, moving, copying, hiding and colouring a sheet
@@ -2351,6 +2447,21 @@ type Spreadsheet(container: Element) =
         let isModifier = eventFlag e "ctrlKey" || eventFlag e "metaKey"
         let shift = eventFlag e "shiftKey"
         let lower = if key.Length = 1 then key.ToLowerInvariant() else key
+
+        // A selected picture takes Delete and Escape.
+        let onPicture =
+            match selectedPicture, model.EditingCell with
+            | Some id, None when not isModifier && (key = "Escape" || ((key = "Delete" || key = "Backspace") && not readOnly)) ->
+                preventDefault e
+                if key <> "Escape" then
+                    (match SheetOps.deletePicture id model with
+                     | Ok changed -> changeDrawings "Delete picture" (fun _ -> changed) |> ignore
+                     | Result.Error _ -> ())
+                selectedPicture <- None
+                render()
+                true
+            | _ -> false
+        if onPicture then () else
 
         match model.EditingCell with
         | Some _ ->
@@ -3345,7 +3456,8 @@ type Spreadsheet(container: Element) =
                 [| for i in 0 .. current.Length - 1 do
                     if i >= notifiedSheets.Length || not (sameSheetContent current.[i] notifiedSheets.[i]) then yield i |]
             let selection = Some (activeSheetIndex, model.Selection, activeCellAddress())
-            let selectionChanged = selection <> notifiedSelection
+            let selectionChanged = selection <> notifiedSelection || selectedPicture <> notifiedPicture
+            notifiedPicture <- selectedPicture
             let bookChanged = not (sameBookContent book notifiedBook)
             notifiedSheets <- current
             notifiedNames <- Array.copy sheetNames
@@ -3372,6 +3484,7 @@ type Spreadsheet(container: Element) =
                         "ActiveCell" ==> (columnToLetter active.Col + string (active.Row + 1))
                         "ActiveRow" ==> active.Row
                         "ActiveCol" ==> active.Col
+                        "Picture" ==> (match selectedPicture with Some id -> box id | None -> null)
                     ]
                 for listener in selectionListeners.ToArray() do
                     if selectionListeners.Contains listener then (try listener change with _ -> ())
@@ -3388,9 +3501,10 @@ type Spreadsheet(container: Element) =
     /// they move with the sheet; clicks go through to the cells under them.
     /// Rebuilt only when the drawings or the sizes of rows / columns change.
     and renderDrawings (content: Element) (metrics: SpreadsheetLayout.SheetMetrics) =
-        if not (obj.ReferenceEquals(renderedDrawings, model.Drawings)) || not (obj.ReferenceEquals(renderedMetrics, metrics)) then
+        if not (obj.ReferenceEquals(renderedDrawings, model.Drawings)) || not (obj.ReferenceEquals(renderedMetrics, metrics)) || renderedDrawingsReadOnly <> readOnly then
             renderedDrawings <- box model.Drawings
             renderedMetrics <- box metrics
+            renderedDrawingsReadOnly <- readOnly
             for node in drawingNodes do detach node
             drawingNodes.Clear()
             for drawing in model.Drawings do
@@ -3423,6 +3537,11 @@ type Spreadsheet(container: Element) =
                             ]
                             frame
                     setAttribute node "title" label
+                    setAttribute node "data-drawing-id" (string drawing.Id)
+                    // A picture takes the pointer in the editor (it is selected,
+                    // moved and sized with it); in a viewer, and for a chart or
+                    // another kept object, clicks go through to the cells.
+                    let takesPointer = (match drawing.Content with Picture _ -> not readOnly | KeptObject _ -> false)
                     setStyles node [
                         "position", "absolute"
                         "left", sprintf "%.1fpx" (rowHeaderWidth + rect.X)
@@ -3430,10 +3549,71 @@ type Spreadsheet(container: Element) =
                         "width", sprintf "%.1fpx" rect.Width
                         "height", sprintf "%.1fpx" rect.Height
                         "z-index", "3"
-                        "pointer-events", "none"
+                        "pointer-events", (if takesPointer then "auto" else "none")
+                        "cursor", (if takesPointer then "move" else "default")
                     ]
                     appendChild content node
                     drawingNodes.Add node
+        renderPictureFrame content
+
+    /// The frame around the selected picture, with its eight handles. While
+    /// the picture is dragged, the frame and the picture are where the drag
+    /// has them (the model changes when the mouse is released).
+    and renderPictureFrame (content: Element) =
+        let selected =
+            match selectedPicture with
+            | Some id ->
+                (match SheetOps.drawingById id model with
+                 | Some drawing when (match drawing.Content with Picture _ -> true | KeptObject _ -> false) -> Some drawing
+                 | _ ->
+                    // (Deleted, or undone away.)
+                    selectedPicture <- None
+                    None)
+            | None -> None
+        match selected with
+        | None ->
+            (match pictureFrame with Some frame -> setStyle frame "display" "none" | None -> ())
+        | Some drawing ->
+            let frame =
+                match pictureFrame with
+                | Some frame when isChildOf frame content -> frame
+                | _ ->
+                    let frame = createElement "div"
+                    setClassName frame "spreadsheet-picture-frame"
+                    setCssText frame "position:absolute;box-sizing:border-box;border:1px solid #1a73e8;z-index:4;pointer-events:none"
+                    for handle, left, top, cursor in [ "nw", "0%", "0%", "nwse-resize"; "n", "50%", "0%", "ns-resize"; "ne", "100%", "0%", "nesw-resize"; "e", "100%", "50%", "ew-resize"
+                                                       "se", "100%", "100%", "nwse-resize"; "s", "50%", "100%", "ns-resize"; "sw", "0%", "100%", "nesw-resize"; "w", "0%", "50%", "ew-resize" ] do
+                        let grip = createElement "div"
+                        setClassName grip "spreadsheet-picture-handle"
+                        setAttribute grip "data-handle" handle
+                        setCssText grip (sprintf "position:absolute;left:%s;top:%s;width:8px;height:8px;margin:-5px 0 0 -5px;box-sizing:border-box;background:#fff;border:1px solid #1a73e8;cursor:%s;pointer-events:auto" left top cursor)
+                        appendChild frame grip
+                    appendChild content frame
+                    pictureFrame <- Some frame
+                    frame
+            let rect =
+                match pictureDrag with
+                | Some drag when drag.Id = drawing.Id -> drag.Current
+                | _ -> SpreadsheetLayout.drawingRect model drawing
+            setAttribute frame "data-drawing-id" (string drawing.Id)
+            setStyles frame [
+                "display", "block"
+                "left", sprintf "%.1fpx" (rowHeaderWidth + rect.X)
+                "top", sprintf "%.1fpx" (headerHeight + rect.Y)
+                "width", sprintf "%.1fpx" rect.Width
+                "height", sprintf "%.1fpx" rect.Height
+            ]
+            match pictureDrag with
+            | Some drag when drag.Id = drawing.Id ->
+                let image = queryOne content (sprintf ".spreadsheet-picture[data-drawing-id=\"%d\"]" drawing.Id)
+                if not (isNull (box image)) then
+                    setStyles image [
+                        "left", sprintf "%.1fpx" (rowHeaderWidth + rect.X)
+                        "top", sprintf "%.1fpx" (headerHeight + rect.Y)
+                        "width", sprintf "%.1fpx" rect.Width
+                        "height", sprintf "%.1fpx" rect.Height
+                    ]
+            | _ -> ()
 
     /// What sits on top of the cells: the selection, the active cell, the
     /// edit box, the selection's fill handle, the input message of the
@@ -4678,6 +4858,25 @@ type Spreadsheet(container: Element) =
                 preventDefault e
                 stopPropagation e
                 showValidationList () |> ignore
+            elif within target ".spreadsheet-picture-handle, .spreadsheet-picture" then
+                // A picture is selected by a click on it, moved by dragging it
+                // and sized by dragging a handle of its frame.
+                preventDefault e
+                let onHandle = within target ".spreadsheet-picture-handle"
+                let holder = if onHandle then closest target ".spreadsheet-picture-frame" else closest target ".spreadsheet-picture"
+                match System.Int32.TryParse (getAttribute holder "data-drawing-id") with
+                | true, id when (SheetOps.drawingById id model).IsSome ->
+                    if model.EditingCell.IsSome then finishEditing true |> ignore
+                    if not (holdsFocus content) then focusQuietly content
+                    selectedPicture <- Some id
+                    if mouseButton e = 0 && not readOnly then
+                        let rect = SpreadsheetLayout.drawingRect model (SheetOps.drawingById id model).Value
+                        pictureDrag <-
+                            Some { Id = id
+                                   Handle = (if onHandle then getAttribute (closest target ".spreadsheet-picture-handle") "data-handle" else "move")
+                                   StartX = getClientX e; StartY = getClientY e; Start = rect; Current = rect; Moved = false }
+                    render()
+                | _ -> ()
             elif within target ".spreadsheet-fill-handle" then
                 preventDefault e
                 if not readOnly then
@@ -4713,6 +4912,8 @@ type Spreadsheet(container: Element) =
                     // Clicking another cell commits the entry in progress.
                     if model.EditingCell.IsSome then finishEditing true |> ignore
                     if not (holdsFocus content) then focusQuietly content
+                    // (A click on a cell takes the selection off a picture.)
+                    selectedPicture <- None
                     if eventFlag e "shiftKey" then
                         // Shift+click: from the active cell to here.
                         selectFromTo (activeCellAddress()) hitAddr
@@ -4744,7 +4945,7 @@ type Spreadsheet(container: Element) =
                 match headerIndex target ".spreadsheet-row-header" "data-row" with
                 | Some row -> fitFromHandle true row
                 | None -> ()
-            elif not (within target ".spreadsheet-edit-input, .spreadsheet-col-header, .spreadsheet-row-header, .spreadsheet-corner, .spreadsheet-fill-handle, .spreadsheet-list-button") then
+            elif not (within target ".spreadsheet-edit-input, .spreadsheet-col-header, .spreadsheet-row-header, .spreadsheet-corner, .spreadsheet-fill-handle, .spreadsheet-list-button, .spreadsheet-picture, .spreadsheet-picture-handle") then
                 match hitTestEvent e with
                 | SpreadsheetLayout.Cell hitAddr -> startEditing hitAddr.Row hitAddr.Col
                 | _ -> ())
@@ -4754,7 +4955,7 @@ type Spreadsheet(container: Element) =
             // plain click: to a place in the workbook the grid goes itself,
             // an address is handed to the host (OnHyperlinkActivate).
             if mouseButton e = 0 && (readOnly || eventFlag e "ctrlKey" || eventFlag e "metaKey") && not model.Hyperlinks.IsEmpty
-               && not (within target ".spreadsheet-edit-input, .spreadsheet-col-header, .spreadsheet-row-header, .spreadsheet-corner, .spreadsheet-fill-handle, .spreadsheet-list-button") then
+               && not (within target ".spreadsheet-edit-input, .spreadsheet-col-header, .spreadsheet-row-header, .spreadsheet-corner, .spreadsheet-fill-handle, .spreadsheet-list-button, .spreadsheet-picture, .spreadsheet-picture-handle") then
                 match hitTestEvent e with
                 | SpreadsheetLayout.Cell hitAddr when (SheetOps.hyperlinkAt model hitAddr).IsSome ->
                     preventDefault e
@@ -4806,7 +5007,18 @@ type Spreadsheet(container: Element) =
 
         // Mouse move for dragging and resizing (throttled with requestAnimationFrame)
         let onDocumentMouseMove = (fun (e: obj) ->
-            if isResizingColumn then
+            if pictureDrag.IsSome then
+                match pictureDrag with
+                | Some drag ->
+                    let dx = (getClientX e - drag.StartX) / appliedZoom
+                    let dy = (getClientY e - drag.StartY) / appliedZoom
+                    if drag.Moved || abs dx >= 2.0 || abs dy >= 2.0 then
+                        drag.Moved <- true
+                        drag.Current <- draggedRect drag dx dy (eventFlag e "shiftKey")
+                        // (Only the frame and the picture move: no render of the cells.)
+                        renderPictureFrame content
+                | None -> ()
+            elif isResizingColumn then
                 match resizeColumnIndex with
                 | Some col ->
                     let currentX = getProp e "clientX" |> unbox<float>
@@ -4871,7 +5083,16 @@ type Spreadsheet(container: Element) =
 
         // Mouse up for both drag selection and resize
         let onDocumentMouseUp = (fun (_: obj) ->
-            if isFilling then
+            if pictureDrag.IsSome then
+                // The whole drag is one undo step.
+                let drag = pictureDrag.Value
+                pictureDrag <- None
+                if drag.Moved then
+                    (try placePictureAt "picture" (if drag.Handle = "move" then "Move picture" else "Resize picture") drag.Id drag.Current |> ignore with _ -> ())
+                    // (Drawn again from the model, whatever came of it.)
+                    renderedDrawings <- null
+                render()
+            elif isFilling then
                 isFilling <- false
                 match fillSource, fillTarget with
                 | Some source, Some (direction, count) ->
@@ -5139,6 +5360,8 @@ type Spreadsheet(container: Element) =
             activeSheetIndex <- index
             model <- sheets.[index]
             anchorCell <- (if index < sheetAnchors.Length then sheetAnchors.[index] else { Row = 0; Col = 0 })
+            selectedPicture <- None
+            pictureDrag <- None
             // Scroll lives outside the SpreadsheetModel; a sheet starts at
             // its top-left corner (we don't persist scroll yet — reset-to-zero
             // matches Excel's behavior on workbook reload). The container is
@@ -5622,24 +5845,131 @@ type Spreadsheet(container: Element) =
         |> List.length
 
     /// The active sheet's pictures and other drawing objects, back to front:
-    /// { kind: "picture" | "chart" | "shape" | "other", name, description,
-    ///   row, col (anchor cell), x, y, width, height (sheet pixels) }.
+    /// { id, kind: "picture" | "chart" | "shape" | "other", name, description,
+    ///   contentType (a picture's, else null), row, col (anchor cell),
+    ///   x, y, width, height (sheet pixels at 100%) }.
     member _.GetDrawings() : obj array =
         model.Drawings
         |> List.map (fun drawing ->
             let rect = SpreadsheetLayout.drawingRect model drawing
-            createObj [
-                "kind" ==> (match drawing.Content with Picture _ -> "picture" | KeptObject (kind, _) -> kind)
-                "name" ==> drawing.Name
-                "description" ==> drawing.Description
-                "row" ==> drawing.Anchor.FromRow
-                "col" ==> drawing.Anchor.FromCol
-                "x" ==> rect.X
-                "y" ==> rect.Y
-                "width" ==> rect.Width
-                "height" ==> rect.Height
-            ])
+            Host.drawingToObj drawing rect.X rect.Y rect.Width rect.Height)
         |> List.toArray
+
+    /// The active sheet's pictures, back to front (the objects of GetDrawings
+    /// whose kind is "picture"): { id, kind, name, description, contentType,
+    /// row, col, x, y, width, height }. `id` names the picture for
+    /// MovePicture, ResizePicture, DeletePicture and SelectPicture; it stays
+    /// the same through undo and redo. A file's objects are numbered 1..n
+    /// back to front when it is opened.
+    member _.GetPictures() : obj array =
+        model.Drawings
+        |> List.filter (fun drawing -> match drawing.Content with Picture _ -> true | KeptObject _ -> false)
+        |> List.map (fun drawing ->
+            let rect = SpreadsheetLayout.drawingRect model drawing
+            Host.drawingToObj drawing rect.X rect.Y rect.Width rect.Height)
+        |> List.toArray
+
+    /// Put a picture on the active sheet, in front of its other objects, with
+    /// its top-left corner at a cell (one undo step), and return its id.
+    /// `source`: the image file's bytes (Uint8Array or ArrayBuffer) or a data
+    /// URL ("data:image/png;base64,..."); PNG, JPEG and GIF are taken (the
+    /// kind is read off the bytes, not off a name or the URL's type).
+    /// `anchorCell`: "B3" or { row, col }. `size` (optional): { width, height }
+    /// in sheet pixels - with one of the two the other follows the picture's
+    /// proportions, with neither the picture has its own pixel size.
+    /// `name` (optional) is what GetPictures calls it ("Picture 3" otherwise).
+    /// The picture moves with its cell and keeps its size. Throws for
+    /// anything that is not a PNG, JPEG or GIF image, a cell outside the
+    /// sheet, or a size that is not positive.
+    member _.InsertPicture(source: obj, anchorCell: obj, size: obj, name: obj) : int =
+        let memberName = "InsertPicture"
+        let bytes = Host.pictureBytesArg memberName source
+        let info =
+            match SheetOps.imageInfo bytes with
+            | Some info -> info
+            | None -> Host.hostFail memberName "the picture is not a PNG, JPEG or GIF image"
+        let cell = Host.cellArg memberName "anchorCell" model anchorCell
+        let width, height = pictureSizeArg memberName size (float info.Width) (float info.Height)
+        let name = Host.optionalArg (Host.stringArg memberName "name") name |> Option.filter (fun text -> text.Trim() <> "")
+        let id = SheetOps.nextDrawingId model
+        changeDrawings "Insert picture" (SheetOps.insertPicture id info bytes cell width height name) |> ignore
+        render()
+        id
+
+    /// Move a picture of the active sheet (one undo step): to a cell ("B3" or
+    /// { row, col }: its top-left corner goes to the cell's), or to a point of
+    /// the sheet ({ x, y } in sheet pixels at 100%, from the sheet's top-left
+    /// corner; it is then anchored to the cell the point is in). The size
+    /// stays. Throws when there is no picture with the id (a chart or another
+    /// kept object cannot be moved) or the place is not one.
+    member _.MovePicture(id: obj, place: obj) : unit =
+        let memberName = "MovePicture"
+        let drawing = pictureArg memberName id
+        let rect = SpreadsheetLayout.drawingRect model drawing
+        let x, y =
+            if Host.isJsObject place && Host.hasKey place "x" && Host.hasKey place "y" then
+                let x, y = Host.numberArg memberName "x" (Host.getKey place "x"), Host.numberArg memberName "y" (Host.getKey place "y")
+                if x < 0.0 || y < 0.0 then Host.hostFail memberName "x and y cannot be negative"
+                x, y
+            else
+                let cell = Host.cellArg memberName "the place" model place
+                SpreadsheetLayout.columnLeft model cell.Col, SpreadsheetLayout.rowTop model cell.Row
+        if placePictureAt memberName "Move picture" drawing.Id { rect with X = x; Y = y } then render()
+
+    /// Give a picture of the active sheet a size (one undo step):
+    /// { width, height } in sheet pixels; with one of the two the other
+    /// follows the picture's present proportions. Its top-left corner stays.
+    /// Throws when there is no picture with the id or the size is not positive.
+    member _.ResizePicture(id: obj, size: obj) : unit =
+        let memberName = "ResizePicture"
+        let drawing = pictureArg memberName id
+        let rect = SpreadsheetLayout.drawingRect model drawing
+        if Host.isNullish size then Host.hostFail memberName "the size is missing ({ width, height })"
+        let width, height = pictureSizeArg memberName size rect.Width rect.Height
+        if placePictureAt memberName "Resize picture" drawing.Id { rect with Width = width; Height = height } then render()
+
+    /// Take a picture off the active sheet (one undo step). Throws when there
+    /// is no picture with the id.
+    member _.DeletePicture(id: obj) : unit =
+        let drawing = pictureArg "DeletePicture" id
+        match SheetOps.deletePicture drawing.Id model with
+        | Result.Error message -> Host.hostFail "DeletePicture" message
+        | Ok changed ->
+            if selectedPicture = Some drawing.Id then selectedPicture <- None
+            if changeDrawings "Delete picture" (fun _ -> changed) then render()
+
+    /// Set the alternative text of a picture (its description; "" removes
+    /// it) and, when given, its name, as one undo step.
+    member _.SetPictureAltText(id: obj, description: obj, name: obj) : unit =
+        let memberName = "SetPictureAltText"
+        let drawing = pictureArg memberName id
+        let description = Host.stringArg memberName "the description" description
+        let name = Host.optionalArg (Host.stringArg memberName "name") name
+        match SheetOps.describePicture drawing.Id name (Some description) model with
+        | Result.Error message -> Host.hostFail memberName message
+        | Ok changed -> if changeDrawings "Picture text" (fun _ -> changed) then render()
+
+    /// The id of the picture that is selected on the active sheet, or null.
+    /// A click on a picture selects it (not in read-only mode): it gets a
+    /// frame with eight handles, is moved by dragging it and sized by
+    /// dragging a handle (a corner keeps its proportions, Shift frees them);
+    /// Delete removes it, Escape or a click on a cell lets go of it. Each
+    /// drag is one undo step. OnSelectionChange tells: its payload has
+    /// `Picture` (the id, or null).
+    member _.GetSelectedPicture() : obj =
+        match selectedPicture with
+        | Some id when (SheetOps.drawingById id model).IsSome -> box id
+        | _ -> null
+
+    /// Select a picture of the active sheet by its id, or with null none.
+    /// Throws when there is no picture with the id.
+    member _.SelectPicture(id: obj) : unit =
+        if Host.isNullish id then selectedPicture <- None
+        else
+            let drawing = pictureArg "SelectPicture" id
+            if model.EditingCell.IsSome then finishEditing true |> ignore
+            selectedPicture <- Some drawing.Id
+        render()
 
     /// The comment thread on a cell of the active sheet: { author, date,
     /// text, replies: [{ author, date, text }] }, or null.

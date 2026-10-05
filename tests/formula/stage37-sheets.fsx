@@ -131,7 +131,7 @@ eq "a hidden sheet is still read" (valueAt "sheet2" 0 0 (calc hidden)) (CellValu
 // ---- copy -------------------------------------------------------------------------------------
 let tableModel : Table = { Name = "Sales"; StartRow = 1; StartCol = 5; EndRow = 3; EndCol = 6; HeaderRowCount = 1; Style = None; AutoFilter = None; HasTotals = false }
 let pictured : SheetDrawing =
-    { Anchor = { Kind = "oneCell"; FromRow = 1; FromCol = 1; FromOffsetX = 0.0; FromOffsetY = 0.0; ToRow = None; ToCol = None; ToOffsetX = 0.0; ToOffsetY = 0.0; X = 0.0; Y = 0.0; Width = Some 10.0; Height = Some 10.0; EditAs = None }
+    { Id = 1; Anchor = { Kind = "oneCell"; FromRow = 1; FromCol = 1; FromOffsetX = 0.0; FromOffsetY = 0.0; ToRow = None; ToCol = None; ToOffsetX = 0.0; ToOffsetY = 0.0; X = 0.0; Y = 0.0; Width = Some 10.0; Height = Some 10.0; EditAs = None }
       Name = Some "p"; Description = None; Content = Picture ("image/png", "png", [| 1uy; 2uy |]) }
 let kept = { pictured with Name = Some "chart"; Content = KeptObject ("chart", "<xdr:graphicFrame/>") }
 let text (value: string) = { num 0.0 with Value = CellValue.String value }

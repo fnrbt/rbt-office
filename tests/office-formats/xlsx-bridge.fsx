@@ -694,6 +694,47 @@ eq "links: edits of an imported sheet are written"
     ([ "A1", "https://example.com/a?x=1&y=2#part", false; "C7", "'Hidden one'!A1", true; "B8:C8", "'Hidden one'!A1", true; "B7", "tel:+15550100", false ] |> List.sort)
 eq "links: none left when all are removed" ((reread (Bridge.Export.toWorkbookOut (linkedInput (Ops.removeHyperlinks [ cellRange 0 0 20 5 ] relinked |> fst) (Some linkedImported.Source)))).Sheets.[0].Hyperlinks) []
 
+// ---- pictures placed through the host API (SheetOps) ---------------------------
+let logoInfo = (Ops.imageInfo logoBytes).Value
+eq "pictures: the fixture's PNG is read off its header" (logoInfo.ContentType, logoInfo.Extension, logoInfo.Width, logoInfo.Height) ("image/png", "png", 24, 16)
+eq "pictures: a file's objects are numbered back to front" (extrasModel.Drawings |> List.map (fun d -> d.Id, (match d.Content with Picture _ -> "picture" | KeptObject (kind, _) -> kind))) [ 1, "picture"; 2, "chart" ]
+let imagesOf (wb: XlsxReader.Workbook) = wb.Sheets.[0].Extras.Images |> List.map (fun image -> image.Anchor.Kind, image.Anchor.FromRow, image.Anchor.FromCol, image.Anchor.FromColOffset, image.Anchor.Width, image.Anchor.Height, image.Name, image.Description, image.Data.Length)
+// A workbook made in the editor: two copies of a picture, one moved and described.
+let twoLogos =
+    fresh
+    |> Ops.insertPicture 1 logoInfo logoBytes (addr 1 1) 24.0 16.0 None
+    |> Ops.insertPicture 2 logoInfo (Array.copy logoBytes) (addr 8 0) 48.0 32.0 (Some "Big logo")
+    |> fun m -> Ops.placePicture 1 (addr 3 2) 4.0 6.0 24.0 16.0 m |> okOf
+    |> fun m -> Ops.describePicture 2 None (Some "our logo, twice the size") m |> okOf
+let twoLogosBytes = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (singleInput twoLogos None))
+let twoLogosBack = XlsxReader.loadBytesNative twoLogosBytes |> Option.get
+eq "pictures: written at their cells with offsets, sizes, names and descriptions" (imagesOf twoLogosBack)
+    [ "oneCell", 3, 2, 4.0 * 9525.0, Some (24.0 * 9525.0), Some (16.0 * 9525.0), Some "Picture 1", None, logoBytes.Length
+      "oneCell", 8, 0, 0.0, Some (48.0 * 9525.0), Some (32.0 * 9525.0), Some "Big logo", Some "our logo, twice the size", logoBytes.Length ]
+let entriesOf (bytes: byte[]) =
+    use archive = new System.IO.Compression.ZipArchive(new MemoryStream(bytes))
+    archive.Entries |> Seq.map (fun entry -> entry.FullName) |> Seq.sort |> List.ofSeq
+eq "pictures: the same picture twice is one media part" (entriesOf twoLogosBytes |> List.filter (fun name -> name.StartsWith "xl/media/")) [ "xl/media/image1.png" ]
+let twoLogosAgain = (Bridge.Import.importWorkbook twoLogosBack).Sheets.[0].Model
+eq "pictures: read back with ids in order" (twoLogosAgain.Drawings |> List.map (fun d -> d.Id, d.Name, d.Anchor.FromRow, d.Anchor.Width)) [ 1, Some "Picture 1", 3, Some 24.0; 2, Some "Big logo", 8, Some 48.0 ]
+// On a sheet of a file with a chart: a picture added, the file's one sized, then both deleted.
+let withNew =
+    extrasModel
+    |> Ops.insertPicture (Ops.nextDrawingId extrasModel) logoInfo logoBytes (addr 12 0) 24.0 16.0 (Some "Added")
+    |> fun m -> Ops.placePicture 1 (addr 2 1) 0.0 0.0 60.0 40.0 m |> okOf
+let withNewBack = reread (Bridge.Export.toWorkbookOut (extrasInput withNew))
+eq "pictures: beside a file's chart: the old one sized, the new one in front, the chart as it was"
+    (withNewBack.Sheets.[0].Extras.Images |> List.map (fun image -> image.Name, image.Anchor.Kind, image.Anchor.FromRow, image.Anchor.Width |> Option.map (fun emu -> emu / 9525.0), image.Anchor.Order),
+     withNewBack.Sheets.[0].Extras.Objects |> List.map (fun item -> item.Kind, item.Name, item.Anchor.Order, item.Xml = extrasWb.Sheets.[0].Extras.Objects.[0].Xml))
+    ([ Some "Logo", "oneCell", 2, Some 60.0, 0; Some "Added", "oneCell", 12, Some 24.0, 2 ], [ "chart", Some "Chart 1", 1, true ])
+let chartOnly = withNew |> Ops.deletePicture 1 |> okOf |> Ops.deletePicture 3 |> okOf
+let chartOnlyBytes = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (extrasInput chartOnly))
+let chartOnlyBack = XlsxReader.loadBytesNative chartOnlyBytes |> Option.get
+eq "pictures: deleted ones are gone from the file, with their media; the chart stays" (chartOnlyBack.Sheets.[0].Extras.Images.Length, chartOnlyBack.Sheets.[0].Extras.Objects |> List.map (fun item -> item.Kind), entriesOf chartOnlyBytes |> List.filter (fun name -> name.StartsWith "xl/media/")) (0, [ "chart" ], [])
+// The last drawing of a sheet deleted: no drawing part is left.
+let noLogosBytes = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (singleInput (twoLogosAgain |> Ops.deletePicture 1 |> okOf |> Ops.deletePicture 2 |> okOf) (Some (Bridge.Import.importWorkbook twoLogosBack).Source)))
+eq "pictures: none left, no drawing part and no media" (entriesOf noLogosBytes |> List.filter (fun name -> name.StartsWith "xl/media/" || name.StartsWith "xl/drawings/")) []
+
 printfn ""
 printfn "XLSX bridge tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

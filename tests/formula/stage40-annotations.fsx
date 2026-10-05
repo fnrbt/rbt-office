@@ -118,5 +118,46 @@ eq "links follow rows" ((applyStructureEdit (InsertRows (0, 3)) overlaid).Hyperl
 let manyLinks = { createEmpty 3000 10 with Hyperlinks = [ for row in 0 .. 1999 -> { Range = range row 1 row 1; Target = sprintf "https://example.com/%d" row; IsInternal = false; Tooltip = None; Display = None } ] }
 eq "lookup among many" ([ 0; 1234; 1999; 2000 ] |> List.map (fun row -> Ops.hyperlinkAt manyLinks (at row 1) |> Option.map (fun l -> l.Target))) [ Some "https://example.com/0"; Some "https://example.com/1234"; Some "https://example.com/1999"; None ]
 
+// ---- pictures -------------------------------------------------------------------
+let png (width: int) (height: int) : byte[] =
+    Array.concat [ [| 0x89uy; 0x50uy; 0x4Euy; 0x47uy; 0x0Duy; 0x0Auy; 0x1Auy; 0x0Auy; 0uy; 0uy; 0uy; 13uy; 0x49uy; 0x48uy; 0x44uy; 0x52uy |]
+                   [| byte (width >>> 24); byte (width >>> 16); byte (width >>> 8); byte width; byte (height >>> 24); byte (height >>> 16); byte (height >>> 8); byte height |]
+                   [| 8uy; 6uy; 0uy; 0uy; 0uy; 0uy; 0uy; 0uy; 0uy |] ]
+let gif (width: int) (height: int) : byte[] =
+    Array.concat [ "GIF89a"B; [| byte width; byte (width >>> 8); byte height; byte (height >>> 8); 0x80uy; 0uy; 0uy |] ]
+// A JPEG with an APP0 segment, a comment and a quantisation table before its (progressive) frame.
+let jpeg (width: int) (height: int) : byte[] =
+    Array.concat [ [| 0xFFuy; 0xD8uy; 0xFFuy; 0xE0uy; 0uy; 16uy |]; Array.zeroCreate 14
+                   [| 0xFFuy; 0xFEuy; 0uy; 5uy; 1uy; 2uy; 3uy |]
+                   [| 0xFFuy; 0xDBuy; 0uy; 4uy; 0uy; 0uy |]
+                   [| 0xFFuy; 0xC2uy; 0uy; 17uy; 8uy; byte (height >>> 8); byte height; byte (width >>> 8); byte width; 3uy |]; Array.zeroCreate 9 ]
+let infoOf (data: byte[]) = Ops.imageInfo data |> Option.map (fun info -> info.ContentType, info.Extension, info.Width, info.Height)
+eq "image: PNG" (infoOf (png 640 480)) (Some ("image/png", "png", 640, 480))
+eq "image: a large PNG" (infoOf (png 70000 3)) (Some ("image/png", "png", 70000, 3))
+eq "image: GIF" (infoOf (gif 300 2)) (Some ("image/gif", "gif", 300, 2))
+eq "image: JPEG, the size is in the frame segment" (infoOf (jpeg 1024 768)) (Some ("image/jpeg", "jpeg", 1024, 768))
+eq "image: not an image" ([ "<svg xmlns='http://www.w3.org/2000/svg'/>"B; "BM......................"B; [||]; [| 0xFFuy; 0xD8uy |]; (png 5 5).[0..15]; Array.append (jpeg 4 4).[0..21] [| 0xFFuy |] ] |> List.map infoOf) [ None; None; None; None; None; None ]
+eq "image: a PNG without a size" (infoOf (png 0 9)) None
+let noPictures = sheetOf [ at 0 0, cell (CellValue.Number 1.0) ]
+let pngInfo = (Ops.imageInfo (png 40 30)).Value
+let onePicture = Ops.insertPicture (Ops.nextDrawingId noPictures) pngInfo (png 40 30) (at 2 1) 40.0 30.0 None noPictures
+let describe (m: SpreadsheetModel) = m.Drawings |> List.map (fun d -> d.Id, d.Name, d.Anchor.Kind, (d.Anchor.FromRow, d.Anchor.FromCol), (d.Anchor.FromOffsetX, d.Anchor.FromOffsetY), (d.Anchor.Width, d.Anchor.Height))
+eq "insert: anchored to its cell, with its size and a name" (describe onePicture) [ 1, Some "Picture 1", "oneCell", (2, 1), (0.0, 0.0), (Some 40.0, Some 30.0) ]
+let chart : SheetDrawing = { Id = 7; Anchor = Ops.pictureAnchor (at 0 0) 0.0 0.0 100.0 80.0; Name = Some "Chart 1"; Description = None; Content = KeptObject ("chart", "<xdr:graphicFrame/>") }
+let withChart = { onePicture with Drawings = onePicture.Drawings @ [ chart ] }
+let twoPictures = Ops.insertPicture (Ops.nextDrawingId withChart) pngInfo (png 40 30) (at 5 5) 80.0 60.0 (Some "Logo") withChart
+eq "insert: the next id is above every one, the new picture in front" (twoPictures.Drawings |> List.map (fun d -> d.Id, d.Name)) [ 1, Some "Picture 1"; 7, Some "Chart 1"; 8, Some "Logo" ]
+let placed = Ops.placePicture 1 (at 4 3) 5.0 7.0 20.0 10.0 twoPictures |> okOf
+eq "place: another cell, an offset and a size; the others as they were" (describe placed |> List.head, placed.Drawings.Tail = twoPictures.Drawings.Tail) ((1, Some "Picture 1", "oneCell", (4, 3), (5.0, 7.0), (Some 20.0, Some 10.0)), true)
+isError "place: no such picture" (Ops.placePicture 99 (at 0 0) 0.0 0.0 1.0 1.0 twoPictures) "no picture with the id 99"
+isError "place: a chart is not a picture" (Ops.placePicture 7 (at 0 0) 0.0 0.0 1.0 1.0 twoPictures) "is not a picture"
+isError "delete: a chart is not a picture" (Ops.deletePicture 7 twoPictures) "is not a picture"
+eq "delete: by id" ((Ops.deletePicture 1 twoPictures |> okOf).Drawings |> List.map (fun d -> d.Id)) [ 7; 8 ]
+eq "delete: an id is not handed out again while a higher one is there" (Ops.nextDrawingId (Ops.deletePicture 1 twoPictures |> okOf)) 9
+eq "describe: alternative text and name" ((Ops.describePicture 8 None (Some "our logo") twoPictures |> okOf).Drawings.[2] |> fun d -> d.Name, d.Description) (Some "Logo", Some "our logo")
+eq "describe: an empty text removes it" ((Ops.describePicture 8 (Some "L") (Some "") (Ops.describePicture 8 None (Some "x") twoPictures |> okOf) |> okOf).Drawings.[2] |> fun d -> d.Name, d.Description) (Some "L", None)
+eq "a two-cell anchor becomes a cell and a size when placed" ((Ops.placePicture 1 (at 1 1) 0.0 0.0 30.0 30.0 { twoPictures with Drawings = twoPictures.Drawings |> List.map (fun d -> if d.Id = 1 then { d with Anchor = { d.Anchor with Kind = "twoCell"; ToRow = Some 9; ToCol = Some 9; EditAs = Some "oneCell" } } else d) } |> okOf).Drawings.[0].Anchor |> fun a -> a.Kind, a.ToRow, a.EditAs) ("oneCell", None, None)
+eq "pictures follow rows and columns, keeping their ids" ((applyStructureEdit (InsertRows (0, 2)) (applyStructureEdit (InsertCols (0, 1)) twoPictures)).Drawings |> List.map (fun d -> d.Id, d.Anchor.FromRow, d.Anchor.FromCol)) [ 1, 4, 2; 7, 2, 1; 8, 7, 6 ]
+
 printfn "\nAnnotation tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

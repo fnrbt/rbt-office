@@ -2089,3 +2089,211 @@ checks['api-hyperlinks'] = async () => {
     close();
     return lines;
 };
+
+// Pictures: inserted, moved, sized and deleted through the API and with the mouse, as undo
+// steps; beside the charts of a file; through XLSX.
+checks['api-pictures'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        const canvasOf = (width, height, color) => { const c = document.createElement('canvas'); c.width = width; c.height = height; const g = c.getContext('2d'); g.fillStyle = color; g.fillRect(0, 0, width, height); return c; };
+        const bytesOfDataUrl = (url) => Uint8Array.from(atob(url.slice(url.indexOf(',') + 1)), (ch) => ch.charCodeAt(0));
+        const pngUrl = canvasOf(60, 40, '#d00000').toDataURL('image/png');
+        const jpegBytes = bytesOfDataUrl(canvasOf(90, 60, '#00a000').toDataURL('image/jpeg'));
+        const gifBytes = Uint8Array.from([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 1, 0, 1, 0, 0x80, 0, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0x21, 0xf9, 4, 1, 0, 0, 0, 0, 0x2c, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 2, 0x44, 1, 0, 0x3b]);
+        const cellBox = (row, col) => host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"]`).getBoundingClientRect();
+        const imageOf = (id, root = host) => root.querySelector(`.spreadsheet-picture[data-drawing-id="${id}"]`);
+        const box = (element) => { const r = element.getBoundingClientRect(); return [r.left, r.top, r.width, r.height].map(Math.round); };
+        const geometry = (id, g = grid) => { const p = g.GetPictures().find((q) => q.id === id); return p ? [p.row, p.col, p.x, p.y, p.width, p.height].map((n) => Math.round(n * 10) / 10) : null; };
+        const changes = [], selections = [];
+        const off = grid.OnChange((change) => changes.push(change)), offSelection = grid.OnSelectionChange((change) => selections.push(change));
+        grid.SetCell(0, 0, 'pictures');
+        check('no pictures yet', [grid.GetPictures(), grid.GetSelectedPicture()], [[], null]);
+        const r0 = grid.GetRevision(); changes.length = 0;
+
+        // ---- insert ----
+        const first = grid.InsertPicture(pngUrl, 'C4');
+        check('a PNG from a data URL, at its own size, anchored to the cell', [first, grid.GetPictures()], [1, [{ id: 1, kind: 'picture', name: 'Picture 1', description: null, contentType: 'image/png', row: 3, col: 2, x: 200, y: 75, width: 60, height: 40 }]]);
+        await frame();
+        const c4 = cellBox(3, 2);
+        check('it is drawn over its cell', box(imageOf(first)), [Math.round(c4.left), Math.round(c4.top), 60, 40]);
+        await imageOf(first).decode();
+        check('... the picture itself', [imageOf(first).naturalWidth, imageOf(first).naturalHeight], [60, 40]);
+        check('it is a change with a new revision', [changes.length, grid.GetRevision() !== r0], [1, true]);
+        grid.Undo(); await frame();
+        check('undo takes it away, back at the revision before', [grid.GetPictures(), imageOf(first), grid.GetRevision() === r0], [[], null, true]);
+        grid.Redo(); await frame();
+        check('redo puts it back under its id', [grid.GetPictures().map((p) => p.id), !!imageOf(first)], [[1], true]);
+        const second = grid.InsertPicture(jpegBytes, { row: 8, col: 1 }, { width: 120 }, 'Photo');
+        check('a JPEG from bytes: one side given, the other follows its proportions', [second, grid.GetPictures()[1].name, grid.GetPictures()[1].contentType, geometry(second)], [2, 'Photo', 'image/jpeg', [8, 1, 100, 200, 120, 80]]);
+        const third = grid.InsertPicture(gifBytes.buffer, 'A12', { width: 30, height: 20 });
+        check('a GIF from an ArrayBuffer, in a size given', [third, grid.GetPictures()[2].contentType, geometry(third)], [3, 'image/gif', [11, 0, 0, 275, 30, 20]]);
+        check('GetDrawings has them too, back to front', grid.GetDrawings().map((d) => [d.id, d.kind]), [[1, 'picture'], [2, 'picture'], [3, 'picture']]);
+
+        // ---- move, size, describe ----
+        grid.MovePicture(first, 'E2');
+        check('moved to a cell', geometry(first), [1, 4, 400, 25, 60, 40]);
+        grid.MovePicture(first, { x: 130, y: 60 });
+        check('moved to a point of the sheet: anchored to the cell the point is in', geometry(first), [2, 1, 130, 60, 60, 40]);
+        await frame();
+        const a1 = cellBox(0, 0);
+        check('... and drawn there', box(imageOf(first)), [Math.round(a1.left + 130), Math.round(a1.top + 60), 60, 40]);
+        grid.Undo();
+        check('... one undo step', geometry(first), [1, 4, 400, 25, 60, 40]);
+        grid.Redo();
+        grid.ResizePicture(first, { width: 30 });
+        check('sized by one side: the proportions stay', geometry(first), [2, 1, 130, 60, 30, 20]);
+        grid.ResizePicture(first, { width: 60, height: 40 });
+        grid.SetPictureAltText(second, 'a green photo');
+        check('alternative text', [grid.GetPictures()[1].description, grid.GetPictures()[1].name], ['a green photo', 'Photo']);
+        await frame();
+        check('... is the image\'s alt', imageOf(second).getAttribute('alt'), 'a green photo');
+        grid.InsertRows(0, 2);
+        check('pictures move with their rows', [geometry(first)[0], geometry(second)[0], geometry(first)[3]], [4, 10, 110]);
+        grid.Undo();
+
+        // ---- with the mouse ----
+        const down = (element, options = {}) => { const r = element.getBoundingClientRect(); const at = { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 }; element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, ...at, ...options })); return at; };
+        const drag = async (element, dx, dy, options = {}) => {
+            const at = down(element);
+            document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: at.clientX + dx / 2, clientY: at.clientY + dy / 2, ...options }));
+            document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: at.clientX + dx, clientY: at.clientY + dy, ...options }));
+            await frame();
+            const during = imageOf(Number(element.closest('[data-drawing-id]').getAttribute('data-drawing-id')));
+            const seen = during ? box(during) : null;
+            document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: at.clientX + dx, clientY: at.clientY + dy }));
+            await frame();
+            return seen;
+        };
+        const frameNode = () => host.querySelector('.spreadsheet-picture-frame');
+        const handle = (name) => host.querySelector(`.spreadsheet-picture-handle[data-handle="${name}"]`);
+        selections.length = 0;
+        down(imageOf(first)); document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); await frame();
+        check('a click on a picture selects it', [grid.GetSelectedPicture(), selections.map((sel) => sel.Picture), geometry(first)], [first, [first], [2, 1, 130, 60, 60, 40]]);
+        check('... a frame with eight handles is around it', [getComputedStyle(frameNode()).display, box(frameNode()), host.querySelectorAll('.spreadsheet-picture-handle').length], ['block', box(imageOf(first)), 8]);
+        const revisionBeforeDrag = grid.GetRevision();
+        const before = box(imageOf(first));
+        const seen = await drag(imageOf(first), 50, 25);
+        check('dragging it moves it: while the mouse is down the picture follows', seen, [before[0] + 50, before[1] + 25, 60, 40]);
+        check('... and on release it is there in the model', geometry(first), [3, 1, 180, 85, 60, 40]);
+        grid.Undo(); await frame();
+        check('... the whole drag is one undo step', [geometry(first), grid.GetRevision() === revisionBeforeDrag, box(imageOf(first))], [[2, 1, 130, 60, 60, 40], true, before]);
+        await drag(handle('se'), 30, 0);
+        check('a corner handle sizes it and keeps the proportions', geometry(first), [2, 1, 130, 60, 90, 60]);
+        await drag(handle('e'), -20, 15);
+        check('a side handle changes one dimension', geometry(first), [2, 1, 130, 60, 70, 60]);
+        await drag(handle('nw'), -35, 0);
+        check('the corner opposite the handle stays', [geometry(first)[2] + geometry(first)[4], geometry(first)[3] + geometry(first)[5], geometry(first)[4], geometry(first)[5]], [200, 120, 105, 90]);
+        await drag(handle('se'), -45, -10, { shiftKey: true });
+        check('with Shift a corner sizes freely', [geometry(first)[4], geometry(first)[5]], [60, 80]);
+        grid.ResizePicture(first, { width: 60, height: 40 }); grid.MovePicture(first, { x: 130, y: 60 });
+        // Zoomed: the pointer's travel is in screen pixels, the picture's place in sheet pixels.
+        grid.SetZoom(1.5); await frame();
+        const zoomedBox = box(imageOf(first));
+        check('zoomed, the picture is drawn larger', [zoomedBox[2], zoomedBox[3]], [90, 60]);
+        await drag(imageOf(first), 60, 30);
+        check('... and a drag of 60 x 30 screen pixels moves it 40 x 20', geometry(first), [3, 1, 170, 80, 60, 40]);
+        await drag(handle('e'), 45, 0);
+        check('... a handle sizes it by the same measure', geometry(first), [3, 1, 170, 80, 90, 40]);
+        grid.SetZoom(1); await frame();
+        // Scrolled, with frozen panes.
+        grid.FreezeAt(1, 1);
+        const far = grid.InsertPicture(pngUrl, 'D60');
+        grid.ScrollToCell(62, 3); await frame(); await frame();
+        check('a picture far down is drawn where its cell is once scrolled to', [Math.round(imageOf(far).getBoundingClientRect().top - cellBox(59, 3).top), Math.round(imageOf(far).getBoundingClientRect().left - cellBox(59, 3).left)], [0, 0]);
+        const farBefore = geometry(far);
+        await drag(imageOf(far), -30, 20);
+        check('... and dragged from there', geometry(far).slice(2), [farBefore[2] - 30, farBefore[3] + 20, 60, 40]);
+        grid.Unfreeze();
+        grid.ScrollToCell(0, 0); await frame();
+        // Keys.
+        grid.SelectPicture(third); await frame();
+        check('SelectPicture', [grid.GetSelectedPicture(), frameNode().getAttribute('data-drawing-id')], [third, String(third)]);
+        press(host, 'Escape'); await frame();
+        check('Escape lets go of it', [grid.GetSelectedPicture(), getComputedStyle(frameNode()).display, grid.GetPictures().length], [null, 'none', 4]);
+        grid.SelectPicture(third);
+        press(host, 'Delete'); await frame();
+        check('Delete removes the selected picture', [grid.GetPictures().map((p) => p.id), grid.GetSelectedPicture(), imageOf(third)], [[1, 2, 4], null, null]);
+        grid.Undo(); await frame();
+        check('... one undo step', [grid.GetPictures().map((p) => p.id), !!imageOf(third)], [[1, 2, 3, 4], true]);
+        grid.SelectPicture(first); selections.length = 0;
+        await mouse(grid, host, 'mousedown', 15, 6); await mouse(grid, host, 'mouseup', 15, 6); await frame();
+        check('a click on a cell selects the cell and lets go of the picture', [grid.GetSelectedPicture(), grid.GetSelectionRef(), selections.at(-1)?.Picture], [null, 'G16', null]);
+        // Read-only: pictures are not in the way of the cells.
+        grid.SetReadOnly(true); await frame();
+        check('in a viewer a picture does not take the pointer', getComputedStyle(imageOf(first)).pointerEvents, 'none');
+        const overPicture = imageOf(second).getBoundingClientRect();
+        document.elementFromPoint(overPicture.left + 5, overPicture.top + 5).dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, clientX: overPicture.left + 5, clientY: overPicture.top + 5 }));
+        document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); await frame();
+        check('... a click on it selects the cell under it', [grid.GetSelectedPicture(), grid.GetSelectionRef()], [null, 'B9']);
+        grid.SetReadOnly(false); await frame();
+        check('... and in the editor it does again', getComputedStyle(imageOf(first)).pointerEvents, 'auto');
+        grid.DeletePicture(far);
+        check('DeletePicture', grid.GetPictures().map((p) => p.id), [1, 2, 3]);
+
+        // ---- what is refused ----
+        check('no picture', /^InsertPicture: the picture is missing/.test(thrown(() => grid.InsertPicture(undefined, 'A1')) ?? ''), true);
+        check('bytes that are no image', thrown(() => grid.InsertPicture(new TextEncoder().encode('hello, this is not an image at all'), 'A1')), 'InsertPicture: the picture is not a PNG, JPEG or GIF image');
+        check('an SVG, whatever the data URL says it is', thrown(() => grid.InsertPicture('data:image/png;base64,' + btoa('<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>'), 'A1')), 'InsertPicture: the picture is not a PNG, JPEG or GIF image');
+        check('a text that is no data URL', /is not a Uint8Array, an ArrayBuffer or a data URL/.test(thrown(() => grid.InsertPicture('https://example.com/a.png', 'A1')) ?? ''), true);
+        check('a cell that is none', /is not a cell/.test(thrown(() => grid.InsertPicture(pngUrl, 'nowhere')) ?? ''), true);
+        check('a cell outside the sheet', /outside the sheet/.test(thrown(() => grid.InsertPicture(pngUrl, 'A99999')) ?? ''), true);
+        check('a size of nothing', /width must be above 0/.test(thrown(() => grid.InsertPicture(pngUrl, 'A1', { width: 0 })) ?? ''), true);
+        check('an unknown id', [thrown(() => grid.MovePicture(99, 'A1')), thrown(() => grid.DeletePicture(99)), thrown(() => grid.SelectPicture(99))], ['MovePicture: the sheet has no picture with the id 99', 'DeletePicture: the sheet has no picture with the id 99', 'SelectPicture: the sheet has no picture with the id 99']);
+        check('a size without numbers', /neither a width nor a height/.test(thrown(() => grid.ResizePicture(first, {})) ?? ''), true);
+        check('nothing was added by what was refused', grid.GetPictures().length, 3);
+
+        // ---- through XLSX ----
+        const before2 = grid.GetPictures();
+        const bytes = await grid.ExportXlsx();
+        check('one media part per picture', Object.keys(await partsOf(bytes, /^xl\/media\//)).sort(), ['xl/media/image1.png', 'xl/media/image2.jpeg', 'xl/media/image3.gif']);
+        const again = mountGrid();
+        try {
+            await again.grid.ImportXlsx(bytes);
+            // (The columns of a new workbook reopen at the file's default width: places are compared by cell and offset.)
+            const layout = await import('/spreadsheet/Layout.js');
+            const placed = (g) => g.GetPictures().map((p) => ({ ...pick(p, ['id', 'kind', 'name', 'description', 'contentType', 'row', 'col', 'width', 'height']),
+                offsetX: Math.round(p.x - layout.columnLeft(g.GetModel(), p.col)), offsetY: Math.round(p.y - layout.rowTop(g.GetModel(), p.row)) }));
+            check('the pictures come back from the file: ids, cells, offsets, sizes, names, alternative text', placed(again.grid), placed(grid));
+            check('... the first one 70 x 5 pixels into its cell', [placed(again.grid)[0].offsetX, placed(again.grid)[0].offsetY], [70, 5]);
+            await frame();
+            await imageOf(1, again.host).decode();
+            check('... and are drawn', [imageOf(1, again.host).naturalWidth, box(imageOf(2, again.host)).slice(2)], [60, [120, 80]]);
+        } finally { again.close(); }
+
+        // ---- beside the charts of a file ----
+        for (const name of ['tests/test-documents-excel/synthetic-drawing-extras.xlsx', 'tests/real-world/chart-zoo.xlsx']) {
+            const file = mountGrid();
+            try {
+                const original = await bytesOf(name);
+                await file.grid.ImportXlsx(original);
+                const short = name.split('/').pop();
+                const chartsBefore = await partsOf(original, /^xl\/charts\//);
+                const drawings = file.grid.GetDrawings();
+                const chart = drawings.find((d) => d.kind === 'chart'), ownPicture = drawings.find((d) => d.kind === 'picture');
+                check(`${short}: its objects have ids, back to front`, drawings.map((d) => d.id), drawings.map((_, i) => i + 1));
+                check(`${short}: a chart cannot be moved as a picture`, /is not a picture/.test(thrown(() => file.grid.MovePicture(chart.id, 'A1')) ?? ''), true);
+                const added = file.grid.InsertPicture(pngUrl, 'B20', undefined, 'Added');
+                if (ownPicture) { file.grid.MovePicture(ownPicture.id, 'H30'); file.grid.ResizePicture(ownPicture.id, { width: 50, height: 25 }); }
+                const saved = await file.grid.ExportXlsx();
+                const chartsAfter = await partsOf(saved, /^xl\/charts\//);
+                check(`${short}: the charts are in the saved file byte for byte (${Object.keys(chartsBefore).length})`, [Object.keys(chartsAfter).length, Object.keys(chartsBefore).filter((part) => chartsBefore[part] !== chartsAfter[part])], [Object.keys(chartsBefore).length, []]);
+                const reopenedFile = mountGrid();
+                try {
+                    await reopenedFile.grid.ImportXlsx(saved);
+                    const after = reopenedFile.grid.GetDrawings();
+                    check(`${short}: the new picture and the moved one beside the kept objects`, [after.filter((d) => d.kind !== 'picture').map((d) => [d.kind, d.name]), after.find((d) => d.name === 'Added') && pick(after.find((d) => d.name === 'Added'), ['row', 'col', 'width', 'height']), ownPicture ? pick(after.find((d) => d.name === ownPicture.name), ['row', 'col', 'width', 'height']) : null],
+                        [drawings.filter((d) => d.kind !== 'picture').map((d) => [d.kind, d.name]), { row: 19, col: 1, width: 60, height: 40 }, ownPicture ? { row: 29, col: 7, width: 50, height: 25 } : null]);
+                    // Deleted again: the picture's media goes, the charts stay.
+                    for (const picture of reopenedFile.grid.GetPictures()) reopenedFile.grid.DeletePicture(picture.id);
+                    const cleared = await reopenedFile.grid.ExportXlsx();
+                    const chartsCleared = await partsOf(cleared, /^xl\/charts\//);
+                    check(`${short}: with the pictures deleted the charts are still as they were`, [Object.keys(chartsBefore).filter((part) => chartsBefore[part] !== chartsCleared[part]), (await OF.excel.load(cleared)) !== null], [[], true]);
+                } finally { reopenedFile.close(); }
+            } finally { file.close(); }
+        }
+        off(); offSelection();
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};

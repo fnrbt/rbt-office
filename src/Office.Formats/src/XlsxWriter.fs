@@ -2049,6 +2049,17 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
     let keptPartPaths = keptParts |> List.map fst |> Set.ofList
     let mediaFiles = ResizeArray<string * byte[]>()
     let mutable nextMedia = 1
+    // The same picture several times in the workbook is one media part.
+    let sameBytes (a: byte[]) (b: byte[]) =
+        obj.ReferenceEquals(a, b)
+        || (a.Length = b.Length
+            && (let mutable same = true
+                let mutable i = 0
+                while same && i < a.Length do
+                    if a.[i] <> b.[i] then same <- false
+                    i <- i + 1
+                same))
+    let mediaExtensions = System.Collections.Generic.Dictionary<string, string>()
     textFiles.Add { Path = "xl/styles.xml"; Content = stylesXml styles }
     textFiles.Add { Path = "xl/sharedStrings.xml"; Content = sharedStringsXmlPreserved sharedItems }
     workbook.Sheets
@@ -2075,12 +2086,17 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
                 sheet.Extras.Images
                 |> List.mapi (fun i image ->
                     let extension = if image.Extension = "" then "bin" else image.Extension
-                    while Set.contains (sprintf "xl/media/image%d.%s" nextMedia extension) keptPartPaths do
+                    let known = mediaFiles |> Seq.tryFind (fun (path, data) -> mediaExtensions.[path] = extension && sameBytes data image.Data)
+                    match known with
+                    | Some (path, _) -> sprintf "rIdImg%d" (i + 1), path
+                    | None ->
+                        while Set.contains (sprintf "xl/media/image%d.%s" nextMedia extension) keptPartPaths do
+                            nextMedia <- nextMedia + 1
+                        let path = sprintf "xl/media/image%d.%s" nextMedia extension
                         nextMedia <- nextMedia + 1
-                    let path = sprintf "xl/media/image%d.%s" nextMedia extension
-                    nextMedia <- nextMedia + 1
-                    mediaFiles.Add (path, image.Data)
-                    sprintf "rIdImg%d" (i + 1), path)
+                        mediaFiles.Add (path, image.Data)
+                        mediaExtensions.[path] <- extension
+                        sprintf "rIdImg%d" (i + 1), path)
             let relsBody =
                 [ for relId, path in imageRels do
                       yield sprintf "<Relationship Id=\"%s\" Type=\"%s\" Target=\"/%s\"/>" relId RelationshipTypes.image path

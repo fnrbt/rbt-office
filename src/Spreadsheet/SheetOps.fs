@@ -2111,3 +2111,110 @@ let removeHyperlinks (ranges: CellRange list) (model: SpreadsheetModel) : Spread
             | _ -> ()
         let withCells = if obj.ReferenceEquals(cells, model.Cells) then model else { model with Cells = cells } |> invalidateFilterProjection
         { withCells with Hyperlinks = hyperlinksWithout ranges model.Hyperlinks }, touched.Length
+
+// --- pictures -------------------------------------------------------------------
+// A picture is a drawing object of the sheet (`SpreadsheetModel.Drawings`,
+// back to front) known by its `Id`. Charts and the other objects a file
+// brings are kept as they are: only pictures are placed through here.
+
+/// What the first bytes of an image say it is.
+type ImageInfo = {
+    /// "image/png" | "image/jpeg" | "image/gif"
+    ContentType: string
+    /// The extension of its part in a file: "png" | "jpeg" | "gif".
+    Extension: string
+    /// Its size in pixels.
+    Width: int
+    Height: int
+}
+
+/// Read the kind and the pixel size of a PNG, JPEG or GIF off its header;
+/// None for anything else (and for a file cut short of its size).
+let imageInfo (data: byte[]) : ImageInfo option =
+    let at (index: int) = int data.[index]
+    let n = if isNull data then 0 else data.Length
+    if n >= 24 && at 0 = 0x89 && at 1 = 0x50 && at 2 = 0x4E && at 3 = 0x47 && at 4 = 0x0D && at 5 = 0x0A && at 6 = 0x1A && at 7 = 0x0A then
+        // The IHDR chunk comes first: width and height, big-endian.
+        let be (index: int) = (at index <<< 24) ||| (at (index + 1) <<< 16) ||| (at (index + 2) <<< 8) ||| at (index + 3)
+        let width, height = be 16, be 20
+        if width > 0 && height > 0 then Some { ContentType = "image/png"; Extension = "png"; Width = width; Height = height } else None
+    elif n >= 10 && at 0 = 0x47 && at 1 = 0x49 && at 2 = 0x46 && at 3 = 0x38 && (at 4 = 0x37 || at 4 = 0x39) && at 5 = 0x61 then
+        let width, height = at 6 ||| (at 7 <<< 8), at 8 ||| (at 9 <<< 8)
+        if width > 0 && height > 0 then Some { ContentType = "image/gif"; Extension = "gif"; Width = width; Height = height } else None
+    elif n >= 4 && at 0 = 0xFF && at 1 = 0xD8 then
+        // Segments until a start-of-frame one, which has the size.
+        let mutable index = 2
+        let mutable found = None
+        let mutable going = true
+        while going && index + 3 < n do
+            if at index <> 0xFF then going <- false
+            else
+                let marker = at (index + 1)
+                if marker = 0xFF then index <- index + 1                       // padding
+                elif marker = 0xD8 || (marker >= 0xD0 && marker <= 0xD7) || marker = 0x01 then index <- index + 2   // no length
+                elif marker >= 0xC0 && marker <= 0xCF && marker <> 0xC4 && marker <> 0xC8 && marker <> 0xCC then
+                    if index + 8 < n then
+                        let height, width = (at (index + 5) <<< 8) ||| at (index + 6), (at (index + 7) <<< 8) ||| at (index + 8)
+                        if width > 0 && height > 0 then found <- Some { ContentType = "image/jpeg"; Extension = "jpeg"; Width = width; Height = height }
+                    going <- false
+                else index <- index + 2 + ((at (index + 2) <<< 8) ||| at (index + 3))
+        found
+    else None
+
+/// The number for the next drawing object of a sheet.
+let nextDrawingId (model: SpreadsheetModel) : int =
+    (model.Drawings |> List.fold (fun highest drawing -> max highest drawing.Id) 0) + 1
+
+/// The drawing object with an id, or None.
+let drawingById (id: int) (model: SpreadsheetModel) : SheetDrawing option =
+    if id <= 0 then None else model.Drawings |> List.tryFind (fun drawing -> drawing.Id = id)
+
+let private isPicture (drawing: SheetDrawing) = match drawing.Content with Picture _ -> true | KeptObject _ -> false
+
+/// The picture with an id; an Error that says why when there is none, or
+/// the object is a chart or another object the editor only keeps.
+let pictureById (id: int) (model: SpreadsheetModel) : Result<SheetDrawing, string> =
+    match drawingById id model with
+    | None -> Result.Error (sprintf "the sheet has no picture with the id %d" id)
+    | Some drawing when not (isPicture drawing) -> Result.Error (sprintf "the object %d is not a picture (charts and other kept objects cannot be changed)" id)
+    | Some drawing -> Ok drawing
+
+/// An anchor at a cell with a size of its own: the object moves with the
+/// cell and keeps its size.
+let pictureAnchor (cell: CellAddress) (offsetX: float) (offsetY: float) (width: float) (height: float) : DrawingAnchor =
+    { Kind = "oneCell"; FromRow = cell.Row; FromCol = cell.Col; FromOffsetX = offsetX; FromOffsetY = offsetY
+      ToRow = None; ToCol = None; ToOffsetX = 0.0; ToOffsetY = 0.0; X = 0.0; Y = 0.0
+      Width = Some width; Height = Some height; EditAs = None }
+
+/// Put a picture in front of the sheet's other objects, at a cell, in the
+/// size given. `id` is its number (`nextDrawingId`).
+let insertPicture (id: int) (info: ImageInfo) (data: byte[]) (cell: CellAddress) (width: float) (height: float) (name: string option) (model: SpreadsheetModel) : SpreadsheetModel =
+    let name = match name with Some _ -> name | None -> Some (sprintf "Picture %d" id)
+    let drawing = { Id = id; Anchor = pictureAnchor cell 0.0 0.0 width height; Name = name; Description = None; Content = Picture (info.ContentType, info.Extension, data) }
+    { model with Drawings = model.Drawings @ [ drawing ] }
+
+let private changePicture (id: int) (change: SheetDrawing -> SheetDrawing) (model: SpreadsheetModel) : Result<SpreadsheetModel, string> =
+    match pictureById id model with
+    | Result.Error message -> Result.Error message
+    | Ok _ ->
+        let drawings = model.Drawings |> List.map (fun drawing -> if drawing.Id = id then change drawing else drawing)
+        Ok (if drawings = model.Drawings then model else { model with Drawings = drawings })
+
+/// Place a picture: at `cell`, `offsetX` / `offsetY` pixels into it, in the
+/// size given. (Whatever anchor it had, it now moves with that cell and
+/// keeps its size.)
+let placePicture (id: int) (cell: CellAddress) (offsetX: float) (offsetY: float) (width: float) (height: float) (model: SpreadsheetModel) : Result<SpreadsheetModel, string> =
+    changePicture id (fun drawing -> { drawing with Anchor = pictureAnchor cell offsetX offsetY width height }) model
+
+/// Take a picture off the sheet.
+let deletePicture (id: int) (model: SpreadsheetModel) : Result<SpreadsheetModel, string> =
+    match pictureById id model with
+    | Result.Error message -> Result.Error message
+    | Ok _ -> Ok { model with Drawings = model.Drawings |> List.filter (fun drawing -> drawing.Id <> id) }
+
+/// Set the name and the description (alternative text) of a picture; None leaves one as it is.
+let describePicture (id: int) (name: string option) (description: string option) (model: SpreadsheetModel) : Result<SpreadsheetModel, string> =
+    changePicture id (fun drawing ->
+        { drawing with
+            Name = (match name with Some _ -> name | None -> drawing.Name)
+            Description = (match description with Some "" -> None | Some _ -> description | None -> drawing.Description) }) model

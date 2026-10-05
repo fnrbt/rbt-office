@@ -834,3 +834,50 @@ let filterOfObj (memberName: string) (value: obj) : FilterDescription =
     | [ "dynamic" ] -> { emptyFilterDescription "dynamic" with Dynamic = stringArg memberName "criteria.dynamic" (get "dynamic") }
     | [] -> hostFail memberName "criteria need one of the keys values, conditions, top, color, dynamic"
     | several -> hostFail memberName (sprintf "criteria take one kind of filter, got %s" (String.concat " and " several))
+
+// ---------------------------------------------------------------------------
+// Pictures
+// ---------------------------------------------------------------------------
+
+[<Emit("(function (v) { try { if (v instanceof Uint8Array) return v; if (v instanceof ArrayBuffer) return new Uint8Array(v); if (ArrayBuffer.isView(v)) return new Uint8Array(v.buffer, v.byteOffset, v.byteLength); if (typeof v === 'string') { var m = /^data:[^,;]*((?:;[^,;]*)*),/.exec(v); if (!m) return null; var body = v.slice(m[0].length); if (/;base64/i.test(m[1])) { var bin = atob(body.replace(/\\s+/g, '')); var out = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out; } return new TextEncoder().encode(decodeURIComponent(body)); } } catch (e) { } return null; })($0)")>]
+let private bytesOfSource (value: obj) : byte[] = jsNative
+
+/// The bytes of a picture as a host hands it over: a Uint8Array, an
+/// ArrayBuffer, or a data URL ("data:image/png;base64,...").
+let pictureBytesArg (memberName: string) (value: obj) : byte[] =
+    if isNullish value then hostFail memberName "the picture is missing (a Uint8Array, an ArrayBuffer or a data URL)"
+    else
+        let bytes = bytesOfSource value
+        if isNull (box bytes) then hostFail memberName "the picture is not a Uint8Array, an ArrayBuffer or a data URL (\"data:image/png;base64,...\")"
+        elif bytes.Length = 0 then hostFail memberName "the picture is empty"
+        else bytes
+
+/// A cell as a host names one: "B3", or { row, col } (0-based).
+let cellArg (memberName: string) (what: string) (model: SpreadsheetModel) (value: obj) : CellAddress =
+    if isNullish value then hostFail memberName (what + " is missing")
+    elif jsTypeOf value = "string" then
+        match tryParseCell (unbox<string> value) with
+        | Some addr when addr.Row < model.RowCount && addr.Col < model.ColCount -> addr
+        | Some _ -> hostFail memberName (sprintf "%s %s is outside the sheet" what (unbox<string> value))
+        | None -> hostFail memberName (sprintf "%s \"%s\" is not a cell (\"B3\", or { row, col })" what (unbox<string> value))
+    elif isJsObject value && hasKey value "row" && hasKey value "col" then
+        { Row = rowArg memberName model (getKey value "row"); Col = colArg memberName model (getKey value "col") }
+    else hostFail memberName (what + " is not a cell (\"B3\", or { row, col })")
+
+/// A drawing object of a sheet: { id, kind: "picture" | "chart" | "shape" | "other",
+/// name, description, contentType (a picture's, else null), row, col (the
+/// cell it is anchored to), x, y, width, height (sheet pixels at 100%) }.
+let drawingToObj (drawing: SheetDrawing) (x: float) (y: float) (width: float) (height: float) : obj =
+    createObj [
+        "id" ==> drawing.Id
+        "kind" ==> (match drawing.Content with Picture _ -> "picture" | KeptObject (kind, _) -> kind)
+        "name" ==> orNull drawing.Name
+        "description" ==> orNull drawing.Description
+        "contentType" ==> (match drawing.Content with Picture (contentType, _, _) -> box contentType | KeptObject _ -> null)
+        "row" ==> drawing.Anchor.FromRow
+        "col" ==> drawing.Anchor.FromCol
+        "x" ==> x
+        "y" ==> y
+        "width" ==> width
+        "height" ==> height
+    ]
