@@ -1151,15 +1151,21 @@ let private colsXml (styles: StyleBook) (sheet: XlsxSheetOut) =
         sheet.Extras.Columns
         |> List.tryFind (fun column -> col + 1 >= column.Index && col + 1 <= column.MaxIndex)
         |> Option.bind (fun column -> column.Width)
+    // The width a hidden column keeps, its outline level and collapsed mark.
+    let axis = sheet.Extras.ColumnAxis |> List.map (fun (col, kept, level, collapsed) -> col, (kept, level, collapsed)) |> Map.ofList
     let columns =
-        Set.union (widths |> Map.toSeq |> Seq.map fst |> Set.ofSeq) (styleIds |> Map.toSeq |> Seq.map fst |> Set.ofSeq)
+        Set.unionMany [ widths |> Map.toSeq |> Seq.map fst |> Set.ofSeq; styleIds |> Map.toSeq |> Seq.map fst |> Set.ofSeq
+                        axis |> Map.toSeq |> Seq.filter (fun (_, (_, level, collapsed)) -> level > 0 || collapsed) |> Seq.map fst |> Set.ofSeq ]
         |> Set.toList
     if List.isEmpty columns then ""
     else
         let attributes col =
             let width, hidden =
                 match Map.tryFind col widths with
-                | Some width when width <= 0.0 -> fileWidth col, true
+                | Some width when width <= 0.0 ->
+                    (match Map.tryFind col axis with
+                     | Some (Some kept, _, _) -> Some kept
+                     | _ -> fileWidth col), true
                 | Some width -> Some width, false
                 | None -> None, false
             let parts = [
@@ -1170,6 +1176,11 @@ let private colsXml (styles: StyleBook) (sheet: XlsxSheetOut) =
                 | Some id -> yield sprintf "style=\"%d\"" id
                 | None -> ()
                 if hidden then yield "hidden=\"1\""
+                match Map.tryFind col axis with
+                | Some (_, level, collapsed) ->
+                    if level > 0 then yield sprintf "outlineLevel=\"%d\"" level
+                    if collapsed then yield "collapsed=\"1\""
+                | None -> ()
             ]
             String.concat " " parts
         let body = StringBuilder()
@@ -1257,7 +1268,16 @@ let private rowsXml (styles: StyleBook) (sharedIndex: string -> XlsxRichRun list
         if ordered then cells
         // (Stable: cells at the same place keep their order.)
         else cells |> Array.mapi (fun index cell -> index, cell) |> Array.sortWith (fun (ia, a) (ib, b) -> if a.Row <> b.Row then compare a.Row b.Row elif a.Col <> b.Col then compare a.Col b.Col else compare ia ib) |> Array.map snd
-    let heights = sheet.RowHeights |> List.toArray |> Array.sortBy fst
+    // What a row has besides a height: the height a hidden one keeps, outline level, collapsed mark.
+    let axis = System.Collections.Generic.Dictionary<int, float option * int * bool>()
+    for (row, kept, level, collapsed) in sheet.Extras.RowAxis do axis.[row] <- (kept, level, collapsed)
+    // (A row that only has an outline level is written too: NaN stands for "no height of its own".)
+    let given = System.Collections.Generic.HashSet<int>(sheet.RowHeights |> List.map fst)
+    let heights =
+        [| yield! sheet.RowHeights
+           for KeyValue(row, (_, level, collapsed)) in axis do
+               if (level > 0 || collapsed) && not (given.Contains row) then yield row, nan |]
+        |> Array.sortBy fst
     // The last height given for a row wins, as with a map built from the list.
     let sb = StringBuilder()
     let mutable cellAt = 0
@@ -1273,10 +1293,22 @@ let private rowsXml (styles: StyleBook) (sharedIndex: string -> XlsxRichRun list
             heightAt <- heightAt + 1
         let rowText = string (row + 1)
         sb.Append("<row r=\"").Append(rowText).Append('"') |> ignore
+        let extra = match axis.TryGetValue row with | true, found -> Some found | false, _ -> None
         match height with
-        // Height 0 is how the sheet model says "hidden" (as for columns).
-        | Some h when h <= 0.0 -> sb.Append(" hidden=\"1\"") |> ignore
+        // Height 0 is how the sheet model says "hidden" (as for columns); the
+        // row keeps the height it is shown at again.
+        | Some h when h <= 0.0 ->
+            (match extra with
+             | Some (Some kept, _, _) when kept > 0.0 -> sb.Append(" ht=\"").Append(invariantFixed kept).Append("\" customHeight=\"1\"") |> ignore
+             | _ -> ())
+            sb.Append(" hidden=\"1\"") |> ignore
+        | Some h when System.Double.IsNaN h -> ()
         | Some h -> sb.Append(" ht=\"").Append(invariantFixed h).Append("\" customHeight=\"1\"") |> ignore
+        | None -> ()
+        match extra with
+        | Some (_, level, collapsed) ->
+            if level > 0 then sb.Append(" outlineLevel=\"").Append(string level).Append('"') |> ignore
+            if collapsed then sb.Append(" collapsed=\"1\"") |> ignore
         | None -> ()
         sb.Append('>') |> ignore
         while cellAt < cells.Length && cells.[cellAt].Row = row do
@@ -1576,14 +1608,21 @@ let private personsXml (persons: (string * string * string * string) list) =
 /// `<sheetFormatPr>`: the file's default column width and row height when the
 /// sheet came from a file, Excel's defaults otherwise.
 let private sheetFormatXml (sheet: XlsxSheetOut) =
+    // The deepest outline level of the rows / columns (Excel sizes its outline gutter by them).
+    let deepest (axis: (int * float option * int * bool) list) = axis |> List.fold (fun level (_, _, own, _) -> max level own) 0
+    let outline = [
+        if deepest sheet.Extras.RowAxis > 0 then yield sprintf "outlineLevelRow=\"%d\"" (deepest sheet.Extras.RowAxis)
+        if deepest sheet.Extras.ColumnAxis > 0 then yield sprintf "outlineLevelCol=\"%d\"" (deepest sheet.Extras.ColumnAxis)
+    ]
     match sheet.Extras.Format with
-    | None -> "<sheetFormatPr defaultRowHeight=\"15\"/>"
+    | None -> sprintf "<sheetFormatPr %s/>" (String.concat " " ("defaultRowHeight=\"15\"" :: outline))
     | Some format ->
         let attrs = [
             match format.BaseColWidth with Some width -> yield sprintf "baseColWidth=\"%s\"" (invariant width) | None -> ()
             match format.DefaultColWidth with Some width -> yield sprintf "defaultColWidth=\"%s\"" (invariant width) | None -> ()
             yield sprintf "defaultRowHeight=\"%s\"" (invariant (format.DefaultRowHeight |> Option.defaultValue 15.0))
             if format.CustomDefaultHeight then yield "customHeight=\"1\""
+            yield! outline
         ]
         sprintf "<sheetFormatPr %s/>" (String.concat " " attrs)
 
@@ -2300,6 +2339,19 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
                 { sheet.Extras with
                     Format = Some sheet.Format
                     Columns = sheet.Columns
+                    RowAxis =
+                        sheet.Rows
+                        |> List.choose (fun row ->
+                            if row.Hidden || row.OutlineLevel > 0 || row.Collapsed then
+                                Some (row.Index - 1, (if row.Hidden then row.Height else None), row.OutlineLevel, row.Collapsed)
+                            else None)
+                    ColumnAxis =
+                        sheet.Columns
+                        |> List.collect (fun column ->
+                            if column.Hidden || column.OutlineLevel > 0 || column.Collapsed then
+                                [ for index in column.Index - 1 .. min 16383 (column.MaxIndex - 1) ->
+                                    index, (if column.Hidden then column.Width else None), column.OutlineLevel, column.Collapsed ]
+                            else [])
                     ColumnStyles =
                         sheet.Columns
                         |> List.choose (fun column ->

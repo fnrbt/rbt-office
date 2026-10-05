@@ -193,6 +193,7 @@ let private sameSheetContent (a: SpreadsheetModel) (b: SpreadsheetModel) =
         && sameRef a.RichRuns b.RichRuns
         && sameRef a.RowHeights b.RowHeights
         && sameRef a.ColumnWidths b.ColumnWidths
+        && (sameRef a.Axes b.Axes || a.Axes = b.Axes)
         && sameRef a.Validations b.Validations
         && (sameRef a.MergedCells b.MergedCells || a.MergedCells = b.MergedCells)
         && sameRef a.ConditionalFormats b.ConditionalFormats
@@ -1875,6 +1876,66 @@ type Spreadsheet(container: Element) =
             model <- put after model
             pushValueNeutral { Undo = put before; Redo = put after; Description = description }
             true
+
+    // --- rows and columns: sizes, hidden ones, outline ---------------------------
+    // One undo step holds the sizes of the rows and columns and what the
+    // sheet keeps beside them (Model.SheetAxes) before and after.
+    let axesState (m: SpreadsheetModel) = m.RowHeights, m.ColumnWidths, m.Axes
+    let putAxes (rowHeights: Map<int, float>, columnWidths: Map<int, float>, axes: SheetAxes) (m: SpreadsheetModel) =
+        { m with RowHeights = rowHeights; ColumnWidths = columnWidths; Axes = axes }
+    /// Make an undo step of the change of sizes since `before` (the grid's own
+    /// resize handles change the model while the mouse moves). False when
+    /// nothing changed.
+    let commitAxes (description: string) (before: Map<int, float> * Map<int, float> * SheetAxes) : bool =
+        let rowsBefore, colsBefore, axesBefore = before
+        let after = axesState model
+        let rowsAfter, colsAfter, axesAfter = after
+        if (sameRef rowsBefore rowsAfter || rowsBefore = rowsAfter) && (sameRef colsBefore colsAfter || colsBefore = colsAfter)
+           && (sameRef axesBefore axesAfter || axesBefore = axesAfter) then false
+        else
+            pushValueNeutral { Undo = putAxes before; Redo = putAxes after; Description = description }
+            true
+    let changeAxes (description: string) (change: SpreadsheetModel -> SpreadsheetModel) : bool =
+        let before = axesState model
+        model <- change model
+        commitAxes description before
+    /// Text widths for auto-fit: in the cell's font, and never less than the
+    /// grid's own measure of the text (which decides whether a number fits).
+    let fitMeasure : SheetOps.TextMeasure =
+        fun text fontSize fontName bold italic ->
+            match fontName with
+            | Some family when family <> "" ->
+                max (browserTextWidth text fontSize ("'" + family.Replace("'", "") + "', Arial") bold italic) (cellTextWidth text fontSize bold italic)
+            | _ -> cellTextWidth text fontSize bold italic
+    /// The rows / columns an argument names: a 0-based number (with `count`,
+    /// that many from it on) or an A1 range ("2:5", "B:D", "B2:D9" - its
+    /// rows / columns), clipped to the sheet.
+    let axisSpanArg (memberName: string) (rows: bool) (target: obj) (count: obj) : int * int =
+        let limit = (if rows then model.RowCount else model.ColCount) - 1
+        let what = if rows then "row" else "column"
+        if Host.jsTypeOf (requiredArg memberName (what + " or range") target) = "number" then
+            let first = Host.intArg memberName what target
+            if first < 0 || first > limit then Host.hostFail memberName (sprintf "%s %d is not on the sheet (0..%d)" what first limit)
+            let count = match Host.optionalArg (Host.intArg memberName "count") count with Some count -> count | None -> 1
+            if count < 1 then Host.hostFail memberName (sprintf "count must be at least 1, got %d" count)
+            first, min limit (first + count - 1)
+        else
+            let range = Host.rangeArg memberName target
+            let first, last = if rows then range.From.Row, range.To.Row else range.From.Col, range.To.Col
+            if first > limit then Host.hostFail memberName (sprintf "%s is not on the sheet" (SheetOps.rangeText range))
+            first, min limit last
+    /// The rows / columns of the selection.
+    let selectedSpan (rows: bool) : int * int =
+        let top, left, bottom, right = selectionBounds()
+        if rows then top, min bottom (model.RowCount - 1) else left, min right (model.ColCount - 1)
+    /// Fit columns / rows to what their cells show, as one undo step.
+    let autoFitSpan (rows: bool) (first: int, last: int) : bool =
+        let sizes =
+            if rows then SheetOps.autoFitRowHeights fitMeasure model (first, last)
+            else SheetOps.autoFitColumnWidths fitMeasure model (first, last)
+        changeAxes (if rows then "AutoFit rows" else "AutoFit columns") (SheetOps.applyAxisSizes rows sizes)
+    /// The sizes as they were when a drag of a resize handle began.
+    let mutable resizeBefore : (Map<int, float> * Map<int, float> * SheetAxes) option = None
 
     /// The highest validation id the component has handed out (see lastRuleId).
     let mutable lastValidationId = 0
@@ -4508,6 +4569,7 @@ type Spreadsheet(container: Element) =
                 match headerIndex target ".spreadsheet-col-header" "data-col" with
                 | Some col when not readOnly ->
                     isResizingColumn <- true
+                    resizeBefore <- Some (axesState model)
                     resizeColumnIndex <- Some col
                     resizeStartPos <- getClientX e
                     resizeStartSize <- getColumnWidth col model
@@ -4517,6 +4579,7 @@ type Spreadsheet(container: Element) =
                 match headerIndex target ".spreadsheet-row-header" "data-row" with
                 | Some row when not readOnly ->
                     isResizingRow <- true
+                    resizeBefore <- Some (axesState model)
                     resizeRowIndex <- Some row
                     resizeStartPos <- getClientY e
                     resizeStartSize <- getRowHeight row model
@@ -4541,7 +4604,27 @@ type Spreadsheet(container: Element) =
                 | _ -> ())
         listen content "dblclick" (fun e ->
             let target = getEventTarget e
-            if not (within target ".spreadsheet-edit-input, .spreadsheet-col-header, .spreadsheet-row-header, .spreadsheet-corner, .spreadsheet-fill-handle, .spreadsheet-list-button") then
+            // A double click on a resize handle fits the column / row to its
+            // content - every selected one when it is among whole selected
+            // columns / rows.
+            let fitFromHandle (rows: bool) (index: int) =
+                if not readOnly then
+                    let top, left, bottom, right = selectionBounds()
+                    let whole = if rows then left = 0 && right >= model.ColCount - 1 else top = 0 && bottom >= model.RowCount - 1
+                    let first, last = selectedSpan rows
+                    let span = if whole && index >= first && index <= last then first, last else index, index
+                    if autoFitSpan rows span then render()
+            if within target ".col-resize-handle" then
+                preventDefault e
+                match headerIndex target ".spreadsheet-col-header" "data-col" with
+                | Some col -> fitFromHandle false col
+                | None -> ()
+            elif within target ".row-resize-handle" then
+                preventDefault e
+                match headerIndex target ".spreadsheet-row-header" "data-row" with
+                | Some row -> fitFromHandle true row
+                | None -> ()
+            elif not (within target ".spreadsheet-edit-input, .spreadsheet-col-header, .spreadsheet-row-header, .spreadsheet-corner, .spreadsheet-fill-handle, .spreadsheet-list-button") then
                 match hitTestEvent e with
                 | SpreadsheetLayout.Cell hitAddr -> startEditing hitAddr.Row hitAddr.Col
                 | _ -> ())
@@ -4674,11 +4757,16 @@ type Spreadsheet(container: Element) =
                 isResizingColumn <- false
                 resizeColumnIndex <- None
                 resizeRenderScheduled <- false
+                // The whole drag is one undo step.
+                (match resizeBefore with Some before -> commitAxes "Column width" before |> ignore | None -> ())
+                resizeBefore <- None
                 render()  // Final render to ensure clean state
             elif isResizingRow then
                 isResizingRow <- false
                 resizeRowIndex <- None
                 resizeRenderScheduled <- false
+                (match resizeBefore with Some before -> commitAxes "Row height" before |> ignore | None -> ())
+                resizeBefore <- None
                 render()  // Final render to ensure clean state
         )
 
@@ -6518,6 +6606,155 @@ type Spreadsheet(container: Element) =
     /// The frozen panes of the active sheet: { rows, cols } (0 = none).
     member _.GetFrozen() : obj =
         createObj [ "rows" ==> model.FrozenRows; "cols" ==> model.FrozenCols ]
+
+    // ===== Rows and columns =====
+    // Sizes are sheet pixels (at 100 % zoom). Where a member takes "a row or
+    // range" it takes a 0-based number or an A1 string whose rows / columns
+    // are meant: "2:5", "B:D", or any range such as "B2:D9".
+
+    /// Set the width of a column (0-based number) or of the columns of an A1
+    /// range ("B:D") to `px` pixels (0..1785; 0 hides them, as HideColumns
+    /// does). One undo step. Throws on a bad column, range or width.
+    member _.SetColumnWidth(target: obj, px: obj) : unit =
+        let first, last = axisSpanArg "SetColumnWidth" false target null
+        let size = Host.numberArg "SetColumnWidth" "the width" px
+        if not (size >= 0.0 && size <= SheetOps.maxColumnWidthPx) then Host.hostFail "SetColumnWidth" (sprintf "the width must be 0 to %g pixels, got %g" SheetOps.maxColumnWidthPx size)
+        if changeAxes "Column width" (SheetOps.setAxisSize false first last size) then render()
+
+    /// Set the height of a row (0-based number) or of the rows of an A1 range
+    /// ("2:5") to `px` pixels (0..546; 0 hides them). One undo step.
+    member _.SetRowHeight(target: obj, px: obj) : unit =
+        let first, last = axisSpanArg "SetRowHeight" true target null
+        let size = Host.numberArg "SetRowHeight" "the height" px
+        if not (size >= 0.0 && size <= SheetOps.maxRowHeightPx) then Host.hostFail "SetRowHeight" (sprintf "the height must be 0 to %g pixels, got %g" SheetOps.maxRowHeightPx size)
+        if changeAxes "Row height" (SheetOps.setAxisSize true first last size) then render()
+
+    /// The width of a column in pixels (0 when it is hidden).
+    member _.GetColumnWidth(col: obj) : float =
+        SheetOps.axisSize false (Host.colArg "GetColumnWidth" model col) model
+
+    /// The height of a row in pixels (0 when it is hidden, by HideRows or by a filter).
+    member _.GetRowHeight(row: obj) : float =
+        getRowHeight (Host.rowArg "GetRowHeight" model row) model
+
+    /// Fit columns to their content: each column of `range` (a column number
+    /// or an A1 range; default: the columns of the selection) gets the width
+    /// of its widest cell - what the cell displays, in its font, with its
+    /// indent, on one line (wrapped text: its longest line as broken by line
+    /// breaks) - at most 1785 pixels. Cells merged across columns do not
+    /// count, hidden rows and columns are left out, and a column without
+    /// text keeps its width. A double click on the resize handle of a column
+    /// header does the same. One undo step.
+    member _.AutoFitColumns(?range: obj) : unit =
+        let span =
+            match range with
+            | Some target when not (Host.isNullish target) -> axisSpanArg "AutoFitColumns" false target null
+            | _ -> selectedSpan false
+        if autoFitSpan false span then render()
+
+    /// Fit rows to their content: each row of `range` (a row number or an A1
+    /// range; default: the rows of the selection) gets the height of its
+    /// tallest cell - the lines of its text (wrapped text: as many as it
+    /// takes at the width of its column or merged columns) at the line height
+    /// of its font - at least 20 and at most 546 pixels; a row without text
+    /// gets 20. Cells merged across rows do not count; hidden rows stay
+    /// hidden. A double click on the resize handle of a row header does the
+    /// same. One undo step.
+    member _.AutoFitRows(?range: obj) : unit =
+        let span =
+            match range with
+            | Some target when not (Host.isNullish target) -> axisSpanArg "AutoFitRows" true target null
+            | _ -> selectedSpan true
+        if autoFitSpan true span then render()
+
+    /// Hide rows: `target` is a row number (with `count`, that many rows) or
+    /// an A1 range. A hidden row keeps its height for UnhideRows. One undo step.
+    member _.HideRows(target: obj, ?count: obj) : unit =
+        let first, last = axisSpanArg "HideRows" true target (defaultArg count null)
+        if changeAxes "Hide rows" (SheetOps.hideAxis true first last) then render()
+
+    /// Show the hidden rows among those named (see HideRows) at the height
+    /// they had. Rows hidden by a filter are the filter's. One undo step.
+    member _.UnhideRows(target: obj, ?count: obj) : unit =
+        let first, last = axisSpanArg "UnhideRows" true target (defaultArg count null)
+        if changeAxes "Unhide rows" (SheetOps.unhideAxis true first last) then render()
+
+    /// Hide columns: a column number (with `count`) or an A1 range ("B:D"). One undo step.
+    member _.HideColumns(target: obj, ?count: obj) : unit =
+        let first, last = axisSpanArg "HideColumns" false target (defaultArg count null)
+        if changeAxes "Hide columns" (SheetOps.hideAxis false first last) then render()
+
+    /// Show the hidden columns among those named at the width they had. One undo step.
+    member _.UnhideColumns(target: obj, ?count: obj) : unit =
+        let first, last = axisSpanArg "UnhideColumns" false target (defaultArg count null)
+        if changeAxes "Unhide columns" (SheetOps.unhideAxis false first last) then render()
+
+    /// The hidden rows of the active sheet as A1 row ranges, in order:
+    /// ["3:5", "9:9"]. Rows a filter hides are not listed.
+    member _.GetHiddenRows() : string array =
+        SheetOps.hiddenRuns true model |> List.map (SheetOps.axisRunText true) |> List.toArray
+
+    /// The hidden columns of the active sheet as A1 column ranges: ["B:D"].
+    member _.GetHiddenColumns() : string array =
+        SheetOps.hiddenRuns false model |> List.map (SheetOps.axisRunText false) |> List.toArray
+
+    /// Group rows (Excel's Data > Group): the outline level of the rows named
+    /// (a row number with `count`, or an A1 range) goes up by one, to at most
+    /// 7. The grid draws no outline gutter: a host draws its own from
+    /// GetOutline and collapses with SetGroupCollapsed. One undo step.
+    member _.GroupRows(target: obj, ?count: obj) : unit =
+        let first, last = axisSpanArg "GroupRows" true target (defaultArg count null)
+        if changeAxes "Group rows" (SheetOps.changeOutlineLevel true first last 1) then render()
+
+    /// Ungroup rows: their outline level goes down by one. One undo step.
+    member _.UngroupRows(target: obj, ?count: obj) : unit =
+        let first, last = axisSpanArg "UngroupRows" true target (defaultArg count null)
+        if changeAxes "Ungroup rows" (SheetOps.changeOutlineLevel true first last -1) then render()
+
+    /// Group columns (see GroupRows).
+    member _.GroupColumns(target: obj, ?count: obj) : unit =
+        let first, last = axisSpanArg "GroupColumns" false target (defaultArg count null)
+        if changeAxes "Group columns" (SheetOps.changeOutlineLevel false first last 1) then render()
+
+    /// Ungroup columns (see UngroupRows).
+    member _.UngroupColumns(target: obj, ?count: obj) : unit =
+        let first, last = axisSpanArg "UngroupColumns" false target (defaultArg count null)
+        if changeAxes "Ungroup columns" (SheetOps.changeOutlineLevel false first last -1) then render()
+
+    /// Collapse (true) or expand (false) the group that a row / column is in:
+    /// `axis` is "rows" or "columns", `index` any row / column of the group
+    /// (0-based; the group at that row's own level). Collapsing hides the
+    /// group's rows; expanding shows them again, except those of groups
+    /// inside it that are collapsed themselves. One undo step. Throws when
+    /// the row / column is in no group.
+    member _.SetGroupCollapsed(axis: obj, index: obj, collapsed: obj) : unit =
+        let rows =
+            match Host.stringArg "SetGroupCollapsed" "the axis" axis with
+            | "rows" -> true
+            | "columns" -> false
+            | other -> Host.hostFail "SetGroupCollapsed" (sprintf "the axis must be \"rows\" or \"columns\", got \"%s\"" other)
+        let at = if rows then Host.rowArg "SetGroupCollapsed" model index else Host.colArg "SetGroupCollapsed" model index
+        let collapse = Host.boolArg "SetGroupCollapsed" "collapsed" collapsed
+        if changeAxes (if collapse then "Collapse group" else "Expand group") (SheetOps.setGroupCollapsed "SetGroupCollapsed" rows at collapse) then render()
+
+    /// The outline of the active sheet: { rows: [group], columns: [group],
+    /// rowLevels, columnLevels (the deepest level, 0 = no groups) } with
+    /// group = { first, last (0-based), range ("3:7" / "B:D"), level (1..7),
+    /// collapsed }; outer groups come before the groups inside them.
+    member _.GetOutline() : obj =
+        let groups (rows: bool) =
+            SheetOps.outlineGroups rows model
+            |> List.map (fun (first, last, level, collapsed) ->
+                createObj [ "first" ==> first; "last" ==> last; "range" ==> SheetOps.axisRunText rows (first, last)
+                            "level" ==> level; "collapsed" ==> collapsed ])
+            |> List.toArray
+        let deepest (levels: Map<int, int>) = levels |> Map.fold (fun level _ own -> max level own) 0
+        createObj [
+            "rows" ==> groups true
+            "columns" ==> groups false
+            "rowLevels" ==> deepest model.Axes.RowLevels
+            "columnLevels" ==> deepest model.Axes.ColLevels
+        ]
 
     /// Zoom the active sheet: `factor` 0.1 .. 4 (1 = 100 %; rounded to a whole
     /// percent). Cells, headers, pictures and the edit box scale; the cell in

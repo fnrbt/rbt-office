@@ -53,6 +53,7 @@ stages=(
     stage35-validations
     stage36-names
     stage37-sheets
+    stage38-rowcol
     numbertext
 )
 

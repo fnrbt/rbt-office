@@ -796,6 +796,25 @@ type SheetOrigin = {
     Sheet: int
 }
 
+/// What a sheet keeps about its rows and columns besides their sizes. A
+/// hidden row / column is one of size 0 in `RowHeights` / `ColumnWidths`
+/// (every layout reads those); the size it goes back to when it is shown
+/// again is kept here. Outline levels (Excel's Group) are 1..7 per row /
+/// column; `CollapsedRows` / `CollapsedCols` are the summary rows / columns
+/// (the one after a group) whose group is collapsed.
+type SheetAxes = {
+    HiddenRowSizes: Map<int, float>
+    HiddenColSizes: Map<int, float>
+    RowLevels: Map<int, int>
+    ColLevels: Map<int, int>
+    CollapsedRows: Set<int>
+    CollapsedCols: Set<int>
+}
+
+let emptySheetAxes : SheetAxes =
+    { HiddenRowSizes = Map.empty; HiddenColSizes = Map.empty; RowLevels = Map.empty; ColLevels = Map.empty
+      CollapsedRows = Set.empty; CollapsedCols = Set.empty }
+
 type SpreadsheetModel = {
     /// Sparse cell storage - only non-empty cells
     Cells: Map<CellAddress, CellData>
@@ -838,6 +857,9 @@ type SpreadsheetModel = {
 
     /// Custom column widths (default 100.0)
     ColumnWidths: Map<int, float>
+
+    /// The sizes hidden rows / columns go back to, and the outline (groups).
+    Axes: SheetAxes
 
     /// Current search query
     SearchQuery: string option
@@ -1028,6 +1050,7 @@ let createEmpty rowCount colCount = {
     FilterHiddenRows = [||]
     RowHeights = Map.empty
     ColumnWidths = Map.empty
+    Axes = emptySheetAxes
     SearchQuery = None
     SearchCaseSensitive = None
     SearchResults = [||]
@@ -2390,6 +2413,13 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
         ColCount = if onRows then model.ColCount else max 1 (model.ColCount + delta)
         RowHeights = if onRows then moveIndexMap model.RowHeights else model.RowHeights
         ColumnWidths = if onRows then model.ColumnWidths else moveIndexMap model.ColumnWidths
+        Axes =
+            (let axes = model.Axes
+             if obj.ReferenceEquals(axes, emptySheetAxes) then axes
+             else
+                let moveSet (items: Set<int>) = items |> Seq.choose moveIndex |> Set.ofSeq
+                if onRows then { axes with HiddenRowSizes = moveIndexMap axes.HiddenRowSizes; RowLevels = moveIndexMap axes.RowLevels; CollapsedRows = moveSet axes.CollapsedRows }
+                else { axes with HiddenColSizes = moveIndexMap axes.HiddenColSizes; ColLevels = moveIndexMap axes.ColLevels; CollapsedCols = moveSet axes.CollapsedCols })
         ConditionalFormats = conditionalFormats
         RichRuns = moveAddressMap model.RichRuns
         MergedCells = merges

@@ -348,7 +348,31 @@ let private extrasOfModel (original: XlsxReader.SheetExtras) (before: Spreadshee
     let threads =
         if threadsUnchanged then original.ThreadedComments
         else model.Threads |> Map.toList |> List.map (fun (addr, thread) -> threadToReader addr thread)
-    { original with Images = images; Objects = objects; ThreadedComments = threads }
+    // What rows / columns have besides a size: the size a hidden one keeps
+    // (points / characters in the file), outline levels, collapsed marks.
+    let axesUnchanged =
+        match before with
+        | Some baseline ->
+            (obj.ReferenceEquals(baseline.Axes, model.Axes) || baseline.Axes = model.Axes)
+            && obj.ReferenceEquals(baseline.RowHeights, model.RowHeights) && obj.ReferenceEquals(baseline.ColumnWidths, model.ColumnWidths)
+        | None -> false
+    let axisOf (sizes: Map<int, float>) (kept: Map<int, float>) (levels: Map<int, int>) (collapsed: Set<int>) (pixelsPerUnit: float) =
+        let indices = Collections.Generic.HashSet<int>()
+        for KeyValue(index, size) in sizes do if size <= 0.0 then indices.Add index |> ignore
+        for KeyValue(index, _) in levels do indices.Add index |> ignore
+        for index in collapsed do indices.Add index |> ignore
+        [ for index in Seq.sort indices ->
+            let hidden = match Map.tryFind index sizes with Some size -> size <= 0.0 | None -> false
+            index,
+            (if hidden then Map.tryFind index kept |> Option.map (fun pixels -> pixels / pixelsPerUnit) else None),
+            (Map.tryFind index levels |> Option.defaultValue 0),
+            Set.contains index collapsed ]
+    let rowAxis, columnAxis =
+        if axesUnchanged then original.RowAxis, original.ColumnAxis
+        else
+            axisOf model.RowHeights model.Axes.HiddenRowSizes model.Axes.RowLevels model.Axes.CollapsedRows 1.333,
+            axisOf model.ColumnWidths model.Axes.HiddenColSizes model.Axes.ColLevels model.Axes.CollapsedCols 7.0
+    { original with Images = images; Objects = objects; ThreadedComments = threads; RowAxis = rowAxis; ColumnAxis = columnAxis }
 
 module Import =
 
@@ -722,14 +746,35 @@ module Import =
                     heights.[index] <- row.Height |> Option.defaultValue defaultRowHeight
             for row in 0 .. rowCount - 1 do
                 if heights.[row] > 0.0 then rowHeights <- Map.add row (heights.[row] * 1.333) rowHeights
-        // A size of 0 is how the model marks a hidden row / column.
+        // A size of 0 is how the model marks a hidden row / column; the size
+        // it is shown at again, and the outline, are kept beside the sizes.
+        let mutable hiddenRowSizes = Map.empty<int, float>
+        let mutable hiddenColSizes = Map.empty<int, float>
+        let mutable rowLevels = Map.empty<int, int>
+        let mutable colLevels = Map.empty<int, int>
+        let mutable collapsedRows = Set.empty<int>
+        let mutable collapsedCols = Set.empty<int>
         for row in sheet.Rows do
-            if row.Hidden then rowHeights <- Map.add (row.Index - 1) 0.0 rowHeights
+            let index = row.Index - 1
+            if row.Hidden then
+                hiddenRowSizes <- Map.add index ((row.Height |> Option.defaultValue defaultRowHeight) * 1.333) hiddenRowSizes
+                rowHeights <- Map.add index 0.0 rowHeights
+            if row.OutlineLevel > 0 then rowLevels <- Map.add index (min 7 row.OutlineLevel) rowLevels
+            if row.Collapsed then collapsedRows <- Set.add index collapsedRows
         for column in sheet.Columns do
-            // A hidden range can run to the last column (16384); only the ones near the data matter.
-            if column.Hidden then
+            // A range can run to the last column (16384); only the ones near the data matter.
+            if column.Hidden || column.OutlineLevel > 0 || column.Collapsed then
                 for idx in column.Index .. min column.MaxIndex (column.Index + 1023) do
-                    columnWidths <- Map.add (idx - 1) 0.0 columnWidths
+                    if column.Hidden then
+                        hiddenColSizes <- Map.add (idx - 1) ((column.Width |> Option.defaultValue defaultColWidth) * 7.0) hiddenColSizes
+                        columnWidths <- Map.add (idx - 1) 0.0 columnWidths
+                    if column.OutlineLevel > 0 then colLevels <- Map.add (idx - 1) (min 7 column.OutlineLevel) colLevels
+                    if column.Collapsed then collapsedCols <- Set.add (idx - 1) collapsedCols
+        let axes : SheetAxes =
+            if hiddenRowSizes.IsEmpty && hiddenColSizes.IsEmpty && rowLevels.IsEmpty && colLevels.IsEmpty && collapsedRows.IsEmpty && collapsedCols.IsEmpty then emptySheetAxes
+            else
+                { HiddenRowSizes = hiddenRowSizes; HiddenColSizes = hiddenColSizes; RowLevels = rowLevels; ColLevels = colLevels
+                  CollapsedRows = collapsedRows; CollapsedCols = collapsedCols }
 
         let merged =
             sheet.MergedCells
@@ -845,6 +890,7 @@ module Import =
                 MergedCells = merged
                 RowHeights = rowHeights
                 ColumnWidths = columnWidths
+                Axes = axes
                 Tables = sheetTables
                 FrozenRows = sheet.FrozenPane |> Option.map (fun p -> p.YSplit) |> Option.defaultValue 0
                 FrozenCols = sheet.FrozenPane |> Option.map (fun p -> p.XSplit) |> Option.defaultValue 0

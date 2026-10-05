@@ -1120,3 +1120,388 @@ let splitAreas (text: string) : string list =
         else current.Append c |> ignore
     parts.Add (current.ToString().Trim())
     parts |> Seq.filter (fun part -> part <> "") |> List.ofSeq
+
+// ---------------------------------------------------------------------------
+// Rows and columns: sizes, hiding, auto-fit, outline
+// ---------------------------------------------------------------------------
+// Every function takes `rows`: true for rows, false for columns. Sizes are
+// sheet pixels (what the model holds, at 100 % zoom). A hidden row / column
+// has size 0 in the model's size map; `Axes` keeps the size it had.
+
+[<Literal>]
+let defaultRowHeightPx = 25.0
+[<Literal>]
+let defaultColumnWidthPx = 100.0
+/// Excel's limits: a row of 409.5 pt, a column of 255 characters.
+[<Literal>]
+let maxRowHeightPx = 546.0
+[<Literal>]
+let maxColumnWidthPx = 1785.0
+/// The height of a row that holds one line of the default font (11 px):
+/// what auto-fit gives a row with nothing taller in it.
+[<Literal>]
+let autoRowHeightPx = 20.0
+
+let private axisSizes (rows: bool) (model: SpreadsheetModel) = if rows then model.RowHeights else model.ColumnWidths
+let private axisDefault (rows: bool) = if rows then defaultRowHeightPx else defaultColumnWidthPx
+let private axisCount (rows: bool) (model: SpreadsheetModel) = if rows then model.RowCount else model.ColCount
+let private keptSizes (rows: bool) (model: SpreadsheetModel) = if rows then model.Axes.HiddenRowSizes else model.Axes.HiddenColSizes
+
+let private withAxis (rows: bool) (sizes: Map<int, float>) (kept: Map<int, float>) (model: SpreadsheetModel) : SpreadsheetModel =
+    let axes =
+        if obj.ReferenceEquals(kept, keptSizes rows model) then model.Axes
+        elif rows then { model.Axes with HiddenRowSizes = kept }
+        else { model.Axes with HiddenColSizes = kept }
+    if rows then
+        if obj.ReferenceEquals(sizes, model.RowHeights) && obj.ReferenceEquals(axes, model.Axes) then model
+        else { model with RowHeights = sizes; Axes = axes }
+    else
+        if obj.ReferenceEquals(sizes, model.ColumnWidths) && obj.ReferenceEquals(axes, model.Axes) then model
+        else { model with ColumnWidths = sizes; Axes = axes }
+
+/// The size of a row / column as the sheet shows it: 0 when it is hidden.
+let axisSize (rows: bool) (index: int) (model: SpreadsheetModel) : float =
+    match Map.tryFind index (axisSizes rows model) with
+    | Some size -> max 0.0 size
+    | None -> axisDefault rows
+
+let isAxisHidden (rows: bool) (index: int) (model: SpreadsheetModel) : bool =
+    axisSize rows index model <= 0.0
+
+/// The size a row / column has, or - hidden - goes back to when it is shown.
+let shownAxisSize (rows: bool) (index: int) (model: SpreadsheetModel) : float =
+    let size = axisSize rows index model
+    if size > 0.0 then size
+    else Map.tryFind index (keptSizes rows model) |> Option.defaultValue (axisDefault rows)
+
+/// The rows / columns `first..last` clipped to the sheet (None when none is on it).
+let clipAxisSpan (rows: bool) (first: int) (last: int) (model: SpreadsheetModel) : (int * int) option =
+    let first, last = max 0 (min first last), min (axisCount rows model - 1) (max first last)
+    if first <= last then Some (first, last) else None
+
+/// Give the rows / columns `first..last` a size. Size 0 hides them (see
+/// `hideAxis`); any other size also shows a hidden one.
+let rec setAxisSize (rows: bool) (first: int) (last: int) (size: float) (model: SpreadsheetModel) : SpreadsheetModel =
+    if size <= 0.0 then hideAxis rows first last model
+    else
+        match clipAxisSpan rows first last model with
+        | None -> model
+        | Some (first, last) ->
+            let mutable sizes = axisSizes rows model
+            let mutable kept = keptSizes rows model
+            let isDefault = size = axisDefault rows
+            for index in first .. last do
+                match Map.tryFind index sizes with
+                | Some existing when existing = size -> ()
+                | Some _ when isDefault -> sizes <- Map.remove index sizes
+                | None when isDefault -> ()
+                | _ -> sizes <- Map.add index size sizes
+                if not kept.IsEmpty && Map.containsKey index kept then kept <- Map.remove index kept
+            withAxis rows sizes kept model
+
+/// Hide the rows / columns `first..last`: each keeps the size it had for
+/// when it is shown again.
+and hideAxis (rows: bool) (first: int) (last: int) (model: SpreadsheetModel) : SpreadsheetModel =
+    match clipAxisSpan rows first last model with
+    | None -> model
+    | Some (first, last) ->
+        let mutable sizes = axisSizes rows model
+        let mutable kept = keptSizes rows model
+        for index in first .. last do
+            match Map.tryFind index sizes with
+            | Some size when size <= 0.0 -> ()
+            | Some size ->
+                kept <- Map.add index size kept
+                sizes <- Map.add index 0.0 sizes
+            | None -> sizes <- Map.add index 0.0 sizes
+        withAxis rows sizes kept model
+
+/// Show the hidden rows / columns among `first..last` at the size they had.
+let unhideAxis (rows: bool) (first: int) (last: int) (model: SpreadsheetModel) : SpreadsheetModel =
+    let first, last = min first last, max first last
+    let mutable sizes = axisSizes rows model
+    let mutable kept = keptSizes rows model
+    // (The hidden ones are in the size map: a range of a million rows costs what the map holds.)
+    for KeyValue(index, size) in axisSizes rows model do
+        if index >= first && index <= last && size <= 0.0 then
+            match Map.tryFind index kept with
+            | Some previous when previous > 0.0 && previous <> axisDefault rows -> sizes <- Map.add index previous sizes
+            | _ -> sizes <- Map.remove index sizes
+            if Map.containsKey index kept then kept <- Map.remove index kept
+    withAxis rows sizes kept model
+
+/// The hidden rows / columns of a sheet as runs (first, last), in order.
+/// Rows a filter hides are not among them.
+let hiddenRuns (rows: bool) (model: SpreadsheetModel) : (int * int) list =
+    let count = axisCount rows model
+    let runs = ResizeArray<int * int>()
+    for KeyValue(index, size) in axisSizes rows model do
+        if size <= 0.0 && index >= 0 && index < count then
+            if runs.Count > 0 && snd runs.[runs.Count - 1] = index - 1 then runs.[runs.Count - 1] <- (fst runs.[runs.Count - 1], index)
+            else runs.Add ((index, index))
+    List.ofSeq runs
+
+/// "3:5" / "B:D" for a run of rows / columns.
+let axisRunText (rows: bool) (first: int, last: int) : string =
+    if rows then sprintf "%d:%d" (first + 1) (last + 1)
+    else columnToLetter first + ":" + columnToLetter last
+
+// --- auto-fit -----------------------------------------------------------------
+
+/// Width of a text in pixels: text, font size (px), font family, bold, italic
+/// (the shape of `Layout.TextMeasurer`).
+type TextMeasure = string -> float -> string option -> bool -> bool -> float
+
+let private cellFontPx (format: CellFormat) = float (defaultArg format.FontSize 11)
+/// The height of a line of a cell's text, as the grid draws it.
+let cellLineHeightPx (format: CellFormat) = Math.Round (cellFontPx format * 1.3)
+let private cellIndentPx (format: CellFormat) =
+    if format.Indent > 0 then float format.Indent * Rbt.Spreadsheet.CellText.mdwPx (cellFontPx format) * 1.4 else 0.0
+/// A cell's text sits 5 px from its left and right edge, 3 px from top and bottom.
+[<Literal>]
+let private cellPadX = 10.0
+[<Literal>]
+let private cellPadY = 6.0
+
+let private shownText (model: SpreadsheetModel) (data: CellData) : string =
+    Rbt.Spreadsheet.CellText.cellDisplayText None 1.0e6 data.Format (viewedValue model data.Value)
+
+let private isTurned (format: CellFormat) = format.TextRotation = 90 || format.TextRotation = 180
+
+/// The number of lines a text takes when it is wrapped to `width` pixels:
+/// broken at spaces, a word wider than the width broken where it must be,
+/// and a line break in the text always starts a line.
+let wrappedLineCount (measure: string -> float) (width: float) (text: string) : int =
+    let mutable lines = 0
+    for paragraph in (if isNull text then "" else text).Replace("\r\n", "\n").Split('\n') do
+        if paragraph = "" || width <= 0.0 || measure paragraph <= width then lines <- lines + 1
+        else
+            let space = measure " "
+            let mutable used = 0.0
+            lines <- lines + 1
+            for word in paragraph.Split(' ') do
+                let wordWidth = measure word
+                if used > 0.0 && used + space + wordWidth <= width then used <- used + space + wordWidth
+                elif wordWidth <= width then
+                    if used > 0.0 then lines <- lines + 1
+                    used <- wordWidth
+                else
+                    // A word longer than a line: as many lines as it takes, the rest goes on.
+                    if used > 0.0 then lines <- lines + 1
+                    let mutable rest = 0.0
+                    for c in word do
+                        let w = measure (string c)
+                        if rest > 0.0 && rest + w > width then
+                            lines <- lines + 1
+                            rest <- w
+                        else rest <- rest + w
+                    used <- rest
+    max 1 lines
+
+/// The width each column of `first..last` needs to show the text of its
+/// cells on one line: (column, width) for the columns that hold text, in
+/// order - a column without any keeps its width. Measured is what a cell
+/// displays (number format applied) in its font, plus its indent and the
+/// cell's padding. A wrapped cell counts with its longest line break-free
+/// line, text turned by 90 degrees with the height of a line, and a cell
+/// merged across columns not at all (as in Excel). Hidden rows and columns
+/// are left out. Only the cells that exist are looked at.
+let autoFitColumnWidths (measure: TextMeasure) (model: SpreadsheetModel) (first: int, last: int) : (int * float) list =
+    let needed = Collections.Generic.Dictionary<int, float>()
+    let hasMerges = not model.MergedCells.IsEmpty
+    let hiddenRows = model.RowHeights |> Map.exists (fun _ size -> size <= 0.0)
+    for KeyValue(addr, data) in model.Cells do
+        if addr.Col >= first && addr.Col <= last then
+            match data.Value with
+            | Empty | String "" -> ()
+            | _ ->
+                let merged =
+                    hasMerges
+                    && (match findMergedCell addr model with
+                        | Some merge -> merge.EndCol > merge.StartCol || merge.StartRow <> addr.Row
+                        | None -> false)
+                let hidden = (hiddenRows && isAxisHidden true addr.Row model) || isFilterHiddenRow addr.Row model
+                if not merged && not hidden then
+                    let format = data.Format
+                    let text = shownText model data
+                    // (No glyph is wider than its font is tall and a fifth: a text that
+                    // cannot be wider than what the column needs already is not measured.)
+                    let known = match needed.TryGetValue addr.Col with | true, known -> known | false, _ -> 0.0
+                    let extra = cellPadX + cellIndentPx format
+                    if text <> "" && (isTurned format || float text.Length * cellFontPx format * 1.2 + extra > known) then
+                        let width =
+                            if isTurned format then cellLineHeightPx format
+                            else
+                                let line (part: string) = measure part (cellFontPx format) format.FontName format.Bold format.Italic
+                                if text.IndexOf '\n' >= 0 then text.Replace("\r\n", "\n").Split('\n') |> Array.map line |> Array.max
+                                else line text
+                        let width = Math.Ceiling width + extra
+                        if width > known then needed.[addr.Col] <- width
+    [ for KeyValue(col, width) in needed do
+        if not (isAxisHidden false col model) then yield col, min maxColumnWidthPx (Math.Ceiling width) ]
+    |> List.sortBy fst
+
+/// The height each row of `first..last` needs: (row, height) for every row
+/// that is not hidden. A row's height is that of its tallest cell - the
+/// lines of its text (one, or as many as wrapped text takes at the width of
+/// its column, or of its merged columns) at the line height of its font,
+/// plus the cell's padding - and at least `autoRowHeightPx`. Cells merged
+/// across rows do not count. Only the cells that exist are looked at.
+let autoFitRowHeights (measure: TextMeasure) (model: SpreadsheetModel) (first: int, last: int) : (int * float) list =
+    let first, last = max 0 first, min last (model.RowCount - 1)
+    let needed = Collections.Generic.Dictionary<int, float>()
+    let hasMerges = not model.MergedCells.IsEmpty
+    for KeyValue(addr, data) in model.Cells do
+        if addr.Row >= first && addr.Row <= last then
+            match data.Value with
+            | Empty | String "" -> ()
+            | _ ->
+                let merge = if hasMerges then findMergedCell addr model else None
+                let skip =
+                    match merge with
+                    | Some merge -> merge.EndRow > merge.StartRow || merge.StartCol <> addr.Col
+                    | None -> false
+                if not skip && not (isAxisHidden false addr.Col model) then
+                    let format = data.Format
+                    // (One line of text that is not wrapped or turned: its line height, whatever it says.
+                    // Only a text can hold a line break.)
+                    let oneLine = not format.WrapText && not (isTurned format) && (match unwrapFormulaValue data.Value with String _ -> false | _ -> true)
+                    let text = if oneLine then "1" else shownText model data
+                    if text <> "" then
+                        let fontPx = cellFontPx format
+                        let line (part: string) = measure part fontPx format.FontName format.Bold format.Italic
+                        let height =
+                            if isTurned format then Math.Ceiling (line text) + cellPadY
+                            else
+                                let lines =
+                                    if format.WrapText then
+                                        let lastCol = match merge with Some merge -> merge.EndCol | None -> addr.Col
+                                        let mutable width = 0.0
+                                        for col in addr.Col .. lastCol do width <- width + axisSize false col model
+                                        wrappedLineCount line (width - cellPadX - cellIndentPx format) text
+                                    else text.Replace("\r\n", "\n").Split('\n').Length
+                                float lines * cellLineHeightPx format + cellPadY
+                        match needed.TryGetValue addr.Row with
+                        | true, known when known >= height -> ()
+                        | _ -> needed.[addr.Row] <- height
+    // (A span of a million rows: the rows with a size or a cell of their own; the others have the default already.)
+    let rowsToSet =
+        if last - first < 20000 then seq { first .. last }
+        else
+            seq { for KeyValue(row, _) in model.RowHeights do if row >= first && row <= last then yield row
+                  yield! needed.Keys }
+            |> Seq.distinct |> Seq.sort
+    [ for row in rowsToSet do
+        if not (isAxisHidden true row model) then
+            let height =
+                match needed.TryGetValue row with
+                | true, height -> max autoRowHeightPx height
+                | false, _ -> autoRowHeightPx
+            yield row, min maxRowHeightPx height ]
+
+/// Apply sizes (index, size) to rows / columns.
+let applyAxisSizes (rows: bool) (sizes: (int * float) list) (model: SpreadsheetModel) : SpreadsheetModel =
+    sizes |> List.fold (fun m (index, size) -> setAxisSize rows index index size m) model
+
+// --- outline (Excel's Group / Ungroup) ---------------------------------------------
+
+[<Literal>]
+let maxOutlineLevel = 7
+
+let private levelsOf (rows: bool) (model: SpreadsheetModel) = if rows then model.Axes.RowLevels else model.Axes.ColLevels
+let private collapsedOf (rows: bool) (model: SpreadsheetModel) = if rows then model.Axes.CollapsedRows else model.Axes.CollapsedCols
+
+/// The outline level of a row / column: 0 when it is in no group.
+let outlineLevel (rows: bool) (index: int) (model: SpreadsheetModel) : int =
+    Map.tryFind index (levelsOf rows model) |> Option.defaultValue 0
+
+/// Raise (`delta` 1: Group) or lower (-1: Ungroup) the outline level of the
+/// rows / columns `first..last`, between 0 and 7.
+let changeOutlineLevel (rows: bool) (first: int) (last: int) (delta: int) (model: SpreadsheetModel) : SpreadsheetModel =
+    match clipAxisSpan rows first last model with
+    | None -> model
+    | Some (first, last) ->
+        let mutable levels = levelsOf rows model
+        if delta > 0 then
+            for index in first .. last do
+                let level = min maxOutlineLevel (outlineLevel rows index model + delta)
+                levels <- Map.add index level levels
+        else
+            for KeyValue(index, level) in levelsOf rows model do
+                if index >= first && index <= last then
+                    let lowered = level + delta
+                    levels <- if lowered <= 0 then Map.remove index levels else Map.add index lowered levels
+        if levels = levelsOf rows model then model
+        else
+            // A summary row / column whose group is gone is no longer one.
+            let hasGroupBefore index = index > 0 && Map.containsKey (index - 1) levels
+            let collapsed = collapsedOf rows model |> Set.filter hasGroupBefore
+            if rows then { model with Axes = { model.Axes with RowLevels = levels; CollapsedRows = collapsed } }
+            else { model with Axes = { model.Axes with ColLevels = levels; CollapsedCols = collapsed } }
+
+/// The group a row / column is in at its own level: the run of neighbours
+/// at that level or deeper, as (first, last, level). None outside any group.
+let outlineGroupAt (rows: bool) (index: int) (model: SpreadsheetModel) : (int * int * int) option =
+    let level = outlineLevel rows index model
+    if level <= 0 then None
+    else
+        let mutable first = index
+        while first > 0 && outlineLevel rows (first - 1) model >= level do first <- first - 1
+        let mutable last = index
+        while outlineLevel rows (last + 1) model >= level do last <- last + 1
+        Some (first, last, level)
+
+/// Collapse (hide) or expand (show) the group the row / column `index` is
+/// in. The row / column after the group is its summary and carries the
+/// collapsed mark, as in Excel's default layout. Expanding leaves the
+/// groups inside that are themselves collapsed as they are.
+let setGroupCollapsed (memberName: string) (rows: bool) (index: int) (collapsed: bool) (model: SpreadsheetModel) : SpreadsheetModel =
+    match outlineGroupAt rows index model with
+    | None -> failwith (sprintf "%s: %s %d is not in a group" memberName (if rows then "row" else "column") index)
+    | Some (first, last, level) ->
+        let marks = collapsedOf rows model
+        let withMarks (marks: Set<int>) (m: SpreadsheetModel) =
+            if marks = collapsedOf rows m then m
+            elif rows then { m with Axes = { m.Axes with CollapsedRows = marks } }
+            else { m with Axes = { m.Axes with CollapsedCols = marks } }
+        if collapsed then
+            hideAxis rows first last model |> withMarks (Set.add (last + 1) marks)
+        else
+            let marks = Set.remove (last + 1) marks
+            let mutable result = model
+            let rec expand (first: int) (last: int) (level: int) =
+                let mutable at = first
+                while at <= last do
+                    if outlineLevel rows at model <= level then
+                        result <- unhideAxis rows at at result
+                        at <- at + 1
+                    else
+                        let mutable stop = at
+                        while stop < last && outlineLevel rows (stop + 1) model > level do stop <- stop + 1
+                        if not (Set.contains (stop + 1) marks) then expand at stop (level + 1)
+                        at <- stop + 1
+            expand first last level
+            withMarks marks result
+
+/// Every group of the rows / columns: (first, last, level, collapsed), outer
+/// groups before the ones inside them.
+let outlineGroups (rows: bool) (model: SpreadsheetModel) : (int * int * int * bool) list =
+    let levels = levelsOf rows model
+    if levels.IsEmpty then []
+    else
+        let marks = collapsedOf rows model
+        let indices = levels |> Map.toArray
+        let groups = ResizeArray<int * int * int * bool>()
+        let deepest = indices |> Array.map snd |> Array.max
+        for level in 1 .. deepest do
+            let mutable start = -1
+            let mutable previous = -2
+            let close () = if start >= 0 then groups.Add ((start, previous, level, Set.contains (previous + 1) marks))
+            for index, own in indices do
+                if own >= level then
+                    if start < 0 || index <> previous + 1 then
+                        close ()
+                        start <- index
+                    previous <- index
+            close ()
+        groups |> Seq.sortBy (fun (first, _, level, _) -> first, level) |> List.ofSeq

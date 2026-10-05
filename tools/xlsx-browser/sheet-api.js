@@ -1440,3 +1440,186 @@ checks['api-sheets'] = async () => {
     close();
     return lines;
 };
+
+// Rows and columns: sizes, auto-fit (also by a double click on a header's resize handle), hidden
+// rows and columns that come back at their size, the outline (groups, collapse / expand).
+import { press } from '/component.js';
+checks['api-rowcol'] = async () => {
+    const { lines, check, note } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        const node = (row, col) => host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"]`);
+        const size = (row, col) => { const box = node(row, col).getBoundingClientRect(); return [Math.round(box.width), Math.round(box.height)]; };
+        const active = () => { const cell = grid.GetActiveCell(); return [cell.Row, cell.Col]; };
+        const textWidth = (text, px = 11, bold = false) => { const context = document.createElement('canvas').getContext('2d'); context.font = `${bold ? 'bold ' : ''}${px}px Arial, sans-serif`; return context.measureText(text).width; };
+        const changes = [];
+        grid.OnChange((change) => changes.push(change));
+        grid.SetCell(0, 0, 'a'); grid.SetCell(9, 0, 'z'); changes.splice(0);
+
+        // ---- sizes ----
+        const r0 = grid.GetRevision();
+        check('the default sizes', [grid.GetColumnWidth(1), grid.GetRowHeight(2)], [100, 25]);
+        grid.SetColumnWidth(1, 150);
+        check('SetColumnWidth sets one column: one change, one undo step', [grid.GetColumnWidth(1), grid.GetColumnWidth(2), changes.splice(0).length, grid.GetRevision() !== r0, grid.CanUndo()], [150, 100, 1, true, true]);
+        grid.SetColumnWidth('C:D', 60); grid.SetRowHeight(2, 40); grid.SetRowHeight('4:5', 30);
+        await frame();
+        check('... or the columns / rows of a range', [[1, 2, 3, 4].map((col) => grid.GetColumnWidth(col)), [2, 3, 4, 5].map((row) => grid.GetRowHeight(row))], [[150, 60, 60, 100], [40, 30, 30, 25]]);
+        check('the grid draws them', [size(0, 1), size(0, 2), size(2, 0), size(3, 3)], [[150, 25], [60, 25], [100, 40], [60, 30]]);
+        grid.Undo(); grid.Undo();
+        check('undo takes back one call at a time', [[2, 3].map((col) => grid.GetColumnWidth(col)), [2, 3, 4].map((row) => grid.GetRowHeight(row))], [[60, 60], [25, 25, 25]]);
+        grid.Redo(); grid.Redo();
+        check('redo', [grid.GetRowHeight(2), grid.GetRowHeight(4)], [40, 30]);
+        const r1 = grid.GetRevision();
+        grid.SetColumnWidth(1, 150);
+        check('the size it has already is no change', [grid.GetRevision() === r1, changes.splice(0).length > 0], [true, true]);
+        check('bad arguments throw', [
+            thrown(() => grid.SetColumnWidth(-1, 10)), thrown(() => grid.SetColumnWidth(0, -5)), thrown(() => grid.SetColumnWidth(0, 5000)), thrown(() => grid.SetColumnWidth('no range', 10)),
+            thrown(() => grid.SetRowHeight(0, 'tall')), thrown(() => grid.SetRowHeight(0, 600)), thrown(() => grid.HideRows()), thrown(() => grid.HideRows(2, 0)), thrown(() => grid.GetColumnWidth(99999)),
+            thrown(() => grid.SetGroupCollapsed('rows', 0, true)), thrown(() => grid.SetGroupCollapsed('diagonal', 0, true)), thrown(() => grid.AutoFitColumns('??')),
+        ].map((message) => message && message.split(':')[0]), ['SetColumnWidth', 'SetColumnWidth', 'SetColumnWidth', 'SetColumnWidth', 'SetRowHeight', 'SetRowHeight', 'HideRows', 'HideRows', 'GetColumnWidth', 'SetGroupCollapsed', 'SetGroupCollapsed', 'AutoFitColumns']);
+        check('a message says what is wrong', [thrown(() => grid.SetColumnWidth(0, 5000)), thrown(() => grid.SetGroupCollapsed('rows', 0, true))], ['SetColumnWidth: the width must be 0 to 1785 pixels, got 5000', 'SetGroupCollapsed: row 0 is not in a group']);
+
+        // ---- auto-fit ----
+        const long = 'a fairly long piece of text for one cell';
+        grid.SetCell(0, 5, long); grid.SetCell(1, 5, 'Big and bold'); grid.SelectCell(1, 5); grid.ApplyFormat('bold'); grid.SetFontSize(22);
+        grid.SetCell(2, 5, 'short');
+        grid.SetCell(0, 6, '1234567.891'); grid.SelectCell(0, 6); grid.SetNumberFormat('#,##0.00'); grid.SetColumnWidth(6, 30);
+        await frame();
+        check('a number in a column too narrow for it shows ####', /^#+$/.test(node(0, 6).textContent), true);
+        const before = grid.GetRevision();
+        grid.AutoFitColumns('F:G');
+        await frame();
+        const wanted = Math.ceil(Math.max(textWidth(long), textWidth('Big and bold', 22, true))) + 10;
+        check('AutoFitColumns: the widest text of the column in its font, plus the padding', [grid.GetColumnWidth(5), grid.GetRevision() !== before], [wanted, true]);
+        check('... the text fits its cell', [node(0, 5).scrollWidth <= node(0, 5).clientWidth, node(1, 5).scrollWidth <= node(1, 5).clientWidth], [true, true]);
+        check('... a number is fitted as it is displayed', [grid.GetColumnWidth(6), node(0, 6).textContent], [Math.ceil(textWidth('1,234,567.89')) + 10, '1,234,567.89']);
+        grid.Undo();
+        check('one undo step for all the columns', [grid.GetColumnWidth(5), grid.GetColumnWidth(6)], [100, 30]);
+        grid.Redo();
+        grid.SelectRange(0, 7, 3, 8); grid.SetCell(1, 7, 'selected column'); grid.SetCell(2, 8, 'x');
+        grid.AutoFitColumns();
+        check('without a range: the columns of the selection (a column without text keeps its width)', [grid.GetColumnWidth(7), grid.GetColumnWidth(8), grid.GetColumnWidth(9)], [Math.ceil(textWidth('selected column')) + 10, Math.ceil(textWidth('x')) + 10, 100]);
+        // Rows: wrapped text, a large font.
+        grid.SetCell(6, 1, 'wrapped text that takes a number of lines in a column this narrow'); grid.SelectCell(6, 1); grid.SetWrapText(true);
+        grid.SetCell(7, 0, 'Big'); grid.SelectCell(7, 0); grid.SetFontSize(22);
+        grid.SetRowHeight(8, 60);
+        grid.AutoFitRows('7:9');
+        await frame();
+        const wrappedHeight = grid.GetRowHeight(6);
+        check('AutoFitRows: wrapped text gets the lines it takes', [wrappedHeight > 25, (wrappedHeight - 6) % 14, node(6, 1).scrollHeight <= node(6, 1).clientHeight + 1], [true, 0, true]);
+        check('... a large font its line height, a row without text the default', [grid.GetRowHeight(7), grid.GetRowHeight(8)], [Math.round(22 * 1.3) + 6, 20]);
+        grid.SetColumnWidth(1, 300); grid.AutoFitRows(6);
+        check('... fewer lines in a wider column', grid.GetRowHeight(6) < wrappedHeight, true);
+        grid.Undo(); grid.Undo();
+        check('undo of the fit and of the width', [grid.GetRowHeight(6), grid.GetColumnWidth(1)], [wrappedHeight, 150]);
+
+        // ---- the resize handles of the headers ----
+        const handle = (kind, index) => host.querySelector(`.spreadsheet-${kind}-header[data-${kind}="${index}"] .${kind}-resize-handle`);
+        const doubleClick = (target) => { const box = target.getBoundingClientRect(); target.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: box.left + 1, clientY: box.top + 1, button: 0 })); };
+        grid.SelectCell(0, 0);
+        grid.SetColumnWidth(5, 400); await frame();
+        doubleClick(handle('col', 5));
+        check('a double click on a column header\'s resize handle fits the column', grid.GetColumnWidth(5), wanted);
+        grid.Undo();
+        check('... as one undo step', grid.GetColumnWidth(5), 400);
+        grid.SetRowHeight(7, 90); await frame();
+        doubleClick(handle('row', 7));
+        check('... and on a row header\'s the row', grid.GetRowHeight(7), Math.round(22 * 1.3) + 6);
+        grid.SetZoom(1.5); await frame();
+        doubleClick(handle('col', 5));
+        check('at a zoom of 150 % the fitted width is the same (sheet pixels)', [grid.GetColumnWidth(5), Math.abs(node(0, 5).getBoundingClientRect().width - wanted * 1.5) <= 1], [wanted, true]);
+        // With whole columns selected, a double click on one of them fits them all.
+        grid.SetColumnWidth('F:G', 250); grid.SelectRange(0, 5, grid.GetModel().RowCount - 1, 6); await frame();
+        doubleClick(handle('col', 6));
+        check('with whole columns selected, all of them', [grid.GetColumnWidth(5), grid.GetColumnWidth(6)], [wanted, Math.ceil(textWidth('1,234,567.89')) + 10]);
+        // A drag of the handle is one undo step.
+        grid.SetZoom(1); grid.SelectCell(0, 0); await frame();
+        const grip = handle('col', 0), gripBox = grip.getBoundingClientRect(), revisionBeforeDrag = grid.GetRevision();
+        grip.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: gripBox.left + 1, clientY: gripBox.top + 5, button: 0 }));
+        for (const dx of [10, 25, 40]) document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: gripBox.left + 1 + dx, clientY: gripBox.top + 5 }));
+        document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: gripBox.left + 41, clientY: gripBox.top + 5 }));
+        await frame();
+        check('dragging a resize handle resizes', [grid.GetColumnWidth(0), grid.GetRevision() !== revisionBeforeDrag], [140, true]);
+        grid.Undo();
+        check('... as one undo step', [grid.GetColumnWidth(0), grid.GetRevision() === revisionBeforeDrag], [100, true]);
+
+        // ---- hidden rows and columns ----
+        grid.SetRowHeight(2, 40);
+        const visible = grid.GetRevision();
+        grid.HideRows(2, 2); await frame();
+        check('HideRows: the rows have no height and are listed', [grid.GetRowHeight(2), grid.GetRowHeight(3), grid.GetHiddenRows(), grid.GetRevision() !== visible], [0, 0, ['3:4'], true]);
+        check('... and are not drawn', [node(2, 0) === null || node(2, 0).getBoundingClientRect().height === 0, Math.round(node(4, 0).getBoundingClientRect().top - node(1, 0).getBoundingClientRect().bottom)], [true, 0]);
+        grid.SelectCell(1, 0); press(host, 'ArrowDown');
+        check('the arrow keys step over hidden rows', active(), [4, 0]);
+        press(host, 'ArrowUp');
+        check('... both ways', active(), [1, 0]);
+        grid.HideColumns('B:C'); await frame();
+        check('HideColumns', [grid.GetHiddenColumns(), grid.GetColumnWidth(1), grid.GetColumnWidth(2)], [['B:C'], 0, 0]);
+        grid.SelectCell(0, 0); press(host, 'ArrowRight');
+        check('... stepped over by the arrow keys too', active(), [0, 3]);
+        grid.Undo();
+        check('undo shows the columns again at their widths', [grid.GetHiddenColumns(), grid.GetColumnWidth(1), grid.GetColumnWidth(2)], [[], 150, 60]);
+        grid.Redo();
+        grid.UnhideRows('1:10'); grid.UnhideColumns(0, 5); await frame();
+        check('UnhideRows / UnhideColumns: back at the sizes they had', [grid.GetHiddenRows(), grid.GetRowHeight(2), grid.GetRowHeight(3), grid.GetHiddenColumns(), grid.GetColumnWidth(1), grid.GetColumnWidth(2), size(2, 1)], [[], 40, 30, [], 150, 60, [150, 40]]);
+        grid.SetColumnWidth(3, 0);
+        check('a width of 0 hides; any other width shows', [grid.GetHiddenColumns(), (grid.SetColumnWidth(3, 70), grid.GetHiddenColumns()), grid.GetColumnWidth(3)], [['D:D'], [], 70]);
+
+        // ---- outline ----
+        check('no outline at first', grid.GetOutline(), { rows: [], columns: [], rowLevels: 0, columnLevels: 0 });
+        grid.GroupRows('11:16'); grid.GroupRows(11, 2); grid.GroupColumns('J:K');
+        check('GroupRows / GroupColumns: levels', grid.GetOutline(), {
+            rows: [{ first: 10, last: 15, range: '11:16', level: 1, collapsed: false }, { first: 11, last: 12, range: '12:13', level: 2, collapsed: false }],
+            columns: [{ first: 9, last: 10, range: 'J:K', level: 1, collapsed: false }], rowLevels: 2, columnLevels: 1 });
+        grid.SetGroupCollapsed('rows', 11, true);
+        check('collapsing the inner group hides its rows', [grid.GetHiddenRows(), grid.GetOutline().rows.map((group) => group.collapsed)], [['12:13'], [false, true]]);
+        grid.SetGroupCollapsed('rows', 14, true);
+        check('... the outer group all of them', grid.GetHiddenRows(), ['11:16']);
+        grid.SetGroupCollapsed('rows', 14, false);
+        check('expanding the outer group leaves the collapsed inner one shut', [grid.GetHiddenRows(), grid.GetOutline().rows.map((group) => group.collapsed)], [['12:13'], [false, true]]);
+        grid.Undo(); grid.Undo();
+        check('undo', grid.GetHiddenRows(), ['12:13']);
+        grid.Redo();
+        grid.SetGroupCollapsed('columns', 9, true);
+        grid.UngroupRows(15);
+        check('UngroupRows lowers the level', grid.GetOutline().rows.map((group) => [group.range, group.level]), [['11:15', 1], ['12:13', 2]]);
+        grid.InsertRows(0, 2);
+        check('inserted rows move the outline and the hidden rows', [grid.GetOutline().rows.map((group) => group.range), grid.GetHiddenRows()], [['13:17', '14:15'], ['13:18']]);
+        grid.Undo();
+
+        // ---- through a file ----
+        grid.HideRows(2);
+        const state = () => ({ rows: grid.GetHiddenRows(), columns: grid.GetHiddenColumns(), outline: grid.GetOutline(), widths: [1, 2, 3, 5, 6].map((col) => Math.round(grid.GetColumnWidth(col))), heights: [4, 6, 7].map((row) => Math.round(grid.GetRowHeight(row))) });
+        const saved = state();
+        const again = await reopened(grid);
+        try {
+            const read = { rows: again.grid.GetHiddenRows(), columns: again.grid.GetHiddenColumns(), outline: again.grid.GetOutline(), widths: [1, 2, 3, 5, 6].map((col) => Math.round(again.grid.GetColumnWidth(col))), heights: [4, 6, 7].map((row) => Math.round(again.grid.GetRowHeight(row))) };
+            for (const key of Object.keys(saved)) check(`ExportXlsx -> ImportXlsx: ${key}`, read[key], saved[key]);
+            again.grid.UnhideRows('1:20'); again.grid.UnhideColumns('A:Z');
+            check('... a row hidden in the file comes back at the height it had', [Math.round(again.grid.GetRowHeight(2)), again.grid.GetHiddenRows(), again.grid.GetHiddenColumns()], [40, [], []]);
+            check('... the collapsed marks are still there for the host', again.grid.GetOutline().rows.map((group) => group.collapsed), saved.outline.rows.map((group) => group.collapsed));
+        } finally { again.close(); }
+
+        // ---- a large sheet: a whole column is fitted from the cells it has ----
+        const big = mountGrid();
+        try {
+            await big.grid.ImportXlsx(await bytesOf('tests/real-world/dashboard-sales-analysis.xlsx'));
+            big.grid.SwitchSheet(big.grid.GetSheetNames().indexOf('Data'));
+            const cells = big.grid.GetModel().RowCount;
+            let started = performance.now();
+            big.grid.AutoFitColumns('A:A');
+            const one = performance.now() - started;
+            started = performance.now();
+            big.grid.AutoFitColumns('A:K');
+            const all = performance.now() - started;
+            started = performance.now();
+            big.grid.AutoFitRows('1:1048576');
+            const rows = performance.now() - started;
+            check('a whole column of a large sheet is fitted in reasonable time', one < 3000 && all < 6000 && rows < 6000, true);
+            note(`dashboard "Data" (${cells} rows): AutoFitColumns("A:A") ${Math.round(one)} ms, ("A:K") ${Math.round(all)} ms, AutoFitRows(all rows) ${Math.round(rows)} ms`);
+            check('the cell map did not grow', big.grid.CanUndo(), true);
+        } finally { big.close(); }
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};

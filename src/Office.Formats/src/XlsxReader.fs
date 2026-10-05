@@ -174,6 +174,10 @@ type Row = {
     CustomHeight: bool option
     /// `<row hidden="1">` collapses the row in display + print (height = 0).
     Hidden: bool
+    /// `outlineLevel` (0 = in no group) and `collapsed` (the summary row of
+    /// a collapsed group).
+    OutlineLevel: int
+    Collapsed: bool
 }
 
 type ColumnInfo = {
@@ -181,6 +185,9 @@ type ColumnInfo = {
     MaxIndex: int
     Width: float option
     Hidden: bool
+    /// `outlineLevel` (0 = in no group) and `collapsed`.
+    OutlineLevel: int
+    Collapsed: bool
     /// `<col style="N"/>` — default cellXf index for every cell in this
     /// column that doesn't carry its own `s="..."`. None when absent.
     Style: int option
@@ -686,12 +693,18 @@ type SheetExtras = {
     /// The relationship id of the `<pageSetup>` element (the printer
     /// settings part, one of `KeptRelationships`).
     PrinterSettingsRelId: string option
+    /// What rows / columns have besides a size, for the writer: 0-based
+    /// index, the height (points) / width (characters) a hidden one keeps,
+    /// the outline level, and the collapsed mark. `packageFromReaderWorkbook`
+    /// fills them in from the sheet's rows and columns.
+    RowAxis: (int * float option * int * bool) list
+    ColumnAxis: (int * float option * int * bool) list
 }
 
 let emptySheetExtras =
     { Images = []; Objects = []; ThreadedComments = []; DrawingRelationships = []; Format = None; Columns = []; ColumnStyles = []
       SheetId = None; KeptRelationships = []; KeptExtensions = []; PivotLocations = []; DataTables = []
-      KeptCellExtensions = []; PrinterSettingsRelId = None }
+      KeptCellExtensions = []; PrinterSettingsRelId = None; RowAxis = []; ColumnAxis = [] }
 
 /// A named cell style (cellStyles / cellStyleXfs of styles.xml), with the
 /// font, fill, border and number format its xf refers to given as their XML so
@@ -1632,6 +1645,8 @@ module Xlsx =
             RawHeight = rawHeight
             CustomHeight = customHeightAttr
             Hidden = hidden
+            OutlineLevel = Xml.attr "outlineLevel" rowNode |> Option.bind tryParseInt |> Option.defaultValue 0
+            Collapsed = Xml.attr "collapsed" rowNode |> Option.map isTrueText |> Option.defaultValue false
         }
 
     // Row extraction
@@ -1962,8 +1977,8 @@ module Xlsx =
                         { Xml = sheetXml
                           Ctx = ctx
                           ColumnNames = System.Collections.Generic.Dictionary<int, string>()
-                          RowNames = [| "r"; "ht"; "customHeight"; "hidden"; "s"; "customFormat"; "spans" |]
-                          RowValues = Array.create 7 null
+                          RowNames = [| "r"; "ht"; "customHeight"; "hidden"; "s"; "customFormat"; "spans"; "outlineLevel"; "collapsed" |]
+                          RowValues = Array.create 9 null
                           CellNames = [| "r"; "s"; "t" |]
                           CellValues = Array.create 3 null
                           FormulaNames = [| "t"; "ref"; "si" |]
@@ -2006,7 +2021,9 @@ module Xlsx =
                                               Height = (if customHeightAttr = Some true then rawHeight else None)
                                               RawHeight = rawHeight
                                               CustomHeight = customHeightAttr
-                                              Hidden = hidden }
+                                              Hidden = hidden
+                                              OutlineLevel = intAttribute scan.RowValues.[7] |> Option.defaultValue 0
+                                              Collapsed = boolAttribute scan.RowValues.[8] |> Option.defaultValue false }
                                     pos <- if selfClosed then rowTagEnd + 1 else rowEnd + 6
                     if not scan.Valid then None
                     else Some (List.ofSeq rows, sheetXml.Substring(0, openAt) + "<sheetData/>" + sheetXml.Substring(closeAt + 12))
@@ -2048,6 +2065,8 @@ module Xlsx =
                 MaxIndex = maxIdx
                 Width = width
                 Hidden = hidden
+                OutlineLevel = Xml.attr "outlineLevel" colNode |> Option.bind tryParseInt |> Option.defaultValue 0
+                Collapsed = Xml.attr "collapsed" colNode |> Option.map isTrueText |> Option.defaultValue false
                 Style = style
             })
 
@@ -2476,6 +2495,8 @@ module Xlsx =
         let rawHeight = nativeFloatAttr reader "ht"
         let height = if customHeight then rawHeight else None
         let hidden = nativeBoolAttr reader "hidden"
+        let outlineLevel = nativeIntAttr reader "outlineLevel" |> Option.defaultValue 0
+        let collapsed = nativeBoolAttr reader "collapsed"
         let rowStyle = nativeIntAttr reader "s"
         let customFormat = nativeBoolAttr reader "customFormat"
         let spans = nativeAttr reader "spans"
@@ -2500,6 +2521,8 @@ module Xlsx =
             RawHeight = rawHeight
             CustomHeight = customHeightAttr
             Hidden = hidden
+            OutlineLevel = outlineLevel
+            Collapsed = collapsed
         }
 
     let private columnInfoNative (reader: System.Xml.XmlReader) : ColumnInfo option =
@@ -2511,6 +2534,8 @@ module Xlsx =
                 MaxIndex = maxIdx
                 Width = nativeFloatAttr reader "width"
                 Hidden = nativeBoolAttr reader "hidden"
+                OutlineLevel = nativeIntAttr reader "outlineLevel" |> Option.defaultValue 0
+                Collapsed = nativeBoolAttr reader "collapsed"
                 Style = nativeIntAttr reader "style"
             })
 
