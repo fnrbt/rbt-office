@@ -170,7 +170,8 @@ let wb3 : Workbook =
       SheetOrder = sheets |> List.map (fun (id, _, _) -> id)
       ActiveSheet = "s4"; Tables = Map.empty
       Names = namesOfTriples [ None, "Ping", "Pong+1"; None, "Pong", "Ping+1"; None, "Selfish", "Selfish*2"
-                               None, "Three", "1+2"; None, "Chain", "Three*2" ] }
+                               None, "Three", "1+2"; None, "Chain", "Three*2" ]
+      NameInfo = Map.empty }
 let wb3c = recalculateWorkbook wb3
 let sumAt r c = valueAt r c wb3c.Sheets.["s4"].Model
 eq "3d-cell"          (sumAt 0 0) (N 111.0)

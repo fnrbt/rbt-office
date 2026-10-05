@@ -149,6 +149,8 @@ type XlsxSource = {
     Baseline: SpreadsheetModel array
     /// The defined names as imported (the context's `Names`).
     BaselineNames: Map<Wb.SheetId option * string, string>
+    /// ... and their spelling, comments and hidden flags (the context's `NameInfo`).
+    BaselineNameInfo: Map<Wb.SheetId option * string, Wb.DefinedNameInfo>
 }
 
 /// A whole imported workbook: every sheet in file order, and the workbook
@@ -212,7 +214,8 @@ let buildWorkbookContext (models: SpreadsheetModel array) (names: string array) 
       SheetOrder = sheetEntries |> List.map fst
       ActiveSheet = sheetIdOfIndex (max 0 (min (models.Length - 1) activeIndex))
       Tables = Map.ofList tables
-      Names = definedNames }
+      Names = definedNames
+      NameInfo = Map.empty }
 
 /// Pixels at 100% per EMU (the unit drawing anchors use in the file).
 let private emuPerPixel = 9525.0
@@ -901,6 +904,19 @@ module Import =
             scope, entry.Name, entry.RefersTo)
         |> Wb.namesOfTriples
 
+    /// Spelling, comment and hidden flag of a reader workbook's defined names.
+    let private definedNameInfo (wb: XlsxReader.Workbook) : Map<Wb.SheetId option * string, Wb.DefinedNameInfo> =
+        wb.NamedRanges
+        |> List.map (fun entry ->
+            let scope =
+                entry.Scope
+                |> Option.bind (fun text ->
+                    match Int32.TryParse text with
+                    | true, index -> Some (sheetIdOfIndex index)
+                    | _ -> None)
+            (scope, entry.Name.ToUpperInvariant()), ({ Name = entry.Name; Comment = entry.Comment; Hidden = entry.Hidden } : Wb.DefinedNameInfo))
+        |> Map.ofList
+
     /// Convert a loaded workbook: every sheet, plus the workbook context.
     /// Throws when the workbook has no sheets.
     let importWorkbookWith (options: ImportOptions) (wb: XlsxReader.Workbook) : ImportedWorkbook =
@@ -924,7 +940,7 @@ module Import =
             imports |> Array.fold (fun acc import -> Map.fold (fun m k v -> Map.add k v m) acc import.TableColumns) Map.empty
         let firstVisible = visible |> Array.tryFindIndex id |> Option.defaultValue 0
         let context =
-            buildWorkbookContext models names visible tableColumns names' firstVisible
+            { buildWorkbookContext models names visible tableColumns names' firstVisible with NameInfo = definedNameInfo wb }
             |> computeUncachedFormulas
         let finalModels =
             Array.init names.Length (fun index ->
@@ -940,7 +956,7 @@ module Import =
                    Visible = visible.[index] } : ImportedSheet))
           Context = context
           Date1904 = wb.Date1904
-          Source = { Id = sourceId; Workbook = wb; Baseline = finalModels; BaselineNames = context.Names } }
+          Source = { Id = sourceId; Workbook = wb; Baseline = finalModels; BaselineNames = context.Names; BaselineNameInfo = context.NameInfo } }
 
     let importWorkbook (wb: XlsxReader.Workbook) : ImportedWorkbook =
         importWorkbookWith defaultImportOptions wb
@@ -1020,7 +1036,7 @@ module Import =
             let visible = readerSheets |> Array.map (fun sheet -> sheetStateText sheet.State = "visible")
             let firstVisible = visible |> Array.tryFindIndex id |> Option.defaultValue 0
             let models = standIns |> Array.mapi (fun index standIn -> if convertNow index then convert index else standIn)
-            let context = buildWorkbookContext models names visible tableColumns names' firstVisible
+            let context = { buildWorkbookContext models names visible tableColumns names' firstVisible with NameInfo = definedNameInfo wb }
             { Sheets =
                 names
                 |> Array.mapi (fun index name ->
@@ -1030,7 +1046,7 @@ module Import =
                        Visible = visible.[index] } : ImportedSheet))
               Context = context
               Date1904 = wb.Date1904
-              Source = { Id = sourceId; Workbook = wb; Baseline = baseline; BaselineNames = context.Names } }
+              Source = { Id = sourceId; Workbook = wb; Baseline = baseline; BaselineNames = context.Names; BaselineNameInfo = context.NameInfo } }
 
     /// One sheet, with only that sheet as the context of its formulas - use
     /// `importWorkbook` when other sheets or defined names matter.
@@ -1058,6 +1074,9 @@ type ExportInput = {
     ActiveSheetIndex: int
     /// Defined names as the workbook context keys them: (scope sheet id, UPPER name) -> refers-to.
     DefinedNames: Map<Wb.SheetId option * string, string>
+    /// Spelling, comment and hidden flag of the defined names (Workbook.NameInfo);
+    /// empty = as the file had them, upper-cased for names it did not have.
+    NameInfo: Map<Wb.SheetId option * string, Wb.DefinedNameInfo>
     /// The workbook the sheets came from, when they came from a file.
     Source: XlsxSource option
     /// VBA module source to write as the workbook's VBA project (native hosts).
@@ -1451,9 +1470,12 @@ module Export =
             |> List.map (fun n ->
                 ({ Name = n.Name
                    RefersTo = n.RefersTo
-                   LocalSheetIndex = n.Scope |> Option.bind (fun s -> match Int32.TryParse s with | true, v -> Some v | _ -> None) } : XlsxWriter.XlsxDefinedName))
+                   LocalSheetIndex = n.Scope |> Option.bind (fun s -> match Int32.TryParse s with | true, v -> Some v | _ -> None)
+                   Comment = n.Comment
+                   Hidden = n.Hidden } : XlsxWriter.XlsxDefinedName))
         match input.Source with
-        | Some source when sameRef source.BaselineNames input.DefinedNames || source.BaselineNames = input.DefinedNames -> fromSource source
+        | Some source when (sameRef source.BaselineNames input.DefinedNames || source.BaselineNames = input.DefinedNames)
+                           && (input.NameInfo.IsEmpty || sameRef source.BaselineNameInfo input.NameInfo || source.BaselineNameInfo = input.NameInfo) -> fromSource source
         | _ ->
             let spelling =
                 match input.Source with
@@ -1469,9 +1491,15 @@ module Export =
                     let local = scope |> Option.bind sheetIndexOfId
                     if scope.IsSome && local.IsNone then None
                     else
-                        Some ({ Name = Map.tryFind upperName spelling |> Option.defaultValue upperName
+                        let info = Map.tryFind (scope, upperName) input.NameInfo
+                        Some ({ Name =
+                                    (match info with
+                                     | Some info -> info.Name
+                                     | None -> Map.tryFind upperName spelling |> Option.defaultValue upperName)
                                 RefersTo = (if refersTo.StartsWith "=" then refersTo.Substring 1 else refersTo)
-                                LocalSheetIndex = local } : XlsxWriter.XlsxDefinedName))
+                                LocalSheetIndex = local
+                                Comment = info |> Option.bind (fun info -> info.Comment)
+                                Hidden = (match info with Some info -> info.Hidden | None -> false) } : XlsxWriter.XlsxDefinedName))
 
     /// The editor's workbook in the writer's shape (see the module comment).
     let toWorkbookOut (input: ExportInput) : XlsxWriter.XlsxWorkbookOut =

@@ -878,3 +878,125 @@ checks['api-validation'] = async () => {
     close();
     return lines;
 };
+
+// Defined names: GetDefinedNames, SetDefinedName, DeleteDefinedName, and the name box's GoTo.
+checks['api-names'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        const { createEmpty } = await import('/spreadsheet/Model.js');
+        grid.InstallWorkbook([grid.GetModel(), createEmpty(200, 20)], ['Data', 'Other sheet'], 0, undefined);
+        grid.SetCell(0, 0, '1'); grid.SetCell(1, 0, '2'); grid.SetCell(2, 0, '3'); grid.SetCell(0, 1, '10'); grid.SetCell(1, 1, '20');
+        grid.SetCell(4, 0, '=SUM(Totals)'); grid.SetCell(5, 0, '=Rate*100');
+        const value = (row, col) => grid.GetCell(row, col).value;
+        check('a formula with an unknown name', [value(4, 0), value(5, 0)], ['#NAME?', '#NAME?']);
+        check('no names yet', grid.GetDefinedNames(), []);
+        const changes = [];
+        const off = grid.OnChange((change) => changes.push(change));
+        const take = () => changes.splice(0).map((c) => `${c.Sheets.join(',')}|${c.WorkbookChanged ? 'book' : ''}`);
+
+        // ---- define ----
+        const r0 = grid.GetRevision();
+        grid.SetDefinedName('Totals', '=Data!$A$1:$A$3', undefined, 'the first column');
+        check('a name is defined and its formulas recalculated', [grid.GetDefinedNames(), value(4, 0)],
+            [[{ name: 'Totals', refersTo: 'Data!$A$1:$A$3', scope: null, scopeName: null, comment: 'the first column', isBuiltIn: false, hidden: false }], 6]);
+        const r1 = grid.GetRevision();
+        check('it is a change of the workbook: OnChange and a new revision', [take(), r1 !== r0, grid.IsModified()], [['0|book'], true, true]);
+        grid.SetDefinedName('Rate', '0.19', null, null);
+        check('a constant, without "="', [value(5, 0), grid.GetDefinedNames().map((n) => [n.name, n.refersTo, n.comment])], [19, [['Rate', '0.19', null], ['Totals', 'Data!$A$1:$A$3', 'the first column']]]);
+        take();
+        // A sheet-level name shadows the workbook's on its own sheet.
+        grid.SwitchSheet(1);
+        grid.SetCell(0, 0, '=Rate*100'); grid.SetCell(0, 1, '7'); grid.SetCell(1, 0, '=SUM(Totals)');
+        check('another sheet reads the workbook-level names', [value(0, 0), value(1, 0)], [19, 6]);
+        grid.SetDefinedName('rate', "'Other sheet'!$B$1", 1);
+        check('a sheet-level name wins on its sheet', [value(0, 0), grid.GetDefinedNames().map((n) => [n.name, n.scope, n.scopeName])], [700, [['Rate', null, null], ['Totals', null, null], ['rate', 1, 'Other sheet']]]);
+        grid.SwitchSheet(0);
+        check('... and only there', value(5, 0), 19);
+
+        // ---- replace, undo, redo ----
+        const beforeReplace = grid.GetRevision();
+        grid.SetDefinedName('TOTALS', 'Data!$B$1:$B$2');
+        check('a replaced name: new spelling, re-pointed formulas, one name', [value(4, 0), grid.GetDefinedNames().filter((n) => n.scope === null).map((n) => [n.name, n.refersTo, n.comment])], [30, [['Rate', '0.19', null], ['TOTALS', 'Data!$B$1:$B$2', null]]]);
+        check('formulas of the other sheet follow', grid.GetCell(1, 0) && grid.GetRange("'Other sheet'!A2")[0][0].value, 30);
+        grid.Undo();
+        check('undo puts the name and the values back, and the revision', [value(4, 0), grid.GetDefinedNames()[1].name, grid.GetDefinedNames()[1].comment, grid.GetRevision() === beforeReplace], [6, 'Totals', 'the first column', true]);
+        grid.Redo();
+        check('redo', [value(4, 0), grid.GetDefinedNames()[1].name], [30, 'TOTALS']);
+        grid.Undo();
+        grid.SetDefinedName('Totals', '=Data!$A$1:$A$3', undefined, 'the first column');
+        check('defining a name as it is changes nothing', [grid.CanRedo(), take().length > 0], [true, true]);
+
+        // ---- delete ----
+        take();
+        grid.DeleteDefinedName('totals');
+        check('a deleted name: #NAME? in its formulas', [value(4, 0), grid.GetDefinedNames().map((n) => n.name), take()], ['#NAME?', ['Rate', 'rate'], ['0,1|book']]);
+        grid.Undo();
+        check('undo brings it back', [value(4, 0), grid.GetDefinedNames().map((n) => n.name)], [6, ['Rate', 'Totals', 'rate']]);
+        grid.Redo(); grid.Undo();
+        grid.DeleteDefinedName('Rate', 1);
+        check('a sheet-level name is deleted by its sheet', [grid.GetDefinedNames().map((n) => [n.name, n.scope]), grid.GetRange("'Other sheet'!A1")[0][0].value], [[['Rate', null], ['Totals', null]], 19]);
+        grid.Undo();
+
+        // ---- what is refused ----
+        check('invalid names', ['A1', 'R1C1', 'My name', '1st', '', 'TRUE', '_xlnm.Print_Area'].map((name) => thrown(() => grid.SetDefinedName(name, '1')) !== null), [true, true, true, true, true, true, true]);
+        check('the message says what is wrong', thrown(() => grid.SetDefinedName('A1', '1')), 'SetDefinedName: the name "A1" reads as a cell reference');
+        check('an invalid formula', [thrown(() => grid.SetDefinedName('Bad', 'SUM(')) !== null, thrown(() => grid.SetDefinedName('Bad', '')), thrown(() => grid.SetDefinedName('Bad', 5)) !== null],
+            [true, 'SetDefinedName: a name has to refer to something', true]);
+        check('an unknown sheet', [thrown(() => grid.SetDefinedName('Fine', '1', 7)), thrown(() => grid.DeleteDefinedName('Rate', 9))], ['SetDefinedName: there is no sheet 7 (the workbook has 2)', 'DeleteDefinedName: there is no sheet 9 (the workbook has 2)']);
+        check('deleting what is not there', [thrown(() => grid.DeleteDefinedName('Nope')), thrown(() => grid.DeleteDefinedName('Totals', 0))],
+            ['DeleteDefinedName: the workbook has no name "Nope" (a sheet-level name needs its sheet index)', 'DeleteDefinedName: the sheet "Data" has no name "Totals"']);
+        check('nothing was defined by the refused calls', grid.GetDefinedNames().map((n) => n.name), ['Rate', 'Totals', 'rate']);
+
+        // ---- GoTo ----
+        const selection = () => [grid.GetActiveSheetIndex(), grid.GetSelectionRef()];
+        check('a cell', [grid.GoTo('C7'), selection()], [{ sheetIndex: 0, range: 'C7' }, [0, 'C7']]);
+        check('a range with $', [grid.GoTo('$B$2:$D$5'), selection()], [{ sheetIndex: 0, range: 'B2:D5' }, [0, 'B2:D5']]);
+        check('a name', [grid.GoTo('totals'), selection()], [{ sheetIndex: 0, range: 'A1:A3' }, [0, 'A1:A3']]);
+        check('a reference on another sheet switches to it', [grid.GoTo("'Other sheet'!B3:C9"), selection()], [{ sheetIndex: 1, range: 'B3:C9' }, [1, 'B3:C9']]);
+        check('on that sheet its own name is the one', [grid.GoTo('Rate'), selection()], [{ sheetIndex: 1, range: 'B1' }, [1, 'B1']]);
+        check('a name that leads to another sheet', [grid.GoTo('Totals'), selection()], [{ sheetIndex: 0, range: 'A1:A3' }, [0, 'A1:A3']]);
+        check("another sheet's name, qualified", [grid.GoTo("'Other sheet'!rate"), selection()], [{ sheetIndex: 1, range: 'B1' }, [1, 'B1']]);
+        grid.SwitchSheet(0);
+        check('a whole column is clipped to the sheet', grid.GoTo('B:B').range, 'B1:B' + grid.GetModel().RowCount);
+        grid.GoTo('A150');
+        await frame();
+        check('the place is scrolled into view', [!!host.querySelector('.spreadsheet-cell[data-row="149"][data-col="0"]'), host.querySelector('.spreadsheet-container').scrollTop > 1000], [true, true]);
+        check('a name that is not a range', thrown(() => grid.GoTo('Rate')), 'GoTo: the name "Rate" does not refer to a range (0.19)');
+        check('nothing by that name', [thrown(() => grid.GoTo('Nowhere')), thrown(() => grid.GoTo('Missing!A1')), thrown(() => grid.GoTo('')) !== null, thrown(() => grid.GoTo('ZZZ99999999')) !== null],
+            ['GoTo: "Nowhere" is not a reference, a defined name or a table', 'GoTo: there is no sheet "Missing"', true, true]);
+        grid.SelectRange(0, 0, 2, 1);
+        grid.DefineTable('Sales', 0, 0, 2, 1, ['a', 'b'], false);
+        check('a table', grid.GoTo('sales'), { sheetIndex: 0, range: 'A1:B3' });
+        check('a table name is not free for a defined name', thrown(() => grid.SetDefinedName('SALES', '1')), 'SetDefinedName: "SALES" is the name of a table');
+
+        // ---- through a file ----
+        off();
+        const again = await reopened(grid);
+        try {
+            check('the names come back from the file: spelling, comment, scope', again.grid.GetDefinedNames(),
+                [{ name: 'Rate', refersTo: '0.19', scope: null, scopeName: null, comment: null, isBuiltIn: false, hidden: false },
+                 { name: 'Totals', refersTo: 'Data!$A$1:$A$3', scope: null, scopeName: null, comment: 'the first column', isBuiltIn: false, hidden: false },
+                 { name: 'rate', refersTo: "'Other sheet'!$B$1", scope: 1, scopeName: 'Other sheet', comment: null, isBuiltIn: false, hidden: false }]);
+            check('an opened workbook is not modified', again.grid.IsModified(), false);
+            check('and its formulas read them', [again.grid.GetCell(4, 0).value, again.grid.GetCell(5, 0).value, again.grid.GetRange("'Other sheet'!A1")[0][0].value], [6, 19, 700]);
+            again.grid.SetDefinedName('Rate', '0.07', undefined, 'reduced');
+            check('a name edited after opening', [again.grid.GetCell(5, 0).value, again.grid.IsModified()], [7.000000000000001, true]);
+            const third = await reopened(again.grid);
+            try {
+                check('... is saved as edited, the others as they were', third.grid.GetDefinedNames().map((n) => [n.name, n.refersTo, n.scope, n.comment]),
+                    [['Rate', '0.07', null, 'reduced'], ['Totals', 'Data!$A$1:$A$3', null, 'the first column'], ['rate', "'Other sheet'!$B$1", 1, null]]);
+            } finally { third.close(); }
+        } finally { again.close(); }
+
+        // A workbook of the corpus with names: listed as the file spells them, untouched by a save.
+        const bytes = await bytesOf('tests/real-world/milk-street-office.xlsx');
+        await grid.ImportXlsx(bytes);
+        const fileNames = grid.GetDefinedNames();
+        const reader = OF.excel.workbookInfo(await OF.excel.load(bytes)).definedNames.filter((n) => !/^_xlnm\./.test(n.name)).map((n) => n.name).sort();
+        check('names of an opened file are listed with their spelling', [fileNames.length > 0, fileNames.map((n) => n.name).sort()], [true, reader]);
+        check('opening is not a modification', grid.IsModified(), false);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};

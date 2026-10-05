@@ -457,6 +457,8 @@ type XlsxDefinedName = {
     Name: string
     RefersTo: string
     LocalSheetIndex: int option
+    Comment: string option
+    Hidden: bool
 }
 
 type XlsxWorkbookOut = {
@@ -1726,13 +1728,13 @@ let private workbookXmlFull (workbook: XlsxWorkbookOut) =
         workbook.Sheets
         |> List.mapi (fun i s ->
             [ match s.PrintArea with
-              | Some v -> yield { Name = "_xlnm.Print_Area"; RefersTo = sprintf "%s!%s" (quoted s.Name) v; LocalSheetIndex = Some i }
+              | Some v -> yield { Name = "_xlnm.Print_Area"; RefersTo = sprintf "%s!%s" (quoted s.Name) v; LocalSheetIndex = Some i; Comment = None; Hidden = false }
               | None -> ()
               match s.PrintTitleRows, s.PrintTitleCols with
               | None, None -> ()
               | rows, cols ->
                   let parts = [ rows; cols ] |> List.choose id |> List.map (fun part -> sprintf "%s!%s" (quoted s.Name) part)
-                  yield { Name = "_xlnm.Print_Titles"; RefersTo = String.concat "," parts; LocalSheetIndex = Some i } ])
+                  yield { Name = "_xlnm.Print_Titles"; RefersTo = String.concat "," parts; LocalSheetIndex = Some i; Comment = None; Hidden = false } ])
         |> List.concat
     let names = workbook.DefinedNames @ printNames
     let definedNames =
@@ -1742,8 +1744,10 @@ let private workbookXmlFull (workbook: XlsxWorkbookOut) =
                 names
                 |> List.map (fun n ->
                     let local = n.LocalSheetIndex |> Option.map (fun i -> sprintf " localSheetId=\"%d\"" i) |> Option.defaultValue ""
-                    sprintf "<definedName %s%s>%s</definedName>"
-                        (attr "name" n.Name) local
+                    let comment = n.Comment |> Option.map (fun text -> " " + attr "comment" text) |> Option.defaultValue ""
+                    let hidden = if n.Hidden then " hidden=\"1\"" else ""
+                    sprintf "<definedName %s%s%s%s>%s</definedName>"
+                        (attr "name" n.Name) comment local hidden
                         (escaped n.RefersTo))
                 |> String.concat ""
             "<definedNames>" + body + "</definedNames>"
@@ -2262,7 +2266,7 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
                             | Some index when index > 0 && index < workbook.Styles.Length -> Some (column.Index - 1, column.MaxIndex - 1, workbook.Styles.[index])
                             | _ -> None) } })
       ActiveSheetIndex = 0
-      DefinedNames = workbook.NamedRanges |> List.map (fun n -> { Name = n.Name; RefersTo = n.RefersTo; LocalSheetIndex = n.Scope |> Option.bind (fun s -> match System.Int32.TryParse s with true, v -> Some v | _ -> None) })
+      DefinedNames = workbook.NamedRanges |> List.map (fun n -> { Name = n.Name; RefersTo = n.RefersTo; LocalSheetIndex = n.Scope |> Option.bind (fun s -> match System.Int32.TryParse s with true, v -> Some v | _ -> None); Comment = n.Comment; Hidden = n.Hidden })
       VbaProjectSource = None
       Dxfs = workbook.Dxfs |> Array.toList
       Preserved = workbook.Preserved }

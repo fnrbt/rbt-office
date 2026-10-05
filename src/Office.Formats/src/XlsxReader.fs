@@ -305,6 +305,10 @@ type NamedRange = {
     Name: string
     RefersTo: string
     Scope: string option  // worksheet name or "Workbook"
+    /// The `comment` attribute (the name manager's comment).
+    Comment: string option
+    /// `hidden="1"`: not listed in the name manager.
+    Hidden: bool
 }
 
 type ChartType =
@@ -3914,6 +3918,8 @@ module NamedRanges =
                     Name = name
                     RefersTo = refersTo
                     Scope = scope
+                    Comment = Xml.attr "comment" nameNode |> Option.filter (fun text -> text <> "")
+                    Hidden = (match Xml.attr "hidden" nameNode with Some ("1" | "true") -> true | _ -> false)
                 }))
 
     let parseNamedRanges (wbNode: XmlNode) : NamedRange list =

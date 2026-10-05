@@ -160,6 +160,23 @@ let private sameRef (a: 'T) (b: 'T) = obj.ReferenceEquals(a, b)
 [<Emit("$0.then((written) => (written instanceof Uint8Array ? written : (written && typeof written.arrayBuffer === 'function' ? written.arrayBuffer().then((buffer) => new Uint8Array(buffer)) : new Uint8Array(written))))")>]
 let private packageBytes (written: JS.Promise<obj>): JS.Promise<byte[]> = jsNative
 
+/// The document content a workbook holds outside its sheets (defined names
+/// with their spelling and comments). A change of it is a change of the
+/// document: the revision and OnChange follow it as they follow the sheets.
+type private BookContent = {
+    Names: Map<SheetId option * string, string>
+    NameInfo: Map<SheetId option * string, DefinedNameInfo>
+}
+
+let private bookContentOf (workbook: Workbook option) : BookContent =
+    match workbook with
+    | Some wb -> { Names = wb.Names; NameInfo = wb.NameInfo }
+    | None -> { Names = Map.empty; NameInfo = Map.empty }
+
+let private sameBookContent (a: BookContent) (b: BookContent) =
+    (sameRef a.Names b.Names || a.Names = b.Names)
+    && (sameRef a.NameInfo b.NameInfo || a.NameInfo = b.NameInfo)
+
 /// Whether two models of a sheet hold the same document content: everything
 /// that is part of the workbook, as opposed to view and editing state
 /// (selection, edit buffer, clipboard, search, undo history).
@@ -394,6 +411,7 @@ type Spreadsheet(container: Element) =
     /// and the selection of the active sheet.
     let mutable notifiedSheets: SpreadsheetModel array = [||]
     let mutable notifiedNames: string array = [||]
+    let mutable notifiedBook: BookContent = bookContentOf None
     let mutable notifiedSelection: (int * Selection * CellAddress) option = None
     // --- revisions ----------------------------------------------------------------
     // The revision is a number that names the workbook's content: every
@@ -406,6 +424,8 @@ type Spreadsheet(container: Element) =
     /// The content the current revision was given to.
     let mutable revisionSheets: SpreadsheetModel array = Array.copy sheets
     let mutable revisionNames: string array = Array.copy sheetNames
+    /// ... and the workbook-level content (defined names) it was given to.
+    let mutable revisionBook: BookContent = bookContentOf None
     /// The undoable steps in the order they were taken, each with the
     /// revision before and after it, and the ones undone since (for redo).
     let appliedSteps = ResizeArray<Command * int * int>()
@@ -663,7 +683,8 @@ type Spreadsheet(container: Element) =
               SheetOrder = sheetEntries |> List.map fst
               ActiveSheet = activeSheet
               Tables = Map.empty
-              Names = Map.empty }
+              Names = Map.empty
+              NameInfo = Map.empty }
 
     let installWorkbookSnapshot (wb: Workbook) =
         for i in 0 .. sheets.Length - 1 do
@@ -678,7 +699,8 @@ type Spreadsheet(container: Element) =
                 SheetOrder = wb.SheetOrder
                 ActiveSheet = wb.ActiveSheet
                 Tables = wb.Tables
-                Names = wb.Names })
+                Names = wb.Names
+                NameInfo = wb.NameInfo })
 
     /// The workbook that conditional-format and validation formulas are
     /// evaluated against; refreshed at each render.
@@ -1729,6 +1751,46 @@ type Spreadsheet(container: Element) =
             pushValueNeutral { Undo = (fun m -> { m with Validations = before })
                                Redo = (fun m -> { m with Validations = after })
                                Description = description }
+            true
+
+    /// The workbook context, made now for a grid that has none yet.
+    let ensureWorkbook () : Workbook =
+        match workbook with
+        | Some wb -> wb
+        | None ->
+            let wb = currentWorkbookSnapshot()
+            workbook <- Some wb
+            wb
+
+    /// The index of the sheet with an id, or -1.
+    let sheetIndexOfId (id: SheetId) : int =
+        let mutable found = -1
+        for index in 0 .. sheets.Length - 1 do
+            if found < 0 && sheetIdForIndex index = id then found <- index
+        found
+
+    /// The index of the sheet with a name (as formulas match it: whatever the case), or -1.
+    let sheetIndexOfName (name: string) : int =
+        sheetNames |> Array.tryFindIndex (fun known -> System.String.Equals(known, name, System.StringComparison.OrdinalIgnoreCase)) |> Option.defaultValue -1
+
+    /// Change one defined name as one undoable step: every formula is
+    /// recalculated (those that use the name read something else now), and
+    /// undo / redo put the name back as it was / as it became. False when
+    /// nothing changed.
+    let changeDefinedName (description: string) (scope: SheetId option) (name: string) (change: Workbook -> Workbook) : bool =
+        let wb = ensureWorkbook ()
+        let before = Rbt.Spreadsheet.Workbook.tryFindDefinedName scope name wb
+        let changed = change wb
+        let after = Rbt.Spreadsheet.Workbook.tryFindDefinedName scope name changed
+        if before = after then false
+        else
+            workbook <- Some changed
+            recalculateEverything()
+            let restore (state: Rbt.Spreadsheet.Workbook.DefinedName option) (m: SpreadsheetModel) =
+                workbook <- workbook |> Option.map (Rbt.Spreadsheet.Workbook.restoreDefinedName scope name state)
+                invalidateCalcEngine()
+                m
+            model <- pushCommand { Undo = restore before; Redo = restore after; Description = description } model
             true
 
     /// The highest validation id the component has handed out (see lastRuleId).
@@ -2796,10 +2858,12 @@ type Spreadsheet(container: Element) =
         let same =
             current.Length = revisionSheets.Length
             && sheetNames = revisionNames
+            && sameBookContent (bookContentOf workbook) revisionBook
             && Array.forall2 sameSheetContent current revisionSheets
         if not same then
             revisionSheets <- current
             revisionNames <- Array.copy sheetNames
+            revisionBook <- bookContentOf workbook
             let fresh () =
                 lastRevision <- lastRevision + 1
                 lastRevision
@@ -2847,14 +2911,18 @@ type Spreadsheet(container: Element) =
                     if i >= notifiedSheets.Length || not (sameSheetContent current.[i] notifiedSheets.[i]) then yield i |]
             let selection = Some (activeSheetIndex, model.Selection, activeCellAddress())
             let selectionChanged = selection <> notifiedSelection
+            let book = bookContentOf workbook
+            let bookChanged = not (sameBookContent book notifiedBook)
             notifiedSheets <- current
             notifiedNames <- Array.copy sheetNames
+            notifiedBook <- book
             notifiedSelection <- selection
-            if structureChanged || changedSheets.Length > 0 then
+            if structureChanged || bookChanged || changedSheets.Length > 0 then
                 let change =
                     createObj [
                         "Sheets" ==> changedSheets
                         "StructureChanged" ==> structureChanged
+                        "WorkbookChanged" ==> bookChanged
                         "ActiveSheetIndex" ==> activeSheetIndex
                         "Revision" ==> revision
                         "Modified" ==> (revision <> savedRevision)
@@ -4466,7 +4534,8 @@ type Spreadsheet(container: Element) =
     /// rows and columns, tables, validations, conditional formats, sheets
     /// added, removed or renamed, undo and redo. It receives
     /// { Sheets: number[] (indices of the sheets that changed),
-    ///   StructureChanged: boolean (sheet list changed), ActiveSheetIndex,
+    ///   StructureChanged: boolean (sheet list changed), WorkbookChanged:
+    ///   boolean (defined names changed), ActiveSheetIndex,
     ///   Revision: number, Modified: boolean } (see GetRevision / IsModified).
     /// Selection moves and in-cell typing before it is committed are not
     /// document changes. Returns a function that removes the subscription.
@@ -4476,6 +4545,7 @@ type Spreadsheet(container: Element) =
             // Changes are reported from here on, not since the last subscriber left.
             notifiedSheets <- Array.init sheets.Length (fun i -> if i = activeSheetIndex then model else sheets.[i])
             notifiedNames <- Array.copy sheetNames
+            notifiedBook <- bookContentOf workbook
             notifiedSelection <- Some (activeSheetIndex, model.Selection, activeCellAddress())
         changeListeners.Add listener
         System.Action(fun () -> changeListeners.Remove listener |> ignore)
@@ -4488,6 +4558,7 @@ type Spreadsheet(container: Element) =
         if changeListeners.Count = 0 && selectionListeners.Count = 0 then
             notifiedSheets <- Array.init sheets.Length (fun i -> if i = activeSheetIndex then model else sheets.[i])
             notifiedNames <- Array.copy sheetNames
+            notifiedBook <- bookContentOf workbook
             notifiedSelection <- Some (activeSheetIndex, model.Selection, activeCellAddress())
         selectionListeners.Add listener
         System.Action(fun () -> selectionListeners.Remove listener |> ignore)
@@ -4759,6 +4830,7 @@ type Spreadsheet(container: Element) =
                     | None -> true)
               ActiveSheetIndex = activeSheetIndex
               DefinedNames = (match workbook with Some wb -> wb.Names | None -> Map.empty)
+              NameInfo = (match workbook with Some wb -> wb.NameInfo | None -> Map.empty)
               Source = xlsxSource
               // A VBA project of the opened file is one of its kept parts.
               Macros = None }
@@ -5881,6 +5953,141 @@ type Spreadsheet(container: Element) =
         if invalidCircles.Count > 0 then
             invalidCircles.Clear()
             render()
+
+    // ===== Defined names =====
+
+    /// The workbook's defined names: [{ name, refersTo (the formula, without
+    /// "="), scope (0-based index of the sheet a sheet-level name belongs
+    /// to, null for a workbook-level one), scopeName (that sheet's name or
+    /// null), comment (string | null), isBuiltIn (an `_xlnm.` name of the
+    /// file, e.g. the range of a filter), hidden (the file hides it from the
+    /// name manager) }], workbook-level names first, then by name. Print
+    /// areas and print titles are not names here: they belong to the page setup.
+    member _.GetDefinedNames() : obj array =
+        match workbook with
+        | None -> [||]
+        | Some wb ->
+            Rbt.Spreadsheet.Workbook.definedNames wb
+            |> List.filter (fun entry -> not (entry.Name.ToUpperInvariant().StartsWith "_XLNM.PRINT_"))
+            |> List.choose (fun entry ->
+                let scopeIndex = entry.Scope |> Option.map sheetIndexOfId
+                // (A name of a sheet that is gone is not a name any more.)
+                if scopeIndex = Some -1 then None
+                else
+                    Some (createObj [
+                            "name" ==> entry.Name
+                            "refersTo" ==> entry.RefersTo
+                            "scope" ==> Host.orNull scopeIndex
+                            "scopeName" ==> Host.orNull (scopeIndex |> Option.map (fun index -> sheetNames.[index]))
+                            "comment" ==> Host.orNull entry.Comment
+                            "isBuiltIn" ==> entry.Name.ToUpperInvariant().StartsWith "_XLNM."
+                            "hidden" ==> entry.Hidden ]))
+            |> List.toArray
+
+    /// Define a name, or replace the one of the same scope (names differ by
+    /// more than upper / lower case): `name` as Excel accepts it (starts
+    /// with a letter, `_` or `\`; letters, digits, `_`, `.`, `\`, `?`; not a
+    /// cell reference such as A1 or R1C1; at most 255 characters; not the
+    /// name of a table), `refersTo` a reference or formula with or without
+    /// "=" ("Sheet1!$A$1:$B$9", "0.19", "OFFSET(Data!$A$1,0,0,5,1)" - a
+    /// reference without a sheet is read on the sheet of the formula that
+    /// uses the name), `scopeSheetIndex` the sheet of a sheet-level name
+    /// (omitted or null: the workbook), `comment` a note (omitted or null:
+    /// none). Formulas that use the name are recalculated. One undo step.
+    /// Throws on an invalid name, formula or sheet index.
+    member _.SetDefinedName(name: obj, refersTo: obj, scopeSheetIndex: obj, comment: obj) : unit =
+        let memberName = "SetDefinedName"
+        let name = (Host.stringArg memberName "name" name).Trim()
+        let refersTo = (Host.stringArg memberName "refersTo" refersTo).Trim()
+        let scopeIndex = Host.optionalArg (Host.intArg memberName "scopeSheetIndex") scopeSheetIndex
+        let comment = Host.optionalArg (Host.stringArg memberName "comment") comment |> Option.filter (fun text -> text <> "")
+        match scopeIndex with
+        | Some index when index < 0 || index >= sheets.Length -> Host.hostFail memberName (sprintf "there is no sheet %d (the workbook has %d)" index sheets.Length)
+        | _ -> ()
+        (match Rbt.Spreadsheet.Workbook.definedNameProblem name with
+         | Some problem -> Host.hostFail memberName problem
+         | None -> ())
+        if name.ToUpperInvariant().StartsWith "_XLNM." then Host.hostFail memberName (sprintf "\"%s\" is a built-in name" name)
+        let wb = ensureWorkbook ()
+        if wb.Tables |> Map.exists (fun known _ -> System.String.Equals(known, name, System.StringComparison.OrdinalIgnoreCase)) then
+            Host.hostFail memberName (sprintf "\"%s\" is the name of a table" name)
+        (match SheetOps.refersToProblem refersTo with
+         | Some problem -> Host.hostFail memberName problem
+         | None -> ())
+        let scope = scopeIndex |> Option.map sheetIdForIndex
+        if changeDefinedName "Define name" scope name (Rbt.Spreadsheet.Workbook.setDefinedName scope name refersTo comment) then render()
+
+    /// Delete a defined name: the workbook-level one, or with `scope` (a
+    /// sheet index) that sheet's. Formulas that use it show #NAME?. One undo
+    /// step. Throws when there is no such name, or for a built-in name.
+    member _.DeleteDefinedName(name: obj, scope: obj) : unit =
+        let memberName = "DeleteDefinedName"
+        let name = (Host.stringArg memberName "name" name).Trim()
+        let scopeIndex = Host.optionalArg (Host.intArg memberName "scope") scope
+        match scopeIndex with
+        | Some index when index < 0 || index >= sheets.Length -> Host.hostFail memberName (sprintf "there is no sheet %d (the workbook has %d)" index sheets.Length)
+        | _ -> ()
+        if name.ToUpperInvariant().StartsWith "_XLNM." then Host.hostFail memberName (sprintf "\"%s\" is a built-in name" name)
+        let scope = scopeIndex |> Option.map sheetIdForIndex
+        let wb = ensureWorkbook ()
+        match Rbt.Spreadsheet.Workbook.deleteDefinedName scope name wb with
+        | None ->
+            Host.hostFail memberName
+                (match scopeIndex with
+                 | Some index -> sprintf "the sheet \"%s\" has no name \"%s\"" sheetNames.[index] name
+                 | None -> sprintf "the workbook has no name \"%s\" (a sheet-level name needs its sheet index)" name)
+        | Some _ ->
+            if changeDefinedName "Delete name" scope name (fun current -> Rbt.Spreadsheet.Workbook.deleteDefinedName scope name current |> Option.defaultValue current) then render()
+
+    /// Go to a place, as the name box does: a reference ("B3", "B3:C9",
+    /// "A:A", "Sheet2!B3:C9", "'My sheet'!A1"), a defined name that refers
+    /// to a range (the active sheet's own name before a workbook-level one;
+    /// "Sheet2!Name" for another sheet's), or the name of a table. The sheet
+    /// is switched to when it is another one, the range selected (clipped to
+    /// the sheet) and scrolled into view. Returns { sheetIndex, range }.
+    /// Throws when the text names nothing, or a name that is not a range.
+    member this.GoTo(nameOrRef: obj) : obj =
+        let memberName = "GoTo"
+        let text = (Host.stringArg memberName "nameOrRef" nameOrRef).Trim()
+        if text = "" then Host.hostFail memberName "nothing to go to"
+        let sheetNamed (name: string) =
+            let index = sheetIndexOfName name
+            if index < 0 then Host.hostFail memberName (sprintf "there is no sheet \"%s\"" name)
+            index
+        let prefix, rest = SheetOps.splitSheetPrefix text
+        let homeIndex = match prefix with Some name -> sheetNamed name | None -> activeSheetIndex
+        let sheetIndex, range =
+            match SheetOps.tryParseRange rest with
+            | Some range -> homeIndex, range
+            | None ->
+                let named = workbook |> Option.bind (Rbt.Spreadsheet.Workbook.getName (Some (sheetIdForIndex homeIndex)) rest)
+                match named with
+                | Some refersTo ->
+                    // (Of several areas, the first.)
+                    let body = if refersTo.StartsWith "=" then refersTo.Substring 1 else refersTo
+                    let first = (SheetOps.splitAreas body) |> List.tryHead |> Option.defaultValue body
+                    let targetPrefix, targetRest = SheetOps.splitSheetPrefix first
+                    match SheetOps.tryParseRange targetRest with
+                    | Some range -> (match targetPrefix with Some name -> sheetNamed name | None -> homeIndex), range
+                    | None -> Host.hostFail memberName (sprintf "the name \"%s\" does not refer to a range (%s)" rest body)
+                | None ->
+                    let table =
+                        workbook |> Option.bind (fun wb ->
+                            wb.Tables |> Map.tryPick (fun known table -> if System.String.Equals(known, rest, System.StringComparison.OrdinalIgnoreCase) then Some table else None))
+                    match table with
+                    | Some table when sheetIndexOfId table.SheetId >= 0 ->
+                        sheetIndexOfId table.SheetId, SheetOps.rangeOf table.StartRow table.StartCol table.EndRow table.EndCol
+                    | _ -> Host.hostFail memberName (sprintf "\"%s\" is not a reference, a defined name or a table" text)
+        if sheetIndex <> activeSheetIndex then this.SwitchSheet sheetIndex
+        let range =
+            match SheetOps.clipRange model.RowCount model.ColCount range with
+            | Some clipped -> clipped
+            | None -> Host.hostFail memberName (sprintf "%s is outside the sheet" (SheetOps.rangeText range))
+        if model.EditingCell.IsSome then finishEditing true |> ignore
+        selectFromTo range.From range.To
+        revealCell range.From.Row range.From.Col
+        render()
+        createObj [ "sheetIndex" ==> sheetIndex; "range" ==> SheetOps.rangeText range ]
 
     /// Show the built-in conditional formatting dialog for the active cell.
     /// The dialog offers five kinds of rule (greater than, less than,

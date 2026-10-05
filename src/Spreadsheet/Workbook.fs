@@ -36,6 +36,15 @@ type Table = {
     HasTotals: bool
 }
 
+/// What a defined name carries besides what it refers to.
+type DefinedNameInfo = {
+    /// The name as it was written (the key of `Names` is upper-cased).
+    Name: string
+    Comment: string option
+    /// A name the file hides from the name manager (`hidden="1"`).
+    Hidden: bool
+}
+
 /// Workbook containing multiple sheets
 type Workbook = {
     Sheets: Map<SheetId, Sheet>
@@ -47,6 +56,9 @@ type Workbook = {
     /// sheet-local names, None for workbook-global names. A sheet-local name
     /// shadows a global one of the same name when evaluating on that sheet.
     Names: Map<SheetId option * string, string>
+    /// The spelling, comment and hidden flag of defined names, by the key
+    /// of `Names`. A name without an entry is spelled as its key.
+    NameInfo: Map<SheetId option * string, DefinedNameInfo>
 }
 
 /// Create empty workbook with one sheet
@@ -64,6 +76,7 @@ let createWorkbook (): Workbook =
         ActiveSheet = sheetId
         Tables = Map.empty
         Names = Map.empty
+        NameInfo = Map.empty
     }
 
 /// Look up a defined name's refers-to text, scoped to the current sheet: a
@@ -85,6 +98,99 @@ let namesOfTriples (triples: (SheetId option * string * string) seq): Map<SheetI
 /// Convenience for workbook-global names only (scope = None).
 let namesOfPairs (pairs: (string * string) seq): Map<SheetId option * string, string> =
     pairs |> Seq.map (fun (n, refersTo) -> None, n, refersTo) |> namesOfTriples
+
+/// What is wrong with a defined name, or None for one Excel accepts: it
+/// starts with a letter, `_` or `\`; holds letters, digits, `_`, `.`, `\`
+/// and `?` only; is at most 255 characters; and cannot be read as a cell
+/// reference (A1, XFD1048576, R1C1, R, C) or as TRUE / FALSE.
+let definedNameProblem (name: string) : string option =
+    let name = if isNull name then "" else name
+    let upper = name.ToUpperInvariant()
+    let isDigits (text: string) = text |> Seq.forall System.Char.IsDigit
+    let isR1C1 =
+        // R, C, R12, C3, R1C1, RC, R2C ...
+        upper.Length > 0 && upper.[0] = 'R'
+        && (let rest = upper.Substring 1
+            let c = rest.IndexOf 'C'
+            if c < 0 then isDigits rest
+            else isDigits (rest.Substring(0, c)) && isDigits (rest.Substring(c + 1)))
+        || (upper.Length > 0 && upper.[0] = 'C' && isDigits (upper.Substring 1))
+    let isA1 =
+        let letters = upper |> Seq.takeWhile (fun c -> c >= 'A' && c <= 'Z') |> Seq.length
+        letters >= 1 && letters <= 3 && letters < upper.Length && isDigits (upper.Substring letters)
+        && (letterToColumn (upper.Substring(0, letters)) <= 16383)
+        && (match System.Int32.TryParse (upper.Substring letters) with
+            | true, row -> row >= 1 && row <= 1048576
+            | _ -> false)
+    if name = "" then Some "a name cannot be empty"
+    elif name.Length > 255 then Some "a name can have at most 255 characters"
+    elif not (System.Char.IsLetter name.[0] || name.[0] = '_' || name.[0] = '\\') then
+        Some (sprintf "the name \"%s\" must start with a letter, an underscore or a backslash" name)
+    elif name |> Seq.exists (fun c -> not (System.Char.IsLetterOrDigit c || c = '_' || c = '.' || c = '\\' || c = '?')) then
+        Some (sprintf "the name \"%s\" may hold letters, digits, underscores, periods, backslashes and question marks only" name)
+    elif isA1 || isR1C1 then Some (sprintf "the name \"%s\" reads as a cell reference" name)
+    elif upper = "TRUE" || upper = "FALSE" then Some (sprintf "the name \"%s\" is a logical value" name)
+    else None
+
+/// A defined name with what it refers to and what else is known of it.
+type DefinedName = {
+    Scope: SheetId option
+    Name: string
+    /// The refers-to formula, without a leading `=`.
+    RefersTo: string
+    Comment: string option
+    Hidden: bool
+}
+
+let private refersToBody (text: string) : string =
+    let text = if isNull text then "" else text.Trim()
+    if text.StartsWith "=" then text.Substring 1 else text
+
+/// The defined names of the workbook: global ones first, then by name.
+let definedNames (workbook: Workbook) : DefinedName list =
+    workbook.Names
+    |> Map.toList
+    |> List.map (fun ((scope, key), refersTo) ->
+        match Map.tryFind (scope, key) workbook.NameInfo with
+        | Some info -> { Scope = scope; Name = info.Name; RefersTo = refersToBody refersTo; Comment = info.Comment; Hidden = info.Hidden }
+        | None -> { Scope = scope; Name = key; RefersTo = refersToBody refersTo; Comment = None; Hidden = false })
+
+/// The defined name `name` of a scope (not the one a sheet would see: see getName).
+let tryFindDefinedName (scope: SheetId option) (name: string) (workbook: Workbook) : DefinedName option =
+    let key = scope, name.ToUpperInvariant()
+    Map.tryFind key workbook.Names
+    |> Option.map (fun refersTo ->
+        match Map.tryFind key workbook.NameInfo with
+        | Some info -> { Scope = scope; Name = info.Name; RefersTo = refersToBody refersTo; Comment = info.Comment; Hidden = info.Hidden }
+        | None -> { Scope = scope; Name = snd key; RefersTo = refersToBody refersTo; Comment = None; Hidden = false })
+
+/// Define a name or replace the one of the same scope (names differ by
+/// more than case). The refers-to text is kept without a leading `=`. A
+/// replaced name keeps its hidden flag; its spelling and comment are the
+/// new ones.
+let setDefinedName (scope: SheetId option) (name: string) (refersTo: string) (comment: string option) (workbook: Workbook) : Workbook =
+    let key = scope, name.ToUpperInvariant()
+    let hidden = match Map.tryFind key workbook.NameInfo with Some info -> info.Hidden | None -> false
+    { workbook with
+        Names = Map.add key (refersToBody refersTo) workbook.Names
+        NameInfo = Map.add key { Name = name; Comment = comment; Hidden = hidden } workbook.NameInfo }
+
+/// Remove the name of a scope. None when there is no such name.
+let deleteDefinedName (scope: SheetId option) (name: string) (workbook: Workbook) : Workbook option =
+    let key = scope, name.ToUpperInvariant()
+    if Map.containsKey key workbook.Names then
+        Some { workbook with Names = Map.remove key workbook.Names; NameInfo = Map.remove key workbook.NameInfo }
+    else None
+
+/// Put one name back as it was (`before`: None = it did not exist), for undo / redo.
+let restoreDefinedName (scope: SheetId option) (name: string) (before: DefinedName option) (workbook: Workbook) : Workbook =
+    let key = scope, name.ToUpperInvariant()
+    match before with
+    | Some known ->
+        { workbook with
+            Names = Map.add key known.RefersTo workbook.Names
+            NameInfo = Map.add key { Name = known.Name; Comment = known.Comment; Hidden = known.Hidden } workbook.NameInfo }
+    | None -> { workbook with Names = Map.remove key workbook.Names; NameInfo = Map.remove key workbook.NameInfo }
 
 /// Get active sheet
 let getActiveSheet (workbook: Workbook): Sheet option =

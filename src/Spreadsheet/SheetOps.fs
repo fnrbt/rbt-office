@@ -1089,3 +1089,34 @@ let listValuesAt (reader: ListSourceReader) (addr: CellAddress) (model: Spreadsh
             reader model (addr.Row - anchor.Row) (addr.Col - anchor.Col) source
          | _ -> None)
     | None -> None
+
+// ---- defined names ----------------------------------------------------------------
+
+/// What is wrong with the refers-to text of a defined name (with or without
+/// a leading `=`), or None when it reads as a formula.
+let refersToProblem (refersTo: string) : string option =
+    let text = if isNull refersTo then "" else refersTo.Trim()
+    let body = if text.StartsWith "=" then text.Substring 1 else text
+    if body.Trim() = "" then Some "a name has to refer to something"
+    else
+        match Rbt.Spreadsheet.Formula.parseFormula ("=" + body) with
+        | Ok _ -> None
+        | Result.Error problem -> Some (sprintf "\"%s\" is not a reference or formula (%s)" body problem)
+
+/// The areas of a reference list ("Sheet1!$A$1:$A$3,Sheet1!$C$1" -> two):
+/// split at the commas outside quotes and parentheses.
+let splitAreas (text: string) : string list =
+    let parts = ResizeArray<string>()
+    let current = System.Text.StringBuilder()
+    let mutable quoted = false
+    let mutable depth = 0
+    for c in (if isNull text then "" else text) do
+        if c = '\'' then quoted <- not quoted
+        if not quoted && c = '(' then depth <- depth + 1
+        if not quoted && c = ')' then depth <- depth - 1
+        if c = ',' && not quoted && depth = 0 then
+            parts.Add (current.ToString().Trim())
+            current.Clear() |> ignore
+        else current.Append c |> ignore
+    parts.Add (current.ToString().Trim())
+    parts |> Seq.filter (fun part -> part <> "") |> List.ofSeq

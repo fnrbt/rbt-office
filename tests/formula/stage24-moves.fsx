@@ -34,7 +34,8 @@ let wbOf (sheets: (string * string * SpreadsheetModel) list) : Workbook =
       SheetOrder = sheets |> List.map (fun (id, _, _) -> id)
       ActiveSheet = (let (id, _, _) = List.head sheets in id)
       Tables = Map.empty
-      Names = Map.empty }
+      Names = Map.empty
+      NameInfo = Map.empty }
 let sheetModel id (wb: Workbook) = wb.Sheets.[id].Model
 
 // --- 1. Print area, print titles and manual breaks follow the edit ----------
@@ -110,7 +111,8 @@ let moveData =
 let moveOther = modelOf [ at 0 0, fml "=Data!A1+1"; at 1 0, fml "=SUM(Data!A1:A2)"; at 2 0, fml "=A1" ]
 let moveWb =
     { wbOf [ "sheet1", "Data", moveData; "sheet2", "Other", moveOther ] with
-        Names = namesOfTriples [ None, "First", "Data!$A$1"; None, "Pair", "Data!$A$1:$A$2"; Some "sheet1", "Local", "$A$2" ] }
+        Names = namesOfTriples [ None, "First", "Data!$A$1"; None, "Pair", "Data!$A$1:$A$2"; Some "sheet1", "Local", "$A$2" ]
+        NameInfo = Map.empty }
 
 let moved, moveUndo = cutPaste (Range (0, 0, 1, 0)) "sheet1" 0 3 moveWb
 let movedCalc = recalculateWorkbook moved

@@ -34,6 +34,7 @@ let workbook =
       SheetOrder = [ "sheet1"; "sheet2" ]
       ActiveSheet = "sheet1"
       Tables = Map.empty
+      NameInfo = Map.empty
       Names =
         namesOfTriples
             [ None,            "MyCell",    "Sheet2!$A$1"        // single cross-sheet cell

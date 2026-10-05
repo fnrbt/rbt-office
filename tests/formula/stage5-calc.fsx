@@ -35,7 +35,8 @@ let wb0 =
       SheetOrder = [ "sheet1"; "sheet2" ]
       ActiveSheet = "sheet1"
       Tables = Map.empty
-      Names = Map.empty }
+      Names = Map.empty
+      NameInfo = Map.empty }
 
 let a1 = { Sheet = "sheet1"; Cell = { Row = 0; Col = 0 } }
 let a2 = { Sheet = "sheet1"; Cell = { Row = 1; Col = 0 } }
@@ -158,7 +159,7 @@ let bigModel =
         Cells = seq { for r in 0 .. 4999 -> { Row = r; Col = 0 }, cell (CellValue.Number 1.0) } |> Map.ofSeq }
 let bigWb0 =
     { Sheets = Map.ofList [ "s1", { Id = "s1"; Name = "Sheet1"; Model = bigModel; Visible = true } ]
-      SheetOrder = [ "s1" ]; ActiveSheet = "s1"; Tables = Map.empty; Names = Map.empty }
+      SheetOrder = [ "s1" ]; ActiveSheet = "s1"; Tables = Map.empty; Names = Map.empty; NameInfo = Map.empty }
 let bb1 = { Sheet = "s1"; Cell = { Row = 0; Col = 1 } }
 let bb1Data = cell (CellValue.Formula ("=SUM(A1:A5000)", CellValue.Empty))
 let (bigWb1, bigEng1) = updateCell bb1 (CellValue.Formula ("=SUM(A1:A5000)", CellValue.Empty)) bb1Data bigWb0 emptyEngine
@@ -176,7 +177,7 @@ ok "bigrange-recalc" (readWb bb1 bigWb4 = CellValue.Number 5010.0) (sprintf "B1=
 // --- Incremental-vs-full equivalence through the guarded edit API --------
 let oneSheetWb (model: SpreadsheetModel) =
     { Sheets = Map.ofList [ "s1", { Id = "s1"; Name = "Sheet1"; Model = model; Visible = true } ]
-      SheetOrder = [ "s1" ]; ActiveSheet = "s1"; Tables = Map.empty; Names = Map.empty }
+      SheetOrder = [ "s1" ]; ActiveSheet = "s1"; Tables = Map.empty; Names = Map.empty; NameInfo = Map.empty }
 
 let activeModelOf (wb: Workbook) = (Map.find wb.ActiveSheet wb.Sheets).Model
 
@@ -336,7 +337,8 @@ let plusWb =
       SheetOrder = [ "sheet1"; "sheet2" ]
       ActiveSheet = "sheet1"
       Tables = Map.empty
-      Names = Map.empty }
+      Names = Map.empty
+      NameInfo = Map.empty }
 let plusA1 = { Sheet = "sheet1"; Cell = { Row = 0; Col = 0 } }
 let plusA2 = { Sheet = "sheet1"; Cell = { Row = 1; Col = 0 } }
 let plusA3 = { Sheet = "sheet1"; Cell = { Row = 2; Col = 0 } }

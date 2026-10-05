@@ -51,6 +51,7 @@ stages=(
     stage33-sheetops
     stage34-cfapi
     stage35-validations
+    stage36-names
     numbertext
 )
 

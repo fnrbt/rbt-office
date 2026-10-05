@@ -98,7 +98,7 @@ module XlsxWrite =
                         | _ -> true)
                   ActiveSheetIndex = 0
                   // The editor does not edit defined names: they go back as loaded.
-                  DefinedNames = (match XlsxRead.source with Some source -> source.BaselineNames | None -> Map.empty)
+                  NameInfo = Map.empty; DefinedNames = (match XlsxRead.source with Some source -> source.BaselineNames | None -> Map.empty)
                   Source = XlsxRead.source
                   Macros = macroSource }
         File.WriteAllBytes(path, XlsxWriter.writeWorkbookPackageBytes workbook)

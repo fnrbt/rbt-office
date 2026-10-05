@@ -110,7 +110,8 @@ let private workbookOf (st: EditorState) : Workbook.Workbook =
       SheetOrder = entries |> List.map fst
       ActiveSheet = sheetIdAt (max 0 (min (sheets.Length - 1) st.ActiveSheet.Value))
       Tables = Map.empty
-      Names = Map.empty }
+      Names = Map.empty
+      NameInfo = Map.empty }
 
 /// Apply a workbook-wide change as one undoable step.
 let applyWorkbookChange (st: EditorState) (transform: Workbook.Workbook -> Workbook.Workbook) =
@@ -264,7 +265,8 @@ let private singleSheetWorkbook (name: string) (model: M.SpreadsheetModel) : Wor
       SheetOrder = [ "sheet1" ]
       ActiveSheet = "sheet1"
       Tables = Map.empty
-      Names = Map.empty }
+      Names = Map.empty
+      NameInfo = Map.empty }
 
 let private recalcEditedCell (st: EditorState) (addr: M.CellAddress) (cellData: M.CellData) (edited: M.SpreadsheetModel) (before: M.SpreadsheetModel) =
     if st.Sheets.Value.Length <> 1 || cellData.Value = M.Empty then

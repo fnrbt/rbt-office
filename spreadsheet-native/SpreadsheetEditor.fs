@@ -296,7 +296,8 @@ let private singleSheetWorkbook (name: string) (model: SpreadsheetModel) : Rbt.S
       SheetOrder = [ "sheet1" ]
       ActiveSheet = "sheet1"
       Tables = Map.empty
-      Names = Map.empty }
+      Names = Map.empty
+      NameInfo = Map.empty }
 
 let private recalcEditedCell (state: SpreadsheetEditorState) (addr: CellAddress) (cellData: CellData) (edited: SpreadsheetModel) (before: SpreadsheetModel) =
     if state.Sheets.Value.Length <> 1 || cellData.Value = CellValue.Empty then

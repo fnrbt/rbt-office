@@ -191,7 +191,8 @@ let wbOf (sheets: (string * string * SpreadsheetModel) list) : Workbook =
       SheetOrder = sheets |> List.map (fun (id, _, _) -> id)
       ActiveSheet = (let (id, _, _) = List.head sheets in id)
       Tables = Map.empty
-      Names = Map.empty }
+      Names = Map.empty
+      NameInfo = Map.empty }
 let sheetModel id (wb: Workbook) = wb.Sheets.[id].Model
 
 let dataSheet = modelOf [ at 0 0, num 1.0; at 1 0, num 2.0; at 2 0, fml "=SUM(Data!A1:A2)"; at 3 0, fml "=Other!A1" ]

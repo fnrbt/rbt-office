@@ -27,7 +27,7 @@ let inputOf (imported: Bridge.ImportedWorkbook) (sheets: SpreadsheetModel array)
       Names = imported.Sheets |> Array.map (fun sheet -> sheet.Name)
       Visible = imported.Sheets |> Array.map (fun sheet -> sheet.Visible)
       ActiveSheetIndex = 0
-      DefinedNames = names
+      NameInfo = Map.empty; DefinedNames = names
       Source = Some imported.Source
       Macros = None }
 let modelsOf (imported: Bridge.ImportedWorkbook) = imported.Sheets |> Array.map (fun sheet -> sheet.Model)
@@ -176,7 +176,7 @@ let fresh =
 let freshOut =
     Bridge.Export.toWorkbookOut
         { Sheets = [| fresh; createEmpty 10 5 |]; Names = [| "First"; "Hidden one" |]; Visible = [| true; false |]; ActiveSheetIndex = 0
-          DefinedNames = Wb.namesOfTriples [ None, "Total", "First!$A$3"; Some (Bridge.sheetIdOfIndex 0), "Local", "First!$A$2" ]
+          NameInfo = Map.empty; DefinedNames = Wb.namesOfTriples [ None, "Total", "First!$A$3"; Some (Bridge.sheetIdOfIndex 0), "Local", "First!$A$2" ]
           Source = None; Macros = None }
 let freshBack = reread freshOut
 eq "fresh: sheets and visibility" (freshBack.Sheets |> List.map (fun s -> s.Name, s.State)) [ "First", XlsxReader.SheetVisible; "Hidden one", XlsxReader.SheetHidden ]
@@ -186,6 +186,37 @@ eq "fresh: defined names" (freshBack.NamedRanges |> List.map (fun n -> n.Name.To
 // Importing what was exported gives the models back.
 let freshAgain = Bridge.Import.importWorkbook freshBack
 eq "fresh: import of the export" (freshAgain.Sheets.[0].Model.Cells |> Map.map (fun _ cell -> cell.Value)) (fresh.Cells |> Map.map (fun _ cell -> match cell.Value with CellValue.Formula (text, cached) -> CellValue.Formula (text.TrimStart '=', cached) | value -> value))
+
+// ---- defined names: spelling, comment, scope and the hidden flag ------------
+let namedBook =
+    [ None, "TaxRate", "0.19", Some "VAT, standard"; Some (Bridge.sheetIdOfIndex 0), "Local_Total", "First!$A$3", None; None, "plain", "First!$A$2", None ]
+    |> List.fold (fun (wb: Wb.Workbook) (scope, name, refersTo, comment) -> Wb.setDefinedName scope name refersTo comment wb)
+        (Bridge.buildWorkbookContext [| fresh; createEmpty 10 5 |] [| "First"; "Hidden one" |] [| true; false |] Map.empty Map.empty 0)
+let namedInput (wb: Wb.Workbook) (source: Bridge.XlsxSource option) : Bridge.ExportInput =
+    { Sheets = [| fresh; createEmpty 10 5 |]; Names = [| "First"; "Hidden one" |]; Visible = [| true; false |]; ActiveSheetIndex = 0
+      NameInfo = wb.NameInfo; DefinedNames = wb.Names; Source = source; Macros = None }
+let namedBack = reread (Bridge.Export.toWorkbookOut (namedInput namedBook None))
+eq "names: written with their spelling, comment and scope"
+    (namedBack.NamedRanges |> List.map (fun n -> n.Name, n.RefersTo, n.Scope, n.Comment, n.Hidden) |> List.sort)
+    [ "Local_Total", "First!$A$3", Some "0", None, false; "TaxRate", "0.19", None, Some "VAT, standard", false; "plain", "First!$A$2", None, None, false ]
+let namedAgain = Bridge.Import.importWorkbook namedBack
+eq "names: the import has what the export had" (Wb.definedNames namedAgain.Context) (Wb.definedNames namedBook)
+// Untouched names are written as the file had them; a changed one with what it is now, the others unchanged.
+let namesUntouched = reread (Bridge.Export.toWorkbookOut { namedInput namedAgain.Context (Some namedAgain.Source) with Sheets = namedAgain.Sheets |> Array.map (fun sheet -> sheet.Model) })
+eq "names: an unedited workbook writes them again" (namesUntouched.NamedRanges |> List.map (fun n -> n.Name, n.Comment) |> List.sort) [ "Local_Total", None; "TaxRate", Some "VAT, standard"; "plain", None ]
+let renamedBook = namedAgain.Context |> Wb.setDefinedName None "TAXRATE" "0.07" (Some "reduced") |> Wb.deleteDefinedName None "plain" |> Option.get
+let namesRenamed = reread (Bridge.Export.toWorkbookOut { namedInput renamedBook (Some namedAgain.Source) with Sheets = namedAgain.Sheets |> Array.map (fun sheet -> sheet.Model) })
+eq "names: an edited name is written as it is now" (namesRenamed.NamedRanges |> List.map (fun n -> n.Name, n.RefersTo, n.Scope, n.Comment) |> List.sort)
+    [ "Local_Total", "First!$A$3", Some "0", None; "TAXRATE", "0.07", None, Some "reduced" ]
+// A name the file hides from the name manager keeps its flag. (The reader drops `_xlnm.` names other than the print ones.)
+let filterKey = Some (Bridge.sheetIdOfIndex 0), "SECRET"
+let hiddenBook =
+    { namedBook with
+        Names = namedBook.Names |> Map.add filterKey "First!$A$1:$A$5"
+        NameInfo = namedBook.NameInfo |> Map.add filterKey { Name = "Secret"; Comment = None; Hidden = true } }
+let hiddenOut = Bridge.Export.toWorkbookOut (namedInput hiddenBook None)
+eq "names: a hidden name" ((reread hiddenOut).NamedRanges |> List.filter (fun n -> n.Hidden) |> List.map (fun n -> n.Name, n.Scope)) [ "Secret", Some "0" ]
+eq "names: ... is hidden after the import too" ((Bridge.Import.importWorkbook (reread hiddenOut)).Context |> Wb.tryFindDefinedName (fst filterKey) "secret" |> Option.map (fun n -> n.Hidden)) (Some true)
 
 // ---- every property of a cell format set in the editor comes back ----------
 let dressed =
@@ -202,7 +233,7 @@ let dressedSheet =
     |> setCell (addr 0 0) { Value = CellValue.Number 1234.5; Format = dressed; Comment = None }
     |> setCell (addr 1 1) { Value = CellValue.String "shrunk"; Format = shrunk; Comment = None }
 let dressedBack =
-    Bridge.Export.toWorkbookOut { Sheets = [| dressedSheet |]; Names = [| "Formats" |]; Visible = [| true |]; ActiveSheetIndex = 0; DefinedNames = Map.empty; Source = None; Macros = None }
+    Bridge.Export.toWorkbookOut { Sheets = [| dressedSheet |]; Names = [| "Formats" |]; Visible = [| true |]; ActiveSheetIndex = 0; NameInfo = Map.empty; DefinedNames = Map.empty; Source = None; Macros = None }
     |> reread |> Bridge.Import.importWorkbook
 let dressedFormat row col = dressedBack.Sheets.[0].Model.Cells.[addr row col].Format
 let sameColors (format: CellFormat) =
@@ -232,7 +263,7 @@ let lists =
     |> setCell (addr 0 0) { Value = CellValue.String "North"; Format = defaultFormat; Comment = None }
     |> setCell (addr 1 0) { Value = CellValue.String "South"; Format = defaultFormat; Comment = None }
 let validatedOut =
-    Bridge.Export.toWorkbookOut { Sheets = [| validated; lists |]; Names = [| "Data"; "Lists" |]; Visible = [| true; true |]; ActiveSheetIndex = 0; DefinedNames = Map.empty; Source = None; Macros = None }
+    Bridge.Export.toWorkbookOut { Sheets = [| validated; lists |]; Names = [| "Data"; "Lists" |]; Visible = [| true; true |]; ActiveSheetIndex = 0; NameInfo = Map.empty; DefinedNames = Map.empty; Source = None; Macros = None }
 let validatedFile = reread validatedOut
 eq "validations: the sqrefs of the file (a whole column written out)" (validatedFile.Sheets.[0].DataValidations |> List.map (fun dv -> dv.Range, dv.ValidationType))
    [ "A1:A1048576", "whole"; "B2:B21 D2:D21", "list"; "C1", "list"; "E3:E10", "custom"; "F1", "none"; "G1:G6", "date" ]
@@ -355,7 +386,7 @@ eq "paint: the viewport items scroll the drawing with the body" (Rbt.Spreadsheet
     [ Rbt.Spreadsheet.Layout.BodyZone, 30.0 + (pictureRect extrasModel).Y - 40.0 ]
 // A picture in a workbook made in the editor is written; threads too.
 let pictured = { fresh with Drawings = [ extrasModel.Drawings.[0] ]; Threads = Map.ofList [ addr 0 0, { Id = "{BBBBBBBB-0000-0000-0000-000000000001}"; Author = Some "New Author"; PersonId = None; Date = None; Text = "typed here"; Replies = [] } ] }
-let picturedBack = reread (Bridge.Export.toWorkbookOut { Sheets = [| pictured |]; Names = [| "First" |]; Visible = [| true |]; ActiveSheetIndex = 0; DefinedNames = Map.empty; Source = None; Macros = None })
+let picturedBack = reread (Bridge.Export.toWorkbookOut { Sheets = [| pictured |]; Names = [| "First" |]; Visible = [| true |]; ActiveSheetIndex = 0; NameInfo = Map.empty; DefinedNames = Map.empty; Source = None; Macros = None })
 eq "fresh: picture and thread written" (picturedBack.Sheets.[0].Extras.Images |> List.map (fun image -> image.Data.Length, image.Anchor.FromRow), picturedBack.Sheets.[0].Extras.ThreadedComments |> List.map (fun thread -> thread.Author, thread.Text))
     ([ 154, 2 ], [ Some "New Author", "typed here" ])
 
