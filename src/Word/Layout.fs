@@ -2460,6 +2460,14 @@ type FootnoteAreaRecord = {
     AreaLayouts: BlockLayout list
 }
 
+/// The layouts of a section's pass (made with the section's first page at
+/// y = 0) moved down to where that page stands in the document.
+type PlacedSection = {
+    PlacedSource: BlockLayout array
+    PlacedOffset: float
+    PlacedLayouts: BlockLayout array
+}
+
 type ParagraphLayoutMemo = {
     /// Block-by-block passes of the last layout, by the place they have in it.
     MemoPasses: System.Collections.Generic.Dictionary<string, PassRecord>
@@ -2476,6 +2484,9 @@ type ParagraphLayoutMemo = {
     /// where, and the paragraph made of the rest. Handing back the same
     /// paragraph lets its own memo entry stand from one pass to the next.
     MemoContinuations: System.Collections.Generic.Dictionary<string, TextBuffer * int * ParagraphBlock>
+    /// The layouts of a section's pass where the section stands in the
+    /// document (see sectionLayoutsAt), by the pass's place.
+    MemoPlaced: System.Collections.Generic.Dictionary<string, PlacedSection>
     mutable Generation: int
     mutable LineBreakCount: int
     mutable MemoStyles: NamedStyle list
@@ -2490,6 +2501,7 @@ let private createParagraphLayoutMemo () = {
     MemoSlices = None
     MemoEntries = System.Collections.Generic.Dictionary<string, ParagraphLayoutMemoEntry>()
     MemoContinuations = System.Collections.Generic.Dictionary<string, TextBuffer * int * ParagraphBlock>()
+    MemoPlaced = System.Collections.Generic.Dictionary<string, PlacedSection>()
     Generation = 0
     LineBreakCount = 0
     MemoStyles = []
@@ -5537,10 +5549,54 @@ let uniformPageInfosWithLayoutCount (settings: LayoutSettings) (layouts: BlockLa
 let uniformPageInfos (settings: LayoutSettings) (layouts: BlockLayout list) =
     uniformPageInfosWithLayoutCount settings layouts |> fst
 
+/// The layouts of a section's pass at the place the section has in the
+/// document: `source` moved down by `offset` (the top of the section's first
+/// page). A section is flowed as if its first page were the document's
+/// first, so its pass - and the record kept of it - does not depend on what
+/// stands before the section: when an edit further up adds or removes a page
+/// the sections below keep their passes and are only moved. The layouts
+/// moved to the same place are the same objects from pass to pass (those of
+/// the blocks an edit in the section did not touch included); the second
+/// result says whether any were kept.
+let private sectionLayoutsAt (memo: ParagraphLayoutMemo option) (slot: string) (source: BlockLayout array) (offset: float) : BlockLayout array * bool =
+    if offset = 0.0 then source, true
+    else
+        let moveAll () = source |> Array.map (shiftBlockY offset)
+        match memo with
+        | None -> moveAll (), false
+        | Some memo ->
+            let keep placed =
+                memo.MemoPlaced.[slot] <- { PlacedSource = source; PlacedOffset = offset; PlacedLayouts = placed }
+            match memo.MemoPlaced.TryGetValue slot with
+            | true, known when known.PlacedOffset = offset && obj.ReferenceEquals(known.PlacedSource, source) -> known.PlacedLayouts, true
+            | true, known when known.PlacedOffset = offset ->
+                // An edit in the section: the layouts it kept at the start and at the end are moved already.
+                let before = known.PlacedSource
+                let placed = Array.zeroCreate<BlockLayout> source.Length
+                let limit = min source.Length before.Length
+                let mutable prefix = 0
+                while prefix < limit && obj.ReferenceEquals(source.[prefix], before.[prefix]) do
+                    placed.[prefix] <- known.PlacedLayouts.[prefix]
+                    prefix <- prefix + 1
+                let mutable suffix = 0
+                while suffix < limit - prefix && obj.ReferenceEquals(source.[source.Length - 1 - suffix], before.[before.Length - 1 - suffix]) do
+                    placed.[source.Length - 1 - suffix] <- known.PlacedLayouts.[before.Length - 1 - suffix]
+                    suffix <- suffix + 1
+                for index in prefix .. source.Length - 1 - suffix do
+                    placed.[index] <- shiftBlockY offset source.[index]
+                keep placed
+                placed, true
+            | _ ->
+                let placed = moveAll ()
+                keep placed
+                placed, false
+
 /// Lay out a multi-section document section by section. A continuous break
 /// continues on the same page below the previous section; otherwise the next
 /// section starts on a new page (using that section's page size — supporting a
 /// landscape page mid-document). Non-final multi-column sections are balanced.
+/// Each section is flowed from y = 0 at the top of its first page and its
+/// layouts are then moved to where that page stands (see sectionLayoutsAt).
 /// Returns the layouts plus the per-page geometry.
 let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) sections =
     let results = ResizeArray<BlockLayout>()
@@ -5554,7 +5610,8 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
     let pageSettings = ResizeArray<LayoutSettings>()  // settings owning each page
     pageTops.Add 0.0
     let mutable currentPage = 0
-    let mutable currentY = 0.0             // absolute Y where the next section starts
+    // Where the next section starts, below the top of the page it starts on.
+    let mutable currentYInPage = 0.0
     let mutable started = false
     // Footnotes are per page, and a page can hold several (continuous) sections.
     let mutable footnotesByPage: Map<int, (string * string) list> = Map.empty
@@ -5571,7 +5628,7 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
         if not started then
             currentPage <- 0
             recordPage 0 secSettings 0.0
-            currentY <- WordLayout.Page.contentTop secSettings.PaddingTop 0.0
+            currentYInPage <- WordLayout.Page.contentTop secSettings.PaddingTop 0.0
             started <- true
         else
             match breakType with
@@ -5582,7 +5639,7 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
                 let newTop = pageTops.[currentPage] + pageHeight prevSettings + pageGap
                 currentPage <- currentPage + 1
                 recordPage currentPage secSettings newTop
-                currentY <- WordLayout.Page.contentTop secSettings.PaddingTop newTop
+                currentYInPage <- WordLayout.Page.contentTop secSettings.PaddingTop 0.0
         // Page tops within this section are uniform (secStride from the section top).
         let sectionBase = currentPage
         let sectionBaseTop = pageTops.[currentPage]
@@ -5591,23 +5648,37 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
         let secDoc = { doc with Blocks = blocks; PageSetup = { doc.PageSetup with Columns = columns } }
         let balanced = (not isFinal) && secColumns.Count >= 2
         let slot = match memo with Some _ -> "s" + string i | None -> ""
-        let record, endPage, endY, secFootnotes = flowColumnsKept slot memo secSettings measureText measureRange secDoc secColumns pageTopOf true currentPage currentY balanced footnotesByPage
-        footnotesByPage <- secFootnotes
-        // (Blocks kept from the last pass, from the start of the document and from its end.)
+        // The section's own pages are numbered from 0, the first at y = 0: of what stands
+        // before the section its pass is given where on its first page it starts and the
+        // footnotes that page has already.
+        let ownTopOf p = float p * secStride
+        let ownFootnotes =
+            match Map.tryFind sectionBase footnotesByPage with
+            | Some notes when not notes.IsEmpty -> Map.empty |> Map.add 0 notes
+            | _ -> Map.empty
+        let record, ownEndPage, ownEndY, secFootnotes = flowColumnsKept slot memo secSettings measureText measureRange secDoc secColumns ownTopOf true 0 currentYInPage balanced ownFootnotes
+        for KeyValue (ownPage, notes) in secFootnotes do
+            footnotesByPage <- footnotesByPage |> Map.add (sectionBase + ownPage) notes
+        let endPage = sectionBase + ownEndPage
+        let placed, placedBefore = sectionLayoutsAt memo slot record.PassResults sectionBaseTop
+        // (Blocks kept from the last pass, from the start of the document and from its end.
+        // A section that was moved has none: its layouts are other objects.)
         let count = record.PassBlocks.Length
+        let sectionKeptPrefix = if placedBefore then record.PassKeptPrefix else 0
+        let sectionKeptSuffix = if placedBefore then record.PassKeptSuffix else 0
         if keptRun then
-            keptPrefix <- keptPrefix + record.PassKeptPrefix
-            if record.PassKeptPrefix < count then keptRun <- false
-        if record.PassKeptPrefix >= count then keptSuffix <- keptSuffix + count
-        else keptSuffix <- record.PassKeptSuffix
+            keptPrefix <- keptPrefix + sectionKeptPrefix
+            if sectionKeptPrefix < count then keptRun <- false
+        if sectionKeptPrefix >= count then keptSuffix <- keptSuffix + count
+        else keptSuffix <- sectionKeptSuffix
         for start in 0 .. record.PassBlocks.Length - 1 do
             blockStarts.Add (results.Count + record.PassStarts.[start])
         if record.PassHasEndnotes then hasEndnoteRefs <- true
-        results.AddRange record.PassResults
+        results.AddRange placed
         // Record the geometry of every page this section used.
         for p in sectionBase .. endPage do recordPage p secSettings (pageTopOf p)
         currentPage <- endPage
-        currentY <- endY)
+        currentYInPage <- ownEndY - ownTopOf ownEndPage)
     let maxPage = pageTops.Count - 1
     let bodyLayouts = results.ToArray()
     blockStarts.Add bodyLayouts.Length
@@ -5845,6 +5916,7 @@ let clearIncrementalLayoutState (state: IncrementalLayoutState) =
     state.MeasuredBlockCount <- 0
     state.MemoSweepThreshold <- 256
     state.Memo.MemoPasses.Clear()
+    state.Memo.MemoPlaced.Clear()
     state.Memo.MemoFootnoteAreas.Clear()
     state.Memo.MemoSlices <- None
     state.Memo.MemoEntries.Clear()
@@ -5891,6 +5963,7 @@ let layoutDocumentPagesIncremental (state: IncrementalLayoutState) (settings: La
                 memo.MemoEntries.Clear()
                 memo.MemoContinuations.Clear()
                 memo.MemoPasses.Clear()
+                memo.MemoPlaced.Clear()
                 memo.MemoFootnoteAreas.Clear()
             memo.MemoStyles <- doc.Styles
             memo.MemoStyleContext <- None

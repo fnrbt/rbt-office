@@ -905,5 +905,58 @@ do
     check "an id no block has leaves the document as it is" (obj.ReferenceEquals(Doc.replaceParagraph doc "none" (para "none" "x"), doc)) true
     check "a paragraph in a table cell" ((Doc.replaceParagraph tableDoc "t1-r3-b" (para "t1-r3-b" "cell") |> fun d -> Doc.findParagraph d "t1-r3-b") |> Option.map (fun p -> toString p.Buffer)) (Some "cell")
 
+// ---------------------------------------------------------------------------
+// An edit that adds a page to a section moves the sections after it: their
+// passes stand (no block of theirs is laid out again), their layouts are the
+// layouts they had, one page further down - and what results is the layout
+// of the whole document made from nothing. Page sizes that are not round
+// numbers (A4) and a landscape section are in the document on purpose.
+// ---------------------------------------------------------------------------
+do
+    let a4 : Doc.SectionPageSetup option =
+        Some { PageWidth = 793.7; PageHeight = 1122.52; MarginLeft = 94.49; MarginRight = 94.49; MarginTop = 94.49; MarginBottom = 94.49; HeaderDistance = 47.0; FooterDistance = 47.0; DifferentFirstPage = false; EvenAndOddHeaders = false }
+    let landscape : Doc.SectionPageSetup option =
+        Some { PageWidth = 1122.52; PageHeight = 793.7; MarginLeft = 75.6; MarginRight = 75.6; MarginTop = 94.49; MarginBottom = 94.49; HeaderDistance = 47.0; FooterDistance = 47.0; DifferentFirstPage = false; EvenAndOddHeaders = false }
+    let sectionOf name count (geometry: Doc.SectionPageSetup option) breakKind =
+        [ for i in 1 .. count -> Doc.Paragraph (para (sprintf "%s-p%d" name i) (words (sprintf "%s%d_" name i) (20 + (i * 11) % 70)))
+          yield Doc.Paragraph (paraWith (name + "-end") { Doc.defaultMetadata with SectionBreak = Some breakKind; SectionPageSetup = geometry } (words "end" 6)) ]
+    let movedDoc =
+        [ yield! sectionOf "one" 40 a4 "nextPage"
+          yield! sectionOf "two" 60 landscape "nextPage"
+          yield! sectionOf "three" 50 a4 "nextPage"
+          yield noted "moved-note" "footnote" "mf1" (words "noted" 30 + " x") (words "footnote" 12)
+          yield! sectionOf "four" 30 a4 "continuous"
+          for i in 1 .. 40 -> Doc.Paragraph (para (sprintf "last-p%d" i) (words "last" (15 + (i * 5) % 50))) ]
+        |> document
+    let state = Layout.createIncrementalLayoutState ()
+    let kept (doc: Doc.Document) = Layout.layoutDocumentPagesIncremental state settings measureText measureRange doc |> fst
+    compare "sections moved: initial" state movedDoc |> ignore
+    let before = kept movedDoc
+    let pageCountOf (doc: Doc.Document) = (Layout.layoutDocumentPages settings measureText measureRange doc |> snd).Length
+    // A paragraph long enough to add a page to the first section.
+    let grown = insertAfter "one-p20" (Doc.Paragraph (para "one-grown" (words "grown" 700))) movedDoc
+    checkTrue "sections moved: the edit adds a page" (pageCountOf grown > pageCountOf movedDoc)
+    compare "sections moved: after the first section grew by a page" state grown |> ignore
+    let laidOut = Layout.incrementalLayoutBlocksLaidOut state
+    let after = kept grown
+    checkTrue (sprintf "sections moved: only blocks of the edited section were laid out (%d of %d)" laidOut grown.Blocks.Length) (laidOut <= 41)
+    let layoutOf id (layouts: Layout.BlockLayout list) = layouts |> List.find (fun layout -> layout.BlockId = id)
+    let shift = (layoutOf "three-p10" after).Y - (layoutOf "three-p10" before).Y
+    checkTrue "sections moved: a later section stands further down" (shift > 500.0)
+    check "sections moved: by the same distance, block for block and line for line"
+        ([ for id in [ "two-p3"; "two-p59"; "three-p1"; "three-p49"; "last-p40" ] ->
+            let a, b = layoutOf id before, layoutOf id after
+            abs (b.Y - a.Y - shift) < 1e-6 && List.forall2 (fun (x: Layout.MeasuredLine) (y: Layout.MeasuredLine) -> abs (y.Y - x.Y - shift) < 1e-6 && obj.ReferenceEquals(x.Segments, y.Segments)) a.Lines b.Lines ])
+        [ true; true; true; true; true ]
+    // The same edit taken back: the sections are where they were.
+    let shrunk = removeBlock "one-grown" grown
+    compare "sections moved: after the paragraph was removed again" state shrunk |> ignore
+    checkTrue (sprintf "sections moved: again only the edited section was laid out (%d)" (Layout.incrementalLayoutBlocksLaidOut state)) (Layout.incrementalLayoutBlocksLaidOut state <= 41)
+    checkTrue "sections moved: back where they were" (kept shrunk = before)
+    // Typing in a moved section afterwards is an edit of that section alone.
+    compare "sections moved: typing in a later section" state (typeIn "three-p7" 3 "typed " grown) |> ignore
+    compare "sections moved: and in the first again" state (typeIn "one-p2" 3 "typed " grown) |> ignore
+    assertProgressive "sections moved" movedDoc [ "the first section grows", insertAfter "one-p20" (Doc.Paragraph (para "one-grown" (words "grown" 700))) ]
+
 printfn "incremental-layout: %d passed, %d failed" pass fail
 if fail > 0 then failwithf "%d incremental layout checks failed" fail
