@@ -370,6 +370,10 @@ type XlsxTableOut = {
     Columns: string list
     HeaderRowCount: int
     TotalsRowCount: int
+    /// What each column shows in the totals row, left to right: ("label",
+    /// text), ("function", "sum" | "count" | ...), ("custom", formula) or
+    /// ("", "") for nothing ([] when not known).
+    Totals: (string * string) list
     AutoFilter: (int * int) option
     Style: XlsxTableStyle option
 }
@@ -1755,12 +1759,19 @@ let private tableXml id (table: XlsxTableOut) =
                 table.Columns
                 |> List.tryItem i
                 |> Option.defaultValue (sprintf "Column%d" (i + 1))
-            let totals = if table.TotalsRowCount > 0 then " totalsRowFunction=\"none\"" else ""
-            sprintf "<tableColumn id=\"%d\" %s%s/>" (i + 1) (attr "name" name) totals)
+            // What the column shows in the totals row: Excel checks it against the cell.
+            match (if table.TotalsRowCount > 0 then List.tryItem i table.Totals else None) with
+            | Some ("label", label) -> sprintf "<tableColumn id=\"%d\" %s %s/>" (i + 1) (attr "name" name) (attr "totalsRowLabel" label)
+            | Some ("function", fn) -> sprintf "<tableColumn id=\"%d\" %s %s/>" (i + 1) (attr "name" name) (attr "totalsRowFunction" fn)
+            | Some ("custom", formula) ->
+                sprintf "<tableColumn id=\"%d\" %s totalsRowFunction=\"custom\"><totalsRowFormula>%s</totalsRowFormula></tableColumn>" (i + 1) (attr "name" name) (escapeXml formula)
+            | _ -> sprintf "<tableColumn id=\"%d\" %s/>" (i + 1) (attr "name" name))
         |> String.concat ""
     let autoFilter =
+        // (The filter covers the header and the data, not the totals row.)
+        let filterRef = sprintf "%s:%s" (cellRef (table.StartRow - 1) (table.StartCol - 1)) (cellRef (table.EndRow - 1 - max 0 table.TotalsRowCount) (table.EndCol - 1))
         table.AutoFilter
-        |> Option.map (fun _ -> sprintf "<autoFilter ref=\"%s\"/>" refText)
+        |> Option.map (fun _ -> sprintf "<autoFilter ref=\"%s\"/>" filterRef)
         |> Option.defaultValue ""
     let style =
         table.Style
@@ -2342,6 +2353,7 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
                       Columns = t.Columns
                       HeaderRowCount = t.HeaderRowCount
                       TotalsRowCount = t.TotalsRowCount
+                      Totals = t.Totals
                       AutoFilter = t.AutoFilter
                       Style =
                         t.Style |> Option.map (fun s ->

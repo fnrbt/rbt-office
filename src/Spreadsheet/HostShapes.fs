@@ -923,3 +923,62 @@ let findMatchToObj (sheetIndex: int) (addr: CellAddress) (text: string) : obj =
         "address" ==> (columnToLetter addr.Col + string (addr.Row + 1))
         "text" ==> text
     ]
+
+// ---------------------------------------------------------------------------
+// Tables
+// ---------------------------------------------------------------------------
+
+/// A table style as hosts get it: { name, showRowStripes,
+/// showColumnStripes, showFirstColumn, showLastColumn }, or null.
+let tableStyleToObj (style: TableStyle option) : obj =
+    match style with
+    | None -> null
+    | Some style ->
+        createObj [
+            "name" ==> style.Name
+            "showRowStripes" ==> style.ShowRowStripes
+            "showColumnStripes" ==> style.ShowColumnStripes
+            "showFirstColumn" ==> style.ShowFirstColumn
+            "showLastColumn" ==> style.ShowLastColumn
+        ]
+
+/// A table as hosts get it: { name, sheetIndex, range, hasHeaders,
+/// hasTotals, columns, style, hasAutoFilter }.
+let tableToObj (sheetIndex: int) (table: TableInfo) : obj =
+    createObj [
+        "name" ==> table.Name
+        "sheetIndex" ==> sheetIndex
+        "range" ==> rangeText table.Range
+        "hasHeaders" ==> table.HasHeaders
+        "hasTotals" ==> table.HasTotals
+        "columns" ==> List.toArray table.Columns
+        "style" ==> tableStyleToObj table.Style
+        "hasAutoFilter" ==> table.HasAutoFilter
+    ]
+
+let private tableStyleKeys = [ "name"; "showRowStripes"; "showColumnStripes"; "showFirstColumn"; "showLastColumn" ]
+
+/// The table style a host names: a style name ("TableStyleMedium2";
+/// "none" or "" for no style) or { name, showRowStripes?,
+/// showColumnStripes?, showFirstColumn?, showLastColumn? }. Left out (null /
+/// undefined) it is `missing`.
+let tableStyleArg (memberName: string) (missing: TableStyle option) (value: obj) : TableStyle option =
+    let named (name: string) =
+        if name = "" || name = "none" then None
+        elif name.StartsWith "TableStyle" || name.StartsWith "PivotStyle" then Some (tableStyleNamed name)
+        else hostFail memberName (sprintf "\"%s\" is not a table style (they are named like \"TableStyleMedium2\"; \"none\" for no style)" name)
+    if isNullish value then missing
+    elif jsTypeOf value = "string" then named (unbox<string> value)
+    elif isJsObject value then
+        for key in keysOf value do
+            if not (List.contains key tableStyleKeys) then hostFail memberName (sprintf "a table style has no \"%s\" (it has %s)" key (String.concat ", " tableStyleKeys))
+        match named (stringArg memberName "style.name" (getKey value "name")) with
+        | None -> None
+        | Some style ->
+            let flag (key: string) (preset: bool) = optionalArg (boolArg memberName ("style." + key)) (getKey value key) |> Option.defaultValue preset
+            Some { style with
+                    ShowRowStripes = flag "showRowStripes" style.ShowRowStripes
+                    ShowColumnStripes = flag "showColumnStripes" style.ShowColumnStripes
+                    ShowFirstColumn = flag "showFirstColumn" style.ShowFirstColumn
+                    ShowLastColumn = flag "showLastColumn" style.ShowLastColumn }
+    else hostFail memberName "the style is a style name or { name, showRowStripes, showColumnStripes, showFirstColumn, showLastColumn }"

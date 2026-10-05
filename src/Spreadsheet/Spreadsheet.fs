@@ -189,6 +189,8 @@ type private BookContent = {
     /// The sheets without a tab, in tab order (the sheets themselves, their
     /// names and their order are compared sheet by sheet).
     Hidden: SheetId list
+    /// The tables as structured references read them (name, place, columns).
+    Tables: Map<string, Rbt.Spreadsheet.Workbook.Table>
 }
 
 let private bookContentOf (workbook: Workbook option) : BookContent =
@@ -196,13 +198,15 @@ let private bookContentOf (workbook: Workbook option) : BookContent =
     | Some wb ->
         { Names = wb.Names
           NameInfo = wb.NameInfo
-          Hidden = wb.SheetOrder |> List.filter (fun id -> match Map.tryFind id wb.Sheets with Some sheet -> not sheet.Visible | None -> false) }
-    | None -> { Names = Map.empty; NameInfo = Map.empty; Hidden = [] }
+          Hidden = wb.SheetOrder |> List.filter (fun id -> match Map.tryFind id wb.Sheets with Some sheet -> not sheet.Visible | None -> false)
+          Tables = wb.Tables }
+    | None -> { Names = Map.empty; NameInfo = Map.empty; Hidden = []; Tables = Map.empty }
 
 let private sameBookContent (a: BookContent) (b: BookContent) =
     (sameRef a.Names b.Names || a.Names = b.Names)
     && (sameRef a.NameInfo b.NameInfo || a.NameInfo = b.NameInfo)
     && a.Hidden = b.Hidden
+    && (sameRef a.Tables b.Tables || a.Tables = b.Tables)
 
 /// The search a host started with Find: FindNext / FindPrevious /
 /// ReplaceMatch go by it.
@@ -2270,6 +2274,80 @@ type Spreadsheet(container: Element) =
         if bookSteps.Count > 400 then bookSteps.RemoveAt 0
         model <- pushCommand step model
 
+    /// Run a change of the workbook's tables as one undoable step of the
+    /// workbook (see above): `op` gives the changed workbook and the cells
+    /// it wrote. The step keeps what differs - those cells, the tables, and
+    /// the rules and defined names whose formulas were rewritten - and undo /
+    /// redo put that back / in again in the workbook as it is then; every
+    /// formula is recalculated (structured references read the tables).
+    /// False when nothing changed.
+    let changeTables (description: string) (op: Workbook -> SheetOps.TableChange) : bool =
+        // Formulas of every sheet can name a table, and a table's sheet is changed.
+        convertFormulaSheets ()
+        for index in 0 .. sheets.Length - 1 do
+            if index <> activeSheetIndex && not sheets.[index].Tables.IsEmpty then convertInPlace index
+        sheets.[activeSheetIndex] <- model
+        let before = bookSnapshot ()
+        let change = op before
+        let after = change.Book
+        if obj.ReferenceEquals(after, before) then false
+        else
+            let cellOf (wb: Workbook) (id: SheetId) (addr: CellAddress) = Map.tryFind id wb.Sheets |> Option.bind (fun sheet -> Map.tryFind addr sheet.Model.Cells)
+            let cells = change.Cells |> List.map (fun (id, addr) -> id, addr, cellOf before id addr, cellOf after id addr)
+            let lists =
+                [ for KeyValue(id, sheet) in before.Sheets do
+                    match Map.tryFind id after.Sheets with
+                    | Some changed when not (obj.ReferenceEquals(changed.Model, sheet.Model)) ->
+                        let was, now = sheet.Model, changed.Model
+                        if was.Tables <> now.Tables || was.ConditionalFormats <> now.ConditionalFormats || was.Validations <> now.Validations then
+                            yield id, (was.Tables, was.ConditionalFormats, was.Validations), (now.Tables, now.ConditionalFormats, now.Validations)
+                    | _ -> () ]
+            let keysOf (a: Map<'K, 'V>) (b: Map<'K, 'V>) =
+                [ for KeyValue(key, _) in a do yield key
+                  for KeyValue(key, _) in b do if not (Map.containsKey key a) then yield key ]
+                |> List.filter (fun key -> Map.tryFind key a <> Map.tryFind key b)
+            let tables = keysOf before.Tables after.Tables |> List.map (fun key -> key, Map.tryFind key before.Tables, Map.tryFind key after.Tables)
+            let names = keysOf before.Names after.Names |> List.map (fun key -> key, Map.tryFind key before.Names, Map.tryFind key after.Names)
+            let put (key: 'K) (value: 'V option) (map: Map<'K, 'V>) =
+                match value with
+                | Some value -> Map.add key value map
+                | None -> Map.remove key map
+            let apply (forward: bool) () =
+                let current = bookSnapshot ()
+                let mutable models = current.Sheets |> Map.map (fun _ sheet -> sheet.Model)
+                for id, addr, was, now in cells do
+                    match Map.tryFind id models with
+                    | Some sheetModel ->
+                        let sheetModel = resolveSheet sheetModel
+                        models <- Map.add id (match (if forward then now else was) with
+                                              | Some data -> setCell addr data sheetModel
+                                              | None -> clearCell addr sheetModel) models
+                    | None -> ()
+                for id, was, now in lists do
+                    match Map.tryFind id models with
+                    | Some sheetModel ->
+                        let tablesOf, formats, validations = if forward then now else was
+                        models <- Map.add id { resolveSheet sheetModel with Tables = tablesOf; ConditionalFormats = formats; Validations = validations } models
+                    | None -> ()
+                let mutable bookTables = current.Tables
+                for key, was, now in tables do bookTables <- put key (if forward then now else was) bookTables
+                let mutable bookNames = current.Names
+                for key, was, now in names do bookNames <- put key (if forward then now else was) bookNames
+                installBook
+                    { current with
+                        Sheets = current.Sheets |> Map.map (fun id sheet -> match Map.tryFind id models with Some changed when not (obj.ReferenceEquals(changed, sheet.Model)) -> { sheet with Model = changed } | _ -> sheet)
+                        Tables = bookTables
+                        Names = bookNames }
+                recalculateEverything ()
+            runBookStep description (apply true) (apply false)
+            true
+
+    /// The index of the sheet a table is on (throws for a table of no sheet).
+    let tableSheetIndex (memberName: string) (table: SheetOps.TableInfo) : int =
+        let index = sheetIndexOfId table.SheetId
+        if index < 0 then Host.hostFail memberName (sprintf "the table \"%s\" is on no sheet" table.Name)
+        index
+
     /// The sheet with an id as the workbook has it now, or None.
     let sheetOfId (id: SheetId) (wb: Workbook) = Map.tryFind id wb.Sheets
 
@@ -2727,17 +2805,32 @@ type Spreadsheet(container: Element) =
             tables
             |> List.tryPick (fun table ->
                 if row >= table.StartRow && row <= table.EndRow && col >= table.StartCol && col <= table.EndCol then
-                    Some (table.HasHeaders && row = table.StartRow, (row - table.StartRow - (if table.HasHeaders then 1 else 0)) % 2 = 0)
+                    // (The style is the one the sheet keeps for the table.)
+                    let style = model.Tables |> List.tryFind (fun own -> own.Name = table.Name) |> Option.bind (fun own -> own.Style)
+                    Some (table.HasHeaders && row = table.StartRow, (row - table.StartRow - (if table.HasHeaders then 1 else 0)) % 2 = 0,
+                          style, table.HasTotals && row = table.EndRow)
                 else None)
         match tableInfo with
-        | Some (true, _) ->
+        | Some (true, _, Some { HeaderFill = Some fill }, _) ->
+            add "background-color" fill
+            add "color" "white"
+            add "font-weight" "bold"
+        | Some (true, _, _, _) ->
             add "background" "linear-gradient(180deg, #4472C4 0%, #2E5AA8 100%)"
             add "color" "white"
             add "font-weight" "bold"
             add "text-align" "center"
             gridColor <- "#2E5AA8"
-        | Some (false, isEvenRow) ->
+        | Some (false, isEvenRow, Some style, isTotals) ->
+            // The bands of the style: the first row of data and every second one after it.
+            if isTotals then add "font-weight" "bold"
+            else
+                match style.StripeFill with
+                | Some fill when style.ShowRowStripes && isEvenRow -> add "background-color" fill
+                | _ -> ()
+        | Some (false, isEvenRow, None, isTotals) ->
             add "background-color" (if isEvenRow then "#FFFFFF" else "#EDF2FA")
+            if isTotals then add "font-weight" "bold"
             gridColor <- "#D0D8E4"
         | None -> ()
         // The cell's own format (over the table's).
@@ -3242,7 +3335,7 @@ type Spreadsheet(container: Element) =
                 | Some wb -> wb.Tables |> Map.toList |> List.map snd |> List.filter (fun table -> table.SheetId = activeSheetId)
                 | None -> []
             let styleInputs : obj array =
-                [| box model.ConditionalFormats; box model.Threads; box model.Hyperlinks; box model.MergedCells; box model.ShowGridLines
+                [| box model.ConditionalFormats; box model.Threads; box model.Hyperlinks; box model.MergedCells; box model.ShowGridLines; box model.Tables
                    box model.ShowHeaders; box model.ShowFormulas; box model.ShowZeros
                    box (match workbook with Some wb -> box wb.Tables | None -> null); box activeSheetIndex; box readOnly
                    (if model.ConditionalFormats.IsEmpty then null else box model.Cells)
@@ -6799,37 +6892,129 @@ type Spreadsheet(container: Element) =
     member _.GetWorkbook() =
         workbook
 
-    /// Define a table in the current workbook
-    member _.DefineTable(name: string, startRow: int, startCol: int, endRow: int, endCol: int, columns: string list, hasHeaders: bool) =
+    /// The tables of the workbook, sheet by sheet: [{ name, sheetIndex,
+    /// range ("A1:D9": header row, data and total row), hasHeaders,
+    /// hasTotals, columns: [names, left to right], style: { name,
+    /// showRowStripes, showColumnStripes, showFirstColumn, showLastColumn }
+    /// | null, hasAutoFilter (the header cells carry filter buttons) }].
+    member _.GetTables() : obj array =
         match workbook with
-        | Some wb ->
-            let table: Rbt.Spreadsheet.Workbook.Table = {
-                Name = name
-                SheetId = sheetIdForIndex activeSheetIndex  // the sheet being edited
-                StartRow = startRow
-                StartCol = startCol
-                EndRow = endRow
-                EndCol = endCol
-                Columns = columns
-                HasHeaders = hasHeaders
-                HasTotals = false
-            }
-            let newWb = Rbt.Spreadsheet.Workbook.defineTable table wb
-            workbook <- Some newWb
-            // Structured references to the table resolve from now on.
-            recalculateFormulas()
-            render()  // Re-render to apply table styles
-        | None -> ()
+        | None -> [||]
+        | Some _ ->
+            SheetOps.tablesOf (bookSnapshot ())
+            |> List.choose (fun table ->
+                let index = sheetIndexOfId table.SheetId
+                if index < 0 then None else Some (Host.tableToObj index table))
+            |> List.toArray
 
-    /// Delete a table
-    member _.DeleteTable(name: string) =
-        match workbook with
-        | Some wb ->
-            let newWb = Rbt.Spreadsheet.Workbook.deleteTable name wb
-            workbook <- Some newWb
-            recalculateFormulas()
+    /// Make a table of a range of the active sheet:
+    /// `DefineTable(range, name?, hasHeaders?, style?)` -> the table's name.
+    /// `range` "A1:D9"; `name` (default the first free "TableN") follows
+    /// the rules of defined names and is not the name of another table or
+    /// defined name; `hasHeaders` (default true): the first row names the
+    /// columns - blank header cells become "ColumnN", repeated names get a
+    /// number appended, and every header cell becomes text; false: every row
+    /// is data and the columns are Column1, Column2 ... (no row is inserted,
+    /// unlike Excel); `style`: a built-in style name or { name,
+    /// showRowStripes?, showColumnStripes?, showFirstColumn?,
+    /// showLastColumn? }, "none" for no style (default
+    /// "TableStyleMedium2"). Structured references to the table resolve from
+    /// then on. One undo step. Throws for a bad name, a range that is
+    /// outside the sheet, whole rows / columns, overlaps another table or
+    /// holds merged cells, and a header row without a row of data.
+    /// The earlier call `DefineTable(name, startRow, startCol, endRow,
+    /// endCol, columns, hasHeaders)` (0-based, the column names given) keeps
+    /// working: it registers the table for structured references only and
+    /// is now an undo step too.
+    member _.DefineTable(first: obj, second: obj, third: obj, fourth: obj, fifth: obj, sixth: obj, seventh: obj) : string =
+        let memberName = "DefineTable"
+        if Host.isJsNumber second then
+            let name = Host.stringArg memberName "name" first
+            let columns : string list =
+                if Host.isJsArray sixth then List.ofArray (unbox<string array> sixth)
+                elif Host.isNullish sixth then []
+                else unbox<string list> sixth
+            let table : Rbt.Spreadsheet.Workbook.Table =
+                { Name = name
+                  SheetId = sheetIdForIndex activeSheetIndex
+                  StartRow = Host.intArg memberName "startRow" second
+                  StartCol = Host.intArg memberName "startCol" third
+                  EndRow = Host.intArg memberName "endRow" fourth
+                  EndCol = Host.intArg memberName "endCol" fifth
+                  Columns = columns
+                  HasHeaders = (Host.optionalArg (Host.boolArg memberName "hasHeaders") seventh |> Option.defaultValue true)
+                  HasTotals = false }
+            if changeTables "Define table" (fun wb -> { Book = Rbt.Spreadsheet.Workbook.defineTable table wb; Cells = [] }) then render()
+            name
+        else
+            let range = Host.rangeArg memberName first
+            let name = Host.optionalArg (Host.stringArg memberName "name") second
+            let hasHeaders = Host.optionalArg (Host.boolArg memberName "hasHeaders") third |> Option.defaultValue true
+            let style = Host.tableStyleArg memberName (Some (SheetOps.tableStyleNamed SheetOps.defaultTableStyleName)) fourth
+            let made : string ref = ref ""
+            let sheetId = sheetIdForIndex activeSheetIndex
+            changeTables "Define table" (fun wb ->
+                let change, name = SheetOps.defineTable memberName sheetId range name hasHeaders style wb
+                made.Value <- name
+                change) |> ignore
             render()
-        | None -> ()
+            made.Value
+
+    /// Give a table another range ("A1:F20") on its sheet: the first row
+    /// stays where it is and the new range overlaps the old one; with a
+    /// total row the range includes it (it moves to the new last row, which
+    /// has to be free). Columns that come in are named by their header
+    /// cells. One undo step. Throws for an unknown table or a bad range.
+    member _.ResizeTable(name: obj, range: obj) : unit =
+        let memberName = "ResizeTable"
+        let name = Host.stringArg memberName "name" name
+        let range = Host.rangeArg memberName range
+        if changeTables "Resize table" (SheetOps.resizeTable memberName name range) then render()
+
+    /// Rename a table; structured references to it in every formula of the
+    /// workbook (cells, conditional formats, validations, defined names)
+    /// follow. One undo step. Throws for an unknown table and for a name
+    /// that is not valid or taken.
+    member _.RenameTable(name: obj, newName: obj) : unit =
+        let memberName = "RenameTable"
+        let name = Host.stringArg memberName "name" name
+        let newName = Host.stringArg memberName "newName" newName
+        if changeTables "Rename table" (SheetOps.renameTable memberName name newName) then render()
+
+    /// Remove a table. `keepData` (default true) converts it to a range, as
+    /// Excel does: the cells stay and structured references to the table
+    /// become the plain references they stood for ("Sales[Amount]" ->
+    /// "$B$2:$B$9"); false also empties the table's cells (formats stay),
+    /// and references to it show #REF!. One undo step. Throws for an unknown
+    /// table.
+    member _.DeleteTable(name: obj, keepData: obj) : unit =
+        let memberName = "DeleteTable"
+        let name = Host.stringArg memberName "name" name
+        let keepData = Host.optionalArg (Host.boolArg memberName "keepData") keepData |> Option.defaultValue true
+        if changeTables "Delete table" (SheetOps.deleteTable memberName name keepData) then render()
+
+    /// Show (true) or remove (false) the total row of a table: the row below
+    /// its data, with "Total" in the first column and in the last the sum
+    /// of that column when it holds numbers, else the count of its entries
+    /// (SUBTOTAL: filtered rows are left out). The row below the table has
+    /// to be empty (nothing is moved down); removing empties the row. One
+    /// undo step. Throws for an unknown table and a row that is in use.
+    member _.SetTableTotalRow(name: obj, show: obj) : unit =
+        let memberName = "SetTableTotalRow"
+        let name = Host.stringArg memberName "name" name
+        let show = Host.boolArg memberName "show" show
+        if changeTables (if show then "Total row" else "Remove total row") (SheetOps.setTableTotalRow memberName name show) then render()
+
+    /// Give a table another style: a built-in style name
+    /// ("TableStyleLight9"), { name, showRowStripes?, showColumnStripes?,
+    /// showFirstColumn?, showLastColumn? }, or null / "none" for no style.
+    /// One undo step. (The grid draws the header fill and the row bands of a
+    /// style in the Office theme's colours.)
+    member _.SetTableStyle(name: obj, style: obj) : unit =
+        let memberName = "SetTableStyle"
+        let name = Host.stringArg memberName "name" name
+        let style = Host.tableStyleArg memberName None style
+        if changeTables "Table style" (SheetOps.setTableStyle memberName name style) then render()
 
     /// Get table names
     member _.GetTableNames() =

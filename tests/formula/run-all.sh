@@ -57,6 +57,7 @@ stages=(
     stage39-sortfilter
     stage40-annotations
     stage41-find
+    stage42-tables
     numbertext
 )
 

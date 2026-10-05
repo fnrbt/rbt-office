@@ -1347,9 +1347,27 @@ module Export =
           StartCol = t.StartCol
           EndRow = t.EndRow
           EndCol = t.EndCol
-          Columns = [ for c in t.StartCol - 1 .. t.EndCol - 1 -> textAt (t.StartRow - 1) c model ]
+          Columns =
+            (if t.HeaderRowCount > 0 then [ for c in t.StartCol - 1 .. t.EndCol - 1 -> textAt (t.StartRow - 1) c model ]
+             else [ for index in 1 .. t.EndCol - t.StartCol + 1 -> sprintf "Column%d" index ])
           HeaderRowCount = t.HeaderRowCount
           TotalsRowCount = if t.HasTotals then 1 else 0
+          Totals =
+            (if not t.HasTotals then []
+             else
+                [ for c in t.StartCol - 1 .. t.EndCol - 1 ->
+                    match Map.tryFind { Row = t.EndRow - 1; Col = c } model.Cells |> Option.map (fun data -> data.Value) with
+                    | Some (CellValue.String label) when label <> "" -> "label", label
+                    | Some (CellValue.Formula (formula, _)) ->
+                        // SUBTOTAL(10N, the column) is one of Excel's own totals; anything else is a custom one.
+                        let body = (if formula.StartsWith "=" then formula.Substring 1 else formula).Trim()
+                        let known =
+                            [ "101", "average"; "102", "countNums"; "103", "count"; "104", "max"; "105", "min"; "107", "stdDev"; "109", "sum"; "110", "var" ]
+                            |> List.tryPick (fun (code, name) -> if body.StartsWith("SUBTOTAL(" + code + ",", StringComparison.OrdinalIgnoreCase) then Some name else None)
+                        (match known with
+                         | Some name -> "function", name
+                         | None -> "custom", body)
+                    | _ -> "", "" ])
           AutoFilter = t.AutoFilter
           Style =
             t.Style |> Option.map (fun s ->

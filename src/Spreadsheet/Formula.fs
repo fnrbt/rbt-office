@@ -2133,6 +2133,55 @@ let tableSelArea (sel: TableSel)
             | Some _, None -> Result.Error (match sel.Item with TblThisRow -> Err.value | _ -> Err.ref)
             | None, _ -> Result.Error Err.ref
 
+/// A formula with its structured references to one table written as the
+/// plain references they stand for - what converting a table to a range
+/// does to the formulas that named it. `homeSheet` and `cell` say where the
+/// formula stands (a this-row reference is the cell of its own row; a
+/// formula on another sheet gets the table's sheet name); a reference that
+/// selects nothing becomes #REF!. Text that does not parse, or that does
+/// not name the table, is returned as it was.
+let tableRefsToRanges (workbook: Rbt.Spreadsheet.Workbook.Workbook) (tableName: string)
+                      (homeSheet: Rbt.Spreadsheet.Workbook.SheetId) (cell: CellAddress option) (formula: string) : string =
+    match Rbt.Spreadsheet.Workbook.getTable tableName workbook with
+    | None -> formula
+    | Some table ->
+        let qualifier =
+            if table.SheetId = homeSheet then None
+            else Map.tryFind table.SheetId workbook.Sheets |> Option.map (fun sheet -> sheet.Name)
+        let names (selection: TableSel) =
+            if selection.Table <> "" then String.Equals(selection.Table, table.Name, StringComparison.OrdinalIgnoreCase)
+            else
+                match cell with
+                | Some at ->
+                    table.SheetId = homeSheet
+                    && at.Row >= table.StartRow && at.Row <= table.EndRow && at.Col >= table.StartCol && at.Col <= table.EndCol
+                | None -> false
+        let corner row col : RefAst = { Sheet = qualifier; Row = row; Col = col; RowAbs = true; ColAbs = true }
+        rewriteFormulaText (mapExprReferences (fun reference ->
+            match reference with
+            | TableRef selection when names selection ->
+                (match tableSelArea selection (Some workbook) (Some homeSheet) cell with
+                 | Ok (r0, c0, r1, c1) when r0 <= r1 && c0 <= c1 ->
+                    if r0 = r1 && c0 = c1 then CellRef (corner r0 c0)
+                    else RangeRef (corner r0 c0, corner r1 c1)
+                 | _ -> ErrorLit Err.ref)
+            | other -> other)) formula
+
+/// The sheet a structured reference reads: the table's own sheet when the
+/// formula stands on another one (`model` is the formula's sheet).
+let private tableSelModel (sel: TableSel)
+                          (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
+                          (sheet: Rbt.Spreadsheet.Workbook.SheetId option)
+                          (model: SpreadsheetModel) : SpreadsheetModel =
+    if sel.Table = "" then model
+    else
+        match workbook |> Option.bind (fun wb -> Rbt.Spreadsheet.Workbook.getTable sel.Table wb |> Option.map (fun table -> wb, table)) with
+        | Some (wb, table) when Some table.SheetId <> sheet ->
+            (match Map.tryFind table.SheetId wb.Sheets with
+             | Some other -> resolveSheet other.Model
+             | None -> model)
+        | _ -> model
+
 /// Resolve a structured reference (`Table[[#Totals],[Amount]]` etc.) to the
 /// flat list of cell values it covers (row-major over the selected rows ×
 /// columns). `sheet`/`currentCell` resolve this-row and unqualified refs.
@@ -2145,6 +2194,7 @@ let iterTableSel (sel: TableSel)
     match tableSelArea sel workbook sheet currentCell with
     | Result.Error e -> emit (err e)
     | Result.Ok (r0, c0, r1, c1) ->
+        let model = tableSelModel sel workbook sheet model
         for row in r0 .. r1 do
             for col in c0 .. c1 do
                 emit (getCellValue { Row = row; Col = col } model |> unwrapValue)
@@ -2167,7 +2217,7 @@ let firstTableSelValue (sel: TableSel)
     | Result.Error e -> err e
     | Result.Ok (r0, c0, r1, _) ->
         if r0 > r1 then err Err.ref
-        else getCellValue { Row = r0; Col = c0 } model |> unwrapValue
+        else getCellValue { Row = r0; Col = c0 } (tableSelModel sel workbook sheet model) |> unwrapValue
 
 // --- Date helpers -----------------------------------------------------------
 // Excel serial dates: serial 1 = 1900-01-01. Excel's phantom 1900-02-29 (the

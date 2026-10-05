@@ -735,6 +735,59 @@ eq "pictures: deleted ones are gone from the file, with their media; the chart s
 let noLogosBytes = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (singleInput (twoLogosAgain |> Ops.deletePicture 1 |> okOf |> Ops.deletePicture 2 |> okOf) (Some (Bridge.Import.importWorkbook twoLogosBack).Source)))
 eq "pictures: none left, no drawing part and no media" (entriesOf noLogosBytes |> List.filter (fun name -> name.StartsWith "xl/media/" || name.StartsWith "xl/drawings/")) []
 
+// ---- tables made and changed in the editor -----------------------------------------
+let tableCells =
+    [ addr 0 0, CellValue.String "Region"; addr 0 1, CellValue.String "Amount"; addr 0 2, CellValue.String ""
+      addr 1 0, CellValue.String "East"; addr 1 1, CellValue.Number 10.0; addr 1 2, CellValue.Number 1.0
+      addr 2 0, CellValue.String "West"; addr 2 1, CellValue.Number 20.0; addr 2 2, CellValue.Number 2.0
+      addr 6 0, CellValue.Formula ("=SUM(Sales[Amount])", CellValue.Number 30.0) ]
+    |> List.fold (fun m (at, value) -> setCell at { Value = value; Format = defaultFormat; Comment = None } m) (createEmpty 30 8)
+let tableBook0 = Bridge.buildWorkbookContext [| tableCells |] [| "First" |] [| true |] Map.empty Map.empty 0
+let tableId = Bridge.sheetIdOfIndex 0
+let tableBook =
+    (Ops.defineTable "DefineTable" tableId { From = addr 0 0; To = addr 2 2 } (Some "Sales") true (Some (Ops.tableStyleNamed "TableStyleMedium9")) tableBook0 |> fst).Book
+    |> fun wb -> (Ops.setTableTotalRow "SetTableTotalRow" "Sales" true wb).Book
+    |> fun wb -> (Ops.defineTable "DefineTable" tableId { From = addr 10 0; To = addr 12 1 } None false None wb |> fst).Book
+let tableInput (wb: Wb.Workbook) (source: Bridge.XlsxSource option) : Bridge.ExportInput =
+    { Sheets = [| wb.Sheets.[tableId].Model |]; Names = [| "First" |]; Visible = [| true |]; ActiveSheetIndex = 0; NameInfo = wb.NameInfo; DefinedNames = wb.Names; Source = source; Macros = None }
+let tableBytes = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (tableInput tableBook None))
+let tableBack = XlsxReader.loadBytesNative tableBytes |> Option.get
+eq "tables: written with their columns, total row, filter and style"
+    (tableBack.Sheets.[0].Tables |> List.map (fun t -> t.Name, (t.StartRow, t.StartCol, t.EndRow, t.EndCol), t.Columns, t.HeaderRowCount, t.TotalsRowCount, t.Totals, t.AutoFilter, t.Style |> Option.map (fun s -> s.Name, s.ShowRowStripes)))
+    [ "Sales", (1, 1, 4, 3), [ "Region"; "Amount"; "Column3" ], 1, 1, [ "label", "Total"; "", ""; "function", "sum" ], Some (1, 3), Some ("TableStyleMedium9", true)
+      "Table1", (11, 1, 13, 2), [ "Column1"; "Column2" ], 0, 0, [ "", ""; "", "" ], None, None ]
+let tablePartText (name: string) =
+    use archive = new System.IO.Compression.ZipArchive(new MemoryStream(tableBytes))
+    use reader = new StreamReader(archive.GetEntry(name).Open())
+    reader.ReadToEnd()
+ok "tables: the filter of a table stops above its total row" ((tablePartText "xl/tables/table1.xml").Contains("<autoFilter ref=\"A1:C3\"/>")) (tablePartText "xl/tables/table1.xml")
+eq "tables: one part each" (entriesOf tableBytes |> List.filter (fun name -> name.StartsWith "xl/tables/")) [ "xl/tables/table1.xml"; "xl/tables/table2.xml" ]
+let tableAgain = Bridge.Import.importWorkbook tableBack
+eq "tables: read back as the editor had them"
+    (Ops.tablesOf tableAgain.Context |> List.map (fun t -> t.Name, Ops.rangeText t.Range, t.HasHeaders, t.HasTotals, t.Columns, t.HasAutoFilter, t.Style |> Option.map (fun s -> s.Name)))
+    (Ops.tablesOf tableBook |> List.map (fun t -> t.Name, Ops.rangeText t.Range, t.HasHeaders, t.HasTotals, t.Columns, t.HasAutoFilter, t.Style |> Option.map (fun s -> s.Name)))
+eq "tables: the total and a structured reference come back as formulas"
+    ([ addr 3 2; addr 6 0 ] |> List.map (fun at -> match tableAgain.Sheets.[0].Model.Cells.[at].Value with CellValue.Formula (text, _) -> Rbt.Spreadsheet.Model.formulaText text | other -> sprintf "%A" other))
+    [ "=SUBTOTAL(109,Sales[Column3])"; "=SUM(Sales[Amount])" ]
+// Opened again and changed: renamed, resized, one deleted - the file follows.
+let tableEdited =
+    (Ops.renameTable "RenameTable" "Sales" "Revenue" { tableAgain.Context with Sheets = tableAgain.Context.Sheets |> Map.map (fun _ sheet -> { sheet with Model = resolveSheet sheet.Model }) }).Book
+    |> fun wb -> (Ops.deleteTable "DeleteTable" "Table1" true wb).Book
+    |> fun wb -> (Ops.setTableTotalRow "SetTableTotalRow" "Revenue" false wb).Book
+let tableEditedBytes = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (tableInput tableEdited (Some tableAgain.Source)))
+let tableEditedBack = XlsxReader.loadBytesNative tableEditedBytes |> Option.get
+eq "tables: renamed, without its total row; the deleted one's part is gone"
+    (tableEditedBack.Sheets.[0].Tables |> List.map (fun t -> t.Name, (t.StartRow, t.StartCol, t.EndRow, t.EndCol), t.TotalsRowCount), entriesOf tableEditedBytes |> List.filter (fun name -> name.StartsWith "xl/tables/"))
+    ([ "Revenue", (1, 1, 3, 3), 0 ], [ "xl/tables/table1.xml" ])
+eq "tables: formulas name the table as renamed"
+    (match (Bridge.Import.importWorkbook tableEditedBack).Sheets.[0].Model.Cells.[addr 6 0].Value with CellValue.Formula (text, _) -> Rbt.Spreadsheet.Model.formulaText text | other -> sprintf "%A" other)
+    "=SUM(Revenue[Amount])"
+// Untouched tables of a file go out as the file had them (their total-row functions too).
+let tableUntouched = reread (Bridge.Export.toWorkbookOut (tableInput tableAgain.Context (Some tableAgain.Source)))
+eq "tables: untouched, they are written as the file had them"
+    (tableUntouched.Sheets.[0].Tables |> List.map (fun t -> t.Name, t.Columns, t.Totals, t.AutoFilter))
+    (tableBack.Sheets.[0].Tables |> List.map (fun t -> t.Name, t.Columns, t.Totals, t.AutoFilter))
+
 printfn ""
 printfn "XLSX bridge tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

@@ -2464,3 +2464,146 @@ checks['api-find'] = async () => {
     large.close();
     return lines;
 };
+
+// Tables: GetTables, DefineTable, ResizeTable, RenameTable, DeleteTable, SetTableTotalRow, SetTableStyle.
+checks['api-tables'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        const value = (a1) => grid.GetRange(a1)[0][0].value, formula = (a1) => grid.GetRange(a1)[0][0].formula;
+        const tables = (g = grid) => g.GetTables().map((t) => `${t.name}@${t.sheetIndex}!${t.range}${t.hasHeaders ? '' : ' no headers'}${t.hasTotals ? ' totals' : ''} [${t.columns.join('|')}] ${t.style ? t.style.name : 'no style'}${t.hasAutoFilter ? ' filter' : ''}`);
+        const node = (row, col) => host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"]`);
+        const look = async (row, col) => { await frame(); const style = getComputedStyle(node(row, col)); return [style.backgroundColor, style.fontWeight === '700' || style.fontWeight === 'bold']; };
+        const rows = [['Region', 'Amount', '', 'Amount'], ['East', '10', '1', '100'], ['West', '20', '2', '200'], ['East', '30', '3', '300']];
+        rows.forEach((row, r) => row.forEach((text, c) => { if (text !== '') grid.SetCell(r, c, text); }));
+        grid.SetCell(1, 6, '=SUM(Sales[Amount])'); grid.SetCell(2, 6, '=Sales[@Amount]*2'); grid.SetCell(3, 6, '=COUNTA(Sales[#Headers])'); grid.SetCell(4, 6, '=ROWS(Sales[#All])');
+        grid.AddSheet('Other'); grid.SetCell(0, 0, '=SUM(Sales[Amount2])'); grid.SetCell(1, 0, '=Sales[[#Totals],[Amount2]]');
+        grid.SwitchSheet(0);
+        grid.SetDefinedName('Big', 'Sales[Amount2]'); grid.SetCell(5, 6, '=SUM(Big)');
+        check('before there is a table the references are errors', [grid.GetTables(), value('G2') === 60], [[], false]);
+        const changes = [];
+        const off = grid.OnChange((change) => changes.push(`${change.Sheets.join(',')}${change.WorkbookChanged ? ' book' : ''}`));
+
+        // ---- define ----
+        const r0 = grid.GetRevision();
+        check('DefineTable returns the name', grid.DefineTable('A1:D4', 'Sales'), 'Sales');
+        check('GetTables: range, columns (blank and repeated headers named), style, filter buttons', grid.GetTables(),
+            [{ name: 'Sales', sheetIndex: 0, range: 'A1:D4', hasHeaders: true, hasTotals: false, columns: ['Region', 'Amount', 'Column3', 'Amount2'], style: { name: 'TableStyleMedium2', showRowStripes: true, showColumnStripes: false, showFirstColumn: false, showLastColumn: false }, hasAutoFilter: true }]);
+        check('the header cells hold the column names', [value('C1'), value('D1')], ['Column3', 'Amount2']);
+        check('structured references resolve, here and on the other sheet', [value('G2'), value('G3'), value('G4'), value('G5'), value('G6'), value('Other!A1')], [60, 40, 4, 4, 600, 600]);
+        check('one change, a new revision', [changes.splice(0).length, grid.GetRevision() !== r0, grid.GetTables().length], [1, true, 1]);
+        check('the grid draws the header and the bands of the style', [await look(0, 0), await look(1, 0), await look(2, 0), await look(3, 0)], [['rgb(68, 114, 196)', true], ['rgb(218, 227, 243)', false], ['rgb(255, 255, 255)', false], ['rgb(218, 227, 243)', false]]);
+        grid.SetCell(1, 1, '15');
+        check('an edit of the data recalculates the references on both sheets', [value('G2'), value('G3'), (grid.SetCell(1, 3, '150'), value('Other!A1')), value('G6')], [65, 40, 650, 650]);
+        grid.SetCell(1, 1, '10'); grid.SetCell(1, 3, '100'); changes.splice(0);
+        grid.Undo();
+        check('undo: no table, the header cells as they were, the references errors again', [grid.GetTables(), value('C1'), value('D1'), value('G2') === 60], [[], null, 'Amount', false]);
+        grid.Redo();
+        check('redo', [tables(), value('C1'), value('G2')], [['Sales@0!A1:D4 [Region|Amount|Column3|Amount2] TableStyleMedium2 filter'], 'Column3', 60]);
+        // A second table: default name, no headers, another style.
+        grid.SwitchSheet(1);
+        grid.SetCell(5, 0, 'a'); grid.SetCell(5, 1, '1'); grid.SetCell(6, 0, 'b'); grid.SetCell(6, 1, '2');
+        check('a default name; no headers; a style by name with options', [grid.DefineTable('A6:B7', undefined, false, { name: 'TableStyleLight10', showRowStripes: false }), tables()],
+            ['Table1', ['Sales@0!A1:D4 [Region|Amount|Column3|Amount2] TableStyleMedium2 filter', 'Table1@1!A6:B7 no headers [Column1|Column2] TableStyleLight10']]);
+        grid.SetCell(8, 0, '=SUM(Table1[Column2])');
+        check('its columns are Column1, Column2', value('A9'), 3);
+        check('DefineTable refuses bad names and ranges', [thrown(() => grid.DefineTable('A6:B7')), thrown(() => grid.DefineTable('D1:E3', 'sales')), thrown(() => grid.DefineTable('D1:E3', 'Big')), thrown(() => grid.DefineTable('D1:E3', 'A1')),
+            thrown(() => grid.DefineTable('D1:E1')), thrown(() => grid.DefineTable('D:E')), thrown(() => grid.DefineTable('nowhere')) !== null, thrown(() => grid.DefineTable('D1:E3', 'T', true, 'Fancy')).slice(0, 44)],
+            ['DefineTable: A6:B7 overlaps the table "Table1"', 'DefineTable: there is already a table named "sales"', 'DefineTable: "Big" is a defined name', 'DefineTable: the name "A1" reads as a cell reference',
+             'DefineTable: a table with a header row needs at least one more row', 'DefineTable: a table cannot be whole rows or columns', true, 'DefineTable: "Fancy" is not a table style (t']);
+        grid.SwitchSheet(0);
+
+        // ---- total row ----
+        grid.SetTableTotalRow('Sales', true);
+        check('SetTableTotalRow: the row below, a label and the sum of the last column', [tables()[0], value('A5'), formula('D5'), value('D5'), value('Other!A2'), value('G5'), value('G2')],
+            ['Sales@0!A1:D5 totals [Region|Amount|Column3|Amount2] TableStyleMedium2 filter', 'Total', '=SUBTOTAL(109,Sales[Amount2])', 600, 600, 5, 60]);
+        check('the total row is drawn bold', (await look(4, 0))[1], true);
+        grid.Undo();
+        check('undo takes the row away', [tables()[0].includes('totals'), value('A5'), value('D5')], [false, null, null]);
+        grid.Redo();
+        grid.SetCell(8, 1, 'in the way');
+        check('it is refused when the row is in use; twice is no change', [(grid.SetTableTotalRow('Sales', false), thrown(() => { grid.SetCell(4, 1, 'x'); grid.SetTableTotalRow('Sales', true); })), (grid.SetCell(4, 1, ''), grid.SetTableTotalRow('Sales', true), thrown(() => grid.SetTableTotalRow('Sales', true)))],
+            ['SetTableTotalRow: the row below the table (A5:D5) is not empty', null]);
+
+        // ---- resize ----
+        grid.SetTableTotalRow('Sales', false);
+        grid.SetCell(4, 0, 'North'); grid.SetCell(4, 1, '40'); grid.SetCell(4, 3, '400'); grid.SetCell(0, 4, 'Region');
+        grid.ResizeTable('Sales', 'A1:E5');
+        check('ResizeTable: more rows and a column, named by its header', [tables()[0], value('E1'), value('G2'), value('Other!A1'), value('G5')], ['Sales@0!A1:E5 [Region|Amount|Column3|Amount2|Region2] TableStyleMedium2 filter', 'Region2', 100, 1000, 5]);
+        grid.Undo();
+        check('undo', [tables()[0], value('E1'), value('G2')], ['Sales@0!A1:D4 [Region|Amount|Column3|Amount2] TableStyleMedium2 filter', 'Region', 60]);
+        check('ResizeTable refuses', [thrown(() => grid.ResizeTable('Sales', 'A2:D5')), thrown(() => grid.ResizeTable('Sales', 'F1:H4')), thrown(() => grid.ResizeTable('Nope', 'A1:D5')), thrown(() => grid.ResizeTable('Sales', 'A1:D1'))],
+            ['ResizeTable: the table has to keep its first row (row 1)', 'ResizeTable: the new range has to overlap the table', 'ResizeTable: there is no table "Nope"', 'ResizeTable: the table needs at least one row of data']);
+        grid.SetCell(4, 0, ''); grid.SetCell(4, 1, ''); grid.SetCell(4, 3, ''); grid.SetCell(0, 4, '');
+
+        // ---- rename ----
+        grid.SetTableTotalRow('Sales', true);
+        grid.RenameTable('Sales', 'Revenue');
+        check('RenameTable: formulas and names of every sheet follow and still resolve', [tables()[0].split('@')[0], formula('G2'), formula('G3'), formula('D5'), formula('Other!A2'), grid.GetDefinedNames().find((n) => n.name === 'Big').refersTo, value('G2'), value('G6'), value('Other!A1')],
+            ['Revenue', '=SUM(Revenue[Amount])', '=Revenue[@Amount]*2', '=SUBTOTAL(109,Revenue[Amount2])', '=Revenue[[#Totals],[Amount2]]', 'Revenue[Amount2]', 60, 600, 600]);
+        grid.Undo();
+        check('undo: the old name everywhere', [tables()[0].split('@')[0], formula('G2'), formula('Other!A2'), grid.GetDefinedNames().find((n) => n.name === 'Big').refersTo, value('G2')], ['Sales', '=SUM(Sales[Amount])', '=Sales[[#Totals],[Amount2]]', 'Sales[Amount2]', 60]);
+        check('RenameTable refuses', [thrown(() => grid.RenameTable('Sales', 'Table1')), thrown(() => grid.RenameTable('Sales', 'my table')).slice(0, 44), thrown(() => grid.RenameTable('Nope', 'X'))],
+            ['RenameTable: there is already a table named "Table1"', 'RenameTable: the name "my table" may hold le', 'RenameTable: there is no table "Nope"']);
+
+        // ---- style ----
+        grid.SetTableStyle('Sales', 'TableStyleMedium3');
+        check('SetTableStyle: another style is drawn', [tables()[0].includes('TableStyleMedium3'), (await look(0, 0))[0]], [true, 'rgb(237, 125, 49)']);
+        grid.SetTableStyle('Sales', null);
+        check('no style', [grid.GetTables()[0].style, thrown(() => grid.SetTableStyle('Sales', 7))], [null, 'SetTableStyle: the style is a style name or { name, showRowStripes, showColumnStripes, showFirstColumn, showLastColumn }']);
+        grid.Undo(); grid.Undo();
+        check('undone', grid.GetTables()[0].style.name, 'TableStyleMedium2');
+
+        // ---- rows and columns inside a table ----
+        grid.InsertRows(2, 1);
+        check('a row inserted inside: the table grows, references follow', [tables()[0].split(' ')[0], value('G2'), value('Other!A1')], ['Sales@0!A1:D6', 60, 600]);
+        grid.Undo();
+        check('undone', tables()[0].split(' ')[0], 'Sales@0!A1:D5');
+
+        // ---- through a file ----
+        const again = await reopened(grid);
+        check('the tables come back from the exported file', tables(again.grid), tables());
+        check('... with their formulas and values', [again.grid.GetRange('G2')[0][0].formula, again.grid.GetRange('G2')[0][0].value, again.grid.GetRange('D5')[0][0].formula, again.grid.GetRange('Other!A1')[0][0].value, again.grid.GetRange('Other!A9')[0][0].value], ['=SUM(Sales[Amount])', 60, '=SUBTOTAL(109,Sales[Amount2])', 600, 3]);
+        // The opened file's tables are changed in turn and saved again.
+        again.grid.RenameTable('Sales', 'Income'); again.grid.SetTableTotalRow('Income', false); again.grid.DeleteTable('Table1');
+        again.grid.SetCell(1, 1, '11');
+        check('an opened file: rename, total row off, convert to range, an edit', [tables(again.grid), again.grid.GetRange('G2')[0][0].value, again.grid.GetRange('Other!A9')[0][0].formula], [['Income@0!A1:D4 [Region|Amount|Column3|Amount2] TableStyleMedium2 filter'], 61, '=SUM($B$6:$B$7)']);
+        const third = await reopened(again.grid);
+        check('... and that is what the next file holds', [tables(third.grid), third.grid.GetRange('G2')[0][0].formula, third.grid.GetRange('G2')[0][0].value, Object.keys(await partsOf(await again.grid.ExportXlsx(), /^xl\/tables\//))], [['Income@0!A1:D4 [Region|Amount|Column3|Amount2] TableStyleMedium2 filter'], '=SUM(Income[Amount])', 61, ['xl/tables/table1.xml']]);
+        third.close(); again.close();
+
+        // ---- convert to a range, delete ----
+        grid.DeleteTable('Sales');
+        check('DeleteTable (keeping the data): references become plain ones; values stand', [tables().length, formula('G2'), formula('G3'), formula('G4'), formula('D5'), formula('Other!A1'), formula('Other!A2'), grid.GetDefinedNames().find((n) => n.name === 'Big').refersTo, value('G2'), value('G3'), value('Other!A1'), value('A1'), value('A5')],
+            [1, '=SUM($B$2:$B$4)', '=$B$3*2', '=COUNTA($A$1:$D$1)', '=SUBTOTAL(109,$D$2:$D$4)', '=SUM(Sheet1!$D$2:$D$4)', '=Sheet1!$D$5', 'Sheet1!$D$2:$D$4', 60, 40, 600, 'Region', 'Total']);
+        check('... the cells are drawn as plain cells again', (await look(0, 0))[0], 'rgb(255, 255, 255)');
+        grid.Undo();
+        check('undo: the table and every structured reference are back', [tables()[0], formula('G2'), formula('Other!A2'), grid.GetDefinedNames().find((n) => n.name === 'Big').refersTo, value('G2')],
+            ['Sales@0!A1:D5 totals [Region|Amount|Column3|Amount2] TableStyleMedium2 filter', '=SUM(Sales[Amount])', '=Sales[[#Totals],[Amount2]]', 'Sales[Amount2]', 60]);
+        grid.Redo(); grid.Undo();
+        grid.DeleteTable('Sales', false);
+        check('DeleteTable(name, false): the cells are emptied too, references are errors', [tables().length, value('A1'), value('B2'), value('D5'), formula('G2'), value('G2')], [1, null, null, null, '=SUM(Sales[Amount])', '#REF!']);
+        grid.Undo();
+        check('undo brings the data back', [tables().length, value('A1'), value('B2'), value('D5'), value('G2')], [2, 'Region', 10, 600, 60]);
+        check('DeleteTable refuses an unknown table', thrown(() => grid.DeleteTable('Nope')), 'DeleteTable: there is no table "Nope"');
+
+        // ---- with the sheet operations and the filter ----
+        grid.SetAutoFilter('A1:D4'); grid.SetFilter(0, { values: ['East'] });
+        check('a table is filtered by SetAutoFilter over its range; its total counts the rows shown', [grid.GetFilters().range, value('D5')], ['A1:D4', 400]);
+        grid.ClearAutoFilter();
+        const copy = grid.DuplicateSheet(0);
+        check('a copied sheet has a copy of the table under a new name', [tables().map((t) => t.split('!')[0]), grid.GetRange('G2')[0][0].formula !== '=SUM(Sales[Amount])'], [['Sales@0', 'Sales_2@1', 'Table1@2'].map((t, i) => i === 1 ? tables()[1].split('!')[0] : t), true]);
+        grid.DeleteSheet(copy);
+        check('a deleted sheet takes its table along', tables().map((t) => t.split('!')[0]), ['Sales@0', 'Table1@1']);
+
+        // ---- the earlier call ----
+        grid.SwitchSheet(1);
+        grid.SetCell(12, 0, 'k'); grid.SetCell(12, 1, 'v'); grid.SetCell(13, 0, 'x'); grid.SetCell(13, 1, '7'); grid.SetCell(15, 0, '=SUM(Old[v])');
+        const before = grid.GetRevision();
+        grid.DefineTable('Old', 12, 0, 13, 1, ['k', 'v'], true);
+        check('the earlier DefineTable(name, rows, columns ...) still registers a table, now as an undo step', [value('A16'), grid.GetTables().length, grid.GetRevision() !== before, (grid.Undo(), grid.GetTables().length), grid.GetRevision() === before], [7, 3, true, 2, true]);
+        off();
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};

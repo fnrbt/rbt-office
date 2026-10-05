@@ -397,6 +397,10 @@ type TableDefinition = {
     HeaderRowCount: int
     /// `totalsRowCount` — number of totals rows at the bottom (0 or 1 in practice).
     TotalsRowCount: int
+    /// What each column shows in the totals row, left to right: ("label",
+    /// text), ("function", "sum" | "count" | ...), ("custom", formula) or
+    /// ("", "") for nothing.
+    Totals: (string * string) list
     Style: TableStyleInfo option
     /// (startCol, endCol) span of `<autoFilter ref="…">`, 1-indexed. None when
     /// the table has no autoFilter child. Excel renders a dropdown button on
@@ -3057,6 +3061,18 @@ module Xlsx =
                         Xml.attr "totalsRowCount" doc
                         |> Option.bind tryParseInt
                         |> Option.defaultValue 0
+                    let totals =
+                        Ns.descendantsNs "tableColumn" doc
+                        |> List.filter (fun node -> (Xml.attr "name" node).IsSome)
+                        |> List.map (fun node ->
+                            match Xml.attr "totalsRowLabel" node, Xml.attr "totalsRowFunction" node with
+                            | Some label, _ -> "label", label
+                            | None, Some "custom" ->
+                                (match sElem "totalsRowFormula" node |> Option.bind Xml.text with
+                                 | Some formula -> "custom", formula
+                                 | None -> "", "")
+                            | None, Some "none" | None, None -> "", ""
+                            | None, Some name -> "function", name)
                     Some {
                         Name = tableName
                         Columns = columns
@@ -3066,6 +3082,7 @@ module Xlsx =
                         EndCol = c2
                         HeaderRowCount = headerCount
                         TotalsRowCount = totalsRowCount
+                        Totals = totals
                         Style = style
                         AutoFilter = autoFilter
                     }

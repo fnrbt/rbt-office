@@ -2356,3 +2356,423 @@ let stepMatch (forward: bool) (from: int * int * int) (places: (int * int * int)
         match places |> Array.tryFindIndexBack (fun place -> place < from) with
         | Some index -> Some index
         | None -> Some (places.Length - 1)
+
+// ---------------------------------------------------------------------------
+// Tables
+// ---------------------------------------------------------------------------
+// A table is kept twice: on its sheet (`SpreadsheetModel.Tables`: where it
+// is, its style and filter buttons - what is drawn and written to a file)
+// and in the workbook (`Workbook.Tables`: its columns by name - what
+// structured references read). Every operation here changes both.
+
+module Wb = Rbt.Spreadsheet.Workbook
+
+/// A table as hosts see it.
+type TableInfo = {
+    Name: string
+    SheetId: Wb.SheetId
+    /// Header row, data rows and total row.
+    Range: CellRange
+    HasHeaders: bool
+    HasTotals: bool
+    Columns: string list
+    Style: TableStyle option
+    HasAutoFilter: bool
+}
+
+/// What a table operation did: the workbook after it and the cells it
+/// changed (for the undo step, which puts those cells back).
+type TableChange = {
+    Book: Wb.Workbook
+    Cells: (Wb.SheetId * CellAddress) list
+}
+
+let private sameName (a: string) (b: string) = String.Equals(a, b, StringComparison.OrdinalIgnoreCase)
+
+/// The table of a sheet's own list with a name.
+let private sheetTableNamed (name: string) (model: SpreadsheetModel) : Table option =
+    model.Tables |> List.tryFind (fun table -> sameName table.Name name)
+
+let private tryFindTable (name: string) (workbook: Wb.Workbook) : Wb.Table option =
+    workbook.Tables |> Map.tryPick (fun _ table -> if sameName table.Name name then Some table else None)
+
+let private findTable (memberName: string) (name: string) (workbook: Wb.Workbook) : Wb.Table =
+    match tryFindTable name workbook with
+    | Some table -> table
+    | None -> failwith (sprintf "%s: there is no table \"%s\"" memberName name)
+
+let private sheetModelOf (id: Wb.SheetId) (workbook: Wb.Workbook) : SpreadsheetModel =
+    match Map.tryFind id workbook.Sheets with
+    | Some sheet -> sheet.Model
+    | None -> failwith (sprintf "the workbook has no sheet \"%s\"" id)
+
+let private withSheetModel (id: Wb.SheetId) (model: SpreadsheetModel) (workbook: Wb.Workbook) : Wb.Workbook =
+    match Map.tryFind id workbook.Sheets with
+    | Some sheet when not (obj.ReferenceEquals(sheet.Model, model)) -> { workbook with Sheets = Map.add id { sheet with Model = model } workbook.Sheets }
+    | _ -> workbook
+
+/// The tables of a workbook, sheet by sheet in tab order, each sheet's from
+/// the top left.
+let tablesOf (workbook: Wb.Workbook) : TableInfo list =
+    [ for id in workbook.SheetOrder do
+        match Map.tryFind id workbook.Sheets with
+        | None -> ()
+        | Some sheet ->
+            let onSheet =
+                workbook.Tables |> Map.toList |> List.map snd
+                |> List.filter (fun table -> table.SheetId = id)
+                |> List.sortBy (fun table -> table.StartRow, table.StartCol)
+            for table in onSheet do
+                let own = sheetTableNamed table.Name sheet.Model
+                yield
+                    { Name = table.Name
+                      SheetId = id
+                      Range = rangeOf table.StartRow table.StartCol table.EndRow table.EndCol
+                      HasHeaders = table.HasHeaders
+                      HasTotals = table.HasTotals
+                      Columns = table.Columns
+                      Style = own |> Option.bind (fun t -> t.Style)
+                      HasAutoFilter = (match own with Some t -> t.AutoFilter.IsSome | None -> false) } ]
+
+/// The header and band fills of a built-in table style: the styles cycle
+/// through black and the six accent colours of the Office theme.
+let tableStyleFills (styleName: string) : string * string =
+    let accents = [| "4472C4"; "ED7D31"; "A5A5A5"; "FFC000"; "5B9BD5"; "70AD47" |]
+    let mutable n = 0
+    let mutable any = false
+    for ch in styleName do
+        if Char.IsDigit ch && n < 100000 then
+            any <- true
+            n <- n * 10 + (int ch - int '0')
+    let slot = (max 1 (if any then n else 2) - 1) % 7
+    if slot = 0 then "#000000", "#D9D9D9"
+    else "#" + accents.[slot - 1], CF.blendColors ("#" + accents.[slot - 1]) "#FFFFFF" 0.8
+
+/// The style record of a built-in table style ("TableStyleMedium2") with
+/// banded rows, as Excel applies one.
+let tableStyleNamed (name: string) : TableStyle =
+    let header, stripe = tableStyleFills name
+    { Name = name; ShowFirstColumn = false; ShowLastColumn = false; ShowRowStripes = true; ShowColumnStripes = false
+      HeaderFill = Some header; StripeFill = Some stripe }
+
+let defaultTableStyleName = "TableStyleMedium2"
+
+/// Column names as Excel makes them from header cells: a blank one is
+/// "ColumnN" (N its place), and a name that was used already gets the next
+/// free number appended.
+let uniqueColumnNames (raw: string list) : string list =
+    let taken = Collections.Generic.HashSet<string>()
+    raw
+    |> List.mapi (fun index text ->
+        let wanted = if String.IsNullOrWhiteSpace text then sprintf "Column%d" (index + 1) else text
+        let mutable name = wanted
+        let mutable next = 2
+        while taken.Contains (name.ToUpperInvariant()) do
+            name <- wanted + string next
+            next <- next + 1
+        taken.Add (name.ToUpperInvariant()) |> ignore
+        name)
+
+/// What is wrong with a name for a (new) table, or None: it follows the
+/// rules of defined names and is not the name of another table or of a
+/// defined name.
+let tableNameProblem (name: string) (workbook: Wb.Workbook) : string option =
+    match Wb.definedNameProblem name with
+    | Some problem -> Some problem
+    | None ->
+        if (tryFindTable name workbook).IsSome then Some (sprintf "there is already a table named \"%s\"" name)
+        elif workbook.Names |> Map.exists (fun (_, known) _ -> known = name.ToUpperInvariant()) then Some (sprintf "\"%s\" is a defined name" name)
+        else None
+
+/// The first of Table1, Table2 ... that nothing is called yet.
+let freeTableName (workbook: Wb.Workbook) : string =
+    let mutable n = 1
+    while (tableNameProblem (sprintf "Table%d" n) workbook).IsSome do n <- n + 1
+    sprintf "Table%d" n
+
+let private headerNames (model: SpreadsheetModel) (row: int) (left: int) (right: int) : string list =
+    [ for col in left .. right -> displayValue (getCellValue { Row = row; Col = col } model) ]
+
+/// Write the column names into the header row where the cells do not hold
+/// them already (as text); gives the model and the cells written.
+let private writeHeaders (row: int) (left: int) (names: string list) (model: SpreadsheetModel) : SpreadsheetModel * CellAddress list =
+    let mutable m = model
+    let touched = ResizeArray<CellAddress>()
+    names |> List.iteri (fun index name ->
+        let addr = { Row = row; Col = left + index }
+        let existing = getCell addr m
+        match existing with
+        | Some data when data.Value = String name -> ()
+        | _ ->
+            let data = existing |> Option.defaultValue { Value = Empty; Format = defaultFormat; Comment = None }
+            m <- setCell addr { data with Value = String name } m
+            touched.Add addr)
+    m, List.ofSeq touched
+
+let private tableRangeProblem (ignoreTable: string option) (sheetId: Wb.SheetId) (range: CellRange) (workbook: Wb.Workbook) : string option =
+    let model = sheetModelOf sheetId workbook
+    if range.To.Row >= model.RowCount || range.To.Col >= model.ColCount then
+        Some (sprintf "%s is outside the sheet" (rangeText range))
+    else
+        let overlaps (table: Wb.Table) =
+            table.SheetId = sheetId
+            && (match ignoreTable with Some name -> not (sameName name table.Name) | None -> true)
+            && table.StartRow <= range.To.Row && table.EndRow >= range.From.Row && table.StartCol <= range.To.Col && table.EndCol >= range.From.Col
+        match workbook.Tables |> Map.tryPick (fun _ table -> if overlaps table then Some table else None) with
+        | Some other -> Some (sprintf "%s overlaps the table \"%s\"" (rangeText range) other.Name)
+        | None ->
+            if not (mergedCellsIntersectingRange range.From.Row (range.To.Row + 1) range.From.Col (range.To.Col + 1) model).IsEmpty then
+                Some (sprintf "%s holds merged cells (a table cannot)" (rangeText range))
+            else None
+
+/// Make a table of a range of a sheet. With headers the first row names
+/// the columns (blank and repeated header cells are given Excel's names,
+/// and every header cell becomes text); without, the columns are Column1,
+/// Column2 ... and every row is data. `style` None is a table without a
+/// style. Throws (naming `memberName`) for a bad name or range.
+let defineTable (memberName: string) (sheetId: Wb.SheetId) (range: CellRange) (name: string option) (hasHeaders: bool)
+                (style: TableStyle option) (workbook: Wb.Workbook) : TableChange * string =
+    let fail (message: string) = failwith (sprintf "%s: %s" memberName message)
+    let name =
+        match name with
+        | Some given ->
+            (match tableNameProblem given workbook with
+             | Some problem -> fail problem
+             | None -> given)
+        | None -> freeTableName workbook
+    if isWholeColumns range || isWholeRows range then fail "a table cannot be whole rows or columns"
+    (match tableRangeProblem None sheetId range workbook with
+     | Some problem -> fail problem
+     | None -> ())
+    if hasHeaders && range.To.Row = range.From.Row then fail "a table with a header row needs at least one more row"
+    let model = sheetModelOf sheetId workbook
+    let top, left, bottom, right = range.From.Row, range.From.Col, range.To.Row, range.To.Col
+    let columns =
+        if hasHeaders then uniqueColumnNames (headerNames model top left right)
+        else [ for index in 1 .. right - left + 1 -> sprintf "Column%d" index ]
+    let model, touched = if hasHeaders then writeHeaders top left columns model else model, []
+    let own : Table =
+        { Name = name; StartRow = top + 1; StartCol = left + 1; EndRow = bottom + 1; EndCol = right + 1
+          HeaderRowCount = (if hasHeaders then 1 else 0)
+          Style = style
+          AutoFilter = (if hasHeaders then Some (left + 1, right + 1) else None)
+          HasTotals = false }
+    let table : Wb.Table =
+        { Name = name; SheetId = sheetId; StartRow = top; StartCol = left; EndRow = bottom; EndCol = right
+          Columns = columns; HasHeaders = hasHeaders; HasTotals = false }
+    let book =
+        { withSheetModel sheetId { model with Tables = model.Tables @ [ own ] } workbook with
+            Tables = Map.add name table workbook.Tables }
+    { Book = book; Cells = touched |> List.map (fun addr -> sheetId, addr) }, name
+
+/// Replace a table's records (the sheet's and the workbook's).
+let private putTable (before: Wb.Table) (after: Wb.Table) (own: Table -> Table) (model: SpreadsheetModel) (workbook: Wb.Workbook) : Wb.Workbook =
+    let model = { model with Tables = model.Tables |> List.map (fun t -> if sameName t.Name before.Name then own t else t) }
+    let tables = workbook.Tables |> Map.filter (fun _ table -> not (sameName table.Name before.Name)) |> Map.add after.Name after
+    { withSheetModel before.SheetId model workbook with Tables = tables }
+
+let private rowIsEmpty (model: SpreadsheetModel) (row: int) (left: int) (right: int) : bool =
+    [ left .. right ] |> List.forall (fun col ->
+        match getCellValue { Row = row; Col = col } model with
+        | Empty | String "" -> true
+        | _ -> false)
+
+/// Show or remove the total row of a table. Shown, it is the row below the
+/// data (which has to be empty): "Total" in the first column and, in the
+/// last, the sum of the column when it holds numbers, else the count of
+/// its entries (SUBTOTAL, so filtered rows are left out). Removed, its
+/// cells are emptied.
+let setTableTotalRow (memberName: string) (name: string) (show: bool) (workbook: Wb.Workbook) : TableChange =
+    let fail (message: string) = failwith (sprintf "%s: %s" memberName message)
+    let table = findTable memberName name workbook
+    let model = sheetModelOf table.SheetId workbook
+    if show = table.HasTotals then { Book = workbook; Cells = [] }
+    elif show then
+        let row = table.EndRow + 1
+        if row >= model.RowCount then fail "there is no row below the table for the totals"
+        if not (rowIsEmpty model row table.StartCol table.EndCol) then
+            fail (sprintf "the row below the table (%s) is not empty" (rangeText (rangeOf row table.StartCol row table.EndCol)))
+        if tableRangeProblem (Some table.Name) table.SheetId (rangeOf table.StartRow table.StartCol row table.EndCol) workbook |> Option.isSome then
+            fail "the row below the table belongs to another table or holds merged cells"
+        let put (addr: CellAddress) (value: CellValue) (m: SpreadsheetModel) =
+            let data = getCell addr m |> Option.defaultValue { Value = Empty; Format = defaultFormat; Comment = None }
+            setCell addr { data with Value = value } m
+        let first = { Row = row; Col = table.StartCol }
+        let last = { Row = row; Col = table.EndCol }
+        let mutable m = put first (String "Total") model
+        let touched = ResizeArray<CellAddress>([ first ])
+        if table.EndCol > table.StartCol && not table.Columns.IsEmpty then
+            let dataStart = table.StartRow + (if table.HasHeaders then 1 else 0)
+            let numeric =
+                [ dataStart .. table.EndRow ] |> List.exists (fun r ->
+                    match unwrapFormulaValue (getCellValue { Row = r; Col = table.EndCol } model) with
+                    | Number _ -> true
+                    | _ -> false)
+            let column = List.item (table.EndCol - table.StartCol) table.Columns
+            let formula =
+                Rbt.Spreadsheet.Formula.exprToFormula
+                    (Rbt.Spreadsheet.Formula.Function ("SUBTOTAL",
+                        [ Rbt.Spreadsheet.Formula.Number (if numeric then 109.0 else 103.0)
+                          Rbt.Spreadsheet.Formula.TableRef { Table = table.Name; Item = Rbt.Spreadsheet.Formula.TblData; ColStart = Some column; ColEnd = None } ]))
+            m <- put last (Formula ("=" + formula, Empty)) m
+            touched.Add last
+        let after = { table with EndRow = row; HasTotals = true }
+        { Book = putTable table after (fun t -> { t with EndRow = t.EndRow + 1; HasTotals = true }) m workbook
+          Cells = touched |> Seq.map (fun addr -> table.SheetId, addr) |> List.ofSeq }
+    else
+        let row = table.EndRow
+        let mutable m = model
+        let touched = ResizeArray<CellAddress>()
+        for col in table.StartCol .. table.EndCol do
+            let addr = { Row = row; Col = col }
+            match getCell addr m with
+            | Some data when data.Value <> Empty ->
+                m <- setCell addr { data with Value = Empty } m
+                touched.Add addr
+            | _ -> ()
+        let after = { table with EndRow = row - 1; HasTotals = false }
+        { Book = putTable table after (fun t -> { t with EndRow = t.EndRow - 1; HasTotals = false }) m workbook
+          Cells = touched |> Seq.map (fun addr -> table.SheetId, addr) |> List.ofSeq }
+
+/// Give a table another range: the header row stays in its row, and the
+/// new range has to overlap the old one (Excel's rule). Columns that come
+/// in are named by their header cells; a total row moves to the new last
+/// row (`range` includes it, as the table's range does).
+let resizeTable (memberName: string) (name: string) (range: CellRange) (workbook: Wb.Workbook) : TableChange =
+    let fail (message: string) = failwith (sprintf "%s: %s" memberName message)
+    let table = findTable memberName name workbook
+    if isWholeColumns range || isWholeRows range then fail "a table cannot be whole rows or columns"
+    if range.From.Row <> table.StartRow then fail (sprintf "the table has to keep its first row (row %d)" (table.StartRow + 1))
+    if range.From.Col > table.EndCol || range.To.Col < table.StartCol then fail "the new range has to overlap the table"
+    let needed = (if table.HasHeaders then 1 else 0) + (if table.HasTotals then 1 else 0)
+    if range.To.Row - range.From.Row + 1 <= needed && needed > 0 then fail "the table needs at least one row of data"
+    (match tableRangeProblem (Some table.Name) table.SheetId range workbook with
+     | Some problem -> fail problem
+     | None -> ())
+    if rangeOf table.StartRow table.StartCol table.EndRow table.EndCol = range then { Book = workbook; Cells = [] }
+    else
+        // The total row is taken off, the table resized, and the total row put back.
+        let without = if table.HasTotals then setTableTotalRow memberName name false workbook else { Book = workbook; Cells = [] }
+        let plain = findTable memberName name without.Book
+        let model = sheetModelOf plain.SheetId without.Book
+        let bottom = if table.HasTotals then range.To.Row - 1 else range.To.Row
+        let columns =
+            if plain.HasHeaders then
+                // Columns that stay keep their names; new ones are read off the header row.
+                let raw =
+                    [ for col in range.From.Col .. range.To.Col ->
+                        if col >= plain.StartCol && col <= plain.EndCol && col - plain.StartCol < plain.Columns.Length then List.item (col - plain.StartCol) plain.Columns
+                        else displayValue (getCellValue { Row = plain.StartRow; Col = col } model) ]
+                uniqueColumnNames raw
+            else [ for index in 1 .. range.To.Col - range.From.Col + 1 -> sprintf "Column%d" index ]
+        let model, touched = if plain.HasHeaders then writeHeaders plain.StartRow range.From.Col columns model else model, []
+        let after = { plain with StartCol = range.From.Col; EndCol = range.To.Col; EndRow = bottom; Columns = columns }
+        let resized =
+            putTable plain after (fun t ->
+                { t with StartCol = range.From.Col + 1; EndCol = range.To.Col + 1; EndRow = bottom + 1
+                         AutoFilter = t.AutoFilter |> Option.map (fun _ -> range.From.Col + 1, range.To.Col + 1) }) model without.Book
+        let cells = without.Cells @ (touched |> List.map (fun addr -> plain.SheetId, addr))
+        if table.HasTotals then
+            let withTotals = setTableTotalRow memberName name true resized
+            { withTotals with Cells = List.distinct (cells @ withTotals.Cells) }
+        else { Book = resized; Cells = cells }
+
+/// Apply `rewrite` (given the sheet and the cell a formula stands in; no
+/// cell for the formulas of rules and names) to every formula of a
+/// workbook: cells, conditional formats, validations and defined names.
+let private rewriteBookFormulas (mentions: string -> bool) (rewrite: Wb.SheetId -> CellAddress option -> string -> string) (workbook: Wb.Workbook) : TableChange =
+    let touched = ResizeArray<Wb.SheetId * CellAddress>()
+    let sheets =
+        workbook.Sheets
+        |> Map.map (fun id sheet ->
+            let model = sheet.Model
+            let mutable cells = model.Cells
+            for KeyValue(addr, data) in model.Cells do
+                match data.Value with
+                | Formula (formula, cached) when mentions formula ->
+                    let rewritten = rewrite id (Some addr) formula
+                    if rewritten <> formula then
+                        cells <- Map.add addr { data with Value = Formula (rewritten, cached) } cells
+                        touched.Add((id, addr))
+                | _ -> ()
+            // (The rules of the sheet, through the walk that knows where their formulas are.)
+            let rules = mapModelFormulas (fun formula -> if mentions formula then rewrite id None formula else formula) { model with Cells = Map.empty }
+            let changed =
+                not (obj.ReferenceEquals(cells, model.Cells))
+                || rules.ConditionalFormats <> model.ConditionalFormats || rules.Validations <> model.Validations
+            if not changed then sheet
+            else
+                { sheet with
+                    Model =
+                        { model with
+                            Cells = cells
+                            ConditionalFormats = (if rules.ConditionalFormats = model.ConditionalFormats then model.ConditionalFormats else rules.ConditionalFormats)
+                            Validations = (if rules.Validations = model.Validations then model.Validations else rules.Validations) }
+                        |> invalidateFilterProjection })
+    let names =
+        workbook.Names |> Map.map (fun (scope, _) refersTo ->
+            if mentions refersTo then rewrite (defaultArg scope "") None refersTo else refersTo)
+    { Book = { workbook with Sheets = sheets; Names = (if names = workbook.Names then workbook.Names else names) }; Cells = List.ofSeq touched }
+
+/// Rename a table: structured references in every formula of the workbook
+/// follow.
+let renameTable (memberName: string) (name: string) (newName: string) (workbook: Wb.Workbook) : TableChange =
+    let table = findTable memberName name workbook
+    if table.Name = newName then { Book = workbook; Cells = [] }
+    else
+        (match (if sameName table.Name newName then Wb.definedNameProblem newName else tableNameProblem newName workbook) with
+         | Some problem -> failwith (sprintf "%s: %s" memberName problem)
+         | None -> ())
+        let change = RenameTableRefs (table.Name, newName)
+        let rewritten =
+            rewriteBookFormulas
+                (fun formula -> formula.IndexOf(table.Name, StringComparison.OrdinalIgnoreCase) >= 0)
+                (fun _ _ formula -> rewriteFormulaForSheets change formula) workbook
+        let model = sheetModelOf table.SheetId rewritten.Book
+        { rewritten with Book = putTable table { table with Name = newName } (fun t -> { t with Name = newName }) model rewritten.Book }
+
+/// Remove a table. Keeping the data (Excel's "convert to range") the cells
+/// stay as they are and every structured reference to the table becomes
+/// the plain reference it stood for; otherwise the table's cells are
+/// emptied as well (and references to it are #REF!).
+let deleteTable (memberName: string) (name: string) (keepData: bool) (workbook: Wb.Workbook) : TableChange =
+    let table = findTable memberName name workbook
+    let inTable (id: Wb.SheetId) (cell: CellAddress option) =
+        match cell with
+        | Some at -> id = table.SheetId && at.Row >= table.StartRow && at.Row <= table.EndRow && at.Col >= table.StartCol && at.Col <= table.EndCol
+        | None -> false
+    let rewritten =
+        if keepData then
+            rewriteBookFormulas
+                (fun formula -> formula.IndexOf '[' >= 0)
+                (fun id cell formula ->
+                    if formula.IndexOf(table.Name, StringComparison.OrdinalIgnoreCase) >= 0 || inTable id cell then
+                        Rbt.Spreadsheet.Formula.tableRefsToRanges workbook table.Name id cell formula
+                    else formula) workbook
+        else { Book = workbook; Cells = [] }
+    let model = sheetModelOf table.SheetId rewritten.Book
+    let mutable m = { model with Tables = model.Tables |> List.filter (fun t -> not (sameName t.Name table.Name)) }
+    let touched = ResizeArray<Wb.SheetId * CellAddress>(rewritten.Cells)
+    if not keepData then
+        for KeyValue(addr, data) in model.Cells do
+            if inTable table.SheetId (Some addr) && data.Value <> Empty then
+                m <- setCell addr { data with Value = Empty } m
+                touched.Add((table.SheetId, addr))
+    let book = withSheetModel table.SheetId m rewritten.Book
+    { Book = { book with Tables = book.Tables |> Map.filter (fun _ known -> not (sameName known.Name table.Name)) }
+      Cells = List.distinct (List.ofSeq touched) }
+
+/// Give a table another style (None: no style).
+let setTableStyle (memberName: string) (name: string) (style: TableStyle option) (workbook: Wb.Workbook) : TableChange =
+    let table = findTable memberName name workbook
+    let model = sheetModelOf table.SheetId workbook
+    match sheetTableNamed table.Name model with
+    | Some own when own.Style <> style -> { Book = putTable table table (fun t -> { t with Style = style }) model workbook; Cells = [] }
+    | Some _ -> { Book = workbook; Cells = [] }
+    | None ->
+        // A table the workbook alone knows (defined the old way) gets its record on the sheet.
+        let own : Table =
+            { Name = table.Name; StartRow = table.StartRow + 1; StartCol = table.StartCol + 1; EndRow = table.EndRow + 1; EndCol = table.EndCol + 1
+              HeaderRowCount = (if table.HasHeaders then 1 else 0); Style = style
+              AutoFilter = (if table.HasHeaders then Some (table.StartCol + 1, table.EndCol + 1) else None); HasTotals = table.HasTotals }
+        { Book = withSheetModel table.SheetId { model with Tables = model.Tables @ [ own ] } workbook; Cells = [] }
