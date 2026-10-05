@@ -546,6 +546,87 @@ eq "axes: edited rows of a file's sheet" (rowAttributes axesEditedFile)
 eq "axes: the row shown again has its height" (axesEditedFile.Sheets.[0].Rows |> List.tryFind (fun r -> r.Index = 3) |> Option.bind (fun r -> r.Height) |> Option.map (fun h -> Math.Round (h * 1.333))) (Some 40.0)
 eq "axes: edited columns" (columnAttributes axesEditedFile |> List.map (fun (first, last, hidden, _, level, collapsed) -> first, last, hidden, level, collapsed)) [ 2, 2, true, 0, false; 3, 3, true, 0, false; 5, 6, true, 0, false; 8, 8, true, 0, false ]
 
+// ---- the AutoFilter: its range, every kind of column filter, the rows it hides, the hidden name ----
+let filterCell value = { Value = value; Format = defaultFormat; Comment = None }
+let filterData =
+    [ 0, "Region", "Sales"; 1, "East", "10"; 2, "West", "20"; 3, "East", "30"; 4, "North", "40"; 5, "West", "50"; 6, "South", "60" ]
+    |> List.fold (fun m (row, region, sales) ->
+        m
+        |> setCell (addr row 1) (filterCell (CellValue.String region))
+        |> setCell (addr row 2) (filterCell (match Double.TryParse sales with | true, n -> CellValue.Number n | _ -> CellValue.String sales))
+        |> setCell (addr row 3) (filterCell (CellValue.String (sprintf "note %d" row)))
+        |> setCell (addr row 4) { filterCell (CellValue.Number (float row)) with Format = { defaultFormat with BgColor = (if row % 2 = 0 then Some "#FFFF00" else None); TextColor = (if row = 3 then Some "#FF0000" else None) } }) (createEmpty 40 8)
+    |> Ops.setAxisSize true 2 2 44.0
+    |> Ops.hideAxis true 12 12
+let filterRange = area 0 1 6 4
+let filterKinds =
+    [ "values", [ 1, FilterValues (Set.ofList [ "East"; "West" ], true) ]
+      "one condition", [ 2, FilterCustom ([ OpGreaterThan, "25" ], true) ]
+      "two conditions (or)", [ 2, FilterCustom ([ OpLessThan, "20"; OpGreaterOrEqual, "50" ], false) ]
+      "two conditions (and)", [ 2, FilterCustom ([ OpGreaterOrEqual, "20"; OpNotEqual, "40" ], true) ]
+      "text with wildcards", [ 3, FilterCustom ([ OpEqual, "*e 3*" ], true) ]
+      "top", [ 2, FilterTop (2, false, false) ]
+      "bottom percent", [ 2, FilterTop (40, true, true) ]
+      "fill colour", [ 4, FilterColor ("#FFFF00", false) ]
+      "text colour", [ 4, FilterColor ("#FF0000", true) ]
+      "above average", [ 2, FilterDynamic "aboveAverage" ]
+      "below average", [ 2, FilterDynamic "belowAverage" ]
+      "two columns", [ 1, FilterValues (Set.ofList [ "East" ], false); 2, FilterCustom ([ OpGreaterThan, "10" ], true) ] ]
+for label, columns in filterKinds do
+    let model = columns |> List.fold (fun m (col, criteria) -> setColumnFilter col criteria m) (setAutoFilter (Some filterRange) filterData)
+    let file = reread (Bridge.Export.toWorkbookOut (axesInput model None))
+    let back = (Bridge.Import.importWorkbook file).Sheets.[0].Model
+    eq ("filter " + label + ": hides rows at all") (model.FilterHiddenRows.Length > 0) true
+    eq ("filter " + label + ": range and criteria come back") (back.AutoFilter, back.Filters) (model.AutoFilter, model.Filters)
+    eq ("filter " + label + ": the same rows are hidden") back.FilterHiddenRows model.FilterHiddenRows
+    eq ("filter " + label + ": the file hides exactly those rows (and the one the user hid)") (file.Sheets.[0].Rows |> List.filter (fun r -> r.Hidden) |> List.map (fun r -> r.Index - 1)) (List.ofArray model.FilterHiddenRows @ [ 12 ])
+    eq ("filter " + label + ": the user's hidden row is still the user's") (Ops.hiddenRuns true back) [ 12, 12 ]
+    eq ("filter " + label + ": applying it again changes nothing") (reapplyFilter back).FilterHiddenRows back.FilterHiddenRows
+    let shown = setAutoFilter None back
+    eq ("filter " + label + ": shown again, the rows have their heights") ([ for row in model.FilterHiddenRows -> row, Math.Round (getRowHeight row shown) ], getRowHeight 12 shown) ([ for row in model.FilterHiddenRows -> row, (if row = 2 then 44.0 else 25.0) ], 0.0)
+let valuesModel = setAutoFilter (Some filterRange) filterData |> setColumnFilter 1 (FilterValues (Set.ofList [ "East"; "West" ], false))
+let valuesOut = Bridge.Export.toWorkbookOut (axesInput valuesModel None)
+let valuesBytes = XlsxWriter.writeWorkbookPackageBytes valuesOut
+let partText (bytes: byte[]) (path: string) =
+    use archive = new System.IO.Compression.ZipArchive(new MemoryStream(bytes), System.IO.Compression.ZipArchiveMode.Read)
+    use reader = new StreamReader(archive.GetEntry(path).Open())
+    reader.ReadToEnd()
+let valuesSheetXml = partText valuesBytes "xl/worksheets/sheet1.xml"
+ok "filter: the element as Excel writes it" (valuesSheetXml.Contains "<autoFilter ref=\"B1:E7\"><filterColumn colId=\"0\"><filters><filter val=\"East\"/><filter val=\"West\"/></filters></filterColumn></autoFilter>") valuesSheetXml
+ok "filter: it comes after the rows and before the merges / page setup" (valuesSheetXml.IndexOf "<autoFilter" > valuesSheetXml.IndexOf "</sheetData>" && valuesSheetXml.IndexOf "<autoFilter" < valuesSheetXml.IndexOf "<pageMargins") "order"
+ok "filter: the hidden name of the sheet" ((partText valuesBytes "xl/workbook.xml").Contains "<definedName name=\"_xlnm._FilterDatabase\" localSheetId=\"0\" hidden=\"1\">&apos;Axes&apos;!$B$1:$E$7</definedName>") (partText valuesBytes "xl/workbook.xml")
+let valuesFile = XlsxReader.loadBytesNative valuesBytes |> Option.get
+eq "filter: the name is the filter's, not a defined name of the workbook" ((Bridge.Import.importWorkbook valuesFile).Context.Names |> Map.count, valuesFile.NamedRanges.Length) (0, 0)
+// A filter with no column filtered: the range alone.
+let rangeOnly = reread (Bridge.Export.toWorkbookOut (axesInput (setAutoFilter (Some filterRange) filterData) None))
+eq "filter: a range without column filters" ((Bridge.Import.importWorkbook rangeOnly).Sheets.[0].Model.AutoFilter, rangeOnly.Sheets.[0].Extras.AutoFilter) (Some { Range = filterRange; Implicit = false }, Some { Ref = "B1:E7"; Columns = [] })
+// With the file as the source: untouched it goes back as the file states it; edited it is written from the model.
+let valuesImported = Bridge.Import.importWorkbook valuesFile
+let valuesAgain = valuesImported.Sheets.[0].Model
+let valuesSame = reread (Bridge.Export.toWorkbookOut (axesInput valuesAgain (Some valuesImported.Source)))
+eq "filter: an untouched sheet of a file keeps its filter and hidden rows" (valuesSame.Sheets.[0].Extras.AutoFilter, valuesSame.Sheets.[0].Rows |> List.filter (fun r -> r.Hidden) |> List.map (fun r -> r.Index - 1)) (valuesFile.Sheets.[0].Extras.AutoFilter, [ 4; 6; 12 ])
+let valuesLazy = (Bridge.Import.importWorkbookLazy (fun _ -> false) valuesFile).Sheets.[0].Model |> resolveSheet
+eq "filter: a sheet converted on demand has it too" (valuesLazy.AutoFilter, List.ofArray valuesLazy.FilterHiddenRows) (valuesModel.AutoFilter, [ 4; 6 ])
+let refiltered = valuesAgain |> setColumnFilter 2 (FilterTop (1, false, false))
+let refilteredFile = reread (Bridge.Export.toWorkbookOut (axesInput refiltered (Some valuesImported.Source)))
+eq "filter: another column filtered on a file's sheet" (refilteredFile.Sheets.[0].Extras.AutoFilter |> Option.map (fun f -> f.Columns |> List.map (fun c -> c.ColId, c.Kind)), refilteredFile.Sheets.[0].Rows |> List.filter (fun r -> r.Hidden) |> List.map (fun r -> r.Index - 1))
+    (Some [ 0, "filters"; 1, "top10" ], [ 1; 2; 3; 4; 5; 6; 12 ])
+let unfiltered = reread (Bridge.Export.toWorkbookOut (axesInput (setAutoFilter None valuesAgain) (Some valuesImported.Source)))
+eq "filter: removed from a file's sheet, its rows are shown" (unfiltered.Sheets.[0].Extras.AutoFilter, unfiltered.Sheets.[0].Rows |> List.filter (fun r -> r.Hidden) |> List.map (fun r -> r.Index - 1), (partText (XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (axesInput (setAutoFilter None valuesAgain) (Some valuesImported.Source)))) "xl/workbook.xml").Contains "_FilterDatabase") (None, [ 12 ], false)
+// A filter the editor does not evaluate (date groups) is kept: its XML, and the rows the file hid.
+let keptColumn = { XlsxReader.emptyAutoFilterColumn with ColId = 1; Kind = "other"; Xml = "<filters><dateGroupItem year=\"2024\" month=\"3\" dateTimeGrouping=\"month\"/></filters>" }
+let keptOut =
+    let out = Bridge.Export.toWorkbookOut (axesInput (filterData |> Ops.setAxisSize true 3 3 0.0) None)
+    { out with Sheets = out.Sheets |> List.map (fun sheet -> { sheet with Extras = { sheet.Extras with AutoFilter = Some { Ref = "B1:E7"; Columns = [ keptColumn ] } } }) }
+let keptFile = reread keptOut
+eq "kept filter: read as what it is" (keptFile.Sheets.[0].Extras.AutoFilter) (Some { Ref = "B1:E7"; Columns = [ keptColumn ] })
+let keptImported = Bridge.Import.importWorkbook keptFile
+let keptModel = keptImported.Sheets.[0].Model
+eq "kept filter: in the model, with the rows the file hid" (keptModel.Filters |> Map.toList |> List.map (fun (col, f) -> col, f.Criteria), List.ofArray keptModel.FilterHiddenRows) ([ 2, FilterKept keptColumn.Xml ], [ 3 ])
+eq "kept filter: applying the filters again leaves its rows hidden" (List.ofArray (reapplyFilter keptModel).FilterHiddenRows, List.ofArray (keptModel |> setColumnFilter 1 (FilterValues (Set.ofList [ "West" ], false))).FilterHiddenRows) ([ 3 ], [ 1; 3; 4; 6 ])
+let keptEdited = reread (Bridge.Export.toWorkbookOut (axesInput (keptModel |> setColumnFilter 1 (FilterValues (Set.ofList [ "West" ], false))) (Some keptImported.Source)))
+eq "kept filter: written back beside a new one" (keptEdited.Sheets.[0].Extras.AutoFilter |> Option.map (fun f -> f.Columns |> List.map (fun c -> c.ColId, c.Kind, c.Xml.Contains "dateGroupItem"))) (Some [ 0, "filters", false; 1, "other", true ])
+
 printfn ""
 printfn "XLSX bridge tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

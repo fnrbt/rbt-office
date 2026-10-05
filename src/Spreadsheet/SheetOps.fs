@@ -512,16 +512,18 @@ let clearCells (what: ClearWhat) (top: int, left: int, bottom: int, right: int) 
         elif updated <> data then cells <- Map.add addr updated cells
         if what <> ClearFormats && not (Map.isEmpty runs) && Map.containsKey addr runs then runs <- Map.remove addr runs
     let area = float (bottom - top + 1) * float (right - left + 1)
+    // (The rows an AutoFilter hides are left as they are.)
     if area <= cellByCellLimit then
         for row in top .. bottom do
-            for col in left .. right do
-                let addr = { Row = row; Col = col }
-                match Map.tryFind addr model.Cells with
-                | Some data -> change addr data
-                | None -> ()
+            if not (isFilterHiddenRow row model) then
+                for col in left .. right do
+                    let addr = { Row = row; Col = col }
+                    match Map.tryFind addr model.Cells with
+                    | Some data -> change addr data
+                    | None -> ()
     else
         for KeyValue(addr, data) in model.Cells do
-            if addr.Row >= top && addr.Row <= bottom && addr.Col >= left && addr.Col <= right then change addr data
+            if addr.Row >= top && addr.Row <= bottom && addr.Col >= left && addr.Col <= right && not (isFilterHiddenRow addr.Row model) then change addr data
     if obj.ReferenceEquals(cells, model.Cells) && obj.ReferenceEquals(runs, model.RichRuns) then model
     else { model with Cells = cells; RichRuns = runs } |> invalidateFilterProjection
 
@@ -1505,3 +1507,333 @@ let outlineGroups (rows: bool) (model: SpreadsheetModel) : (int * int * int * bo
                     previous <- index
             close ()
         groups |> Seq.sortBy (fun (first, _, level, _) -> first, level) |> List.ofSeq
+
+// ---------------------------------------------------------------------------
+// Sorting a range
+// ---------------------------------------------------------------------------
+
+/// What a sort key orders the rows by.
+type SortBy =
+    | SortByValue
+    | SortByCellColor
+    | SortByFontColor
+
+/// One key of a sort: a sheet column (0-based) of the sorted range.
+type SortKey = {
+    Column: int
+    Descending: bool
+    By: SortBy
+    /// For the colour sorts: the rows with this fill / text colour come
+    /// first (last with `Descending`); "" = no fill / the automatic colour.
+    Color: string
+}
+
+type SortOptions = {
+    /// The first row of the range is a header row and stays where it is.
+    HasHeader: bool
+    /// Text that differs only in case is ordered too (lower case first).
+    CaseSensitive: bool
+}
+
+/// The order of two cell values in an ascending sort, blanks apart: numbers
+/// before text before FALSE before TRUE before errors.
+let private compareSortValues (caseSensitive: bool) (a: CellValue) (b: CellValue) : int =
+    let rank (value: CellValue) =
+        match value with
+        | Number _ -> 0
+        | String _ -> 1
+        | Boolean _ -> 2
+        | Error _ -> 3
+        | _ -> 4
+    match a, b with
+    | Number x, Number y -> compare x y
+    | String x, String y ->
+        let order = String.Compare(x, y, StringComparison.OrdinalIgnoreCase)
+        if order <> 0 || not caseSensitive then order else -(String.CompareOrdinal(x, y))
+    | Boolean x, Boolean y -> compare x y
+    | _ -> compare (rank a) (rank b)
+
+/// The rows of `top` .. `bottom` that take part in a sort: those the
+/// AutoFilter does not hide (a hidden row stays where it is, as in Excel).
+let private sortableRows (top: int) (bottom: int) (model: SpreadsheetModel) : int array =
+    filterShownRows top bottom model |> Array.ofList
+
+/// Why `range` cannot be sorted by `keys`, or None: no key, a key outside
+/// the range, merged cells among the rows to sort, or a dynamic array (a
+/// spilling formula or the cells it fills) among them.
+let sortProblem (range: CellRange) (keys: SortKey list) (options: SortOptions) (model: SpreadsheetModel) : string option =
+    let range = clipToUsed model range
+    let top = if options.HasHeader then range.From.Row + 1 else range.From.Row
+    let inRows (row: int) = row >= top && row <= range.To.Row
+    let inCols (col: int) = col >= range.From.Col && col <= range.To.Col
+    if keys.IsEmpty then Some "no sort key was given"
+    else
+        match keys |> List.tryFind (fun key -> not (inCols key.Column)) with
+        | Some key -> Some (sprintf "the key column %s is outside the range %s" (columnToLetter key.Column) (rangeText range))
+        | None ->
+            let merged =
+                model.MergedCells
+                |> List.exists (fun merge -> merge.StartRow <= range.To.Row && merge.EndRow >= top && merge.StartCol <= range.To.Col && merge.EndCol >= range.From.Col)
+            let spills =
+                model.Spill
+                |> Map.exists (fun ghost anchor -> (inRows ghost.Row && inCols ghost.Col) || (inRows anchor.Row && inCols anchor.Col))
+            if merged then Some "the range holds merged cells"
+            elif spills then Some "the range holds a dynamic array (a formula that spills, or the cells it fills)"
+            else None
+
+/// Sort the rows of `range` by `keys` (the first key decides, the next ones
+/// break ties, rows that tie on every key keep their order). Only the cells
+/// of the range move - whole rows of it, each with its value, format,
+/// comment, rich text, threaded comment and single-cell hyperlink; cells
+/// beside the range, row heights, validations and conditional formats stay.
+/// A formula that moves is re-pointed as a copy of it would be: its relative
+/// references shift by the rows it moved, `$`-locked rows stay. Formulas
+/// elsewhere are not re-pointed. Blank cells sort last in either direction.
+/// Rows the AutoFilter hides stay where they are. Throws (naming
+/// `memberName`) when `sortProblem` finds one. Cached values of formulas are
+/// stale afterwards: recalculate.
+let sortRange (memberName: string) (range: CellRange) (keys: SortKey list) (options: SortOptions) (model: SpreadsheetModel) : SpreadsheetModel =
+    match sortProblem range keys options model with
+    | Some problem -> failwith (sprintf "%s: %s" memberName problem)
+    | None ->
+        let range = clipToUsed model range
+        let top = if options.HasHeader then range.From.Row + 1 else range.From.Row
+        let left, right = range.From.Col, range.To.Col
+        let rows = sortableRows top range.To.Row model
+        let sortState =
+            match keys with
+            | key :: _ -> Some { Column = key.Column; Ascending = not key.Descending }
+            | [] -> model.SortState
+        if rows.Length < 2 then { model with SortState = sortState }
+        else
+            let valueAt (row: int) (col: int) =
+                match Map.tryFind { Row = row; Col = col } model.Cells with
+                | Some data -> unwrapFormulaValue data.Value
+                | None -> CellValue.Empty
+            let colorAt (font: bool) (row: int) (col: int) =
+                match Map.tryFind { Row = row; Col = col } model.Cells with
+                | Some data -> ((if font then data.Format.TextColor else data.Format.BgColor) |> Option.defaultValue "").ToUpperInvariant()
+                | None -> ""
+            let isBlank (value: CellValue) = match value with CellValue.Empty | String "" -> true | _ -> false
+            let compareBy (key: SortKey) (a: int) (b: int) : int =
+                match key.By with
+                | SortByValue ->
+                    let va, vb = valueAt a key.Column, valueAt b key.Column
+                    match isBlank va, isBlank vb with
+                    | true, true -> 0
+                    | true, false -> 1
+                    | false, true -> -1
+                    | false, false ->
+                        let order = compareSortValues options.CaseSensitive va vb
+                        if key.Descending then -order else order
+                | SortByCellColor | SortByFontColor ->
+                    let wanted = key.Color.ToUpperInvariant()
+                    let has (row: int) = if colorAt (key.By = SortByFontColor) row key.Column = wanted then 0 else 1
+                    let order = compare (has a) (has b)
+                    if key.Descending then -order else order
+            let compareRows (a: int) (b: int) : int =
+                let mutable order = 0
+                let mutable rest = keys
+                while order = 0 && not rest.IsEmpty do
+                    order <- compareBy rest.Head a b
+                    rest <- rest.Tail
+                order
+            // (List.sortWith is stable.)
+            let ordered = rows |> List.ofArray |> List.sortWith compareRows |> Array.ofList
+            // ordered.[i] is the row whose cells land on rows.[i].
+            let target = System.Collections.Generic.Dictionary<int, int>()
+            let mutable moved = false
+            for i in 0 .. rows.Length - 1 do
+                target.[ordered.[i]] <- rows.[i]
+                if ordered.[i] <> rows.[i] then moved <- true
+            if not moved then { model with SortState = sortState }
+            else
+                let moves (addr: CellAddress) = addr.Col >= left && addr.Col <= right && target.ContainsKey addr.Row
+                let moveMap (items: Map<CellAddress, 'T>) (onMove: int -> 'T -> 'T) : Map<CellAddress, 'T> =
+                    if Map.isEmpty items then items
+                    else
+                        let taken = ResizeArray<CellAddress * 'T>()
+                        for row in rows do
+                            for col in left .. right do
+                                let addr = { Row = row; Col = col }
+                                match Map.tryFind addr items with
+                                | Some item -> taken.Add ((addr, item))
+                                | None -> ()
+                        let mutable result = items
+                        for addr, _ in taken do result <- Map.remove addr result
+                        for addr, item in taken do
+                            let row = target.[addr.Row]
+                            result <- Map.add { addr with Row = row } (onMove (row - addr.Row) item) result
+                        result
+                let cells =
+                    moveMap model.Cells (fun delta data ->
+                        match data.Value with
+                        | Formula (formula, cached) when delta <> 0 -> { data with Value = Formula (shiftFormulaReferences delta 0 formula, cached) }
+                        | _ -> data)
+                let hyperlinks =
+                    if model.Hyperlinks.IsEmpty then model.Hyperlinks
+                    else
+                        model.Hyperlinks
+                        |> List.map (fun link ->
+                            if link.Range.From = link.Range.To && moves link.Range.From then
+                                let addr = { link.Range.From with Row = target.[link.Range.From.Row] }
+                                { link with Range = { From = addr; To = addr } }
+                            else link)
+                { model with
+                    Cells = cells
+                    RichRuns = moveMap model.RichRuns (fun _ runs -> runs)
+                    Threads = moveMap model.Threads (fun _ thread -> thread)
+                    Hyperlinks = hyperlinks
+                    SortState = sortState }
+                |> invalidateFilterProjection
+
+// ---------------------------------------------------------------------------
+// AutoFilter criteria as plain data
+// ---------------------------------------------------------------------------
+
+/// One comparison of a "conditions" filter.
+type FilterConditionDescription = {
+    /// "equals" | "notEquals" | "greaterThan" | "greaterOrEqual" | "lessThan"
+    /// | "lessOrEqual" | "contains" | "notContains" | "beginsWith" | "endsWith".
+    Operator: string
+    /// A number or text. With "equals" / "notEquals" text may hold the
+    /// wildcards `*` and `?` (`~` before one means the character itself);
+    /// the four text operators take their text literally.
+    Value: string
+}
+
+/// The filter of a column as plain data; `Kind` says which fields count.
+type FilterDescription = {
+    /// "values" | "conditions" | "top" | "color" | "dynamic" | "kept".
+    Kind: string
+    Values: string list
+    Blanks: bool
+    Conditions: FilterConditionDescription list
+    And: bool
+    Count: int
+    Percent: bool
+    Bottom: bool
+    Color: string
+    /// "cellColor" | "fontColor".
+    By: string
+    /// "aboveAverage" | "belowAverage".
+    Dynamic: string
+}
+
+let emptyFilterDescription (kind: string) : FilterDescription =
+    { Kind = kind; Values = []; Blanks = false; Conditions = []; And = true; Count = 10; Percent = false; Bottom = false
+      Color = ""; By = "cellColor"; Dynamic = "" }
+
+let filterOperators =
+    [ "equals"; "notEquals"; "greaterThan"; "greaterOrEqual"; "lessThan"; "lessOrEqual"; "contains"; "notContains"; "beginsWith"; "endsWith" ]
+
+/// A pattern with its `~` escapes taken out, when it holds no wildcard.
+let private literalOfPattern (pattern: string) : string option =
+    let sb = System.Text.StringBuilder()
+    let mutable i = 0
+    let mutable literal = true
+    while literal && i < pattern.Length do
+        let c = pattern.[i]
+        if c = '~' && i + 1 < pattern.Length && (pattern.[i + 1] = '*' || pattern.[i + 1] = '?' || pattern.[i + 1] = '~') then
+            sb.Append(pattern.[i + 1]) |> ignore
+            i <- i + 2
+        elif c = '*' || c = '?' then literal <- false
+        else
+            sb.Append(c) |> ignore
+            i <- i + 1
+    if literal then Some (sb.ToString()) else None
+
+let private describeCondition (op: CompareOperator, operand: string) : FilterConditionDescription =
+    let plain name = { Operator = name; Value = operand }
+    match op with
+    | OpGreaterThan -> plain "greaterThan"
+    | OpGreaterOrEqual -> plain "greaterOrEqual"
+    | OpLessThan -> plain "lessThan"
+    | OpLessOrEqual -> plain "lessOrEqual"
+    | OpEqual | OpNotEqual ->
+        let negative = op = OpNotEqual
+        let starts = operand.Length >= 2 && operand.StartsWith "*"
+        // (A closing `*` that is escaped is not a wildcard.)
+        let ends = operand.Length >= 2 && operand.EndsWith "*" && not (operand.EndsWith "~*")
+        let inner (text: string) = literalOfPattern text |> Option.filter (fun literal -> literal <> "")
+        let text =
+            if starts && ends && operand.Length >= 3 then inner (operand.Substring(1, operand.Length - 2)) |> Option.map (fun literal -> (if negative then "notContains" else "contains"), literal)
+            elif ends && not negative then inner (operand.Substring(0, operand.Length - 1)) |> Option.map (fun literal -> "beginsWith", literal)
+            elif starts && not negative then inner (operand.Substring 1) |> Option.map (fun literal -> "endsWith", literal)
+            else None
+        match text with
+        | Some (name, literal) -> { Operator = name; Value = literal }
+        | None -> plain (if negative then "notEquals" else "equals")
+    | _ -> plain "equals"
+
+/// A column filter as plain data.
+let describeFilter (criteria: FilterCriteria) : FilterDescription =
+    match criteria with
+    | FilterValues (values, blanks) -> { emptyFilterDescription "values" with Values = Set.toList values; Blanks = blanks }
+    | FilterCustom (conditions, matchAll) -> { emptyFilterDescription "conditions" with Conditions = conditions |> List.map describeCondition; And = matchAll }
+    | FilterTop (count, percent, bottom) -> { emptyFilterDescription "top" with Count = count; Percent = percent; Bottom = bottom }
+    | FilterColor (color, font) -> { emptyFilterDescription "color" with Color = color; By = (if font then "fontColor" else "cellColor") }
+    | FilterDynamic kind -> { emptyFilterDescription "dynamic" with Dynamic = kind }
+    | FilterKept _ -> emptyFilterDescription "kept"
+
+/// Check a described filter and give the model's criteria. Throws (naming
+/// `memberName`) for an unknown kind or operator, no or more than two
+/// conditions, a count below 1 (or a percentage above 100), a colour that is
+/// not "#RRGGBB" (or ""), and an unknown dynamic filter. A date written
+/// "2024-03-31" (or a time "14:30") in a condition becomes its serial number.
+let filterOfDescription (memberName: string) (description: FilterDescription) : FilterCriteria =
+    let fail message = failwith (sprintf "%s: %s" memberName message)
+    match description.Kind with
+    | "values" ->
+        let values = description.Values |> List.filter (fun value -> value <> "") |> Set.ofList
+        let blanks = description.Blanks || List.contains "" description.Values
+        FilterValues (values, blanks)
+    | "conditions" ->
+        if description.Conditions.IsEmpty then fail "a conditions filter needs at least one condition"
+        elif description.Conditions.Length > 2 then fail "a conditions filter takes at most two conditions"
+        else
+            let conditions =
+                description.Conditions
+                |> List.map (fun condition ->
+                    let value =
+                        match dateOrTimeSerial condition.Value with
+                        | Some serial when condition.Value.Contains "-" || condition.Value.Contains ":" -> numberOperand serial
+                        | _ -> condition.Value
+                    match condition.Operator with
+                    | "equals" -> OpEqual, value
+                    | "notEquals" -> OpNotEqual, value
+                    | "greaterThan" -> OpGreaterThan, value
+                    | "greaterOrEqual" -> OpGreaterOrEqual, value
+                    | "lessThan" -> OpLessThan, value
+                    | "lessOrEqual" -> OpLessOrEqual, value
+                    | "contains" | "notContains" | "beginsWith" | "endsWith" when condition.Value = "" ->
+                        fail (sprintf "the operator \"%s\" needs a text" condition.Operator)
+                    | "contains" -> OpEqual, "*" + escapeWildcards condition.Value + "*"
+                    | "notContains" -> OpNotEqual, "*" + escapeWildcards condition.Value + "*"
+                    | "beginsWith" -> OpEqual, escapeWildcards condition.Value + "*"
+                    | "endsWith" -> OpEqual, "*" + escapeWildcards condition.Value
+                    | other -> fail (sprintf "unknown filter operator \"%s\" (one of %s)" other (String.concat ", " filterOperators)))
+            FilterCustom (conditions, description.And || conditions.Length = 1)
+    | "top" ->
+        if description.Count < 1 then fail "the count of a top / bottom filter must be at least 1"
+        elif description.Percent && description.Count > 100 then fail "a percentage cannot be above 100"
+        else FilterTop (description.Count, description.Percent, description.Bottom)
+    | "color" ->
+        if description.Color <> "" && not (isHexColor description.Color) then fail (sprintf "\"%s\" is not a colour (\"#RRGGBB\", or \"\" for none)" description.Color)
+        else
+            match description.By with
+            | "cellColor" -> FilterColor (description.Color.ToUpperInvariant(), false)
+            | "fontColor" -> FilterColor (description.Color.ToUpperInvariant(), true)
+            | other -> fail (sprintf "unknown colour filter \"%s\" (\"cellColor\" or \"fontColor\")" other)
+    | "dynamic" ->
+        (match description.Dynamic with
+         | "aboveAverage" | "belowAverage" -> FilterDynamic description.Dynamic
+         | other -> fail (sprintf "unknown dynamic filter \"%s\" (\"aboveAverage\" or \"belowAverage\")" other))
+    | other -> fail (sprintf "unknown filter kind \"%s\"" other)
+
+/// Check a range for an AutoFilter: clipped to the sheet, and - a whole
+/// column or row being no place for a header - at least one cell.
+let autoFilterRange (memberName: string) (range: CellRange) (model: SpreadsheetModel) : CellRange =
+    match clipRange model.RowCount model.ColCount range with
+    | Some clipped -> clipped
+    | None -> failwith (sprintf "%s: the range %s is outside the sheet" memberName (rangeText range))

@@ -632,6 +632,68 @@ module Import =
             RepeatRows = sheet.PrintTitleRows |> Option.bind wholeSheet |> Option.map (fun (sr, _, er, _) -> sr, er)
             RepeatCols = sheet.PrintTitleCols |> Option.bind wholeSheet |> Option.map (fun (_, sc, _, ec) -> sc, ec) }
 
+    /// The sheet's AutoFilter in the model: its range and column filters.
+    /// The rows the file hides below the filter's header row are the rows
+    /// the filter hid: they become the model's filtered rows (and are rows
+    /// of their own height again, not rows the user hid).
+    let private withAutoFilter (wb: XlsxReader.Workbook) (sheet: XlsxReader.Worksheet) (model: SpreadsheetModel) : SpreadsheetModel =
+        match sheet.Extras.AutoFilter |> Option.bind (fun filter -> CF.parseArea filter.Ref |> Option.map (fun range -> filter, range)) with
+        | None -> model
+        | Some (filter, range) ->
+            let criteria (column: XlsxReader.AutoFilterColumn) : FilterCriteria =
+                let kept = FilterKept column.Xml
+                match column.Kind with
+                | "filters" -> FilterValues (Set.ofList column.Values, column.Blank)
+                | "customFilters" ->
+                    let conditions =
+                        column.Custom
+                        |> List.map (fun (operator, value) ->
+                            match operator with
+                            | "equal" | "" -> Some (OpEqual, value)
+                            | "notEqual" -> Some (OpNotEqual, value)
+                            | "greaterThan" -> Some (OpGreaterThan, value)
+                            | "greaterThanOrEqual" -> Some (OpGreaterOrEqual, value)
+                            | "lessThan" -> Some (OpLessThan, value)
+                            | "lessThanOrEqual" -> Some (OpLessOrEqual, value)
+                            | _ -> None)
+                    if conditions.IsEmpty || conditions |> List.exists Option.isNone then kept
+                    else FilterCustom (conditions |> List.choose id, column.And || conditions.Length = 1)
+                | "top10" -> FilterTop (max 1 (int column.Value), column.Percent, not column.Top)
+                | "colorFilter" ->
+                    let dxf = column.DxfId |> Option.bind (fun id -> if id >= 0 && id < wb.Dxfs.Length then Some wb.Dxfs.[id] else None)
+                    (match dxf with
+                     | Some dxf ->
+                        let color = (if column.CellColor then dxf.FillColor else dxf.FontColor) |> Option.bind hexColor |> Option.defaultValue ""
+                        FilterColor (color.ToUpperInvariant(), not column.CellColor)
+                     | None -> kept)
+                | "dynamicFilter" when column.DynamicType = "aboveAverage" || column.DynamicType = "belowAverage" -> FilterDynamic column.DynamicType
+                | _ -> kept
+            let filters =
+                filter.Columns
+                |> List.fold (fun acc column ->
+                    let col = range.From.Col + column.ColId
+                    Map.add col ({ Column = col; Criteria = criteria column } : ColumnFilter) acc) Map.empty
+            let filtered =
+                if Map.isEmpty filters then [||]
+                else
+                    [| for KeyValue(row, _) in model.Axes.HiddenRowSizes do
+                        if row > range.From.Row && row <= range.To.Row then yield row |]
+            let shown =
+                if filtered.Length = 0 then model
+                else
+                    let mutable heights = model.RowHeights
+                    let mutable kept = model.Axes.HiddenRowSizes
+                    for row in filtered do
+                        (match Map.tryFind row kept with
+                         | Some size -> heights <- Map.add row size heights
+                         | None -> heights <- Map.remove row heights)
+                        kept <- Map.remove row kept
+                    { model with RowHeights = heights; Axes = { model.Axes with HiddenRowSizes = kept } }
+            { shown with
+                AutoFilter = Some { Range = range; Implicit = false }
+                Filters = filters
+                FilterHiddenRows = Array.sort filtered }
+
     let private importSheet (options: ImportOptions) (wb: XlsxReader.Workbook) (sheet: XlsxReader.Worksheet) : SheetImport =
         // Used range, one-based counts: every <row> counts, with or without cells.
         let mutable rowCount = 0
@@ -907,6 +969,7 @@ module Import =
                 Drawings = drawingsOfExtras sheet.Extras
                 Threads = threads
                 Spill = spill }
+            |> withAutoFilter wb sheet
         { Model = model
           TableColumns = tableColumns
           State = sheetStateText sheet.State }
@@ -1359,6 +1422,56 @@ module Export =
 
     /// A sheet written from its model alone. `cells` are its cells in the
     /// writer's shape (a sheet from a file supplies its own, see `sourcedSheet`).
+    /// The model as a file states it: the rows its AutoFilter hides are
+    /// hidden rows that keep their height.
+    let private filterRowsAsHidden (model: SpreadsheetModel) : SpreadsheetModel =
+        if model.FilterHiddenRows.Length = 0 || Map.isEmpty model.Filters then model
+        else
+            let mutable heights = model.RowHeights
+            let mutable kept = model.Axes.HiddenRowSizes
+            for row in model.FilterHiddenRows do
+                match Map.tryFind row model.RowHeights with
+                | Some size when size <= 0.0 -> ()
+                | size ->
+                    kept <- Map.add row (defaultArg size 25.0) kept
+                    heights <- Map.add row 0.0 heights
+            { model with RowHeights = heights; Axes = { model.Axes with HiddenRowSizes = kept } }
+
+    /// The sheet's AutoFilter in the reader's shape. A colour filter's
+    /// colour becomes a `<dxf>` (`dxfIndex` hands out its index).
+    let private autoFilterOut (dxfIndex: XlsxReader.Dxf -> int) (model: SpreadsheetModel) : XlsxReader.SheetAutoFilter option =
+        model.AutoFilter
+        |> Option.map (fun filter ->
+            let column (col: int, columnFilter: ColumnFilter) : XlsxReader.AutoFilterColumn =
+                let empty = { XlsxReader.emptyAutoFilterColumn with ColId = col - filter.Range.From.Col }
+                match columnFilter.Criteria with
+                | FilterValues (values, blanks) -> { empty with Kind = "filters"; Values = Set.toList values; Blank = blanks }
+                | FilterCustom (conditions, matchAll) ->
+                    { empty with
+                        Kind = "customFilters"
+                        And = matchAll
+                        Custom =
+                            conditions
+                            |> List.map (fun (op, value) ->
+                                (match op with
+                                 | OpNotEqual -> "notEqual"
+                                 | OpGreaterThan -> "greaterThan"
+                                 | OpGreaterOrEqual -> "greaterThanOrEqual"
+                                 | OpLessThan -> "lessThan"
+                                 | OpLessOrEqual -> "lessThanOrEqual"
+                                 | _ -> "equal"), value) }
+                | FilterTop (count, percent, bottom) -> { empty with Kind = "top10"; Top = not bottom; Percent = percent; Value = float count }
+                | FilterColor (color, font) ->
+                    let hex = if color = "" then None else Some (color.TrimStart '#')
+                    let dxf : XlsxReader.Dxf =
+                        { FontColor = (if font then hex else None); FillColor = (if font then None else hex)
+                          Bold = None; Italic = None; Underline = None; Strike = None }
+                    { empty with Kind = "colorFilter"; DxfId = Some (dxfIndex dxf); CellColor = not font }
+                | FilterDynamic kind -> { empty with Kind = "dynamicFilter"; DynamicType = kind }
+                | FilterKept xml -> { empty with Kind = "other"; Xml = xml }
+            { Ref = CF.sqrefText [ filter.Range ]
+              Columns = model.Filters |> Map.toList |> List.filter (fun (col, _) -> col >= filter.Range.From.Col) |> List.map column })
+
     let private modelSheetWith (cells: XlsxWriter.XlsxCellOut list) (dxfIndex: XlsxReader.Dxf -> int) (name: string) (state: XlsxReader.SheetState) (model: SpreadsheetModel) : XlsxWriter.XlsxSheetOut =
         { Name = name
           State = state
@@ -1393,7 +1506,7 @@ module Export =
           Extras =
             { extrasOfModel XlsxReader.emptySheetExtras None
                 { model with Drawings = model.Drawings |> List.filter (fun drawing -> match drawing.Content with Picture _ -> true | KeptObject _ -> false) }
-                with DataTables = dataTables model } }
+                with DataTables = dataTables model; AutoFilter = autoFilterOut dxfIndex model } }
 
     let private modelSheet (cache: FormatCache) (dxfIndex: XlsxReader.Dxf -> int) (name: string) (state: XlsxReader.SheetState) (model: SpreadsheetModel) : XlsxWriter.XlsxSheetOut =
         let cells = model.Cells |> Map.toList |> List.map (fun (addr, data) -> cellOut cache model addr data)
@@ -1495,6 +1608,10 @@ module Export =
                 let extras =
                     if unchanged (fun m -> m.DataTables) then extras
                     else { extras with DataTables = dataTables model }
+                // An AutoFilter that was not touched goes back as the file states it.
+                let extras =
+                    if before.AutoFilter = model.AutoFilter && unchanged (fun m -> m.Filters) then extras
+                    else { extras with AutoFilter = fromModel.Extras.AutoFilter }
                 // Sparklines and x14 conditional formats name cells; the
                 // editor does not model them, so they only go back while the
                 // sheet's rows and columns are where the file had them.
@@ -1614,9 +1731,9 @@ module Export =
                     // it (but for its name, visibility and tab colour, which
                     // change without converting it).
                     if isDeferredSheet model then { outSheet with Name = name; State = stateOf index model; View = { outSheet.View with TabColor = model.TabColor } }
-                    else sourcedSheet cache dxfIndex name (stateOf index model) outSheet readerSheet before model
+                    else sourcedSheet cache dxfIndex name (stateOf index model) outSheet readerSheet (filterRowsAsHidden before) (filterRowsAsHidden model)
                 | None ->
-                    modelSheet cache dxfIndex name (stateOf index model) model)
+                    modelSheet cache dxfIndex name (stateOf index model) (filterRowsAsHidden model))
             |> Array.toList
         { Sheets = sheets
           ActiveSheetIndex = max 0 (min (input.Sheets.Length - 1) input.ActiveSheetIndex)

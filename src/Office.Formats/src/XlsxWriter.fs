@@ -1626,6 +1626,38 @@ let private sheetFormatXml (sheet: XlsxSheetOut) =
         ]
         sprintf "<sheetFormatPr %s/>" (String.concat " " attrs)
 
+/// `<autoFilter>` of a sheet (CT_AutoFilter): the range and one
+/// `<filterColumn>` per filtered column.
+let private autoFilterXml (dxfCount: int) (sheet: XlsxSheetOut) =
+    match sheet.Extras.AutoFilter with
+    | None -> ""
+    | Some filter ->
+        let column (c: XlsxReader.AutoFilterColumn) =
+            let body =
+                match c.Kind with
+                | "filters" ->
+                    let values = c.Values |> List.map (fun value -> sprintf "<filter %s/>" (attr "val" value)) |> String.concat ""
+                    sprintf "<filters%s>%s</filters>" (if c.Blank then " blank=\"1\"" else "") values
+                | "customFilters" ->
+                    let conditions =
+                        c.Custom
+                        |> List.map (fun (operator, value) ->
+                            sprintf "<customFilter%s %s/>" (if operator = "equal" || operator = "" then "" else " " + attr "operator" operator) (attr "val" value))
+                        |> String.concat ""
+                    sprintf "<customFilters%s>%s</customFilters>" (if c.And && c.Custom.Length > 1 then " and=\"1\"" else "") conditions
+                | "top10" ->
+                    sprintf "<top10%s%s val=\"%s\"/>" (if c.Top then "" else " top=\"0\"") (if c.Percent then " percent=\"1\"" else "") (invariant c.Value)
+                | "colorFilter" ->
+                    (match c.DxfId with
+                     | Some id when id >= 0 && id < dxfCount -> sprintf "<colorFilter dxfId=\"%d\"%s/>" id (if c.CellColor then "" else " cellColor=\"0\"")
+                     | _ -> "")
+                | "dynamicFilter" -> sprintf "<dynamicFilter %s/>" (attr "type" c.DynamicType)
+                | _ -> c.Xml
+            if body = "" then "" else sprintf "<filterColumn colId=\"%d\">%s</filterColumn>" c.ColId body
+        let columns = filter.Columns |> List.map column |> String.concat ""
+        if columns = "" then sprintf "<autoFilter %s/>" (attr "ref" filter.Ref)
+        else sprintf "<autoFilter %s>%s</autoFilter>" (attr "ref" filter.Ref) columns
+
 let private worksheetXml (styles: StyleBook) sharedIndex sheetIndex active (sheet: XlsxSheetOut) =
     let hasFitToPage = sheet.PageSetup |> Option.exists (fun p -> p.FitToPage)
     // (CT_SheetPr: tabColor comes before pageSetUpPr.)
@@ -1653,6 +1685,7 @@ let private worksheetXml (styles: StyleBook) sharedIndex sheetIndex active (shee
     + ("<sheetData>" + rowsXml styles sharedIndex sheet + "</sheetData>")
     // Child order is fixed by CT_Worksheet; Excel refuses a part that
     // deviates (e.g. tableParts before legacyDrawing).
+    + autoFilterXml styles.Dxfs.Length sheet
     + mergeCellsXmlFull sheet.MergedCells
     + conditionalFormattingXml styles.Dxfs.Length sheet.ConditionalFormats
     + dataValidationsXml sheet.DataValidations
@@ -1812,7 +1845,17 @@ let private workbookXmlFull (workbook: XlsxWorkbookOut) =
               | None, None -> ()
               | rows, cols ->
                   let parts = [ rows; cols ] |> List.choose id |> List.map (fun part -> sprintf "%s!%s" (quoted s.Name) part)
-                  yield { Name = "_xlnm.Print_Titles"; RefersTo = String.concat "," parts; LocalSheetIndex = Some i; Comment = None; Hidden = false } ])
+                  yield { Name = "_xlnm.Print_Titles"; RefersTo = String.concat "," parts; LocalSheetIndex = Some i; Comment = None; Hidden = false }
+              // Excel keeps the range of a sheet's AutoFilter in a hidden name of the sheet.
+              match s.Extras.AutoFilter with
+              | Some filter ->
+                  let absolute (corner: string) =
+                      let letters = corner |> Seq.takeWhile (fun c -> c < '0' || c > '9') |> Seq.filter (fun c -> c <> '$') |> Seq.toArray |> System.String
+                      let digits = corner |> Seq.filter (fun c -> c >= '0' && c <= '9') |> Seq.toArray |> System.String
+                      (if letters = "" then "" else "$" + letters) + (if digits = "" then "" else "$" + digits)
+                  let reference = filter.Ref.Split(':') |> Array.map absolute |> String.concat ":"
+                  yield { Name = "_xlnm._FilterDatabase"; RefersTo = sprintf "%s!%s" (quoted s.Name) reference; LocalSheetIndex = Some i; Comment = None; Hidden = true }
+              | None -> () ])
         |> List.concat
     let names = workbook.DefinedNames @ printNames
     let definedNames =

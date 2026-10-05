@@ -360,7 +360,7 @@ let main argv =
           SortAscending = (fun () -> let _, c = EH.focusCell (EH.activeModel st) in EH.applyChange st (M.sortByColumn c true) |> ignore)
           SortDescending = (fun () -> let _, c = EH.focusCell (EH.activeModel st) in EH.applyChange st (M.sortByColumn c false) |> ignore)
           ToggleFilter = openFilterDialog
-          ClearFilter = (fun () -> EH.applyChange st (fun m -> { m with Filters = Map.empty; FilterHiddenRows = [||] }) |> ignore; status.Value <- "Filters cleared")
+          ClearFilter = (fun () -> EH.applyChange st (fun m -> M.clearColumnFilter None m) |> ignore; status.Value <- "Filters cleared")
           ToggleFreezePanes = (fun () -> EH.applyChange st (fun m -> if m.FrozenRows > 0 || m.FrozenCols > 0 then { m with FrozenRows = 0; FrozenCols = 0 } else let r, c = EH.focusCell m in { m with FrozenRows = r; FrozenCols = c }) |> ignore)
           SplitPanes = (fun () -> status.Value <- "Split panes not wired")
           InsertChart = (fun () -> status.Value <- "Insert chart not wired")

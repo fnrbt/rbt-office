@@ -1623,3 +1623,227 @@ checks['api-rowcol'] = async () => {
     close();
     return lines;
 };
+
+// Sort and filter: SortRange, SetAutoFilter / ClearAutoFilter, SetFilter / ClearFilter / ReapplyFilter,
+// GetFilters, GetFilterValues; what copy, clear, fill and format do on a filtered selection.
+checks['api-sortfilter'] = async () => {
+    const { lines, check, note } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        const column = (col, rows, g = grid) => rows.map((row) => g.GetCell(row, col).text);
+        const formulas = (col, rows, g = grid) => rows.map((row) => g.GetCell(row, col).formula);
+        const rowsDrawn = () => [...host.querySelectorAll('.spreadsheet-row-header')].filter((n) => n.getBoundingClientRect().height > 0 && n.offsetParent !== null).map((n) => Number(n.getAttribute('data-row'))).filter((row) => row <= 11).sort((a, b) => a - b);
+        const cellDrawn = (row, col) => { const n = host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"]`); return !!n && n.getBoundingClientRect().height > 0; };
+        const changes = [];
+        grid.OnChange((change) => changes.push(change));
+        const fill = () => {
+            const data = [['Region', 'Sales', 'Double', 'Note'], ['East', '30', '=B2*2', 'first order'], ['West', '10', '=B3*2', 'Second'], ['east', '20', '=B4*2', ''],
+                          ['North', '40', '=B5*2', '50% off'], ['West', '50', '=B6*2', 'last order'], ['', '60', '=B7*2', 'no region'], ['South', 'n/a', '=B2+B$2', 'what?'], ['East', '20', '=B9*2', '']];
+            data.forEach((row, r) => row.forEach((text, c) => { if (text !== '') grid.SetCell(r, c, text); }));
+            grid.SetCell(10, 1, '=SUBTOTAL(109,B2:B9)'); grid.SetCell(10, 2, '=SUM(B2:B9)'); grid.SetCell(11, 5, '=B2');
+        };
+        fill();
+        grid.SelectCell(8, 1); grid.ApplyBgColor('#FFFF00'); grid.SelectCell(3, 1); grid.ApplyTextColor('#FF0000'); grid.SelectCell(0, 6);
+        changes.splice(0);
+
+        // ---- SortRange ----
+        const r0 = grid.GetRevision();
+        grid.SortRange('A1:D9', [{ column: 'B' }], { hasHeader: true });
+        check('SortRange by a column, the header row staying: numbers, then text', column(1, [0, 1, 2, 3, 4, 5, 6, 7, 8]), ['Sales', '10', '20', '20', '30', '40', '50', '60', 'n/a']);
+        check('rows equal on the key keep their order; the other cells of the range come along', column(0, [1, 2, 3, 4, 5, 6, 7, 8]), ['West', 'east', 'East', 'East', 'North', 'West', '', 'South']);
+        check('a formula that moved points at its own row again', formulas(2, [1, 2, 3, 4, 8]), ['=B2*2', '=B3*2', '=B4*2', '=B5*2', '=B3+B$2']);
+        check('... and is recalculated', column(2, [1, 2, 4, 7]), ['20', '40', '60', '120']);
+        check('formulas outside the range are not re-pointed, and see the new order', [grid.GetCell(11, 5).formula, grid.GetCell(11, 5).text, grid.GetCell(10, 2).text], ['=B2', '10', '230']);
+        check('formats moved with their cells', [grid.GetCell(3, 1).format.fill, grid.GetCell(2, 1).format.textColor], ['#FFFF00', '#FF0000']);
+        check('one change, one undo step, a new revision', [changes.splice(0).length, grid.GetRevision() !== r0, grid.CanUndo()], [1, true, true]);
+        grid.Undo();
+        check('undo puts the rows back', [column(1, [1, 2, 3]), formulas(2, [1, 7]), grid.GetRevision() === r0, grid.GetCell(11, 5).text], [['30', '10', '20'], ['=B2*2', '=B2+B$2'], true, '30']);
+        grid.Redo();
+        check('redo sorts again', column(1, [1, 2, 3, 8]), ['10', '20', '20', 'n/a']);
+        grid.Undo();
+        grid.SortRange('A2:D9', [{ column: 0 }, { column: 1, descending: true }]);
+        check('two keys (the second descending), blanks last', [column(0, [1, 2, 3, 4, 5, 6, 7, 8]), column(1, [1, 2, 3, 4, 5, 6, 7, 8])], [['East', 'east', 'East', 'North', 'South', 'West', 'West', ''], ['30', '20', '20', '40', 'n/a', '50', '10', '60']]);
+        grid.Undo();
+        grid.SortRange('A2:D9', [{ column: 'B', by: 'cellColor', color: '#ffff00' }, { column: 1, by: 'fontColor', color: '#FF0000' }]);
+        check('by fill colour, then by text colour', column(1, [1, 2, 3, 4]), ['20', '20', '30', '10']);
+        grid.Undo();
+        grid.SortRange('A:D', [{ column: 1, descending: true }], { hasHeader: true });
+        check('whole columns are clipped to the used rows (the formulas below sort as numbers)', column(1, [1, 2, 3]).length, 3);
+        grid.Undo();
+        check('sort: bad arguments throw', [
+            thrown(() => grid.SortRange('nope', [{ column: 0 }])), thrown(() => grid.SortRange('A1:D9', [])), thrown(() => grid.SortRange('A1:D9', [{ column: 'F' }])),
+            thrown(() => grid.SortRange('A1:D9', [{ column: 0, by: 'icon' }])), thrown(() => grid.SortRange('A1:D9', [{ column: 0, order: 'desc' }])),
+            thrown(() => grid.SortRange('A1:D9', [{ column: 0 }], { header: true })), thrown(() => grid.SortRange('A1:D9')),
+        ].map((message) => message && message.startsWith('SortRange: ')), [true, true, true, true, true, true, true]);
+        grid.MergeCells(3, 3, 4, 3);
+        check('merged cells among the rows are refused', thrown(() => grid.SortRange('A1:D9', [{ column: 0 }], { hasHeader: true })), 'SortRange: the range holds merged cells');
+        grid.Undo();
+        grid.SetCell(2, 6, 'a'); grid.SetCell(3, 6, 'B'); grid.SetCell(4, 6, 'c'); grid.SelectCell(2, 6);
+        grid.SortCurrentColumnDesc();
+        check('SortCurrentColumnDesc still sorts the block of data by the column (its first row a header)', [column(6, [1, 2, 3]), column(0, [0])], [['c', 'B', 'a'], ['Region']]);
+        grid.Undo(); grid.SelectCell(0, 6);
+        changes.splice(0);
+
+        // ---- SetAutoFilter / SetFilter ----
+        check('no filter: GetFilters is null', grid.GetFilters(), null);
+        const r1 = grid.GetRevision();
+        grid.SetAutoFilter('A1:D9');
+        check('SetAutoFilter: the range, nothing hidden yet', grid.GetFilters(), { range: 'A1:D9', columns: [], hiddenRows: [], hiddenRowCount: 0, visibleRowCount: 8 });
+        check('it is a change and an undo step', [changes.splice(0).length, grid.GetRevision() !== r1], [1, true]);
+        check('GetFilterValues: what a checklist offers', [grid.GetFilterValues(0), grid.GetFilterValues('B')], [{ values: ['East', 'North', 'South', 'West'], blanks: true }, { values: ['10', '20', '30', '40', '50', '60', 'n/a'], blanks: false }]);
+        grid.SetFilter(0, { values: ['East'] });
+        await frame();
+        const filters = grid.GetFilters();
+        check('SetFilter by values (case-insensitive): the other rows are hidden', [filters.hiddenRows, filters.hiddenRowCount, filters.visibleRowCount, filters.columns], [[2, 4, 5, 6, 7], 5, 3, [{ column: 0, letter: 'A', criteria: { values: ['East'], blanks: false } }]]);
+        check('the grid draws the rows that are left, with their own numbers', [rowsDrawn(), cellDrawn(2, 0), cellDrawn(3, 0), grid.GetRowHeight(2) >= 0], [[0, 1, 3, 8, 9, 10, 11], false, true, true]);
+        check('the hidden rows keep their cells', column(0, [2, 4, 5]), ['West', 'North', 'West']);
+        check('SUBTOTAL leaves the hidden rows out, SUM does not', [grid.GetCell(10, 1).text, grid.GetCell(10, 2).text], ['70', '230']);
+        check('one change, one undo step', [changes.splice(0).length], [1]);
+        grid.Undo();
+        await frame();
+        check('undo shows the rows again (the filter range stays)', [grid.GetFilters().hiddenRows, grid.GetFilters().columns, rowsDrawn().length, grid.GetCell(10, 1).text], [[], [], 12, '230']);
+        grid.Redo();
+        check('redo hides them', [grid.GetFilters().hiddenRows, grid.GetCell(10, 1).text], [[2, 4, 5, 6, 7], '70']);
+        const hiddenFor = (col, criteria) => { grid.ClearFilter(); grid.SetFilter(col, criteria); return grid.GetFilters().hiddenRows; };
+        check('values with blanks', hiddenFor(0, { values: ['west'], blanks: true }), [1, 3, 4, 7, 8]);
+        check('a condition on numbers', hiddenFor(1, { conditions: [{ operator: 'greaterThan', value: 30 }] }), [1, 2, 3, 7, 8]);
+        check('two conditions joined by AND, then OR', [hiddenFor('B', { conditions: [{ operator: 'greaterOrEqual', value: 20 }, { operator: 'lessOrEqual', value: '40' }] }), hiddenFor('B', { conditions: [{ operator: 'lessThan', value: 20 }, { operator: 'greaterThan', value: 50 }], and: false })], [[2, 5, 6, 7], [1, 3, 4, 5, 7, 8]]);
+        check('text conditions', [hiddenFor(3, { conditions: [{ operator: 'contains', value: 'order' }] }), hiddenFor(3, { conditions: [{ operator: 'notContains', value: 'order' }] }), hiddenFor(3, { conditions: [{ operator: 'beginsWith', value: 's' }] }),
+            hiddenFor(3, { conditions: [{ operator: 'endsWith', value: '?' }] }), hiddenFor(3, { conditions: [{ operator: 'equals', value: '5?% *' }] }), hiddenFor(0, { conditions: [{ operator: 'notEquals', value: 'west' }] })],
+            [[2, 3, 4, 6, 7, 8], [1, 5], [1, 3, 4, 5, 6, 7, 8], [1, 2, 3, 4, 5, 6, 8], [1, 2, 3, 5, 6, 7, 8], [2, 5]]);
+        check('the criteria read back as they were given', grid.GetFilters().columns[0].criteria, { conditions: [{ operator: 'notEquals', value: 'west' }], and: true });
+        check('top and bottom', [hiddenFor(1, { top: { count: 2 } }), hiddenFor(1, { top: { count: 2, bottom: true } }), hiddenFor(1, { top: { count: 30, percent: true } })], [[1, 2, 3, 4, 7, 8], [1, 4, 5, 6, 7], [1, 2, 3, 4, 7, 8]]);
+        check('by colour', [hiddenFor(1, { color: '#ffff00' }), hiddenFor(1, { color: '#FF0000', by: 'fontColor' }), hiddenFor(1, { color: null })], [[1, 2, 3, 4, 5, 6, 7], [1, 2, 4, 5, 6, 7, 8], [8]]);
+        check('above and below average', [hiddenFor(1, { dynamic: 'aboveAverage' }), hiddenFor(1, { dynamic: 'belowAverage' })], [[1, 2, 3, 7, 8], [4, 5, 6, 7]]);
+        grid.ClearFilter(); grid.SetFilter(0, { values: ['East', 'West'] }); grid.SetFilter(1, { conditions: [{ operator: 'greaterOrEqual', value: 20 }] });
+        check('filters on two columns combine', [grid.GetFilters().hiddenRows, grid.GetFilters().columns.map((c) => c.letter)], [[2, 4, 6, 7], ['A', 'B']]);
+        grid.ClearFilter('A');
+        check('ClearFilter(column) takes one off', [grid.GetFilters().hiddenRows, grid.GetFilters().columns.map((c) => c.letter)], [[2, 7], ['B']]);
+        grid.ClearFilter();
+        check('ClearFilter() takes all off, the AutoFilter stays', [grid.GetFilters().hiddenRows, grid.GetFilters().columns, grid.GetFilters().range], [[], [], 'A1:D9']);
+        check('filter: bad arguments throw', [
+            thrown(() => grid.SetFilter(7, { values: ['x'] })), thrown(() => grid.SetFilter(0, { values: 'x' })), thrown(() => grid.SetFilter(0, {})), thrown(() => grid.SetFilter(0, { values: [], top: { count: 1 } })),
+            thrown(() => grid.SetFilter(0, { conditions: [{ operator: 'like', value: 1 }] })), thrown(() => grid.SetFilter(0, { top: { count: 0 } })), thrown(() => grid.SetFilter(0, { color: 'red' })),
+            thrown(() => grid.SetFilter(0, { dynamic: 'today' })), thrown(() => grid.SetFilter(0, { value: 1 })), thrown(() => grid.SetFilter('A1', { values: [] })), thrown(() => grid.SetFilter(0)),
+        ].map((message) => message && message.startsWith('SetFilter: ')), new Array(11).fill(true));
+        check('... with a message that says what', [thrown(() => grid.SetFilter(7, { values: ['x'] })), thrown(() => grid.SetAutoFilter('nope')) !== null, thrown(() => grid.SetAutoFilter()) !== null, thrown(() => grid.GetFilters(5)) !== null, thrown(() => grid.ClearFilter('1')) !== null],
+            ['SetFilter: column H is outside the filter range A1:D9', true, true, true, true]);
+
+        // ---- a filter is applied when it is set, not when a cell changes ----
+        grid.SetFilter(0, { values: ['East'] });
+        grid.SetCell(1, 0, 'West');
+        check('an edited row stays where it is', grid.GetFilters().hiddenRows, [2, 4, 5, 6, 7]);
+        check('... and the edit recalculated incrementally', grid.GetRecalcStats().Kind, 'incremental');
+        changes.splice(0);
+        grid.ReapplyFilter();
+        check('ReapplyFilter hides it (one change)', [grid.GetFilters().hiddenRows, changes.splice(0).length], [[1, 2, 4, 5, 6, 7], 1]);
+        grid.Undo(); grid.SetCell(1, 0, 'East');
+
+        // ---- a filtered selection: copy, clear, format, fill ----
+        grid.SelectRange(0, 0, 8, 1);
+        check('GetSelectionText copies the rows that are shown', grid.GetSelectionText(), 'Region\tSales\nEast\t30\neast\t20\nEast\t20');
+        check('GetSelectionHtml too', (grid.GetSelectionHtml().match(/<tr>/g) || []).length, 4);
+        const copiedText = grid.GetSelectionText();
+        await grid.Copy();
+        grid.SelectCell(14, 0); grid.PasteText(copiedText, '');
+        check('a copy of a filtered selection pastes as one block', [column(0, [14, 15, 16, 17, 18]), column(1, [15, 16, 17])], [['Region', 'East', 'east', 'East', ''], ['30', '20', '20']]);
+        grid.Undo();
+        grid.SelectRange(1, 3, 8, 3); grid.ApplyFormat('bold');
+        check('a format command skips the hidden rows', [1, 2, 3, 5, 8].map((row) => grid.GetCell(row, 3).format.bold), [true, false, true, false, true]);
+        grid.Undo();
+        grid.SelectRange(1, 3, 8, 3); grid.ClearContents();
+        check('ClearContents skips them', column(3, [1, 2, 4, 5, 6, 7]), ['', 'Second', '50% off', 'last order', 'no region', 'what?']);
+        grid.Undo();
+        grid.SelectRange(1, 3, 8, 3); press(host, 'Delete');
+        check('the Delete key skips them', column(3, [1, 2, 4, 5]), ['', 'Second', '50% off', 'last order']);
+        grid.Undo();
+        grid.SelectRange(1, 3, 8, 3); grid.FillDown();
+        check('FillDown fills the rows that are shown', column(3, [1, 2, 3, 4, 5, 8]), ['first order', 'Second', 'first order', '50% off', 'last order', 'first order']);
+        grid.Undo();
+        grid.SelectCell(0, 6);
+        grid.HideRows(3);
+        check('a row the user hid is another matter: it stays hidden when the filter goes', [grid.GetHiddenRows(), grid.GetFilters().hiddenRows], [['4:4'], [2, 4, 5, 6, 7]]);
+        grid.ClearFilter();
+        check('... and is not shown by ClearFilter', [grid.GetHiddenRows(), grid.GetFilters().hiddenRows, grid.GetRowHeight(3), grid.GetRowHeight(2)], [['4:4'], [], 0, 25]);
+        grid.UnhideRows(3);
+        grid.SetFilter(0, { values: ['East'] });
+        grid.InsertRows(2, 1);
+        check('inserted rows move the range and the hidden rows; the new row is shown', [grid.GetFilters().range, grid.GetFilters().hiddenRows], ['A1:D10', [3, 5, 6, 7, 8]]);
+        grid.Undo();
+        check('undo of the insert', [grid.GetFilters().range, grid.GetFilters().hiddenRows], ['A1:D9', [2, 4, 5, 6, 7]]);
+
+        // ---- the grid's own dropdown ----
+        const button = host.querySelector('.spreadsheet-col-header[data-col="1"] .col-filter-btn');
+        button.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); button.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); button.click();
+        await frame();
+        const dropdown = document.getElementById('filter-dropdown');
+        check('the column button opens the checklist of the filter range', [!!dropdown, dropdown ? [...dropdown.querySelectorAll('label span')].map((n) => n.textContent) : []], [true, ['10', '20', '30', '40', '50', '60', 'n/a']]);
+        if (dropdown) {
+            const boxes = [...dropdown.querySelectorAll('input[type=checkbox]')];
+            boxes.forEach((box, i) => { box.checked = i === 1 || i === 2; });
+            [...dropdown.querySelectorAll('button')].find((b) => b.textContent === 'Apply').click();
+            await frame();
+            check('Apply sets a values filter on the column (an undo step)', [grid.GetFilters().columns.map((c) => [c.letter, c.criteria]), grid.GetFilters().hiddenRows], [[['A', { values: ['East'], blanks: false }], ['B', { values: ['20', '30'], blanks: false }]], [2, 4, 5, 6, 7]]);
+            grid.Undo();
+            check('... that undo takes back', grid.GetFilters().columns.length, 1);
+        }
+
+        // ---- ExportXlsx -> ImportXlsx ----
+        grid.SetFilter(1, { conditions: [{ operator: 'greaterOrEqual', value: 20 }, { operator: 'lessThan', value: 60 }] });
+        grid.SetFilter(3, { conditions: [{ operator: 'notContains', value: 'zzz' }] });
+        const before = grid.GetFilters();
+        const bytes = await grid.ExportXlsx();
+        const zip = await window.JSZip.loadAsync(bytes);
+        const sheetXml = await zip.files['xl/worksheets/sheet1.xml'].async('string'), workbookXml = await zip.files['xl/workbook.xml'].async('string');
+        check('the file: the filter, its columns, the hidden rows, the hidden name', [
+            /<autoFilter ref="A1:D9"><filterColumn colId="0"><filters><filter val="East"\/><\/filters><\/filterColumn><filterColumn colId="1"><customFilters and="1"><customFilter operator="greaterThanOrEqual" val="20"\/><customFilter operator="lessThan" val="60"\/><\/customFilters><\/filterColumn><filterColumn colId="3"><customFilters><customFilter operator="notEqual" val="\*zzz\*"\/><\/customFilters><\/filterColumn><\/autoFilter>/.test(sheetXml),
+            [...sheetXml.matchAll(/<row r="(\d+)"[^>]*hidden="1"/g)].map((m) => Number(m[1]) - 1), /<definedName name="_xlnm\._FilterDatabase" localSheetId="0" hidden="1">[^<]*!\$A\$1:\$D\$9<\/definedName>/.test(workbookXml)], [true, before.hiddenRows, true]);
+        const again = mountGrid();
+        try {
+            await again.grid.ImportXlsx(bytes);
+            await frame();
+            check('re-imported: the same filter and the same rows hidden', again.grid.GetFilters(), before);
+            check('... the cells of the hidden rows are there, the defined names are not polluted', [column(0, [2, 4], again.grid), again.grid.GetDefinedNames().length], [['West', 'North'], 0]);
+            check('... it is not modified, and ReapplyFilter changes nothing', [again.grid.IsModified(), (again.grid.ReapplyFilter(), again.grid.IsModified())], [false, false]);
+            again.grid.ClearFilter(1);
+            check('... and goes on working', again.grid.GetFilters().hiddenRows, [2, 4, 5, 6, 7]);
+            again.grid.ClearAutoFilter();
+            await frame();
+            check('ClearAutoFilter removes it and shows every row', [again.grid.GetFilters(), [1, 2, 4, 7].map((row) => again.grid.GetRowHeight(row) > 0)], [null, [true, true, true, true]]);
+            const cleared = await reopened(again.grid);
+            try { check('... also in the file written after that', [cleared.grid.GetFilters(), cleared.grid.GetHiddenRows()], [null, []]); } finally { cleared.close(); }
+            again.grid.Undo();
+            check('undo of ClearAutoFilter', again.grid.GetFilters().hiddenRows, [2, 4, 5, 6, 7]);
+        } finally { again.close(); }
+
+        // ---- a large sheet ----
+        const big = mountGrid();
+        try {
+            await big.grid.ImportXlsx(await bytesOf('tests/real-world/dashboard-sales-analysis.xlsx'));
+            const names = big.grid.GetSheetNames();
+            big.grid.SwitchSheet(names.indexOf('Data'));
+            await frame();
+            const rows = big.grid.GetModel().RowCount;
+            let started = performance.now();
+            big.grid.SetAutoFilter('A:K');
+            const values = big.grid.GetFilterValues(1).values;
+            const listed = performance.now() - started;
+            started = performance.now();
+            big.grid.SetFilter(1, { values: values.slice(0, 1) });
+            const filtered = performance.now() - started;
+            await frame();
+            const state = big.grid.GetFilters();
+            check('a filter on a large sheet hides most rows', state.hiddenRowCount > 1000 && state.visibleRowCount > 0, true);
+            started = performance.now();
+            big.grid.SortRange('A:K', [{ column: 2, descending: true }], { hasHeader: true });
+            const sorted = performance.now() - started;
+            started = performance.now();
+            big.grid.Undo(); big.grid.Undo();
+            const undone = performance.now() - started;
+            check('in reasonable time', listed < 5000 && filtered < 5000 && sorted < 10000, true);
+            note(`dashboard "Data" (${rows} rows): SetAutoFilter + GetFilterValues ${Math.round(listed)} ms, SetFilter ${Math.round(filtered)} ms (${state.hiddenRowCount} rows hidden), SortRange of the ${state.visibleRowCount} shown rows ${Math.round(sorted)} ms, two undos ${Math.round(undone)} ms`);
+        } finally { big.close(); }
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};

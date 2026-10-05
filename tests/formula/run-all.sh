@@ -54,6 +54,7 @@ stages=(
     stage36-names
     stage37-sheets
     stage38-rowcol
+    stage39-sortfilter
     numbertext
 )
 

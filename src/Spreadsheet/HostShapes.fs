@@ -683,3 +683,137 @@ let ruleOfObj (memberName: string) (baseStyle: CellFormat) (value: obj) : RuleDe
         Reverse = flag "reverse" false
         Period = optionalArg (stringArg memberName "rule.period") (get "period")
         Style = optionalArg (fun format -> ruleFormatPatchOfObj memberName "rule.format" format baseStyle) (get "format") }
+
+// ---------------------------------------------------------------------------
+// Sort keys and AutoFilter criteria
+// ---------------------------------------------------------------------------
+// A column is a 0-based sheet column number or its letters ("C").
+//
+// A sort key:  { column, descending?: boolean, by?: "value" | "cellColor" | "fontColor",
+//                color?: "#RRGGBB" | null }   (color: with a colour sort, the colour that goes first)
+//
+// Filter criteria, one of:
+//   { values: string[], blanks?: boolean }         the cells showing one of the texts (and the blank cells)
+//   { conditions: [{ operator, value }], and?: boolean }   one or two comparisons, joined by AND (default) or OR;
+//        operator: "equals" | "notEquals" | "greaterThan" | "greaterOrEqual" | "lessThan" | "lessOrEqual"
+//                  | "contains" | "notContains" | "beginsWith" | "endsWith";
+//        value: a number, a text (with "equals" / "notEquals" it may hold the wildcards * and ?), a Date or
+//               a date written "2024-03-31"
+//   { top: { count, percent?: boolean, bottom?: boolean } }   the largest (bottom: smallest) numbers
+//   { color: "#RRGGBB" | null, by?: "cellColor" | "fontColor" }   null: no fill / the automatic text colour
+//   { dynamic: "aboveAverage" | "belowAverage" }
+// and, read only, { kept: true } for a filter of an opened file that the editor does not evaluate.
+
+/// A column argument: a 0-based number or the column's letters.
+let columnArg (memberName: string) (what: string) (model: SpreadsheetModel) (value: obj) : int =
+    let col =
+        if jsTypeOf value = "string" then
+            let text = (unbox<string> value).Trim().TrimStart('$').ToUpperInvariant()
+            if text <> "" && text.Length <= 3 && text |> Seq.forall (fun c -> c >= 'A' && c <= 'Z') then letterToColumn text
+            else hostFail memberName (sprintf "%s must be a 0-based column number or column letters, got \"%s\"" what (unbox<string> value))
+        else intArg memberName what value
+    if col < 0 || col >= model.ColCount then hostFail memberName (sprintf "%s %s is outside the sheet" what (if col >= 0 then columnToLetter col else string col))
+    else col
+
+/// The keys of a sort (an array of key objects, or one key object).
+let sortKeysOfObj (memberName: string) (model: SpreadsheetModel) (value: obj) : SortKey list =
+    let one (item: obj) : SortKey =
+        if not (isJsObject item) then
+            // (A bare column is a key too.)
+            { Column = columnArg memberName "a sort key" model item; Descending = false; By = SortByValue; Color = "" }
+        else
+            for key in keysOf item do
+                if not (List.contains key [ "column"; "descending"; "by"; "color" ]) then
+                    hostFail memberName (sprintf "a sort key has no key \"%s\" (it takes: column, descending, by, color)" key)
+            let by =
+                match optionalArg (stringArg memberName "key.by") (getKey item "by") with
+                | None | Some "value" -> SortByValue
+                | Some "cellColor" -> SortByCellColor
+                | Some "fontColor" -> SortByFontColor
+                | Some other -> hostFail memberName (sprintf "key.by must be \"value\", \"cellColor\" or \"fontColor\", got \"%s\"" other)
+            let color = getKey item "color"
+            if by = SortByValue && not (isNullish color) then hostFail memberName "key.color goes with by: \"cellColor\" or \"fontColor\""
+            { Column = columnArg memberName "key.column" model (getKey item "column")
+              Descending = (optionalArg (boolArg memberName "key.descending") (getKey item "descending") |> Option.defaultValue false)
+              By = by
+              Color = (if isNullish color then "" else colorArg memberName "key.color" color) }
+    if isJsArray value then
+        let items = unbox<obj array> value
+        if items.Length = 0 then hostFail memberName "keys must hold at least one sort key"
+        [ for item in items -> one item ]
+    elif isNullish value then hostFail memberName "keys is required: [{ column, descending?, by? }]"
+    else [ one value ]
+
+/// The options of a sort: { hasHeader?, caseSensitive? } (both false when left out).
+let sortOptionsOfObj (memberName: string) (value: obj) : SortOptions =
+    if isNullish value then { HasHeader = false; CaseSensitive = false }
+    elif not (isJsObject value) then hostFail memberName "options must be an object { hasHeader?, caseSensitive? }"
+    else
+        for key in keysOf value do
+            if key <> "hasHeader" && key <> "caseSensitive" then hostFail memberName (sprintf "the sort options have no key \"%s\" (they take: hasHeader, caseSensitive)" key)
+        { HasHeader = (optionalArg (boolArg memberName "options.hasHeader") (getKey value "hasHeader") |> Option.defaultValue false)
+          CaseSensitive = (optionalArg (boolArg memberName "options.caseSensitive") (getKey value "caseSensitive") |> Option.defaultValue false) }
+
+/// Filter criteria as a host reads them.
+let filterToObj (criteria: FilterCriteria) : obj =
+    let description = describeFilter criteria
+    match description.Kind with
+    | "values" -> createObj [ "values" ==> Array.ofList description.Values; "blanks" ==> description.Blanks ]
+    | "conditions" ->
+        createObj [
+            "conditions" ==> [| for condition in description.Conditions -> createObj [ "operator" ==> condition.Operator; "value" ==> condition.Value ] |]
+            "and" ==> description.And
+        ]
+    | "top" -> createObj [ "top" ==> createObj [ "count" ==> description.Count; "percent" ==> description.Percent; "bottom" ==> description.Bottom ] ]
+    | "color" -> createObj [ "color" ==> (if description.Color = "" then null else box description.Color); "by" ==> description.By ]
+    | "dynamic" -> createObj [ "dynamic" ==> description.Dynamic ]
+    | _ -> createObj [ "kept" ==> true ]
+
+/// Filter criteria a host gives, checked for their shape (`SheetOps.filterOfDescription` checks the rest).
+let filterOfObj (memberName: string) (value: obj) : FilterDescription =
+    if not (isJsObject value) then hostFail memberName "criteria must be an object: { values }, { conditions }, { top }, { color } or { dynamic }"
+    let get (key: string) = getKey value key
+    let kinds = [ "values"; "conditions"; "top"; "color"; "dynamic" ] |> List.filter (fun key -> hasKey value key)
+    for key in keysOf value do
+        if not (List.contains key [ "values"; "blanks"; "conditions"; "and"; "top"; "color"; "by"; "dynamic" ]) then
+            hostFail memberName (sprintf "filter criteria have no key \"%s\" (they take: values, blanks, conditions, and, top, color, by, dynamic)" key)
+    let text (what: string) (item: obj) : string =
+        if isJsNumber item then string (unbox<float> item)
+        elif jsTypeOf item = "string" then unbox<string> item
+        elif isJsDate item then jsDateText item
+        else hostFail memberName (sprintf "%s must be a text, a number or a Date" what)
+    let flag (key: string) (fallback: bool) = optionalArg (boolArg memberName ("criteria." + key)) (get key) |> Option.defaultValue fallback
+    match kinds with
+    | [ "values" ] ->
+        let items = get "values"
+        if not (isJsArray items) then hostFail memberName "criteria.values must be an array of texts"
+        { emptyFilterDescription "values" with
+            Values = [ for item in unbox<obj array> items -> if isNullish item then "" else text "an item of criteria.values" item ]
+            Blanks = flag "blanks" false }
+    | [ "conditions" ] ->
+        let items = get "conditions"
+        let items = if isJsArray items then unbox<obj array> items elif isJsObject items then [| items |] else hostFail memberName "criteria.conditions must be an array of { operator, value }"
+        { emptyFilterDescription "conditions" with
+            Conditions =
+                [ for item in items ->
+                    if not (isJsObject item) then hostFail memberName "a condition must be an object { operator, value }"
+                    { Operator = stringArg memberName "condition.operator" (getKey item "operator")
+                      Value = (let given = getKey item "value" in if isNullish given then "" else text "condition.value" given) } ]
+            And = flag "and" true }
+    | [ "top" ] ->
+        let top = get "top"
+        if isJsNumber top then { emptyFilterDescription "top" with Count = intArg memberName "criteria.top" top }
+        elif not (isJsObject top) then hostFail memberName "criteria.top must be an object { count, percent?, bottom? }"
+        else
+            { emptyFilterDescription "top" with
+                Count = intArg memberName "top.count" (getKey top "count")
+                Percent = (optionalArg (boolArg memberName "top.percent") (getKey top "percent") |> Option.defaultValue false)
+                Bottom = (optionalArg (boolArg memberName "top.bottom") (getKey top "bottom") |> Option.defaultValue false) }
+    | [ "color" ] ->
+        let color = get "color"
+        { emptyFilterDescription "color" with
+            Color = (if isNullish color then "" else colorArg memberName "criteria.color" color)
+            By = (optionalArg (stringArg memberName "criteria.by") (get "by") |> Option.defaultValue "cellColor") }
+    | [ "dynamic" ] -> { emptyFilterDescription "dynamic" with Dynamic = stringArg memberName "criteria.dynamic" (get "dynamic") }
+    | [] -> hostFail memberName "criteria need one of the keys values, conditions, top, color, dynamic"
+    | several -> hostFail memberName (sprintf "criteria take one kind of filter, got %s" (String.concat " and " several))

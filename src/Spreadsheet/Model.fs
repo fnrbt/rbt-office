@@ -270,12 +270,6 @@ type SortState = {
     Ascending: bool
 }
 
-/// Column filter (values to show - unchecked values are hidden)
-type ColumnFilter = {
-    Column: int
-    VisibleValues: Set<string>  // String representation of values to show
-}
-
 /// The comparison of a `cellIs` conditional format or a data validation.
 type CompareOperator =
     | OpGreaterThan
@@ -789,6 +783,46 @@ type KeptRange = {
     Range: CellRange
 }
 
+/// What one column of an AutoFilter lets through.
+type FilterCriteria =
+    /// The cells whose displayed text is one of `values` (compared without
+    /// regard to case), and the blank cells when `blanks`.
+    | FilterValues of values: Set<string> * blanks: bool
+    /// One or two comparisons (never between / not between), joined by AND
+    /// (`matchAll`) or OR. An operand is a number or text; with "equal" and
+    /// "not equal" text may hold the wildcards `*` and `?` (`~` escapes one),
+    /// which is how "contains", "begins with" and "ends with" are written.
+    | FilterCustom of conditions: (CompareOperator * string) list * matchAll: bool
+    /// The `count` largest (`bottom`: smallest) numbers of the column, or
+    /// that percentage of them.
+    | FilterTop of count: int * percent: bool * bottom: bool
+    /// The cells filled with `color` ("#RRGGBB"; "" = no fill), or whose
+    /// text has that colour when `font` ("" = the automatic colour).
+    | FilterColor of color: string * font: bool
+    /// "aboveAverage" | "belowAverage": numbers above / below the column's mean.
+    | FilterDynamic of kind: string
+    /// A filter of a file that the editor does not evaluate (date groups,
+    /// the other dynamic filters), as the XML of its `<filterColumn>`
+    /// children: it hides no row by itself, the rows the file had hidden
+    /// stay hidden until the filter is applied again, and it is written back.
+    | FilterKept of xml: string
+
+/// The filter of one column of the sheet's AutoFilter.
+type ColumnFilter = {
+    /// 0-based sheet column.
+    Column: int
+    Criteria: FilterCriteria
+}
+
+/// The sheet's AutoFilter: the range it covers (its first row is the header
+/// row and is never hidden). `Implicit` marks one that was made by filtering
+/// a column without setting a range first (the grid's own filter buttons):
+/// it goes away with its last column filter.
+type SheetFilter = {
+    Range: CellRange
+    Implicit: bool
+}
+
 /// Which sheet of which opened file a model is: `Book` identifies the import
 /// (`XlsxBridge.XlsxSource.Id`), `Sheet` is the sheet's position in that file.
 type SheetOrigin = {
@@ -841,15 +875,22 @@ type SpreadsheetModel = {
     /// Current sort state
     SortState: SortState option
 
-    /// Active filters by column
+    /// The sheet's AutoFilter (its range), when it has one.
+    AutoFilter: SheetFilter option
+
+    /// The column filters of the AutoFilter, by 0-based sheet column. Empty
+    /// when no column is filtered (and always when there is no AutoFilter).
     Filters: Map<int, ColumnFilter>
 
-    /// Rows visible under the active AutoFilter projection. None means the
-    /// projection was invalidated by a data mutation and reads should fall
-    /// back to recomputing from the current cells.
+    /// The rows that pass the column filters among the rows that hold cells,
+    /// as last asked for (`getVisibleRows`); None when cells changed since.
     FilterVisibleRows: Set<int> option
 
-    /// Rows hidden by the active AutoFilter projection.
+    /// The rows the AutoFilter hides, ascending. They are worked out when a
+    /// filter is set or applied again (`reapplyFilter`), not when a cell
+    /// changes - as in Excel, an edited row stays where it is until the
+    /// filter is applied again - and they are part of the document: a file
+    /// stores them as hidden rows. Empty when no column is filtered.
     FilterHiddenRows: int array
 
     /// Custom row heights (default 25.0)
@@ -1045,6 +1086,7 @@ let createEmpty rowCount colCount = {
     Clipboard = None
     History = emptyHistory
     SortState = None
+    AutoFilter = None
     Filters = Map.empty
     FilterVisibleRows = None
     FilterHiddenRows = [||]
@@ -1156,12 +1198,31 @@ let formatCellRef (row: int) (col: int): string =
 let getCell (addr: CellAddress) (model: SpreadsheetModel): CellData option =
     Map.tryFind addr model.Cells
 
+/// Called after the cells of a sheet changed. The rows an AutoFilter hides
+/// stay as they are (see `SpreadsheetModel.FilterHiddenRows`); only the set
+/// of rows that pass, kept for `getVisibleRows`, is forgotten.
 let invalidateFilterProjection (model: SpreadsheetModel): SpreadsheetModel =
     if Map.isEmpty model.Filters then
         if model.FilterVisibleRows.IsNone && model.FilterHiddenRows.Length = 0 then model
         else { model with FilterVisibleRows = None; FilterHiddenRows = [||] }
-    else
-        { model with FilterVisibleRows = None; FilterHiddenRows = [||] }
+    elif model.FilterVisibleRows.IsNone then model
+    else { model with FilterVisibleRows = None }
+
+let private binarySearchInt (values: int array) target =
+    let mutable lo = 0
+    let mutable hi = values.Length - 1
+    let mutable found = -1
+    while found < 0 && lo <= hi do
+        let mid = lo + (hi - lo) / 2
+        let value = values.[mid]
+        if value = target then found <- mid
+        elif value < target then lo <- mid + 1
+        else hi <- mid - 1
+    found
+
+/// Whether the AutoFilter hides a row.
+let isFilterHiddenRow (row: int) (model: SpreadsheetModel): bool =
+    model.FilterHiddenRows.Length > 0 && not (Map.isEmpty model.Filters) && binarySearchInt model.FilterHiddenRows row >= 0
 
 /// Set cell data at address
 let setCell (addr: CellAddress) (data: CellData) (model: SpreadsheetModel): SpreadsheetModel =
@@ -1291,11 +1352,14 @@ let clearSelectionCells (selection: Selection) (model: SpreadsheetModel): Spread
         // which leaves the rest of a large sheet's map as it is (filtering
         // the whole map costs seconds on a sheet of several hundred
         // thousand cells).
+        // (Rows an AutoFilter hides keep their cells: as in Excel, an edit
+        // of a filtered selection acts on the rows that are shown.)
         let mutable cells = model.Cells
         for row in startRow .. endRow do
-            for col in startCol .. endCol do
-                let addr = { Row = row; Col = col }
-                if Map.containsKey addr cells then cells <- Map.remove addr cells
+            if not (isFilterHiddenRow row model) then
+                for col in startCol .. endCol do
+                    let addr = { Row = row; Col = col }
+                    if Map.containsKey addr cells then cells <- Map.remove addr cells
         if obj.ReferenceEquals(cells, model.Cells) then model
         else { model with Cells = cells } |> invalidateFilterProjection
     | Range (startRow, startCol, endRow, endCol) ->
@@ -1305,7 +1369,8 @@ let clearSelectionCells (selection: Selection) (model: SpreadsheetModel): Spread
             |> Map.filter (fun addr _ ->
                 let remove =
                     addr.Row >= startRow && addr.Row <= endRow &&
-                    addr.Col >= startCol && addr.Col <= endCol
+                    addr.Col >= startCol && addr.Col <= endCol &&
+                    not (isFilterHiddenRow addr.Row model)
                 if remove then changed <- true
                 not remove)
         if changed then { model with Cells = cells } |> invalidateFilterProjection else model
@@ -1439,52 +1504,6 @@ let dataBlockForColumn (col: int) (model: SpreadsheetModel) : (int * int) option
             | Some t -> Some (t.StartRow - 1, t.EndRow - 1 - (if t.HasTotals then 1 else 0))
             | None -> Some (first, last)
 
-/// The block the active AutoFilter applies to: the one around its leftmost
-/// filtered column.
-let private filterBlock (model: SpreadsheetModel) : (int * int) option =
-    if Map.isEmpty model.Filters then None
-    else
-        let firstFilterCol = model.Filters |> Map.toSeq |> Seq.map fst |> Seq.min
-        dataBlockForColumn firstFilterCol model
-
-let private computeVisibleRows (model: SpreadsheetModel): Set<int> =
-    let rows = dataRows model
-    if Map.isEmpty model.Filters then
-        rows
-    else
-        let inBlock =
-            match filterBlock model with
-            | Some (first, last) -> fun row -> row >= first && row <= last
-            | None -> fun _ -> false
-        rows
-        |> Set.filter (fun row ->
-            // Rows outside the filtered block are never filtered.
-            not (inBlock row) ||
-            model.Filters
-            |> Map.forall (fun col filter ->
-                let addr = { Row = row; Col = col }
-                let value = getCellValue addr model
-                let displayStr = displayValue value
-                Set.contains displayStr filter.VisibleValues))
-
-let private hiddenRowsFromVisible (visible: Set<int>) (model: SpreadsheetModel): int array =
-    match filterBlock model with
-    | None -> [||]
-    | Some (headerRow, lastRow) ->
-        // The block's first row is its header and always stays.
-        dataRows model
-        |> Set.filter (fun row -> row > headerRow && row <= lastRow && not (Set.contains row visible))
-        |> Set.toArray
-
-let private refreshFilterProjection (model: SpreadsheetModel): SpreadsheetModel =
-    if Map.isEmpty model.Filters then
-        if model.FilterVisibleRows.IsNone && model.FilterHiddenRows.Length = 0 then model
-        else { model with FilterVisibleRows = None; FilterHiddenRows = [||] }
-    else
-        let visible = computeVisibleRows model
-        let hidden = hiddenRowsFromVisible visible model
-        { model with FilterVisibleRows = Some visible; FilterHiddenRows = hidden }
-
 /// A row/column insertion or deletion. `at` is the 0-indexed first row/column
 /// affected; `count` rows/columns are inserted before it or deleted from it.
 type StructureEdit =
@@ -1539,6 +1558,8 @@ type FormulaHooks = {
     Evaluate: string -> int -> int -> SpreadsheetModel -> CellAddress -> CellValue
     /// Re-point references after a sheet was renamed or deleted, or a table renamed.
     Sheets: SheetRewrite -> string -> string
+    /// The text a cell shows for a value under a format (CellText).
+    Display: CellFormat -> CellValue -> string
 }
 
 let mutable private formulaHooks : FormulaHooks option = None
@@ -1605,6 +1626,346 @@ let evaluateFormulaAt (formula: string) (rows: int) (cols: int) (model: Spreadsh
     | Some hooks -> hooks.Evaluate formula rows cols model cell
     | None -> Error "NAME?"
 
+// ---------------------------------------------------------------------------
+// AutoFilter
+// ---------------------------------------------------------------------------
+// A sheet has at most one AutoFilter: a range whose first row is the header
+// row, and a filter for some of its columns. The rows the filters hide are
+// worked out when a filter is set or applied again and are kept in the model
+// (`FilterHiddenRows`); editing a cell does not hide or show a row.
+
+/// The text a cell shows, with its number format applied: what a filter's
+/// list of values is made of and matched against.
+let filterDisplayText (cell: CellData option) : string =
+    match cell with
+    | None -> ""
+    | Some data ->
+        match currentFormulaHooks () with
+        | Some hooks -> hooks.Display data.Format data.Value
+        | None -> displayValueWithFormat (unwrapFormulaValue data.Value) data.Format
+
+type private WildToken =
+    | WildChar of char
+    | WildOne
+    | WildMany
+
+/// Whether `text` matches a filter pattern: `*` is any run of characters,
+/// `?` any one character, `~*` / `~?` / `~~` the character itself. Letters
+/// match without regard to case; the whole text has to match.
+let wildcardMatch (pattern: string) (text: string) : bool =
+    let pattern = pattern.ToUpperInvariant()
+    let text = text.ToUpperInvariant()
+    let tokens = ResizeArray<WildToken>()
+    let mutable i = 0
+    while i < pattern.Length do
+        let c = pattern.[i]
+        if c = '~' && i + 1 < pattern.Length && (pattern.[i + 1] = '*' || pattern.[i + 1] = '?' || pattern.[i + 1] = '~') then
+            tokens.Add (WildChar pattern.[i + 1])
+            i <- i + 2
+        else
+            tokens.Add (if c = '*' then WildMany elif c = '?' then WildOne else WildChar c)
+            i <- i + 1
+    let isMany index = index < tokens.Count && (match tokens.[index] with WildMany -> true | _ -> false)
+    let mutable t = 0
+    let mutable p = 0
+    let mutable star = -1
+    let mutable mark = 0
+    let mutable failed = false
+    while not failed && t < text.Length do
+        let direct =
+            p < tokens.Count
+            && (match tokens.[p] with
+                | WildOne -> true
+                | WildChar c -> c = text.[t]
+                | WildMany -> false)
+        if direct then
+            t <- t + 1
+            p <- p + 1
+        elif isMany p then
+            star <- p
+            mark <- t
+            p <- p + 1
+        elif star >= 0 then
+            p <- star + 1
+            mark <- mark + 1
+            t <- mark
+        else failed <- true
+    if failed then false
+    else
+        while isMany p do p <- p + 1
+        p = tokens.Count
+
+/// Write text so that a filter pattern matches it literally.
+let escapeWildcards (text: string) : string =
+    text.Replace("~", "~~").Replace("*", "~*").Replace("?", "~?")
+
+let private filterNumberOf (cell: CellData option) : float option =
+    match cell with
+    | Some data ->
+        (match unwrapFormulaValue data.Value with
+         | Number n -> Some n
+         | _ -> None)
+    | None -> None
+
+let private filterBlank (cell: CellData option) : bool =
+    match cell with
+    | None -> true
+    | Some data ->
+        match unwrapFormulaValue data.Value with
+        | Empty | String "" -> true
+        | _ -> false
+
+/// The test one comparison of a custom filter makes of a cell.
+let private filterConditionTest (op: CompareOperator) (operand: string) : CellData option -> bool =
+    let number = tryParseNumber operand
+    fun cell ->
+        let value = match cell with Some data -> unwrapFormulaValue data.Value | None -> Empty
+        match op with
+        | OpEqual | OpNotEqual ->
+            let equal =
+                if operand = "" then filterBlank cell
+                else
+                    match number, value with
+                    | Some n, Number x when x = n -> true
+                    | _ -> not (filterBlank cell) && wildcardMatch operand (filterDisplayText cell)
+            if op = OpEqual then equal else not equal
+        | _ ->
+            let holds (order: int) =
+                match op with
+                | OpGreaterThan -> order > 0
+                | OpGreaterOrEqual -> order >= 0
+                | OpLessThan -> order < 0
+                | OpLessOrEqual -> order <= 0
+                | _ -> false
+            match number, value with
+            | Some n, Number x -> holds (compare x n)
+            | None, String text when text <> "" -> holds (System.String.Compare(text, operand, System.StringComparison.OrdinalIgnoreCase))
+            | _ -> false
+
+/// The test a column filter makes of a cell of its column; `firstRow` to
+/// `lastRow` are the rows the filter covers (what "top 10" and "above
+/// average" are measured over).
+let private filterCriteriaTest (model: SpreadsheetModel) (col: int) (firstRow: int) (lastRow: int) (criteria: FilterCriteria) : CellData option -> bool =
+    let numbers () =
+        [| for row in firstRow .. lastRow do
+            match filterNumberOf (Map.tryFind { Row = row; Col = col } model.Cells) with
+            | Some n -> yield n
+            | None -> () |]
+    match criteria with
+    | FilterValues (values, blanks) ->
+        let wanted = System.Collections.Generic.HashSet<string>()
+        for value in values do wanted.Add (value.ToUpperInvariant()) |> ignore
+        let blanks = blanks || wanted.Contains ""
+        fun cell ->
+            if filterBlank cell then blanks
+            else
+                wanted.Contains ((filterDisplayText cell).ToUpperInvariant())
+                || (match cell with
+                    | Some data -> wanted.Contains ((displayValue data.Value).ToUpperInvariant())
+                    | None -> false)
+    | FilterCustom (conditions, matchAll) ->
+        let tests = conditions |> List.map (fun (op, operand) -> filterConditionTest op operand)
+        if tests.IsEmpty then (fun _ -> true)
+        elif matchAll then (fun cell -> tests |> List.forall (fun test -> test cell))
+        else (fun cell -> tests |> List.exists (fun test -> test cell))
+    | FilterTop (count, percent, bottom) ->
+        let sorted = numbers () |> Array.sort
+        if sorted.Length = 0 then (fun _ -> false)
+        else
+            let wanted = if percent then int (float sorted.Length * float count / 100.0) else count
+            let wanted = max 1 (min sorted.Length wanted)
+            // (Ties with the last one that makes it are let through too, as in Excel.)
+            let threshold = if bottom then sorted.[wanted - 1] else sorted.[sorted.Length - wanted]
+            fun cell ->
+                match filterNumberOf cell with
+                | Some x -> if bottom then x <= threshold else x >= threshold
+                | None -> false
+    | FilterDynamic kind ->
+        let all = numbers ()
+        if kind <> "aboveAverage" && kind <> "belowAverage" then (fun _ -> true)
+        elif all.Length = 0 then (fun _ -> false)
+        else
+            let mean = Array.sum all / float all.Length
+            fun cell ->
+                match filterNumberOf cell with
+                | Some x -> if kind = "aboveAverage" then x > mean else x < mean
+                | None -> false
+    | FilterColor (color, font) ->
+        let wanted = color.ToUpperInvariant()
+        fun cell ->
+            let own =
+                match cell with
+                | Some data -> (if font then data.Format.TextColor else data.Format.BgColor) |> Option.defaultValue ""
+                | None -> ""
+            own.ToUpperInvariant() = wanted
+    | FilterKept _ -> fun _ -> true
+
+/// The range a filter made without one covers: the block of data around a
+/// column (see `dataBlockForColumn`), as wide as the block's filled cells.
+let private implicitFilterRange (col: int) (model: SpreadsheetModel) : CellRange =
+    match dataBlockForColumn col model with
+    | None -> { From = { Row = 0; Col = col }; To = { Row = 0; Col = col } }
+    | Some (first, last) ->
+        let mutable lo = col
+        let mutable hi = col
+        for KeyValue(addr, data) in model.Cells do
+            if addr.Row >= first && addr.Row <= last && data.Value <> Empty then
+                if addr.Col < lo then lo <- addr.Col
+                if addr.Col > hi then hi <- addr.Col
+        { From = { Row = first; Col = lo }; To = { Row = last; Col = hi } }
+
+/// The rows the AutoFilter filters, first to last (the rows below its header
+/// row, down to the end of its range or of the sheet's cells), or None.
+let filterDataRows (model: SpreadsheetModel) : (int * int) option =
+    match model.AutoFilter with
+    | None -> None
+    | Some filter ->
+        let mutable lastUsed = -1
+        for KeyValue(addr, _) in model.Cells do
+            if addr.Row > lastUsed then lastUsed <- addr.Row
+        let first = filter.Range.From.Row + 1
+        let last = min filter.Range.To.Row lastUsed
+        if last < first then None else Some (first, last)
+
+/// An implicit filter follows its block of data: rows added to the block
+/// since are filtered too.
+let private refreshImplicitRange (model: SpreadsheetModel) : SpreadsheetModel =
+    match model.AutoFilter with
+    | Some filter when filter.Implicit && not (Map.isEmpty model.Filters) ->
+        let firstCol = model.Filters |> Map.toSeq |> Seq.map fst |> Seq.min
+        let block = implicitFilterRange firstCol model
+        let lastCol = model.Filters |> Map.toSeq |> Seq.map fst |> Seq.max
+        let range =
+            { From = { Row = block.From.Row; Col = min block.From.Col (min filter.Range.From.Col firstCol) }
+              To = { Row = block.To.Row; Col = max block.To.Col (max filter.Range.To.Col lastCol) } }
+        if range = filter.Range then model else { model with AutoFilter = Some { filter with Range = range } }
+    | _ -> model
+
+/// Whether each row passes every column filter, for the rows the filter
+/// covers: (first data row, last data row, test).
+let private filterRowTest (model: SpreadsheetModel) : (int * int * (int -> bool)) option =
+    if Map.isEmpty model.Filters then None
+    else
+        match filterDataRows model with
+        | None -> None
+        | Some (first, last) ->
+            let tests =
+                model.Filters
+                |> Map.toArray
+                |> Array.map (fun (col, filter) -> col, filterCriteriaTest model col first last filter.Criteria)
+            let passes (row: int) =
+                let mutable pass = true
+                let mutable i = 0
+                while pass && i < tests.Length do
+                    let col, test = tests.[i]
+                    pass <- test (Map.tryFind { Row = row; Col = col } model.Cells)
+                    i <- i + 1
+                pass
+            Some (first, last, passes)
+
+/// Apply the column filters to the sheet as it is now: the rows that fail
+/// one are hidden, every other row of the filter's range is shown.
+let reapplyFilter (model: SpreadsheetModel) : SpreadsheetModel =
+    if Map.isEmpty model.Filters then
+        if model.FilterVisibleRows.IsNone && model.FilterHiddenRows.Length = 0 then model
+        else { model with FilterVisibleRows = None; FilterHiddenRows = [||] }
+    else
+        let model = refreshImplicitRange model
+        let hidden =
+            match filterRowTest model with
+            | None -> [||]
+            | Some (first, last, passes) ->
+                // A kept filter is not evaluated: the rows the file had hidden stay hidden.
+                let kept = model.Filters |> Map.exists (fun _ filter -> match filter.Criteria with FilterKept _ -> true | _ -> false)
+                [| for row in first .. last do
+                    if not (passes row) || (kept && isFilterHiddenRow row model) then yield row |]
+        if hidden = model.FilterHiddenRows && model.FilterVisibleRows.IsNone then model
+        else { model with FilterVisibleRows = None; FilterHiddenRows = (if hidden = model.FilterHiddenRows then model.FilterHiddenRows else hidden) }
+
+/// Give the sheet an AutoFilter over `range` (its first row is the header
+/// row), or take it away with None. The filters of columns outside the new
+/// range are dropped; rows are hidden and shown accordingly.
+let setAutoFilter (range: CellRange option) (model: SpreadsheetModel) : SpreadsheetModel =
+    match range with
+    | None -> { model with AutoFilter = None; Filters = Map.empty } |> reapplyFilter
+    | Some range ->
+        let filters = model.Filters |> Map.filter (fun col _ -> col >= range.From.Col && col <= range.To.Col)
+        { model with
+            AutoFilter = Some { Range = range; Implicit = false }
+            Filters = (if filters.Count = model.Filters.Count then model.Filters else filters) }
+        |> reapplyFilter
+
+/// Filter a column. Without an AutoFilter the sheet gets an implicit one
+/// over the block of data around the column.
+let setColumnFilter (col: int) (criteria: FilterCriteria) (model: SpreadsheetModel) : SpreadsheetModel =
+    let filter =
+        match model.AutoFilter with
+        | Some filter when filter.Implicit && (col < filter.Range.From.Col || col > filter.Range.To.Col) ->
+            { filter with Range = { From = { filter.Range.From with Col = min col filter.Range.From.Col }; To = { filter.Range.To with Col = max col filter.Range.To.Col } } }
+        | Some filter -> filter
+        | None -> { Range = implicitFilterRange col model; Implicit = true }
+    { model with
+        AutoFilter = Some filter
+        Filters = Map.add col { Column = col; Criteria = criteria } model.Filters }
+    |> reapplyFilter
+
+/// Take the filter off a column (None: off every column). An implicit
+/// AutoFilter goes with its last column filter.
+let clearColumnFilter (col: int option) (model: SpreadsheetModel) : SpreadsheetModel =
+    let filters =
+        match col with
+        | Some col -> Map.remove col model.Filters
+        | None -> Map.empty
+    let autoFilter =
+        match model.AutoFilter with
+        | Some filter when filter.Implicit && Map.isEmpty filters -> None
+        | other -> other
+    if Map.isEmpty model.Filters && autoFilter = model.AutoFilter then model
+    else { model with Filters = filters; AutoFilter = autoFilter } |> reapplyFilter
+
+/// The distinct texts the cells of a column show within the AutoFilter's
+/// rows (the block of data around the column when there is no AutoFilter),
+/// sorted - numbers first, by value - and whether the column has blank cells
+/// there: what a filter's checklist offers.
+let filterColumnValues (col: int) (model: SpreadsheetModel) : string list * bool =
+    let rows =
+        match model.AutoFilter with
+        | Some _ -> filterDataRows model
+        | None ->
+            match dataBlockForColumn col model with
+            | Some (first, last) when last > first -> Some (first + 1, last)
+            | _ -> None
+    match rows with
+    | None -> [], false
+    | Some (first, last) ->
+        let seen = System.Collections.Generic.HashSet<string>()
+        let found = ResizeArray<CellValue * string>()
+        let mutable blanks = false
+        for row in first .. last do
+            let cell = Map.tryFind { Row = row; Col = col } model.Cells
+            if filterBlank cell then blanks <- true
+            else
+                let text = filterDisplayText cell
+                if seen.Add (text.ToUpperInvariant()) then
+                    found.Add ((match cell with Some data -> unwrapFormulaValue data.Value | None -> Empty), text)
+        let rank (value: CellValue) = match value with Number _ -> 0 | String _ -> 1 | Boolean _ -> 2 | _ -> 3
+        let ordered =
+            found
+            |> Seq.sortWith (fun (a, textA) (b, textB) ->
+                match a, b with
+                | Number x, Number y -> compare x y
+                | _ ->
+                    if rank a <> rank b then compare (rank a) (rank b)
+                    else System.String.Compare(textA, textB, System.StringComparison.OrdinalIgnoreCase))
+            |> Seq.map snd
+            |> List.ofSeq
+        ordered, blanks
+
+/// The rows of `top` to `bottom` that the AutoFilter does not hide.
+let filterShownRows (top: int) (bottom: int) (model: SpreadsheetModel) : int list =
+    if model.FilterHiddenRows.Length = 0 || Map.isEmpty model.Filters then [ top .. bottom ]
+    else [ for row in top .. bottom do if not (isFilterHiddenRow row model) then yield row ]
+
 /// Serialize selection to clipboard data
 let serializeSelection (selection: Selection) (model: SpreadsheetModel) (isCut: bool): ClipboardData =
     match selection with
@@ -1618,21 +1979,24 @@ let serializeSelection (selection: Selection) (model: SpreadsheetModel) (isCut: 
             { Cells = []; IsCut = isCut; SourceStartRow = row; SourceStartCol = col; SourceEndRow = row; SourceEndCol = col }
 
     | Range (startRow, startCol, endRow, endCol) ->
+        // Rows an AutoFilter hides are not copied: a copy holds the shown
+        // rows one after the other (as Excel pastes them); a cut keeps the
+        // places, since its paste is a move of the cells.
+        let rows = filterShownRows startRow endRow model
+        let compact = not isCut && rows.Length < endRow - startRow + 1
         let cells =
-            [startRow .. endRow]
-            |> List.collect (fun row ->
+            rows
+            |> List.mapi (fun index row -> index, row)
+            |> List.collect (fun (index, row) ->
                 [startCol .. endCol]
-                |> List.map (fun col ->
+                |> List.choose (fun col ->
                     let addr = { Row = row; Col = col }
-                    let relRow = row - startRow
+                    let relRow = if compact then index else row - startRow
                     let relCol = col - startCol
                     match getCell addr model with
                     | Some data -> Some (relRow, relCol, data)
-                    | None -> None
-                )
-            )
-            |> List.choose id
-
+                    | None -> None))
+        let endRow = if compact then startRow + max 0 (rows.Length - 1) else endRow
         { Cells = cells; IsCut = isCut; SourceStartRow = startRow; SourceStartCol = startCol; SourceEndRow = endRow; SourceEndCol = endCol }
 
 /// Paste clipboard data at target address
@@ -1662,7 +2026,7 @@ let pasteClipboard (targetAddr: CellAddress) (clipboardData: ClipboardData) (mod
             let adjustedCellData = { cellData with Value = adjustedValue }
             updatedModel <- setCell pasteAddr adjustedCellData updatedModel
 
-    refreshFilterProjection updatedModel
+    updatedModel
 
 /// Where a paste of `clipboard` into `selection` puts the block's top-left
 /// corner. One place — the selection's top-left — unless the selection is a
@@ -1783,7 +2147,7 @@ let rec compareCellValues (v1: CellValue) (v2: CellValue): int =
 let sortByColumn (col: int) (ascending: bool) (model: SpreadsheetModel): SpreadsheetModel =
     let sorted = { model with SortState = Some { Column = col; Ascending = ascending } }
     match dataBlockForColumn col model with
-    | None -> refreshFilterProjection sorted
+    | None -> reapplyFilter sorted
     | Some (firstRow, lastRow) ->
         let rowCells =
             model.Cells
@@ -1830,7 +2194,7 @@ let sortByColumn (col: int) (ascending: bool) (model: SpreadsheetModel): Spreads
         { sorted with
             Cells = cells
             RichRuns = moveMap model.RichRuns (fun _ runs -> runs) }
-        |> refreshFilterProjection
+        |> reapplyFilter
 
 /// Get unique values in a column (as strings for display)
 let getColumnUniqueValues (col: int) (model: SpreadsheetModel): string list =
@@ -1841,56 +2205,38 @@ let getColumnUniqueValues (col: int) (model: SpreadsheetModel): string list =
     |> List.distinct
     |> List.sort
 
-/// Apply filter to a column
+/// Filter a column to the cells that show one of `visibleValues` ("" lets
+/// the blank cells through).
 let applyFilter (col: int) (visibleValues: Set<string>) (model: SpreadsheetModel): SpreadsheetModel =
-    let filter = { Column = col; VisibleValues = visibleValues }
-    { model with Filters = Map.add col filter model.Filters }
-    |> refreshFilterProjection
+    setColumnFilter col (FilterValues (visibleValues, Set.contains "" visibleValues)) model
 
 /// Remove filter from a column
 let removeFilter (col: int) (model: SpreadsheetModel): SpreadsheetModel =
-    { model with Filters = Map.remove col model.Filters }
-    |> refreshFilterProjection
+    clearColumnFilter (Some col) model
 
-/// Get visible rows based on all active filters
+/// The rows holding cells that pass every column filter as the cells are
+/// now (rows outside the filter's range pass; its header row is tested like
+/// a data row here, though it is never hidden). With no filter: every row
+/// that holds a cell.
 let getVisibleRows (model: SpreadsheetModel): Set<int> =
     match model.FilterVisibleRows with
     | Some visible when not (Map.isEmpty model.Filters) -> visible
-    | _ -> computeVisibleRows model
-
-let private binarySearchInt (values: int array) target =
-    let mutable lo = 0
-    let mutable hi = values.Length - 1
-    let mutable found = -1
-    while found < 0 && lo <= hi do
-        let mid = lo + (hi - lo) / 2
-        let value = values.[mid]
-        if value = target then found <- mid
-        elif value < target then lo <- mid + 1
-        else hi <- mid - 1
-    found
-
-let isFilterHiddenRow (row: int) (model: SpreadsheetModel): bool =
-    not (Map.isEmpty model.Filters) && binarySearchInt model.FilterHiddenRows row >= 0
+    | _ ->
+        let rows = dataRows model
+        match (if Map.isEmpty model.Filters then None else filterRowTest (refreshImplicitRange model)) with
+        | None -> rows
+        | Some (first, last, passes) -> rows |> Set.filter (fun row -> row < first - 1 || row > last || passes row)
 
 let getVisibleRowsHashSet (model: SpreadsheetModel): System.Collections.Generic.HashSet<int> =
     System.Collections.Generic.HashSet<int>(getVisibleRows model |> Set.toArray)
 
-/// Render-time model for active AutoFilters: filtered-out data rows get
-/// height 0 so the grid collapses them, exactly like Excel's hidden rows —
-/// the surviving rows keep their original numbers and draw contiguously
-/// because rowY/visibleRange accumulate getRowHeight. The first row of the
-/// data block is treated as the header (AutoFilter range convention) and is
-/// never hidden. A strict no-op when no filters are active, so unfiltered
-/// sheets (the whole parity corpus) are untouched.
+/// The model a renderer draws: since the rows an AutoFilter hides are kept
+/// in the model (and `Layout.metricsOf` gives them no height), this is the
+/// model itself. Kept for the hosts that call it before painting.
 let applyFilterRowHeights (model: SpreadsheetModel): SpreadsheetModel =
-    if Map.isEmpty model.Filters then
-        if model.FilterVisibleRows.IsNone && model.FilterHiddenRows.Length = 0 then model
-        else { model with FilterVisibleRows = None; FilterHiddenRows = [||] }
-    else
-        match model.FilterVisibleRows with
-        | Some _ -> model
-        | None -> refreshFilterProjection model
+    if Map.isEmpty model.Filters && (model.FilterVisibleRows.IsSome || model.FilterHiddenRows.Length > 0) then
+        { model with FilterVisibleRows = None; FilterHiddenRows = [||] }
+    else model
 
 /// Distinct, sorted display strings in a column — the AutoFilter checklist's
 /// values. Blanks excluded; uses the same `displayValue` as the filter test.
@@ -2427,6 +2773,9 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
         CfBoldCells = model.CfBoldCells |> Seq.choose moveAddr |> Set.ofSeq
         Spill = spill
         Validations = validations
+        AutoFilter = model.AutoFilter |> Option.bind (fun filter -> moveCellRange filter.Range |> Option.map (fun range -> { filter with Range = range }))
+        FilterHiddenRows = (if onRows && model.FilterHiddenRows.Length > 0 then model.FilterHiddenRows |> Array.choose moveIndex else model.FilterHiddenRows)
+        FilterVisibleRows = None
         Filters =
             if onRows then model.Filters
             else
@@ -2443,7 +2792,16 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
         SearchResults = model.SearchResults |> Array.choose moveAddr
         SearchIndex = 0
     }
-    |> refreshFilterProjection
+    |> fun edited ->
+        // The rows a filter hides moved with their rows; a filter whose range is gone is gone.
+        match edited.AutoFilter with
+        | None when not (Map.isEmpty edited.Filters) || edited.FilterHiddenRows.Length > 0 -> { edited with Filters = Map.empty; FilterHiddenRows = [||] }
+        | Some filter ->
+            let filters = edited.Filters |> Map.filter (fun col _ -> col >= filter.Range.From.Col && col <= filter.Range.To.Col)
+            if filters.Count = model.Filters.Count then edited
+            elif Map.isEmpty filters then { edited with Filters = filters; FilterHiddenRows = [||]; AutoFilter = (if filter.Implicit then None else edited.AutoFilter) }
+            else reapplyFilter { edited with Filters = filters }
+        | None -> edited
 
 /// Insert or delete rows/columns on a stand-alone sheet. Unqualified
 /// references in its formulas follow the edit; a workbook host should call
@@ -3295,7 +3653,7 @@ and importCSVWithChanges (csvText: string) (startRow: int) (startCol: int) (mode
         )
     )
 
-    refreshFilterProjection updatedModel, oldCells, newCells
+    invalidateFilterProjection updatedModel, oldCells, newCells
 
 /// Export spreadsheet to CSV string
 let exportCSV (model: SpreadsheetModel): string =

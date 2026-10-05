@@ -10527,14 +10527,15 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
             let hasFilters = not (Map.isEmpty model.Filters)
             let mutable filterColsCache: int array option = None
             let mutable filterValuesCache: Set<string> array option = None
-            let hasFilterProjection = hasFilters && model.FilterHiddenRows.Length > 0
+            // (The rows a filter hides are kept in the model: they are what is skipped.)
+            let hasFilterProjection = hasFilters
             let filterCriteria () =
                 match filterColsCache, filterValuesCache with
                 | Some filterCols, Some filterValues -> filterCols, filterValues
                 | _ ->
                     let filterEntries = model.Filters |> Map.toArray
                     let filterCols = filterEntries |> Array.map fst
-                    let filterValues = filterEntries |> Array.map (fun (_, filter) -> filter.VisibleValues)
+                    let filterValues = filterEntries |> Array.map (fun _ -> Set.empty<string>)
                     filterColsCache <- Some filterCols
                     filterValuesCache <- Some filterValues
                     filterCols, filterValues
@@ -13577,5 +13578,6 @@ let formulaHooksInstalled : bool =
           Adjust = adjustFormulaTextForEdit
           Move = moveFormulaText
           Evaluate = fun formula rows cols model cell -> evaluateFormulaShifted None None formula rows cols model cell
-          Sheets = rewriteFormulaTextForSheets }
+          Sheets = rewriteFormulaTextForSheets
+          Display = fun format value -> Rbt.Spreadsheet.CellText.cellDisplayText None 1.0e6 format value }
     true

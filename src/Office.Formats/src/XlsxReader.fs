@@ -654,6 +654,46 @@ type DataTableFormula = {
     CalculateAlways: bool
 }
 
+/// One `<filterColumn>` of a sheet's `<autoFilter>`.
+type AutoFilterColumn = {
+    /// The column's place in the filter's range, 0-based (`colId`).
+    ColId: int
+    /// "filters" (a list of values), "customFilters", "top10", "colorFilter",
+    /// "dynamicFilter", or "other" for what is only kept (`Xml`): a list with
+    /// date groups, an icon filter.
+    Kind: string
+    /// filters: the values, and whether blank cells pass.
+    Values: string list
+    Blank: bool
+    /// customFilters: (operator, value) - "equal" | "notEqual" | "greaterThan"
+    /// | "greaterThanOrEqual" | "lessThan" | "lessThanOrEqual" - joined by
+    /// AND (`And`) or OR.
+    Custom: (string * string) list
+    And: bool
+    /// top10: the largest (`Top`) or smallest `Value` items, or percent.
+    Top: bool
+    Percent: bool
+    Value: float
+    /// colorFilter: the differential format holding the colour, and whether
+    /// it is the cell's fill (else its font colour).
+    DxfId: int option
+    CellColor: bool
+    /// dynamicFilter: its `type` ("aboveAverage", "today", ...).
+    DynamicType: string
+    /// The children of the `<filterColumn>` as the file has them.
+    Xml: string
+}
+
+/// A sheet's `<autoFilter>`: its range and the filtered columns.
+type SheetAutoFilter = {
+    Ref: string
+    Columns: AutoFilterColumn list
+}
+
+let emptyAutoFilterColumn : AutoFilterColumn =
+    { ColId = 0; Kind = "other"; Values = []; Blank = false; Custom = []; And = false; Top = true; Percent = false; Value = 10.0
+      DxfId = None; CellColor = true; DynamicType = ""; Xml = "" }
+
 /// What a sheet holds beyond its cells: pictures, other drawing objects and threaded comments.
 type SheetExtras = {
     Images: SheetImage list
@@ -699,12 +739,14 @@ type SheetExtras = {
     /// fills them in from the sheet's rows and columns.
     RowAxis: (int * float option * int * bool) list
     ColumnAxis: (int * float option * int * bool) list
+    /// The sheet's own AutoFilter (a table's is part of the table).
+    AutoFilter: SheetAutoFilter option
 }
 
 let emptySheetExtras =
     { Images = []; Objects = []; ThreadedComments = []; DrawingRelationships = []; Format = None; Columns = []; ColumnStyles = []
       SheetId = None; KeptRelationships = []; KeptExtensions = []; PivotLocations = []; DataTables = []
-      KeptCellExtensions = []; PrinterSettingsRelId = None; RowAxis = []; ColumnAxis = [] }
+      KeptCellExtensions = []; PrinterSettingsRelId = None; RowAxis = []; ColumnAxis = []; AutoFilter = None }
 
 /// A named cell style (cellStyles / cellStyleXfs of styles.xml), with the
 /// font, fill, border and number format its xf refers to given as their XML so
@@ -4645,6 +4687,82 @@ let private attributeIn (name: string) (tag: string) : string option =
         let close = tag.IndexOf ('"', start)
         if close < 0 then None else Some (tag.Substring(start, close - start))
 
+let private unescapeAttribute (text: string) : string =
+    if not (text.Contains "&") then text
+    else text.Replace("&lt;", "<").Replace("&gt;", ">").Replace("&quot;", "\"").Replace("&apos;", "'").Replace("&amp;", "&")
+
+let private autoFilterTagPattern = System.Text.RegularExpressions.Regex("<(filter|customFilter|top10|colorFilter|dynamicFilter|filters|customFilters|dateGroupItem|iconFilter)\\b[^>]*>")
+
+/// The sheet's `<autoFilter>` (the one after the rows; a table's is in the
+/// table's own part), read off the text of the sheet part.
+let private sheetAutoFilterOf (sheetXml: string) : SheetAutoFilter option =
+    let dataEnd = max 0 (sheetXml.LastIndexOf "</sheetData>")
+    let at = sheetXml.IndexOf ("<autoFilter", dataEnd)
+    let tagEnd = if at < 0 then -1 else sheetXml.IndexOf ('>', at)
+    if tagEnd < 0 then None
+    else
+        let tag = sheetXml.Substring(at, tagEnd - at + 1)
+        match attributeIn "ref" tag with
+        | None -> None
+        | Some reference ->
+            let body =
+                if tag.EndsWith "/>" then ""
+                else
+                    let close = sheetXml.IndexOf ("</autoFilter>", tagEnd)
+                    if close < 0 then "" else sheetXml.Substring(tagEnd + 1, close - tagEnd - 1)
+            let flag (name: string) (fallback: bool) (element: string) =
+                match attributeIn name element with
+                | Some "1" | Some "true" -> true
+                | Some _ -> false
+                | None -> fallback
+            let columns = ResizeArray<AutoFilterColumn>()
+            let mutable from = 0
+            let mutable more = true
+            while more do
+                let start = body.IndexOf ("<filterColumn", from)
+                let startEnd = if start < 0 then -1 else body.IndexOf ('>', start)
+                if startEnd < 0 then more <- false
+                else
+                    let startTag = body.Substring(start, startEnd - start + 1)
+                    let close = if startTag.EndsWith "/>" then -1 else body.IndexOf ("</filterColumn>", startEnd)
+                    let inner = if close < 0 then "" else body.Substring(startEnd + 1, close - startEnd - 1)
+                    from <- (if close < 0 then startEnd + 1 else close + 15)
+                    let tags = [ for m in autoFilterTagPattern.Matches inner -> m.Groups.[1].Value, m.Value ]
+                    let first (name: string) = tags |> List.tryFind (fun (found, _) -> found = name) |> Option.map snd
+                    let column = { emptyAutoFilterColumn with ColId = (attributeIn "colId" startTag |> Option.bind tryParseInt |> Option.defaultValue 0); Xml = inner }
+                    let parsed =
+                        if tags |> List.exists (fun (name, _) -> name = "dateGroupItem" || name = "iconFilter") then column
+                        else
+                            match first "filters", first "customFilters", first "top10", first "colorFilter", first "dynamicFilter" with
+                            | Some filters, _, _, _, _ ->
+                                { column with
+                                    Kind = "filters"
+                                    Blank = flag "blank" false filters
+                                    Values = tags |> List.choose (fun (name, element) -> if name = "filter" then attributeIn "val" element |> Option.map unescapeAttribute else None) }
+                            | None, Some custom, _, _, _ ->
+                                { column with
+                                    Kind = "customFilters"
+                                    And = flag "and" false custom
+                                    Custom =
+                                        tags
+                                        |> List.choose (fun (name, element) ->
+                                            if name = "customFilter" then
+                                                Some ((attributeIn "operator" element |> Option.defaultValue "equal"), (attributeIn "val" element |> Option.map unescapeAttribute |> Option.defaultValue ""))
+                                            else None) }
+                            | None, None, Some top, _, _ ->
+                                { column with
+                                    Kind = "top10"
+                                    Top = flag "top" true top
+                                    Percent = flag "percent" false top
+                                    Value = (attributeIn "val" top |> Option.bind tryParseFloat |> Option.defaultValue 10.0) }
+                            | None, None, None, Some color, _ ->
+                                { column with Kind = "colorFilter"; DxfId = (attributeIn "dxfId" color |> Option.bind tryParseInt); CellColor = flag "cellColor" true color }
+                            | None, None, None, None, Some dynamic ->
+                                { column with Kind = "dynamicFilter"; DynamicType = (attributeIn "type" dynamic |> Option.defaultValue "") }
+                            | _ -> column
+                    columns.Add parsed
+            Some { Ref = reference; Columns = List.ofSeq columns }
+
 /// The sheet and range a pivot cache definition reads (`<worksheetSource
 /// ref sheet>`); None for a cache over a named range, a table or external data.
 let pivotCacheSourceOf (cacheXml: string) : (string * string) option =
@@ -4817,6 +4935,7 @@ let private buildWorkbook (scanRows: bool) (source: PartSource) (header: Workboo
                         KeptRelationships = keptRels
                         KeptExtensions = keptExtensions
                         KeptCellExtensions = cellExtensions
+                        AutoFilter = (try sheetAutoFilterOf xml with _ -> None)
                         PrinterSettingsRelId = pageSetupRelId xml |> Option.filter (fun id -> Set.contains id keptIds)
                         PivotLocations = pivotLocations }
                 // A fresh context per sheet: shared-formula groups are sheet-local.

@@ -579,7 +579,8 @@ let fillCells (top: int, left: int, bottom: int, right: int) (direction: FillDir
             for step in 1 .. count do
                 let k = if forward then lineLength - 1 + step else -step
                 let addr = addressAt k
-                if addr.Row >= 0 && addr.Col >= 0 && addr.Row < model.RowCount && addr.Col < model.ColCount then
+                // (A row the AutoFilter hides is not filled, as in Excel.)
+                if addr.Row >= 0 && addr.Col >= 0 && addr.Row < model.RowCount && addr.Col < model.ColCount && not (isFilterHiddenRow addr.Row model) then
                     match continuation k with
                     | Some cell -> result <- setCell addr { cell with Comment = None } result
                     | None -> result <- clearCell addr result
