@@ -119,5 +119,43 @@ check "odd pages the default header, even pages the even one" (evenShown 0, even
 let story = Paint.storyBlockLayouts settings measureText measureRange (Paint.headerFooterStartY settings doc.PageSetup (List.item fourPage pages) true) (doc.HeaderParts.[3].Blocks)
 check "the layouts of a header's blocks, from the header distance down" (story.Length, abs (story.Head.Y - ((List.item fourPage pages).Top + 48.0)) < 0.01, story |> List.pairwise |> List.forall (fun (a, b) -> b.Y >= a.Y + a.Height - 0.01)) (5, true, true)
 
+// ---------------------------------------------------------------------------
+// A section's text stands at its own left margin: on screen a block is at the
+// document's left margin (the final section's) plus its layout's x, so the
+// layouts of a section with another left margin are moved by the difference -
+// lines, list markers, the cells of a table and its borders, footnotes.
+// ---------------------------------------------------------------------------
+do
+    let wide : Doc.SectionPageSetup = { geometry false with MarginLeft = 192.0; MarginRight = 48.0 }
+    let marginDoc : Doc.Document =
+        { Doc.empty with
+            Blocks =
+                [ Doc.Paragraph (para "wide-1" (words "wide" 60))
+                  Doc.Paragraph { para "wide-end" "end" with Metadata = { Doc.defaultMetadata with SectionBreak = Some "nextPage"; SectionPageSetup = Some wide } }
+                  Doc.Paragraph (para "last-1" (words "last" 60)) ]
+            PageSetup = pageSetup
+            Styles = []
+            Selection = None }
+    let marginLayouts, marginPages = Layout.layoutDocumentPages settings measureText measureRange marginDoc
+    let lineExtent id =
+        let layout = marginLayouts |> List.find (fun layout -> layout.BlockId = id)
+        let xs = layout.Lines |> List.collect (fun line -> line.Segments |> List.map (fun segment -> Layout.segmentX segment, Layout.segmentX segment + Layout.segmentWidth segment))
+        xs |> List.map fst |> List.min, xs |> List.map snd |> List.max
+    let wideLeft, wideRight = lineExtent "wide-1"
+    let lastLeft, lastRight = lineExtent "last-1"
+    check "a section with a wider left margin: its lines start that much further right" (wideLeft, lastLeft) (96.0, 0.0)
+    check "and end at its own right margin (the page is 816 wide, the margins 192 and 48)" (wideRight <= 96.0 + (816.0 - 192.0 - 48.0) + 8.0, wideRight > 96.0 + 400.0, lastRight <= 624.0 + 8.0) (true, true, true)
+    check "the pages say whose margins they have" ((List.item 0 marginPages).MarginLeft, (List.item 1 marginPages).MarginLeft) (192.0, 96.0)
+    let _, marginCommands, _ = Paint.collectDocumentCommandsWithLayoutsAndPages settings "Calibri" measureText measureRange marginDoc marginLayouts marginPages
+    let textLeft (page: Layout.PageInfo) =
+        marginCommands |> List.choose (function Paint.DrawText (_, _, x, baseline, _) when baseline > page.Top && baseline < page.Top + page.Height -> Some x | _ -> None) |> List.min
+    check "painted at the section's own margin" (textLeft (List.item 0 marginPages), textLeft (List.item 1 marginPages)) (192.0, 96.0)
+    let state = Layout.createIncrementalLayoutState ()
+    check "the same incrementally, also after an edit in the section" 
+        (Layout.layoutDocumentPagesIncremental state settings measureText measureRange marginDoc = (marginLayouts, marginPages),
+         (let edited = marginDoc |> Doc.setCursor "wide-1" 3 |> Doc.insertText "typed "
+          Layout.layoutDocumentPagesIncremental state settings measureText measureRange edited = Layout.layoutDocumentPages settings measureText measureRange edited))
+        (true, true)
+
 printfn "word header-footer: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

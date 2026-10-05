@@ -2465,6 +2465,8 @@ type FootnoteAreaRecord = {
 type PlacedSection = {
     PlacedSource: BlockLayout array
     PlacedOffset: float
+    /// How far right of the document's left margin the section's own is.
+    PlacedShift: float
     PlacedLayouts: BlockLayout array
 }
 
@@ -2487,6 +2489,9 @@ type ParagraphLayoutMemo = {
     /// The layouts of a section's pass where the section stands in the
     /// document (see sectionLayoutsAt), by the pass's place.
     MemoPlaced: System.Collections.Generic.Dictionary<string, PlacedSection>
+    /// A page's footnote paragraphs moved sideways with their section (see
+    /// layoutSections), by page: what they were moved from, how far, and the result.
+    MemoPlacedNotes: System.Collections.Generic.Dictionary<int, BlockLayout list * float * BlockLayout list>
     mutable Generation: int
     mutable LineBreakCount: int
     mutable MemoStyles: NamedStyle list
@@ -2502,6 +2507,7 @@ let private createParagraphLayoutMemo () = {
     MemoEntries = System.Collections.Generic.Dictionary<string, ParagraphLayoutMemoEntry>()
     MemoContinuations = System.Collections.Generic.Dictionary<string, TextBuffer * int * ParagraphBlock>()
     MemoPlaced = System.Collections.Generic.Dictionary<string, PlacedSection>()
+    MemoPlacedNotes = System.Collections.Generic.Dictionary<int, BlockLayout list * float * BlockLayout list>()
     Generation = 0
     LineBreakCount = 0
     MemoStyles = []
@@ -5554,22 +5560,26 @@ let uniformPageInfos (settings: LayoutSettings) (layouts: BlockLayout list) =
 /// page). A section is flowed as if its first page were the document's
 /// first, so its pass - and the record kept of it - does not depend on what
 /// stands before the section: when an edit further up adds or removes a page
-/// the sections below keep their passes and are only moved. The layouts
+/// the sections below keep their passes and are only moved. `shift` moves
+/// them sideways as well: a section with a left margin of its own stands
+/// that much right (or left) of the document's left margin, which is what
+/// painting and hit testing add to a layout's x. The layouts
 /// moved to the same place are the same objects from pass to pass (those of
 /// the blocks an edit in the section did not touch included); the second
 /// result says whether any were kept.
-let private sectionLayoutsAt (memo: ParagraphLayoutMemo option) (slot: string) (source: BlockLayout array) (offset: float) : BlockLayout array * bool =
-    if offset = 0.0 then source, true
+let private sectionLayoutsAt (memo: ParagraphLayoutMemo option) (slot: string) (source: BlockLayout array) (offset: float) (shift: float) : BlockLayout array * bool =
+    if offset = 0.0 && shift = 0.0 then source, true
     else
-        let moveAll () = source |> Array.map (shiftBlockY offset)
+        let move (layout: BlockLayout) = layout |> shiftBlockY offset |> shiftBlockX shift
+        let moveAll () = source |> Array.map move
         match memo with
         | None -> moveAll (), false
         | Some memo ->
             let keep placed =
-                memo.MemoPlaced.[slot] <- { PlacedSource = source; PlacedOffset = offset; PlacedLayouts = placed }
+                memo.MemoPlaced.[slot] <- { PlacedSource = source; PlacedOffset = offset; PlacedShift = shift; PlacedLayouts = placed }
             match memo.MemoPlaced.TryGetValue slot with
-            | true, known when known.PlacedOffset = offset && obj.ReferenceEquals(known.PlacedSource, source) -> known.PlacedLayouts, true
-            | true, known when known.PlacedOffset = offset ->
+            | true, known when known.PlacedOffset = offset && known.PlacedShift = shift && obj.ReferenceEquals(known.PlacedSource, source) -> known.PlacedLayouts, true
+            | true, known when known.PlacedOffset = offset && known.PlacedShift = shift ->
                 // An edit in the section: the layouts it kept at the start and at the end are moved already.
                 let before = known.PlacedSource
                 let placed = Array.zeroCreate<BlockLayout> source.Length
@@ -5583,7 +5593,7 @@ let private sectionLayoutsAt (memo: ParagraphLayoutMemo option) (slot: string) (
                     placed.[source.Length - 1 - suffix] <- known.PlacedLayouts.[before.Length - 1 - suffix]
                     suffix <- suffix + 1
                 for index in prefix .. source.Length - 1 - suffix do
-                    placed.[index] <- shiftBlockY offset source.[index]
+                    placed.[index] <- move source.[index]
                 keep placed
                 placed, true
             | _ ->
@@ -5674,7 +5684,9 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
         for KeyValue (ownPage, notes) in secFootnotes do
             footnotesByPage <- footnotesByPage |> Map.add (sectionBase + ownPage) notes
         let endPage = sectionBase + ownEndPage
-        let placed, placedBefore = sectionLayoutsAt memo slot record.PassResults sectionBaseTop
+        // (On screen a block stands at the document's left margin plus its layout's x: the layouts of a
+        // section with a left margin of its own are moved by the difference.)
+        let placed, placedBefore = sectionLayoutsAt memo slot record.PassResults sectionBaseTop (secSettings.PaddingLeft - settings.PaddingLeft)
         // (Blocks kept from the last pass, from the start of the document and from its end.
         // A section that was moved has none: its layouts are other objects.)
         let count = record.PassBlocks.Length
@@ -5701,7 +5713,22 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
         if not notes.IsEmpty && pageIndex <= maxPage && pageIndex < pageSettings.Count then
             let s = pageSettings.[pageIndex]
             let contentBottom = WordLayout.Page.contentBottom (pageHeight s) s.MarginBottom pageTops.[pageIndex]
-            noteLayouts.AddRange(footnoteLayoutsForPageKept "s" memo s measureText measureRange (s.Width - s.PaddingLeft - s.MarginRight) pageIndex contentBottom notes)
+            let own = footnoteLayoutsForPageKept "s" memo s measureText measureRange (s.Width - s.PaddingLeft - s.MarginRight) pageIndex contentBottom notes
+            // (Moved sideways as the text of their section is; the same objects while nothing changed.)
+            let shift = s.PaddingLeft - settings.PaddingLeft
+            let placed =
+                if shift = 0.0 then own
+                else
+                    match memo with
+                    | None -> own |> List.map (shiftBlockX shift)
+                    | Some memo ->
+                        match memo.MemoPlacedNotes.TryGetValue pageIndex with
+                        | true, (source, knownShift, known) when knownShift = shift && obj.ReferenceEquals(source, own) -> known
+                        | _ ->
+                            let moved = own |> List.map (shiftBlockX shift)
+                            memo.MemoPlacedNotes.[pageIndex] <- (own, shift, moved)
+                            moved
+            noteLayouts.AddRange placed
     results.AddRange noteLayouts
     let pages = [ for p in 0 .. maxPage -> pageInfoOf pageSettings.[p] pageTops.[p] ]
     // Endnotes go after the last section's text, in its page geometry; pages
@@ -5941,6 +5968,7 @@ let clearIncrementalLayoutState (state: IncrementalLayoutState) =
     state.MemoSweepThreshold <- 256
     state.Memo.MemoPasses.Clear()
     state.Memo.MemoPlaced.Clear()
+    state.Memo.MemoPlacedNotes.Clear()
     state.Memo.MemoFootnoteAreas.Clear()
     state.Memo.MemoSlices <- None
     state.Memo.MemoEntries.Clear()
@@ -5988,6 +6016,7 @@ let layoutDocumentPagesIncremental (state: IncrementalLayoutState) (settings: La
                 memo.MemoContinuations.Clear()
                 memo.MemoPasses.Clear()
                 memo.MemoPlaced.Clear()
+                memo.MemoPlacedNotes.Clear()
                 memo.MemoFootnoteAreas.Clear()
             memo.MemoStyles <- doc.Styles
             memo.MemoStyleContext <- None

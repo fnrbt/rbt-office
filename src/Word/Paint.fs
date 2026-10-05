@@ -2247,12 +2247,21 @@ let private sectionColumnsAreMulti = function
     | Some columns when columns.Count >= 2 -> true
     | _ -> false
 
+/// Whether layouts of the document can stand to the right of where a block
+/// laid out on its own stands: in a column of a multi-column section, or in
+/// a section whose left margin is not the document's (the final section's).
+/// A table's borders then follow its cells' layouts (see tableColumnOffset).
 let private documentHasMultiColumnLayout (doc: Document) =
     let mutable found = sectionColumnsAreMulti doc.PageSetup.Columns
     for block in doc.Blocks do
         if not found then
             match Rbt.Word.Document.tryGetParagraph block with
-            | Some para -> found <- sectionColumnsAreMulti para.Metadata.SectionColumns
+            | Some para ->
+                found <-
+                    sectionColumnsAreMulti para.Metadata.SectionColumns
+                    || (match para.Metadata.SectionPageSetup with
+                        | Some setup -> setup.MarginLeft <> doc.PageSetup.MarginLeft
+                        | None -> false)
             | None -> ()
     found
 
