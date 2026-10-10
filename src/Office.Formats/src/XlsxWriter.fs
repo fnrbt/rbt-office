@@ -1087,7 +1087,7 @@ let private escapedFast (value: string) =
     if plain then value else escaped value
 
 /// One `<c>` appended to `sb`. `rowText` is the row number as text.
-let private appendCellXml (sb: StringBuilder) (styles: StyleBook) (sharedIndex: string -> XlsxRichRun list -> int) (dataTables: Map<string, XlsxReader.DataTableFormula>) (arrayFormulas: Map<string, string>) (rowText: string) (cell: XlsxCellOut) =
+let private appendCellXml (sb: StringBuilder) (styles: StyleBook) (sharedIndex: string -> XlsxRichRun list -> int) (dataTables: Map<string, XlsxReader.DataTableFormula>) (arrayFormulas: Map<string, string * string>) (rowText: string) (cell: XlsxCellOut) =
     let styleId = styles.StyleIdOf cell.Format
     let letters = columnLetters cell.Col
     let dataTable = if dataTables.IsEmpty then None else Map.tryFind (letters + rowText) dataTables
@@ -1113,11 +1113,15 @@ let private appendCellXml (sb: StringBuilder) (styles: StyleBook) (sharedIndex: 
         sb.Append("><v>").Append(string (sharedIndex text runs)).Append("</v></c>") |> ignore
     | None, XlsxFormula (formula, cached) ->
         let tAttr, cachedXml = cached |> Option.map (cachedValueXml sharedIndex) |> Option.defaultValue ("", "")
-        openCell tAttr
-        // An array formula says which cells its results fill.
+        // An array formula says which cells its results fill; a dynamic one
+        // names its cell metadata (`cm`).
         match (if arrayFormulas.IsEmpty then None else Map.tryFind (letters + rowText) arrayFormulas) with
-        | Some range -> sb.Append("><f t=\"array\" ref=\"").Append(range).Append("\">") |> ignore
-        | None -> sb.Append("><f>") |> ignore
+        | Some (range, cmAttr) ->
+            openCell (tAttr + cmAttr)
+            sb.Append("><f t=\"array\" ref=\"").Append(range).Append("\">") |> ignore
+        | None ->
+            openCell tAttr
+            sb.Append("><f>") |> ignore
         sb.Append(escapedFast formula).Append("</f>").Append(cachedXml).Append("</c>") |> ignore
     | None, other ->
         let tAttr, valueXml = cachedValueXml sharedIndex other
@@ -1243,10 +1247,13 @@ let private sheetViewsXml (sheet: XlsxSheetOut) active =
 let private firstCellOfRange (range: string) =
     (match range.IndexOf ':' with -1 -> range | index -> range.Substring(0, index)).Replace("$", "").ToUpperInvariant()
 
-let private rowsXml (styles: StyleBook) (sharedIndex: string -> XlsxRichRun list -> int) (sheet: XlsxSheetOut) : string =
+let private rowsXml (styles: StyleBook) (sharedIndex: string -> XlsxRichRun list -> int) (dynamicCm: int) (sheet: XlsxSheetOut) : string =
     // A data table is written on the first cell of its range.
     let dataTables = sheet.Extras.DataTables |> List.map (fun table -> firstCellOfRange table.Ref, table) |> Map.ofList
-    let arrayFormulas = Map.ofList sheet.Extras.ArrayFormulas
+    let arrayFormulas =
+        sheet.Extras.ArrayFormulas
+        |> List.map (fun (cell, range, dynamic) -> cell, (range, (if dynamic && dynamicCm > 0 then " cm=\"" + string dynamicCm + "\"" else "")))
+        |> Map.ofList
     let cells =
         let listed = List.toArray sheet.Cells
         if dataTables.IsEmpty then listed
@@ -1676,7 +1683,7 @@ let private autoFilterXml (dxfCount: int) (sheet: XlsxSheetOut) =
         if columns = "" then sprintf "<autoFilter %s/>" (attr "ref" filter.Ref)
         else sprintf "<autoFilter %s>%s</autoFilter>" (attr "ref" filter.Ref) columns
 
-let private worksheetXml (styles: StyleBook) sharedIndex sheetIndex active (sheet: XlsxSheetOut) =
+let private worksheetXml (styles: StyleBook) sharedIndex (dynamicCm: int) sheetIndex active (sheet: XlsxSheetOut) =
     let hasFitToPage = sheet.PageSetup |> Option.exists (fun p -> p.FitToPage)
     // (CT_SheetPr: tabColor comes before pageSetUpPr.)
     let tabColor =
@@ -1700,7 +1707,7 @@ let private worksheetXml (styles: StyleBook) sharedIndex sheetIndex active (shee
     + sheetViewsXml sheet active
     + sheetFormatXml sheet
     + colsXml styles sheet
-    + ("<sheetData>" + rowsXml styles sharedIndex sheet + "</sheetData>")
+    + ("<sheetData>" + rowsXml styles sharedIndex dynamicCm sheet + "</sheetData>")
     // Child order is fixed by CT_Worksheet; Excel refuses a part that
     // deviates (e.g. tableParts before legacyDrawing).
     + autoFilterXml styles.Dxfs.Length sheet
@@ -1918,7 +1925,7 @@ let private workbookXmlFull (workbook: XlsxWorkbookOut) =
         declaration Namespaces.spreadsheet Namespaces.relationships (max 0 workbook.ActiveSheetIndex) sheets
         kept.ExternalReferencesXml definedNames calcPr kept.PivotCachesXml kept.WorkbookExtLstXml
 
-let private workbookRelsXmlFull (workbook: XlsxWorkbookOut) hasVba (themePath: string option) (hasPersons: bool) =
+let private workbookRelsXmlFull (workbook: XlsxWorkbookOut) hasVba (themePath: string option) (hasPersons: bool) (ownMetadata: bool) =
     let sheetRels =
         sheetRelationshipIds workbook
         |> List.mapi (fun i id -> sprintf "<Relationship Id=\"%s\" Type=\"%s\" Target=\"worksheets/sheet%d.xml\"/>" id RelationshipTypes.worksheet (i + 1))
@@ -1931,6 +1938,8 @@ let private workbookRelsXmlFull (workbook: XlsxWorkbookOut) hasVba (themePath: s
         match themePath with
         | Some path -> yield sprintf "<Relationship Id=\"rIdTheme\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme\" Target=\"/%s\"/>" (escaped path)
         | None -> ()
+        // The cell metadata dynamic array formulas name, when the opened workbook had none.
+        if ownMetadata then yield "<Relationship Id=\"rIdMetadata\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/sheetMetadata\" Target=\"metadata.xml\"/>"
         if hasPersons then yield "<Relationship Id=\"rIdPersons\" Type=\"http://schemas.microsoft.com/office/2017/10/relationships/person\" Target=\"/xl/persons/person.xml\"/>"
         // Pivot caches, slicer caches and external links, under the ids workbook.xml names them by.
         for relId, relType, target, isExternal in workbook.Preserved.WorkbookRelationships @ Option.toList workbook.Preserved.CalcChain do
@@ -1938,7 +1947,7 @@ let private workbookRelsXmlFull (workbook: XlsxWorkbookOut) hasVba (themePath: s
     ]
     sprintf "%s\n<Relationships xmlns=\"%s\">%s</Relationships>" declaration Namespaces.relationshipsPackage (String.concat "" baseRels)
 
-let private contentTypesXmlFull (workbook: XlsxWorkbookOut) (keptParts: (string * byte[]) list) =
+let private contentTypesXmlFull (workbook: XlsxWorkbookOut) (keptParts: (string * byte[]) list) (ownMetadata: bool) =
     let hasVba = workbook.VbaProjectSource |> Option.exists hasText
     let workbookType =
         if hasVba then "application/vnd.ms-excel.sheet.macroEnabled.main+xml"
@@ -1985,6 +1994,8 @@ let private contentTypesXmlFull (workbook: XlsxWorkbookOut) (keptParts: (string 
                   yield sprintf "<Override PartName=\"/xl/drawings/sheetDrawing%d.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.drawing+xml\"/>" i
               if not sheet.Extras.ThreadedComments.IsEmpty then
                   yield sprintf "<Override PartName=\"/xl/threadedComments/threadedComment%d.xml\" ContentType=\"application/vnd.ms-excel.threadedcomments+xml\"/>" i
+          if ownMetadata then
+              yield "<Override PartName=\"/xl/metadata.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheetMetadata+xml\"/>"
           if workbook.Sheets |> List.exists (fun sheet -> not sheet.Extras.ThreadedComments.IsEmpty) then
               yield "<Override PartName=\"/xl/persons/person.xml\" ContentType=\"application/vnd.ms-excel.person+xml\"/>"
           for name, contentType in workbook.Preserved.Overrides do
@@ -2058,6 +2069,112 @@ let private reachableKeptParts (workbook: XlsxWorkbookOut) (themePath: string op
             | _ -> ()
     workbook.Preserved.Parts |> List.filter (fun (path, _) -> seen.Contains path)
 
+// ---------------------------------------------------------------------------
+// Cell metadata of dynamic array formulas (xl/metadata.xml)
+// ---------------------------------------------------------------------------
+
+let private xldaprTypeXml =
+    "<metadataType name=\"XLDAPR\" minSupportedVersion=\"120000\" copy=\"1\" pasteAll=\"1\" pasteValues=\"1\" merge=\"1\" splitFirst=\"1\" rowColShift=\"1\" clearFormats=\"1\" clearComments=\"1\" assign=\"1\" coerce=\"1\" cellMeta=\"1\"/>"
+let private xdaNamespace = "http://schemas.microsoft.com/office/spreadsheetml/2017/dynamicarray"
+let private dynamicArrayBlockXml (declareNamespace: bool) =
+    "<bk><extLst><ext uri=\"{bdbb8cdc-fa1e-496e-a857-3c3f30c029c3}\"><xda:dynamicArrayProperties"
+    + (if declareNamespace then " xmlns:xda=\"" + xdaNamespace + "\"" else "")
+    + " fDynamic=\"1\" fCollapsed=\"0\"/></ext></extLst></bk>"
+
+/// The metadata part of a workbook whose only metadata is "this formula is a
+/// dynamic array", as Excel writes it: cells name its one record with `cm="1"`.
+let private dynamicArrayMetadataXml =
+    declaration + "\n<metadata xmlns=\"" + Namespaces.spreadsheet + "\" xmlns:xda=\"" + xdaNamespace + "\">"
+    + "<metadataTypes count=\"1\">" + xldaprTypeXml + "</metadataTypes>"
+    + "<futureMetadata name=\"XLDAPR\" count=\"1\">" + dynamicArrayBlockXml false + "</futureMetadata>"
+    + "<cellMetadata count=\"1\"><bk><rc t=\"1\" v=\"0\"/></bk></cellMetadata></metadata>"
+
+/// A metadata part with a cell-metadata record for dynamic array formulas, and
+/// the `cm` that names it. A part that has one is returned as it is; one that
+/// has other metadata (rich values, MDX) gets the XLDAPR type, its future
+/// metadata block and the record added, everything else staying as it was.
+let metadataWithDynamicArrays (existing: string) : string * int =
+    let known = try XlsxReader.dynamicArrayCellMetadata existing with _ -> Set.empty
+    if not known.IsEmpty then existing, Set.minElement known
+    else
+        let countOf (text: string) (token: string) =
+            let mutable count = 0
+            let mutable at = text.IndexOf(token, System.StringComparison.Ordinal)
+            while at >= 0 do
+                count <- count + 1
+                at <- text.IndexOf(token, at + token.Length, System.StringComparison.Ordinal)
+            count
+        // An element that closes itself holds nothing: it is written again in full.
+        let withoutEmpty (name: string) (text: string) =
+            System.Text.RegularExpressions.Regex.Replace(text, "<" + name + "\\b[^>]*/>", "")
+        let withCount (openTag: string) (count: int) =
+            let pattern = System.Text.RegularExpressions.Regex("\\bcount=\"\\d*\"")
+            if pattern.IsMatch openTag then pattern.Replace(openTag, "count=\"" + string count + "\"")
+            else openTag.Substring(0, openTag.Length - 1) + " count=\"" + string count + "\">"
+        /// An element found by the start of its tag: (tag start, end of the start tag, start of the end tag).
+        let elementAt (text: string) (start: string) (name: string) =
+            let at = text.IndexOf(start, System.StringComparison.Ordinal)
+            if at < 0 then None
+            else
+                let tagEnd = text.IndexOf('>', at)
+                let close = if tagEnd < 0 then -1 else text.IndexOf("</" + name + ">", tagEnd, System.StringComparison.Ordinal)
+                if close < 0 then None else Some (at, tagEnd, close)
+        /// Adds `item` to the element as its last child, with the count of its `child`ren kept right.
+        let appended (text: string) (at: int, tagEnd: int, close: int) (child: string) (item: string) =
+            let had = countOf (text.Substring(tagEnd + 1, close - tagEnd - 1)) child
+            text.Substring(0, at) + withCount (text.Substring(at, tagEnd - at + 1)) (had + 1)
+            + text.Substring(tagEnd + 1, close - tagEnd - 1) + item + text.Substring close,
+            had
+        let text = existing |> withoutEmpty "metadataTypes" |> withoutEmpty "cellMetadata"
+        let rootAt = text.IndexOf("<metadata", System.StringComparison.Ordinal)
+        let rootEnd = if rootAt < 0 then -1 else text.IndexOf('>', rootAt)
+        let rootClose = text.LastIndexOf("</metadata>", System.StringComparison.Ordinal)
+        if rootEnd < 0 || rootClose < rootEnd then dynamicArrayMetadataXml, 1
+        else
+            // 1. The metadata type.
+            let text, typeIndex =
+                match elementAt text "<metadataTypes" "metadataTypes" with
+                | Some (at, tagEnd, close) ->
+                    let body = text.Substring(tagEnd + 1, close - tagEnd - 1)
+                    let named = body.IndexOf("name=\"XLDAPR\"", System.StringComparison.Ordinal)
+                    if named >= 0 then text, countOf (body.Substring(0, named)) "<metadataType "
+                    else
+                        let extended, had = appended text (at, tagEnd, close) "<metadataType " xldaprTypeXml
+                        extended, had + 1
+                | None ->
+                    text.Substring(0, rootEnd + 1) + "<metadataTypes count=\"1\">" + xldaprTypeXml + "</metadataTypes>" + text.Substring(rootEnd + 1), 1
+            // Where the elements that come after the future metadata begin:
+            // cellMetadata, valueMetadata, the part's own extLst.
+            let tailAt (text: string) (names: string list) =
+                let last =
+                    [ "</metadataTypes>"; "</metadataStrings>"; "</mdxMetadata>"; "</futureMetadata>"; "</cellMetadata>"; "</valueMetadata>" ]
+                    |> List.map (fun close -> text.LastIndexOf(close, System.StringComparison.Ordinal))
+                    |> List.max
+                let candidates =
+                    [ for name in names do
+                        let at = text.IndexOf("<" + name, System.StringComparison.Ordinal)
+                        if at >= 0 then yield at
+                      let ext = text.IndexOf("<extLst", max 0 last, System.StringComparison.Ordinal)
+                      if ext >= 0 then yield ext
+                      yield text.LastIndexOf("</metadata>", System.StringComparison.Ordinal) ]
+                List.min candidates
+            // 2. The future metadata block that says "dynamic".
+            let text, blockIndex =
+                match elementAt text "<futureMetadata name=\"XLDAPR\"" "futureMetadata" with
+                | Some found -> appended text found "<bk>" (dynamicArrayBlockXml true)
+                | None ->
+                    let at = tailAt text [ "cellMetadata"; "valueMetadata" ]
+                    text.Substring(0, at) + "<futureMetadata name=\"XLDAPR\" count=\"1\">" + dynamicArrayBlockXml true + "</futureMetadata>" + text.Substring at, 0
+            // 3. The cell-metadata record that points at it.
+            let record = sprintf "<bk><rc t=\"%d\" v=\"%d\"/></bk>" typeIndex blockIndex
+            match elementAt text "<cellMetadata" "cellMetadata" with
+            | Some found ->
+                let extended, had = appended text found "<bk>" record
+                extended, had + 1
+            | None ->
+                let at = tailAt text [ "valueMetadata" ]
+                text.Substring(0, at) + "<cellMetadata count=\"1\">" + record + "</cellMetadata>" + text.Substring at, 1
+
 let private workbookFiles (workbook: XlsxWorkbookOut) =
     let styles = collectStyles workbook
     let sharedItems, sharedIndex = collectSharedStrings workbook
@@ -2067,12 +2184,35 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
     // The theme stays only if its part was kept.
     let themePath = workbook.Preserved.ThemePath |> Option.filter (fun path -> workbook.Preserved.Parts |> List.exists (fun (kept, _) -> kept = path))
     let keptParts = reachableKeptParts workbook themePath
-    textFiles.Add { Path = "[Content_Types].xml"; Content = contentTypesXmlFull workbook keptParts }
+    // Dynamic array formulas name a record of the cell metadata: the opened
+    // workbook's metadata part with that record added to it, or a new part.
+    let hasDynamicArrays =
+        workbook.Sheets |> List.exists (fun sheet -> sheet.Extras.ArrayFormulas |> List.exists (fun (_, _, dynamic) -> dynamic))
+    let keptMetadata =
+        workbook.Preserved.WorkbookRelationships
+        |> List.tryPick (fun (_, relType, target, isExternal) ->
+            if isExternal || not (relType.EndsWith "/sheetMetadata") then None
+            else
+                let path = ZipInterop.normalizePath target
+                keptParts |> List.tryFind (fun (kept, _) -> kept = path))
+    let ownMetadata = hasDynamicArrays && keptMetadata.IsNone
+    let dynamicCm =
+        if not hasDynamicArrays then 0
+        else
+            match keptMetadata with
+            | Some (path, data) ->
+                let xml, cm = metadataWithDynamicArrays (System.Text.Encoding.UTF8.GetString data)
+                textFiles.Add { Path = path; Content = xml }
+                cm
+            | None ->
+                textFiles.Add { Path = "xl/metadata.xml"; Content = dynamicArrayMetadataXml }
+                1
+    textFiles.Add { Path = "[Content_Types].xml"; Content = contentTypesXmlFull workbook keptParts ownMetadata }
     textFiles.Add { Path = "_rels/.rels"; Content = rootRelsXmlFull workbook }
     textFiles.Add { Path = "xl/workbook.xml"; Content = workbookXmlFull workbook }
     let persons = personsOf workbook
     let hasThreads = workbook.Sheets |> List.exists (fun sheet -> not sheet.Extras.ThreadedComments.IsEmpty)
-    textFiles.Add { Path = "xl/_rels/workbook.xml.rels"; Content = workbookRelsXmlFull workbook hasVba themePath hasThreads }
+    textFiles.Add { Path = "xl/_rels/workbook.xml.rels"; Content = workbookRelsXmlFull workbook hasVba themePath hasThreads ownMetadata }
     if hasThreads then textFiles.Add { Path = "xl/persons/person.xml"; Content = personsXml persons }
     let keptPartPaths = keptParts |> List.map fst |> Set.ofList
     let mediaFiles = ResizeArray<string * byte[]>()
@@ -2094,7 +2234,7 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
     |> List.iteri (fun i sheet ->
         let sheetIndex = i + 1
         let firstTableId = tableId
-        textFiles.Add { Path = sprintf "xl/worksheets/sheet%d.xml" sheetIndex; Content = worksheetXml styles sharedIndex sheetIndex (i = workbook.ActiveSheetIndex) sheet }
+        textFiles.Add { Path = sprintf "xl/worksheets/sheet%d.xml" sheetIndex; Content = worksheetXml styles sharedIndex dynamicCm sheetIndex (i = workbook.ActiveSheetIndex) sheet }
         match sheetRelsXml sheetIndex sheet firstTableId with
         | Some rels -> textFiles.Add { Path = sprintf "xl/worksheets/_rels/sheet%d.xml.rels" sheetIndex; Content = rels }
         | None -> ()
@@ -2438,7 +2578,7 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
                         [ for row in sheet.Rows do
                             for cell in row.Cells do
                                 match cell.Formula, cell.ArrayRef with
-                                | Some _, Some range when range <> "" -> yield cell.Reference.Column + string cell.Reference.Row, range
+                                | Some _, Some range when range <> "" -> yield cell.Reference.Column + string cell.Reference.Row, range, cell.ArrayDynamic
                                 | _ -> () ]
                     RowAxis =
                         sheet.Rows

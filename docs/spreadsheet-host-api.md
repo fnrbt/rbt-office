@@ -668,3 +668,23 @@ Nothing to call for the recalculation itself: every edit recalculates what it ha
   of that one sheet is `#REF!`), as Excel does; undo restores the text. `RenameSheet` re-points either end. Inserting or deleting rows / columns on ONE
   sheet of the span does not re-point a 3-D reference (Excel does not either: it is the same cells on every sheet of the span); it reads whatever is at
   those cells afterwards.
+
+## XLSX: what is written how
+
+### Dynamic arrays and legacy array formulas
+
+- A formula that spills (`=SEQUENCE(3)`, `=SORT(A1:A9)`, `=A1:A3*2`) is written as Excel writes a dynamic array: `<c r="A1" cm="1"><f t="array"
+  ref="A1:A3">`, with `xl/metadata.xml` holding the XLDAPR future metadata (`xda:dynamicArrayProperties fDynamic="1"`) that the `cm` names, the part's
+  content type and its workbook relationship. Excel opens it as a spilling formula (no `{…}`, no implicit `@`). The `ref` is the range the formula
+  fills at the time of the save.
+- A file's dynamic array formulas are read back as spilling formulas, including one that fills a single cell (`ref="H1"` with `cm`): it is written as a
+  dynamic array again for as long as its cell holds that formula.
+- A legacy (Ctrl+Shift+Enter) array formula - `<f t="array">` on a cell without dynamic-array metadata - is still calculated as an array formula over
+  its cells, and is written as a legacy array formula over the range the file gave it, again for as long as the cell holds the formula it was read
+  with (rows / columns inserted or deleted and a sort move the formula and keep it). Typing another formula into the cell makes it an ordinary (or
+  spilling) formula. There is no host call that makes a formula a legacy array formula.
+- A workbook that already has a metadata part with other entries (rich values: pictures in cells, data types) keeps it: the part, its relationship, the
+  rich-value parts it goes with and their content types are carried through; when a dynamic array has to be written and the part has no XLDAPR record
+  yet, the type, the future-metadata block and a `cellMetadata` record are ADDED to it (the existing types, blocks and `valueMetadata` keep their
+  positions and numbers). Not carried: the `vm` attribute of a cell that names a rich value (the cell keeps its fallback value, as before).
+- A workbook without dynamic arrays gets no metadata part.

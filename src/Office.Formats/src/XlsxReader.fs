@@ -144,6 +144,10 @@ type Cell = {
     /// For the anchor of a legacy array formula (`<f t="array" ref="B1:B3">`),
     /// the range the formula fills. None for ordinary formulas.
     ArrayRef: string option
+    /// The array formula is a dynamic array (the cell's `cm` names an XLDAPR
+    /// entry of xl/metadata.xml): it spills. False: a legacy (Ctrl+Shift+Enter)
+    /// array formula over `ArrayRef`.
+    ArrayDynamic: bool
     StyleIndex: int option
     Style: CellStyle option
     /// Per-run rich-text formatting for inline-string cells whose
@@ -759,8 +763,10 @@ type SheetExtras = {
     /// The sheet's own AutoFilter (a table's is part of the table).
     AutoFilter: SheetAutoFilter option
     /// Array formulas for the writer: the cell that holds the formula and the
-    /// range its results fill ("C1", "C1:C3"), written as `<f t="array" ref>`.
-    ArrayFormulas: (string * string) list
+    /// range its results fill ("C1", "C1:C3"), written as `<f t="array" ref>`;
+    /// true for a dynamic array (the cell gets the `cm` of the XLDAPR entry of
+    /// xl/metadata.xml), false for a legacy Ctrl+Shift+Enter array formula.
+    ArrayFormulas: (string * string * bool) list
 }
 
 let emptySheetExtras =
@@ -927,6 +933,44 @@ let internal isTrueText (text: string) =
     text = "1" || text = "true"
 
 // DSL for XLSX-specific patterns
+/// xl/metadata.xml: the cell-metadata records (the 1-based values of `<c cm>`)
+/// that mark a dynamic array formula. Such a record points
+/// (`<rc t v>`) into the future metadata of type XLDAPR at a block whose
+/// `xda:dynamicArrayProperties` has `fDynamic="1"`.
+let dynamicArrayCellMetadata (metadataXml: string) : Set<int> =
+    let doc = XmlDsl.parse metadataXml
+    let named (local: string) (node: XmlNode) =
+        match node with
+        | XmlDsl.Element (name, _, _) -> Ns.stripNs name = local
+        | _ -> false
+    let kids (local: string) (node: XmlNode) = Xml.children node |> List.filter (named local)
+    let types =
+        kids "metadataTypes" doc
+        |> List.collect (kids "metadataType")
+        |> List.map (fun node -> Xml.attr "name" node |> Option.defaultValue "")
+        |> List.toArray
+    let dynamicBlocks =
+        kids "futureMetadata" doc
+        |> List.filter (fun node -> Xml.attr "name" node = Some "XLDAPR")
+        |> List.collect (kids "bk")
+        |> List.map (fun block ->
+            Ns.descendantsNs "dynamicArrayProperties" block
+            |> List.exists (fun properties -> Xml.attr "fDynamic" properties |> Option.exists isTrueText))
+        |> List.toArray
+    kids "cellMetadata" doc
+    |> List.collect (kids "bk")
+    |> List.mapi (fun index block ->
+        let dynamic =
+            kids "rc" block
+            |> List.exists (fun record ->
+                match Xml.attr "t" record |> Option.bind tryParseInt, Xml.attr "v" record |> Option.bind tryParseInt with
+                | Some t, Some v ->
+                    t >= 1 && t <= types.Length && types.[t - 1] = "XLDAPR" && v >= 0 && v < dynamicBlocks.Length && dynamicBlocks.[v]
+                | _ -> false)
+        if dynamic then Some (index + 1) else None)
+    |> List.choose id
+    |> Set.ofList
+
 module Xlsx =
     // Namespace-aware helpers
     let inline sElem name node = Ns.childNs name node
@@ -1502,6 +1546,9 @@ module Xlsx =
         SharedFormulas: System.Collections.Generic.Dictionary<string, int * int * string>
         /// What-if data tables seen so far.
         DataTables: ResizeArray<DataTableFormula>
+        /// The cell-metadata indices (`<c cm>`, 1-based) that mark a dynamic
+        /// array formula; see `dynamicArrayCellMetadata`.
+        mutable DynamicCm: Set<int>
     }
 
     /// Days between the 1904 and 1900 date systems' epochs.
@@ -1517,6 +1564,7 @@ module Xlsx =
                 | _ -> [||]
             SharedFormulas = System.Collections.Generic.Dictionary<string, int * int * string>()
             DataTables = ResizeArray<DataTableFormula>()
+            DynamicCm = Set.empty
         }
 
     let private resolvedStyle (styles: CellStyle array option) styleIdx =
@@ -1532,6 +1580,11 @@ module Xlsx =
                           (fText: string option) (fType: string option) (fRef: string option) (fSi: string option)
                           (fAttr: string -> string option)
                           (value: string option) (inlineText: string option) (inlineRuns: (string * RunProps) list) : Cell =
+        let arrayDynamic =
+            fType = Some "array" && not ctx.DynamicCm.IsEmpty
+            && (match fAttr "cm" |> Option.bind tryParseInt with
+                | Some cm -> ctx.DynamicCm.Contains cm
+                | None -> false)
         let formula, arrayRef =
             match fText with
             | None -> None, None
@@ -1584,6 +1637,7 @@ module Xlsx =
                 | _ -> cached
             Formula = formula
             ArrayRef = arrayRef
+            ArrayDynamic = arrayDynamic && arrayRef.IsSome
             StyleIndex = styleIdx
             Style = resolvedStyle ctx.Styles styleIdx
             InlineRuns =
@@ -1638,7 +1692,7 @@ module Xlsx =
         let cell =
             buildCell ctx column colIndex row cellType styleIdx
                 fText (fNode |> Option.bind (Xml.attr "t")) (fNode |> Option.bind (Xml.attr "ref")) (fNode |> Option.bind (Xml.attr "si"))
-                (fun name -> fNode |> Option.bind (Xml.attr name))
+                (fun name -> if name = "cm" then Xml.attr "cm" cNode else fNode |> Option.bind (Xml.attr name))
                 value inlineText inlineRuns
         cell, colIndex
 
@@ -1669,6 +1723,7 @@ module Xlsx =
                                         Value = Empty
                                         Formula = None
                                         ArrayRef = None
+                                        ArrayDynamic = false
                                         StyleIndex = Some s
                                         Style = resolvedStyle ctx.Styles (Some s)
                                         InlineRuns = [] } ]
@@ -1984,11 +2039,15 @@ module Xlsx =
                 let fRef = optional scan.FormulaValues.[1]
                 let fSi = optional scan.FormulaValues.[2]
                 // The other attributes are only asked for by a data table.
+                // The cell's own `cm` was read with its other attributes.
+                let cellCm = optional scan.CellValues.[3]
                 let fAttr (name: string) =
-                    let names = [| name |]
-                    let values : string array = [| null |]
-                    scanAttributes xml formulaTag.[0] formulaTag.[1] names values
-                    optional values.[0]
+                    if name = "cm" then cellCm
+                    else
+                        let names = [| name |]
+                        let values : string array = [| null |]
+                        scanAttributes xml formulaTag.[0] formulaTag.[1] names values
+                        optional values.[0]
                 buildCell scan.Ctx (scanColumnName scan colIndex) colIndex row cellType styleIdx (Some formula) fType fRef fSi fAttr
                     (if isNull value then None else Some value) None []
 
@@ -2044,8 +2103,8 @@ module Xlsx =
                           ColumnNames = System.Collections.Generic.Dictionary<int, string>()
                           RowNames = [| "r"; "ht"; "customHeight"; "hidden"; "s"; "customFormat"; "spans"; "outlineLevel"; "collapsed" |]
                           RowValues = Array.create 9 null
-                          CellNames = [| "r"; "s"; "t" |]
-                          CellValues = Array.create 3 null
+                          CellNames = [| "r"; "s"; "t"; "cm" |]
+                          CellValues = Array.create 4 null
                           FormulaNames = [| "t"; "ref"; "si" |]
                           FormulaValues = Array.create 3 null
                           NextInline = indexOfFrom sheetXml "<is" openEnd
@@ -2519,7 +2578,9 @@ module Xlsx =
         let mutable fType = None
         let mutable fRef = None
         let mutable fSi = None
-        let mutable fExtra : Map<string, string> = Map.empty
+        let mutable fExtra : Map<string, string> =
+            if ctx.DynamicCm.IsEmpty then Map.empty
+            else match nativeAttr reader "cm" with Some cm -> Map.add "cm" cm Map.empty | None -> Map.empty
         let mutable value = None
         let mutable inlineText = None
         let mutable inlineRuns = []
@@ -4393,7 +4454,10 @@ type private WorkbookHeader = {
 
 /// Relationship types of the workbook part whose targets are kept as they are.
 let private isKeptWorkbookRelType (relType: string) =
-    [ "/pivotCacheDefinition"; "/slicerCache"; "/externalLink"; "/timelineCache"; "/connections" ]
+    [ "/pivotCacheDefinition"; "/slicerCache"; "/externalLink"; "/timelineCache"; "/connections"
+      // Cell and value metadata, and the rich values the value metadata names.
+      "/sheetMetadata"; "/rdRichValue"; "/rdRichValueStructure"; "/rdRichValueTypes"; "/richValueRel"
+      "/rdArray"; "/richStyles"; "/rdSupportingPropertyBag"; "/rdSupportingPropertyBagStructure"; "/rdRichValueWebImage" ]
     |> List.exists (fun suffix -> relType.EndsWith suffix)
 
 /// Relationship types of a sheet part whose targets are kept as they are.
@@ -4941,6 +5005,14 @@ let private buildWorkbook (scanRows: bool) (source: PartSource) (header: Workboo
         |> Option.map (XmlDsl.parse >> ConditionalFormats.parseDxfs themeColors)
         |> Option.defaultValue [||]
 
+    // Which `<c cm>` values say "dynamic array formula".
+    let dynamicCm =
+        header.Rels
+        |> List.tryFind (fun r -> r.Type.EndsWith "/sheetMetadata" && isInternal r)
+        |> Option.bind (fun r -> source.Text (relTargetPath header.WorkbookPath r))
+        |> Option.map (fun xml -> try dynamicArrayCellMetadata xml with _ -> Set.empty)
+        |> Option.defaultValue Set.empty
+
     let persons =
         header.Rels
         |> List.filter (fun r -> r.Type.EndsWith "/person" && isInternal r)
@@ -5002,6 +5074,7 @@ let private buildWorkbook (scanRows: bool) (source: PartSource) (header: Workboo
                         PivotLocations = pivotLocations }
                 // A fresh context per sheet: shared-formula groups are sheet-local.
                 let ctx = Xlsx.newSheetContext (Some styles) header.Date1904
+                ctx.DynamicCm <- dynamicCm
                 let withExtras (sheet: Worksheet) = { sheet with Extras = { extras with DataTables = List.ofSeq ctx.DataTables } }
                 let viaDom () =
                     let sheet = XmlDsl.parse xml

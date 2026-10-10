@@ -1725,6 +1725,7 @@ let sortRange (memberName: string) (range: CellRange) (keys: SortKey list) (opti
                 { model with
                     Cells = cells
                     RichRuns = moveMap model.RichRuns (fun _ runs -> runs)
+                    ArrayMarks = followArrayMarks cells (moveMap model.ArrayMarks (fun _ mark -> mark))
                     Threads = moveMap model.Threads (fun _ thread -> thread)
                     Hyperlinks = hyperlinks
                     SortState = sortState }

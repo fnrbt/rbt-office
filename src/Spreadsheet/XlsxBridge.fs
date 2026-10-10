@@ -377,11 +377,13 @@ let private extrasOfModel (original: XlsxReader.SheetExtras) (before: Spreadshee
         else
             axisOf model.RowHeights model.Axes.HiddenRowSizes model.Axes.RowLevels model.Axes.CollapsedRows 1.333,
             axisOf model.ColumnWidths model.Axes.HiddenColSizes model.Axes.ColLevels model.Axes.CollapsedCols 7.0
-    // A formula that spilled is written as an array formula over the cells it
-    // fills: opened again (here or elsewhere), those cells are its results,
-    // not cells in its way.
+    // A formula that spilled is written as a dynamic array formula over the
+    // cells it fills: opened again (here or elsewhere), those cells are its
+    // results, not cells in its way. A formula the file had as a legacy
+    // (Ctrl+Shift+Enter) array formula stays one, over the range it had; a
+    // dynamic array that fills one cell stays a dynamic array.
     let arrayFormulas =
-        if Map.isEmpty model.Spill then []
+        if Map.isEmpty model.Spill && Map.isEmpty model.ArrayMarks then []
         else
             let bounds = System.Collections.Generic.Dictionary<CellAddress, CellAddress>()
             for KeyValue (cell, anchor) in model.Spill do
@@ -389,11 +391,29 @@ let private extrasOfModel (original: XlsxReader.SheetExtras) (before: Spreadshee
                     match bounds.TryGetValue anchor with
                     | true, corner -> bounds.[anchor] <- { Row = max corner.Row cell.Row; Col = max corner.Col cell.Col }
                     | false, _ -> bounds.[anchor] <- cell
-            [ for KeyValue (anchor, corner) in bounds do
-                match Map.tryFind anchor model.Cells with
-                | Some { Value = CellValue.Formula _ } ->
-                    yield formatCellRef anchor.Row anchor.Col, formatCellRef anchor.Row anchor.Col + ":" + formatCellRef corner.Row corner.Col
-                | _ -> () ]
+            let rangeText (anchor: CellAddress) (corner: CellAddress) =
+                let first = formatCellRef anchor.Row anchor.Col
+                if corner = anchor then first else first + ":" + formatCellRef corner.Row corner.Col
+            let marked = System.Collections.Generic.HashSet<CellAddress>()
+            [ for KeyValue (anchor, _) in model.ArrayMarks do
+                match arrayMarkOf anchor model with
+                | Some mark ->
+                    marked.Add anchor |> ignore
+                    let spilled = match bounds.TryGetValue anchor with | true, corner -> Some corner | _ -> None
+                    let corner =
+                        match spilled with
+                        | Some corner when not mark.Legacy -> corner
+                        | _ -> { Row = anchor.Row + max 1 mark.Rows - 1; Col = anchor.Col + max 1 mark.Cols - 1 }
+                    // A dynamic array that no longer spills fills its own cell.
+                    let corner = if mark.Legacy || spilled.IsSome then corner else anchor
+                    yield formatCellRef anchor.Row anchor.Col, rangeText anchor corner, not mark.Legacy
+                | None -> ()
+              for KeyValue (anchor, corner) in bounds do
+                if not (marked.Contains anchor) then
+                    match Map.tryFind anchor model.Cells with
+                    | Some { Value = CellValue.Formula _ } ->
+                        yield formatCellRef anchor.Row anchor.Col, rangeText anchor corner, true
+                    | _ -> () ]
     { original with Images = images; Objects = objects; ThreadedComments = threads; RowAxis = rowAxis; ColumnAxis = columnAxis; ArrayFormulas = arrayFormulas }
 
 module Import =
@@ -763,6 +783,8 @@ module Import =
         // anchor, so a recalculation spills over them again instead of finding
         // them in its way (#SPILL!).
         let mutable spill = Map.empty<CellAddress, CellAddress>
+        // What the file says of each array formula (legacy or dynamic, its range).
+        let mutable arrayMarks = Map.empty<CellAddress, ArrayFormulaMark>
         for row in sheet.Rows do
             for cell in row.Cells do
                 let r = cell.Reference.Row - 1
@@ -777,6 +799,14 @@ module Import =
                                     spill <- Map.add { Row = ghostRow; Col = ghostCol } anchor spill
                     | _ -> ()
                     let value = cellValue wb cell
+                    (match value, cell.ArrayRef with
+                     | CellValue.Formula (text, _), Some range ->
+                        let rows, cols =
+                            match parsePlainRange range with
+                            | Some (sr, sc, er, ec) -> er - sr + 1, ec - sc + 1
+                            | None -> 1, 1
+                        arrayMarks <- Map.add { Row = r; Col = c } { Text = text; Legacy = not cell.ArrayDynamic; Rows = rows; Cols = cols } arrayMarks
+                     | _ -> ())
                     let baseFormat = styleFormat cell
                     let hasComment = commentCells.Contains((r, c))
                     let comment =
@@ -1010,7 +1040,8 @@ module Import =
                 PageSetup = pageSetup sheet
                 Drawings = drawingsOfExtras sheet.Extras
                 Threads = threads
-                Spill = spill }
+                Spill = spill
+                ArrayMarks = arrayMarks }
             |> withAutoFilter wb sheet
         { Model = model
           TableColumns = tableColumns

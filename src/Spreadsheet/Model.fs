@@ -231,6 +231,17 @@ let emptyRunOverride = {
     VertAlign = None
 }
 
+/// An array formula as a file had it (`<f t="array" ref>`).
+type ArrayFormulaMark = {
+    /// The formula the mark was read with; the mark is void once the cell holds another.
+    Text: string
+    /// A Ctrl+Shift+Enter array formula (no dynamic-array cell metadata).
+    Legacy: bool
+    /// Rows and columns of the range the formula fills.
+    Rows: int
+    Cols: int
+}
+
 /// Cell data
 type CellData = {
     Value: CellValue
@@ -1091,6 +1102,13 @@ type SpreadsheetModel = {
     /// workbooks.
     Spill: Map<CellAddress, CellAddress>
 
+    /// What the opened file said of its array formulas, by the cell that holds
+    /// the formula: whether it is a legacy (Ctrl+Shift+Enter) array formula or
+    /// a dynamic array, and the range it fills. A mark holds for as long as
+    /// the cell holds the formula it was read with (`arrayMarkOf`); a legacy
+    /// array formula is saved as one again.
+    ArrayMarks: Map<CellAddress, ArrayFormulaMark>
+
     /// Data validations, by range (see `ValidationRange`). `getValidation`
     /// gives the one on a cell.
     Validations: ValidationRange list
@@ -1228,6 +1246,7 @@ let createEmpty rowCount colCount = {
     ShowZeros = true
     Zoom = 1.0
     Spill = Map.empty
+    ArrayMarks = Map.empty
     Validations = []
     Macros = ""
     Drawings = []
@@ -1342,6 +1361,29 @@ let private binarySearchInt (values: int array) target =
 /// Whether the AutoFilter hides a row.
 let isFilterHiddenRow (row: int) (model: SpreadsheetModel): bool =
     model.FilterHiddenRows.Length > 0 && not (Map.isEmpty model.Filters) && binarySearchInt model.FilterHiddenRows row >= 0
+
+/// The file's mark of the array formula a cell holds, while the cell still
+/// holds that formula.
+let arrayMarkOf (addr: CellAddress) (model: SpreadsheetModel) : ArrayFormulaMark option =
+    if Map.isEmpty model.ArrayMarks then None
+    else
+        match Map.tryFind addr model.ArrayMarks, Map.tryFind addr model.Cells with
+        | Some mark, Some { Value = Formula (text, _) } when text = mark.Text -> Some mark
+        | _ -> None
+
+/// Array marks after the cells they are on moved and had their references
+/// rewritten (rows or columns inserted, deleted or sorted): each takes the
+/// formula its cell holds now.
+let followArrayMarks (cells: Map<CellAddress, CellData>) (marks: Map<CellAddress, ArrayFormulaMark>) : Map<CellAddress, ArrayFormulaMark> =
+    if Map.isEmpty marks then marks
+    else
+        marks
+        |> Map.toSeq
+        |> Seq.choose (fun (addr, mark) ->
+            match Map.tryFind addr cells with
+            | Some { Value = Formula (text, _) } -> Some (addr, (if text = mark.Text then mark else { mark with Text = text }))
+            | _ -> None)
+        |> Map.ofSeq
 
 /// Set cell data at address
 let setCell (addr: CellAddress) (data: CellData) (model: SpreadsheetModel): SpreadsheetModel =
@@ -2433,7 +2475,8 @@ let sortRegionByColumn (active: CellAddress) (ascending: bool) (model: Spreadshe
                 | _ -> cellData)
         { sorted with
             Cells = cells
-            RichRuns = moveMap model.RichRuns (fun _ runs -> runs) }
+            RichRuns = moveMap model.RichRuns (fun _ runs -> runs)
+            ArrayMarks = followArrayMarks cells (moveMap model.ArrayMarks (fun _ mark -> mark)) }
         |> reapplyFilter
 
 /// The cell a sort "by column" starts from when only the column is known:
@@ -3041,6 +3084,7 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
                 else { axes with HiddenColSizes = moveIndexMap axes.HiddenColSizes; ColLevels = moveIndexMap axes.ColLevels; CollapsedCols = moveSet axes.CollapsedCols })
         ConditionalFormats = conditionalFormats
         RichRuns = moveAddressMap model.RichRuns
+        ArrayMarks = followArrayMarks cells (moveAddressMap model.ArrayMarks)
         MergedCells = merges
         Tables = tables
         CfBoldCells = model.CfBoldCells |> Seq.choose moveAddr |> Set.ofSeq
