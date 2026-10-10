@@ -1072,11 +1072,14 @@ type SheetAxes = {
     CollapsedCols: Set<int>
     SummaryBelow: bool
     SummaryRight: bool
+    /// False: the sheet does not show its outline's brackets and buttons
+    /// (the sheet view's `showOutlineSymbols`), grouped or not.
+    ShowSymbols: bool
 }
 
 let emptySheetAxes : SheetAxes =
     { HiddenRowSizes = Map.empty; HiddenColSizes = Map.empty; RowLevels = Map.empty; ColLevels = Map.empty
-      CollapsedRows = Set.empty; CollapsedCols = Set.empty; SummaryBelow = true; SummaryRight = true }
+      CollapsedRows = Set.empty; CollapsedCols = Set.empty; SummaryBelow = true; SummaryRight = true; ShowSymbols = true }
 
 /// A row / column insertion or deletion as a recalculation needs to know it:
 /// rows (or columns) from `At` on moved by `Count` (down / right when

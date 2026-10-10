@@ -1680,6 +1680,10 @@ let setOutlineSummary (below: bool) (right: bool) (model: SpreadsheetModel) : Sp
             groups |> List.map (fun (first, last, _, _) -> summaryIndex rows first last moved) |> Set.ofList
         { moved with Axes = { moved.Axes with CollapsedRows = marksOf true rowGroups; CollapsedCols = marksOf false colGroups } }
 
+/// Show or hide the outline's symbols on the sheet (the sheet view's `showOutlineSymbols`).
+let setOutlineSymbols (show: bool) (model: SpreadsheetModel) : SpreadsheetModel =
+    if model.Axes.ShowSymbols = show then model else { model with Axes = { model.Axes with ShowSymbols = show } }
+
 // ---------------------------------------------------------------------------
 // Sorting a range
 // ---------------------------------------------------------------------------

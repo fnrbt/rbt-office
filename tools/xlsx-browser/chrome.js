@@ -247,13 +247,47 @@ checks['chrome-outline'] = async () => {
         check('SetShowOutline(false): no strip, the cells are back', [host.querySelectorAll('.spreadsheet-outline').length, origin(), grid.GetShowOutline(), grid.GetOutline().rowLevels], [0, [50, 30], false, 2]);
         grid.SetShowOutline(true); await frame();
         check('SetShowOutline(true)', [origin(), nodes('button').length], [[98, 63], 3]);
+        // A sheet without headers keeps its strips: a narrow band beside each holds the level buttons of the other axis.
         grid.SetShowHeaders(false); await frame();
-        check('no headers: no strip', [host.querySelectorAll('.spreadsheet-outline').length, origin()], [0, [0, 0]]);
-        grid.SetShowHeaders(true); await frame();
-        check('headers again', origin(), [98, 63]);
-        grid.SetReadOnly(true); await frame();
+        const shownHeaders = () => [...host.querySelectorAll('.spreadsheet-row-header, .spreadsheet-col-header')].filter((n) => n.getClientRects().length > 0).length;
+        const inHeaderArea = (node) => { const box = node.getBoundingClientRect(), [left, top] = inner(), [x, y] = origin(); return box.left >= left - 1 && box.top >= top - 1 && (box.right <= left + x + 1 || box.bottom <= top + y + 1); };
+        check('no headers: the strips stay, the row numbers and column letters go', [nodes('button').length, nodes('level').length, origin(), shownHeaders(), nodes('button').concat(nodes('level')).every(inHeaderArea)], [3, 5, [66, 51], 0, true]);
+        check('... the level buttons are in the corner bands, not over the cells', nodes('level').map((n) => { const box = n.getBoundingClientRect(), [left, top] = inner(), [x, y] = origin(); return box.right <= left + x + 1 && box.bottom <= top + y + 1; }).every(Boolean), true);
         await click(buttonOf('rows', 3));
-        check('a viewer draws the strip; its buttons do nothing', [nodes('button').length, grid.GetHiddenRows()], [3, []]);
+        check('... and a click collapses', grid.GetHiddenRows(), ['4:5']);
+        grid.Undo(); await frame();
+        const a1 = cellBox(host, 0, 0);
+        await realClick(a1.left + a1.width / 2, a1.top + a1.height / 2);
+        check('... a click on a cell still selects that cell', grid.GetSelectionRef(), 'A1');
+        grid.SetShowHeaders(true); await frame();
+        check('headers again', [origin(), shownHeaders() > 0], [[98, 63], true]);
+        // The sheet's own switch (the sheet view's showOutlineSymbols): saved with the sheet, one undo step.
+        check('the symbols are shown', [grid.GetShowOutlineSymbols(), grid.GetOutline().showSymbols], [true, true]);
+        grid.SetShowOutlineSymbols(false); await frame();
+        check('SetShowOutlineSymbols(false): no strip, the groups stay', [host.querySelectorAll('.spreadsheet-outline').length, origin(), grid.GetShowOutlineSymbols(), grid.GetOutline().showSymbols, grid.GetOutline().rowLevels], [0, [50, 30], false, false, 2]);
+        {
+            const hiddenZip = await window.JSZip.loadAsync(await grid.ExportXlsx());
+            check('... written on the sheet view', /<sheetView [^>]*showOutlineSymbols="0"/.test(await hiddenZip.files['xl/worksheets/sheet1.xml'].async('string')), true);
+            const hidden = await reopened(grid);
+            try { await frame(); check('... read back: grouped, without symbols', [hidden.grid.GetShowOutlineSymbols(), hidden.grid.GetOutline().rowLevels, hidden.host.querySelectorAll('.spreadsheet-outline').length], [false, 2, 0]); } finally { hidden.close(); }
+        }
+        grid.Undo(); await frame();
+        check('... undone', [grid.GetShowOutlineSymbols(), origin()], [true, [98, 63]]);
+        // A viewer: the buttons collapse and expand - how the sheet is looked at, not a change of the workbook.
+        grid.SetReadOnly(true); await frame();
+        {
+            let told = 0;
+            const off = grid.OnChange(() => { told++; });
+            const revision = grid.GetRevision(), canUndo = grid.CanUndo();
+            await click(buttonOf('rows', 3)); await frame();
+            check('a viewer: a click collapses the group', [grid.GetHiddenRows(), buttons('rows').map((b) => b[2])], [['4:5'], ['−', '+']]);
+            check('... without a new revision, a change event or an undo step', [grid.GetRevision() === revision, told, grid.CanUndo() === canUndo], [true, 0, true]);
+            await click(levelOf('rows', 1)); await frame();
+            check('... the level buttons work', grid.GetHiddenRows(), ['3:8']);
+            await click(levelOf('rows', 3)); await frame();
+            check('... and expand again', [grid.GetHiddenRows(), grid.GetRevision() === revision, told], [[], true, 0]);
+            if (typeof off === 'function') off();
+        }
         grid.SetReadOnly(false);
 
         // ---- export, re-import ----

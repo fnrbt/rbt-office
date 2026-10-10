@@ -229,7 +229,7 @@ let viewOut =
           NameInfo = Map.empty; DefinedNames = Map.empty; Source = None; Macros = None }
 let viewBack = reread viewOut
 eq "view: written to the sheet view" (viewBack.Sheets |> List.map (fun s -> s.View, s.ShowZeros, s.ShowGridLines, s.FrozenPane))
-    [ { XlsxReader.ShowRowColHeaders = false; ShowFormulas = true; ZoomScale = 135; TabColor = None; SummaryBelow = true; SummaryRight = true }, false, false, Some { XlsxReader.XSplit = 2; YSplit = 3 }
+    [ { XlsxReader.ShowRowColHeaders = false; ShowFormulas = true; ZoomScale = 135; TabColor = None; SummaryBelow = true; SummaryRight = true; ShowOutlineSymbols = true }, false, false, Some { XlsxReader.XSplit = 2; YSplit = 3 }
       XlsxReader.defaultSheetView, true, true, None ]
 let viewAgain = (Bridge.Import.importWorkbook viewBack).Sheets |> Array.map (fun sheet -> sheet.Model)
 eq "view: the import has what the export had"

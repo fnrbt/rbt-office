@@ -660,6 +660,11 @@ type Spreadsheet(container: Element) =
     /// The width of the rows' strip and the height of the columns' one, as drawn (0: none).
     let mutable gutterWidth = 0.0
     let mutable gutterHeight = 0.0
+    /// The band of the column letters (30) and of the row numbers (50). A
+    /// sheet that hides its headers has none - but for a narrow one beside an
+    /// outline strip, where the level buttons of the other axis are.
+    let mutable headBand = 30.0
+    let mutable sideBand = 50.0
     /// The groups of the sheet on display, per `SheetAxes` value.
     let mutable outlineAxes: obj = null
     let mutable outlineRowGroups: (int * int * int * bool) array = [||]
@@ -1480,16 +1485,18 @@ type Spreadsheet(container: Element) =
             outlineColGroups <- SheetOps.outlineGroups false model |> Array.ofList
             outlineRowDepth <- SheetOps.outlineDepth true model
             outlineColDepth <- SheetOps.outlineDepth false model
-        // (The strips go with the headers: a sheet without headers has none.)
-        let strip (depth: int) = if showOutline && model.ShowHeaders && depth > 0 then float (depth + 1) * outlineStep + 3.0 else 0.0
+        // (A sheet draws its strips with or without its headers, unless it hides the outline's symbols.)
+        let strip (depth: int) = if showOutline && model.Axes.ShowSymbols && depth > 0 then float (depth + 1) * outlineStep + 3.0 else 0.0
         let wantedWidth = strip outlineRowDepth
         let wantedHeight = strip outlineColDepth
         if model.ShowHeaders <> appliedHeaders || wantedWidth <> gutterWidth || wantedHeight <> gutterHeight then
             appliedHeaders <- model.ShowHeaders
             gutterWidth <- wantedWidth
             gutterHeight <- wantedHeight
-            headerHeight <- (if appliedHeaders then 30.0 else 0.0) + gutterHeight
-            rowHeaderWidth <- (if appliedHeaders then 50.0 else 0.0) + gutterWidth
+            headBand <- if appliedHeaders then 30.0 elif gutterWidth > 0.0 then outlineStep + 3.0 else 0.0
+            sideBand <- if appliedHeaders then 50.0 elif gutterHeight > 0.0 then outlineStep + 3.0 else 0.0
+            headerHeight <- headBand + gutterHeight
+            rowHeaderWidth <- sideBand + gutterWidth
             match cornerElement with
             | Some corner ->
                 setStyle corner "width" (string rowHeaderWidth + "px")
@@ -1497,10 +1504,11 @@ type Spreadsheet(container: Element) =
             | None -> ()
             match layers with
             | Some layer ->
-                let display = if appliedHeaders then "" else "none"
-                setStyle layer.ColHeaders "display" display
-                setStyle layer.RowHeaders "display" display
-                setStyle layer.FrozenHeaders "display" display
+                // (Without headers the layers still hold the outline strips; the header cells are hidden by a rule of the sheet style.)
+                let display = if appliedHeaders || gutterWidth > 0.0 || gutterHeight > 0.0 then "" else "none"
+                for headers in [ layer.ColHeaders; layer.RowHeaders; layer.FrozenHeaders ] do
+                    setStyle headers "display" display
+                    if appliedHeaders then removeAttribute headers "data-headers" else setAttribute headers "data-headers" "off"
             | None -> ()
         let zoom = if model.Zoom >= 0.1 && model.Zoom <= 4.0 then model.Zoom else 1.0
         if zoom <> appliedZoom then
@@ -4119,7 +4127,7 @@ type Spreadsheet(container: Element) =
         else
             let signature : obj array =
                 [| outlineAxes; box metrics.RowPrefix; box metrics.ColPrefix; box frozenRows; box frozenCols; box firstRow; box lastRow; box firstCol; box lastCol
-                   box gutterWidth; box gutterHeight; box readOnly |]
+                   box gutterWidth; box gutterHeight; box readOnly; box headBand; box sideBand |]
             let same =
                 signature.Length = outlineSignature.Length
                 && Array.forall2 (fun (a: obj) (b: obj) -> obj.ReferenceEquals(a, b) || (not (isNull a) && a.Equals b)) signature outlineSignature
@@ -4140,7 +4148,7 @@ type Spreadsheet(container: Element) =
                     setCssText node css
                     node
                 let stripBackground = "background:#f3f3f3;"
-                let cursor = if readOnly then "cursor:default;" else ""
+                let cursor = ""
                 let axis (rows: bool) =
                     let prefix = if rows then metrics.RowPrefix else metrics.ColPrefix
                     let count = if rows then metrics.RowCount else metrics.ColCount
@@ -4152,7 +4160,7 @@ type Spreadsheet(container: Element) =
                     // Where the sheet's rows / columns begin on this axis, and the other axis' header band.
                     let origin = if rows then headerHeight else rowHeaderWidth
                     let band = if rows then gutterHeight else gutterWidth
-                    let bandSize = if rows then 30.0 else 50.0
+                    let bandSize = if rows then headBand else sideBand
                     let scrolled = if rows then layer.RowHeaders else layer.ColHeaders
                     // A box along the axis (`along`, `length`) and across the strip (`across`, `size`).
                     let rect (along: float) (length: float) (across: float) (size: float) =
@@ -4215,12 +4223,24 @@ type Spreadsheet(container: Element) =
     and pressOutline (node: Element) =
         let rows = getAttribute node "data-axis" = "rows"
         let number (name: string) = match System.Int32.TryParse (getAttribute node name) with | true, value -> value | _ -> -1
-        if readOnly then ()
-        elif number "data-first" >= 0 then
+        // In a viewer what is collapsed is how the sheet is looked at, not a
+        // change of the workbook: no undo step, no new revision.
+        let apply (description: string) (change: SpreadsheetModel -> SpreadsheetModel) =
+            if readOnly then
+                // (What happened before is told first; this then counts as the state already known.)
+                notifyChanges ()
+                let before = axesState model
+                model <- change model
+                if before <> axesState model then
+                    if activeSheetIndex < revisionSheets.Length then revisionSheets.[activeSheetIndex] <- model
+                    if activeSheetIndex < notifiedSheets.Length then notifiedSheets.[activeSheetIndex] <- model
+                    render()
+            elif changeAxes description change then render()
+        if number "data-first" >= 0 then
             let collapse = getAttribute node "data-collapsed" <> "1"
-            if changeAxes (if collapse then "Collapse group" else "Expand group") (SheetOps.setGroupCollapsed "outline" rows (number "data-first") collapse) then render()
+            apply (if collapse then "Collapse group" else "Expand group") (SheetOps.setGroupCollapsed "outline" rows (number "data-first") collapse)
         elif number "data-level" > 0 then
-            if changeAxes "Show outline level" (SheetOps.showOutlineLevel rows (number "data-level")) then render()
+            apply "Show outline level" (SheetOps.showOutlineLevel rows (number "data-level"))
 
     /// The header cells that carry a filter button: (row, col, active, sorted)
     /// with sorted 1 ascending, -1 descending, 0 not sorted. The header row of
@@ -5496,6 +5516,7 @@ type Spreadsheet(container: Element) =
              + ".spreadsheet-container .spreadsheet-row-header{position:absolute;left:0;width:50px;border-right:1px solid #a6a6a6;border-bottom:1px solid #d0d0d0;"
              + "background:linear-gradient(90deg, #f8f8f8 0%, #e8e8e8 100%);display:flex;align-items:center;justify-content:center;box-sizing:border-box;"
              + "font-weight:normal;font-size:11px;font-family:Arial, sans-serif;color:#444;user-select:none;cursor:default}"
+             + ".spreadsheet-container [data-headers=off] .spreadsheet-col-header,.spreadsheet-container [data-headers=off] .spreadsheet-row-header{display:none}"
              + ".spreadsheet-container .col-header-text{flex:1;text-align:center}"
              + ".spreadsheet-container .col-filter-btn{width:16px;height:16px;align-items:center;justify-content:center;cursor:pointer;font-size:10px;border-radius:2px}"
              + ".spreadsheet-container .col-filter-btn:hover{background:#d0d0d0;opacity:1 !important}"
@@ -5947,6 +5968,8 @@ type Spreadsheet(container: Element) =
         // (The new nodes are at 100 % with their headers shown: see syncView.)
         appliedZoom <- 1.0
         appliedHeaders <- true
+        headBand <- 30.0
+        sideBand <- 50.0
         headerHeight <- 30.0
         rowHeaderWidth <- 50.0
         gutterWidth <- 0.0
@@ -8794,9 +8817,20 @@ type Spreadsheet(container: Element) =
 
     member _.GetShowOutline() : bool = showOutline
 
+    /// Show (the default) or hide the outline's symbols of the active sheet:
+    /// its brackets, +/- and level buttons. A setting of the sheet, saved with
+    /// it (the sheet view's showOutlineSymbols); the groups themselves stay.
+    /// One undo step. (SetShowOutline hides the strips of every sheet in this
+    /// component without changing any sheet.)
+    member _.SetShowOutlineSymbols(show: obj) : unit =
+        let show = Host.boolArg "SetShowOutlineSymbols" "show" show
+        if changeAxes "Outline symbols" (SheetOps.setOutlineSymbols show) then render()
+
+    member _.GetShowOutlineSymbols() : bool = model.Axes.ShowSymbols
+
     /// The outline of the active sheet: { rows: [group], columns: [group],
     /// rowLevels, columnLevels (the deepest level, 0 = no groups),
-    /// summaryBelow, summaryRight } with
+    /// summaryBelow, summaryRight, showSymbols } with
     /// group = { first, last (0-based), range ("3:7" / "B:D"), level (1..7),
     /// collapsed }; outer groups come before the groups inside them.
     member _.GetOutline() : obj =
@@ -8814,6 +8848,7 @@ type Spreadsheet(container: Element) =
             "columnLevels" ==> deepest model.Axes.ColLevels
             "summaryBelow" ==> model.Axes.SummaryBelow
             "summaryRight" ==> model.Axes.SummaryRight
+            "showSymbols" ==> model.Axes.ShowSymbols
         ]
 
     /// Zoom the active sheet: `factor` 0.1 .. 4 (1 = 100 %; rounded to a whole

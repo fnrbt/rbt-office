@@ -451,7 +451,8 @@ columns and is written to / read from XLSX (`<row ht hidden outlineLevel collaps
 | `ShowOutlineLevel(axis, level)` | `axis` `"rows"` \| `"columns"`; `level` 1..8 | | Excel's level buttons: shows the rows / columns of the levels below `level`, collapses every group from `level` on (1 = only what is in no group, deepest + 1 = everything). Rows hidden by hand inside the groups are shown too. |
 | `SetOutlineSummary(below, right)` | two booleans | | Where a group's summary row / column is (the sheet's `<outlinePr summaryBelow summaryRight>`): below / right (`true`, Excel's default) or above / left. The +/- button and the `collapsed` mark of a group are on its summary row / column. Collapsed groups stay collapsed. |
 | `SetShowOutline(show)` / `GetShowOutline()` | boolean | boolean | Whether the grid draws the outline strips (default `true`). A setting of the component for every sheet: not saved, no undo step, no revision. |
-| `GetOutline()` | | `{ rows: [group], columns: [group], rowLevels, columnLevels, summaryBelow, summaryRight }` with `group = { first, last, range: "3:7" \| "B:D", level: 1..7, collapsed }` | Outer groups come before the groups inside them; `rowLevels` / `columnLevels` are the deepest level (0 = no groups). |
+| `SetShowOutlineSymbols(show)` / `GetShowOutlineSymbols()` | boolean | boolean | The active **sheet's** own switch for its outline symbols (the sheet view's `showOutlineSymbols`; Excel's "Show outline symbols if an outline is applied"): read from and written to the file, one undo step, a new revision. `false` hides the strips of that sheet; its groups, hidden rows and `GetOutline()` stay. |
+| `GetOutline()` | | `{ rows: [group], columns: [group], rowLevels, columnLevels, summaryBelow, summaryRight, showSymbols }` with `group = { first, last, range: "3:7" \| "B:D", level: 1..7, collapsed }` | Outer groups come before the groups inside them; `rowLevels` / `columnLevels` are the deepest level (0 = no groups). |
 
 In the grid: dragging a header's resize handle is now one undo step (it was none); a **double click on a resize handle** fits that column /
 row (`AutoFitColumns` / `AutoFitRows`), and when whole columns / rows are selected and the handle is one of theirs, all of them. Arrow keys,
@@ -464,11 +465,15 @@ on the group's summary row / column (`.spreadsheet-outline-button` with `data-ax
 +/- is `SetGroupCollapsed`, on a level button `ShowOutlineLevel` (one undo step each); it selects nothing. **The cells and headers move right /
 down by the strip**: the header area is 50 x 30 px only on a sheet without groups (read it from `.spreadsheet-corner`'s size, or use
 `GetCellRect`-style members rather than fixed offsets). The strips scale with the zoom, stay in place while the sheet scrolls, and go with
-`SetShowOutline(false)` and with the headers (`SetShowHeaders(false)`: Excel keeps the strip there, the grid does not). A viewer draws them
-with inert buttons. A group whose summary row / column is hidden or off the sheet (a group at row 1 with the summary above) has no button:
+`SetShowOutline(false)` (the component, every sheet) or `SetShowOutlineSymbols(false)` (the sheet, saved). **A sheet without headers
+(`SetShowHeaders(false)`) keeps its strips**: the row numbers and column letters go, and a band of 18 px stays beside a strip for the level
+buttons of the other axis (so the header area is e.g. 66 x 51 px with two row levels and one column level, 48 x 18 px with row groups only).
+**In a viewer (`SetReadOnly(true)`) the buttons work**: +/- and the level buttons collapse and expand as in the editor, but as view state -
+no undo step, no new revision, no `OnChange` call, and an export still gives the file as it was opened. (The API members `SetGroupCollapsed` /
+`ShowOutlineLevel` are edits as before.) A group whose summary row / column is hidden or off the sheet (a group at row 1 with the summary above) has no button:
 use the level buttons or `SetGroupCollapsed`. At most 1500 strip elements are drawn for the rows / columns in view.
 
-Limits: `SetShowOutline` is not the sheet's `showOutlineSymbols` (that attribute is not read or written).
+Limits: `<outlinePr showOutlineSymbols>` (a second place a file can say it) is not read; `applyStyles` is not kept.
 Auto-fit looks only at the cells that exist; on a very large sheet a whole column costs a
 pass over the sheet's cells (dashboard "Data", 846 000 cells: one column 0.46 s, eleven columns 3.4 s, all 76 931 rows 0.9 s).
 Auto-fit does not account for conditional-format icons / data bars, filter buttons, or rotation other than 90 degrees.

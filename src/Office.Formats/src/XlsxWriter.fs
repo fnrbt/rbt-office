@@ -455,9 +455,11 @@ type XlsxSheetViewOut = {
     /// one of them is false.
     SummaryBelow: bool
     SummaryRight: bool
+    /// False: the outline's symbols are hidden (`<sheetView showOutlineSymbols="0">`).
+    ShowOutlineSymbols: bool
 }
 
-let defaultSheetViewOut : XlsxSheetViewOut = { ShowZeros = true; ShowHeaders = true; ShowFormulas = false; ZoomScale = 100; TabColor = None; SummaryBelow = true; SummaryRight = true }
+let defaultSheetViewOut : XlsxSheetViewOut = { ShowZeros = true; ShowHeaders = true; ShowFormulas = false; ZoomScale = 100; TabColor = None; SummaryBelow = true; SummaryRight = true; ShowOutlineSymbols = true }
 
 type XlsxSheetOut = {
     Name: string
@@ -1245,6 +1247,7 @@ let private sheetViewsXml (sheet: XlsxSheetOut) active =
         if not sheet.ShowGridLines then yield "showGridLines=\"0\""
         if not sheet.View.ShowHeaders then yield "showRowColHeaders=\"0\""
         if not sheet.View.ShowZeros then yield "showZeros=\"0\""
+        if not sheet.View.ShowOutlineSymbols then yield "showOutlineSymbols=\"0\""
         if active then yield "tabSelected=\"1\""
         if sheet.View.ZoomScale <> 100 then
             yield sprintf "zoomScale=\"%d\"" sheet.View.ZoomScale
@@ -3363,7 +3366,7 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
               FrozenCols = sheet.FrozenPane |> Option.map (fun p -> p.XSplit) |> Option.defaultValue 0
               ShowGridLines = sheet.ShowGridLines
               View = { ShowZeros = sheet.ShowZeros; ShowHeaders = sheet.View.ShowRowColHeaders; ShowFormulas = sheet.View.ShowFormulas; ZoomScale = sheet.View.ZoomScale; TabColor = sheet.View.TabColor
-                       SummaryBelow = sheet.View.SummaryBelow; SummaryRight = sheet.View.SummaryRight }
+                       SummaryBelow = sheet.View.SummaryBelow; SummaryRight = sheet.View.SummaryRight; ShowOutlineSymbols = sheet.View.ShowOutlineSymbols }
               Tables =
                 sheet.Tables
                 |> List.map (fun t ->

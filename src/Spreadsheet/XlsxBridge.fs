@@ -919,11 +919,11 @@ module Import =
                     if column.Collapsed then collapsedCols <- Set.add (idx - 1) collapsedCols
         let axes : SheetAxes =
             if hiddenRowSizes.IsEmpty && hiddenColSizes.IsEmpty && rowLevels.IsEmpty && colLevels.IsEmpty && collapsedRows.IsEmpty && collapsedCols.IsEmpty
-               && sheet.View.SummaryBelow && sheet.View.SummaryRight then emptySheetAxes
+               && sheet.View.SummaryBelow && sheet.View.SummaryRight && sheet.View.ShowOutlineSymbols then emptySheetAxes
             else
                 { HiddenRowSizes = hiddenRowSizes; HiddenColSizes = hiddenColSizes; RowLevels = rowLevels; ColLevels = colLevels
                   CollapsedRows = collapsedRows; CollapsedCols = collapsedCols
-                  SummaryBelow = sheet.View.SummaryBelow; SummaryRight = sheet.View.SummaryRight }
+                  SummaryBelow = sheet.View.SummaryBelow; SummaryRight = sheet.View.SummaryRight; ShowSymbols = sheet.View.ShowOutlineSymbols }
 
         let merged =
             sheet.MergedCells
@@ -1651,7 +1651,8 @@ module Export =
               ZoomScale = max 10 (min 400 (int (System.Math.Round (model.Zoom * 100.0))))
               TabColor = model.TabColor
               SummaryBelow = model.Axes.SummaryBelow
-              SummaryRight = model.Axes.SummaryRight }
+              SummaryRight = model.Axes.SummaryRight
+              ShowOutlineSymbols = model.Axes.ShowSymbols }
           Tables = model.Tables |> List.map (table model)
           DataValidations = validations model
           ConditionalFormats = conditionalFormats dxfIndex model

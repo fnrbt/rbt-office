@@ -476,9 +476,12 @@ type SheetViewOptions = {
     /// to its left). Both true when the file does not say.
     SummaryBelow: bool
     SummaryRight: bool
+    /// `<sheetView showOutlineSymbols="0">`: the outline's brackets and
+    /// buttons are not shown although rows / columns are grouped.
+    ShowOutlineSymbols: bool
 }
 
-let defaultSheetView : SheetViewOptions = { ShowRowColHeaders = true; ShowFormulas = false; ZoomScale = 100; TabColor = None; SummaryBelow = true; SummaryRight = true }
+let defaultSheetView : SheetViewOptions = { ShowRowColHeaders = true; ShowFormulas = false; ZoomScale = 100; TabColor = None; SummaryBelow = true; SummaryRight = true; ShowOutlineSymbols = true }
 
 /// The colour of a `<tabColor>` element from its attributes (see SheetViewOptions.TabColor).
 let tabColorOfAttributes (rgb: string option) (theme: string option) (tint: string option) (indexed: string option) : string option =
@@ -2375,7 +2378,7 @@ module Xlsx =
                 (match Xml.attr "zoomScale" view |> Option.bind tryParseInt with
                  | Some percent when percent >= 10 && percent <= 400 -> percent
                  | _ -> 100)
-              TabColor = None; SummaryBelow = true; SummaryRight = true }
+              TabColor = None; SummaryBelow = true; SummaryRight = true; ShowOutlineSymbols = flag "showOutlineSymbols" true }
 
     /// `<sheetPr><tabColor rgb | theme tint | indexed/></sheetPr>`.
     let private tabColorOf (sheet: XmlNode) : string option =
@@ -2806,7 +2809,8 @@ module Xlsx =
                             (match nativeFloatAttr reader "zoomScale" |> Option.map int with
                              | Some percent when percent >= 10 && percent <= 400 -> percent
                              | _ -> 100)
-                          TabColor = None; SummaryBelow = true; SummaryRight = true }
+                          TabColor = None; SummaryBelow = true; SummaryRight = true
+                          ShowOutlineSymbols = nativeBoolAttrDefault true reader "showOutlineSymbols" }
                     if not reader.IsEmptyElement then
                         sheetViewDepth <- reader.Depth
                 | System.Xml.XmlNodeType.Element when reader.LocalName = "pane" && sheetViewDepth >= 0 ->
