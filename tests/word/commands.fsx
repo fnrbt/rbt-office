@@ -248,6 +248,64 @@ do
     let wide (text: string) (_style: TextStyle) = float text.Length * 13.0
     check "whatever the measurers say" (requiredFontFaces settings "Calibri" wide (rangeMeasurerFromTextMeasurer wide) doc None) faces
 
+// ---- a table in a table cell: its paragraphs are edited as any other ---------
+// (They were laid out and painted, but no editing function found them: what
+// was typed into one was lost, and the document's text did not have theirs.)
+do
+    let tableOf (doc: Doc.Document) = doc.Blocks |> List.pick (function Doc.Table table -> Some table | _ -> None)
+    let named (prefix: string) (id: string) (table: Doc.TableBlock) : Doc.TableBlock =
+        { table with
+            Id = id
+            Rows = table.Rows |> List.mapi (fun r row -> { row with Cells = row.Cells |> List.mapi (fun c cell -> { cell with Content = [ paragraph (sprintf "%s%d%d" prefix r c) (sprintf "%s%d%d" prefix r c) ] }) }) }
+    let inner = tableOf (Doc.insertTable 2 2 (docOf [ paragraph "x" "" ] |> caret "x" 0)) |> named "in" "inner"
+    let outer =
+        let table = tableOf (Doc.insertTable 1 2 (docOf [ paragraph "x" "" ] |> caret "x" 0)) |> named "out" "outer"
+        { table with
+            Rows =
+                table.Rows
+                |> List.map (fun row ->
+                    { row with
+                        Cells = row.Cells |> List.mapi (fun c cell -> if c = 0 then { cell with Content = cell.Content @ [ paragraph "below" "below" ]; NestedTables = [ inner ]; NestedTableAnchors = [ 1 ] } else cell) }) }
+    let doc = { Doc.empty with Blocks = [ Doc.Paragraph (paragraph "before" "before"); Doc.Table outer; Doc.Paragraph (paragraph "after" "after") ]; Selection = None }
+    let text id (doc: Doc.Document) = Doc.findParagraph doc id |> Option.map textOf
+    let outerCell (doc: Doc.Document) = (tableOf doc).Rows.Head.Cells.Head
+    let innerOf (doc: Doc.Document) = (outerCell doc).NestedTables.Head
+    let cellAt (doc: Doc.Document) = let c = Doc.caretContext doc in c.InTable, c.Row, c.Column, c.RowCount, c.ColumnCount
+    check "nested: the paragraph is found" (text "in11" doc) (Some "in11")
+    check "nested: the document's text has the nested table's, in order"
+        ((Doc.getText doc).Split([| '\n'; '\t'; '\r' |], System.StringSplitOptions.RemoveEmptyEntries) |> Array.toList)
+        [ "before"; "out00"; "in00"; "in01"; "in10"; "in11"; "below"; "out01"; "after" ]
+    let typed = doc |> caret "in11" 0 |> Doc.insertText "Z"
+    check "nested: typing" (text "in11" typed) (Some "Zin11")
+    check "nested: the other blocks are the objects they were" (obj.ReferenceEquals(typed.Blocks.Head, doc.Blocks.Head), obj.ReferenceEquals(List.last typed.Blocks, List.last doc.Blocks)) (true, true)
+    check "nested: the caret context is the nested table's cell" (cellAt (caret "in10" 0 doc)) (true, 1, 0, 2, 2)
+    check "nested: and the outer table's for a paragraph of its cell" (cellAt (caret "below" 0 doc)) (true, 0, 0, 1, 2)
+    // Enter and Backspace in the nested cell.
+    let split = doc |> caret "in00" 2 |> Doc.splitBlock
+    let splitCell = (innerOf split).Rows.Head.Cells.Head
+    check "nested: Enter makes a second paragraph in the cell" (splitCell.Content |> List.map textOf) [ "in"; "00" ]
+    check "nested: the caret is at the start of it" (split.Selection |> Option.map (fun sel -> sel.Focus.BlockId = splitCell.Content.[1].Id, sel.Focus.Offset)) (Some (true, 0))
+    let joined = Doc.deleteBackward split
+    check "nested: Backspace joins them" ((innerOf joined).Rows.Head.Cells.Head.Content |> List.map textOf, joined.Selection |> Option.map (fun sel -> sel.Focus.BlockId, sel.Focus.Offset)) ([ "in00" ], Some ("in00", 2))
+    // Enter above the nested table: the table stays between the same paragraphs.
+    let above = doc |> caret "out00" 3 |> Doc.splitBlock
+    check "outer cell: Enter above the nested table" ((outerCell above).Content |> List.map textOf, (outerCell above).NestedTableAnchors) ([ "out"; "00"; "below" ], [ 2 ])
+    check "outer cell: Backspace joins again" (let again = Doc.deleteBackward above in (outerCell again).Content |> List.map textOf, (outerCell again).NestedTableAnchors) ([ "out00"; "below" ], [ 1 ])
+    check "outer cell: Backspace below the nested table joins nothing" (let same = doc |> caret "below" 0 |> Doc.deleteBackward in (outerCell same).Content |> List.map textOf) [ "out00"; "below" ]
+    check "outer cell: Delete at the end of the paragraph above it neither" (let same = Doc.mergeWithNext doc "out00" in (outerCell same).Content |> List.map textOf) [ "out00"; "below" ]
+    // Tab.
+    let moved = doc |> caret "in00" 0 |> Doc.moveToAdjacentTableCell true
+    check "nested: Tab goes to the next cell of the nested table" (moved |> Option.map cellAt) (Some (true, 0, 1, 2, 2))
+    let added = doc |> caret "in11" 0 |> Doc.moveToAdjacentTableCell true
+    check "nested: Tab in its last cell adds a row to it" (added |> Option.map (fun d -> cellAt d, (tableOf d).Rows.Length)) (Some ((true, 2, 0, 3, 2), 1))
+    // A selection.
+    let across = doc |> Doc.setSelection { BlockId = "in00"; Offset = 1 } { BlockId = "in11"; Offset = 1 } |> Doc.deleteSelection
+    check "nested: a selection over cells empties what is between its ends" ([ "in00"; "in01"; "in10"; "in11" ] |> List.map (fun id -> text id across)) [ Some "i"; Some ""; Some ""; Some "n11" ]
+    let over = doc |> Doc.setSelection { BlockId = "out00"; Offset = 1 } { BlockId = "below"; Offset = 2 } |> Doc.deleteSelection
+    check "outer cell: a selection from above the nested table to below it takes the table" ((outerCell over).Content |> List.map textOf, (outerCell over).NestedTables.Length, (outerCell over).NestedTableAnchors) ([ "olow" ], 0, [])
+    let into = doc |> Doc.setSelection { BlockId = "out00"; Offset = 1 } { BlockId = "in01"; Offset = 1 } |> Doc.deleteSelection
+    check "a selection from the outer cell into the nested table keeps the table" ((outerCell into).Content |> List.map textOf, (outerCell into).NestedTables.Length, text "in00" into, text "in01" into) ([ "o"; "below" ], 1, Some "", Some "n01")
+
 printfn ""
 printfn "Word command tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

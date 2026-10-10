@@ -703,6 +703,56 @@ type Document = {
     Package: PackageData
 }
 
+/// The paragraphs of a cell in document order: its own, and those of the
+/// tables in it at the places NestedTableAnchors gives (as the layout puts
+/// them: a table with no anchor comes after the cell's paragraphs).
+let rec cellParagraphsInOrder (cell: TableCell) : ParagraphBlock list =
+    if cell.NestedTables.IsEmpty then cell.Content
+    else
+        let content = cell.Content |> List.toArray
+        let anchors = cell.NestedTableAnchors |> List.toArray
+        let anchored =
+            cell.NestedTables
+            |> List.mapi (fun i table -> table, (if i < anchors.Length then anchors.[i] else content.Length) |> max 0 |> min content.Length)
+            |> List.sortBy snd
+            |> List.toArray
+        let result = ResizeArray<ParagraphBlock>()
+        let mutable tableIndex = 0
+        for paraIndex in 0 .. content.Length do
+            while tableIndex < anchored.Length && snd anchored.[tableIndex] = paraIndex do
+                result.AddRange(tableParagraphsInOrder (fst anchored.[tableIndex]))
+                tableIndex <- tableIndex + 1
+            if paraIndex < content.Length then result.Add content.[paraIndex]
+        List.ofSeq result
+
+/// The paragraphs of a table, row by row and cell by cell, those of the
+/// tables in its cells included.
+and tableParagraphsInOrder (table: TableBlock) : ParagraphBlock list =
+    table.Rows |> List.collect (fun row -> row.Cells |> List.collect cellParagraphsInOrder)
+
+/// Whether a table, or a table in one of its cells, has the id or holds the
+/// paragraph with it.
+let rec tableHolds (blockId: string) (table: TableBlock) : bool =
+    table.Id = blockId
+    || (let mutable found = false
+        for row in table.Rows do
+            if not found then
+                for cell in row.Cells do
+                    if not found then
+                        for para in cell.Content do
+                            if para.Id = blockId then found <- true
+                        if not found then
+                            for nested in cell.NestedTables do
+                                if not found && tableHolds blockId nested then found <- true
+        found)
+
+/// The table with an id among tables and the tables in their cells.
+let rec tryFindTableIn (tableId: string) (tables: TableBlock list) : TableBlock option =
+    tables
+    |> List.tryPick (fun table ->
+        if table.Id = tableId then Some table
+        else table.Rows |> List.tryPick (fun row -> row.Cells |> List.tryPick (fun cell -> if cell.NestedTables.IsEmpty then None else tryFindTableIn tableId cell.NestedTables)))
+
 /// Every paragraph of a block list in document order, including the cells of
 /// nested tables and text box content.
 let rec paragraphsOfBlocks (blocks: Block list) : ParagraphBlock list =
@@ -941,16 +991,7 @@ let private blockHolds (blockId: string) (block: Block) =
     match block with
     | Paragraph p
     | Heading (_, p) -> p.Id = blockId
-    | Table t ->
-        t.Id = blockId
-        || (let mutable found = false
-            for row in t.Rows do
-                if not found then
-                    for cell in row.Cells do
-                        if not found then
-                            for para in cell.Content do
-                                if para.Id = blockId then found <- true
-            found)
+    | Table t -> tableHolds blockId t
     | TextBox t -> t.Id = blockId || (t.Content |> List.exists (fun para -> para.Id = blockId))
 
 /// The top-level block that is, or holds, the block with an id, and its
@@ -1086,15 +1127,22 @@ let private mapListSharing (mapper: 'T -> 'T) (items: 'T list) =
 /// Map the editable paragraphs of the document's blocks until `finished`
 /// says the rest can stay as it is (the blocks after that are not looked into).
 let private mapEditableParagraphsUntil (finished: unit -> bool) (mapper: ParagraphBlock -> ParagraphBlock) (doc: Document) =
-    let mapCell (cell: TableCell) =
+    let rec mapCell (cell: TableCell) =
         let content = mapListSharing mapper cell.Content
-        if sameReference content cell.Content then cell
-        else { cell with Content = content }
+        let nested = if cell.NestedTables.IsEmpty then cell.NestedTables else mapListSharing mapTable cell.NestedTables
+        if sameReference content cell.Content && sameReference nested cell.NestedTables then cell
+        else { cell with Content = content; NestedTables = nested }
 
-    let mapRow (row: TableRow) =
+    and mapRow (row: TableRow) =
         let cells = mapListSharing mapCell row.Cells
         if sameReference cells row.Cells then row
         else { row with Cells = cells }
+
+    and mapTable (table: TableBlock) =
+        if finished () then table else
+        let rows = mapListSharing mapRow table.Rows
+        if sameReference rows table.Rows then table
+        else { table with Rows = rows }
 
     let mapBlock block =
         if finished () then block else
@@ -1130,11 +1178,15 @@ let findParagraph doc paragraphId =
         | Paragraph p
         | Heading (_, p) when p.Id = paragraphId -> Some p
         | Table t ->
-            t.Rows
-            |> List.tryPick (fun row ->
-                row.Cells
-                |> List.tryPick (fun cell ->
-                    cell.Content |> List.tryFind (fun p -> p.Id = paragraphId)))
+            let rec inTable (table: TableBlock) =
+                table.Rows
+                |> List.tryPick (fun row ->
+                    row.Cells
+                    |> List.tryPick (fun cell ->
+                        match cell.Content |> List.tryFind (fun p -> p.Id = paragraphId) with
+                        | Some para -> Some para
+                        | None -> if cell.NestedTables.IsEmpty then None else cell.NestedTables |> List.tryPick inTable))
+            inTable t
         | TextBox t ->
             t.Content |> List.tryFind (fun p -> p.Id = paragraphId)
         | _ -> None)
@@ -1176,21 +1228,14 @@ let private editableParagraphsInOrder doc =
     |> List.collect (function
         | Paragraph p
         | Heading (_, p) -> [p]
-        | Table t ->
-            t.Rows
-            |> List.collect (fun row ->
-                row.Cells
-                |> List.collect (fun cell -> cell.Content))
+        | Table t -> tableParagraphsInOrder t
         | TextBox t -> t.Content)
 
 let private blockParagraphs (block: Block) =
     match block with
     | Paragraph p
     | Heading (_, p) -> [p]
-    | Table table ->
-        table.Rows
-        |> List.collect (fun row -> row.Cells)
-        |> List.collect (fun cell -> cell.Content)
+    | Table table -> tableParagraphsInOrder table
     | TextBox textBox -> textBox.Content
 
 let private blockId (block: Block) =
@@ -1460,30 +1505,53 @@ let private emptyTableCell () =
     }
 
 let private tryFindTableCellByParagraph doc paragraphId =
-    // (The one block that holds the paragraph, found by its place.)
+    // (The one block that holds the paragraph, found by its place; the table
+    // is the innermost one: that of the cell the paragraph is a paragraph of.)
+    let rec inTable (table: TableBlock) =
+        table.Rows
+        |> List.mapi (fun rowIndex row -> rowIndex, row)
+        |> List.tryPick (fun (rowIndex, row) ->
+            row.Cells
+            |> List.mapi (fun colIndex cell -> colIndex, cell)
+            |> List.tryPick (fun (colIndex, cell) ->
+                if cell.Content |> List.exists (fun para -> para.Id = paragraphId) then
+                    Some (table.Id, rowIndex, colIndex)
+                elif cell.NestedTables.IsEmpty then None
+                else cell.NestedTables |> List.tryPick inTable))
     (match locateBlock doc paragraphId with
      | ValueSome (struct (_, block)) -> [ block ]
      | ValueNone -> [])
     |> List.tryPick (function
-        | Table table ->
-            table.Rows
-            |> List.mapi (fun rowIndex row -> rowIndex, row)
-            |> List.tryPick (fun (rowIndex, row) ->
-                row.Cells
-                |> List.mapi (fun colIndex cell -> colIndex, cell)
-                |> List.tryPick (fun (colIndex, cell) ->
-                    if cell.Content |> List.exists (fun para -> para.Id = paragraphId) then
-                        Some (table.Id, rowIndex, colIndex)
-                    else
-                        None))
+        | Table table -> inTable table
         | _ -> None)
 
+/// The table with an id: a block of the document or a table in a cell.
+let tryFindTable (doc: Document) (tableId: string) : TableBlock option =
+    match locateBlock doc tableId with
+    | ValueSome (struct (_, Table table)) -> tryFindTableIn tableId [ table ]
+    | _ -> None
+
 let private updateTable (doc: Document) tableId update =
+    let rec updateIn (table: TableBlock) =
+        if table.Id = tableId then update table
+        elif not (tableHolds tableId table) then table
+        else
+            { table with
+                Rows =
+                    table.Rows
+                    |> List.map (fun row ->
+                        { row with
+                            Cells =
+                                row.Cells
+                                |> List.map (fun cell ->
+                                    if cell.NestedTables.IsEmpty then cell
+                                    else { cell with NestedTables = cell.NestedTables |> List.map updateIn }) }) }
     { doc with
         Blocks =
             doc.Blocks
             |> List.map (function
                 | Table table when table.Id = tableId -> Table (update table)
+                | Table table when tableHolds tableId table -> Table (updateIn table)
                 | block -> block) }
 
 let private currentTableCell doc =
@@ -1492,14 +1560,10 @@ let private currentTableCell doc =
     | None -> None
 
 let private tryGetTableCellParagraph doc tableId rowIndex colIndex =
-    doc.Blocks
-    |> List.tryPick (function
-        | Table table when table.Id = tableId ->
-            table.Rows
-            |> List.tryItem rowIndex
-            |> Option.bind (fun row -> row.Cells |> List.tryItem colIndex)
-            |> Option.bind (fun cell -> cell.Content |> List.tryHead)
-        | _ -> None)
+    tryFindTable doc tableId
+    |> Option.bind (fun table -> table.Rows |> List.tryItem rowIndex)
+    |> Option.bind (fun row -> row.Cells |> List.tryItem colIndex)
+    |> Option.bind (fun cell -> cell.Content |> List.tryHead)
 
 /// Find block index by ID
 let findBlockIndex doc blockId =
@@ -1563,13 +1627,72 @@ let selectedParagraphRanges (doc: Document) : (ParagraphBlock * int * int) list 
                 para, (if index = startIdx then startOffset else 0), (if index = endIdx then endOffset else length))
         | _ -> []
 
+/// Edit the list of paragraphs a paragraph is in when that is a table cell's
+/// (of a table in a cell too) or a text box's. `edit` gets the list and, for
+/// a cell, the places of the tables in it (the number of the cell's
+/// paragraphs before each), and gives both back; None leaves the document as
+/// it is. None when the paragraph is a block of the document.
+let private editContainerOf (doc: Document) (paragraphId: string) (edit: ParagraphBlock list -> int list -> (ParagraphBlock list * int list) option) : Document option =
+    match locateBlock doc paragraphId with
+    | ValueNone -> None
+    | ValueSome (struct (index, block)) ->
+        let mutable changed = false
+        let rec editTable (table: TableBlock) =
+            if changed || not (tableHolds paragraphId table) then table
+            else { table with Rows = table.Rows |> List.map (fun row -> { row with Cells = row.Cells |> List.map editCell }) }
+        and editCell (cell: TableCell) =
+            if changed then cell
+            elif cell.Content |> List.exists (fun p -> p.Id = paragraphId) then
+                match edit cell.Content cell.NestedTableAnchors with
+                | Some (content, anchors) ->
+                    changed <- true
+                    { cell with Content = content; NestedTableAnchors = anchors }
+                | None -> cell
+            elif cell.NestedTables.IsEmpty then cell
+            else { cell with NestedTables = cell.NestedTables |> List.map editTable }
+        let edited =
+            match block with
+            | Table table -> Table (editTable table)
+            | TextBox box when box.Content |> List.exists (fun p -> p.Id = paragraphId) ->
+                match edit box.Content [] with
+                | Some (content, _) ->
+                    changed <- true
+                    TextBox { box with Content = content }
+                | None -> block
+            | _ -> block
+        if not changed then None
+        else Some { doc with Blocks = doc.Blocks |> List.mapi (fun i b -> if i = index then edited else b) }
+
 /// Split block at cursor, creating two blocks
 let splitBlock doc =
     match doc.Selection with
     | None -> doc
     | Some sel ->
         match findBlock doc sel.Focus.BlockId with
-        | None -> doc
+        | None ->
+            // A paragraph of a table cell or a text box: split within the
+            // list it is in; the tables of the cell after it stay after it.
+            match findParagraph doc sel.Focus.BlockId with
+            | None -> doc
+            | Some para ->
+                let offset = sel.Focus.Offset
+                let beforeBuffer = TextBuffer.sliceBuffer 0 offset para.Buffer
+                let afterBuffer = TextBuffer.sliceBuffer offset (TextBuffer.length para.Buffer - offset) para.Buffer
+                let newBlockId = nextBlockId()
+                let newPara = { Id = newBlockId; Buffer = afterBuffer; Metadata = para.Metadata }
+                let updatedPara = { para with Buffer = beforeBuffer }
+                let split =
+                    editContainerOf doc para.Id (fun content anchors ->
+                        let index = content |> List.findIndex (fun p -> p.Id = para.Id)
+                        Some (content |> List.collect (fun p -> if p.Id = para.Id then [ updatedPara; newPara ] else [ p ]),
+                              anchors |> List.map (fun anchor -> if anchor > index then anchor + 1 else anchor)))
+                match split with
+                | None -> doc
+                | Some split ->
+                    let caret = { BlockId = newBlockId; Offset = 0 }
+                    { split with Selection = Some { Anchor = caret; Focus = caret } }
+        | Some (Table _)
+        | Some (TextBox _) -> doc
         | Some block ->
             let para = getParagraph block
             let offset = sel.Focus.Offset
@@ -1618,7 +1741,26 @@ let splitBlock doc =
 /// Merge block with previous block (for Backspace at start)
 let mergeWithPrevious doc blockId =
     match findBlockIndex doc blockId with
-    | None -> doc
+    | None ->
+        // A paragraph of a table cell or a text box joins the paragraph
+        // before it in the same cell / box - not across a table in the cell.
+        match findParagraph doc blockId with
+        | None -> doc
+        | Some currentPara ->
+            let mutable caret = None
+            let merged =
+                editContainerOf doc blockId (fun content anchors ->
+                    let index = content |> List.findIndex (fun p -> p.Id = blockId)
+                    if index = 0 || List.contains index anchors then None
+                    else
+                        let prevPara = content.[index - 1]
+                        caret <- Some { BlockId = prevPara.Id; Offset = TextBuffer.length prevPara.Buffer }
+                        let mergedPara = { prevPara with Buffer = TextBuffer.append prevPara.Buffer currentPara.Buffer }
+                        Some (content |> List.mapi (fun i p -> i, p) |> List.choose (fun (i, p) -> if i = index - 1 then Some mergedPara elif i = index then None else Some p),
+                              anchors |> List.map (fun anchor -> if anchor > index then anchor - 1 else anchor)))
+            match merged, caret with
+            | Some merged, Some caret -> { merged with Selection = Some { Anchor = caret; Focus = caret } }
+            | _ -> doc
     | Some idx when idx = 0 -> doc  // First block, can't merge
     | Some idx ->
         match findBlock doc blockId with
@@ -1663,7 +1805,20 @@ let mergeWithPrevious doc blockId =
 /// Merge block with next block (for Delete at end)
 let mergeWithNext doc blockId =
     match findBlockIndex doc blockId with
-    | None -> doc
+    | None ->
+        // (As mergeWithPrevious: within the cell or the text box.)
+        match findParagraph doc blockId with
+        | None -> doc
+        | Some currentPara ->
+            editContainerOf doc blockId (fun content anchors ->
+                let index = content |> List.findIndex (fun p -> p.Id = blockId)
+                if index >= content.Length - 1 || List.contains (index + 1) anchors then None
+                else
+                    let nextPara = content.[index + 1]
+                    let mergedPara = { currentPara with Buffer = TextBuffer.append currentPara.Buffer nextPara.Buffer }
+                    Some (content |> List.mapi (fun i p -> i, p) |> List.choose (fun (i, p) -> if i = index then Some mergedPara elif i = index + 1 then None else Some p),
+                          anchors |> List.map (fun anchor -> if anchor > index + 1 then anchor - 1 else anchor)))
+            |> Option.defaultValue doc
     | Some idx when idx >= doc.Blocks.Length - 1 -> doc  // Last block, can't merge
     | Some idx ->
         match findBlock doc blockId with
@@ -1737,19 +1892,24 @@ let deleteSelection doc =
                 // whether the paragraph is that block (as opposed to sitting
                 // in a table cell or text box inside it).
                 let topLevel paragraphId =
-                    doc.Blocks
-                    |> List.mapi (fun index block -> index, block)
-                    |> List.tryPick (fun (index, block) ->
+                    let rec cellKey (table: TableBlock) =
+                        table.Rows
+                        |> List.tryPick (fun row ->
+                            row.Cells
+                            |> List.tryPick (fun cell ->
+                                // (The list of paragraphs it is in, named by the first of them.)
+                                if cell.Content |> List.exists (fun p -> p.Id = paragraphId) then Some cell.Content.Head.Id
+                                elif cell.NestedTables.IsEmpty then None
+                                else cell.NestedTables |> List.tryPick cellKey))
+                    match locateBlock doc paragraphId with
+                    | ValueNone -> None
+                    | ValueSome (struct (index, block)) ->
                         match block with
                         | Paragraph p
-                        | Heading (_, p) -> if p.Id = paragraphId then Some (index, true, 0) else None
-                        | Table table ->
-                            table.Rows
-                            |> List.collect (fun row -> row.Cells)
-                            |> List.tryFindIndex (fun cell -> cell.Content |> List.exists (fun p -> p.Id = paragraphId))
-                            |> Option.map (fun cellIndex -> index, false, cellIndex)
+                        | Heading (_, p) -> if p.Id = paragraphId then Some (index, true, "") else None
+                        | Table table -> cellKey table |> Option.map (fun key -> index, false, key)
                         | TextBox textBox ->
-                            if textBox.Content |> List.exists (fun p -> p.Id = paragraphId) then Some (index, false, 0) else None)
+                            if textBox.Content |> List.exists (fun p -> p.Id = paragraphId) then Some (index, false, "") else None
 
                 match topLevel firstBlockId, topLevel lastBlockId with
                 | Some (firstIndex, firstIsBlock, firstCell), Some (lastIndex, lastIsBlock, lastCell) ->
@@ -1793,6 +1953,29 @@ let deleteSelection doc =
                             | [], head :: _ -> [ { head with Buffer = TextBuffer.empty } ]
                             | _ -> kept
 
+                    // A table in a cell goes when the selection runs from
+                    // a paragraph of the cell before it to one after it;
+                    // the others keep their place among what is left.
+                    let rec editTable (table: TableBlock) : TableBlock =
+                        { table with Rows = table.Rows |> List.map (fun row -> { row with Cells = row.Cells |> List.map editCell }) }
+                    and editCell (cell: TableCell) : TableCell =
+                        let content = editContent cell.Content
+                        if cell.NestedTables.IsEmpty then { cell with Content = content }
+                        else
+                            let selected (p: ParagraphBlock) = p.Id = firstBlockId || p.Id = lastBlockId || Set.contains p.Id removeIds
+                            let original = cell.Content |> List.toArray
+                            let anchors = cell.NestedTableAnchors |> List.toArray
+                            let keptIds = content |> List.map (fun p -> p.Id) |> Set.ofList
+                            let tables =
+                                cell.NestedTables
+                                |> List.mapi (fun i nested ->
+                                    let anchor = (if i < anchors.Length then anchors.[i] else original.Length) |> max 0 |> min original.Length
+                                    let before = original |> Array.take anchor
+                                    if Array.exists selected before && (original |> Array.skip anchor |> Array.exists selected) then None
+                                    else Some (editTable nested, before |> Array.filter (fun p -> keptIds.Contains p.Id) |> Array.length))
+                                |> List.choose id
+                            { cell with Content = content; NestedTables = List.map fst tables; NestedTableAnchors = List.map snd tables }
+
                     let newBlocks =
                         doc.Blocks
                         |> List.mapi (fun index block -> index, block)
@@ -1808,11 +1991,7 @@ let deleteSelection doc =
                                 | Paragraph p when p.Id = lastBlockId -> if joins then None else Some (Paragraph newLastPara)
                                 | Heading (level, p) when p.Id = lastBlockId -> if joins then None else Some (Heading (level, newLastPara))
                                 | Table table when index = firstIndex || index = lastIndex ->
-                                    let rows =
-                                        table.Rows
-                                        |> List.map (fun row ->
-                                            { row with Cells = row.Cells |> List.map (fun cell -> { cell with Content = editContent cell.Content }) })
-                                    Some (Table { table with Rows = rows })
+                                    Some (Table (editTable table))
                                 | TextBox textBox when index = firstIndex || index = lastIndex ->
                                     Some (TextBox { textBox with Content = editContent textBox.Content })
                                 | block -> Some block)
@@ -2207,7 +2386,7 @@ let moveToAdjacentTableCell (forward: bool) (doc: Document) : Document option =
     match currentTableCell doc with
     | None -> None
     | Some (tableId, rowIndex, colIndex) ->
-        let tableOf (current: Document) = current.Blocks |> List.tryPick (function Table table when table.Id = tableId -> Some table | _ -> None)
+        let tableOf (current: Document) = tryFindTable current tableId
         let cursorIn (current: Document) (row: int) (col: int) =
             tableOf current
             |> Option.bind (fun table -> List.tryItem row table.Rows)
@@ -2338,7 +2517,7 @@ let deleteSelectedTableRow doc =
             if table.Rows.Length <= 1 then table
             else { table with Rows = table.Rows |> List.mapi (fun i row -> i, row) |> List.choose (fun (i, row) -> if i = rowIndex then None else Some row) })
 
-        match doc.Blocks |> List.tryPick (function Table table when table.Id = tableId -> Some table.Rows.Length | _ -> None) with
+        match tryFindTable doc tableId |> Option.map (fun table -> table.Rows.Length) with
         | Some oldLength when oldLength > 1 ->
             let targetRow = min rowIndex (oldLength - 2)
             match tryGetTableCellParagraph updatedDoc tableId targetRow colIndex with
@@ -2480,11 +2659,7 @@ let private textRunsInBlock block =
     match block with
     | Paragraph para
     | Heading (_, para) -> textRunsInParagraph para
-    | Table table ->
-        table.Rows
-        |> List.collect (fun row -> row.Cells)
-        |> List.collect (fun cell -> cell.Content)
-        |> List.collect textRunsInParagraph
+    | Table table -> tableParagraphsInOrder table |> List.collect textRunsInParagraph
     | TextBox textBox ->
         textBox.Content |> List.collect textRunsInParagraph
 
@@ -4172,7 +4347,7 @@ let caretContext (doc: Document) : CaretContext =
         match tryFindTableCellByParagraph doc focus.BlockId with
         | None -> inText
         | Some (tableId, rowIndex, colIndex) ->
-            let table = match findBlock doc tableId with Some (Table table) -> Some table | _ -> None
+            let table = tryFindTable doc tableId
             match table with
             | None -> inText
             | Some table ->

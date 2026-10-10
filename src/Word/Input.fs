@@ -1010,9 +1010,8 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             // Check if we're on an empty list item - if so, exit list
             match handler.Document.Selection with
             | Some sel ->
-                match Doc.findBlock handler.Document sel.Focus.BlockId with
-                | Some block ->
-                    let para = Doc.getParagraph block
+                match Doc.findParagraph handler.Document sel.Focus.BlockId with
+                | Some para ->
                     let isEmpty = TextBuffer.length para.Buffer = 0
                     let inList = para.Metadata.ListStyle <> NoList
 

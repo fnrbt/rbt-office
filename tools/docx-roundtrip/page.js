@@ -560,7 +560,7 @@ window.editOpen = (outsideTables) => {
     const handle = openEditor(state.pkg);
     state.handle = handle;
     const lines = Word.getLayoutLines(handle.editor);
-    // (A paragraph of a table inside a table cell is not reported as in a table, and is not in getText.)
+    // (A line of text the document's text has: not one of a header, a footnote or a text box.)
     const bodyText = Word.getText(handle.editor);
     const line = outsideTables ? lines.find((l) => !l.InTable && (l.Text || '').trim().length > 0 && bodyText.includes(l.Text.trim()))
         : lines.find((l) => (l.Text || '').trim().length > 0) ?? lines[0];

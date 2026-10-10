@@ -893,15 +893,18 @@ module API =
                 }
             | Doc.Table table ->
                 tableIndex <- tableIndex + 1
-                let maxRows = table.Rows.Length
-                let maxColumns = maxVisualColumns table
-                table.Rows
-                |> List.iteri (fun rowIndex row ->
-                    let mutable columnIndex = 1
-                    for cell in row.Cells do
-                        let span = max 1 cell.ColSpan
-                        for para in cell.Content do
-                            addContext para {
+                // (A table in a cell: its paragraphs come where the table is
+                // among the cell's, with the row and column they have in it;
+                // the table's number is that of the top-level table.)
+                let rec addTable (table: Doc.TableBlock) =
+                    let maxRows = table.Rows.Length
+                    let maxColumns = maxVisualColumns table
+                    table.Rows
+                    |> List.iteri (fun rowIndex row ->
+                        let mutable columnIndex = 1
+                        for cell in row.Cells do
+                            let span = max 1 cell.ColSpan
+                            let context = {
                                 ParagraphIndex = 0
                                 TableIndex = Some tableIndex
                                 RowIndex = Some (rowIndex + 1)
@@ -911,7 +914,24 @@ module API =
                                 MaxColumns = Some maxColumns
                                 InTextBox = false
                             }
-                        columnIndex <- columnIndex + span)
+                            if cell.NestedTables.IsEmpty then
+                                for para in cell.Content do addContext para context
+                            else
+                                let count = cell.Content.Length
+                                let anchors = cell.NestedTableAnchors |> List.toArray
+                                let nested =
+                                    cell.NestedTables
+                                    |> List.mapi (fun i inner -> inner, (if i < anchors.Length then anchors.[i] else count) |> max 0 |> min count)
+                                    |> List.sortBy snd
+                                cell.Content
+                                |> List.iteri (fun index para ->
+                                    for (inner, anchor) in nested do
+                                        if anchor = index then addTable inner
+                                    addContext para context)
+                                for (inner, anchor) in nested do
+                                    if anchor = count then addTable inner
+                            columnIndex <- columnIndex + span)
+                addTable table
             | Doc.TextBox textBox ->
                 for para in textBox.Content do
                     addContext para {
