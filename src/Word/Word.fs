@@ -170,16 +170,21 @@ module API =
 
     /// `loading`: the package the document is of, when it is still being read.
     let private loadDocumentOf (editor: Editor) (newDoc: Doc.Document) (loading: Docx.ProgressiveImport option) =
-        // (The document that was on display may have been one that was being read.)
+        // (Held before the document that was on display is let go of: it may be of the same package.)
+        let reading = loading |> Option.filter (fun state -> state.Failed.IsNone && not state.Complete)
+        reading |> Option.iter Docx.holdProgressiveImport
+        // (The document that was on display may have been one that was being read: the editor
+        // is done with that package - which ends its reading, unless a viewer shows it too.)
         stopLoading editor
         editor.LoadFailure <- loading |> Option.bind (fun state -> state.Failed)
-        match loading with
-        | Some state when state.Failed.IsSome -> ()
+        match reading with
         | Some state ->
             let listener = fun (step: Docx.ImportStep) -> loadStep.Value editor step
             state.Listeners.Add listener
             editor.Loading <- Some state
-            editor.StopLoading <- fun () -> state.Listeners.Remove listener |> ignore
+            editor.StopLoading <- fun () ->
+                state.Listeners.Remove listener |> ignore
+                Docx.releaseProgressiveImport state
             editor.Handler.RenderContext.Progress.LoadPending <- true
         | None -> ()
         // Through a viewport the start of the document is laid out and shown
@@ -385,7 +390,8 @@ module API =
     /// the document is what was read before that place and stays on display.
     /// isLoadComplete is false for good, isLoadFailed true and getLoadError
     /// says why; the onChange listeners are told once ({ LoadChanged: true,
-    /// LoadComplete: false, LoadFailed: true, LoadError }), whenLoadComplete
+    /// LoadComplete: false, LoadFailed: true, LoadError } - every notice from
+    /// then on carries LoadFailed and LoadError, as state), whenLoadComplete
     /// resolves to false (it never rejects), and nothing more is read - what
     /// goes by the whole document goes by what was read: the layout completes
     /// over it, getText, find and getPageCount answer for it. It cannot be
@@ -415,6 +421,24 @@ module API =
     /// Read the rest of the document now.
     let completeLoad (editor: Editor) : unit =
         ensureLoaded editor
+
+    /// Stop reading the document on display: it stays what was read so far,
+    /// as a document that could not be read to its end (isLoadFailed is true,
+    /// getLoadError says that the reading was cancelled, whenLoadComplete
+    /// resolves to false, the listeners are told, it is not saved). The
+    /// package reads no further slice and lets go of the file. False when
+    /// there was nothing to cancel (the document is read, or failed).
+    ///
+    /// The editor cancels by itself the reading of a package it is done with:
+    /// when another document is loaded (importFromDocxPackage, setContent ...)
+    /// and when it is disposed of - unless a viewer or another editor still
+    /// shows that package. A host that wants such a package read to its end
+    /// regardless reads it first (completeLoad, or the package's own
+    /// Progressive.complete()).
+    let cancelLoad (editor: Editor) : bool =
+        match editor.Loading with
+        | Some state -> Docx.cancelProgressiveImport state
+        | None -> false
 
     /// Call `callback` after every change of the document or the selection
     /// (typing, pointer, toolbar / API commands, undo, redo, loading a
@@ -3245,6 +3269,7 @@ module API =
             "whenLoadComplete" ==> whenLoadComplete
             "completeLoad" ==> completeLoad
             "isLoadFailed" ==> isLoadFailed
+            "cancelLoad" ==> cancelLoad
             "getLoadError" ==> getLoadError
             "onFontsDiscovered" ==> onFontsDiscovered
             "isLayoutComplete" ==> isLayoutComplete

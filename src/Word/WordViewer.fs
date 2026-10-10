@@ -62,6 +62,9 @@ module Viewer =
     ///   isLayoutComplete() / whenLayoutComplete() (a promise of the page frames) /
     ///   onLayoutProgress(callback)     callback({ PageCount, LayoutComplete }) as pages are added; returns
     ///                                  the function that ends the subscription
+    ///   isLoadComplete() / whenLoadComplete() / completeLoad() / isLoadFailed() / getLoadError() /
+    ///   cancelLoad() / dispose()       a package that is still being read (Office.Formats `word.openProgressive`,
+    ///                                  loaded with { progressive: true }): see below
     ///   setImageCache(map)             Map of image source -> decoded HTMLImageElement
     ///   getPageCount() / getPageFrames() / getDocumentSize()
     ///   renderPage(canvas, pageIndex, scale)   paint one page (see API.renderPage)
@@ -114,8 +117,6 @@ module Viewer =
             | None -> ()
         let mutable loadTold = 0.0
         state?load <- fun (package: obj) (options: obj) ->
-            endLoading ()
-            loadFailure <- None
             let progressive = not (isNull options) && not (isNull (options?progressive)) && unbox<bool> (options?progressive)
             let importing =
                 match Docx.progressiveImportOf package with
@@ -126,6 +127,10 @@ module Viewer =
                         Docx.completeProgressiveImport importing
                         None
                 | _ -> None
+            // (Held before the package that was shown is let go of - it may be the same one. The
+            // viewer is done with that one: its reading ends, unless something else shows it.)
+            importing |> Option.iter Docx.holdProgressiveImport
+            endLoading ()
             // (A package that could not be read to its end: what was read.)
             loadFailure <- Docx.progressiveImportOf package |> Option.bind (fun known -> known.Failed)
             // A viewer shows no caret.
@@ -153,7 +158,9 @@ module Viewer =
                     if ended then continueLayout ()
                 importing.Listeners.Add listener
                 loading <- Some importing
-                stopLoading <- fun () -> importing.Listeners.Remove listener |> ignore
+                stopLoading <- fun () ->
+                    importing.Listeners.Remove listener |> ignore
+                    Docx.releaseProgressiveImport importing
                 ctx.Progress.LoadPending <- true
                 importing.Package?Progressive?start () |> ignore
             | None -> ()
@@ -180,6 +187,18 @@ module Viewer =
                     loadWaiters.Add (fun () -> resolve (box loadFailure.IsNone))
                     importing.Package?Progressive?start () |> ignore)
         state?completeLoad <- fun () -> ensureLoaded ()
+        // Stop reading the document: it stays what was read (failed, see above; the error says that
+        // the reading was cancelled). The viewer does so itself for a package it is done with - when
+        // another one is loaded, and in dispose() - unless an editor or another viewer shows it too.
+        state?cancelLoad <- fun () ->
+            match loading with
+            | Some importing -> Docx.cancelProgressiveImport importing
+            | None -> false
+        // The viewer is not used any more: nothing is read or laid out for it from here on.
+        state?dispose <- fun () ->
+            endLoading ()
+            Ren.cancelScheduledLayout ctx
+            progressListeners.Clear()
         state?isLayoutComplete <- fun () -> Ren.layoutIsComplete ctx
         state?whenLayoutComplete <- fun () ->
             JS.Constructors.Promise.Create(fun (resolve: obj -> unit) _ ->

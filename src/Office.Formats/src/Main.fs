@@ -413,6 +413,17 @@ module Processors =
     //                               the error. Preserved is not filled in: such a package cannot be
     //                               written back. (A main part that is read at once fails as
     //                               forEditorPackage does: openProgressive rejects.)
+    //   Progressive.cancel()        stop reading: no further slice is scheduled (one that is
+    //                               waiting does nothing), and the package lets go of what it
+    //                               read from - the archive's parts, the text of the main part.
+    //                               The package is then as one that failed (Failed, and
+    //                               Cancelled, are true; Error says that it was cancelled;
+    //                               Paragraphs holds what was read; the listeners are called a
+    //                               last time; whenComplete rejects). True when it cancelled
+    //                               anything: false for a package that is read, failed or
+    //                               cancelled already. An editor or a viewer that shows the
+    //                               package cancels it when it is done with it (see Word's
+    //                               importFromDocxPackage).
     //
     // Preserved (what the writer needs of the package) is an object from the
     // start and is filled in when the body is read. PageSetup is, until then,
@@ -458,8 +469,22 @@ module Processors =
                     "Paragraphs" ==> [||]
                     "Styles" ==> [||]
                 ]
-            | Some reader ->
-                let front = reader.Front
+            | Some opened ->
+                let front = opened.Front
+                // (Let go of when the reading is cancelled: the reader holds the archive's parts
+                // and the text of the main part.)
+                let mutable current : DocxReader.ProgressiveReader option = Some opened
+                let cancelledReader : DocxReader.ProgressiveReader =
+                    { opened with
+                        IsDone = (fun () -> true)
+                        Failure = (fun () -> Some "The reading of the document was cancelled")
+                        Read = (fun _ -> { First = 0; Blocks = []; Shapes = [] })
+                        OpenSection = (fun () -> None)
+                        BlockCount = (fun () -> 0)
+                        Progress = (fun () -> 0.0)
+                        ImagesOf = (fun _ -> Map.empty)
+                        Finish = (fun () -> failwith "The reading of the document was cancelled") }
+                let reader () : DocxReader.ProgressiveReader = match current with | Some reader -> reader | None -> cancelledReader
                 let firstBlocks = max 1 (int (numberOption options "firstBlocks" 64.0))
                 let sliceMs = max 1.0 (numberOption options "sliceMs" 13.0)
                 let convert = DocxReader.editorParagraphConverter front.Theme front.Styles front.NumberingDefinitions front.Footnotes front.Endnotes
@@ -468,12 +493,12 @@ module Processors =
                 let listeners = ResizeArray<obj>()
                 let waiters = ResizeArray<(obj -> unit) * (exn -> unit)>()
                 let preserved = createObj []
-                let state = createObj [ "IsComplete" ==> false; "AtOnce" ==> reader.AtOnce; "Failed" ==> false; "Error" ==> null; "PageSetupVersion" ==> 0; "Slices" ==> 0; "LongestSliceMs" ==> 0.0; "LongestSlice" ==> 0 ]
+                let state = createObj [ "IsComplete" ==> false; "AtOnce" ==> opened.AtOnce; "Failed" ==> false; "Cancelled" ==> false; "Error" ==> null; "PageSetupVersion" ==> 0; "Slices" ==> 0; "LongestSliceMs" ==> 0.0; "LongestSlice" ==> 0 ]
                 let blocksOf (parts: DocxReader.HeaderFooter list) = parts |> List.collect (fun part -> part.Blocks)
                 let noteBlocks (notes: DocxReader.Note list) = notes |> List.collect (fun note -> note.Blocks)
-                let headerImages = reader.ImagesOf (blocksOf front.Headers @ blocksOf front.Footers)
-                let noteImages = reader.ImagesOf (noteBlocks front.Footnotes @ noteBlocks front.Endnotes)
-                let commentImages = reader.ImagesOf (front.Comments |> List.collect (fun comment -> comment.Blocks))
+                let headerImages = (reader ()).ImagesOf (blocksOf front.Headers @ blocksOf front.Footers)
+                let noteImages = (reader ()).ImagesOf (noteBlocks front.Footnotes @ noteBlocks front.Endnotes)
+                let commentImages = (reader ()).ImagesOf (front.Comments |> List.collect (fun comment -> comment.Blocks))
                 let package =
                     createObj [
                         "Paragraphs" ==> paragraphs
@@ -502,23 +527,27 @@ module Processors =
                 let mutable step = 8
                 let add (batch: DocxReader.ProgressiveBatch) =
                     if not batch.Blocks.IsEmpty then
-                        for item in convert batch.Blocks (reader.ImagesOf batch.Blocks) do pushItem paragraphs item
+                        for item in convert batch.Blocks ((reader ()).ImagesOf batch.Blocks) do pushItem paragraphs item
                     if not batch.Shapes.IsEmpty then
                         shapeItems.AddRange (shapeObjectsFor { front with Shapes = batch.Shapes })
-                    if not (reader.IsDone ()) then statePageSetup (reader.OpenSection ())
+                    if not ((reader ()).IsDone ()) then statePageSetup ((reader ()).OpenSection ())
                     // (What the reader could not read: the blocks before it were in the batch.)
-                    match reader.Failure () with
+                    match (reader ()).Failure () with
                     | Some message -> failwith message
                     | None -> ()
                 /// The body is read: the shapes after the blocks, what is kept for the writer, the page setup.
                 let finish () =
-                    let final = reader.Finish ()
+                    let final = (reader ()).Finish ()
                     let shapes = shapeItems.ToArray()
                     assignFields preserved (preservedWithItemChunks final paragraphs shapes)
                     for item in shapes do pushItem paragraphs item
                     statePageSetup final.PageSetup
                     complete <- true
                     state?IsComplete <- true
+                    // (Read: the reader, and what it read from, is not needed any more.)
+                    let blockCount = (reader ()).BlockCount ()
+                    state?BlockCount <- (fun () -> blockCount)
+                    current <- None
                 let notify (first: int) =
                     let count = paragraphs.Length - first
                     if count > 0 || complete || failed.IsSome then
@@ -555,9 +584,9 @@ module Processors =
                         try
                             while more do
                                 let passStart = nowMs ()
-                                let batch = reader.Read step
+                                let batch = (reader ()).Read step
                                 add batch
-                                if reader.IsDone () then
+                                if (reader ()).IsDone () then
                                     finish ()
                                     more <- false
                                 else
@@ -589,11 +618,26 @@ module Processors =
                                     state?LongestSliceMs <- took
                                     state?LongestSlice <- unbox<int> (state?Slices)
                                 pump ())
-                state?Progress <- (fun () -> if complete then 1.0 else reader.Progress ())
-                state?BlockCount <- (fun () -> reader.BlockCount ())
+                state?Progress <- (fun () -> if complete then 1.0 else (reader ()).Progress ())
+                state?BlockCount <- (fun () -> (reader ()).BlockCount ())
                 state?readMore <- (fun (budget: float) -> readMore (if isNull (box budget) then sliceMs else budget))
                 state?complete <- (fun () -> readMore System.Double.PositiveInfinity |> ignore)
                 state?start <- (fun () -> pump ())
+                state?cancel <- (fun () ->
+                    if complete || failed.IsSome then false
+                    else
+                        let first = paragraphs.Length
+                        let progress = (reader ()).Progress ()
+                        let blockCount = (reader ()).BlockCount ()
+                        fail (exn "The reading of the document was cancelled")
+                        state?Cancelled <- true
+                        // (What says how far it got stays what it was.)
+                        state?Progress <- (fun () -> progress)
+                        state?BlockCount <- (fun () -> blockCount)
+                        current <- None
+                        notify first
+                        rejectWaiters ()
+                        true)
                 state?subscribe <- (fun (listener: obj) ->
                     listeners.Add listener
                     fun () -> listeners.Remove listener |> ignore)
@@ -609,8 +653,8 @@ module Processors =
                 // The start of the document.
                 let begin' () =
                     try
-                        add (reader.Read firstBlocks)
-                        if reader.IsDone () then finish ()
+                        add ((reader ()).Read firstBlocks)
+                        if (reader ()).IsDone () then finish ()
                         elif booleanOption options "autoStart" true then pump ()
                     with error -> fail error
                 begin' ()

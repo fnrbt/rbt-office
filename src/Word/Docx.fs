@@ -1468,6 +1468,8 @@ type ProgressiveImport = {
     mutable Consumed: int
     /// The package's count of the changes of its page setup, as last looked at.
     mutable PageSetupVersion: int
+    /// How many editors and viewers show the document while it is read (see holdProgressiveImport).
+    mutable Holders: int
 }
 
 [<Emit("($0 != null && typeof $0 === 'object' && $0.Progressive != null)")>]
@@ -1633,7 +1635,8 @@ let private beginProgressive (package: obj) : ProgressiveImport =
           CommentBodies = comments
           Imported = imported
           Consumed = 0
-          PageSetupVersion = package?Progressive?PageSetupVersion |> intOrDefault 0 }
+          PageSetupVersion = package?Progressive?PageSetupVersion |> intOrDefault 0
+          Holders = 0 }
     consumeProgressive state
     package?Progressive?subscribe (System.Func<int, int, bool, unit>(fun _ _ _ -> consumeProgressive state)) |> ignore
     state
@@ -1658,6 +1661,32 @@ let completeProgressiveImport (state: ProgressiveImport) : unit =
     if not state.Complete && state.Failed.IsNone then
         state.Package?Progressive?complete () |> ignore
         consumeProgressive state
+
+/// Stop reading the package: its document stays what was read, as that of a
+/// package that failed (Office.Formats' Progressive.cancel; the listeners are
+/// told with ImportStep.Failed). False when there was nothing to cancel.
+let cancelProgressiveImport (state: ProgressiveImport) : bool =
+    if state.Complete || state.Failed.IsSome then false
+    else
+        let cancel : obj = state.Package?Progressive?cancel
+        if isNullOrUndefined cancel then false
+        else
+            let cancelled = unbox<bool> (state.Package?Progressive?cancel ())
+            consumeProgressive state
+            cancelled
+
+/// An editor or a viewer shows the document while it is read ...
+let holdProgressiveImport (state: ProgressiveImport) : unit =
+    state.Holders <- state.Holders + 1
+
+/// ... and is done with it (another document was loaded, it was disposed of):
+/// when nothing shows a package that is still being read, the reading is
+/// cancelled - no slices for a document nobody looks at, and the package lets
+/// go of the file it reads.
+let releaseProgressiveImport (state: ProgressiveImport) : unit =
+    if state.Holders > 0 then
+        state.Holders <- state.Holders - 1
+        if state.Holders = 0 then cancelProgressiveImport state |> ignore
 
 /// The document of an editor package. A package object is converted once:
 /// a host that asks for a package's fonts (getRequiredFonts) and then loads
