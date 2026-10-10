@@ -564,6 +564,24 @@ let sheetXmlOf (bytes: byte array) =
     reader.ReadToEnd()
 ok "outline: outlinePr is written before the dimension" ((sheetXmlOf summaryBytes).Contains "<sheetPr><outlinePr summaryBelow=\"0\" summaryRight=\"0\"/></sheetPr><dimension") (sheetXmlOf summaryBytes |> fun x -> x.Substring(0, min 400 x.Length))
 ok "outline: no outlinePr for Excel's default" (not ((sheetXmlOf (XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (axesInput axesModel None)))).Contains "outlinePr")) ""
+// (The outline's symbols can be switched off in <outlinePr> too, not only in the sheet view.)
+do
+    let patched =
+        use source = new System.IO.Compression.ZipArchive(new MemoryStream(summaryBytes))
+        use target = new MemoryStream()
+        (use out = new System.IO.Compression.ZipArchive(target, System.IO.Compression.ZipArchiveMode.Create, true)
+         for entry in source.Entries do
+            use reader = new StreamReader(entry.Open())
+            let text = reader.ReadToEnd()
+            let text = if entry.FullName = "xl/worksheets/sheet1.xml" then text.Replace("<outlinePr summaryBelow=\"0\"", "<outlinePr showOutlineSymbols=\"0\" summaryBelow=\"0\"") else text
+            use writer = new StreamWriter(out.CreateEntry(entry.FullName).Open())
+            writer.Write text)
+        target.ToArray()
+    ok "outline: the patched part says so" ((sheetXmlOf patched).Contains "showOutlineSymbols=\"0\"") ""
+    eq "outline: showOutlineSymbols of outlinePr is read (XML reader)" ((XlsxReader.loadBytesNative patched |> Option.get).Sheets.[0].View.ShowOutlineSymbols) false
+    eq "outline: showOutlineSymbols of outlinePr is read (text scanner)" ((XlsxReader.loadBytesNativeScanned patched |> Option.get).Sheets.[0].View.ShowOutlineSymbols) false
+    eq "outline: and the sheet shows no symbols" (Bridge.Import.importWorkbook (XlsxReader.loadBytesNative patched |> Option.get)).Sheets.[0].Model.Axes.ShowSymbols false
+    eq "outline: symbols are shown otherwise" (summaryFile.Sheets.[0].View.ShowOutlineSymbols) true
 eq "outline: the file says where the summaries are" (summaryFile.Sheets.[0].View.SummaryBelow, summaryFile.Sheets.[0].View.SummaryRight) (false, false)
 eq "outline: summary above: the mark is on the row before the group" (rowAttributes summaryFile) [ 5, false, None, 0, true; 6, true, None, 1, false; 7, true, None, 1, false; 8, true, None, 1, false; 9, true, None, 1, false ]
 eq "outline: summary left: on the column before" (columnAttributes summaryFile |> List.map (fun (first, last, hidden, _, level, collapsed) -> first, last, hidden, level, collapsed)) [ 4, 4, false, 0, true; 5, 6, true, 1, false ]

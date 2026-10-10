@@ -301,6 +301,12 @@ type XlsxCellFormat = {
     /// that entry, so what the model does not hold of it - protection, quote
     /// prefix, pivot button, theme colours - stays. None: a format of the model.
     SourceXf: int option
+    /// The cell format of the opened file this was made from by a change of
+    /// the user's (its cellXfs index): a writer that adds to the file's
+    /// styles makes the new entry from that one, so that what the change did
+    /// not touch - protection, quote prefix, pivot button, the named style,
+    /// a font, fill or border the model has no full account of - stays.
+    BasedOnXf: int option
 }
 
 type XlsxVertAlign =
@@ -554,6 +560,7 @@ let defaultXlsxCellFormat = {
     DiagonalDown = false
     NamedStyle = None
     SourceXf = None
+    BasedOnXf = None
 }
 
 type private FontKey = {
@@ -2251,6 +2258,7 @@ let tableXmlFromSource (source: string) (table: XlsxTableOut) : string option =
             appendEscapedAttr sb text
             sb.ToString()
         let rootTag = root.Value
+        let isQueryTable = tagAttribute rootTag "tableType" = Some "queryTable"
         let refChanged = tagAttribute rootTag "ref" <> Some refText
         let hadTotals = tagAttribute rootTag "totalsRowCount" |> Option.exists (fun count -> count <> "0")
         let newRoot =
@@ -2289,7 +2297,9 @@ let tableXmlFromSource (source: string) (table: XlsxTableOut) : string option =
                 | Some xml -> xml
                 | None ->
                     nextId <- nextId + 1
-                    sprintf "<tableColumn id=\"%d\" name=\"\"/>" nextId
+                    // (A column of a query table names itself: Excel asks for the attribute there.)
+                    if isQueryTable then sprintf "<tableColumn id=\"%d\" uniqueName=\"%d\" name=\"\"/>" nextId nextId
+                    else sprintf "<tableColumn id=\"%d\" name=\"\"/>" nextId
             let startTag, rest = splitStartTag xml
             let startTag = withTagAttribute "name" (Some (escapedValue names.[i])) startTag
             match total with
@@ -2929,61 +2939,130 @@ let private inPlaceStyles (workbook: XlsxWorkbookOut) (stylesXml: string) : (Sty
             let fontIds = System.Collections.Generic.Dictionary<FontKey, int>(HashIdentity.Structural)
             let fillIds = System.Collections.Generic.Dictionary<string, int>()
             let borderIds = System.Collections.Generic.Dictionary<BorderKey, int>(HashIdentity.Structural)
+            let numFmtIdOf (key: XfKey) =
+                match key.NumFmt with
+                | None -> 0
+                | Some code ->
+                    match builtInNumFmtId code with
+                    | Some id -> id
+                    | None ->
+                        match numFmtIds.TryGetValue code with
+                        | true, id -> id
+                        | false, _ ->
+                            let id = nextNumFmt
+                            nextNumFmt <- nextNumFmt + 1
+                            numFmtIds.[code] <- id
+                            newNumFmts.Add (sprintf "<numFmt numFmtId=\"%d\" formatCode=\"%s\"/>" id (escaped code))
+                            id
+            let fontIdOf (key: XfKey) =
+                if key.Font = defaultFontKey then 0
+                else
+                    match fontIds.TryGetValue key.Font with
+                    | true, id -> id
+                    | false, _ ->
+                        let id = fontCount + newFonts.Count
+                        fontIds.[key.Font] <- id
+                        newFonts.Add (fontXml key.Font)
+                        id
+            let fillIdOf (key: XfKey) =
+                match key.Fill with
+                | None -> 0
+                | Some color ->
+                    match fillIds.TryGetValue color with
+                    | true, id -> id
+                    | false, _ ->
+                        let id = fillCount + newFills.Count
+                        fillIds.[color] <- id
+                        newFills.Add (fillXml key.Fill)
+                        id
+            let borderIdOf (key: XfKey) =
+                if key.Border = defaultBorderKey then 0
+                else
+                    match borderIds.TryGetValue key.Border with
+                    | true, id -> id
+                    | false, _ ->
+                        let id = borderCount + newBorders.Count
+                        borderIds.[key.Border] <- id
+                        newBorders.Add (borderXml key.Border)
+                        id
             let indexOfKey (key: XfKey) =
                 match xfIndex.TryGetValue key with
                 | true, index -> index
                 | false, _ ->
-                    let numFmtId =
-                        match key.NumFmt with
-                        | None -> 0
-                        | Some code ->
-                            match builtInNumFmtId code with
-                            | Some id -> id
-                            | None ->
-                                match numFmtIds.TryGetValue code with
-                                | true, id -> id
-                                | false, _ ->
-                                    let id = nextNumFmt
-                                    nextNumFmt <- nextNumFmt + 1
-                                    numFmtIds.[code] <- id
-                                    newNumFmts.Add (sprintf "<numFmt numFmtId=\"%d\" formatCode=\"%s\"/>" id (escaped code))
-                                    id
-                    let fontId =
-                        if key.Font = defaultFontKey then 0
-                        else
-                            match fontIds.TryGetValue key.Font with
-                            | true, id -> id
-                            | false, _ ->
-                                let id = fontCount + newFonts.Count
-                                fontIds.[key.Font] <- id
-                                newFonts.Add (fontXml key.Font)
-                                id
-                    let fillId =
-                        match key.Fill with
-                        | None -> 0
-                        | Some color ->
-                            match fillIds.TryGetValue color with
-                            | true, id -> id
-                            | false, _ ->
-                                let id = fillCount + newFills.Count
-                                fillIds.[color] <- id
-                                newFills.Add (fillXml key.Fill)
-                                id
-                    let borderId =
-                        if key.Border = defaultBorderKey then 0
-                        else
-                            match borderIds.TryGetValue key.Border with
-                            | true, id -> id
-                            | false, _ ->
-                                let id = borderCount + newBorders.Count
-                                borderIds.[key.Border] <- id
-                                newBorders.Add (borderXml key.Border)
-                                id
+                    let numFmtId = numFmtIdOf key
+                    let fontId = fontIdOf key
+                    let fillId = fillIdOf key
+                    let borderId = borderIdOf key
                     let xfId = if key.NamedStyle > 0 && key.NamedStyle < namedXfIds.Length then namedXfIds.[key.NamedStyle] else 0
                     let index = xfCount + newXfs.Count
                     newXfs.Add (xfXmlOf numFmtId fontId fillId borderId xfId key)
                     xfIndex.[key] <- index
                     index
+            // A format the user made from one of the file's (BasedOnXf): the
+            // file's entry with what the change touched replaced - its number
+            // format, font, fill, border or alignment, each only when it is
+            // not what the reader saw in that entry. Everything else of the
+            // entry stays: its named style, protection, quote prefix, pivot
+            // button, attributes and extensions this writer knows nothing of.
+            let sourceXfs =
+                System.Text.RegularExpressions.Regex.Matches(xfsBody, "<xf(?=[\\s>/])(?:[^>]*/>|[^>]*>[\\s\\S]*?</xf>)")
+                |> Seq.cast<System.Text.RegularExpressions.Match> |> Seq.map (fun found -> found.Value) |> Seq.toArray
+            let derived = System.Collections.Generic.Dictionary<struct (int * XfKey), int>(HashIdentity.Structural)
+            let derivedIndex (basedOn: int) (key: XfKey) : int option =
+                if sourceXfs.Length <> xfCount || basedOn < 0 || basedOn >= xfCount then None
+                else
+                    match derived.TryGetValue (struct (basedOn, key)) with
+                    | true, index -> Some index
+                    | false, _ ->
+                        let was = columnStyleKey kept.CellFormats.[basedOn]
+                        let source = sourceXfs.[basedOn]
+                        let tagEnd = source.IndexOf '>'
+                        let startTag = source.Substring(0, tagEnd + 1)
+                        let selfClosed = startTag.EndsWith "/>"
+                        let inner = if selfClosed then "" else source.Substring(tagEnd + 1, source.Length - tagEnd - 1 - 5)
+                        let openTag = if selfClosed then startTag.Substring(0, startTag.Length - 2).TrimEnd() + ">" else startTag
+                        let openTag =
+                            if key.NumFmt = was.NumFmt then openTag
+                            else openTag |> withTagAttribute "numFmtId" (Some (string (numFmtIdOf key))) |> withTagAttribute "applyNumberFormat" (Some "1")
+                        let openTag =
+                            if key.Font = was.Font then openTag
+                            else openTag |> withTagAttribute "fontId" (Some (string (fontIdOf key))) |> withTagAttribute "applyFont" (Some "1")
+                        let openTag =
+                            if key.Fill = was.Fill then openTag
+                            else openTag |> withTagAttribute "fillId" (Some (string (fillIdOf key))) |> withTagAttribute "applyFill" (Some "1")
+                        let openTag =
+                            if key.Border = was.Border then openTag
+                            else openTag |> withTagAttribute "borderId" (Some (string (borderIdOf key))) |> withTagAttribute "applyBorder" (Some "1")
+                        let sameAlignment =
+                            key.HorizontalAlign = was.HorizontalAlign && key.VerticalAlign = was.VerticalAlign && key.WrapText = was.WrapText
+                            && key.Indent = was.Indent && key.ShrinkToFit = was.ShrinkToFit && key.TextRotation = was.TextRotation
+                        let openTag, inner =
+                            if sameAlignment then openTag, inner
+                            else
+                                let found = System.Text.RegularExpressions.Regex.Match(inner, "<alignment(?=[\\s>/])(?:[^>]*/>|[^>]*>[\\s\\S]*?</alignment>)")
+                                let tag = if found.Success then (let cut = found.Value.IndexOf '>' in found.Value.Substring(0, cut + 1)) else "<alignment/>"
+                                let tag = if tag.EndsWith "/>" then tag else tag.Substring(0, tag.Length - 1).TrimEnd() + "/>"
+                                let tag =
+                                    tag
+                                    |> withTagAttribute "horizontal" (key.HorizontalAlign |> Option.map escaped)
+                                    |> withTagAttribute "vertical" (key.VerticalAlign |> Option.map escaped)
+                                    |> withTagAttribute "wrapText" (if key.WrapText then Some "1" else None)
+                                    |> withTagAttribute "indent" (if key.Indent > 0 then Some (string key.Indent) else None)
+                                    |> withTagAttribute "shrinkToFit" (if key.ShrinkToFit then Some "1" else None)
+                                    |> withTagAttribute "textRotation" (if key.TextRotation <> 0 then Some (string key.TextRotation) else None)
+                                let empty = tag = "<alignment/>"
+                                let inner =
+                                    if found.Success then inner.Substring(0, found.Index) + (if empty then "" else tag) + inner.Substring(found.Index + found.Length)
+                                    elif empty then inner
+                                    else tag + inner          // (the first child of an xf)
+                                withTagAttribute "applyAlignment" (Some "1") openTag, inner
+                        let xml =
+                            if inner.Trim() = "" then openTag.Substring(0, openTag.Length - 1) + "/>"
+                            else openTag + inner + "</xf>"
+                        let index = xfCount + newXfs.Count
+                        newXfs.Add xml
+                        derived.[struct (basedOn, key)] <- index
+                        Some index
             let byIdentity = System.Collections.Generic.Dictionary<XlsxCellFormat, int>(HashIdentity.Reference)
             let styleIdOf (format: XlsxCellFormat) =
                 match format.SourceXf with
@@ -2992,7 +3071,11 @@ let private inPlaceStyles (workbook: XlsxWorkbookOut) (stylesXml: string) : (Sty
                     match byIdentity.TryGetValue format with
                     | true, index -> index
                     | false, _ ->
-                        let index = indexOfKey (xfKey format)
+                        let key = xfKey format
+                        let index =
+                            match format.BasedOnXf |> Option.bind (fun basedOn -> derivedIndex basedOn key) with
+                            | Some index -> index
+                            | None -> indexOfKey key
                         byIdentity.[format] <- index
                         index
             let finish () =

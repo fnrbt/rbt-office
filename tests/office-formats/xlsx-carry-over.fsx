@@ -347,6 +347,132 @@ do
         (bare.Contains "totalsRowShown=\"0\"" && not (bare.Contains "totalsRowCount") && bare.Contains "headerRowCount=\"0\"" && not (bare.Contains "<autoFilter")
          && bare.Contains "totalsRowFunction=\"sum\"" && (try Xml.Linq.XDocument.Parse bare |> ignore; true with _ -> false)) bare
 
+    // A new column of a query table names itself (uniqueName), as the file's columns do.
+    let queryPart = part.Replace("<table xmlns", "<table tableType=\"queryTable\" xmlns").Replace("<tableColumn id=\"1\" name", "<tableColumn id=\"1\" uniqueName=\"1\" name")
+    let queried = XlsxWriter.tableXmlFromSource queryPart table |> Option.defaultValue ""
+    ok "table part: the test's part is a query table" (queryPart.Contains "tableType=\"queryTable\"" && queryPart <> part) queryPart
+    ok "table part: a new column of a query table gets a uniqueName" (queried.Contains "<tableColumn id=\"10\" uniqueName=\"10\" name=\"Tax\"/>") queried
+    ok "table part: and no other table's does" (not (xml.Contains "uniqueName")) xml
+
+// ---- a format changed by the user is made from the file's -----------------------
+// The cell's new cellXfs entry is the file's entry with what the change touched
+// replaced: protection, the quote prefix, the named style and the parts of the
+// format the change left alone (their fonts, fills and borders as the file has them) stay.
+do
+    let bytes = bytesOf "real-world/milk-street-office.xlsx"
+    let original = partsOf bytes
+    let imported = Bridge.Import.importWorkbook (loadBytes bytes)
+    let models = modelsOf imported
+    let xfsOf (styles: string) =
+        let body = styles.Substring(styles.IndexOf "<cellXfs", styles.IndexOf "</cellXfs>" - styles.IndexOf "<cellXfs")
+        [| for m in Text.RegularExpressions.Regex.Matches(body, "<xf(?=[\\s>/])(?:[^>]*/>|[^>]*>[\\s\\S]*?</xf>)") -> m.Value |]
+    let attrOf (name: string) (xml: string) =
+        let m = Text.RegularExpressions.Regex.Match(xml, "\\s" + name + "=\"([^\"]*)\"")
+        if m.Success then m.Groups.[1].Value else ""
+    let sourceXfs = xfsOf (textOf original "xl/styles.xml")
+    let sheetXml = textOf original "xl/worksheets/sheet1.xml"
+    // A cell of the first sheet whose format is unlocked, and one with a quote prefix.
+    let cellWith (wanted: string -> bool) =
+        [ for m in Text.RegularExpressions.Regex.Matches(sheetXml, "<c r=\"([A-Z]+)(\\d+)\" s=\"(\\d+)\"") do
+            let xf = int m.Groups.[3].Value
+            if xf < sourceXfs.Length && wanted sourceXfs.[xf] then
+                yield { Row = int m.Groups.[2].Value - 1; Col = Bridge.columnIndexOfLetters m.Groups.[1].Value }, xf ]
+        |> List.tryFind (fun (cell, _) -> Map.containsKey cell models.[0].Cells)
+    let unlocked = cellWith (fun xf -> xf.Contains "<protection locked=\"0\"" && attrOf "xfId" xf <> "0" && attrOf "xfId" xf <> "")
+    let unlocked = match unlocked with Some found -> Some found | None -> cellWith (fun xf -> xf.Contains "<protection locked=\"0\"")
+    ok "format change: the workbook has an unlocked cell" unlocked.IsSome ""
+    match unlocked with
+    | Some (cell, xf) ->
+        let data = models.[0].Cells.[cell]
+        let edited = Array.copy models
+        edited.[0] <- { models.[0] with Cells = Map.add cell { data with Format = { data.Format with Italic = not data.Format.Italic } } models.[0].Cells }
+        let written = partsOf (export imported edited (namesOf imported))
+        let nowXfs = xfsOf (textOf written "xl/styles.xml")
+        let nowSheet = textOf written "xl/worksheets/sheet1.xml"
+        let reference = columnToLetter cell.Col + string (cell.Row + 1)
+        let m = Text.RegularExpressions.Regex.Match(nowSheet, "<c r=\"" + reference + "\" s=\"(\\d+)\"")
+        let now = if m.Success then int m.Groups.[1].Value else -1
+        ok "format change: the cell has a new format behind the file's" (now >= sourceXfs.Length && now < nowXfs.Length) (sprintf "%d of %d (the file has %d)" now nowXfs.Length sourceXfs.Length)
+        if now >= sourceXfs.Length && now < nowXfs.Length then
+            let was, made = sourceXfs.[xf], nowXfs.[now]
+            ok "format change: the file's formats keep their places" (Array.truncate sourceXfs.Length nowXfs = sourceXfs) ""
+            ok "format change: protection stays" (made.Contains "<protection locked=\"0\"") (was + "  ->  " + made)
+            eq "format change: the named style, number format, fill and border stay"
+                (attrOf "xfId" made, attrOf "numFmtId" made, attrOf "fillId" made, attrOf "borderId" made) (attrOf "xfId" was, attrOf "numFmtId" was, attrOf "fillId" was, attrOf "borderId" was)
+            ok "format change: the font is a new one" (attrOf "fontId" made <> attrOf "fontId" was && attrOf "applyFont" made = "1") made
+            eq "format change: the alignment stays" (Text.RegularExpressions.Regex.Match(made, "<alignment[^>]*>").Value) (Text.RegularExpressions.Regex.Match(was, "<alignment[^>]*>").Value)
+            // Read back: the cell is italic now, and still what it was otherwise.
+            let again = Bridge.Import.importWorkbook (loadBytes (export imported edited (namesOf imported)))
+            eq "format change: read back" again.Sheets.[0].Model.Cells.[cell].Format { data.Format with Italic = not data.Format.Italic }
+    | None -> ()
+    // A quote prefix stays through a change of the alignment (the entry gets an alignment of its own).
+    match cellWith (fun xf -> xf.Contains "quotePrefix=\"1\"") with
+    | Some (cell, xf) ->
+        let data = models.[0].Cells.[cell]
+        let edited = Array.copy models
+        edited.[0] <- { models.[0] with Cells = Map.add cell { data with Format = { data.Format with HorizontalAlign = Some "right"; WrapText = true } } models.[0].Cells }
+        let written = partsOf (export imported edited (namesOf imported))
+        let nowXfs = xfsOf (textOf written "xl/styles.xml")
+        let reference = columnToLetter cell.Col + string (cell.Row + 1)
+        let m = Text.RegularExpressions.Regex.Match(textOf written "xl/worksheets/sheet1.xml", "<c r=\"" + reference + "\" s=\"(\\d+)\"")
+        let now = if m.Success then int m.Groups.[1].Value else -1
+        ok "format change (alignment): a new format" (now >= sourceXfs.Length && now < nowXfs.Length) (string now)
+        if now >= sourceXfs.Length && now < nowXfs.Length then
+            let was, made = sourceXfs.[xf], nowXfs.[now]
+            ok "format change (alignment): the quote prefix stays" (made.Contains "quotePrefix=\"1\"") made
+            ok "format change (alignment): the alignment is the new one" (made.Contains "horizontal=\"right\"" && made.Contains "wrapText=\"1\"" && attrOf "applyAlignment" made = "1") made
+            eq "format change (alignment): the font stays" (attrOf "fontId" made) (attrOf "fontId" was)
+            ok "format change (alignment): well formed" (try Xml.Linq.XElement.Parse made |> ignore; true with _ -> false) made
+    | None -> ok "format change: the workbook has a cell with a quote prefix on its first sheet" false ""
+
+// ---- sheets renamed or deleted: the sheets that do not name them go back as they were read ----
+for file in [ "real-world/lyric-multifamily.xlsx"; "real-world/dashboard-ecommerce-sales.xlsx" ] do
+    let label = Path.GetFileNameWithoutExtension file
+    let bytes = bytesOf file
+    let original = partsOf bytes
+    let reader = loadBytes bytes
+    let imported = Bridge.Import.importWorkbook reader
+    let names = namesOf imported
+    let partOf (index: int) = (List.item index reader.Sheets).Extras.SourcePart |> Option.map fst
+    let isWorksheet (index: int) = match (List.item index reader.Sheets).Extras.SourcePart with Some (_, relType) -> relType.EndsWith "/worksheet" | None -> false
+    let mentions (index: int) (name: string) =
+        match partOf index with
+        | Some path -> (textOf original path).ToLowerInvariant().Contains (name.ToLowerInvariant())
+        | None -> true
+    // The sheet the fewest others name.
+    let target =
+        [ 0 .. names.Length - 1 ]
+        |> List.minBy (fun k -> [ 0 .. names.Length - 1 ] |> List.filter (fun i -> i <> k && mentions i names.[k]) |> List.length)
+    let others = [ 0 .. names.Length - 1 ] |> List.filter (fun i -> i <> target && isWorksheet i)
+    let silent = others |> List.filter (fun i -> not (mentions i names.[target]))
+    ok (label + ": there are sheets that do not name the renamed one") (not silent.IsEmpty) names.[target]
+    // Renamed.
+    let renamed = names |> Array.mapi (fun i name -> if i = target then "Renamed Tab" else name)
+    let written = partsOf (export imported (modelsOf imported) renamed)
+    // (But for the sheet the file had on display: its tabSelected goes to the first sheet.)
+    let unselected (text: string) = text.Replace(" tabSelected=\"1\"", "")
+    let same (parts: Map<string, byte[]>) (index: int) = match partOf index with Some path -> unselected (textOf parts path) = unselected (textOf original path) | None -> false
+    let differing = silent |> List.filter (fun i -> not (same written i))
+    ok (label + ": renamed: the sheets that do not name it are the file's parts") differing.IsEmpty (sprintf "%A of %A" (differing |> List.map (fun i -> names.[i])) (silent |> List.map (fun i -> names.[i])))
+    ok (label + ": renamed: the workbook lists the new name") ((textOf written "xl/workbook.xml").Contains "name=\"Renamed Tab\"" && not ((textOf written "xl/workbook.xml").Contains ("<sheet name=\"" + names.[target] + "\""))) ""
+    for i in others |> List.filter (fun i -> mentions i names.[target]) do
+        match partOf i with
+        | Some path ->
+            let now = textOf written path
+            let quoted = "'" + names.[target] + "'!"
+            ok (sprintf "%s: renamed: %s follows" label names.[i]) (not (now.Contains (names.[target] + "!")) && not (now.Contains quoted) || not ((textOf original path).Contains (names.[target] + "!") || (textOf original path).Contains quoted)) path
+        | None -> ()
+    let again = Bridge.Import.importWorkbook (loadBytes (export imported (modelsOf imported) renamed))
+    eq (label + ": renamed: read back") (namesOf again) renamed
+    eq (label + ": renamed: the cells of a sheet that went back as it was") (silent |> List.map (fun i -> again.Sheets.[i].Model.Cells = imported.Sheets.[i].Model.Cells)) (silent |> List.map (fun _ -> true))
+    // Deleted.
+    let keep = [| for i in 0 .. names.Length - 1 do if i <> target then yield i |]
+    let withoutIt = partsOf (export imported (keep |> Array.map (fun i -> (modelsOf imported).[i])) (keep |> Array.map (fun i -> names.[i])))
+    let differing = silent |> List.filter (fun i -> not (same withoutIt i))
+    ok (label + ": deleted: the sheets that do not name it are the file's parts") differing.IsEmpty (sprintf "%A" (differing |> List.map (fun i -> names.[i])))
+    let again = Bridge.Import.importWorkbook (loadBytes (export imported (keep |> Array.map (fun i -> (modelsOf imported).[i])) (keep |> Array.map (fun i -> names.[i]))))
+    eq (label + ": deleted: read back") (namesOf again) (keep |> Array.map (fun i -> names.[i]))
+
 // ---- a print area of several areas --------------------------------------------
 do
     let source = bytesOf "real-world/milk-street-office.xlsx"

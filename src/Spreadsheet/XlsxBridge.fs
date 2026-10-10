@@ -1725,6 +1725,7 @@ module Export =
                 if not sameCells then
                     for KeyValue(addr, data) in before.Cells do previousCells.[key addr.Row addr.Col] <- data
                 let sameRuns = sameRef before.RichRuns model.RichRuns
+                let basedOnFormats = Collections.Generic.Dictionary<int, Collections.Generic.Dictionary<XlsxWriter.XlsxCellFormat, XlsxWriter.XlsxCellFormat>>()
                 model.Cells
                 |> Map.toList
                 |> List.map (fun (addr, data) ->
@@ -1747,6 +1748,26 @@ module Export =
                         // Only the value (or the comment) changed: the cell keeps
                         // the format the file gave it, its named cell style included.
                         { cellOut cache model addr data with Format = kept.Format }
+                    | _, (true, kept) when kept.Format.SourceXf.IsSome ->
+                        // The format was changed: the new one is made from the
+                        // file's (what the change did not touch of it stays).
+                        let written = cellOut cache model addr data
+                        let basedOn = kept.Format.SourceXf.Value
+                        let known =
+                            match basedOnFormats.TryGetValue basedOn with
+                            | true, known -> known
+                            | false, _ ->
+                                let known = Collections.Generic.Dictionary<XlsxWriter.XlsxCellFormat, XlsxWriter.XlsxCellFormat>(HashIdentity.Reference)
+                                basedOnFormats.[basedOn] <- known
+                                known
+                        let format =
+                            match known.TryGetValue written.Format with
+                            | true, format -> format
+                            | false, _ ->
+                                let format = { written.Format with BasedOnXf = Some basedOn }
+                                known.[written.Format] <- format
+                                format
+                        { written with Format = format }
                     | _ -> cellOut cache model addr data)
         let fromModel = modelSheetWith cells dxfIndex name state model
         let unchanged (pick: SpreadsheetModel -> 'T) = sameRef (pick before) (pick model) || pick before = pick model
@@ -2113,10 +2134,11 @@ module Export =
     /// read from, byte for byte, beside the sheets that are written from
     /// their models; the styles and shared strings are then the file's with
     /// what is new added behind (no index of the file changes its meaning).
-    /// That is done for a workbook in the 1900 date system whose sheets all
-    /// still have the names the file gave them and of which none was deleted;
-    /// any other workbook, and any sheet whose part is not supplied, is written
-    /// from the model as before.
+    /// That is done for a workbook in the 1900 date system (the serials of a
+    /// 1904 workbook are converted when it is read and written in the 1900
+    /// system); when sheets of the file were renamed or deleted, for the
+    /// sheets whose parts do not name any of those. Any other sheet, and any
+    /// whose part is not supplied, is written from the model as before.
     let toWorkbookOutWith (sourceParts: (string * byte[]) list) (input: ExportInput) : XlsxWriter.XlsxWorkbookOut =
         let original = input.Source |> Option.map (fun source -> XlsxWriter.packageFromReaderWorkbook source.Workbook)
         // Rules kept from the file refer to the file's dxfs by index, so those
@@ -2240,8 +2262,24 @@ module Export =
         // and shared strings are added to whenever the file's are at hand.)
         let verbatimAllowed =
             match input.Source with
-            | Some source -> not source.Workbook.Date1904 && renames.Count = 0 && deletedTabs.IsEmpty
+            | Some source -> not source.Workbook.Date1904
             | None -> false
+        // Sheets of the file that were renamed or deleted: a sheet whose part
+        // names one of them (a formula, a rule, a link) is written from the
+        // model, where the references have followed; a part that does not
+        // name any still goes back as it was read. (A name with characters
+        // that are written differently in XML or in a quoted reference is
+        // not looked for: no sheet goes back as it was read then.)
+        let changedTabs =
+            fileTabs |> List.filter (fun name -> renames.ContainsKey (name.ToUpperInvariant()) || not (present.Contains (name.ToUpperInvariant())))
+        let changedTabsPlain =
+            changedTabs |> List.forall (fun name -> name <> "" && name |> Seq.forall (fun c -> Char.IsLetterOrDigit c || c = ' ' || c = '_' || c = '-' || c = '.' || c = '(' || c = ')'))
+        let namesChangedTab (data: byte[]) : bool =
+            if changedTabs.IsEmpty then false
+            elif not changedTabsPlain then true
+            else
+                let text = (Text.Encoding.UTF8.GetString data).ToLowerInvariant()
+                changedTabs |> List.exists (fun name -> text.IndexOf (name.ToLowerInvariant()) >= 0)
         let inPlaceParts : (string * byte[]) list option =
             match input.Source with
             | Some source ->
@@ -2260,6 +2298,7 @@ module Export =
                 let untouched =
                     if isDeferredSheet model then model.TabColor = outSheet.View.TabColor
                     else untouchedSheet before current
+                let untouched = untouched && not (namesChangedTab suppliedParts.[path])
                 if untouched then verbatimParts.Add ((path, suppliedParts.[path]))
                 untouched
             | _ -> false

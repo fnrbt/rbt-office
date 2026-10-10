@@ -2615,6 +2615,13 @@ module Xlsx =
             flag "summaryBelow", flag "summaryRight"
         | None -> true, true
 
+    /// `<sheetPr><outlinePr showOutlineSymbols/>` (true when absent): with the
+    /// sheet view's flag of that name, whether the outline's symbols are shown.
+    let private outlineSymbolsOf (sheet: XmlNode) : bool =
+        match sElem "sheetPr" sheet |> Option.bind (sElem "outlinePr") |> Option.bind (Xml.attr "showOutlineSymbols") with
+        | Some v -> not (v = "0" || v = "false")
+        | None -> true
+
     /// `<sheetView showGridLines="0"/>`. Excel's default is true; polished
     /// workbooks turn it off and rely on explicit cell borders.
     let private showGridLines (sheet: XmlNode) : bool =
@@ -3054,10 +3061,11 @@ module Xlsx =
 
     /// What `<sheetPr>` holds: the fit-to-page flag, the tab colour and where
     /// the summary rows / columns of the outline are (below, right).
-    let private fitToPageNative (reader: System.Xml.XmlReader) : bool * string option * (bool * bool) =
+    let private fitToPageNative (reader: System.Xml.XmlReader) : bool * string option * (bool * bool) * bool =
         let mutable fit = false
         let mutable tabColor = None
         let mutable summary = true, true
+        let mutable symbols = true
         if not reader.IsEmptyElement then
             let depth = reader.Depth
             let mutable doneReading = false
@@ -3070,10 +3078,11 @@ module Xlsx =
                     tabColor <- tabColorOfAttributes (attribute "rgb") (attribute "theme") (attribute "tint") (attribute "indexed")
                 | System.Xml.XmlNodeType.Element when reader.LocalName = "outlinePr" ->
                     summary <- nativeBoolAttrDefault true reader "summaryBelow", nativeBoolAttrDefault true reader "summaryRight"
+                    symbols <- nativeBoolAttrDefault true reader "showOutlineSymbols"
                 | System.Xml.XmlNodeType.EndElement when reader.Depth = depth ->
                     doneReading <- true
                 | _ -> ()
-        fit, tabColor, summary
+        fit, tabColor, summary, symbols
 
     let private defaultPageSetupNative fit =
         {
@@ -3233,6 +3242,7 @@ module Xlsx =
             let hyperlinks = System.Collections.Generic.List<Hyperlink>()
             let mutable format = emptySheetFormat
             let mutable summaryValue = true, true
+            let mutable symbolsValue = true
             let mutable frozenPaneValue = None
             let mutable showZerosValue = true
             let mutable viewValue = defaultSheetView
@@ -3256,7 +3266,8 @@ module Xlsx =
                 | System.Xml.XmlNodeType.Element ->
                     match reader.LocalName with
                     | "sheetPr" ->
-                        let fit, tabColor, summary = fitToPageNative reader
+                        let fit, tabColor, summary, symbols = fitToPageNative reader
+                        symbolsValue <- symbols
                         fitToPage <- fit
                         tabColorValue <- tabColor
                         summaryValue <- summary
@@ -3321,7 +3332,7 @@ module Xlsx =
                 FrozenPane = frozenPaneValue
                 ShowZeros = showZerosValue
                 ShowGridLines = showGridLinesValue
-                View = { viewValue with TabColor = tabColorValue; SummaryBelow = fst summaryValue; SummaryRight = snd summaryValue }
+                View = { viewValue with TabColor = tabColorValue; SummaryBelow = fst summaryValue; SummaryRight = snd summaryValue; ShowOutlineSymbols = viewValue.ShowOutlineSymbols && symbolsValue }
                 Hyperlinks = resizeListToList hyperlinks
                 PageSetup = pageSetupFinal
                 PageMargins = pageMarginsValue
@@ -3378,7 +3389,10 @@ module Xlsx =
             FrozenPane = frozenPane sheet
             ShowZeros = showZeros sheet
             ShowGridLines = showGridLines sheet
-            View = (let below, right = outlineSummaryOf sheet in { sheetViewOptions sheet with TabColor = tabColorOf sheet; SummaryBelow = below; SummaryRight = right })
+            View =
+                (let below, right = outlineSummaryOf sheet
+                 let view = sheetViewOptions sheet
+                 { view with TabColor = tabColorOf sheet; SummaryBelow = below; SummaryRight = right; ShowOutlineSymbols = view.ShowOutlineSymbols && outlineSymbolsOf sheet })
             Hyperlinks = hyperlinks resolveRel sheet
             PageSetup = pageSetup sheet
             PageMargins = pageMargins sheet
