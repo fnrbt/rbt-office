@@ -283,6 +283,70 @@ do
     // Nothing changed: the drawing is the file's.
     ok "vml: untouched comments leave the drawing alone" ((partsOf (export reimported (modelsOf reimported) (namesOf reimported))).[vmlPath] = (partsOf saved).[vmlPath]) ""
 
+// ---- a changed table keeps what the model does not hold ---------------------
+do
+    let source = bytesOf "test-documents-excel/pandas-test_decimal.xlsx"
+    let original = partsOf source
+    let wb = loadBytes source
+    let imported = Bridge.Import.importWorkbook wb
+    let index = imported.Sheets |> Array.findIndex (fun sheet -> not sheet.Model.Tables.IsEmpty)
+    let model = imported.Sheets.[index].Model
+    let table = model.Tables.Head
+    // One more row, a header renamed.
+    let header = addr (table.StartRow - 1) (table.StartCol)
+    let edited =
+        { model with
+            Tables = [ { table with EndRow = table.EndRow + 1 } ]
+            Cells = model.Cells |> Map.add header { model.Cells.[header] with Value = CellValue.String "Amount" } }
+    let models = modelsOf imported
+    models.[index] <- edited
+    let written = partsOf (export imported models (namesOf imported))
+    let xml = textOf written "xl/tables/table1.xml"
+    ok "table: the changed table is written" (xml.Contains "ref=\"A1:F6\"" && xml.Contains "<autoFilter ref=\"A1:F6\"") xml
+    ok "table: its revision ids stay" (xml.Contains "xr:uid=\"{0F235FC8-2683-4264-B306-3D553F7838E8}\"" && xml.Contains "xr3:uid=\"{1BB94865-8D62-4199-B271-3EA12BCA4449}\"") xml
+    ok "table: the columns' formats stay" (count "dataDxfId=" xml = 6 && xml.Contains "name=\"Amount\" queryTableFieldId=\"2\" dataDxfId=\"4\"") xml
+    ok "table: the query table binding stays" (xml.Contains "tableType=\"queryTable\"" && count "queryTableFieldId=" xml = 6 && count "uniqueName=" xml = 6) xml
+    ok "table: the query table part and its relationship stay"
+        (written.ContainsKey "xl/queryTables/queryTable1.xml" && written.["xl/tables/_rels/table1.xml.rels"] = original.["xl/tables/_rels/table1.xml.rels"]) ""
+    ok "table: well formed" (try Xml.Linq.XDocument.Parse xml |> ignore; true with _ -> false) ""
+    eq "table: one table part" (written |> Map.toList |> List.filter (fun (path, _) -> path.StartsWith "xl/tables/table") |> List.length) 1
+    let back = (loadBytes (export imported models (namesOf imported))).Sheets.[index].Tables.Head
+    eq "table: read back" (back.Name, back.EndRow, back.Columns.[1]) ("test_decimal", table.EndRow + 1, "Amount")
+    // Renamed and one column narrower: still the file's part.
+    let models = modelsOf imported
+    models.[index] <- { model with Tables = [ { table with Name = "Decimals"; EndCol = table.EndCol - 1 } ] }
+    let xml = textOf (partsOf (export imported models (namesOf imported))) "xl/tables/table1.xml"
+    ok "table: renamed and narrowed" (xml.Contains "displayName=\"Decimals\"" && xml.Contains "ref=\"A1:E5\"" && xml.Contains "<tableColumns count=\"5\">" && count "<tableColumn " xml = 5 && not (xml.Contains "name=\"Column6\"") && xml.Contains "xr:uid=") xml
+
+// The same on a part with calculated columns, filter criteria, totals and a sort order.
+do
+    let part =
+        "<?xml version=\"1.0\"?><table xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:xr=\"urn:xr\" id=\"7\" xr:uid=\"{T}\" name=\"Sales\" displayName=\"Sales\" ref=\"B2:E10\" totalsRowCount=\"1\" headerRowDxfId=\"9\" dataDxfId=\"8\">"
+        + "<autoFilter ref=\"B2:E9\" xr:uid=\"{F}\"><filterColumn colId=\"1\"><filters><filter val=\"x\"/></filters></filterColumn></autoFilter>"
+        + "<sortState ref=\"B3:E9\"><sortCondition ref=\"C3:C9\"/></sortState>"
+        + "<tableColumns count=\"4\"><tableColumn id=\"1\" name=\"Item\" totalsRowLabel=\"Total\"/><tableColumn id=\"2\" name=\"Qty\" totalsRowFunction=\"sum\" dataDxfId=\"3\"/>"
+        + "<tableColumn id=\"5\" name=\"Price\"/><tableColumn id=\"9\" name=\"Amount\" totalsRowFunction=\"custom\" dataDxfId=\"2\"><calculatedColumnFormula>Sales[[#This Row],[Qty]]*Sales[[#This Row],[Price]]</calculatedColumnFormula><totalsRowFormula>SUM(E3:E9)/2</totalsRowFormula></tableColumn></tableColumns>"
+        + "<tableStyleInfo name=\"TableStyleLight1\" showRowStripes=\"1\"/><extLst><ext uri=\"u\"/></extLst></table>"
+    let style : XlsxWriter.XlsxTableStyle = { Name = "TableStyleMedium2"; ShowFirstColumn = true; ShowLastColumn = false; ShowRowStripes = true; ShowColumnStripes = false }
+    let table : XlsxWriter.XlsxTableOut =
+        { Name = "Sales"; StartRow = 2; StartCol = 2; EndRow = 12; EndCol = 6; Columns = [ "Item"; "Qty"; "Tax"; "Price"; "Amount" ]; HeaderRowCount = 1; TotalsRowCount = 1
+          Totals = [ "label", "All"; "function", "average"; "", ""; "", ""; "custom", "MAX(F3:F11)" ]; AutoFilter = Some (2, 6); Style = Some style; SourcePart = None }
+    let xml = XlsxWriter.tableXmlFromSource part table |> Option.defaultValue ""
+    ok "table part: well formed" (try Xml.Linq.XDocument.Parse xml |> ignore; true with _ -> false) xml
+    ok "table part: root" (xml.Contains "id=\"7\" xr:uid=\"{T}\"" && xml.Contains "ref=\"B2:F12\"" && xml.Contains "headerRowDxfId=\"9\" dataDxfId=\"8\"" && xml.Contains "totalsRowCount=\"1\"") xml
+    ok "table part: the filter keeps its criteria on the new range" (xml.Contains "<autoFilter ref=\"B2:F11\" xr:uid=\"{F}\"><filterColumn colId=\"1\">") xml
+    ok "table part: a sort order of another range is dropped" (not (xml.Contains "sortState")) xml
+    ok "table part: columns keep their ids and formats; a new one gets a free id"
+        (xml.Contains "<tableColumns count=\"5\"><tableColumn id=\"1\" name=\"Item\" totalsRowLabel=\"All\"/><tableColumn id=\"2\" name=\"Qty\" totalsRowFunction=\"average\" dataDxfId=\"3\"/><tableColumn id=\"10\" name=\"Tax\"/><tableColumn id=\"5\" name=\"Price\"/><tableColumn id=\"9\" name=\"Amount\" totalsRowFunction=\"custom\" dataDxfId=\"2\">") xml
+    ok "table part: the calculated column formula stays, the total's formula is the new one"
+        (xml.Contains "<calculatedColumnFormula>Sales[[#This Row],[Qty]]*Sales[[#This Row],[Price]]</calculatedColumnFormula><totalsRowFormula>MAX(F3:F11)</totalsRowFormula></tableColumn>") xml
+    ok "table part: style and what follows" (xml.Contains "<tableStyleInfo name=\"TableStyleMedium2\" showFirstColumn=\"1\" showLastColumn=\"0\" showRowStripes=\"1\" showColumnStripes=\"0\"/><extLst><ext uri=\"u\"/></extLst></table>") xml
+    // No totals row any more, no filter, no header.
+    let bare = XlsxWriter.tableXmlFromSource part { table with StartRow = 2; EndRow = 9; EndCol = 5; Columns = [ "Item"; "Qty"; "Price"; "Amount" ]; TotalsRowCount = 0; Totals = []; AutoFilter = None; HeaderRowCount = 0 } |> Option.defaultValue ""
+    ok "table part: without totals, filter and header"
+        (bare.Contains "totalsRowShown=\"0\"" && not (bare.Contains "totalsRowCount") && bare.Contains "headerRowCount=\"0\"" && not (bare.Contains "<autoFilter")
+         && bare.Contains "totalsRowFunction=\"sum\"" && (try Xml.Linq.XDocument.Parse bare |> ignore; true with _ -> false)) bare
+
 // ---- column default styles follow their columns --------------------------------
 do
     let wb = loadBytes (bytesOf "real-world/saopaulo-condos.xlsx")

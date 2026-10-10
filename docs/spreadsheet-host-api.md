@@ -791,8 +791,12 @@ comments, threaded comments and persons) every part goes back **as it was read, 
   the file's: byte for byte, under its name. Once a picture is added, moved or removed, or rows / columns move an anchor, the drawing is
   written from the model as `xl/drawings/sheetDrawingN.xml`;
 - **a table part** (`xl/tables/tableN.xml`, with its query table) while the table's range, columns, header / total rows and style are what
-  the part says. (A table written from the model loses what the model does not hold: revision ids, per-column formats, calculated-column
-  formulas, the query-table binding.) New table parts take numbers and ids no kept part uses.
+  the part says. A table of the file that changed (resized, a header retyped, renamed, totals or filter switched, another style) is
+  written as **the file's part with what changed replaced**: its id and revision ids, `headerRowDxfId` / `dataDxfId` and each column's
+  own id, `dataDxfId`, `calculatedColumnFormula` and `queryTableFieldId`, the filter's criteria, `tableType="queryTable"` and the part's
+  relationship to its query table stay. Columns are matched by position while their number is the file's, by name otherwise; a new
+  column gets a free id; a `sortState` goes when the range changed. A renamed table is found as the one table of the file it overlaps.
+  Only a table that is new to the workbook is written from the model alone. New table parts take numbers and ids no kept part uses.
 - A VML drawing that holds nothing but the boxes of the sheet's comments goes back while the comments are the file's and is made anew when
   they change; one that also holds form controls or camera pictures keeps every such shape as it was, and the boxes of the comments in it
   follow the comments (a new comment gets a box in that drawing, the box of a removed comment is taken out; untouched it stays the file's).

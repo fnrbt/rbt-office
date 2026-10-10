@@ -224,7 +224,7 @@ let syntheticSheet : XlsxWriter.XlsxSheetOut =
       ShowGridLines = false
       View = { XlsxWriter.defaultSheetViewOut with ShowZeros = false; ShowHeaders = false; ShowFormulas = true; ZoomScale = 85 }
       Tables =
-        [ { Name = "Table1"; StartRow = 1; StartCol = 1; EndRow = 2; EndCol = 2; Columns = [ "Header"; "Value" ]; HeaderRowCount = 1; TotalsRowCount = 0; Totals = []; AutoFilter = Some (1, 2); Style = Some { Name = "TableStyleMedium2"; ShowFirstColumn = false; ShowLastColumn = false; ShowRowStripes = true; ShowColumnStripes = false } } ]
+        [ { Name = "Table1"; StartRow = 1; StartCol = 1; EndRow = 2; EndCol = 2; Columns = [ "Header"; "Value" ]; HeaderRowCount = 1; TotalsRowCount = 0; Totals = []; AutoFilter = Some (1, 2); Style = Some { Name = "TableStyleMedium2"; ShowFirstColumn = false; ShowLastColumn = false; ShowRowStripes = true; ShowColumnStripes = false }; SourcePart = None } ]
       DataValidations =
         [ { Sqref = "A2"; ValidationType = "decimal"; Operator = Some "between"; Formula1 = Some "1"; Formula2 = Some "100"; AllowBlank = true; ShowDropDown = true; ErrorMessage = Some "No"; InputMessage = Some "Pick"; ErrorTitle = Some "Bad"; PromptTitle = Some "Hint"; ErrorStyle = Some "warning"; ShowErrorMessage = true; ShowInputMessage = true } ]
       ConditionalFormats = []

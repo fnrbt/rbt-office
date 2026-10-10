@@ -376,6 +376,13 @@ type XlsxTableOut = {
     Totals: (string * string) list
     AutoFilter: (int * int) option
     Style: XlsxTableStyle option
+    /// The part of the opened file the table was read from (one of the
+    /// workbook's `Preserved.Parts`). A table that is no longer what that
+    /// part says is written as that part with what changed replaced, so it
+    /// keeps what the model does not hold: its id and revision ids, the
+    /// formats of its columns (dxf ids), calculated-column formulas, its
+    /// filter criteria and the binding to its query table.
+    SourcePart: string option
 }
 
 type XlsxPageMargins = {
@@ -1774,8 +1781,18 @@ let private tablePlacement (workbook: XlsxWorkbookOut) : (string * int option) l
     let parts = System.Collections.Generic.Dictionary<string, byte[]>()
     for path, data in workbook.Preserved.Parts do parts.[path] <- data
     let taken = System.Collections.Generic.HashSet<int>()
+    let claimed = System.Collections.Generic.Dictionary<string, XlsxTableOut>()
     let keptOf (sheet: XlsxSheetOut) (table: XlsxTableOut) =
-        sheet.Extras.TableParts |> List.tryPick (fun (name, path) -> if name = table.Name && parts.ContainsKey path then Some path else None)
+        match sheet.Extras.TableParts |> List.tryPick (fun (name, path) -> if name = table.Name && parts.ContainsKey path then Some path else None) with
+        | Some path -> Some path
+        | None ->
+            // (A changed table of the file: written as its part, changed. One table per part.)
+            match table.SourcePart with
+            | Some path when parts.ContainsKey path ->
+                match claimed.TryGetValue path with
+                | true, owner -> if obj.ReferenceEquals (owner, table) then Some path else None
+                | false, _ -> claimed.[path] <- table; Some path
+            | _ -> None
     for sheet in workbook.Sheets do
         for table in sheet.Tables do
             match keptOf sheet table with
@@ -2152,6 +2169,148 @@ let private tableXml id (table: XlsxTableOut) =
     sprintf "%s\n<table xmlns=\"%s\" id=\"%d\" %s %s ref=\"%s\" headerRowCount=\"%d\" totalsRowCount=\"%d\">%s<tableColumns count=\"%d\">%s</tableColumns>%s</table>"
         declaration Namespaces.spreadsheet id (attr "name" table.Name) (attr "displayName" table.Name) refText table.HeaderRowCount table.TotalsRowCount autoFilter (table.EndCol - table.StartCol + 1) cols style
 
+// ---- a table of the file, changed: the file's part with what changed replaced ----
+
+let private tableRootPattern = System.Text.RegularExpressions.Regex("<table(?=[\\s>])[^>]*>")
+let private tableColumnsPattern = System.Text.RegularExpressions.Regex("<tableColumns(?=[\\s>])[^>]*>([\\s\\S]*?)</tableColumns>")
+let private tableColumnPattern = System.Text.RegularExpressions.Regex("<tableColumn(?=[\\s>/])[^>]*?/>|<tableColumn(?=[\\s>])[^>]*>[\\s\\S]*?</tableColumn>")
+let private tableAutoFilterPattern = System.Text.RegularExpressions.Regex("<autoFilter(?=[\\s>/])[^>]*?/>|<autoFilter(?=[\\s>])[^>]*>[\\s\\S]*?</autoFilter>")
+let private tableSortStatePattern = System.Text.RegularExpressions.Regex("<sortState(?=[\\s>/])[^>]*?/>|<sortState(?=[\\s>])[^>]*>[\\s\\S]*?</sortState>")
+let private tableStyleInfoPattern = System.Text.RegularExpressions.Regex("<tableStyleInfo(?=[\\s>/])[^>]*?/>|<tableStyleInfo(?=[\\s>])[^>]*>[\\s\\S]*?</tableStyleInfo>")
+let private totalsFormulaPattern = System.Text.RegularExpressions.Regex("<totalsRowFormula(?=[\\s>/])[^>]*?/>|<totalsRowFormula(?=[\\s>])[^>]*>[\\s\\S]*?</totalsRowFormula>")
+
+/// The value of an attribute of a start tag (as the file wrote it, not decoded).
+let private tagAttribute (tag: string) (name: string) : string option =
+    let found = System.Text.RegularExpressions.Regex.Match(tag, "\\s" + name + "=\"([^\"]*)\"")
+    if found.Success then Some found.Groups.[1].Value else None
+
+/// A start tag (`<x ...>` or `<x .../>`) with an attribute set to a value
+/// (given escaped), or without it.
+let private withTagAttribute (name: string) (value: string option) (tag: string) : string =
+    let pattern = System.Text.RegularExpressions.Regex("\\s" + name + "=\"[^\"]*\"")
+    let found = pattern.Match tag
+    match value with
+    | Some value ->
+        let text = " " + name + "=\"" + value + "\""
+        if found.Success then tag.Substring(0, found.Index) + text + tag.Substring(found.Index + found.Length)
+        else
+            let cut = if tag.EndsWith "/>" then tag.Length - 2 else tag.Length - 1
+            tag.Substring(0, cut).TrimEnd() + text + tag.Substring cut
+    | None -> if found.Success then tag.Substring(0, found.Index) + tag.Substring(found.Index + found.Length) else tag
+
+/// The start tag of an element's XML (up to its first `>`), and the rest.
+let private splitStartTag (xml: string) : string * string =
+    let close = xml.IndexOf '>'
+    xml.Substring(0, close + 1), xml.Substring(close + 1)
+
+/// The XML of a table part of the file for the table as it is now: its
+/// name, range, header and totals rows, filter, columns and style are the
+/// model's; everything else (the id, revision ids, dxf ids, each kept
+/// column's own id, format and calculated-column formula, the filter's
+/// criteria, the query-table attributes) stays as the file has it. Columns
+/// are matched by position while their number is the file's, by name
+/// otherwise. None when the part is not a table the writer can follow.
+let tableXmlFromSource (source: string) (table: XlsxTableOut) : string option =
+    let root = tableRootPattern.Match source
+    let columns = tableColumnsPattern.Match source
+    if not root.Success || not columns.Success || columns.Index < root.Index then None
+    else
+        let refText = sprintf "%s:%s" (cellRef (table.StartRow - 1) (table.StartCol - 1)) (cellRef (table.EndRow - 1) (table.EndCol - 1))
+        let escapedValue (text: string) =
+            let sb = StringBuilder()
+            appendEscapedAttr sb text
+            sb.ToString()
+        let rootTag = root.Value
+        let refChanged = tagAttribute rootTag "ref" <> Some refText
+        let hadTotals = tagAttribute rootTag "totalsRowCount" |> Option.exists (fun count -> count <> "0")
+        let newRoot =
+            rootTag
+            |> withTagAttribute "name" (Some (escapedValue table.Name))
+            |> withTagAttribute "displayName" (Some (escapedValue table.Name))
+            |> withTagAttribute "ref" (Some refText)
+            |> withTagAttribute "headerRowCount" (if table.HeaderRowCount = 1 then None else Some (string table.HeaderRowCount))
+            |> withTagAttribute "totalsRowCount" (if table.TotalsRowCount > 0 then Some (string table.TotalsRowCount) else None)
+            |> fun tag ->
+                if table.TotalsRowCount > 0 then withTagAttribute "totalsRowShown" None tag
+                elif hadTotals then withTagAttribute "totalsRowShown" (Some "0") tag
+                else tag
+        // The columns.
+        let existing =
+            tableColumnPattern.Matches columns.Groups.[1].Value |> Seq.cast<System.Text.RegularExpressions.Match> |> Seq.map (fun found -> found.Value) |> Seq.toArray
+        let count = table.EndCol - table.StartCol + 1
+        let names = [| for i in 0 .. count - 1 -> table.Columns |> List.tryItem i |> Option.defaultValue (sprintf "Column%d" (i + 1)) |]
+        let nameOf (xml: string) = tagAttribute (fst (splitStartTag xml)) "name" |> Option.defaultValue ""
+        let used = Array.create existing.Length false
+        let sourceOf (i: int) : string option =
+            if existing.Length = count then (used.[i] <- true; Some existing.[i])
+            else
+                let wanted = escapedValue names.[i]
+                let mutable found = -1
+                for k in 0 .. existing.Length - 1 do
+                    if found < 0 && not used.[k] && System.String.Equals(nameOf existing.[k], wanted, System.StringComparison.OrdinalIgnoreCase) then found <- k
+                if found < 0 then None else (used.[found] <- true; Some existing.[found])
+        let matched = [| for i in 0 .. count - 1 -> sourceOf i |]
+        let mutable nextId =
+            existing |> Array.fold (fun top xml -> match tagAttribute (fst (splitStartTag xml)) "id" |> Option.map System.Int32.TryParse with Some (true, id) -> max top id | _ -> top) 0
+        let columnXml (i: int) =
+            let total = if table.TotalsRowCount > 0 then List.tryItem i table.Totals else None
+            let xml =
+                match matched.[i] with
+                | Some xml -> xml
+                | None ->
+                    nextId <- nextId + 1
+                    sprintf "<tableColumn id=\"%d\" name=\"\"/>" nextId
+            let startTag, rest = splitStartTag xml
+            let startTag = withTagAttribute "name" (Some (escapedValue names.[i])) startTag
+            match total with
+            | None -> startTag + rest          // (No totals row: what the file says the column would show stays.)
+            | Some (kind, value) ->
+                let startTag =
+                    startTag
+                    |> withTagAttribute "totalsRowLabel" (if kind = "label" then Some (escapedValue value) else None)
+                    |> withTagAttribute "totalsRowFunction" (match kind with "function" -> Some (escapedValue value) | "custom" -> Some "custom" | _ -> None)
+                let rest = totalsFormulaPattern.Replace(rest, "")
+                if kind <> "custom" then startTag + rest
+                else
+                    let formula = "<totalsRowFormula>" + escapeXml value + "</totalsRowFormula>"
+                    if startTag.EndsWith "/>" then startTag.Substring(0, startTag.Length - 2).TrimEnd() + ">" + formula + "</tableColumn>"
+                    else
+                        // (After the calculated-column formula, before anything else: CT_TableColumn's order.)
+                        let close = "</calculatedColumnFormula>"
+                        let at = rest.IndexOf (close, System.StringComparison.Ordinal)
+                        if at >= 0 then startTag + rest.Substring(0, at + close.Length) + formula + rest.Substring(at + close.Length)
+                        else startTag + formula + rest
+        let columnsTag, _ = splitStartTag columns.Value
+        let newColumns =
+            withTagAttribute "count" (Some (string count)) columnsTag
+            + (String.concat "" [ for i in 0 .. count - 1 -> columnXml i ])
+            + "</tableColumns>"
+        let between = source.Substring(root.Index + root.Length, columns.Index - root.Index - root.Length)
+        let after = source.Substring(columns.Index + columns.Length)
+        // The filter (it covers the header and the data, not the totals row).
+        let filterRef = sprintf "%s:%s" (cellRef (table.StartRow - 1) (table.StartCol - 1)) (cellRef (table.EndRow - 1 - max 0 table.TotalsRowCount) (table.EndCol - 1))
+        let between =
+            let found = tableAutoFilterPattern.Match between
+            match table.AutoFilter, found.Success with
+            | None, true -> between.Substring(0, found.Index) + between.Substring(found.Index + found.Length)
+            | None, false -> between
+            | Some _, true ->
+                let startTag, rest = splitStartTag found.Value
+                between.Substring(0, found.Index) + withTagAttribute "ref" (Some filterRef) startTag + rest + between.Substring(found.Index + found.Length)
+            | Some _, false -> sprintf "<autoFilter ref=\"%s\"/>" filterRef + between
+        // A sort order names cells of the range it was made for.
+        let between = if refChanged then tableSortStatePattern.Replace(between, "") else between
+        let style =
+            table.Style
+            |> Option.map (fun s ->
+                sprintf "<tableStyleInfo %s showFirstColumn=\"%d\" showLastColumn=\"%d\" showRowStripes=\"%d\" showColumnStripes=\"%d\"/>"
+                    (attr "name" s.Name) (if s.ShowFirstColumn then 1 else 0) (if s.ShowLastColumn then 1 else 0) (if s.ShowRowStripes then 1 else 0) (if s.ShowColumnStripes then 1 else 0))
+            |> Option.defaultValue ""
+        let after =
+            let found = tableStyleInfoPattern.Match after
+            if found.Success then after.Substring(0, found.Index) + style + after.Substring(found.Index + found.Length) else style + after
+        Some (source.Substring(0, root.Index) + newRoot + between + newColumns + after)
+
 let private sheetRelsXml sheetIndex (sheet: XlsxSheetOut) (tableParts: (string * int option) list) (placement: SheetPlacement) (drawingPath: string option) =
     let commentsVmlPath = placement.VmlPath
     let rels = [
@@ -2419,6 +2578,11 @@ let private reachableKeptParts (workbook: XlsxWorkbookOut) (themePath: string op
                 for _, _, target, isExternal in sheet.Extras.DrawingRelationships do want target isExternal
         for _, path in sheet.Extras.TableParts do
             if sheet.Tables |> List.exists (fun table -> sheet.Extras.TableParts |> List.exists (fun (name, known) -> name = table.Name && known = path)) then want path false
+        // (A changed table of the file is written as its part: what the part leads to - a query table - stays.)
+        for table in sheet.Tables do
+            match table.SourcePart with
+            | Some path -> want path false
+            | None -> ()
     for _, _, target, isExternal in workbook.Preserved.WorkbookRelationships @ Option.toList workbook.Preserved.CalcChain @ workbook.Preserved.RootRelationships do
         want target isExternal
     match themePath with Some path -> pending.Enqueue path | None -> ()
@@ -2696,7 +2860,17 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
         for table, (path, id) in List.zip sheet.Tables tableParts do
             match id with
             | Some id -> textFiles.Add { Path = path; Content = tableXml id table }
-            | None -> ())
+            | None ->
+                // The file's part: as it is while the table is what it says, else with what changed replaced.
+                let asFile = sheet.Extras.TableParts |> List.exists (fun (name, known) -> name = table.Name && known = path)
+                if not asFile then
+                    let source = keptParts |> List.tryPick (fun (kept, data) -> if kept = path then Some (System.Text.Encoding.UTF8.GetString data) else None)
+                    match source |> Option.bind (fun xml -> tableXmlFromSource xml table) with
+                    | Some xml -> textFiles.Add { Path = path; Content = xml }
+                    | None ->
+                        // (Not a part the writer can follow: a table of its own making under the part's name and id.)
+                        let id = source |> Option.map (fun xml -> tableIdPattern.Match xml) |> Option.filter (fun found -> found.Success) |> Option.map (fun found -> int found.Groups.[1].Value) |> Option.defaultValue 1
+                        textFiles.Add { Path = path; Content = tableXml id table })
     let written = textFiles |> Seq.map (fun file -> file.Path) |> Set.ofSeq
     let binaryFiles =
         (match workbook.VbaProjectSource with
@@ -2938,7 +3112,8 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
                               ShowFirstColumn = s.ShowFirstColumn
                               ShowLastColumn = s.ShowLastColumn
                               ShowRowStripes = s.ShowRowStripes
-                              ShowColumnStripes = s.ShowColumnStripes }) })
+                              ShowColumnStripes = s.ShowColumnStripes })
+                      SourcePart = sheet.Extras.TableParts |> List.tryPick (fun (name, path) -> if name = t.Name then Some path else None) })
               DataValidations =
                 sheet.DataValidations
                 |> List.map (fun dv ->

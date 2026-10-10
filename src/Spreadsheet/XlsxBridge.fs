@@ -1497,7 +1497,8 @@ module Export =
                    ShowFirstColumn = s.ShowFirstColumn
                    ShowLastColumn = s.ShowLastColumn
                    ShowRowStripes = s.ShowRowStripes
-                   ShowColumnStripes = s.ShowColumnStripes } : XlsxWriter.XlsxTableStyle)) }
+                   ShowColumnStripes = s.ShowColumnStripes } : XlsxWriter.XlsxTableStyle))
+          SourcePart = None }
 
     let private margins (m: PageMargins) : XlsxWriter.XlsxPageMargins =
         { Top = m.Top; Bottom = m.Bottom; Left = m.Left; Right = m.Right; Header = m.Header; Footer = m.Footer }
@@ -1748,7 +1749,24 @@ module Export =
         { fromModel with
             ColumnWidths = patchSizes original.ColumnWidths before.ColumnWidths model.ColumnWidths 7.0 100.0
             RowHeights = patchSizes original.RowHeights before.RowHeights model.RowHeights 1.333 25.0
-            Tables = if unchanged (fun m -> m.Tables) then original.Tables else fromModel.Tables
+            Tables =
+                if unchanged (fun m -> m.Tables) then original.Tables
+                else
+                    // Each table that is one of the file's is written as the
+                    // file's part of it: found by its name, or - renamed - as
+                    // the table of the file it overlaps that no table is named for.
+                    let named = fromModel.Tables |> List.map (fun t -> t.Name) |> Set.ofList
+                    let orphans = original.Tables |> List.filter (fun t -> t.SourcePart.IsSome && not (Set.contains t.Name named))
+                    let overlaps (a: XlsxWriter.XlsxTableOut) (b: XlsxWriter.XlsxTableOut) =
+                        a.StartRow <= b.EndRow && b.StartRow <= a.EndRow && a.StartCol <= b.EndCol && b.StartCol <= a.EndCol
+                    fromModel.Tables
+                    |> List.map (fun t ->
+                        match original.Tables |> List.tryFind (fun known -> known.Name = t.Name) with
+                        | Some known -> { t with SourcePart = known.SourcePart }
+                        | None ->
+                            match orphans |> List.filter (overlaps t) with
+                            | [ known ] -> { t with SourcePart = known.SourcePart }
+                            | _ -> t)
             // A list validation whose values come from a range is expanded on
             // import; unchanged validations go back as the file states them.
             DataValidations = if sameRef before.Validations model.Validations then original.DataValidations else fromModel.DataValidations
