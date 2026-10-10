@@ -284,8 +284,8 @@ module StyleResolution =
                     | None -> baseProps.IndentRight
                 FirstLineIndent =
                     match TypeConversion.twipsToPoints props.FirstLineIndent, TypeConversion.twipsToPoints props.HangingIndent with
-                    | Some firstLine, _ -> Some firstLine
-                    | None, Some hanging -> Some -hanging
+                    | _, Some hanging -> Some -hanging
+                    | Some firstLine, None -> Some firstLine
                     | None, None -> baseProps.FirstLineIndent
                 RightTabPosition =
                     match props.RightTabPosition with

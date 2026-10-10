@@ -153,8 +153,8 @@ let private mergeParagraphProperties (baseProps: DocxReader.ParagraphProperties)
     Alignment = props.Alignment |> Option.orElse baseProps.Alignment
     IndentLeft = props.IndentLeft |> Option.orElse baseProps.IndentLeft
     IndentRight = props.IndentRight |> Option.orElse baseProps.IndentRight
-    FirstLineIndent = props.FirstLineIndent |> Option.orElse baseProps.FirstLineIndent
-    HangingIndent = props.HangingIndent |> Option.orElse baseProps.HangingIndent
+    FirstLineIndent = if props.FirstLineIndent.IsSome || props.HangingIndent.IsSome then props.FirstLineIndent else baseProps.FirstLineIndent
+    HangingIndent = if props.FirstLineIndent.IsSome || props.HangingIndent.IsSome then props.HangingIndent else baseProps.HangingIndent
     RightTabPosition = props.RightTabPosition |> Option.orElse baseProps.RightTabPosition
     RightTabLeader = props.RightTabLeader |> Option.orElse baseProps.RightTabLeader
     TabStops = (if List.isEmpty props.TabStops then baseProps.TabStops else props.TabStops)

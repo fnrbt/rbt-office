@@ -3962,9 +3962,10 @@ let private paragraphLayoutProps fontSize defaultMissingSpacingToZero (borderAdv
         if props.SpacingAfterAuto = Some true then Some wordAutoSpacing
         else wordSpacingTwipsToPoints props.SpacingAfter |> Option.orElse missingSpacingFallback
     let firstLineIndent =
+        // (Stated together, the hanging indent is the one that counts.)
         match wordTwipsToPoints props.FirstLineIndent, wordTwipsToPoints props.HangingIndent with
-        | Some firstLine, _ -> Some firstLine
-        | None, Some hanging -> Some -hanging
+        | _, Some hanging -> Some -hanging
+        | Some firstLine, None -> Some firstLine
         | None, None -> None
     let lineSpacing = wordLineSpacingToMultiple fontSize props.LineSpacing props.LineRule
     let whenDirect (stated: bool) (value: 'a option) = if stated then value else None
@@ -4155,8 +4156,11 @@ let private mergeParagraphProperties baseProps props = {
     Alignment = props.Alignment |> Option.orElse baseProps.Alignment
     IndentLeft = props.IndentLeft |> Option.orElse baseProps.IndentLeft
     IndentRight = props.IndentRight |> Option.orElse baseProps.IndentRight
-    FirstLineIndent = props.FirstLineIndent |> Option.orElse baseProps.FirstLineIndent
-    HangingIndent = props.HangingIndent |> Option.orElse baseProps.HangingIndent
+    // (w:firstLine and w:hanging are the two forms of one property: a paragraph
+    // that states either does not take the other from its style. A style's
+    // first-line indent used to win over the paragraph's hanging indent.)
+    FirstLineIndent = if props.FirstLineIndent.IsSome || props.HangingIndent.IsSome then props.FirstLineIndent else baseProps.FirstLineIndent
+    HangingIndent = if props.FirstLineIndent.IsSome || props.HangingIndent.IsSome then props.HangingIndent else baseProps.HangingIndent
     RightTabPosition = props.RightTabPosition |> Option.orElse baseProps.RightTabPosition
     RightTabLeader = props.RightTabLeader |> Option.orElse baseProps.RightTabLeader
     TabStops = (if List.isEmpty props.TabStops then baseProps.TabStops else props.TabStops)
