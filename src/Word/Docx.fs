@@ -2359,16 +2359,21 @@ let exportDocumentPackage (doc: Document) : obj =
         match imported with
         | Some original -> jsonOf current = jsonOf (ofOriginal original)
         | None -> false
-    let listsUnchanged =
+    // The levels of lists of the file ("list id/level") that are not numbered as they were.
+    let changedListLevels =
         match imported with
         | Some original ->
             let before = listSignatures original
             let after = listSignatures doc
-            after |> Seq.forall (fun entry ->
+            after
+            |> Seq.filter (fun entry ->
                 match before.TryGetValue entry.Key with
-                | true, value -> value = entry.Value
-                | _ -> true)
-        | None -> false
+                | true, value -> value <> entry.Value
+                | _ -> false)
+            |> Seq.map (fun entry -> entry.Key)
+            |> Seq.toArray
+        | None -> [||]
+    let listsUnchanged = imported.IsSome && changedListLevels.Length = 0
     let partIds (parts: HeaderFooterPart list) = parts |> List.map (fun part -> part.Kind, part.RelationshipId)
     createObj [
         "Footnotes" ==> footnotes
@@ -2379,6 +2384,8 @@ let exportDocumentPackage (doc: Document) : obj =
         "EndnotesUnchanged" ==> sameAsImported endnotes (notesToEditor context "endnote")
         "CommentsUnchanged" ==> sameAsImported comments (commentsToEditor context)
         "ListsUnchanged" ==> listsUnchanged
+        // (The writer then writes those levels anew and leaves the rest of the numbering as it was read.)
+        "ChangedListLevels" ==> changedListLevels
         "PageSetupUnchanged" ==> (match imported with
                                   | Some original ->
                                       doc.PageSetup = original.PageSetup

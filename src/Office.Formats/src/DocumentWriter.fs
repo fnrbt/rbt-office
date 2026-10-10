@@ -3850,6 +3850,103 @@ let private mergeNumbering (original: string) (customInfos: NumberingInfo list) 
                   + String.concat "" nums
                   + original.Substring numsAt)
 
+/// The numbering part as it was read with the levels the editor changed
+/// ("list id/level") written anew: in the list's own abstract definition (a
+/// copy of it, made for the list, when other lists share the definition), the
+/// other levels, lists and definitions staying the text they were. None when
+/// a list or its definition is not found in the text.
+let private patchNumberingLevels (original: string) (customInfos: NumberingInfo list) (changed: string array) : string option =
+    let mutable text = original
+    let mutable ok = true
+    let elementRange (from: int) (name: string) =
+        // (The element that starts at `from`: where it ends.)
+        let tagEnd = tagEndIndex text from
+        if tagEnd < 0 then -1
+        elif text.[tagEnd - 1] = '/' then tagEnd + 1
+        else
+            match childElementRanges text (tagEnd + 1) with
+            | Some children ->
+                let close = text.IndexOf('>', children.CloseAt)
+                if close < 0 then -1 else close + 1
+            | None -> -1
+    let findStart (pattern: string) =
+        let m = System.Text.RegularExpressions.Regex.Match(text, pattern)
+        if m.Success then m.Index else -1
+    let escape (value: string) = System.Text.RegularExpressions.Regex.Escape value
+    let highest () =
+        [ for m in numberAttributePattern.Matches text do
+            let value = if m.Groups.[1].Success then m.Groups.[1].Value else m.Groups.[2].Value
+            match System.Int32.TryParse value with
+            | true, number -> yield number
+            | _ -> () ]
+        |> List.fold max 0
+    for key in changed do
+        let slash = key.LastIndexOf '/'
+        let numId = if slash > 0 then key.Substring(0, slash) else key
+        // (The editor counts levels from one, the file from zero.)
+        let level = if slash > 0 then (match System.Int32.TryParse(key.Substring(slash + 1)) with | true, value -> value - 1 | _ -> -1) else -1
+        match customInfos |> List.tryFind (fun info -> info.NumId = numId && info.Level = level && not info.Undefined) with
+        | None -> ok <- false
+        | Some info when ok ->
+            let numAt = findStart ("<w:num(?:\\s[^>]*)?\\sw:numId=\"" + escape numId + "\"")
+            let numEnd = if numAt < 0 then -1 else elementRange numAt "w:num"
+            if numAt < 0 || numEnd < 0 then ok <- false
+            else
+                let num = text.Substring(numAt, numEnd - numAt)
+                let reference = System.Text.RegularExpressions.Regex.Match(num, "<w:abstractNumId w:val=\"(\\d+)\"\\s*/>")
+                if not reference.Success then ok <- false
+                else
+                    let abstractId = reference.Groups.[1].Value
+                    let abstractPattern = "<w:abstractNum(?:\\s[^>]*)?\\sw:abstractNumId=\"" + escape abstractId + "\""
+                    let abstractAt = findStart abstractPattern
+                    let abstractEnd = if abstractAt < 0 then -1 else elementRange abstractAt "w:abstractNum"
+                    if abstractAt < 0 || abstractEnd < 0 then ok <- false
+                    else
+                        let shared = System.Text.RegularExpressions.Regex.Matches(text, "<w:abstractNumId w:val=\"" + escape abstractId + "\"\\s*/>").Count > 1
+                        let definition = text.Substring(abstractAt, abstractEnd - abstractAt)
+                        let ownId = if shared then string (highest () + 1) else abstractId
+                        // The level written anew, in the place of the one that is there.
+                        let levelXml = numberingLevelWithIndents false info.IndentLeft info.FirstLineIndent info.Level info.Start info.Format info.LevelText
+                        let withLevel (definition: string) =
+                            let m = System.Text.RegularExpressions.Regex.Match(definition, "<w:lvl(?:\\s[^>]*)?\\sw:ilvl=\"" + string level + "\"[^>]*>")
+                            if m.Success then
+                                let close = definition.IndexOf("</w:lvl>", m.Index, System.StringComparison.Ordinal)
+                                if close < 0 then None else Some (definition.Substring(0, m.Index) + levelXml + definition.Substring(close + 8))
+                            else
+                                let close = definition.LastIndexOf("</w:abstractNum>", System.StringComparison.Ordinal)
+                                if close < 0 then None else Some (definition.Substring(0, close) + levelXml + definition.Substring close)
+                        match withLevel definition with
+                        | None -> ok <- false
+                        | Some definition ->
+                            let definition =
+                                if not shared then definition
+                                else
+                                    // A definition of its own for this list: with an id and a signature of its own.
+                                    let attribute = "w:abstractNumId=\"" + abstractId + "\""
+                                    let at = definition.IndexOf(attribute, System.StringComparison.Ordinal)
+                                    let renamed = definition.Substring(0, at) + "w:abstractNumId=\"" + ownId + "\"" + definition.Substring(at + attribute.Length)
+                                    System.Text.RegularExpressions.Regex.Replace(renamed, "<w:nsid [^>]*/>|<w:tmpl [^>]*/>", "")
+                            // The list: its definition, and no override of the level but the editor's own start.
+                            let num =
+                                let repointed = if shared then num.Replace(reference.Value, "<w:abstractNumId w:val=\"" + ownId + "\"/>") else num
+                                let without = System.Text.RegularExpressions.Regex.Replace(repointed, "<w:lvlOverride w:ilvl=\"" + string level + "\"(?:/>|>[\\s\\S]*?</w:lvlOverride>)", "")
+                                if not info.HasOverride then without
+                                else
+                                    let startOverride = element "w:lvlOverride" [("w:ilvl", string level)] [ selfClosing "w:startOverride" [("w:val", string (info.Start |> Option.defaultValue 1))] ]
+                                    if without.EndsWith "/>" then without.Substring(0, without.Length - 2) + ">" + startOverride + "</w:num>"
+                                    else
+                                        let close = without.LastIndexOf("</w:num>", System.StringComparison.Ordinal)
+                                        without.Substring(0, close) + startOverride + without.Substring close
+                            // (The list comes after the definitions: it is replaced first.)
+                            if numAt > abstractAt then
+                                text <- text.Substring(0, numAt) + num + text.Substring numEnd
+                                text <-
+                                    if shared then text.Substring(0, abstractEnd) + definition + text.Substring abstractEnd
+                                    else text.Substring(0, abstractAt) + definition + text.Substring abstractEnd
+                            else ok <- false
+        | Some _ -> ()
+    if ok then Some text else None
+
 let private generateSettings (pageSetup: PageSetupInfo option) =
     let children = [
         match pageSetup with
@@ -4085,7 +4182,14 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
             // (Also with RegenerateAll: the lists are not blocks, and they are as they were.)
             if boolOrDefault false (package?ListsUnchanged) then
                 Map.tryFind "numbering" preserved.SourceXml |> Option.bind (fun original -> mergeNumbering original infos needsDefaults)
-            else None
+            else
+                // Lists whose format the editor changed: those levels alone are written anew.
+                let changed = optionalArray (package?ChangedListLevels) |> Array.map (fun key -> stringOrDefault "" key)
+                if changed.Length = 0 then None
+                else
+                    Map.tryFind "numbering" preserved.SourceXml
+                    |> Option.bind (fun original -> mergeNumbering original infos needsDefaults)
+                    |> Option.bind (fun merged -> patchNumberingLevels merged infos changed)
         merged |> Option.defaultWith (fun () -> generateNumbering infos)
     let styles =
         (collectPackageStyles (optionalArray (package?Styles)) @ collectStyles allBlocks)
