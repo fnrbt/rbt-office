@@ -1285,7 +1285,9 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
             HeaderFooter = hf
             ManualRowBreaks = sheet.RowBreaks
             ManualColBreaks = sheet.ColBreaks
-            PrintArea = sheet.PrintArea |> Option.bind parseRange
+            // (A print area of several areas names them with commas between.)
+            PrintArea = sheet.PrintArea |> Option.bind (fun text -> text.Split(',') |> Array.tryHead) |> Option.bind parseRange
+            ExtraPrintAreas = (match sheet.PrintArea with Some text -> text.Split(',') |> Array.toList |> List.tail |> List.choose parseRange | None -> [])
             RepeatRows = sheet.PrintTitleRows |> Option.bind parseRowRange
             RepeatCols = sheet.PrintTitleCols |> Option.bind parseColRange
             FirstPageNumber = sheet.PageSetup |> Option.map (fun ps -> ps.FirstPageNumber) |> Option.defaultValue 1
