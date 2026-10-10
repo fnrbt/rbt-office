@@ -823,6 +823,40 @@ module API =
         // (The lines and the pages are other ones: LayoutChanged, with FontsPending as it is now.)
         notifyLayoutProgress editor
 
+    /// As setTextMeasurers, for a host whose font set gained faces: the new
+    /// measurers measure as the ones installed, except text in the families
+    /// of `faces` ([{ family, bold, italic }] - the faces the font set has now
+    /// and had not; text that named them was set in a fallback). Only the
+    /// paragraphs that name one of those families are laid out again (their
+    /// lines are broken again, and what follows them moves if they grew); the
+    /// lines of all the others stand, and their text is not measured again.
+    /// A document that names none of them is not laid out at all. The result
+    /// is the layout setTextMeasurers gives. Returns how many paragraphs and
+    /// blocks were laid out again for it.
+    ///
+    /// The host answers for the premise. Text falls back by family: when a
+    /// face of the family the host's shaper falls back to (its default
+    /// family) is among `faces`, text in families the host has no face of is
+    /// measured otherwise too - then call setTextMeasurers, or pass null for
+    /// `faces`, which is the same.
+    let setTextMeasurersForFaces (editor: Editor) (measureText: Layout.TextMeasurer) (measureRange: Layout.TextRangeMeasurer) (faces: obj array) : int =
+        let ctx = editor.Handler.RenderContext
+        let measureText = if isNull (box measureText) then None else Some measureText
+        let measureRange = if isNull (box measureRange) then None else Some measureRange
+        if isNull (box faces) then
+            Ren.setTextMeasurers ctx measureText measureRange
+            Ren.render ctx editor.Doc
+            continueLayout editor
+            notifyLayoutProgress editor
+            -1
+        else
+            let count = Ren.setTextMeasurersForFamilies ctx measureText measureRange (faces |> Array.map (fun face -> unbox<string> (face?family)))
+            if count > 0 then
+                Ren.render ctx editor.Doc
+                continueLayout editor
+            notifyLayoutProgress editor
+            count
+
     let setTextRangeMeasurer (editor: Editor) (measureRange: Layout.TextRangeMeasurer) =
         let ctx = editor.Handler.RenderContext
         Ren.setTextMeasurers ctx ctx.TextMeasurer (if isNull (box measureRange) then None else Some measureRange)
@@ -3333,6 +3367,7 @@ module API =
             "getLoadError" ==> getLoadError
             "onFontsDiscovered" ==> onFontsDiscovered
             "setFontAvailability" ==> setFontAvailability
+            "setTextMeasurersForFaces" ==> setTextMeasurersForFaces
             "getPendingFonts" ==> getPendingFonts
             "isLayoutComplete" ==> isLayoutComplete
             "whenLayoutComplete" ==> whenLayoutComplete

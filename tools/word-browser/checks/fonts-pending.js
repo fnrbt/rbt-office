@@ -39,6 +39,7 @@ try {
     const [whole, wholeCanvas] = editorOn(stack(new Set(allFaces)));
     Word.importFromDocxPackage(whole, wholePackage);
     const finalPages = Word.getPageCount(whole);
+    const finalPrint = JSON.stringify(Word.getLayoutFingerprint(whole));
     check('with every face nothing is pending', [Word.getPendingFonts(whole), Word.getDocumentSize(whole).FontsPending], [[], false]);
     const [without, withoutCanvas] = editorOn(stack(new Set(allFaces.filter((face) => face !== georgia))));
     Word.importFromDocxPackage(without, wholePackage);
@@ -111,6 +112,51 @@ try {
         check('installing the face tells the listeners that the layout changed, nothing pending', [changes.length >= 1, changes.some((change) => change.LayoutChanged && !change.FontsPending && !change.DocumentChanged), changes.some((change) => change.FontsPending)], [true, true, false]);
         check('the page count is the final one', [Word.getPageCount(editor), Word.getPendingFonts(editor), Word.getDocumentSize(editor).FontsPending], [finalPages, [], false]);
         Word.dispose(editor); canvas.remove();
+    }
+
+    // ---- the face arrives: only the text in it is laid out again -------------------
+    {
+        const text = stack(new Set(allFaces.filter((face) => face !== georgia)));
+        let measured = 0;
+        const measureText = (value, style) => { measured++; return text.measureText(value, style); };
+        const measureRange = (value, style, start, length) => { measured++; return text.measureRange(value, style, start, length); };
+        const canvas = document.createElement('canvas'); document.body.appendChild(canvas);
+        const editor = Word.initializeCanvas(canvas); Word.setViewport(editor, viewport);
+        Word.setFontAvailability(editor, text.isAvailable);
+        Word.setTextMeasurers(editor, measureText, measureRange);
+        Word.importFromDocxPackage(editor, wholePackage);
+        measured = 0;
+        check('laid out without the late face', [Word.getPageCount(editor), Word.getDocumentSize(editor).FontsPending], [provisionalPages, true]);
+        const measuredForAll = measured;
+        const changes = [];
+        Word.onChange(editor, (change) => changes.push({ ...change }));
+        // A face of a family the document does not name (the host's font set is that of all its documents).
+        measured = 0;
+        const versionBefore = Word.getRenderStats(editor).MeasurerVersion;
+        check('a face the document does not name: nothing is laid out again', [Word.setTextMeasurersForFaces(editor, measureText, measureRange, [{ family: 'Papyrus', bold: false, italic: false }]), measured, Word.getRenderStats(editor).MeasurerVersion - versionBefore, Word.getPageCount(editor), Word.isLayoutComplete(editor)], [0, 0, 1, provisionalPages, true]);
+        // The late face.
+        text.faces.add(georgia);
+        measured = 0; changes.length = 0;
+        const again = Word.setTextMeasurersForFaces(editor, measureText, measureRange, [{ family: 'Georgia', bold: true, italic: false }]);
+        const pages = Word.getPageCount(editor);
+        const measuredForFace = measured;
+        check('the face the document was waiting for: its paragraphs are laid out again', [again >= 400, pages, Word.getPendingFonts(editor), Word.getDocumentSize(editor).FontsPending], [true, finalPages, [], false]);
+        check('the layout is the one made with the face from the start', [JSON.stringify(Word.getLayoutFingerprint(editor)) === finalPrint], [true]);
+        check(`the text in other faces is not measured again (${measuredForFace} calls of the measurers, ${measuredForAll} for the whole document)`, [measuredForFace > 0, measuredForFace < measuredForAll / 3], [true, true]);
+        check('the listeners are told that the layout changed', [changes.some((change) => change.LayoutChanged && !change.FontsPending)], [true]);
+        // null for the faces: everything, as setTextMeasurers.
+        measured = 0;
+        check('without faces named everything is laid out again', [Word.setTextMeasurersForFaces(editor, measureText, measureRange, null), Word.getPageCount(editor), measured > measuredForAll / 2, JSON.stringify(Word.getLayoutFingerprint(editor)) === finalPrint], [-1, finalPages, true, true]);
+        Word.dispose(editor); canvas.remove();
+        // The viewer.
+        const lacking = stack(new Set(allFaces.filter((face) => face !== georgia)));
+        const viewer = Word.createViewer(document.createElement('canvas'));
+        viewer.setTextMeasurers(lacking.measureText, lacking.measureRange);
+        viewer.load(wholePackage);
+        const before = viewer.getPageCount();
+        lacking.faces.add(georgia);
+        check('the viewer: the face arrives, the pages are the final ones', [before, viewer.setTextMeasurersForFaces(lacking.measureText, lacking.measureRange, [{ family: 'Georgia', bold: true, italic: false }]) >= 400, viewer.getPageCount()], [provisionalPages, true, finalPages]);
+        viewer.dispose();
     }
 
     // ---- read in steps: the faces before the blocks --------------------------------

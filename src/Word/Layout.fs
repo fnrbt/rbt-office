@@ -6363,6 +6363,96 @@ let clearIncrementalLayoutState (state: IncrementalLayoutState) =
     state.Memo.MemoStyles <- []
     state.Memo.MemoStyleContext <- None
 
+/// The measurers measure text in some faces otherwise from now on (the host
+/// got the files of faces it had drawn in a fallback): `uses style` says
+/// whether text of that style is in one of them; all other text measures as
+/// it did. What was laid out in those faces is forgotten - the lines and the
+/// placements of the paragraphs set in them, and the place they have in the
+/// passes that were recorded, so that the next pass lays them out again as it
+/// does paragraphs an edit changed - and everything else stands: the lines of
+/// the other paragraphs, the layouts before the first paragraph in such a
+/// face and after the last one whose place did not move. Returns how many
+/// paragraphs were set in the faces.
+let invalidateFacesInIncrementalLayout (state: IncrementalLayoutState) (uses: TextBuffer.TextStyle -> bool) : int =
+    let memo = state.Memo
+    let lineUses (line: MeasuredLine) =
+        line.Segments
+        |> List.exists (function
+            | TextSegment (_, style, _, _, _) -> uses style
+            | MathSegment (_, style, _, _, _, _, _, _) -> uses style
+            | ImageSegment _ -> false)
+    let layoutUses (layout: BlockLayout) =
+        (match layout.PrefixStyle with
+         | Some style -> uses style
+         | None -> false)
+        || List.exists lineUses layout.Lines
+    let affected = System.Collections.Generic.HashSet<string>()
+    for KeyValue (key, entry) in memo.MemoEntries do
+        let inFaces =
+            uses entry.MemoContentTextStyle
+            || (entry.MemoEffectiveBuffer.Runs |> List.exists (function TextBuffer.Text run -> uses run.Style | TextBuffer.Image _ -> false))
+            || (match entry.MemoLines with Some (_, lines) -> List.exists lineUses lines | None -> false)
+            || (match entry.MemoLinesOlder with Some (_, lines) -> List.exists lineUses lines | None -> false)
+            || (match entry.MemoPlacement with Some (_, layout) -> layoutUses layout | None -> false)
+            || (match entry.MemoPlacementOlder with Some (_, layout) -> layoutUses layout | None -> false)
+            || (match entry.MemoObstaclePlacement with Some (_, _, _, layout, _, _) -> layoutUses layout | None -> false)
+        if inFaces then
+            let separator = key.IndexOf '\u0001'
+            affected.Add (if separator < 0 then key else key.Substring(0, separator)) |> ignore
+    // (Every slot of a paragraph that has one in the faces: the whole and the rest of one that breaks over a page.)
+    for KeyValue (key, entry) in memo.MemoEntries do
+        let separator = key.IndexOf '\u0001'
+        if affected.Contains (if separator < 0 then key else key.Substring(0, separator)) then
+            entry.MemoLines <- None
+            entry.MemoLinesOlder <- None
+            entry.MemoPlacement <- None
+            entry.MemoPlacementOlder <- None
+            entry.MemoObstaclePlacement <- None
+    let rec tableAffected (table: TableBlock) =
+        table.Rows
+        |> List.exists (fun row ->
+            row.Cells
+            |> List.exists (fun cell ->
+                (cell.Content |> List.exists (fun para -> affected.Contains para.Id))
+                || List.exists tableAffected cell.NestedTables))
+    // (The same block as another object: a pass that compares its blocks with those of the last
+    // one takes it for a block that changed, and reads of it what it would have read.)
+    let another (block: Block) : Block =
+        match block with
+        | Paragraph para -> Paragraph { para with Id = para.Id }
+        | Heading (level, para) -> Heading (level, { para with Id = para.Id })
+        | Table table -> Table { table with Id = table.Id }
+        | TextBox textBox -> TextBox { textBox with Id = textBox.Id }
+    let mutable changed = 0
+    for record in memo.MemoPasses.Values do
+        for index in 0 .. record.PassBlocks.Length - 1 do
+            let block = record.PassBlocks.[index]
+            let byContent =
+                match block with
+                | Paragraph para
+                | Heading (_, para) -> affected.Contains para.Id
+                | Table table -> tableAffected table
+                | TextBox _ -> false
+            let byResult () =
+                let mutable found = false
+                let mutable at = record.PassStarts.[index]
+                while not found && at < record.PassStarts.[index + 1] do
+                    if layoutUses record.PassResults.[at] then found <- true
+                    at <- at + 1
+                found
+            if byContent || byResult () then
+                record.PassBlocks.[index] <- another block
+                changed <- changed + 1
+    // What is cheap to make again and was made of text in any face: the note areas.
+    memo.MemoFootnoteAreas.Clear()
+    memo.MemoPlacedNotes.Clear()
+    memo.MemoSlices <- None
+    // The last result is not what the next pass gives.
+    state.LastDocument <- None
+    state.LastLayouts <- None
+    state.LastPages <- None
+    affected.Count + changed
+
 /// True when two documents lay out (and paint, the selection overlay apart)
 /// alike without looking further: they are the same document or differ only
 /// in the selection - a caret move, a selection drag. Everything else is the

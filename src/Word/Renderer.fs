@@ -650,6 +650,32 @@ let setTextMeasurers (ctx: RenderContext) (measureText: TextMeasurer option) (me
     ctx.TextMeasurerVersion <- ctx.TextMeasurerVersion + 1
     clearLayoutCache ctx
 
+/// As `setTextMeasurers`, for measurers that differ from the ones installed
+/// only in how they measure text that names one of `families` (the host got
+/// faces of those families and set such text in a fallback until now): the
+/// paragraphs set in them are laid out again, as paragraphs an edit changed
+/// are; the lines of all the others stand. Returns how many paragraphs and
+/// blocks were set in the families (0: the layout stands as it is).
+let setTextMeasurersForFamilies (ctx: RenderContext) (measureText: TextMeasurer option) (measureRange: TextRangeMeasurer option) (families: string seq) : int =
+    ctx.TextMeasurer <- measureText
+    ctx.TextRangeMeasurer <- measureRange
+    ctx.TextMeasurerVersion <- ctx.TextMeasurerVersion + 1
+    let normalize (name: string) = name.Trim().ToLowerInvariant()
+    let names = System.Collections.Generic.HashSet<string>()
+    for family in families do
+        if not (isNull family) then names.Add (normalize family) |> ignore
+    let uses (style: TextBuffer.TextStyle) =
+        names.Contains (normalize (style.FontFamily |> Option.filter (fun name -> name.Trim() <> "") |> Option.defaultValue ctx.FontFamily))
+    let count = if names.Count = 0 then 0 else Rbt.Word.Layout.invalidateFacesInIncrementalLayout ctx.LayoutState uses
+    if count > 0 then
+        // (The tables that are laid out again are planned again; what is painted is collected again.)
+        clearMeasuredWidths ()
+        ctx.PlanScope <- obj ()
+        clearPaintCache ctx.PaintCache
+        ctx.LastPaint <- None
+        ctx.PageFrame <- None
+    count
+
 let layoutLookupFor (ctx: RenderContext) (doc: Document) =
     // (Asked for by commands that may name any block: the whole document.)
     completeLayout ctx

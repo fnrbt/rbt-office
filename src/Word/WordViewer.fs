@@ -262,6 +262,15 @@ module Viewer =
         // viewer breaks lines and pages exactly as that editor does.
         state?setTextMeasurers <- fun (measureText: Layout.TextMeasurer) (measureRange: Layout.TextRangeMeasurer) ->
             Ren.setTextMeasurers ctx (if isNull (box measureText) then None else Some measureText) (if isNull (box measureRange) then None else Some measureRange)
+        // As setTextMeasurers, for a font set that gained `faces` ([{ family, bold, italic }]): only the
+        // paragraphs that name one of their families are laid out again (see API.setTextMeasurersForFaces).
+        state?setTextMeasurersForFaces <- fun (measureText: Layout.TextMeasurer) (measureRange: Layout.TextRangeMeasurer) (faces: obj array) ->
+            let measureText = if isNull (box measureText) then None else Some measureText
+            let measureRange = if isNull (box measureRange) then None else Some measureRange
+            if isNull (box faces) then
+                Ren.setTextMeasurers ctx measureText measureRange
+                -1
+            else Ren.setTextMeasurersForFamilies ctx measureText measureRange (faces |> Array.map (fun face -> unbox<string> (face?family)))
         state?setTextMeasurer <- fun (measureText: Layout.TextMeasurer) ->
             Ren.setTextMeasurers ctx (if isNull (box measureText) then None else Some measureText) ctx.TextRangeMeasurer
         state?setTextRangeMeasurer <- fun (measureRange: Layout.TextRangeMeasurer) ->
