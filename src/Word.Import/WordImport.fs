@@ -183,6 +183,7 @@ let private mergeParagraphProperties (baseProps: DocxReader.ParagraphProperties)
     SectionColumns = props.SectionColumns |> Option.orElse baseProps.SectionColumns
     SectionGeometry = props.SectionGeometry |> Option.orElse baseProps.SectionGeometry
     SectionPageNumberStart = props.SectionPageNumberStart |> Option.orElse baseProps.SectionPageNumberStart
+    SectionPageNumberFormat = props.SectionPageNumberFormat |> Option.orElse baseProps.SectionPageNumberFormat
     RenderedPageBreakBefore = props.RenderedPageBreakBefore |> Option.orElse baseProps.RenderedPageBreakBefore
     HeaderReferences = if props.HeaderReferences.IsEmpty then baseProps.HeaderReferences else props.HeaderReferences
     FooterReferences = if props.FooterReferences.IsEmpty then baseProps.FooterReferences else props.FooterReferences
@@ -563,6 +564,7 @@ let private hasDirectParagraphFormatting (props: DocxReader.ParagraphProperties)
     || props.ListInfo.IsSome
     || props.SectionBreak.IsSome
     || props.SectionPageNumberStart.IsSome
+    || props.SectionPageNumberFormat.IsSome
     || props.RenderedPageBreakBefore.IsSome
     || not props.HeaderReferences.IsEmpty
     || not props.FooterReferences.IsEmpty
@@ -652,6 +654,7 @@ let private paraMetadata styleMap resolver useDocumentMarkForPureEmpty defaultMi
             SectionColumns = props.SectionColumns |> Option.map (fun c -> ({ Count = c.Count; Gap = c.Gap; Separator = c.Separator; Widths = c.Widths }: Rbt.Word.Document.SectionColumns))
             SectionPageSetup = props.SectionGeometry |> Option.map (fun g -> ({ PageWidth = g.PageWidth; PageHeight = g.PageHeight; MarginLeft = g.MarginLeft; MarginRight = g.MarginRight; MarginTop = g.MarginTop; MarginBottom = g.MarginBottom; HeaderDistance = g.HeaderDistance; FooterDistance = g.FooterDistance; DifferentFirstPage = g.DifferentFirstPage; EvenAndOddHeaders = false }: Rbt.Word.Document.SectionPageSetup))
             SectionPageNumberStart = props.SectionPageNumberStart
+            SectionPageNumberFormat = props.SectionPageNumberFormat
             RenderedPageBreakBefore = props.RenderedPageBreakBefore
             HeaderReferences = props.HeaderReferences |> List.map (fun ref -> ref.Kind, ref.RelationshipId)
             FooterReferences = props.FooterReferences |> List.map (fun ref -> ref.Kind, ref.RelationshipId)
@@ -955,6 +958,7 @@ let private pageSetup (doc: DocxReader.WordDocument) =
             HeaderReferences = setup.HeaderReferences |> List.map (fun ref -> ref.Kind, ref.RelationshipId)
             FooterReferences = setup.FooterReferences |> List.map (fun ref -> ref.Kind, ref.RelationshipId)
             PageNumberStart = setup.PageNumberStart
+            PageNumberFormat = setup.PageNumberFormat
         }
 
 /// A header / footer part with its blocks in order. It used to be built from

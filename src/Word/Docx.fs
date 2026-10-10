@@ -412,6 +412,7 @@ let private metadataFromEditor (item: obj) =
     let pageBreakAfter = item?PageBreakAfter |> boolOrDefault false
     let sectionBreak = optionalString (item?SectionBreak)
     let sectionPageNumberStart = optionalInt (item?SectionPageNumberStart)
+    let sectionPageNumberFormat = optionalString (item?SectionPageNumberFormat)
     let renderedPageBreakBefore = optionalInt (item?RenderedPageBreakBefore)
     let sectionPageSetup = sectionPageSetupFromEditor (item?SectionPageSetup)
     let sectionColumns : SectionColumns option =
@@ -470,6 +471,7 @@ let private metadataFromEditor (item: obj) =
             PageBreakAfter = pageBreakAfter
             SectionBreak = sectionBreak
             SectionPageNumberStart = sectionPageNumberStart
+            SectionPageNumberFormat = sectionPageNumberFormat
             RenderedPageBreakBefore = renderedPageBreakBefore
             SectionPageSetup = sectionPageSetup
             SectionColumns = sectionColumns
@@ -1251,6 +1253,7 @@ let private pageSetupFromEditor (value: obj) =
         HeaderReferences = refsFromEditor (value?HeaderReferences)
         FooterReferences = refsFromEditor (value?FooterReferences)
         PageNumberStart = optionalInt (value?PageNumberStart)
+        PageNumberFormat = optionalString (value?PageNumberFormat)
     }
 
 /// Import EditorParagraphs from Office.Formats into Word document
@@ -1685,6 +1688,7 @@ let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) 
         "PageBreakAfter" ==> para.Metadata.PageBreakAfter
         "SectionBreak" ==> para.Metadata.SectionBreak
         "SectionPageNumberStart" ==> para.Metadata.SectionPageNumberStart
+        "SectionPageNumberFormat" ==> para.Metadata.SectionPageNumberFormat
         "RenderedPageBreakBefore" ==> para.Metadata.RenderedPageBreakBefore
         "SectionPageSetup" ==> (para.Metadata.SectionPageSetup |> Option.map sectionPageSetupToEditor |> Option.toObj)
         "SectionColumns" ==> (para.Metadata.SectionColumns
@@ -1962,6 +1966,7 @@ let exportPageSetupToEditor (setup: PageSetup) : obj =
         "HeaderReferences" ==> refsToEditor setup.HeaderReferences
         "FooterReferences" ==> refsToEditor setup.FooterReferences
         "PageNumberStart" ==> setup.PageNumberStart
+        "PageNumberFormat" ==> setup.PageNumberFormat
     ]
 
 /// A note / comment body made of plain text: what the editor has for a note

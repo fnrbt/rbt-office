@@ -252,6 +252,7 @@ type ParagraphProperties = {
     SectionColumns: SectionColumns option
     SectionGeometry: SectionGeometry option
     SectionPageNumberStart: int option
+    SectionPageNumberFormat: string option
     RenderedPageBreakBefore: int option
     HeaderReferences: HeaderFooterReference list
     FooterReferences: HeaderFooterReference list
@@ -539,6 +540,7 @@ type PageSetup = {
     HeaderReferences: HeaderFooterReference list
     FooterReferences: HeaderFooterReference list
     PageNumberStart: int option
+    PageNumberFormat: string option
 }
 
 type NumberingDefinition = {
@@ -918,6 +920,7 @@ module Docx =
                 SectionColumns = sectPr |> Option.bind parseColumns
                 SectionGeometry = sectPr |> Option.bind parseSectionGeometry
                 SectionPageNumberStart = sectPr |> Option.bind (fun section -> getPropVal "pgNumType" "start" section) |> Option.bind (fun value -> match System.Int32.TryParse(value) with | true, parsed -> Some parsed | false, _ -> None)
+                SectionPageNumberFormat = sectPr |> Option.bind (fun section -> getPropVal "pgNumType" "fmt" section)
                 RenderedPageBreakBefore = None
                 HeaderReferences = sectPr |> Option.map (headerFooterReferences "headerReference") |> Option.defaultValue []
                 FooterReferences = sectPr |> Option.map (headerFooterReferences "footerReference") |> Option.defaultValue []
@@ -956,7 +959,7 @@ module Docx =
                 SectionBreak = None
                 SectionColumns = None
                 SectionGeometry = None
-                SectionPageNumberStart = None
+                SectionPageNumberStart = None; SectionPageNumberFormat = None
                 RenderedPageBreakBefore = None
                 HeaderReferences = []
                 FooterReferences = []
@@ -2252,7 +2255,7 @@ module Styles =
             SectionBreak = None
             SectionGeometry = None
             SectionColumns = None
-            SectionPageNumberStart = None
+            SectionPageNumberStart = None; SectionPageNumberFormat = None
             RenderedPageBreakBefore = None
             HeaderReferences = []
             FooterReferences = []
@@ -3298,6 +3301,7 @@ let private parsePageSetup evenAndOddHeaders (sectPr: XmlNode option) : PageSetu
             PageNumberStart =
                 Docx.getPropVal "pgNumType" "start" section
                 |> Option.bind (fun value -> match System.Int32.TryParse(value) with | true, parsed -> Some parsed | false, _ -> None)
+            PageNumberFormat = Docx.getPropVal "pgNumType" "fmt" section
         })
 
 // Extract image as data URL from archive
@@ -4043,6 +4047,7 @@ let private hasDirectParagraphFormatting (props: ParagraphProperties) =
     || props.ListInfo.IsSome
     || props.SectionBreak.IsSome
     || props.SectionPageNumberStart.IsSome
+    || props.SectionPageNumberFormat.IsSome
     || props.RenderedPageBreakBefore.IsSome
     || not props.HeaderReferences.IsEmpty
     || not props.FooterReferences.IsEmpty
@@ -4155,6 +4160,7 @@ let private mergeParagraphProperties baseProps props = {
     SectionColumns = props.SectionColumns
     SectionGeometry = props.SectionGeometry
     SectionPageNumberStart = props.SectionPageNumberStart
+    SectionPageNumberFormat = props.SectionPageNumberFormat
     RenderedPageBreakBefore = props.RenderedPageBreakBefore
     HeaderReferences = props.HeaderReferences
     FooterReferences = props.FooterReferences
@@ -4781,6 +4787,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                 "PageBreakAfter" ==> pageBreakAfter
                 "SectionBreak" ==> effectiveParaProps.SectionBreak
                 "SectionPageNumberStart" ==> effectiveParaProps.SectionPageNumberStart
+                "SectionPageNumberFormat" ==> effectiveParaProps.SectionPageNumberFormat
                 "HeaderReferences" ==> referenceObjects effectiveParaProps.HeaderReferences
                 "FooterReferences" ==> referenceObjects effectiveParaProps.FooterReferences
                 "ParagraphMarkFontSize" ==> paragraphFontSize
@@ -5076,6 +5083,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                     "PageBreakAfter" ==> pageBreakAfter
                     "SectionBreak" ==> effectiveParaProps.SectionBreak
                     "SectionPageNumberStart" ==> effectiveParaProps.SectionPageNumberStart
+                    "SectionPageNumberFormat" ==> effectiveParaProps.SectionPageNumberFormat
                     "HeaderReferences" ==> referenceObjects effectiveParaProps.HeaderReferences
                     "FooterReferences" ==> referenceObjects effectiveParaProps.FooterReferences
                     "ParagraphMarkFontSize" ==> paragraphFontSize
@@ -5491,6 +5499,7 @@ let toEditorPageSetup (doc: WordDocument) : obj =
             "HeaderReferences" ==> referenceObjects setup.HeaderReferences
             "FooterReferences" ==> referenceObjects setup.FooterReferences
             "PageNumberStart" ==> setup.PageNumberStart
+            "PageNumberFormat" ==> setup.PageNumberFormat
         ]
 
 /// Footnote / endnote bodies as editor blocks (paragraphs with runs, tables),

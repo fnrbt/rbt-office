@@ -387,7 +387,7 @@ ok "editor-notes-carry-blocks"
 let sectionsDoc =
     (fun body -> docxWithParts body [] [] |> DocxReader.loadBytesNative |> Option.get)
         ("<w:p><w:r><w:t>one</w:t></w:r></w:p><w:p><w:pPr><w:sectPr><w:headerReference w:type=\"default\" r:id=\"rId11\"/></w:sectPr></w:pPr></w:p>"
-         + "<w:p><w:r><w:t>two</w:t></w:r></w:p><w:p><w:pPr><w:sectPr><w:headerReference w:type=\"default\" r:id=\"rId12\"/><w:pgNumType w:start=\"7\"/></w:sectPr></w:pPr></w:p>"
+         + "<w:p><w:r><w:t>two</w:t></w:r></w:p><w:p><w:pPr><w:sectPr><w:headerReference w:type=\"default\" r:id=\"rId12\"/><w:pgNumType w:fmt=\"lowerRoman\" w:start=\"7\"/></w:sectPr></w:pPr></w:p>"
          + "<w:p><w:r><w:t>three</w:t></w:r></w:p><w:sectPr><w:headerReference w:type=\"default\" r:id=\"rId13\"/><w:footerReference w:type=\"first\" r:id=\"rId14\"/><w:pgNumType w:start=\"3\"/></w:sectPr>")
 let sectionRefs =
     sectionsDoc.Content
@@ -397,6 +397,14 @@ let sectionRefs =
 ok "section-references-stay-on-ending-paragraph"
    (sectionRefs = [ [], None; [ "rId11" ], None; [], None; [ "rId12" ], Some 7; [], None ])
    (sprintf "%A" sectionRefs)
+let sectionFormats =
+    sectionsDoc.Content
+    |> List.choose (function
+        | DocxReader.Para para when para.Properties.SectionBreak.IsSome -> Some para.Properties.SectionPageNumberFormat
+        | _ -> None)
+ok "section-page-number-format-is-read"
+   (sectionFormats = [ None; Some "lowerRoman" ] && (sectionsDoc.PageSetup |> Option.bind (fun setup -> setup.PageNumberFormat)) = None)
+   (sprintf "%A" sectionFormats)
 let finalSection = sectionsDoc.PageSetup |> Option.map (fun setup -> setup.HeaderReferences |> List.map (fun r -> r.Kind, r.RelationshipId), setup.FooterReferences |> List.map (fun r -> r.Kind, r.RelationshipId), setup.PageNumberStart)
 ok "final-section-references-on-page-setup"
    (finalSection = Some ([ "default", "rId13" ], [ "first", "rId14" ], Some 3))

@@ -36,7 +36,7 @@ const SHAPE_KEYS = ['Width', 'Height', 'X', 'Y', 'Geometry', 'CustomPath', 'Cust
 const PARA_KEYS = ['Type', 'Style', 'Alignment', 'ListStyle', 'ListLevel', 'ListId', 'ListNumberFormat', 'ListLevelText', 'ListStart',
     'IndentLeft', 'IndentRight', 'FirstLineIndent', 'SpacingBefore', 'SpacingAfter', 'LineSpacing', 'LineSpacingRule',
     'TabStops', 'Rtl', 'BackgroundColor', 'ParagraphBorders', 'PageBreakBefore', 'PageBreakAfter', 'SectionBreak',
-    'SectionPageNumberStart', 'SectionPageSetup', 'SectionColumns', 'StyleContextualSpacing',
+    'SectionPageNumberStart', 'SectionPageNumberFormat', 'SectionPageSetup', 'SectionColumns', 'StyleContextualSpacing',
     'ContentControlTag', 'ContentControlAlias', 'KeepNext', 'KeepLines', 'HeaderReferences', 'FooterReferences',
     // What the paragraph itself states, as opposed to what it inherits.
     'ExplicitSpacingBefore', 'ExplicitSpacingAfter', 'ExplicitLineSpacing', 'ExplicitIndentLeft', 'ExplicitIndentRight', 'ExplicitFirstLineIndent',
@@ -49,7 +49,7 @@ const CELL_KEYS = ['ColSpan', 'BackgroundColor', 'Width', 'PreferredWidth', 'Pre
     'PaddingTop', 'PaddingRight', 'PaddingBottom', 'PaddingLeft'];
 const SETUP_KEYS = ['PageWidth', 'PageHeight', 'MarginLeft', 'MarginRight', 'MarginTop', 'MarginBottom', 'HeaderDistance', 'FooterDistance',
     'DifferentFirstPage', 'EvenAndOddHeaders', 'ColumnCount', 'ColumnSpace', 'ColumnSeparator', 'ColumnWidths',
-    'HeaderReferences', 'FooterReferences', 'PageNumberStart', 'SectionStart'];
+    'HeaderReferences', 'FooterReferences', 'PageNumberStart', 'PageNumberFormat', 'SectionStart'];
 
 function runSummary(run) {
     if (run.IsImage) {

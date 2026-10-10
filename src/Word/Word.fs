@@ -2497,6 +2497,7 @@ module API =
             HeaderReferences = editor.Doc.PageSetup.HeaderReferences
             FooterReferences = editor.Doc.PageSetup.FooterReferences
             PageNumberStart = editor.Doc.PageSetup.PageNumberStart
+            PageNumberFormat = editor.Doc.PageSetup.PageNumberFormat
         }
         let newDoc = Doc.setPageSetup setup editor.Doc
         commitDocumentUpdate editor newDoc
@@ -2518,6 +2519,7 @@ module API =
             HeaderReferences = editor.Doc.PageSetup.HeaderReferences
             FooterReferences = editor.Doc.PageSetup.FooterReferences
             PageNumberStart = editor.Doc.PageSetup.PageNumberStart
+            PageNumberFormat = editor.Doc.PageSetup.PageNumberFormat
         }
         let newDoc = Doc.setPageSetup setup editor.Doc
         commitDocumentUpdate editor newDoc

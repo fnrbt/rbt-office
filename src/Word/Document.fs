@@ -143,6 +143,8 @@ type BlockMetadata = {
     SectionBreak: string option
     SectionColumns: SectionColumns option
     SectionPageNumberStart: int option
+    /// w:pgNumType w:fmt of the section the paragraph ends ("decimal", "lowerRoman", ...).
+    SectionPageNumberFormat: string option
     RenderedPageBreakBefore: int option
     SectionPageSetup: SectionPageSetup option
     HeaderReferences: (string * string) list
@@ -233,6 +235,7 @@ let defaultMetadata = {
     SectionBreak = None
     SectionColumns = None
     SectionPageNumberStart = None
+    SectionPageNumberFormat = None
     RenderedPageBreakBefore = None
     SectionPageSetup = None
     HeaderReferences = []
@@ -551,6 +554,8 @@ type PageSetup = {
     FooterReferences: (string * string) list
     /// w:pgNumType w:start of the final section.
     PageNumberStart: int option
+    /// w:pgNumType w:fmt of the final section.
+    PageNumberFormat: string option
 }
 
 type NamedStyle = {
@@ -657,6 +662,7 @@ let defaultPageSetup = {
     HeaderReferences = []
     FooterReferences = []
     PageNumberStart = None
+    PageNumberFormat = None
 }
 
 /// A paragraph that ends a section: its w:sectPr describes the section that

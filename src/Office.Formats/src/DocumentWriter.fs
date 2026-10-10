@@ -101,6 +101,7 @@ type PageSetupInfo = {
     HeaderReferences: (string * string) list
     FooterReferences: (string * string) list
     PageNumberStart: int option
+    PageNumberFormat: string option
 }
 
 let private defaultPageSetupInfo = {
@@ -122,6 +123,7 @@ let private defaultPageSetupInfo = {
     HeaderReferences = []
     FooterReferences = []
     PageNumberStart = None
+    PageNumberFormat = None
 }
 
 let private referencePairs (value: obj) : (string * string) list =
@@ -156,6 +158,7 @@ let private optionalPageSetup (value: obj) =
             HeaderReferences = referencePairs (value?HeaderReferences)
             FooterReferences = referencePairs (value?FooterReferences)
             PageNumberStart = optionalInt (value?PageNumberStart)
+            PageNumberFormat = optionalString (value?PageNumberFormat)
         }
 
 let private sectionColumnsElement (setup: PageSetupInfo) =
@@ -173,7 +176,7 @@ let private sectionColumnsElement (setup: PageSetupInfo) =
 
 /// Children of w:sectPr in CT_SectPr sequence order: header/footer references,
 /// type, pgSz, pgMar, pgNumType, cols, titlePg.
-let private sectionPropertiesChildren (references: string list) (sectionType: string option) (setup: PageSetupInfo option) (pageNumberStart: int option) =
+let private sectionPropertiesChildren (references: string list) (sectionType: string option) (setup: PageSetupInfo option) (pageNumberStart: int option) (pageNumberFormat: string option) =
     [ yield! references
       match sectionType with
       | Some value when value = "continuous" || value = "nextPage" || value = "evenPage" || value = "oddPage" || value = "nextColumn" ->
@@ -192,9 +195,16 @@ let private sectionPropertiesChildren (references: string list) (sectionType: st
               ("w:gutter", "0")
           ]
       | None -> ()
-      match pageNumberStart with
-      | Some start -> yield selfClosing "w:pgNumType" [("w:start", string (max 0 start))]
-      | None -> ()
+      match pageNumberStart, pageNumberFormat with
+      | None, None -> ()
+      | start, format ->
+          yield selfClosing "w:pgNumType" [
+              match format with
+              | Some value when value <> "" -> yield ("w:fmt", value)
+              | _ -> ()
+              match start with
+              | Some start -> yield ("w:start", string (max 0 start))
+              | None -> () ]
       match setup |> Option.bind sectionColumnsElement with
       | Some columns -> yield columns
       | None -> ()
@@ -991,7 +1001,7 @@ let private paragraphSectionProperties (packageSetup: PageSetupInfo) (para: obj)
             // A sectPr without pgSz/pgMar is US Letter with default margins to Word,
             // so a section with unknown geometry takes the document's.
             |> Option.defaultValue { packageSetup with DifferentFirstPage = false; ColumnCount = 1; ColumnWidths = []; SectionStart = None }
-            |> fun setup -> { setup with HeaderReferences = []; FooterReferences = []; PageNumberStart = None }
+            |> fun setup -> { setup with HeaderReferences = []; FooterReferences = []; PageNumberStart = None; PageNumberFormat = None }
         let setup =
             let columns = para?SectionColumns
             if isNullOrUndefined columns then paraSetup
@@ -1008,7 +1018,7 @@ let private paragraphSectionProperties (packageSetup: PageSetupInfo) (para: obj)
             sectionReferences "w:headerReference" setup.DifferentFirstPage setup.EvenAndOddHeaders (para?HeaderReferences)
             @ sectionReferences "w:footerReference" setup.DifferentFirstPage setup.EvenAndOddHeaders (para?FooterReferences)
         let pageNumberStart = optionalInt (para?SectionPageNumberStart)
-        Some (element "w:sectPr" [] (sectionPropertiesChildren refs sectionBreak (Some setup) pageNumberStart))
+        Some (element "w:sectPr" [] (sectionPropertiesChildren refs sectionBreak (Some setup) pageNumberStart (optionalString (para?SectionPageNumberFormat))))
 
 let private defaultFontSizePixels = 11.0 * 96.0 / 72.0
 
@@ -1918,6 +1928,7 @@ let private generateSectionProperties (pageSetup: PageSetupInfo option) (headers
             (pageSetup |> Option.bind (fun setup -> setup.SectionStart))
             pageSetup
             setup.PageNumberStart
+            setup.PageNumberFormat
     if children.IsEmpty then "" else element "w:sectPr" [] children
 
 /// Generate document.xml with formatting (handles JS arrays)

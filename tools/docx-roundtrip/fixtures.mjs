@@ -285,9 +285,9 @@ const docs = [
         name: 'synthetic/three-sections',
         body:
             p('section one') + `<w:p><w:pPr><w:sectPr><w:headerReference w:type="default" r:id="rId11"/><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr></w:pPr></w:p>` +
-            p('section two') + p('still section two') + `<w:p><w:pPr><w:sectPr><w:headerReference w:type="default" r:id="rId12"/><w:footerReference w:type="default" r:id="rId14"/><w:pgSz w:w="15840" w:h="12240"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/><w:pgNumType w:start="7"/></w:sectPr></w:pPr></w:p>` +
+            p('section two') + p('still section two') + `<w:p><w:pPr><w:sectPr><w:headerReference w:type="default" r:id="rId12"/><w:footerReference w:type="default" r:id="rId14"/><w:pgSz w:w="15840" w:h="12240"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/><w:pgNumType w:fmt="lowerRoman" w:start="7"/></w:sectPr></w:pPr></w:p>` +
             p('section three'),
-        sect: `<w:sectPr><w:headerReference w:type="default" r:id="rId13"/><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/><w:pgNumType w:start="3"/></w:sectPr>`,
+        sect: `<w:sectPr><w:headerReference w:type="default" r:id="rId13"/><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/><w:pgNumType w:fmt="upperLetter" w:start="3"/></w:sectPr>`,
         rels: [['rId11', 'header', 'header1.xml'], ['rId12', 'header', 'header2.xml'], ['rId13', 'header', 'header3.xml'], ['rId14', 'footer', 'footer1.xml']]
             .map(([id, kind, target]) => `<Relationship Id="${id}" Type="${REL}/${kind}" Target="${target}"/>`).join(''),
         extra: {
@@ -298,14 +298,14 @@ const docs = [
             '<Override PartName="/word/footer1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/>',
         expect: [
             { part: 'word/document.xml', has: '<w:sectPr><w:headerReference w:type="default" r:id="rId11"/>(<w:type w:val="nextPage"/>)?<w:pgSz w:w="12240" w:h="15840"/>.*</w:sectPr></w:pPr>.*section two' },
-            { part: 'word/document.xml', has: 'still section two.*<w:sectPr><w:headerReference w:type="default" r:id="rId12"/><w:footerReference w:type="default" r:id="rId14"/>(<w:type w:val="nextPage"/>)?<w:pgSz w:w="15840" w:h="12240"/>.*<w:pgNumType w:start="7"/></w:sectPr></w:pPr>' },
-            { part: 'word/document.xml', has: 'section three.*</w:p><w:sectPr><w:headerReference w:type="default" r:id="rId13"/><w:pgSz w:w="12240" w:h="15840"/>.*<w:pgNumType w:start="3"/></w:sectPr></w:body>' },
+            { part: 'word/document.xml', has: 'still section two.*<w:sectPr><w:headerReference w:type="default" r:id="rId12"/><w:footerReference w:type="default" r:id="rId14"/>(<w:type w:val="nextPage"/>)?<w:pgSz w:w="15840" w:h="12240"/>.*<w:pgNumType w:fmt="lowerRoman" w:start="7"/></w:sectPr></w:pPr>' },
+            { part: 'word/document.xml', has: 'section three.*</w:p><w:sectPr><w:headerReference w:type="default" r:id="rId13"/><w:pgSz w:w="12240" w:h="15840"/>.*<w:pgNumType w:fmt="upperLetter" w:start="3"/></w:sectPr></w:body>' },
             // Each reference is written once, and the final section does not pick up section two's footer.
             { part: 'word/document.xml', lacks: 'rId13.*rId13' }, { part: 'word/document.xml', lacks: 'rId14.*rId14' }, { part: 'word/document.xml', lacks: 'rId12.*rId12' },
             { part: 'word/document.xml', lacks: '<w:sectPr>.*<w:sectPr>.*<w:sectPr>.*<w:sectPr>' },
-            { read: 'pkg.PageSetup.HeaderReferences.0.RelationshipId', equals: 'rId13' }, { read: 'pkg.PageSetup.FooterReferences', equals: null }, { read: 'pkg.PageSetup.PageNumberStart', equals: 3 },
+            { read: 'pkg.PageSetup.HeaderReferences.0.RelationshipId', equals: 'rId13' }, { read: 'pkg.PageSetup.FooterReferences', equals: null }, { read: 'pkg.PageSetup.PageNumberStart', equals: 3 }, { read: 'pkg.PageSetup.PageNumberFormat', equals: 'upperLetter' },
             { read: 'pkg.Paragraphs.1.HeaderReferences.0.RelationshipId', equals: 'rId11' }, { read: 'pkg.Paragraphs.2.HeaderReferences', equals: null },
-            { read: 'pkg.Paragraphs.4.HeaderReferences.0.RelationshipId', equals: 'rId12' }, { read: 'pkg.Paragraphs.4.SectionPageNumberStart', equals: 7 },
+            { read: 'pkg.Paragraphs.4.HeaderReferences.0.RelationshipId', equals: 'rId12' }, { read: 'pkg.Paragraphs.4.SectionPageNumberStart', equals: 7 }, { read: 'pkg.Paragraphs.4.SectionPageNumberFormat', equals: 'lowerRoman' },
         ],
     },
     {
