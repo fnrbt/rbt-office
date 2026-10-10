@@ -490,7 +490,7 @@ no undo step, no new revision, no `OnChange` call, and an export still gives the
 `ShowOutlineLevel` are edits as before.) A group whose summary row / column is hidden or off the sheet (a group at row 1 with the summary above) has no button:
 use the level buttons or `SetGroupCollapsed`. At most 1500 strip elements are drawn for the rows / columns in view.
 
-Limits: `<outlinePr showOutlineSymbols>` (a second place a file can say it) is not read; `applyStyles` is not kept.
+`<sheetPr><outlinePr showOutlineSymbols>` (a second place a file can say it) is read too: the symbols are shown only when neither it nor the sheet view's flag says otherwise; a save writes the sheet view's flag. Limits: `applyStyles` is not kept.
 Auto-fit looks only at the cells that exist; on a very large sheet a whole column costs a
 pass over the sheet's cells (dashboard "Data", 846 000 cells: one column 0.46 s, eleven columns 3.4 s, all 76 931 rows 0.9 s).
 Auto-fit does not account for conditional-format icons / data bars, filter buttons, or rotation other than 90 degrees.
@@ -750,7 +750,7 @@ The `pageSetup` object:
 - Headers and footers are text in Excel's code syntax: `&P` page number, `&N` number of pages, `&D` date, `&T` time, `&F` file name, `&A` sheet name, `&&` a literal ampersand, `&"Font,Style"`, `&12` font size, `&K RRGGBB` colour, `&B` `&I` `&U` toggles. `left` / `center` / `right` are the sections of `raw` (`&L...&C...&R...`; text before the first marker belongs to the centre). To set one: a string (the raw text), `null` (none), `{ raw }`, or `{ left?, center?, right? }` (sections not given stay as they are). At most 255 characters with the codes. `firstHeader` / `firstFooter` apply when `differentFirst`, `evenHeader` / `evenFooter` when `differentOddEven` (the flags are separate keys and are not set implicitly).
 - The print area, the print titles and the breaks follow inserted and deleted rows / columns (and their undo); the print names follow a sheet rename (they are written from the page setup, not stored as defined names: `GetDefinedNames` does not list them and `SetDefinedName` refuses `_xlnm.` names).
 - XLSX: a sheet of an opened file whose setup was not changed is written exactly as the file had it (also a multi-area print area and printer settings the editor does not model). Once the page setup of a sheet is changed, the `<pageSetup>` element is written from the model: `horizontalDpi` / `verticalDpi`, the printer-settings relationship (`r:id`), `draft`, `errors`, `copies` and `autoPageBreaks` are not written for that sheet.
-- No page count / page rectangles: pagination lives in the PDF exporter (`Rbt.Spreadsheet.Pdf`, .NET only) and is not part of the browser bundle.
+- Page count and page rectangles: `GetPrintPages` (above). The pagination (`Pagination.paginatePrinted`) is part of the browser bundle and is the one the PDF exporter (`Rbt.Spreadsheet.Pdf`, .NET only) lays its pages out with; only the PDF output itself is .NET only.
 
 ## Calculation (groups 15 / 16)
 Nothing to call for the recalculation itself: every edit recalculates what it has to. What a host can read and set:
