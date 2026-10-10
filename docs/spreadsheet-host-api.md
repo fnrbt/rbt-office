@@ -885,8 +885,9 @@ changes (named styles, the indexed palette, table styles and extensions of the s
 - **Every sheet is written from the model** (the styles, strings and workbook part are still the file's, added to) in a workbook in the
   1904 date system (its serials are converted on import, and `date1904` is not written). In a workbook in which **a sheet of the file was
   renamed or deleted**, a sheet whose part names one of those sheets anywhere in its text (a formula, a rule, a link) is written from the
-  model, where the references have followed; the sheets that do not name any still go back as the parts they were read from (none does
-  when such a name has characters other than letters, digits, space, `_ - . ( )`). **Everything is written from the model as before** with a
+  model, where the references have followed; the sheets that do not name any still go back as the parts they were read from (also when
+  such a name has an apostrophe, a quotation mark, `&`, `<`, `>` or letters outside ASCII: the name is looked for as it is, with its
+  apostrophes doubled as in a quoted reference, and with those characters as XML writes them). **Everything is written from the model as before** with a
   styles or shared-strings part the writer cannot add to (no `cellXfs` / `fonts` / `fills` / `borders`, element names with a prefix, or entries the reader counted
   differently); a workbook that was not opened with `ImportXlsx` in a browser (`ImportXlsxFromBuffer`, `InstallImportedWorkbook`: the
   editor does not have the file's bytes). A copy of a sheet (`DuplicateSheet`) is always written from the model. The copy has the source's charts (parts of their own, reading the copy), pictures and shapes; the source's **pivot tables, slicers and timelines stay with the source** - the copy holds the pivot tables' cells as plain values and no slicer / timeline frame (a frame without its slicer makes Excel repair the file).

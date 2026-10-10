@@ -2355,19 +2355,28 @@ module Export =
         // Sheets of the file that were renamed or deleted: a sheet whose part
         // names one of them (a formula, a rule, a link) is written from the
         // model, where the references have followed; a part that does not
-        // name any still goes back as it was read. (A name with characters
-        // that are written differently in XML or in a quoted reference is
-        // not looked for: no sheet goes back as it was read then.)
+        // name any still goes back as it was read. A name is looked for in
+        // every way a part can write it: as it is, with an apostrophe doubled
+        // (inside a quoted reference), and with `& < >`, the apostrophe and
+        // the quotation mark as XML writes them.
         let changedTabs =
             fileTabs |> List.filter (fun name -> renames.ContainsKey (name.ToUpperInvariant()) || not (present.Contains (name.ToUpperInvariant())))
-        let changedTabsPlain =
-            changedTabs |> List.forall (fun name -> name <> "" && name |> Seq.forall (fun c -> Char.IsLetterOrDigit c || c = ' ' || c = '_' || c = '-' || c = '.' || c = '(' || c = ')'))
+        let changedTabForms =
+            changedTabs
+            |> List.filter (fun name -> name <> "")
+            |> List.collect (fun name ->
+                let lower = name.ToLowerInvariant()
+                [ for quoted in [ lower; lower.Replace("'", "''") ] do
+                    let inXml = quoted.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;")
+                    for apostrophe in [ "'"; "&apos;"; "&#39;"; "&#x27;" ] do
+                        for quotation in [ "\""; "&quot;"; "&#34;"; "&#x22;" ] do
+                            yield inXml.Replace("'", apostrophe).Replace("\"", quotation) ])
+            |> List.distinct
         let namesChangedTab (data: byte[]) : bool =
-            if changedTabs.IsEmpty then false
-            elif not changedTabsPlain then true
+            if changedTabForms.IsEmpty then false
             else
                 let text = (Text.Encoding.UTF8.GetString data).ToLowerInvariant()
-                changedTabs |> List.exists (fun name -> text.IndexOf (name.ToLowerInvariant()) >= 0)
+                changedTabForms |> List.exists (fun form -> text.IndexOf (form, StringComparison.Ordinal) >= 0)
         let inPlaceParts : (string * byte[]) list option =
             match input.Source with
             | Some source ->

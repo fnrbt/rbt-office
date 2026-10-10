@@ -473,6 +473,47 @@ for file in [ "real-world/lyric-multifamily.xlsx"; "real-world/dashboard-ecommer
     let again = Bridge.Import.importWorkbook (loadBytes (export imported (keep |> Array.map (fun i -> (modelsOf imported).[i])) (keep |> Array.map (fun i -> names.[i]))))
     eq (label + ": deleted: read back") (namesOf again) (keep |> Array.map (fun i -> names.[i]))
 
+// ---- ... also when the name has an apostrophe, a quotation mark, & < > or letters outside ASCII ----
+do
+    let reader = loadBytes (bytesOf "real-world/lyric-multifamily.xlsx")
+    let imported = Bridge.Import.importWorkbook reader
+    let names = namesOf imported
+    let original = partsOf (bytesOf "real-world/lyric-multifamily.xlsx")
+    let mentions (parts: Map<string, byte[]>) (path: string) (name: string) = (textOf parts path).ToLowerInvariant().Contains (name.ToLowerInvariant())
+    let pathOf (workbook: XlsxReader.Workbook) (index: int) = (List.item index workbook.Sheets).Extras.SourcePart |> Option.map fst |> Option.defaultValue ""
+    // One sheet gets such a name, and another a formula that reads it: that is the file.
+    let target = 0
+    let reading = 1
+    let odd = "Tom's \"Q&A\" <caf\u00e9>"
+    let formulaCell (sheet: string) : CellData = { Value = CellValue.Formula ("='" + sheet.Replace("'", "''") + "'!A1", CellValue.Number 0.0); Format = defaultFormat; Comment = None }
+    let withFormula (sheet: string) (models: SpreadsheetModel array) = models |> Array.mapi (fun i model -> if i = reading then setCell (addr 300 30) (formulaCell sheet) model else model)
+    let oddBytes = export imported (withFormula odd (modelsOf imported)) (names |> Array.mapi (fun i name -> if i = target then odd else name))
+    let oddReader = loadBytes oddBytes
+    let oddImported = Bridge.Import.importWorkbook oddReader
+    let oddParts = partsOf oddBytes
+    eq "odd name: the file has the sheet under that name" (namesOf oddImported).[target] odd
+    // Every way the name is written in a part.
+    let forms =
+        [ for quoted in [ odd; odd.Replace("'", "''") ] do
+            let inXml = quoted.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;")
+            for apostrophe in [ "'"; "&apos;" ] do
+                for quotation in [ "\""; "&quot;" ] -> inXml.Replace("'", apostrophe).Replace("\"", quotation) ]
+    let namesIt (index: int) = forms |> List.exists (fun form -> mentions oddParts (pathOf oddReader index) form)
+    let others = [ 0 .. names.Length - 1 ] |> List.filter (fun i -> i <> target && (match (List.item i oddReader.Sheets).Extras.SourcePart with Some (_, relType) -> relType.EndsWith "/worksheet" | None -> false))
+    let silent, naming = others |> List.partition (fun i -> not (namesIt i))
+    ok "odd name: the sheet with the formula names it, others do not" (not silent.IsEmpty && List.contains reading naming) (sprintf "%d silent, %d naming" silent.Length naming.Length)
+    // Renamed to a plain name, and deleted: the sheets that do not name it are the file's parts.
+    let unselected (text: string) = text.Replace(" tabSelected=\"1\"", "")
+    let same (parts: Map<string, byte[]>) (index: int) = unselected (textOf parts (pathOf oddReader index)) = unselected (textOf oddParts (pathOf oddReader index))
+    // (The host has renamed the sheet in the formulas of the models.)
+    let renamed = partsOf (export oddImported (withFormula "Plain Again" (modelsOf oddImported)) (namesOf oddImported |> Array.mapi (fun i name -> if i = target then "Plain Again" else name)))
+    eq "odd name renamed: the sheets that do not name it are the file's parts" (silent |> List.filter (fun i -> not (same renamed i)) |> List.map (fun i -> names.[i])) []
+    ok "odd name renamed: no part names it any more" (naming |> List.forall (fun i -> not (forms |> List.exists (fun form -> mentions renamed (pathOf oddReader i) form)))) "still named"
+    ok "odd name renamed: the formula reads the sheet under its new name" (mentions renamed (pathOf oddReader reading) "'Plain Again'!A1" || mentions renamed (pathOf oddReader reading) "&apos;Plain Again&apos;!A1") "not followed"
+    let keep = [| for i in 0 .. names.Length - 1 do if i <> target then yield i |]
+    let deleted = partsOf (export oddImported (keep |> Array.map (fun i -> (modelsOf oddImported).[i])) (keep |> Array.map (fun i -> (namesOf oddImported).[i])))
+    eq "odd name deleted: the sheets that do not name it are the file's parts" (silent |> List.filter (fun i -> not (same deleted i)) |> List.map (fun i -> names.[i])) []
+
 // ---- a print area of several areas --------------------------------------------
 do
     let source = bytesOf "real-world/milk-street-office.xlsx"
