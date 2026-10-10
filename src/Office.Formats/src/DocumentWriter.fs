@@ -4180,6 +4180,43 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
          |> Array.toList)
         @ (preserved.Parts |> List.filter (fun (path, _) -> not (Set.contains path written)))
 
+    // Pictures nothing refers to any more do not stay in the package (a block
+    // that was deleted, or that is now written from the model with a picture
+    // file of its own, leaves the relationship and the file it had): a picture
+    // relationship of a part whose XML does not use its id goes, and then every
+    // file under word/media that no relationship part names.
+    let files =
+        let contentOf = files |> List.map (fun file -> file.Path, file.Content) |> Map.ofList
+        files
+        |> List.map (fun file ->
+            let name = file.Path.Substring(file.Path.LastIndexOf '/' + 1)
+            if not (file.Path.StartsWith "word/_rels/" && name.EndsWith ".rels") then file
+            else
+                match Map.tryFind ("word/" + name.Substring(0, name.Length - 5)) contentOf with
+                | None -> file
+                | Some part ->
+                    let unused (relationship: string) =
+                        let id = System.Text.RegularExpressions.Regex.Match(relationship, "\\sId=\"([^\"]*)\"")
+                        relationship.IndexOf "/relationships/image\"" >= 0
+                        && relationship.IndexOf "TargetMode=\"External\"" < 0
+                        && id.Success
+                        && part.IndexOf("\"" + id.Groups.[1].Value + "\"", System.StringComparison.Ordinal) < 0
+                    let pieces = System.Text.RegularExpressions.Regex.Matches(file.Content, "<Relationship\\s[^>]*/>")
+                    let mutable content = file.Content
+                    for i in pieces.Count - 1 .. -1 .. 0 do
+                        let piece = pieces.[i]
+                        if unused piece.Value then content <- content.Substring(0, piece.Index) + content.Substring(piece.Index + piece.Length)
+                    { file with Content = content })
+    let binaryFiles =
+        let relationshipTexts =
+            (files |> List.filter (fun file -> file.Path.EndsWith ".rels") |> List.map (fun file -> file.Content))
+            @ (binaryFiles |> List.filter (fun (path, _) -> path.EndsWith ".rels") |> List.map (fun (_, data) -> System.Text.Encoding.UTF8.GetString data))
+        binaryFiles
+        |> List.filter (fun (path, _) ->
+            not (path.StartsWith "word/media/")
+            || (let name = path.Substring(path.LastIndexOf '/' + 1)
+                relationshipTexts |> List.exists (fun text -> text.IndexOf("media/" + name + "\"", System.StringComparison.Ordinal) >= 0)))
+
     reservedRelationshipIds <- Set.empty
     reservedPartPaths <- Set.empty
     createPackageWithBinary files binaryFiles
