@@ -861,6 +861,26 @@ let private borderXml (border: BorderKey) =
 let private indexOf item items =
     items |> List.findIndex ((=) item)
 
+/// A differential format: `<dxf>` of the styles part, `<x14:dxf>` of an x14 rule.
+let private dxfXml (element: string) (d: XlsxReader.Dxf) =
+    let flag name value =
+        match value with
+        | Some true -> sprintf "<%s/>" name
+        | Some false -> sprintf "<%s val=\"0\"/>" name
+        | None -> ""
+    let font =
+        let body =
+            flag "b" d.Bold + flag "i" d.Italic + flag "strike" d.Strike
+            + (match d.Underline with Some true -> "<u/>" | Some false -> "<u val=\"none\"/>" | None -> "")
+            + (d.FontColor |> xmlColor |> Option.map (fun c -> sprintf "<color rgb=\"%s\"/>" c) |> Option.defaultValue "")
+        if body = "" then "" else "<font>" + body + "</font>"
+    let fill =
+        d.FillColor
+        |> xmlColor
+        |> Option.map (fun c -> sprintf "<fill><patternFill><bgColor rgb=\"%s\"/></patternFill></fill>" c)
+        |> Option.defaultValue ""
+    "<" + element + ">" + font + fill + "</" + element + ">"
+
 let private stylesXml (book: StyleBook) =
     let numFmts =
         if Map.isEmpty book.NumFmtIds then ""
@@ -906,25 +926,7 @@ let private stylesXml (book: StyleBook) =
         | None -> 0
         | Some _ -> 2 + indexOf fill book.Fills
     let dxfs =
-        let dxfXml (d: XlsxReader.Dxf) =
-            let flag name value =
-                match value with
-                | Some true -> sprintf "<%s/>" name
-                | Some false -> sprintf "<%s val=\"0\"/>" name
-                | None -> ""
-            let font =
-                let body =
-                    flag "b" d.Bold + flag "i" d.Italic + flag "strike" d.Strike
-                    + (match d.Underline with Some true -> "<u/>" | Some false -> "<u val=\"none\"/>" | None -> "")
-                    + (d.FontColor |> xmlColor |> Option.map (fun c -> sprintf "<color rgb=\"%s\"/>" c) |> Option.defaultValue "")
-                if body = "" then "" else "<font>" + body + "</font>"
-            let fill =
-                d.FillColor
-                |> xmlColor
-                |> Option.map (fun c -> sprintf "<fill><patternFill><bgColor rgb=\"%s\"/></patternFill></fill>" c)
-                |> Option.defaultValue ""
-            "<dxf>" + font + fill + "</dxf>"
-        sprintf "<dxfs count=\"%d\">%s</dxfs>" book.Dxfs.Length (book.Dxfs |> List.map dxfXml |> String.concat "")
+        sprintf "<dxfs count=\"%d\">%s</dxfs>" book.Dxfs.Length (book.Dxfs |> List.map (dxfXml "dxf") |> String.concat "")
     let borders = (book.Borders |> List.map borderXml |> String.concat "") + namedXml (fun style -> style.BorderXml)
     // cellStyleXfs / cellStyles: the kept named styles, or just Normal.
     let cellStyleXfs, cellStyles =
@@ -1346,88 +1348,222 @@ let private mergeCellsXmlFull (mergedCells: MergedCellRange list) =
             |> String.concat ""
         sprintf "<mergeCells count=\"%d\">%s</mergeCells>" mergedCells.Length body
 
-let private dataValidationsXml validations =
+/// A validation whose formulas read another sheet: Excel keeps those in the
+/// sheet's extension list (`<x14:dataValidations>`).
+let private isExtValidation (dv: XlsxDataValidation) =
+    let reads (formula: string option) = formula |> Option.exists (fun text -> text.Contains "!")
+    reads dv.Formula1 || reads dv.Formula2
+
+let private dataValidationAttrs (withSqref: bool) (dv: XlsxDataValidation) = [
+    yield attr "type" dv.ValidationType
+    if withSqref then yield attr "sqref" dv.Sqref
+    match dv.ErrorStyle with Some style when style <> "stop" -> yield attr "errorStyle" style | _ -> ()
+    match dv.Operator with Some op -> yield attr "operator" op | None -> ()
+    if dv.AllowBlank then yield "allowBlank=\"1\""
+    if not dv.ShowDropDown then yield "showDropDown=\"1\""
+    if dv.ShowInputMessage then yield "showInputMessage=\"1\""
+    if dv.ShowErrorMessage then yield "showErrorMessage=\"1\""
+    match dv.ErrorTitle with Some t -> yield attr "errorTitle" t | None -> ()
+    match dv.ErrorMessage with Some e -> yield attr "error" e | None -> ()
+    match dv.PromptTitle with Some t -> yield attr "promptTitle" t | None -> ()
+    match dv.InputMessage with Some p -> yield attr "prompt" p | None -> ()
+]
+
+let private dataValidationsXml (all: XlsxDataValidation list) =
+    let validations = all |> List.filter (fun dv -> not (isExtValidation dv))
     if List.isEmpty validations then ""
     else
         let body =
             validations
             |> List.map (fun dv ->
-                let attrs = [
-                    yield attr "type" dv.ValidationType
-                    yield attr "sqref" dv.Sqref
-                    match dv.ErrorStyle with Some style when style <> "stop" -> yield attr "errorStyle" style | _ -> ()
-                    match dv.Operator with Some op -> yield attr "operator" op | None -> ()
-                    if dv.AllowBlank then yield "allowBlank=\"1\""
-                    if not dv.ShowDropDown then yield "showDropDown=\"1\""
-                    if dv.ShowInputMessage then yield "showInputMessage=\"1\""
-                    if dv.ShowErrorMessage then yield "showErrorMessage=\"1\""
-                    match dv.ErrorTitle with Some t -> yield attr "errorTitle" t | None -> ()
-                    match dv.ErrorMessage with Some e -> yield attr "error" e | None -> ()
-                    match dv.PromptTitle with Some t -> yield attr "promptTitle" t | None -> ()
-                    match dv.InputMessage with Some p -> yield attr "prompt" p | None -> ()
-                ]
                 let f1 = dv.Formula1 |> Option.map (elemText "formula1") |> Option.defaultValue ""
                 let f2 = dv.Formula2 |> Option.map (elemText "formula2") |> Option.defaultValue ""
-                sprintf "<dataValidation %s>%s%s</dataValidation>" (String.concat " " attrs) f1 f2)
+                sprintf "<dataValidation %s>%s%s</dataValidation>" (String.concat " " (dataValidationAttrs true dv)) f1 f2)
             |> String.concat ""
         sprintf "<dataValidations count=\"%d\">%s</dataValidations>" validations.Length body
 
-/// `<conditionalFormatting>` blocks. Rules keep their type-specific payload
+let private x14Namespace = "http://schemas.microsoft.com/office/spreadsheetml/2009/9/main"
+let private xmNamespace = "http://schemas.microsoft.com/office/excel/2006/main"
+
+/// The extension of a sheet for the validations that read another sheet, or "".
+let private dataValidationsExtXml (all: XlsxDataValidation list) =
+    let validations = all |> List.filter isExtValidation
+    if List.isEmpty validations then ""
+    else
+        let formula (name: string) (text: string option) =
+            match text with
+            | Some text -> "<x14:" + name + "><xm:f>" + escaped text + "</xm:f></x14:" + name + ">"
+            | None -> ""
+        let body =
+            validations
+            |> List.map (fun dv ->
+                sprintf "<x14:dataValidation %s>%s%s<xm:sqref>%s</xm:sqref></x14:dataValidation>"
+                    (String.concat " " (dataValidationAttrs false dv)) (formula "formula1" dv.Formula1) (formula "formula2" dv.Formula2) (escaped dv.Sqref))
+            |> String.concat ""
+        sprintf "<ext uri=\"{CCE6A557-97BC-4b89-ADB6-D9C93CAAB3DF}\" xmlns:x14=\"%s\"><x14:dataValidations count=\"%d\" xmlns:xm=\"%s\">%s</x14:dataValidations></ext>"
+            x14Namespace validations.Length xmNamespace body
+
+/// The id an x14 rule has (and its 2007 twin names): made of the sheet and the rule's place in it.
+let private x14RuleId (sheetIndex: int) (ruleNumber: int) =
+    let hex (value: int) (width: int) =
+        let digits = "0123456789ABCDEF"
+        let mutable text = ""
+        let mutable rest = value
+        for _ in 1 .. width do
+            text <- string digits.[rest % 16] + text
+            rest <- rest / 16
+        text
+    "{14000000-0000-4000-" + hex sheetIndex 4 + "-" + hex ruleNumber 12 + "}"
+
+/// The main-part `<conditionalFormatting>` blocks of a sheet and the x14
+/// blocks of its extension list. Rules keep their type-specific payload
 /// (formulas, colour scale, data bar, icon set, top-N / above-average
 /// attributes); a `dxfId` outside the workbook's dxf table is dropped rather
-/// than written as a dangling index.
-let private conditionalFormattingXml (dxfCount: int) (formats: XlsxReader.ConditionalFormat list) =
+/// than written as a dangling index. A data bar with x14 options is written
+/// twice, as Excel does: the 2007 bar, which names its x14 twin by id.
+let private conditionalFormattingParts (dxfCount: int) (sheetIndex: int) (formats: XlsxReader.ConditionalFormat list) : string * string =
     let mutable nextPriority = 0
+    let mutable ruleNumber = 0
     let cfvo (kind: string, value: string option) =
         match value with
         | Some v -> sprintf "<cfvo %s %s/>" (attr "type" kind) (attr "val" v)
         | None -> sprintf "<cfvo %s/>" (attr "type" kind)
+    let x14Cfvo (kind: string, value: string option) =
+        match value with
+        | Some v -> sprintf "<x14:cfvo %s><xm:f>%s</xm:f></x14:cfvo>" (attr "type" kind) (escaped v)
+        | None -> sprintf "<x14:cfvo %s/>" (attr "type" kind)
     let color (c: string) = sprintf "<color rgb=\"%s\"/>" (cleanRgb c)
-    formats
-    |> List.filter (fun cf -> not (List.isEmpty cf.Rules))
-    |> List.map (fun cf ->
-        let rules =
-            cf.Rules
-            |> List.map (fun (rule: XlsxReader.ConditionalFormatRule) ->
-                nextPriority <- nextPriority + 1
-                let attrs = [
-                    yield attr "type" rule.Type
-                    match rule.DxfId with
-                    | Some id when id >= 0 && id < dxfCount -> yield sprintf "dxfId=\"%d\"" id
-                    | _ -> ()
-                    yield sprintf "priority=\"%d\"" (rule.Priority |> Option.defaultValue nextPriority)
-                    if rule.StopIfTrue then yield "stopIfTrue=\"1\""
-                    if rule.Type = "aboveAverage" && not rule.AboveAverage then yield "aboveAverage=\"0\""
-                    if rule.Percent then yield "percent=\"1\""
-                    if rule.Bottom then yield "bottom=\"1\""
-                    match rule.Operator with Some op -> yield attr "operator" op | None -> ()
-                    match rule.Text with Some t -> yield attr "text" t | None -> ()
-                    match rule.TimePeriod with Some period -> yield attr "timePeriod" period | None -> ()
-                    match rule.Rank with Some r -> yield sprintf "rank=\"%d\"" r | None -> ()
-                    match rule.StdDev with Some d -> yield sprintf "stdDev=\"%d\"" d | None -> ()
-                    if rule.EqualAverage then yield "equalAverage=\"1\""
-                ]
-                let children = [
-                    for f in rule.Formulas -> elemText "formula" f
-                    if not (List.isEmpty rule.ColorScale) then
-                        yield "<colorScale>"
-                              + (rule.ColorScale |> List.map (fun stop -> cfvo (stop.CfvoType, stop.CfvoValue)) |> String.concat "")
-                              + (rule.ColorScale |> List.map (fun stop -> color stop.Color) |> String.concat "")
-                              + "</colorScale>"
-                    if rule.Type = "dataBar" then
-                        yield "<dataBar>"
-                              + (rule.DataBarCfvo |> List.map cfvo |> String.concat "")
-                              + color (rule.DataBarColor |> Option.defaultValue "638EC6")
-                              + "</dataBar>"
-                    match rule.IconSet with
-                    | Some family ->
-                        yield sprintf "<iconSet %s%s>%s</iconSet>" (attr "iconSet" family) (if rule.IconSetReverse then " reverse=\"1\"" else "") (rule.IconSetCfvo |> List.map cfvo |> String.concat "")
-                    | None -> ()
-                ]
-                sprintf "<cfRule %s>%s</cfRule>" (String.concat " " attrs) (String.concat "" children))
-            |> String.concat ""
-        sprintf "<conditionalFormatting %s>%s</conditionalFormatting>" (attr "sqref" cf.Range) rules)
-    |> String.concat ""
+    let x14Color (name: string) (c: string option) =
+        match c with
+        | Some c -> sprintf "<x14:%s rgb=\"%s\"/>" name (cleanRgb c)
+        | None -> ""
+    let ruleAttrs (rule: XlsxReader.ConditionalFormatRule) (priority: int) (withDxfId: bool) = [
+        yield attr "type" rule.Type
+        match rule.DxfId with
+        | Some id when withDxfId && id >= 0 && id < dxfCount -> yield sprintf "dxfId=\"%d\"" id
+        | _ -> ()
+        yield sprintf "priority=\"%d\"" priority
+        if rule.StopIfTrue then yield "stopIfTrue=\"1\""
+        if rule.Type = "aboveAverage" && not rule.AboveAverage then yield "aboveAverage=\"0\""
+        if rule.Percent then yield "percent=\"1\""
+        if rule.Bottom then yield "bottom=\"1\""
+        match rule.Operator with Some op -> yield attr "operator" op | None -> ()
+        match rule.Text with Some t -> yield attr "text" t | None -> ()
+        match rule.TimePeriod with Some period -> yield attr "timePeriod" period | None -> ()
+        match rule.Rank with Some r -> yield sprintf "rank=\"%d\"" r | None -> ()
+        match rule.StdDev with Some d -> yield sprintf "stdDev=\"%d\"" d | None -> ()
+        if rule.EqualAverage then yield "equalAverage=\"1\""
+    ]
+    let extBlocks = ResizeArray<string>()
+    let extBlock (sqref: string) (ruleXml: string) =
+        extBlocks.Add (sprintf "<x14:conditionalFormatting xmlns:xm=\"%s\">%s<xm:sqref>%s</xm:sqref></x14:conditionalFormatting>" xmNamespace ruleXml (escaped sqref))
+    let main =
+        formats
+        |> List.filter (fun cf -> not (List.isEmpty cf.Rules))
+        |> List.map (fun cf ->
+            let rules =
+                cf.Rules
+                |> List.map (fun (rule: XlsxReader.ConditionalFormatRule) ->
+                    nextPriority <- nextPriority + 1
+                    ruleNumber <- ruleNumber + 1
+                    let priority = rule.Priority |> Option.defaultValue nextPriority
+                    let id = x14RuleId sheetIndex ruleNumber
+                    match rule.Ext with
+                    // In the x14 list only.
+                    | Some ext when ext.InExtList ->
+                        let body =
+                            match rule.Type with
+                            | "iconSet" ->
+                                sprintf "<x14:iconSet %s%s%s%s>%s%s</x14:iconSet>"
+                                    (attr "iconSet" (rule.IconSet |> Option.defaultValue "3TrafficLights1"))
+                                    (if ext.ShowValue then "" else " showValue=\"0\"")
+                                    (if rule.IconSetReverse then " reverse=\"1\"" else "")
+                                    (if ext.IconCustom.IsEmpty then "" else " custom=\"1\"")
+                                    (rule.IconSetCfvo |> List.map x14Cfvo |> String.concat "")
+                                    (ext.IconCustom |> List.map (fun (family, icon) -> sprintf "<x14:cfIcon %s iconId=\"%d\"/>" (attr "iconSet" family) icon) |> String.concat "")
+                            | "colorScale" ->
+                                "<x14:colorScale>"
+                                + (rule.ColorScale |> List.map (fun stop -> x14Cfvo (stop.CfvoType, stop.CfvoValue)) |> String.concat "")
+                                + (rule.ColorScale |> List.map (fun stop -> x14Color "color" (Some stop.Color)) |> String.concat "")
+                                + "</x14:colorScale>"
+                            | _ ->
+                                (rule.Formulas |> List.map (fun f -> "<xm:f>" + escaped f + "</xm:f>") |> String.concat "")
+                                + (match ext.Dxf with Some dxf -> dxfXml "x14:dxf" dxf | None -> "")
+                        extBlock cf.Range (sprintf "<x14:cfRule %s id=\"%s\">%s</x14:cfRule>" (String.concat " " (ruleAttrs rule priority false)) id body)
+                        ""
+                    | _ ->
+                        let barExt = rule.Ext |> Option.bind (fun ext -> ext.DataBar)
+                        let children = [
+                            for f in rule.Formulas -> elemText "formula" f
+                            if not (List.isEmpty rule.ColorScale) then
+                                yield "<colorScale>"
+                                      + (rule.ColorScale |> List.map (fun stop -> cfvo (stop.CfvoType, stop.CfvoValue)) |> String.concat "")
+                                      + (rule.ColorScale |> List.map (fun stop -> color stop.Color) |> String.concat "")
+                                      + "</colorScale>"
+                            if rule.Type = "dataBar" then
+                                let barColor = rule.DataBarColor |> Option.defaultValue "638EC6"
+                                yield "<dataBar"
+                                      + (match barExt with Some bar when not bar.ShowValue -> " showValue=\"0\"" | _ -> "")
+                                      + ">"
+                                      + (rule.DataBarCfvo |> List.map cfvo |> String.concat "")
+                                      + color barColor
+                                      + "</dataBar>"
+                                match barExt with
+                                | Some bar ->
+                                    yield sprintf "<extLst><ext xmlns:x14=\"%s\" uri=\"{B025F937-C7B1-47D3-B67F-A62EFF666E3E}\"><x14:id>%s</x14:id></ext></extLst>" x14Namespace id
+                                    let barAttrs = [
+                                        yield sprintf "minLength=\"%d\"" bar.MinLength
+                                        yield sprintf "maxLength=\"%d\"" bar.MaxLength
+                                        if not bar.ShowValue then yield "showValue=\"0\""
+                                        if bar.Border then yield "border=\"1\""
+                                        if not bar.Gradient then yield "gradient=\"0\""
+                                        if bar.Direction <> "context" then yield attr "direction" bar.Direction
+                                        if bar.NegativeBarColorSameAsPositive then yield "negativeBarColorSameAsPositive=\"1\""
+                                        if bar.Border && not bar.NegativeBarBorderColorSameAsPositive then yield "negativeBarBorderColorSameAsPositive=\"0\""
+                                        if bar.AxisPosition <> "automatic" then yield attr "axisPosition" bar.AxisPosition
+                                    ]
+                                    extBlock cf.Range
+                                        (sprintf "<x14:cfRule type=\"dataBar\" id=\"%s\"><x14:dataBar %s>%s%s%s%s%s%s</x14:dataBar></x14:cfRule>"
+                                            id (String.concat " " barAttrs)
+                                            (bar.Cfvo |> List.map x14Cfvo |> String.concat "")
+                                            (x14Color "fillColor" (Some barColor))
+                                            (if bar.Border then x14Color "borderColor" (match bar.BorderColor with Some c -> Some c | None -> Some barColor) else "")
+                                            (if bar.NegativeBarColorSameAsPositive then "" else x14Color "negativeFillColor" (match bar.NegativeFillColor with Some c -> Some c | None -> Some "FF0000"))
+                                            (if bar.Border && not bar.NegativeBarBorderColorSameAsPositive then x14Color "negativeBorderColor" (match bar.NegativeBorderColor with Some c -> Some c | None -> Some "FF0000") else "")
+                                            (if bar.AxisPosition = "none" then "" else x14Color "axisColor" (match bar.AxisColor with Some c -> Some c | None -> Some "000000")))
+                                | None -> ()
+                            match rule.IconSet with
+                            | Some family ->
+                                yield sprintf "<iconSet %s%s%s>%s</iconSet>" (attr "iconSet" family)
+                                        (match rule.Ext with Some ext when not ext.ShowValue -> " showValue=\"0\"" | _ -> "")
+                                        (if rule.IconSetReverse then " reverse=\"1\"" else "") (rule.IconSetCfvo |> List.map cfvo |> String.concat "")
+                            | None -> ()
+                        ]
+                        sprintf "<cfRule %s>%s</cfRule>" (String.concat " " (ruleAttrs rule priority true)) (String.concat "" children))
+                |> String.concat ""
+            if rules = "" then "" else sprintf "<conditionalFormatting %s>%s</conditionalFormatting>" (attr "sqref" cf.Range) rules)
+        |> String.concat ""
+    main, String.concat "" extBlocks
+
+/// The sheet's extension list: the x14 conditional formats and validations
+/// written from the rules, and the extensions kept from the file. x14 rules
+/// join a kept x14 list (one whose rules were not all understood).
+let private sheetExtLstXml (cfBlocks: string) (validationsExt: string) (kept: string list) =
+    let isCfExt (xml: string) = xml.Contains "conditionalFormattings>"
+    let keptCf, others = kept |> List.partition isCfExt
+    let cfExt =
+        match keptCf, cfBlocks with
+        | [], "" -> []
+        | [], blocks ->
+            [ sprintf "<ext uri=\"{78C0D931-6437-407d-A8EE-F0AAD7539E65}\" xmlns:x14=\"%s\"><x14:conditionalFormattings>%s</x14:conditionalFormattings></ext>" x14Namespace blocks ]
+        | first :: rest, blocks ->
+            let close = first.LastIndexOf "</"
+            let listClose = if close < 0 then -1 else first.LastIndexOf ("</", close - 1)
+            if blocks = "" || listClose < 0 || not (first.Contains "xmlns:x14=") then keptCf
+            else (first.Substring(0, listClose) + blocks + first.Substring listClose) :: rest
+    match cfExt @ (if validationsExt = "" then [] else [ validationsExt ]) @ others with
+    | [] -> ""
+    | extensions -> "<extLst>" + String.concat "" extensions + "</extLst>"
 
 let private hyperlinksXml hyperlinks =
     if List.isEmpty hyperlinks then ""
@@ -1684,6 +1820,7 @@ let private autoFilterXml (dxfCount: int) (sheet: XlsxSheetOut) =
         else sprintf "<autoFilter %s>%s</autoFilter>" (attr "ref" filter.Ref) columns
 
 let private worksheetXml (styles: StyleBook) sharedIndex (dynamicCm: int) sheetIndex active (sheet: XlsxSheetOut) =
+    let conditionalFormats, conditionalFormatsExt = conditionalFormattingParts styles.Dxfs.Length sheetIndex sheet.ConditionalFormats
     let hasFitToPage = sheet.PageSetup |> Option.exists (fun p -> p.FitToPage)
     // (CT_SheetPr: tabColor comes before pageSetUpPr.)
     let tabColor =
@@ -1712,7 +1849,7 @@ let private worksheetXml (styles: StyleBook) sharedIndex (dynamicCm: int) sheetI
     // deviates (e.g. tableParts before legacyDrawing).
     + autoFilterXml styles.Dxfs.Length sheet
     + mergeCellsXmlFull sheet.MergedCells
-    + conditionalFormattingXml styles.Dxfs.Length sheet.ConditionalFormats
+    + conditionalFormats
     + dataValidationsXml sheet.DataValidations
     + hyperlinksXml sheet.Hyperlinks
     + pagePartsXml sheet
@@ -1722,9 +1859,7 @@ let private worksheetXml (styles: StyleBook) sharedIndex (dynamicCm: int) sheetI
     + (if sheet.Cells |> List.exists (fun c -> c.Comment.IsSome) then sprintf "<legacyDrawing r:id=\"rIdCommentsVml%d\"/>" sheetIndex else "")
     + tablePartsXml sheet.Tables.Length
     // The slicer list (and other kept extensions) of the file the sheet came from.
-    + (match sheet.Extras.KeptCellExtensions @ sheet.Extras.KeptExtensions with
-       | [] -> ""
-       | extensions -> "<extLst>" + String.concat "" extensions + "</extLst>")
+    + sheetExtLstXml conditionalFormatsExt (dataValidationsExtXml sheet.DataValidations) (sheet.Extras.KeptCellExtensions @ sheet.Extras.KeptExtensions)
     + "</worksheet>"
 
 let private commentsXml (cells: XlsxCellOut list) =

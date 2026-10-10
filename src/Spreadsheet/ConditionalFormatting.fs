@@ -26,10 +26,10 @@ type CellEffect = {
     Italic: bool option
     Underline: bool option
     Strikethrough: bool option
-    /// (fill fraction 0..1, colour) — see `CellFormat.DataBar`.
-    DataBar: (float * string) option
-    /// (icon index, icon count) — see `CellFormat.IconSet`.
-    IconSet: (int * int) option
+    /// See `CellFormat.DataBar`.
+    DataBar: DataBarDraw option
+    /// See `CellFormat.IconSet`.
+    IconSet: IconDraw option
 }
 
 let noEffect : CellEffect =
@@ -172,6 +172,8 @@ let private resolveThreshold (ctx: Context) (rule: PreparedRule) (threshold: CfT
     match threshold.Kind with
     | CfvoMin -> lowest
     | CfvoMax -> highest
+    | CfvoAutoMin -> lowest |> Option.map (fun value -> min 0.0 value)
+    | CfvoAutoMax -> highest |> Option.map (fun value -> max 0.0 value)
     | CfvoNumber -> literal
     | CfvoPercent ->
         (match lowest, highest, literal with
@@ -323,7 +325,85 @@ let private ruleMatches (ctx: Context) (rule: PreparedRule) (addr: CellAddress) 
     | Errors wanted ->
         let isError = match value with Error _ -> true | _ -> false
         isError = wanted
-    | ColorScale _ | DataBar _ | IconSet _ -> (match value with Number _ -> true | _ -> false)
+    | ColorScale _ | DataBar _ | IconSet _ | DataBarEx _ | IconSetEx _ -> (match value with Number _ -> true | _ -> false)
+
+/// How a data bar of Excel 2010+ lies in the cell of the value `n`, the
+/// rule's ends being `lo` and `hi`.
+let dataBarDrawOf (options: DataBarOptions) (color: string) (lo: float) (hi: float) (n: float) : DataBarDraw option =
+    let css (text: string) = if text.StartsWith "#" then text else "#" + text
+    let negative = n < 0.0
+    let fill = if negative then (match options.NegativeFill with Some other -> css other | None -> css color) else css color
+    let border =
+        match options.Border with
+        | None -> None
+        | Some line -> if negative then Some (css (defaultArg options.NegativeBorder line)) else Some (css line)
+    let clamp (value: float) = max 0.0 (min 1.0 value)
+    let axisColor = css (defaultArg options.AxisColor "#000000")
+    // The axis: where zero is, when the rule's values are on both sides of it.
+    let axis =
+        match options.Axis with
+        | AxisNone -> None
+        | AxisMiddle -> Some 0.5
+        | AxisAutomatic ->
+            if lo >= 0.0 then None
+            elif hi <= 0.0 then Some 1.0
+            else Some (-lo / (hi - lo))
+    let span =
+        match axis with
+        | None ->
+            // From the cell's edge, between the shortest and the longest bar.
+            let fraction = if hi - lo < 1e-12 then 1.0 else clamp ((n - lo) / (hi - lo))
+            let shortest = float (max 0 (min 100 options.MinLength)) / 100.0
+            let longest = float (max 0 (min 100 options.MaxLength)) / 100.0
+            let length = shortest + fraction * (max shortest longest - shortest)
+            if length <= 0.0 then None else Some (0.0, length, true)
+        | Some at ->
+            let reach = match options.Axis with AxisMiddle -> max (abs lo) (abs hi) | _ -> (if negative then abs lo else abs hi)
+            let room = if negative then at else 1.0 - at
+            let length = if reach < 1e-12 then 0.0 else clamp (abs n / reach) * room
+            if length <= 0.0 then None
+            elif negative then Some (at - length, at, false)
+            else Some (at, at + length, true)
+    let mirrored = options.Direction = BarRightToLeft
+    let flip (value: float) = if mirrored then 1.0 - value else value
+    match span, axis with
+    | None, None -> None
+    | _ ->
+        let from, upTo, fadeRight = defaultArg span (0.0, 0.0, true)
+        let from, upTo, fadeRight = if mirrored then 1.0 - upTo, 1.0 - from, not fadeRight else from, upTo, fadeRight
+        Some { From = from; To = upTo; Color = fill; Gradient = options.Gradient; FadeRight = fadeRight; Border = border
+               Axis = axis |> Option.map (fun at -> flip at, axisColor); HideValue = not options.ShowValue }
+
+/// The icon sets of Excel 2010+, which only the x14 form of a rule can name.
+let extendedIconSets = [ "3Stars"; "3Triangles"; "5Boxes" ]
+
+/// How an icon is drawn where the icon itself cannot be: a character and
+/// its colour. `index` 0 is the icon of the lowest values.
+let iconGlyph (family: string) (index: int) : string * string =
+    let red, amber, green, grey, black = "#E53935", "#F9A825", "#43A047", "#8E8E8E", "#404040"
+    let count = if family.Length > 0 && Char.IsDigit family.[0] then int family.[0] - int '0' else 3
+    let index = max 0 (min (count - 1) index)
+    // Position of the icon between the lowest (0) and the highest (1).
+    let level = if count <= 1 then 1.0 else float index / float (count - 1)
+    let trafficColor = if level < 0.34 then red elif level < 0.67 then amber else green
+    let name = if family.Length > 1 then family.Substring 1 else family
+    match name with
+    | "Arrows" | "ArrowsGray" ->
+        let glyph =
+            if level <= 0.0 then "\u2193" elif level >= 1.0 then "\u2191"
+            elif level < 0.5 then "\u2198" elif level > 0.5 then "\u2197" else "\u2192"
+        glyph, (if name = "ArrowsGray" then grey else trafficColor)
+    | "Triangles" -> (if level <= 0.0 then "\u25BC" elif level >= 1.0 then "\u25B2" else "\u25AC"), trafficColor
+    | "Flags" -> "\u2691", trafficColor
+    | "Signs" -> (if level <= 0.0 then "\u25C6" elif level >= 1.0 then "\u25CF" else "\u25B2"), trafficColor
+    | "Symbols" | "Symbols2" -> (if level <= 0.0 then "\u2718" elif level >= 1.0 then "\u2714" else "!"), trafficColor
+    | "Stars" -> (if level <= 0.0 then "\u2606" else "\u2605"), (if level >= 1.0 then amber elif level > 0.0 then "#FBD46B" else grey)
+    | "Rating" | "Boxes" | "Quarters" ->
+        // More of the mark is filled the higher the value.
+        let glyph = if level <= 0.0 then "\u25CB" elif level < 0.34 then "\u25D4" elif level < 0.67 then "\u25D1" elif level < 1.0 then "\u25D5" else "\u25CF"
+        glyph, (if name = "Quarters" then black else "#4472C4")
+    | "RedToBlack" -> "\u25CF", (if level <= 0.0 then black elif level < 0.5 then grey elif level < 1.0 then "#F28B82" else red)
+    | _ -> "\u25CF", trafficColor
 
 /// What a matching rule contributes to the cell.
 let private ruleEffect (ctx: Context) (rule: PreparedRule) (raw: CellValue) : CellEffect =
@@ -357,7 +437,12 @@ let private ruleEffect (ctx: Context) (rule: PreparedRule) (raw: CellValue) : Ce
             // the smallest value still shows a bar.
             let lo = if low.Kind = CfvoMin && lo >= 0.0 then 0.0 else lo
             let fraction = if hi - lo < 1e-12 then 1.0 else (n - lo) / (hi - lo)
-            { noEffect with DataBar = Some (max 0.0 (min 1.0 fraction), (if color.StartsWith "#" then color else "#" + color)) }
+            { noEffect with DataBar = Some (plainDataBar (max 0.0 (min 1.0 fraction)) (if color.StartsWith "#" then color else "#" + color)) }
+         | _ -> noEffect)
+    | DataBarEx (low, high, color, options), Number n ->
+        let resolved = thresholdsOf ctx rule [ low; high ]
+        (match resolved.[0], resolved.[1] with
+         | Some lo, Some hi -> { noEffect with DataBar = dataBarDrawOf options color (min lo hi) (max lo hi) n }
          | _ -> noEffect)
     | IconSet (family, thresholds, reverse), Number n ->
         let count = max (iconCountOf family) thresholds.Length
@@ -368,8 +453,21 @@ let private ruleEffect (ctx: Context) (rule: PreparedRule) (raw: CellValue) : Ce
             match resolved.[i] with
             | Some at when n >= at -> index <- i
             | _ -> ()
-        { noEffect with IconSet = Some ((if reverse then count - 1 - index else index), count) }
-    | (ColorScale _ | DataBar _ | IconSet _), _ -> noEffect
+        { noEffect with IconSet = Some { Family = family; Index = (if reverse then count - 1 - index else index); Count = count; HideValue = false } }
+    | IconSetEx (family, thresholds, reverse, options), Number n ->
+        let count = max (iconCountOf family) thresholds.Length
+        let resolved = thresholdsOf ctx rule thresholds
+        let mutable index = 0
+        for i in 1 .. resolved.Length - 1 do
+            match resolved.[i] with
+            | Some at when n >= at -> index <- i
+            | _ -> ()
+        let hide = not options.ShowValue
+        (match List.tryItem index options.Custom with
+         | Some (custom, _) when custom = "NoIcons" -> noEffect
+         | Some (custom, icon) -> { noEffect with IconSet = Some { Family = custom; Index = icon; Count = iconCountOf custom; HideValue = hide } }
+         | None -> { noEffect with IconSet = Some { Family = family; Index = (if reverse then count - 1 - index else index); Count = count; HideValue = hide } })
+    | (ColorScale _ | DataBar _ | IconSet _ | DataBarEx _ | IconSetEx _), _ -> noEffect
     | _ ->
         let style = rule.Entry.Format.Style
         { noEffect with
@@ -476,6 +574,41 @@ type OoxmlStyle = {
     Strikethrough: bool
 }
 
+/// The x14 data bar of a rule (`<x14:dataBar>`), attribute by attribute.
+type OoxmlDataBarExt = {
+    MinLength: int
+    MaxLength: int
+    ShowValue: bool
+    Border: bool
+    Gradient: bool
+    /// "context", "leftToRight", "rightToLeft".
+    Direction: string
+    NegativeBarColorSameAsPositive: bool
+    NegativeBarBorderColorSameAsPositive: bool
+    /// "automatic", "middle", "none".
+    AxisPosition: string
+    /// The two ends with the x14 kinds (autoMin, autoMax, min, max, num, percent, percentile, formula).
+    Cfvo: (string * string option) list
+    BorderColor: string option
+    NegativeFillColor: string option
+    NegativeBorderColor: string option
+    AxisColor: string option
+}
+
+/// What the x14 form of a rule holds beyond the `<cfRule>`.
+type OoxmlRuleExt = {
+    DataBar: OoxmlDataBarExt option
+    /// Custom icons of an icon set: (icon set, icon id) per step.
+    IconCustom: (string * int) list
+    /// `showValue` of an icon set.
+    ShowValue: bool
+    /// The rule is in the sheet's x14 list only (an icon set of Excel 2010+,
+    /// custom icons, a formula that reads another sheet).
+    InExtList: bool
+}
+
+let emptyOoxmlRuleExt : OoxmlRuleExt = { DataBar = None; IconCustom = []; ShowValue = true; InExtList = false }
+
 /// One `<cfRule>`: its attributes and children as they are in the file.
 type OoxmlRule = {
     /// cellIs, expression, containsText, notContainsText, beginsWith,
@@ -504,6 +637,8 @@ type OoxmlRule = {
     Priority: int option
     StopIfTrue: bool
     Style: OoxmlStyle option
+    /// The x14 extension of the rule, when it has one.
+    Ext: OoxmlRuleExt option
 }
 
 /// One `<conditionalFormatting sqref="…">` block.
@@ -515,7 +650,7 @@ type OoxmlConditionalFormat = {
 let emptyOoxmlRule (kind: string) : OoxmlRule =
     { Type = kind; Operator = None; Formulas = []; Text = None; Rank = None; Percent = false; Bottom = false
       AboveAverage = true; EqualAverage = false; StdDev = None; ColorScale = []; DataBarColor = None; DataBarCfvo = []
-      IconSet = None; IconSetCfvo = []; IconSetReverse = false; TimePeriod = None; Priority = None; StopIfTrue = false; Style = None }
+      IconSet = None; IconSetCfvo = []; IconSetReverse = false; TimePeriod = None; Priority = None; StopIfTrue = false; Style = None; Ext = None }
 
 [<Literal>]
 let private lastRow = 1048575
@@ -611,6 +746,8 @@ let private thresholdOf (kind: string, value: string option) : CfThreshold =
         | "percent" -> CfvoPercent
         | "percentile" -> CfvoPercentile
         | "formula" -> CfvoFormula
+        | "autoMin" -> CfvoAutoMin
+        | "autoMax" -> CfvoAutoMax
         | _ -> CfvoNumber
     { Kind = thresholdKind; Value = value }
 
@@ -623,7 +760,16 @@ let private cfvoOf (threshold: CfThreshold) : string * string option =
         | CfvoPercent -> "percent"
         | CfvoPercentile -> "percentile"
         | CfvoFormula -> "formula"
+        | CfvoAutoMin -> "autoMin"
+        | CfvoAutoMax -> "autoMax"
     kind, threshold.Value
+
+/// The `<cfvo>` of the 2007 form for a threshold: it has no automatic ends.
+let private legacyCfvoOf (threshold: CfThreshold) : string * string option =
+    match threshold.Kind with
+    | CfvoAutoMin -> "min", None
+    | CfvoAutoMax -> "max", None
+    | _ -> cfvoOf threshold
 
 let private cssColor (color: string) : string =
     let hex = color.TrimStart('#')
@@ -662,10 +808,32 @@ let private ruleOfOoxml (rule: OoxmlRule) : ConditionalFormatRule option =
             match rule.DataBarCfvo with
             | first :: second :: _ -> thresholdOf first, thresholdOf second
             | _ -> { Kind = CfvoMin; Value = None }, { Kind = CfvoMax; Value = None }
-        Some (DataBar (low, high, cssColor (defaultArg rule.DataBarColor "638EC6")))
+        let color = cssColor (defaultArg rule.DataBarColor "638EC6")
+        (match rule.Ext |> Option.bind (fun ext -> ext.DataBar) with
+         | Some bar ->
+            let low, high =
+                match bar.Cfvo with
+                | first :: second :: _ -> thresholdOf first, thresholdOf second
+                | _ -> low, high
+            let options =
+                { Gradient = bar.Gradient
+                  Border = (if bar.Border then Some (cssColor (defaultArg bar.BorderColor (color.TrimStart '#'))) else None)
+                  NegativeFill = (if bar.NegativeBarColorSameAsPositive then None else Some (cssColor (defaultArg bar.NegativeFillColor "FF0000")))
+                  NegativeBorder = (if bar.NegativeBarBorderColorSameAsPositive || not bar.Border then None else Some (cssColor (defaultArg bar.NegativeBorderColor "FF0000")))
+                  Axis = (match bar.AxisPosition with "middle" -> AxisMiddle | "none" -> AxisNone | _ -> AxisAutomatic)
+                  AxisColor = bar.AxisColor |> Option.map cssColor
+                  Direction = (match bar.Direction with "leftToRight" -> BarLeftToRight | "rightToLeft" -> BarRightToLeft | _ -> BarContext)
+                  ShowValue = bar.ShowValue
+                  MinLength = bar.MinLength
+                  MaxLength = bar.MaxLength }
+            Some (DataBarEx (low, high, color, options))
+         | None -> Some (DataBar (low, high, color)))
     | "iconSet" ->
         let family = defaultArg rule.IconSet "3TrafficLights1"
-        Some (IconSet (family, rule.IconSetCfvo |> List.map thresholdOf, rule.IconSetReverse))
+        (match rule.Ext with
+         | Some ext when ext.InExtList || not ext.ShowValue || not ext.IconCustom.IsEmpty ->
+            Some (IconSetEx (family, rule.IconSetCfvo |> List.map thresholdOf, rule.IconSetReverse, { ShowValue = ext.ShowValue; Custom = ext.IconCustom }))
+         | _ -> Some (IconSet (family, rule.IconSetCfvo |> List.map thresholdOf, rule.IconSetReverse)))
     | _ -> None
 
 /// Model rules for conditional formatting read from a file. Priorities keep
@@ -754,6 +922,33 @@ let private ooxmlOfRule (anchor: CellAddress) (rule: ConditionalFormatRule) : Oo
         { emptyOoxmlRule "dataBar" with DataBarColor = Some (color.TrimStart('#')); DataBarCfvo = [ cfvoOf low; cfvoOf high ] }
     | IconSet (family, thresholds, reverse) ->
         { emptyOoxmlRule "iconSet" with IconSet = Some family; IconSetCfvo = thresholds |> List.map cfvoOf; IconSetReverse = reverse }
+    | DataBarEx (low, high, color, options) ->
+        let hex (text: string) = text.TrimStart('#')
+        { emptyOoxmlRule "dataBar" with
+            DataBarColor = Some (hex color)
+            DataBarCfvo = [ legacyCfvoOf low; legacyCfvoOf high ]
+            Ext =
+                Some { emptyOoxmlRuleExt with
+                        DataBar =
+                            Some { MinLength = options.MinLength; MaxLength = options.MaxLength; ShowValue = options.ShowValue
+                                   Border = options.Border.IsSome; Gradient = options.Gradient
+                                   Direction = (match options.Direction with BarLeftToRight -> "leftToRight" | BarRightToLeft -> "rightToLeft" | BarContext -> "context")
+                                   NegativeBarColorSameAsPositive = options.NegativeFill.IsNone
+                                   NegativeBarBorderColorSameAsPositive = options.NegativeBorder.IsNone
+                                   AxisPosition = (match options.Axis with AxisMiddle -> "middle" | AxisNone -> "none" | AxisAutomatic -> "automatic")
+                                   Cfvo = [ cfvoOf low; cfvoOf high ]
+                                   BorderColor = options.Border |> Option.map hex
+                                   NegativeFillColor = options.NegativeFill |> Option.map hex
+                                   NegativeBorderColor = options.NegativeBorder |> Option.map hex
+                                   AxisColor = options.AxisColor |> Option.map hex } } }
+    | IconSetEx (family, thresholds, reverse, options) ->
+        { emptyOoxmlRule "iconSet" with
+            IconSet = Some family; IconSetCfvo = thresholds |> List.map cfvoOf; IconSetReverse = reverse
+            Ext =
+                Some { emptyOoxmlRuleExt with
+                        IconCustom = options.Custom
+                        ShowValue = options.ShowValue
+                        InExtList = not options.Custom.IsEmpty || List.contains family extendedIconSets } }
 
 /// The model's conditional formats as `<conditionalFormatting>` blocks, one
 /// per distinct range set, with every rule's style attached. Priorities are
@@ -771,10 +966,16 @@ let toOoxml (formats: ConditionalFormatRange list) : OoxmlConditionalFormat list
                 style.TextColor.IsSome || style.BgColor.IsSome || style.Bold || style.Italic || style.Underline || style.Strikethrough
             let visual =
                 match entry.Format.Rule with
-                | ColorScale _ | DataBar _ | IconSet _ -> true
+                | ColorScale _ | DataBar _ | IconSet _ | DataBarEx _ | IconSetEx _ -> true
                 | _ -> false
+            let described = ooxmlOfRule first.From entry.Format.Rule
+            // A formula that reads another sheet: Excel keeps such a rule in the x14 list.
+            let described =
+                if described.Ext.IsNone && described.Formulas |> List.exists (fun formula -> formula.Contains "!") then
+                    { described with Ext = Some { emptyOoxmlRuleExt with InExtList = true } }
+                else described
             let rule =
-                { ooxmlOfRule first.From entry.Format.Rule with
+                { described with
                     Priority = Some priority
                     StopIfTrue = entry.StopIfTrue
                     Style =

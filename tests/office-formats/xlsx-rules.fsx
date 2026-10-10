@@ -39,6 +39,7 @@ let toWriter (dxfs: ResizeArray<XlsxReader.Dxf>) (formats: ConditionalFormatRang
                    DxfId = r.Style |> Option.map (fun s ->
                        dxfIndex { FontColor = s.FontColor |> Option.map (fun c -> c.TrimStart '#'); FillColor = s.FillColor |> Option.map (fun c -> c.TrimStart '#')
                                   Bold = (if s.Bold then Some true else None); Italic = (if s.Italic then Some true else None); Underline = (if s.Underline then Some true else None); Strike = (if s.Strikethrough then Some true else None) })
+                   Ext = None
                    ColorScale = r.ColorScale |> List.map (fun (k, v, c) -> ({ CfvoType = k; CfvoValue = v; Color = c } : XlsxReader.CfColorStop))
                    DataBarColor = r.DataBarColor; DataBarCfvo = r.DataBarCfvo; Text = r.Text
                    IconSet = r.IconSet; IconSetCfvo = r.IconSetCfvo; IconSetReverse = r.IconSetReverse; TimePeriod = r.TimePeriod
@@ -59,6 +60,7 @@ let fromReader (wb: XlsxReader.Workbook) (sheet: XlsxReader.Worksheet) : Conditi
                    ColorScale = r.ColorScale |> List.map (fun s -> s.CfvoType, s.CfvoValue, s.Color)
                    DataBarColor = r.DataBarColor; DataBarCfvo = r.DataBarCfvo
                    IconSet = r.IconSet; IconSetCfvo = r.IconSetCfvo; IconSetReverse = r.IconSetReverse; TimePeriod = r.TimePeriod
+                   Ext = None
                    Priority = r.Priority; StopIfTrue = r.StopIfTrue
                    Style = dxf |> Option.map (fun d -> ({ FontColor = d.FontColor; FillColor = d.FillColor; Bold = (d.Bold = Some true); Italic = (d.Italic = Some true); Underline = (d.Underline = Some true); Strikethrough = (d.Strike = Some true) } : CF.OoxmlStyle)) } : CF.OoxmlRule)) } : CF.OoxmlConditionalFormat))
     |> CF.ofOoxml
@@ -175,8 +177,11 @@ match XlsxReader.loadBytesNative bytes with
     // 10. Validations: kinds, operators, formulas, alert texts and styles.
     let dvBack = validationsIn sheet
     eq "dv-count" dvBack.Length validations.Length
-    for (got, expected) in List.zip dvBack validations do
-        eq (sprintf "dv-%d-%s" expected.Id (CF.sqrefText expected.Ranges)) got expected
+    // (A validation that reads another sheet is in the sheet's x14 list, after the others:
+    // they come back by range, numbered in the order of the file.)
+    for expected in validations do
+        let got = dvBack |> List.tryFind (fun candidate -> candidate.Ranges = expected.Ranges) |> Option.map (fun found -> { found with Id = expected.Id })
+        eq (sprintf "dv-%d-%s" expected.Id (CF.sqrefText expected.Ranges)) got (Some expected)
     eq "dv-whole-column-written-out" (sheet.DataValidations |> List.exists (fun d -> d.Range = "J1:J1048576 L1:M4" && d.ValidationType = "list" && d.Formula1 = Some "Tucked!$A$1:$A$9" && not d.ShowDropDown)) true
     eq "dv-any" (sheet.DataValidations |> List.exists (fun d -> d.ValidationType = "none" && d.Prompt = Some "Anything goes" && not d.ShowInputMessage)) true
     eq "dv-grouped" (sheet.DataValidations |> List.exists (fun d -> d.Range = "B1:B5" && d.Operator = Some "notBetween" && d.ErrorStyle = Some "warning")) true

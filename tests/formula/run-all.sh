@@ -62,6 +62,7 @@ stages=(
     stage44-pagesetup
     stage45-order
     stage46-quicksort
+    stage47-x14rules
     numbertext
 )
 

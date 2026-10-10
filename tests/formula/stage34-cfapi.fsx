@@ -109,7 +109,7 @@ throws "a stop that is no number" (fun () -> build { d "colorScale" with Stops =
 throws "a percentage above 100" (fun () -> build { d "colorScale" with Stops = [ stop "min" None, "#FF0000"; stop "percentile" (Some "120"), "#00FF00" ] } |> ignore) "Add: rule.stops[1].value must be between 0 and 100"
 throws "a stop of a bad colour" (fun () -> build { d "colorScale" with Stops = [ stop "min" None, "red"; stop "max" None, "#00FF00" ] } |> ignore) "Add: rule.stops[0].color must be a colour"
 throws "a bar of a bad colour" (fun () -> build { d "dataBar" with Color = Some "#12" } |> ignore) "Add: rule.color must be a colour"
-throws "an unknown icon set" (fun () -> build { d "iconSet" with IconSet = Some "3Stars" } |> ignore) "Add: rule.iconSet must be one of 3Arrows"
+throws "an unknown icon set" (fun () -> build { d "iconSet" with IconSet = Some "3Hearts" } |> ignore) "Add: rule.iconSet must be one of 3Arrows"
 throws "too few thresholds" (fun () -> build { d "iconSet" with IconSet = Some "5Rating"; Thresholds = Ops.defaultIconThresholds 3 } |> ignore) "Add: icon set \"5Rating\" needs 5 thresholds"
 throws "min as an icon threshold" (fun () -> build { d "iconSet" with IconSet = Some "3Flags"; Thresholds = [ stop "min" None; stop "percent" (Some "33"); stop "percent" (Some "67") ] } |> ignore) "Add: rule.thresholds[0].type must be one of \"number\""
 throws "a format on a visual rule" (fun () -> build { d "dataBar" with Style = Some style } |> ignore) "Add: a \"dataBar\" rule draws by itself"

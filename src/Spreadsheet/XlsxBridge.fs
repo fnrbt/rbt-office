@@ -558,6 +558,8 @@ module Import =
                     let dxf =
                         rule.DxfId
                         |> Option.bind (fun id -> if id >= 0 && id < wb.Dxfs.Length then Some wb.Dxfs.[id] else None)
+                        // An x14 rule has its format in place.
+                        |> Option.orElse (rule.Ext |> Option.bind (fun ext -> ext.Dxf))
                     ({ Type = rule.Type
                        Operator = rule.Operator
                        Formulas = rule.Formulas
@@ -577,6 +579,20 @@ module Import =
                        TimePeriod = rule.TimePeriod
                        Priority = rule.Priority
                        StopIfTrue = rule.StopIfTrue
+                       Ext =
+                        rule.Ext |> Option.map (fun ext ->
+                            ({ DataBar =
+                                ext.DataBar |> Option.map (fun bar ->
+                                    ({ MinLength = bar.MinLength; MaxLength = bar.MaxLength; ShowValue = bar.ShowValue; Border = bar.Border
+                                       Gradient = bar.Gradient; Direction = bar.Direction
+                                       NegativeBarColorSameAsPositive = bar.NegativeBarColorSameAsPositive
+                                       NegativeBarBorderColorSameAsPositive = bar.NegativeBarBorderColorSameAsPositive
+                                       AxisPosition = bar.AxisPosition; Cfvo = bar.Cfvo; BorderColor = bar.BorderColor
+                                       NegativeFillColor = bar.NegativeFillColor; NegativeBorderColor = bar.NegativeBorderColor
+                                       AxisColor = bar.AxisColor } : CF.OoxmlDataBarExt))
+                               IconCustom = ext.IconCustom
+                               ShowValue = ext.ShowValue
+                               InExtList = ext.InExtList } : CF.OoxmlRuleExt))
                        Style =
                         dxf |> Option.map (fun d ->
                             ({ FontColor = d.FontColor |> Option.bind hexColor
@@ -1389,17 +1405,35 @@ module Export =
                Rules =
                 cf.Rules
                 |> List.map (fun rule ->
+                    let dxf =
+                        rule.Style |> Option.map (fun style ->
+                            ({ FontColor = style.FontColor |> Option.map (fun c -> c.TrimStart '#')
+                               FillColor = style.FillColor |> Option.map (fun c -> c.TrimStart '#')
+                               Bold = (if style.Bold then Some true else None)
+                               Italic = (if style.Italic then Some true else None)
+                               Underline = (if style.Underline then Some true else None)
+                               Strike = (if style.Strikethrough then Some true else None) } : XlsxReader.Dxf))
+                    // A rule of the x14 list has its format in place, not in the styles part.
+                    let inExtList = rule.Ext |> Option.exists (fun ext -> ext.InExtList)
                     ({ Type = rule.Type
                        Operator = rule.Operator
                        Formulas = rule.Formulas
-                       DxfId =
-                        rule.Style |> Option.map (fun style ->
-                            dxfIndex { FontColor = style.FontColor |> Option.map (fun c -> c.TrimStart '#')
-                                       FillColor = style.FillColor |> Option.map (fun c -> c.TrimStart '#')
-                                       Bold = (if style.Bold then Some true else None)
-                                       Italic = (if style.Italic then Some true else None)
-                                       Underline = (if style.Underline then Some true else None)
-                                       Strike = (if style.Strikethrough then Some true else None) })
+                       DxfId = (if inExtList then None else dxf |> Option.map dxfIndex)
+                       Ext =
+                        rule.Ext |> Option.map (fun ext ->
+                            ({ DataBar =
+                                ext.DataBar |> Option.map (fun bar ->
+                                    ({ MinLength = bar.MinLength; MaxLength = bar.MaxLength; ShowValue = bar.ShowValue; Border = bar.Border
+                                       Gradient = bar.Gradient; Direction = bar.Direction
+                                       NegativeBarColorSameAsPositive = bar.NegativeBarColorSameAsPositive
+                                       NegativeBarBorderColorSameAsPositive = bar.NegativeBarBorderColorSameAsPositive
+                                       AxisPosition = bar.AxisPosition; Cfvo = bar.Cfvo; BorderColor = bar.BorderColor
+                                       NegativeFillColor = bar.NegativeFillColor; NegativeBorderColor = bar.NegativeBorderColor
+                                       AxisColor = bar.AxisColor } : XlsxReader.CfDataBarExt))
+                               IconCustom = ext.IconCustom
+                               ShowValue = ext.ShowValue
+                               InExtList = ext.InExtList
+                               Dxf = (if ext.InExtList then dxf else None) } : XlsxReader.CfRuleExt))
                        ColorScale = rule.ColorScale |> List.map (fun (kind, stopValue, color) -> ({ CfvoType = kind; CfvoValue = stopValue; Color = color } : XlsxReader.CfColorStop))
                        DataBarColor = rule.DataBarColor
                        DataBarCfvo = rule.DataBarCfvo

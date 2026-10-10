@@ -90,6 +90,7 @@ let mkCell col row value : XlsxReader.Cell =
         Value = value
         Formula = None
         ArrayRef = None
+        ArrayDynamic = false
         StyleIndex = None
         Style = None
         InlineRuns = []

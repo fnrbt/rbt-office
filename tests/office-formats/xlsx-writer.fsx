@@ -276,7 +276,7 @@ let partText (bytes: byte[]) (name: string) =
 let cfRule (kind: string) : XlsxReader.ConditionalFormatRule =
     { Type = kind; Operator = None; Formulas = []; DxfId = None; ColorScale = []; DataBarColor = None; DataBarCfvo = []
       Text = None; IconSet = None; IconSetCfvo = []; IconSetReverse = false; TimePeriod = None; Rank = None; Percent = false; Bottom = false
-      AboveAverage = true; EqualAverage = false; StdDev = None; Priority = None; StopIfTrue = false }
+      AboveAverage = true; EqualAverage = false; StdDev = None; Priority = None; StopIfTrue = false; Ext = None }
 
 let nastySheet : XlsxWriter.XlsxSheetOut =
     { syntheticSheet with

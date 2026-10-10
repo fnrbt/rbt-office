@@ -172,15 +172,16 @@ do
         (not ((textOf after "xl/_rels/workbook.xml.rels").Contains "calcChain") && not ((textOf after "[Content_Types].xml").Contains "calcChain")) ""
     ok "formula added: the properties stay" (after.ContainsKey "docProps/core.xml" && after.ContainsKey "docProps/app.xml") ""
 
-    // Rows inserted in the first sheet: its x14 formats name cells that moved, so they go
-    // (the editor's own rules are written); formulas moved, so the chain goes.
+    // Rows inserted in the first sheet: its x14 data bar is a rule of the model and moves
+    // with its cells; formulas moved, so the chain goes.
     let wb : Wb.Workbook = imported.Context
     let restructured, _ = Wb.applyStructureEdit (List.item 0 wb.SheetOrder) (InsertRows (2, 3)) wb
     let restructuredModels = wb.SheetOrder |> List.map (fun id -> (Map.find id restructured.Sheets).Model) |> List.toArray
     let written = export imported restructuredModels names
     let after = partsOf written
     whole "rows inserted" written
-    ok "rows inserted: x14 formats of that sheet are not written stale" (not ((textOf after "xl/worksheets/sheet1.xml").Contains "x14:conditionalFormattings")) ""
+    ok "rows inserted: the x14 data bar of that sheet follows its cells"
+        ((textOf after "xl/worksheets/sheet1.xml").Contains "<xm:sqref>E18:E25</xm:sqref>" && not ((textOf after "xl/worksheets/sheet1.xml").Contains "<xm:sqref>E15:E22</xm:sqref>")) ""
     ok "rows inserted: the properties and printer settings stay" (after.ContainsKey "docProps/core.xml" && after.ContainsKey "xl/printerSettings/printerSettings1.bin") ""
 
     // The Data sheet removed: its printer settings go with it, nothing is orphaned.

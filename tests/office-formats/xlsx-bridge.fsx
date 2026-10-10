@@ -283,23 +283,25 @@ let lists =
 let validatedOut =
     Bridge.Export.toWorkbookOut { Sheets = [| validated; lists |]; Names = [| "Data"; "Lists" |]; Visible = [| true; true |]; ActiveSheetIndex = 0; NameInfo = Map.empty; DefinedNames = Map.empty; Source = None; Macros = None }
 let validatedFile = reread validatedOut
-eq "validations: the sqrefs of the file (a whole column written out)" (validatedFile.Sheets.[0].DataValidations |> List.map (fun dv -> dv.Range, dv.ValidationType))
+// (The list that reads the other sheet is in the x14 list of the sheet, which is read after the others.)
+eq "validations: the sqrefs of the file (a whole column written out)" (validatedFile.Sheets.[0].DataValidations |> List.map (fun dv -> dv.Range, dv.ValidationType) |> List.sort)
    [ "A1:A1048576", "whole"; "B2:B21 D2:D21", "list"; "C1", "list"; "E3:E10", "custom"; "F1", "none"; "G1:G6", "date" ]
 let validatedBack = Bridge.Import.importWorkbook validatedFile
 let backModel = validatedBack.Sheets.[0].Model
-eq "validations: every kind comes back for the same ranges, under ids 1.." backModel.Validations validated.Validations
+eq "validations: every kind comes back for the same ranges" (backModel.Validations |> List.map (fun v -> v.Ranges, v.Validation) |> List.sort) (validated.Validations |> List.map (fun v -> v.Ranges, v.Validation) |> List.sort)
+eq "validations: under ids 1.." (backModel.Validations |> List.map (fun v -> v.Id)) [ 1 .. validated.Validations.Length ]
 eq "validations: a whole column makes no cell" (backModel.Cells.Count, (getValidation (addr 1048575 0) backModel).IsSome, (getValidation (addr 500000 1) backModel).IsSome) (1, true, false)
-eq "validations: the lazy import gives the same" ((Bridge.Import.importWorkbookLazy (fun _ -> false) validatedFile).Sheets |> Array.map (fun sheet -> (resolveSheet sheet.Model).Validations)) [| validated.Validations; [] |]
+eq "validations: the lazy import gives the same" ((Bridge.Import.importWorkbookLazy (fun _ -> false) validatedFile).Sheets |> Array.map (fun sheet -> (resolveSheet sheet.Model).Validations)) [| backModel.Validations; [] |]
 // Unedited, the file's validations are written as the file had them; edited, from the model.
 let unedited = Bridge.Export.toWorkbookOut (inputOf validatedBack (modelsOf validatedBack) validatedBack.Context.Names)
 eq "validations: unedited, as in the file" unedited.Sheets.[0].DataValidations (XlsxWriter.packageFromReaderWorkbook validatedFile).Sheets.[0].DataValidations
 let editedModel = backModel |> setValidationRanges [ area 0 0 4 0 ] (validationOf (ListValues [ "a" ])) |> clearValidationRanges [ wholeCol 6 ]
 let editedValidations =
     Bridge.Export.toWorkbookOut (inputOf validatedBack [| editedModel; validatedBack.Sheets.[1].Model |] validatedBack.Context.Names) |> reread
-eq "validations: edited ones are written from the model" (editedValidations.Sheets.[0].DataValidations |> List.map (fun dv -> dv.Range, dv.ValidationType))
-   [ "A6:A1048576", "whole"; "B2:B21 D2:D21", "list"; "C1", "list"; "E3:E10", "custom"; "F1", "none"; "A1:A5", "list" ]
-eq "validations: and read back the same" ((Bridge.Import.importWorkbook editedValidations).Sheets.[0].Model.Validations |> List.map (fun v -> v.Ranges, v.Validation.Rule))
-   (editedModel.Validations |> List.map (fun v -> v.Ranges, v.Validation.Rule))
+eq "validations: edited ones are written from the model" (editedValidations.Sheets.[0].DataValidations |> List.map (fun dv -> dv.Range, dv.ValidationType) |> List.sort)
+   (List.sort [ "A6:A1048576", "whole"; "B2:B21 D2:D21", "list"; "C1", "list"; "E3:E10", "custom"; "F1", "none"; "A1:A5", "list" ])
+eq "validations: and read back the same" ((Bridge.Import.importWorkbook editedValidations).Sheets.[0].Model.Validations |> List.map (fun v -> v.Ranges, v.Validation.Rule) |> List.sort)
+   (editedModel.Validations |> List.map (fun v -> v.Ranges, v.Validation.Rule) |> List.sort)
 
 // ---- pictures, kept objects and threaded comments are in the model ---------
 // synthetic-drawing-extras.xlsx: a picture B3..D7 (two-cell, editAs oneCell), a

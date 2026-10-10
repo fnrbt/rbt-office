@@ -582,6 +582,10 @@ let private thresholdToObj (threshold: ThresholdDescription) (color: string opti
         | Some color -> yield "color" ==> color
         | None -> () ]
 
+/// The keys of a data bar rule that only an Excel 2010+ data bar has.
+let dataBarOptionKeys =
+    [ "gradient"; "borderColor"; "negativeColor"; "negativeBorderColor"; "axisPosition"; "axisColor"; "direction"; "showValue"; "minLength"; "maxLength" ]
+
 /// A rule description as the `rule` object.
 let ruleToObj (rule: RuleDescription) : obj =
     let format : obj = match rule.Style with Some style -> ruleFormatToObj style | None -> null
@@ -609,10 +613,36 @@ let ruleToObj (rule: RuleDescription) : obj =
             yield "min" ==> (match rule.Low with Some low -> thresholdToObj low None | None -> null)
             yield "max" ==> (match rule.High with Some high -> thresholdToObj high None | None -> null)
             yield "color" ==> orNull rule.Color
+            // The options of an Excel 2010+ data bar: only such a bar has these keys.
+            match rule.Bar with
+            | Some bar ->
+                yield "gradient" ==> bar.Gradient
+                yield "borderColor" ==> orNull bar.Border
+                yield "negativeColor" ==> orNull bar.NegativeFill
+                yield "negativeBorderColor" ==> orNull bar.NegativeBorder
+                yield "axisPosition" ==> (match bar.Axis with AxisAutomatic -> "automatic" | AxisMiddle -> "middle" | AxisNone -> "none")
+                yield "axisColor" ==> orNull bar.AxisColor
+                yield "direction" ==> (match bar.Direction with BarContext -> "context" | BarLeftToRight -> "leftToRight" | BarRightToLeft -> "rightToLeft")
+                yield "showValue" ==> bar.ShowValue
+                yield "minLength" ==> bar.MinLength
+                yield "maxLength" ==> bar.MaxLength
+            | None -> ()
         | "iconSet" ->
             yield "iconSet" ==> orNull rule.IconSet
             yield "thresholds" ==> (rule.Thresholds |> List.map (fun threshold -> thresholdToObj threshold None) |> List.toArray)
             yield "reverse" ==> rule.Reverse
+            // Hidden values, custom icons, an icon set of Excel 2010+: only such a rule has these keys.
+            match rule.Icons with
+            | Some icons ->
+                yield "showValue" ==> icons.ShowValue
+                yield "icons" ==>
+                    (if icons.Custom.IsEmpty then null
+                     else
+                        icons.Custom
+                        |> List.map (fun (family, index) -> createObj [ "iconSet" ==> family; "index" ==> index ])
+                        |> List.toArray
+                        |> box)
+            | None -> ()
         | _ -> ()
         yield "format" ==> format ]
 
@@ -658,8 +688,8 @@ let ruleOfObj (memberName: string) (baseStyle: CellFormat) (value: obj) : RuleDe
         | "top" -> [ "rank"; "percent"; "bottom" ]
         | "aboveAverage" -> [ "above"; "orEqual"; "stdDev" ]
         | "colorScale" -> [ "stops" ]
-        | "dataBar" -> [ "min"; "max"; "color" ]
-        | "iconSet" -> [ "iconSet"; "thresholds"; "reverse" ]
+        | "dataBar" -> [ "min"; "max"; "color" ] @ dataBarOptionKeys
+        | "iconSet" -> [ "iconSet"; "thresholds"; "reverse"; "showValue"; "icons" ]
         | other when List.contains other ruleTypes -> []
         | other -> hostFail memberName (sprintf "unknown rule type \"%s\" (known: %s)" other (String.concat ", " ruleTypes))
     for key in keysOf value do
@@ -698,6 +728,41 @@ let ruleOfObj (memberName: string) (baseStyle: CellFormat) (value: obj) : RuleDe
         IconSet = optionalArg (stringArg memberName "rule.iconSet") (get "iconSet")
         Thresholds = list "thresholds" |> Array.mapi (fun index item -> fst (thresholdOfObj memberName (sprintf "rule.thresholds[%d]" index) false item)) |> Array.toList
         Reverse = flag "reverse" false
+        Bar =
+            (if kind <> "dataBar" || not (dataBarOptionKeys |> List.exists (fun key -> not (isNullish (get key)) || hasKey value key)) then None
+             else
+                let defaults = defaultDataBarOptions
+                // A colour key that is there and null means "none"; one that is not there, the default.
+                let colorKey (key: string) (fallback: string option) =
+                    if not (hasKey value key) then fallback
+                    else optionalArg (colorArg memberName ("rule." + key)) (get key)
+                let choice (key: string) (names: string list) (fallback: string) =
+                    match optionalArg (stringArg memberName ("rule." + key)) (get key) with
+                    | None -> fallback
+                    | Some name when List.contains name names -> name
+                    | Some name -> hostFail memberName (sprintf "rule.%s must be one of %s, got \"%s\"" key (names |> List.map (fun n -> "\"" + n + "\"") |> String.concat ", ") name)
+                Some { Gradient = flag "gradient" defaults.Gradient
+                       Border = colorKey "borderColor" defaults.Border
+                       NegativeFill = colorKey "negativeColor" defaults.NegativeFill
+                       NegativeBorder = colorKey "negativeBorderColor" defaults.NegativeBorder
+                       Axis = (match choice "axisPosition" [ "automatic"; "middle"; "none" ] "automatic" with "middle" -> AxisMiddle | "none" -> AxisNone | _ -> AxisAutomatic)
+                       AxisColor = colorKey "axisColor" defaults.AxisColor
+                       Direction = (match choice "direction" [ "context"; "leftToRight"; "rightToLeft" ] "context" with "leftToRight" -> BarLeftToRight | "rightToLeft" -> BarRightToLeft | _ -> BarContext)
+                       ShowValue = flag "showValue" true
+                       MinLength = whole "minLength" defaults.MinLength
+                       MaxLength = whole "maxLength" defaults.MaxLength })
+        Icons =
+            (if kind <> "iconSet" || (isNullish (get "showValue") && isNullish (get "icons")) then None
+             else
+                Some { ShowValue = flag "showValue" true
+                       Custom =
+                        list "icons"
+                        |> Array.mapi (fun index icon ->
+                            let what = sprintf "rule.icons[%d]" index
+                            if isNullish icon then hostFail memberName (what + " must be { iconSet, index }")
+                            let family = optionalArg (stringArg memberName (what + ".iconSet")) (getKey icon "iconSet") |> Option.defaultValue "NoIcons"
+                            family, (optionalArg (intArg memberName (what + ".index")) (getKey icon "index") |> Option.defaultValue 0))
+                        |> Array.toList })
         Period = optionalArg (stringArg memberName "rule.period") (get "period")
         Style = optionalArg (fun format -> ruleFormatPatchOfObj memberName "rule.format" format baseStyle) (get "format") }
 

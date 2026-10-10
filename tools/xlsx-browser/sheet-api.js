@@ -614,7 +614,7 @@ checks['api-cf'] = async () => {
             [() => grid.AddConditionalFormat('A1', { type: 'colorScale', stops: [{ type: 'min', color: '#FF0000' }, { type: 'percent', color: '#00FF00' }] }), /^AddConditionalFormat: rule\.stops\[1\]\.value is missing/],
             [() => grid.AddConditionalFormat('A1', { type: 'dataBar', color: 'blue' }), /^AddConditionalFormat: rule\.color must be a colour/],
             [() => grid.AddConditionalFormat('A1', { type: 'dataBar', format }), /^AddConditionalFormat: a "dataBar" rule draws by itself/],
-            [() => grid.AddConditionalFormat('A1', { type: 'iconSet', iconSet: '3Stars' }), /^AddConditionalFormat: rule\.iconSet must be one of 3Arrows/],
+            [() => grid.AddConditionalFormat('A1', { type: 'iconSet', iconSet: '3Hearts' }), /^AddConditionalFormat: rule\.iconSet must be one of 3Arrows/],
             [() => grid.AddConditionalFormat('A1', { type: 'iconSet', iconSet: '5Rating', thresholds: [{ type: 'percent', value: 0 }] }), /^AddConditionalFormat: icon set "5Rating" needs 5 thresholds/],
             [() => grid.AddConditionalFormat('A1', { type: 'blanks', format: { fill: 'red' } }), /^AddConditionalFormat: rule\.format\.fill must be a colour/],
             [() => grid.AddConditionalFormat('A1', { type: 'blanks', format: { wrap: true } }), /^AddConditionalFormat: rule\.format\.wrap: a conditional format applies only/],
@@ -862,7 +862,8 @@ checks['api-validation'] = async () => {
         check('GetValidations(sheetIndex) reads another sheet', [big.grid.GetValidations(1), big.grid.GetValidations(0).length], [[], 2]);
         const bigBytes = await big.grid.ExportXlsx();
         const sheetXml = await (await window.JSZip.loadAsync(bigBytes)).file('xl/worksheets/sheet1.xml').async('string');
-        check('the file has the whole columns as ranges', [...sheetXml.matchAll(/<dataValidation [^>]*sqref="([^"]*)"/g)].map((m) => m[1]), ['A1:A1048576', 'C1:D1048576']);
+        // (The list that reads another sheet is in the x14 list of the sheet, as Excel writes it.)
+        check('the file has the whole columns as ranges', [...sheetXml.matchAll(/<dataValidation [^>]*sqref="([^"]*)"/g), ...sheetXml.matchAll(/<xm:sqref>([^<]*)<\/xm:sqref><\/x14:dataValidation>/g)].map((m) => m[1]), ['A1:A1048576', 'C1:D1048576']);
         const bigAgain = mountGrid();
         await bigAgain.grid.ImportXlsx(bigBytes);
         check('re-imported it is one validation per rule, on whole columns', bigAgain.grid.GetValidations().map((v) => [v.id, v.range, v.rule.type, v.rule.source]), [[1, 'A:A', 'decimal', null], [2, 'C:D', 'list', 'Lists!$A$1:$A$9']]);

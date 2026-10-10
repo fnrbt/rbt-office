@@ -96,6 +96,43 @@ let borderCss (border: BorderStyle) : string =
     | Some (width, line) -> string width + "px " + line + " " + (border.Color |> Option.defaultValue "#000000")
     | None -> "none"
 
+/// A conditional-formatting data bar as one cell shows it.
+type DataBarDraw = {
+    /// Where the bar starts and ends across the cell: fractions of its width
+    /// from the left edge, 0..1, `From` <= `To`.
+    From: float
+    To: float
+    /// Fill colour, "#RRGGBB".
+    Color: string
+    /// The fill fades to white along the bar; `FadeRight`: toward its right
+    /// end (a bar that grows rightwards), else toward its left end.
+    Gradient: bool
+    FadeRight: bool
+    /// Colour of the line around the bar.
+    Border: string option
+    /// The axis negative and positive bars start from: where it is (a
+    /// fraction of the cell's width) and its colour.
+    Axis: (float * string) option
+    /// The cell shows the bar without its value.
+    HideValue: bool
+}
+
+/// A plain bar from the cell's left edge over `fraction` of its width.
+let plainDataBar (fraction: float) (color: string) : DataBarDraw =
+    { From = 0.0; To = fraction; Color = color; Gradient = false; FadeRight = true; Border = None; Axis = None; HideValue = false }
+
+/// A conditional-formatting icon as one cell shows it.
+type IconDraw = {
+    /// The icon set the icon is of ("3TrafficLights1", "5Arrows", "3Stars").
+    Family: string
+    /// Which of its icons: 0 is the one for the lowest values.
+    Index: int
+    /// How many icons the set has.
+    Count: int
+    /// The cell shows the icon without its value.
+    HideValue: bool
+}
+
 /// Cell formatting
 type CellFormat = {
     Bold: bool
@@ -149,13 +186,11 @@ type CellFormat = {
     /// the cell is selected; for static snapshot rendering we always show
     /// it so the visual cue carries through to PDF / PNG exports.
     HasListDropdown: bool
-    /// Conditional-formatting data bar: (fillFraction 0..1, RRGGBB
-    /// color). Renderers draw a horizontal bar from the cell's left
-    /// edge spanning fraction × width, behind the text.
-    DataBar: (float * string) option
-    /// Conditional-formatting icon set: (iconIndex, iconCount). The
-    /// renderer draws a small low/mid/high indicator at the cell's left.
-    IconSet: (int * int) option
+    /// Conditional-formatting data bar, as it is drawn in this cell (see
+    /// `DataBarDraw`): behind the text, inset from the top and the bottom.
+    DataBar: DataBarDraw option
+    /// Conditional-formatting icon, drawn at the cell's left (see `IconDraw`).
+    IconSet: IconDraw option
 }
 
 /// Default format
@@ -384,12 +419,68 @@ type CfThresholdKind =
     | CfvoPercentile
     /// A formula, evaluated once for the rule.
     | CfvoFormula
+    /// Data bars of Excel 2010+ ("Automatic"): the lowest value or 0,
+    /// whichever is lower / the highest value or 0, whichever is higher.
+    | CfvoAutoMin
+    | CfvoAutoMax
 
 type CfThreshold = {
     Kind: CfThresholdKind
     /// The number / percentage / formula text; None for min and max.
     Value: string option
 }
+
+/// Where the axis of a data bar is.
+type DataBarAxis =
+    /// Between the lowest and the highest value where zero falls; no axis
+    /// when no value is negative.
+    | AxisAutomatic
+    /// In the middle of the cell.
+    | AxisMiddle
+    /// No axis: negative values draw their bars in the same direction.
+    | AxisNone
+
+type DataBarDirection =
+    | BarContext
+    | BarLeftToRight
+    | BarRightToLeft
+
+/// What an Excel 2010+ data bar (the x14 extension) says beyond its two
+/// ends and its colour.
+type DataBarOptions = {
+    /// A gradient fill (true) or a solid one.
+    Gradient: bool
+    /// Colour of the border; None: no border.
+    Border: string option
+    /// Fill and border of the bars of negative values; None: as positive values.
+    NegativeFill: string option
+    NegativeBorder: string option
+    Axis: DataBarAxis
+    AxisColor: string option
+    Direction: DataBarDirection
+    /// False: the cells show the bar only.
+    ShowValue: bool
+    /// Shortest and longest bar, in percent of the cell's width.
+    MinLength: int
+    MaxLength: int
+}
+
+/// The options Excel 2010+ gives a new data bar (the gradient preset has
+/// `Border` too).
+let defaultDataBarOptions : DataBarOptions =
+    { Gradient = true; Border = None; NegativeFill = Some "#FF0000"; NegativeBorder = None; Axis = AxisAutomatic; AxisColor = Some "#000000"
+      Direction = BarContext; ShowValue = true; MinLength = 0; MaxLength = 100 }
+
+/// What an icon set says beyond its family, steps and direction.
+type IconSetOptions = {
+    /// False: the cells show the icon only.
+    ShowValue: bool
+    /// Custom icons, one per step from the lowest: (icon set, index of the
+    /// icon in it), ("NoIcons", 0) for no icon. Empty: the family's own.
+    Custom: (string * int) list
+}
+
+let defaultIconSetOptions : IconSetOptions = { ShowValue = true; Custom = [] }
 
 type TextRuleKind =
     | TextContains
@@ -439,6 +530,12 @@ type ConditionalFormatRule =
     /// Icon set: `family` is the OOXML name ("3TrafficLights1", "5Arrows");
     /// one threshold per icon (the first is the floor).
     | IconSet of family: string * thresholds: CfThreshold list * reverse: bool
+    /// A data bar with the options of Excel 2010+ (written with its x14
+    /// extension): negative values, an axis, a border, solid or gradient.
+    | DataBarEx of low: CfThreshold * high: CfThreshold * color: string * options: DataBarOptions
+    /// An icon set with custom icons, hidden values or one of the icon sets
+    /// of Excel 2010+ ("3Stars", "3Triangles", "5Boxes").
+    | IconSetEx of family: string * thresholds: CfThreshold list * reverse: bool * options: IconSetOptions
 
 /// Conditional format (rule + style to apply)
 type ConditionalFormat = {
@@ -2745,6 +2842,8 @@ let mapModelFormulas (rewrite: string -> string) (model: SpreadsheetModel) : Spr
                 | ColorScale stops -> ColorScale (stops |> List.map (fun (stop, color) -> threshold stop, color))
                 | DataBar (low, high, color) -> DataBar (threshold low, threshold high, color)
                 | IconSet (family, thresholds, reverse) -> IconSet (family, thresholds |> List.map threshold, reverse)
+                | DataBarEx (low, high, color, options) -> DataBarEx (threshold low, threshold high, color, options)
+                | IconSetEx (family, thresholds, reverse, options) -> IconSetEx (family, thresholds |> List.map threshold, reverse, options)
                 | other -> other
             if rule = entry.Format.Rule then entry else { entry with Format = { entry.Format with Rule = rule } })
     let validations =
@@ -2916,6 +3015,8 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
             | ColorScale stops -> ColorScale (stops |> List.map (fun (threshold, color) -> adjustThreshold threshold, color))
             | DataBar (low, high, color) -> DataBar (adjustThreshold low, adjustThreshold high, color)
             | IconSet (family, thresholds, reverse) -> IconSet (family, thresholds |> List.map adjustThreshold, reverse)
+            | DataBarEx (low, high, color, options) -> DataBarEx (adjustThreshold low, adjustThreshold high, color, options)
+            | IconSetEx (family, thresholds, reverse, options) -> IconSetEx (family, thresholds |> List.map adjustThreshold, reverse, options)
             | other -> other
         model.ConditionalFormats
         |> List.choose (fun entry ->
@@ -3448,7 +3549,7 @@ let applyDataBars (sr: int) (sc: int) (er: int) (ec: int) (color: string) (model
         let span = if hi - lo < 1e-12 then 1.0 else hi - lo
         cells
         |> List.fold (fun m (addr, v) ->
-            updateFormat addr (fun f -> { f with DataBar = Some(max 0.0 (min 1.0 ((v - lo) / span)), color) }) m) model
+            updateFormat addr (fun f -> { f with DataBar = Some (plainDataBar (max 0.0 (min 1.0 ((v - lo) / span))) color) }) m) model
 
 /// 2- or 3-color scale (pass `mid = None` for 2-color) → per-cell BgColor.
 let applyColorScale (sr: int) (sc: int) (er: int) (ec: int) (loColor: string) (mid: string option) (hiColor: string) (model: SpreadsheetModel) : SpreadsheetModel =
@@ -3479,7 +3580,7 @@ let applyIconSet (sr: int) (sc: int) (er: int) (ec: int) (count: int) (model: Sp
         cells
         |> List.fold (fun m (addr, v) ->
             let bucket = min (count - 1) (int ((v - lo) / span * float count))
-            updateFormat addr (fun f -> { f with IconSet = Some(bucket, count) }) m) model
+            updateFormat addr (fun f -> { f with IconSet = Some { Family = (if count = 4 then "4TrafficLights" elif count = 5 then "5Quarters" else "3TrafficLights1"); Index = bucket; Count = count; HideValue = false } }) m) model
     | _ -> model
 
 // --- Data validation --------------------------------------------------------

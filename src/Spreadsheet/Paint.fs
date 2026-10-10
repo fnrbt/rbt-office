@@ -365,16 +365,41 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
         // stays visible above and below.
         for (cell, format, _value, _selected, _background, zone) in states do
             match format.DataBar with
-            | Some (frac, color) when frac > 0.0 ->
+            | Some bar ->
                 let inset = 2.0
-                let barW = (cell.Rect.Width - 1.0) * frac
+                let width = cell.Rect.Width - 1.0
+                let top = cell.Rect.Y + inset
+                let height = max 1.0 (cell.Rect.Height - inset * 2.0)
+                let left = cell.Rect.X + width * bar.From
+                let barW = width * (bar.To - bar.From)
                 if barW > 0.5 then
-                    yield zone, FillRect (
-                        { X = cell.Rect.X
-                          Y = cell.Rect.Y + inset
-                          Width = barW
-                          Height = max 1.0 (cell.Rect.Height - inset * 2.0) },
-                        color)
+                    if bar.Gradient then
+                        // The fill fades to white along the bar: strips of
+                        // the colour, lighter one after the other.
+                        let strips = 8
+                        for strip in 0 .. strips - 1 do
+                            let lightness = (float strip / float strips) * 0.85
+                            let place = if bar.FadeRight then strip else strips - 1 - strip
+                            yield zone, FillRect (
+                                { X = left + barW * float place / float strips
+                                  Y = top
+                                  Width = barW / float strips + 0.5
+                                  Height = height },
+                                Rbt.Spreadsheet.ConditionalFormatting.blendColors bar.Color "#FFFFFF" lightness)
+                    else
+                        yield zone, FillRect ({ X = left; Y = top; Width = barW; Height = height }, bar.Color)
+                    match bar.Border with
+                    | Some line -> yield zone, StrokeRect ({ X = left + 0.5; Y = top + 0.5; Width = max 1.0 (barW - 1.0); Height = max 1.0 (height - 1.0) }, line, 1.0)
+                    | None -> ()
+                match bar.Axis with
+                | Some (at, color) ->
+                    // A dashed line down the cell.
+                    let x = cell.Rect.X + width * at
+                    let mutable y = cell.Rect.Y
+                    while y < cell.Rect.Y + cell.Rect.Height do
+                        yield zone, FillRect ({ X = x; Y = y; Width = 1.0; Height = min 2.0 (cell.Rect.Y + cell.Rect.Height - y) }, color)
+                        y <- y + 3.0
+                | None -> ()
             | _ -> ()
 
         // Pass 2: per-cell strokes + cellXf borders, drawn on top of every
@@ -634,6 +659,12 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                 |> Option.map (fun m ->
                     fun (s: string) -> m s fontPt format.FontName format.Bold format.Italic)
             let displayText = cellDisplayText measure cell.Rect.Width format value
+            // A data bar or an icon set that shows no values.
+            let displayText =
+                match format.DataBar, format.IconSet with
+                | Some bar, _ when bar.HideValue -> ""
+                | _, Some icon when icon.HideValue -> ""
+                | _ -> displayText
             // Cells in a hidden column (0 width) or hidden row (0 height) paint
             // nothing — Excel renders no text there, and without this guard the
             // hidden cell's text overflows into the next visible column (and a
@@ -963,25 +994,21 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
         // gutter the text was already indented past.
         for (cell, format, _value, _selected, _background, zone) in states do
             match format.IconSet with
-            | Some (idx, count) when count > 1 ->
-                // 0 = worst (red), count-1 = best (green), midpoints amber.
-                let t = float idx / float (count - 1)
-                let color =
-                    if t <= 0.5 then
-                        // red → amber over the first half
-                        let u = t * 2.0
-                        sprintf "#FF%02X00" (int (0.0 * (1.0 - u) + 192.0 * u))
-                    else
-                        // amber → green over the second half
-                        let u = (t - 0.5) * 2.0
-                        sprintf "#%02X%02X%02X"
-                            (int (255.0 * (1.0 - u)))
-                            (int (192.0 * (1.0 - u) + 176.0 * u))
-                            (int (80.0 * u))
+            | Some icon when icon.Count > 1 ->
+                // The icon's colour, and its shape where the set is one of
+                // arrows or triangles (up for the highest, down for the lowest).
+                let glyph, color = Rbt.Spreadsheet.ConditionalFormatting.iconGlyph icon.Family icon.Index
                 let sz = 9.0
                 let iconX = cell.Rect.X + 3.0
                 let iconY = cell.Rect.Y + cell.Rect.Height / 2.0 - sz / 2.0
-                yield zone, FillRect ({ X = iconX; Y = iconY; Width = sz; Height = sz }, color)
+                match glyph with
+                | "\u2191" | "\u25B2" ->
+                    yield zone, VecPath ([ VMove (iconX, iconY + sz); VLine (iconX + sz / 2.0, iconY); VLine (iconX + sz, iconY + sz); VClose ], Some color, None)
+                | "\u2193" | "\u25BC" ->
+                    yield zone, VecPath ([ VMove (iconX, iconY); VLine (iconX + sz, iconY); VLine (iconX + sz / 2.0, iconY + sz); VClose ], Some color, None)
+                | "\u2192" | "\u25AC" ->
+                    yield zone, FillRect ({ X = iconX; Y = iconY + sz / 2.0 - 1.5; Width = sz; Height = 3.0 }, color)
+                | _ -> yield zone, FillRect ({ X = iconX; Y = iconY; Width = sz; Height = sz }, color)
             | _ -> ()
     ]
     // Text that runs over the cells beside its own (its clip is that run of

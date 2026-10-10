@@ -21,9 +21,9 @@ let fmtAt r (m: SpreadsheetModel) = match getCell { Row=r; Col=0 } m with Some c
 
 // ── data bars (0-baseline, all ≥ 0) ──
 let db = applyDataBars 0 0 4 0 "#638EC6" model
-check "databar min"  ((fmtAt 0 db).DataBar) (Some (0.0, "#638EC6"))
-check "databar max"  ((fmtAt 4 db).DataBar) (Some (1.0, "#638EC6"))
-check "databar mid"  ((fmtAt 2 db).DataBar) (Some (0.5, "#638EC6"))
+check "databar min"  ((fmtAt 0 db).DataBar) (Some (plainDataBar 0.0 "#638EC6"))
+check "databar max"  ((fmtAt 4 db).DataBar) (Some (plainDataBar 1.0 "#638EC6"))
+check "databar mid"  ((fmtAt 2 db).DataBar) (Some (plainDataBar 0.5 "#638EC6"))
 
 // ── 2-color scale (red→green) ──
 let cs = applyColorScale 0 0 4 0 "#FF0000" None "#00FF00" model
@@ -33,9 +33,9 @@ check "colorscale mid" ((fmtAt 2 cs).BgColor) (Some "#7F7F00")   // halfway lerp
 
 // ── icon set (3 buckets) ──
 let ic = applyIconSet 0 0 4 0 3 model
-check "iconset low"  ((fmtAt 0 ic).IconSet) (Some (0, 3))   // 0
-check "iconset mid"  ((fmtAt 2 ic).IconSet) (Some (1, 3))   // 50 → bucket 1
-check "iconset high" ((fmtAt 4 ic).IconSet) (Some (2, 3))   // 100 → clamped to 2
+check "iconset low"  ((fmtAt 0 ic).IconSet |> Option.map (fun icon -> icon.Index, icon.Count)) (Some (0, 3))   // 0
+check "iconset mid"  ((fmtAt 2 ic).IconSet |> Option.map (fun icon -> icon.Index, icon.Count)) (Some (1, 3))   // 50 → bucket 1
+check "iconset high" ((fmtAt 4 ic).IconSet |> Option.map (fun icon -> icon.Index, icon.Count)) (Some (2, 3))   // 100 → clamped to 2
 
 printfn ""
 printfn "Stage 14 CF-visual tests: %d passed, %d failed" pass fail

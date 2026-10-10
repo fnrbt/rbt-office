@@ -3200,8 +3200,10 @@ type Spreadsheet(container: Element) =
             add "box-shadow" (if shadows.Count = 0 then "none" else String.concat "," shadows)
         // Conditional formatting (highest priority): the merged effect of
         // every matching rule that covers the cell.
-        let mutable icon : (int * int) option = None
+        let mutable icon : IconDraw option = None
         let mutable bar = -1
+        let mutable barDraw : DataBarDraw option = None
+        let mutable hideValue = false
         if not model.ConditionalFormats.IsEmpty then
             match Rbt.Spreadsheet.ConditionalFormatting.effectAt (Rbt.Spreadsheet.ConditionalFormatting.contextFor model) addr with
             | Some effect ->
@@ -3214,14 +3216,22 @@ type Spreadsheet(container: Element) =
                 match effect.TextColor with Some color -> add "color" color | None -> ()
                 match effect.BgColor with Some color -> add "background-color" color | None -> ()
                 match effect.DataBar with
-                | Some (fraction, color) ->
-                    // A bar from the left edge, behind the text.
-                    let percent = int (System.Math.Round (fraction * 100.0))
-                    add "background-image" ("linear-gradient(to right, " + color + " " + string percent + "%, transparent " + string percent + "%)")
+                | Some draw when draw.From = 0.0 && not draw.Gradient && draw.Border.IsNone && draw.Axis.IsNone ->
+                    // A plain bar from the left edge, behind the text.
+                    let percent = int (System.Math.Round (draw.To * 100.0))
+                    add "background-image" ("linear-gradient(to right, " + draw.Color + " " + string percent + "%, transparent " + string percent + "%)")
                     bar <- percent
+                    hideValue <- draw.HideValue
+                | Some draw ->
+                    // A bar of Excel 2010+ (an axis, negative values, a border, a gradient): drawn by nodes of its own.
+                    bar <- int (System.Math.Round ((draw.To - draw.From) * 100.0))
+                    barDraw <- Some draw
+                    hideValue <- draw.HideValue
                 | None -> ()
                 match effect.IconSet with
-                | Some (index, count) when count > 1 -> icon <- Some (index, count)
+                | Some draw when draw.Count > 1 ->
+                    icon <- Some draw
+                    if draw.HideValue then hideValue <- true
                 | _ -> ()
             | None -> ()
         // The text. A number that does not fit its cell shows ####, as in
@@ -3245,6 +3255,8 @@ type Spreadsheet(container: Element) =
                         System.String('#', max 1 (int ((w - 10.0) / hash)))
                 | _ -> SpreadsheetCellText.cellDisplayText None 1.0e6 data.Format data.Value
             | None -> ""
+        // A data bar or an icon set that shows no values.
+        let displayText = if hideValue then "" else displayText
         // Shrink to fit: one line of text wider than its cell is drawn smaller
         // (never larger), down to what fits between the cell's paddings.
         match cellData with
@@ -3343,15 +3355,38 @@ type Spreadsheet(container: Element) =
             setClassName strip "spreadsheet-overflow-gap"
             setCssText strip ("position:absolute;left:" + string (int (floor (edge + 0.5))) + "px;top:" + string topLine + "px;bottom:0;width:1px;background:white;z-index:-1;pointer-events:none")
             appendChild cell strip
+        match barDraw with
+        | Some draw ->
+            let percent (fraction: float) = string (System.Math.Round (fraction * 10000.0) / 100.0) + "%"
+            let fill = createElement "div"
+            setClassName fill "spreadsheet-cf-bar"
+            let background =
+                if draw.Gradient then "linear-gradient(to " + (if draw.FadeRight then "right" else "left") + ", " + draw.Color + ", #FFFFFF)"
+                else draw.Color
+            setCssText fill
+                ("position:absolute;box-sizing:border-box;top:2px;bottom:2px;left:" + percent draw.From + ";width:" + percent (draw.To - draw.From)
+                 + ";background:" + background + (match draw.Border with Some line -> ";border:1px solid " + line | None -> "")
+                 + ";z-index:-1;pointer-events:none")
+            setAttribute fill "data-cf-bar-from" (percent draw.From)
+            setAttribute fill "data-cf-bar-color" draw.Color
+            if draw.To > draw.From then appendChild cell fill
+            match draw.Axis with
+            | Some (at, color) ->
+                let axis = createElement "div"
+                setClassName axis "spreadsheet-cf-axis"
+                setCssText axis ("position:absolute;top:0;bottom:0;left:" + percent at + ";width:0;border-left:1px dashed " + color + ";z-index:-1;pointer-events:none")
+                appendChild cell axis
+            | None -> ()
+        | None -> ()
         match icon with
-        | Some (index, count) ->
-            // Same low → high signal the canvas painter draws: red, amber, green.
-            let t = float index / float (count - 1)
-            let color = if t < 0.34 then "#E53935" elif t < 0.67 then "#F9A825" else "#43A047"
+        | Some draw ->
+            // The icon as a character in the colour of the real one (arrows, flags, marks, lights).
+            let glyph, color = Rbt.Spreadsheet.ConditionalFormatting.iconGlyph draw.Family draw.Index
             let mark = createElement "span"
-            setTextContent mark "●"
+            setTextContent mark glyph
             setCssText mark ("color:" + color + ";margin-right:3px;font-size:10px")
-            setAttribute mark "data-cf-icon" (string index)
+            setAttribute mark "data-cf-icon" (string draw.Index)
+            setAttribute mark "data-cf-icon-set" draw.Family
             prependChild cell mark
         | None -> ()
         // A marker and a tooltip for a comment or a comment thread.

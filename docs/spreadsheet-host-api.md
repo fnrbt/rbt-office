@@ -165,7 +165,43 @@ iconSet   = "3Arrows" | "3ArrowsGray" | "3Flags" | "3TrafficLights1" | "3Traffic
 - Numbers read back as strings in `formula1` / `formula2` (`"25"`); threshold values read back as numbers.
 - On input, keys with a default may be left out: `percent`, `bottom`, `orEqual`, `reverse`: false; `above`: true; `stdDev`: 0; `rank`: 10; a data bar's `min` (min), `max` (max), `color` (`#638EC6`); an icon set's `iconSet` (`3TrafficLights1`) and `thresholds` (percent 0/33/67, 0/25/50/75, 0/20/40/60/80); `format`: no formatting. On output every key of the rule's type is present.
 - Rules the old built-in dialog made (greater than / less than / between / equal with a literal number, text contains) read back as the `cellIs` / `containsText` rules they are equal to.
-- Not modelled: the x14 extension rules of a file (icon sets `3Stars`, `3Triangles`, `5Boxes`, data bars with negative-value / gradient settings, rules referring to other sheets). They are not listed, and they are kept in the file only while the sheet's conditional formats are not edited: the first edit of a sheet's rules writes the sheet's rules from the model, without them. A data bar keeps its two ends and colour only.
+- **Excel 2010+ forms (the x14 extension of a sheet).** They are rules like the others: listed, editable, drawn, undoable, following inserted / deleted
+  rows and columns, written back in the x14 form Excel writes.
+  - A data bar with x14 options has, besides `min` / `max` / `color`, these keys (a plain 2007 data bar has none of them - their presence is what says
+    "this is an Excel 2010+ data bar"):
+    ```
+    { type: "dataBar", min, max, color,
+      gradient: boolean,                       // false: a solid fill
+      borderColor: "#RRGGBB" | null,           // null: no border
+      negativeColor: "#RRGGBB" | null,         // fill of the bars of negative values; null: the same as `color`
+      negativeBorderColor: "#RRGGBB" | null,   // null: the same as `borderColor`
+      axisPosition: "automatic" | "middle" | "none", axisColor: "#RRGGBB" | null,
+      direction: "context" | "leftToRight" | "rightToLeft",
+      showValue: boolean,                      // false: the cells show the bar only
+      minLength: number, maxLength: number }   // shortest / longest bar in percent of the cell (0..100)
+    ```
+    Its `min` / `max` may also be `{ type: "autoMin" }` / `{ type: "autoMax" }` (Excel's "Automatic": the lowest value or 0 / the highest value or 0).
+    On input, giving ANY of these keys makes the rule an Excel 2010+ data bar; the keys left out take Excel's defaults for a new data bar (`gradient:
+    true`, `borderColor: null`, `negativeColor: "#FF0000"`, `negativeBorderColor: null`, `axisPosition: "automatic"`, `axisColor: "#000000"`,
+    `direction: "context"`, `showValue: true`, `minLength: 0`, `maxLength: 100`); a colour key given as `null` means "none / same as positive".
+    Drawn (DOM grid and painter): with `axisPosition: "automatic"` and negative values the axis is where zero falls between the two ends, negative
+    bars grow leftwards from it in `negativeColor`, positive ones rightwards; `"middle"` puts the axis at the middle of the cell; `"none"` draws
+    every bar from the cell's edge between `minLength` and `maxLength`; `"rightToLeft"` mirrors; a gradient fades to white away from the axis; the
+    border is a 1 px line. A plain data bar is drawn as before (a solid bar from the left edge).
+  - An icon set may have `showValue: boolean` and `icons: [{ iconSet, index }, ...] | null` (custom icons, one per threshold from the lowest step up;
+    `index` 0 is the icon of the family's lowest step; `{ iconSet: "NoIcons", index: 0 }` shows no icon for that step). These two keys are present on
+    reading only when the rule uses them or names one of the icon sets of Excel 2010+: `"3Stars"`, `"3Triangles"`, `"5Boxes"` (accepted by `iconSet`
+    now). `icons` and `reverse: true` do not go together. The DOM grid draws an icon as a coloured character of its kind (arrows ↓ → ↑ ↘ ↗, triangles,
+    flags, check / exclamation / cross marks, stars, part-filled circles for ratings, quarters and boxes, discs for traffic lights), with
+    `data-cf-icon` (index) and `data-cf-icon-set` on its node; the painter draws arrows and triangles as shapes and the others as a square in the
+    icon's colour.
+  - A rule whose formula reads another sheet (`{ type: "expression", formula: "Lists!$B$1>$A1" }`, `cellIs` operands, a threshold formula) is an
+    ordinary rule here; it is evaluated against the other sheet and follows edits of it. In the file it is written in the x14 list (`<x14:cfRule>`
+    with `<xm:f>` and its format in place as `<x14:dxf>`), as Excel does, and read from there.
+  - Still not understood: an x14 rule of an unknown type and pivot-table conditional formats (`pivot="1"`). When a sheet's x14 list has one, the whole
+    list is carried through as it is (also when the sheet's other rules are edited; new cross-sheet rules are added to that list) and its rules are
+    not listed; its 2007 twins (plain data bars) are. As for sparklines, a carried list is dropped when rows / columns of the sheet are inserted or
+    deleted. Not kept either: the `gte="0"` ("greater than" instead of "greater than or equal") of a threshold.
 
 ### `AddConditionalFormat(range: string, rule: Rule, options?: { stopIfTrue?: boolean }): number`
 Adds a rule to the cells of `range` and returns its id. The new rule takes precedence over the sheet's other rules (as in Excel); use `ReorderConditionalFormats` / `UpdateConditionalFormat(id, { priority })` to change that.
@@ -203,6 +239,10 @@ Validations belong to a sheet and are stored by range: a whole column (`"A:A"`) 
 XLSX as `A1:A1048576`. A cell is covered by at most one validation. All mutating members act on the active sheet, are one undo step each (no
 recalculation), bump the revision and fire `OnChange`. Validations follow inserted / deleted rows and columns (ranges move, the formulas in
 the rules are re-pointed) and round-trip through `ExportXlsx` / `ImportXlsx`.
+A validation whose formula or list source reads another sheet (`{ type: "list", source: "Lists!$A$1:$A$9" }`, `formula1: "Limits!$B$2"`) is read from
+and written to the sheet's x14 list (`<x14:dataValidations>` with `<xm:f>` / `<xm:sqref>`), the way Excel writes it; in this API it is a validation
+like any other. Because that list comes after the sheet's other validations in the file, the ids of a workbook opened again are numbered in that
+order (the validations that read another sheet last); ids are never stable across a save and a reopen anyway.
 
 ### `GetValidations(sheetIndex?: number): { id: number, range: string, rule: ValidationRule }[]`
 The validations of the active sheet (or of the sheet at `sheetIndex`; a lazily loaded sheet is converted), in the order they were made.
@@ -688,3 +728,15 @@ Nothing to call for the recalculation itself: every edit recalculates what it ha
   yet, the type, the future-metadata block and a `cellMetadata` record are ADDED to it (the existing types, blocks and `valueMetadata` keep their
   positions and numbers). Not carried: the `vm` attribute of a cell that names a rich value (the cell keeps its fallback value, as before).
 - A workbook without dynamic arrays gets no metadata part.
+
+### Conditional formats and validations of Excel 2010+ (x14)
+
+- A data bar with x14 options is written twice, as Excel does: the 2007 `<cfRule type="dataBar">` (with `min` / `max` ends where the x14 ones are
+  automatic) carrying `<extLst><ext uri="{B025F937-…}"><x14:id>{…}</x14:id></ext></extLst>`, and its `<x14:cfRule type="dataBar" id="{…}">` twin in
+  the sheet's `<ext uri="{78C0D931-…}"><x14:conditionalFormattings>` list with `minLength`, `maxLength`, `showValue`, `border`, `gradient`,
+  `direction`, `negativeBarColorSameAsPositive`, `negativeBarBorderColorSameAsPositive`, `axisPosition`, the two `x14:cfvo` and `x14:fillColor` /
+  `borderColor` / `negativeFillColor` / `negativeBorderColor` / `axisColor`. Colours are written as RGB (a theme colour of the file is resolved).
+- Icon sets with custom icons or of the families `3Stars` / `3Triangles` / `5Boxes`, and rules whose formulas read another sheet, are written in that
+  list only (`<x14:iconSet custom="1">` with `<x14:cfIcon>`; `<xm:f>` and `<x14:dxf>`); validations that read another sheet in `<ext
+  uri="{CCE6A557-…}"><x14:dataValidations>`. Priorities are one numbering across both lists.
+- Sparkline groups, slicer lists and anything else in a sheet's extension list are carried through untouched, as before.

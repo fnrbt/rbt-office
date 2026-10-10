@@ -395,10 +395,10 @@ checks['export-package-parts'] = async () => {
         grid.Undo();
         after = await partsIn(await grid.ExportXlsx());
         check('undone: the chain is kept again', after['xl/calcChain.xml'] === before['xl/calcChain.xml'], true);
-        // Rows inserted in the first sheet: its x14 formats would be stale.
+        // Rows inserted in the first sheet: its x14 data bar (a rule of the model) moves with its cells.
         grid.InsertRows(2, 2);
         after = await partsIn(await grid.ExportXlsx());
-        check('rows inserted: the x14 formats of that sheet are not written stale', /x14:conditionalFormattings/.test(after['xl/worksheets/sheet1.xml']), false);
+        check('rows inserted: the x14 data bar of that sheet follows its cells', [/<xm:sqref>E17:E24<\/xm:sqref>/.test(after['xl/worksheets/sheet1.xml']), /<xm:sqref>E15:E22<\/xm:sqref>/.test(after['xl/worksheets/sheet1.xml'])], [true, false]);
         grid.Undo();
         // The Data sheet removed by the host.
         const sheets = grid.GetSheets(), names = grid.GetSheetNames();

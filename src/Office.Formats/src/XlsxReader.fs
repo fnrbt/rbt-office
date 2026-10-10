@@ -213,6 +213,61 @@ type CfColorStop = {
     Color: string
 }
 
+/// A `<dxf>` "differential format" from styles.xml — the partial style
+/// overlay a conditional-formatting rule applies on top of a cell's
+/// existing format. Only the fields a dxf can carry are modeled; all
+/// optional, since a dxf typically sets just a fill or just a color.
+type Dxf = {
+    FontColor: string option
+    FillColor: string option
+    Bold: bool option
+    Italic: bool option
+    /// `<u/>` (any kind but "none") and `<strike/>` of the dxf's font.
+    Underline: bool option
+    Strike: bool option
+}
+
+/// The x14 form of a data bar (`<x14:dataBar>` in the sheet's extension
+/// list), attribute by attribute with the schema's defaults.
+type CfDataBarExt = {
+    MinLength: int
+    MaxLength: int
+    ShowValue: bool
+    Border: bool
+    Gradient: bool
+    /// "context", "leftToRight", "rightToLeft".
+    Direction: string
+    NegativeBarColorSameAsPositive: bool
+    NegativeBarBorderColorSameAsPositive: bool
+    /// "automatic", "middle", "none".
+    AxisPosition: string
+    /// The two ends: (type, value) with the x14 types (autoMin, autoMax,
+    /// min, max, num, percent, percentile, formula).
+    Cfvo: (string * string option) list
+    BorderColor: string option
+    NegativeFillColor: string option
+    NegativeBorderColor: string option
+    AxisColor: string option
+}
+
+/// What the x14 form of a conditional-formatting rule holds beyond the
+/// `<cfRule>` (the `{78C0D931-…}` extension of the sheet).
+type CfRuleExt = {
+    DataBar: CfDataBarExt option
+    /// Custom icons of an icon set (`<x14:cfIcon>`): (icon set, icon id) per step.
+    IconCustom: (string * int) list
+    /// `showValue` of an icon set.
+    ShowValue: bool
+    /// The rule is in the x14 list only: an icon set of Excel 2010+, custom
+    /// icons, a rule whose formulas read another sheet (`<xm:f>`).
+    InExtList: bool
+    /// The format of such a rule: it has its `<x14:dxf>` in place, not an
+    /// index into the styles part.
+    Dxf: Dxf option
+}
+
+let emptyCfRuleExt : CfRuleExt = { DataBar = None; IconCustom = []; ShowValue = true; InExtList = false; Dxf = None }
+
 type ConditionalFormatRule = {
     Type: string  // "cellIs", "expression", "colorScale", "dataBar", etc.
     /// cellIs operator: greaterThan / lessThan / between / equal /
@@ -266,25 +321,13 @@ type ConditionalFormatRule = {
     StdDev: int option
     Priority: int option
     StopIfTrue: bool
+    /// The rule's x14 extension, when it has one.
+    Ext: CfRuleExt option
 }
 
 type ConditionalFormat = {
     Range: string
     Rules: ConditionalFormatRule list
-}
-
-/// A `<dxf>` "differential format" from styles.xml — the partial style
-/// overlay a conditional-formatting rule applies on top of a cell's
-/// existing format. Only the fields a dxf can carry are modeled; all
-/// optional, since a dxf typically sets just a fill or just a color.
-type Dxf = {
-    FontColor: string option
-    FillColor: string option
-    Bold: bool option
-    Italic: bool option
-    /// `<u/>` (any kind but "none") and `<strike/>` of the dxf's font.
-    Underline: bool option
-    Strike: bool option
 }
 
 type DataValidation = {
@@ -4073,7 +4116,140 @@ module ConditionalFormats =
             StdDev = stdDev
             Priority = priority
             StopIfTrue = stopIfTrue
+            Ext =
+                // `showValue="0"` of the 2007 icon set.
+                match Ns.childNs "iconSet" ruleNode |> Option.bind (Xml.attr "showValue") with
+                | Some text when not (isTrueText text) -> Some { emptyCfRuleExt with ShowValue = false }
+                | _ -> None
         }
+
+    /// One `<dxf>` (of the styles part, or the `<x14:dxf>` of an x14 rule).
+    let parseDxf (themeColors: string array) (dxf: XmlNode) : Dxf =
+        let fontColor =
+            Xlsx.sElem "font" dxf
+            |> Option.bind (Xlsx.sElem "color")
+            |> Option.bind (Xlsx.resolveColorElement themeColors)
+        let fillColor =
+            Xlsx.sElem "fill" dxf
+            |> Option.bind (Xlsx.sElem "patternFill")
+            |> Option.bind (fun pf ->
+                Xlsx.sElem "bgColor" pf |> Option.bind (Xlsx.resolveColorElement themeColors)
+                |> Option.orElseWith (fun () ->
+                    Xlsx.sElem "fgColor" pf |> Option.bind (Xlsx.resolveColorElement themeColors)))
+        let boolChild key =
+            Xlsx.sElem "font" dxf
+            |> Option.bind (Xlsx.sElem key)
+            |> Option.map (fun node ->
+                Xml.attr "val" node
+                |> Option.map (fun v -> v <> "0" && v <> "false")
+                |> Option.defaultValue true)
+        {
+            FontColor = fontColor
+            FillColor = fillColor
+            Bold = boolChild "b"
+            Italic = boolChild "i"
+            Underline =
+                Xlsx.sElem "font" dxf
+                |> Option.bind (Xlsx.sElem "u")
+                |> Option.map (fun node -> Xml.attr "val" node <> Some "none")
+            Strike = boolChild "strike"
+        }
+
+    /// The rule types of the x14 list this reader makes rules of.
+    let x14RuleTypes =
+        [ "dataBar"; "iconSet"; "colorScale"; "expression"; "cellIs"; "containsText"; "notContainsText"; "beginsWith"; "endsWith"
+          "top10"; "aboveAverage"; "duplicateValues"; "uniqueValues"; "containsBlanks"; "notContainsBlanks"; "containsErrors"
+          "notContainsErrors"; "timePeriod" ]
+
+    let private directChildren (local: string) (node: XmlNode) =
+        Xml.children node
+        |> List.filter (fun child -> match child with XmlDsl.Element (name, _, _) -> Ns.stripNs name = local | _ -> false)
+
+    /// The x14 rules of a sheet (`<x14:conditionalFormatting>` blocks of its
+    /// extension list): (sqref, rule node) in document order.
+    let private x14RuleNodes (sheet: XmlNode) : (string * XmlNode) list =
+        match Ns.childNs "extLst" sheet with
+        | None -> []
+        | Some extLst ->
+            Ns.descendantsNs "conditionalFormatting" extLst
+            |> List.collect (fun block ->
+                let sqref = directChildren "sqref" block |> List.tryHead |> Option.bind Xml.text |> Option.map (fun text -> text.Trim()) |> Option.defaultValue ""
+                directChildren "cfRule" block |> List.map (fun rule -> sqref, rule))
+
+    /// Whether every x14 rule of the sheet is one this reader makes a rule
+    /// of. When not, the extension is kept as it is and none is read.
+    let x14Understood (sheet: XmlNode) : bool =
+        x14RuleNodes sheet
+        |> List.forall (fun (sqref, rule) ->
+            let kind = Xml.attr "type" rule |> Option.defaultValue ""
+            Xml.attr "pivot" rule |> Option.forall (fun text -> not (isTrueText text))
+            && List.contains kind x14RuleTypes
+            && (sqref <> "" || kind = "dataBar"))
+
+    let private x14Cfvo (parent: XmlNode) : (string * string option) list =
+        directChildren "cfvo" parent
+        |> List.map (fun cfvo ->
+            Xml.attr "type" cfvo |> Option.defaultValue "min",
+            (Ns.childNs "f" cfvo |> Option.bind Xml.text |> Option.filter (fun text -> text <> "")))
+
+    let private x14DataBar (themeColors: string array) (bar: XmlNode) : CfDataBarExt * string option =
+        let flag (name: string) (fallback: bool) = Xml.attr name bar |> Option.map isTrueText |> Option.defaultValue fallback
+        let number (name: string) (fallback: int) = Xml.attr name bar |> Option.bind tryParseInt |> Option.defaultValue fallback
+        let colorOf (name: string) = Ns.childNs name bar |> Option.bind (Xlsx.resolveColorElement themeColors)
+        { MinLength = number "minLength" 10
+          MaxLength = number "maxLength" 90
+          ShowValue = flag "showValue" true
+          Border = flag "border" false
+          Gradient = flag "gradient" true
+          Direction = Xml.attr "direction" bar |> Option.defaultValue "context"
+          NegativeBarColorSameAsPositive = flag "negativeBarColorSameAsPositive" false
+          NegativeBarBorderColorSameAsPositive = flag "negativeBarBorderColorSameAsPositive" true
+          AxisPosition = Xml.attr "axisPosition" bar |> Option.defaultValue "automatic"
+          Cfvo = x14Cfvo bar
+          BorderColor = colorOf "borderColor"
+          NegativeFillColor = colorOf "negativeFillColor"
+          NegativeBorderColor = colorOf "negativeBorderColor"
+          AxisColor = colorOf "axisColor" },
+        colorOf "fillColor"
+
+    /// A rule that is in the x14 list only.
+    let private x14Rule (themeColors: string array) (ruleNode: XmlNode) : ConditionalFormatRule =
+        let basic = parseRule themeColors ruleNode
+        let formulas = directChildren "f" ruleNode |> List.choose Xml.text
+        let ext = { emptyCfRuleExt with InExtList = true; Dxf = Ns.childNs "dxf" ruleNode |> Option.map (parseDxf themeColors) }
+        match Ns.childNs "dataBar" ruleNode, Ns.childNs "iconSet" ruleNode, Ns.childNs "colorScale" ruleNode with
+        | Some bar, _, _ ->
+            let barExt, fill = x14DataBar themeColors bar
+            let legacy (kind: string, value: string option) =
+                match kind with
+                | "autoMin" -> "min", None
+                | "autoMax" -> "max", None
+                | _ -> kind, value
+            { basic with
+                Formulas = []
+                DataBarColor = fill
+                DataBarCfvo = barExt.Cfvo |> List.map legacy
+                Ext = Some { emptyCfRuleExt with DataBar = Some barExt } }
+        | None, Some icons, _ ->
+            let custom =
+                directChildren "cfIcon" icons
+                |> List.map (fun icon -> Xml.attr "iconSet" icon |> Option.defaultValue "NoIcons", (Xml.attr "iconId" icon |> Option.bind tryParseInt |> Option.defaultValue 0))
+            { basic with
+                Formulas = []
+                IconSetCfvo = x14Cfvo icons
+                Ext = Some { ext with
+                                IconCustom = custom
+                                ShowValue = Xml.attr "showValue" icons |> Option.map isTrueText |> Option.defaultValue true } }
+        | None, None, Some scale ->
+            let stops = x14Cfvo scale
+            let colors = directChildren "color" scale |> List.map (fun node -> Xlsx.resolveColorElement themeColors node |> Option.defaultValue "FFFFFF")
+            { basic with
+                Formulas = []
+                ColorScale =
+                    List.zip (stops |> List.truncate colors.Length) (colors |> List.truncate stops.Length)
+                    |> List.map (fun ((kind, value), color) -> { CfvoType = kind; CfvoValue = value; Color = color })
+                Ext = Some ext }
+        | None, None, None -> { basic with Formulas = formulas; Ext = Some ext }
 
     let parseConditionalFormat (themeColors: string array) (cfNode: XmlNode) : ConditionalFormat option =
         Xml.attr "sqref" cfNode
@@ -4087,8 +4263,41 @@ module ConditionalFormats =
             })
 
     let parseConditionalFormats (themeColors: string array) (sheet: XmlNode) : ConditionalFormat list =
-        Ns.descendantsNs "conditionalFormatting" sheet
-        |> List.choose (parseConditionalFormat themeColors)
+        let x14 = if x14Understood sheet then x14RuleNodes sheet else []
+        // The x14 data bar a 2007 data bar names by id (`<x14:id>` in the rule's own extension).
+        let barsById = System.Collections.Generic.Dictionary<string, XmlNode>()
+        for _, rule in x14 do
+            match Xml.attr "type" rule, Xml.attr "id" rule, Ns.childNs "dataBar" rule with
+            | Some "dataBar", Some id, Some bar -> barsById.[id] <- bar
+            | _ -> ()
+        let paired = System.Collections.Generic.HashSet<string>()
+        let main =
+            Ns.descendantsNs "conditionalFormatting" sheet
+            |> List.choose (fun cfNode ->
+                Xml.attr "sqref" cfNode
+                |> Option.map (fun range ->
+                    let rules =
+                        Ns.descendantsNs "cfRule" cfNode
+                        |> List.map (fun ruleNode ->
+                            let rule = parseRule themeColors ruleNode
+                            let id = Ns.descendantsNs "id" ruleNode |> List.tryHead |> Option.bind Xml.text |> Option.map (fun text -> text.Trim())
+                            match id with
+                            | Some id when rule.Type = "dataBar" && barsById.ContainsKey id ->
+                                paired.Add id |> ignore
+                                let barExt, fill = x14DataBar themeColors barsById.[id]
+                                { rule with
+                                    DataBarColor = (match fill with Some _ -> fill | None -> rule.DataBarColor)
+                                    Ext = Some { emptyCfRuleExt with DataBar = Some barExt } }
+                            | _ -> rule)
+                    { Range = range; Rules = rules }))
+        let extOnly =
+            x14
+            |> List.choose (fun (sqref, ruleNode) ->
+                match Xml.attr "id" ruleNode with
+                | Some id when paired.Contains id -> None
+                | _ when sqref = "" -> None
+                | _ -> Some { Range = sqref; Rules = [ x14Rule themeColors ruleNode ] })
+        main @ extOnly
 
     /// Parse the `<dxfs>` table out of styles.xml. Each `<dxf>` carries a
     /// partial font + fill; conditional-format rules reference them by
@@ -4098,42 +4307,22 @@ module ConditionalFormats =
         Xlsx.sElem "dxfs" stylesDoc
         |> Option.map (Xlsx.sElems "dxf")
         |> Option.defaultValue []
-        |> List.map (fun dxf ->
-            let fontColor =
-                Xlsx.sElem "font" dxf
-                |> Option.bind (Xlsx.sElem "color")
-                |> Option.bind (Xlsx.resolveColorElement themeColors)
-            let fillColor =
-                Xlsx.sElem "fill" dxf
-                |> Option.bind (Xlsx.sElem "patternFill")
-                |> Option.bind (fun pf ->
-                    Xlsx.sElem "bgColor" pf |> Option.bind (Xlsx.resolveColorElement themeColors)
-                    |> Option.orElseWith (fun () ->
-                        Xlsx.sElem "fgColor" pf |> Option.bind (Xlsx.resolveColorElement themeColors)))
-            let boolChild key =
-                Xlsx.sElem "font" dxf
-                |> Option.bind (Xlsx.sElem key)
-                |> Option.map (fun node ->
-                    Xml.attr "val" node
-                    |> Option.map (fun v -> v <> "0" && v <> "false")
-                    |> Option.defaultValue true)
-            {
-                FontColor = fontColor
-                FillColor = fillColor
-                Bold = boolChild "b"
-                Italic = boolChild "i"
-                Underline =
-                    Xlsx.sElem "font" dxf
-                    |> Option.bind (Xlsx.sElem "u")
-                    |> Option.map (fun node -> Xml.attr "val" node <> Some "none")
-                Strike = boolChild "strike"
-            })
+        |> List.map (parseDxf themeColors)
         |> List.toArray
 
 // Data Validation parsing
 module DataValidations =
     let parseDataValidation (dvNode: XmlNode) : DataValidation option =
+        // The x14 form has its range in `<xm:sqref>` and its formulas in `<xm:f>`.
+        let childText (name: string) = Ns.childNs name dvNode |> Option.bind Xml.text |> Option.map (fun text -> text.Trim()) |> Option.filter (fun text -> text <> "")
+        let formulaOf (name: string) =
+            Ns.childNs name dvNode
+            |> Option.bind (fun node ->
+                match Ns.childNs "f" node with
+                | Some inner -> Xml.text inner
+                | None -> Xml.text node)
         Xml.attr "sqref" dvNode
+        |> Option.orElseWith (fun () -> childText "sqref")
         |> Option.map (fun range ->
             let valType = Xml.attr "type" dvNode |> Option.defaultValue "none"
             let operator = Xml.attr "operator" dvNode
@@ -4142,8 +4331,8 @@ module DataValidations =
             // `showDropDown="1"` means the in-cell arrow is SUPPRESSED (the
             // attribute is named backwards in the schema).
             let showDropDown = not (flag "showDropDown" false)
-            let formula1 = Ns.childNs "formula1" dvNode |> Option.bind Xml.text
-            let formula2 = Ns.childNs "formula2" dvNode |> Option.bind Xml.text
+            let formula1 = formulaOf "formula1"
+            let formula2 = formulaOf "formula2"
             {
                 Range = range
                 ValidationType = valType
@@ -4162,10 +4351,17 @@ module DataValidations =
             })
 
     let parseDataValidations (sheet: XmlNode) : DataValidation list =
-        Ns.childNs "dataValidations" sheet
-        |> Option.map (Ns.descendantsNs "dataValidation")
-        |> Option.defaultValue []
-        |> List.choose parseDataValidation
+        let main =
+            Ns.childNs "dataValidations" sheet
+            |> Option.map (Ns.descendantsNs "dataValidation")
+            |> Option.defaultValue []
+        // The validations whose formulas read another sheet (`<x14:dataValidations>` of the extension list).
+        let extended =
+            Ns.childNs "extLst" sheet
+            |> Option.map (Ns.descendantsNs "dataValidations")
+            |> Option.defaultValue []
+            |> List.collect (Ns.descendantsNs "dataValidation")
+        main @ extended |> List.choose parseDataValidation
 
 // Named Ranges parsing
 module NamedRanges =
@@ -4782,10 +4978,14 @@ let private keptSheetExtensions (sheetXml: string) : string list =
                 try
                     let rootTag = sheetXml.Substring(rootAt, rootEnd - rootAt).TrimEnd('/')
                     match XmlDsl.parse (rootTag + ">" + fragment + "</worksheet>") with
-                    | XmlDsl.Element (_, rootAttributes, [ extLst ]) ->
+                    | XmlDsl.Element (_, rootAttributes, [ extLst ]) as parsed ->
+                        // The x14 conditional formats are read as rules (and written from
+                        // them); they are only kept as they are when one is not understood.
+                        let rulesRead = ConditionalFormats.x14Understood parsed
                         Xml.children extLst
                         |> List.map (fun ext -> DocxReader.selfContainedXml rootAttributes (DocxReader.Docx.xmlToString ext))
-                        |> List.filter (fun xml -> isPartExtension xml || isCellExtension xml)
+                        |> List.filter (fun xml ->
+                            isPartExtension xml || xml.Contains "sparklineGroups" || (xml.Contains "conditionalFormattings" && not rulesRead))
                     | _ -> []
                 with _ -> []
 

@@ -646,6 +646,10 @@ type RuleDescription = {
     IconSet: string option
     Thresholds: ThresholdDescription list
     Reverse: bool
+    /// The options of an Excel 2010+ data bar (`DataBarEx`); None: a plain data bar.
+    Bar: DataBarOptions option
+    /// Custom icons / hidden values of an icon set (`IconSetEx`); None: the family's icons, values shown.
+    Icons: IconSetOptions option
     /// The period of a "dateOccurring" rule.
     Period: string option
     Style: CellFormat option
@@ -654,7 +658,7 @@ type RuleDescription = {
 let emptyRuleDescription (kind: string) : RuleDescription =
     { Type = kind; Operator = None; Formula1 = None; Formula2 = None; Text = None; Rank = 10; Percent = false; Bottom = false
       Above = true; OrEqual = false; StdDev = 0; Stops = []; Low = None; High = None; Color = None; IconSet = None
-      Thresholds = []; Reverse = false; Period = None; Style = None }
+      Thresholds = []; Reverse = false; Bar = None; Icons = None; Period = None; Style = None }
 
 /// The rule types a host can name.
 let ruleTypes =
@@ -670,7 +674,7 @@ let iconSetNames =
 /// of applying a format.
 let isVisualRule (rule: ConditionalFormatRule) : bool =
     match rule with
-    | ColorScale _ | DataBar _ | IconSet _ -> true
+    | ColorScale _ | DataBar _ | IconSet _ | DataBarEx _ | IconSetEx _ -> true
     | _ -> false
 
 /// The properties of a format a conditional format applies (and a file
@@ -688,10 +692,12 @@ let private thresholdKindText (kind: CfThresholdKind) : string =
     | CfvoPercent -> "percent"
     | CfvoPercentile -> "percentile"
     | CfvoFormula -> "formula"
+    | CfvoAutoMin -> "autoMin"
+    | CfvoAutoMax -> "autoMax"
 
 let private describeThreshold (threshold: CfThreshold) : ThresholdDescription =
     { Kind = thresholdKindText threshold.Kind
-      Value = (match threshold.Kind with CfvoMin | CfvoMax -> None | _ -> threshold.Value) }
+      Value = (match threshold.Kind with CfvoMin | CfvoMax | CfvoAutoMin | CfvoAutoMax -> None | _ -> threshold.Value) }
 
 /// A formula as a host reads and writes it: without the leading "=".
 let private formulaBody (text: string) : string =
@@ -737,6 +743,10 @@ let describeRule (format: ConditionalFormat) : RuleDescription =
         { emptyRuleDescription "dataBar" with Low = Some (describeThreshold low); High = Some (describeThreshold high); Color = Some color }
     | IconSet (family, thresholds, reverse) ->
         { emptyRuleDescription "iconSet" with IconSet = Some family; Thresholds = thresholds |> List.map describeThreshold; Reverse = reverse }
+    | DataBarEx (low, high, color, options) ->
+        { emptyRuleDescription "dataBar" with Low = Some (describeThreshold low); High = Some (describeThreshold high); Color = Some color; Bar = Some options }
+    | IconSetEx (family, thresholds, reverse, options) ->
+        { emptyRuleDescription "iconSet" with IconSet = Some family; Thresholds = thresholds |> List.map describeThreshold; Reverse = reverse; Icons = Some options }
 
 let private isNumberText (text: string) =
     match Double.TryParse(text.Trim(), Globalization.NumberStyles.Float, Globalization.CultureInfo.InvariantCulture) with
@@ -770,6 +780,8 @@ let ruleOfDescription (memberName: string) (fallbackStyle: CellFormat) (descript
         match source.Kind, value with
         | "min", _ -> { Kind = CfvoMin; Value = None }
         | "max", _ -> { Kind = CfvoMax; Value = None }
+        | "autoMin", _ -> { Kind = CfvoAutoMin; Value = None }
+        | "autoMax", _ -> { Kind = CfvoAutoMax; Value = None }
         | "formula", Some text -> { Kind = CfvoFormula; Value = Some (formulaBody text) }
         | "formula", None -> fail (sprintf "%s.value is missing (a formula)" what)
         | _, None -> fail (sprintf "%s.value is missing (a number)" what)
@@ -842,18 +854,44 @@ let ruleOfDescription (memberName: string) (fallbackStyle: CellFormat) (descript
         | "dataBar" ->
             let low = description.Low |> Option.defaultValue { Kind = "min"; Value = None }
             let high = description.High |> Option.defaultValue { Kind = "max"; Value = None }
-            DataBar (threshold "rule.min" anyKind low, threshold "rule.max" anyKind high,
-                     color "rule.color" (description.Color |> Option.defaultValue "#638EC6"))
+            let barColor = color "rule.color" (description.Color |> Option.defaultValue "#638EC6")
+            (match description.Bar with
+             | None -> DataBar (threshold "rule.min" anyKind low, threshold "rule.max" anyKind high, barColor)
+             | Some options ->
+                // The data bar of Excel 2010+: its ends may be automatic.
+                let optional (what: string) (value: string option) = value |> Option.map (color what)
+                if options.MinLength < 0 || options.MaxLength > 100 || options.MinLength > options.MaxLength then
+                    fail (sprintf "rule.minLength and rule.maxLength must be 0..100, the first not above the second, got %d and %d" options.MinLength options.MaxLength)
+                DataBarEx (threshold "rule.min" ("autoMin" :: anyKind) low, threshold "rule.max" ("autoMax" :: anyKind) high, barColor,
+                           { options with
+                                Border = optional "rule.borderColor" options.Border
+                                NegativeFill = optional "rule.negativeColor" options.NegativeFill
+                                NegativeBorder = optional "rule.negativeBorderColor" options.NegativeBorder
+                                AxisColor = optional "rule.axisColor" options.AxisColor }))
         | "iconSet" ->
             let family = description.IconSet |> Option.defaultValue "3TrafficLights1"
-            if not (List.contains family iconSetNames) then
-                fail (sprintf "rule.iconSet must be one of %s, got \"%s\"" (String.concat ", " iconSetNames) family)
+            let known = iconSetNames @ Rbt.Spreadsheet.ConditionalFormatting.extendedIconSets
+            if not (List.contains family known) then
+                fail (sprintf "rule.iconSet must be one of %s, got \"%s\"" (String.concat ", " known) family)
             let count = int family.[0] - int '0'
             let thresholds = if description.Thresholds.IsEmpty then defaultIconThresholds count else description.Thresholds
             if thresholds.Length <> count then
                 fail (sprintf "icon set \"%s\" needs %d thresholds (one per icon, the first is the floor), got %d" family count thresholds.Length)
-            IconSet (family, thresholds |> List.mapi (fun index source -> threshold (sprintf "rule.thresholds[%d]" index) [ "number"; "percent"; "percentile"; "formula" ] source),
-                     description.Reverse)
+            let steps = thresholds |> List.mapi (fun index source -> threshold (sprintf "rule.thresholds[%d]" index) [ "number"; "percent"; "percentile"; "formula" ] source)
+            let options = description.Icons |> Option.defaultValue defaultIconSetOptions
+            if not options.Custom.IsEmpty then
+                if options.Custom.Length <> count then
+                    fail (sprintf "rule.icons needs %d icons (one per step, the lowest first), got %d" count options.Custom.Length)
+                if description.Reverse then fail "rule.reverse does not go with rule.icons (custom icons are given in the order they show)"
+                options.Custom |> List.iteri (fun index (iconFamily, icon) ->
+                    if iconFamily <> "NoIcons" then
+                        if not (List.contains iconFamily known) then
+                            fail (sprintf "rule.icons[%d].iconSet must be \"NoIcons\" or one of %s, got \"%s\"" index (String.concat ", " known) iconFamily)
+                        if icon < 0 || icon >= int iconFamily.[0] - int '0' then
+                            fail (sprintf "rule.icons[%d].index must be 0..%d for \"%s\", got %d" index (int iconFamily.[0] - int '0' - 1) iconFamily icon))
+            if options = defaultIconSetOptions && not (List.contains family Rbt.Spreadsheet.ConditionalFormatting.extendedIconSets) then
+                IconSet (family, steps, description.Reverse)
+            else IconSetEx (family, steps, description.Reverse, options)
         | other ->
             fail (sprintf "unknown rule type \"%s\" (known: %s)" other (String.concat ", " ruleTypes))
     if isVisualRule rule then

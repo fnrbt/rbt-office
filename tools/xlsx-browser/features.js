@@ -92,3 +92,113 @@ checks['dynamic-arrays'] = async () => {
     } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
     return lines;
 };
+
+// ---- x14 conditional formats and validations (Excel 2010+) ----
+const X14 = 'http://schemas.microsoft.com/office/spreadsheetml/2009/9/main', XM = 'http://schemas.microsoft.com/office/excel/2006/main';
+const REL_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+// Two sheets as Excel lays them out: "Data" with `dataBody` in its worksheet element, "Lists" with A1:A3 = red, green, blue and B1 = 3, B2 = 40.
+export const twoSheetPackage = (dataBody) => zipOf({
+    '[Content_Types].xml': DECL + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>'
+        + '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        + '<Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>',
+    '_rels/.rels': DECL + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>',
+    'xl/workbook.xml': DECL + `<workbook xmlns="${NS}" xmlns:r="${REL_NS}"><sheets><sheet name="Data" sheetId="1" r:id="rId1"/><sheet name="Lists" sheetId="2" r:id="rId2"/></sheets></workbook>`,
+    'xl/_rels/workbook.xml.rels': DECL + `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${REL_NS}/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="${REL_NS}/worksheet" Target="worksheets/sheet2.xml"/></Relationships>`,
+    'xl/worksheets/sheet1.xml': DECL + `<worksheet xmlns="${NS}" xmlns:r="${REL_NS}">${dataBody}</worksheet>`,
+    'xl/worksheets/sheet2.xml': DECL + `<worksheet xmlns="${NS}"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>red</t></is></c><c r="B1"><v>3</v></c></row><row r="2"><c r="A2" t="inlineStr"><is><t>green</t></is></c><c r="B2"><v>40</v></c></row><row r="3"><c r="A3" t="inlineStr"><is><t>blue</t></is></c></row></sheetData></worksheet>`,
+});
+const numberRows = (values) => '<sheetData>' + values.map((cells, r) => `<row r="${r + 1}">` + cells.map((v, c) => `<c r="${'ABCDEFGH'[c]}${r + 1}"><v>${v}</v></c>`).join('') + '</row>').join('') + '</sheetData>';
+const X14_SHEET = numberRows([[-50, 1, 5, 0, 1], [-25, 2, 4, 0, 2], [0, 3, 3, 0, 3], [50, 4, 2, 0, 4], [100, 5, 1, 0, 5]])
+    + `<conditionalFormatting sqref="A1:A5"><cfRule type="dataBar" priority="1"><dataBar><cfvo type="min"/><cfvo type="max"/><color rgb="FF638EC6"/></dataBar><extLst><ext uri="{B025F937-C7B1-47D3-B67F-A62EFF666E3E}" xmlns:x14="${X14}"><x14:id>{C0DA50BC-9888-411D-B3C3-DCE2CC2ECCB4}</x14:id></ext></extLst></cfRule></conditionalFormatting>`
+    + `<extLst><ext uri="{78C0D931-6437-407d-A8EE-F0AAD7539E65}" xmlns:x14="${X14}"><x14:conditionalFormattings>`
+    + `<x14:conditionalFormatting xmlns:xm="${XM}"><x14:cfRule type="dataBar" id="{C0DA50BC-9888-411D-B3C3-DCE2CC2ECCB4}"><x14:dataBar minLength="0" maxLength="100" border="1" gradient="0" negativeBarBorderColorSameAsPositive="0"><x14:cfvo type="autoMin"/><x14:cfvo type="autoMax"/><x14:borderColor rgb="FF1F4E79"/><x14:negativeFillColor rgb="FFFF0000"/><x14:negativeBorderColor rgb="FF990000"/><x14:axisColor rgb="FF000000"/></x14:dataBar></x14:cfRule><xm:sqref>A1:A5</xm:sqref></x14:conditionalFormatting>`
+    + `<x14:conditionalFormatting xmlns:xm="${XM}"><x14:cfRule type="iconSet" priority="2" id="{AAAAAAAA-0000-4000-8000-000000000001}"><x14:iconSet iconSet="3Triangles" showValue="0" custom="1"><x14:cfvo type="percent"><xm:f>0</xm:f></x14:cfvo><x14:cfvo type="num"><xm:f>2</xm:f></x14:cfvo><x14:cfvo type="num"><xm:f>4</xm:f></x14:cfvo><x14:cfIcon iconSet="3Arrows" iconId="0"/><x14:cfIcon iconSet="NoIcons" iconId="0"/><x14:cfIcon iconSet="3Stars" iconId="2"/></x14:iconSet></x14:cfRule><xm:sqref>C1:C5</xm:sqref></x14:conditionalFormatting>`
+    + `<x14:conditionalFormatting xmlns:xm="${XM}"><x14:cfRule type="expression" priority="3" id="{AAAAAAAA-0000-4000-8000-000000000002}"><xm:f>Lists!$B$1&gt;=$E1</xm:f><x14:dxf><font><b/><color rgb="FF9C0006"/></font><fill><patternFill><bgColor rgb="FFFFC7CE"/></patternFill></fill></x14:dxf></x14:cfRule><xm:sqref>E1:E5</xm:sqref></x14:conditionalFormatting>`
+    + `</x14:conditionalFormattings></ext>`
+    + `<ext uri="{CCE6A557-97BC-4b89-ADB6-D9C93CAAB3DF}" xmlns:x14="${X14}"><x14:dataValidations count="1" xmlns:xm="${XM}"><x14:dataValidation type="list" allowBlank="1" showInputMessage="1" showErrorMessage="1"><x14:formula1><xm:f>Lists!$A$1:$A$3</xm:f></x14:formula1><xm:sqref>H1:H5</xm:sqref></x14:dataValidation></x14:dataValidations></ext></extLst>`;
+
+checks['x14-rules'] = async () => {
+    const { lines, check } = makeLog();
+    try {
+        const file = mountGrid();
+        try {
+            const { grid, host } = file;
+            await grid.ImportXlsx(await twoSheetPackage(X14_SHEET));
+            await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            const node = (row, col) => host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"]`);
+            const rulesOf = (g) => g.GetConditionalFormats().map((entry) => [entry.range, entry.rule]);
+            const expected = [
+                ['A1:A5', { type: 'dataBar', min: { type: 'autoMin', value: null }, max: { type: 'autoMax', value: null }, color: '#638EC6', gradient: false, borderColor: '#1F4E79', negativeColor: '#FF0000', negativeBorderColor: '#990000',
+                            axisPosition: 'automatic', axisColor: '#000000', direction: 'context', showValue: true, minLength: 0, maxLength: 100, format: null }],
+                ['C1:C5', { type: 'iconSet', iconSet: '3Triangles', thresholds: [{ type: 'percent', value: 0 }, { type: 'number', value: 2 }, { type: 'number', value: 4 }], reverse: false, showValue: false,
+                            icons: [{ iconSet: '3Arrows', index: 0 }, { iconSet: 'NoIcons', index: 0 }, { iconSet: '3Stars', index: 2 }], format: null }],
+            ];
+            const read = rulesOf(grid);
+            check('the data bar and the icon set of the file, with their x14 options', read.slice(0, 2), expected);
+            check('the rule that reads another sheet', [read[2][0], read[2][1].type, read[2][1].formula, read[2][1].format.fill, read[2][1].format.bold], ['E1:E5', 'expression', 'Lists!$B$1>=$E1', '#FFC7CE', true]);
+
+            // ---- the DOM grid ----
+            const barOf = (row) => { const bar = node(row, 0).querySelector('.spreadsheet-cf-bar'); return bar && [bar.style.left, bar.style.width, bar.getAttribute('data-cf-bar-color'), bar.style.borderColor !== '']; };
+            check('bars: negative left of the axis in red, positive right of it, none for zero', [0, 2, 4].map(barOf), [['0%', '33.33%', '#FF0000', true], null, ['33.33%', '66.67%', '#638EC6', true]]);
+            check('bars: the axis in every cell of the rule', [0, 1, 2, 3, 4].map((row) => node(row, 0).querySelector('.spreadsheet-cf-axis')?.style.left), ['33.33%', '33.33%', '33.33%', '33.33%', '33.33%']);
+            const box = (element) => { const r = element.getBoundingClientRect(); return [Math.round(r.left), Math.round(r.right)]; };
+            const cellBox = box(node(4, 0)), barBox = box(node(4, 0).querySelector('.spreadsheet-cf-bar')), negBox = box(node(0, 0).querySelector('.spreadsheet-cf-bar'));
+            check('bars: on screen the positive bar reaches the right edge, the negative bar the left', [Math.abs(barBox[1] - cellBox[1]) <= 2, Math.abs(negBox[0] - box(node(0, 0))[0]) <= 2, Math.abs(negBox[1] - barBox[0]) <= 1], [true, true, true]);
+            // Pixels: the middle of the positive bar is its colour.
+            const hostBox = host.getBoundingClientRect(), bar = node(4, 0).querySelector('.spreadsheet-cf-bar').getBoundingClientRect();
+            const png = await window.screenshotRegion(Math.round(bar.left + bar.width / 2 - 2), Math.round(bar.top + 3), 4, 2);
+            const image = new Image(); await new Promise((resolve) => { image.onload = resolve; image.src = 'data:image/png;base64,' + png; });
+            const canvas = document.createElement('canvas'); canvas.width = 4; canvas.height = 2; canvas.getContext('2d').drawImage(image, 0, 0);
+            const pixel = [...canvas.getContext('2d').getImageData(1, 1, 1, 1).data].slice(0, 3);
+            check('bars: the pixels of the positive bar are its colour', pixel, [0x63, 0x8E, 0xC6]);
+            const iconOf = (row) => { const icon = node(row, 2).querySelector('[data-cf-icon]'); return icon ? [icon.getAttribute('data-cf-icon-set'), icon.getAttribute('data-cf-icon')] : null; };
+            // C1:C5 = 5, 4, 3, 2, 1 with steps at 2 and 4.
+            check('icons: the custom icon of each step, none for NoIcons', [0, 2, 4].map(iconOf), [['3Stars', '2'], null, ['3Arrows', '0']]);
+            check('icons: the values are hidden', [0, 4].map((row) => /\d/.test(node(row, 2).textContent)), [false, false]);
+            const fillOf = (row) => getComputedStyle(node(row, 4)).backgroundColor;
+            check('the cross-sheet rule formats E1:E3 (Lists!B1 = 3)', [0, 2, 3].map(fillOf), ['rgb(255, 199, 206)', 'rgb(255, 199, 206)', 'rgb(255, 255, 255)']);
+            // The other sheet edited: the rule follows.
+            grid.SwitchSheet(1); grid.EnterText(0, 1, '1'); grid.SwitchSheet(0);
+            await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            check('... and follows an edit of that sheet (Lists!B1 = 1)', [0, 1, 2].map(fillOf), ['rgb(255, 199, 206)', 'rgb(255, 255, 255)', 'rgb(255, 255, 255)']);
+            grid.SwitchSheet(1); grid.Undo(); grid.SwitchSheet(0);
+            await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            check('... and its undo', [0, 1, 2].map(fillOf), ['rgb(255, 199, 206)', 'rgb(255, 199, 206)', 'rgb(255, 199, 206)']);
+            check('the list of the other sheet', grid.GetValidationList(0, 7), ['red', 'green', 'blue']);
+            check('the validation', (({ type, source, range }) => ({ type, source, range }))(grid.GetValidationAt(2, 7)), { type: 'list', source: 'Lists!$A$1:$A$3', range: 'H1:H5' });
+
+            // ---- through the host API, with undo ----
+            const id = grid.AddConditionalFormat('B1:B5', { type: 'dataBar', color: '#63C384', gradient: true, axisPosition: 'middle', negativeColor: null, borderColor: '#2E7D32', showValue: false });
+            await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            const added = grid.GetConditionalFormats().find((entry) => entry.id === id).rule;
+            check('a data bar added with options: the others have their defaults', added, { type: 'dataBar', min: { type: 'min', value: null }, max: { type: 'max', value: null }, color: '#63C384', gradient: true, borderColor: '#2E7D32', negativeColor: null, negativeBorderColor: null,
+                axisPosition: 'middle', axisColor: '#000000', direction: 'context', showValue: false, minLength: 0, maxLength: 100, format: null });
+            check('... drawn from the middle, as a gradient, without the value', [node(4, 1).querySelector('.spreadsheet-cf-bar')?.style.left, /gradient/.test(node(4, 1).querySelector('.spreadsheet-cf-bar')?.style.background ?? ''), /\d/.test(node(4, 1).textContent)], ['50%', true, false]);
+            grid.Undo(); await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            check('undone', [grid.GetConditionalFormats().length, node(4, 1).querySelector('.spreadsheet-cf-bar'), node(4, 1).textContent], [3, null, '5']);
+            grid.Redo(); await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            check('redone', [grid.GetConditionalFormats().length, node(4, 1).querySelector('.spreadsheet-cf-bar')?.style.left], [4, '50%']);
+            const stars = grid.AddConditionalFormat('D1:D5', { type: 'iconSet', iconSet: '3Stars' });
+            check('an icon set of Excel 2010+', grid.GetConditionalFormats().find((entry) => entry.id === stars).rule, { type: 'iconSet', iconSet: '3Stars', thresholds: [{ type: 'percent', value: 0 }, { type: 'percent', value: 33 }, { type: 'percent', value: 67 }], reverse: false, showValue: true, icons: null, format: null });
+            const errors = [];
+            for (const rule of [{ type: 'dataBar', axisPosition: 'left' }, { type: 'dataBar', negativeColor: 'red' }, { type: 'iconSet', icons: [{ iconSet: '3Arrows', index: 0 }] }, { type: 'dataBar', min: { type: 'autoMin' } }])
+                try { grid.AddConditionalFormat('F1:F5', rule); errors.push(null); } catch (e) { errors.push(String(e.message).slice(0, 60)); }
+            check('what is refused', errors.map((message) => message !== null), [true, true, true, true]);
+            check('a plain data bar still has its three keys', (() => { const plain = grid.AddConditionalFormat('F1:F5', { type: 'dataBar' }); const rule = grid.GetConditionalFormats().find((entry) => entry.id === plain).rule; grid.RemoveConditionalFormat(plain); return Object.keys(rule); })(), ['type', 'min', 'max', 'color', 'format']);
+
+            // ---- saved and opened again ----
+            const before = rulesOf(grid);
+            const bytes = await grid.ExportXlsx();
+            const sheet = await text(bytes, 'xl/worksheets/sheet1.xml');
+            const count = (pattern) => (sheet.match(pattern) ?? []).length;
+            check('written: two 2007 data bars naming their x14 twins, the others in the x14 list only', [count(/<cfRule type="dataBar"/g), count(/<x14:id>/g), count(/<x14:cfRule type="dataBar"/g), count(/<x14:cfRule type="iconSet"/g), count(/<x14:cfRule type="expression"/g), count(/<cfRule type="(iconSet|expression)"/g)], [2, 2, 2, 2, 1, 0]);
+            check('written: the validation in the x14 list', [count(/<x14:dataValidation /g), count(/<dataValidation /g), /<x14:formula1><xm:f>Lists!\$A\$1:\$A\$3<\/xm:f><\/x14:formula1><xm:sqref>H1:H5<\/xm:sqref>/.test(sheet)], [1, 0, true]);
+            const again = await reopened(grid);
+            try {
+                check('opened again: the same rules', rulesOf(again.grid), before);
+                check('opened again: the list', again.grid.GetValidationList(0, 7), ['red', 'green', 'blue']);
+            } finally { again.close(); }
+        } finally { file.close(); }
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    return lines;
+};
