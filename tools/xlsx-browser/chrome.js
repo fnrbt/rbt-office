@@ -797,3 +797,47 @@ checks['print-areas'] = async () => {
     finally { close(); }
     return lines;
 };
+
+// A viewer: filter buttons are drawn for a host that listens, and filtering there is how the sheet is looked at.
+checks['viewer-filter'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        ['Name', 'Ann', 'Bob', 'Cy', 'Ann'].forEach((text, row) => { grid.SetCell(row, 0, text); grid.SetCell(row, 1, row === 0 ? 'N' : String(row)); });
+        grid.SetAutoFilter('A1:B5'); await frame();
+        const bytes = await grid.ExportXlsx();
+        const viewer = mountGrid();
+        try {
+            await viewer.grid.ImportXlsx(bytes); viewer.grid.SetReadOnly(true); await frame();
+            const buttons = () => [...viewer.host.querySelectorAll('.spreadsheet-filter-button')].filter((n) => n.getClientRects().length > 0);
+            check('a viewer no host listens to: no filter buttons', [buttons().length, viewer.grid.GetFilterButtonRects().length], [0, 0]);
+            const pressed = [];
+            const off = viewer.grid.OnFilterButton((button) => pressed.push(button.row));
+            const shownRows = () => [...viewer.host.querySelectorAll('.spreadsheet-row-header')].filter((n) => n.getBoundingClientRect().height > 0).map((n) => Number(n.getAttribute('data-row'))).filter((r) => r < 5).sort((a, b) => a - b);
+            await frame();
+            check('a host listens: the buttons are drawn', [buttons().length, viewer.grid.GetFilterButtonRects().length], [2, 2]);
+            const box = buttons()[0].getBoundingClientRect();
+            await realClick(box.left + box.width / 2, box.top + box.height / 2);
+            check('a press reaches the host', pressed, [0]);
+            let told = 0;
+            const offChange = viewer.grid.OnChange(() => { told++; });
+            const revision = viewer.grid.GetRevision(), canUndo = viewer.grid.CanUndo();
+            viewer.grid.SetFilter(0, { values: ['Ann'] }); await frame();
+            check('SetFilter in the viewer hides the rows', shownRows(), [0, 1, 4]);
+            check('... as view state: no revision, no change event, no undo step', [viewer.grid.GetRevision() === revision, told, viewer.grid.CanUndo() === canUndo], [true, 0, true]);
+            const out = await viewer.grid.ExportXlsx();
+            check('... and an export is still the file that was opened', [out.length === bytes.length, out.every((value, index) => value === bytes[index])], [true, true]);
+            viewer.grid.ClearFilter(); await frame();
+            check('ClearFilter shows them again, still no revision', [shownRows(), viewer.grid.GetRevision() === revision, told], [[0, 1, 2, 3, 4], true, 0]);
+            if (typeof offChange === 'function') offChange();
+            off(); await frame();
+            check('the host stops listening: the buttons go', buttons().length, 0);
+        } finally { viewer.close(); }
+        // In the editor the same call is an edit.
+        const before = grid.GetRevision();
+        grid.SetFilter(0, { values: ['Ann'] });
+        check('in the editor SetFilter is an edit', [grid.GetRevision() !== before, grid.CanUndo()], [true, true]);
+    } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
+    finally { close(); }
+    return lines;
+};

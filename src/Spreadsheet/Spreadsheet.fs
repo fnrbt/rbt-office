@@ -636,6 +636,11 @@ type Spreadsheet(container: Element) =
     let mutable lastFullReason = ""
     let mutable lastRecalcStats : SpreadsheetRecalc.RecalcStats = { ChangedCells = 0; ReachedFormulas = 0; EvaluatedFormulas = 0; Evaluations = 0 }
     let mutable readOnly = false
+    /// Set by a change that is how a viewer looks at the sheet (a filter
+    /// applied in read-only mode): the next look at the revision takes the
+    /// sheets as they are for the state already known - no new revision, no
+    /// change event.
+    let mutable absorbViewState = false
     let mutable scrollTop = 0.0
     let mutable scrollLeft = 0.0
     let mutable containerHeight = 600.0
@@ -2216,7 +2221,9 @@ type Spreadsheet(container: Element) =
         else
             // (SUBTOTAL and AGGREGATE leave out the rows a filter hides.)
             if not sameHidden then recalculateFormulas()
-            model <- pushCommand { Undo = putFilter before; Redo = putFilter after; Description = description } model
+            // In a viewer a filter is how the sheet is looked at: no undo step, no new revision.
+            if readOnly then absorbViewState <- true
+            else model <- pushCommand { Undo = putFilter before; Redo = putFilter after; Description = description } model
             true
     /// Sort a range of the active sheet as one undoable step, then recalculate.
     let sortBlock (memberName: string) (range: CellRange) (keys: SheetOps.SortKey list) (options: SheetOps.SortOptions) (description: string) : bool =
@@ -3849,6 +3856,10 @@ type Spreadsheet(container: Element) =
     /// 0 anything else. Unchanged content keeps its number.
     and observeRevisionAfter (step: int) (command: Command option) =
         let current = Array.init sheets.Length (fun i -> if i = activeSheetIndex then model else sheets.[i])
+        if absorbViewState then
+            absorbViewState <- false
+            if current.Length = revisionSheets.Length then revisionSheets <- current
+            if current.Length = notifiedSheets.Length then notifiedSheets <- Array.copy current
         let same =
             current.Length = revisionSheets.Length
             && sheetNames = revisionNames

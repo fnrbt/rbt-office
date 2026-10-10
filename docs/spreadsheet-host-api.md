@@ -519,6 +519,13 @@ A **column** argument is a 0-based sheet column number or its letters (`2` or `"
 - A host that draws buttons of its own over the grid should hide the built-in ones (`.spreadsheet-filter-button { visibility: hidden }` keeps the rectangles; `display: none` makes them empty), or better drop its own and subscribe.
 - A table's own filter is still the sheet's (one filter per sheet): a table button is `active` when the sheet's AutoFilter covers the table's rows and filters that column. The built-in checklist on a table button without a sheet AutoFilter filters the block of data around the column.
 
+### Filtering in a viewer (`SetReadOnly(true)`)
+A viewer draws **no filter buttons of its own** (its own filter menu edits). When a host subscribes with `OnFilterButton` the buttons are
+drawn and pressed as in the editor (`GetFilterButtonRects()` lists them), and the host answers a press with `SetFilter` / `ClearFilter` /
+`ReapplyFilter`. In a viewer those calls are **view state**: the rows are hidden or shown and `SUBTOTAL` / `AGGREGATE` follow, but there is
+no undo step, no new revision and no `OnChange` call, and `ExportXlsx()` still gives the file as it was opened (the filter is not saved).
+In the editor the same calls are edits, as before. `SortRange` and the quick sorts change cells and stay refused / edits.
+
 ### Filter criteria (given to `SetFilter`, returned by `GetFilters`)
 One of:
 - `{ values: string[], blanks?: boolean }`: the cells showing one of the texts (compared without case; the cell's displayed text, or its unformatted value), plus the blank cells when `blanks` (an `""` among the values means the same).
