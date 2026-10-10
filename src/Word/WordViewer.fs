@@ -242,7 +242,15 @@ module Viewer =
             | Some importing -> Docx.cancelProgressiveImport importing
             | None -> false
         // The viewer is not used any more: nothing is read or laid out for it from here on.
+        // (A document that was still being read is then what was read, for good: not complete, and -
+        // as after cancelLoad - failed, the error saying that the reading was cancelled.)
         state?dispose <- fun () ->
+            match loading with
+            | Some importing ->
+                stopLoading ()
+                stopLoading <- ignore
+                if not importing.Complete then loadFailure <- importing.Failed |> Option.orElse (Some Docx.readingCancelledMessage)
+            | None -> ()
             endLoading ()
             Ren.cancelScheduledLayout ctx
             progressListeners.Clear()

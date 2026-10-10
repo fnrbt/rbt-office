@@ -92,6 +92,7 @@ try {
         Word.importFromDocxPackage(editor, fourth);
         Word.dispose(editor); canvas.remove();
         check('dispose: cancelled', [fourth.Progressive.Cancelled, await stopped(fourth)], [true, [0, 0]]);
+        check('dispose: the editor says that its document was not read to its end', [Word.isLoadComplete(editor), Word.isLoadFailed(editor), Word.getLoadError(editor)], [false, true, cancelledMessage]);
         // A package the editor read to its end is not.
         const fifth = await OF.word.openProgressive(long, { autoStart: false });
         const [reader, readerCanvas] = editorOn();
@@ -121,7 +122,23 @@ try {
         viewer.load(second, { progressive: true });
         check('the viewer loads another package: the first one is cancelled', [first.Progressive.Cancelled, await stopped(first), second.Progressive.Cancelled], [true, [0, 0], false]);
         viewer.dispose();
-        check('the viewer is disposed of: cancelled, nothing more is laid out', [second.Progressive.Cancelled, await stopped(second), viewer.isLoadComplete()], [true, [0, 0], true]);
+        check('the viewer is disposed of: cancelled, nothing more is laid out', [second.Progressive.Cancelled, await stopped(second)], [true, [0, 0]]);
+        check('the viewer disposed of says that its document was not read to its end', [viewer.isLoadComplete(), viewer.isLoadFailed(), viewer.getLoadError(), await viewer.whenLoadComplete()], [false, true, cancelledMessage, false]);
+        // Disposed of at once, before the first slice (a host that closes a document it has just opened).
+        {
+            const atOnce = await OF.word.openProgressive(long, {});
+            const short = Word.createViewer(document.createElement('canvas'));
+            short.load(atOnce, { progressive: true });
+            short.dispose();
+            check('a viewer disposed of right after load: not complete, failed as cancelled', [short.isLoadComplete(), short.isLoadFailed(), short.getLoadError(), atOnce.Progressive.Cancelled, atOnce.Progressive.IsComplete], [false, true, cancelledMessage, true, false]);
+            // A document that was read to its end is complete after dispose as before it.
+            const whole = await OF.word.openProgressive(long, { autoStart: false });
+            whole.Progressive.complete();
+            const done = Word.createViewer(document.createElement('canvas'));
+            done.load(whole, { progressive: true });
+            done.dispose();
+            check('a viewer of a document that was read: complete after dispose', [done.isLoadComplete(), done.isLoadFailed()], [true, false]);
+        }
 
         // An editor and a viewer show the same package: it is read while one of them does.
         const shared = await OF.word.openProgressive(long, {});

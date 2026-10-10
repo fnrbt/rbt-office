@@ -225,9 +225,20 @@ module API =
 
     /// Detach the editor's window-level listeners and remove its hidden text
     /// input element. Call when the canvas is removed.
+    ///
+    /// A document that was still being read stays what was read: the reading
+    /// is cancelled (unless a viewer or another editor shows the package), and
+    /// the editor says of it what it says after cancelLoad - isLoadComplete
+    /// false, isLoadFailed true, getLoadError that the reading was cancelled.
     let dispose (editor: Editor) =
+        let reading = editor.Loading
         editor.StopLoading ()
         editor.StopLoading <- ignore
+        match reading with
+        | Some state ->
+            if not state.Complete then editor.LoadFailure <- state.Failed |> Option.orElse (Some Docx.readingCancelledMessage)
+            editor.Loading <- None
+        | None -> ()
         editor.LoadWaiters.Clear()
         editor.Listeners.Clear()
         Ren.cancelScheduledLayout editor.Handler.RenderContext

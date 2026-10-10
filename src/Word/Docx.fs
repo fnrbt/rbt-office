@@ -1695,6 +1695,11 @@ let cancelProgressiveImport (state: ProgressiveImport) : bool =
             consumeProgressive state
             cancelled
 
+/// What an editor or a viewer that was disposed of while its document was
+/// still being read says of it (getLoadError): the package's own words for a
+/// reading that was cancelled.
+let readingCancelledMessage = "The reading of the document was cancelled"
+
 /// An editor or a viewer shows the document while it is read ...
 let holdProgressiveImport (state: ProgressiveImport) : unit =
     state.Holders <- state.Holders + 1
