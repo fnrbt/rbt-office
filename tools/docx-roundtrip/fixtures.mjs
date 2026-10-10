@@ -2,7 +2,10 @@
 // DOCX writer has to carry through a save. `expect` entries are checked by
 // page.js: {part, has|lacks} are regexes over a written part, {readText} /
 // {savedText} look at the text the reader produced before / after the save,
-// {mutate} is JS run on the exported package before writing (simulates an edit).
+// {mutate} is JS run on the exported package before writing (simulates an edit;
+// the document is then written from the model alone), {kept} a regex over a part
+// of the editor's save of the unedited document, {editKeeps} / {editLacks}
+// regexes over document.xml after one character was typed into the first paragraph.
 
 const W = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"';
 const REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
@@ -554,10 +557,10 @@ const docs = [
         { part: 'word/_rels/settings.xml.rels', has: 'Id="rId1" Type="[^"]*/attachedTemplate" Target="file:///C:/Templates/Normal.dotm" TargetMode="External"' },
         // styles.xml: latent styles, a table style, a numbering-linked style and properties the editor has no model for.
         { part: 'word/styles.xml', has: '<w:latentStyles [^>]*w:count="2"[^>]*><w:lsdException [^>]*w:name="Normal"' },
-        { part: 'word/styles.xml', has: '<w:style w:styleId="TableGrid" w:type="table">.*?<w:tblBorders>.*?</w:tblBorders>.*?<w:tblStylePr w:type="firstRow"><w:rPr><w:b/></w:rPr></w:tblStylePr></w:style>' },
-        { part: 'word/styles.xml', has: '<w:style w:styleId="Numbered" w:type="paragraph">.*?<w:numPr><w:numId w:val="3"/></w:numPr>' },
-        { part: 'word/styles.xml', has: '<w:style w:styleId="Kept" w:type="paragraph">.*?<w:suppressAutoHyphens/>.*?<w:lang w:val="de-DE"/>' },
-        { part: 'word/styles.xml', has: '<w:rPrDefault><w:rPr><w:rFonts w:asciiTheme="minorHAnsi" w:hAnsiTheme="minorHAnsi"/><w:sz w:val="22"/><w:lang w:eastAsia="ja-JP" w:val="en-US"/>' },
+        { part: 'word/styles.xml', has: '<w:style [^>]*w:styleId="TableGrid"[^>]*>.*?<w:tblBorders>.*?</w:tblBorders>.*?<w:tblStylePr w:type="firstRow"><w:rPr><w:b/></w:rPr></w:tblStylePr></w:style>' },
+        { part: 'word/styles.xml', has: '<w:style [^>]*w:styleId="Numbered"[^>]*>.*?<w:numPr><w:numId w:val="3"/></w:numPr>' },
+        { part: 'word/styles.xml', has: '<w:style [^>]*w:styleId="Kept"[^>]*>.*?<w:suppressAutoHyphens/>.*?<w:lang w:val="de-DE"/>' },
+        { part: 'word/styles.xml', has: '<w:rPrDefault><w:rPr><w:rFonts w:asciiTheme="minorHAnsi" w:hAnsiTheme="minorHAnsi"/><w:sz w:val="22"/><w:lang (w:eastAsia="ja-JP" w:val="en-US"|w:val="en-US" w:eastAsia="ja-JP")/>' },
         { part: 'word/document.xml', has: '<w:pStyle w:val="Kept"/>' },
     ]),
     preservedParts('synthetic/preserved-parts-edited', [
@@ -568,10 +571,48 @@ const docs = [
         { part: 'word/settings.xml', has: '<w:trackRevisions/><w:defaultTabStop w:val="708"/><w:evenAndOddHeaders/><w:footnotePr>' },
         { part: 'word/settings.xml', has: '<w:compat>' },
         { part: 'word/styles.xml', has: '<w:style w:type="paragraph" w:styleId="Kept">.*?<w:b/>.*?<w:sz w:val="48"/>' }, { part: 'word/styles.xml', lacks: 'suppressAutoHyphens' },
-        { part: 'word/styles.xml', has: '<w:style w:styleId="TableGrid" w:type="table">.*?<w:tblStylePr w:type="firstRow">' }, { part: 'word/styles.xml', has: '<w:latentStyles ' },
-        { part: 'word/styles.xml', has: '<w:style w:styleId="Numbered" w:type="paragraph">.*?<w:numPr><w:numId w:val="3"/></w:numPr>' },
+        { part: 'word/styles.xml', has: '<w:style [^>]*w:styleId="TableGrid"[^>]*>.*?<w:tblStylePr w:type="firstRow">' }, { part: 'word/styles.xml', has: '<w:latentStyles ' },
+        { part: 'word/styles.xml', has: '<w:style [^>]*w:styleId="Numbered"[^>]*>.*?<w:numPr><w:numId w:val="3"/></w:numPr>' },
         { same: 'word/theme/theme1.xml' }, { same: 'customXml/item1.xml' }, { same: 'docProps/core.xml' },
     ]),
+    {
+        // What decides the layout and used to be lost by a save: where the pages ended
+        // when the document was last laid out, and where a floating table floats.
+        name: 'synthetic/layout-kept',
+        body: p('first page') +
+            `<w:p><w:r><w:t xml:space="preserve">before the page end </w:t></w:r><w:r><w:lastRenderedPageBreak/><w:t>after the page end</w:t></w:r></w:p>` +
+            `<w:tbl><w:tblPr><w:tblpPr w:leftFromText="187" w:rightFromText="187" w:bottomFromText="72" w:vertAnchor="text" w:tblpY="1"/><w:tblW w:w="2400" w:type="dxa"/></w:tblPr><w:tblGrid><w:gridCol w:w="2400"/></w:tblGrid><w:tr>${cell(p('floating'))}</w:tr></w:tbl>` +
+            p('Text beside the floating table, long enough to run on for a few lines next to it: one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty.'),
+        expect: [
+            { part: 'word/document.xml', has: '<w:r>(<w:rPr>.*?</w:rPr>)?<w:lastRenderedPageBreak/><w:t' },
+            { part: 'word/document.xml', has: '<w:tblPr><w:tblpPr [^>]*w:bottomFromText="72"[^>]*/>' }, { part: 'word/document.xml', has: '<w:tblpPr [^>]*w:rightFromText="187"' }, { part: 'word/document.xml', has: '<w:tblpPr [^>]*w:tblpY="1"' },
+            { read: 'pkg.Paragraphs.2.Floating', equals: true },
+        ],
+    },
+    {
+        // What the model does not hold: an unedited save has all of it (the body is
+        // the text that was read), and after an edit of the first paragraph every
+        // other paragraph still has it.
+        name: 'synthetic/unmodelled-content',
+        root: 'xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" mc:Ignorable="w14"',
+        body: `<w:p w:rsidR="00A1B2C3" w:rsidRDefault="00A1B2C3" w14:paraId="0A0B0C0D"><w:r w:rsidRPr="00112233"><w:t>edit me</w:t></w:r></w:p>` +
+            `<w:p w:rsidR="00D4E5F6" w14:paraId="1A1B1C1D"><w:pPr><w:suppressAutoHyphens/><w:rPr><w:lang w:val="en-AU"/></w:rPr></w:pPr><w:proofErr w:type="spellStart"/><w:r w:rsidRPr="00445566"><w:rPr><w:noProof/><w:lang w:val="en-AU"/></w:rPr><w:t>speling</w:t></w:r><w:proofErr w:type="spellEnd"/></w:p>` +
+            `<w:bookmarkStart w:id="7" w:name="between"/><w:bookmarkEnd w:id="7"/>` +
+            `<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> TOC \\o "1-3" </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>entry one</w:t></w:r></w:p>` +
+            `<w:p><w:r><w:t>entry two</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>` +
+            `<w:sdt><w:sdtPr><w:id w:val="77"/><w:docPartObj><w:docPartGallery w:val="Table of Contents"/><w:docPartUnique/></w:docPartObj></w:sdtPr><w:sdtEndPr/><w:sdtContent>${p('in a control')}${p('second in the control')}</w:sdtContent></w:sdt>` +
+            p('last'),
+        sect: '<w:sectPr w:rsidR="00A1B2C3"><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/><w:cols w:space="708"/><w:docGrid w:linePitch="360"/></w:sectPr>',
+        expect: [
+            { part: 'word/document.xml', kept: 'w14:paraId="0A0B0C0D"' }, { part: 'word/document.xml', kept: '<w:docGrid w:linePitch="360"/>' },
+            { part: 'word/document.xml', kept: '<w:proofErr w:type="spellStart"/>' }, { part: 'word/document.xml', kept: 'mc:Ignorable="w14"' },
+            { editKeeps: 'w14:paraId="1A1B1C1D"' }, { editKeeps: '<w:noProof/><w:lang w:val="en-AU"/>' }, { editKeeps: '<w:proofErr w:type="spellEnd"/>' },
+            { editKeeps: '<w:bookmarkStart w:id="7" w:name="between"/><w:bookmarkEnd w:id="7"/>' },
+            { editKeeps: '<w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> TOC' }, { editKeeps: 'entry two</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/>' },
+            { editKeeps: '<w:docPartGallery w:val="Table of Contents"/>' }, { editKeeps: '<w:sectPr w:rsidR="00A1B2C3">' }, { editKeeps: '<w:docGrid w:linePitch="360"/>' },
+            { editKeeps: 'Qedit me|edit meQ' }, { editLacks: 'w14:paraId="0A0B0C0D"' },
+        ],
+    },
 ];
 
 export async function syntheticFixtures(JSZip) {

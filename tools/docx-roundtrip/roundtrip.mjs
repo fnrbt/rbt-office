@@ -8,25 +8,53 @@
 //        -> Docx.exportDocumentPackage -> DocumentWriter.writeFromEditorPackage
 //        -> docx' -> (read again) -> docx'' -> (read again)
 //
-// and asserts that
+// Every document is saved in two ways, and both are checked:
+//
+//   * as the editor saves it. What was not changed goes back as the text it
+//     was read from, so for a document nobody edited word/document.xml, the
+//     numbering, the notes, the comments, the styles, the settings and every
+//     header / footer are the original's, character for character (a byte
+//     order mark aside);
+//   * from the model alone (package.RegenerateAll): what a block, a header or
+//     a note that was changed is written as.
+//
+// For each of the two it asserts that
 //   * what the reader sees after the first save equals what it saw in the
 //     original (fidelity: sizes, indents, spacing, lists, tables, tabs, ...),
+//   * the saved document is laid out as the original: the same number of
+//     pages, the same laid-out blocks, each on the same page at the same y
+//     with the same height (within half a pixel), line count and line
+//     heights, and the same resolved formatting of every paragraph and run
+//     (Word.getLayoutFingerprint),
 //   * a second save reproduces the first one exactly (fixed point),
 //   * every written XML part is well formed and the children of the
-//     elements this writer produces are in schema (xsd:sequence) order.
+//     elements this writer produces are in schema (xsd:sequence) order,
+//   * every relationship target is in the package, no relationship id is
+//     used twice, and every r:id the XML uses is one the part has.
+//
+// Then the document is edited with real key events:
+//   * one character typed and deleted again: the saved document reads back
+//     and is laid out as the original;
+//   * one character typed into a paragraph outside the tables and kept: the
+//     saved document has it, its parts are well formed, and every other
+//     paragraph of document.xml is still the text it was read from.
 //
 // Usage:
 //   dotnet fable src/Office.Formats --outDir $DIST/office-formats --lang JavaScript --noCache
 //   dotnet fable src/Word           --outDir $DIST/word           --lang JavaScript --noCache
-//   node tools/docx-roundtrip/roundtrip.mjs --dist $DIST [--out DIR] [--verbose] [fixture.docx ...]
-//
-// For every document it also checks that import followed by export with no
-// edit yields the same number of blocks (empty paragraphs at the end included).
+//   node tools/docx-roundtrip/roundtrip.mjs --dist $DIST [--out DIR] [--verbose] [--synthetic] [--xml-summary] [--report-only] [fixture.docx ...]
 //
 // With no fixture arguments it runs the built-in synthetic documents (one per
-// feature the writer has to preserve) plus the small corpus files listed in
-// DEFAULT_CORPUS. --out keeps the saved documents (pass 1 and 2) so the .NET
-// reader can be pointed at them: dotnet fsi tools/docx-roundtrip/native-check.fsx DIR
+// feature the writer has to preserve, fixtures.mjs) and every DOCX under
+// tests/test-documents* (--synthetic: the synthetic ones only).
+// --xml-summary prints how many documents come back with the document.xml
+// they were read from, and, for the save from the model alone, which elements
+// and attributes it has more or fewer of than the originals.
+// --out keeps the documents: <name>.original.docx, .pass1.docx / .pass2.docx
+// (the editor's first and second save) and .model.docx (from the model
+// alone), so the .NET reader and layout can be pointed at them:
+//   dotnet fsi tests/word/roundtrip-layout.fsx DIR     (laid out as the originals)
+//   dotnet fsi tools/docx-roundtrip/native-check.fsx DIR   (pass 1 and 2 hold the same text)
 //
 // Environment:
 //   PLAYWRIGHT  path to playwright's index.mjs (default: resolve "playwright")
@@ -51,6 +79,8 @@ const dist = path.resolve(opt('--dist') ?? path.join(repo, 'dist'));
 const outDir = opt('--out');
 const verbose = flag('--verbose');
 const expectFailures = flag('--report-only');
+const xmlSummary = flag('--xml-summary');
+const syntheticOnly = flag('--synthetic');
 const port = Number(process.env.PORT ?? 16021);
 
 const firstExisting = (candidates) => candidates.find((p) => p && fs.existsSync(p));
@@ -62,14 +92,13 @@ const jszipDir = firstExisting([
 if (!jszipDir) { console.error('jszip not found; set JSZIP_DIR'); process.exit(2); }
 const JSZip = createRequire(import.meta.url)(path.join(jszipDir, 'dist/jszip.min.js'));
 
-const DEFAULT_CORPUS = [
-    'tests/test-documents/sample-formatted.docx',
-    'tests/test-documents-features/test-lists.docx',
-    'tests/test-documents-features/test-formatting.docx',
-    'tests/test-documents-features/test-complex-tables.docx',
-    'tests/test-documents-features/test-header-footer.docx',
-    'tests/test-documents-features/test-multi-headers.docx',
-];
+// Every DOCX under tests/test-documents* (paths relative to the repository).
+const corpusFiles = () => {
+    const found = [];
+    const walk = (dir) => { for (const entry of fs.readdirSync(dir, { withFileTypes: true })) { const full = path.join(dir, entry.name); if (entry.isDirectory()) walk(full); else if (entry.name.endsWith('.docx')) found.push(path.relative(repo, full)); } };
+    for (const entry of fs.readdirSync(path.join(repo, 'tests'), { withFileTypes: true })) if (entry.isDirectory() && entry.name.startsWith('test-documents')) walk(path.join(repo, 'tests', entry.name));
+    return found.sort();
+};
 
 const mime = { '.js': 'text/javascript', '.mjs': 'text/javascript', '.html': 'text/html', '.json': 'application/json' };
 const fixtures = new Map(); // name -> Buffer
@@ -97,16 +126,13 @@ const server = http.createServer((req, res) => {
 });
 
 async function main() {
-    for (const required of ['office-formats/src/Main.js', 'word/Docx.js'])
+    for (const required of ['office-formats/src/Main.js', 'word/Docx.js', 'word/Word.js'])
         if (!fs.existsSync(path.join(dist, required))) { console.error(`missing ${required} under ${dist}; Fable-compile first (see header)`); process.exit(2); }
 
     const expectations = new Map();
     if (args.length === 0) {
         for (const f of await syntheticFixtures(JSZip)) { fixtures.set(f.name, f.data); expectations.set(f.name, f.expect ?? []); }
-        for (const rel of DEFAULT_CORPUS) {
-            const p = path.join(repo, rel);
-            if (fs.existsSync(p)) fixtures.set(rel, fs.readFileSync(p));
-        }
+        if (!syntheticOnly) for (const rel of corpusFiles()) fixtures.set(rel, fs.readFileSync(path.join(repo, rel)));
     } else {
         for (const p of args) fixtures.set(p, fs.readFileSync(p));
     }
@@ -119,7 +145,9 @@ async function main() {
         console.error('playwright not found; set PLAYWRIGHT=/path/to/playwright/index.mjs'); server.close(); process.exit(2);
     }
     const browser = await (playwright.chromium ?? playwright.default.chromium).launch();
-    let failed = 0;
+    let failed = 0, identicalXml = 0, compared = 0;
+    const notIdentical = [];
+    const xmlKinds = new Map(); // element / attribute kind -> how often it was in the originals and in the saved documents
     try {
         const tab = await browser.newPage();
         tab.on('pageerror', (e) => console.error('page error:', e.message));
@@ -133,6 +161,27 @@ async function main() {
         for (const name of fixtures.keys()) {
             const result = await tab.evaluate(async ([n, expect]) => window.roundTrip(n, expect), [name, expectations.get(name) ?? []]);
             const problems = result.problems;
+            // The trivial edit: one character typed and deleted with real key events.
+            if (await tab.evaluate('window.editOpen()')) {
+                await tab.keyboard.type('x');
+                await tab.keyboard.press('Backspace');
+                problems.push(...await tab.evaluate('window.editFinish()'));
+            }
+            // A real edit: one character typed into a paragraph outside the tables.
+            if (await tab.evaluate('window.editOpen(true)')) {
+                await tab.keyboard.type('Q');
+                problems.push(...await tab.evaluate(([n, expect]) => window.editKeptFinish(n, expect), [name, expectations.get(name) ?? []]));
+            }
+            for (const [kind, [before, after]] of Object.entries(result.xmlDiff ?? {})) {
+                const entry = xmlKinds.get(kind) ?? { files: 0, before: 0, after: 0 };
+                entry.files++; entry.before += before; entry.after += after; xmlKinds.set(kind, entry);
+            }
+            if (result.xmlIdentical) identicalXml++; else notIdentical.push(name);
+            compared++;
+            // An unedited save writes the parts it read back as they were.
+            if (!expectations.get(name)?.some((e) => e.mutate) && !result.problems.some((p) => p.startsWith('threw'))) {
+                for (const part of result.changedParts ?? []) problems.push(`unedited save: ${part} is not the text that was read`);
+            }
             console.log(`${problems.length === 0 ? 'ok  ' : 'FAIL'} ${name}  (${result.stats})`);
             const limit = verbose ? 200 : 12;
             for (const p of problems.slice(0, limit)) console.log('     ' + p);
@@ -141,12 +190,21 @@ async function main() {
             if (problems.length) failed++;
             if (outDir && result.saved) {
                 const base = path.basename(name).replace(/\.docx$/, '');
-                result.saved.forEach((b64, i) => fs.writeFileSync(path.join(outDir, `${base}.pass${i + 1}.docx`), Buffer.from(b64, 'base64')));
+                result.saved.forEach((b64, i) => fs.writeFileSync(path.join(outDir, `${base}.${['pass1', 'pass2', 'model'][i]}.docx`), Buffer.from(b64, 'base64')));
+                if (fixtures.get(name).length && !(expectations.get(name) ?? []).some((e) => e.mutate)) fs.writeFileSync(path.join(outDir, `${base}.original.docx`), fixtures.get(name));
             }
         }
     } finally {
         await browser.close();
         server.close();
+    }
+    if (xmlSummary) {
+        console.log(`\nword/document.xml of an unedited save: identical to the original in ${identicalXml} of ${compared} documents.`);
+        if (notIdentical.length) console.log('  not identical: ' + notIdentical.join(', '));
+        console.log('Written from the model alone (what a changed block is written as), against the original:');
+        const rows = [...xmlKinds.entries()].sort((a, b) => b[1].files - a[1].files || a[0].localeCompare(b[0]));
+        if (rows.length) console.log('Elements and attributes whose number changed (kind: documents, occurrences before -> after):');
+        for (const [kind, e] of rows) console.log(`  ${kind}: ${e.files} documents, ${e.before} -> ${e.after}`);
     }
     console.log(failed === 0 ? '\nDOCX ROUND TRIP: ALL PASSED' : `\nDOCX ROUND TRIP: ${failed} fixture(s) FAILED`);
     process.exit(failed === 0 || expectFailures ? 0 : 1);

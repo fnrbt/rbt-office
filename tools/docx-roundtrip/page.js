@@ -1,9 +1,10 @@
 // Browser side of roundtrip.mjs. Served next to the Fable output.
-let OF, Docx;
+let OF, Docx, Word;
 try {
     const main = await import('/office-formats/src/Main.js');
     OF = typeof main.default === 'function' ? main.default() : main.default;
     Docx = await import('/word/Docx.js');
+    Word = (await import('/word/Word.js')).default;
 } catch (e) {
     window.loadError = String(e && e.stack || e);
     throw e;
@@ -35,14 +36,14 @@ const SHAPE_KEYS = ['Width', 'Height', 'X', 'Y', 'Geometry', 'CustomPath', 'Cust
     'RelativeHeight', 'AnchorBlock', 'DistanceTop', 'DistanceBottom', 'DistanceLeft', 'DistanceRight'];
 const PARA_KEYS = ['Type', 'Style', 'Alignment', 'ListStyle', 'ListLevel', 'ListId', 'ListNumberFormat', 'ListLevelText', 'ListStart',
     'IndentLeft', 'IndentRight', 'FirstLineIndent', 'SpacingBefore', 'SpacingAfter', 'LineSpacing', 'LineSpacingRule',
-    'TabStops', 'Rtl', 'BackgroundColor', 'ParagraphBorders', 'PageBreakBefore', 'PageBreakAfter', 'SectionBreak',
+    'TabStops', 'Rtl', 'BackgroundColor', 'ParagraphBorders', 'PageBreakBefore', 'PageBreakBeforeDerived', 'PageBreakAfter', 'SectionBreak',
     'SectionPageNumberStart', 'SectionPageNumberFormat', 'SectionPageSetup', 'SectionColumns', 'StyleContextualSpacing',
     'ContentControlTag', 'ContentControlAlias', 'KeepNext', 'KeepLines', 'HeaderReferences', 'FooterReferences',
     // What the paragraph itself states, as opposed to what it inherits.
     'ExplicitSpacingBefore', 'ExplicitSpacingAfter', 'ExplicitLineSpacing', 'ExplicitIndentLeft', 'ExplicitIndentRight', 'ExplicitFirstLineIndent',
     'ExplicitContextualSpacing', 'ExplicitBackgroundColor', 'ExplicitTabs', 'HasMarkProperties', 'ExplicitMarkFontSize',
     'MarkRevisionType', 'MarkRevisionId', 'MarkRevisionAuthor', 'MarkRevisionDate'];
-const TABLE_KEYS = ['TableStyleId', 'TableLook', 'PreferredWidth', 'PreferredWidthType', 'TableAlignment', 'LayoutMode', 'GridColumns', 'Borders', 'BackgroundColor',
+const TABLE_KEYS = ['Floating', 'FloatingXml', 'TableStyleId', 'TableLook', 'PreferredWidth', 'PreferredWidthType', 'TableAlignment', 'LayoutMode', 'GridColumns', 'Borders', 'BackgroundColor',
     'CellSpacing', 'PaddingTop', 'PaddingRight', 'PaddingBottom', 'PaddingLeft'];
 const ROW_KEYS = ['IsHeader', 'Height', 'HeightRule', 'CanSplit', 'CellSpacing', 'PaddingTop', 'PaddingRight', 'PaddingBottom', 'PaddingLeft'];
 const CELL_KEYS = ['ColSpan', 'BackgroundColor', 'Width', 'PreferredWidth', 'PreferredWidthType', 'Borders', 'VerticalAlignment', 'VerticalMerge',
@@ -267,6 +268,75 @@ function checkXml(part, text, problems) {
 }
 const inside = (el, name) => { for (let p = el.parentNode; p; p = p.parentNode) if (p.nodeName === name) return true; return false; };
 
+// ---- layout ----------------------------------------------------------------
+
+// The document in an editor, laid out to the end: the page count and one
+// fingerprint per laid-out block (Word.getLayoutFingerprint: page, y, height,
+// lines, text, resolved paragraph and run formatting).
+const VIEW = { scale: 1, devicePixelRatio: 1, scrollTop: 0, scrollLeft: 0, width: 900, height: 600 };
+function openEditor(pkg) {
+    const canvas = document.createElement('canvas');
+    canvas.style.cssText = 'position:fixed;left:0;top:0';
+    document.body.appendChild(canvas);
+    const editor = Word.initializeCanvas(canvas);
+    Word.setViewport(editor, VIEW);
+    Word.importFromDocxPackage(editor, pkg);
+    return { editor, canvas };
+}
+function closeEditor(handle) { try { Word.dispose(handle.editor); } catch { /* nothing to release */ } handle.canvas.remove(); }
+function layoutOf(editor) {
+    Word.completeLayout(editor);
+    return { pages: Word.getPageCount(editor), blocks: Word.getLayoutFingerprint(editor) };
+}
+function layoutOfPackage(pkg) { const handle = openEditor(pkg); try { return layoutOf(handle.editor); } finally { closeEditor(handle); } }
+
+const LAYOUT_TOLERANCE = 0.5; // px, for y and height
+function diffLayout(label, a, b, problems) {
+    if (a.pages !== b.pages) problems.push(`${label}: ${a.pages} pages became ${b.pages}`);
+    if (a.blocks.length !== b.blocks.length) problems.push(`${label}: ${a.blocks.length} laid-out blocks became ${b.blocks.length}`);
+    const byKind = new Map();
+    const note = (kind, text) => { const e = byKind.get(kind) ?? { count: 0, first: text }; e.count++; byKind.set(kind, e); };
+    for (let i = 0; i < Math.min(a.blocks.length, b.blocks.length); i++) {
+        const x = a.blocks[i], y = b.blocks[i];
+        const where = `block ${i} ${JSON.stringify(x.Text.slice(0, 30))}`;
+        if (x.Text !== y.Text) { note('text', `${where} -> ${JSON.stringify(y.Text.slice(0, 30))}`); continue; }
+        if (x.Page !== y.Page) note('page', `${where}: page ${x.Page} -> ${y.Page}`);
+        if (Math.abs(x.Y - y.Y) > LAYOUT_TOLERANCE) note('y', `${where}: y ${x.Y.toFixed(2)} -> ${y.Y.toFixed(2)}`);
+        if (Math.abs(x.Height - y.Height) > LAYOUT_TOLERANCE) note('height', `${where}: height ${x.Height.toFixed(2)} -> ${y.Height.toFixed(2)}`);
+        if (x.LineCount !== y.LineCount) note('line count', `${where}: ${x.LineCount} lines -> ${y.LineCount}`);
+        else if (x.LineHeights !== y.LineHeights) note('line heights', `${where}: ${x.LineHeights} -> ${y.LineHeights}`);
+        if (x.Paragraph !== y.Paragraph) {
+            const p = x.Paragraph.split(';'), q = y.Paragraph.split(';');
+            p.forEach((field, j) => { if (field !== q[j]) note('paragraph ' + field.split('=')[0], `${where}: ${field} -> ${q[j]}`); });
+        }
+        if (x.Runs !== y.Runs) note('run format', `${where}: ${x.Runs} -> ${y.Runs}`);
+    }
+    for (const [kind, e] of byKind) problems.push(`${label}: ${kind} x${e.count}, first ${e.first}`);
+}
+
+// ---- document.xml, element by element ----------------------------------------
+
+// How often each element (under its parent) and each attribute occurs.
+function xmlCensus(text) {
+    const counts = new Map();
+    const dom = new DOMParser().parseFromString(text, 'application/xml');
+    if (dom.getElementsByTagName('parsererror')[0]) return counts;
+    const bump = (key) => counts.set(key, (counts.get(key) ?? 0) + 1);
+    const walk = (el) => {
+        bump(`<${el.nodeName}>`);
+        for (const attr of el.attributes) if (!attr.name.startsWith('xmlns')) bump(`<${el.nodeName} ${attr.name}>`);
+        for (const child of el.children) walk(child);
+    };
+    walk(dom.documentElement);
+    return counts;
+}
+// { kind: [count before, count after] } for every kind whose count changed.
+function xmlCensusDiff(before, after) {
+    const a = xmlCensus(before), b = xmlCensus(after), out = {};
+    for (const key of new Set([...a.keys(), ...b.keys()])) if ((a.get(key) ?? 0) !== (b.get(key) ?? 0)) out[key] = [a.get(key) ?? 0, b.get(key) ?? 0];
+    return out;
+}
+
 // ---- pipeline --------------------------------------------------------------
 
 function exportPackage(doc) {
@@ -315,9 +385,104 @@ async function rawParts(bytes) {
 // Parts of an object the editor does not model: they must come back unchanged.
 const OPAQUE_PART = /^word\/(charts|embeddings|diagrams)\//;
 
+// One way of saving, checked against the original: the saved document reads
+// back as the original did and is laid out as it was, a second save reproduces
+// the first, every written part is well formed and in schema order, the
+// opaque parts and every relationship target are there.
+//   regenerate: every part is written from the model alone (package.RegenerateAll),
+//   as a document made in the editor is. Otherwise the save is the editor's own:
+//   what was not changed goes back as the text it was read from.
+async function checkSave(label, regenerate, ctx, problems) {
+    const { first, s0, fp0, original, p0, raw0, mutate, expect } = ctx;
+    const tag = (text) => (label ? `${label}: ${text}` : text);
+    const prepare = (run) => (pkg) => { if (run) run(pkg); if (regenerate) pkg.RegenerateAll = true; };
+    const bytes1 = await save(first.doc, prepare(mutate ? new Function('pkg', mutate.mutate) : null));
+    const second = await open(bytes1);
+    const s1 = summarisePackage(second.pkg);
+    const bytes2 = await save(second.doc, prepare(null));
+    const third = await open(bytes2);
+    const s2 = summarisePackage(third.pkg);
+    const bytes3 = await save(third.doc, prepare(null));
+
+    if (!mutate) diff(tag('save 1 vs original'), s0, s1, problems);
+    diff(tag('save 2 vs save 1 (not a fixed point)'), s1, s2, problems);
+    // The saved document is laid out as the original was: the same pages, every
+    // block at the same place with the same lines and the same resolved formatting.
+    if (!mutate) diffLayout(tag('layout after save 1 vs original'), fp0, layoutOfPackage(second.pkg), problems);
+
+    const p1 = await parts(bytes1), p2 = await parts(bytes2), p3 = await parts(bytes3);
+    // A schema-order slip that was already in the original part is not this writer's.
+    for (const part of Object.keys(p1)) {
+        const found = [];
+        checkXml(part, p1[part], found);
+        const inherited = [];
+        if (p0[part]) checkXml(part, p0[part], inherited);
+        for (const problem of found) if (!inherited.includes(problem)) problems.push(tag(problem));
+    }
+    // Byte-level fixed point from the second save on (the first save may still
+    // normalise what the reader reports differently for a written file).
+    for (const part of Object.keys(p2)) if (p2[part] !== p3[part]) problems.push(tag(`${part} differs between save 2 and save 3`));
+    if (Object.keys(p2).length !== Object.keys(p3).length) problems.push(tag('part list differs between save 2 and save 3'));
+    const raw1 = await rawParts(bytes1);
+    for (const name of Object.keys(raw0)) if (OPAQUE_PART.test(name) && raw0[name] !== raw1[name]) problems.push(tag(`${name}: ${raw1[name] === undefined ? 'missing after save' : 'changed by save'}`));
+    // Every relationship target of the saved package exists, and every part has a content type.
+    const types = p1['[Content_Types].xml'] || '';
+    for (const [relsName, relsXml] of Object.entries(p1)) {
+        if (!relsName.endsWith('.rels')) continue;
+        const owner = relsName.replace(/_rels\/([^/]*)\.rels$/, '$1');
+        const base = owner.includes('/') ? owner.slice(0, owner.lastIndexOf('/')) : '';
+        const ids = new Set();
+        for (const m of relsXml.matchAll(/<Relationship\b[^>]*>/g)) {
+            const id = /\bId="([^"]*)"/.exec(m[0])?.[1];
+            if (ids.has(id)) problems.push(tag(`${relsName}: relationship id ${id} twice`));
+            ids.add(id);
+            if (/TargetMode="External"/.test(m[0])) continue;
+            const target = /Target="([^"]*)"/.exec(m[0])?.[1] ?? '';
+            const resolved = target.startsWith('/') ? target.slice(1) : (base ? base + '/' : '') + target;
+            const norm = []; for (const seg of resolved.split('/')) { if (seg === '..') norm.pop(); else if (seg && seg !== '.') norm.push(seg); }
+            if (raw1[norm.join('/')] === undefined) problems.push(tag(`${relsName}: relationship target ${target} is not in the package`));
+        }
+        // Every relationship the part's XML uses is one the part has.
+        const partXml = p1[owner];
+        if (partXml && /\.xml$/.test(owner) && owner.startsWith('word/'))
+            for (const m of partXml.matchAll(/<[^<>]*?\sr:(?:id|embed|link|pict)="([^"]*)"/g))
+                if (m[1] && !ids.has(m[1])) { problems.push(tag(`${owner}: refers to relationship ${m[1]}, which the part does not have`)); break; }
+    }
+    for (const name of Object.keys(raw1)) {
+        if (name === '[Content_Types].xml') continue;
+        const ext = name.slice(name.lastIndexOf('.') + 1).toLowerCase();
+        if (!new RegExp(`PartName="/${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`, 'i').test(types) && !new RegExp(`Extension="${ext}"`, 'i').test(types))
+            problems.push(tag(`${name}: no content type`));
+    }
+
+    const flatText = (s) => s.filter((e) => e.runs).map((e) => e.runs.map((r) => r.text ?? '￼').join('')).join('\n');
+    for (const e of expect) {
+        if (e.has && !new RegExp(e.has).test(p1[e.part] ?? '')) problems.push(tag(`${e.part}: expected /${e.has}/`));
+        if (e.lacks && new RegExp(e.lacks).test(p1[e.part] ?? '')) problems.push(tag(`${e.part}: unexpected /${e.lacks}/`));
+        if (e.readText && !flatText(s0).includes(e.readText)) problems.push(tag(`reader: expected text ${JSON.stringify(e.readText)} in ${JSON.stringify(flatText(s0).slice(0, 300))}`));
+        if (e.savedText && !flatText(s1).includes(e.savedText)) problems.push(tag(`after save: expected text ${JSON.stringify(e.savedText)} in ${JSON.stringify(flatText(s1).slice(0, 300))}`));
+        if (e.same && raw0[e.same] !== raw1[e.same]) problems.push(tag(`${e.same}: ${raw1[e.same] === undefined ? 'missing after save' : 'not byte-identical after save'}`));
+        if (e.absent && raw1[e.absent] !== undefined) problems.push(tag(`${e.absent}: should not be in the saved package`));
+        if (e.kept && !regenerate && !new RegExp(e.kept).test(p1[e.part] ?? '')) problems.push(tag(`${e.part}: an unedited save lost /${e.kept}/`));
+        if (e.read) { const got = e.read.split('.').reduce((o, k) => (o == null ? o : o[k]), { pkg: first.pkg, items: s0 }); if (JSON.stringify(norm(got)) !== JSON.stringify(e.equals)) problems.push(tag(`reader: ${e.read} = ${JSON.stringify(norm(got))}, expected ${JSON.stringify(e.equals)}`)); }
+    }
+    return { bytes1, bytes2, p1 };
+}
+
+// Parts an unedited save writes back exactly as they were read.
+const SOURCE_PART = /^word\/(document|numbering|footnotes|endnotes|comments|styles|settings)\.xml$/;
+const HEADER_FOOTER_PART = /^word\/(header|footer)\d*\.xml$/;
+// The parts the document's relationships lead to.
+const referencedParts = (allParts) => {
+    const found = new Set();
+    for (const m of (allParts['word/_rels/document.xml.rels'] ?? '').matchAll(/Target="([^"]*)"/g)) found.add(m[1].startsWith('/') ? m[1].slice(1) : 'word/' + m[1]);
+    return found;
+};
+
 window.roundTrip = async (name, expect) => {
     const problems = [];
-    let stats = '', saved = [], xml = '';
+    let stats = '', saved = [], xml = '', xmlDiff = {}, xmlIdentical = false, pages = 0, changedParts = [];
+    window.roundTripState = undefined;
     try {
         let original = new Uint8Array(await (await fetch('/fixture?name=' + encodeURIComponent(name))).arrayBuffer());
         // An empty fixture stands for a document made in the editor, with nothing
@@ -345,71 +510,126 @@ window.roundTrip = async (name, expect) => {
                     if (got !== count(part.Paragraphs)) problems.push(`import -> export: ${key}[${i}] ${count(part.Paragraphs)} blocks became ${got}`);
                 });
         }
+        const fp0 = layoutOfPackage(first.pkg);
+        const p0 = await parts(original), raw0 = await rawParts(original);
         const mutate = expect.find((e) => e.mutate);
-        const bytes1 = await save(first.doc, mutate ? new Function('pkg', mutate.mutate) : null);
-        const second = await open(bytes1);
-        const s1 = summarisePackage(second.pkg);
-        const bytes2 = await save(second.doc, null);
-        const third = await open(bytes2);
-        const s2 = summarisePackage(third.pkg);
-        const bytes3 = await save(third.doc, null);
-        saved = [toBase64(bytes1), toBase64(bytes2)];
-
-        if (!mutate) diff('save 1 vs original', s0, s1, problems);
-        diff('save 2 vs save 1 (not a fixed point)', s1, s2, problems);
-
-        const p1 = await parts(bytes1), p2 = await parts(bytes2), p3 = await parts(bytes3);
-        // styles.xml and settings.xml keep what the original holds; a schema-order
-        // slip that was already in the original part is not this writer's.
-        const p0 = await parts(original);
-        for (const part of Object.keys(p1)) {
-            const found = [];
-            checkXml(part, p1[part], found);
-            const inherited = [];
-            if ((part === 'word/styles.xml' || part === 'word/settings.xml') && p0[part]) checkXml(part, p0[part], inherited);
-            for (const problem of found) if (!inherited.includes(problem)) problems.push(problem);
-        }
-        // Byte-level fixed point from the second save on (the first save may still
-        // normalise what the reader reports differently for a written file).
-        for (const part of Object.keys(p2)) if (p2[part] !== p3[part]) problems.push(`${part} differs between save 2 and save 3`);
-        if (Object.keys(p2).length !== Object.keys(p3).length) problems.push('part list differs between save 2 and save 3');
-        xml = p1['word/document.xml'];
-        const raw0 = await rawParts(original), raw1 = await rawParts(bytes1);
-        for (const name of Object.keys(raw0)) if (OPAQUE_PART.test(name) && raw0[name] !== raw1[name]) problems.push(`${name}: ${raw1[name] === undefined ? 'missing after save' : 'changed by save'}`);
-        // Every relationship target of the saved package exists, and every part has a content type.
-        const types = p1['[Content_Types].xml'] || '';
-        for (const [relsName, relsXml] of Object.entries(p1)) {
-            if (!relsName.endsWith('.rels')) continue;
-            const owner = relsName.replace(/_rels\/([^/]*)\.rels$/, '$1');
-            const base = owner.includes('/') ? owner.slice(0, owner.lastIndexOf('/')) : '';
-            for (const m of relsXml.matchAll(/<Relationship\b[^>]*>/g)) {
-                if (/TargetMode="External"/.test(m[0])) continue;
-                const target = /Target="([^"]*)"/.exec(m[0])?.[1] ?? '';
-                const resolved = target.startsWith('/') ? target.slice(1) : (base ? base + '/' : '') + target;
-                const norm = []; for (const seg of resolved.split('/')) { if (seg === '..') norm.pop(); else if (seg && seg !== '.') norm.push(seg); }
-                if (raw1[norm.join('/')] === undefined) problems.push(`${relsName}: relationship target ${target} is not in the package`);
+        const ctx = { first, s0, fp0, original, p0, raw0, mutate, expect };
+        // Everything from the model: what a changed block, header or note is written as.
+        const model = await checkSave(mutate ? '' : 'written from the model', true, ctx, problems);
+        let shown = model;
+        if (!mutate) {
+            // The editor's save of a document nobody changed.
+            shown = await checkSave('', false, { ...ctx, expect: expect.filter((e) => e.same || e.absent || e.kept) }, problems);
+            if (p0['word/document.xml'] !== undefined) {
+                xmlDiff = xmlCensusDiff(p0['word/document.xml'], model.p1['word/document.xml']);
+                // (A byte order mark is not written back. Headers and footers are numbered
+                // in the order the document refers to them, so they are looked for by their text.)
+                const text = (value) => (value ?? '').replace(/^\uFEFF/, '');
+                xmlIdentical = text(p0['word/document.xml']) === text(shown.p1['word/document.xml']);
+                const savedHeadersFooters = new Set(Object.keys(shown.p1).filter((part) => HEADER_FOOTER_PART.test(part)).map((part) => text(shown.p1[part])));
+                // (Section properties that are not the last element of the body - not a
+                // document Word writes - are put there: the body is then written from the model.)
+                const bodySectionLast = /<\/w:sectPr>\s*<\/w:body>/.test(p0['word/document.xml']) || !/<w:sectPr[\s>]/.test(p0['word/document.xml'].replace(/<w:p[\s>][\s\S]*?<\/w:p>/g, ''));
+                for (const part of Object.keys(p0)) {
+                    if (part === 'word/document.xml' && !bodySectionLast) continue;
+                    // (A style the document uses and its style part does not have is added to it.)
+                    const styleIds = (value) => [...(value ?? '').matchAll(/w:styleId="([^"]*)"/g)].map((m) => m[1]).sort().join(' ');
+                    if (part === 'word/styles.xml' && styleIds(p0[part]) !== styleIds(shown.p1[part])) continue;
+                    if (SOURCE_PART.test(part) && shown.p1[part] !== undefined && text(shown.p1[part]) !== text(p0[part])) changedParts.push(part);
+                    if (HEADER_FOOTER_PART.test(part) && referencedParts(p0).has(part) && !savedHeadersFooters.has(text(p0[part]))) changedParts.push(part);
+                }
             }
         }
-        for (const name of Object.keys(raw1)) {
-            if (name === '[Content_Types].xml') continue;
-            const ext = name.slice(name.lastIndexOf('.') + 1).toLowerCase();
-            if (!new RegExp(`PartName="/${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`, 'i').test(types) && !new RegExp(`Extension="${ext}"`, 'i').test(types))
-                problems.push(`${name}: no content type`);
-        }
-
-        const flatText = (s) => s.filter((e) => e.runs).map((e) => e.runs.map((r) => r.text ?? '￼').join('')).join('\n');
-        for (const e of expect) {
-            if (e.has && !new RegExp(e.has).test(p1[e.part] ?? '')) problems.push(`${e.part}: expected /${e.has}/`);
-            if (e.lacks && new RegExp(e.lacks).test(p1[e.part] ?? '')) problems.push(`${e.part}: unexpected /${e.lacks}/`);
-            if (e.readText && !flatText(s0).includes(e.readText)) problems.push(`reader: expected text ${JSON.stringify(e.readText)} in ${JSON.stringify(flatText(s0).slice(0, 300))}`);
-            if (e.savedText && !flatText(s1).includes(e.savedText)) problems.push(`after save: expected text ${JSON.stringify(e.savedText)} in ${JSON.stringify(flatText(s1).slice(0, 300))}`);
-            if (e.same && raw0[e.same] !== raw1[e.same]) problems.push(`${e.same}: ${raw1[e.same] === undefined ? 'missing after save' : 'not byte-identical after save'}`);
-            if (e.absent && raw1[e.absent] !== undefined) problems.push(`${e.absent}: should not be in the saved package`);
-            if (e.read) { const got = e.read.split('.').reduce((o, k) => (o == null ? o : o[k]), { pkg: first.pkg, items: s0 }); if (JSON.stringify(norm(got)) !== JSON.stringify(e.equals)) problems.push(`reader: ${e.read} = ${JSON.stringify(norm(got))}, expected ${JSON.stringify(e.equals)}`); }
-        }
-        stats = `${s0.filter((e) => e.kind === 'para').length} paragraphs, ${s0.filter((e) => e.kind === 'table').length} tables, ${bytes1.length} bytes`;
+        saved = [toBase64(shown.bytes1), toBase64(shown.bytes2), toBase64(model.bytes1)];
+        xml = shown.p1['word/document.xml'];
+        window.roundTripState = { pkg: first.pkg, fp0, s0 };
+        pages = fp0.pages;
+        stats = `${fp0.pages} pages, ${s0.filter((e) => e.kind === 'para').length} paragraphs, ${s0.filter((e) => e.kind === 'table').length} tables, ${shown.bytes1.length} bytes`;
     } catch (e) {
         problems.push('threw: ' + String(e && e.stack || e).split('\n').slice(0, 4).join(' | '));
     }
-    return { problems, stats, saved, xml };
+    return { problems, stats, saved, xml, xmlDiff, xmlIdentical, changedParts, pages };
+};
+
+// A trivial edit, made with real key events by roundtrip.mjs between these two
+// calls: one character typed at the start of the first line of text, then
+// deleted. The document saved after it is laid out as the original.
+window.editOpen = (outsideTables) => {
+    const state = window.roundTripState;
+    if (!state) return false;
+    const handle = openEditor(state.pkg);
+    state.handle = handle;
+    const lines = Word.getLayoutLines(handle.editor);
+    // (A paragraph of a table inside a table cell is not reported as in a table, and is not in getText.)
+    const bodyText = Word.getText(handle.editor);
+    const line = outsideTables ? lines.find((l) => !l.InTable && (l.Text || '').trim().length > 0 && bodyText.includes(l.Text.trim()))
+        : lines.find((l) => (l.Text || '').trim().length > 0) ?? lines[0];
+    if (!line) { closeEditor(handle); return false; }
+    Word.setSelection(handle.editor, line.BlockId, line.StartOffset, line.BlockId, line.StartOffset);
+    Word.getInputElement(handle.editor).focus();
+    state.text = Word.getText(handle.editor);
+    state.revision = Word.getRevision(handle.editor);
+    return true;
+};
+window.editFinish = async () => {
+    const state = window.roundTripState, problems = [];
+    try {
+        const editor = state.handle.editor;
+        if (Word.getRevision(editor) === state.revision) problems.push('trivial edit: the key events did not reach the editor');
+        if (Word.getText(editor) !== state.text) problems.push('trivial edit: the text is not what it was after typing and deleting a character');
+        const exported = Word.exportDocumentPackage(editor);
+        const bytes = new Uint8Array(await (await OF.word.writeFromEditorPackage(exported)).arrayBuffer());
+        const reopened = await open(bytes);
+        diff('trivial edit, saved, vs original', state.s0, summarisePackage(reopened.pkg), problems);
+        diffLayout('layout after a trivial edit and a save vs original', state.fp0, layoutOfPackage(reopened.pkg), problems);
+    } catch (e) {
+        problems.push('trivial edit threw: ' + String(e && e.stack || e).split('\n').slice(0, 4).join(' | '));
+    }
+    closeEditor(state.handle);
+    return problems;
+};
+
+// A real edit (editOpen(true), then one character typed by roundtrip.mjs): the
+// saved document has the character, its parts are well formed, and every
+// paragraph but the one that was typed in is the text it was read from.
+window.editKeptFinish = async (original, expect) => {
+    const state = window.roundTripState, problems = [];
+    try {
+        const editor = state.handle.editor;
+        const typed = Word.getText(editor);
+        if (typed.length !== state.text.length + 1) problems.push(`edit: the typed character is not in the text (${JSON.stringify(state.text.slice(0, 80))} -> ${JSON.stringify(typed.slice(0, 80))}, selection ${JSON.stringify(Word.getSelection(editor))})`);
+        const bytes = new Uint8Array(await (await OF.word.writeFromEditorPackage(Word.exportDocumentPackage(editor))).arrayBuffer());
+        const reopened = await open(bytes);
+        const handle = openEditor(reopened.pkg);
+        if (Word.getText(handle.editor) !== typed) problems.push('edit: the saved document does not read back with the text that was saved');
+        closeEditor(handle);
+        const saved = await parts(bytes);
+        const originalBytes = new Uint8Array(await (await fetch('/fixture?name=' + encodeURIComponent(original))).arrayBuffer());
+        const before = originalBytes.length ? await parts(originalBytes) : {};
+        for (const part of Object.keys(saved)) {
+            const found = [], inherited = [];
+            checkXml(part, saved[part], found);
+            if (before[part]) checkXml(part, before[part], inherited);
+            for (const problem of found) if (!inherited.includes(problem)) problems.push('edit: ' + problem);
+        }
+        const was = before['word/document.xml'], is = saved['word/document.xml'];
+        for (const e of expect ?? []) {
+            if (e.editKeeps && !new RegExp(e.editKeeps).test(is)) problems.push(`edit: word/document.xml lost /${e.editKeeps}/`);
+            if (e.editLacks && new RegExp(e.editLacks).test(is)) problems.push(`edit: word/document.xml still has /${e.editLacks}/`);
+        }
+        if (was !== undefined && /<\/w:sectPr>\s*<\/w:body>/.test(was)) {
+            // Paragraph by paragraph (the text up to each end tag): how many of the original's are gone.
+            const count = new Map();
+            for (const piece of is.split('</w:p>')) count.set(piece, (count.get(piece) ?? 0) + 1);
+            let lost = 0;
+            for (const piece of was.replace(/^\uFEFF/, '').split('</w:p>')) { const left = count.get(piece) ?? 0; if (left > 0) count.set(piece, left - 1); else lost++; }
+            // (The paragraph typed in, and the piece the root's start tag is in when the writer adds a namespace to it.)
+            if (lost > 2) problems.push(`edit: ${lost} paragraphs of document.xml are not the text they were read from (one was changed)`);
+        }
+    } catch (e) {
+        problems.push('edit threw: ' + String(e && e.stack || e).split('\n').slice(0, 4).join(' | '));
+    }
+    closeEditor(state.handle);
+    window.roundTripState = undefined;
+    return problems;
 };

@@ -1536,6 +1536,26 @@ module API =
             layoutIndex <- layoutIndex + 1
         result.ToArray()
 
+    /// The laid-out document block by block, for comparing two layouts (see
+    /// LayoutFingerprint): [{ Page, Y, Height, LineCount, LineHeights, Text,
+    /// Paragraph, Runs }] with the resolved paragraph and run formatting as
+    /// strings. Lays the whole document out.
+    let getLayoutFingerprint (editor: Editor) =
+        let layouts = layoutsForEditor editor
+        LayoutFingerprint.ofLayouts (pageForYInDoc editor.Doc) layouts
+        |> List.map (fun block ->
+            createObj [
+                "Page" ==> block.Page
+                "Y" ==> block.Y
+                "Height" ==> block.Height
+                "LineCount" ==> block.LineCount
+                "LineHeights" ==> block.LineHeights
+                "Text" ==> block.Text
+                "Paragraph" ==> block.Paragraph
+                "Runs" ==> block.Runs
+            ])
+        |> List.toArray
+
     let getVbaLayoutLines (editor: Editor) =
         getLayoutLines editor
 
@@ -2994,6 +3014,7 @@ module API =
             "getImageHitTest" ==> getImageHitTest
             "getLayoutSegments" ==> getLayoutSegments
             "getLayoutLines" ==> getLayoutLines
+            "getLayoutFingerprint" ==> getLayoutFingerprint
             "getVbaLayoutLines" ==> getVbaLayoutLines
             "getRangeInformation" ==> getRangeInformation
             "getSelectionInformation" ==> getSelectionInformation
