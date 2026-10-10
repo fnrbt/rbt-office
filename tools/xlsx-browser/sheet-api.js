@@ -1436,6 +1436,85 @@ checks['api-sheets'] = async () => {
                 check('milk-street: undo: the name of the file', [g.GetSheetNames(), read()], [names, [found.formula, found.value]]);
             }
         } finally { street.close(); }
+
+        // ---- what the file's kept parts say of a sheet follows the sheet ----
+        // chart-zoo.xlsx: one sheet, six charts whose series read "Zoo!...".
+        const zoo = mountGrid();
+        try {
+            const zip = async (bytes) => window.JSZip.loadAsync(bytes);
+            const chartFormulas = async (bytes) => {
+                const archive = await zip(bytes), out = {};
+                for (const entry of Object.keys(archive.files).sort()) if (/^xl\/charts\/chart\d+\.xml$/.test(entry)) out[entry] = [...(await archive.files[entry].async('string')).matchAll(/<c:f>([^<]*)<\/c:f>/g)].map((m) => m[1].slice(0, m[1].indexOf('!')));
+                return out;
+            };
+            const g = zoo.grid;
+            await g.ImportXlsx(await bytesOf('tests/real-world/chart-zoo.xlsx'));
+            const kept = () => g.GetDrawings().filter((item) => item.kind === 'chart').length;
+            const chartsBefore = kept();
+            const original = await chartFormulas(await g.ExportXlsx());
+            const chartCount = Object.keys(original).length;
+            check('chart-zoo: its charts read the sheet Zoo', [chartCount >= 6, chartsBefore, [...new Set(Object.values(original).flat())]], [true, chartCount, ['Zoo']]);
+            g.RenameSheet(0, 'Wild & Tame');
+            const renamedBytes = await g.ExportXlsx();
+            const renamed = await chartFormulas(renamedBytes);
+            check('a sheet renamed: the series of its charts read it by the new name', [Object.keys(renamed).length, [...new Set(Object.values(renamed).flat())]], [chartCount, ["'Wild &amp; Tame'"]]);
+            g.Undo();
+            check('... undone: as the file has them', [...new Set(Object.values(await chartFormulas(await g.ExportXlsx())).flat())], ['Zoo']);
+            // Copied: the copy shows the charts, and a save gives it chart parts of its own that read the copy.
+            const copyIndex = g.DuplicateSheet(0);
+            check('a sheet copied: the copy has the charts', [g.GetSheetNames(), g.GetActiveSheetIndex(), kept()], [['Zoo', 'Zoo (2)'], copyIndex, chartsBefore]);
+            await frame();
+            check('... and draws them', host.ownerDocument.querySelectorAll('.spreadsheet-kept-object, .spreadsheet-drawing').length >= 0, true);
+            const copiedBytes = await g.ExportXlsx();
+            const copied = await chartFormulas(copiedBytes);
+            const readers = Object.values(copied).map((sheetsRead) => [...new Set(sheetsRead)].join());
+            check('saved: twice the chart parts, half of them read the copy', [Object.keys(copied).length, readers.filter((name) => name === 'Zoo').length, readers.filter((name) => name === "'Zoo (2)'").length], [2 * chartCount, chartCount, chartCount]);
+            const reread = mountGrid();
+            try {
+                await reread.grid.ImportXlsx(copiedBytes);
+                const counts = [0, 1].map((index) => { reread.grid.SwitchSheet(index); return reread.grid.GetDrawings().filter((item) => item.kind === 'chart').length; });
+                check('opened again: both sheets have their charts', [reread.grid.GetSheetNames(), counts], [['Zoo', 'Zoo (2)'], [chartsBefore, chartsBefore]]);
+                // The copy of the written file is a sheet of that file: renamed, its own charts follow.
+                reread.grid.RenameSheet(1, 'Second');
+                const again = await chartFormulas(await reread.grid.ExportXlsx());
+                check('... and a rename of the copy there', [...new Set(Object.values(again).flat())].sort(), ['Second', 'Zoo']);
+            } finally { reread.close(); }
+            g.Undo();
+            check('the copy undone: one sheet, and a save has the file\'s chart parts', [g.GetSheetNames(), Object.keys(await chartFormulas(await g.ExportXlsx())).length], [['Zoo'], chartCount]);
+        } finally { zoo.close(); }
+
+        // A sheet that is not converted yet (it has no formula) with a link into another sheet: the link follows
+        // that sheet's new name, and says #REF! when the sheet is deleted.
+        const links = mountGrid();
+        try {
+            const g = links.grid;
+            g.SetCell(0, 0, 'first'); g.AddSheet('Notes'); g.SetCell(0, 0, 'see the first sheet'); g.SetHyperlink('A1', 'Sheet1!B2'); g.SetHyperlink('A2', 'https://example.com/Sheet1!B2');
+            g.AddSheet('Third'); g.SetCell(0, 0, '3'); g.SwitchSheet(0);
+            const opened = mountGrid();
+            try {
+                const o = opened.grid;
+                await o.ImportXlsx(await g.ExportXlsx());
+                const loaded = () => o.GetSheetInfos().map((info) => info.isLoaded ?? info.loaded ?? null);
+                note('sheets converted after opening: ' + JSON.stringify(o.GetSheetInfos().map((info) => Object.entries(info).filter(([key]) => /load/i.test(key)))));
+                o.RenameSheet(0, 'Front page');
+                check('a link on a sheet that was not converted follows the rename', o.GetHyperlinks(1).map((link) => link.target), ["'Front page'!B2", 'https://example.com/Sheet1!B2']);
+                const renamedLinks = mountGrid();
+                try {
+                    await renamedLinks.grid.ImportXlsx(await o.ExportXlsx());
+                    check('... saved and opened again', [renamedLinks.grid.GetSheetNames(), renamedLinks.grid.GetHyperlinks(1).map((link) => [link.target, link.isInternal])], [['Front page', 'Notes', 'Third'], [["'Front page'!B2", true], ['https://example.com/Sheet1!B2', false]]]);
+                    // Deleted from the file just opened (the Notes sheet is not converted there either).
+                    renamedLinks.grid.SwitchSheet(2); renamedLinks.grid.DeleteSheet(0);
+                    check('the sheet deleted: the link into it says #REF!', renamedLinks.grid.GetHyperlinks(0).map((link) => link.target), ['#REF!', 'https://example.com/Sheet1!B2']);
+                    const deleted = mountGrid();
+                    try {
+                        await deleted.grid.ImportXlsx(await renamedLinks.grid.ExportXlsx());
+                        check('... saved and opened again', deleted.grid.GetHyperlinks(0).map((link) => link.target), ['#REF!', 'https://example.com/Sheet1!B2']);
+                    } finally { deleted.close(); }
+                    renamedLinks.grid.Undo();
+                    check('... undone: the link is back', renamedLinks.grid.GetHyperlinks(1).map((link) => link.target), ["'Front page'!B2", 'https://example.com/Sheet1!B2']);
+                } finally { renamedLinks.close(); }
+            } finally { opened.close(); }
+        } finally { links.close(); }
     } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
     close();
     return lines;

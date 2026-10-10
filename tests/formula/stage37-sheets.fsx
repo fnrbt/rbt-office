@@ -93,6 +93,9 @@ eq "delete: names that referred to it" (Wb.getName None "DataTotal" without, Wb.
 eq "delete: the names of its scope are gone" (Wb.getName (Some "sheet1") "Local" without, without.NameInfo |> Map.containsKey (Some "sheet1", "LOCAL")) (None, false)
 let withoutCalc = calc without
 eq "delete: the values" (valueAt "sheet2" 0 0 withoutCalc, valueAt "sheet2" 4 0 withoutCalc) (CellValue.Error "REF!", CellValue.Error "REF!")
+// A link into the deleted sheet leads nowhere: its target says #REF! (other links stay).
+eq "delete: links into the sheet" (((Wb.removeSheet "sheet2" wb0).Value |> fst).Sheets.["sheet1"].Model.Hyperlinks |> List.map (fun l -> l.Target, l.IsInternal)) [ "#REF!", true; "https://example.com/Summary!A1", false ]
+eq "undo: the links are back" ((Wb.restoreSheet (snd (Wb.removeSheet "sheet2" wb0).Value) (fst (Wb.removeSheet "sheet2" wb0).Value)).Sheets.["sheet1"].Model.Hyperlinks |> List.map (fun l -> l.Target)) (wb0.Sheets.["sheet1"].Model.Hyperlinks |> List.map (fun l -> l.Target))
 let restored = Wb.restoreSheet removal without
 eq "undo: the sheet is back in its place and active" (names restored, restored.SheetOrder, restored.ActiveSheet) (names wb0, wb0.SheetOrder, "sheet1")
 eq "undo: the references are back" (formulaAt "sheet2" 0 0 restored, formulaAt "sheet2" 1 0 restored, formulaAt "sheet2" 2 0 restored) ("=SUM(Data!A1:A3)", "=Data!$A$4*2", "=COUNT(data!A:A)+Rate")
@@ -151,7 +154,9 @@ eq "copy: its formulas name the copy, and the copy of the table" (formulaAt "she
 eq "copy: the original is as it was" (obj.ReferenceEquals(copied.Sheets.["sheet1"].Model, source), formulaAt "sheet1" 5 0 copied) (true, "=SUM(Sales[Amount])+Data!A1")
 eq "copy: tables" (copy.Tables |> List.map (fun t -> t.Name), copied.Tables |> Map.toList |> List.map (fun (key, t) -> key, t.Name, t.SheetId, t.Columns)) ([ "Sales_2" ], [ "Sales", "Sales", "sheet1", [ "Amount"; "Tax" ]; "Sales_2", "Sales_2", "sheet4", [ "Amount"; "Tax" ] ])
 eq "copy: the names of the sheet's scope" (Wb.getName (Some "sheet4") "Local" copied, Wb.getName (Some "sheet1") "Local" copied, (Wb.definedNames copied |> List.filter (fun n -> n.Name = "Local") |> List.map (fun n -> n.Scope, n.Comment))) (Some "'Data (2)'!$A$1", Some "Data!$A$1", [ Some "sheet1", Some "of the data sheet"; Some "sheet4", Some "of the data sheet" ])
-eq "copy: pictures come along, kept objects and pivots do not" (copy.Drawings |> List.map (fun d -> d.Name), copy.KeptRanges, copy.SourceSheet) ([ Some "p" ], [], None)
+// (The kept drawing objects - charts - come along: written to XLSX, their chart parts are copied for the copy. Pivot tables do not.)
+eq "copy: pictures and kept objects come along, pivots do not" (copy.Drawings |> List.map (fun d -> d.Name), copy.KeptRanges, copy.SourceSheet, copy.KeptFrom) ([ Some "p"; Some "chart" ], [], None, Some { Book = 1; Sheet = 0 })
+eq "copy of a copy: the kept objects are still the file's" ((Wb.duplicateSheet "sheet4" "sheet5" "Data (3)" 2 copied).Sheets.["sheet5"].Model.KeptFrom) (Some { Book = 1; Sheet = 0 })
 eq "copy: rules name the copy" (copy.ConditionalFormats |> List.map (fun f -> f.Format.Rule)) [ Expression "Summary!$B$1>'Data (2)'!$A$1" ]
 let copiedCalc = calc copied
 eq "copy: the values" (valueAt "sheet4" 5 0 copiedCalc, valueAt "sheet1" 5 0 copiedCalc, valueAt "sheet4" 6 0 copiedCalc) (CellValue.Number 151.0, CellValue.Number 151.0, CellValue.Number 11.0)

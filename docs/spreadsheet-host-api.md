@@ -354,9 +354,9 @@ the sheet then on display, so `Redo()` finds it there. After the user switches t
 | `OnSheetsChange(cb)` | `cb(infos)` gets the `GetSheetInfos()` array | unsubscribe function | Fires after the list changed: a sheet added, deleted, renamed, moved, copied, hidden / shown, tab colour; by a call, by undo / redo, or by `InstallWorkbook` / `ImportXlsx`. Not for a mere switch of the sheet on display (`OnSelectionChange` / `OnSheetChanged`). Fires while the grid is mounted. |
 | `AddSheet(name?, atIndex?)` | `name` string (default: first free "Sheet1", "Sheet2", ...); `atIndex` 0..count (default: at the end) | index of the new sheet | The new sheet (1000 x 26) is shown. Throws on an invalid / duplicate name or a position outside 0..count. Formulas that named a sheet of that name before it existed are recalculated. |
 | `RenameSheet(index, name)` | | | Formulas of every sheet (cells, conditional formats, validations incl. list sources), defined names and internal hyperlinks follow, quoted where needed (`'My Sheet'!A1`, `'It''s'!A1`). Throws: empty, > 31 chars, any of `: \ / ? * [ ]`, leading / trailing apostrophe, "History", a duplicate (case-insensitive; changing only the case of the sheet's own name is allowed), no such sheet. Values are not recalculated (nothing changes) - see limits. |
-| `DeleteSheet(index)` | | | References to the sheet in other sheets' formulas, rules and defined names become `#REF!`; names scoped to it and its tables go with it; what the file kept for it (pictures, charts, pivot tables, comments) is dropped from the exported package. If it was on display, the nearest visible sheet is shown. Undo restores the sheet, the names, the tables and the references (a formula edited in between keeps the edit). Throws when it is the only visible sheet, or no such sheet. |
+| `DeleteSheet(index)` | | | References to the sheet in other sheets' formulas, rules and defined names become `#REF!`; names scoped to it and its tables go with it; what the file kept for it (pictures, charts, pivot tables, comments) is dropped from the exported package; internal hyperlinks of other sheets into it get the target `#REF!`. If it was on display, the nearest visible sheet is shown. Undo restores the sheet, the names, the tables and the references (a formula edited in between keeps the edit). Throws when it is the only visible sheet, or no such sheet. |
 | `MoveSheet(from, to)` | `to` = index the sheet has afterwards (0..count-1) | | The sheet on display stays on display. |
-| `DuplicateSheet(index)` | | index of the copy | The copy is placed right after the original, named "Name (2)" ("(3)", ...; cut to 31 chars) and shown. Copied: cells, formats, sizes, merges, comments, validations, conditional formats, pictures, page setup, sheet-scoped names, tables (as "Table_2"; the copy's structured references follow). The copy's formulas that named the original sheet name the copy. NOT copied: charts / shapes / other drawing objects the editor only keeps from the file, pivot tables, named cell styles (they stay with the original). |
+| `DuplicateSheet(index)` | | index of the copy | The copy is placed right after the original, named "Name (2)" ("(3)", ...; cut to 31 chars) and shown. Copied: cells, formats, sizes, merges, comments, validations, conditional formats, pictures, page setup, sheet-scoped names, tables (as "Table_2"; the copy's structured references follow). The copy's formulas that named the original sheet name the copy. Also copied (since 0.1.9): the drawing objects the editor only keeps from the file - charts, shapes; `GetDrawings()` lists them on the copy, and `ExportXlsx` writes each copied chart as a chart part of its own (new part name, its own relationships and content type) whose series read the copy where the original's read the original. NOT copied: **pivot tables** (the copy has their cells as plain values; the pivot table, its cache and slicers stay with the original) and named cell styles. |
 | `SetSheetVisibility(index, visibility)` | `"visible"` \| `"hidden"` \| `"veryHidden"` | | Hiding the sheet on display shows the nearest visible one. Throws when it would leave no visible sheet. `SheetVisibility()` (bool per sheet) keeps working. |
 | `SetSheetTabColor(index, color)` | `"#RRGGBB"` or null (none) | | The component draws no tab strip; the colour is workbook content (GetSheetInfos, the saved file's `<tabColor>`). |
 
@@ -364,13 +364,18 @@ Existing members that keep working: `GetSheetNames()`, `SheetNames()`, `SheetVis
 `OnSheetChanged(cb(index))` (now also fires when a sheet-list operation or its undo changes the sheet on display), `IsSheetLoaded(index)`.
 
 Lazy sheets: `MoveSheet`, `SetSheetVisibility`, `SetSheetTabColor` convert no sheet. `RenameSheet` / `DeleteSheet` / `AddSheet` convert the sheets
-that have formulas (as any first edit does); plain-data sheets stay unconverted. `DuplicateSheet` converts the sheet it copies.
+that have formulas or internal hyperlinks (as any first edit does); plain-data sheets stay unconverted. `DuplicateSheet` converts the sheet it copies.
 
 Limits: a rename does not recalculate (a formula that builds the sheet's name as text - `INDIRECT("Old!A1")` - keeps its value until the
-next recalculation and then no longer finds the sheet, as in Excel); internal hyperlinks on a sheet that is not converted yet are not
-re-pointed; chart series and pivot-cache sources kept from the file still name the old sheet name after a rename (Excel shows their
-cached data; a refresh of that pivot / chart will not find the sheet); 3-D references follow a rename of either end sheet but are not
-adjusted when sheets are moved or an end sheet is deleted (-> `#REF!`).
+next recalculation and then no longer finds the sheet, as in Excel).
+
+Kept parts follow the sheets (since 0.1.9; applied when the workbook is written, `ExportXlsx`): after a rename the series of the file's charts
+(`<c:f>`, `<cx:f>`: `Sales!$B$2:$B$9` -> `'Net sales'!$B$2:$B$9`, also where they are qualified defined names), the sheet of a pivot cache's
+`<worksheetSource sheet>` and the formulas of kept extensions (`<xm:f>` of sparklines) name the sheet by its new name; references in chart
+series to a sheet that was deleted become `#REF!`. Internal hyperlinks follow a rename also on sheets that were not converted yet, and a link
+into a deleted sheet has the target `#REF!` (`GetHyperlink(...).target`, written as `location="#REF!"`; undo restores it). Parts nothing was
+renamed in go back byte for byte. Not followed: slicer caches and external-link parts (they do not name sheets of the workbook), and text
+inside chart titles.
 
 ## Rows and columns (group 8)
 

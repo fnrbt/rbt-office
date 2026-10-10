@@ -1135,6 +1135,11 @@ type SpreadsheetModel = {
     /// model. None for a sheet made in the editor.
     SourceSheet: SheetOrigin option
 
+    /// For a copy of a sheet of an opened file: the sheet of the file its
+    /// kept drawing objects (charts, shapes) came from. They refer to parts
+    /// of that sheet's drawing; a save copies the chart parts for the copy.
+    KeptFrom: SheetOrigin option
+
     /// Counts the row / column insertions and deletions the sheet has seen
     /// (an undo brings the earlier count back). What is kept of a file by
     /// cell reference without being modelled (sparklines, x14 conditional
@@ -1234,6 +1239,7 @@ let createEmpty rowCount colCount = {
     TabColor = None
     VeryHidden = false
     SourceSheet = None
+    KeptFrom = None
     StructureVersion = 0
     StructureMove = None
     Deferred = None

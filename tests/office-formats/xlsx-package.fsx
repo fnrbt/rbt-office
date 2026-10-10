@@ -270,5 +270,99 @@ do
     let models = wb.SheetOrder |> List.map (fun id -> (Map.find id widened.Sheets).Model) |> List.toArray
     eq "a column inserted inside: the range grows" (sourceOf (export imported models names)) "<worksheetSource ref=\"A1:I200\" sheet=\"Data\"/>"
 
+// ---- what kept parts say of a sheet follows the sheet -------------------------------
+// The series of a chart, the source of a pivot cache and the formulas of kept extensions
+// name sheets: they follow a rename, say #REF! of a deleted sheet, and a copied sheet
+// has charts of its own that read the copy.
+do
+    let chartPaths (parts: Map<string, byte[]>) = parts |> Map.toList |> List.map fst |> List.filter (fun path -> Regex.IsMatch(path, "^xl/charts/chart\\d+\\.xml$")) |> List.sort
+    let formulasOf (parts: Map<string, byte[]>) (path: string) = [ for m in Regex.Matches(textOf parts path, "<c:f>([^<]*)</c:f>") -> m.Groups.[1].Value ]
+    let original = partsOf (bytesOf "real-world/chart-zoo.xlsx")
+    let imported = Bridge.Import.importWorkbook (loadBytes (bytesOf "real-world/chart-zoo.xlsx"))
+    let wb = imported.Context
+    let zooId = wb.SheetOrder.Head
+    let charts = chartPaths original
+    ok "the fixture's charts read the sheet Zoo" (charts.Length >= 6 && charts |> List.forall (fun path -> formulasOf original path |> List.exists (fun f -> f.StartsWith "Zoo!"))) (sprintf "%A" charts)
+    let unchanged = partsOf (export imported (modelsOf imported) (namesOf imported))
+    ok "not renamed: the chart parts go back byte for byte" (charts |> List.forall (fun path -> Map.tryFind path unchanged = Map.tryFind path original)) ""
+
+    // -- renamed (a name that has to be quoted, and escaped in XML)
+    let renamedBytes = export imported (modelsOf imported) [| "Animals & Co" |]
+    let renamed = partsOf renamedBytes
+    whole "a sheet with charts renamed" renamedBytes
+    let all = charts |> List.collect (formulasOf renamed)
+    ok "renamed: every series reads the sheet by its new name" (all.Length > 10 && all |> List.forall (fun f -> f.StartsWith "'Animals &amp; Co'!$")) (sprintf "%A" (all |> List.truncate 3))
+    eq "renamed: the references themselves stand" (all |> List.map (fun f -> f.Substring(f.IndexOf '!'))) (charts |> List.collect (formulasOf original) |> List.map (fun f -> f.Substring(f.IndexOf '!')))
+    let again = loadBytes renamedBytes
+    eq "renamed: read again - the sheet, with its charts" (again.Sheets |> List.map (fun sheet -> sheet.Name, sheet.Extras.Objects |> List.filter (fun item -> item.Kind = "chart") |> List.length)) [ "Animals & Co", charts.Length ]
+    // ... and renamed a second time, from the written file
+    let second = Bridge.Import.importWorkbook again
+    let twice = partsOf (export second (modelsOf second) [| "Beasts" |])
+    ok "renamed again from the written file" (chartPaths twice |> List.collect (formulasOf twice) |> List.forall (fun f -> f.StartsWith "Beasts!$")) (sprintf "%A" (chartPaths twice |> List.collect (formulasOf twice) |> List.truncate 3))
+
+    // (A name that reads as a cell address is quoted, as Excel writes it.)
+    let asCell = partsOf (export imported (modelsOf imported) [| "Zoo2" |])
+    ok "renamed to a name that reads as a cell: quoted" (chartPaths asCell |> List.collect (formulasOf asCell) |> List.forall (fun f -> f.StartsWith "'Zoo2'!$")) ""
+
+    // -- copied: the copy has chart parts of its own that read the copy
+    let copied = Wb.duplicateSheet zooId "copy1" "Zoo (2)" 1 wb
+    let sheetsOf (book: Wb.Workbook) = book.SheetOrder |> List.map (fun id -> (Map.find id book.Sheets).Model) |> List.toArray
+    let namesIn (book: Wb.Workbook) = book.SheetOrder |> List.map (fun id -> (Map.find id book.Sheets).Name) |> List.toArray
+    eq "copied: the copy's model has the kept objects" ((Map.find "copy1" copied.Sheets).Model.Drawings.Length) ((Map.find zooId wb.Sheets).Model.Drawings.Length)
+    let copiedBytes = export imported (sheetsOf copied) (namesIn copied)
+    let copiedParts = partsOf copiedBytes
+    whole "a sheet with charts copied" copiedBytes
+    let allCharts = chartPaths copiedParts
+    eq "copied: twice the chart parts" allCharts.Length (2 * charts.Length)
+    let copies = allCharts |> List.filter (fun path -> not (List.contains path charts))
+    ok "copied: the source's charts are as they were" (charts |> List.forall (fun path -> Map.tryFind path copiedParts = Map.tryFind path original)) ""
+    ok "copied: the copies read the copy" (copies |> List.collect (formulasOf copiedParts) |> List.forall (fun f -> f.StartsWith "'Zoo (2)'!$")) (sprintf "%A" (copies |> List.collect (formulasOf copiedParts) |> List.truncate 3))
+    ok "copied: each copy has its relationships part and a content type" (copies |> List.forall (fun path ->
+        let rels = path.Replace("xl/charts/", "xl/charts/_rels/") + ".rels"
+        Map.containsKey rels copiedParts && (textOf copiedParts "[Content_Types].xml").Contains (sprintf "PartName=\"/%s\"" path))) ""
+    let reread = loadBytes copiedBytes
+    eq "copied: read again - both sheets have the charts" (reread.Sheets |> List.map (fun sheet -> sheet.Name, sheet.Extras.Objects |> List.filter (fun item -> item.Kind = "chart") |> List.length)) [ "Zoo", charts.Length; "Zoo (2)", charts.Length ]
+    // The copy and the source are drawn from different drawing parts, each with relationships to its own charts.
+    let drawingRels = copiedParts |> Map.toList |> List.filter (fun (path, _) -> path.StartsWith "xl/drawings/_rels/") |> List.map (fun (path, _) -> [ for m in Regex.Matches(textOf copiedParts path, "Target=\"/?(?:\\.\\./)?(?:xl/)?charts/(chart\\d+\\.xml)\"") -> m.Groups.[1].Value ] |> List.sort)
+    ok "copied: two drawings, no chart shared between them" (drawingRels.Length = 2 && (Set.intersect (Set.ofList drawingRels.[0]) (Set.ofList drawingRels.[1])).IsEmpty && drawingRels |> List.forall (fun targets -> targets.Length = charts.Length)) (sprintf "%A" drawingRels)
+    // A copy of the copy, the source renamed, the first copy deleted.
+    let more = Wb.duplicateSheet "copy1" "copy2" "Third" 2 copied |> Wb.renameSheetEverywhere zooId "First"
+    let moreBytes = export imported (sheetsOf more) (namesIn more)
+    let moreParts = partsOf moreBytes
+    whole "a copy of a copy, the source renamed" moreBytes
+    eq "three sheets of charts" (chartPaths moreParts).Length (3 * charts.Length)
+    let byName = chartPaths moreParts |> List.collect (formulasOf moreParts) |> List.countBy (fun f -> f.Substring(0, f.IndexOf '!'))  |> List.sortBy fst
+    ok "each sheet's charts read that sheet" (byName |> List.map fst = [ "'Zoo (2)'"; "First"; "Third" ] && (byName |> List.map snd |> List.distinct).Length = 1) (sprintf "%A" byName)
+    let without = match Wb.removeSheet "copy1" more with Some (after, _) -> after | None -> more
+    let withoutBytes = export imported (sheetsOf without) (namesIn without)
+    whole "a copy removed" withoutBytes
+    eq "its chart parts are not written" (chartPaths (partsOf withoutBytes)).Length (2 * charts.Length)
+
+// A pivot cache that reads a range of a sheet, a chart on another sheet, a link into a sheet, a sparkline:
+// renamed and deleted sheets.
+do
+    let original = partsOf (bytesOf "real-world/dashboard-ecommerce-sales.xlsx")
+    let cachePath = "xl/pivotCache/pivotCacheDefinition1.xml"
+    let cacheXml = textOf original cachePath
+    let source = Regex.Match(cacheXml, "<worksheetSource[^>]*>").Value
+    let patched = original |> Map.add cachePath (Text.Encoding.UTF8.GetBytes (cacheXml.Replace(source, "<worksheetSource ref=\"A1:H200\" sheet=\"Data\"/>")))
+    let workbook = loadBytes (zipOf patched)
+    let imported = Bridge.Import.importWorkbook workbook
+    let names = namesOf imported
+    let renamedNames = names |> Array.map (fun name -> if name = "Data" then "Raw <Data>" else name)
+    let bytes = export imported (modelsOf imported) renamedNames
+    let parts = partsOf bytes
+    whole "a sheet a pivot cache reads renamed" bytes
+    eq "the pivot cache reads the sheet by its new name" (Regex.Match(textOf parts cachePath, "<worksheetSource[^>]*>").Value) "<worksheetSource ref=\"A1:H200\" sheet=\"Raw &lt;Data&gt;\"/>"
+    eq "... and is read back so" ((loadBytes bytes).Preserved.PivotCacheSources |> List.filter (fun (path, _, _) -> path = cachePath)) [ cachePath, "Raw <Data>", "A1:H200" ]
+    // The charts of the workbook that read the Data sheet follow too.
+    let chartFormulas (from: Map<string, byte[]>) = [ for KeyValue (path, _) in from do if Regex.IsMatch(path, "^xl/charts/chart(Ex)?\\d+\\.xml$") then for m in Regex.Matches(textOf from path, "<c(?:x)?:f[^>]*>([^<]*)</c(?:x)?:f>") -> m.Groups.[1].Value ]
+    let before = chartFormulas original
+    let after = chartFormulas parts
+    let readData (f: string) = f.StartsWith "Data!" || f.StartsWith "'Data'!"
+    ok "charts: no series names the old sheet" (not (after |> List.exists readData) && after.Length = before.Length) (sprintf "%A" (after |> List.filter readData |> List.truncate 3))
+    eq "charts: those that read it read the renamed sheet" (after |> List.filter (fun f -> f.StartsWith "'Raw &lt;Data&gt;'!") |> List.length) (before |> List.filter readData |> List.length)
+    eq "charts: the other series are untouched" (after |> List.filter (fun f -> not (f.StartsWith "'Raw &lt;Data&gt;'!"))) (before |> List.filter (fun f -> not (readData f)))
+
 printfn "xlsx-package: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

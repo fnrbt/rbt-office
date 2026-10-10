@@ -5901,10 +5901,11 @@ type Spreadsheet(container: Element) =
     /// of the sheet's scope and its tables are copied (a table under a new
     /// name, "Sales_2", which the copy's structured references follow), and
     /// so are its pictures, comments, formats, validations and conditional
-    /// formats. What an opened file only kept for the sheet - charts and
-    /// other drawing objects the editor does not model, pivot tables, named
-    /// cell styles - stays with the original: the copy has none of it. One
-    /// undo step. Throws when there is no such sheet.
+    /// formats, and the drawing objects an opened file only kept for the
+    /// sheet - charts, shapes: an export writes each copied chart as a chart
+    /// part of its own whose series read the copy. Pivot tables and named
+    /// cell styles stay with the original (the copy has a pivot table's
+    /// cells as values). One undo step. Throws when there is no such sheet.
     member _.DuplicateSheet(index: obj) : int =
         let memberName = "DuplicateSheet"
         let index = Host.intArg memberName "index" index

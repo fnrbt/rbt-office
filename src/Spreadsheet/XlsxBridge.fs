@@ -1188,8 +1188,10 @@ module Import =
                 readerSheets
                 |> Array.mapi (fun index sheet ->
                     let sheetTables, columns = tables wb sheet
+                    // (What names other sheets and so has to follow them: formulas, and links into the workbook.)
                     let hasFormulas =
                         not sheet.ConditionalFormats.IsEmpty || not sheet.DataValidations.IsEmpty
+                        || sheet.Hyperlinks |> List.exists (fun link -> link.IsInternal)
                         || sheet.Rows |> List.exists (fun row -> row.Cells |> List.exists readerCellIsFormula)
                     // (Read off the file once: the graph of a workbook is built more than once.)
                     let mutable formulasRead : (CellAddress * string) array option = None
@@ -1777,6 +1779,188 @@ module Export =
                                 Comment = info |> Option.bind (fun info -> info.Comment)
                                 Hidden = (match info with Some info -> info.Hidden | None -> false) } : XlsxWriter.XlsxDefinedName))
 
+    // ---- the sheet names inside kept parts ---------------------------------------------
+    // Parts the editor keeps without modelling them name sheets too: the series of a
+    // chart (`<c:f>Sales!$B$2:$B$9</c:f>`), the source of a pivot cache
+    // (`<worksheetSource sheet="Sales">`), the formulas of kept extensions
+    // (`<xm:f>`). They follow a sheet that was renamed, and say #REF! of one that
+    // was deleted, as the formulas of the cells do.
+
+    /// A sheet name as a reference writes it: quoted when it has to be.
+    let private sheetNameInReference (name: string) : string =
+        let plain =
+            name.Length > 0 && (Char.IsLetter name.[0] || name.[0] = '_')
+            && name |> Seq.forall (fun ch -> Char.IsLetterOrDigit ch || ch = '_' || ch = '.')
+        let letters = name |> Seq.takeWhile Char.IsLetter |> Seq.length
+        let likeCell =
+            (letters >= 1 && letters <= 3 && letters < name.Length && name.Substring letters |> Seq.forall Char.IsDigit)
+            || (name.Length >= 2 && "RrCc".IndexOf name.[0] >= 0 && name.Substring 1 |> Seq.forall (fun ch -> Char.IsDigit ch || ch = 'C' || ch = 'c'))
+        let word = name.Equals("TRUE", StringComparison.OrdinalIgnoreCase) || name.Equals("FALSE", StringComparison.OrdinalIgnoreCase)
+        if plain && not likeCell && not word then name else "'" + name.Replace("'", "''") + "'"
+
+    /// `formula` with the sheets its references and names are qualified by
+    /// renamed: `renames` gives the new name by the old one in upper case.
+    /// Text in double quotes is left alone, and so is a reference into
+    /// another workbook (`[1]Sheet1!A1`).
+    let private renameSheetQualifiers (renames: Collections.Generic.Dictionary<string, string>) (formula: string) : string =
+        if renames.Count = 0 || formula.IndexOf '!' < 0 then formula
+        else
+            let sb = Text.StringBuilder()
+            let renamed (name: string) =
+                match renames.TryGetValue (name.ToUpperInvariant()) with
+                | true, next -> next
+                | false, _ -> name
+            /// The qualifier as it is written for the names it holds (one, or the two ends of a 3-D reference).
+            let written (qualifier: string) (wasQuoted: bool) : string =
+                if qualifier.StartsWith "[" then (if wasQuoted then "'" + qualifier.Replace("'", "''") + "'" else qualifier)
+                else
+                    let cut = qualifier.IndexOf ':'
+                    if cut < 0 then
+                        let next = renamed qualifier
+                        if next = qualifier then (if wasQuoted then "'" + qualifier.Replace("'", "''") + "'" else qualifier)
+                        else sheetNameInReference next
+                    else
+                        let first, last = renamed (qualifier.Substring(0, cut)), renamed (qualifier.Substring(cut + 1))
+                        let both = first + ":" + last
+                        if first = qualifier.Substring(0, cut) && last = qualifier.Substring(cut + 1) then (if wasQuoted then "'" + qualifier.Replace("'", "''") + "'" else qualifier)
+                        elif sheetNameInReference first = first && sheetNameInReference last = last then both
+                        else "'" + both.Replace("'", "''") + "'"
+            let isNameChar (ch: char) = Char.IsLetterOrDigit ch || ch = '_' || ch = '.'
+            let mutable i = 0
+            while i < formula.Length do
+                let ch = formula.[i]
+                if ch = '"' then
+                    // A text: up to its closing quote ("" is a quote inside it).
+                    let mutable j = i + 1
+                    let mutable closed = false
+                    while not closed && j < formula.Length do
+                        if formula.[j] = '"' then
+                            if j + 1 < formula.Length && formula.[j + 1] = '"' then j <- j + 2
+                            else closed <- true
+                        else j <- j + 1
+                    let stop = min formula.Length (j + 1)
+                    sb.Append(formula.Substring(i, stop - i)) |> ignore
+                    i <- stop
+                elif ch = '\'' then
+                    let name = Text.StringBuilder()
+                    let mutable j = i + 1
+                    let mutable closed = false
+                    while not closed && j < formula.Length do
+                        if formula.[j] = '\'' then
+                            if j + 1 < formula.Length && formula.[j + 1] = '\'' then
+                                name.Append('\'') |> ignore
+                                j <- j + 2
+                            else closed <- true
+                        else
+                            name.Append(formula.[j]) |> ignore
+                            j <- j + 1
+                    let stop = min formula.Length (j + 1)
+                    if closed && stop < formula.Length && formula.[stop] = '!' then sb.Append(written (name.ToString()) true) |> ignore
+                    else sb.Append(formula.Substring(i, stop - i)) |> ignore
+                    i <- stop
+                elif Char.IsLetter ch || ch = '_' then
+                    let mutable j = i
+                    while j < formula.Length && isNameChar formula.[j] do j <- j + 1
+                    // (`Jan:Mar!B2`: the two ends of a 3-D reference.)
+                    let mutable stop = j
+                    if j < formula.Length && formula.[j] = ':' then
+                        let mutable k = j + 1
+                        while k < formula.Length && isNameChar formula.[k] do k <- k + 1
+                        if k > j + 1 && k < formula.Length && formula.[k] = '!' then stop <- k
+                    if stop < formula.Length && formula.[stop] = '!' then sb.Append(written (formula.Substring(i, stop - i)) false) |> ignore
+                    else
+                        stop <- j
+                        sb.Append(formula.Substring(i, stop - i)) |> ignore
+                    i <- stop
+                else
+                    sb.Append(ch) |> ignore
+                    i <- i + 1
+            sb.ToString()
+
+    let private xmlTextDecoded (text: string) =
+        if text.IndexOf '&' < 0 then text
+        else text.Replace("&lt;", "<").Replace("&gt;", ">").Replace("&quot;", "\"").Replace("&apos;", "'").Replace("&amp;", "&")
+    let private xmlTextEncoded (text: string) =
+        text.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;")
+
+    /// `xml` with the text of every element named one of `names` (as written,
+    /// with its prefix) passed through `change`.
+    let private mapElementTexts (names: string list) (change: string -> string) (xml: string) : string =
+        let mutable result = xml
+        for name in names do
+            let opening = "<" + name
+            let closing = "</" + name + ">"
+            if result.IndexOf opening >= 0 then
+                let sb = Text.StringBuilder()
+                let mutable at = 0
+                let mutable going = true
+                while going do
+                    let found = result.IndexOf (opening, at)
+                    if found < 0 then going <- false
+                    else
+                        let after = found + opening.Length
+                        let tagEnd = if after < result.Length then result.IndexOf ('>', after) else -1
+                        // (`<c:f>` and `<cx:f dir="row">`, not `<c:fmtId>`.)
+                        let isIt = after < result.Length && (result.[after] = '>' || result.[after] = ' ') && tagEnd >= 0 && result.[tagEnd - 1] <> '/'
+                        let close = if isIt then result.IndexOf (closing, tagEnd) else -1
+                        if close < 0 then
+                            sb.Append(result.Substring(at, after - at)) |> ignore
+                            at <- after
+                        else
+                            let inner = result.Substring(tagEnd + 1, close - tagEnd - 1)
+                            sb.Append(result.Substring(at, tagEnd + 1 - at)) |> ignore
+                            if inner.IndexOf '<' >= 0 then sb.Append(inner) |> ignore
+                            else
+                                let text = xmlTextDecoded inner
+                                let changed = change text
+                                sb.Append(if changed = text then inner else xmlTextEncoded changed) |> ignore
+                            at <- close
+                sb.Append(result.Substring at) |> ignore
+                result <- sb.ToString()
+        result
+
+    /// The formulas of a kept part or extension (`names`: the elements that
+    /// hold one) for the sheets as they are named now: `renames` by the old
+    /// name in upper case, `deleted` the sheets that are gone (`tabs`: the
+    /// file's sheets in tab order, for the 3-D references among them).
+    let private keptFormulasFollow (names: string list) (renames: Collections.Generic.Dictionary<string, string>) (deleted: string list) (tabs: string list) (xml: string) : string =
+        if renames.Count = 0 && deleted.IsEmpty then xml
+        else
+            mapElementTexts names (fun formula ->
+                let afterDeletes =
+                    deleted
+                    |> List.fold (fun (text: string) name ->
+                        if text.IndexOf(name, StringComparison.OrdinalIgnoreCase) < 0 then text
+                        else
+                            let rewritten = rewriteFormulaForSheets (DeleteSheetRefs (name, tabs)) ("=" + text)
+                            if rewritten.StartsWith "=" then rewritten.Substring 1 else rewritten) formula
+                renameSheetQualifiers renames afterDeletes) xml
+
+    /// A pivot cache definition with the sheet of its `<worksheetSource sheet>` renamed.
+    let private pivotCacheSheetFollows (renames: Collections.Generic.Dictionary<string, string>) (xml: string) : string =
+        let tagAt = xml.IndexOf "<worksheetSource"
+        let tagEnd = if tagAt < 0 then -1 else xml.IndexOf ('>', tagAt)
+        if tagEnd < 0 then xml
+        else
+            let tag = xml.Substring(tagAt, tagEnd - tagAt)
+            let key = " sheet=\""
+            let at = tag.IndexOf key
+            if at < 0 then xml
+            else
+                let start = at + key.Length
+                let close = tag.IndexOf ('"', start)
+                if close < 0 then xml
+                else
+                    let name = xmlTextDecoded (tag.Substring(start, close - start))
+                    match renames.TryGetValue (name.ToUpperInvariant()) with
+                    | true, next -> xml.Substring(0, tagAt + start) + (xmlTextEncoded next).Replace("\"", "&quot;") + xml.Substring(tagAt + close)
+                    | false, _ -> xml
+
+    let private isChartPart (path: string) =
+        path.StartsWith "xl/charts/" && path.EndsWith ".xml" && path.IndexOf "/_rels/" < 0
+    /// The elements of a chart part (chart, chartEx) that hold a formula.
+    let private chartFormulaElements = [ "c:f"; "cx:f"; "c15:f"; "c16r3:f" ]
+
     /// The editor's workbook in the writer's shape (see the module comment).
     let toWorkbookOut (input: ExportInput) : XlsxWriter.XlsxWorkbookOut =
         let original = input.Source |> Option.map (fun source -> XlsxWriter.packageFromReaderWorkbook source.Workbook)
@@ -1819,6 +2003,76 @@ module Export =
                         | _ -> None)
                 fun index -> if index < owners.Length then owners.[index] else None
             | _ -> fun _ -> None
+        // The sheets of the file as they are named now (by the old name, in upper
+        // case), and those that are gone: what kept parts say of them follows.
+        let fileTabs = match input.Source with Some source -> source.Workbook.Sheets |> List.map (fun sheet -> sheet.Name) | None -> []
+        let renames = Collections.Generic.Dictionary<string, string>()
+        let present = Collections.Generic.HashSet<string>()
+        for index in 0 .. input.Sheets.Length - 1 do
+            match sourceOf index with
+            | Some (readerSheet, _, _) ->
+                present.Add (readerSheet.Name.ToUpperInvariant()) |> ignore
+                if readerSheet.Name <> nameOf index then renames.[readerSheet.Name.ToUpperInvariant()] <- nameOf index
+            | None -> ()
+        let deletedTabs = fileTabs |> List.filter (fun name -> not (present.Contains (name.ToUpperInvariant())))
+        let withKeptFormulas (sheet: XlsxWriter.XlsxSheetOut) : XlsxWriter.XlsxSheetOut =
+            if (renames.Count = 0 && deletedTabs.IsEmpty) || sheet.Extras.KeptCellExtensions.IsEmpty then sheet
+            else
+                let extensions = sheet.Extras.KeptCellExtensions |> List.map (keptFormulasFollow [ "xm:f" ] renames deletedTabs fileTabs)
+                if extensions = sheet.Extras.KeptCellExtensions then sheet else { sheet with Extras = { sheet.Extras with KeptCellExtensions = extensions } }
+        // A copy of a sheet of the file (Workbook.duplicateSheet) has the kept
+        // drawing objects of its source - charts, shapes. The parts behind them
+        // are the file's: a chart part is copied under a name of its own (with
+        // its relationships part), its series reading the copy where they read
+        // the source; what the objects otherwise refer to (the pictures of a
+        // group, a chart's style and colours through its relationships) is shared.
+        let clonedParts = ResizeArray<string * byte[]>()
+        let clonedOverrides = ResizeArray<string * string>()
+        let takenPaths = Collections.Generic.HashSet<string>()
+        match input.Source with
+        | Some source -> for path, _ in source.Workbook.Preserved.Parts do takenPaths.Add path |> ignore
+        | None -> ()
+        let copyExtras (index: int) (model: SpreadsheetModel) : XlsxReader.SheetExtras option =
+            match input.Source, model.KeptFrom with
+            | Some source, Some origin when origin.Book = source.Id && origin.Sheet >= 0 && origin.Sheet < source.Workbook.Sheets.Length
+                                           && model.Drawings |> List.exists (fun drawing -> match drawing.Content with KeptObject _ -> true | Picture _ -> false) ->
+                let readerSheet = List.item origin.Sheet source.Workbook.Sheets
+                let xmlOfObjects = model.Drawings |> List.choose (fun drawing -> match drawing.Content with KeptObject (_, xml) -> Some xml | Picture _ -> None)
+                let refersTo (relId: string) = xmlOfObjects |> List.exists (fun xml -> xml.IndexOf ("\"" + relId + "\"") >= 0)
+                let partOf (path: string) = source.Workbook.Preserved.Parts |> List.tryFind (fun (kept, _) -> kept = path) |> Option.map snd
+                let ownRenames = Collections.Generic.Dictionary<string, string>(renames)
+                ownRenames.[readerSheet.Name.ToUpperInvariant()] <- nameOf index
+                let relationships =
+                    readerSheet.Extras.DrawingRelationships
+                    |> List.filter (fun (relId, _, _, _) -> refersTo relId)
+                    |> List.map (fun (relId, relType, target, isExternal) ->
+                        let path = target.TrimStart '/'
+                        match (if isExternal || not (isChartPart path) then None else partOf path) with
+                        | None -> relId, relType, target, isExternal
+                        | Some data ->
+                            // "xl/charts/chart3.xml" -> the first "xl/charts/chartN.xml" no part has.
+                            let stem = path.Substring(0, path.Length - 4)
+                            let mutable digits = 0
+                            while digits < stem.Length && Char.IsDigit stem.[stem.Length - 1 - digits] do digits <- digits + 1
+                            let prefix = stem.Substring(0, stem.Length - digits)
+                            let mutable number = 1
+                            while takenPaths.Contains (sprintf "%s%d.xml" prefix number) do number <- number + 1
+                            let copyPath = sprintf "%s%d.xml" prefix number
+                            takenPaths.Add copyPath |> ignore
+                            let text = Text.Encoding.UTF8.GetString data
+                            clonedParts.Add ((copyPath, Text.Encoding.UTF8.GetBytes (keptFormulasFollow chartFormulaElements ownRenames deletedTabs fileTabs text)))
+                            let relsOf (part: string) = let cut = part.LastIndexOf '/' in part.Substring(0, cut) + "/_rels/" + part.Substring(cut + 1) + ".rels"
+                            (match partOf (relsOf path) with
+                             | Some rels ->
+                                clonedParts.Add ((relsOf copyPath, rels))
+                                takenPaths.Add (relsOf copyPath) |> ignore
+                             | None -> ())
+                            (match source.Workbook.Preserved.Overrides |> List.tryFind (fun (name, _) -> name.TrimStart('/').Equals(path, StringComparison.OrdinalIgnoreCase)) with
+                             | Some (_, contentType) -> clonedOverrides.Add (("/" + copyPath, contentType))
+                             | None -> ())
+                            relId, relType, "/" + copyPath, false)
+                Some { XlsxReader.emptySheetExtras with DrawingRelationships = relationships }
+            | _ -> None
         let sheets =
             input.Sheets
             |> Array.mapi (fun index model ->
@@ -1828,10 +2082,15 @@ module Export =
                     // A sheet that was never converted goes back as the file had
                     // it (but for its name, visibility and tab colour, which
                     // change without converting it).
-                    if isDeferredSheet model then { outSheet with Name = name; State = stateOf index model; View = { outSheet.View with TabColor = model.TabColor } }
-                    else sourcedSheet cache dxfIndex name (stateOf index model) outSheet readerSheet (filterRowsAsHidden before) (filterRowsAsHidden model)
+                    if isDeferredSheet model then withKeptFormulas { outSheet with Name = name; State = stateOf index model; View = { outSheet.View with TabColor = model.TabColor } }
+                    else withKeptFormulas (sourcedSheet cache dxfIndex name (stateOf index model) outSheet readerSheet (filterRowsAsHidden before) (filterRowsAsHidden model))
                 | None ->
-                    modelSheet cache dxfIndex name (stateOf index model) (filterRowsAsHidden model))
+                    let written = modelSheet cache dxfIndex name (stateOf index model) (filterRowsAsHidden model)
+                    match copyExtras index model with
+                    | Some kept ->
+                        let extras = extrasOfModel kept None model
+                        { written with Extras = { written.Extras with Objects = extras.Objects; Images = extras.Images; DrawingRelationships = extras.DrawingRelationships } }
+                    | None -> written)
             |> Array.toList
         { Sheets = sheets
           ActiveSheetIndex = max 0 (min (input.Sheets.Length - 1) input.ActiveSheetIndex)
@@ -1881,6 +2140,31 @@ module Export =
                             | None -> false))
                 let preserved =
                     if chainStands then source.Workbook.Preserved else { source.Workbook.Preserved with CalcChain = None }
+                // What the kept parts say of sheets that were renamed or deleted; the parts of copied charts.
+                let preserved =
+                    if renames.Count = 0 && deletedTabs.IsEmpty && clonedParts.Count = 0 then preserved
+                    else
+                        let cachePaths = preserved.PivotCacheSources |> List.map (fun (path, _, _) -> path) |> Set.ofList
+                        let follows (path: string) (data: byte[]) : byte[] =
+                            if renames.Count = 0 && deletedTabs.IsEmpty then data
+                            elif isChartPart path then
+                                let text = Text.Encoding.UTF8.GetString data
+                                let rewritten = keptFormulasFollow chartFormulaElements renames deletedTabs fileTabs text
+                                if rewritten = text then data else Text.Encoding.UTF8.GetBytes rewritten
+                            elif Set.contains path cachePaths then
+                                let text = Text.Encoding.UTF8.GetString data
+                                let rewritten = pivotCacheSheetFollows renames text
+                                if rewritten = text then data else Text.Encoding.UTF8.GetBytes rewritten
+                            else data
+                        { preserved with
+                            Parts = (preserved.Parts |> List.map (fun (path, data) -> path, follows path data)) @ List.ofSeq clonedParts
+                            Overrides = preserved.Overrides @ List.ofSeq clonedOverrides
+                            PivotCacheSources =
+                                preserved.PivotCacheSources
+                                |> List.map (fun (path, sheet, range) ->
+                                    match renames.TryGetValue (sheet.ToUpperInvariant()) with
+                                    | true, next -> path, next, range
+                                    | false, _ -> path, sheet, range) }
                 if moved.IsEmpty then preserved
                 else
                     let cachePaths = preserved.PivotCacheSources |> List.map (fun (path, _, _) -> path) |> Set.ofList

@@ -783,6 +783,8 @@ type SheetRemoval = {
     /// Conditional formats and validations of other sheets whose formulas referred to it: (sheet, before, after).
     Formats: (SheetId * ConditionalFormatRange list * ConditionalFormatRange list) list
     Validations: (SheetId * ValidationRange list * ValidationRange list) list
+    /// Links of other sheets that led into it: (sheet, before, after).
+    Hyperlinks: (SheetId * SheetHyperlink list * SheetHyperlink list) list
     /// Defined names that referred to it: (key, before, after).
     Names: ((SheetId option * string) * string * string) list
     /// The names of its own scope, gone with it: (key, refers-to, spelling and comment).
@@ -833,11 +835,27 @@ let removeSheet (sheetId: SheetId) (workbook: Workbook) : (Workbook * SheetRemov
         let cells = ResizeArray<SheetId * CellAddress * CellData * CellData>()
         let formats = ResizeArray<SheetId * ConditionalFormatRange list * ConditionalFormatRange list>()
         let validations = ResizeArray<SheetId * ValidationRange list * ValidationRange list>()
+        let hyperlinks = ResizeArray<SheetId * SheetHyperlink list * SheetHyperlink list>()
+        // A link into the deleted sheet leads nowhere: its target says #REF!, as in Excel.
+        let rewriteLink (link: SheetHyperlink) =
+            if not link.IsInternal then link
+            else
+                let rewritten = rewrite ("=" + link.Target)
+                let target = if rewritten.StartsWith "=" then rewritten.Substring 1 else rewritten
+                if target = link.Target then link else { link with Target = target }
         let sheets =
             workbook.Sheets
             |> Map.remove sheetId
             |> Map.map (fun id other ->
                 let model = mapModelFormulas rewrite other.Model
+                let model =
+                    if model.Hyperlinks.IsEmpty then model
+                    else
+                        let links = model.Hyperlinks |> List.map rewriteLink
+                        if links = model.Hyperlinks then model
+                        else
+                            hyperlinks.Add((id, model.Hyperlinks, links))
+                            { model with Hyperlinks = links }
                 if obj.ReferenceEquals(model, other.Model) then other
                 else
                     if not (obj.ReferenceEquals(model.Cells, other.Model.Cells)) then
@@ -877,6 +895,7 @@ let removeSheet (sheetId: SheetId) (workbook: Workbook) : (Workbook * SheetRemov
                 Cells = List.ofSeq cells
                 Formats = List.ofSeq formats
                 Validations = List.ofSeq validations
+                Hyperlinks = List.ofSeq hyperlinks
                 Names = List.ofSeq nameChanges
                 ScopedNames = scoped |> List.map (fun (key, refersTo) -> key, refersTo, Map.tryFind key workbook.NameInfo)
                 Tables = tables })
@@ -906,6 +925,8 @@ let restoreSheet (removal: SheetRemoval) (workbook: Workbook) : Workbook =
                     if owner = id && model.ConditionalFormats = after then model <- { model with ConditionalFormats = before }
                 for (owner, before, after) in removal.Validations do
                     if owner = id && model.Validations = after then model <- { model with Validations = before }
+                for (owner, before, after) in removal.Hyperlinks do
+                    if owner = id && model.Hyperlinks = after then model <- { model with Hyperlinks = before }
                 if obj.ReferenceEquals(model, sheet.Model) then sheet else { sheet with Model = model })
             |> Map.add sheetId removal.Sheet
         let order =
@@ -982,9 +1003,11 @@ let private copyTableName (name: string) (taken: string -> bool) : string =
 /// position `index` and made active. Its formulas that named the source
 /// sheet name the copy; the names of the source's scope are copied to the
 /// copy's; its tables are copied under new names ("Sales_2"), which the
-/// copy's structured references follow. Pictures are copied. What the editor
-/// only keeps of a file for the source (charts and other kept drawing
-/// objects, pivot tables) stays with the source: the copy has none.
+/// copy's structured references follow. Pictures are copied, and so are the
+/// drawing objects the editor only keeps of a file - charts, shapes: written
+/// to XLSX, a copied chart is a chart part of its own whose series read the
+/// copy where the source's read the source. Pivot tables stay with the
+/// source: the copy has their cells as values, not the pivot tables.
 let duplicateSheet (sourceId: SheetId) (newId: SheetId) (newName: string) (index: int) (workbook: Workbook) : Workbook =
     match Map.tryFind sourceId workbook.Sheets with
     | None -> workbook
@@ -1006,9 +1029,11 @@ let duplicateSheet (sourceId: SheetId) (newId: SheetId) (newName: string) (index
         let model =
             { mapModelFormulas rewrite sourceModel with
                 Tables = sourceModel.Tables |> List.map (fun table -> { table with Name = renamedTable table.Name })
-                Drawings = sourceModel.Drawings |> List.filter (fun drawing -> match drawing.Content with Picture _ -> true | KeptObject _ -> false)
+                // (The kept drawing objects - charts, shapes - come along: an export copies
+                // the chart parts behind them. Pivot tables stay with the source.)
                 KeptRanges = []
                 SourceSheet = None
+                KeptFrom = (match sourceModel.SourceSheet with Some origin -> Some origin | None -> sourceModel.KeptFrom)
                 Deferred = None
                 History = emptyHistory
                 Clipboard = None
