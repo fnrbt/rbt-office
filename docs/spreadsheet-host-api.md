@@ -756,6 +756,28 @@ Nothing to call for the recalculation itself: every edit recalculates what it ha
 
 ## XLSX: what is written how
 
+### Parts the editor does not model
+Nothing of an opened package is dropped on a save. Besides the parts made from the model (workbook, styles, shared strings, the worksheets,
+comments, threaded comments and persons) every part goes back **as it was read, under its own name, with its relationship and content type**:
+- of the workbook: pivot and slicer caches, external links, connections, cell metadata (`xl/metadata`) and rich values, the Power Pivot data
+  model (`xl/model/item.data`), custom XML, XML maps, and any other relationship type that is not a sheet, the styles, the shared strings,
+  the theme (kept), the calculation chain, the persons or the macros;
+- of the package: document properties, the thumbnail, sensitivity labels (`docMetadata`);
+- of a sheet: pivot tables, slicers, timelines, printer settings, and what the elements `customProperties`, `legacyDrawing`,
+  `legacyDrawingHF`, `drawingHF`, `picture`, `oleObjects`, `controls`, `webPublishItems` name (form controls and camera pictures with their
+  VML drawing and images, embedded objects, header pictures); those elements are written back as they were;
+- **a sheet's drawing part** (`xl/drawings/drawingN.xml`, with its relationships, charts and media) while the sheet's pictures and objects are
+  the file's: byte for byte, under its name. Once a picture is added, moved or removed, or rows / columns move an anchor, the drawing is
+  written from the model as `xl/drawings/sheetDrawingN.xml`;
+- **a table part** (`xl/tables/tableN.xml`, with its query table) while the table's range, columns, header / total rows and style are what
+  the part says. (A table written from the model loses what the model does not hold: revision ids, per-column formats, calculated-column
+  formulas, the query-table binding.) New table parts take numbers and ids no kept part uses.
+- A VML drawing that holds nothing but the boxes of the sheet's comments goes back while the comments are the file's and is made anew when
+  they change; one that also holds form controls always goes back as it was (a comment added to such a sheet gets no box of its own).
+- Not carried: **chart sheets** (they are not sheets the editor has; the part and its drawing are dropped), and `xl/calcChain.xml` once a
+  formula cell was added, removed or moved (Excel rebuilds it).
+`tests/office-formats/xlsx-parts.fsx` asserts this for every workbook under `tests/real-world` and `tests/test-documents-excel`.
+
 ### Dynamic arrays and legacy array formulas
 
 - A formula that spills (`=SEQUENCE(3)`, `=SORT(A1:A9)`, `=A1:A3*2`) is written as Excel writes a dynamic array: `<c r="A1" cm="1"><f t="array"

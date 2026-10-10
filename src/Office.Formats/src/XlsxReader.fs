@@ -792,6 +792,18 @@ type SheetExtras = {
     /// `<ext>` elements of the sheet's `<extLst>` that refer to those parts
     /// (the slicer list), with the namespace declarations they need.
     KeptExtensions: string list
+    /// Elements of the sheet that name such parts (`keptSheetElementNames`:
+    /// legacyDrawing with form controls, oleObjects, controls, the header
+    /// pictures, custom properties ...) as (name, XML), written back as they are.
+    KeptElements: (string * string) list
+    /// The sheet's drawing part in the file. While the sheet's pictures and
+    /// objects are the file's, that part goes back as it is, under its name.
+    DrawingPart: string option
+    /// The sheet's table parts in the file: (table name, part). A table that
+    /// is as the file had it goes back as that part (with what the model
+    /// does not hold of it: revision ids, per-column formats and formulas,
+    /// its query table).
+    TableParts: (string * string) list
     /// The sheet's pivot tables: part path and the range of `<location ref>`.
     PivotLocations: (string * string) list
     /// What-if data tables, in file order.
@@ -820,7 +832,7 @@ type SheetExtras = {
 
 let emptySheetExtras =
     { Images = []; Objects = []; ThreadedComments = []; DrawingRelationships = []; Format = None; Columns = []; ColumnStyles = []
-      SheetId = None; KeptRelationships = []; KeptExtensions = []; PivotLocations = []; DataTables = []
+      SheetId = None; KeptRelationships = []; KeptExtensions = []; KeptElements = []; DrawingPart = None; TableParts = []; PivotLocations = []; DataTables = []
       KeptCellExtensions = []; PrinterSettingsRelId = None; RowAxis = []; ColumnAxis = []; AutoFilter = None; ArrayFormulas = [] }
 
 /// A named cell style (cellStyles / cellStyleXfs of styles.xml), with the
@@ -4668,17 +4680,64 @@ type private WorkbookHeader = {
     CalcIteration: (int * float) option
 }
 
-/// Relationship types of the workbook part whose targets are kept as they are.
+/// Relationship types of the workbook part whose targets are kept as they
+/// are: every one but those of the parts a writer makes from the model (the
+/// sheets, styles, shared strings, the theme, the calculation chain, the
+/// persons of threaded comments, the macros). So pivot and slicer caches,
+/// external links, connections, cell metadata and rich values, the Power
+/// Pivot data model, custom XML, XML maps ... all go back as they were.
 let private isKeptWorkbookRelType (relType: string) =
-    [ "/pivotCacheDefinition"; "/slicerCache"; "/externalLink"; "/timelineCache"; "/connections"
-      // Cell and value metadata, and the rich values the value metadata names.
-      "/sheetMetadata"; "/rdRichValue"; "/rdRichValueStructure"; "/rdRichValueTypes"; "/richValueRel"
-      "/rdArray"; "/richStyles"; "/rdSupportingPropertyBag"; "/rdSupportingPropertyBagStructure"; "/rdRichValueWebImage" ]
-    |> List.exists (fun suffix -> relType.EndsWith suffix)
+    not ([ "/worksheet"; "/chartsheet"; "/dialogsheet"; "/macrosheet"; "/xlMacrosheet"; "/xlIntlMacrosheet"; "/styles"; "/sharedStrings"; "/theme"
+           "/calcChain"; "/person"; "/vbaProject"; "/officeDocument" ]
+         |> List.exists (fun suffix -> relType.EndsWith suffix))
 
-/// Relationship types of a sheet part whose targets are kept as they are.
+/// Relationship types of a sheet part whose targets are kept as they are:
+/// every one but those of what the model holds (the drawing, tables,
+/// comments, threaded comments, hyperlinks). A VML drawing is kept when the
+/// sheet names it (see `keptSheetElements`): it may hold form controls.
 let private isKeptSheetRelType (relType: string) =
-    [ "/pivotTable"; "/slicer"; "/timeline"; "/printerSettings" ] |> List.exists (fun suffix -> relType.EndsWith suffix)
+    not ([ "/drawing"; "/table"; "/comments"; "/threadedComment"; "/hyperlink"; "/vmlDrawing" ] |> List.exists (fun suffix -> relType.EndsWith suffix))
+
+/// The elements of a worksheet that only name parts the model does not hold,
+/// in the order CT_Worksheet has them.
+let keptSheetElementNames = [ "customProperties"; "legacyDrawing"; "legacyDrawingHF"; "drawingHF"; "picture"; "oleObjects"; "controls"; "webPublishItems" ]
+
+/// Those elements of a sheet as (name, XML with the namespace declarations
+/// it needs). Read from the text of the part, after the rows: both sheet
+/// parsers leave them alone.
+let private keptSheetElements (sheetXml: string) : (string * string) list =
+    let rowsEnd = max (sheetXml.LastIndexOf "</sheetData>") (sheetXml.LastIndexOf "<sheetData/>")
+    let from = if rowsEnd < 0 then 0 else rowsEnd
+    let found =
+        keptSheetElementNames
+        |> List.choose (fun name ->
+            let openAt = sheetXml.IndexOf ("<" + name, from)
+            // (Not a longer name that begins the same: legacyDrawing / legacyDrawingHF.)
+            let rec startOf (at: int) =
+                if at < 0 then -1
+                else
+                    let next = at + name.Length + 1
+                    if next < sheetXml.Length && (sheetXml.[next] = ' ' || sheetXml.[next] = '>' || sheetXml.[next] = '/' || sheetXml.[next] = '\r' || sheetXml.[next] = '\n' || sheetXml.[next] = '\t') then at
+                    else startOf (sheetXml.IndexOf ("<" + name, next))
+            let start = startOf openAt
+            if start < 0 then None
+            else
+                let tagEnd = sheetXml.IndexOf ('>', start)
+                if tagEnd < 0 then None
+                elif sheetXml.[tagEnd - 1] = '/' then Some (name, sheetXml.Substring(start, tagEnd + 1 - start))
+                else
+                    let close = "</" + name + ">"
+                    let closeAt = sheetXml.IndexOf (close, tagEnd)
+                    if closeAt < 0 then None else Some (name, sheetXml.Substring(start, closeAt + close.Length - start)))
+    if found.IsEmpty then []
+    else
+        try
+            let rootAt = sheetXml.IndexOf "<worksheet"
+            let rootEnd = sheetXml.IndexOf ('>', rootAt)
+            match XmlDsl.parse (sheetXml.Substring(rootAt, rootEnd - rootAt).TrimEnd('/') + "/>") with
+            | XmlDsl.Element (_, rootAttributes, _) -> found |> List.map (fun (name, xml) -> name, DocxReader.selfContainedXml rootAttributes xml)
+            | _ -> []
+        with _ -> []
 
 let private readWorkbookHeader (source: PartSource) (workbookPath: string) : WorkbookHeader option =
     source.Text workbookPath
@@ -5251,7 +5310,18 @@ let private buildWorkbook (scanRows: bool) (source: PartSource) (header: Workboo
                     sheetRels
                     |> List.filter (fun r -> r.Type.EndsWith suffix && isInternal r)
                     |> List.choose (fun r -> source.Text (relTargetPath sheetPath r))
-                let tables = partsOfType "/table" |> List.choose Xlsx.parseTable
+                let tablesWithParts =
+                    sheetRels
+                    |> List.filter (fun r -> r.Type.EndsWith "/table" && isInternal r)
+                    |> List.choose (fun r ->
+                        let path = relTargetPath sheetPath r
+                        source.Text path |> Option.bind Xlsx.parseTable |> Option.map (fun table -> table, path))
+                let tables = tablesWithParts |> List.map fst
+                let drawingPart =
+                    sheetRels
+                    |> List.tryFind (fun r -> r.Type.EndsWith "/drawing" && isInternal r)
+                    |> Option.map (relTargetPath sheetPath)
+                    |> Option.filter source.Exists
                 let comments = partsOfType "/comments" |> List.collect CellComments.parseComments
                 let pivots =
                     partsOfType "/pivotTable"
@@ -5265,10 +5335,40 @@ let private buildWorkbook (scanRows: bool) (source: PartSource) (header: Workboo
                 let threads =
                     partsOfType "/threadedComment"
                     |> List.collect (fun threadXml -> try readThreadedComments persons threadXml with _ -> [])
-                // Pivot tables, slicers and timelines: their parts are kept as they are.
+                // What the model does not hold (pivot tables, slicers, timelines,
+                // printer settings, controls, embedded objects ...): the parts
+                // are kept as they are, with the elements that name them.
+                let keptElements =
+                    let all = try keptSheetElements xml with _ -> []
+                    let known = sheetRels |> List.map (fun r -> r.Id) |> Set.ofList
+                    all |> List.filter (fun (_, element) -> DocxReader.relationshipIdsInXml element |> List.forall (fun id -> Set.contains id known))
+                // A VML drawing that holds nothing but the boxes of the sheet's
+                // comments is only good while the comments stay as they are.
+                let keptElements =
+                    keptElements
+                    |> List.map (fun (name, element) ->
+                        if name <> "legacyDrawing" then name, element
+                        else
+                            let vml =
+                                DocxReader.relationshipIdsInXml element
+                                |> List.tryPick (fun id -> sheetRels |> List.tryFind (fun r -> r.Id = id && isInternal r))
+                                |> Option.bind (fun r -> source.Text (relTargetPath sheetPath r))
+                                |> Option.defaultValue ""
+                            let count (needle: string) =
+                                let mutable n = 0
+                                let mutable at = vml.IndexOf needle
+                                while at >= 0 do
+                                    n <- n + 1
+                                    at <- vml.IndexOf (needle, at + needle.Length)
+                                n
+                            let shapes = count "ClientData"
+                            let notes = count "ObjectType=\"Note\""
+                            // (Each shape has an opening and a closing ClientData tag.)
+                            if not comments.IsEmpty && shapes <= notes * 2 then "legacyDrawingNotes", element else name, element)
+                let namedIds = keptElements |> List.collect (fun (_, element) -> DocxReader.relationshipIdsInXml element) |> Set.ofList
                 let keptRels =
                     sheetRels
-                    |> List.filter (fun r -> isKeptSheetRelType r.Type)
+                    |> List.filter (fun r -> isKeptSheetRelType r.Type || (r.Type.EndsWith "/vmlDrawing" && Set.contains r.Id namedIds))
                     |> List.map (fun r -> r.Id, r.Type, (if isInternal r then "/" + relTargetPath sheetPath r else r.Target), not (isInternal r))
                 let keptIds = keptRels |> List.map (fun (id, _, _, _) -> id) |> Set.ofList
                 let allExtensions =
@@ -5288,6 +5388,9 @@ let private buildWorkbook (scanRows: bool) (source: PartSource) (header: Workboo
                         SheetId = tryParseInt info.SheetId
                         KeptRelationships = keptRels
                         KeptExtensions = keptExtensions
+                        KeptElements = keptElements
+                        DrawingPart = drawingPart
+                        TableParts = tablesWithParts |> List.map (fun (table, path) -> table.Name, path)
                         KeptCellExtensions = cellExtensions
                         AutoFilter = (try sheetAutoFilterOf xml with _ -> None)
                         PrinterSettingsRelId = pageSetupRelId xml |> Option.filter (fun id -> Set.contains id keptIds)
@@ -5334,6 +5437,8 @@ let private buildWorkbook (scanRows: bool) (source: PartSource) (header: Workboo
          |> List.collect (fun sheet -> sheet.Extras.DrawingRelationships)
          |> List.choose (fun (_, _, target, isExternal) -> if isExternal || target.StartsWith "#" then None else Some (ZipInterop.normalizePath target)))
         @ (if source.Exists header.ThemePath then [ header.ThemePath ] else [])
+        // The drawing and table parts themselves, for the sheets that leave them as they are.
+        @ (worksheets |> List.collect (fun sheet -> Option.toList sheet.Extras.DrawingPart @ List.map snd sheet.Extras.TableParts))
         // Pivot tables and slicers of the sheets, and the workbook's pivot
         // caches, slicer caches and external links.
         @ ((worksheets |> List.collect (fun sheet -> sheet.Extras.KeptRelationships)) @ header.KeptRels
@@ -5343,7 +5448,8 @@ let private buildWorkbook (scanRows: bool) (source: PartSource) (header: Workboo
         (try source.Text "_rels/.rels" |> Option.map (XmlDsl.parse >> parseRelationships) |> Option.defaultValue [] with _ -> [])
         |> List.filter (fun r ->
             isInternal r
-            && (r.Type.EndsWith "/core-properties" || r.Type.EndsWith "/extended-properties" || r.Type.EndsWith "/custom-properties")
+            // (Every part of the package but the workbook: the document properties, a thumbnail, sensitivity labels ...)
+            && not (r.Type.EndsWith "/officeDocument")
             && source.Exists (ZipInterop.resolveTarget "" r.Target))
         |> List.map (fun r -> r.Id, r.Type, "/" + ZipInterop.resolveTarget "" r.Target, false)
     let calcChain =

@@ -504,7 +504,10 @@ match XlsxReader.loadBytesNative extrasPackage with
           [ "Normal", None, true, Some false, ""; "Weighty", Some "0.000 \"kg\"", true, Some true, "<alignment horizontal=\"center\"/>" ])
        (sprintf "%A" wb1.Preserved.NamedStyles)
     ok "theme-and-chart-parts-kept"
-       ((wb1.Preserved.Parts |> List.map fst) = [ "xl/charts/chart1.xml"; "xl/theme/theme1.xml" ] && wb1.Preserved.ThemePath = Some "xl/theme/theme1.xml")
+       // (... and the sheet's drawing part itself, with its relationships and picture: it goes back as it is while the drawing is untouched.)
+       ((wb1.Preserved.Parts |> List.map fst |> List.filter (fun path -> not (path.StartsWith "xl/drawings/" || path.StartsWith "xl/media/"))) = [ "xl/charts/chart1.xml"; "xl/theme/theme1.xml" ]
+        && (wb1.Preserved.Parts |> List.map fst |> List.filter (fun path -> path.StartsWith "xl/drawings/" && not (path.Contains "_rels"))).Length = 1
+        && wb1.Preserved.ThemePath = Some "xl/theme/theme1.xml")
        (sprintf "%A" (wb1.Preserved.Parts |> List.map fst))
     let savedBytes = XlsxWriter.packageFromReaderWorkbook wb1 |> XlsxWriter.writeWorkbookPackageBytes
     match XlsxReader.loadBytesNative savedBytes with

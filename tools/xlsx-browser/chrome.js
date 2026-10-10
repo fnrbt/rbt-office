@@ -382,3 +382,46 @@ checks['chrome-frozen-drawings'] = async () => {
     finally { close(); }
     return lines;
 };
+
+// Nothing of the opened package is lost on a save: every part the editor does not model goes back as it was.
+checks['export-keeps-parts'] = async () => {
+    const { lines, check } = makeLog();
+    const { bytesOf } = await import('/component.js');
+    const base64 = async (zip, name) => zip.files[name].async('base64');
+    const entries = (zip) => Object.keys(zip.files).filter((name) => !zip.files[name].dir);
+    // Parts the writer makes from the model (their text may differ); every other part is the file's, byte for byte.
+    const rewritten = (name) => /^(\[Content_Types\]\.xml|_rels\/\.rels|xl\/workbook\.xml|xl\/_rels\/workbook\.xml\.rels|xl\/styles\.xml|xl\/sharedStrings\.xml|xl\/metadata\.xml|xl\/worksheets\/|xl\/comments|xl\/threadedComments\/|xl\/persons\/)/.test(name);
+    for (const file of ['tests/real-world/dashboard-ecommerce-sales.xlsx', 'tests/test-documents-excel/pandas-test_decimal.xlsx', 'tests/test-documents-excel/poi-55864.xlsx', 'tests/test-documents-excel/phpsp-27template.xlsx', 'tests/real-world/milk-street-office.xlsx']) {
+        const short = file.split('/').pop();
+        const { grid, close } = mountGrid();
+        try {
+            const original = await bytesOf(file);
+            const before = await window.JSZip.loadAsync(original);
+            await grid.ImportXlsx(original.slice());
+            const compare = async (label, bytes, skip = () => false) => {
+                const after = await window.JSZip.loadAsync(bytes);
+                const names = entries(before).filter((name) => name !== 'xl/calcChain.xml' && !skip(name));
+                check(`${short}: ${label}: every part is there`, names.filter((name) => !after.files[name]), []);
+                const changed = [];
+                for (const name of names) if (!rewritten(name) && after.files[name] && await base64(before, name) !== await base64(after, name)) changed.push(name);
+                check(`${short}: ${label}: what is not made from the model is byte for byte the file's`, changed, []);
+                return after;
+            };
+            const unedited = await compare('unedited', await grid.ExportXlsx());
+            if (short === 'dashboard-ecommerce-sales.xlsx') {
+                const rels = await unedited.files['xl/_rels/workbook.xml.rels'].async('string'), types = await unedited.files['[Content_Types].xml'].async('string');
+                check('the data model and the metadata are related and typed', [/Target="(\/xl\/)?model\/item\.data"/.test(rels), /Target="(\/xl\/)?metadata"/.test(rels), /PartName="\/xl\/model\/item\.data"|Extension="data"/.test(types), /PartName="\/xl\/metadata"/.test(types)], [true, true, true, true]);
+                const sheet3 = await unedited.files['xl/worksheets/sheet3.xml'].async('string'), sheet3Rels = await unedited.files['xl/worksheets/_rels/sheet3.xml.rels'].async('string');
+                const legacy = /<legacyDrawing r:id="([^"]+)"/.exec(sheet3);
+                check('sheet3 names its VML drawing', [!!legacy, legacy && new RegExp(`Id="${legacy[1]}"[^>]*vmlDrawing1\\.vml|vmlDrawing1\\.vml"[^>]*Id="${legacy[1]}"`).test(sheet3Rels)], [true, true]);
+                check('the drawings keep their names', entries(unedited).filter((name) => /sheetDrawing/.test(name)), []);
+            }
+            // An edit of a cell on every sheet: still nothing lost (drawings and tables of the edited sheets included).
+            const sheets = grid.GetSheets();
+            for (let index = 0; index < sheets.length; index++) { if (sheets[index].visibility && sheets[index].visibility !== 'visible') continue; grid.SwitchSheet(index); const used = grid.GetUsedRange(); grid.SetCell((used ? used.lastRow : 0) + 3, 0, 'edited'); }
+            await compare('a cell edited on each sheet', await grid.ExportXlsx());
+        } catch (e) { lines.push(`FAIL ${short} threw: ` + String(e && e.stack || e)); }
+        finally { close(); }
+    }
+    return lines;
+};

@@ -415,7 +415,10 @@ let private extrasOfModel (original: XlsxReader.SheetExtras) (before: Spreadshee
                     | Some { Value = CellValue.Formula _ } ->
                         yield formatCellRef anchor.Row anchor.Col, rangeText anchor corner, true
                     | _ -> () ]
-    { original with Images = images; Objects = objects; ThreadedComments = threads; RowAxis = rowAxis; ColumnAxis = columnAxis; ArrayFormulas = arrayFormulas }
+    { original with
+        Images = images; Objects = objects; ThreadedComments = threads; RowAxis = rowAxis; ColumnAxis = columnAxis; ArrayFormulas = arrayFormulas
+        // (The file's drawing part goes back as it is only with the file's pictures and objects.)
+        DrawingPart = if drawingsUnchanged then original.DrawingPart else None }
 
 module Import =
 
@@ -1778,6 +1781,31 @@ module Export =
                 let extras =
                     if unchanged (fun m -> m.DataTables) then extras
                     else { extras with DataTables = dataTables model }
+                // A table part of the file goes back as it is while the table
+                // is what the part says: its range, its columns, its rows.
+                let extras =
+                    if extras.TableParts.IsEmpty then extras
+                    else
+                        let same (name: string) =
+                            match original.Tables |> List.tryFind (fun t -> t.Name = name), fromModel.Tables |> List.tryFind (fun t -> t.Name = name) with
+                            | Some a, Some b ->
+                                a.StartRow = b.StartRow && a.StartCol = b.StartCol && a.EndRow = b.EndRow && a.EndCol = b.EndCol && a.Columns = b.Columns
+                                && a.HeaderRowCount = b.HeaderRowCount && a.TotalsRowCount = b.TotalsRowCount && a.Style = b.Style && a.AutoFilter.IsSome = b.AutoFilter.IsSome
+                            | _ -> false
+                        let kept = extras.TableParts |> List.filter (fun (name, _) -> same name)
+                        if kept.Length = extras.TableParts.Length then extras else { extras with TableParts = kept }
+                // The file's VML drawing of the comment boxes stands only while
+                // the comments are the file's: with other comments it is made anew.
+                let extras =
+                    if not (extras.KeptElements |> List.exists (fun (elementName, _) -> elementName = "legacyDrawingNotes")) then extras
+                    else
+                        let commentsOf (m: SpreadsheetModel) = m.Cells |> Map.toList |> List.choose (fun (addr, data) -> data.Comment |> Option.map (fun comment -> addr, comment))
+                        if sameRef before.Cells model.Cells || commentsOf before = commentsOf model then extras
+                        else
+                            let dropped = extras.KeptElements |> List.filter (fun (elementName, _) -> elementName = "legacyDrawingNotes") |> List.collect (fun (_, xml) -> DocxReader.relationshipIdsInXml xml) |> Set.ofList
+                            { extras with
+                                KeptElements = extras.KeptElements |> List.filter (fun (elementName, _) -> elementName <> "legacyDrawingNotes")
+                                KeptRelationships = extras.KeptRelationships |> List.filter (fun (id, _, _, _) -> not (Set.contains id dropped)) }
                 // An AutoFilter that was not touched goes back as the file states it.
                 let extras =
                     if before.AutoFilter = model.AutoFilter && unchanged (fun m -> m.Filters) then extras

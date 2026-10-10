@@ -1669,6 +1669,46 @@ let private tablePartsXml count =
 let private hasDrawing (sheet: XlsxSheetOut) =
     not sheet.Extras.Images.IsEmpty || not sheet.Extras.Objects.IsEmpty
 
+/// The file's own drawing part of a sheet, when it goes back as it is (the
+/// sheet's pictures and objects are the file's: see SheetExtras.DrawingPart).
+let private keptDrawingPart (workbook: XlsxWorkbookOut) (sheet: XlsxSheetOut) : string option =
+    sheet.Extras.DrawingPart |> Option.filter (fun path -> workbook.Preserved.Parts |> List.exists (fun (kept, _) -> kept = path))
+
+let private tableIdPattern = System.Text.RegularExpressions.Regex("<table\\b[^>]*?\\sid=\"(\\d+)\"")
+let private tableNumberPattern = System.Text.RegularExpressions.Regex("table(\\d+)\\.xml$")
+
+/// Where each table of each sheet is written, sheet by sheet in order: the
+/// part, and the id of a table part the writer makes (None: the file's part
+/// goes back as it is, see SheetExtras.TableParts). New parts take numbers
+/// and ids no kept table part has.
+let private tablePlacement (workbook: XlsxWorkbookOut) : (string * int option) list list =
+    let parts = System.Collections.Generic.Dictionary<string, byte[]>()
+    for path, data in workbook.Preserved.Parts do parts.[path] <- data
+    let keptOf (sheet: XlsxSheetOut) (table: XlsxTableOut) =
+        sheet.Extras.TableParts |> List.tryPick (fun (name, path) -> if name = table.Name && parts.ContainsKey path then Some path else None)
+    let taken = System.Collections.Generic.HashSet<int>()
+    for sheet in workbook.Sheets do
+        for table in sheet.Tables do
+            match keptOf sheet table with
+            | Some path ->
+                let number = tableNumberPattern.Match path
+                if number.Success then taken.Add (int number.Groups.[1].Value) |> ignore
+                let id = tableIdPattern.Match (System.Text.Encoding.UTF8.GetString parts.[path])
+                if id.Success then taken.Add (int id.Groups.[1].Value) |> ignore
+            | None -> ()
+    let mutable next = 1
+    workbook.Sheets
+    |> List.map (fun sheet ->
+        sheet.Tables
+        |> List.map (fun table ->
+            match keptOf sheet table with
+            | Some path -> path, None
+            | None ->
+                while taken.Contains next do next <- next + 1
+                let id = next
+                next <- next + 1
+                sprintf "xl/tables/table%d.xml" id, Some id))
+
 let private drawingNamespace = "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"
 let private drawingMainNamespace = "http://schemas.openxmlformats.org/drawingml/2006/main"
 let private threadedCommentsNamespace = "http://schemas.microsoft.com/office/spreadsheetml/2018/threadedcomments"
@@ -1824,7 +1864,16 @@ let private autoFilterXml (dxfCount: int) (sheet: XlsxSheetOut) =
         if columns = "" then sprintf "<autoFilter %s/>" (attr "ref" filter.Ref)
         else sprintf "<autoFilter %s>%s</autoFilter>" (attr "ref" filter.Ref) columns
 
-let private worksheetXml (styles: StyleBook) sharedIndex (dynamicCm: int) sheetIndex active (sheet: XlsxSheetOut) =
+/// The `<legacyDrawing>` element kept from the file ("" when none): the
+/// sheet's own VML drawing with its form controls ("legacyDrawing"), or the
+/// one that only holds the boxes of its comments ("legacyDrawingNotes", kept
+/// while the comments are as the file had them).
+let private keptLegacyDrawing (sheet: XlsxSheetOut) : string =
+    sheet.Extras.KeptElements
+    |> List.tryPick (fun (name, xml) -> if name = "legacyDrawing" || name = "legacyDrawingNotes" then Some xml else None)
+    |> Option.defaultValue ""
+
+let private worksheetXml (styles: StyleBook) sharedIndex (dynamicCm: int) sheetIndex active (hasDrawingPart: bool) (sheet: XlsxSheetOut) =
     let conditionalFormats, conditionalFormatsExt = conditionalFormattingParts styles.Dxfs.Length sheetIndex sheet.ConditionalFormats
     let hasFitToPage = sheet.PageSetup |> Option.exists (fun p -> p.FitToPage)
     // (CT_SheetPr: tabColor comes before pageSetUpPr.)
@@ -1843,6 +1892,8 @@ let private worksheetXml (styles: StyleBook) sharedIndex (dynamicCm: int) sheetI
         if sheet.View.SummaryBelow && sheet.View.SummaryRight then ""
         else
             "<outlinePr" + (if sheet.View.SummaryBelow then "" else " summaryBelow=\"0\"") + (if sheet.View.SummaryRight then "" else " summaryRight=\"0\"") + "/>"
+    let keptElement (name: string) =
+        sheet.Extras.KeptElements |> List.tryPick (fun (known, xml) -> if known = name then Some xml else None) |> Option.defaultValue ""
     let sheetPr =
         if hasFitToPage || tabColor <> "" || outlinePr <> "" then
             "<sheetPr>" + tabColor + outlinePr + (if hasFitToPage then "<pageSetUpPr fitToPage=\"1\"/>" else "") + "</sheetPr>"
@@ -1865,8 +1916,19 @@ let private worksheetXml (styles: StyleBook) sharedIndex (dynamicCm: int) sheetI
     + pagePartsXml sheet
     + breaksXml "rowBreaks" sheet.RowBreaks
     + breaksXml "colBreaks" sheet.ColBreaks
-    + (if hasDrawing sheet then sprintf "<drawing r:id=\"rIdDrawing%d\"/>" sheetIndex else "")
-    + (if sheet.Cells |> List.exists (fun c -> c.Comment.IsSome) then sprintf "<legacyDrawing r:id=\"rIdCommentsVml%d\"/>" sheetIndex else "")
+    + keptElement "customProperties"
+    + (if hasDrawingPart then sprintf "<drawing r:id=\"rIdDrawing%d\"/>" sheetIndex else "")
+    // The file's own VML drawing (it may hold form controls beside the
+    // comment boxes) stands for the one made from the comments.
+    + (match keptLegacyDrawing sheet with
+       | "" -> if sheet.Cells |> List.exists (fun c -> c.Comment.IsSome) then sprintf "<legacyDrawing r:id=\"rIdCommentsVml%d\"/>" sheetIndex else ""
+       | kept -> kept)
+    + keptElement "legacyDrawingHF"
+    + keptElement "drawingHF"
+    + keptElement "picture"
+    + keptElement "oleObjects"
+    + keptElement "controls"
+    + keptElement "webPublishItems"
     + tablePartsXml sheet.Tables.Length
     // The slicer list (and other kept extensions) of the file the sheet came from.
     + sheetExtLstXml conditionalFormatsExt (dataValidationsExtXml sheet.DataValidations) (sheet.Extras.KeptCellExtensions @ sheet.Extras.KeptExtensions)
@@ -1942,18 +2004,20 @@ let private tableXml id (table: XlsxTableOut) =
     sprintf "%s\n<table xmlns=\"%s\" id=\"%d\" %s %s ref=\"%s\" headerRowCount=\"%d\" totalsRowCount=\"%d\">%s<tableColumns count=\"%d\">%s</tableColumns>%s</table>"
         declaration Namespaces.spreadsheet id (attr "name" table.Name) (attr "displayName" table.Name) refText table.HeaderRowCount table.TotalsRowCount autoFilter (table.EndCol - table.StartCol + 1) cols style
 
-let private sheetRelsXml sheetIndex (sheet: XlsxSheetOut) firstTableId =
+let private sheetRelsXml sheetIndex (sheet: XlsxSheetOut) (tableParts: (string * int option) list) (commentsVmlPath: string) (drawingPath: string option) =
     let rels = [
         for i, h in sheet.Hyperlinks |> List.mapi (fun i h -> i + 1, h) do
             if not h.IsInternal then
                 yield sprintf "<Relationship Id=\"rIdHyperlink%d\" Type=\"%s\" Target=\"%s\" TargetMode=\"External\"/>" i RelationshipTypes.hyperlink (escaped h.Target)
-        for i in 1 .. sheet.Tables.Length do
-            yield sprintf "<Relationship Id=\"rIdTable%d\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/table\" Target=\"../tables/table%d.xml\"/>" i (firstTableId + i - 1)
+        for i, (path, _) in tableParts |> List.mapi (fun i part -> i + 1, part) do
+            yield sprintf "<Relationship Id=\"rIdTable%d\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/table\" Target=\"/%s\"/>" i path
         if sheet.Cells |> List.exists (fun c -> c.Comment.IsSome) then
             yield sprintf "<Relationship Id=\"rIdComments%d\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments\" Target=\"../comments%d.xml\"/>" sheetIndex sheetIndex
-            yield sprintf "<Relationship Id=\"rIdCommentsVml%d\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing\" Target=\"../drawings/vmlDrawing%d.vml\"/>" sheetIndex sheetIndex
-        if hasDrawing sheet then
-            yield sprintf "<Relationship Id=\"rIdDrawing%d\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing\" Target=\"/xl/drawings/sheetDrawing%d.xml\"/>" sheetIndex sheetIndex
+            if keptLegacyDrawing sheet = "" then
+                yield sprintf "<Relationship Id=\"rIdCommentsVml%d\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing\" Target=\"/%s\"/>" sheetIndex commentsVmlPath
+        match drawingPath with
+        | Some path -> yield sprintf "<Relationship Id=\"rIdDrawing%d\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing\" Target=\"/%s\"/>" sheetIndex path
+        | None -> ()
         if not sheet.Extras.ThreadedComments.IsEmpty then
             yield sprintf "<Relationship Id=\"rIdThreaded%d\" Type=\"http://schemas.microsoft.com/office/2017/10/relationships/threadedComment\" Target=\"/xl/threadedComments/threadedComment%d.xml\"/>" sheetIndex sheetIndex
         // Pivot tables, slicers and timelines of the file, under the ids the
@@ -2103,12 +2167,9 @@ let private contentTypesXmlFull (workbook: XlsxWorkbookOut) (keptParts: (string 
         |> String.concat ""
     let mutable tableId = 1
     let tableOverrides =
-        workbook.Sheets
-        |> List.collect (fun s ->
-            s.Tables |> List.map (fun _ ->
-                let id = tableId
-                tableId <- tableId + 1
-                sprintf "<Override PartName=\"/xl/tables/table%d.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml\"/>" id))
+        tablePlacement workbook
+        |> List.collect (List.choose (fun (path, id) ->
+            id |> Option.map (fun _ -> sprintf "<Override PartName=\"/%s\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml\"/>" path)))
         |> String.concat ""
     let comments =
         workbook.Sheets
@@ -2135,7 +2196,7 @@ let private contentTypesXmlFull (workbook: XlsxWorkbookOut) (keptParts: (string 
         |> String.concat ""
     let extraOverrides =
         [ for i, sheet in workbook.Sheets |> List.mapi (fun i sheet -> i + 1, sheet) do
-              if hasDrawing sheet then
+              if hasDrawing sheet && (keptDrawingPart workbook sheet).IsNone then
                   yield sprintf "<Override PartName=\"/xl/drawings/sheetDrawing%d.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.drawing+xml\"/>" i
               if not sheet.Extras.ThreadedComments.IsEmpty then
                   yield sprintf "<Override PartName=\"/xl/threadedComments/threadedComment%d.xml\" ContentType=\"application/vnd.ms-excel.threadedcomments+xml\"/>" i
@@ -2182,8 +2243,13 @@ let private reachableKeptParts (workbook: XlsxWorkbookOut) (themePath: string op
         if not isExternal && not (target.StartsWith "#") then pending.Enqueue (ZipInterop.normalizePath target)
     for sheet in workbook.Sheets do
         for _, _, target, isExternal in sheet.Extras.KeptRelationships do want target isExternal
-        if hasDrawing sheet then
-            for _, _, target, isExternal in sheet.Extras.DrawingRelationships do want target isExternal
+        match keptDrawingPart workbook sheet with
+        | Some path -> want path false
+        | None ->
+            if hasDrawing sheet then
+                for _, _, target, isExternal in sheet.Extras.DrawingRelationships do want target isExternal
+        for _, path in sheet.Extras.TableParts do
+            if sheet.Tables |> List.exists (fun table -> sheet.Extras.TableParts |> List.exists (fun (name, known) -> name = table.Name && known = path)) then want path false
     for _, _, target, isExternal in workbook.Preserved.WorkbookRelationships @ Option.toList workbook.Preserved.CalcChain @ workbook.Preserved.RootRelationships do
         want target isExternal
     match themePath with Some path -> pending.Enqueue path | None -> ()
@@ -2375,24 +2441,35 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
     let mediaExtensions = System.Collections.Generic.Dictionary<string, string>()
     textFiles.Add { Path = "xl/styles.xml"; Content = stylesXml styles }
     textFiles.Add { Path = "xl/sharedStrings.xml"; Content = sharedStringsXmlPreserved sharedItems }
+    let placement = tablePlacement workbook
     workbook.Sheets
     |> List.iteri (fun i sheet ->
         let sheetIndex = i + 1
-        let firstTableId = tableId
-        textFiles.Add { Path = sprintf "xl/worksheets/sheet%d.xml" sheetIndex; Content = worksheetXml styles sharedIndex dynamicCm sheetIndex (i = workbook.ActiveSheetIndex) sheet }
-        match sheetRelsXml sheetIndex sheet firstTableId with
+        let tableParts = placement.[i]
+        // The sheet's drawing: the file's part as it is, or one made from the pictures and objects.
+        let keptDrawing = keptDrawingPart workbook sheet
+        let drawingPath =
+            match keptDrawing with
+            | Some path -> Some path
+            | None -> if hasDrawing sheet then Some (sprintf "xl/drawings/sheetDrawing%d.xml" sheetIndex) else None
+        textFiles.Add { Path = sprintf "xl/worksheets/sheet%d.xml" sheetIndex; Content = worksheetXml styles sharedIndex dynamicCm sheetIndex (i = workbook.ActiveSheetIndex) drawingPath.IsSome sheet }
+        // (The boxes of new comments: not under the name of a kept VML drawing.)
+        let commentsVmlPath =
+            let usual = sprintf "xl/drawings/vmlDrawing%d.vml" sheetIndex
+            if Set.contains usual keptPartPaths then sprintf "xl/drawings/commentsDrawing%d.vml" sheetIndex else usual
+        match sheetRelsXml sheetIndex sheet tableParts commentsVmlPath drawingPath with
         | Some rels -> textFiles.Add { Path = sprintf "xl/worksheets/_rels/sheet%d.xml.rels" sheetIndex; Content = rels }
         | None -> ()
         match commentsXml sheet.Cells with
         | Some xml -> textFiles.Add { Path = sprintf "xl/comments%d.xml" sheetIndex; Content = xml }
         | None -> ()
-        match vmlCommentsXml sheetIndex sheet.Cells with
-        | Some xml -> textFiles.Add { Path = sprintf "xl/drawings/vmlDrawing%d.vml" sheetIndex; Content = xml }
+        match (if keptLegacyDrawing sheet = "" then vmlCommentsXml sheetIndex sheet.Cells else None) with
+        | Some xml -> textFiles.Add { Path = commentsVmlPath; Content = xml }
         | None -> ()
         match threadedCommentsXml persons sheetIndex sheet with
         | Some xml -> textFiles.Add { Path = sprintf "xl/threadedComments/threadedComment%d.xml" sheetIndex; Content = xml }
         | None -> ()
-        if hasDrawing sheet then
+        if hasDrawing sheet && keptDrawing.IsNone then
             // One media part per picture (not under the name of a kept part), and
             // the relationships the kept objects refer to, with their ids.
             let imageRels =
@@ -2420,9 +2497,10 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
                 textFiles.Add
                     { Path = sprintf "xl/drawings/_rels/sheetDrawing%d.xml.rels" sheetIndex
                       Content = sprintf "%s\n<Relationships xmlns=\"%s\">%s</Relationships>" declaration Namespaces.relationshipsPackage (String.concat "" relsBody) }
-        for table in sheet.Tables do
-            textFiles.Add { Path = sprintf "xl/tables/table%d.xml" tableId; Content = tableXml tableId table }
-            tableId <- tableId + 1)
+        for table, (path, id) in List.zip sheet.Tables tableParts do
+            match id with
+            | Some id -> textFiles.Add { Path = path; Content = tableXml id table }
+            | None -> ())
     let written = textFiles |> Seq.map (fun file -> file.Path) |> Set.ofSeq
     let binaryFiles =
         (match workbook.VbaProjectSource with
