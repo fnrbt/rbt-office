@@ -1139,22 +1139,6 @@ type Spreadsheet(container: Element) =
         }
         model <- pushCommand command model
 
-    /// Sort the active sheet by a column as one undoable step, then
-    /// recalculate: rows moved, so every formula reading them is stale.
-    let sortActiveSheet (col: int) (ascending: bool) (description: string) =
-        let oldCells = model.Cells
-        let oldSpill = model.Spill
-        let oldRichRuns = model.RichRuns
-        let oldSortState = model.SortState
-        model <- sortByColumn col ascending model
-        recalculateFormulas()
-        let command = {
-            Undo = fun m -> { restoreCellMapWithSpill oldCells oldSpill m with RichRuns = oldRichRuns; SortState = oldSortState }
-            Redo = fun m -> sortByColumn col ascending m
-            Description = description
-        }
-        model <- pushCommand command model
-
     /// Cut the selection: copy it to the clipboard, clear the cells and
     /// recalculate, as one undoable step.
     let cutSelection () =
@@ -2144,6 +2128,20 @@ type Spreadsheet(container: Element) =
                                    Redo = (fun m -> SheetOps.sortRange memberName range keys options m)
                                    Description = description } model
             true
+    /// Sort the block of data around a cell by the cell's column (a quick
+    /// sort), as one undoable step. With only a column in hand (a click on a
+    /// column header) the block is the one around the active cell when that
+    /// is in the column, else around the column's first entry.
+    let sortActiveSheet (memberName: string) (col: int) (ascending: bool) (description: string) =
+        // (A quick sort from a cell with no data around it does nothing; a
+        // click on a column header has the column's own data to go to.)
+        let active = activeCellAddress()
+        let anchor = if memberName = "sort" then sortAnchorForColumn col (Some active) model else Some active
+        match anchor |> Option.bind (fun anchor -> SheetOps.quickSortTarget anchor model |> Option.map (fun target -> anchor, target)) with
+        | Some (anchor, (range, options)) ->
+            let key : SheetOps.SortKey = { Column = anchor.Col; Descending = not ascending; By = SheetOps.SortByValue; Color = "" }
+            sortBlock memberName range [ key ] options description |> ignore
+        | None -> ()
     /// Text widths for auto-fit: in the cell's font, and never less than the
     /// grid's own measure of the text (which decides whether a number fits).
     let fitMeasure : SheetOps.TextMeasure =
@@ -5321,7 +5319,7 @@ type Spreadsheet(container: Element) =
                         match model.SortState with
                         | Some sortState when sortState.Column = col -> not sortState.Ascending
                         | _ -> true
-                    sortActiveSheet col ascending (sprintf "Sort by column %s" (columnToLetter col))
+                    (try sortActiveSheet "sort" col ascending (sprintf "Sort by column %s" (columnToLetter col)) with error -> reportError "sort" (box error))
                     render()
                 | None -> ())
 
@@ -8520,16 +8518,24 @@ type Spreadsheet(container: Element) =
     /// Redo last undone operation
     member _.Redo() = redoStep ()
 
-    /// Sort current column ascending
+    /// Quick sort, ascending: the block of data around the active cell
+    /// (Excel's current region - bounded by empty rows and columns) is
+    /// sorted by the active cell's column. Only the cells of the block move.
+    /// Its first row stays when it is a header: a table's header row, a row
+    /// of labels over values of another kind (text over numbers), or a row
+    /// formatted unlike the row under it. Blanks are last. One undo step;
+    /// nothing happens when there is no data around the cell. Throws like
+    /// SortRange for merged cells or a dynamic array in the block.
     member _.SortCurrentColumnAsc() =
-        let col = match model.Selection with SingleCell (_, col) -> col | Range (_, startCol, _, _) -> startCol
-        sortActiveSheet col true (sprintf "Sort %s ascending" (columnToLetter col))
+        let col = (activeCellAddress()).Col
+        sortActiveSheet "SortCurrentColumnAsc" col true (sprintf "Sort %s ascending" (columnToLetter col))
         render()
 
-    /// Sort current column descending
+    /// Quick sort, descending (see SortCurrentColumnAsc); blanks are last
+    /// here too.
     member _.SortCurrentColumnDesc() =
-        let col = match model.Selection with SingleCell (_, col) -> col | Range (_, startCol, _, _) -> startCol
-        sortActiveSheet col false (sprintf "Sort %s descending" (columnToLetter col))
+        let col = (activeCellAddress()).Col
+        sortActiveSheet "SortCurrentColumnDesc" col false (sprintf "Sort %s descending" (columnToLetter col))
         render()
 
     /// The selection as tab-separated text (what the cells show), the way

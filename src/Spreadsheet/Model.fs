@@ -1523,6 +1523,121 @@ let dataBlockForColumn (col: int) (model: SpreadsheetModel) : (int * int) option
             | Some t -> Some (t.StartRow - 1, t.EndRow - 1 - (if t.HasTotals then 1 else 0))
             | None -> Some (first, last)
 
+/// Excel's "current region" around a cell: the smallest block holding the
+/// cell that empty rows and empty columns (or the sheet's edges) bound on
+/// every side - cells that touch only at a corner join it. None when the
+/// cell is empty and so is everything around it.
+let currentRegion (addr: CellAddress) (model: SpreadsheetModel) : CellRange option =
+    // (Row -> the filled columns of the row: one pass over the cells, then
+    // every look is a short scan.)
+    let filled = System.Collections.Generic.Dictionary<int, ResizeArray<int>>()
+    for KeyValue(cell, data) in model.Cells do
+        if data.Value <> Empty then
+            match filled.TryGetValue cell.Row with
+            | true, cols -> cols.Add cell.Col
+            | _ ->
+                let cols = ResizeArray<int>()
+                cols.Add cell.Col
+                filled.[cell.Row] <- cols
+    let rowHas (row: int) (left: int) (right: int) =
+        match filled.TryGetValue row with
+        | true, cols ->
+            let mutable found = false
+            let mutable i = 0
+            while not found && i < cols.Count do
+                if cols.[i] >= left && cols.[i] <= right then found <- true
+                i <- i + 1
+            found
+        | _ -> false
+    let colHas (col: int) (top: int) (bottom: int) =
+        let mutable found = false
+        let mutable row = top
+        while not found && row <= bottom do
+            if rowHas row col col then found <- true
+            row <- row + 1
+        found
+    let mutable top = addr.Row
+    let mutable bottom = addr.Row
+    let mutable left = addr.Col
+    let mutable right = addr.Col
+    let mutable grew = true
+    while grew do
+        grew <- false
+        while top > 0 && rowHas (top - 1) (left - 1) (right + 1) do
+            top <- top - 1
+            grew <- true
+        while rowHas (bottom + 1) (left - 1) (right + 1) do
+            bottom <- bottom + 1
+            grew <- true
+        while left > 0 && colHas (left - 1) (top - 1) (bottom + 1) do
+            left <- left - 1
+            grew <- true
+        while colHas (right + 1) (top - 1) (bottom + 1) do
+            right <- right + 1
+            grew <- true
+    if top = bottom && left = right && not (rowHas top left right) then None
+    else
+        // (The block is as wide and as tall as its filled cells: a start on
+        // an empty cell beside the data is not part of it.)
+        while top < bottom && not (rowHas top left right) do top <- top + 1
+        while bottom > top && not (rowHas bottom left right) do bottom <- bottom - 1
+        while left < right && not (colHas left top bottom) do left <- left + 1
+        while right > left && not (colHas right top bottom) do right <- right - 1
+        Some { From = { Row = top; Col = left }; To = { Row = bottom; Col = right } }
+
+/// Whether the first row of a block of data is a header row, guessed as
+/// Excel guesses it for a quick sort: a table's header row is one; else the
+/// first row is compared with the row under it, column by column, and it is
+/// a header when a label stands over a value of another kind (text over a
+/// number, a date or a boolean) or when the two rows are formatted
+/// differently (bold, italic, underline, font, size, colours). A block of
+/// text formatted alike all the way down has no header: its first row sorts
+/// with the rest.
+let regionHasHeader (region: CellRange) (model: SpreadsheetModel) : bool =
+    let top = region.From.Row
+    if region.To.Row <= top then false
+    else
+        let tableHeader =
+            model.Tables
+            |> List.tryPick (fun t ->
+                if t.StartRow - 1 = top && t.StartCol - 1 <= region.To.Col && t.EndCol - 1 >= region.From.Col then Some (t.HeaderRowCount > 0)
+                else None)
+        match tableHeader with
+        | Some header -> header
+        | None ->
+            let kind (value: CellValue) =
+                match unwrapFormulaValue value with
+                | Empty | String "" -> 0
+                | String _ -> 1
+                | Number _ -> 2
+                | Boolean _ -> 3
+                | _ -> 4
+            let look (format: CellFormat) =
+                format.Bold, format.Italic, format.Underline, format.FontName, format.FontSize, format.TextColor, format.BgColor
+            let mutable header = false
+            let mutable possible = true
+            for col in region.From.Col .. region.To.Col do
+                match Map.tryFind { Row = top; Col = col } model.Cells with
+                | Some first when kind first.Value <> 0 ->
+                    // The first filled cell under it.
+                    let mutable row = top + 1
+                    let mutable below = None
+                    while below.IsNone && row <= region.To.Row do
+                        match Map.tryFind { Row = row; Col = col } model.Cells with
+                        | Some data when kind data.Value <> 0 -> below <- Some data
+                        | _ -> ()
+                        row <- row + 1
+                    match below with
+                    | Some data ->
+                        let above, under = kind first.Value, kind data.Value
+                        if above = 1 && (under = 2 || under = 3) then header <- true
+                        // A number over text is data, whatever its looks.
+                        elif above <> 1 && under = 1 then possible <- false
+                        elif look first.Format <> look data.Format then header <- true
+                    | None -> ()
+                | _ -> ()
+            header && possible
+
 /// A row/column insertion or deletion. `at` is the 0-indexed first row/column
 /// affected; `count` rows/columns are inserted before it or deleted from it.
 type StructureEdit =
@@ -2159,31 +2274,30 @@ let rec compareCellValues (v1: CellValue) (v2: CellValue): int =
             | Formula (_, cached) -> rank cached
         compare (rank v1) (rank v2)
 
-/// Sort the data block around a column by that column, in place. The block's
-/// rows keep their position on the sheet (nothing is compacted to the top) and
-/// rows outside it are untouched. A first row made only of text is taken as
-/// the header and stays first. Blanks sort last in either direction, ties keep
-/// their order, and a formula that moves keeps pointing at its own row (its
-/// relative references shift with it). Cached values of other formulas are
-/// stale afterwards — recalculate.
-let sortByColumn (col: int) (ascending: bool) (model: SpreadsheetModel): SpreadsheetModel =
+/// Sort the block of data around a cell (`currentRegion`) by the cell's
+/// column, in place: only the cells of the block move, as whole rows of it,
+/// and rows and columns outside it are untouched. A header row
+/// (`regionHasHeader`) stays first. Blanks sort last in either direction,
+/// ties keep their order, and a formula that moves keeps pointing at its own
+/// row (its relative references shift with it). Cached values of other
+/// formulas are stale afterwards — recalculate.
+let sortRegionByColumn (active: CellAddress) (ascending: bool) (model: SpreadsheetModel): SpreadsheetModel =
+    let col = active.Col
     let sorted = { model with SortState = Some { Column = col; Ascending = ascending } }
-    match dataBlockForColumn col model with
+    match currentRegion active model with
     | None -> reapplyFilter sorted
-    | Some (firstRow, lastRow) ->
-        let rowCells =
-            model.Cells
-            |> Map.toList
-            |> List.filter (fun (addr, _) -> addr.Row >= firstRow && addr.Row <= lastRow)
-        let isTable =
-            model.Tables |> List.exists (fun t -> t.StartRow - 1 = firstRow && col >= t.StartCol - 1 && col <= t.EndCol - 1 && t.HeaderRowCount > 0)
-        let headerCells = rowCells |> List.filter (fun (addr, cellData) -> addr.Row = firstRow && cellData.Value <> Empty)
-        let hasHeader =
-            lastRow > firstRow
-            && (isTable
-                || (not (List.isEmpty headerCells)
-                    && headerCells |> List.forall (fun (_, cellData) -> match cellData.Value with String _ -> true | _ -> false)))
-        let dataStart = if hasHeader then firstRow + 1 else firstRow
+    | Some region when col < region.From.Col || col > region.To.Col -> reapplyFilter sorted
+    | Some region ->
+        let firstRow = region.From.Row
+        // (A table's totals row is not data.)
+        let lastRow =
+            model.Tables
+            |> List.tryPick (fun t ->
+                if t.HasTotals && t.EndRow - 1 = region.To.Row && col >= t.StartCol - 1 && col <= t.EndCol - 1 && t.EndRow - 1 > firstRow then Some (t.EndRow - 2)
+                else None)
+            |> Option.defaultValue region.To.Row
+        let left, right = region.From.Col, region.To.Col
+        let dataStart = if regionHasHeader region model then firstRow + 1 else firstRow
         let isBlank row =
             match getCellValue { Row = row; Col = col } model |> unwrapFormulaValue with
             | Empty | String "" -> true
@@ -2202,7 +2316,7 @@ let sortByColumn (col: int) (ascending: bool) (model: SpreadsheetModel): Spreads
         let target = order |> List.mapi (fun i source -> source, dataStart + i) |> Map.ofList
         let moveMap (items: Map<CellAddress, 'T>) (onMove: int -> 'T -> 'T) : Map<CellAddress, 'T> =
             let moving, staying =
-                items |> Map.partition (fun addr _ -> addr.Row >= dataStart && addr.Row <= lastRow)
+                items |> Map.partition (fun addr _ -> addr.Row >= dataStart && addr.Row <= lastRow && addr.Col >= left && addr.Col <= right)
             moving
             |> Map.fold (fun acc addr value ->
                 let row = Map.find addr.Row target
@@ -2217,6 +2331,29 @@ let sortByColumn (col: int) (ascending: bool) (model: SpreadsheetModel): Spreads
             Cells = cells
             RichRuns = moveMap model.RichRuns (fun _ runs -> runs) }
         |> reapplyFilter
+
+/// The cell a sort "by column" starts from when only the column is known:
+/// `preferred` when it is in the column and has data around it, else the
+/// first filled cell of the column in the column's main block of data.
+let sortAnchorForColumn (col: int) (preferred: CellAddress option) (model: SpreadsheetModel) : CellAddress option =
+    match preferred with
+    | Some addr when addr.Col = col && (currentRegion addr model).IsSome -> Some addr
+    | _ ->
+        match dataBlockForColumn col model with
+        | None -> None
+        | Some (first, last) ->
+            let inColumn =
+                seq { first .. last }
+                |> Seq.tryFind (fun row -> match Map.tryFind { Row = row; Col = col } model.Cells with Some data -> data.Value <> Empty | None -> false)
+            Some { Row = defaultArg inColumn first; Col = col }
+
+/// Sort the block of data around a column's entries by that column (see
+/// `sortRegionByColumn`; the block is the one around the column's first
+/// entry in its main run of rows).
+let sortByColumn (col: int) (ascending: bool) (model: SpreadsheetModel): SpreadsheetModel =
+    match sortAnchorForColumn col None model with
+    | Some anchor -> sortRegionByColumn anchor ascending model
+    | None -> reapplyFilter { model with SortState = Some { Column = col; Ascending = ascending } }
 
 /// Get unique values in a column (as strings for display)
 let getColumnUniqueValues (col: int) (model: SpreadsheetModel): string list =

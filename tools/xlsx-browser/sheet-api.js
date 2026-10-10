@@ -1680,8 +1680,30 @@ checks['api-sortfilter'] = async () => {
         grid.Undo();
         grid.SetCell(2, 6, 'a'); grid.SetCell(3, 6, 'B'); grid.SetCell(4, 6, 'c'); grid.SelectCell(2, 6);
         grid.SortCurrentColumnDesc();
-        check('SortCurrentColumnDesc still sorts the block of data by the column (its first row a header)', [column(6, [1, 2, 3]), column(0, [0])], [['c', 'B', 'a'], ['Region']]);
-        grid.Undo(); grid.SelectCell(0, 6);
+        check('SortCurrentColumnDesc sorts the block around the active cell only (a list of text has no header)', [column(6, [2, 3, 4]), column(0, [0, 1, 2]), column(1, [1, 2])], [['c', 'B', 'a'], ['Region', 'East', 'West'], ['30', '10']]);
+        grid.Undo();
+        check('... as one undo step', column(6, [2, 3, 4]), ['a', 'B', 'c']);
+        // The reported case: a block at R101:T105 with a header row of text, far below other data, the active cell in it.
+        [['Item', 'Qty', 'Price'], ['bolt', '4', '1.5'], ['nut', '9', ''], ['washer', '2', '2'], ['pin', '7', '']].forEach((row, r) => row.forEach((text, c) => { if (text !== '') grid.SetCell(100 + r, 17 + c, text); }));
+        for (let row = 9; row < 100; row++) grid.SetCell(row, 21, String(row));
+        const beforeQuick = grid.GetRevision();
+        grid.SelectCell(102, 19);
+        grid.SortCurrentColumnDesc();
+        check('quick sort descending: the header row stays, blanks are last, the rows travel', [column(19, [100, 101, 102, 103, 104]), column(17, [100, 101, 102, 103, 104])], [['Price', '2', '1.5', '', ''], ['Item', 'washer', 'bolt', 'nut', 'pin']]);
+        check('... the data above is not touched', [column(0, [0, 1, 2]), column(1, [1, 2, 3]), column(21, [99])], [['Region', 'East', 'West'], ['30', '10', '20'], ['99']]);
+        grid.Undo();
+        check('... one undo step', [column(19, [101, 102, 103, 104]), grid.GetRevision() === beforeQuick], [['1.5', '', '2', ''], true]);
+        grid.Redo();
+        check('... redo sorts again', column(19, [101, 102, 103, 104]), ['2', '1.5', '', '']);
+        grid.SortCurrentColumnAsc();
+        check('quick sort ascending: header kept, blanks last', [column(19, [100, 101, 102, 103, 104]), column(17, [101, 102])], [['Price', '1.5', '2', '', ''], ['bolt', 'washer']]);
+        grid.SelectCell(101, 17); grid.SortCurrentColumnAsc();
+        check('quick sort by a text column of the block', column(17, [100, 101, 102, 103, 104]), ['Item', 'bolt', 'nut', 'pin', 'washer']);
+        grid.SelectCell(150, 3); const idle = grid.GetRevision(); grid.SortCurrentColumnAsc();
+        check('no data around the cell: nothing happens', grid.GetRevision(), idle);
+        for (let row = 100; row <= 104; row++) for (let col = 17; col <= 19; col++) grid.SetCell(row, col, '');
+        for (let row = 9; row < 100; row++) grid.SetCell(row, 21, '');
+        grid.SelectCell(0, 0); grid.SelectCell(0, 6);
         changes.splice(0);
 
         // ---- SetAutoFilter / SetFilter ----

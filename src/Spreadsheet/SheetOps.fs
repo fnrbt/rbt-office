@@ -1730,6 +1730,23 @@ let sortRange (memberName: string) (range: CellRange) (keys: SortKey list) (opti
                     SortState = sortState }
                 |> invalidateFilterProjection
 
+/// What a quick sort (Sort A to Z / Z to A with one cell selected) acts on:
+/// the block of data around `active` (`currentRegion`; a table's totals row
+/// left out) and whether its first row is a header (`regionHasHeader`).
+/// None when there is no data around the cell.
+let quickSortTarget (active: CellAddress) (model: SpreadsheetModel) : (CellRange * SortOptions) option =
+    match currentRegion active model with
+    | Some region when active.Col >= region.From.Col && active.Col <= region.To.Col ->
+        let bottom =
+            model.Tables
+            |> List.tryPick (fun t ->
+                if t.HasTotals && t.EndRow - 1 = region.To.Row && t.EndRow - 1 > region.From.Row
+                   && active.Col >= t.StartCol - 1 && active.Col <= t.EndCol - 1 then Some (t.EndRow - 2)
+                else None)
+            |> Option.defaultValue region.To.Row
+        Some ({ region with To = { region.To with Row = bottom } }, { HasHeader = regionHasHeader region model; CaseSensitive = false })
+    | _ -> None
+
 // ---------------------------------------------------------------------------
 // AutoFilter criteria as plain data
 // ---------------------------------------------------------------------------

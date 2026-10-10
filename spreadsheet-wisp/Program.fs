@@ -357,8 +357,8 @@ let main argv =
           InsertColumn = (fun () -> let _, c = EH.focusCell (EH.activeModel st) in EH.applyStructureEdit st (M.InsertCols (c, 1)) |> ignore)
           DeleteRow = (fun () -> let r, _ = EH.focusCell (EH.activeModel st) in EH.applyStructureEdit st (M.DeleteRows (r, 1)) |> ignore)
           DeleteColumn = (fun () -> let _, c = EH.focusCell (EH.activeModel st) in EH.applyStructureEdit st (M.DeleteCols (c, 1)) |> ignore)
-          SortAscending = (fun () -> let _, c = EH.focusCell (EH.activeModel st) in EH.applyChange st (M.sortByColumn c true) |> ignore)
-          SortDescending = (fun () -> let _, c = EH.focusCell (EH.activeModel st) in EH.applyChange st (M.sortByColumn c false) |> ignore)
+          SortAscending = (fun () -> let r, c = EH.focusCell (EH.activeModel st) in EH.applyChange st (M.sortRegionByColumn { Row = r; Col = c } true) |> ignore)
+          SortDescending = (fun () -> let r, c = EH.focusCell (EH.activeModel st) in EH.applyChange st (M.sortRegionByColumn { Row = r; Col = c } false) |> ignore)
           ToggleFilter = openFilterDialog
           ClearFilter = (fun () -> EH.applyChange st (fun m -> M.clearColumnFilter None m) |> ignore; status.Value <- "Filters cleared")
           ToggleFreezePanes = (fun () -> EH.applyChange st (fun m -> if m.FrozenRows > 0 || m.FrozenCols > 0 then { m with FrozenRows = 0; FrozenCols = 0 } else let r, c = EH.focusCell m in { m with FrozenRows = r; FrozenCols = c }) |> ignore)

@@ -61,6 +61,7 @@ stages=(
     stage43-status
     stage44-pagesetup
     stage45-order
+    stage46-quicksort
     numbertext
 )
 
