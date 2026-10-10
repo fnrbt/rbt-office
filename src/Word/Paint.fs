@@ -2535,7 +2535,112 @@ let private tableColumnOffset (index: LayoutIndex) (plan: TableLayoutPlan) (tabl
     if System.Double.IsPositiveInfinity actualMin || System.Double.IsPositiveInfinity plannedMin then 0.0
     else actualMin - plannedMin
 
+/// What of a command lies in the band `top` .. `bottom` (the rows of a table
+/// that stand together): lines along the band's edges, the part of an
+/// upright line and of a filled rectangle that is inside it.
+let private clipCommandToBand (top: float) (bottom: float) (command: PaintCommand) : PaintCommand option =
+    let slack = 0.75
+    match command with
+    | StrokeLine (c, lw, ds, doff, x1, y1, x2, y2) ->
+        if abs (y1 - y2) < 0.01 then
+            if y1 >= top - slack && y1 <= bottom + slack then Some command else None
+        else
+            let low, high = max top (min y1 y2), min bottom (max y1 y2)
+            // (An upright line across several rows keeps its direction.)
+            if high - low < 1.0 then None
+            elif y1 <= y2 then Some (StrokeLine (c, lw, ds, doff, x1, low, x2, high))
+            else Some (StrokeLine (c, lw, ds, doff, x1, high, x2, low))
+    | FillRect (c, x, y, w, h) ->
+        let low, high = max top y, min bottom (y + h)
+        if high - low < 0.5 then None else Some (FillRect (c, x, low, w, high - low))
+    | StrokeRect (_, _, _, y, _, h) -> if y >= top - slack && y + h <= bottom + slack then Some command else None
+    | DrawText (_, _, _, baseline, _) -> if baseline >= top && baseline <= bottom + slack then Some command else None
+    | DrawUnderline (_, _, _, y, _) -> if y >= top && y <= bottom + slack then Some command else None
+    | DrawImage (_, _, y, _, h, _, _, _, _) -> if y >= top - slack && y + h <= bottom + slack then Some command else None
+    | DrawShape (_, _, _, (_, y, _, h), _) -> if y >= top - slack && y + h <= bottom + slack then Some command else None
+
+/// The borders and fills of a table in a multi-column section. The layout
+/// pass lays such a table out on a strip as wide as a column and places it row
+/// by row: the rows that fit go under one another, the next ones start the
+/// next column (or page) below the header rows, which are repeated there. The
+/// table's commands are made on the same strip and moved, stretch of rows by
+/// stretch of rows, to where the rows' paragraphs are. None when the table is
+/// not in such a section (or its paragraphs have no layout).
+let private columnTableFragmentCommands (settings: LayoutSettings) measureText measureRange (doc: Document) (index: LayoutIndex) (tableBlock: TableBlock) : (PaintCommand list * float) option =
+    let actualLayouts (blockId: BlockId) : BlockLayout list =
+        match index.ByBlock.TryGetValue blockId with
+        | true, layouts -> List.ofSeq layouts
+        | false, _ ->
+            match index.ById.TryGetValue blockId with
+            | true, layout -> [ layout ]
+            | false, _ -> []
+    // The strip the table was laid out on: as wide as a column of its section. (Held against
+    // the layouts - the cells are as wide there as they were laid out - so that a document of
+    // which only the start is laid out, whose sections are not all known, is painted the same.)
+    let stripOf (candidate: LayoutSettings) =
+        let plan, bands = tableStripRows None ValueNone candidate measureText measureRange doc tableBlock
+        let fits =
+            plan.Rows |> List.forall (fun row ->
+                row.Measurement.CellGroups |> List.forall (fun group ->
+                    group.Layouts |> List.forall (fun planned ->
+                        match actualLayouts planned.BlockId with
+                        | actual :: _ -> abs (actual.AvailableWidth - planned.AvailableWidth) < 0.5
+                        | [] -> true)))
+        if fits then Some (candidate, plan, bands) else None
+    let strip =
+        match tableColumnStripSettings settings doc tableBlock with
+        | None -> None
+        | Some stripSettings ->
+            stripOf stripSettings
+            |> Option.orElseWith (fun () -> stripOf { settings with PageHeight = stripSettings.PageHeight })
+    match strip with
+    | None -> None
+    | Some (stripSettings, plan, bands) ->
+        let stripCommands = tableFragmentPaintCommands plan
+        // Where a row is: how far its paragraphs' layouts are from the strip's (every occurrence, for a repeated header row).
+        let offsetsOfRow (row: TableLayoutPlanRow) : (float * float) list =
+            row.Measurement.CellGroups
+            |> List.tryPick (fun group ->
+                group.Layouts
+                |> List.tryPick (fun planned ->
+                    match actualLayouts planned.BlockId with
+                    | [] -> None
+                    | found -> Some (found |> List.map (fun layout -> (settings.PaddingLeft + layout.Indent) - (stripSettings.PaddingLeft + planned.Indent), layout.Y - planned.Y))))
+            |> Option.defaultValue []
+        let rows = List.toArray plan.Rows
+        let offsets = rows |> Array.map offsetsOfRow
+        if rows.Length = 0 || bands.Length <> rows.Length || offsets |> Array.forall List.isEmpty then None
+        else
+            let commands = ResizeArray<PaintCommand>()
+            let addStretch (first: int) (last: int) (dx: float, dy: float) =
+                let top, bottom = fst bands.[first], snd bands.[last]
+                for command in stripCommands do
+                    match clipCommandToBand top bottom command with
+                    | Some clipped -> commands.Add (clipped |> shiftCommandX dx |> shiftCommandY dy)
+                    | None -> ()
+            // The rows in order, each where its first occurrence is (a row without a paragraph of its own goes with the row above it).
+            let mutable current = offsets |> Array.tryPick List.tryHead |> Option.defaultValue (0.0, 0.0)
+            let mutable stretchStart = 0
+            let mutable lastOffset = current
+            for rowIndex in 0 .. rows.Length - 1 do
+                let here = match offsets.[rowIndex] with first :: _ -> first | [] -> current
+                if rowIndex > 0 && (abs (fst here - fst current) > 0.5 || abs (snd here - snd current) > 0.5) then
+                    addStretch stretchStart (rowIndex - 1) current
+                    stretchStart <- rowIndex
+                current <- here
+                lastOffset <- here
+            addStretch stretchStart (rows.Length - 1) current
+            // The header rows where they are repeated.
+            let headerCount = min plan.HeaderRowCount rows.Length
+            if headerCount > 0 then
+                for occurrence in List.tail (match offsets.[0] with [] -> [ (0.0, 0.0) ] | found -> found) do
+                    addStretch 0 (headerCount - 1) occurrence
+            Some (resizeArrayToList commands, plan.NextY + snd lastOffset)
+
 let private tableFragmentPaintCommandsForDocument settings measureText measureRange doc index hasMultiColumnLayout tableBlock =
+    match (if hasMultiColumnLayout then columnTableFragmentCommands settings measureText measureRange doc index tableBlock else None) with
+    | Some placed -> Some placed
+    | None ->
     canonicalTableYFromLayouts settings measureText measureRange doc index tableBlock
     |> Option.map (fun tableY ->
         let plan = buildTableLayoutPlanForDocumentAt settings measureText measureRange doc tableBlock tableY

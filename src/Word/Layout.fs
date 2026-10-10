@@ -1481,10 +1481,34 @@ let private hitTestLayoutWithRange (measureRange: TextRangeMeasurer) (paddingLef
     | ValueSome (struct (blockId, offset)) -> Some (blockId, offset)
     | ValueNone -> None
 
+/// How far a point is, sideways, from where a layout's text stands (0 inside it).
+let private horizontalDistanceToLayout (paddingLeft: float) (layout: BlockLayout) (mouseX: float) =
+    let left = paddingLeft + layout.Indent
+    let right = left + max 0.0 layout.AvailableWidth
+    if mouseX < left then left - mouseX elif mouseX > right then mouseX - right else 0.0
+
+/// The layout a point is in: of those at the point's height - the cells of a
+/// table row, the columns of a section - the one the point is in sideways, or
+/// nearest to. (It was the first at that height: a click in the second cell of
+/// a row, or in the second column of a page, went to the first.)
+let private layoutAtPoint (paddingLeft: float) (layouts: BlockLayout list) (mouseX: float) (mouseY: float) : BlockLayout voption =
+    let mutable best = ValueNone
+    let mutable bestDistance = System.Double.PositiveInfinity
+    let mutable remaining = layouts
+    while bestDistance > 0.0 && not remaining.IsEmpty do
+        let layout = remaining.Head
+        if layoutContainsY mouseY layout then
+            let distance = horizontalDistanceToLayout paddingLeft layout mouseX
+            if distance < bestDistance then
+                best <- ValueSome layout
+                bestDistance <- distance
+        remaining <- remaining.Tail
+    best
+
 let hitTestLayoutsWithRange (measureRange: TextRangeMeasurer) (paddingLeft: float) (layouts: BlockLayout list) (mouseX: float) (mouseY: float) =
-    match layouts |> List.tryFind (layoutContainsY mouseY) with
-    | None -> None
-    | Some layout -> hitTestLayoutWithRange measureRange paddingLeft layout mouseX mouseY
+    match layoutAtPoint paddingLeft layouts mouseX mouseY with
+    | ValueNone -> None
+    | ValueSome layout -> hitTestLayoutWithRange measureRange paddingLeft layout mouseX mouseY
 
 let hitTestLayoutArrayWithRangeValue (measureRange: TextRangeMeasurer) (paddingLeft: float) (layouts: BlockLayout array) (mouseX: float) (mouseY: float) =
     let mutable low = 0
@@ -1501,15 +1525,20 @@ let hitTestLayoutArrayWithRangeValue (measureRange: TextRangeMeasurer) (paddingL
     while index > 0 && layouts.[index - 1].Y + layouts.[index - 1].Height > mouseY do
         index <- index - 1
 
-    let mutable result = ValueNone
-    let mutable found = false
-    while not found && index < layouts.Length && layouts.[index].Y <= mouseY do
+    // (Of the layouts at that height - the cells of a row - the one the point is in sideways, or nearest to.)
+    let mutable best = ValueNone
+    let mutable bestDistance = System.Double.PositiveInfinity
+    while bestDistance > 0.0 && index < layouts.Length && layouts.[index].Y <= mouseY do
         let layout = layouts.[index]
         if layoutContainsY mouseY layout then
-            result <- hitTestLayoutWithRangeValue measureRange paddingLeft layout mouseX mouseY
-            found <- true
+            let distance = horizontalDistanceToLayout paddingLeft layout mouseX
+            if distance < bestDistance then
+                best <- ValueSome layout
+                bestDistance <- distance
         index <- index + 1
-    result
+    match best with
+    | ValueSome layout -> hitTestLayoutWithRangeValue measureRange paddingLeft layout mouseX mouseY
+    | ValueNone -> ValueNone
 
 let hitTestLayoutArrayWithRange (measureRange: TextRangeMeasurer) (paddingLeft: float) (layouts: BlockLayout array) (mouseX: float) (mouseY: float) =
     match hitTestLayoutArrayWithRangeValue measureRange paddingLeft layouts mouseX mouseY with
@@ -5303,6 +5332,84 @@ let private shiftLayoutOffsets (delta: int) (layout: BlockLayout) =
                         EndOffset = line.EndOffset + delta
                         Segments = line.Segments |> List.map shiftSegment }) }
 
+/// The page a block of a column is laid out on by itself: as wide as the
+/// column, and without an end (the column flow places what was laid out).
+let private columnStripSettings (settings: LayoutSettings) (columnWidth: float) : LayoutSettings =
+    { settings with Width = settings.PaddingLeft + columnWidth + settings.MarginRight; PageHeight = 100000.0 }
+
+/// The rows of a table that is laid out on a column strip (see
+/// `columnStripSettings`): the plan of the table there and, row by row, its
+/// top and bottom. A table of a multi-column section is laid out so and then
+/// placed row by row - in the layout pass and, for its borders, by the paint.
+let tableStripRows (memo: ParagraphLayoutMemo option) (initialCounters: Map<string * int, int> voption) (stripSettings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (tableBlock: TableBlock) : TableLayoutPlan * (float * float) array =
+    let plan = buildTableLayoutPlanAtWithMemo memo initialCounters stripSettings measureText measureRange doc tableBlock stripSettings.PaddingTop
+    plan, (plan.Rows |> List.map (fun row -> row.Y, row.Y + row.Height) |> List.toArray)
+
+/// The row (of the table itself) each paragraph of a table is in - those of the tables in its cells too.
+let tableRowOfParagraphs (tableBlock: TableBlock) : System.Collections.Generic.Dictionary<BlockId, int> =
+    let rowOf = System.Collections.Generic.Dictionary<BlockId, int>()
+    let rec addTable (rowIndex: int) (table: TableBlock) =
+        for row in table.Rows do
+            for cell in row.Cells do
+                for para in cell.Content do
+                    if not (rowOf.ContainsKey para.Id) then rowOf.[para.Id] <- rowIndex
+                for nested in cell.NestedTables do
+                    addTable rowIndex nested
+    let mutable rowIndex = 0
+    for row in tableBlock.Rows do
+        for cell in row.Cells do
+            for para in cell.Content do
+                if not (rowOf.ContainsKey para.Id) then rowOf.[para.Id] <- rowIndex
+            for nested in cell.NestedTables do
+                addTable rowIndex nested
+        rowIndex <- rowIndex + 1
+    rowOf
+
+/// The columns of the section a top-level table is in, with the section's
+/// page geometry applied to `settings`: Some when the section has two or
+/// more columns. (What the paint needs to find the strip the layout pass
+/// laid the table out on.)
+let tableColumnSection (settings: LayoutSettings) (doc: Document) (tableBlock: TableBlock) : (LayoutSettings * SectionColumns) option =
+    let mutable found = false
+    let mutable result = None
+    let mutable pending = false
+    for block in doc.Blocks do
+        if not found then
+            match block with
+            | Table table when obj.ReferenceEquals(table, tableBlock) || table.Id = tableBlock.Id -> pending <- true
+            | _ -> ()
+            match tryGetParagraph block with
+            | Some para when para.Metadata.SectionBreak.IsSome ->
+                if pending then
+                    found <- true
+                    match para.Metadata.SectionColumns with
+                    | Some columns when columns.Count >= 2 ->
+                        let sectionSettings =
+                            match para.Metadata.SectionPageSetup with
+                            | Some g -> { settings with Width = g.PageWidth; PageHeight = g.PageHeight; PaddingLeft = g.MarginLeft; PaddingTop = g.MarginTop; MarginRight = g.MarginRight; MarginBottom = g.MarginBottom }
+                            | None -> settings
+                        result <- Some (sectionSettings, columns)
+                    | _ -> ()
+            | _ -> ()
+    if not found && pending then
+        match doc.PageSetup.Columns with
+        | Some columns when columns.Count >= 2 -> result <- Some (settings, columns)
+        | _ -> ()
+    result
+
+/// The width of the first column of a section's columns (the columns of a
+/// section are of one width unless it states their widths).
+let sectionColumnWidth (settings: LayoutSettings) (columns: SectionColumns) : float =
+    let n = max 1 columns.Count
+    let full = settings.Width - settings.PaddingLeft - settings.MarginRight
+    if columns.Widths.Length = n then fst columns.Widths.Head
+    else (full - float (n - 1) * columns.Gap) / float n
+
+/// The strip a table of a multi-column section is laid out on (None in a section of one column).
+let tableColumnStripSettings (settings: LayoutSettings) (doc: Document) (tableBlock: TableBlock) : LayoutSettings option =
+    tableColumnSection settings doc tableBlock
+    |> Option.map (fun (sectionSettings, columns) -> columnStripSettings sectionSettings (sectionColumnWidth sectionSettings columns))
+
 let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (columns: SectionColumns) (pageTopOf: int -> float) (nonUniform: bool) (startPage: int) (startY: float) (balanced: bool) (initialFootnotes: Map<int, (string * string) list>) =
     let styleContext = styleContextForLayout memo doc
     let blocks = List.toArray doc.Blocks
@@ -5352,7 +5459,11 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                 sub |> List.filter (fun layout ->
                     not (layout.BlockId.StartsWith footnoteBlockIdPrefix) && not (layout.BlockId.StartsWith endnoteBlockIdPrefix))
             let bottom = maxLineBottom settings.PaddingTop sub
-            Some ((bottom - settings.PaddingTop) / float n + 2.0)
+            let height = (bottom - settings.PaddingTop) / float n + 2.0
+            // (Columns are balanced on the page the section starts on. A section with more text
+            // than that page has room for fills its columns page by page instead - it ran on
+            // below the page in columns as long as half of it.)
+            if startY + height > contentBottomAt startPage + 0.5 then None else Some height
         else None
 
     let results = ResizeArray<BlockLayout>()
@@ -5553,23 +5664,23 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
         | None ->
             previousParagraph <- None
             let sub = { doc with Blocks = [block] }
+            // (As wide as the section's first column: a table keeps its width from column to column.)
+            let stripSettings = columnStripSettings settings (columnWidth 0)
             let subLayouts, _ =
-                layoutDocumentWithRangeAndInitial memo { settings with Width = settings.PaddingLeft + columnWidth col + settings.MarginRight; PageHeight = 100000.0 } measureText measureRange sub counters [] []
+                layoutDocumentWithRangeAndInitial memo stripSettings measureText measureRange sub counters [] []
             // The sub-pass lays its own footnotes out at the bottom of its
             // 100,000px page; they belong at the bottom of the real page.
             let subLayouts =
                 subLayouts
                 |> List.filter (fun layout ->
                     not (layout.BlockId.StartsWith footnoteBlockIdPrefix) && not (layout.BlockId.StartsWith endnoteBlockIdPrefix))
-            match subLayouts with
-            | [] -> ()
-            | _ ->
-                let mutable subTop = System.Double.PositiveInfinity
-                let mutable subBottom = System.Double.NegativeInfinity
-                for layout in subLayouts do
-                    if layout.Y < subTop then subTop <- layout.Y
-                    let layoutBottom = layout.Y + layout.Height
-                    if layoutBottom > subBottom then subBottom <- layoutBottom
+            let mutable subTop = System.Double.PositiveInfinity
+            let mutable subBottom = System.Double.NegativeInfinity
+            for layout in subLayouts do
+                if layout.Y < subTop then subTop <- layout.Y
+                let layoutBottom = layout.Y + layout.Height
+                if layoutBottom > subBottom then subBottom <- layoutBottom
+            let placeWhole () =
                 let height = subBottom - subTop
                 if not (atColumnTop ()) && y + height > columnBottom () + 0.5 then advanceColumn ()
                 let dy = y - subTop
@@ -5577,6 +5688,61 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                     results.Add(sl |> shiftBlockY dy |> shiftBlockX (columnDx col))
                     addPageFootnotes (layoutFootnotes sl.Lines)
                 y <- y + height
+            // A table goes from column to column (and page to page) row by row: a row that
+            // does not fit under the rows above it starts the next column, below the table's
+            // header rows, which are repeated there. (It was placed whole: a table longer than
+            // what was left of the column left that empty, and one longer than a column ran
+            // on below the page.) A row is not divided: one taller than a column stands at
+            // the top of a column of its own.
+            let placeRows (tableBlock: TableBlock) =
+                let plan, bands = tableStripRows memo (ValueSome counters) stripSettings measureText measureRange sub tableBlock
+                let rowOf = tableRowOfParagraphs tableBlock
+                // The strip of the plan against the strip the layouts are on (they are the same, up to where the table starts).
+                let planned =
+                    plan.Rows |> List.tryPick (fun row -> row.Measurement.CellGroups |> List.tryPick (fun group -> List.tryHead group.Layouts))
+                let actual = planned |> Option.bind (fun layout -> subLayouts |> List.tryFind (fun candidate -> candidate.BlockId = layout.BlockId))
+                match planned, actual with
+                | Some planned, Some actual when bands.Length = tableBlock.Rows.Length && bands.Length > 1 ->
+                    let delta = actual.Y - planned.Y
+                    let rowLayouts = Array.init bands.Length (fun _ -> ResizeArray<BlockLayout>())
+                    let mutable lastRow = 0
+                    for sl in subLayouts do
+                        match rowOf.TryGetValue sl.BlockId with
+                        | true, rowIndex when rowIndex < bands.Length -> lastRow <- rowIndex
+                        | _ -> ()
+                        rowLayouts.[lastRow].Add sl
+                    let top rowIndex = fst bands.[rowIndex] + delta
+                    let bottom rowIndex = snd bands.[rowIndex] + delta
+                    let headerCount = min plan.HeaderRowCount (bands.Length - 1)
+                    let addRow rowIndex dy =
+                        for sl in rowLayouts.[rowIndex] do
+                            results.Add(sl |> shiftBlockY dy |> shiftBlockX (columnDx col))
+                            addPageFootnotes (layoutFootnotes sl.Lines)
+                    let mutable dy = y - top 0
+                    // (Whether a row stands in this column already: the first one of a column is placed whatever its height.)
+                    let mutable rowsInColumn = if atColumnTop () then 0 else 1
+                    for rowIndex in 0 .. bands.Length - 1 do
+                        // (The header rows go with the first row below them.)
+                        let needed = if rowIndex < headerCount then bottom headerCount else bottom rowIndex
+                        if rowsInColumn > 0 && (rowIndex = 0 || rowIndex >= headerCount) && needed + dy > columnBottom () + 0.5 then
+                            advanceColumn ()
+                            rowsInColumn <- 0
+                            if rowIndex >= headerCount && headerCount > 0 then
+                                let headerDy = y - top 0
+                                for headerRow in 0 .. headerCount - 1 do
+                                    addRow headerRow headerDy
+                                y <- y + (top headerCount - top 0)
+                            dy <- y - top rowIndex
+                        addRow rowIndex dy
+                        rowsInColumn <- rowsInColumn + 1
+                        y <- bottom rowIndex + dy
+                    // (The space after the table.)
+                    y <- y + max 0.0 (subBottom - bottom (bands.Length - 1))
+                | _ -> placeWhole ()
+            match block, subLayouts with
+            | _, [] -> ()
+            | Table tableBlock, _ when not tableBlock.Floating -> placeRows tableBlock
+            | _ -> placeWhole ()
             // A list running through the table carries on after it.
             match block with
             | Table tableBlock -> counters <- listCountersAfterTable counters tableBlock
@@ -5868,7 +6034,14 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
         let pageTopOf p = sectionBaseTop + float (p - sectionBase) * secStride
         let secColumns = columnsOrSingle columns
         let secDoc = { doc with Blocks = blocks; PageSetup = { doc.PageSetup with Columns = columns } }
-        let balanced = (not isFinal) && secColumns.Count >= 2
+        // The columns of a section are balanced when the section after it goes on on the same
+        // page (a continuous break), as in Word; before a break to a new page the text fills
+        // one column after the other.
+        let nextContinues =
+            match List.tryItem (i + 1) sections with
+            | Some (_, _, _, Some "continuous", _) -> true
+            | _ -> false
+        let balanced = (not isFinal) && secColumns.Count >= 2 && nextContinues
         let slot = match memo with Some _ -> "s" + string i | None -> ""
         // The section's own pages are numbered from 0, the first at y = 0: of what stands
         // before the section its pass is given where on its first page it starts and the

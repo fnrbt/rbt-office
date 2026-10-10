@@ -792,7 +792,12 @@ for seed, sections, twoColumns, steps in [ 21, false, false, 60; 22, true, false
             else
                 pass <- pass + 1
                 // (The commands of the blocks that are laid out: of the document cut there.)
-                let coldCommands = commandsOf { doc with Blocks = List.truncate limit doc.Blocks } coldLayouts coldPages
+                // (With the paragraph that ends the section the cut falls in: it says what columns the
+                // section has - a table of it is painted on its column - and has no layout to paint.)
+                let cutSectionEnd =
+                    doc.Blocks |> List.skip (min limit doc.Blocks.Length)
+                    |> List.tryFind (fun block -> match Doc.tryGetParagraph block with Some para -> para.Metadata.SectionBreak.IsSome | None -> false)
+                let coldCommands = commandsOf { doc with Blocks = List.truncate limit doc.Blocks @ Option.toList cutSectionEnd } coldLayouts coldPages
                 match state.LastSlices with
                 | Some slices ->
                     match Layout.withTablePlanScope paintScope (fun () -> Paint.collectDocumentChunks paintCache settings "Calibri" measureText measureRange doc slices incPages) with
@@ -802,7 +807,8 @@ for seed, sections, twoColumns, steps in [ 21, false, false, 60; 22, true, false
                         if chunkCommands <> coldCommands then
                             failed <- true
                             fail <- fail + 1
-                            printfn "FAIL random %d %s (the first %d of %d blocks): the commands in chunks differ (%d vs %d commands)" seed label limit doc.Blocks.Length chunkCommands.Length coldCommands.Length
+                            let firstDifference = List.zip (List.truncate (min chunkCommands.Length coldCommands.Length) chunkCommands) (List.truncate (min chunkCommands.Length coldCommands.Length) coldCommands) |> List.tryFind (fun (a, b) -> a <> b)
+                            printfn "FAIL random %d %s (the first %d of %d blocks): the commands in chunks differ (%d vs %d commands, the first that differ: %A)" seed label limit doc.Blocks.Length chunkCommands.Length coldCommands.Length firstDifference
                         else pass <- pass + 1
                     | None -> ()
                 | None -> ()
