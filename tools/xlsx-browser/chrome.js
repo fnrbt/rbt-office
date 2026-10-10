@@ -278,3 +278,107 @@ checks['chrome-outline'] = async () => {
     finally { close(); }
     return lines;
 };
+
+// One screen pixel as [r, g, b].
+const pixelAt = async (x, y) => {
+    const image = new Image();
+    image.src = 'data:image/png;base64,' + await window.screenshotRegion(Math.round(x), Math.round(y), 1, 1);
+    await image.decode();
+    const canvas = document.createElement('canvas'); canvas.width = 1; canvas.height = 1;
+    const context = canvas.getContext('2d'); context.drawImage(image, 0, 0);
+    return [...context.getImageData(0, 0, 1, 1).data.slice(0, 3)];
+};
+const isRed = (pixel) => pixel[0] > 180 && pixel[1] < 60 && pixel[2] < 60;
+
+// A drawing over frozen panes: the part over the frozen rows / columns stays, the rest scrolls and is cut at the frozen edge.
+checks['chrome-frozen-drawings'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        const canvas = document.createElement('canvas'); canvas.width = 250; canvas.height = 150;
+        const context = canvas.getContext('2d'); context.fillStyle = '#e00000'; context.fillRect(0, 0, 250, 150);
+        for (let r = 0; r < 80; r++) grid.SetCell(r, 0, 'r' + r);
+        for (let c = 1; c < 40; c++) grid.SetCell(0, c, 'c' + c);
+        // Over A1:C6 (columns 100 px, rows 25 px): x 0..250, y 0..150.
+        const id = grid.InsertPicture(canvas.toDataURL('image/png'), 'A1');
+        await frame();
+        const { scroller } = parts(host);
+        const box = scroller.getBoundingClientRect();
+        const at = (x, y) => pixelAt(box.left + scroller.clientLeft + 50 + x, box.top + scroller.clientTop + 30 + y);   // sheet pixels of the view, after the headers
+        const reds = async (points) => { const out = []; for (const [x, y] of points) out.push(isRed(await at(x, y))); return out; };
+        // Points of the view: in the frozen corner, over the frozen rows, over the frozen column, in the scrolled part.
+        const corner = [50, 25], overRows = [200, 25], overCols = [50, 120], body = [200, 120];
+        check('no frozen panes: the picture is one node, drawn over its cells', [host.querySelectorAll('.spreadsheet-picture').length, host.querySelectorAll('.spreadsheet-drawing-part').length, await reds([corner, overRows, overCols, body])], [1, 0, [true, true, true, true]]);
+        grid.FreezeAt(2, 1); await frame();
+        check('frozen at B3: the picture is drawn over the frozen cells too (it was under them)', await reds([corner, overRows, overCols, body]), [true, true, true, true]);
+        check('... as one part per pane it reaches', [...host.querySelectorAll('.spreadsheet-drawing-part')].map((n) => n.getAttribute('data-pane')).sort(), ['0', '1', '2', '3']);
+        scroller.scrollTop = 60; await frame(); await frame();
+        // The frozen rows (y < 50) keep their part; below them the picture moved up by 60: its bottom edge is at y 150 - 60 = 90.
+        check('scrolled down by 60: the part over the frozen rows stays, the rest moved up under them', await reds([corner, overRows, [50, 70], [200, 70], [50, 100], [200, 100]]), [true, true, true, true, false, false]);
+        scroller.scrollTop = 200; await frame(); await frame();
+        check('scrolled past it: only the part over the frozen rows is left', await reds([corner, overRows, [50, 60], [200, 60], overCols, body]), [true, true, false, false, false, false]);
+        scroller.scrollTop = 0; scroller.scrollLeft = 120; await frame(); await frame();
+        // The frozen column (x < 100) keeps its part; right of it the picture moved left by 120: its right edge is at x 250 - 120 = 130.
+        check('scrolled right by 120: the part over the frozen column stays, the rest is cut at the frozen edge', await reds([corner, overCols, [115, 25], [115, 120], [140, 25], [140, 120]]), [true, true, true, true, false, false]);
+        scroller.scrollLeft = 300; await frame(); await frame();
+        check('scrolled past it sideways', await reds([corner, overCols, [115, 25], [115, 120]]), [true, true, false, false]);
+        scroller.scrollLeft = 0; await frame();
+
+        // A picture beside the frozen panes goes under them.
+        grid.MovePicture(id, 'C5'); await frame();   // x 200..450, y 100..250
+        check('a picture in the scrolled part is one node', [host.querySelectorAll('.spreadsheet-drawing-part').length, host.querySelectorAll('.spreadsheet-picture').length, await reds([[300, 150]])], [0, 1, [true]]);
+        scroller.scrollTop = 80; scroller.scrollLeft = 150; await frame(); await frame();
+        // Now at x 50..300, y 20..170 of the view: cut at x 100 and y 50.
+        check('scrolled: it goes under the frozen rows and the frozen column', await reds([[150, 100], [75, 100], [150, 35], [75, 35]]), [true, false, false, false]);
+        scroller.scrollTop = 0; scroller.scrollLeft = 0; await frame();
+
+        // The mouse: select and drag the picture from the scrolled part to over the frozen rows.
+        grid.MovePicture(id, 'A1'); await frame();
+        const start = [box.left + scroller.clientLeft + 50 + 50, box.top + scroller.clientTop + 30 + 25];
+        await realClick(start[0], start[1]);
+        const handles = [...host.querySelectorAll('.spreadsheet-picture-handle')].filter((n) => n.getClientRects().length > 0);
+        const se = handles.find((n) => n.getAttribute('data-handle') === 'se').getBoundingClientRect();
+        check('a click on the part in the frozen corner selects the picture; its frame is over the frozen panes', [grid.GetSelectedPicture(), handles.length, document.elementFromPoint(se.left + 4, se.top + 4)?.className], [id, 8, 'spreadsheet-picture-handle']);
+        await window.realMouse('move', start[0], start[1]); await window.realMouse('down', 0, 0);
+        await window.realMouse('move', start[0] + 60, start[1] + 40, { steps: 4 }); await frame();
+        check('while it is dragged it is cut where it is', await reds([[80, 55], [280, 60], [40, 20]]), [true, true, false]);
+        await window.realMouse('up', 0, 0); await frame();
+        const moved = grid.GetPictures()[0];
+        check('dragged by (60, 40)', [moved.x, moved.y, moved.width, moved.height], [60, 40, 250, 150]);
+        grid.Undo(); await frame();
+        check('undo', [grid.GetPictures()[0].x, grid.GetPictures()[0].y, await reds([corner, body])], [0, 0, [true, true]]);
+        grid.Redo(); await frame();
+        check('redo', [grid.GetPictures()[0].x, grid.GetPictures()[0].y], [60, 40]);
+        grid.Undo();
+
+        // Zoom, and the panes going away.
+        grid.SetZoom(2); await frame();
+        check('zoomed to 200 %: the parts scale with their panes', await reds([[100, 50], [400, 50], [100, 240], [400, 240]]), [true, true, true, true]);
+        grid.SetZoom(1); grid.Unfreeze(); await frame();
+        check('unfrozen: one node again', [host.querySelectorAll('.spreadsheet-drawing-part').length, host.querySelectorAll('.spreadsheet-picture').length], [0, 1]);
+
+        // Export, re-import (the frozen pane and the picture).
+        grid.FreezeAt(2, 1);
+        const again = await reopened(grid);
+        try {
+            await frame();
+            check('opened again: frozen, with the picture cut along the panes', [again.grid.GetFrozen(), again.grid.GetPictures().map((p) => [p.x, p.y, p.width, p.height]), [...again.host.querySelectorAll('.spreadsheet-drawing-part')].length], [{ rows: 2, cols: 1 }, [[0, 0, 250, 150]], 4]);
+        } finally { again.close(); }
+
+        // A chart's frame is cut the same way.
+        const { bytesOf } = await import('/component.js');
+        const charts = mountGrid();
+        try {
+            await charts.grid.ImportXlsx((await bytesOf('tests/real-world/chart-zoo.xlsx')).slice());
+            const withChart = charts.grid.GetSheets().findIndex((sheet, index) => { charts.grid.SwitchSheet(index); return charts.grid.GetDrawings().some((d) => d.kind === 'chart'); });
+            const chart = charts.grid.GetDrawings().find((d) => d.kind === 'chart');
+            await frame();
+            const before = charts.host.querySelectorAll('.spreadsheet-object-chart').length;
+            charts.grid.FreezeAt(chart.row + 2, chart.col + 1); await frame();
+            const chartParts = [...charts.host.querySelectorAll(`.spreadsheet-drawing-part[data-drawing-id="${chart.id}"]`)];
+            check('a chart frame over frozen panes is cut into parts as well', [withChart >= 0, before > 0, chartParts.length > 1, chartParts.every((part) => part.querySelector('.spreadsheet-object-chart'))], [true, true, true, true]);
+        } finally { charts.close(); }
+    } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
+    finally { close(); }
+    return lines;
+};

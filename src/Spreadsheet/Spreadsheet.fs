@@ -299,6 +299,9 @@ let private setScrollLeft (el: Element) (value: float): unit = jsNative
 [<Emit("$0.removeAttribute($1)")>]
 let private removeAttribute (el: Element) (name: string): unit = jsNative
 
+[<Emit("$0.parentNode")>]
+let private parentOf (el: Element): Element = jsNative
+
 [<Emit("$0.parentNode === $1")>]
 let private isChildOf (el: Element) (parent: Element): bool = jsNative
 
@@ -501,6 +504,8 @@ type Spreadsheet(container: Element) =
     let mutable pictureDrag: PictureDrag option = None
     let mutable pictureFrame: Element option = None
     let mutable renderedDrawingsReadOnly = false
+    /// The frozen panes and header sizes the drawings were last laid out for.
+    let mutable renderedDrawingsPanes = ""
     // --- revisions ----------------------------------------------------------------
     // The revision is a number that names the workbook's content: every
     // change gives a new one, and undo / redo bring back the number the
@@ -3912,61 +3917,103 @@ type Spreadsheet(container: Element) =
     /// Pictures, and labelled frames for charts and other kept objects, over
     /// the cells at their anchors. They are part of the scrolled content, so
     /// they move with the sheet; clicks go through to the cells under them.
-    /// Rebuilt only when the drawings or the sizes of rows / columns change.
+    /// With frozen panes a drawing is cut along the frozen edges, as in
+    /// Excel: the part over the frozen rows / columns sits in their pane and
+    /// stays, the part beside them scrolls (and goes under the frozen cells).
+    /// Rebuilt only when the drawings, the sizes of rows / columns or the
+    /// panes change (and while a picture is dragged across panes).
     and renderDrawings (content: Element) (metrics: SpreadsheetLayout.SheetMetrics) =
-        if not (obj.ReferenceEquals(renderedDrawings, model.Drawings)) || not (obj.ReferenceEquals(renderedMetrics, metrics)) || renderedDrawingsReadOnly <> readOnly then
-            renderedDrawings <- box model.Drawings
+        let frozenRows = max 0 (min metrics.RowCount model.FrozenRows)
+        let frozenCols = max 0 (min metrics.ColCount model.FrozenCols)
+        let panes = string frozenRows + "|" + string frozenCols + "|" + string rowHeaderWidth + "|" + string headerHeight
+        // (A picture that is dragged over frozen panes is cut anew as it moves.)
+        let dragged = match pictureDrag with Some drag when frozenRows > 0 || frozenCols > 0 -> Some drag | _ -> None
+        if not (obj.ReferenceEquals(renderedDrawings, model.Drawings)) || not (obj.ReferenceEquals(renderedMetrics, metrics)) || renderedDrawingsReadOnly <> readOnly
+           || renderedDrawingsPanes <> panes || dragged.IsSome then
+            renderedDrawings <- (if dragged.IsSome then null else box model.Drawings)
             renderedMetrics <- box metrics
             renderedDrawingsReadOnly <- readOnly
+            renderedDrawingsPanes <- panes
             for node in drawingNodes do detach node
             drawingNodes.Clear()
+            let frozenW = metrics.ColPrefix.[frozenCols]
+            let frozenH = metrics.RowPrefix.[frozenRows]
+            let paneElements = match layers with Some layer -> layer.Panes | None -> [| content; content; content; content |]
             for drawing in model.Drawings do
-                let rect = SpreadsheetLayout.drawingRect model drawing
+                let rect =
+                    match dragged with
+                    | Some drag when drag.Id = drawing.Id -> drag.Current
+                    | _ -> SpreadsheetLayout.drawingRect model drawing
                 if rect.Width >= 1.0 && rect.Height >= 1.0 then
                     let label = SpreadsheetLayout.drawingLabel drawing
-                    let node =
-                        match drawing.Content with
-                        | Picture (contentType, _, data) ->
-                            let image = createElement "img"
-                            setAttribute image "src" (pictureUrl data contentType)
-                            setAttribute image "alt" (drawing.Description |> Option.defaultValue label)
-                            setAttribute image "draggable" "false"
-                            setClassName image "spreadsheet-drawing spreadsheet-picture"
-                            image
-                        | KeptObject (kind, _) ->
-                            let frame = createElement "div"
-                            setClassName frame ("spreadsheet-drawing spreadsheet-object spreadsheet-object-" + kind)
-                            setTextContent frame label
-                            setStyles frame [
-                                "display", "flex"
-                                "align-items", "center"
-                                "justify-content", "center"
-                                "box-sizing", "border-box"
-                                "background", "#f6f8fa"
-                                "border", "1px solid #8a94a6"
-                                "color", "#4a5568"
-                                "font", "12px Arial, sans-serif"
-                                "overflow", "hidden"
-                            ]
-                            frame
-                    setAttribute node "title" label
-                    setAttribute node "data-drawing-id" (string drawing.Id)
-                    // A picture takes the pointer in the editor (it is selected,
-                    // moved and sized with it); in a viewer, and for a chart or
-                    // another kept object, clicks go through to the cells.
                     let takesPointer = (match drawing.Content with Picture _ -> not readOnly | KeptObject _ -> false)
-                    setStyles node [
-                        "position", "absolute"
-                        "left", sprintf "%.1fpx" (rowHeaderWidth + rect.X)
-                        "top", sprintf "%.1fpx" (headerHeight + rect.Y)
-                        "width", sprintf "%.1fpx" rect.Width
-                        "height", sprintf "%.1fpx" rect.Height
-                        "z-index", "3"
-                        "pointer-events", (if takesPointer then "auto" else "none")
-                        "cursor", (if takesPointer then "move" else "default")
-                    ]
-                    appendChild content node
-                    drawingNodes.Add node
+                    // The drawing's node at (left, top) of its parent.
+                    let build (left: float) (top: float) : Element =
+                        let node =
+                            match drawing.Content with
+                            | Picture (contentType, _, data) ->
+                                let image = createElement "img"
+                                setAttribute image "src" (pictureUrl data contentType)
+                                setAttribute image "alt" (drawing.Description |> Option.defaultValue label)
+                                setAttribute image "draggable" "false"
+                                setClassName image "spreadsheet-drawing spreadsheet-picture"
+                                image
+                            | KeptObject (kind, _) ->
+                                let frame = createElement "div"
+                                setClassName frame ("spreadsheet-drawing spreadsheet-object spreadsheet-object-" + kind)
+                                setTextContent frame label
+                                setStyles frame [
+                                    "display", "flex"
+                                    "align-items", "center"
+                                    "justify-content", "center"
+                                    "box-sizing", "border-box"
+                                    "background", "#f6f8fa"
+                                    "border", "1px solid #8a94a6"
+                                    "color", "#4a5568"
+                                    "font", "12px Arial, sans-serif"
+                                    "overflow", "hidden"
+                                ]
+                                frame
+                        setAttribute node "title" label
+                        setAttribute node "data-drawing-id" (string drawing.Id)
+                        // A picture takes the pointer in the editor (it is selected,
+                        // moved and sized with it); in a viewer, and for a chart or
+                        // another kept object, clicks go through to the cells.
+                        setStyles node [
+                            "position", "absolute"
+                            "left", sprintf "%.1fpx" left
+                            "top", sprintf "%.1fpx" top
+                            "width", sprintf "%.1fpx" rect.Width
+                            "height", sprintf "%.1fpx" rect.Height
+                            "max-width", "none"
+                            "z-index", "3"
+                            "pointer-events", (if takesPointer then "auto" else "none")
+                            "cursor", (if takesPointer then "move" else "default")
+                        ]
+                        node
+                    let right = rect.X + rect.Width
+                    let bottom = rect.Y + rect.Height
+                    if (frozenRows = 0 && frozenCols = 0) || (rect.X >= frozenW && rect.Y >= frozenH) then
+                        let node = build (rowHeaderWidth + rect.X) (headerHeight + rect.Y)
+                        appendChild content node
+                        drawingNodes.Add node
+                    else
+                        // One part per pane the drawing reaches: a box that cuts
+                        // the drawing to the pane's share of it.
+                        for pane in 0 .. 3 do
+                            let x0, x1 = if pane >= 2 then rect.X, min right frozenW else max rect.X frozenW, right
+                            let y0, y1 = if pane = 1 || pane = 3 then rect.Y, min bottom frozenH else max rect.Y frozenH, bottom
+                            if x1 - x0 > 0.0 && y1 - y0 > 0.0 then
+                                let part = createElement "div"
+                                setClassName part "spreadsheet-drawing-part"
+                                setAttribute part "data-drawing-id" (string drawing.Id)
+                                setAttribute part "data-pane" (string pane)
+                                setCssText part
+                                    (sprintf "position:absolute;left:%.1fpx;top:%.1fpx;width:%.1fpx;height:%.1fpx;overflow:hidden;z-index:3;pointer-events:none"
+                                        (rowHeaderWidth + x0) (headerHeight + y0) (x1 - x0) (y1 - y0))
+                                appendChild part (build (rect.X - x0) (rect.Y - y0))
+                                appendChild paneElements.[pane] part
+                                drawingNodes.Add part
         renderPictureFrame content
 
     /// The frame around the selected picture, with its eight handles. While
@@ -3987,9 +4034,25 @@ type Spreadsheet(container: Element) =
         | None ->
             (match pictureFrame with Some frame -> setStyle frame "display" "none" | None -> ())
         | Some drawing ->
+            let rect =
+                match pictureDrag with
+                | Some drag when drag.Id = drawing.Id -> drag.Current
+                | _ -> SpreadsheetLayout.drawingRect model drawing
+            // The frame goes with the pane the picture's corner is in (a
+            // picture over frozen rows / columns stays there with its handles).
+            let parent =
+                match layers with
+                | Some layer when model.FrozenRows > 0 || model.FrozenCols > 0 ->
+                    let metrics = SpreadsheetLayout.metricsOf model
+                    let frozenW = metrics.ColPrefix.[max 0 (min metrics.ColCount model.FrozenCols)]
+                    let frozenH = metrics.RowPrefix.[max 0 (min metrics.RowCount model.FrozenRows)]
+                    layer.Panes.[(if rect.Y < frozenH then 1 else 0) + (if rect.X < frozenW then 2 else 0)]
+                | _ -> content
             let frame =
                 match pictureFrame with
-                | Some frame when isChildOf frame content -> frame
+                | Some frame when not (isNull (box (parentOf frame))) ->
+                    if not (isChildOf frame parent) then appendChild parent frame
+                    frame
                 | _ ->
                     let frame = createElement "div"
                     setClassName frame "spreadsheet-picture-frame"
@@ -4001,13 +4064,9 @@ type Spreadsheet(container: Element) =
                         setAttribute grip "data-handle" handle
                         setCssText grip (sprintf "position:absolute;left:%s;top:%s;width:8px;height:8px;margin:-5px 0 0 -5px;box-sizing:border-box;background:#fff;border:1px solid #1a73e8;cursor:%s;pointer-events:auto" left top cursor)
                         appendChild frame grip
-                    appendChild content frame
+                    appendChild parent frame
                     pictureFrame <- Some frame
                     frame
-            let rect =
-                match pictureDrag with
-                | Some drag when drag.Id = drawing.Id -> drag.Current
-                | _ -> SpreadsheetLayout.drawingRect model drawing
             setAttribute frame "data-drawing-id" (string drawing.Id)
             setStyles frame [
                 "display", "block"
@@ -4017,7 +4076,7 @@ type Spreadsheet(container: Element) =
                 "height", sprintf "%.1fpx" rect.Height
             ]
             match pictureDrag with
-            | Some drag when drag.Id = drawing.Id ->
+            | Some drag when drag.Id = drawing.Id && model.FrozenRows <= 0 && model.FrozenCols <= 0 ->
                 let image = queryOne content (sprintf ".spreadsheet-picture[data-drawing-id=\"%d\"]" drawing.Id)
                 if not (isNull (box image)) then
                     setStyles image [
@@ -4028,9 +4087,6 @@ type Spreadsheet(container: Element) =
                     ]
             | _ -> ()
 
-    /// What sits on top of the cells: the selection, the active cell, the
-    /// edit box, the selection's fill handle, the input message of the
-    /// selected cell's validation, and the validation notice.
     /// The outline strips (see `showOutline`): a background, a bracket and a
     /// +/- button per group in view, the level buttons in the corner. Rows'
     /// groups sit in the strip that scrolls with the row numbers, groups of
@@ -4208,6 +4264,9 @@ type Spreadsheet(container: Element) =
             | true, col -> showFilterDropdown col (pageRight node) (pageBottom node)
             | _ -> ()
 
+    /// What sits on top of the cells: the selection, the active cell, the
+    /// edit box, the selection's fill handle, the input message of the
+    /// selected cell's validation, and the validation notice.
     and renderOverlays (layer: GridLayers) (metrics: SpreadsheetLayout.SheetMetrics) (frozenRows: int) (frozenCols: int) =
         let rowPrefix = metrics.RowPrefix
         let colPrefix = metrics.ColPrefix
@@ -5722,7 +5781,9 @@ type Spreadsheet(container: Element) =
                         drag.Moved <- true
                         drag.Current <- draggedRect drag dx dy (eventFlag e "shiftKey")
                         // (Only the frame and the picture move: no render of the cells.)
-                        renderPictureFrame content
+                        // (Over frozen panes the picture is cut anew where the drag has it.)
+                        if model.FrozenRows > 0 || model.FrozenCols > 0 then renderDrawings content (SpreadsheetLayout.metricsOf model)
+                        else renderPictureFrame content
                 | None -> ()
             elif isResizingColumn then
                 match resizeColumnIndex with
