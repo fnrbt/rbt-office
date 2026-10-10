@@ -150,6 +150,8 @@ let start (wb: Wb.Workbook) =
     countFull "start"
     checkFormulaIndex "start" current
     engine <- Recalc.build current
+    // (As the full recalculation, which `edit` compares with: every circular reference is calculated at every edit.)
+    Recalc.findCycles engine
 let edit label (hint: (string * CellAddress) list option) (change: Wb.Workbook -> Wb.Workbook) =
     let edited = change current
     checkFormulaIndex (label + " (edited)") edited
@@ -176,6 +178,7 @@ let edit label (hint: (string * CellAddress) list option) (change: Wb.Workbook -
         if reason.Contains "do not settle" then (fullDifference <- None; unsettled <- true) else countFull label
         declines.[reason] <- (match declines.TryGetValue reason with | true, n -> n + 1 | _ -> 1)
         if not (Recalc.adopt engine full) then engine <- Recalc.build full
+        Recalc.findCycles engine
         Declined
 
 let twoSheets () =
@@ -232,17 +235,27 @@ ok "after the undo the workbook is what it was" ((difference current beforeUndo)
 let formatted = edit "a format" None (fun wb -> Wb.updateSheetModel "sheet1" (setCellBgColor (at 0 0) "#ff0000" wb.Sheets.["sheet1"].Model) wb) |> stats "format"
 eq "a format changes no value" (formatted.ChangedCells, formatted.EvaluatedFormulas) (0, 0)
 
-// ---- what is left to the full recalculation -------------------------------------
-let declined label outcome = ok label (outcome = Declined) "was calculated incrementally"
-declined "a formula that reads itself" (edit "cycle" None (setCells "sheet1" [ at 30 3, Some (formula "=D31+1") ]))
+// ---- circular references, and edits that are more than cells --------------------
+// (They were left to the full recalculation; `edit` checks each against it.)
+let handled label outcome = ok label (outcome <> Declined) (sprintf "left to the full recalculation: %s" (Recalc.lastDecline engine))
+handled "a formula that reads itself" (edit "cycle" None (setCells "sheet1" [ at 30 3, Some (formula "=D31+1") ]))
 eq "the cycle is marked" (valueAt "sheet1" 30 3 current) (CellValue.Error Formula.Err.cycle)
 ok "an edit elsewhere is incremental although a cycle exists" (edit "beside a cycle" None (setCells "sheet1" [ at 0 0, Some (number 1.0) ]) <> Declined) ""
-declined "a cycle through two cells" (edit "cycle 2" None (setCells "sheet1" [ at 31 3, Some (formula "=D33"); at 32 3, Some (formula "=D32") ]))
-edit "the cycles removed" None (setCells "sheet1" [ at 30 3, None; at 31 3, None; at 32 3, None ]) |> ignore
+handled "a cycle through two cells" (edit "cycle 2" None (setCells "sheet1" [ at 31 3, Some (formula "=D33"); at 32 3, Some (formula "=D32") ]))
+eq "both show it" (valueAt "sheet1" 31 3 current, valueAt "sheet1" 32 3 current) (CellValue.Error Formula.Err.cycle, CellValue.Error Formula.Err.cycle)
+handled "what reads a cycle" (edit "reader of a cycle" None (setCells "sheet1" [ at 33 3, Some (formula "=D32*2"); at 34 3, Some (formula "=D34+1") ]))
+eq "... shows the error too" (valueAt "sheet1" 33 3 current) (CellValue.Error Formula.Err.cycle)
+// A formula that was there before the edit closes the cycle with a formula the edit brings.
+handled "an existing formula drawn into a cycle" (edit "cycle 3" (Some [ "sheet1", at 36 3 ]) (setCells "sheet1" [ at 36 3, Some (formula "=D36+1") ]))
+handled "... its other half entered" (edit "cycle 3b" (Some [ "sheet1", at 35 3 ]) (setCells "sheet1" [ at 35 3, Some (formula "=D37*2") ]))
+eq "both halves show it" (valueAt "sheet1" 35 3 current, valueAt "sheet1" 36 3 current) (CellValue.Error Formula.Err.cycle, CellValue.Error Formula.Err.cycle)
+handled "a cycle broken by a value" (edit "cycle 3 broken" None (setCells "sheet1" [ at 35 3, Some (number 4.0) ]))
+eq "the other half has its value again" (valueAt "sheet1" 36 3 current) (CellValue.Number 5.0)
+handled "the cycles removed" (edit "the cycles removed" None (setCells "sheet1" [ at 30 3, None; at 31 3, None; at 32 3, None; at 33 3, None; at 34 3, None; at 35 3, None; at 36 3, None ]))
 ok "then edits are incremental again" (edit "after the cycles" None (setCells "sheet1" [ at 0 0, Some (number 2.0) ]) <> Declined) ""
 // (Dynamic arrays, OFFSET / INDIRECT and 3-D references are calculated incrementally: see further down.)
 // More than cells: a defined name.
-declined "a defined name added" (edit "name" None (fun wb -> { wb with Names = wb.Names |> Map.add (None, "RATE") "=Sheet1!$A$1" }))
+handled "a defined name added" (edit "name" None (fun wb -> { wb with Names = wb.Names |> Map.add (None, "RATE") "=Sheet1!$A$1" }))
 edit "a formula with the name" None (setCells "sheet1" [ at 46 5, Some (formula "=RATE*2") ]) |> ignore
 let named = edit "the named cell typed" None (setCells "sheet1" [ at 0 0, Some (number 21.0) ]) |> stats "named"
 eq "a name is a precedent" (valueAt "sheet1" 46 5 current) (CellValue.Number 42.0)
@@ -277,7 +290,17 @@ let randomEdits (label: string) (seed: int) (steps: int) (wb: Wb.Workbook) =
                 let numbers = cells |> Array.filter (fun (_, cell) -> match cell.Value with CellValue.Number _ -> true | _ -> false)
                 let formulas = cells |> Array.filter (fun (_, cell) -> match cell.Value with CellValue.Formula _ -> true | _ -> false)
                 let refOf (addr: CellAddress) = sprintf "%s%d" (columnToLetter addr.Col) (addr.Row + 1)
-                let kind = random.Next 12
+                let kind = random.Next 14
+                // (Rows and columns inserted and deleted among the edits of cells: the formulas of a real workbook follow.)
+                let structureEdit =
+                    if kind < 12 || cells.Length = 0 then None
+                    else
+                        let around = anyCell ()
+                        Some (match random.Next 5 with
+                              | 0 | 1 -> InsertRows (around.Row, 1 + random.Next 2)
+                              | 2 -> DeleteRows (around.Row + 1, 1)
+                              | 3 -> InsertCols (around.Col, 1)
+                              | _ -> DeleteCols (around.Col + 1 + random.Next 3, 1))
                 let name, changes =
                     match kind with
                     | 0 | 1 | 2 when numbers.Length > 0 ->
@@ -312,7 +335,11 @@ let randomEdits (label: string) (seed: int) (steps: int) (wb: Wb.Workbook) =
                 let undo = changes |> List.map (fun (addr, _) -> addr, getCell addr before)
                 history.Add (targetSheet, undo)
                 let hint = if changes.Length = 1 && random.Next 2 = 0 then Some [ targetSheet, fst changes.Head ] else None
-                match edit (sprintf "%s step %d (%s)" label step name) hint (setCells targetSheet changes) with
+                let outcome =
+                    match structureEdit with
+                    | Some structure -> edit (sprintf "%s step %d (%A)" label step structure) None (fun wb -> fst (Wb.applyStructureEdit sheetId structure wb))
+                    | None -> edit (sprintf "%s step %d (%s)" label step name) hint (setCells targetSheet changes)
+                match outcome with
                 | Incremental s ->
                     incremental <- incremental + 1
                     evaluated <- evaluated + s.EvaluatedFormulas
@@ -364,9 +391,11 @@ do
            |> setCells other [ at 0 0, Some (formula "=Sheet1!A1+1") ]
     start wb
     eq "through the other sheet" (valueAt "sheet1" 1 0 current) (CellValue.Number 8.0)
-    let edited = current |> setCells "sheet1" [ at 0 0, Some (formula "=A2+1") ]
-    eq "the input overwritten by a formula that reads what depends on it: declined, as a circular reference"
-        (Recalc.recalculate engine edited None |> Option.isSome, Recalc.lastDecline engine) (false, "a circular reference among the formulas to evaluate")
+    // A circular reference through the other sheet is calculated by the engine: every formula on it shows it.
+    ok "the input overwritten by a formula that reads what depends on it: incremental" (edit "a cycle across sheets" None (setCells "sheet1" [ at 0 0, Some (formula "=A2+1") ]) <> Declined) (Recalc.lastDecline engine)
+    eq "... all three formulas of the cycle" (valueAt "sheet1" 0 0 current, valueAt "sheet1" 1 0 current, valueAt other 0 0 current) (CellValue.Error Formula.Err.cycle, CellValue.Error Formula.Err.cycle, CellValue.Error Formula.Err.cycle)
+    ok "broken again" (edit "the cycle across sheets broken" None (setCells "sheet1" [ at 0 0, Some (number 5.0) ]) <> Declined) (Recalc.lastDecline engine)
+    eq "... the values are back" (valueAt "sheet1" 1 0 current) (CellValue.Number 12.0)
 
 // ---- dynamic arrays ---------------------------------------------------------------
 // A formula that spills owns the cells it spilled into; entering, changing and
@@ -568,6 +597,145 @@ ok "no edit is declined for OFFSET / INDIRECT / 3-D references (only circular re
     (sprintf "%A" (List.ofSeq declines.Keys))
 ok "the random edits with OFFSET / INDIRECT / 3-D references were nearly all incremental" (dynamicIncremental * 10 > dynamicSeeds * spillSteps * 9) (sprintf "%d of %d" dynamicIncremental (dynamicSeeds * spillSteps))
 reportFullRuns "with OFFSET / INDIRECT / 3-D references"
+
+// ---- edits that are more than cells ---------------------------------------------------
+// Defined names, tables, filters and hidden rows, rows and columns inserted and deleted,
+// sheets added, removed, renamed, copied and moved: the engine calculates the formulas
+// that can tell (those that use a name or a table, SUBTOTAL / AGGREGATE, what reads the
+// sheet whose rows moved, 3-D references ...) instead of leaving the workbook to the full
+// recalculation. Every step is compared with the full recalculation of the edited workbook.
+module Ops = Rbt.Spreadsheet.SheetOps
+let moreWorkbook (iterate: bool) =
+    let wb = Wb.createWorkbook () |> Wb.addSheet "Data" |> Wb.addSheet "Totals"
+    let wb =
+        wb |> setCells "sheet1"
+                ([ for row in 1 .. 12 do
+                     yield at row 0, Some (text (sprintf "item %d" (row % 4)))
+                     yield at row 1, Some (number (float (row * 3 % 7 + 1)))
+                     yield at row 2, Some (formula (sprintf "=B%d*2" (row + 1))) ]
+                 @ [ at 0 0, Some (text "Item"); at 0 1, Some (text "Qty"); at 0 2, Some (text "Double")
+                     at 14 1, Some (formula "=SUBTOTAL(109,B2:B13)"); at 14 2, Some (formula "=SUM(C2:C13)"); at 15 1, Some (formula "=AGGREGATE(9,5,B2:B13)")
+                     at 16 1, Some (formula "=SUBTOTAL(9,B2:B13)+RATE"); at 17 1, Some (formula "=SUM(Sales[Qty])"); at 18 1, Some (formula "=ROWS(Sales[Qty])+Data!A1")
+                     at 19 1, Some (formula "=SUM(Sheet1:Totals!F1)"); at 20 1, Some (formula "=Missing!A1+1"); at 21 1, Some (formula "=INDEX(B:B,5)+ROW()") ])
+           |> setCells "sheet2" [ at 0 0, Some (number 5.0); at 1 0, Some (formula "=Sheet1!B15*RATE"); at 2 0, Some (formula "=SUM(Sheet1!C2:C13)+A1"); at 0 5, Some (number 2.0); at 3 0, Some (formula "=LOCALRATE+1") ]
+           |> setCells "sheet3" [ at 0 0, Some (formula "=Data!A2+Data!A3"); at 1 0, Some (formula "=Sheet1!B17"); at 0 5, Some (number 3.0); at 2 0, Some (formula "=SUM(Data!A:A)") ]
+    let wb = { wb with Names = wb.Names |> Map.add (None, "RATE") "=Data!$A$1" |> Map.add (Some "sheet2", "LOCALRATE") "=Data!$F$1*10" }
+    let change, _ = Ops.defineTable "t" "sheet1" { From = at 0 0; To = at 12 2 } (Some "Sales") true None wb
+    { change.Book with Iteration = (if iterate then Some { Wb.IterativeCalculation.MaxIterations = 20; MaxChange = 0.001 } else None) }
+let handledOrFail label outcome = ok label (outcome <> Declined) (sprintf "left to the full recalculation: %s" (Recalc.lastDecline engine))
+do
+    start (moreWorkbook false)
+    eq "more: calculated" (valueAt "sheet1" 14 1 current, valueAt "sheet1" 17 1 current, valueAt "sheet2" 1 0 current) (CellValue.Number 50.0, CellValue.Number 50.0, CellValue.Number 250.0)
+    // A filter: only SUBTOTAL / AGGREGATE and what reads them.
+    let filtered = edit "a filter set" None (fun wb -> Wb.updateSheetModel "sheet1" (wb.Sheets.["sheet1"].Model |> setAutoFilter (Some { From = at 0 0; To = at 12 2 }) |> setColumnFilter 0 (FilterValues (Set.ofList [ "item 1" ], false))) wb)
+    handledOrFail "a filter set: by the engine" filtered
+    (match filtered with
+     | Incremental stats -> ok "a filter set: only SUBTOTAL / AGGREGATE and their readers are evaluated" (stats.EvaluatedFormulas >= 3 && stats.EvaluatedFormulas <= 9 && stats.EvaluatedFormulas * 2 < Recalc.formulaCount engine) (sprintf "%A of %d" stats (Recalc.formulaCount engine))
+     | Declined -> ())
+    ok "a filter set: SUBTOTAL leaves the hidden rows out, SUM does not" (valueAt "sheet1" 14 1 current = CellValue.Number 13.0 && valueAt "sheet1" 14 2 current = CellValue.Number 100.0) (sprintf "%A" (valueAt "sheet1" 14 1 current))
+    handledOrFail "the filter cleared" (edit "the filter cleared" None (fun wb -> Wb.updateSheetModel "sheet1" (wb.Sheets.["sheet1"].Model |> setAutoFilter None) wb))
+    eq "the filter cleared: the subtotal is back" (valueAt "sheet1" 14 1 current) (CellValue.Number 50.0)
+    // A row hidden by hand: AGGREGATE(9,5,...) and SUBTOTAL(109,...) leave it out.
+    handledOrFail "a row hidden" (edit "a row hidden" None (fun wb -> Wb.updateSheetModel "sheet1" (setRowHeight 3 0.0 wb.Sheets.["sheet1"].Model) wb))
+    // Names.
+    let renamed = edit "a name changed" None (Wb.setDefinedName None "RATE" "=Data!$F$1" None)
+    handledOrFail "a name changed: by the engine" renamed
+    (match renamed with
+     | Incremental stats -> ok "a name changed: the formulas that use a name, and their readers" (stats.EvaluatedFormulas >= 2 && stats.EvaluatedFormulas <= 8 && stats.EvaluatedFormulas * 2 < Recalc.formulaCount engine) (sprintf "%A" stats)
+     | Declined -> ())
+    eq "a name changed: its users follow" (valueAt "sheet2" 1 0 current) (CellValue.Number 94.0)
+    handledOrFail "a name deleted" (edit "a name deleted" None (fun wb -> (Wb.deleteDefinedName None "RATE" wb) |> Option.defaultValue wb))
+    ok "a name deleted: #NAME?" (match valueAt "sheet2" 1 0 current with CellValue.Error _ -> true | _ -> false) (sprintf "%A" (valueAt "sheet2" 1 0 current))
+    handledOrFail "a name defined again" (edit "a name defined" None (Wb.setDefinedName None "RATE" "=Data!$A$1" None))
+    handledOrFail "a sheet-scoped name changed" (edit "a sheet-scoped name changed" None (Wb.setDefinedName (Some "sheet2") "LOCALRATE" "=Data!$F$1*100" None))
+    eq "a sheet-scoped name changed: its user follows" (valueAt "sheet2" 3 0 current) (CellValue.Number 201.0)
+    // Tables.
+    handledOrFail "a table resized" (edit "a table resized" None (fun wb -> (Ops.resizeTable "t" "Sales" { From = at 0 0; To = at 8 2 } wb).Book))
+    eq "a table resized: the structured references follow" (valueAt "sheet1" 18 1 current) (CellValue.Number 13.0)
+    handledOrFail "a table renamed" (edit "a table renamed" None (fun wb -> (Ops.renameTable "t" "Sales" "Orders" wb).Book))
+    handledOrFail "a table removed" (edit "a table removed" None (fun wb -> (Ops.deleteTable "t" "Orders" true wb).Book))
+    handledOrFail "a table defined" (edit "a table defined" None (fun wb -> (fst (Ops.defineTable "t" "sheet1" { From = at 0 0; To = at 12 2 } (Some "Sales") true None wb)).Book))
+    // Rows and columns.
+    for label, sheetId, structureEdit in [ "a row inserted", "sheet1", InsertRows (5, 1); "rows deleted", "sheet1", DeleteRows (7, 2); "a column inserted", "sheet1", InsertCols (1, 1)
+                                           "a column deleted", "sheet1", DeleteCols (1, 1); "a row inserted on the sheet that is read", "sheet2", InsertRows (0, 1)
+                                           "a row deleted that a formula read", "sheet2", DeleteRows (0, 1); "a column inserted before a 3-D reference", "sheet3", InsertCols (2, 2) ] do
+        handledOrFail label (edit label None (fun wb -> fst (Wb.applyStructureEdit sheetId structureEdit wb)))
+    // Sheets.
+    handledOrFail "a sheet renamed" (edit "a sheet renamed" None (Wb.renameSheetEverywhere "sheet2" "Numbers"))
+    handledOrFail "a sheet renamed to a name formulas wait for" (edit "a sheet named Missing" None (fun wb -> Wb.addSheet "Missing" wb |> setCells "sheet4" [ at 0 0, Some (number 41.0) ]))
+    eq "the reference to it resolves" (valueAt "sheet1" (if (match valueAt "sheet1" 20 1 current with CellValue.Number _ -> true | _ -> false) then 20 else 19) 1 current |> (fun v -> match v with CellValue.Number _ -> true | _ -> false)) true
+    handledOrFail "sheets moved" (edit "sheets moved" None (Wb.moveSheet "sheet3" 0))
+    handledOrFail "a sheet copied" (edit "a sheet copied" None (Wb.duplicateSheet "sheet1" "copy1" "Sheet1 (2)" 1))
+    handledOrFail "a sheet removed" (edit "a sheet removed" None (fun wb -> match Wb.removeSheet "sheet2" wb with Some (after, _) -> after | None -> wb))
+    handledOrFail "another removed" (edit "the copy removed" None (fun wb -> match Wb.removeSheet "copy1" wb with Some (after, _) -> after | None -> wb))
+    handledOrFail "an edit of cells afterwards" (edit "cells after all that" None (setCells "sheet1" [ at 2 1, Some (number 40.0) ]))
+
+/// Random sequences of such edits (and of cells) on that workbook.
+let randomMore (iterate: bool) (seed: int) (steps: int) =
+    let random = Random seed
+    start (moreWorkbook iterate)
+    let mutable incremental = 0
+    let mutable copies = 0
+    let failuresBefore = fail
+    for step in 1 .. steps do
+        if fail = failuresBefore then
+            let ids = current.SheetOrder |> List.toArray
+            let sheetId = ids.[random.Next ids.Length]
+            let model = resolveSheet current.Sheets.[sheetId].Model
+            let name, change =
+                match random.Next 16 with
+                | 0 | 1 -> "a number", setCells sheetId [ at (random.Next 14) (random.Next 3), Some (number (float (random.Next 90))) ]
+                | 2 ->
+                    let bodies = [| "=SUBTOTAL(109,B2:B13)"; "=RATE*3"; "=SUM(Sales[Qty])"; "=Sheet1!B15+1"; "=SUM(Sheet1:Totals!F1)"; "=Data!A1"; "=AGGREGATE(9,5,B2:B9)"; "=E5+1"; "=F6*2"; "=Nowhere!B2"; "=ROW()+COLUMN()"; "=SUM(A:A)"; "=LOCALRATE"; "=INDEX(Sheet1!B:B,6)"; "=SEQUENCE(3)"; "=B2:B4*2"; "=SORT(Sheet1!B2:B5)"; "=OFFSET(Sheet1!A1,2,1)"; "=SUM(H3#)" |]
+                    "a formula", setCells sheetId [ at (random.Next 22) (3 + random.Next 4), Some (formula bodies.[random.Next bodies.Length]) ]
+                | 3 -> "a name set", Wb.setDefinedName None (if random.Next 2 = 0 then "RATE" else "OTHER") (sprintf "=Data!$%s$%d" (if random.Next 2 = 0 then "A" else "F") (1 + random.Next 3)) None
+                | 4 -> "a name deleted", (fun wb -> Wb.deleteDefinedName None (if random.Next 2 = 0 then "RATE" else "OTHER") wb |> Option.defaultValue wb)
+                | 5 -> "rows inserted", (fun wb -> fst (Wb.applyStructureEdit sheetId (InsertRows (random.Next 16, 1 + random.Next 2)) wb))
+                | 6 -> "rows deleted", (fun wb -> fst (Wb.applyStructureEdit sheetId (DeleteRows (1 + random.Next 16, 1 + random.Next 2)) wb))
+                | 7 -> "columns inserted", (fun wb -> fst (Wb.applyStructureEdit sheetId (InsertCols (random.Next 5, 1)) wb))
+                | 8 -> "columns deleted", (fun wb -> fst (Wb.applyStructureEdit sheetId (DeleteCols (3 + random.Next 4, 1)) wb))
+                | 9 ->
+                    "a filter", (fun wb ->
+                        let m = resolveSheet wb.Sheets.[sheetId].Model
+                        let next =
+                            if m.AutoFilter.IsSome && random.Next 2 = 0 then setAutoFilter None m
+                            else m |> setAutoFilter (Some { From = at 0 0; To = at 12 2 }) |> setColumnFilter 1 (FilterCustom ([ OpGreaterThan, string (random.Next 6) ], true))
+                        Wb.updateSheetModel sheetId next wb)
+                | 10 -> "a row hidden or shown", (fun wb -> Wb.updateSheetModel sheetId (setRowHeight (1 + random.Next 12) (if random.Next 2 = 0 then 0.0 else 20.0) (resolveSheet wb.Sheets.[sheetId].Model)) wb)
+                | 11 -> "a sheet renamed", Wb.renameSheetEverywhere sheetId (sprintf "%s%d" (if random.Next 3 = 0 then "Nowhere" else "Tab") step)
+                | 12 -> "a sheet moved", Wb.moveSheet sheetId (random.Next ids.Length)
+                | 13 when ids.Length < 6 ->
+                    copies <- copies + 1
+                    let id = sprintf "extra%d" copies
+                    (if random.Next 2 = 0 then "a sheet copied", Wb.duplicateSheet sheetId id (sprintf "Copy %d" copies) (random.Next ids.Length)
+                     else "a sheet added", (fun wb -> { wb with Sheets = Map.add id ({ Id = id; Name = sprintf "Added %d" copies; Model = createEmpty 50 10; Visible = true } : Wb.Sheet) wb.Sheets; SheetOrder = wb.SheetOrder @ [ id ] }
+                                                     |> setCells id [ at 0 0, Some (number 9.0); at 1 0, Some (formula "=A1+Sheet1!B2") ]))
+                | 14 when ids.Length > 2 -> "a sheet removed", (fun wb -> match Wb.removeSheet sheetId wb with Some (after, _) -> after | None -> wb)
+                | _ ->
+                    "a table changed", (fun wb ->
+                        try
+                            if wb.Tables.IsEmpty then (fst (Ops.defineTable "t" wb.SheetOrder.Head { From = at 0 0; To = at (6 + random.Next 6) 2 } (Some "Sales") true None wb)).Book
+                            elif random.Next 3 = 0 then (Ops.deleteTable "t" (wb.Tables |> Seq.head).Value.Name true wb).Book
+                            else
+                                let table = (wb.Tables |> Seq.head).Value
+                                (Ops.resizeTable "t" table.Name { From = at table.StartRow table.StartCol; To = at (table.StartRow + 3 + random.Next 9) table.EndCol } wb).Book
+                        with _ -> wb)
+            ignore model
+            match edit (sprintf "more%s seed %d step %d (%s)" (if iterate then " (iterating)" else "") seed step name) None change with
+            | Incremental _ -> incremental <- incremental + 1
+            | Declined -> ()
+    incremental
+do
+    declines.Clear()
+    let seeds = (match Environment.GetEnvironmentVariable "MORE_SEEDS" with null | "" -> 40 | value -> int value)
+    let steps = 40
+    let mutable incremental = 0
+    for seed in 1 .. seeds do
+        incremental <- incremental + randomMore (seed % 4 = 0) (900 + seed) steps
+    printfn "  edits that are more than cells: %d of %d random edits incremental; left to the full recalculation: %s" incremental (seeds * steps)
+        (if declines.Count = 0 then "none" else declines |> Seq.map (fun kv -> sprintf "%d x \"%s\"" kv.Value kv.Key) |> String.concat ", ")
+    ok "edits that are more than cells are calculated by the engine" (incremental * 100 >= seeds * steps * 97) (sprintf "%d of %d" incremental (seeds * steps))
+    reportFullRuns "with edits that are more than cells"
 
 // The formula index: known for most of the cell maps that went by, and never wrong (checked in `edit`).
 printfn "  formula index: known for %d of %d cell maps checked" indexKnown indexChecks

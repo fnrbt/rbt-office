@@ -95,10 +95,10 @@ do
     // ... and one that makes it again.
     let again = settledInOne "the cycle made again" (recovered |> setCells "sheet2" [ at 0 0, Some (formula "=Sheet1!B1") ])
     eq "the cycle made again (through B1 now): all three" (valueAt "sheet1" 0 0 again, valueAt "sheet1" 0 1 again, valueAt "sheet2" 0 0 again) (cycle, cycle, cycle)
-    // The engine leaves an edit that makes a cycle to the full pass, and goes on from its result.
     let engine = Recalc.build recovered
     let edited = recovered |> setCells "sheet2" [ at 0 0, Some (formula "=Sheet1!B1") ]
-    eq "the incremental engine declines the edit that makes the cycle" (Recalc.recalculate engine edited None |> Option.isSome, Recalc.lastDecline engine) (false, "a circular reference among the formulas to evaluate")
+    // The engine calculates an edit that makes a cycle itself, as the full pass does.
+    ok "the incremental engine calculates the edit that makes the cycle" (match Recalc.recalculate engine edited None with Some result -> same result (full edited) && valueAt "sheet2" 0 0 result = cycle | None -> false) (Recalc.lastDecline engine)
     let fullResult, fullEngine = Recalc.recalculateAll edited
     ok "the full pass's engine goes on incrementally beside the cycle" (
         match Recalc.recalculate fullEngine (fullResult |> setCells "sheet2" [ at 1 0, Some (number 8.0) ]) None with
@@ -204,9 +204,9 @@ do
     eq "... both it and what reads it on the next sheet" (valueAt "sheet1" 1 3 current) (n 13.0)
     step "a 3-D reference entered" (setCells "sheet3" [ at 5 5, Some (formula "=AVERAGE(Sheet1:Two!A1)+COUNT(Sheet1:Three!A1:B2)") ])
     eq "... calculated" (valueAt "sheet3" 5 5 current) (n 13.5)
-    // The tab order is part of what a 3-D reference reads: another order is more than an edit of cells.
+    // The tab order is part of what a 3-D reference reads.
     let moved = { current with SheetOrder = [ "sheet2"; "sheet1"; "sheet3" ] }
-    eq "sheets moved: left to the full recalculation" (Recalc.recalculate engine moved None |> Option.isSome, Recalc.lastDecline engine) (false, "more than cells changed (sheets, names, tables, filters, rows or columns)")
+    ok "sheets moved: the formulas with 3-D references are calculated, by the engine" (match Recalc.recalculate (Recalc.build current) moved None with Some result -> same result (full moved) | None -> false) ""
     let movedFull = settledInOne "sheets moved" moved
     eq "the span Two:Three holds Sheet1 now, Sheet1:Three no longer Two" (valueAt "sheet1" 0 3 movedFull, valueAt "sheet1" 1 3 movedFull) (n 242.0, n 7.0)
     // A cycle through a 3-D reference.
@@ -232,11 +232,13 @@ do
     eq "two formulas are on the cycle" (Recalc.cyclicCount engine) 2
     ok "a second run leaves the settled workbook exactly as it is" (same calculated (full calculated)) ""
     ok "switched on in a workbook that showed the cycle error: the formulas start from nothing" (near (valueAt "sheet1" 2 0 (full { strict with Iteration = iterating.Iteration })) 1111.111) ""
-    // An input of the cycle edited: the engine leaves it to the full pass, which settles it again.
+    // An input of the cycle edited: the engine settles it again, to the numbers of the full pass.
     let edited = calculated |> setCells "sheet1" [ at 0 0, Some (number 2000.0) ]
-    eq "an edit that reaches the cycle is left to the full recalculation" (Recalc.recalculate engine edited None |> Option.isSome) false
     let again, engineAfter = Recalc.recalculateAll edited
     ok "... which settles at the new fixed point" (near (valueAt "sheet1" 2 0 again) 2222.222) (sprintf "%A" (valueAt "sheet1" 2 0 again))
+    ok "an edit that reaches the cycle is calculated by the engine, to the same numbers" (match Recalc.recalculate engine edited None with Some result -> same result again | None -> false) (Recalc.lastDecline engine)
+    // ... also by an engine that was built for the workbook and never ran a full pass over it.
+    ok "... and by an engine built for the calculated workbook" (match Recalc.recalculate (Recalc.build calculated) edited None with Some result -> same result again | None -> false) ""
     // An edit beside the cycle is incremental and leaves the cycle's values alone.
     match Recalc.recalculate engineAfter (again |> setCells "sheet3" [ at 0 0, Some (number 5.0) ]) None with
     | Some result -> ok "an edit beside the cycle is incremental" (valueAt "sheet1" 2 0 result = valueAt "sheet1" 2 0 again && same result (full result)) ""
@@ -245,6 +247,18 @@ do
     let growing = { (three () |> setCells "sheet1" [ at 0 0, Some (formula "=Two!A1+1") ] |> setCells "sheet2" [ at 0 0, Some (formula "=Sheet1!A1") ]) with Iteration = Some { MaxIterations = 10; MaxChange = 0.001 } }
     eq "a cycle that grows: as many steps as the workbook allows" (valueAt "sheet1" 0 0 (full growing)) (n 10.0)
     eq "... and ten more at the next run, as in Excel" (valueAt "sheet1" 0 0 (full (full growing))) (n 20.0)
+    // ... at an edit elsewhere too: Excel calculates a circular reference at every calculation.
+    let grown, growingEngine = Recalc.recalculateAll growing
+    let beside = grown |> setCells "sheet3" [ at 4 4, Some (number 1.0) ]
+    ok "an edit beside a cycle that grows: ten more, as the full pass gives" (match Recalc.recalculate growingEngine beside None with Some result -> valueAt "sheet1" 0 0 result = n 20.0 && same result (full beside) | None -> false) ""
+    // An engine that was only built for the workbook takes its circular references as settled (the workbook
+    // came calculated) until an edit reaches one - or until it has looked for them.
+    ok "... an engine that was only built leaves the cycle as the workbook has it" (match Recalc.recalculate (Recalc.build grown) beside None with Some result -> valueAt "sheet1" 0 0 result = n 10.0 | None -> false) ""
+    let looked = Recalc.build grown
+    Recalc.findCycles looked
+    ok "... and gives ten more once it has looked for the circular references" (match Recalc.recalculate looked beside None with Some result -> valueAt "sheet1" 0 0 result = n 20.0 && same result (full beside) | None -> false) ""
+    let reaching = grown |> setCells "sheet2" [ at 5 5, Some (formula "=Sheet1!A1*2") ] |> setCells "sheet1" [ at 0 0, Some (formula "=Two!A1+2") ]
+    ok "... an edit that reaches the cycle calculates it, whatever the engine knew" (match Recalc.recalculate (Recalc.build grown) reaching None with Some result -> same result (full reaching) | None -> false) ""
 
 printfn "stage45-order: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

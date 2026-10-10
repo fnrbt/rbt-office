@@ -946,6 +946,18 @@ let emptySheetAxes : SheetAxes =
     { HiddenRowSizes = Map.empty; HiddenColSizes = Map.empty; RowLevels = Map.empty; ColLevels = Map.empty
       CollapsedRows = Set.empty; CollapsedCols = Set.empty }
 
+/// A row / column insertion or deletion as a recalculation needs to know it:
+/// rows (or columns) from `At` on moved by `Count` (down / right when
+/// `Insert`, else up / left over the `Count` that were deleted). `Version`
+/// is the `StructureVersion` the edit gave the sheet.
+type StructureMove = {
+    OnRows: bool
+    Insert: bool
+    At: int
+    Count: int
+    Version: int
+}
+
 type SpreadsheetModel = {
     /// Sparse cell storage - only non-empty cells
     Cells: Map<CellAddress, CellData>
@@ -1128,6 +1140,9 @@ type SpreadsheetModel = {
     /// cell reference without being modelled (sparklines, x14 conditional
     /// formats) is only written back while this is what it was at import.
     StructureVersion: int
+    /// The row / column edit that gave the sheet its `StructureVersion` (as `StructureMove`),
+    /// when that was one edit: a recalculation then knows which cells moved.
+    StructureMove: StructureMove option
 
     /// Set on the stand-in for a sheet of an opened file that has not been
     /// converted to a model yet (a sheet is converted when it is first shown,
@@ -1220,6 +1235,7 @@ let createEmpty rowCount colCount = {
     VeryHidden = false
     SourceSheet = None
     StructureVersion = 0
+    StructureMove = None
     Deferred = None
 }
 
@@ -2996,6 +3012,7 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
     let delta = if isInsert then count else -count
     { model with
         StructureVersion = model.StructureVersion + 1
+        StructureMove = Some { OnRows = onRows; Insert = isInsert; At = at; Count = count; Version = model.StructureVersion + 1 }
         Hyperlinks = hyperlinks
         KeptRanges = keptRanges
         DataTables = dataTables

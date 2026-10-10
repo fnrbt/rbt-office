@@ -4,7 +4,7 @@
 // reading the written file again, and frame times while scrolling a sheet.
 //
 // Usage:
-//   node tools/xlsx-browser/perf.mjs --dist $DIST [--profile load|export|reread|scroll|edits|first] [--first-runs N] [--only-first] [--sheet NAME] [--frames N] [--steps 120,0] [--no-scroll] [--no-jump] [--edits] [file.xlsx ...]
+//   node tools/xlsx-browser/perf.mjs --dist $DIST [--profile load|export|reread|scroll|edits|first|more] [--first-runs N] [--only-first] [--more] [--sheet NAME] [--frames N] [--steps 120,0] [--no-scroll] [--no-jump] [--edits] [file.xlsx ...]
 // (--edits also times edits of a large block: a format on 10 000 cells, a paste of 1 000 x 20
 // cells, a typed entry and their undo, on the first sheet and on the sheet with the most cells.)
 // (--no-jump leaves out the jumps to the far end: 0.1.4 took minutes for one frame there.)
@@ -32,6 +32,7 @@ const noJump = (() => { const i = args.indexOf('--no-jump'); if (i < 0) return f
 const noScroll = (() => { const i = args.indexOf('--no-scroll'); if (i < 0) return false; args.splice(i, 1); return true; })();
 const firstRuns = Number(opt('--first-runs') ?? 5);
 const edits = (() => { const i = args.indexOf('--edits'); if (i < 0) return false; args.splice(i, 1); return true; })();
+const more = (() => { const i = args.indexOf('--more'); if (i < 0) return false; args.splice(i, 1); return true; })();
 const onlyFirst = (() => { const i = args.indexOf('--only-first'); if (i < 0) return false; args.splice(i, 1); return true; })();
 const port = Number(process.env.PORT ?? 16101);
 const jszipDir = [process.env.JSZIP_DIR, path.join(repo, 'node_modules/jszip'), path.resolve(repo, '../rbt-office/node_modules/jszip')].find((p) => p && fs.existsSync(p));
@@ -87,6 +88,42 @@ try {
             const t1 = performance.now();
             grid.EnterText(7, 3, '12345');
             return { first, second: performance.now() - t1, kind: s ? s.Kind + (s.Reason ? ': ' + s.Reason : '') + ', ' + s.Formulas + ' formulas in the graph' : '' };
+        },
+        // Edits that are more than cells (--more): a paste whose formulas close a circular reference
+        // (milk-street: Annual!C21:N40 pasted at C101), rows inserted and deleted, a defined name,
+        // a filter, sheets renamed / added / moved / deleted. Each: [the call in ms, what the recalculation was].
+        async more(name) {
+            await window.perf.openFresh(name);
+            const recalc = () => { const s = grid.GetRecalcStats ? grid.GetRecalcStats() : null; return s ? (s.Kind === 'incremental' ? 'incremental: ' + s.ChangedCells + ' cells changed, ' + s.EvaluatedFormulas + ' of ' + s.Formulas + ' formulas evaluated' : s.Kind + ' recalculation' + (s.Reason ? ': ' + s.Reason : '')) : ''; };
+            const timed = async (run) => { const t0 = performance.now(); try { await run(); } catch (e) { return [performance.now() - t0, 'threw: ' + String(e && e.message || e)]; } return [performance.now() - t0, recalc()]; };
+            const out = {};
+            grid.EnterText(7, 3, '54321'); grid.Undo();   // (the graph is built)
+            grid.SelectRange(20, 2, 39, 13); await grid.Copy();
+            grid.SelectCell(100, 2);
+            out.pasteCycle = await timed(() => grid.Paste());
+            out.pasteCycleUndo = await timed(() => grid.Undo());
+            out.pasteCycleRedo = await timed(() => grid.Redo());
+            out.typedBesideCycle = await timed(() => grid.EnterText(7, 3, '777'));
+            grid.Undo(); grid.Undo();
+            grid.SelectCell(30, 2);
+            out.insertRow = await timed(() => grid.InsertRows(30, 1));
+            out.insertRowUndo = await timed(() => grid.Undo());
+            out.deleteRow = await timed(() => grid.DeleteRows(60, 2));
+            out.deleteRowUndo = await timed(() => grid.Undo());
+            out.insertColumn = await timed(() => grid.InsertColumns(3, 1));
+            await timed(() => grid.Undo());
+            out.defineName = await timed(() => grid.SetDefinedName('PerfRate', '=' + "'" + grid.GetSheetNames()[0].replace(/'/g, "''") + "'" + '!$D$8'));
+            out.deleteName = await timed(() => grid.DeleteDefinedName('PerfRate'));
+            const used = grid.GetUsedRange();
+            out.setFilter = await timed(() => { grid.SetAutoFilter('A' + (used.firstRow + 1) + ':' + 'H' + (used.lastRow + 1)); grid.SetFilter(2, { conditions: [{ operator: 'greaterThan', value: 0 }] }); });
+            out.clearFilter = await timed(() => grid.ClearAutoFilter());
+            const names = grid.GetSheetNames();
+            out.renameSheet = await timed(() => grid.RenameSheet(0, names[0] + ' x'));
+            await timed(() => grid.Undo());
+            out.addSheet = await timed(() => grid.AddSheet('Perf sheet'));
+            out.moveSheet = await timed(() => grid.MoveSheet(names.length, 0));
+            out.deleteSheet = await timed(() => grid.DeleteSheet(0));
+            return out;
         },
         async edits(index) {
             if (grid.GetActiveSheetIndex() !== index) grid.SwitchSheet(index);
@@ -246,6 +283,11 @@ try {
                 console.log(`    one typed number                      ${both(e.type)}; one typed text ${both(e.typeText)}`);
                 console.log(`    Delete on 10 000 cells                ${both(e.clear)}; undo ${both(e.clearUndo)}`);
             }
+        }
+        if (more) {
+            const m = await phase('more', () => tab.evaluate((name) => window.perf.more(name), file));
+            console.log('  edits that are more than cells:');
+            for (const [key, [time, kind]] of Object.entries(m)) console.log(`    ${key.padEnd(18)} ${ms(time).padStart(8)}  [${kind}]`);
         }
         const target = sheetName ? sheets.find((s) => s.name === sheetName) : sheets.slice().sort((a, b) => b.rows - a.rows)[0];
         if (target && !noScroll) {

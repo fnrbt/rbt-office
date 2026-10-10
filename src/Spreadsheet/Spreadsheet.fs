@@ -1103,15 +1103,21 @@ type Spreadsheet(container: Element) =
     let recalculateFormulas () =
         recalculateAfterEdit None
 
-    /// Full recalculation of the whole workbook, whatever the edit was (rows /
-    /// columns moved, sheets, names).
+    /// Recalculation after an edit that is more than one of cells (rows /
+    /// columns moved, sheets, names, tables): the engine calculates the
+    /// formulas that can tell (see Recalc), and every formula of the
+    /// workbook only when it has no calculated state to start from.
     let recalculateEverything () =
+        recalculateAfterEdit None
+
+    /// The full recalculation of the whole workbook, whatever the engine holds.
+    let recalculateFromScratch () =
         invalidateCalcEngine()
         convertFormulaSheets ()
         let recalculated, engine = currentWorkbookSnapshot() |> SpreadsheetRecalc.recalculateAll
         installWorkbookSnapshot recalculated
         lastRecalculation <- "full"
-        lastFullReason <- "rows, columns, sheets or names changed"
+        lastFullReason <- "the workbook was calculated from scratch"
         adoptConvertedSheets ()
         recalcEngine <- (if incrementalRecalculation then Some engine else None)
         calculatedWorkbook <- Some recalculated
@@ -2056,7 +2062,6 @@ type Spreadsheet(container: Element) =
             recalculateEverything()
             let restore (state: Rbt.Spreadsheet.Workbook.DefinedName option) (m: SpreadsheetModel) =
                 workbook <- workbook |> Option.map (Rbt.Spreadsheet.Workbook.restoreDefinedName scope name state)
-                invalidateCalcEngine()
                 m
             model <- pushCommand { Undo = restore before; Redo = restore after; Description = description } model
             true
@@ -5883,12 +5888,10 @@ type Spreadsheet(container: Element) =
             let id = sheetIdForIndex from
             let move (position: int) () =
                 installBook (Rbt.Spreadsheet.Workbook.moveSheet id position (bookSnapshot ()))
-                rebaseCalcEngine ()
                 // A 3-D reference (`Jan:Mar!B1`) reads the sheets between its two ends:
-                // other sheets now. (No formula and no cell changed otherwise.)
-                match (if incrementalRecalculation then ensureRecalcEngine () else None) with
-                | Some engine when SpreadsheetRecalc.threeDCount engine = 0 -> ()
-                | _ -> recalculateEverything ()
+                // other sheets now. (No formula and no cell changed otherwise: the
+                // engine calculates the formulas with such a reference, and SHEET().)
+                recalculateEverything ()
             runBookStep "Move sheet" (move target) (move from)
             render()
 
@@ -8365,7 +8368,7 @@ type Spreadsheet(container: Element) =
                 invalidateCalcEngine()
                 m
             put after model |> ignore
-            recalculateEverything()
+            recalculateFromScratch()
             model <- pushCommand { Undo = put before; Redo = put after; Description = "Iterative calculation" } model
             render()
 

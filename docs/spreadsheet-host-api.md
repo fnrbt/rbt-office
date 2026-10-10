@@ -622,13 +622,27 @@ The `pageSetup` object:
 Nothing to call for the recalculation itself: every edit recalculates what it has to. What a host can read and set:
 
 - `GetRecalcStats()` -> `{ Kind: "incremental" | "full" | "none", Reason, ChangedCells, ReachedFormulas, EvaluatedFormulas, Formulas }` (existing; PascalCase keys).
-  After an edit of cells the kind is "incremental" - also in workbooks with dynamic arrays, OFFSET / INDIRECT and 3-D references. It is "full" (every formula of
-  the workbook, in one dependency order across the sheets) with one of these reasons:
-  - "more than cells changed (sheets, names, tables, filters, rows or columns)"
-  - "rows, columns, sheets or names changed" (a member that always recalculates everything)
-  - "a circular reference among the formulas to evaluate" (the edit makes, or reaches, a circular reference)
+  The kind is "incremental" after an edit of cells - also in workbooks with dynamic arrays, OFFSET / INDIRECT and 3-D references, and when the edit
+  makes or reaches a circular reference - and (since 0.1.9) after edits that are more than cells; only the formulas that can tell are evaluated:
+  - a **circular reference** made or reached by the edit (a paste, a typed formula): its formulas show the cycle error, or - with iterative
+    calculation - are calculated in sweeps, inside the incremental pass. With iterative calculation a circular reference that did not settle is
+    calculated again at every edit (as in Excel); one that settled is left alone until something it reads changes. (The circular references
+    of a file that was just opened are taken as settled - the file came calculated - until an edit reaches one.)
+  - a **filter** set, changed or removed, rows hidden or shown: SUBTOTAL / AGGREGATE formulas and what reads them.
+  - a **defined name** defined, changed or deleted: the formulas that use that name (directly or through another name) and what reads them.
+  - a **table** defined, resized, renamed, removed, its total row: the formulas with structured references and what reads them.
+  - **rows / columns inserted or deleted**: formulas that only follow their cells (`=B5` becoming `=B6`) are re-pointed and keep their value
+    without being evaluated; evaluated are the formulas the edit really changes (a range it took cells from, `#REF!`), those that read the sheet
+    at a place that stayed while cells moved under it (a whole column, `INDEX(B:B,3)`), ROW() / COLUMN() and the like, SUBTOTAL / AGGREGATE, and
+    the arrays of the sheet. The undo of such an edit evaluates what reads the sheet.
+  - **sheets** added, deleted, moved, copied back by an undo: the formulas that read a deleted / restored sheet, formulas waiting for a sheet of
+    that name, 3-D references and SHEET() / SHEETS(). (A rename and a copy change no value: the graph is built again at the next edit.)
+  `EvaluatedFormulas` counts evaluations (the sweeps of an iterated circular reference count each time).
+  It is "full" (every formula of the workbook, in one dependency order across the sheets) with one of these reasons:
+  - "the setting of iterative calculation changed" / "the workbook was calculated from scratch" (`SetIterativeCalculation`)
   - "the dynamic arrays do not settle (a circular reference through spilled cells)"
   - "formulas that choose their precedents (OFFSET, INDIRECT) do not settle (a circular reference through them)"
+  - "rows or columns changed on a sheet that is not converted" (does not happen through the component: it converts the sheets first)
   - "no calculated state to start from" / "incremental recalculation is switched off"
 - `SetIncrementalRecalculation(enabled: boolean)` (existing): off = every edit is a full recalculation.
 - Circular references. The formulas ON a circular reference - within a sheet, across sheets, through a defined name, a 3-D reference or the cells of a

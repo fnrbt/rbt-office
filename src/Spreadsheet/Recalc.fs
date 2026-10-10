@@ -24,16 +24,31 @@ open Rbt.Spreadsheet.Formula
 // recalculation of the edited workbook gives (provided the workbook was
 // calculated before the edit).
 //
-// It declines (None: the caller runs the full recalculation) when the edit
-// is not one of cells alone (names, tables, sheets, filters, structure) and
-// when the formulas to evaluate are part of a cycle. Volatile functions (NOW,
-// RAND ...) are evaluated again at every edit, with what reads them. A 3-D
-// reference reads its range on every sheet of its span (in the tab order the
-// graph was built for; another order is "more than cells" and builds it
-// again). Formulas that choose their precedents while they are evaluated
-// (OFFSET, INDIRECT, the range and intersection operators) are evaluated at
-// every edit too, and once more whenever a value changed after they were:
-// see `recalculate`. Dynamic arrays are part of the graph: see there.
+// An edit can be more than one of cells: `recalculate` compares what the
+// engine holds with the edited workbook and has the formulas that can tell
+// wired again and calculated - those that use a defined name that changed,
+// structured references when a table changed, SUBTOTAL / AGGREGATE when a
+// filter or hidden rows changed, what reads a sheet that was removed, renamed
+// or whose rows or columns moved, 3-D references when the sheets or their
+// order changed (see `Surroundings`). Rows or columns inserted or deleted are
+// known as such (`Model.StructureMove`): a formula that only followed its
+// cells is wired again and keeps its value (`followsMove`).
+//
+// A circular reference the edit makes or reaches is found among the formulas
+// the pass has to calculate (their strongly connected components): its
+// formulas show the cycle error, or - in a workbook with iterative
+// calculation - are calculated in sweeps, in reading order. Volatile
+// functions (NOW, RAND ...) are evaluated again at every edit, with what
+// reads them. A 3-D reference reads its range on every sheet of its span.
+// Formulas that choose their precedents while they are evaluated (OFFSET,
+// INDIRECT, the range and intersection operators) are evaluated at every
+// edit too, and once more whenever a value changed after they were: see
+// `recalculate`. Dynamic arrays are part of the graph: see there.
+//
+// It declines (None: the caller runs the full recalculation) when the
+// workbook's setting of iterative calculation changed, and when dynamic
+// arrays or OFFSET / INDIRECT formulas do not settle (a circular reference
+// through them).
 //
 // The full recalculation of a workbook (`recalculateAll`, what
 // Formula.recalculateWorkbook runs) is a pass of the same graph over every
@@ -51,6 +66,8 @@ type RangeGroup(sheet: SheetState, r0: int, c0: int, r1: int, c1: int, key: stri
     member _.Key = key
     member val Owners = ResizeArray<Node>() with get
     member val Mark = 0 with get, set
+    /// The batch of formulas taken out of the graph that last swept the owners (`unwireMany`).
+    member val SweepMark = 0 with get, set
 
 /// A formula cell, or a cell a formula reads on its own.
 and Node(sheet: SheetState, row: int, col: int) =
@@ -76,6 +93,23 @@ and Node(sheet: SheetState, row: int, col: int) =
     member val Random = false with get, set
     /// The formula reads a 3-D reference (`Jan:Mar!B1`), itself or through a name.
     member val ThreeD = false with get, set
+    /// What the formula is made of (`classify`): 1 a function that gives another value every time,
+    /// 2 references chosen while it is evaluated, 4 a 3-D reference, 8 a function that leaves out
+    /// hidden rows (SUBTOTAL, AGGREGATE), 16 a defined name, 32 a structured reference, 64 a
+    /// function of the workbook's sheets (SHEET, SHEETS), 128 a reference to a sheet there is none of.
+    member val Traits = 0 with get, set
+    /// Which wiring of a formula this is (`Engine.WireCount` when it was wired).
+    member val WireStamp = 0 with get, set
+    /// The batch that takes the formula out of the graph / that last swept what reads this cell (`unwireMany`).
+    member val UnwireMark = 0 with get, set
+    member val SweepMark = 0 with get, set
+    /// Found on a circular reference by the last pass that reached it.
+    member val OnCycle = false with get, set
+    /// The round of a pass that last found it on a circular reference.
+    member val CircularRound = 0 with get, set
+    /// With iterative calculation: the circular reference it is on did not settle when it was
+    /// last calculated (or has not been calculated here yet) - it is calculated at every edit.
+    member val Unsettled = true with get, set
     // Strongly connected components of a round (the full pass marks cycles).
     member val SccPass = 0 with get, set
     member val SccIndex = 0 with get, set
@@ -149,6 +183,12 @@ type Engine = {
     NameTraits: Dictionary<string, int>
     /// Formulas that read a 3-D reference: what they read depends on the order of the sheets.
     mutable ThreeD: int
+    /// Formulas found on a circular reference (`Node.OnCycle`; entries whose flag is down are stale).
+    /// With iterative calculation they are calculated again at every edit, as in Excel.
+    mutable WireCount: int
+    mutable Cyclic: ResizeArray<Node>
+    /// Every circular reference of the graph is in `Cyclic` (a pass over all of it has looked).
+    mutable CyclesKnown: bool
 }
 
 let private keyOf (row: int) (col: int) : float = float row * 16384.0 + float col
@@ -181,13 +221,16 @@ let private traitsOf (name: string) =
     | false, _ ->
         let call = Function (name, [])
         let traits = if containsDynamicReference call then 2 elif containsVolatile call then 1 else 0
+        let upper = name.ToUpperInvariant()
+        let traits =
+            traits
+            ||| (if upper = "SUBTOTAL" || upper = "AGGREGATE" then 8 else 0)
+            ||| (if upper = "SHEET" || upper = "SHEETS" then 64 else 0)
         if functionTraits.Count > 4096 then functionTraits.Clear()
         functionTraits.[name] <- traits
         traits
 
-/// One walk over a formula and the defined names it uses: 1 a function that
-/// gives another value every time, 2 references chosen while it is evaluated,
-/// 4 a 3-D reference.
+/// One walk over a formula and the defined names it uses: see `Node.Traits`.
 let rec private classifyWith (engine: Engine) (workbook: Workbook) (sheetId: SheetId) (seen: Set<string>) (expr: Expr) : int =
     let stack = ResizeArray<Expr>()
     stack.Add expr
@@ -200,7 +243,9 @@ let rec private classifyWith (engine: Engine) (workbook: Workbook) (sheetId: She
         | CellRef r | SpillRef r | RangeRef (r, _) ->
             match r.Sheet with
             | Some qualifier when qualifier.IndexOf ':' >= 0 -> traits <- traits ||| 4
-            | _ -> ()
+            | Some qualifier -> if (resolveSheetName qualifier workbook).IsNone then traits <- traits ||| 128
+            | None -> ()
+        | TableRef _ -> traits <- traits ||| 32
         | UnaryOp (_, inner) -> stack.Add inner
         | BinOp (left, _, right) ->
             stack.Add left
@@ -210,6 +255,7 @@ let rec private classifyWith (engine: Engine) (workbook: Workbook) (sheetId: She
             for arg in args do
                 stack.Add arg
         | NameRef name ->
+            traits <- traits ||| 16
             let upper = name.ToUpperInvariant()
             let key = sheetId + "|" + upper
             match engine.NameTraits.TryGetValue key with
@@ -293,6 +339,9 @@ let private dropGroup (sheet: SheetState) (group: RangeGroup) =
     else
         sheet.Wide.Remove group |> ignore
 
+let private noNodes : Node array = [||]
+let private noGroups : RangeGroup array = [||]
+
 /// Take a formula out of the graph: what it read no longer leads to it.
 let private unwire (engine: Engine) (node: Node) =
     for precedent in node.Precedents do
@@ -318,17 +367,53 @@ let private unwire (engine: Engine) (node: Node) =
     node.Dynamic <- false
     node.Random <- false
     node.ThreeD <- false
+    node.Traits <- 0
+    node.OnCycle <- false
+    node.Unsettled <- true
     if node.Dependents.Count = 0 then
         node.Sheet.Nodes.Remove (keyOf node.Row node.Col) |> ignore
 
-let private noNodes : Node array = [||]
-let private noGroups : RangeGroup array = [||]
+/// Take many formulas out of the graph at once. A cell that thousands of
+/// formulas read (the cell of a defined name, a total) holds them in a list:
+/// taking them out one by one searches that list once for each, so each list
+/// is gone through once instead, for the whole batch.
+let private unwireMany (engine: Engine) (nodes: ResizeArray<Node>) =
+    if nodes.Count <= 4 then
+        for node in nodes do
+            if node.IsFormula then unwire engine node
+    else
+        engine.EdgeMark <- engine.EdgeMark + 1
+        let batch = engine.EdgeMark
+        for node in nodes do
+            if node.IsFormula then node.UnwireMark <- batch
+        for node in nodes do
+            if node.IsFormula && node.UnwireMark = batch then
+                for precedent in node.Precedents do
+                    if precedent.SweepMark <> batch then
+                        precedent.SweepMark <- batch
+                        precedent.Dependents.RemoveAll (fun reader -> reader.UnwireMark = batch) |> ignore
+                        if not precedent.IsFormula && precedent.Dependents.Count = 0 then
+                            precedent.Sheet.Nodes.Remove (keyOf precedent.Row precedent.Col) |> ignore
+                for group in node.Ranges do
+                    if group.SweepMark <> batch then
+                        group.SweepMark <- batch
+                        group.Owners.RemoveAll (fun owner -> owner.UnwireMark = batch) |> ignore
+                        if group.Owners.Count = 0 then dropGroup group.Sheet group
+                node.Precedents <- noNodes
+                node.Ranges <- noGroups
+        // (What is left of each: as `unwire` leaves a formula that reads nothing.)
+        for node in nodes do
+            if node.IsFormula && node.UnwireMark = batch then
+                node.UnwireMark <- 0
+                unwire engine node
 
 /// Put a formula into the graph.
 let private wire (engine: Engine) (workbook: Workbook) (sheet: SheetState) (row: int) (col: int) (formula: string) : Node =
     let node = nodeAt sheet row col
     node.Formula <- formula
     node.IsFormula <- true
+    engine.WireCount <- engine.WireCount + 1
+    node.WireStamp <- engine.WireCount
     engine.Formulas <- engine.Formulas + 1
     match parseFormula formula with
     | Ok expr ->
@@ -358,6 +443,7 @@ let private wire (engine: Engine) (workbook: Workbook) (sheet: SheetState) (row:
         node.Precedents <- (if precedents.Count = 0 then noNodes else precedents.ToArray())
         node.Ranges <- (if ranges.Count = 0 then noGroups else ranges.ToArray())
         let traits = classify engine workbook sheet.Id expr
+        node.Traits <- traits
         if traits &&& 3 <> 0 then
             node.Volatile <- true
             engine.Volatile.Add node
@@ -396,6 +482,9 @@ let private buildGraph (unloadedToo: bool) (workbook: Workbook) : Engine =
         LastCyclic = 0
         NameTraits = Dictionary<string, int>()
         ThreeD = 0
+        WireCount = 0
+        Cyclic = ResizeArray<Node>()
+        CyclesKnown = false
     }
     for KeyValue (sheetId, sheet) in workbook.Sheets do
         let state = sheetState engine sheetId
@@ -623,8 +712,13 @@ let private sameSurroundings (engine: Engine) (edited: Workbook) =
 /// The cells an edit changed: those named by `hint`, or - without one - the
 /// cells of every sheet whose cell map is another one, compared cell by cell.
 /// `restyled` takes the spilled cells that changed in their format alone.
+///
+/// `structural` names the sheets whose rows or columns moved: of those only
+/// the cells that hold or held a formula are compared (through the formula
+/// index - the values are not walked); the caller has everything that reads
+/// the sheet calculated again.
 let private collectChanges (engine: Engine) (edited: Workbook) (hint: (SheetId * CellAddress) list option)
-                           (restyled: ResizeArray<struct (SheetState * CellAddress)>) : ResizeArray<CellChange> =
+                           (restyled: ResizeArray<struct (SheetState * CellAddress)>) (structural: HashSet<SheetId>) : ResizeArray<CellChange> =
     let changes = ResizeArray<CellChange>()
     match hint with
     | Some cells ->
@@ -657,7 +751,43 @@ let private collectChanges (engine: Engine) (edited: Workbook) (hint: (SheetId *
                 // A sheet that was a stand-in and is loaded now holds what its file held.
                 let beforeCells = if isLoaded before then loadedCells before else loadedCells after
                 let afterCells = loadedCells after
-                if not (obj.ReferenceEquals(beforeCells, afterCells)) then
+                if not (isLoaded before) && isLoaded after then
+                    // The sheet was converted since (its formulas were known from the file):
+                    // a formula that was rewritten on the way - a sheet it names was renamed,
+                    // rows it reads moved - is another formula than the graph holds.
+                    let seen = HashSet<float>()
+                    for node in List.ofSeq state.Nodes.Values do
+                        if node.IsFormula then
+                            seen.Add (keyOf node.Row node.Col) |> ignore
+                            let now = match Map.tryFind { Row = node.Row; Col = node.Col } afterCells with Some cell -> ValueSome cell | None -> ValueNone
+                            let text = formulaOf now
+                            if isNull text || text <> node.Formula then
+                                let was : CellData voption =
+                                    match now with
+                                    | ValueSome cell -> ValueSome { cell with Value = CellValue.Formula (node.Formula, effectiveValue now) }
+                                    | ValueNone -> ValueSome { Value = CellValue.Formula (node.Formula, CellValue.Empty); Format = defaultFormat; Comment = None }
+                                changes.Add { State = state; Row = node.Row; Col = node.Col; Before = was; After = now }
+                    for addr in formulaIndexOf afterCells do
+                        if seen.Add (keyOf addr.Row addr.Col) then
+                            changes.Add { State = state; Row = addr.Row; Col = addr.Col; Before = ValueNone; After = (match Map.tryFind addr afterCells with Some cell -> ValueSome cell | None -> ValueNone) }
+                elif obj.ReferenceEquals(beforeCells, afterCells) then ()
+                elif structural.Contains sheetId then
+                    let seen = HashSet<float>()
+                    let consider (addr: CellAddress) =
+                        if seen.Add (keyOf addr.Row addr.Col) then
+                            let was = match Map.tryFind addr beforeCells with Some cell -> ValueSome cell | None -> ValueNone
+                            let now = match Map.tryFind addr afterCells with Some cell -> ValueSome cell | None -> ValueNone
+                            let differs =
+                                match was, now with
+                                | ValueSome a, ValueSome b -> not (obj.ReferenceEquals(a, b)) && a.Value <> b.Value
+                                | ValueNone, ValueNone -> false
+                                | ValueSome a, ValueNone -> a.Value <> CellValue.Empty
+                                | ValueNone, ValueSome b -> b.Value <> CellValue.Empty
+                            if differs then changes.Add { State = state; Row = addr.Row; Col = addr.Col; Before = was; After = now }
+                    for node in List.ofSeq state.Nodes.Values do
+                        if node.IsFormula then consider { Row = node.Row; Col = node.Col }
+                    for addr in formulaIndexOf afterCells do consider addr
+                else
                     diffCells state beforeCells afterCells (loadedSpill after) changes restyled
     changes
 
@@ -665,18 +795,20 @@ let private collectChanges (engine: Engine) (edited: Workbook) (hint: (SheetId *
 /// is given each changed cell that holds a formula now, `onValue` each one
 /// that does not.
 let private rewire (engine: Engine) (edited: Workbook) (changes: ResizeArray<CellChange>) (onFormula: Node -> CellChange -> unit) (onValue: CellChange -> unit) =
+    // The formulas that are gone or are other formulas now leave the graph, together.
+    let going = ResizeArray<Node>()
+    for change in changes do
+        let formulaAfter = formulaOf change.After
+        match change.State.Nodes.TryGetValue (keyOf change.Row change.Col) with
+        | true, node when node.IsFormula && (isNull formulaAfter || node.Formula <> formulaAfter) -> going.Add node
+        | _ -> ()
+    unwireMany engine going
     for change in changes do
         let state = change.State
-        let formulaBefore = formulaOf change.Before
         let formulaAfter = formulaOf change.After
-        let key = keyOf change.Row change.Col
-        if not (isNull formulaBefore) && (isNull formulaAfter || formulaAfter <> formulaBefore) then
-            match state.Nodes.TryGetValue key with
-            | true, node when node.IsFormula -> unwire engine node
-            | _ -> ()
         if not (isNull formulaAfter) then
             let node =
-                match state.Nodes.TryGetValue key with
+                match state.Nodes.TryGetValue (keyOf change.Row change.Col) with
                 | true, node when node.IsFormula && node.Formula = formulaAfter -> node
                 | true, node when node.IsFormula ->
                     unwire engine node
@@ -693,6 +825,254 @@ let private holdWorkbook (engine: Engine) (workbook: Workbook) =
         state.Name <- sheet.Name
     engine.Workbook <- workbook
 
+/// Whether a formula as an insertion / deletion of rows or columns left it
+/// (`after`) reads the very cells it read before (`before`): every reference
+/// of it either stands where it stood, wholly before the edit or on another
+/// sheet, or moved with its cells, both corners by the edit's count. Such a
+/// formula gives the value it gave: it is wired again and not evaluated.
+/// False - evaluate - for anything else: a range the edit runs through or
+/// took cells from, a name that changed, structured and spill references, arrays, and the
+/// functions that answer with a position or with the rows that are shown.
+/// `onMovedSheet` says whether a reference's sheet (None: the formula's own)
+/// is the sheet that was edited.
+/// `nameStands` says of a defined name whether it refers to the cells it referred to.
+let private followsMove (move: StructureMove) (onMovedSheet: string option -> bool) (nameStands: string -> bool) (before: Expr) (after: Expr) : bool =
+    let sameOnOtherAxis (a: RefAst) (b: RefAst) =
+        if move.OnRows then a.Col = b.Col else a.Row = b.Row
+    let along (r: RefAst) = if move.OnRows then r.Row else r.Col
+    let follows (a: RefAst) (b: RefAst) (a2: RefAst) (b2: RefAst) =
+        a.Sheet = a2.Sheet && b.Sheet = b2.Sheet
+        && (if not (onMovedSheet a.Sheet) then a.Row = a2.Row && a.Col = a2.Col && b.Row = b2.Row && b.Col = b2.Col
+            else
+                sameOnOtherAxis a a2 && sameOnOtherAxis b b2
+                && (let lo, hi = min (along a) (along b), max (along a) (along b)
+                    if hi < move.At then along a2 = along a && along b2 = along b
+                    elif move.Insert then lo >= move.At && along a2 = along a + move.Count && along b2 = along b + move.Count
+                    else lo >= move.At + move.Count && along a2 = along a - move.Count && along b2 = along b - move.Count))
+    let left = Stack<Expr>()
+    let right = Stack<Expr>()
+    left.Push before
+    right.Push after
+    let mutable same = true
+    while same && left.Count > 0 do
+        match left.Pop(), right.Pop() with
+        | Number a, Number b -> same <- a = b
+        | Str a, Str b -> same <- a = b
+        | Bool a, Bool b -> same <- a = b
+        | ErrorLit a, ErrorLit b -> same <- a = b
+        | MissingArg, MissingArg -> ()
+        | NameRef a, NameRef b -> same <- a = b && nameStands a
+        | CellRef a, CellRef b -> same <- not (a.Sheet |> Option.exists (fun sheet -> sheet.IndexOf ':' >= 0)) && follows a a b b
+        | RangeRef (a, b), RangeRef (a2, b2) -> same <- not (a.Sheet |> Option.exists (fun sheet -> sheet.IndexOf ':' >= 0)) && follows a b a2 b2
+        | UnaryOp (opA, a), UnaryOp (opB, b) ->
+            same <- opA = opB
+            left.Push a
+            right.Push b
+        | BinOp (a1, opA, a2), BinOp (b1, opB, b2) ->
+            same <- opA = opB
+            left.Push a1
+            right.Push b1
+            left.Push a2
+            right.Push b2
+        | Function (nameA, argsA), Function (nameB, argsB) ->
+            if nameA <> nameB || List.length argsA <> List.length argsB then same <- false
+            else
+                let upper = nameA.ToUpperInvariant()
+                if upper = "ROW" || upper = "COLUMN" || upper = "CELL" || upper = "SHEET" || upper = "SHEETS" || upper = "FORMULATEXT" || upper = "ISFORMULA" || traitsOf nameA <> 0 then same <- false
+                else
+                    for arg in argsA do left.Push arg
+                    for arg in argsB do right.Push arg
+        | _ -> same <- false
+    same
+
+/// What an edit changed besides cells, as far as a recalculation has to know.
+type private Surroundings = {
+    Any: bool
+    /// Why the edit is left to the full recalculation (null: it is not).
+    Problem: string
+    Added: ResizeArray<SheetId>
+    Removed: ResizeArray<SheetState>
+    Renamed: ResizeArray<SheetState>
+    /// Sheets were added, removed, renamed or put in another order.
+    SheetsChanged: bool
+    NamesChanged: bool
+    /// The names (upper case, whatever their scope) that were defined, changed or deleted,
+    /// and the names that are defined through one of them.
+    ChangedNames: HashSet<string>
+    /// Names that only followed rows or columns that moved (`followsMove`): they refer to
+    /// the cells they referred to, which stand elsewhere now.
+    FollowerNames: HashSet<string>
+    TablesChanged: bool
+    /// Rows may be hidden or shown: a filter, row heights, rows that moved.
+    VisibilityChanged: bool
+    /// Sheets whose rows or columns moved.
+    Structural: HashSet<SheetId>
+    /// Of those, the sheets where that was one insertion or deletion, with it.
+    Moves: Dictionary<SheetId, StructureMove>
+}
+
+let private surroundingsOf (engine: Engine) (edited: Workbook) : Surroundings =
+    let known = engine.Workbook
+    let added = ResizeArray<SheetId>()
+    let removed = ResizeArray<SheetState>()
+    let renamed = ResizeArray<SheetState>()
+    let structural = HashSet<SheetId>()
+    let moves = Dictionary<SheetId, StructureMove>()
+    let mutable problem : string = null
+    let mutable tables = not (obj.ReferenceEquals(known.Tables, edited.Tables) || known.Tables = edited.Tables)
+    let mutable visibility = false
+    for KeyValue (sheetId, sheet) in edited.Sheets do
+        match engine.Sheets.TryGetValue sheetId with
+        | true, state when not (isNull (box state.Model)) ->
+            if state.Name <> sheet.Name then renamed.Add state
+            let before = state.Model
+            let after = sheet.Model
+            if not (obj.ReferenceEquals(before, after)) then
+                if not (obj.ReferenceEquals(before.Tables, after.Tables) || before.Tables = after.Tables) then tables <- true
+                if not (sameFilterState before after) then visibility <- true
+                if not (obj.ReferenceEquals(before.RowHeights, after.RowHeights)) && before.RowHeights <> after.RowHeights then visibility <- true
+                if before.StructureVersion <> after.StructureVersion then
+                    if not (isLoaded after) || not (isLoaded before) then problem <- "rows or columns changed on a sheet that is not converted"
+                    structural.Add sheetId |> ignore
+                    visibility <- true
+                    // (One edit on from the sheet as the engine holds it: which cells moved is known.)
+                    match after.StructureMove with
+                    | Some move when move.Version = after.StructureVersion && after.StructureVersion = before.StructureVersion + 1 -> moves.[sheetId] <- move
+                    | _ -> ()
+        | _ -> added.Add sheetId
+    for KeyValue (sheetId, state) in engine.Sheets do
+        if not (Map.containsKey sheetId edited.Sheets) then removed.Add state
+    let names = not (obj.ReferenceEquals(known.Names, edited.Names) || known.Names = edited.Names)
+    let changedNames = HashSet<string>()
+    let followerNames = HashSet<string>()
+    /// The one sheet whose rows or columns moved, with its name and the move, when that is all that moved.
+    let theMove =
+        if moves.Count = 1 && structural.Count = 1 then
+            let pair = Seq.head moves
+            Some ((Map.find pair.Key edited.Sheets).Name, pair.Value)
+        else None
+    let parsed (refersTo: string) = parseFormula (if refersTo.StartsWith "=" then refersTo else "=" + refersTo)
+    // A name that stands as it was written while rows or columns moved under it (a whole
+    // column of the sheet, a range the edit runs through) refers to other cells now.
+    match theMove with
+    | Some (sheetName, move) ->
+        for KeyValue ((scope, name), refersTo) in edited.Names do
+            match Map.tryFind (scope, name) known.Names with
+            | Some was when was = refersTo ->
+                let stands =
+                    match parsed refersTo with
+                    | Ok expr ->
+                        let rec plain (e: Expr) =
+                            match e with
+                            | CellRef r -> r.Sheet.IsSome
+                            | RangeRef (a, _) -> a.Sheet.IsSome
+                            | Number _ | Str _ | Bool _ | ErrorLit _ -> true
+                            | UnaryOp (_, inner) -> plain inner
+                            | BinOp (left, _, right) -> plain left && plain right
+                            | _ -> false
+                        // (Anything but plain references and constants - a function, another name,
+                        // a reference without a sheet - may read what moved.)
+                        plain expr
+                        && followsMove move (fun qualifier -> match qualifier with Some q -> q.Equals(sheetName, System.StringComparison.OrdinalIgnoreCase) | None -> false) (fun _ -> false) expr expr
+                    | Result.Error _ -> true
+                if not stands then changedNames.Add (name.ToUpperInvariant()) |> ignore
+            | _ -> ()
+    | None -> ()
+    let names = names || changedNames.Count > 0
+    if names then
+        for KeyValue ((scope, name), refersTo) in known.Names do
+            match Map.tryFind (scope, name) edited.Names with
+            | Some now when now = refersTo -> ()
+            | Some now ->
+                let follows =
+                    match theMove, parsed refersTo, parsed now with
+                    | Some (sheetName, move), Ok was, Ok is ->
+                        // (A name inside a name: the name is taken as changed.)
+                        followsMove move (fun qualifier -> match qualifier with Some q -> q.Equals(sheetName, System.StringComparison.OrdinalIgnoreCase) | None -> false) (fun _ -> false) was is
+                        // (A reference without a sheet in a name is relative to whoever uses it: not followed here.)
+                        && (let rec qualified (expr: Expr) =
+                                match expr with
+                                | CellRef r -> r.Sheet.IsSome
+                                | RangeRef (a, _) -> a.Sheet.IsSome
+                                | UnaryOp (_, inner) -> qualified inner
+                                | BinOp (left, _, right) -> qualified left && qualified right
+                                | Function (_, args) -> args |> List.forall qualified
+                                | _ -> true
+                            qualified was)
+                    | _ -> false
+                if follows then followerNames.Add (name.ToUpperInvariant()) |> ignore
+                else changedNames.Add (name.ToUpperInvariant()) |> ignore
+            | None -> changedNames.Add (name.ToUpperInvariant()) |> ignore
+        for KeyValue ((scope, name), _) in edited.Names do
+            if not (Map.containsKey (scope, name) known.Names) then changedNames.Add (name.ToUpperInvariant()) |> ignore
+        // A name defined through a changed one reads something else too.
+        let mentions (refersTo: string) =
+            match parseFormula (if refersTo.StartsWith "=" then refersTo else "=" + refersTo) with
+            | Ok expr ->
+                let stack = ResizeArray<Expr>()
+                stack.Add expr
+                let mutable found = false
+                while not found && stack.Count > 0 do
+                    let current = stack.[stack.Count - 1]
+                    stack.RemoveAt (stack.Count - 1)
+                    match current with
+                    | NameRef name -> if changedNames.Contains (name.ToUpperInvariant()) then found <- true
+                    | UnaryOp (_, inner) -> stack.Add inner
+                    | BinOp (left, _, right) ->
+                        stack.Add left
+                        stack.Add right
+                    | Function (_, args) -> for arg in args do stack.Add arg
+                    | _ -> ()
+                found
+            | Result.Error _ -> true
+        let mutable growing = true
+        while growing do
+            growing <- false
+            for KeyValue ((_, name), refersTo) in edited.Names do
+                let upper = name.ToUpperInvariant()
+                if not (changedNames.Contains upper) && mentions refersTo then
+                    changedNames.Add upper |> ignore
+                    growing <- true
+        // (A name that is both - by scope - counts as changed.)
+        followerNames.ExceptWith changedNames
+        // A name defined through a follower follows too.
+        let mentionsFollower (refersTo: string) =
+            match parsed refersTo with
+            | Ok expr ->
+                let stack = ResizeArray<Expr>()
+                stack.Add expr
+                let mutable found = false
+                while not found && stack.Count > 0 do
+                    let current = stack.[stack.Count - 1]
+                    stack.RemoveAt (stack.Count - 1)
+                    match current with
+                    | NameRef name -> if followerNames.Contains (name.ToUpperInvariant()) then found <- true
+                    | UnaryOp (_, inner) -> stack.Add inner
+                    | BinOp (left, _, right) ->
+                        stack.Add left
+                        stack.Add right
+                    | Function (_, args) -> for arg in args do stack.Add arg
+                    | _ -> ()
+                found
+            | Result.Error _ -> false
+        let mutable following = followerNames.Count > 0
+        while following do
+            following <- false
+            for KeyValue ((_, name), refersTo) in edited.Names do
+                let upper = name.ToUpperInvariant()
+                if not (changedNames.Contains upper) && not (followerNames.Contains upper) && mentionsFollower refersTo then
+                    followerNames.Add upper |> ignore
+                    following <- true
+    let order = not (obj.ReferenceEquals(known.SheetOrder, edited.SheetOrder) || known.SheetOrder = edited.SheetOrder)
+    let sheets = added.Count > 0 || removed.Count > 0 || renamed.Count > 0 || order
+    { Any = sheets || names || tables || visibility || structural.Count > 0
+      Problem = problem
+      Added = added; Removed = removed; Renamed = renamed
+      SheetsChanged = sheets; NamesChanged = names; ChangedNames = changedNames; FollowerNames = followerNames; TablesChanged = tables; VisibilityChanged = visibility
+      Structural = structural; Moves = moves }
+
+let private blankModel = createEmpty 1 1
+
 /// Take a workbook that was recalculated elsewhere (the full recalculation,
 /// after `recalculate` declined an edit) as the engine's calculated state:
 /// the graph follows the formulas that differ from the state it held. False
@@ -700,8 +1080,10 @@ let private holdWorkbook (engine: Engine) (workbook: Workbook) =
 let adopt (engine: Engine) (calculated: Workbook) : bool =
     if not (sameSurroundings engine calculated) then false
     else
-        let changes = collectChanges engine calculated None (ResizeArray())
+        let changes = collectChanges engine calculated None (ResizeArray()) (HashSet<SheetId>())
         rewire engine calculated changes (fun _ _ -> ()) ignore
+        // (Formulas that came in may close a circular reference nothing here has looked for.)
+        if changes.Count > 0 then engine.CyclesKnown <- false
         // (The arrays were laid out elsewhere: their sizes are not known here.)
         for node in engine.Spilling do
             node.ExtentRows <- -1
@@ -749,16 +1131,36 @@ let adopt (engine: Engine) (calculated: Workbook) : bool =
 /// changes no value by the workbook's largest change or more (that sweep is
 /// dropped, so a workbook that had settled is left exactly as it is), or the
 /// workbook's number of iterations is reached.
-let private run (full: bool) (engine: Engine) (edited: Workbook) (hint: (SheetId * CellAddress) list option) : Workbook option =
+let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (SheetId * CellAddress) list option) : Workbook option =
+    // 0: an edit (incremental); 1: the full recalculation; 2: no calculation - the circular references of the graph are looked for.
+    let full = mode = 1
+    let scan = mode = 2
     let decline (reason: string) : Workbook option =
         engine.LastDecline <- reason
         // (The spilled cells by formula may have been moved on by the rounds that ran.)
         for KeyValue (_, state) in engine.Sheets do state.GhostsFor <- null
         None
-    if not full && not (sameSurroundings engine edited) then decline "more than cells changed (sheets, names, tables, filters, rows or columns)"
+    // (The circular references of a graph that was built, not calculated, are not known:
+    // they are taken as settled - the workbook came calculated - until an edit reaches
+    // one, or `findCycles` has looked for them.)
+    let surroundings =
+        if mode = 0 then surroundingsOf engine edited
+        else
+            { Any = false; Problem = null; Added = ResizeArray(); Removed = ResizeArray(); Renamed = ResizeArray()
+              SheetsChanged = false; NamesChanged = false; ChangedNames = HashSet<string>(); FollowerNames = HashSet<string>(); TablesChanged = false; VisibilityChanged = false
+              Structural = HashSet<SheetId>(); Moves = Dictionary<SheetId, StructureMove>() }
+    if mode = 0 && engine.Workbook.Iteration <> edited.Iteration then decline "the setting of iterative calculation changed"
+    elif not (isNull surroundings.Problem) then decline surroundings.Problem
     else
+        // A sheet that is new: nothing was there.
+        for sheetId in surroundings.Added do
+            let state = sheetState engine sheetId
+            state.Model <- blankModel
+            state.Name <- (Map.find sheetId edited.Sheets).Name
         let restyled = ResizeArray<struct (SheetState * CellAddress)>()
-        let changes = if full then ResizeArray<CellChange>() else collectChanges engine edited hint restyled
+        let changes =
+            if mode <> 0 then ResizeArray<CellChange>()
+            else collectChanges engine edited (if surroundings.Any then None else hint) restyled surroundings.Structural
         let mutable workbook = edited
         let models = Dictionary<SheetId, SpreadsheetModel>()
         /// The cells of a sheet as the pass first took them: the pass changes values, never which cells hold formulas.
@@ -809,13 +1211,199 @@ let private run (full: bool) (engine: Engine) (edited: Workbook) (hint: (SheetId
         newRound ()
         let firstPass = pass
 
+        // ---- what changed besides cells ------------------------------------------------
+        // Names, tables, the sheets themselves, a filter, rows and columns: the formulas
+        // that can tell are wired again (what they read may be something else now) and
+        // calculated; the others are not looked at.
+        /// The formulas that read a sheet at or beyond a row / column edit of it, with their wiring.
+        let moveReaders = ResizeArray<struct (Node * int)>()
+        if mode = 0 && surroundings.Any then
+            let rewireKeys = ResizeArray<struct (SheetState * int * int)>()
+            /// Formulas to wire again that give the value they gave (a name they use followed its cells).
+            let quietKeys = ResizeArray<struct (SheetState * int * int)>()
+            let seedKeys = ResizeArray<struct (SheetState * int * int)>()
+            engine.EdgeMark <- engine.EdgeMark + 3
+            let rewireMark = engine.EdgeMark - 2
+            let quietMark = engine.EdgeMark - 1
+            let seedMark = engine.EdgeMark
+            let toRewire (node: Node) =
+                if node.IsFormula && node.EdgeMark <> rewireMark then
+                    node.EdgeMark <- rewireMark
+                    rewireKeys.Add (struct (node.Sheet, node.Row, node.Col))
+            let toRewireQuietly (node: Node) =
+                if node.IsFormula && node.EdgeMark <> rewireMark && node.EdgeMark <> quietMark then
+                    node.EdgeMark <- quietMark
+                    quietKeys.Add (struct (node.Sheet, node.Row, node.Col))
+            let toSeed (node: Node) =
+                if node.IsFormula && node.EdgeMark <> rewireMark && node.EdgeMark <> seedMark then
+                    node.EdgeMark <- seedMark
+                    seedKeys.Add (struct (node.Sheet, node.Row, node.Col))
+            /// Every formula that reads a cell or a range of the sheet.
+            let readersOf (state: SheetState) (onReader: Node -> unit) =
+                for node in state.Nodes.Values do
+                    for reader in node.Dependents do onReader reader
+                for group in state.Groups.Values do
+                    for owner in group.Owners do onReader owner
+            let rewireTraits =
+                (if surroundings.SheetsChanged then 4 ||| 64 ||| 128 else 0)
+                ||| (if surroundings.TablesChanged then 32 else 0)
+            let seedTraits = if surroundings.VisibilityChanged then 8 else 0
+            /// The formula uses one of the names that changed (itself: a name used through another is in the set).
+            let usesNameOf (names: HashSet<string>) (node: Node) =
+                match node.Expr with
+                | None -> true
+                | Some expr ->
+                    let stack = ResizeArray<Expr>()
+                    stack.Add expr
+                    let mutable found = false
+                    while not found && stack.Count > 0 do
+                        let current = stack.[stack.Count - 1]
+                        stack.RemoveAt (stack.Count - 1)
+                        match current with
+                        | NameRef name -> if names.Contains (name.ToUpperInvariant()) then found <- true
+                        | UnaryOp (_, inner) -> stack.Add inner
+                        | BinOp (left, _, right) ->
+                            stack.Add left
+                            stack.Add right
+                        | Function (_, args) -> for arg in args do stack.Add arg
+                        | _ -> ()
+                    found
+            if rewireTraits <> 0 || surroundings.NamesChanged then
+                for state in engine.Sheets.Values do
+                    for node in state.Nodes.Values do
+                        if node.IsFormula then
+                            if node.Traits &&& rewireTraits <> 0 then toRewire node
+                            elif surroundings.NamesChanged && node.Traits &&& 16 <> 0 then
+                                if surroundings.ChangedNames.Count > 0 && usesNameOf surroundings.ChangedNames node then toRewire node
+                                elif surroundings.FollowerNames.Count > 0 && usesNameOf surroundings.FollowerNames node then toRewireQuietly node
+            // (A reference to a sheet that is gone, or that has another name now, reads something else.)
+            for state in surroundings.Removed do readersOf state toRewire
+            for state in surroundings.Renamed do readersOf state toRewire
+            if seedTraits <> 0 then
+                for state in engine.Sheets.Values do
+                    for node in state.Nodes.Values do
+                        if node.IsFormula && node.Traits &&& seedTraits <> 0 then toSeed node
+            // One insertion or deletion: what reads the sheet at or beyond the edit, as it is wired now.
+            for KeyValue (sheetId, move) in surroundings.Moves do
+                match engine.Sheets.TryGetValue sheetId with
+                | true, state ->
+                    let note (reader: Node) = if reader.IsFormula then moveReaders.Add (struct (reader, reader.WireStamp))
+                    for node in state.Nodes.Values do
+                        if (if move.OnRows then node.Row else node.Col) >= move.At then
+                            for reader in node.Dependents do note reader
+                    for group in state.Groups.Values do
+                        if (if move.OnRows then group.R1 else group.C1) >= move.At then
+                            for owner in group.Owners do note owner
+                | false, _ -> ()
+            // (Rows or columns moved: the cells of the sheet are not compared one by one -
+            // whatever reads the sheet is calculated. When it was one insertion or
+            // deletion, less is: see below, after the formulas that follow the rows.)
+            for sheetId in surroundings.Structural do
+                if not (surroundings.Moves.ContainsKey sheetId) then
+                    match engine.Sheets.TryGetValue sheetId with
+                    | true, state -> readersOf state toSeed
+                    | false, _ -> ()
+            if surroundings.NamesChanged || surroundings.SheetsChanged then engine.NameTraits.Clear()
+            // They leave the graph together (see `unwireMany`) and are put back one by one.
+            let going = ResizeArray<Node>()
+            for state in surroundings.Removed do
+                for node in state.Nodes.Values do
+                    if node.IsFormula then going.Add node
+            let again = ResizeArray<struct (SheetState * int * int * string * bool)>()
+            let wireAgain (evaluate: bool) (state: SheetState) (row: int) (col: int) =
+                match Map.tryFind state.Id edited.Sheets with
+                | Some sheet ->
+                    match state.Nodes.TryGetValue (keyOf row col) with
+                    | true, node when node.IsFormula ->
+                        // (The formula as the edit left it; of a sheet that is not converted, as it was.)
+                        let text =
+                            if isLoaded sheet.Model then
+                                formulaOf (match Map.tryFind { Row = row; Col = col } (loadedCells sheet.Model) with Some cell -> ValueSome cell | None -> ValueNone)
+                            else node.Formula
+                        // (Whether its array has to be laid out again is not known of a formula that is only wired again.)
+                        let evaluate = evaluate || node.Spills || node.Traits &&& (1 ||| 2 ||| 4 ||| 8 ||| 32 ||| 64 ||| 128) <> 0
+                        going.Add node
+                        if not (isNull text) then again.Add (struct (state, row, col, text, evaluate))
+                    | _ -> ()
+                | None -> ()
+            for struct (state, row, col) in rewireKeys do wireAgain true state row col
+            for struct (state, row, col) in quietKeys do wireAgain false state row col
+            unwireMany engine going
+            for struct (state, row, col, text, evaluate) in again do
+                let fresh = wire engine edited state row col text
+                // (A formula that gives the value it gave is not part of the pass, unless something it reads changes.)
+                if evaluate || fresh.Spills then
+                    reach fresh
+                    fresh.NeedsEval <- true
+            for state in surroundings.Removed do engine.Sheets.Remove state.Id |> ignore
+            // A new sheet that is not converted brings its formulas as its file has them.
+            for sheetId in surroundings.Added do
+                let sheet = Map.find sheetId edited.Sheets
+                match sheet.Model.Deferred with
+                | Some deferred when deferred.Loaded.IsNone ->
+                    let state = sheetState engine sheetId
+                    for addr, formula in deferred.Formulas () do
+                        wire engine edited state addr.Row addr.Col formula |> ignore
+                | _ -> ()
+            for struct (state, row, col) in seedKeys do
+                match state.Nodes.TryGetValue (keyOf row col) with
+                | true, node when node.IsFormula ->
+                    reach node
+                    node.NeedsEval <- true
+                | _ -> ()
+
         let readers = ResizeArray<Node>()
+        /// The one insertion / deletion of rows or columns of the edit, with its sheet (see `followsMove`).
+        let theMove =
+            if surroundings.Moves.Count = 1 && surroundings.Structural.Count = 1 then
+                let pair = Seq.head surroundings.Moves
+                match engine.Sheets.TryGetValue pair.Key, Map.tryFind pair.Key edited.Sheets with
+                | (true, state), Some sheet when not (isNull (box state.Model)) -> Some (state, sheet.Name, pair.Value, loadedCells state.Model)
+                | _ -> None
+            else None
+        /// What a changed cell held before the edit: the cell that stood there, or - on a sheet whose
+        /// rows or columns moved - the cell that moved there.
+        let heldBefore (change: CellChange) : CellData voption =
+            match theMove with
+            | Some (moved, _, move, cellsBefore) when obj.ReferenceEquals(change.State, moved) ->
+                let along = if move.OnRows then change.Row else change.Col
+                let from =
+                    if along < move.At then Some along
+                    elif move.Insert then (if along >= move.At + move.Count then Some (along - move.Count) else None)
+                    else Some (along + move.Count)
+                match from with
+                | Some index ->
+                    (match Map.tryFind (if move.OnRows then { Row = index; Col = change.Col } else { Row = change.Row; Col = index }) cellsBefore with
+                     | Some cell -> ValueSome cell
+                     | None -> ValueNone)
+                | None -> ValueNone
+            | _ -> change.Before
+        /// A changed formula that only followed the cells it reads (they moved) and gives the value it gave.
+        let followed (node: Node) (change: CellChange) (was: CellData voption) : bool =
+            match theMove, node.Expr with
+            | Some (moved, movedName, move, _), Some expr when not node.Spills && node.Traits &&& ~~~16 = 0 ->
+                let onMoved = obj.ReferenceEquals(change.State, moved)
+                let text = formulaOf was
+                if isNull text || effectiveValue was <> effectiveValue change.After then false
+                else
+                    match parseFormula text with
+                    | Ok before ->
+                        followsMove move (fun qualifier ->
+                            match qualifier with
+                            | None -> onMoved
+                            | Some q -> q.Equals(movedName, System.StringComparison.OrdinalIgnoreCase))
+                            (fun name -> not (surroundings.ChangedNames.Contains (name.ToUpperInvariant()))) before expr
+                    | Result.Error _ -> false
+            | _ -> false
         rewire engine edited changes
             (fun node change ->
-                reach node
-                node.NeedsEval <- true
-                node.BaselinePass <- pass
-                node.Baseline <- effectiveValue change.Before)
+                let was = heldBefore change
+                if not (followed node change was) then
+                    reach node
+                    node.NeedsEval <- true
+                    // (What reads it was calculated with the value it had before the edit.)
+                    node.BaselinePass <- pass
+                    node.Baseline <- effectiveValue was)
             (fun change ->
                 // What reads the cell sees another value.
                 let explicit =
@@ -827,6 +1415,16 @@ let private run (full: bool) (engine: Engine) (edited: Workbook) (hint: (SheetId
                 for reader in readers do
                     reach reader
                     reader.NeedsEval <- true)
+        // One insertion or deletion of rows / columns: every formula that reads a cell
+        // that moved was rewritten to follow it (it was wired again above, and gives the
+        // value it gave - see `followed` - or is calculated). What is left to calculate
+        // reads the sheet at a place that stayed while the cells under it moved - a whole
+        // column, a range in another sheet's name - : of what read the sheet at or
+        // beyond the edit, the formulas that were not wired again.
+        for struct (reader, stamp) in moveReaders do
+            if reader.IsFormula && reader.WireStamp = stamp then
+                reach reader
+                reader.NeedsEval <- true
         if true then
             // ---- the dynamic arrays the edit touches ----------------------------------
             /// Formulas that show #SPILL! (or may), by sheet: a cell changed or given up in their way lays them out again.
@@ -856,6 +1454,16 @@ let private run (full: bool) (engine: Engine) (edited: Workbook) (hint: (SheetId
                 reach node
                 node.NeedsSpill <- true
             let seedAnchor (state: SheetState) (anchor: CellAddress) = seedSpill (nodeAt state anchor.Row anchor.Col)
+            // Rows or columns of a sheet moved: every array of the sheet is laid out again.
+            for sheetId in surroundings.Structural do
+                match engine.Sheets.TryGetValue sheetId, Map.tryFind sheetId edited.Sheets with
+                | (true, state), Some sheet ->
+                    if not (isNull (box state.Model)) then
+                        for KeyValue (_, anchor) in loadedSpill state.Model do seedAnchor state anchor
+                    for KeyValue (_, anchor) in loadedSpill sheet.Model do seedAnchor state anchor
+                    for node in List.ofSeq engine.Spilling do
+                        if obj.ReferenceEquals(node.Sheet, state) then seedSpill node
+                | _ -> ()
             let anySpill =
                 engine.Spilling.Count > 0 || (edited.Sheets |> Map.exists (fun _ sheet -> not (Map.isEmpty (loadedSpill sheet.Model))))
                 || (engine.Sheets.Values |> Seq.exists (fun state -> not (isNull (box state.Model)) && not (Map.isEmpty (loadedSpill state.Model))))
@@ -893,19 +1501,43 @@ let private run (full: bool) (engine: Engine) (edited: Workbook) (hint: (SheetId
             for node in engine.Volatile do
                 reach node
                 node.NeedsEval <- true
-            if full then
+            if full || scan then
                 // Every formula, and every array there is or was.
                 for KeyValue (_, state) in engine.Sheets do
                     for node in List.ofSeq state.Nodes.Values do
                         if node.IsFormula then
                             reach node
-                            node.NeedsEval <- true
-                    if not (isNull (box state.Model)) then
+                            node.NeedsEval <- full
+                    if full && not (isNull (box state.Model)) then
                         for KeyValue (_, anchor) in loadedSpill state.Model do seedAnchor state anchor
 
-            /// Formulas found on a circular reference (the full pass).
-            let iteration = if full then edited.Iteration else None
-            let isCyclic (node: Node) = full && iteration.IsNone && node.CyclicPass >= firstPass
+            /// Formulas found on a circular reference show the cycle error, or - with
+            /// iterative calculation - are calculated in sweeps.
+            let iteration = edited.Iteration
+            let isCyclic (node: Node) = iteration.IsNone && node.CyclicPass >= firstPass
+            if mode = 0 && iteration.IsSome then
+                // Excel calculates every circular reference at every calculation: one
+                // that does not settle moves on by the workbook's number of iterations.
+                engine.EdgeMark <- engine.EdgeMark + 1
+                let mark = engine.EdgeMark
+                let live = ResizeArray<Node>()
+                for node in engine.Cyclic do
+                    if node.OnCycle && node.IsFormula && node.EdgeMark <> mark then
+                        node.EdgeMark <- mark
+                        live.Add node
+                        // (One that had settled gives what it has when nothing it reads changed:
+                        // the sweep over it would be dropped. It is not calculated for nothing.)
+                        if node.Unsettled then
+                            reach node
+                            node.NeedsEval <- true
+                engine.Cyclic <- live
+            /// The place of a sheet among the tabs: the formulas of a circular reference are calculated in reading order.
+            let sheetPlaces = Dictionary<SheetId, int>()
+            let sheetPlace (sheetId: SheetId) =
+                if sheetPlaces.Count = 0 then edited.SheetOrder |> List.iteri (fun place id -> sheetPlaces.[id] <- place)
+                match sheetPlaces.TryGetValue sheetId with
+                | true, place -> place
+                | false, _ -> System.Int32.MaxValue
             let mutable cyclicCount = 0
             // Precedents chosen while evaluating: see the doc comment.
             let hasDynamic = engine.Dynamic.Count > 0
@@ -967,7 +1599,7 @@ let private run (full: bool) (engine: Engine) (edited: Workbook) (hint: (SheetId
                 drain ()
                 /// The circular references of the round, as stretches of the order: first index -> last.
                 let blocks = Dictionary<int, int>()
-                if full && order.Count < reached.Count then
+                if order.Count < reached.Count then
                     // What is left reads a cycle or is on one. On one: the strongly
                     // connected components of more than one formula, and formulas that
                     // read themselves (Tarjan's algorithm, without recursion). It gives
@@ -1019,17 +1651,34 @@ let private run (full: bool) (engine: Engine) (edited: Workbook) (hint: (SheetId
                                     circular.Add (members.Count > 1 || node.SelfPass = pass)
                     for at = components.Count - 1 downto 0 do
                         let first = order.Count
-                        for node in components.[at] do
+                        // (A circular reference in the same order whatever led the pass to it:
+                        // sheet by sheet, row by row. Its sweeps then give the same numbers.)
+                        let members =
+                            if circular.[at] && components.[at].Count > 1 then
+                                components.[at] |> Seq.sortBy (fun node -> sheetPlace node.Sheet.Id, node.Row, node.Col) |> Seq.toArray
+                            else components.[at].ToArray()
+                        for node in members do
                             node.Order <- order.Count
                             order.Add node
-                            if circular.[at] && node.CyclicPass < firstPass then
-                                node.CyclicPass <- pass
-                                cyclicCount <- cyclicCount + 1
+                            if circular.[at] then
+                                node.CircularRound <- pass
+                                // (Every formula of a circular reference shows it, whichever the edit reached first.)
+                                node.NeedsEval <- true
+                                if not node.OnCycle then
+                                    node.OnCycle <- true
+                                    engine.Cyclic.Add node
+                                if node.CyclicPass < firstPass then
+                                    node.CyclicPass <- pass
+                                    cyclicCount <- cyclicCount + 1
                         if circular.[at] then blocks.[first] <- order.Count - 1
+                // (Reached and on no circular reference: one it was on is broken.)
+                for node in reached do
+                    if node.OnCycle && node.CircularRound <> pass then node.OnCycle <- false
                 // (Fewer in order than reached: a cycle among the formulas to evaluate.)
                 if order.Count < reached.Count then
-                    failure <- "a circular reference among the formulas to evaluate"
+                    failure <- "the formulas to evaluate could not be put in order"
                     running <- false
+                elif scan then running <- false
                 else
                     nextEval <- ResizeArray<Node>()
                     nextSpill <- ResizeArray<Node>()
@@ -1222,8 +1871,11 @@ let private run (full: bool) (engine: Engine) (edited: Workbook) (hint: (SheetId
                             for at in index .. last do
                                 let node = order.[at]
                                 node.NeedsEval <- false
+                                node.Unsettled <- going
                                 if node.Dynamic then dynamicSeen <- true
-                                if cachedOf node <> before.[at - index] then
+                                // (What reads a formula the edit changed was calculated with the value it had before.)
+                                let was = if node.BaselinePass = pass && pass = firstPass then node.Baseline else before.[at - index]
+                                if cachedOf node <> was then
                                     valueChanged ()
                                     for reader in node.Outs do
                                         if reader.Order > last then reader.NeedsEval <- true
@@ -1290,6 +1942,9 @@ let private run (full: bool) (engine: Engine) (edited: Workbook) (hint: (SheetId
                             reach node
                             node.NeedsSpill <- true
             if not (isNull failure) then decline failure
+            elif scan then
+                engine.CyclesKnown <- true
+                Some edited
             else
                 // As the full recalculation leaves a sheet whose formulas gave other values.
                 for sheetId in touched do
@@ -1303,13 +1958,25 @@ let private run (full: bool) (engine: Engine) (edited: Workbook) (hint: (SheetId
                         workbook <- updateSheetModel sheetId projected workbook
                 holdWorkbook engine workbook
                 engine.LastStats <- { ChangedCells = changes.Count; ReachedFormulas = reachedTotal; EvaluatedFormulas = evaluated }
-                if full then engine.LastCyclic <- cyclicCount
+                if full then
+                    engine.LastCyclic <- cyclicCount
+                    engine.CyclesKnown <- true
                 Some workbook
         else None
 
+/// Look for the circular references of the graph (no formula is evaluated).
+/// A pass over the whole workbook knows them; an engine that was built for a
+/// calculated workbook (`build`) does not, and takes the circular references
+/// of that workbook as settled until an edit reaches one. After this, in a
+/// workbook with iterative calculation, every one of them is calculated at
+/// the next edit - as the full recalculation, and Excel, do at every
+/// calculation - and from then on those that did not settle.
+let findCycles (engine: Engine) : unit =
+    if not engine.CyclesKnown then run 2 engine engine.Workbook None |> ignore
+
 /// See `run`.
 let recalculate (engine: Engine) (edited: Workbook) (hint: (SheetId * CellAddress) list option) : Workbook option =
-    run false engine edited hint
+    run 0 engine edited hint
 
 /// The full recalculation of a workbook: every formula of every sheet (of the
 /// sheets that are converted; the stand-in of a sheet nothing asked for has no
@@ -1322,7 +1989,7 @@ let recalculateAll (workbook: Workbook) : Workbook * Engine =
     let hasWork = engine.Formulas > 0 || (workbook.Sheets |> Map.exists (fun _ sheet -> not (Map.isEmpty (loadedSpill sheet.Model))))
     if not hasWork then workbook, engine
     else
-        match run true engine workbook None with
+        match run 1 engine workbook None with
         | Some recalculated -> recalculated, engine
         | None -> workbook, engine
 

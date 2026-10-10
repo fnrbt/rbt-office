@@ -3113,6 +3113,138 @@ checks['api-recalc-spill'] = async () => {
 // incrementally (such workbooks were left to the full recalculation), a circular reference
 // that crosses sheets shows the cycle error, and iterative calculation - Excel's setting for
 // workbooks with a deliberate circular reference - is a setting of the workbook.
+// Edits that are more than cells - a paste that closes a circular reference, rows and columns, names,
+// tables, filters, sheets - are calculated by the engine (GetRecalcStats().Kind is "incremental"), to
+// the values a second grid that recalculates everything at every edit shows.
+checks['api-recalc-more'] = async () => {
+    const { lines, check, note } = makeLog();
+    const incremental = mountGrid(), full = mountGrid();
+    try {
+        full.grid.SetIncrementalRecalculation(false);
+        const grids = [incremental.grid, full.grid];
+        const both = (run) => { for (const grid of grids) run(grid); };
+        const texts = (grid, range) => grid.GetRange(range).map((row) => row.map((cell) => cell.text));
+        const shown = (range) => {
+            const mine = texts(incremental.grid, range), theirs = texts(full.grid, range), stats = incremental.grid.GetRecalcStats();
+            return { kind: stats.Kind + (stats.Kind === 'full' ? ': ' + stats.Reason : ''), same: JSON.stringify(mine) === JSON.stringify(theirs), rows: mine, evaluated: stats.EvaluatedFormulas, formulas: stats.Formulas };
+        };
+        both((grid) => {
+            const rows = [['Item', 'Qty', 'Double'], ['a', '4', '=B2*2'], ['b', '6', '=B3*2'], ['a', '10', '=B4*2'], ['c', '1', '=B5*2'], ['b', '3', '=B6*2']];
+            rows.forEach((row, r) => row.forEach((text, c) => grid.SetCell(r, c, text)));
+            grid.SetCell(7, 1, '=SUBTOTAL(109,B2:B6)'); grid.SetCell(7, 2, '=SUM(C2:C6)'); grid.SetCell(8, 1, '=B8*Rate'); grid.SetCell(9, 3, '=SUM(C:C)'); grid.SetCell(10, 3, '=INDEX(B:B,3)');
+            for (let r = 0; r < 40; r++) grid.SetCell(r, 5, '=B8+' + r);
+            grid.AddSheet('Two'); grid.SetCell(0, 0, '=Sheet1!B8+1'); grid.SetCell(1, 0, '=Sheet1!C8'); grid.SetCell(2, 0, '=Gone!A1'); grid.SetCell(3, 0, '2');
+            grid.SwitchSheet(0);
+        });
+        let now = shown('Sheet1!A1:D11');
+        check('built: the same in both grids', [now.same, now.rows[7][1], now.rows[8][1]], [true, '24', now.rows[8][1]]);
+        const stepIs = (label, range, expectKind = 'incremental') => { const result = shown(range); check(label, [result.kind, result.same], [expectKind, true]); return result; };
+
+        // ---- a defined name ----
+        both((grid) => grid.SetDefinedName('Rate', '=Two!$A$4'));
+        now = stepIs('a defined name: calculated by the engine', 'Sheet1!A1:C11');
+        check('... its user has a value, and only it (with what reads it) was evaluated', [now.rows[8][1], now.evaluated >= 1 && now.evaluated <= 3], ['48', true]);
+        both((grid) => grid.SetDefinedName('Rate', '=Sheet1!$B$2'));
+        check('a name changed', [stepIs('a name changed: by the engine', 'Sheet1!A1:C11').rows[8][1]], ['96']);
+        both((grid) => grid.Undo());
+        check('... undone', [stepIs('the undo of a name: by the engine', 'Sheet1!A1:C11').rows[8][1]], ['48']);
+        both((grid) => grid.DeleteDefinedName('Rate'));
+        check('a name deleted: #NAME?', /NAME/.test(stepIs('a name deleted: by the engine', 'Sheet1!A1:C11').rows[8][1]), true);
+        both((grid) => grid.Undo());
+
+        // ---- a filter: only SUBTOTAL / AGGREGATE and what reads them ----
+        both((grid) => { grid.SetAutoFilter('A1:C6'); grid.SetFilter(0, { values: ['a'] }); });
+        now = stepIs('a filter: calculated by the engine', 'Sheet1!A1:C11');
+        check('... SUBTOTAL leaves the hidden rows out, SUM does not; only its dependents were evaluated', [now.rows[7][1], now.rows[7][2], now.evaluated < now.formulas, now.evaluated >= 2], ['14', '48', true, true]);
+        check('... what reads the subtotal on the other sheet follows', [texts(incremental.grid, 'Two!A1')[0][0], texts(full.grid, 'Two!A1')[0][0]], ['15', '15']);
+        both((grid) => grid.ClearAutoFilter());
+        check('the filter removed', stepIs('the filter removed: by the engine', 'Sheet1!A1:C11').rows[7][1], '24');
+
+        // ---- rows and columns ----
+        const fixedBefore = texts(incremental.grid, 'Sheet1!D11')[0][0];
+        both((grid) => grid.InsertRows(2, 1));
+        now = stepIs('a row inserted: calculated by the engine', 'Sheet1!A1:F12');
+        check('... the formulas follow their cells and keep their values; a fixed place in a column reads another cell', [incremental.grid.GetCell(8, 1).formula, now.rows[8][1], incremental.grid.GetCell(11, 3).formula, fixedBefore, now.rows[11][3] !== fixedBefore, now.evaluated < 20], ['=SUBTOTAL(109,B2:B7)', '24', '=INDEX(B:B,3)', '6', true, true]);
+        both((grid) => grid.EnterText(2, 1, '100'));
+        check('a number in the new row', stepIs('typed into the new row: incremental', 'Sheet1!A1:F12').rows[8][1], '124');
+        both((grid) => grid.DeleteRows(2, 1));
+        check('the row deleted', stepIs('a row deleted: by the engine', 'Sheet1!A1:F12').rows[7][1], '24');
+        both((grid) => grid.Undo());
+        check('... undone', stepIs('the undo of a deleted row: by the engine', 'Sheet1!A1:F12').rows[8][1], '124');
+        both((grid) => grid.Redo());
+        both((grid) => grid.InsertColumns(1, 1));
+        now = stepIs('a column inserted: by the engine', 'Sheet1!A1:G12');
+        check('... the formulas moved a column', [incremental.grid.GetCell(7, 2).formula, now.rows[7][2], texts(incremental.grid, 'Two!A1')[0][0]], ['=SUBTOTAL(109,C2:C6)', '24', '25']);
+        both((grid) => grid.DeleteColumns(1, 1));
+        stepIs('the column deleted: by the engine', 'Sheet1!A1:F12');
+
+        // ---- tables ----
+        both((grid) => { grid.DefineTable('A1:C6', 'Sales'); grid.SetCell(12, 1, '=SUM(Sales[Qty])'); });
+        check('a table and a structured reference', stepIs('a structured reference entered: incremental', 'Sheet1!A1:C13').rows[12][1], '24');
+        both((grid) => grid.ResizeTable('Sales', 'A1:C4'));
+        check('the table resized: its reference follows', stepIs('a table resized: by the engine', 'Sheet1!A1:C13').rows[12][1], '20');
+        both((grid) => grid.RenameTable('Sales', 'Orders'));
+        check('the table renamed', [stepIs('a table renamed: by the engine', 'Sheet1!A1:C13').rows[12][1], incremental.grid.GetCell(12, 1).formula], ['20', '=SUM(Orders[Qty])']);
+        both((grid) => grid.DeleteTable('Orders', true));
+        stepIs('the table removed: by the engine', 'Sheet1!A1:C13');
+
+        // ---- sheets ----
+        both((grid) => { grid.AddSheet('Gone'); grid.SetCell(0, 0, '77'); grid.SwitchSheet(0); });
+        check('a sheet added that a formula was waiting for', [stepIs('a sheet added: by the engine', 'Two!A1:A3').rows[2][0]], ['77']);
+        both((grid) => grid.MoveSheet(2, 0));
+        stepIs('a sheet moved: by the engine', 'Two!A1:A3');
+        both((grid) => grid.DeleteSheet(0));
+        check('the sheet deleted: #REF!', /REF/.test(stepIs('a sheet deleted: by the engine', 'Two!A1:A3').rows[2][0]), true);
+        both((grid) => grid.Undo());
+        check('... undone', stepIs('the undo of a deleted sheet: by the engine', 'Two!A1:A3').rows[2][0], '77');
+
+        // ---- a paste that closes a circular reference ----
+        both((grid) => { grid.SwitchSheet(grid.GetSheetNames().indexOf('Sheet1')); grid.SetCell(20, 0, '=$A$22*2+1'); grid.SetCell(20, 1, '=A21*2'); });
+        both((grid) => { grid.SelectRange(20, 0, 20, 0); });
+        for (const grid of grids) { await grid.Copy(); grid.SelectCell(21, 0); await grid.Paste(); }
+        now = stepIs('a pasted formula that closes a circular reference: by the engine', 'Sheet1!A21:B22');
+        const cycleText = now.rows[0][0];
+        check('... both formulas show the cycle, and what reads them', [/CYCLE/.test(cycleText), now.rows[1][0], now.rows[0][1], incremental.grid.GetCell(21, 0).formula], [true, cycleText, cycleText, '=$A$22*2+1']);
+        both((grid) => grid.EnterText(30, 3, '5'));
+        stepIs('an edit beside the cycle: incremental', 'Sheet1!A21:B22');
+        both((grid) => grid.Undo()); both((grid) => grid.Undo());
+        check('the paste undone: the values are back', stepIs('the undo of the paste: by the engine', 'Sheet1!A21:B22').rows[0], ['1', '2']);
+        note('before the iteration: ' + JSON.stringify(shown('Sheet1!A1:F13').rows));
+
+        // With iterative calculation the circular reference is calculated in sweeps by the engine.
+        both((grid) => grid.SetIterativeCalculation(true, 50, 0.0001));
+        both((grid) => { grid.EnterText(24, 0, '1000'); grid.EnterText(24, 1, '=A25+C25'); grid.EnterText(24, 2, '=B25*0.1'); });
+        now = stepIs('iterating: a circular reference entered: by the engine', 'Sheet1!A25:C25');
+        check('... settled at its fixed point', Math.abs(Number(now.rows[0][1].replace(/,/g, '')) - 1111.11) < 0.01, true);
+        both((grid) => grid.EnterText(24, 0, '2000'));
+        now = stepIs('iterating: an input of the cycle: by the engine', 'Sheet1!A25:C25');
+        check('... settled again', Math.abs(Number(now.rows[0][1].replace(/,/g, '')) - 2222.22) < 0.01, true);
+        both((grid) => grid.EnterText(40, 3, '9'));
+        now = stepIs('iterating: an edit elsewhere', 'Sheet1!A25:C25');
+        check('... leaves the settled cycle alone (nothing evaluated)', now.evaluated, 0);
+
+        // The real case: milk-street-office.xlsx, Annual!C21:N40 pasted at C101 closes a circular reference across sheets.
+        const real = mountGrid(), reference = mountGrid();
+        try {
+            reference.grid.SetIncrementalRecalculation(false);
+            const bytes = await bytesOf('tests/real-world/milk-street-office.xlsx');
+            for (const grid of [real.grid, reference.grid]) {
+                await grid.ImportXlsx(bytes);
+                grid.EnterText(7, 3, '54321'); grid.Undo();
+                grid.SelectRange(20, 2, 39, 13); await grid.Copy(); grid.SelectCell(100, 2); await grid.Paste();
+            }
+            const stats = real.grid.GetRecalcStats();
+            const values = (grid) => JSON.stringify(grid.GetRange('C101:N120').map((row) => row.map((cell) => typeof cell.value === 'number' ? Math.round(cell.value * 1e6) / 1e6 : cell.value)));
+            check('milk-street: the paste that closes a cross-sheet cycle is calculated by the engine, to the values of the full recalculation', [stats.Kind, values(real.grid) === values(reference.grid)], ['incremental', true]);
+            note('milk-street paste: ' + JSON.stringify(stats));
+            real.grid.EnterText(7, 3, '777');
+            check('... and the next edit is incremental', real.grid.GetRecalcStats().Kind, 'incremental');
+        } finally { real.close(); reference.close(); }
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    finally { incremental.close(); full.close(); }
+    return lines;
+};
+
 checks['api-recalc-order'] = async () => {
     const { lines, check, note } = makeLog();
     const incremental = mountGrid(), full = mountGrid();
@@ -3151,7 +3283,7 @@ checks['api-recalc-order'] = async () => {
         now = shown('Sheet1!D1:D3');
         const cycleText = now.rows[0][0];
         check('a formula that reads itself through another sheet: both show the cycle error, what reads them too, others are calculated',
-            [now.kind.startsWith('full'), now.same, /CYCLE/.test(cycleText), now.rows.map((row) => row[0]), texts(incremental.grid, 'Two!D1')[0][0]], [true, true, true, [cycleText, cycleText, '2'], cycleText]);
+            [now.kind, now.same, /CYCLE/.test(cycleText), now.rows.map((row) => row[0]), texts(incremental.grid, 'Two!D1')[0][0]], ['incremental', true, true, [cycleText, cycleText, '2'], cycleText]);
         both((grid) => grid.EnterText(5, 0, '7'));
         check('an edit beside the cycle is incremental', [shown('Sheet1!A6:A6').kind, texts(incremental.grid, 'Sheet1!D1')[0][0]], ['incremental', cycleText]);
         both((grid) => { grid.SwitchSheet(1); grid.EnterText(0, 3, '4'); grid.SwitchSheet(0); });
@@ -3217,8 +3349,12 @@ checks['api-recalc-order'] = async () => {
             file.grid.EnterText(200, 30, '1');
             file.grid.InsertRows(300, 1);
             const after = file.grid.GetRange('Assumptions!E57:E60').map((row) => row[0].value);
-            check('its circular model keeps its values through a full recalculation', [file.grid.GetRecalcStats().Kind, after.every((value, i) => typeof value === 'number' && Math.abs(value - before[i]) <= 0.01 * Math.abs(before[i]))], ['full', true]);
+            check('its circular model keeps its values when rows are inserted (calculated by the engine)', [file.grid.GetRecalcStats().Kind, after.every((value, i) => typeof value === 'number' && Math.abs(value - before[i]) <= 0.01 * Math.abs(before[i]))], ['incremental', true]);
             note('Assumptions!E57:E60 ' + JSON.stringify(before) + ' -> ' + JSON.stringify(after));
+            // ... and through a full recalculation (the setting changed: the workbook is calculated from scratch).
+            file.grid.SetIterativeCalculation(true, 100, 0.0005);
+            const again = file.grid.GetRange('Assumptions!E57:E60').map((row) => row[0].value);
+            check('... and through a full recalculation', [file.grid.GetRecalcStats().Kind, again.every((value, i) => typeof value === 'number' && Math.abs(value - before[i]) <= 0.01 * Math.abs(before[i]))], ['full', true]);
         } finally { file.close(); }
     } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
     incremental.close(); full.close();

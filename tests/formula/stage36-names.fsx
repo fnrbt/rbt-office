@@ -75,9 +75,9 @@ let c3 = calc wb3
 eq "a re-pointed name" (valueOf "sheet1" 4 0 c3, valueOf "sheet2" 0 0 c3) (CellValue.Number 30.0, CellValue.Number 30.0)
 eq "one name, the new spelling, no comment" (Wb.definedNames wb3 |> List.filter (fun n -> n.Name.ToUpperInvariant() = "TOTALS") |> List.map (fun n -> n.Name, n.Comment)) [ "TOTALS", None ]
 
-// The incremental engine does not go on over changed names: the edit is declined to a full pass.
+// The incremental engine goes on over a changed name: the formulas that use it are calculated, to the values of the full pass.
 let engine = Recalc.build c2
-eq "a changed name is not an edit of cells" ((Recalc.recalculate engine wb3 None).IsNone) true
+eq "a changed name is calculated by the engine" (Recalc.recalculate engine wb3 None |> Option.map (fun result -> valueOf "sheet1" 4 0 result, valueOf "sheet2" 0 0 result)) (Some (CellValue.Number 30.0, CellValue.Number 30.0))
 
 // Deleting: #NAME?; the sheet-level one gone, the workbook's shows again.
 let wb4 = (Wb.deleteDefinedName None "totals" wb3).Value
