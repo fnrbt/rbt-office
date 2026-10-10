@@ -1646,11 +1646,11 @@ checks['api-rowcol'] = async () => {
         check('a width of 0 hides; any other width shows', [grid.GetHiddenColumns(), (grid.SetColumnWidth(3, 70), grid.GetHiddenColumns()), grid.GetColumnWidth(3)], [['D:D'], [], 70]);
 
         // ---- outline ----
-        check('no outline at first', grid.GetOutline(), { rows: [], columns: [], rowLevels: 0, columnLevels: 0, summaryBelow: true, summaryRight: true });
+        check('no outline at first', grid.GetOutline(), { rows: [], columns: [], rowLevels: 0, columnLevels: 0, summaryBelow: true, summaryRight: true, showSymbols: true });
         grid.GroupRows('11:16'); grid.GroupRows(11, 2); grid.GroupColumns('J:K');
         check('GroupRows / GroupColumns: levels', grid.GetOutline(), {
             rows: [{ first: 10, last: 15, range: '11:16', level: 1, collapsed: false }, { first: 11, last: 12, range: '12:13', level: 2, collapsed: false }],
-            columns: [{ first: 9, last: 10, range: 'J:K', level: 1, collapsed: false }], rowLevels: 2, columnLevels: 1, summaryBelow: true, summaryRight: true });
+            columns: [{ first: 9, last: 10, range: 'J:K', level: 1, collapsed: false }], rowLevels: 2, columnLevels: 1, summaryBelow: true, summaryRight: true, showSymbols: true });
         grid.SetGroupCollapsed('rows', 11, true);
         check('collapsing the inner group hides its rows', [grid.GetHiddenRows(), grid.GetOutline().rows.map((group) => group.collapsed)], [['12:13'], [false, true]]);
         grid.SetGroupCollapsed('rows', 14, true);
@@ -2960,7 +2960,7 @@ checks['api-pagesetup'] = async () => {
         const defaults = {
             orientation: 'portrait', paperSize: 'letter', pageWidth: 612, pageHeight: 792,
             margins: { top: 0.75, bottom: 0.75, left: 0.7, right: 0.7, header: 0.3, footer: 0.3 },
-            scale: 100, fitToWidth: null, fitToHeight: null, printArea: null, printTitles: { rows: null, columns: null },
+            scale: 100, fitToWidth: null, fitToHeight: null, printArea: null, printAreas: [], printTitles: { rows: null, columns: null },
             header: none, footer: none, firstHeader: none, firstFooter: none, evenHeader: none, evenFooter: none,
             differentFirst: false, differentOddEven: false, scaleHeaderFooter: true,
             gridlines: false, headings: false, centerHorizontally: false, centerVertically: false,
@@ -2977,7 +2977,7 @@ checks['api-pagesetup'] = async () => {
         const revision = grid.GetRevision(), undoable = grid.CanUndo();
         const everything = {
             orientation: 'landscape', paperSize: 'a4', margins: { top: 1, bottom: 0.9, left: 0.5, right: 0.6, header: 0.4, footer: 0.2 },
-            fitToWidth: 1, fitToHeight: 0, printArea: 'A1:F40', printTitles: { rows: '1:2', columns: 'A:A' },
+            fitToWidth: 1, fitToHeight: 0, printArea: 'A1:F40', printAreas: ['A1:F40'], printTitles: { rows: '1:2', columns: 'A:A' },
             header: { left: 'Left && more', center: '&"Arial,Bold"Title', right: '&D' }, footer: '&CPage &P of &N',
             firstHeader: { center: 'First' }, evenFooter: { right: 'Even &P' },
             differentFirst: true, differentOddEven: true, scaleHeaderFooter: false,

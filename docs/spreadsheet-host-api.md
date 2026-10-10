@@ -722,7 +722,7 @@ The `pageSetup` object:
   scale: number | null,                   // percent 10..400; null while the sheet is fitted to pages
   fitToWidth, fitToHeight: number | null, // pages, 0 = as many as it takes; null while a scale applies
   printArea: "A1:F40" | "A1:C10,E1:G10" | null,   // one area, or several separated by commas
-  printAreas: ["A1:C10", "E1:G10"],       // the same, one entry per area ([] when none); give printArea or printAreas, not both
+  printAreas: ["A1:C10", "E1:G10"],       // the same, one entry per area ([] when none); both given: printAreas counts (what GetPageSetup returns can be given back)
   printTitles: { rows: "1:2" | null, columns: "A:B" | null },
   header, footer, firstHeader, firstFooter, evenHeader, evenFooter: { left, center, right, raw: string },
   differentFirst, differentOddEven, scaleHeaderFooter: boolean,

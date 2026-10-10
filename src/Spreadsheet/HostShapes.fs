@@ -1145,7 +1145,7 @@ let pageSetupToObj (setup: PageSetup) : obj =
     ]
 
 let private pageSetupKeys =
-    [ "orientation"; "paperSize"; "pageWidth"; "pageHeight"; "margins"; "scale"; "fitToWidth"; "fitToHeight"; "printArea"; "printTitles"
+    [ "orientation"; "paperSize"; "pageWidth"; "pageHeight"; "margins"; "scale"; "fitToWidth"; "fitToHeight"; "printArea"; "printAreas"; "printTitles"
       "header"; "footer"; "firstHeader"; "firstFooter"; "evenHeader"; "evenFooter"; "differentFirst"; "differentOddEven"; "scaleHeaderFooter"
       "gridlines"; "headings"; "centerHorizontally"; "centerVertically"; "pageOrder"; "blackAndWhite"; "firstPageNumber"; "comments" ]
 
@@ -1208,8 +1208,8 @@ let pageSetupChangesOfObj (memberName: string) (current: PageSetup) (value: obj)
       if given "scale" then yield SetScale (intArg memberName "scale" (getKey value "scale"))
       if given "fitToWidth" || given "fitToHeight" then
           yield SetFitTo (optionalArg (intArg memberName "fitToWidth") (getKey value "fitToWidth"), optionalArg (intArg memberName "fitToHeight") (getKey value "fitToHeight"))
-      if present "printArea" && present "printAreas" then hostFail memberName "give printArea or printAreas, not both"
-      if present "printArea" then
+      // (Both, as GetPageSetup gives them: the list counts.)
+      if present "printArea" && not (present "printAreas") then
           // One range, or several separated by commas ("A1:C10,E1:G10").
           let given = getKey value "printArea"
           if isNullish given then yield SetPrintArea None
