@@ -3135,6 +3135,66 @@ let internal tableVerticalMerges (rows: TableRow list) : TableVerticalMerges opt
         if spans.Count = 0 then None
         else Some { MergeRows = rowArray; SpanningCells = spanningCells; RowIndexes = rowIndexes; Spans = spans.ToArray() }
 
+/// The stretches of a page's text area that a table row (or anything from
+/// `top` to `bottom`) covers, page by page: on the pages after the first one
+/// below the table's repeated header rows (`continuationHeaderHeight`).
+let internal pageStretches (settings: LayoutSettings) (continuationHeaderHeight: float) (top: float) (bottom: float) : (float * float) list =
+    let stretches = ResizeArray<float * float>()
+    let stride = pageHeight settings + pageGap
+    let firstPageTop = WordLayout.Page.pageTopForY (pageHeight settings) top
+    let mutable pageTop = firstPageTop
+    let mutable guard = 0
+    while pageTop < bottom && guard < 10000 do
+        let contentTop = WordLayout.Page.contentTop settings.PaddingTop pageTop + (if pageTop > firstPageTop then continuationHeaderHeight else 0.0)
+        let stretchTop = max top contentTop
+        let stretchBottom = min bottom (WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop)
+        if stretchBottom > stretchTop + 0.01 then stretches.Add((stretchTop, stretchBottom))
+        pageTop <- pageTop + stride
+        guard <- guard + 1
+    if stretches.Count = 0 then [ (top, bottom) ] else resizeArrayToList stretches
+
+/// The layouts of a vertically merged cell laid over the stretches its rows
+/// are on. `layouts` are the cell's paragraphs laid out in one piece from the
+/// top of the first stretch (a row-local measurement moved there); a line
+/// that does not fit in what is left of a stretch goes to the top of the
+/// next one, as the rows it belongs to did, and the lines after it follow.
+/// Returns the layouts and the bottom of the content (the last stretch is
+/// not a limit: what is left over makes the last row taller).
+let internal layoutsOverStretches (stretches: (float * float) array) (paddingTop: float) (paddingBottom: float) (layouts: BlockLayout list) : BlockLayout list * float =
+    let mutable stretch = 0
+    let mutable shift = 0.0
+    let mutable contentBottom = if stretches.Length > 0 then fst stretches.[0] else 0.0
+    let moved =
+        layouts
+        |> List.map (fun layout ->
+            if layout.Lines.IsEmpty then
+                let placed = { layout with Y = layout.Y + shift }
+                contentBottom <- max contentBottom (placed.Y + placed.Height)
+                placed
+            else
+                let mutable first = true
+                let mutable layoutShift = shift
+                let mutable lastBottom = layout.Y
+                let lines =
+                    layout.Lines
+                    |> List.map (fun line ->
+                        // (The last stretch takes whatever is left.)
+                        while stretch < stretches.Length - 1
+                              && line.Y + shift + line.Height > snd stretches.[stretch] - paddingBottom + pageFitTolerance do
+                            stretch <- stretch + 1
+                            shift <- fst stretches.[stretch] + paddingTop - line.Y
+                        if first then
+                            layoutShift <- shift
+                            first <- false
+                        lastBottom <- line.Y + shift + line.Height
+                        if shift = 0.0 then line else { line with Y = line.Y + shift })
+                let originalLastBottom = (List.last layout.Lines).Y + (List.last layout.Lines).Height
+                let trailing = max 0.0 (layout.Y + layout.Height - originalLastBottom)
+                let y = layout.Y + layoutShift
+                contentBottom <- max contentBottom (lastBottom + trailing)
+                { layout with Y = y; Height = lastBottom + trailing - y; Lines = lines })
+    moved, contentBottom + paddingBottom
+
 /// Extra height per row so that every merged cell fits in the rows it spans.
 /// `measurements` are the rows measured with the merged cells left out of their
 /// restart row's height. A deficit goes to the last row of the span; spans are
@@ -3737,6 +3797,112 @@ let tableCellFragmentBorderCells (cellFragments: TableCellFragmentPlan list) =
         }: RedBat.BorderGrid.Cell)
     resizeArrayToList result
 
+/// Vertically merged cells of a table whose rows are being placed (by the
+/// layout pass and by the table's plan alike). The content of such a cell is
+/// laid out with its first row, in one piece; where the rows it spans come
+/// to be on more than one page - a page break between them, or a row that is
+/// split - it is laid over the stretches those rows are on, once the last of
+/// them has its place.
+type internal MergedCellSplits = {
+    SplitSpans: struct (int * int * int) array
+    SplitRowStretches: ResizeArray<(float * float) list>
+    /// (first row, cell) -> the cell laid out in one piece from its row's top.
+    SplitWholes: System.Collections.Generic.Dictionary<struct (int * int), TableCellLayoutGroup>
+}
+
+let internal mergedCellSplitsFor (scope: TableMeasureScope) : MergedCellSplits option =
+    match scope.ScopeMerges with
+    | Some merges when merges.Merges.Spans.Length > 0 ->
+        // (A merged cell that holds a table stays in one piece: the table's rows and borders
+        // are placed with the cell's first row.)
+        let spans =
+            merges.Merges.Spans
+            |> Array.filter (fun struct (rowIndex, cellIndex, _) ->
+                match List.tryItem cellIndex merges.Merges.MergeRows.[rowIndex].Cells with
+                | Some cell -> cell.NestedTables.IsEmpty
+                | None -> false)
+        Some { SplitSpans = spans; SplitRowStretches = ResizeArray<(float * float) list>()
+               SplitWholes = System.Collections.Generic.Dictionary<struct (int * int), TableCellLayoutGroup>() }
+    | _ -> None
+
+/// Row `rowIndex` has its place (`rowY`, `rowHeight`; rows are told in
+/// order): the merged cells that end with it and are split, as (first row,
+/// cell, the cell's layouts where they belong now), and what the row has to
+/// grow by for the content the last stretch does not hold.
+let internal mergedCellsSettledAt (splits: MergedCellSplits) (settings: LayoutSettings) (continuationHeaderHeight: float) (rowIndex: int) (rowY: float) (rowHeight: float) (rowLocal: TableRowMeasurement) : (int * int * BlockLayout list) list * float =
+    splits.SplitRowStretches.Add (pageStretches settings continuationHeaderHeight rowY (rowY + rowHeight))
+    let mutable settled = []
+    let mutable growth = 0.0
+    for struct (firstRow, cellIndex, span) in splits.SplitSpans do
+        if firstRow = rowIndex then
+            match List.tryItem cellIndex (moveTableRowMeasurementToY rowY rowLocal).CellGroups with
+            | Some whole -> splits.SplitWholes.[struct (firstRow, cellIndex)] <- whole
+            | None -> ()
+        if firstRow + span - 1 = rowIndex && firstRow < rowIndex then
+            match splits.SplitWholes.TryGetValue(struct (firstRow, cellIndex)) with
+            | true, whole ->
+                // The stretches of the rows, those that touch as one.
+                let stretches = ResizeArray<float * float>()
+                for spanned in firstRow .. rowIndex do
+                    for (top, bottom) in splits.SplitRowStretches.[spanned] do
+                        if stretches.Count > 0 && abs (snd stretches.[stretches.Count - 1] - top) < 0.5 then
+                            stretches.[stretches.Count - 1] <- (fst stretches.[stretches.Count - 1], bottom)
+                        else stretches.Add((top, bottom))
+                if stretches.Count > 1 then
+                    let moved, contentBottom = layoutsOverStretches (stretches.ToArray()) whole.PaddingTop whole.PaddingBottom whole.Layouts
+                    settled <- (firstRow, cellIndex, moved) :: settled
+                    growth <- max growth (contentBottom - snd stretches.[stretches.Count - 1])
+            | _ -> ()
+    settled, (if growth > 0.5 then growth else 0.0)
+
+/// "Keep with next" on a table row (on the first paragraph of its first
+/// cell): the row is not the last of its page when the row after it starts
+/// the next one - it goes there with it, and so do the rows before it that
+/// are kept with it. Returns where the row goes: `pagedRowY`, or the top of
+/// the next page.
+let internal keepRowWithNextY (settings: LayoutSettings) (headerHeight: float) (contentBottom: float) (rows: TableRow array) (rowKeepsWithNext: TableRow -> bool) (measureRowLocal: TableRow -> TableRowMeasurement) (rowIndex: int) (rowY: float) (rowHeight: float) (pagedRowY: float) : float =
+    if pagedRowY = rowY && rowIndex + 1 < rows.Length
+       && contentBottom - (rowY + rowHeight) < 400.0
+       && rowKeepsWithNext rows.[rowIndex] then
+        let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) rowY
+        let pageContentTop = WordLayout.Page.contentTop settings.PaddingTop pageTop
+        if rowY <= pageContentTop + headerHeight + pageFitTolerance then pagedRowY
+        else
+            let mutable total = rowHeight
+            let mutable next = rowIndex + 1
+            let mutable more = true
+            while more && next < rows.Length do
+                let nextRow = rows.[next]
+                let nextMeasurement = measureRowLocal nextRow
+                if rowKeepsWithNext nextRow && next + 1 < rows.Length then
+                    total <- total + nextMeasurement.Height
+                    next <- next + 1
+                else
+                    // (Of a row that may break, its first lines are enough.)
+                    let needed =
+                        if nextRow.CanSplit = Some false then nextMeasurement.Height
+                        else
+                            let mutable firstLines = 0.0
+                            for group in nextMeasurement.CellGroups do
+                                match group.Layouts |> List.tryPick (fun layout -> List.tryHead layout.Lines) with
+                                | Some line -> firstLines <- max firstLines (line.Y + line.Height)
+                                | None -> ()
+                            if firstLines <= 0.0 then nextMeasurement.Height else min nextMeasurement.Height firstLines
+                    total <- total + needed
+                    more <- false
+            let pageRoom = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop - pageContentTop - headerHeight
+            if rowY + total > contentBottom + pageFitTolerance && total <= pageRoom then advanceToNextPage settings rowY
+            else pagedRowY
+    else pagedRowY
+
+let internal tableRowKeepsWithNext (styleContext: DocumentStyleContext) (row: TableRow) =
+    match row.Cells with
+    | cell :: _ ->
+        match cell.Content with
+        | para :: _ -> WordStyles.keepNext (forBlockInContext styleContext (Paragraph para)) para.Metadata
+        | [] -> false
+    | [] -> false
+
 let planTableRowFragments (settings: LayoutSettings) firstTablePage repeatedHeaderHeight rowY rowHeight (measurement: TableRowMeasurement) =
     let rowBottom = rowY + rowHeight
     let mutable pageTop = WordLayout.Page.pageTopForY (pageHeight settings) rowY
@@ -4022,6 +4188,8 @@ and private buildTableLayoutPlanUncached (memo: ParagraphLayoutMemo option) (ini
         totalHeight
     let mutable rowY = tableY
     let firstTablePage = pageNumberForY settings tableY
+    let planRowArray = List.toArray tableBlock.Rows
+    let mergedSplits = mergedCellSplitsFor measureScope
     let rows = ResizeArray<TableLayoutPlanRow>()
     let mutable rowIndex = 0
     for row in tableBlock.Rows do
@@ -4032,6 +4200,7 @@ and private buildTableLayoutPlanUncached (memo: ParagraphLayoutMemo option) (ini
         let mutable rowHeight = rowLocalMeasurement.Height
         let pagedRowY = paginateTableRow settings row rowY rowHeight
         let contentBottom = contentBottomForY settings rowY
+        let pagedRowY = keepRowWithNextY settings headerHeight contentBottom planRowArray (tableRowKeepsWithNext styleContext) measureRowLocal rowIndex rowY rowHeight pagedRowY
         let pagedRowY =
             if pagedRowY = rowY
                && (row.CanSplit |> Option.defaultValue true)
@@ -4054,6 +4223,12 @@ and private buildTableLayoutPlanUncached (memo: ParagraphLayoutMemo option) (ini
             plannedMeasurement <- measureRow row rowY continuationHeaderHeight
             rowHeight <- plannedMeasurement.Height
         let repeatedHeaderHeight = if row.IsHeader then 0.0 else headerHeight
+        // (A merged cell that is split with its rows can make the last of them taller, as in the layout pass.)
+        match mergedSplits with
+        | Some splits ->
+            let _, growth = mergedCellsSettledAt splits settings continuationHeaderHeight rowIndex plannedY rowHeight rowLocalMeasurement
+            rowHeight <- rowHeight + growth
+        | None -> ()
         let fragments = planTableRowFragments settings (pageNumberForY settings plannedY) repeatedHeaderHeight plannedY rowHeight plannedMeasurement
         rows.Add {
             RowIndex = rowIndex
@@ -4530,6 +4705,12 @@ let private layoutDocumentPassKept
                         headerRowY <- headerRowY + headerMeasurement.Height
                         headerRowIndex <- headerRowIndex + 1
 
+                let tableRowArray = List.toArray tableBlock.Rows
+                let rowKeepsWithNext = tableRowKeepsWithNext styleContext
+                let mergedSplits = mergedCellSplitsFor measureScope
+                // (first row, cell) -> where the merged cell's layouts are in `layouts`, and how many.
+                let mergedLayoutsAt = System.Collections.Generic.Dictionary<struct (int * int), struct (int * int)>()
+
                 let mutable rowIndex = 0
                 for row in tableBlock.Rows do
                     let continuationHeaderHeight = if row.IsHeader then 0.0 else headerHeight
@@ -4541,6 +4722,7 @@ let private layoutDocumentPassKept
                     let pagedRowY = paginateTableRow settings row rowY rowHeight
                     let pagedRowY = paginateTableRowWithFootnotes settings footnotesByPage row pagedRowY rowHeight
                     let contentBottom = contentBottomWithFootnotes settings footnotesByPage rowY
+                    let pagedRowY = keepRowWithNextY settings headerHeight contentBottom tableRowArray rowKeepsWithNext measureRowLocal rowIndex rowY rowHeight pagedRowY
                     let pagedRowY =
                         if pagedRowY = rowY
                            && (row.CanSplit |> Option.defaultValue true)
@@ -4597,7 +4779,23 @@ let private layoutDocumentPassKept
                         // unaligned origin) but reflects vMerge row-span centering, so only the
                         // single-row offset is subtracted back out in layout queries.
                         let queryVAlignOffset = if alignmentHeight > rowHeight + 0.5 then 0.0 else offset
+                        let layoutsBefore = layouts.Count
                         addAdjustedLayouts offset queryVAlignOffset group.Layouts
+                        if mergedSplits.IsSome then
+                            mergedLayoutsAt.[struct (rowIndex, groupIndex)] <- struct (layoutsBefore, layouts.Count - layoutsBefore)
+                    match mergedSplits with
+                    | Some splits ->
+                        let settled, growth = mergedCellsSettledAt splits settings continuationHeaderHeight rowIndex rowY rowHeight rowLocalMeasurement
+                        for (firstRow, cellIndex, moved) in settled do
+                            match mergedLayoutsAt.TryGetValue(struct (firstRow, cellIndex)) with
+                            | true, struct (layoutsAt, layoutCount) when layoutCount = moved.Length ->
+                                let mutable at = layoutsAt
+                                for layout in moved do
+                                    layouts.[at] <- layout
+                                    at <- at + 1
+                            | _ -> ()
+                        rowHeight <- rowHeight + growth
+                    | None -> ()
                     rowY <- rowY + rowHeight
                     rowIndex <- rowIndex + 1
 

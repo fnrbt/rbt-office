@@ -1055,6 +1055,11 @@ module Table =
             | [] -> ()
         empty
 
+    /// The paragraphs of a vertically merged cell handed out to the cells it
+    /// continues in, one each. (How merged cells were imported before the
+    /// layout laid a merged cell's content over the rows it spans; the
+    /// importers no longer do this - Docx.gatherVerticalMergeContent still
+    /// undoes it for documents that hold content in continuation cells.)
     let distributeVerticalMergeContent (rows: TableRow list) =
         let rowArray = rows |> List.toArray
         let cellRows = Array.zeroCreate<TableCell[]> rowArray.Length

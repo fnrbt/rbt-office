@@ -767,7 +767,11 @@ let rec private tableCell resolver images styleMap tableStyleMap comments notes 
         |> List.map (mkPara resolver images styleMap comments notes false defaultMissingSpacingToZero)
     {
         Content = if content.IsEmpty then [mkPara resolver images styleMap comments notes false defaultMissingSpacingToZero (applyTableParagraphProperties emptyPara)] else content
-        NestedTables = cell.NestedTables |> List.map (tableBlock resolver images styleMap tableStyleMap comments notes)
+        // (In a table inside a cell a merged cell's paragraphs are still handed out to its rows.)
+        NestedTables =
+            cell.NestedTables
+            |> List.map (tableBlock resolver images styleMap tableStyleMap comments notes)
+            |> List.map (fun table -> { table with Rows = WordLayout.Table.distributeVerticalMergeContent table.Rows })
         NestedTableAnchors = cell.NestedTableAnchors
         ColSpan = props |> Option.bind (fun p -> p.ColSpan) |> Option.defaultValue 1
         BackgroundColor = props |> Option.bind (fun p -> p.Shading) |> Option.bind directShadingBackgroundColor
@@ -833,7 +837,6 @@ and private tableBlock resolver images styleMap tableStyleMap comments notes (ta
             WidthAfter = twipsToCanvasPixels row.WidthAfter
             BordersOverride = tableBorders row.BordersOverride
         })
-        |> WordLayout.Table.distributeVerticalMergeContent
     {
         Id = Guid.NewGuid().ToString("N")
         Rows = rows

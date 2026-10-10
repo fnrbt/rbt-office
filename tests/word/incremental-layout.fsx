@@ -278,6 +278,39 @@ let tablePages =
     |> List.distinct
 checkTrue "table rows land on more than one page" (tablePages.Length >= 2)
 
+// A vertically merged cell that is split with the rows it spans, and rows
+// kept with the next: what an edit lays out again is what a layout from
+// nothing makes (the merged content is placed once the last of its rows is).
+let mergedTable id rowCount =
+    Doc.Table
+        { templateTable with
+            Id = id
+            Rows =
+                [ for r in 1 .. rowCount ->
+                    { templateRow with
+                        IsHeader = (r = 1)
+                        Cells =
+                            [ (if r = 1 then cell (sprintf "%s-h" id) "head"
+                               elif r = 2 then { templateCell with VerticalMerge = Some Doc.RestartMerge; Content = [ for i in 1 .. 14 -> para (sprintf "%s-m%d" id i) (words (sprintf "m%d" i) 30) ] }
+                               else { templateCell with VerticalMerge = Some Doc.ContinueMerge; Content = [ para (sprintf "%s-c%d" id r) "" ] })
+                              { templateCell with
+                                    Content = [ paraWith (sprintf "%s-r%d" id r) (if r % 7 = 0 then { Doc.defaultMetadata with KeepNext = Some true } else Doc.defaultMetadata) (words (sprintf "r%d" r) (2 + (r * 5) % 9)) ] } ] } ] }
+
+let mergedDoc =
+    [ for i in 1 .. 7 -> Doc.Paragraph (para (sprintf "mb%d" i) (words "before" 60))
+      yield mergedTable "mt" 34
+      for i in 1 .. 3 -> Doc.Paragraph (para (sprintf "ma%d" i) (words "after" 40)) ]
+    |> document
+
+let _, mergedInitial, _ =
+    assertEquivalent "merged cell across pages" mergedDoc
+        [ "typing before the table", typeIn "mb1" 3 (words "push" 45)
+          "typing in the merged cell", typeIn "mt-m3" 2 (words "more" 60)
+          "typing in a row beside it", typeIn "mt-r20" 2 (words "cell" 30)
+          "typing after the table", typeIn "ma2" 3 "X" ]
+checkTrue "the merged cell's content is on more than one page"
+    ((mergedInitial |> List.filter (fun layout -> layout.BlockId.StartsWith "mt-m") |> List.collect (fun layout -> layout.Lines) |> List.map (fun line -> pageOf line.Y) |> List.distinct).Length >= 2)
+
 // ---------------------------------------------------------------------------
 // Spacing before/after collapses between paragraphs (max, not sum), headings
 // keep with the next paragraph, and widow control moves short tails.

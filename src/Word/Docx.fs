@@ -1100,7 +1100,10 @@ let rec private blockFromEditor (item: obj) =
                                 |> Array.toList
                                 |> List.choose (fun item ->
                                     match blockFromEditor item with
-                                    | Table table -> Some table
+                                    // (In a table inside a cell a merged cell's paragraphs are still handed
+                                    // out to its rows: such a table is placed and painted row by row with
+                                    // the cell that holds it.)
+                                    | Table table -> Some { table with Rows = WordLayout.Table.distributeVerticalMergeContent table.Rows }
                                     | _ -> None)
                         let nestedTableAnchors =
                             if isNullOrUndefined cell?NestedTableAnchors then []
@@ -1153,7 +1156,10 @@ let rec private blockFromEditor (item: obj) =
 
         Table {
             Id = nextImportedBlockId ()
-            Rows = WordLayout.Table.distributeVerticalMergeContent tableRows
+            // (The content of a vertically merged cell stays in the cell that starts the merge, as
+            // in the file: the layout lays it over the rows the cell spans - and splits it with them
+            // at a page break. It used to be handed out to the rows, a paragraph each.)
+            Rows = tableRows
             PreferredWidth = tableWidthFromEditor (item?PreferredWidth) (item?PreferredWidthType)
             Alignment = optionalString (item?TableAlignment) |> Option.orElse (optionalString (item?Alignment))
             LayoutMode = tableLayoutModeFromString (optionalString (item?LayoutMode))
