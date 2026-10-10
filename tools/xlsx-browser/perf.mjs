@@ -4,7 +4,7 @@
 // reading the written file again, and frame times while scrolling a sheet.
 //
 // Usage:
-//   node tools/xlsx-browser/perf.mjs --dist $DIST [--profile load|export|reread|scroll|edits|first|more] [--first-runs N] [--only-first] [--more] [--sheet NAME] [--frames N] [--steps 120,0] [--no-scroll] [--no-jump] [--edits] [file.xlsx ...]
+//   node tools/xlsx-browser/perf.mjs --dist $DIST [--profile load|export|reread|scroll|edits|first|repeat|more] [--first-runs N] [--only-first] [--more] [--sheet NAME] [--frames N] [--steps 120,0] [--no-scroll] [--no-jump] [--edits] [file.xlsx ...]
 // (--edits also times edits of a large block: a format on 10 000 cells, a paste of 1 000 x 20
 // cells, a typed entry and their undo, on the first sheet and on the sheet with the most cells.)
 // (--no-jump leaves out the jumps to the far end: 0.1.4 took minutes for one frame there.)
@@ -105,7 +105,15 @@ try {
             const s = grid.GetRecalcStats ? grid.GetRecalcStats() : null;
             const t1 = performance.now();
             grid.EnterText(row, col, again);
+            window.perf.lastEdit = { row, col, value, again };
             return { first, second: performance.now() - t1, kind: s ? s.Kind + (s.Reason ? ': ' + s.Reason : '') + ', ' + s.Formulas + ' formulas in the graph' + (cell ? ', ' + s.ReachedFormulas + ' reached, ' + s.EvaluatedFormulas + ' evaluated' : '') : '' };
+        },
+        // The cell of firstEdit typed into again, several times (the graph is built, the sheets converted): the median.
+        repeatEdit(times) {
+            const { row, col, value, again } = window.perf.lastEdit;
+            const all = [];
+            for (let i = 0; i < times; i++) { const t0 = performance.now(); grid.EnterText(row, col, i % 2 ? again : value); all.push(performance.now() - t0); }
+            return all.sort((a, b) => a - b)[Math.floor(all.length / 2)];
         },
         // The constant number cells of every sheet that the most formulas depend on.
         async findInputs() {
@@ -315,6 +323,8 @@ try {
             }
             const sortedFirsts = firsts.slice().sort((a, b) => a - b);
             console.log(`  the first edit right after opening (a typed number${firstCell ? ' in ' + firstCell : ''}): median ${ms(sortedFirsts[Math.floor(sortedFirsts.length / 2)])} of ${firsts.map((t) => t.toFixed(0)).join(', ')} ms [${f.kind}]; the same cell again ${ms(f.second)}`);
+            const repeated = await phase('repeat', () => tab.evaluate(() => window.perf.repeatEdit(7)));
+            console.log(`  that cell typed into seven more times: median ${ms(repeated)}`);
             for (const sheet of (onlyFirst ? [] : sheetName ? sheets.filter((s) => s.name === sheetName) : [sheets[0], sheets.slice().sort((a, b) => b.cells - a.cells)[0]].filter((s, i, all) => all.indexOf(s) === i))) {
                 const e = await phase('edits', () => tab.evaluate((index) => window.perf.edits(index), sheet.index));
                 const both = ([call, total, kind]) => `${ms(call)} (${ms(total)} with the frame)${kind ? ' [' + kind + ']' : ''}`;

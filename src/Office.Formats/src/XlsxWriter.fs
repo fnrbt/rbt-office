@@ -3449,8 +3449,9 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
                               Value = valueOf cell
                               Format = formatOf cell
                               Comment = (if comments.IsEmpty then None else Map.tryFind (r, c) comments) }))
-                 // (Rows that are still in the text of their part stay there.)
-                 if sheet.RowSource.IsLoaded then XlsxReader.OnDemand<XlsxCellOut list>.Of (cells ()) else XlsxReader.OnDemand<XlsxCellOut list>.Deferred cells)
+                 // (Made when asked for: a sheet that goes back as the part it was read from needs none,
+                 // and rows that are still in the text of their part stay there.)
+                 XlsxReader.OnDemand<XlsxCellOut list>.Deferred cells)
               MergedCells =
                 sheet.MergedCells
                 |> List.map (fun m ->
@@ -3557,8 +3558,7 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
                             | Some _, Some range when range <> "" -> yield cell.Reference.Column + string cell.Reference.Row, range, cell.ArrayDynamic
                             | _ -> () ]
                     UncachedFormulas =
-                        (if sheet.RowSource.IsLoaded then None
-                         else Some (sheet.FormulaCells |> List.exists (fun cell -> match cell.Value with XlsxReader.Formula _ -> true | _ -> false)))
+                        Some (sheet.FormulaCells |> List.exists (fun cell -> match cell.Value with XlsxReader.Formula _ -> true | _ -> false))
                     RowAxis =
                         sheet.RowSource.Headers
                         |> List.choose (fun row ->

@@ -6569,6 +6569,24 @@ type Spreadsheet(container: Element) =
         setTimeoutMs (fun () ->
             if not disposed && incrementalRecalculation && generation = engineGeneration && recalcEngine.IsNone then
                 ensureRecalcEngine () |> ignore) 250 |> ignore
+        // The first edit converts the sheets its formulas reach: the rows of
+        // the sheets that have formulas are read from the file right after
+        // the workbook is shown, a sheet at a time, so that the edit does not
+        // wait for that. (Nothing is converted: see IsSheetLoaded.)
+        (
+            let rec readAhead (index: int) =
+                if not disposed && not readOnly && generation = engineGeneration && index < sheets.Length then
+                    let pending =
+                        match sheets.[index].Deferred, sheets.[index].SourceSheet, xlsxSource with
+                        | Some deferred, Some origin, Some source when deferred.Loaded.IsNone && deferred.HasFormulas && origin.Book = source.Id ->
+                            source.Workbook.Sheets |> List.tryItem origin.Sheet |> Option.filter (fun sheet -> not sheet.RowSource.IsLoaded)
+                        | _ -> None
+                    match pending with
+                    | Some sheet ->
+                        (try sheet.Rows |> ignore with _ -> ())
+                        setTimeoutMs (fun () -> readAhead (index + 1)) 0 |> ignore
+                    | None -> readAhead (index + 1)
+            setTimeoutMs (fun () -> readAhead 0) 0 |> ignore)
         for listener in sheetChangedListeners do
             try listener safeIndex with error -> reportError "OnSheetChanged" (box error)
 
