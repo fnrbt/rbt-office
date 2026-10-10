@@ -547,6 +547,7 @@ window.roundTrip = async (name, expect) => {
     const problems = [];
     let stats = '', saved = [], xml = '', xmlDiff = {}, xmlIdentical = false, pages = 0, changedParts = [];
     const partsAsRead = { total: 0, same: 0, changed: [] };
+    let frontFirst = 0; // editors that showed the document before it was read to its end (of two)
     window.roundTripState = undefined;
     try {
         let original = new Uint8Array(await (await fetch('/fixture?name=' + encodeURIComponent(name))).arrayBuffer());
@@ -617,6 +618,32 @@ window.roundTrip = async (name, expect) => {
                 }
             }
         }
+        // The document opened front first (officeFormats.word.openProgressive) and read to its end
+        // while an editor shows it - step by step, and in the slices the package schedules - is the
+        // document read at once: the same model (what the editor exports of it), the same layout,
+        // and an unedited save writes the same bytes into every part.
+        if (!mutate && typeof OF.word.openProgressive === 'function') {
+            const modelText = (pkg) => JSON.stringify(pkg, (key, value) => (value instanceof Uint8Array ? `bytes:${value.length}` : value));
+            const wholeModel = modelText(exportPackage(first.doc));
+            const wholeLayout = JSON.stringify(fp0);
+            const wholeParts = await rawParts(shown.bytes1);
+            for (const how of ['in steps', 'in slices']) {
+                const pkg = await OF.word.openProgressive(original, { autoStart: false, firstBlocks: how === 'in steps' ? 2 : 64 });
+                const handle = openEditor(pkg);
+                try {
+                    if (!Word.isLoadComplete(handle.editor)) frontFirst++;
+                    if (how === 'in steps') { while (!pkg.Progressive.IsComplete) pkg.Progressive.readMore(0); } else await Word.whenLoadComplete(handle.editor);
+                    if (!Word.isLoadComplete(handle.editor)) problems.push(`front first (${how}): the editor's document is not complete when its package is`);
+                    const exported = Word.exportDocumentPackage(handle.editor);
+                    const model = modelText(exported);
+                    if (model !== wholeModel) { let i = 0; while (i < model.length && model[i] === wholeModel[i]) i++; problems.push(`front first (${how}): the model is not that of the document read at once: ...${wholeModel.slice(Math.max(0, i - 80), i + 80)}... became ...${model.slice(Math.max(0, i - 80), i + 80)}...`); }
+                    if (JSON.stringify(layoutOf(handle.editor)) !== wholeLayout) diffLayout(`front first (${how}): layout vs the document read at once`, fp0, layoutOf(handle.editor), problems), problems.push(`front first (${how}): the layout fingerprint is not that of the document read at once`);
+                    const writtenParts = await rawParts(await writePackage(exported, `front first, ${how}`));
+                    const names = new Set([...Object.keys(wholeParts), ...Object.keys(writtenParts)]);
+                    for (const name of names) if (wholeParts[name] !== writtenParts[name]) problems.push(`front first (${how}): ${name} of an unedited save is not byte for byte what the document read at once saves`);
+                } finally { closeEditor(handle); }
+            }
+        }
         saved = [toBase64(shown.bytes1), toBase64(shown.bytes2), toBase64(model.bytes1)];
         xml = shown.p1['word/document.xml'];
         window.roundTripState = { pkg: first.pkg, fp0, s0 };
@@ -626,7 +653,7 @@ window.roundTrip = async (name, expect) => {
         problems.push('threw: ' + String(e && e.stack || e).split('\n').slice(0, 4).join(' | '));
     }
     problems.push(...integrityProblems());
-    return { problems, stats, saved, xml, xmlDiff, xmlIdentical, changedParts, pages, partsAsRead };
+    return { problems, stats, saved, xml, xmlDiff, xmlIdentical, changedParts, pages, partsAsRead, frontFirst };
 };
 
 // A trivial edit, made with real key events by roundtrip.mjs between these two

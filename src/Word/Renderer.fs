@@ -94,6 +94,10 @@ type LayoutProgress = {
     mutable Notified: float
     /// Called once the whole document is laid out (whenLayoutComplete).
     Waiters: ResizeArray<unit -> unit>
+    /// The document on display is still being read (a package opened front
+    /// first): what is laid out, even all of what is there, is not the whole
+    /// document yet.
+    mutable LoadPending: bool
 }
 
 /// A header or footer that is edited in place. The document the editor
@@ -239,7 +243,7 @@ let createContext (canvas: HTMLCanvasElement) = {
     LastPaint = None
     Viewport = None
     PageFrame = None
-    Progress = { Scheduled = false; Epoch = 0; Chunk = 48; Notified = 0.0; Waiters = ResizeArray() }
+    Progress = { Scheduled = false; Epoch = 0; Chunk = 48; Notified = 0.0; Waiters = ResizeArray(); LoadPending = false }
     Story = None
     StoryPainted = false
     StoryOverlay = []
@@ -379,9 +383,25 @@ let measureRangeWithContext ctx text style start length =
 [<Emit("performance.now()")>]
 let private nowMs () : float = jsNative
 
-/// Whether the layout the context has (or makes next) is of the whole document.
-let layoutIsComplete (ctx: RenderContext) =
+/// Whether the layout the context has (or makes next) is of all the blocks the document has.
+let private layoutIsWhole (ctx: RenderContext) =
     Rbt.Word.Layout.incrementalLayoutIsWhole ctx.LayoutState
+
+/// Whether the layout the context has (or makes next) is of the whole
+/// document: all its blocks, and none still to be read.
+let layoutIsComplete (ctx: RenderContext) =
+    layoutIsWhole ctx && not ctx.Progress.LoadPending
+
+/// More of the document on display was read: `blocksBefore` blocks were
+/// there. A layout that covered them all does not cover the new ones at
+/// once - they are laid out as the rest of a long document is, in slices or
+/// when something shows them. True when what was laid out was all there was
+/// (the view may reach further than that: the host repaints).
+let documentExtended (ctx: RenderContext) (blocksBefore: int) : bool =
+    if ctx.LayoutState.BlockLimit = System.Int32.MaxValue || ctx.LayoutState.BlockLimit >= blocksBefore then
+        ctx.LayoutState.BlockLimit <- max 1 blocksBefore
+        true
+    else false
 
 let private resolveLayoutWaiters (ctx: RenderContext) =
     if ctx.Progress.Waiters.Count > 0 && layoutIsComplete ctx then
@@ -481,10 +501,10 @@ let private laidOutBottom (ctx: RenderContext) (layouts: BlockLayout list) =
 
 /// Lay out as much of the document as reaches down to `bottom` (layout y).
 let private coverDown (ctx: RenderContext) (doc: Document) (bottom: float) =
-    let mutable more = not (layoutIsComplete ctx)
+    let mutable more = not (layoutIsWhole ctx)
     while more do
         let layouts, _ = layoutDocumentWithPages ctx doc
-        if layoutIsComplete ctx || laidOutBottom ctx layouts >= bottom then more <- false
+        if layoutIsWhole ctx || laidOutBottom ctx layouts >= bottom then more <- false
         else
             // (In steps of a third: a pass over a few more blocks costs little, the blocks themselves cost their measuring.)
             let limit = ctx.LayoutState.BlockLimit
@@ -493,7 +513,7 @@ let private coverDown (ctx: RenderContext) (doc: Document) (bottom: float) =
 
 /// What a viewport shows, and a screen below it, is laid out.
 let private coverViewport (ctx: RenderContext) (doc: Document) (vp: Viewport) =
-    if not (layoutIsComplete ctx) then
+    if not (layoutIsWhole ctx) then
         let top = (vp.ScrollTop - vp.OriginY) / vp.Scale
         let height = vp.Height / vp.Scale
         coverDown ctx doc (top + 2.0 * height)
@@ -501,7 +521,7 @@ let private coverViewport (ctx: RenderContext) (doc: Document) (vp: Viewport) =
 /// The blocks the selection is in are laid out, and some after them (the
 /// caret moves down by lines that must be there).
 let private coverSelection (ctx: RenderContext) (doc: Document) =
-    if not (layoutIsComplete ctx) then
+    if not (layoutIsWhole ctx) then
         match doc.Selection with
         | None -> ()
         | Some selection ->
@@ -524,7 +544,7 @@ let advanceLayout (ctx: RenderContext) (doc: Document) (budget: float) : bool =
     let progress = ctx.Progress
     let started = nowMs ()
     let target = max 4.0 (min budget 30.0)
-    let mutable more = not (layoutIsComplete ctx)
+    let mutable more = not (layoutIsWhole ctx)
     while more do
         let passStart = nowMs ()
         let limit = ctx.LayoutState.BlockLimit
@@ -534,7 +554,7 @@ let advanceLayout (ctx: RenderContext) (doc: Document) (budget: float) : bool =
         layoutDocumentWithPages ctx doc |> ignore
         let took = max 0.25 (nowMs () - passStart)
         progress.Chunk <- max 8 (min (chunk * 2) (int (float chunk * target / took)))
-        if layoutIsComplete ctx || nowMs () - started + took * 0.6 > budget then more <- false
+        if layoutIsWhole ctx || nowMs () - started + took * 0.6 > budget then more <- false
     layoutIsComplete ctx
 
 [<Emit("(typeof document !== 'undefined' && document.hidden === true)")>]
@@ -559,13 +579,14 @@ let private afterThisTask (_callback: unit -> unit) : unit = jsNative
 /// slice), tells its listeners that there are more pages.
 let rec scheduleLayout (ctx: RenderContext) (currentDocument: unit -> Document) (afterSlice: bool -> bool -> unit) : unit =
     let progress = ctx.Progress
-    if not progress.Scheduled && not (layoutIsComplete ctx) then
+    // (All of what is there laid out while more is being read: the slices start again when it is.)
+    if not progress.Scheduled && not (layoutIsWhole ctx) then
         progress.Scheduled <- true
         let epoch = progress.Epoch
         afterThisTask (fun () ->
             progress.Scheduled <- false
             if epoch = progress.Epoch then
-                if not (layoutIsComplete ctx) then
+                if not (layoutIsWhole ctx) then
                     // A page that is not shown gets its tasks rarely: longer slices then.
                     let budget = if pageIsHidden () then 250.0 else 24.0
                     let complete = advanceLayout ctx (currentDocument ()) budget
@@ -1432,7 +1453,7 @@ let private frameLayoutLookup (frame: PaintFrame) =
 let private frameFor (ctx: RenderContext) (doc: Document) hoveredImage =
     // While a long document is being laid out from its start: what is in view
     // and what the selection is in are laid out before they are shown.
-    if not (ctx.LayoutState.LastWasWhole && layoutIsComplete ctx) then
+    if not (ctx.LayoutState.LastWasWhole && layoutIsWhole ctx) then
         coverSelection ctx doc
         match ctx.Viewport with
         | Some vp -> coverViewport ctx doc vp
@@ -1794,7 +1815,7 @@ let renderPage (ctx: RenderContext) (doc: Document) (canvas: HTMLCanvasElement) 
     let frame =
         let frame = frameNow ()
         // A page past what is laid out of a long document so far: the whole document is.
-        if pageIndex >= List.length frame.Pages && pageIndex >= 0 && not (layoutIsComplete ctx && ctx.LayoutState.LastWasWhole) then
+        if pageIndex >= List.length frame.Pages && pageIndex >= 0 && not (layoutIsWhole ctx && ctx.LayoutState.LastWasWhole) then
             completeLayout ctx
             frameNow ()
         else frame
@@ -1862,7 +1883,7 @@ let renderStats (ctx: RenderContext) (doc: Document) : obj =
         "MeasurerVersion", box ctx.TextMeasurerVersion
         "LayoutComplete", box (layoutIsComplete ctx)
         "LayoutPasses", box ctx.LayoutState.LayoutSerial
-        "LaidOutLimit", box (if layoutIsComplete ctx then List.length doc.Blocks else min ctx.LayoutState.BlockLimit (List.length doc.Blocks))
+        "LaidOutLimit", box (if layoutIsWhole ctx then List.length doc.Blocks else min ctx.LayoutState.BlockLimit (List.length doc.Blocks))
     ]
 
 /// Render document to canvas

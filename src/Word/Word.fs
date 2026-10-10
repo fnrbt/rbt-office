@@ -52,7 +52,24 @@ module API =
         /// header or footer is edited in place `Doc` is the story's own
         /// document; this is the body with that story in its part.)
         mutable Whole: Doc.Document
+        /// The package the document on display is of, while it is still being
+        /// read (see importFromDocxPackage): the document grows as it is.
+        mutable Loading: Docx.ProgressiveImport option
+        /// Ends the editor's interest in that package.
+        mutable StopLoading: unit -> unit
+        /// When the listeners were last told that more was read, and who waits for the end.
+        mutable LoadNotified: float
+        LoadWaiters: ResizeArray<unit -> unit>
     }
+
+    /// Read the document on display to its end now, when its package is
+    /// still being read: what goes by the whole document (saving, the text,
+    /// finding, the page count, selecting everything, the layout queries)
+    /// starts with this. The editor's document is the whole one afterwards.
+    let private ensureLoaded (editor: Editor) =
+        match editor.Loading with
+        | Some state -> Docx.completeProgressiveImport state
+        | None -> ()
 
     /// The whole document: what is saved, and what a revision is a state of.
     let private wholeDocument (editor: Editor) : Doc.Document =
@@ -100,6 +117,7 @@ module API =
     let mutable private pagesInUse : Layout.PageInfo array = [||]
 
     let private notePages (editor: Editor) =
+        ensureLoaded editor
         Ren.completeLayout editor.Handler.RenderContext
         pagesInUse <- Ren.pageFrames editor.Handler.RenderContext editor.Doc |> List.toArray
 
@@ -134,7 +152,31 @@ module API =
     /// Show a newly loaded document (import, setContent). It replaces the
     /// previous document wholesale, so the undo history is cleared rather
     /// than letting Ctrl+Z swap the old document back in.
-    let private loadDocument (editor: Editor) newDoc =
+    let private stopLoading (editor: Editor) =
+        editor.StopLoading ()
+        editor.StopLoading <- ignore
+        editor.Loading <- None
+        editor.Handler.RenderContext.Progress.LoadPending <- false
+        if editor.LoadWaiters.Count > 0 then
+            let waiters = editor.LoadWaiters.ToArray()
+            editor.LoadWaiters.Clear()
+            for waiter in waiters do waiter ()
+
+    /// What follows a step of a package that is being read (set further down).
+    let private loadStep : (Editor -> Docx.ImportStep -> unit) ref = ref (fun _ _ -> ())
+
+    /// `loading`: the package the document is of, when it is still being read.
+    let private loadDocumentOf (editor: Editor) (newDoc: Doc.Document) (loading: Docx.ProgressiveImport option) =
+        // (The document that was on display may have been one that was being read.)
+        stopLoading editor
+        match loading with
+        | Some state ->
+            let listener = fun (step: Docx.ImportStep) -> loadStep.Value editor step
+            state.Listeners.Add listener
+            editor.Loading <- Some state
+            editor.StopLoading <- fun () -> state.Listeners.Remove listener |> ignore
+            editor.Handler.RenderContext.Progress.LoadPending <- true
+        | None -> ()
         // Through a viewport the start of the document is laid out and shown
         // first; the rest follows in idle slices (see isLayoutComplete).
         Ren.beginProgressiveLayout editor.Handler.RenderContext
@@ -146,6 +188,8 @@ module API =
         editor.KnownRevisions.Clear()
         observeRevision editor newDoc
         editor.SavedRevision <- editor.Revision
+
+    let private loadDocument (editor: Editor) newDoc = loadDocumentOf editor newDoc None
 
     /// Undo the last change, whether typed or made through the API.
     /// Returns false when there was nothing to undo.
@@ -165,6 +209,9 @@ module API =
     /// Detach the editor's window-level listeners and remove its hidden text
     /// input element. Call when the canvas is removed.
     let dispose (editor: Editor) =
+        editor.StopLoading ()
+        editor.StopLoading <- ignore
+        editor.LoadWaiters.Clear()
         editor.Listeners.Clear()
         Ren.cancelScheduledLayout editor.Handler.RenderContext
         Inp.dispose editor.Handler
@@ -200,6 +247,8 @@ module API =
                         "Modified" ==> (editor.Revision <> editor.SavedRevision)
                         "LayoutChanged" ==> false
                         "LayoutComplete" ==> Ren.layoutIsComplete editor.Handler.RenderContext
+                        "LoadChanged" ==> false
+                        "LoadComplete" ==> editor.Loading.IsNone
                     ]
                 // A listener may unsubscribe (or subscribe) while being called.
                 for listener in editor.Listeners.ToArray() do
@@ -207,7 +256,7 @@ module API =
 
     /// Tell the onChange listeners that more of a long document is laid out
     /// (more pages, a larger document size), or all of it.
-    let private notifyLayoutProgress (editor: Editor) =
+    let private notifyProgress (editor: Editor) (layoutChanged: bool) (loadChanged: bool) =
         if editor.Listeners.Count > 0 then
             let change =
                 createObj [
@@ -217,17 +266,23 @@ module API =
                     "CanRedo" ==> Inp.canRedo editor.Handler
                     "Revision" ==> editor.Revision
                     "Modified" ==> (editor.Revision <> editor.SavedRevision)
-                    "LayoutChanged" ==> true
+                    "LayoutChanged" ==> layoutChanged
                     "LayoutComplete" ==> Ren.layoutIsComplete editor.Handler.RenderContext
+                    "LoadChanged" ==> loadChanged
+                    "LoadComplete" ==> editor.Loading.IsNone
                 ]
             for listener in editor.Listeners.ToArray() do
                 if editor.Listeners.Contains listener then listener change
+
+    let private notifyLayoutProgress (editor: Editor) = notifyProgress editor true false
 
     /// Lay out the rest of a long document in idle slices (nothing to do, and
     /// nothing scheduled, when the whole document is laid out).
     let private continueLayout (editor: Editor) =
         let ctx = editor.Handler.RenderContext
-        if not (Ren.layoutIsComplete ctx) then
+        // (A document that is still being read is read first: its slices and the layout's would
+        // take turns, and each layout pass would be of another document.)
+        if editor.Loading.IsNone && not (Ren.layoutIsComplete ctx) then
             Ren.scheduleLayout ctx (fun () -> Ren.bodyDocument ctx editor.Doc) (fun complete tell ->
                 // (What is on screen was laid out before it was shown: the frame is brought up to the layout at the end.)
                 if complete then
@@ -257,19 +312,86 @@ module API =
 
     /// Lay out the rest of the document now (what getPageCount does, without the count).
     let completeLayout (editor: Editor) : unit =
+        ensureLoaded editor
         let ctx = editor.Handler.RenderContext
         if not (Ren.layoutIsComplete ctx && ctx.LayoutState.LastWasWhole) then
             Ren.completeLayout ctx
             Inp.repaint editor.Handler
             notifyLayoutProgress editor
 
+    [<Emit("performance.now()")>]
+    let private nowMs () : float = jsNative
+
+    // More of the document was read: its blocks come after the blocks the
+    // editor has - which may have been edited meanwhile; the caret, the
+    // selection, the revision and the undo history are what they were (the
+    // documents the history comes back to get the blocks too, see
+    // Input.extendDocuments). Nothing of it is laid out before it is shown
+    // or its turn comes: the rest of the document is laid out in slices once
+    // it is read.
+    loadStep.Value <- fun (editor: Editor) (step: Docx.ImportStep) ->
+        let ctx = editor.Handler.RenderContext
+        // (A header or footer is not edited in place while the document is read - entering one
+        // reads the rest first; should one be, it is left: the blocks belong to the body.)
+        if editor.Handler.Story.IsSome then Inp.exitStory editor.Handler |> ignore
+        let blocksBefore = List.length editor.Doc.Blocks
+        let sameWhole = obj.ReferenceEquals(editor.Whole, editor.Doc)
+        let doc = Inp.extendDocuments editor.Handler step.Extend
+        editor.Doc <- doc
+        editor.Whole <- (if sameWhole then doc else step.Extend editor.Whole)
+        // (The same content as before, with the same number: reading is not a change of the user's.)
+        editor.RevisionDocument <- step.Extend editor.RevisionDocument
+        for index in 0 .. editor.KnownRevisions.Count - 1 do
+            let known, revision = editor.KnownRevisions.[index]
+            editor.KnownRevisions.[index] <- (step.Extend known, revision)
+        let wasWhole = Ren.documentExtended ctx blocksBefore
+        if step.Complete then stopLoading editor
+        // (What was laid out was all there was: the view may reach into what is there now.)
+        if wasWhole then Inp.repaint editor.Handler
+        let now = nowMs ()
+        if step.Complete || now - editor.LoadNotified > 150.0 then
+            editor.LoadNotified <- now
+            notifyProgress editor false true
+        if step.Complete then
+            // (The page count is known when the rest is laid out: in slices, from here on.)
+            continueLayout editor
+
+    /// Whether the document on display is all there. A package opened front
+    /// first (Office.Formats `word.openProgressive`) is shown as soon as its
+    /// first blocks are read; the rest is read in slices, during which the
+    /// document grows at its end: isLoadComplete is false, the onChange
+    /// listeners are told ({ LoadChanged: true, LoadComplete }) and
+    /// isLayoutComplete is false as well. The caret moves and the document can
+    /// be edited meanwhile, with undo and redo; what goes by the whole
+    /// document (saving, getText, find and replace, getPageCount, select all,
+    /// Ctrl+End, the layout queries, entering a header or footer) reads the
+    /// rest at once.
+    let isLoadComplete (editor: Editor) : bool =
+        editor.Loading.IsNone
+
+    /// A promise that resolves (to true) once the document is all there; at once when it is.
+    let whenLoadComplete (editor: Editor) : JS.Promise<bool> =
+        JS.Constructors.Promise.Create(fun resolve _ ->
+            match editor.Loading with
+            | None -> resolve true
+            | Some state ->
+                editor.LoadWaiters.Add (fun () -> resolve true)
+                // (A package that was opened not to read on by itself is read on from here.)
+                state.Package?Progressive?start () |> ignore)
+
+    /// Read the rest of the document now.
+    let completeLoad (editor: Editor) : unit =
+        ensureLoaded editor
+
     /// Call `callback` after every change of the document or the selection
     /// (typing, pointer, toolbar / API commands, undo, redo, loading a
     /// document). It receives { DocumentChanged, SelectionChanged, CanUndo,
-    /// CanRedo, Revision, Modified, LayoutChanged, LayoutComplete } (see
-    /// getRevision / isModified / isLayoutComplete; LayoutChanged is set when
-    /// the call says that more of a long document is laid out and nothing
-    /// else changed). Returns a function that removes the subscription.
+    /// CanRedo, Revision, Modified, LayoutChanged, LayoutComplete, LoadChanged,
+    /// LoadComplete } (see getRevision / isModified / isLayoutComplete /
+    /// isLoadComplete; LayoutChanged is set when the call says that more of a
+    /// long document is laid out, LoadChanged when it says that more of it
+    /// was read, and nothing else changed). Returns a function that removes
+    /// the subscription.
     let onChange (editor: Editor) (callback: obj -> unit) : unit -> unit =
         editor.Listeners.Add callback
         editor.NotifiedCanUndo <- Inp.canUndo editor.Handler
@@ -430,7 +552,12 @@ module API =
             KnownRevisions = ResizeArray()
             FontFamilies = [||]
             Whole = doc
+            Loading = None
+            StopLoading = ignore
+            LoadNotified = 0.0
+            LoadWaiters = ResizeArray()
         }
+        handler.EnsureWhole <- fun () -> ensureLoaded editor
 
         editor
 
@@ -572,6 +699,8 @@ module API =
     /// pixels per layout pixel. Read-only: no selection or caret. Returns false
     /// when there is no such page.
     let renderPage (editor: Editor) (canvas: HTMLCanvasElement) (pageIndex: int) (scale: float) =
+        // (A page there is not yet: of the whole document.)
+        if editor.Loading.IsSome && pageIndex >= List.length (Ren.pageFrames editor.Handler.RenderContext editor.Doc) then ensureLoaded editor
         Ren.renderPage editor.Handler.RenderContext editor.Doc canvas pageIndex scale
 
     /// Create a read-only viewer (see `Viewer.createViewer`, which this is:
@@ -581,6 +710,7 @@ module API =
 
     /// Get document text
     let getText (editor: Editor) =
+        ensureLoaded editor
         Doc.getText editor.Doc
 
     let getTrackChanges (editor: Editor) =
@@ -671,16 +801,26 @@ module API =
     /// and footers). `target` is an editor (its current document) or an
     /// editor package (Office.Formats `forEditorPackage`) that is not shown
     /// yet - so a host fetches exactly these faces before it installs its
-    /// measurers and loads the document.
+    /// measurers and loads the document. Of a package that is still being
+    /// read (`word.openProgressive`) it is the faces of the styles and of
+    /// what is read so far - see onFontsDiscovered for the rest; of an editor
+    /// whose document is still being read, the rest is read first.
     let getRequiredFonts (target: obj) : obj array =
         if isNull target then [||]
         elif not (isNull (target?Handler)) then
             let editor = unbox<Editor> target
+            ensureLoaded editor
             Ren.requiredFonts editor.Handler.RenderContext editor.Doc
         else
             Ren.requiredFontsOfDocument (Docx.importFromEditorPackage target)
 
+    /// The faces a package that is still being read turns out to need as it
+    /// is read on: see Viewer.onFontsDiscovered.
+    let onFontsDiscovered (package: obj) (callback: obj array -> unit) : unit -> unit =
+        Viewer.onFontsDiscovered package callback
+
     let getCachedLayouts (editor: Editor) =
+        ensureLoaded editor
         Ren.completeLayout editor.Handler.RenderContext
         Ren.cachedLayouts editor.Handler.RenderContext editor.Doc
 
@@ -689,6 +829,7 @@ module API =
         editor.Handler.TrackChanges
 
     let getCommentAnchors (editor: Editor) =
+        ensureLoaded editor
         Ren.commentAnchors editor.Handler.RenderContext editor.Doc
         |> List.map (fun anchor ->
             createObj [
@@ -711,6 +852,7 @@ module API =
         |> List.toArray
 
     let selectCommentAnchor (editor: Editor) (anchor: obj) =
+        ensureLoaded editor
         let blockId = anchor?BlockId |> unbox<string>
         let startOffset = anchor?StartOffset |> unbox<int>
         let endOffset = anchor?EndOffset |> unbox<int>
@@ -757,6 +899,7 @@ module API =
             ]
 
     let getLayoutSegments (editor: Editor) =
+        ensureLoaded editor
         let result = ResizeArray<obj>()
         for layout in layoutsForEditor editor do
             for line in layout.Lines do
@@ -1003,6 +1146,7 @@ module API =
             ]
 
     let getTableGeometry (editor: Editor) =
+        ensureLoaded editor
         let ctx = editor.Handler.RenderContext
         let settings = Ren.layoutSettings ctx editor.Doc
         let measureText = Ren.measureWithContext ctx
@@ -1218,6 +1362,7 @@ module API =
             if found then Some (left, top, right - left, bottom - top) else None
 
     let getRangeBounds (editor: Editor) (blockId: string) (startOffset: int) (endOffset: int) =
+        ensureLoaded editor
         notePages editor
         let tryFindLayout = Ren.layoutLookupFor editor.Handler.RenderContext editor.Doc
         let measureRange = measureRangeForEditor editor
@@ -1289,6 +1434,7 @@ module API =
         max 1 (offset - line.StartOffset + 1 + listOffset)
 
     let computeRangeStatistics (editor: Editor) (blockId: string) (startOffset: int) (endOffset: int) =
+        ensureLoaded editor
         match Doc.findParagraph editor.Doc blockId with
         | None -> null
         | Some para ->
@@ -1369,6 +1515,7 @@ module API =
         else line.Y
 
     let getRangeInformation (editor: Editor) (blockId: string) (startOffset: int) (endOffset: int) =
+        ensureLoaded editor
         let layouts = layoutsForEditor editor
         let tryFindLayout = Ren.layoutLookupFor editor.Handler.RenderContext editor.Doc
         let contexts = paragraphContexts editor.Doc
@@ -1437,12 +1584,14 @@ module API =
             ]
 
     let getSelectionInformation (editor: Editor) =
+        ensureLoaded editor
         match editor.Doc.Selection with
         | None -> null
         | Some selection ->
             getRangeInformation editor selection.Focus.BlockId selection.Focus.Offset selection.Focus.Offset
 
     let getLayoutLines (editor: Editor) =
+        ensureLoaded editor
         let pageLeft = editor.Doc.PageSetup.MarginLeft
         let layouts = layoutsForEditor editor
         let contexts = paragraphContexts editor.Doc
@@ -1572,6 +1721,7 @@ module API =
     /// Paragraph, Runs }] with the resolved paragraph and run formatting as
     /// strings. Lays the whole document out.
     let getLayoutFingerprint (editor: Editor) =
+        ensureLoaded editor
         let layouts = layoutsForEditor editor
         LayoutFingerprint.ofLayouts (pageForYInDoc editor.Doc) layouts
         |> List.map (fun block ->
@@ -1588,10 +1738,12 @@ module API =
         |> List.toArray
 
     let getVbaLayoutLines (editor: Editor) =
+        ensureLoaded editor
         getLayoutLines editor
 
     /// Find literal text matches across editable paragraphs.
     let findText (editor: Editor) (query: string) (matchCase: bool) =
+        ensureLoaded editor
         let matches = Doc.findTextArray query matchCase editor.Doc
         let result = Array.zeroCreate<obj> matches.Length
         for i = 0 to matches.Length - 1 do
@@ -1606,6 +1758,7 @@ module API =
         result
 
     let getRevisionInfos (editor: Editor) =
+        ensureLoaded editor
         Doc.revisionInfos editor.Doc
         |> List.map (fun revision ->
             createObj [
@@ -1621,6 +1774,7 @@ module API =
 
     /// Select a previously returned find match.
     let selectFindMatch (editor: Editor) (matchObj: obj) =
+        ensureLoaded editor
         let matchInfo: Doc.FindMatch = {
             BlockId = matchObj?BlockId |> unbox<string>
             Start = matchObj?Start |> unbox<int>
@@ -1631,6 +1785,7 @@ module API =
         commitDocumentUpdate editor newDoc
 
     let selectRevisionInfo (editor: Editor) (revisionObj: obj) =
+        ensureLoaded editor
         let blockId = revisionObj?BlockId |> unbox<string>
         let startOffset = revisionObj?Start |> unbox<int>
         let endOffset = revisionObj?End |> unbox<int>
@@ -1639,6 +1794,7 @@ module API =
 
     /// Replace all literal text matches across editable paragraphs.
     let replaceAllText (editor: Editor) (query: string) (replacement: string) (matchCase: bool) =
+        ensureLoaded editor
         let (newDoc, count) = Doc.replaceAllText query replacement matchCase editor.Doc
         if count > 0 then
             commitDocumentUpdate editor newDoc
@@ -1731,6 +1887,7 @@ module API =
         pageMap
 
     let refreshFields (editor: Editor) =
+        ensureLoaded editor
         let newDoc = Doc.refreshFieldsWithPageMap (pageMapFromLayout editor) editor.Doc
         commitDocumentUpdate editor newDoc
 
@@ -1836,6 +1993,7 @@ module API =
         commitDocumentUpdate editor newDoc
 
     let getBookmarkInfos (editor: Editor) =
+        ensureLoaded editor
         Doc.bookmarkInfos editor.Doc
         |> List.map (fun info ->
             createObj [
@@ -1848,18 +2006,22 @@ module API =
         |> List.toArray
 
     let selectBookmark (editor: Editor) (bookmarkId: string) =
+        ensureLoaded editor
         let newDoc = Doc.selectBookmark bookmarkId editor.Doc
         commitDocumentUpdate editor newDoc
 
     let removeBookmark (editor: Editor) (bookmarkId: string) =
+        ensureLoaded editor
         let newDoc = Doc.removeBookmark bookmarkId editor.Doc
         commitDocumentUpdate editor newDoc
 
     let renameBookmark (editor: Editor) (bookmarkId: string) (bookmarkName: string) =
+        ensureLoaded editor
         let newDoc = Doc.renameBookmark bookmarkId bookmarkName editor.Doc
         commitDocumentUpdate editor newDoc
 
     let getContentControlInfos (editor: Editor) =
+        ensureLoaded editor
         Doc.contentControlInfos editor.Doc
         |> List.map (fun info ->
             createObj [
@@ -1871,14 +2033,17 @@ module API =
         |> List.toArray
 
     let selectContentControl (editor: Editor) (controlId: string) =
+        ensureLoaded editor
         let newDoc = Doc.selectContentControl controlId editor.Doc
         commitDocumentUpdate editor newDoc
 
     let removeContentControl (editor: Editor) (controlId: string) =
+        ensureLoaded editor
         let newDoc = Doc.removeContentControl controlId editor.Doc
         commitDocumentUpdate editor newDoc
 
     let updateContentControl (editor: Editor) (controlId: string) (newControlId: string) (tag: string) (alias: string) =
+        ensureLoaded editor
         let newDoc = Doc.updateContentControl controlId newControlId tag alias editor.Doc
         commitDocumentUpdate editor newDoc
 
@@ -1906,18 +2071,22 @@ module API =
         commitDocumentUpdate editor newDoc
 
     let acceptAllRevisions (editor: Editor) =
+        ensureLoaded editor
         let newDoc = Doc.acceptAllRevisions editor.Doc
         commitDocumentUpdate editor newDoc
 
     let rejectAllRevisions (editor: Editor) =
+        ensureLoaded editor
         let newDoc = Doc.rejectAllRevisions editor.Doc
         commitDocumentUpdate editor newDoc
 
     let selectNextRevision (editor: Editor) =
+        ensureLoaded editor
         let newDoc = Doc.selectNextRevision editor.Doc
         commitDocumentUpdate editor newDoc
 
     let selectPreviousRevision (editor: Editor) =
+        ensureLoaded editor
         let newDoc = Doc.selectPreviousRevision editor.Doc
         commitDocumentUpdate editor newDoc
     
@@ -2060,6 +2229,7 @@ module API =
     
     /// Select all text
     let selectAll (editor: Editor) =
+        ensureLoaded editor
         let newDoc = Doc.selectAll editor.Doc
         commitDocumentUpdate editor newDoc
 
@@ -2231,6 +2401,7 @@ module API =
     /// exitHeaderFooter. getCaretContext says so (InHeaderFooter, Story,
     /// HeaderFooter). False when there is no such page.
     let enterHeaderFooter (editor: Editor) (pageIndex: int) (kind: string) : bool =
+        ensureLoaded editor
         let isHeader = kind <> "footer"
         Inp.exitStory editor.Handler |> ignore
         let ctx = editor.Handler.RenderContext
@@ -2627,9 +2798,22 @@ module API =
 
     let getAllowLinkedImages (_: Editor) = TextBuf.allowLinkedImages
 
+    /// Show an editor package: Office.Formats' `forEditorPackage(bytes)`, or -
+    /// for a document that is shown before it is read to its end -
+    /// `word.openProgressive(bytes)`. With the latter (and a viewport, which
+    /// shows a part of the document) the import returns with what is read so
+    /// far on display; see isLoadComplete. Without a viewport the canvas
+    /// shows the whole document: it is read to its end first.
     let importFromDocxPackage (editor: Editor) (package: obj) =
-        let newDoc = Docx.importFromEditorPackage package
-        loadDocument editor newDoc
+        match Docx.progressiveImportOf package with
+        | Some state when not state.Complete ->
+            if editor.Handler.RenderContext.Viewport.IsNone then
+                Docx.completeProgressiveImport state
+                loadDocument editor state.Document
+            else
+                loadDocumentOf editor state.Document (Some state)
+                state.Package?Progressive?start () |> ignore
+        | _ -> loadDocument editor (Docx.importFromEditorPackage package)
 
     let setPageSetup (editor: Editor) (pageWidth: float) (pageHeight: float) (marginLeft: float) (marginRight: float) (marginTop: float) (marginBottom: float) (headerDistance: float) (footerDistance: float) =
         let setup: Doc.PageSetup = {
@@ -2698,6 +2882,7 @@ module API =
         pageFramesToJs editor.Handler.RenderContext (Ren.pageFrames editor.Handler.RenderContext editor.Doc)
 
     let getPageCount (editor: Editor) =
+        ensureLoaded editor
         Ren.pageCount editor.Handler.RenderContext editor.Doc
 
     /// Document position under a point in layout coordinates (canvas pixels in
@@ -2960,9 +3145,11 @@ module API =
     /// Export document to EditorParagraphs (Office.Formats format)
     /// Use with: Office.Formats WordWriter.writeFromEditor()
     let exportToDocx (editor: Editor) : obj array =
+        ensureLoaded editor
         Docx.exportToEditor (wholeDocument editor)
 
     let exportDocumentPackage (editor: Editor) =
+        ensureLoaded editor
         // One export for save and for callers: Docx.exportDocumentPackage knows the
         // document's styles and so leaves inherited formatting out of header/footer runs too.
         Docx.exportDocumentPackage (wholeDocument editor)
@@ -3007,6 +3194,10 @@ module API =
             "canUndo" ==> canUndo
             "canRedo" ==> canRedo
             "onChange" ==> onChange
+            "isLoadComplete" ==> isLoadComplete
+            "whenLoadComplete" ==> whenLoadComplete
+            "completeLoad" ==> completeLoad
+            "onFontsDiscovered" ==> onFontsDiscovered
             "isLayoutComplete" ==> isLayoutComplete
             "whenLayoutComplete" ==> whenLayoutComplete
             "completeLayout" ==> completeLayout

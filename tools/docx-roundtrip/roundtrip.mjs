@@ -43,6 +43,12 @@
 // it had, and the summary says how many relationship parts and
 // [Content_Types].xml files came back as the text they were read from.
 //
+// The document is also opened front first (officeFormats.word.openProgressive)
+// and read to its end while an editor shows it, step by step and in the
+// package's own slices: the model the editor exports, the layout fingerprint
+// and every part of an unedited save are, byte for byte, those of the
+// document read at once.
+//
 // Then the document is edited with real key events:
 //   * one character typed and deleted again: the saved document reads back
 //     and is laid out as the original;
@@ -175,6 +181,7 @@ async function main() {
     const browser = await (playwright.chromium ?? playwright.default.chromium).launch();
     let failed = 0, identicalXml = 0, compared = 0;
     const notIdentical = [];
+    const frontFirst = { editors: 0, documents: 0 }; // documents an editor showed before they were read to their end
     const asRead = { total: 0, same: 0, notes: [] }; // relationship parts and [Content_Types].xml of unedited saves
     const tenthTotals = { edited: 0, confined: 0, rewritten: 0, others: 0 };
     const tenthNotes = [];
@@ -224,6 +231,7 @@ async function main() {
                 entry.files++; entry.before += before; entry.after += after; xmlKinds.set(kind, entry);
             }
             if (result.xmlIdentical) identicalXml++; else notIdentical.push(name);
+            frontFirst.editors += result.frontFirst ?? 0; if (result.frontFirst) frontFirst.documents++;
             asRead.total += result.partsAsRead?.total ?? 0; asRead.same += result.partsAsRead?.same ?? 0;
             if (result.partsAsRead?.changed.length) asRead.notes.push(`${name}: ${result.partsAsRead.changed.join(', ')}`);
             compared++;
@@ -255,6 +263,7 @@ async function main() {
         if (rows.length) console.log('Elements and attributes whose number changed (kind: documents, occurrences before -> after):');
         for (const [kind, e] of rows) console.log(`  ${kind}: ${e.files} documents, ${e.before} -> ${e.after}`);
     }
+    console.log(`\nOpened front first: ${frontFirst.documents} of ${compared} documents were shown by an editor before they were read to their end (the others are read at once: short, or a main part that cannot be read front first); each is, read to its end, the document read at once.`);
     if (asRead.total) {
         console.log(`\nRelationship parts and [Content_Types].xml of an unedited save: ${asRead.same} of ${asRead.total} are the text that was read.`);
         if (xmlSummary || verbose) for (const line of asRead.notes) console.log('  not as read: ' + line);

@@ -9,7 +9,7 @@
 // its body repeated (--repeat N, default 8: some 500 pages).
 //
 // Usage:
-//   node tools/word-browser/perf.mjs --dist $DIST [--repeat N] [--keys N] [--profile keys] [--callers FUNCTION] [--painter] [--measure-cost MICROSECONDS]
+//   node tools/word-browser/perf.mjs --dist $DIST [--progressive] [--repeat N] [--keys N] [--profile keys] [--callers FUNCTION] [--painter] [--measure-cost MICROSECONDS]
 // --profile select: the time under each function while everything is selected and the host's queries are answered;
 // --profile keys prints the functions with the most self time while typing, and the time under each
 // function (--profile enter: the time under each function while Enter and Backspace alternate;
@@ -39,6 +39,8 @@ const measureCost = Number(opt('--measure-cost') ?? 0);
 const painter = flag('--painter') || measureCost > 0;
 // --one-shot: the rest of the document is laid out at once after the first paint (completeLayout), not in idle slices.
 const oneShot = flag('--one-shot');
+// --progressive: the document is opened front first (officeFormats.word.openProgressive): shown when its first blocks are read.
+const progressive = flag('--progressive');
 const pathsOf = opt('--callers');
 const port = Number(process.env.PORT ?? 16125);
 const jszipDir = [process.env.JSZIP_DIR, path.join(repo, 'node_modules/jszip'), path.resolve(repo, '../rbt-office/node_modules/jszip')].find((p) => p && fs.existsSync(p));
@@ -66,11 +68,13 @@ try {
     const editor = Word.initializeCanvas(document.getElementById('c'));
     const stats = (times) => { const sorted = times.slice().sort((a, b) => a - b); return { mean: times.reduce((a, b) => a + b, 0) / times.length, median: sorted[Math.floor(sorted.length / 2)], max: sorted[sorted.length - 1] }; };
     window.perf = {
-        async load(usePainter, measureCost, oneShot) {
+        async load(usePainter, measureCost, oneShot, progressive) {
             const bytes = new Uint8Array(await (await fetch('/long.docx')).arrayBuffer());
             const t0 = performance.now();
-            const editorPackage = await OF.processors.forEditorPackage(bytes);
+            // (Front first: the package is handed over when the first blocks are read; the rest is read in slices.)
+            const editorPackage = progressive ? await OF.word.openProgressive(bytes) : await OF.processors.forEditorPackage(bytes);
             const read = performance.now() - t0;
+            const firstItems = editorPackage.Paragraphs.length;
             // A host asks which font faces the package needs before it loads it.
             let t2 = performance.now();
             const faces = Word.getRequiredFonts ? Word.getRequiredFonts(editorPackage).length : 0;
@@ -126,6 +130,9 @@ try {
             // (How long the page could not answer while the rest was laid out: the longest gap between two timer ticks.)
             const ticker = setInterval(() => { const now = performance.now(); longest = Math.max(longest, now - last); last = now; }, 4);
             t1 = performance.now();
+            // (A document that is still being read: read to its end, in slices, then laid out.)
+            let readAll = 0, longestRead = 0;
+            if (progressive && Word.whenLoadComplete) { await Word.whenLoadComplete(editor); readAll = performance.now() - t0; longestRead = longest; }
             if (oneShot && Word.completeLayout) Word.completeLayout(editor);
             if (Word.whenLayoutComplete) await Word.whenLayoutComplete(editor);
             const rest = performance.now() - t1;
@@ -138,7 +145,7 @@ try {
             const framesTime = performance.now() - t1;
             const target = frames[Math.floor(frames.length / 2)];
             Word.setViewport(editor, { scale: 1, devicePixelRatio: 1, scrollTop: target.Top, scrollLeft: 0, width: 1000, height: 800 });
-            return { loaded, read, imported, installed, fonts, faces, frames: framesTime, pages: size.PageCount, top: target.Top, measured: window.perfMeasure ?? null,
+            return { loaded, read, imported, installed, fonts, faces, frames: framesTime, progressive: !!progressive, firstItems, readAll, longestRead, atOnce: !!(editorPackage.Progressive && editorPackage.Progressive.AtOnce), slices: editorPackage.Progressive?.Slices ?? 0, longestSlice: editorPackage.Progressive?.LongestSliceMs ?? 0, longestSliceAt: editorPackage.Progressive?.LongestSlice ?? 0, pages: size.PageCount, top: target.Top, measured: window.perfMeasure ?? null,
                 firstPaint, firstPages: firstSize.PageCount, firstBlocks, firstComplete: firstSize.LayoutComplete, ink, rest, notices, longest, passes: Word.getRenderStats(editor).LayoutPasses };
         },
         // Put the caret into a paragraph of plain text on the page in view (by clicking at a point of the canvas).
@@ -258,7 +265,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
         if (loadError) throw new Error('page failed to load modules: ' + loadError);
         const cdpLoad = await tab.context().newCDPSession(tab);
         if (profile === 'load') { await cdpLoad.send('Profiler.enable'); await cdpLoad.send('Profiler.setSamplingInterval', { interval: 500 }); await cdpLoad.send('Profiler.start'); }
-        const loaded = await tab.evaluate(([usePainter, cost, atOnce]) => window.perf.load(usePainter, cost, atOnce), [painter, measureCost, oneShot]);
+        const loaded = await tab.evaluate(([usePainter, cost, atOnce, frontFirst]) => window.perf.load(usePainter, cost, atOnce, frontFirst), [painter, measureCost, oneShot, progressive]);
         if (profile === 'load') {
             // Where opening the document spends its time: self time, and time under each function.
             const { profile: cpu } = await cdpLoad.send('Profiler.stop');
@@ -288,6 +295,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
         console.log(`  getRequiredFonts(package): ${loaded.fonts.toFixed(0)} ms (${loaded.faces} faces), before the import`);
         console.log(`  opening: read the package ${(loaded.read / 1000).toFixed(2)} s, import and first paint ${(loaded.imported / 1000).toFixed(2)} s${painter ? `, measurers and painter installed ${(loaded.installed / 1000).toFixed(2)} s` : ''}, page frames ${loaded.frames.toFixed(0)} ms`);
         console.log(`  first paint ${(loaded.firstPaint / 1000).toFixed(2)} s after the bytes (${loaded.firstBlocks} blocks, ${loaded.firstPages} pages laid out, ${loaded.ink} dark pixels on the first screen${loaded.firstComplete ? '; the whole document' : ''}); the rest of the layout ${(loaded.rest / 1000).toFixed(2)} s in ${loaded.passes} passes, ${loaded.notices} notices to onChange, the longest time without an answer ${loaded.longest.toFixed(0)} ms`);
+        if (loaded.progressive) console.log(`  opened front first: ${loaded.firstItems} blocks in the package when it was handed over${loaded.atOnce ? ' (the main part was read at once)' : ''}; read to its end ${(loaded.readAll / 1000).toFixed(2)} s after the bytes, in ${loaded.slices} slices of which the longest (slice ${loaded.longestSliceAt}) took ${loaded.longestSlice.toFixed(1)} ms (the longest time between two timer ticks while it was read: ${loaded.longestRead.toFixed(0)} ms)`);
         if (loaded.measured) console.log(`  measurers: ${loaded.measured.calls} calls, ${loaded.measured.shaped} runs shaped at ${measureCost} microseconds`);
         console.log(`docx4j-getting-started x ${repeat}: ${loaded.pages} pages, loaded in ${(loaded.loaded / 1000).toFixed(2)} s${painter ? ' (text path painter and measurers installed)' : ''}`);
         // A click into the text of the page in view puts the caret there.

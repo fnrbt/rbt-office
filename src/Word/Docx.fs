@@ -1408,17 +1408,258 @@ let private packageMapGet (_map: obj) (_package: obj) : Document = jsNative
 let private packageMapSet (_map: obj) (_package: obj) (_doc: Document) : unit = jsNative
 let private convertedPackages = newPackageMap ()
 
+// ---- a package that is still being read ---------------------------------------
+// Office.Formats' openProgressive hands a package over with the first blocks
+// of the body in Paragraphs and reads the rest in slices (its Progressive
+// member; the text boxes come last, when the body is read). Its document is
+// made as the items arrive: the styles they bring, the comments' details,
+// the anchors of the text boxes - what convertEditorPackage does at once -
+// and, the package read to its end, it is the document convertEditorPackage
+// makes of the complete package.
+
+/// The document as it was imported (PackageData.Imported) of a package that
+/// is still being read: what was read so far, the whole of it at the end.
+type ImportedDocument(initial: Document) =
+    member val Document : Document = initial with get, set
+
+/// What PackageData.Imported holds: the document that was imported.
+let importedDocumentOf (value: obj) : Document option =
+    if isNull value then None
+    else
+        match value with
+        | :? ImportedDocument as imported -> Some imported.Document
+        | _ -> Some (unbox<Document> value)
+
+/// More of a package was read.
+type ImportStep = {
+    /// The blocks that were read, in their order (at the end: the text boxes anchored in the body).
+    Appended: Block list
+    /// What was read, given to a document made of what was read before - the
+    /// imported one, or one edited since: the blocks after its blocks, the
+    /// styles they brought after its styles. The same blocks (and styles)
+    /// always get the same extended list, so documents that shared their
+    /// content before share it after.
+    Extend: Document -> Document
+    /// The package is read to its end.
+    Complete: bool
+}
+
+/// The document of a package that is being read (see above).
+type ProgressiveImport = {
+    Package: obj
+    /// What is read so far, as a document.
+    mutable Document: Document
+    mutable Complete: bool
+    /// Told after each step.
+    Listeners: ResizeArray<ImportStep -> unit>
+    // (Kept between the steps.)
+    StyleList: ResizeArray<NamedStyle>
+    StylesSeen: Dictionary<string, Dictionary<string, unit>>
+    /// The id of the block of each item of the body ("": an item that has none).
+    ItemBlockIds: ResizeArray<string>
+    CommentBodies: CommentBody list
+    Imported: ImportedDocument
+    mutable Consumed: int
+    /// The package's count of the changes of its page setup, as last looked at.
+    mutable PageSetupVersion: int
+}
+
+[<Emit("($0 != null && typeof $0 === 'object' && $0.Progressive != null)")>]
+let private hasProgressive (_package: obj) : bool = jsNative
+[<Emit("$0.get($1)")>]
+let private importMapGet (_map: obj) (_package: obj) : ProgressiveImport = jsNative
+[<Emit("$0.set($1, $2)")>]
+let private importMapSet (_map: obj) (_package: obj) (_state: ProgressiveImport) : unit = jsNative
+let private progressiveImports = newPackageMap ()
+
+/// The details of the comments for the comment references of blocks (see withCommentDetails).
+let private withCommentDetailsOfBlocks (comments: CommentBody list) (blocks: Block list) : Block list =
+    if comments.IsEmpty then blocks
+    else ({ Document.empty with Blocks = blocks; HeaderParts = []; FooterParts = [] } |> withCommentDetails comments).Blocks
+
+/// What a step gives a document (ImportStep.Extend).
+let private extension (appended: Block list) (stylesBefore: NamedStyle list) (stylesAfter: NamedStyle list)
+                      (pageSetupBefore: PageSetup) (pageSetupAfter: PageSetup) (selection: Selection option) : Document -> Document =
+    let addedStyles =
+        if obj.ReferenceEquals(stylesBefore, stylesAfter) then []
+        else stylesAfter |> List.skip (List.length stylesBefore)
+    let knownBlocks = ResizeArray<Block list * Block list>()
+    let knownStyles = ResizeArray<NamedStyle list * NamedStyle list>()
+    let knownPackages = ResizeArray<PackageData * PackageData>()
+    // (Used here as well as in the function below: a list that is named once, inside the
+    // function, is made anew by the JavaScript build at every call of it - and nothing
+    // that was extended would be found again.)
+    knownBlocks.Clear()
+    knownStyles.Clear()
+    knownPackages.Clear()
+    let extended (known: ResizeArray<'T * 'T>) (value: 'T) (make: unit -> 'T) : 'T =
+        let mutable found = Unchecked.defaultof<'T>
+        let mutable has = false
+        let mutable i = 0
+        while not has && i < known.Count do
+            let before, after = known.[i]
+            // (What was extended, or the extended one itself: a document is given a step once.)
+            if obj.ReferenceEquals(before, value) || obj.ReferenceEquals(after, value) then
+                found <- after
+                has <- true
+            i <- i + 1
+        if has then found
+        else
+            let made = make ()
+            known.Add ((value, made))
+            made
+    fun (doc: Document) ->
+        let blocks = if appended.IsEmpty then doc.Blocks else extended knownBlocks doc.Blocks (fun () -> doc.Blocks @ appended)
+        let styles =
+            if addedStyles.IsEmpty then doc.Styles
+            elif obj.ReferenceEquals(doc.Styles, stylesBefore) then stylesAfter
+            else extended knownStyles doc.Styles (fun () -> doc.Styles @ addedStyles)
+        // (The style catalog as imported: with the styles the blocks brought.)
+        let package =
+            if addedStyles.IsEmpty then doc.Package
+            else extended knownPackages doc.Package (fun () -> { doc.Package with ImportedStyles = stylesAfter })
+        let pageSetup = if obj.ReferenceEquals(doc.PageSetup, pageSetupBefore) then pageSetupAfter else doc.PageSetup
+        let selection = match doc.Selection, selection with | None, Some _ -> selection | current, _ -> current
+        if obj.ReferenceEquals(blocks, doc.Blocks) && obj.ReferenceEquals(styles, doc.Styles) && obj.ReferenceEquals(package, doc.Package)
+           && obj.ReferenceEquals(pageSetup, doc.PageSetup) && obj.ReferenceEquals(selection, doc.Selection) then doc
+        else { doc with Blocks = blocks; Styles = styles; Package = package; PageSetup = pageSetup; Selection = selection }
+
+/// Take the items of the package that the document does not have yet.
+let private consumeProgressive (state: ProgressiveImport) : unit =
+    let items = optionalArray (state.Package?Paragraphs)
+    let complete = unbox<bool> (state.Package?Progressive?IsComplete)
+    if items.Length > state.Consumed || (complete && not state.Complete) || (state.Package?Progressive?PageSetupVersion |> intOrDefault 0) <> state.PageSetupVersion then
+        let stylesBefore = state.Document.Styles
+        let styleCount = state.StyleList.Count
+        let appended = ResizeArray<Block>()
+        for index in state.Consumed .. items.Length - 1 do
+            let item = items.[index]
+            collectStylesFromItem state.StyleList state.StylesSeen item
+            match blockFromEditor item with
+            | TextBox textBox ->
+                // (The reader gives the anchor as an index into the items.)
+                let anchor =
+                    optionalInt (item?AnchorBlock)
+                    |> Option.bind (fun at -> if at >= 0 && at < state.ItemBlockIds.Count && state.ItemBlockIds.[at] <> "" then Some state.ItemBlockIds.[at] else None)
+                state.ItemBlockIds.Add ""
+                appended.Add (match anchor with Some anchorId -> TextBox { textBox with AnchorBlockId = Some anchorId } | None -> TextBox textBox)
+            | Paragraph para
+            | Heading (_, para) as block ->
+                state.ItemBlockIds.Add para.Id
+                appended.Add block
+            | Table table as block ->
+                state.ItemBlockIds.Add table.Id
+                appended.Add block
+        state.Consumed <- items.Length
+        let blocks = withCommentDetailsOfBlocks state.CommentBodies (List.ofSeq appended)
+        let stylesAfter = if state.StyleList.Count = styleCount then stylesBefore else List.ofSeq state.StyleList
+        // The caret a document is imported with: at the start of its first paragraph.
+        let selection =
+            if state.Document.Selection.IsSome then None
+            else
+                blocks
+                |> List.tryPick (function Paragraph para -> Some para | _ -> None)
+                |> Option.map (fun para -> { Anchor = { BlockId = para.Id; Offset = 0 }; Focus = { BlockId = para.Id; Offset = 0 } })
+        let pageSetupBefore = state.Document.PageSetup
+        // (Until the body is read the package states the page setup of the section the blocks
+        // read so far end in; it says when that is another one.)
+        let pageSetupVersion = state.Package?Progressive?PageSetupVersion |> intOrDefault 0
+        let pageSetupAfter =
+            if pageSetupVersion <> state.PageSetupVersion && not (isNullOrUndefined state.Package?PageSetup) then
+                state.PageSetupVersion <- pageSetupVersion
+                let read = pageSetupFromEditor state.Package?PageSetup
+                if read = pageSetupBefore then pageSetupBefore else read
+            else pageSetupBefore
+        let extend = extension blocks stylesBefore stylesAfter pageSetupBefore pageSetupAfter selection
+        let document = extend state.Document
+        state.Document <- document
+        state.Complete <- complete
+        // What the document was when it was read (see PackageData.Imported).
+        state.Imported.Document <- { document with Package = { document.Package with Imported = null } }
+        let step = { Appended = blocks; Extend = extend; Complete = complete }
+        for listener in state.Listeners.ToArray() do
+            if state.Listeners.Contains listener then listener step
+
+let private beginProgressive (package: obj) : ProgressiveImport =
+    let headers = headerFooterPartsFromEditor (optionalArray (package?HeaderParts))
+    let footers = headerFooterPartsFromEditor (optionalArray (package?FooterParts))
+    let comments = commentBodiesFromEditor (optionalArray (package?Comments))
+    let styleList = ResizeArray<NamedStyle>()
+    let stylesSeen = Dictionary<string, Dictionary<string, unit>>()
+    collectStylesFromCatalog styleList stylesSeen (optionalArray (package?Styles))
+    let styles = List.ofSeq styleList
+    let imported = ImportedDocument(Document.empty)
+    let doc =
+        { Blocks = []
+          Selection = None
+          PageSetup = (if isNullOrUndefined package?PageSetup then defaultPageSetup else pageSetupFromEditor package?PageSetup)
+          Styles = styles
+          Headers = headers |> List.tryHead |> Option.map (fun part -> paragraphsFromBlocks part.Blocks) |> Option.defaultValue []
+          Footers = footers |> List.tryHead |> Option.map (fun part -> paragraphsFromBlocks part.Blocks) |> Option.defaultValue []
+          HeaderParts = headers
+          FooterParts = footers
+          Package =
+            { emptyPackageData with
+                Notes =
+                    noteBodiesFromEditor "footnote" (optionalArray (package?Footnotes))
+                    @ noteBodiesFromEditor "endnote" (optionalArray (package?Endnotes))
+                Comments = comments
+                Preserved = (if isNullOrUndefined package?Preserved then null else package?Preserved)
+                ImportedStyles = styles
+                Imported = box imported } }
+        |> withCommentDetails comments
+    let state =
+        { Package = package
+          Document = doc
+          Complete = false
+          Listeners = ResizeArray()
+          StyleList = styleList
+          StylesSeen = stylesSeen
+          ItemBlockIds = ResizeArray()
+          CommentBodies = comments
+          Imported = imported
+          Consumed = 0
+          PageSetupVersion = package?Progressive?PageSetupVersion |> intOrDefault 0 }
+    consumeProgressive state
+    package?Progressive?subscribe (System.Func<int, int, bool, unit>(fun _ _ _ -> consumeProgressive state)) |> ignore
+    state
+
+/// The document of a package that is still being read: None for a package
+/// that is read (forEditorPackage's, or one opened front first that was read
+/// to its end before anything asked for its document).
+let progressiveImportOf (package: obj) : ProgressiveImport option =
+    if not (hasProgressive package) then None
+    else
+        let known = importMapGet progressiveImports package
+        if not (isNull (box known)) then Some known
+        elif unbox<bool> (package?Progressive?IsComplete) then None
+        else
+            let state = beginProgressive package
+            importMapSet progressiveImports package state
+            Some state
+
+/// Read the rest of the package now.
+let completeProgressiveImport (state: ProgressiveImport) : unit =
+    if not state.Complete then
+        state.Package?Progressive?complete () |> ignore
+        consumeProgressive state
+
 /// The document of an editor package. A package object is converted once:
 /// a host that asks for a package's fonts (getRequiredFonts) and then loads
 /// it into an editor or a viewer pays for one conversion, not two. (A
 /// Document is immutable; the package object is not expected to change.)
+/// For a package that is still being read (Office.Formats' openProgressive)
+/// it is the document of what is read so far - see progressiveImportOf.
 let importFromEditorPackage (package: obj) : Document =
-    let known = packageMapGet convertedPackages package
-    if not (isNull (box known)) then known
-    else
-        let doc = convertEditorPackage package
-        packageMapSet convertedPackages package doc
-        doc
+    match progressiveImportOf package with
+    | Some state -> state.Document
+    | None ->
+        let known = packageMapGet convertedPackages package
+        if not (isNull (box known)) then known
+        else
+            let doc = convertEditorPackage package
+            packageMapSet convertedPackages package doc
+            doc
 
 /// Export Word document to EditorParagraphs for Office.Formats
 /// Reader px for a run with no size anywhere (11pt), which the model holds as
@@ -2337,7 +2578,7 @@ let private listSignatures (doc: Document) =
 
 let exportDocumentPackage (doc: Document) : obj =
     let context = Some (WordStyles.styleContext doc)
-    let imported : Document option = if isNull doc.Package.Imported then None else Some (unbox<Document> doc.Package.Imported)
+    let imported : Document option = importedDocumentOf doc.Package.Imported
     let footnotes = notesToEditor context "footnote" doc
     let endnotes = notesToEditor context "endnote" doc
     let comments = commentsToEditor context doc

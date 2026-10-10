@@ -185,6 +185,9 @@ type InputHandler = {
     /// A double click at a point (layout coordinates): true when it was
     /// taken (into a header or footer, or back to the body) - set by the editor.
     mutable OnDoubleClick: float -> float -> bool
+    /// Called before a key that goes by the whole document (Ctrl+A, Ctrl+End):
+    /// the editor reads a document that is still being read to its end.
+    mutable EnsureWhole: unit -> unit
 }
 
 [<Emit("$0.focus({ preventScroll: true })")>]
@@ -449,6 +452,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         HistoryPlace = None
         OnHistoryPlace = fun _ _ -> false
         OnDoubleClick = fun _ _ -> false
+        EnsureWhole = ignore
     }
 
     // ---- caret movement over the layout that is on screen -------------------
@@ -776,6 +780,8 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
     // proxy (which normally has the focus).
     let onKeyDown (e: Event) =
         let ke = e :?> KeyboardEvent
+        // (Everything, or the end of the document: of the whole document.)
+        if (ke.ctrlKey || ke.metaKey) && (keyEquals 'a' ke.key || ke.key = "End") then handler.EnsureWhole ()
         let mutable newDoc = handler.Document
         let mutable newHistory = handler.History
         let mutable useCommand = false
@@ -1415,6 +1421,31 @@ let loadDocument (handler: InputHandler) (doc: Doc.Document) =
     handler.SelectionAnchor <- None
     updateDocument handler doc
 
+/// A step of the history whose documents were made before more of the
+/// document was read: what was read since is given to what it comes back to.
+type private ExtendedCommand(inner: ICommand, extend: Doc.Document -> Doc.Document) =
+    interface ICommand with
+        member _.Execute doc = extend (inner.Execute doc)
+        member _.Undo doc = extend (inner.Undo doc)
+        member _.Description = inner.Description
+
+/// More of the document was read (a package opened front first): `extend`
+/// gives a document what was read. The document on display gets it, and so
+/// does every document the handler may come back to - the steps of the undo
+/// history hold the documents before and after each edit, made when less was
+/// read. Nothing is painted and nothing is recorded: the caller repaints when
+/// it has to. Returns the document on display. (Not while a header or footer
+/// is edited in place: the editor reads the document to its end before that.)
+let extendDocuments (handler: InputHandler) (extend: Doc.Document -> Doc.Document) : Doc.Document =
+    let doc = extend handler.Document
+    handler.Document <- doc
+    handler.PointerStartDocument <- handler.PointerStartDocument |> Option.map extend
+    let history = handler.History
+    if not history.Undos.IsEmpty || not history.Redos.IsEmpty then
+        let extended (commands: ICommand list) = commands |> List.map (fun command -> ExtendedCommand(command, extend) :> ICommand)
+        handler.History <- { history with Undos = extended history.Undos; Redos = extended history.Redos }
+    doc
+
 /// Detach listeners registered outside the canvas.
 let dispose (handler: InputHandler) =
     handler.Dispose ()
@@ -1428,6 +1459,7 @@ let repaint _ = ()
 let applyEdit _ _ _ = ()
 let applyEditAtStoryPlace _ _ _ _ _ = ()
 let loadDocument _ _ = ()
+let extendDocuments _ _ = ()
 let undo _ = false
 let redo _ = false
 let canUndo _ = false
