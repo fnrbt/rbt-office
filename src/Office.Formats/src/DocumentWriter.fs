@@ -752,7 +752,15 @@ let private collectParagraphHyperlinks (para: obj) =
 let private collectItemHyperlinks (item: obj) =
     collectItemParagraphs item |> List.collect collectParagraphHyperlinks
 
-let private hyperlinkMap (items: obj array) =
+/// The relationship id of every hyperlink target of the items. A target the
+/// part already has a relationship for (`existing`: the relationships it was
+/// read with, when they are written back) keeps that relationship's id, so a
+/// block written from the model refers to the link the file had and leaves no
+/// relationship behind that nothing refers to.
+let private hyperlinkMapWith (existing: PreservedRelationshipInfo list) (items: obj array) =
+    let known =
+        existing
+        |> List.filter (fun rel -> rel.External && rel.Type.EndsWith "/hyperlink")
     items
     |> Array.toList
     |> List.collect collectItemHyperlinks
@@ -760,8 +768,13 @@ let private hyperlinkMap (items: obj array) =
     // Not "rId<n>": header/footer parts keep the relationship ids they were read
     // with (rId7, ...), and a hyperlink numbered into the same range pointed at
     // header1.xml after saving.
-    |> List.mapi (fun index url -> (url, freshRelationshipId (sprintf "rIdLink%d" (index + 1))))
+    |> List.mapi (fun index url ->
+        match known |> List.tryFind (fun rel -> rel.Target = url) with
+        | Some rel -> (url, rel.Id)
+        | None -> (url, freshRelationshipId (sprintf "rIdLink%d" (index + 1))))
     |> Map.ofList
+
+let private hyperlinkMap (items: obj array) = hyperlinkMapWith [] items
 
 type CommentRef = { Id: string; Text: string; Author: string option; Date: string option }
 type NoteRef = { Id: string; NoteType: string; Text: string }
@@ -1442,7 +1455,11 @@ let private generateParagraphWithHyperlinksAndImagesWithPageSetup (packageSetup:
             runs @ [element "w:r" [] [selfClosing "w:br" [("w:type", "page")]]]
         else runs
 
-    element "w:p" [] (pPr :: runs)
+    // (A paragraph that states nothing of its own has no properties element.)
+    // (With a start and an end tag also when it is empty: a shape anchored in it goes before its end tag.)
+    match (if pPr = "<w:pPr/>" then runs else pPr :: runs) with
+    | [] -> "<w:p></w:p>"
+    | children -> element "w:p" [] children
 
 let private generateParagraphWithHyperlinksAndImages (hyperlinks: Map<string, string>) (images: ImageScope) (para: obj) : string =
     generateParagraphWithHyperlinksAndImagesWithPageSetup defaultPageSetupInfo hyperlinks images para
@@ -3540,6 +3557,7 @@ let private generateNotesPart (rootName: string) (noteElementName: string) (mark
             if index < 0 then body
             else body.Substring(0, index + propsEnd.Length) + markRun note + body.Substring(index + propsEnd.Length)
         elif body.StartsWith "<w:p>" then "<w:p>" + markRun note + body.Substring 5
+        elif body.StartsWith "<w:p/>" then "<w:p>" + markRun note + "</w:p>" + body.Substring 6
         else body
     let children =
         notes
@@ -3555,7 +3573,7 @@ let private generateNotesPart (rootName: string) (noteElementName: string) (mark
                 | None ->
                     let body = generateBody note.Blocks
                     // A note must hold at least one paragraph.
-                    withMark note (if body = "" then element "w:p" [] [selfClosing "w:pPr" []] else body)
+                    withMark note (if body = "" then "<w:p></w:p>" else body)
             element noteElementName attrs [body])
     document (element rootName partRootAttributes children)
 
@@ -4579,7 +4597,12 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
         [| yield! paragraphs
            for part in headerParts do yield! part.Blocks
            for part in footerParts do yield! part.Blocks |]
-    let hyperlinks = hyperlinkMap bodyModelBlocks
+    // (A link the body had a relationship for keeps it: see hyperlinkMapWith.)
+    let hyperlinks = hyperlinkMapWith (if sourceParts.Contains "document" then keptFor "document" else []) bodyModelBlocks
+    // The links the relationships part gets an entry of its own for: the others are among the kept ones.
+    let newBodyHyperlinks =
+        let keptIds = keptFor "document" |> List.map (fun rel -> rel.Id) |> Set.ofList
+        hyperlinks |> Map.filter (fun _ id -> not (Set.contains id keptIds))
     // Note and comment bodies come with the package; a reference whose body
     // is not there is written from the text on the reference run.
     let comments = mergeCommentParts (commentPartsFromPackage (package?Comments)) (collectComments contentBlocks)
@@ -4679,7 +4702,7 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
                         match bodyPlan with
                         | Some plan -> generateDocumentXmlFromPlan plan bodyImages hyperlinks pageSetup headerParts footerParts
                         | None -> generateDocumentXmlPackage paragraphs bodyImages pageSetup headerParts footerParts) }
-        yield { Path = "word/_rels/document.xml.rels"; Content = generateDocumentRelsPreserved (keptFor "document") hasNumbering hasSettings hyperlinks hasComments hasFootnotes hasEndnotes headerParts footerParts bodyImages }
+        yield { Path = "word/_rels/document.xml.rels"; Content = generateDocumentRelsPreserved (keptFor "document") hasNumbering hasSettings newBodyHyperlinks hasComments hasFootnotes hasEndnotes headerParts footerParts bodyImages }
         yield { Path = "word/styles.xml"
                 Content =
                     match preserved.StylesXml with
@@ -4761,9 +4784,25 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
     // that was deleted, or that is now written from the model with a picture
     // file of its own, leaves the relationship and the file it had): a picture
     // relationship of a part whose XML does not use its id goes, and then every
-    // file under word/media that no relationship part names.
+    // file under word/media that no relationship part names. The same of the
+    // relationship of a hyperlink (a paragraph with a link that was deleted, or
+    // whose link was taken away): it goes when the part's XML does not use its
+    // id any more - one the part did not use when it was read stays, the
+    // file's own.
     let files =
         let contentOf = files |> List.map (fun file -> file.Path, file.Content) |> Map.ofList
+        let sourceOfPath =
+            [ yield "word/document.xml", "document"
+              yield "word/footnotes.xml", "footnotes"
+              yield "word/endnotes.xml", "endnotes"
+              yield "word/comments.xml", "comments"
+              for part in Array.append headerParts footerParts do yield "word/" + part.Target, part.RelId ]
+            |> List.choose (fun (path, key) ->
+                Map.tryFind key preserved.SourceXml
+                |> Option.map (fun xml ->
+                    let ids (map: Map<string, PreservedRelationshipInfo list>) = map |> Map.tryFind key |> Option.defaultValue [] |> List.map (fun rel -> rel.Id)
+                    path, (xml, Set.ofList (ids preserved.SourceRelationships @ ids preserved.PartRelationships))))
+            |> Map.ofList
         files
         |> List.map (fun file ->
             let name = file.Path.Substring(file.Path.LastIndexOf '/' + 1)
@@ -4772,12 +4811,18 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
                 match Map.tryFind ("word/" + name.Substring(0, name.Length - 5)) contentOf with
                 | None -> file
                 | Some part ->
+                    let partPath = "word/" + name.Substring(0, name.Length - 5)
                     let unused (relationship: string) =
                         let id = System.Text.RegularExpressions.Regex.Match(relationship, "\\sId=\"([^\"]*)\"")
-                        relationship.IndexOf "/relationships/image\"" >= 0
-                        && relationship.IndexOf "TargetMode=\"External\"" < 0
-                        && id.Success
-                        && part.IndexOf("\"" + id.Groups.[1].Value + "\"", System.StringComparison.Ordinal) < 0
+                        let usedIn (text: string) = text.IndexOf("\"" + id.Groups.[1].Value + "\"", System.StringComparison.Ordinal) >= 0
+                        let picture = relationship.IndexOf "/relationships/image\"" >= 0 && relationship.IndexOf "TargetMode=\"External\"" < 0
+                        // (A link's relationship the part had and did not use when it was read: the file's own.)
+                        let inherited =
+                            match Map.tryFind partPath sourceOfPath with
+                            | Some (source, ids) -> id.Success && Set.contains id.Groups.[1].Value ids && not (usedIn source)
+                            | None -> false
+                        let link = relationship.IndexOf "/relationships/hyperlink\"" >= 0 && not inherited
+                        (picture || link) && id.Success && not (usedIn part)
                     let pieces = System.Text.RegularExpressions.Regex.Matches(file.Content, "<Relationship\\s[^>]*/>")
                     let mutable content = file.Content
                     for i in pieces.Count - 1 .. -1 .. 0 do

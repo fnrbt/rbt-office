@@ -278,7 +278,7 @@ const docs = [
         },
         expect: [
             { part: 'word/footnotes.xml', has: '<w:footnote w:type="separator" w:id="-1">.*<w:separator/>' },
-            { part: 'word/footnotes.xml', has: '<w:footnote w:id="2"><w:p><w:pPr/?>(.*?</w:pPr>)?<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:footnoteRef/></w:r>' },
+            { part: 'word/footnotes.xml', has: '<w:footnote w:id="2"><w:p>(<w:pPr>.*?</w:pPr>)?<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:footnoteRef/></w:r>' },
             { part: 'word/footnotes.xml', has: '<w:b/>.*the bold source' }, { part: 'word/footnotes.xml', has: '<w:hyperlink r:id="[^"]+"[^>]*>.*the site' },
             { part: 'word/footnotes.xml', has: '<w:tbl>.*note cell a.*note cell b.*</w:tbl>.*after the note table' },
             { part: 'word/footnotes.xml', lacks: '<w:footnoteRef/>.*<w:footnoteRef/>' },
@@ -519,7 +519,7 @@ const docs = [
             'word/numbering.xml': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:numbering ${W}><w:abstractNum w:abstractNumId="7"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr></w:lvl></w:abstractNum><w:num w:numId="7"><w:abstractNumId w:val="7"/></w:num></w:numbering>`,
         },
         expect: [
-            { part: 'word/document.xml', has: '<w:p><w:pPr/><w:r>(<w:rPr>.*?</w:rPr>)?<w:t[^>]*>nothing set' },
+            { part: 'word/document.xml', has: '<w:p><w:r>(<w:rPr>.*?</w:rPr>)?<w:t[^>]*>nothing set' },
             { part: 'word/document.xml', has: '<w:pPr><w:ind w:left="720"/></w:pPr><w:r>(<w:rPr>.*?</w:rPr>)?<w:t[^>]*>indent only' },
             { part: 'word/document.xml', has: '<w:pPr><w:pStyle w:val="Spaced"/></w:pPr><w:r>(<w:rPr>.*?</w:rPr>)?<w:t[^>]*>inherits from its style' },
             { part: 'word/document.xml', has: '<w:pStyle w:val="Spaced"/><w:spacing w:before="0" w:beforeAutospacing="0" w:after="0" w:afterAutospacing="0"/></w:pPr>' },

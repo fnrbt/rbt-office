@@ -370,8 +370,9 @@ async function open(bytes) {
 // alone, every edited one): each relationship id a part's XML uses is one the
 // part has, each relationship target is in the package, no relationship id is
 // used twice, each part has a content type, and [Content_Types].xml names no
-// part that is not there. (What the original document has wrong already is
-// not the writer's: those are left out.)
+// part that is not there, and no relationship of a picture or a hyperlink is
+// without a referrer in its part. (What the original document has wrong
+// already is not the writer's: those are left out.)
 async function packageIntegrity(bytes) {
     const zip = await window.JSZip.loadAsync(bytes);
     const names = Object.keys(zip.files).filter((name) => !zip.files[name].dir);
@@ -414,6 +415,18 @@ async function packageIntegrity(bytes) {
         const missing = new Set();
         for (const m of xml.matchAll(/\s(?:r:[A-Za-z]+|o:relid)="([^"]+)"/g)) if (!ids.has(m[1])) missing.add(m[1]);
         for (const id of missing) problems.push(`${part}: refers to relationship ${id}, which the part does not have`);
+    }
+    // No relationship without a referrer, of the kinds the writer owns (pictures, hyperlinks): a block
+    // written from the model must not leave behind the relationship its XML had.
+    for (const [relsName, relsXml] of Object.entries(text)) {
+        if (!/^word\/_rels\/[^/]*\.xml\.rels$/.test(relsName)) continue;
+        const owner = text[relsName.replace(/_rels\/([^/]*)\.rels$/, '$1')];
+        if (owner === undefined) continue;
+        for (const m of relsXml.matchAll(/<Relationship\b[^>]*>/g)) {
+            if (!/\/relationships\/(image|hyperlink)"/.test(m[0])) continue;
+            const id = /\bId="([^"]*)"/.exec(m[0])?.[1];
+            if (!owner.includes(`"${id}"`)) problems.push(`${relsName}: relationship ${id} (${/relationships\/(\w+)"/.exec(m[0])[1]}) without a referrer`);
+        }
     }
     return problems;
 }
