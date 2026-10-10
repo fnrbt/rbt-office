@@ -3117,6 +3117,9 @@ type PaintCache = private {
     mutable CacheHeaderFooterCommands: PaintCommand array array
     /// The headers and footers page by page, their commands collected when a page is painted.
     mutable CacheFurniture: FurniturePage array
+    /// Block by block (as CacheBlocks), whether a paragraph of the block ends a section.
+    /// Empty when it is not known for the blocks of the cache.
+    mutable CacheSectionEnds: bool array
     /// How many blocks' commands the last collection made anew.
     mutable CollectedBlocks: int
     /// The layout pass (LayoutSlices.SliceGeneration) the entries were collected from.
@@ -3138,6 +3141,7 @@ let createPaintCache () : PaintCache = {
     CacheHeaderFooterChunks = [||]
     CacheHeaderFooterCommands = [||]
     CacheFurniture = [||]
+    CacheSectionEnds = [||]
     CollectedBlocks = 0
     CacheGeneration = 0
 }
@@ -3146,6 +3150,7 @@ let clearPaintCache (cache: PaintCache) =
     cache.CacheGeneration <- 0
     cache.CacheSettings <- None
     cache.CacheBlocks <- [||]
+    cache.CacheSectionEnds <- [||]
     cache.CacheEntries <- [||]
     cache.CacheNotes <- []
     cache.CacheNoteChunk <- emptyChunk
@@ -3208,6 +3213,8 @@ let collectDocumentChunksWith (deferCollection: bool) (cache: PaintCache) (setti
         let layouts = slices.SliceLayouts
         let struct (prefix, suffix) = commonBlockEnds cache.CacheBlocks blocks
         let shift = cache.CacheBlocks.Length - blocks.Length
+        // (Which blocks end a section, as known for the blocks of the paint before.)
+        let knownSectionEnds = if cache.CacheSectionEnds.Length = cache.CacheBlocks.Length then cache.CacheSectionEnds else [||]
         let styleContext = WordStyles.styleContext doc
         let entries = Array.zeroCreate<BlockPaintEntry> blocks.Length
         let chunks = ResizeArray<PaintChunk>(blocks.Length + 8)
@@ -3395,18 +3402,35 @@ let collectDocumentChunksWith (deferCollection: bool) (cache: PaintCache) (setti
         if not doc.Headers.IsEmpty || not doc.Footers.IsEmpty || not doc.HeaderParts.IsEmpty || not doc.FooterParts.IsEmpty then
             // (Of the layouts, the headers and footers follow those that end a section.)
             // (Body paragraphs: looked for block by block, not layout by layout.)
+            // (Whether a block ends a section is a matter of the block: what the paint before found
+            // stands for the blocks that are the same objects. Asking every paragraph and every
+            // cell of every table again was a millisecond of each keystroke in a long document.)
             let sectionEnds = ResizeArray<BlockLayout>()
+            let sectionEndBlocks = Array.zeroCreate<bool> blocks.Length
             for blockIndex in 0 .. blocks.Length - 1 do
-                match blocks.[blockIndex] with
-                | Paragraph para
-                | Heading (_, para) ->
-                    if endsSection para.Metadata then
-                        for at in slices.SliceStarts.[blockIndex] .. slices.SliceStarts.[blockIndex + 1] - 1 do
-                            if endsSection layouts.[at].Metadata then sectionEnds.Add layouts.[at]
-                | _ ->
-                    // (A table cell's or a text box's paragraph could carry section properties in a broken file: as before.)
+                let known =
+                    if knownSectionEnds.Length = 0 then ValueNone
+                    elif blockIndex < prefix then ValueSome knownSectionEnds.[blockIndex]
+                    elif blockIndex >= blocks.Length - suffix then ValueSome knownSectionEnds.[blockIndex + shift]
+                    else ValueNone
+                let ends =
+                    match known with
+                    | ValueSome ends -> ends
+                    | ValueNone ->
+                        match blocks.[blockIndex] with
+                        | Paragraph para
+                        | Heading (_, para) -> endsSection para.Metadata
+                        | _ ->
+                            // (A table cell's or a text box's paragraph could carry section properties in a broken file: as before.)
+                            let mutable found = false
+                            for at in slices.SliceStarts.[blockIndex] .. slices.SliceStarts.[blockIndex + 1] - 1 do
+                                if not found && endsSection layouts.[at].Metadata then found <- true
+                            found
+                sectionEndBlocks.[blockIndex] <- ends
+                if ends then
                     for at in slices.SliceStarts.[blockIndex] .. slices.SliceStarts.[blockIndex + 1] - 1 do
                         if endsSection layouts.[at].Metadata then sectionEnds.Add layouts.[at]
+            cache.CacheSectionEnds <- sectionEndBlocks
             if deferCollection then
                 // What a page's header and footer are made from is looked at for every page;
                 // their commands (the layout of their blocks, with the page's number) are
@@ -3450,6 +3474,9 @@ let collectDocumentChunksWith (deferCollection: bool) (cache: PaintCache) (setti
             cache.CacheHeaderFooterCommands <- byPage
             cache.CacheHeaderFooterChunks <- pageChunks
             chunks.AddRange pageChunks
+        else
+            // (Not looked at: nothing is known for these blocks.)
+            cache.CacheSectionEnds <- [||]
         Some (chunks.ToArray())
 
 /// `collectDocumentChunksWith`, the commands of plain paragraphs collected

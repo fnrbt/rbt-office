@@ -460,7 +460,10 @@ let whenLayoutComplete (ctx: RenderContext) (callback: unit -> unit) =
 let beginProgressiveLayout (ctx: RenderContext) =
     match ctx.Viewport with
     | Some _ ->
-        ctx.LayoutState.BlockLimit <- 40
+        // (A few blocks: the render raises the limit until what is in view is laid out. Forty
+        // to start with were twenty to eighty pages of a document of long paragraphs, tables
+        // or page breaks - laid out before anything was shown.)
+        ctx.LayoutState.BlockLimit <- 6
         ctx.Progress.Chunk <- 48
     | None -> completeLayout ctx
 
@@ -485,7 +488,8 @@ let private coverDown (ctx: RenderContext) (doc: Document) (bottom: float) =
         else
             // (In steps of a third: a pass over a few more blocks costs little, the blocks themselves cost their measuring.)
             let limit = ctx.LayoutState.BlockLimit
-            ctx.LayoutState.BlockLimit <- (if limit > 1000000 then System.Int32.MaxValue else limit + max 16 (limit / 3))
+            // (A few at first: the blocks of the first screens may be pages long each.)
+            ctx.LayoutState.BlockLimit <- (if limit > 1000000 then System.Int32.MaxValue else limit + max 4 (limit / 3))
 
 /// What a viewport shows, and a screen below it, is laid out.
 let private coverViewport (ctx: RenderContext) (doc: Document) (vp: Viewport) =
@@ -506,8 +510,13 @@ let private coverSelection (ctx: RenderContext) (doc: Document) =
                 | ValueSome (struct (index, _)) -> index
                 | ValueNone -> -1
             let last = max (indexOf selection.Focus.BlockId) (indexOf selection.Anchor.BlockId)
-            if last + 24 >= ctx.LayoutState.BlockLimit then
+            // (Near the end of what is laid out: on by a screen or so of blocks. The caret at the
+            // start of a document that was just loaded asks for nothing more than is shown.)
+            let limit = ctx.LayoutState.BlockLimit
+            if last + 4 >= limit && limit >= 24 then
                 ctx.LayoutState.BlockLimit <- last + 96
+            elif last + 4 >= limit then
+                ctx.LayoutState.BlockLimit <- last + 24
 
 /// One slice of the layout of the rest of the document: blocks are added for
 /// about `budget` milliseconds. True when the whole document is laid out.

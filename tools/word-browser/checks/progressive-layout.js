@@ -53,6 +53,8 @@ try {
     check('the import returns before the whole document is laid out', [Word.isLayoutComplete(editor), firstSize.LayoutComplete, firstStats.LayoutComplete], [false, false, false]);
     check('a few pages are laid out, not the document', [firstSize.PageCount >= 2, firstSize.PageCount < 40, firstStats.LaidOutLimit < firstStats.Blocks / 10], [true, true, true]);
     check('getPageFrames gives the pages so far', Word.getPageFrames(editor).length, firstSize.PageCount);
+    // (What is shown and a screen below it - with a viewport 800 high some two pages - not the forty blocks, twenty to eighty pages of some documents, it used to start with.)
+    check(`the first paint lays out one or two screens (${firstSize.PageCount} pages, ${firstStats.LaidOutLimit} blocks)`, [firstSize.PageCount <= 3, firstSize.Height >= 1600], [true, true]);
     check('the first screen is painted, as in the whole layout', [inkOf(pixelsOf(canvas)) > 2000, same(pixelsOf(canvas), wholeFirstScreen)], [true, true]);
     check(`the first paint takes a fraction of the whole layout (${first.toFixed(0)} ms of ${atOnce.toFixed(0)} ms)`, first < Math.max(120, atOnce / 3), true);
     check('the load is told as a change of the document', [changes.length >= 1, changes[0].DocumentChanged, changes[0].LayoutChanged, changes[0].LayoutComplete], [true, true, false, false]);
