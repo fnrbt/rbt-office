@@ -63,6 +63,8 @@ module API =
         /// Why the document on display could not be read to its end, when it
         /// could not (see isLoadFailed): it is what was read, and is not saved.
         mutable LoadFailure: string option
+        /// Which faces of the document the host cannot set text in yet (see setFontAvailability).
+        Fonts: Viewer.FontTracker
     }
 
     /// Read the document on display to its end now, when its package is
@@ -177,6 +179,7 @@ module API =
         // is done with that package - which ends its reading, unless a viewer shows it too.)
         stopLoading editor
         editor.LoadFailure <- loading |> Option.bind (fun state -> state.Failed)
+        editor.Fonts.Reset ()
         match reading with
         | Some state ->
             let listener = fun (step: Docx.ImportStep) -> loadStep.Value editor step
@@ -235,6 +238,10 @@ module API =
         | Some element -> box element
         | None -> null
 
+    /// Whether the document needs faces the host has not got (see setFontAvailability).
+    let private fontsPending (editor: Editor) : bool =
+        (editor.Fonts.Pending (fun () -> editor.Whole)).Length > 0
+
     /// Tell the onChange listeners what an engine change was. Nothing is
     /// reported when neither the document, the selection nor the undo / redo
     /// availability changed.
@@ -261,6 +268,7 @@ module API =
                         "LoadComplete" ==> (editor.Loading.IsNone && editor.LoadFailure.IsNone)
                         "LoadFailed" ==> editor.LoadFailure.IsSome
                         "LoadError" ==> Option.toObj editor.LoadFailure
+                        "FontsPending" ==> fontsPending editor
                     ]
                 // A listener may unsubscribe (or subscribe) while being called.
                 for listener in editor.Listeners.ToArray() do
@@ -284,6 +292,7 @@ module API =
                     "LoadComplete" ==> (editor.Loading.IsNone && editor.LoadFailure.IsNone)
                     "LoadFailed" ==> editor.LoadFailure.IsSome
                     "LoadError" ==> Option.toObj editor.LoadFailure
+                    "FontsPending" ==> fontsPending editor
                 ]
             for listener in editor.Listeners.ToArray() do
                 if editor.Listeners.Contains listener then listener change
@@ -321,7 +330,10 @@ module API =
     let whenLayoutComplete (editor: Editor) : JS.Promise<obj> =
         let ctx = editor.Handler.RenderContext
         JS.Constructors.Promise.Create(fun resolve _ ->
-            Ren.whenLayoutComplete ctx (fun () -> resolve (Viewer.documentSizeToJs ctx editor.Doc))
+            Ren.whenLayoutComplete ctx (fun () ->
+                let size = Viewer.documentSizeToJs ctx editor.Doc
+                size?FontsPending <- fontsPending editor
+                resolve size)
             continueLayout editor)
 
     /// Lay out the rest of the document now (what getPageCount does, without the count).
@@ -358,6 +370,9 @@ module API =
         for index in 0 .. editor.KnownRevisions.Count - 1 do
             let known, revision = editor.KnownRevisions.[index]
             editor.KnownRevisions.[index] <- (step.Extend known, revision)
+        match editor.Loading with
+        | Some importing -> editor.Fonts.Extend importing step
+        | None -> ()
         let wasWhole = Ren.documentExtended ctx blocksBefore
         // (A package that cannot be read on: the document is what was read, from here on. It is
         // laid out, found in and counted as any document; it is not saved.)
@@ -614,6 +629,7 @@ module API =
             LoadNotified = 0.0
             LoadWaiters = ResizeArray()
             LoadFailure = None
+            Fonts = Viewer.FontTracker()
         }
         handler.EnsureWhole <- fun () -> ensureLoaded editor
 
@@ -706,7 +722,10 @@ module API =
     /// pixels at the viewport's scale (what a scroll spacer needs, plus the
     /// host's own origin / margins), and PageCount.
     let getDocumentSize (editor: Editor) =
-        documentSizeToJs editor.Handler.RenderContext editor.Doc
+        let size = documentSizeToJs editor.Handler.RenderContext editor.Doc
+        // (The pages are counted in other faces than the document's: see setFontAvailability.)
+        size?FontsPending <- fontsPending editor
+        size
 
     /// Layout (document) coordinates of a point given in CSS pixels relative
     /// to the canvas' top-left corner. One to one in whole-canvas mode.
@@ -791,6 +810,8 @@ module API =
         Ren.setTextMeasurers ctx (if isNull (box measureText) then None else Some measureText) ctx.TextRangeMeasurer
         Ren.render ctx editor.Doc
         continueLayout editor
+        // (The lines and the pages are other ones: LayoutChanged, with FontsPending as it is now.)
+        notifyLayoutProgress editor
 
     /// As setTextMeasurer, with `measureRange(text, style, start, length)`
     /// for the width of a part of a shaped run.
@@ -799,12 +820,16 @@ module API =
         Ren.setTextMeasurers ctx (if isNull (box measureText) then None else Some measureText) (if isNull (box measureRange) then None else Some measureRange)
         Ren.render ctx editor.Doc
         continueLayout editor
+        // (The lines and the pages are other ones: LayoutChanged, with FontsPending as it is now.)
+        notifyLayoutProgress editor
 
     let setTextRangeMeasurer (editor: Editor) (measureRange: Layout.TextRangeMeasurer) =
         let ctx = editor.Handler.RenderContext
         Ren.setTextMeasurers ctx ctx.TextMeasurer (if isNull (box measureRange) then None else Some measureRange)
         Ren.render ctx editor.Doc
         continueLayout editor
+        // (The lines and the pages are other ones: LayoutChanged, with FontsPending as it is now.)
+        notifyLayoutProgress editor
 
     /// Paint text with `paintText(text, style, x, baseline, width)` - a plain
     /// JavaScript function returning true when it painted the text - instead
@@ -839,6 +864,8 @@ module API =
         Ren.setTextMeasurers ctx None None
         Ren.render ctx editor.Doc
         continueLayout editor
+        // (The lines and the pages are other ones: LayoutChanged, with FontsPending as it is now.)
+        notifyLayoutProgress editor
 
     /// Counters of the editor's renderer, for hosts and checks:
     /// { FrameBuilds (times a paint frame was built: the document was laid
@@ -873,9 +900,42 @@ module API =
             Ren.requiredFontsOfDocument (Docx.importFromEditorPackage target)
 
     /// The faces a package that is still being read turns out to need as it
-    /// is read on: see Viewer.onFontsDiscovered.
+    /// is read on: see Viewer.onFontsDiscovered - the callback is called
+    /// synchronously, before the blocks that need the faces are given to the
+    /// editor, also when the rest is read at once by a call that needs the
+    /// whole document.
     let onFontsDiscovered (package: obj) (callback: obj array -> unit) : unit -> unit =
         Viewer.onFontsDiscovered package callback
+
+    /// Say which faces the editor's measurers and painter can set text in:
+    /// `isAvailable(family, bold, italic)` -> boolean, asked whenever the
+    /// editor wants to know (so it is never out of date); null: the host
+    /// does not say, and nothing is ever pending.
+    ///
+    /// With it the editor knows when its layout is provisional:
+    ///   getPendingFonts(editor)   the faces of the document on display that
+    ///                             are not available, [{ family, bold, italic }]
+    ///                             - of the document as loaded and as read so
+    ///                             far (it reads nothing, lays out nothing);
+    ///   FontsPending              in every onChange notice and in
+    ///                             getDocumentSize / whenLayoutComplete: some
+    ///                             face is pending, so the lines, the pages
+    ///                             and the page count were made with other
+    ///                             faces than the document's and change when
+    ///                             the host installs them (setTextMeasurers,
+    ///                             which tells the listeners: LayoutChanged).
+    /// A page count asked for at open (getPageCount reads and lays out the
+    /// rest of a long document at once) is final when FontsPending is false
+    /// afterwards. To have it final the first time a host supplies the faces
+    /// from onFontsDiscovered's callback - called before the layout - when it
+    /// has their bytes; otherwise it shows the count as provisional until its
+    /// faces arrive.
+    let setFontAvailability (editor: Editor) (isAvailable: obj) : unit =
+        editor.Fonts.IsAvailable <- (if isNull isAvailable then null else isAvailable)
+
+    /// The faces the document needs that the host has not got: see setFontAvailability.
+    let getPendingFonts (editor: Editor) : obj array =
+        editor.Fonts.Pending (fun () -> editor.Whole)
 
     let getCachedLayouts (editor: Editor) =
         ensureLoaded editor
@@ -3272,6 +3332,8 @@ module API =
             "cancelLoad" ==> cancelLoad
             "getLoadError" ==> getLoadError
             "onFontsDiscovered" ==> onFontsDiscovered
+            "setFontAvailability" ==> setFontAvailability
+            "getPendingFonts" ==> getPendingFonts
             "isLayoutComplete" ==> isLayoutComplete
             "whenLayoutComplete" ==> whenLayoutComplete
             "completeLayout" ==> completeLayout

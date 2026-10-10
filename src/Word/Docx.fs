@@ -1445,6 +1445,9 @@ type ImportStep = {
     /// The package cannot be read to its end (Office.Formats' Progressive.Failed):
     /// why. This is its last step - the document is what was read.
     Failed: string option
+    /// The font faces of the blocks that were read, once something asked for them (null until
+    /// then; see Viewer.facesOfStep): they are found once for all who follow the package.
+    mutable Faces: obj
 }
 
 /// The document of a package that is being read (see above).
@@ -1456,7 +1459,9 @@ type ProgressiveImport = {
     /// Why the package could not be read to its end, when it could not: the document stays
     /// what was read (and cannot be saved, see PackageData.Imported).
     mutable Failed: string option
-    /// Told after each step.
+    /// Told after each step: those who look at what the step brought before anything is done
+    /// with it (the font faces it needs, see Viewer.onFontsDiscovered), then those who show it.
+    FirstListeners: ResizeArray<ImportStep -> unit>
     Listeners: ResizeArray<ImportStep -> unit>
     // (Kept between the steps.)
     StyleList: ResizeArray<NamedStyle>
@@ -1591,7 +1596,9 @@ let private consumeProgressive (state: ProgressiveImport) : unit =
         if failed.IsSome then state.Failed <- failed
         // What the document was when it was read (see PackageData.Imported).
         state.Imported.Document <- { document with Package = { document.Package with Imported = null } }
-        let step = { Appended = blocks; Extend = extend; Complete = complete; Failed = failed }
+        let step = { Appended = blocks; Extend = extend; Complete = complete; Failed = failed; Faces = null }
+        for listener in state.FirstListeners.ToArray() do
+            if state.FirstListeners.Contains listener then listener step
         for listener in state.Listeners.ToArray() do
             if state.Listeners.Contains listener then listener step
 
@@ -1628,6 +1635,7 @@ let private beginProgressive (package: obj) : ProgressiveImport =
           Document = doc
           Complete = false
           Failed = None
+          FirstListeners = ResizeArray()
           Listeners = ResizeArray()
           StyleList = styleList
           StylesSeen = stylesSeen

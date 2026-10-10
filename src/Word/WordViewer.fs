@@ -50,6 +50,48 @@ module Viewer =
             "LayoutComplete" ==> Ren.layoutIsComplete ctx
         ]
 
+    [<Emit("($0.family + '|' + ($0.bold ? 'b' : '') + ($0.italic ? 'i' : ''))")>]
+    let private faceKey (_face: obj) : string = jsNative
+    [<Emit("(!!$0($1.family, $1.bold, $1.italic))")>]
+    let private faceIsAvailable (_isAvailable: obj) (_face: obj) : bool = jsNative
+
+    /// The font faces of the blocks a step of a package brought, in the document's styles.
+    let facesOfStep (importing: Docx.ProgressiveImport) (step: Docx.ImportStep) : obj array =
+        if isNull step.Faces then
+            step.Faces <-
+                box (if step.Appended.IsEmpty then [||]
+                     else Ren.requiredFontsOfDocument { importing.Document with Blocks = step.Appended; Selection = None })
+        unbox<obj array> step.Faces
+
+    /// Which of the faces a document needs the host cannot set text in yet -
+    /// when the host says which it can (setFontAvailability). The faces are
+    /// those of the document as it was loaded, with what was read of it since
+    /// (a face the user's own formatting brings later is the host's doing).
+    type FontTracker() =
+        let faces = System.Collections.Generic.Dictionary<string, obj>()
+        let mutable known = false
+        /// The host's `isAvailable(family, bold, italic)`; null: it does not say.
+        member val IsAvailable : obj = null with get, set
+        /// Another document is shown.
+        member _.Reset () =
+            faces.Clear()
+            known <- false
+        member _.Add (found: obj array) =
+            for face in found do
+                let key = faceKey face
+                if not (faces.ContainsKey key) then faces.[key] <- face
+        /// More of the document was read.
+        member this.Extend (importing: Docx.ProgressiveImport) (step: Docx.ImportStep) =
+            if known then this.Add (facesOfStep importing step)
+        /// The faces the host has not got; none when it does not say which it has.
+        member this.Pending (document: unit -> Doc.Document) : obj array =
+            if isNull this.IsAvailable then [||]
+            else
+                if not known then
+                    known <- true
+                    this.Add (Ren.requiredFontsOfDocument (document ()))
+                faces.Values |> Seq.filter (fun face -> not (faceIsAvailable this.IsAvailable face)) |> Seq.toArray
+
     /// Create a read-only viewer. `canvas` is used for text measurement (and by
     /// `render`, which paints the whole document onto it); pages are painted
     /// onto canvases of the host's with `renderPage`.
@@ -91,9 +133,12 @@ module Viewer =
         let loadWaiters = ResizeArray<unit -> unit>()
         // Why the document could not be read to its end, when it could not (see isLoadFailed).
         let mutable loadFailure : string option = None
+        // Which faces of the document the host cannot set text in yet (see setFontAvailability).
+        let fonts = FontTracker()
+        let fontsPending () = (fonts.Pending current).Length > 0
         let tellProgress (complete: bool) =
             if progressListeners.Count > 0 then
-                let progress = createObj [ "PageCount" ==> List.length (Ren.pageFrames ctx (current ())); "LayoutComplete" ==> complete; "LoadComplete" ==> (loading.IsNone && loadFailure.IsNone); "LoadFailed" ==> loadFailure.IsSome; "LoadError" ==> Option.toObj loadFailure ]
+                let progress = createObj [ "PageCount" ==> List.length (Ren.pageFrames ctx (current ())); "LayoutComplete" ==> complete; "LoadComplete" ==> (loading.IsNone && loadFailure.IsNone); "LoadFailed" ==> loadFailure.IsSome; "LoadError" ==> Option.toObj loadFailure; "FontsPending" ==> fontsPending () ]
                 for listener in progressListeners.ToArray() do
                     if progressListeners.Contains listener then listener progress
         // The rest of a document that is laid out from its start, in idle slices
@@ -136,6 +181,7 @@ module Viewer =
             // A viewer shows no caret.
             let doc = { Docx.importFromEditorPackage package with Selection = None }
             state?document <- doc
+            fonts.Reset ()
             Ren.clearLayoutCache ctx
             Ren.cancelScheduledLayout ctx
             match importing with
@@ -145,6 +191,7 @@ module Viewer =
                 let listener = fun (step: Docx.ImportStep) ->
                     let before = current ()
                     state?document <- { importing.Document with Selection = None }
+                    fonts.Extend importing step
                     let wasWhole = Ren.documentExtended ctx (List.length before.Blocks)
                     // (A package that cannot be read on: the document is what was read, laid out to its end.)
                     let ended = step.Complete || step.Failed.IsSome
@@ -232,7 +279,20 @@ module Viewer =
         state?getPageCount <- fun () ->
             ensureLoaded ()
             Ren.pageCount ctx (current ())
-        state?getDocumentSize <- fun () -> documentSizeToJs ctx (current ())
+        state?getDocumentSize <- fun () ->
+            let size = documentSizeToJs ctx (current ())
+            size?FontsPending <- fontsPending ()
+            size
+        // Which faces the viewer's measurers (and painter) can set text in right now:
+        // `isAvailable(family, bold, italic)`, asked whenever the viewer wants to know (null: the
+        // host does not say). With it getPendingFonts() gives the faces of the document - as read so
+        // far; it reads nothing - that are not available ([{ family, bold, italic }]), and the progress
+        // notices and getDocumentSize() carry FontsPending: the pages were counted in other faces
+        // than the document's and will be counted again when the host installs them
+        // (setTextMeasurers). See onFontsDiscovered for when the host can get ahead of that.
+        state?setFontAvailability <- fun (isAvailable: obj) ->
+            fonts.IsAvailable <- (if isNull isAvailable then null else isAvailable)
+        state?getPendingFonts <- fun () -> fonts.Pending current
         state?renderPage <- fun (target: HTMLCanvasElement) (pageIndex: int) (scale: float) ->
             // (A page there is not yet: of the whole document.)
             if loading.IsSome && pageIndex >= List.length (Ren.pageFrames ctx (current ())) then ensureLoaded ()
@@ -256,15 +316,26 @@ module Viewer =
     let getRequiredFonts (package: obj) : obj array =
         Ren.requiredFontsOfDocument (Docx.importFromEditorPackage package)
 
-    [<Emit("($0.family + '|' + ($0.bold ? 'b' : '') + ($0.italic ? 'i' : ''))")>]
-    let private faceKey (_face: obj) : string = jsNative
-
     /// Be told the font faces a package turns out to need as the rest of it
     /// is read: `callback(faces)` with the faces ([{ family, bold, italic }])
     /// that getRequiredFonts(package) did not name when this was called and
     /// no earlier call of the callback named. A host fetches them while the
     /// text that needs them is still to be laid out. Returns the function that
     /// ends it; nothing is ever told of a package that is read.
+    ///
+    /// The contract: the callback is called synchronously, inside the step
+    /// that read the blocks, before any editor or viewer that shows the
+    /// package is given them - so before any of them is laid out. That holds
+    /// for a forced completion too (getPageCount, getText, saving ... at
+    /// open, completeLoad, Progressive.complete()): the rest is read in one
+    /// step, the callback is called once with every face it brought, and the
+    /// layout that the call needs comes after. A host that has the bytes of
+    /// those faces at hand installs them in the callback (its font set, then
+    /// setTextMeasurers of the editor or the viewer) and the pages are right
+    /// the first time. A host that has to fetch them cannot: the pages are
+    /// then counted in the faces it has, and counted again when it installs
+    /// the fetched ones - it knows which answer it got from getPendingFonts
+    /// and FontsPending (see setFontAvailability).
     let onFontsDiscovered (package: obj) (callback: obj array -> unit) : unit -> unit =
         match Docx.progressiveImportOf package with
         | Some importing when not importing.Complete ->
@@ -273,12 +344,11 @@ module Viewer =
             let listener = fun (step: Docx.ImportStep) ->
                 if not step.Appended.IsEmpty then
                     // (The faces of the blocks that were read, in the document's styles.)
-                    let found =
-                        Ren.requiredFontsOfDocument { importing.Document with Blocks = step.Appended; Selection = None }
-                        |> Array.filter (fun face -> known.Add (faceKey face))
+                    let found = facesOfStep importing step |> Array.filter (fun face -> known.Add (faceKey face))
                     if found.Length > 0 then callback found
-            importing.Listeners.Add listener
-            fun () -> importing.Listeners.Remove listener |> ignore
+            // (Before those who show the blocks: see the contract above.)
+            importing.FirstListeners.Add listener
+            fun () -> importing.FirstListeners.Remove listener |> ignore
         | _ -> ignore
 
     /// `import createViewer from '.../word/WordViewer.js'`.
