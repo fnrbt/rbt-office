@@ -389,5 +389,96 @@ check "native external picture is linked and shows a placeholder"
     (hostileNativeRuns |> List.choose (function Rbt.Word.TextBuffer.Image image -> Some (image.Linked, image.Src, Rbt.Word.TextBuffer.displayedImageSource image) | _ -> None))
     [ true, "https://tracker.example.com/p.png", "opaque:linked" ]
 
+// ---- the selection's format over whole documents ------------------------------
+// WordStyles.selectionFormat works each property out on its own, stops looking
+// at a property once it is mixed and makes no style record per run: for every
+// test document, with everything selected and with ranges inside it, it says
+// what resolving every run and every paragraph in full says.
+module FormatReference =
+    module WS = Rbt.Word.WordStyles
+    module TB = Rbt.Word.TextBuffer
+    let add value current = WS.FormatValue.add value current
+    let format (doc: Document) : WS.SelectionFormat =
+        let context = WS.styleContext doc
+        let headingLevel (id: string) = doc.Blocks |> List.tryPick (function Heading (level, para) when para.Id = id -> Some level | _ -> None)
+        let styleOf (para: ParagraphBlock) =
+            match headingLevel para.Id with
+            | Some level -> WS.forBlockInContext context (Heading (level, para))
+            | None -> WS.forBlockInContext context (Paragraph para)
+        let mutable f : WS.SelectionFormat =
+            { Bold = WS.NoValue; Italic = WS.NoValue; Underline = WS.NoValue; Strike = WS.NoValue; FontFamily = WS.NoValue; FontSize = WS.NoValue
+              Color = WS.NoValue; Highlight = WS.NoValue; StyleId = WS.NoValue; HeadingLevel = WS.NoValue; Alignment = WS.NoValue; ListKind = WS.NoValue
+              ListLevel = WS.NoValue; IndentLeft = WS.NoValue; IndentRight = WS.NoValue; FirstLineIndent = WS.NoValue; ParagraphLineSpacing = WS.NoValue
+              ParagraphLineSpacingRule = WS.NoValue; ParagraphSpacingBefore = WS.NoValue; ParagraphSpacingAfter = WS.NoValue }
+        let character (paragraphStyle: WS.ParagraphStyle) (runStyle: TB.TextStyle) =
+            let style = WS.effectiveTextStyleInContext context paragraphStyle runStyle
+            f <- { f with
+                    Bold = add style.Bold f.Bold; Italic = add style.Italic f.Italic; Underline = add style.Underline f.Underline
+                    Strike = add (style.Strike || style.DoubleStrike) f.Strike; FontFamily = add style.FontFamily f.FontFamily
+                    FontSize = add style.FontSize f.FontSize; Color = add style.Color f.Color; Highlight = add style.Highlight f.Highlight }
+        let paragraph (para: ParagraphBlock) (paragraphStyle: WS.ParagraphStyle) =
+            let metadata = WS.effectiveMetadata paragraphStyle para.Metadata
+            let level =
+                match headingLevel para.Id with
+                | Some level -> level
+                | None -> (match paragraphStyle.OutlineLevel with Some level when level >= 1 && level <= 9 -> level | _ -> 0)
+            let visible =
+                para.Metadata.Style
+                |> Option.filter (fun styleId ->
+                    not (WS.isInternalStyleId styleId)
+                    && (match Map.tryFind ("paragraph", styleId) context.Styles with Some style -> style.StyleType <> "defaults" | None -> true))
+            f <- { f with
+                    ParagraphLineSpacing = add (metadata.LineSpacing |> Option.orElse paragraphStyle.LineSpacing) f.ParagraphLineSpacing
+                    ParagraphLineSpacingRule = add (metadata.LineSpacingRule |> Option.orElse paragraphStyle.LineSpacingRule) f.ParagraphLineSpacingRule
+                    ParagraphSpacingBefore = add (metadata.SpacingBefore |> Option.orElse paragraphStyle.SpacingBefore |> Option.defaultValue 0.0) f.ParagraphSpacingBefore
+                    ParagraphSpacingAfter = add (metadata.SpacingAfter |> Option.orElse paragraphStyle.SpacingAfter |> Option.defaultValue 0.0) f.ParagraphSpacingAfter
+                    StyleId = add visible f.StyleId; HeadingLevel = add level f.HeadingLevel; Alignment = add metadata.Alignment f.Alignment
+                    ListKind = add metadata.ListStyle f.ListKind; ListLevel = add (if metadata.ListStyle = NoList then 0 else metadata.ListLevel) f.ListLevel
+                    IndentLeft = add (metadata.IndentLeft |> Option.defaultValue 0.0) f.IndentLeft
+                    IndentRight = add (metadata.IndentRight |> Option.defaultValue 0.0) f.IndentRight
+                    FirstLineIndent = add (metadata.FirstLineIndent |> Option.defaultValue 0.0) f.FirstLineIndent }
+        let ranges = selectedParagraphRanges doc
+        for (para, rangeStart, rangeEnd) in ranges do
+            let paragraphStyle = styleOf para
+            paragraph para paragraphStyle
+            for run in para.Buffer.Runs do
+                match run with
+                | TB.Text textRun when textRun.Length > 0 && textRun.Start < rangeEnd && textRun.Start + textRun.Length > rangeStart -> character paragraphStyle textRun.Style
+                | _ -> ()
+        if f.Bold = WS.NoValue then
+            match ranges with
+            | (para, rangeStart, _) :: _ -> character (styleOf para) (TB.getStyleAt (if rangeStart > 0 then rangeStart - 1 else 0) para.Buffer)
+            | [] -> ()
+        f
+
+let root = IO.Path.GetFullPath(IO.Path.Combine(__SOURCE_DIRECTORY__, "../.."))
+let formatDocuments =
+    IO.Directory.GetDirectories(IO.Path.Combine(root, "tests"), "test-documents*")
+    |> Array.collect (fun dir -> IO.Directory.GetFiles(dir, "*.docx", IO.SearchOption.AllDirectories))
+    |> Array.sort
+let mutable formatRanges = 0
+for path in formatDocuments do
+    match (try DocxReader.loadBytesNative (IO.File.ReadAllBytes path) with _ -> None) with
+    | None -> ()
+    | Some parsed ->
+        let doc = Rbt.Word.Import.importDoc parsed
+        let paragraphs = (selectedParagraphRanges (selectAll doc)) |> List.map (fun (para, _, _) -> para) |> List.toArray
+        if paragraphs.Length >= 2 then
+            let pick (first: int) (last: int) =
+                let a, b = paragraphs.[first], paragraphs.[last]
+                setSelection { BlockId = a.Id; Offset = 0 } { BlockId = b.Id; Offset = Rbt.Word.TextBuffer.length b.Buffer } doc
+            let n = paragraphs.Length
+            for selected in [ selectAll doc; pick 0 (n / 2); pick (n / 3) (n - 1); pick (n / 2) (min (n - 1) (n / 2 + 20)); pick (n - 1) 0 ] do
+              // (A caret is another matter: what typing would continue with.)
+              if not (selectedParagraphRanges selected).IsEmpty then
+                formatRanges <- formatRanges + 1
+                let got = Rbt.Word.WordStyles.selectionFormat selected
+                let expected = FormatReference.format selected
+                if got <> expected then
+                    fail <- fail + 1
+                    printfn "FAIL selection format of %s: expected %A got %A" (IO.Path.GetFileName path) expected got
+ok "selection format over the test documents" (formatRanges > 250) (sprintf "%d ranges of %d documents" formatRanges formatDocuments.Length)
+pass <- pass + formatRanges
+
 printfn "word import smoke: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

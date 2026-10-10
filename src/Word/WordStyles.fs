@@ -619,7 +619,7 @@ type FormatValue<'T> =
     | Mixed
 
 module FormatValue =
-    let add (value: 'T) (current: FormatValue<'T>) =
+    let inline add (value: 'T) (current: FormatValue<'T>) =
         match current with
         | NoValue -> Uniform value
         | Uniform existing when existing = value -> current
@@ -670,73 +670,172 @@ type SelectionFormat = {
 /// caret, the formatting typing would continue with (the character before
 /// the caret, or the paragraph's own when it is empty) and the caret's
 /// paragraph; with a range, every selected run and every paragraph touched.
+///
+/// (A selection may be the whole of a long document - Ctrl+A - and a host
+/// asks for its format with every change of the selection: each property is
+/// followed on its own until it is "mixed", nothing is resolved for a
+/// paragraph or a run once every property it could change is mixed, a run in
+/// the style of the run before it adds nothing, and the walk ends when
+/// everything is mixed.)
 let selectionFormat (doc: Document) : SelectionFormat =
-    let mutable format: SelectionFormat = {
-        SelectionFormat.Bold = NoValue; Italic = NoValue; Underline = NoValue; Strike = NoValue
-        FontFamily = NoValue; FontSize = NoValue; Color = NoValue; Highlight = NoValue
-        StyleId = NoValue; HeadingLevel = NoValue; Alignment = NoValue
-        ListKind = NoValue; ListLevel = NoValue; IndentLeft = NoValue; IndentRight = NoValue; FirstLineIndent = NoValue
-        ParagraphLineSpacing = NoValue; ParagraphLineSpacingRule = NoValue; ParagraphSpacingBefore = NoValue; ParagraphSpacingAfter = NoValue
-    }
+    let mutable bold = NoValue
+    let mutable italic = NoValue
+    let mutable underline = NoValue
+    let mutable strike = NoValue
+    let mutable fontFamily = NoValue
+    let mutable fontSize = NoValue
+    let mutable color = NoValue
+    let mutable highlight = NoValue
+    let mutable styleId = NoValue
+    let mutable headingLevel = NoValue
+    let mutable alignment = NoValue
+    let mutable listKind = NoValue
+    let mutable listLevel = NoValue
+    let mutable indentLeft = NoValue
+    let mutable indentRight = NoValue
+    let mutable firstLineIndent = NoValue
+    let mutable lineSpacing = NoValue
+    let mutable lineSpacingRule = NoValue
+    let mutable spacingBefore = NoValue
+    let mutable spacingAfter = NoValue
+    let inline isMixed (value: FormatValue<'T>) = (match value with Mixed -> true | _ -> false)
+    let charactersMixed () =
+        isMixed bold && isMixed italic && isMixed underline && isMixed strike
+        && isMixed fontFamily && isMixed fontSize && isMixed color && isMixed highlight
+    let paragraphsMixed () =
+        isMixed styleId && isMixed headingLevel && isMixed alignment && isMixed listKind && isMixed listLevel
+        && isMixed indentLeft && isMixed indentRight && isMixed firstLineIndent
+        && isMixed lineSpacing && isMixed lineSpacingRule && isMixed spacingBefore && isMixed spacingAfter
     match doc.Selection with
-    | None -> format
+    | None -> ()
     | Some selection ->
         let context = styleContext doc
-        // (Asked of the paragraphs of the selection, each found by its place:
-        // not a map of every heading of the document at every call.)
+        // (Asked of the paragraphs of the selection, each found by its place -
+        // or, once a selection turns out to be of many paragraphs, of the
+        // document's headings found in one walk: not a search of the document
+        // per paragraph.)
+        let mutable headings : System.Collections.Generic.Dictionary<string, int> = null
+        let mutable visited = 0
         let headingLevelOf (id: string) =
-            match findBlock doc id with
-            | Some (Heading (level, _)) -> Some level
-            | _ -> None
-        let paragraphStyleOf (para: ParagraphBlock) =
-            match headingLevelOf para.Id with
+            if visited > 16 then
+                if isNull headings then
+                    headings <- System.Collections.Generic.Dictionary<string, int>()
+                    for block in doc.Blocks do
+                        match block with
+                        | Heading (level, para) -> headings.[para.Id] <- level
+                        | _ -> ()
+                match headings.TryGetValue id with
+                | true, level -> Some level
+                | false, _ -> None
+            else
+                match findBlock doc id with
+                | Some (Heading (level, _)) -> Some level
+                | _ -> None
+        // (A style's paragraph format and whether it is one a user sees, looked up once per style.)
+        let styleFormats = System.Collections.Generic.Dictionary<string, ParagraphStyle>()
+        let visibleStyles = System.Collections.Generic.Dictionary<string, bool>()
+        let paragraphStyleFor (level: int option) (para: ParagraphBlock) =
+            match level with
             | Some level -> forBlockInContext context (Heading (level, para))
-            | None -> forBlockInContext context (Paragraph para)
-        let addCharacter (paragraphStyle: ParagraphStyle) (runStyle: TextStyle) =
-            let style = effectiveTextStyleWithResolved context.ResolvedCharacterStyles paragraphStyle runStyle
-            format <-
-                { format with
-                    Bold = FormatValue.add style.Bold format.Bold
-                    Italic = FormatValue.add style.Italic format.Italic
-                    Underline = FormatValue.add style.Underline format.Underline
-                    Strike = FormatValue.add (style.Strike || style.DoubleStrike) format.Strike
-                    FontFamily = FormatValue.add style.FontFamily format.FontFamily
-                    FontSize = FormatValue.add style.FontSize format.FontSize
-                    Color = FormatValue.add style.Color format.Color
-                    Highlight = FormatValue.add style.Highlight format.Highlight }
-        let addParagraph (para: ParagraphBlock) (paragraphStyle: ParagraphStyle) =
-            let metadata: BlockMetadata = effectiveMetadata paragraphStyle para.Metadata
-            let headingLevel =
-                match headingLevelOf para.Id with
-                | Some level -> level
-                | None ->
-                    match paragraphStyle.OutlineLevel with
-                    | Some level when level >= 1 && level <= 9 -> level
-                    | _ -> 0
-            // The style a user sees: an internal entry (the document defaults,
-            // "__docDefaults", which table-cell paragraphs are imported with)
-            // is no style - the paragraph has the default one.
-            let visibleStyle =
-                para.Metadata.Style
-                |> Option.filter (fun styleId ->
+            | None ->
+                match para.Metadata.Style with
+                | None -> context.DefaultParagraphStyle
+                | Some styleId ->
+                    match styleFormats.TryGetValue styleId with
+                    | true, known -> known
+                    | false, _ ->
+                        let found = forBlockInContext context (Paragraph para)
+                        styleFormats.[styleId] <- found
+                        found
+        let isVisibleStyle (styleId: string) =
+            match visibleStyles.TryGetValue styleId with
+            | true, known -> known
+            | false, _ ->
+                let visible =
                     not (isInternalStyleId styleId)
                     && (match Map.tryFind ("paragraph", styleId) context.Styles with
                         | Some style -> style.StyleType <> "defaults"
-                        | None -> true))
-            format <-
-                { format with
-                    ParagraphLineSpacing = FormatValue.add (metadata.LineSpacing |> Option.orElse paragraphStyle.LineSpacing) format.ParagraphLineSpacing
-                    ParagraphLineSpacingRule = FormatValue.add (metadata.LineSpacingRule |> Option.orElse paragraphStyle.LineSpacingRule) format.ParagraphLineSpacingRule
-                    ParagraphSpacingBefore = FormatValue.add (metadata.SpacingBefore |> Option.orElse paragraphStyle.SpacingBefore |> Option.defaultValue 0.0) format.ParagraphSpacingBefore
-                    ParagraphSpacingAfter = FormatValue.add (metadata.SpacingAfter |> Option.orElse paragraphStyle.SpacingAfter |> Option.defaultValue 0.0) format.ParagraphSpacingAfter
-                    StyleId = FormatValue.add visibleStyle format.StyleId
-                    HeadingLevel = FormatValue.add headingLevel format.HeadingLevel
-                    Alignment = FormatValue.add metadata.Alignment format.Alignment
-                    ListKind = FormatValue.add metadata.ListStyle format.ListKind
-                    ListLevel = FormatValue.add (if metadata.ListStyle = NoList then 0 else metadata.ListLevel) format.ListLevel
-                    IndentLeft = FormatValue.add (metadata.IndentLeft |> Option.defaultValue 0.0) format.IndentLeft
-                    IndentRight = FormatValue.add (metadata.IndentRight |> Option.defaultValue 0.0) format.IndentRight
-                    FirstLineIndent = FormatValue.add (metadata.FirstLineIndent |> Option.defaultValue 0.0) format.FirstLineIndent }
+                        | None -> true)
+                visibleStyles.[styleId] <- visible
+                visible
+        let paragraphStyleOf (para: ParagraphBlock) = paragraphStyleFor (headingLevelOf para.Id) para
+        // (The same object, or - in JavaScript, where an optional string is the string - the same text, at once.)
+        let inline sameText (left: string option) (right: string option) = obj.ReferenceEquals(left, right) || left = right
+        let mutable lastParagraphStyle = Unchecked.defaultof<ParagraphStyle>
+        let mutable lastRunStyle = Unchecked.defaultof<TextStyle>
+        let addCharacter (paragraphStyle: ParagraphStyle) (runStyle: TextStyle) =
+            // (What is reported comes from these properties of the run alone.)
+            let asLast =
+                obj.ReferenceEquals(paragraphStyle, lastParagraphStyle)
+                && not (isNull (box lastRunStyle))
+                && (obj.ReferenceEquals(runStyle, lastRunStyle)
+                    || (runStyle.Explicit = lastRunStyle.Explicit
+                        && runStyle.Bold = lastRunStyle.Bold && runStyle.Italic = lastRunStyle.Italic
+                        && runStyle.Underline = lastRunStyle.Underline && runStyle.Strike = lastRunStyle.Strike
+                        && runStyle.DoubleStrike = lastRunStyle.DoubleStrike && runStyle.FontSize = lastRunStyle.FontSize
+                        && sameText runStyle.FontFamily lastRunStyle.FontFamily && sameText runStyle.Color lastRunStyle.Color
+                        && sameText runStyle.Highlight lastRunStyle.Highlight && sameText runStyle.Style lastRunStyle.Style))
+            if not asLast then
+                lastRunStyle <- runStyle
+                lastParagraphStyle <- paragraphStyle
+                // (The run's own style when a character style has a part in it: what
+                // effectiveTextStyleWithResolved resolves. Each property is then worked out as
+                // effectiveTextStyle does, and only while it is not known to be mixed - no
+                // style record is made per run.)
+                let own =
+                    match runStyle.Style with
+                    | None -> runStyle
+                    | Some styleId ->
+                        match Map.tryFind styleId context.ResolvedCharacterStyles |> Option.bind (fun style -> style.Text) with
+                        | Some namedText -> mergeTextStyle namedText runStyle
+                        | None -> runStyle
+                let inherited = paragraphStyle.Text
+                if not (isMixed bold) then bold <- FormatValue.add (inheritToggle ExplicitFormat.Bold inherited.Bold own.Bold own) bold
+                if not (isMixed italic) then italic <- FormatValue.add (inheritToggle ExplicitFormat.Italic inherited.Italic own.Italic own) italic
+                if not (isMixed underline) then underline <- FormatValue.add (inheritToggle ExplicitFormat.Underline inherited.Underline own.Underline own) underline
+                if not (isMixed strike) then
+                    strike <-
+                        FormatValue.add
+                            (inheritToggle ExplicitFormat.Strike inherited.Strike own.Strike own
+                             || inheritToggle ExplicitFormat.DoubleStrike inherited.DoubleStrike own.DoubleStrike own)
+                            strike
+                if not (isMixed fontFamily) then fontFamily <- FormatValue.add (inheritFontFamily inherited own) fontFamily
+                if not (isMixed fontSize) then fontSize <- FormatValue.add (inheritFontSize inherited.FontSize own) fontSize
+                if not (isMixed color) then
+                    color <- FormatValue.add (if ExplicitFormat.has ExplicitFormat.ColorAuto own then own.Color else own.Color |> Option.orElse inherited.Color) color
+                if not (isMixed highlight) then highlight <- FormatValue.add (own.Highlight |> Option.orElse inherited.Highlight) highlight
+        let addParagraph (level: int option) (para: ParagraphBlock) (paragraphStyle: ParagraphStyle) =
+            let own = para.Metadata
+            // (What effectiveMetadata gives for the properties reported here.)
+            if not (isMixed alignment) then
+                let effective =
+                    if own.ExplicitAlignment || own.Alignment <> Left then own.Alignment
+                    else paragraphStyle.Alignment |> Option.defaultValue own.Alignment
+                alignment <- FormatValue.add effective alignment
+            if not (isMixed headingLevel) then
+                let value =
+                    match level with
+                    | Some level -> level
+                    | None ->
+                        match paragraphStyle.OutlineLevel with
+                        | Some level when level >= 1 && level <= 9 -> level
+                        | _ -> 0
+                headingLevel <- FormatValue.add value headingLevel
+            if not (isMixed styleId) then
+                // The style a user sees: an internal entry (the document defaults,
+                // "__docDefaults", which table-cell paragraphs are imported with)
+                // is no style - the paragraph has the default one.
+                let visibleStyle = own.Style |> Option.filter isVisibleStyle
+                styleId <- FormatValue.add visibleStyle styleId
+            if not (isMixed lineSpacing) then lineSpacing <- FormatValue.add (own.LineSpacing |> Option.orElse paragraphStyle.LineSpacing) lineSpacing
+            if not (isMixed lineSpacingRule) then lineSpacingRule <- FormatValue.add (own.LineSpacingRule |> Option.orElse paragraphStyle.LineSpacingRule) lineSpacingRule
+            if not (isMixed spacingBefore) then spacingBefore <- FormatValue.add (own.SpacingBefore |> Option.orElse paragraphStyle.SpacingBefore |> Option.defaultValue 0.0) spacingBefore
+            if not (isMixed spacingAfter) then spacingAfter <- FormatValue.add (own.SpacingAfter |> Option.orElse paragraphStyle.SpacingAfter |> Option.defaultValue 0.0) spacingAfter
+            if not (isMixed listKind) then listKind <- FormatValue.add own.ListStyle listKind
+            if not (isMixed listLevel) then listLevel <- FormatValue.add (if own.ListStyle = NoList then 0 else own.ListLevel) listLevel
+            if not (isMixed indentLeft) then indentLeft <- FormatValue.add (own.IndentLeft |> Option.orElse paragraphStyle.IndentLeft |> Option.defaultValue 0.0) indentLeft
+            if not (isMixed indentRight) then indentRight <- FormatValue.add (own.IndentRight |> Option.orElse paragraphStyle.IndentRight |> Option.defaultValue 0.0) indentRight
+            if not (isMixed firstLineIndent) then firstLineIndent <- FormatValue.add (own.FirstLineIndent |> Option.orElse paragraphStyle.FirstLineIndent |> Option.defaultValue 0.0) firstLineIndent
         let caretStyle (para: ParagraphBlock) offset =
             // What typing here continues with: the character before the caret.
             TextBuffer.getStyleAt (if offset > 0 then offset - 1 else 0) para.Buffer
@@ -744,25 +843,41 @@ let selectionFormat (doc: Document) : SelectionFormat =
             match findParagraph doc blockId with
             | None -> ()
             | Some para ->
-                let paragraphStyle = paragraphStyleOf para
-                addParagraph para paragraphStyle
+                let level = headingLevelOf para.Id
+                let paragraphStyle = paragraphStyleFor level para
+                addParagraph level para paragraphStyle
                 addCharacter paragraphStyle (caretStyle para offset)
         if selection.IsCollapsed then
             addCaret selection.Focus.BlockId selection.Focus.Offset
         else
-            let ranges = selectedParagraphRanges doc
-            for (para, rangeStart, rangeEnd) in ranges do
-                let paragraphStyle = paragraphStyleOf para
-                addParagraph para paragraphStyle
-                for run in para.Buffer.Runs do
-                    match run with
-                    | Text textRun when textRun.Length > 0 && textRun.Start < rangeEnd && textRun.Start + textRun.Length > rangeStart ->
-                        addCharacter paragraphStyle textRun.Style
-                    | _ -> ()
+            let mutable charactersDone = false
+            let mutable paragraphsDone = false
+            let mutable first : (ParagraphBlock * int) option = None
+            forEachSelectedParagraphRange doc (fun para rangeStart rangeEnd ->
+                visited <- visited + 1
+                if first.IsNone then first <- Some (para, rangeStart)
+                let level = headingLevelOf para.Id
+                let paragraphStyle = paragraphStyleFor level para
+                if not paragraphsDone then
+                    addParagraph level para paragraphStyle
+                    paragraphsDone <- paragraphsMixed ()
+                if not charactersDone then
+                    for run in para.Buffer.Runs do
+                        match run with
+                        | Text textRun when textRun.Length > 0 && textRun.Start < rangeEnd && textRun.Start + textRun.Length > rangeStart ->
+                            addCharacter paragraphStyle textRun.Style
+                        | _ -> ()
+                    charactersDone <- charactersMixed ()
+                not (charactersDone && paragraphsDone))
+            |> ignore
             // A range with no text in it (only a picture, or only paragraph marks).
-            if format.Bold = NoValue then
-                match ranges with
-                | (para, rangeStart, _) :: _ -> addCharacter (paragraphStyleOf para) (caretStyle para rangeStart)
-                | [] -> ()
-            if format.StyleId = NoValue then addCaret selection.Focus.BlockId selection.Focus.Offset
-        format
+            if bold = NoValue then
+                match first with
+                | Some (para, rangeStart) -> addCharacter (paragraphStyleOf para) (caretStyle para rangeStart)
+                | None -> ()
+            if styleId = NoValue then addCaret selection.Focus.BlockId selection.Focus.Offset
+    { SelectionFormat.Bold = bold; Italic = italic; Underline = underline; Strike = strike
+      FontFamily = fontFamily; FontSize = fontSize; Color = color; Highlight = highlight
+      StyleId = styleId; HeadingLevel = headingLevel; Alignment = alignment
+      ListKind = listKind; ListLevel = listLevel; IndentLeft = indentLeft; IndentRight = indentRight; FirstLineIndent = firstLineIndent
+      ParagraphLineSpacing = lineSpacing; ParagraphLineSpacingRule = lineSpacingRule; ParagraphSpacingBefore = spacingBefore; ParagraphSpacingAfter = spacingAfter }

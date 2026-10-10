@@ -2111,6 +2111,22 @@ check "format: empty paragraph reports its own formatting" (emptyCaret.Bold, emp
 check "format: no selection" (WS.selectionFormat { formatDoc with Selection = None }).Bold WS.NoValue
 check "format: toggling bold over a mixed range makes it bold" (WS.selectionFormat (WS.toggleBold (Doc.setSelection { BlockId = "f1"; Offset = 2 } { BlockId = "f1"; Offset = 13 } formatDoc))).Bold (WS.Uniform true)
 check "selected paragraph ranges" (Doc.selectedParagraphRanges (Doc.setSelection { BlockId = "f3"; Offset = 2 } { BlockId = "f1"; Offset = 4 } formatDoc) |> List.map (fun (para, s, e) -> para.Id, s, e)) [ "f1", 4, 14; "f2", 0, 7; "f3", 0, 2 ]
+// A selection of many paragraphs (Ctrl+A in a long document): the headings are found in one walk, a
+// property is followed until it is mixed, and what stays the same all the way down is still reported.
+let longFormatDoc =
+    let body index : Doc.Block =
+        if index = 30 then Doc.Heading (2, { Id = "h30"; Buffer = ofString "heading"; Metadata = Doc.defaultMetadata })
+        elif index = 45 then Doc.Paragraph { Id = "p45"; Buffer = { Rope = Rbt.Word.Rope.ofString "red"; Runs = [ Text { Start = 0; Length = 3; Style = { defaultStyle with Color = Some "#FF0000" } } ] }; Metadata = { Doc.defaultMetadata with IndentLeft = Some 24.0 } }
+        else Doc.Paragraph { Id = sprintf "p%d" index; Buffer = ofString "text"; Metadata = Doc.defaultMetadata }
+    { Doc.empty with Blocks = List.init 60 body }
+let longFormat first last = WS.selectionFormat (Doc.setSelection { BlockId = sprintf "p%d" first; Offset = 0 } { BlockId = sprintf "p%d" last; Offset = 4 } longFormatDoc)
+let plainStretch = longFormat 0 29
+check "format: many plain paragraphs" (plainStretch.Bold, plainStretch.HeadingLevel, plainStretch.Color, plainStretch.IndentLeft, plainStretch.FontSize) (WS.Uniform false, WS.Uniform 0, WS.Uniform None, WS.Uniform 0.0, WS.Uniform 11.0)
+let pastHeading = longFormat 0 40
+check "format: many paragraphs, a heading among them" (pastHeading.Bold, pastHeading.HeadingLevel, pastHeading.FontSize, pastHeading.Color, pastHeading.IndentLeft, pastHeading.Italic) (WS.Mixed, WS.Mixed, WS.Mixed, WS.Uniform None, WS.Uniform 0.0, WS.Uniform false)
+let wholeLong = longFormat 0 59
+check "format: the whole of a long document" (wholeLong.Bold, wholeLong.HeadingLevel, wholeLong.Color, wholeLong.IndentLeft, wholeLong.Italic, wholeLong.Alignment, wholeLong.ListKind) (WS.Mixed, WS.Mixed, WS.Mixed, WS.Mixed, WS.Uniform false, WS.Uniform Doc.Left, WS.Uniform Doc.NoList)
+check "format: a heading alone in a long document" (let f = WS.selectionFormat (Doc.setSelection { BlockId = "h30"; Offset = 0 } { BlockId = "h30"; Offset = 7 } longFormatDoc) in f.Bold, f.HeadingLevel) (WS.Uniform true, WS.Uniform 2)
 
 // Text typed just before a run that begins with the mark of a page break as it
 // was rendered (w:lastRenderedPageBreak): the mark stays before the text - the

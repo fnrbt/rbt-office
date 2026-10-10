@@ -1016,10 +1016,28 @@ let locateBlock (doc: Document) (blockId: string) : struct (int * Block) voption
             rest <- rest.Tail
             index <- index + 1
     if result.IsNone then
+        // (The blocks themselves first: the cells of every table before a
+        // paragraph of the body are not gone through to find it.)
         let mutable rest = doc.Blocks
         let mutable index = 0
         while result.IsNone && not rest.IsEmpty do
-            if blockHolds blockId rest.Head then result <- ValueSome (struct (index, rest.Head))
+            let isBlock =
+                match rest.Head with
+                | Paragraph p
+                | Heading (_, p) -> p.Id = blockId
+                | Table t -> t.Id = blockId
+                | TextBox t -> t.Id = blockId
+            if isBlock then result <- ValueSome (struct (index, rest.Head))
+            rest <- rest.Tail
+            index <- index + 1
+    if result.IsNone then
+        let mutable rest = doc.Blocks
+        let mutable index = 0
+        while result.IsNone && not rest.IsEmpty do
+            (match rest.Head with
+             | Table _
+             | TextBox _ -> if blockHolds blockId rest.Head then result <- ValueSome (struct (index, rest.Head))
+             | _ -> ())
             rest <- rest.Tail
             index <- index + 1
     match result with
@@ -1605,27 +1623,57 @@ let getNormalizedRange (sel: Selection) (doc: Document) =
 
 /// The paragraphs a non-collapsed selection touches, in document order, each
 /// with the selected range [start, end) inside it. One pass over the document.
-let selectedParagraphRanges (doc: Document) : (ParagraphBlock * int * int) list =
+/// Call `visit paragraph rangeStart rangeEnd` for each paragraph the selection
+/// touches, in document order, until it answers false. False when there is
+/// no range selected (no selection, a caret, an end that is not in the document).
+let forEachSelectedParagraphRange (doc: Document) (visit: ParagraphBlock -> int -> int -> bool) : bool =
     match doc.Selection with
-    | None -> []
-    | Some sel when sel.IsCollapsed -> []
+    | None -> false
+    | Some sel when sel.IsCollapsed -> false
     | Some sel ->
-        let paragraphs = editableParagraphsInOrder doc
-        let anchorIdx = paragraphs |> List.tryFindIndex (fun p -> p.Id = sel.Anchor.BlockId)
-        let focusIdx = paragraphs |> List.tryFindIndex (fun p -> p.Id = sel.Focus.BlockId)
-        match anchorIdx, focusIdx with
-        | Some aIdx, Some fIdx ->
-            let startIdx, startOffset, endIdx, endOffset =
-                if aIdx < fIdx || (aIdx = fIdx && sel.Anchor.Offset <= sel.Focus.Offset) then aIdx, sel.Anchor.Offset, fIdx, sel.Focus.Offset
-                else fIdx, sel.Focus.Offset, aIdx, sel.Anchor.Offset
-            paragraphs
-            |> List.skip startIdx
-            |> List.truncate (endIdx - startIdx + 1)
-            |> List.mapi (fun i para ->
-                let index = startIdx + i
-                let length = TextBuffer.length para.Buffer
-                para, (if index = startIdx then startOffset else 0), (if index = endIdx then endOffset else length))
-        | _ -> []
+        // (One walk over the paragraphs, from the first end of the selection
+        // to the other: the selection may be the whole of a long document.)
+        let anchorId = sel.Anchor.BlockId
+        let focusId = sel.Focus.BlockId
+        // Both ends are in the document: the walk below may stop early.
+        if (findParagraph doc anchorId).IsNone || (findParagraph doc focusId).IsNone then false
+        else
+            // 0: before the selection, 1: in it, 2: past it (or told to stop).
+            let mutable state = 0
+            let mutable endOffset = 0
+            let step (para: ParagraphBlock) =
+                if state = 0 then
+                    let isAnchor = para.Id = anchorId
+                    let isFocus = para.Id = focusId
+                    if isAnchor && isFocus then
+                        visit para (min sel.Anchor.Offset sel.Focus.Offset) (max sel.Anchor.Offset sel.Focus.Offset) |> ignore
+                        state <- 2
+                    elif isAnchor || isFocus then
+                        endOffset <- (if isAnchor then sel.Focus.Offset else sel.Anchor.Offset)
+                        state <- (if visit para (if isAnchor then sel.Anchor.Offset else sel.Focus.Offset) (TextBuffer.length para.Buffer) then 1 else 2)
+                elif state = 1 then
+                    if para.Id = anchorId || para.Id = focusId then
+                        visit para 0 endOffset |> ignore
+                        state <- 2
+                    elif not (visit para 0 (TextBuffer.length para.Buffer)) then state <- 2
+            let mutable rest = doc.Blocks
+            while state < 2 && not rest.IsEmpty do
+                (match rest.Head with
+                 | Paragraph p
+                 | Heading (_, p) -> step p
+                 | Table t -> for p in tableParagraphsInOrder t do (if state < 2 then step p)
+                 | TextBox t -> for p in t.Content do (if state < 2 then step p))
+                rest <- rest.Tail
+            true
+
+let selectedParagraphRanges (doc: Document) : (ParagraphBlock * int * int) list =
+    let found = ResizeArray<ParagraphBlock * int * int>()
+    if forEachSelectedParagraphRange doc (fun para rangeStart rangeEnd -> found.Add ((para, rangeStart, rangeEnd)); true) then
+        let mutable ranges = []
+        for i = found.Count - 1 downto 0 do
+            ranges <- found.[i] :: ranges
+        ranges
+    else []
 
 /// Edit the list of paragraphs a paragraph is in when that is a table cell's
 /// (of a table in a cell too) or a text box's. `edit` gets the list and, for

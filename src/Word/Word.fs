@@ -315,6 +315,9 @@ module API =
         | Some text -> box text
         | None -> null
 
+    /// The selection format last worked out, and the document it is of.
+    let mutable private lastSelectionFormat : (Doc.Document * WordStyles.SelectionFormat) option = None
+
     /// The formatting of the current selection, for toolbar state. Each value
     /// is the effective one (styles resolved), "mixed" when the selection
     /// holds different values, or null when there is nothing to report.
@@ -335,7 +338,15 @@ module API =
     ///     SpaceBefore, SpaceAfter (points, what setSpacingBefore / setSpacingAfter take) }
     ///   HasSelection, IsCollapsed, CanUndo, CanRedo: boolean
     let getSelectionFormat (editor: Editor) =
-        let format = WordStyles.selectionFormat editor.Doc
+        // (Kept for the document it was read off - content and selection: a host
+        // with several listeners asks more than once after a change.)
+        let format =
+            match lastSelectionFormat with
+            | Some (doc, format) when obj.ReferenceEquals(doc, editor.Doc) -> format
+            | _ ->
+                let format = WordStyles.selectionFormat editor.Doc
+                lastSelectionFormat <- Some (editor.Doc, format)
+                format
         let boolean = formatValueToJs (fun (value: bool) -> box value)
         let number = formatValueToJs (fun (value: float) -> box value)
         let text = formatValueToJs optionalStringToJs

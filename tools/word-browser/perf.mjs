@@ -10,6 +10,7 @@
 //
 // Usage:
 //   node tools/word-browser/perf.mjs --dist $DIST [--repeat N] [--keys N] [--profile keys] [--callers FUNCTION] [--painter] [--measure-cost MICROSECONDS]
+// --profile select: the time under each function while everything is selected and the host's queries are answered;
 // --profile keys prints the functions with the most self time while typing, and the time under each
 // function (--profile enter: the time under each function while Enter and Backspace alternate;
 // --profile load: where opening the document spends its time); --callers FUNCTION adds the time under that function by its chain of callers.
@@ -208,11 +209,17 @@ try {
         selectAll(top) {
             const before = Word.getSelection(editor);
             let t0 = performance.now(); Word.selectAll(editor); const select = performance.now() - t0;
+            // What a host reads after the change: the selection's format and the caret's context (asked twice, as a host with two listeners does).
+            const asked = [];
+            for (let i = 0; i < 3; i++) { const t = performance.now(); Word.getSelectionFormat(editor); const m = performance.now(); Word.getCaretContext(editor); asked.push(m - t, performance.now() - m); }
+            // (And once more, the caret placed in between: the first time includes what the engine's code costs when it first runs.)
+            Word.setSelection(editor, before.FocusBlockId, before.FocusOffset, before.FocusBlockId, before.FocusOffset); Word.selectAll(editor);
+            { const t = performance.now(); Word.getSelectionFormat(editor); asked.push(performance.now() - t); }
             const times = [];
             for (let i = 0; i < 30; i++) { const t = performance.now(); Word.setViewport(editor, { scale: 1, devicePixelRatio: 1, scrollTop: top + i * 400, scrollLeft: 0, width: 1000, height: 800 }); times.push(performance.now() - t); }
             t0 = performance.now(); Word.setSelection(editor, before.FocusBlockId, before.FocusOffset, before.FocusBlockId, before.FocusOffset); const collapse = performance.now() - t0;
             Word.setViewport(editor, { scale: 1, devicePixelRatio: 1, scrollTop: top, scrollLeft: 0, width: 1000, height: 800 });
-            return { select, scroll: stats(times), collapse };
+            return { select, asked, scroll: stats(times), collapse };
         },
         // What the host reads after every change, and vertical caret moves.
         queries(count) {
@@ -375,8 +382,31 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
         console.log(`  ArrowDown:  ${line(vertical.times[0])}; ArrowUp: ${line(vertical.times[1])}`);
         const asked = await tab.evaluate(() => window.perf.queries(40));
         console.log(`  getCaretContext:  ${line(asked.context)}; getSelectionFormat: ${line(asked.format)}`);
+        if (profile === 'select') { await cdp.send('Profiler.enable'); await cdp.send('Profiler.setSamplingInterval', { interval: 100 }); await cdp.send('Profiler.start'); }
         const all = await tab.evaluate((top) => window.perf.selectAll(top), loaded.top);
-        console.log(`  select all:  ${ms(all.select)}; a scroll frame (400 px) with everything selected: ${line(all.scroll)}; the caret placed again ${ms(all.collapse)}`);
+        if (profile === 'select') {
+            // Where selecting everything and the queries after it spend their time (time under each function).
+            const { profile: cpu } = await cdp.send('Profiler.stop');
+            const interval = cpu.timeDeltas.reduce((a, b) => a + b, 0) / Math.max(1, cpu.samples.length) / 1000;
+            const byId = new Map(cpu.nodes.map((node) => [node.id, node]));
+            const selfById = new Map();
+            for (const id of cpu.samples) selfById.set(id, (selfById.get(id) ?? 0) + interval);
+            const keyOf = (frame) => `${frame.functionName || '(anonymous)'}  ${frame.url.split('/').slice(-2).join('/')}:${frame.lineNumber + 1}`;
+            const total = new Map();
+            const walk = (node, open) => {
+                const key = keyOf(node.callFrame);
+                let sum = selfById.get(node.id) ?? 0;
+                const inside = open.has(key);
+                if (!inside) open.add(key);
+                for (const child of node.children ?? []) sum += walk(byId.get(child), open);
+                if (!inside) { open.delete(key); total.set(key, (total.get(key) ?? 0) + sum); }
+                return sum;
+            };
+            walk(cpu.nodes[0], new Set());
+            console.log('  -- select all and the queries after it: time under a function --');
+            for (const [key, time] of [...total.entries()].filter(([key]) => /word\//.test(key)).sort((a, b) => b[1] - a[1]).slice(0, 40)) console.log(`  ${time.toFixed(1).padStart(7)} ms  ${key}`);
+        }
+        console.log(`  select all:  ${ms(all.select)}; getSelectionFormat / getCaretContext with everything selected (asked three times): ${all.asked.slice(0, 6).map(ms).join(', ')}; getSelectionFormat after selecting everything a second time ${ms(all.asked[6])}; a scroll frame (400 px) with everything selected: ${line(all.scroll)}; the caret placed again ${ms(all.collapse)}`);
         const viewed = await tab.evaluate(() => window.perf.viewer(40));
         console.log(`  the viewer: package read ${(viewed.read / 1000).toFixed(2)} s, load and page frames ${(viewed.laidOut / 1000).toFixed(2)} s (${viewed.pages} pages), the first renderPage ${ms(viewed.first)}, the next 40: ${line(viewed.later)}`
             + (viewed.firstStats ? `; commands collected for the first page: ${viewed.firstStats.CollectedOnPaint} paragraphs of ${viewed.firstStats.Blocks} blocks, after 41 pages ${viewed.lastStats.CollectedOnPaint}` : ''));
