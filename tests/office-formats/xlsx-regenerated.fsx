@@ -328,6 +328,10 @@ for dir in [ "real-world"; "test-documents-excel" ] do
                                 let saved = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
                                 let xml = text (partsOf saved).[path]
                                 let names, places = placesOf xml
+                                // The sheet's protection is the file's whatever was changed.
+                                let fileXml = text (partsOf (File.ReadAllBytes file)).[path]
+                                if element "sheetProtection" fileXml <> "" then
+                                    ok (label + ": the sheet's protection is the file's") (element "sheetProtection" xml = element "sheetProtection" fileXml) (element "sheetProtection" xml)
                                 ok (label + ": the part's elements are in the schema's order") (not fileInOrder || (places |> List.forall (fun place -> place >= 0) && places = List.sort places)) (String.concat " " names)
                                 let again = M.resolveSheet (Bridge.Import.importWorkbook (XlsxReader.loadBytesNative saved |> Option.get)).Sheets.[target].Model
                                 let now, wanted = formulas again, formulas edited

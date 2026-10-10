@@ -705,10 +705,11 @@ for label, pad in bothPaths do
     let wb1904 = loadOne pad "<workbookPr date1904=\"1\"/>" dateBody [ "xl/styles.xml", dateStyles ]
     let wb1900 = loadOne pad "<workbookPr/>" dateBody [ "xl/styles.xml", dateStyles ]
     let v wb ref = cellOf wb ref |> Option.map (fun c -> c.Value)
-    ok (sprintf "date1904-shifted-%s" label)
+    // (The serials of a 1904 workbook are the file's - date-formatted or not: `Date1904` says what they mean.)
+    ok (sprintf "date1904-serials-kept-%s" label)
        (wb1904.Date1904
-        && v wb1904 "A1" = Some (XlsxReader.Number 43462.0)
-        && v wb1904 "D1" = Some (XlsxReader.Number 43463.0)
+        && v wb1904 "A1" = Some (XlsxReader.Number 42000.0)
+        && v wb1904 "D1" = Some (XlsxReader.Number 42001.0)
         && v wb1904 "B1" = Some (XlsxReader.Number 42000.0)
         && v wb1904 "C1" = Some (XlsxReader.Number 42000.0))
        (sprintf "%A %A %A %A" (v wb1904 "A1") (v wb1904 "B1") (v wb1904 "C1") (v wb1904 "D1"))

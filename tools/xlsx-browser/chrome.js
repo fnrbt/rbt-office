@@ -592,6 +592,46 @@ checks['export-edited-sheet-keeps-part'] = async () => {
     return lines;
 };
 
+// A workbook in the 1904 date system stays in it: GetDateSystem, the file's serials, typed dates, the texts
+// of dates, and the save - beside a grid with a workbook in the 1900 system on the same page.
+checks['date-system-1904'] = async () => {
+    const { lines, check } = makeLog();
+    const { bytesOf } = await import('/component.js');
+    const { grid, close } = mountGrid();
+    const { grid: other, close: closeOther } = mountGrid();
+    try {
+        check('a new workbook is in the 1900 system', grid.GetDateSystem(), 1900);
+        const original = await bytesOf('tests/test-documents-excel/pandas-times_1904.xlsx');
+        await grid.ImportXlsx(original.slice());
+        await other.ImportXlsx((await bytesOf('tests/real-world/milk-street-office.xlsx')).slice());
+        check('the date systems of the two workbooks', [grid.GetDateSystem(), other.GetDateSystem()], [1904, 1900]);
+        check('a time of the 1904 file is the file\'s number', Math.abs(grid.GetCell(1, 0).value - 0.043090277777777776) < 1e-12, true);
+        check('... shown as the time', grid.GetCell(1, 0).text, '01:02:03.000');
+        grid.SetCell(20, 2, '2018-12-28');
+        other.SwitchSheet(0);
+        const free = 9;         // (N10 and N11: nothing there.)
+        other.SetCell(free, 13, '2018-12-28');
+        check('a date typed into each: the serial of its workbook\'s system', [grid.GetCell(20, 2).value, other.GetCell(free, 13).value], [42000, 43462]);
+        check('... and both show the date', [/2018/.test(grid.GetCell(20, 2).text), /2018/.test(other.GetCell(free, 13).text), grid.GetCell(20, 2).text], [true, true, other.GetCell(free, 13).text]);
+        grid.SetCell(21, 2, '=YEAR(C21)*100+MONTH(C21)');
+        other.SetCell(free + 1, 13, `=YEAR(N${free + 1})*100+MONTH(N${free + 1})`);
+        check('the date functions read the serial in the workbook\'s system', [grid.GetCell(21, 2).value, other.GetCell(free + 1, 13).value], [201812, 201812]);
+        grid.SetCell(22, 2, '=DATE(1904,1,2)');
+        check('DATE gives the workbook\'s serial', grid.GetCell(22, 2).value, 1);
+        const bytes = await grid.ExportXlsx();
+        const zip = await window.JSZip.loadAsync(bytes);
+        check('saved: the workbook says date1904', /<workbookPr\b[^>]*\sdate1904="(1|true)"/.test(await zip.files['xl/workbook.xml'].async('string')), true);
+        const sheet = await zip.files['xl/worksheets/sheet1.xml'].async('string');
+        check('saved: the typed serial, and the file\'s numbers as they were', [/<c r="C21"[^>]*><v>42000<\/v><\/c>/.test(sheet), sheet.includes('<c r="A2" s="1"><v>4.3090277777777776E-2</v></c>')], [true, true]);
+        const otherBytes = await other.ExportXlsx();
+        check('the 1900 workbook saved: no date1904', /date1904="(1|true)"/.test(await (await window.JSZip.loadAsync(otherBytes)).files['xl/workbook.xml'].async('string')), false);
+        await other.ImportXlsx(bytes);
+        check('read again: the system, the serial and the date', [other.GetDateSystem(), other.GetCell(20, 2).value, /2018/.test(other.GetCell(20, 2).text), other.GetCell(21, 2).value], [1904, 42000, true, 201812]);
+    } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
+    finally { close(); closeOther(); }
+    return lines;
+};
+
 // Spill ranges for hosts: GetCell(...).spill, GetSpillRange, and the outline around the active cell's array.
 checks['chrome-spill'] = async () => {
     const { lines, check } = makeLog();

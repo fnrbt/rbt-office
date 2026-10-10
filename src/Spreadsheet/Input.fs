@@ -192,10 +192,10 @@ let private daysFromCivil (year: int) (month: int) (day: int) : int =
 
 /// The Excel serial of a date (days since 1899-12-30, the engine's epoch).
 let dateSerial (year: int) (month: int) (day: int) : float =
-    float (daysFromCivil year month day - daysFromCivil 1899 12 30)
+    float (daysFromCivil year month day - daysFromCivil 1899 12 30) - dateSystemDays ()
 
 let private trySerial (year: int) (month: int) (day: int) : float option =
-    if year < 1900 || year > 9999 || month < 1 || month > 12 || day < 1 || day > daysInMonth year month then None
+    if year < (if date1904 then 1904 else 1900) || year > 9999 || month < 1 || month > 12 || day < 1 || day > daysInMonth year month then None
     else Some (dateSerial year month day)
 
 /// A year as typed: four digits as they are, two digits by Excel's window

@@ -1700,6 +1700,18 @@ let roundHalfAway (x: float) : float =
 /// not shift across DST changes under Fable, where other DateTimes are local.
 let excelEpoch = DateTime(1899, 12, 30, 0, 0, 0, DateTimeKind.Utc)
 
+/// The date system of the workbook at work: true for the 1904 system, where
+/// serial 0 is 1904-01-01 (a file's `workbookPr date1904`), false for the
+/// 1900 system. Serials are kept as the workbook has them; what turns a
+/// serial into a date or a date into a serial - number formats, the date
+/// functions, typed dates - reads this. It is the system of the workbook
+/// that was last imported (`XlsxBridge.Import`) or last at work in a grid
+/// (a grid sets it before it draws, recalculates or takes an entry).
+let mutable date1904 = false
+
+/// The days from a serial of the workbook at work to the 1900 system's.
+let dateSystemDays () : float = if date1904 then 1462.0 else 0.0
+
 /// Format a number according to format code
 let formatNumber (format: string option) (value: float): string =
     match format with
@@ -1711,7 +1723,7 @@ let formatNumber (format: string option) (value: float): string =
         sprintf "%s%%" (NumberText.numberToString "N2" (value * 100.0))
     | Some "date" ->
         try
-            let date = excelEpoch.AddDays(value)
+            let date = excelEpoch.AddDays(value + dateSystemDays ())
             sprintf "%02d/%02d/%04d" date.Month date.Day date.Year
         with
         | _ -> NumberText.numberToString "F2" value

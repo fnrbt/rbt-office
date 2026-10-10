@@ -623,6 +623,11 @@ type Spreadsheet(container: Element) =
     /// The outline of the active cell's dynamic array, one node per pane (made when first needed).
     let spillOutlines : Element array = Array.zeroCreate 4
     let mutable workbook: Workbook option = None  // Optional workbook for table references
+    /// The workbook is in the 1904 date system (the file it was opened from says so).
+    let mutable workbookDate1904 = false
+    /// This grid's workbook is the one at work: dates are made of serials in its date system
+    /// (`Model.date1904`; several grids on a page may hold workbooks in different systems).
+    let useDateSystem () = if Rbt.Spreadsheet.Model.date1904 <> workbookDate1904 then Rbt.Spreadsheet.Model.date1904 <- workbookDate1904
     /// The XLSX file the current workbook was imported from, for ExportXlsx:
     /// what the editor does not model is carried over from it.
     let mutable xlsxSource: Rbt.Spreadsheet.XlsxBridge.XlsxSource option = None
@@ -903,6 +908,7 @@ type Spreadsheet(container: Element) =
         | _ -> sprintf "sheet%d" (index + 1)
 
     let currentWorkbookSnapshot () =
+        useDateSystem ()
         let sheetEntries =
             [ for i in 0 .. sheets.Length - 1 do
                 let sheetId = sheetIdForIndex i
@@ -1780,6 +1786,7 @@ type Spreadsheet(container: Element) =
     let tableEntryHook : (CellAddress * CellData option -> bool) ref = ref (fun _ -> false)
 
     let commitInput (addr: CellAddress) (text: string) (validate: bool) (undoable: bool) : bool =
+        useDateSystem ()
         // (A chart sheet has no cells: nothing typed into it could be saved.)
         if sheetLocked then false else
         let oldCellData = getCell addr model
@@ -3682,6 +3689,7 @@ type Spreadsheet(container: Element) =
     /// did not change are left alone; nodes of cells that left the view are
     /// reused for the ones that came in.
     and render () =
+        useDateSystem ()
         match contentElement, layers with
         | Some content, Some layer ->
             if not model.ConditionalFormats.IsEmpty then refreshRuleWorkbook()
@@ -6675,6 +6683,9 @@ type Spreadsheet(container: Element) =
     member _.InstallWorkbook(newSheets: SpreadsheetModel array, names: string array, activeIndex: int, context: Workbook option) =
         if newSheets.Length = 0 then () else
         importedPackage <- None
+        // (A workbook that is not a file's is in the 1900 date system; InstallImportedWorkbook says otherwise.)
+        workbookDate1904 <- false
+        useDateSystem ()
         invalidateCalcEngine()
         invalidCircles.Clear()
         // The file the previous workbook came from stays the source as long as
@@ -6806,7 +6817,12 @@ type Spreadsheet(container: Element) =
             if activeIndex >= 0 && activeIndex < models.Length then activeIndex
             else imported.Sheets |> Array.tryFindIndex (fun sheet -> sheet.Visible) |> Option.defaultValue 0
         this.InstallWorkbook(models, names, active, Some imported.Context)
-        if models.Length > 0 then xlsxSource <- Some imported.Source
+        if models.Length > 0 then
+            xlsxSource <- Some imported.Source
+            if workbookDate1904 <> imported.Date1904 then
+                workbookDate1904 <- imported.Date1904
+                useDateSystem ()
+                render ()
         // (What kind of sheet is on display is the file's to say.)
         let wasLocked = sheetLocked
         refreshSheetLock ()
@@ -7291,6 +7307,7 @@ type Spreadsheet(container: Element) =
     ///          (for its formula cell and for the cells it filled; see GetSpillRange) }.
     /// Throws when row / col are not whole numbers inside the sheet.
     member _.GetCell(row: obj, col: obj) : obj =
+        useDateSystem ()
         let addr = { Row = Host.rowArg "GetCell" model row; Col = Host.colArg "GetCell" model col }
         Host.cellToObj model addr (cellText (getCell addr model))
 
@@ -9296,6 +9313,14 @@ type Spreadsheet(container: Element) =
                  | None -> sprintf "the workbook has no name \"%s\" (a sheet-level name needs its sheet index)" name)
         | Some _ ->
             if changeDefinedName "Delete name" scope name (fun current -> Rbt.Spreadsheet.Workbook.deleteDefinedName scope name current |> Option.defaultValue current) then render()
+
+    /// The workbook's date system: 1900, or 1904 for a workbook opened from a
+    /// file that says `date1904` (serial 0 is then 1904-01-01). The serials in
+    /// the cells are the file's; number formats, the date functions and typed
+    /// dates work in this system, and a save keeps it.
+    member _.GetDateSystem() : int =
+        useDateSystem ()
+        if workbookDate1904 then 1904 else 1900
 
     /// How the workbook calculates circular references: { enabled,
     /// maxIterations, maxChange } - Excel's "Enable iterative calculation"

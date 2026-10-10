@@ -1077,6 +1077,9 @@ type WorkbookPreservation = {
     /// Iterative calculation of circular references (`<calcPr iterate="1">`):
     /// most iterations and the largest change that ends them. None: off.
     CalcIteration: (int * float) option
+    /// The workbook is in the 1904 date system (`workbookPr date1904`): a
+    /// workbook part made anew says so.
+    Date1904: bool
     /// The sheet that was on display when the file was saved (`<workbookView
     /// activeTab>`, an index into the workbook's sheets).
     ActiveTab: int
@@ -1116,7 +1119,7 @@ type WorkbookPreservation = {
 let emptyWorkbookPreservation =
     { Parts = []; Defaults = []; Overrides = []; ThemePath = None; NamedStyles = []; Persons = []; CellXfNamedStyles = [||]
       WorkbookRelationships = []; ExternalReferencesXml = ""; PivotCachesXml = ""; WorkbookExtLstXml = ""
-      RootRelationships = []; CalcChain = None; PivotCacheSources = []; CalcIteration = None; ActiveTab = 0
+      RootRelationships = []; CalcChain = None; PivotCacheSources = []; CalcIteration = None; Date1904 = false; ActiveTab = 0
       StylesPart = None; SharedStringsPart = None; WorkbookPart = None; CellFormats = [||]; SharedStrings = [||], [||]; DxfCount = 0; SourceParts = []; PackageTexts = []; InPlace = false }
 
 type Worksheet = {
@@ -1845,11 +1848,9 @@ module Xlsx =
     let internal newSheetContext (styles: CellStyle array option) (date1904: bool) : SheetParseContext =
         {
             Styles = styles
-            DateShift =
-                match styles, date1904 with
-                | Some styles, true ->
-                    styles |> Array.map (fun style -> style.NumberFormat |> Option.exists isDateFormatCode)
-                | _ -> [||]
+            // (The serials of a workbook in the 1904 date system stay what the
+            // file has: `Workbook.Date1904` says which system they are in.)
+            DateShift = (ignore date1904; [||])
             SharedFormulas = System.Collections.Generic.Dictionary<string, int * int * string>()
             DataTables = ResizeArray<DataTableFormula>()
             DynamicCm = Set.empty
@@ -5924,6 +5925,7 @@ let private buildWorkbook (scanRows: bool) (source: PartSource) (header: Workboo
           CalcChain = calcChain
           PivotCacheSources = pivotCacheSources
           CalcIteration = header.CalcIteration
+          Date1904 = header.Date1904
           ActiveTab = header.ActiveTab
           StylesPart = if source.Exists header.StylesPath then Some header.StylesPath else None
           SharedStringsPart = if source.Exists header.SharedStringsPath then Some header.SharedStringsPath else None

@@ -159,8 +159,8 @@ type XlsxSource = {
 type ImportedWorkbook = {
     Sheets: ImportedSheet array
     Context: Wb.Workbook
-    /// The file used the 1904 date system. Date serials have already been
-    /// converted to the 1900 system the engine uses.
+    /// The file is in the 1904 date system: its serials are kept as they are,
+    /// and `Model.date1904` (set by the import) makes dates of them.
     Date1904: bool
     /// For `Export.toWorkbookOut`.
     Source: XlsxSource
@@ -1176,6 +1176,8 @@ module Import =
     /// Convert a loaded workbook: every sheet, plus the workbook context.
     /// Throws when the workbook has no sheets.
     let importWorkbookWith (options: ImportOptions) (wb: XlsxReader.Workbook) : ImportedWorkbook =
+        // (Dates are made of the workbook's serials in its own date system from here on.)
+        Rbt.Spreadsheet.Model.date1904 <- wb.Date1904
         let readerSheets = List.toArray wb.Sheets
         if readerSheets.Length = 0 then failwith "XLSX workbook has no worksheets"
         let names = readerSheets |> Array.map (fun sheet -> sheet.Name)
@@ -1249,6 +1251,8 @@ module Import =
     /// library rather than by Excel) is converted whole, as `importWorkbook`
     /// does: its values come from a calculation over every sheet.
     let importWorkbookLazy (convertNow: int -> bool) (wb: XlsxReader.Workbook) : ImportedWorkbook =
+        // (Dates are made of the workbook's serials in its own date system from here on.)
+        Rbt.Spreadsheet.Model.date1904 <- wb.Date1904
         let options = defaultImportOptions
         let readerSheets = List.toArray wb.Sheets
         if readerSheets.Length = 0 then failwith "XLSX workbook has no worksheets"
@@ -2382,9 +2386,7 @@ module Export =
     /// read from, byte for byte, beside the sheets that are written from
     /// their models; the styles and shared strings are then the file's with
     /// what is new added behind (no index of the file changes its meaning).
-    /// That is done for a workbook in the 1900 date system (the serials of a
-    /// 1904 workbook are converted when it is read and written in the 1900
-    /// system); when sheets of the file were renamed or deleted, for the
+    /// When sheets of the file were renamed or deleted, that is done for the
     /// sheets whose parts do not name any of those. Any other sheet, and any
     /// whose part is not supplied, is written from the model as before.
     let toWorkbookOutWith (sourceParts: (string * byte[]) list) (input: ExportInput) : XlsxWriter.XlsxWorkbookOut =
@@ -2505,13 +2507,11 @@ module Export =
             for path, data in source.Workbook.Preserved.SourceParts do suppliedParts.[path] <- data
             for path, data in sourceParts do suppliedParts.[path] <- data
         | None -> ()
-        // (Sheets go back as they were read only in the 1900 date system and
-        // while every sheet of the file is there under its name; the styles
-        // and shared strings are added to whenever the file's are at hand.)
-        let verbatimAllowed =
-            match input.Source with
-            | Some source -> not source.Workbook.Date1904
-            | None -> false
+        // (Sheets go back as they were read - in either date system: the serials
+        // are the file's - while every sheet of the file is there under its
+        // name; the styles and shared strings are added to whenever the file's
+        // are at hand.)
+        let verbatimAllowed = input.Source.IsSome
         // Sheets of the file that were renamed or deleted: a sheet whose part
         // names one of them (a formula, a rule, a link) is written from the
         // model, where the references have followed; a part that does not
@@ -2736,7 +2736,7 @@ module Export =
     /// the reader kept. Empty when no sheet would go back that way.
     let verbatimPartsWanted (input: ExportInput) : string list =
         match input.Source with
-        | Some source when not source.Workbook.Date1904 ->
+        | Some source ->
             let kept = source.Workbook.Preserved
             let readerSheets = List.toArray source.Workbook.Sheets
             let claimed = Collections.Generic.HashSet<int>()
@@ -2760,11 +2760,6 @@ module Export =
             (
                 let have = kept.SourceParts |> List.map fst |> Set.ofList
                 sheetParts @ Option.toList kept.StylesPart @ Option.toList kept.SharedStringsPart |> List.distinct |> List.filter (fun path -> not (Set.contains path have)))
-        | Some source ->
-            // (The 1904 date system: no sheet goes back as it was read, the styles and shared strings are still added to.)
-            let kept = source.Workbook.Preserved
-            let have = kept.SourceParts |> List.map fst |> Set.ofList
-            Option.toList kept.StylesPart @ Option.toList kept.SharedStringsPart |> List.filter (fun path -> not (Set.contains path have))
         | None -> []
 
     /// The workbook to write with the workbook's setting for the iterative

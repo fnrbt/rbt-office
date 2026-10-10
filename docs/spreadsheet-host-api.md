@@ -782,6 +782,15 @@ Nothing to call for the recalculation itself: every edit recalculates what it ha
 - Circular references. The formulas ON a circular reference - within a sheet, across sheets, through a defined name, a 3-D reference or the cells of a
   dynamic array - have the engine's cycle error as their value (GetCell: `{ value: "#CYCLE", valueType: "error" }`; it is not one of Excel's error values - Excel shows 0 and a warning); a formula that only reads one has that error as any formula
   reading an error has (IFERROR catches it). This is the same after every edit and whatever the order of the sheets.
+- `GetDateSystem()` -> `1900` | `1904`. The date system of the workbook: 1904 for a workbook opened from a file whose `workbookPr` says
+  `date1904` (serial 0 is 1904-01-01; Excel for Mac's old default), else 1900 (also every workbook made in the editor; there is no
+  setter). `GetCell(...).value` of a date is the serial **in that system** - a host that converts serials to dates itself adds 1462
+  days for a 1904 workbook (before, date-formatted numbers of such a file were given as 1900 serials). Number formats, `TEXT`, the
+  date functions (`DATE`, `YEAR`, `WEEKDAY`, `EDATE`, `NETWORKDAYS`, `DATEVALUE`, `TODAY` ...), typed dates, date filters and the
+  XLSX save all work in the workbook's system. The system is a setting of the engine while a workbook is at work
+  (`Model.date1904`): a grid sets it when it draws, recalculates, takes an entry or is asked `GetDateSystem()`, and
+  `XlsxBridge.Import` sets it for the workbook it reads; with two grids on a page that hold workbooks in different systems, read
+  cell texts of a grid (`GetCell(...).text`) after that grid drew or after calling its `GetDateSystem()`.
 - `GetIterativeCalculation()` -> `{ enabled: boolean, maxIterations: number, maxChange: number }`. Excel's "Enable iterative calculation" (File > Options >
   Formulas), a setting of the workbook that is read from and written to the file (`<calcPr iterate iterateCount iterateDelta>`). When off: `{ enabled: false,
   maxIterations: 100, maxChange: 0.001 }`. When on, the formulas of a circular reference are not errors: they are calculated again and again, from the
@@ -840,8 +849,8 @@ changes (named styles, the indexed palette, table styles and extensions of the s
   `<xf>` and `<alignment>`, `<extLst>`, and the fonts / fills / borders the change left alone, with their theme colours). A cell the
   file did not have gets an entry made from the model.
 - **`xl/workbook.xml` is the file's part** with the sheet list, the defined names, `activeTab` and the calculation flags (`iterate...`,
-  `fullCalcOnLoad` when a formula has no result) made anew: `fileVersion`, `workbookPr` (`hidePivotFieldList`, `codeName` ...; not
-  `date1904`, see below), `workbookProtection`, the window of `bookViews`, `calcPr`'s other attributes, `mc:AlternateContent` and the
+  `fullCalcOnLoad` when a formula has no result) made anew: `fileVersion`, `workbookPr` (`hidePivotFieldList`, `codeName`,
+  `date1904` ...), `workbookProtection`, the window of `bookViews`, `calcPr`'s other attributes, `mc:AlternateContent` and the
   extension list stay as they were.
 - **A sheet's comments part** (`xl/commentsN.xml`: `shapeId`, authors, phonetic runs) goes back as it is while the sheet's comments are
   the file's, also when the sheet itself is written from the model. When the comments changed the part is written from the model:
@@ -877,7 +886,7 @@ changes (named styles, the indexed palette, table styles and extensions of the s
   styles, shared formulas, `spans`), and the rest of the part is made from the sheet - as for a sheet written from its model, below.
 - **A sheet written from its model** (rows / columns inserted or deleted; a spilled or array formula or a what-if table changed; the
   part names a renamed or deleted sheet; the part is not laid out as expected - a prefix on its elements, rows or cells without `r`,
-  comments between elements; the 1904 date system) **still says what its part said beyond what a model holds**, by where the rows and
+  comments between elements) **still says what its part said beyond what a model holds**, by where the rows and
   columns of the file are now (the model keeps the list of its row / column edits, `StructureLog`): the worksheet's start tag (its
   namespaces, `mc:Ignorable`, `xr:uid`), `sheetPr` (`codeName`, `filterMode`, `pageSetUpPr`'s other attributes ...), the views (the
   selection, `topLeftCell`, `zoomScaleNormal`, `view` ...; `activeCell`, `sqref` and `topLeftCell` follow the edits, a selection of
@@ -908,8 +917,10 @@ changes (named styles, the indexed palette, table styles and extensions of the s
   replaced in the sheet's part, see above). Renaming, hiding or moving the sheet is not (that is in `xl/workbook.xml`).
 - The one thing rewritten in such a part is `tabSelected` of its view, when the sheet on display is no longer the one the file had on
   display (two sheets that say so are a group to Excel); the part is otherwise the file's text.
-- **Every sheet is written from the model** (the styles, strings and workbook part are still the file's, added to) in a workbook in the
-  1904 date system (its serials are converted on import, and `date1904` is not written). In a workbook in which **a sheet of the file was
+- **A workbook in the 1904 date system stays in it** (`GetDateSystem()` -> `1900` | `1904`): the serials in its cells are the file's
+  (before, the numbers under a date format were moved to the 1900 system on import - the others not - and `date1904` was dropped on
+  a save), a save writes `date1904` and its sheets go back as the parts they were read from, or patched, like any other workbook's.
+  In a workbook in which **a sheet of the file was
   renamed or deleted**, a sheet whose part names one of those sheets anywhere in its text (a formula, a rule, a link) is written from the
   model, where the references have followed; the sheets that do not name any still go back as the parts they were read from (also when
   such a name has an apostrophe, a quotation mark, `&`, `<`, `>` or letters outside ASCII: the name is looked for as it is, with its

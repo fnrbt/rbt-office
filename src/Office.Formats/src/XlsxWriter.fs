@@ -3495,8 +3495,6 @@ let private workbookXmlFull (workbook: XlsxWorkbookOut) =
                     match marks |> List.tryPick (fun mark -> match text.IndexOf (mark, System.StringComparison.Ordinal) with -1 -> None | at -> Some (at + mark.Length)) with
                     | Some at -> text.Substring(0, at) + element + text.Substring at
                     | None -> text
-                // (The sheets are written in the 1900 date system: see the reader.)
-                let text = text |> replaceTag "<workbookPr(?=[\\s>/])[^>]*>" (withTagAttribute "date1904" None)
                 // The sheet on display.
                 let active = string (max 0 workbook.ActiveSheetIndex)
                 let text =
@@ -3535,8 +3533,8 @@ let private workbookXmlFull (workbook: XlsxWorkbookOut) =
     match fromFile with
     | Some text -> text
     | None ->
-    sprintf "%s\n<workbook xmlns=\"%s\" xmlns:r=\"%s\"><bookViews><workbookView activeTab=\"%d\"/></bookViews><sheets>%s</sheets>%s%s%s%s%s</workbook>"
-        declaration Namespaces.spreadsheet Namespaces.relationships (max 0 workbook.ActiveSheetIndex) sheets
+    sprintf "%s\n<workbook xmlns=\"%s\" xmlns:r=\"%s\">%s<bookViews><workbookView activeTab=\"%d\"/></bookViews><sheets>%s</sheets>%s%s%s%s%s</workbook>"
+        declaration Namespaces.spreadsheet Namespaces.relationships (if kept.Date1904 then "<workbookPr date1904=\"1\"/>" else "") (max 0 workbook.ActiveSheetIndex) sheets
         kept.ExternalReferencesXml definedNames calcPr kept.PivotCachesXml kept.WorkbookExtLstXml
 
 let private workbookRelsXmlFull (workbook: XlsxWorkbookOut) (placements: SheetPlacement list) hasVba (themePath: string option) (hasPersons: bool) (ownMetadata: bool) =

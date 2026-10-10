@@ -65,6 +65,7 @@ stages=(
     stage47-x14rules
     stage48-tableentry
     stage49-chrome
+    stage50-date1904
     numbertext
 )
 

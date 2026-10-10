@@ -2324,12 +2324,13 @@ let private utcDate year month day = DateTime(year, month, day, 0, 0, 0, DateTim
 /// date - is held at the calendar's ends: .NET's DateTime throws there, which
 /// took a whole recalculation down with one cell.)
 let private serialToDate (s: float) : DateTime =
+    let s = s + dateSystemDays ()
     let held = if System.Double.IsNaN s then 0.0 else max -657000.0 (min 2958465.0 s)
     excelEpoch.AddDays(held)
 /// Reads the date's own calendar fields, so a local-kind value (a parsed
 /// string, DateTime.Today) maps to the serial for the date it displays.
 let private dateToSerial (d: DateTime) : float =
-    (DateTime(d.Year, d.Month, d.Day, d.Hour, d.Minute, d.Second, d.Millisecond, DateTimeKind.Utc) - excelEpoch).TotalDays
+    (DateTime(d.Year, d.Month, d.Day, d.Hour, d.Minute, d.Second, d.Millisecond, DateTimeKind.Utc) - excelEpoch).TotalDays - dateSystemDays ()
 
 /// Shared RNG for the volatile RAND / RANDBETWEEN functions.
 let private rng = Random()
@@ -12402,7 +12403,7 @@ and evalExtendedFunction (fnName: string) (args: Expr list) (ctx: EvalContext) :
             if day1 = 31 then day1 <- 30
         float ((d2.Year - d1.Year) * 360 + (d2.Month - d1.Month) * 30 + (day2 - day1))
     /// Monday = 0 … Sunday = 6 for a date serial.
-    let mondayIndex (serial: int) = ((serial + 5) % 7 + 7) % 7
+    let mondayIndex (serial: int) = ((serial + int (dateSystemDays ()) + 5) % 7 + 7) % 7
     /// Weekend mask (Monday..Sunday) from a WORKDAY.INTL / NETWORKDAYS.INTL weekend argument.
     let weekendMask i : Result<bool[], string> =
         if not (supplied i) then Ok [| false; false; false; false; false; true; true |]

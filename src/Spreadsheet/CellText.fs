@@ -533,7 +533,8 @@ let private excelSerialToDate (serial: float) : System.DateTime =
     // Excel's 1900 calendar: serial 1 is 1900-01-01 but Excel also treats
     // 1900 as a leap year (it isn't). For serials >= 60 we subtract one to
     // line up with the real Gregorian calendar.
-    let days = if serial >= 60.0 then serial else serial + 1.0
+    // (A workbook in the 1904 date system has no such day, and its serials start 1462 days later.)
+    let days = if date1904 then serial + 1462.0 elif serial >= 60.0 then serial else serial + 1.0
     // Day arithmetic in UTC, then the same calendar fields as a local-kind
     // value: Fable formats some tokens (AM/PM) from local time regardless of kind.
     let utc = excelEpoch.AddDays(days)
