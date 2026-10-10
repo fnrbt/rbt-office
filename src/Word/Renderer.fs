@@ -406,11 +406,16 @@ let bodyDocument (ctx: RenderContext) (doc: Document) =
     | Some story -> story.Whole doc
     | None -> doc
 
+/// The pages a document shows for the pages of a layout pass: those, and the
+/// pages of the notes after them (`pageFramesForLayouts`, defined further down).
+let private framePages : (RenderContext -> Document -> BlockLayout list -> PageInfo list -> PageInfo list) ref = ref (fun _ _ _ pages -> pages)
+
 /// The layouts of a story's blocks where its page paints them.
 let private storyLayouts (ctx: RenderContext) (story: StoryView) (doc: Document) : BlockLayout list =
     let whole = story.Whole doc
     let settings = layoutSettings ctx whole
-    let _, pages = layoutDocumentWithPages ctx whole
+    let bodyLayouts, layoutPages = layoutDocumentWithPages ctx whole
+    let pages = framePages.Value ctx whole bodyLayouts layoutPages
     match List.tryItem story.PageIndex pages with
     | None -> []
     | Some page ->
@@ -420,7 +425,7 @@ let private storyLayouts (ctx: RenderContext) (story: StoryView) (doc: Document)
         | _ ->
             let layouts =
                 Rbt.Word.Layout.withTablePlanScope ctx.PlanScope (fun () ->
-                    storyBlockLayouts settings (measureWithContext ctx) (measureRangeWithContext ctx) startY doc.Blocks)
+                    storyBlockLayouts settings (measureWithContext ctx) (measureRangeWithContext ctx) whole startY doc.Blocks)
             ctx.StoryLayouts <- Some (doc.Blocks, startY, ctx.TextMeasurerVersion, layouts)
             layouts
 
@@ -835,6 +840,8 @@ let private pageFramesForLayouts (ctx: RenderContext) (settings: LayoutSettings)
         let frames = pageFramesOfLayouts settings doc layouts pages
         if current then ctx.KnownPageFrames <- Some (ctx.LayoutState.LayoutSerial, frames)
         frames
+
+do framePages.Value <- fun ctx doc layouts pages -> pageFramesForLayouts ctx (layoutSettings ctx doc) doc layouts pages
 
 let private renderPages (ctx: RenderContext) (pages: PageInfo list) =
     ctx.Ctx.fillStyle <- U3.Case1 "#eef0f3"
@@ -1342,7 +1349,10 @@ let private selectionOverlay (ctx: RenderContext) (settings: LayoutSettings) (do
 let private buildFrame (ctx: RenderContext) (doc: Document) hoveredImage =
     ctx.FrameBuilds <- ctx.FrameBuilds + 1
     let settings = layoutSettings ctx doc
-    let layouts, pages = layoutDocumentWithPages ctx doc
+    let layouts, layoutPages = layoutDocumentWithPages ctx doc
+    // (The pages of the notes after the body are pages too: they have the headers and footers,
+    // and the page count the fields show is theirs.)
+    let pages = pageFramesForLayouts ctx settings doc layouts layoutPages
     let body =
         Rbt.Word.Layout.withTablePlanScope ctx.PlanScope (fun () ->
             let chunked =
@@ -1361,7 +1371,7 @@ let private buildFrame (ctx: RenderContext) (doc: Document) hoveredImage =
     {
         Document = doc
         Layouts = layouts
-        Pages = pageFramesForLayouts ctx settings doc layouts pages
+        Pages = pages
         Body = body
         StaticOverlay = commentAnchorCommands ctx doc layouts
         OverlayCommands = overlay
@@ -1670,8 +1680,8 @@ let private renderCore (ctx: RenderContext) (doc: Document) hoveredImage =
         let layouts = storyLayouts ctx story doc
         let tryFind (blockId: string) = layouts |> List.tryFind (fun layout -> layout.BlockId = blockId)
         let boundary =
-            let _, pages = layoutDocumentWithPages ctx whole
-            match List.tryItem story.PageIndex pages with
+            let bodyLayouts, layoutPages = layoutDocumentWithPages ctx whole
+            match List.tryItem story.PageIndex (pageFramesForLayouts ctx settings whole bodyLayouts layoutPages) with
             | Some page -> storyBoundaryCommands settings ctx.FontFamily page story.IsHeader story.Label
             | None -> []
         ctx.StoryOverlay <-
@@ -1685,7 +1695,8 @@ let private renderCore (ctx: RenderContext) (doc: Document) hoveredImage =
 /// (above the body text), "footer" (below it) or "body". None between pages.
 let pageRegionAt (ctx: RenderContext) (doc: Document) (x: float) (y: float) : (int * string) option =
     let doc = bodyDocument ctx doc
-    let _, pages = layoutDocumentWithPages ctx doc
+    let layouts, layoutPages = layoutDocumentWithPages ctx doc
+    let pages = pageFramesForLayouts ctx (layoutSettings ctx doc) doc layouts layoutPages
     let mutable found = None
     let mutable index = 0
     for page in pages do
@@ -1702,9 +1713,21 @@ let pageRegionAt (ctx: RenderContext) (doc: Document) (x: float) (y: float) : (i
 /// Paint.HeaderFooterTarget). The whole document is laid out for it.
 let headerFooterTarget (ctx: RenderContext) (doc: Document) (pageIndex: int) (isHeader: bool) : HeaderFooterTarget option =
     let doc = bodyDocument ctx doc
-    let layouts, pages = layoutWholeDocumentWithPages ctx doc
+    let layouts, layoutPages = layoutWholeDocumentWithPages ctx doc
+    let pages = pageFramesForLayouts ctx (layoutSettings ctx doc) doc layouts layoutPages
     let sectionEnds = layouts |> List.filter (fun layout -> endsSection layout.Metadata)
     headerFooterTargetForPage (layoutSettings ctx doc) doc sectionEnds pages pageIndex isHeader
+
+/// What the running fields (PAGE, NUMPAGES, SECTIONPAGES) show on a page,
+/// from the layout there is (not forced to the end of the document: see
+/// `layoutIsComplete`). None when there is no such page.
+let runningFieldsOfPage (ctx: RenderContext) (doc: Document) (pageIndex: int) : RunningFieldValues option =
+    let doc = bodyDocument ctx doc
+    let layouts, layoutPages = layoutDocumentWithPages ctx doc
+    let pages = pageFramesForLayouts ctx (layoutSettings ctx doc) doc layouts layoutPages
+    let sectionEnds = layouts |> List.filter (fun layout -> endsSection layout.Metadata)
+    headerFooterTargetForPage (layoutSettings ctx doc) doc sectionEnds pages pageIndex true
+    |> Option.map (fun target -> target.TargetFields)
 
 /// Show the document through a viewport (or, with None, go back to the whole
 /// document on a host-sized canvas). The caller repaints afterwards.

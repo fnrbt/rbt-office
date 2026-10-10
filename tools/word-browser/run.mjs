@@ -34,6 +34,7 @@
 //   required-fonts   getRequiredFonts(package | editor), viewer.getRequiredFonts(), the viewer module's function: the faces text is measured and painted in
 //   progressive-layout  a long document through a viewport: the first screens at once, the rest in slices (isLayoutComplete / whenLayoutComplete / onChange), the whole as laid out at once; the viewer's { progressive: true }
 //   header-footer-edit  a header / footer edited in place: double click, typing, undo across header and body, a new footer with fields, a table, link to previous, save
+//   header-footer-variants  undo / redo of link to previous stays in the header; PAGE / NUMPAGES / SECTIONPAGES from the pages shown (the page of the endnotes too), while editing, saved, and once a progressive layout is complete; header text at the size the size box says; a blank title / even page header until something is typed; first and even footers; whole-canvas mode
 //   section-pages    a section's text at its own left margin (pixels, caret, hit test); layout queries find a page by the pages' frames
 //   table-borders    table borders in pixels: double and thin-thick lines, corners and crossings, the wider of two conflicting borders
 //   xml-scan         the DOCX reader's XML scanner gives the nodes the browser's parser gives, for every part of the test documents
@@ -54,7 +55,7 @@ const opt = (name) => { const i = args.indexOf(name); if (i < 0) return undefine
 const dist = path.resolve(opt('--dist') ?? path.join(repo, 'dist'));
 const port = Number(process.env.PORT ?? 16022);
 const all = ['explicit-format', 'page-frames', 'ime', 'typing', 'track-changes', 'linked-images', 'opaque-click', 'viewport', 'selection-format',
-    'placeholder-and-frames', 'caret-movement', 'revision', 'viewer-measurers', 'page-centering', 'commands', 'image-handles', 'painter-frames', 'viewer-entry', 'keystroke-long', 'table-tools', 'caret-frames', 'viewer-first-page', 'required-fonts', 'progressive-layout', 'xml-scan', 'header-footer-edit', 'section-pages', 'table-borders'];
+    'placeholder-and-frames', 'caret-movement', 'revision', 'viewer-measurers', 'page-centering', 'commands', 'image-handles', 'painter-frames', 'viewer-entry', 'keystroke-long', 'table-tools', 'caret-frames', 'viewer-first-page', 'required-fonts', 'progressive-layout', 'xml-scan', 'header-footer-edit', 'header-footer-variants', 'section-pages', 'table-borders'];
 const checks = args.length ? args : all;
 
 const jszipDir = [process.env.JSZIP_DIR, path.join(repo, 'node_modules/jszip'), path.resolve(repo, '../rbt-office/node_modules/jszip')].find((p) => p && fs.existsSync(p));

@@ -1490,15 +1490,101 @@ let private fieldAtFormat (code: string) =
             let q2 = code.IndexOf('"', q1 + 1)
             if q2 <= q1 then None else Some (code.Substring(q1 + 1, q2 - q1 - 1))
 
-let private runningFieldResult pageNumber pageCount code currentText =
+/// What the running fields of a page show: its number as its section counts
+/// it (w:pgNumType w:start) in the section's number format (w:fmt), the
+/// number of pages of the document and of the page's section, and the
+/// section's number (1-based).
+type RunningFieldValues = {
+    FieldPage: int
+    FieldPageFormat: string
+    FieldPageCount: int
+    FieldSectionPages: int
+    FieldSection: int
+}
+
+/// The values of a page that is the `pageNumber`-th of `pageCount` in a document of one section.
+let runningFieldValues (pageNumber: int) (pageCount: int) : RunningFieldValues =
+    { FieldPage = pageNumber; FieldPageFormat = "decimal"; FieldPageCount = pageCount; FieldSectionPages = pageCount; FieldSection = 1 }
+
+let private romanNumeral (number: int) =
+    if number <= 0 || number >= 4000 then string number
+    else
+        let values = [| 1000; 900; 500; 400; 100; 90; 50; 40; 10; 9; 5; 4; 1 |]
+        let letters = [| "M"; "CM"; "D"; "CD"; "C"; "XC"; "L"; "XL"; "X"; "IX"; "V"; "IV"; "I" |]
+        let text = System.Text.StringBuilder()
+        let mutable rest = number
+        for i in 0 .. values.Length - 1 do
+            while rest >= values.[i] do
+                text.Append(letters.[i]) |> ignore
+                rest <- rest - values.[i]
+        text.ToString()
+
+/// A, B, ... Z, AA, BB, ... as Word numbers pages by letters.
+let private letterNumeral (number: int) =
+    if number <= 0 then string number
+    else
+        let letter = string (char (int 'A' + (number - 1) % 26))
+        String.replicate ((number - 1) / 26 + 1) letter
+
+/// A page number in a number format of w:pgNumType w:fmt ("decimal",
+/// "upperRoman", "lowerRoman", "upperLetter", "lowerLetter", "numberInDash";
+/// any other as decimal).
+let formatPageNumber (format: string) (number: int) : string =
+    match format with
+    | "upperRoman" -> romanNumeral number
+    | "lowerRoman" -> (romanNumeral number).ToLowerInvariant()
+    | "upperLetter" -> letterNumeral number
+    | "lowerLetter" -> (letterNumeral number).ToLowerInvariant()
+    | "numberInDash" -> "- " + string number + " -"
+    | _ -> string number
+
+/// The number format a field states itself (the switch \* roman, \* ROMAN,
+/// \* alphabetic, \* ALPHABETIC, \* Arabic), if it does.
+let private fieldNumberFormat (code: string) : string option =
+    let mutable found = None
+    let mutable at = code.IndexOf "\\*"
+    while found.IsNone && at >= 0 do
+        let mutable i = at + 2
+        while i < code.Length && System.Char.IsWhiteSpace code.[i] do i <- i + 1
+        let start = i
+        while i < code.Length && not (System.Char.IsWhiteSpace code.[i]) && code.[i] <> '\\' do i <- i + 1
+        let name = code.Substring(start, i - start)
+        found <-
+            match name with
+            | "roman" -> Some "lowerRoman"
+            | "ROMAN" | "Roman" -> Some "upperRoman"
+            | "alphabetic" -> Some "lowerLetter"
+            | "ALPHABETIC" | "Alphabetic" -> Some "upperLetter"
+            | "Arabic" | "arabic" | "ARABIC" -> Some "decimal"
+            | _ -> None
+        at <- code.IndexOf("\\*", i)
+    found
+
+let private formatCodeOf (format: string) =
+    match format with
+    | "upperRoman" -> 1
+    | "lowerRoman" -> 2
+    | "upperLetter" -> 3
+    | "lowerLetter" -> 4
+    | "numberInDash" -> 5
+    | _ -> 0
+
+/// What the values come to as one number (what a page's commands were made with, see the caches).
+let private fieldValuesKey (values: RunningFieldValues) =
+    (values.FieldSectionPages * 4096 + values.FieldSection) * 8 + formatCodeOf values.FieldPageFormat
+
+let private runningFieldResult (values: RunningFieldValues) code currentText =
+    let own = fieldNumberFormat code
     match fieldCodeName code with
-    | "PAGE" -> string pageNumber
-    | "NUMPAGES" -> string pageCount
+    | "PAGE" -> formatPageNumber (own |> Option.defaultValue values.FieldPageFormat) values.FieldPage
+    | "NUMPAGES" -> formatPageNumber (own |> Option.defaultValue "decimal") values.FieldPageCount
+    | "SECTIONPAGES" -> formatPageNumber (own |> Option.defaultValue "decimal") values.FieldSectionPages
+    | "SECTION" -> formatPageNumber (own |> Option.defaultValue "decimal") values.FieldSection
     | "DATE" -> System.DateTime.Now.ToString(fieldAtFormat code |> Option.defaultValue "yyyy-MM-dd")
     | "TIME" -> System.DateTime.Now.ToString(fieldAtFormat code |> Option.defaultValue "h:mm tt")
     | _ -> currentText
 
-let private paragraphWithRunningFields pageNumber pageCount (para: ParagraphBlock) =
+let private paragraphWithRunningFields (values: RunningFieldValues) (para: ParagraphBlock) =
     let mutable buffer = para.Buffer
     let mutable shift = 0
     let mutable changed = false
@@ -1511,7 +1597,7 @@ let private paragraphWithRunningFields pageNumber pageCount (para: ParagraphBloc
             | Some code ->
                 let start = textRun.Start + shift
                 let oldText = TextBuffer.slice start textRun.Length buffer
-                let newText = runningFieldResult pageNumber pageCount code oldText
+                let newText = runningFieldResult values code oldText
                 if newText <> oldText then
                     let style = { textRun.Style with FieldResult = Some newText }
                     buffer <- buffer |> TextBuffer.delete start textRun.Length |> TextBuffer.insert start newText |> TextBuffer.applyStyle start newText.Length (fun _ -> style)
@@ -1519,12 +1605,12 @@ let private paragraphWithRunningFields pageNumber pageCount (para: ParagraphBloc
                     changed <- true
     if changed then { para with Buffer = buffer }, true else para, false
 
-let private blockWithRunningFields pageNumber pageCount = function
+let private blockWithRunningFields (values: RunningFieldValues) = function
     | Paragraph para ->
-        let para, changed = paragraphWithRunningFields pageNumber pageCount para
+        let para, changed = paragraphWithRunningFields values para
         if changed then Paragraph para, true else Paragraph para, false
     | Heading (level, para) ->
-        let para, changed = paragraphWithRunningFields pageNumber pageCount para
+        let para, changed = paragraphWithRunningFields values para
         if changed then Heading (level, para), true else Heading (level, para), false
     | Table table ->
         let rec tableWithRunningFields depth (table: TableBlock) =
@@ -1539,7 +1625,7 @@ let private blockWithRunningFields pageNumber pageCount = function
                             |> mapListWithChange (fun cell ->
                                 let content, contentChanged =
                                     cell.Content
-                                    |> mapListWithChange (paragraphWithRunningFields pageNumber pageCount)
+                                    |> mapListWithChange (paragraphWithRunningFields values)
                                 let nestedTables, nestedChanged =
                                     cell.NestedTables
                                     |> mapListWithChange (tableWithRunningFields (depth + 1))
@@ -1554,7 +1640,7 @@ let private blockWithRunningFields pageNumber pageCount = function
     | TextBox textBox ->
         let content, changed =
             textBox.Content
-            |> mapListWithChange (paragraphWithRunningFields pageNumber pageCount)
+            |> mapListWithChange (paragraphWithRunningFields values)
         if changed then TextBox { textBox with Content = content }, true else TextBox textBox, false
 
 let private paragraphHasRunningFields (para: ParagraphBlock) =
@@ -1646,14 +1732,6 @@ let private partForReferences preferredKind (refs: (string * string) list) (inde
                 found <- tryFindPartByRelationshipId relationshipId index
             remaining <- tail
         | [] -> ()
-    remaining <- refs
-    while found.IsNone && not remaining.IsEmpty do
-        match remaining with
-        | (kind, relationshipId) :: tail ->
-            if kind = "default" then
-                found <- tryFindPartByRelationshipId relationshipId index
-            remaining <- tail
-        | [] -> ()
     found
 
 let private pageIndexForY (pages: PageInfo array) y =
@@ -1727,6 +1805,9 @@ type private SectionPageIndex = {
     SectionStartPages: int array
     SectionTitlePage: bool array
     SectionEvenOdd: bool array
+    /// The number a section's first page has when it states one (w:pgNumType w:start), and its number format.
+    SectionNumberStart: int option array
+    SectionNumberFormat: string array
 }
 
 /// `sectionEnds`: the layouts of the paragraphs that end a section, in order.
@@ -1736,6 +1817,8 @@ let private buildSectionPageIndex (pages: PageInfo array) (sectionEnds: BlockLay
     let evenOdd = ResizeArray<bool>()
     // (How a section starts is said by its own properties: a continuous one starts on the page the one before it ends on.)
     let continuous = ResizeArray<bool>()
+    let numberStarts = ResizeArray<int option>()
+    let numberFormats = ResizeArray<string>()
     let mutable lastId = ""
     for layout in sectionEnds do
         if layout.Metadata.SectionBreak.IsSome && layout.BlockId = lastId then
@@ -1747,14 +1830,21 @@ let private buildSectionPageIndex (pages: PageInfo array) (sectionEnds: BlockLay
             titles.Add (match layout.Metadata.SectionPageSetup with Some setup -> setup.DifferentFirstPage | None -> false)
             evenOdd.Add (match layout.Metadata.SectionPageSetup with Some setup -> setup.EvenAndOddHeaders | None -> false)
             continuous.Add (layout.Metadata.SectionBreak = Some "continuous")
+            numberStarts.Add layout.Metadata.SectionPageNumberStart
+            numberFormats.Add (layout.Metadata.SectionPageNumberFormat |> Option.defaultValue "decimal")
     ends.Add (max 0 (pages.Length - 1))
+    numberStarts.Add pageSetup.PageNumberStart
+    numberFormats.Add (pageSetup.PageNumberFormat |> Option.defaultValue "decimal")
     titles.Add pageSetup.DifferentFirstPage
     evenOdd.Add pageSetup.EvenAndOddHeaders
     continuous.Add (pageSetup.SectionStart = Some "continuous")
     let starts = Array.zeroCreate<int> ends.Count
     for index in 1 .. ends.Count - 1 do
         starts.[index] <- if continuous.[index] then ends.[index - 1] else ends.[index - 1] + 1
-    { SectionEndPages = ends.ToArray(); SectionStartPages = starts; SectionTitlePage = titles.ToArray(); SectionEvenOdd = evenOdd.ToArray() }
+    // (The last section reaches to the last page - the pages of the notes after it too.)
+    if ends.Count > 1 && ends.[ends.Count - 1] < ends.[ends.Count - 2] then ends.[ends.Count - 1] <- ends.[ends.Count - 2]
+    { SectionEndPages = ends.ToArray(); SectionStartPages = starts; SectionTitlePage = titles.ToArray(); SectionEvenOdd = evenOdd.ToArray()
+      SectionNumberStart = numberStarts.ToArray(); SectionNumberFormat = numberFormats.ToArray() }
 
 /// The section a page's header and footer are those of: the first that ends on or after the page.
 let private sectionOfPage (index: SectionPageIndex) pageIndex =
@@ -1765,6 +1855,30 @@ let private sectionOfPage (index: SectionPageIndex) pageIndex =
         let mid = lo + (hi - lo) / 2
         if ends.[mid] < pageIndex then lo <- mid + 1 else hi <- mid
     lo
+
+/// What the running fields show page by page: the pages are numbered on from
+/// 1, a section that states a start (w:pgNumType w:start) from that on its
+/// first page; a section's pages are those from its first to its last.
+let private pageFieldValues (index: SectionPageIndex) (pageTotal: int) : RunningFieldValues array =
+    let values = Array.zeroCreate<RunningFieldValues> pageTotal
+    let mutable number = 0
+    let mutable previous = -1
+    for pageIndex in 0 .. pageTotal - 1 do
+        let section = sectionOfPage index pageIndex
+        number <-
+            match index.SectionNumberStart.[section] with
+            | Some start when section <> previous -> start
+            | _ -> number + 1
+        previous <- section
+        // (A continuous section starts on the page the one before it ends on: that page is the earlier one's.)
+        let first = if section > 0 then max index.SectionStartPages.[section] (index.SectionEndPages.[section - 1] + 1) else 0
+        values.[pageIndex] <-
+            { FieldPage = number
+              FieldPageFormat = index.SectionNumberFormat.[section]
+              FieldPageCount = pageTotal
+              FieldSectionPages = max 1 (index.SectionEndPages.[section] - first + 1)
+              FieldSection = section + 1 }
+    values
 
 /// Which header / footer a page shows: "first" on the first page of a
 /// section that has a title page, "even" on even pages when the document
@@ -1777,10 +1891,12 @@ let private headerFooterKindOfPage (index: SectionPageIndex) (pageSetup: PageSet
 
 let private partForPage (preferredKind: string) pageIndex (parts: HeaderFooterPartIndex) sectionRefs =
     let refs = sectionRefsForPage sectionRefs pageIndex
+    // A title page or an even page without a header of that kind - its own or one of a section
+    // before it - shows none (ECMA-376 17.10.2: "a new blank header"), not the default header.
+    // (A part no section refers to - one made without a reference - is found by its kind.)
     partForReferences preferredKind refs parts
     |> Option.orElseWith (fun () -> tryFindPartByKind preferredKind parts)
-    |> Option.orElseWith (fun () -> tryFindPartByKind "default" parts)
-    |> Option.orElseWith (fun () -> parts.First)
+    |> Option.orElseWith (fun () -> if preferredKind = "default" then parts.First else None)
 
 let private blocksForPage (preferredKind: string) pageIndex fallbackBlocks (parts: HeaderFooterPartIndex) sectionRefs =
     if parts.Parts.IsEmpty then
@@ -1788,7 +1904,7 @@ let private blocksForPage (preferredKind: string) pageIndex fallbackBlocks (part
     else
         match partForPage preferredKind pageIndex parts sectionRefs with
         | Some part -> part.Blocks
-        | None -> fallbackBlocks ()
+        | None -> []
 
 let private shiftCommandY dy command =
     match command with
@@ -1810,29 +1926,36 @@ let private shiftCommandsY dy commands =
             shifted.Add(shiftCommandY dy command)
         resizeArrayToList shifted
 
-let private repeatedBlockCommands (settings: LayoutSettings) fontFamily measureText measureRange pageNumber pageCount startY blocks =
+/// The document a header's or footer's table is laid out in: the table alone, with the document's styles.
+let private storyTableDocument (doc: Document) (table: TableBlock) : Document =
+    { Rbt.Word.Document.empty with Blocks = [ Table table ]; Selection = None; Styles = doc.Styles }
+
+let private repeatedBlockCommands (settings: LayoutSettings) fontFamily measureText measureRange (doc: Document) (values: RunningFieldValues) startY blocks =
+    // (A header's paragraphs have the document's styles - "Header", the default paragraph
+    // style - as the body's have: laid out without them they came out in the built-in 11 pt.)
+    let styleContext = WordStyles.styleContext doc
     let repeatedSettings = { settings with MarginBottom = 0.0 }
     let maxWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
     let commands = ResizeArray<PaintCommand>()
     let mutable y = startY
     for rawBlock in blocks do
-        let block, _ = blockWithRunningFields pageNumber pageCount rawBlock
+        let block, _ = blockWithRunningFields values rawBlock
         match block with
         | Paragraph para
         | Heading (_, para) ->
             let safePara = { para with Metadata = { para.Metadata with PageBreakAfter = false } }
-            let layout, _ = layoutParagraphAtWithRange repeatedSettings measureText measureRange maxWidth y 0.0 safePara Map.empty
+            let layout, _ = layoutParagraphAtWithStyleWithRange repeatedSettings measureText measureRange maxWidth y 0.0 (forBlockInContext styleContext block) (effectiveBufferInContext styleContext) safePara Map.empty
             addParagraphCommands settings fontFamily measureText measureRange commands layout
             y <- layout.Y + layout.Height
         | Table table ->
-            let tableCommands, nextY = tableBorderCommandsWithRange repeatedSettings measureText measureRange table y
+            let tableCommands, nextY = tableBorderCommandsCore (Some styleContext) repeatedSettings measureText measureRange table y
             commands.AddRange(tableCommands)
             // The borders alone are not the table: lay its cells out as well
             // and paint their text. The table is laid out at the body origin
             // on an unpaged measuring page (a header/footer table never
             // splits) and the resulting commands are moved to y.
             let measureSettings = { repeatedSettings with PageHeight = max repeatedSettings.PageHeight 1000000.0 }
-            let tableDoc = { Rbt.Word.Document.empty with Blocks = [ Table table ]; Selection = None }
+            let tableDoc = storyTableDocument doc table
             let cellCommands = ResizeArray<PaintCommand>()
             for layout in layoutDocumentWithRange measureSettings measureText measureRange tableDoc do
                 if not (layout.BlockId.StartsWith footnoteBlockIdPrefix) && not (layout.BlockId.StartsWith endnoteBlockIdPrefix) then
@@ -1852,6 +1975,8 @@ type private HeaderFooterPageEntry = {
     /// blocks hold no running field (PAGE, NUMPAGES), so neither matters.
     PageNumber: int
     PageCount: int
+    /// What else the running fields show (see fieldValuesKey); 0 without running fields.
+    PageFieldsKey: int
     PageCommands: PaintCommand array
 }
 
@@ -1891,10 +2016,10 @@ type private HeaderFooterPageSource = {
 /// The headers and footers of a document's pages: how many pages, what each
 /// page's are made from, and the commands of a page (made when asked for).
 let private headerFooterPageSources (cache: HeaderFooterCache option) (settings: LayoutSettings) fontFamily measureText measureRange (doc: Document) (layouts: BlockLayout seq) (pages: PageInfo list)
-        : int * (int -> HeaderFooterPageSource) * (int -> HeaderFooterPageSource -> PaintCommand array) =
+        : int * (int -> HeaderFooterPageSource) * (int -> HeaderFooterPageSource -> PaintCommand array) * (int -> RunningFieldValues) =
     let pageCount = pages.Length
     if doc.Headers.IsEmpty && doc.Footers.IsEmpty && doc.HeaderParts.IsEmpty && doc.FooterParts.IsEmpty then
-        0, (fun _ -> { SourceHeaders = []; SourceFooters = []; SourceHeaderY = 0.0; SourceFooterY = 0.0; SourceRunning = false }), (fun _ _ -> [||])
+        0, (fun _ -> { SourceHeaders = []; SourceFooters = []; SourceHeaderY = 0.0; SourceFooterY = 0.0; SourceRunning = false }), (fun _ _ -> [||]), (fun pageIndex -> runningFieldValues (pageIndex + 1) pageCount)
     else
         let mutable fallbackHeaders = ValueNone
         let mutable fallbackFooters = ValueNone
@@ -1964,9 +2089,9 @@ let private headerFooterPageSources (cache: HeaderFooterCache option) (settings:
                     runningFields.Add(struct (blocks, found))
                     found
         let staticRepeatedCommands = ResizeArray<struct (Block list * PaintCommand list)>()
-        let repeatedCommands pageNumber startY blocks =
+        let repeatedCommands (values: RunningFieldValues) startY blocks =
             if hasRunningFields blocks then
-                repeatedBlockCommands settings fontFamily measureText measureRange pageNumber pageCount startY blocks
+                repeatedBlockCommands settings fontFamily measureText measureRange doc values startY blocks
             else
                 let mutable originCommands = Unchecked.defaultof<PaintCommand list>
                 let mutable found = false
@@ -1978,10 +2103,14 @@ let private headerFooterPageSources (cache: HeaderFooterCache option) (settings:
                         found <- true
                     i <- i + 1
                 if not found then
-                    originCommands <- repeatedBlockCommands settings fontFamily measureText measureRange pageNumber pageCount 0.0 blocks
+                    originCommands <- repeatedBlockCommands settings fontFamily measureText measureRange doc values 0.0 blocks
                     staticRepeatedCommands.Add(struct (blocks, originCommands))
                 shiftCommandsY startY originCommands
         let sectionPages = buildSectionPageIndex pagesArray layouts doc.PageSetup
+        let mutable fieldValues : RunningFieldValues array = null
+        let valuesOf (pageIndex: int) : RunningFieldValues =
+            if isNull fieldValues then fieldValues <- pageFieldValues sectionPages pagesArray.Length
+            fieldValues.[pageIndex]
         let sourceOf (pageIndex: int) : HeaderFooterPageSource =
             let info = pagesArray.[pageIndex]
             let kind = headerFooterKindOfPage sectionPages doc.PageSetup pageIndex
@@ -1992,25 +2121,26 @@ let private headerFooterPageSources (cache: HeaderFooterCache option) (settings:
               SourceFooterY = info.Top + info.Height - max 16.0 doc.PageSetup.FooterDistance - settings.LineHeight * 0.78
               SourceRunning = hasRunningFields headers || hasRunningFields footers }
         let commandsOf (pageIndex: int) (source: HeaderFooterPageSource) : PaintCommand array =
-            let pageNumber = pageIndex + 1
+            let values = valuesOf pageIndex
             let commands = ResizeArray<PaintCommand>()
-            if not source.SourceHeaders.IsEmpty then commands.AddRange(repeatedCommands pageNumber source.SourceHeaderY source.SourceHeaders)
-            if not source.SourceFooters.IsEmpty then commands.AddRange(repeatedCommands pageNumber source.SourceFooterY source.SourceFooters)
+            if not source.SourceHeaders.IsEmpty then commands.AddRange(repeatedCommands values source.SourceHeaderY source.SourceHeaders)
+            if not source.SourceFooters.IsEmpty then commands.AddRange(repeatedCommands values source.SourceFooterY source.SourceFooters)
             commands.ToArray()
-        pagesArray.Length, sourceOf, commandsOf
+        pagesArray.Length, sourceOf, commandsOf, valuesOf
 
 /// The header and footer commands page by page. With a cache, a page whose
 /// header and footer blocks, place and (where they show it) page number and
 /// page count are what they were keeps its commands - the same objects.
 let private headerFooterCommandsByPage (cache: HeaderFooterCache option) (settings: LayoutSettings) fontFamily measureText measureRange (doc: Document) (layouts: BlockLayout seq) (pages: PageInfo list) : PaintCommand array array =
-    let pageTotal, sourceOf, commandsOf = headerFooterPageSources cache settings fontFamily measureText measureRange doc layouts pages
+    let pageTotal, sourceOf, commandsOf, valuesOf = headerFooterPageSources cache settings fontFamily measureText measureRange doc layouts pages
     if pageTotal = 0 then [||]
     else
         let pageCount = pageTotal
         let result = Array.zeroCreate<PaintCommand array> pageTotal
         for pageIndex = 0 to pageTotal - 1 do
-            let pageNumber = pageIndex + 1
             let source = sourceOf pageIndex
+            let pageNumber = if source.SourceRunning then (valuesOf pageIndex).FieldPage else 0
+            let fieldsKey = if source.SourceRunning then fieldValuesKey (valuesOf pageIndex) else 0
             let headers, footers, headerY, footerY, running = source.SourceHeaders, source.SourceFooters, source.SourceHeaderY, source.SourceFooterY, source.SourceRunning
             let known =
                 match cache with
@@ -2019,7 +2149,7 @@ let private headerFooterCommandsByPage (cache: HeaderFooterCache option) (settin
                     | true, entry
                         when obj.ReferenceEquals(entry.PageHeaders, headers) && obj.ReferenceEquals(entry.PageFooters, footers)
                              && entry.PageHeaderY = headerY && entry.PageFooterY = footerY
-                             && entry.PageNumber = (if running then pageNumber else 0) && entry.PageCount = (if running then pageCount else 0) -> Some entry.PageCommands
+                             && entry.PageNumber = pageNumber && entry.PageCount = (if running then pageCount else 0) && entry.PageFieldsKey = fieldsKey -> Some entry.PageCommands
                     | _ -> None
                 | None -> None
             match known with
@@ -2031,7 +2161,7 @@ let private headerFooterCommandsByPage (cache: HeaderFooterCache option) (settin
                 | Some cache ->
                     cache.HeaderFooterPages.[pageIndex] <- {
                         PageHeaders = headers; PageFooters = footers; PageHeaderY = headerY; PageFooterY = footerY
-                        PageNumber = (if running then pageNumber else 0); PageCount = (if running then pageCount else 0); PageCommands = commands }
+                        PageNumber = pageNumber; PageCount = (if running then pageCount else 0); PageFieldsKey = fieldsKey; PageCommands = commands }
                 | None -> ()
         let pagesArray = result
         match cache with
@@ -2080,6 +2210,8 @@ type HeaderFooterTarget = {
     TargetReferences: (string * string) list
     /// Where the blocks start on the page.
     TargetY: float
+    /// What the running fields show on the page.
+    TargetFields: RunningFieldValues
 }
 
 /// `sectionEnds`: the layouts of the paragraphs that end a section, in order.
@@ -2117,15 +2249,16 @@ let headerFooterTargetForPage (settings: LayoutSettings) (doc: Document) (sectio
             TargetOwn = own |> List.exists (fun (referenceKind, _) -> referenceKind = kind)
             TargetReferences = own
             TargetY = headerFooterStartY settings doc.PageSetup pagesArray.[pageIndex] isHeader
+            TargetFields = (pageFieldValues sectionPages pagesArray.Length).[pageIndex]
         }
 
 /// The blocks of a header or footer with the page number and the page count
 /// in the fields that show them (what a page paints).
-let blocksWithRunningFields (pageNumber: int) (pageCount: int) (blocks: Block list) : Block list =
+let blocksWithRunningFields (values: RunningFieldValues) (blocks: Block list) : Block list =
     let mutable changed = false
     let mapped =
         blocks |> List.map (fun block ->
-            let next, blockChanged = blockWithRunningFields pageNumber pageCount block
+            let next, blockChanged = blockWithRunningFields values block
             if blockChanged then changed <- true
             next)
     if changed then mapped else blocks
@@ -2133,7 +2266,8 @@ let blocksWithRunningFields (pageNumber: int) (pageCount: int) (blocks: Block li
 /// The layouts of a header's or footer's blocks where a page paints them
 /// (from `startY` down, as `repeatedBlockCommands` places them): what the
 /// caret, the selection and the pointer go by while it is edited in place.
-let storyBlockLayouts (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (startY: float) (blocks: Block list) : BlockLayout list =
+let storyBlockLayouts (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (startY: float) (blocks: Block list) : BlockLayout list =
+    let styleContext = WordStyles.styleContext doc
     let repeatedSettings = { settings with MarginBottom = 0.0 }
     let maxWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
     let layouts = ResizeArray<BlockLayout>()
@@ -2143,13 +2277,13 @@ let storyBlockLayouts (settings: LayoutSettings) (measureText: TextMeasurer) (me
         | Paragraph para
         | Heading (_, para) ->
             let safePara = { para with Metadata = { para.Metadata with PageBreakAfter = false } }
-            let layout, _ = layoutParagraphAtWithRange repeatedSettings measureText measureRange maxWidth y 0.0 safePara Map.empty
+            let layout, _ = layoutParagraphAtWithStyleWithRange repeatedSettings measureText measureRange maxWidth y 0.0 (forBlockInContext styleContext block) (effectiveBufferInContext styleContext) safePara Map.empty
             layouts.Add layout
             y <- layout.Y + layout.Height
         | Table table ->
-            let _, nextY = tableBorderCommandsWithRange repeatedSettings measureText measureRange table y
+            let _, nextY = tableBorderCommandsCore (Some styleContext) repeatedSettings measureText measureRange table y
             let measureSettings = { repeatedSettings with PageHeight = max repeatedSettings.PageHeight 1000000.0 }
-            let tableDoc = { Rbt.Word.Document.empty with Blocks = [ Table table ]; Selection = None }
+            let tableDoc = storyTableDocument doc table
             let dy = y - measureSettings.PaddingTop
             for layout in layoutDocumentWithRange measureSettings measureText measureRange tableDoc do
                 if not (layout.BlockId.StartsWith footnoteBlockIdPrefix) && not (layout.BlockId.StartsWith endnoteBlockIdPrefix) then
@@ -2857,6 +2991,7 @@ type private FurniturePage = {
     FurnitureSource: HeaderFooterPageSource
     FurnitureNumber: int
     FurnitureCount: int
+    FurnitureFieldsKey: int
     FurnitureChunk: PaintChunk
 }
 
@@ -3171,19 +3306,20 @@ let collectDocumentChunksWith (deferCollection: bool) (cache: PaintCache) (setti
                 // What a page's header and footer are made from is looked at for every page;
                 // their commands (the layout of their blocks, with the page's number) are
                 // made when the page is painted.
-                let pageTotal, sourceOf, commandsOf = headerFooterPageSources (Some cache.CacheHeaderFooter) settings fontFamily measureText measureRange doc sectionEnds pages
+                let pageTotal, sourceOf, commandsOf, valuesOf = headerFooterPageSources (Some cache.CacheHeaderFooter) settings fontFamily measureText measureRange doc sectionEnds pages
                 let pagesArray = List.toArray pages
                 let furniture = Array.zeroCreate<FurniturePage> pageTotal
                 for pageIndex in 0 .. pageTotal - 1 do
                     let source = sourceOf pageIndex
-                    let number = if source.SourceRunning then pageIndex + 1 else 0
+                    let number = if source.SourceRunning then (valuesOf pageIndex).FieldPage else 0
                     let count = if source.SourceRunning then pageTotal else 0
+                    let fieldsKey = if source.SourceRunning then fieldValuesKey (valuesOf pageIndex) else 0
                     let known =
                         if pageIndex < cache.CacheFurniture.Length then
                             let entry = cache.CacheFurniture.[pageIndex]
                             if obj.ReferenceEquals(entry.FurnitureSource.SourceHeaders, source.SourceHeaders) && obj.ReferenceEquals(entry.FurnitureSource.SourceFooters, source.SourceFooters)
                                && entry.FurnitureSource.SourceHeaderY = source.SourceHeaderY && entry.FurnitureSource.SourceFooterY = source.SourceFooterY
-                               && entry.FurnitureNumber = number && entry.FurnitureCount = count then ValueSome entry
+                               && entry.FurnitureNumber = number && entry.FurnitureCount = count && entry.FurnitureFieldsKey = fieldsKey then ValueSome entry
                             else ValueNone
                         else ValueNone
                     furniture.[pageIndex] <-
@@ -3195,7 +3331,7 @@ let collectDocumentChunksWith (deferCollection: bool) (cache: PaintCache) (setti
                                 else
                                     let page = pagesArray.[pageIndex]
                                     deferredChunk page.Top (page.Top + page.Height) (fun () -> withTablePlanScope scope (fun () -> commandsOf pageIndex source))
-                            { FurnitureSource = source; FurnitureNumber = number; FurnitureCount = count; FurnitureChunk = chunk }
+                            { FurnitureSource = source; FurnitureNumber = number; FurnitureCount = count; FurnitureFieldsKey = fieldsKey; FurnitureChunk = chunk }
                     chunks.Add furniture.[pageIndex].FurnitureChunk
                 cache.CacheFurniture <- furniture
             else

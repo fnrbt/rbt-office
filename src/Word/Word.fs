@@ -62,6 +62,12 @@ module API =
     /// set further down, where the commands it needs are defined.
     let private doubleClick : (Editor -> float -> float -> bool) ref = ref (fun _ _ _ -> false)
 
+    /// Puts the caret into a page's header or footer (enterHeaderFooter), and
+    /// brings the fields of the story being edited up to the layout
+    /// (refreshStoryFields): set further down as well.
+    let private enterStoryOfPage : (Editor -> int -> bool -> bool) ref = ref (fun _ _ _ -> false)
+    let private storyFieldsRefresh : (Editor -> unit) ref = ref ignore
+
     /// Bring the revision in line with the document that is now shown: the
     /// same content keeps its number (a moved caret is not a new revision),
     /// content seen before (undo, redo) gets its number back, anything else
@@ -224,7 +230,10 @@ module API =
         if not (Ren.layoutIsComplete ctx) then
             Ren.scheduleLayout ctx (fun () -> Ren.bodyDocument ctx editor.Doc) (fun complete tell ->
                 // (What is on screen was laid out before it was shown: the frame is brought up to the layout at the end.)
-                if complete then Inp.repaint editor.Handler
+                if complete then
+                    // (The page count is known now: the fields of a header being edited show it.)
+                    storyFieldsRefresh.Value editor
+                    Inp.repaint editor.Handler
                 if tell then notifyLayoutProgress editor)
 
     /// Whether the whole document is laid out. A document loaded through a
@@ -391,10 +400,12 @@ module API =
             afterChange ()
             notifyListeners editor previous whole
             continueLayout editor
+            if editor.Handler.Story.IsSome then storyFieldsRefresh.Value editor
 
         let handler = Inp.create canvas doc onChange
 
         handler.OnDoubleClick <- fun x y -> doubleClick.Value editor x y
+        handler.OnHistoryPlace <- fun pageIndex isHeader -> enterStoryOfPage.Value editor pageIndex isHeader
         editor <- {
             Handler = handler
             Doc = doc
@@ -1656,7 +1667,8 @@ module API =
                         | _ -> ()
                     | Layout.ImageSegment _
                     | Layout.MathSegment _ -> ()
-        let mutable pageCount = 1
+        // (The pages of the notes after the body are pages of the document: what getPageCount says.)
+        let mutable pageCount = max 1 (Ren.pageCount editor.Handler.RenderContext editor.Doc)
         for layout in layouts do
             pageCount <- max pageCount (pageNumberForY editor.Doc (layout.Y + layout.Height))
         let pageMap: Doc.PageMap = {
@@ -2139,9 +2151,11 @@ module API =
         if isHeader then { doc with HeaderParts = doc.HeaderParts @ [ part ]; Headers = [] }, doc.HeaderParts.Length
         else { doc with FooterParts = doc.FooterParts @ [ part ]; Footers = [] }, doc.FooterParts.Length
 
-    /// The blocks of a header or footer as a part of their own: the paragraphs with ids of their own.
+    /// The blocks of a header or footer as a part of their own: every block - paragraphs,
+    /// tables (and the tables in their cells), text boxes - with an id of its own.
     let private copiedBlocks (isHeader: bool) (blocks: Doc.Block list) : Doc.Block list =
-        blocks |> Doc.mapParagraphsOfBlocks (fun para -> { para with Id = freshId (if isHeader then "header-" else "footer-") })
+        let prefix = if isHeader then "header-" else "footer-"
+        blocks |> Doc.copyBlocksWithNewIds (fun kind -> freshId (if kind = "paragraph" then prefix else prefix + kind + "-"))
 
     /// Back to the body from a header or footer that is edited in place
     /// (Escape and a double click on the body do the same). The body's
@@ -2153,13 +2167,18 @@ module API =
     /// in place: the caret goes into it, the body is dimmed and a labelled
     /// line marks where it ends. Which header that is follows the page - its
     /// section, the first page of a section with a title page, an even page
-    /// of a document that tells even and odd pages apart; where the page
-    /// shows none, an empty one is made (one undo step). Typing, selection,
-    /// formatting, tables, pictures, fields (insertPageNumberField /
-    /// insertPageCountField), undo and redo then work there: the document
-    /// the commands act on is the header's own until exitHeaderFooter.
-    /// getCaretContext says so (InHeaderFooter, Story, HeaderFooter). False
-    /// when there is no such page.
+    /// of a document that tells even and odd pages apart. Entering changes
+    /// nothing in the document: where the page shows no header (none at all,
+    /// or a title / even page whose section - and those before it - has none
+    /// of that kind, which shows a blank one as in Word), the caret stands in
+    /// an empty one that becomes a header of the document with the first
+    /// edit made in it (that edit's undo step takes it away again). Typing,
+    /// selection, formatting, tables, pictures, fields
+    /// (insertPageNumberField / insertPageCountField /
+    /// insertSectionPageCountField), undo and redo then work there: the
+    /// document the commands act on is the header's own until
+    /// exitHeaderFooter. getCaretContext says so (InHeaderFooter, Story,
+    /// HeaderFooter). False when there is no such page.
     let enterHeaderFooter (editor: Editor) (pageIndex: int) (kind: string) : bool =
         let isHeader = kind <> "footer"
         Inp.exitStory editor.Handler |> ignore
@@ -2171,27 +2190,31 @@ module API =
             let parts = if isHeader then doc.HeaderParts else doc.FooterParts
             let existing =
                 match target.TargetPart with
-                // (A title page or an even page that has no header of its own shows an empty one to fill in.)
-                | Some part when part.Kind = target.TargetKind || target.TargetKind = "default" ->
-                    if part.Blocks.IsEmpty then None
-                    else parts |> List.tryFindIndex (fun candidate -> obj.ReferenceEquals(candidate, part))
-                | _ -> None
-            let partIndex =
+                | Some part -> parts |> List.tryFindIndex (fun candidate -> obj.ReferenceEquals(candidate, part))
+                | None -> None
+            // The document the story's blocks belong in once they are edited, and the part's place there.
+            let edited, partIndex =
                 match existing with
-                | Some index -> index
+                | Some index ->
+                    match List.item index parts with
+                    | part when part.Blocks.IsEmpty ->
+                        // (A part without a paragraph: it gets one with the first edit.)
+                        let para : Doc.ParagraphBlock =
+                            { Id = freshId (if isHeader then "header-" else "footer-"); Buffer = TextBuf.empty
+                              Metadata = { Doc.defaultMetadata with Style = Some (if isHeader then "Header" else "Footer") } }
+                        let filled = parts |> List.mapi (fun at candidate -> if at = index then { candidate with Blocks = [ Doc.Paragraph para ] } else candidate)
+                        (if isHeader then { doc with HeaderParts = filled } else { doc with FooterParts = filled }), index
+                    | _ -> doc, index
                 | None ->
-                    // No header here yet: one is made (the document's plain header paragraphs become its blocks).
+                    // No header here: one is made by the first edit (the document's plain header paragraphs become its blocks).
                     let seed =
                         if target.TargetKind <> "default" || not parts.IsEmpty then []
                         else (if isHeader then doc.Headers else doc.Footers) |> List.map Doc.Paragraph
-                    let withPart, index = withNewPart doc target.TargetSection isHeader target.TargetKind seed
-                    commitDocumentUpdate editor withPart
-                    index
-            let whole = editor.Doc
-            match List.tryItem partIndex (if isHeader then whole.HeaderParts else whole.FooterParts) with
+                    withNewPart doc target.TargetSection isHeader target.TargetKind seed
+            match List.tryItem partIndex (if isHeader then edited.HeaderParts else edited.FooterParts) with
             | None -> false
             | Some part ->
-                let pageCount = Ren.pageCount ctx whole
+                let pageCount = Ren.pageCount ctx doc
                 let session : Inp.StorySession =
                     { IsHeader = isHeader
                       PageIndex = min pageIndex (max 0 (pageCount - 1))
@@ -2199,12 +2222,67 @@ module API =
                       Section = target.TargetSection
                       PartIndex = partIndex
                       Label = storyLabel isHeader target.TargetKind
-                      Main = whole
+                      Main = doc
+                      Edited = edited
                       PartBlocks = part.Blocks
-                      EntryBlocks = Paint.blocksWithRunningFields (pageIndex + 1) pageCount part.Blocks
+                      EntryBlocks = Paint.blocksWithRunningFields target.TargetFields part.Blocks
                       Folded = ResizeArray() }
                 Inp.enterStory editor.Handler session None
                 true
+
+    do enterStoryOfPage.Value <- fun editor pageIndex isHeader -> enterHeaderFooter editor pageIndex (if isHeader then "header" else "footer")
+
+    /// Where an offset of a text is in the text it became (a field's result
+    /// changed in it): before the change as it was, after it moved by the
+    /// difference of the lengths.
+    let private offsetInChangedText (before: string) (after: string) (offset: int) : int =
+        if before = after then offset
+        else
+            let limit = min before.Length after.Length
+            let mutable prefix = 0
+            while prefix < limit && before.[prefix] = after.[prefix] do prefix <- prefix + 1
+            let mutable suffix = 0
+            while suffix < limit - prefix && before.[before.Length - 1 - suffix] = after.[after.Length - 1 - suffix] do suffix <- suffix + 1
+            if offset <= prefix then offset
+            elif offset >= before.Length - suffix then offset + after.Length - before.Length
+            else prefix
+
+    let mutable private refreshingStoryFields = false
+
+    /// The fields of the header or footer being edited show what its page
+    /// shows as the layout stands (the page count grows while a long document
+    /// is laid out, and when the header itself grows): the story's text is
+    /// brought up to it, the caret staying where it is in the text. No undo
+    /// step; a story nothing was changed in stays unchanged.
+    let private refreshStoryFields (editor: Editor) =
+        match editor.Handler.Story with
+        | Some session when not refreshingStoryFields ->
+            let ctx = editor.Handler.RenderContext
+            match Ren.runningFieldsOfPage ctx editor.Doc session.PageIndex with
+            | None -> ()
+            | Some values ->
+                let doc = editor.Doc
+                let blocks = Paint.blocksWithRunningFields values doc.Blocks
+                if not (obj.ReferenceEquals(blocks, doc.Blocks)) then
+                    let next = { doc with Blocks = blocks }
+                    let moved (position: Doc.Position) : Doc.Position =
+                        match Doc.findParagraph doc position.BlockId, Doc.findParagraph next position.BlockId with
+                        | Some before, Some after ->
+                            { position with Offset = offsetInChangedText (TextBuf.toString before.Buffer) (TextBuf.toString after.Buffer) position.Offset }
+                        | _ -> position
+                    let selection = doc.Selection |> Option.map (fun selection -> ({ Anchor = moved selection.Anchor; Focus = moved selection.Focus } : Doc.Selection))
+                    refreshingStoryFields <- true
+                    try
+                        if obj.ReferenceEquals(doc.Blocks, session.EntryBlocks) then
+                            // (Nothing was changed in the story: it is the story as entered, with the values of now.)
+                            Inp.enterStory editor.Handler { session with EntryBlocks = blocks; Folded = ResizeArray() } selection
+                        else
+                            Inp.updateDocument editor.Handler { next with Selection = selection }
+                    finally
+                        refreshingStoryFields <- false
+        | _ -> ()
+
+    do storyFieldsRefresh.Value <- refreshStoryFields
 
     /// What getCaretContext reports of the header or footer being edited:
     /// { Kind "header" | "footer", Variant "default" | "first" | "even",
@@ -2235,9 +2313,11 @@ module API =
         | _ -> false
 
     /// "Link to Previous" for the header or footer being edited. Off: the
-    /// section gets a header of its own, a copy of the one it showed. On: it
-    /// shows the header of the section before it again (its own is no longer
-    /// referred to). One undo step; the caret stays in the page's header.
+    /// section gets a header of its own, a copy of the one it showed (every
+    /// block of the copy with an id of its own). On: it shows the header of
+    /// the section before it again (its own is no longer referred to). One
+    /// undo step; the caret stays in the page's header, and is there again
+    /// after undo and redo of the step.
     /// False when nothing changed (the body, the first section, already so).
     let setHeaderFooterLinkToPrevious (editor: Editor) (linked: bool) : bool =
         match editor.Handler.Story with
@@ -2249,10 +2329,15 @@ module API =
                 if linked then
                     withSectionReferences doc session.Section isHeader (sectionReferences doc session.Section isHeader |> List.filter (fun (referenceKind, _) -> referenceKind <> kind))
                 else
-                    let shown = (if isHeader then doc.HeaderParts else doc.FooterParts) |> List.tryItem session.PartIndex |> Option.map (fun part -> part.Blocks) |> Option.defaultValue []
+                    let shown =
+                        Ren.headerFooterTarget editor.Handler.RenderContext doc pageIndex isHeader
+                        |> Option.bind (fun target -> target.TargetPart)
+                        |> Option.map (fun part -> part.Blocks)
+                        |> Option.defaultValue []
                     withNewPart doc session.Section isHeader kind (copiedBlocks isHeader shown) |> fst
-            commitDocumentUpdate editor next
-            enterHeaderFooter editor pageIndex (if isHeader then "header" else "footer") |> ignore
+            // (A step of the whole document that belongs to this page's header: undo and redo come back here.)
+            Inp.applyEditAtStoryPlace editor.Handler (if linked then "Link to previous" else "Unlink from previous") pageIndex isHeader next
+            if not (enterHeaderFooter editor pageIndex (if isHeader then "header" else "footer")) then Inp.repaint editor.Handler
             true
         | _ -> false
 
@@ -2270,15 +2355,30 @@ module API =
                 | None -> 0
             | None -> 0
 
-    /// Insert a page number field (PAGE) at the caret: every page shows its
-    /// own number where the field stands in a header or footer.
-    let insertPageNumberField (editor: Editor) =
-        commitDocumentUpdate editor (Doc.insertField "PAGE" (string (caretPageIndex editor + 1)) editor.Doc)
-
-    /// Insert a page count field (NUMPAGES) at the caret.
-    let insertPageCountField (editor: Editor) =
+    /// What the running fields show on the caret's page.
+    let private caretFieldValues (editor: Editor) : Paint.RunningFieldValues =
         let ctx = editor.Handler.RenderContext
-        commitDocumentUpdate editor (Doc.insertField "NUMPAGES" (string (Ren.pageCount ctx editor.Doc)) editor.Doc)
+        // (The page count is that of the whole document.)
+        let pageCount = Ren.pageCount ctx editor.Doc
+        let pageIndex = caretPageIndex editor
+        Ren.runningFieldsOfPage ctx editor.Doc pageIndex |> Option.defaultValue (Paint.runningFieldValues (pageIndex + 1) pageCount)
+
+    /// Insert a page number field (PAGE) at the caret: every page shows its
+    /// own number where the field stands in a header or footer - as its
+    /// section counts and writes it (a section's first page number and number
+    /// format, w:pgNumType). The field has the formatting of the text at the caret.
+    let insertPageNumberField (editor: Editor) =
+        let values = caretFieldValues editor
+        commitDocumentUpdate editor (Doc.insertField "PAGE" (Paint.formatPageNumber values.FieldPageFormat values.FieldPage) editor.Doc)
+
+    /// Insert a page count field (NUMPAGES) at the caret: the number of pages
+    /// of the document (what getPageCount says).
+    let insertPageCountField (editor: Editor) =
+        commitDocumentUpdate editor (Doc.insertField "NUMPAGES" (string (caretFieldValues editor).FieldPageCount) editor.Doc)
+
+    /// Insert a field with the number of pages of the caret's section (SECTIONPAGES).
+    let insertSectionPageCountField (editor: Editor) =
+        commitDocumentUpdate editor (Doc.insertField "SECTIONPAGES" (string (caretFieldValues editor).FieldSectionPages) editor.Doc)
 
     /// A double click (layout coordinates): on a page's header or footer area
     /// it is edited in place, with the caret where the click was; on the body
@@ -2881,6 +2981,7 @@ module API =
             "setHeaderFooterLinkToPrevious" ==> setHeaderFooterLinkToPrevious
             "insertPageNumberField" ==> insertPageNumberField
             "insertPageCountField" ==> insertPageCountField
+            "insertSectionPageCountField" ==> insertSectionPageCountField
             "moveToAdjacentTableCell" ==> moveToAdjacentTableCell
             "toggleTrackChanges" ==> toggleTrackChanges
             "getCommentAnchors" ==> getCommentAnchors

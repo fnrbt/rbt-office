@@ -355,7 +355,9 @@ let forBlockInContext (context: DocumentStyleContext) block =
     match block with
     | Paragraph para ->
         match para.Metadata.Style with
-        | Some styleId -> context.ParagraphStyles |> Map.tryFind styleId |> Option.defaultValue context.NormalStyle
+        // (A style the document does not define - "Header" on a header made here - is the
+        // default paragraph style to Word, not the bare document defaults.)
+        | Some styleId -> context.ParagraphStyles |> Map.tryFind styleId |> Option.defaultValue context.DefaultParagraphStyle
         | None -> context.DefaultParagraphStyle
     | Heading (level, para) ->
         match para.Metadata.Style with

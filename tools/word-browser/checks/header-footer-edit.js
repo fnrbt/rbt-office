@@ -105,7 +105,7 @@ try {
             check('a double click on the header again, then on the body', [state.reentered, state.left], [[true, 'header'], [false, 'body']]);
 
             // ---- through the API: a table and a field in a footer, a footer where there was none ----
-            check('enterHeaderFooter(page 0, "footer") where the page has no footer makes one', [Word.enterHeaderFooter(editor, 0, 'footer'), story(), Word.getCaretContext(editor).HeaderFooter.Kind, Word.getText(editor)], [true, [true, 'footer'], 'footer', '']);
+            check('enterHeaderFooter(page 0, "footer") where the page has no footer: the caret is in an empty one', [Word.enterHeaderFooter(editor, 0, 'footer'), story(), Word.getCaretContext(editor).HeaderFooter.Kind, Word.getText(editor)], [true, [true, 'footer'], 'footer', '']);
             Word.insertText(editor, 'Page ');
             Word.insertPageNumberField(editor);
             Word.insertText(editor, ' of ');
@@ -127,7 +127,9 @@ try {
             // ---- link to previous ----
             check('the second section has its own header', [Word.getHeaderFooterLinkToPrevious(editor), Word.getCaretContext(editor).HeaderFooter.CanLinkToPrevious], [false, true]);
             check('link to previous: it shows the first section\'s header', [Word.setHeaderFooterLinkToPrevious(editor, true), Word.getHeaderFooterLinkToPrevious(editor), story(), Word.getText(editor).includes('Typed ')], [true, true, [true, 'header'], true]);
-            check('undo takes the link away again', [Word.undo(editor), Word.getHeaderFooterLinkToPrevious(editor) || Word.getCaretContext(editor).Story === 'body'], [true, true]);
+            check('undo takes the link away again, and the caret stays in the header', [Word.undo(editor), Word.getHeaderFooterLinkToPrevious(editor), story(), Word.getText(editor).includes('header two')], [true, false, [true, 'header'], true]);
+            check('redo links it again, in the header', [Word.redo(editor), Word.getHeaderFooterLinkToPrevious(editor), story()], [true, true, [true, 'header']]);
+            check('and undo once more', [Word.undo(editor), Word.getHeaderFooterLinkToPrevious(editor), story()], [true, false, [true, 'header']]);
             Word.exitHeaderFooter(editor);
             check('entered again, the section has its own header as before', [Word.enterHeaderFooter(editor, 1, 'header'), Word.getHeaderFooterLinkToPrevious(editor), Word.getText(editor).includes('header two')], [true, false, true]);
             Word.setHeaderFooterLinkToPrevious(editor, true);

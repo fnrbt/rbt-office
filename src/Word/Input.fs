@@ -125,6 +125,12 @@ type StorySession = {
     Label: string
     /// The whole document when the story was entered: its body, and the body's selection.
     Main: Doc.Document
+    /// The whole document the story's blocks are put into once they are
+    /// changed. Main itself for a header that exists; for one that is only
+    /// made when something is typed into it (a page that shows none, a title
+    /// or even page without a header of its own), Main with the new part and
+    /// the section's reference to it. PartIndex is the part's place in this.
+    Edited: Doc.Document
     /// The part's blocks when the story was entered, and the story's blocks
     /// then (the part's, with the page's number in the fields that show it).
     PartBlocks: Doc.Block list
@@ -170,6 +176,12 @@ type InputHandler = {
     mutable Story: StorySession option
     /// The story the undo / redo step in hand was made in (set by the step).
     mutable HistoryStory: StorySession option
+    /// The header or footer (page, header?) the undo / redo step in hand
+    /// belongs to though it changed the whole document - "link to previous"
+    /// (set by the step): the caret goes back into that page's header.
+    mutable HistoryPlace: (int * bool) option
+    /// Puts the caret into a page's header or footer after such a step (set by the editor).
+    mutable OnHistoryPlace: int -> bool -> bool
     /// A double click at a point (layout coordinates): true when it was
     /// taken (into a header or footer, or back to the body) - set by the editor.
     mutable OnDoubleClick: float -> float -> bool
@@ -197,10 +209,10 @@ let private setProxyValue (_element: HTMLElement) (_value: string) : unit = jsNa
 
 /// The session's parts (the headers, or the footers) with `blocks` in the story's part.
 let private storyParts (session: StorySession) (blocks: Doc.Block list) : Doc.HeaderFooterPart list =
-    let parts = if session.IsHeader then session.Main.HeaderParts else session.Main.FooterParts
-    // (As entered: the part as it was - showing a header is not a change of the document.)
-    if obj.ReferenceEquals(blocks, session.EntryBlocks) then parts
+    // (As entered: the document as it was - showing a header is not a change of the document.)
+    if obj.ReferenceEquals(blocks, session.EntryBlocks) then (if session.IsHeader then session.Main.HeaderParts else session.Main.FooterParts)
     else
+        let parts = if session.IsHeader then session.Edited.HeaderParts else session.Edited.FooterParts
         let mutable found = Unchecked.defaultof<Doc.HeaderFooterPart list>
         let mutable known = false
         for struct (knownBlocks, knownParts) in session.Folded do
@@ -219,17 +231,32 @@ let private storyParts (session: StorySession) (blocks: Doc.Block list) : Doc.He
 /// the story changed - the styles).
 let private foldStory (session: StorySession) (story: Doc.Document) : Doc.Document =
     let parts = storyParts session story.Blocks
-    if session.IsHeader then { story with Blocks = session.Main.Blocks; HeaderParts = parts; FooterParts = session.Main.FooterParts }
-    else { story with Blocks = session.Main.Blocks; HeaderParts = session.Main.HeaderParts; FooterParts = parts }
+    // (The body, the plain header paragraphs and the sections' references are those of the
+    // document the blocks belong in: a header made by the first edit comes with its reference.)
+    let basis = if obj.ReferenceEquals(story.Blocks, session.EntryBlocks) then session.Main else session.Edited
+    let pageSetup =
+        if obj.ReferenceEquals(basis.PageSetup.HeaderReferences, story.PageSetup.HeaderReferences) && obj.ReferenceEquals(basis.PageSetup.FooterReferences, story.PageSetup.FooterReferences) then story.PageSetup
+        else
+            let wanted = { story.PageSetup with HeaderReferences = basis.PageSetup.HeaderReferences; FooterReferences = basis.PageSetup.FooterReferences }
+            // (The same object when nothing else differs: what is kept by reference stays kept.)
+            if wanted = basis.PageSetup then basis.PageSetup else wanted
+    if session.IsHeader then { story with Blocks = basis.Blocks; PageSetup = pageSetup; Headers = basis.Headers; HeaderParts = parts; FooterParts = basis.FooterParts }
+    else { story with Blocks = basis.Blocks; PageSetup = pageSetup; Footers = basis.Footers; HeaderParts = basis.HeaderParts; FooterParts = parts }
 
 /// The story document of a whole document: the blocks of the story's part.
 let private unfoldStory (session: StorySession) (whole: Doc.Document) : Doc.Document =
     let parts = if session.IsHeader then whole.HeaderParts else whole.FooterParts
     let blocks =
         match List.tryItem session.PartIndex parts with
-        | Some part -> if obj.ReferenceEquals(part.Blocks, session.PartBlocks) then session.EntryBlocks else part.Blocks
+        // (A part without a block is the story as entered too: its one paragraph is made by the first edit.)
+        | Some part -> if obj.ReferenceEquals(part.Blocks, session.PartBlocks) || part.Blocks.IsEmpty then session.EntryBlocks else part.Blocks
+        // (A header that the first edit makes, before that edit: as entered.)
         | None -> session.EntryBlocks
-    { whole with Blocks = blocks }
+    // (The story's document has the page setup it was entered with; the references of a
+    // header made by an edit are put back when it is folded.)
+    let pageSetup =
+        if obj.ReferenceEquals(whole.PageSetup, session.Edited.PageSetup) then session.Main.PageSetup else whole.PageSetup
+    { whole with Blocks = blocks; PageSetup = pageSetup }
 
 /// The whole document (body, headers and footers) of the document the
 /// handler works on: that document, or - while a header or footer is edited
@@ -252,6 +279,19 @@ type private StoryCommand(inner: ICommand, session: StorySession, stepped: Story
         member _.Undo whole =
             stepped session
             foldStory session (inner.Undo (unfoldStory session whole))
+        member _.Description = inner.Description
+
+/// A step that changes the whole document from within a header or footer
+/// (the section's reference to it: "link to previous"). Undone or redone, the
+/// caret is in that page's header again.
+type private StoryPlaceCommand(inner: ICommand, pageIndex: int, isHeader: bool, stepped: int -> bool -> unit) =
+    interface ICommand with
+        member _.Execute whole =
+            stepped pageIndex isHeader
+            inner.Execute whole
+        member _.Undo whole =
+            stepped pageIndex isHeader
+            inner.Undo whole
         member _.Description = inner.Description
 
 /// A history with the step just added to it made a story's step when a story is being edited.
@@ -301,6 +341,7 @@ let private showDocument (handler: InputHandler) (doc: Doc.Document) =
 /// (which is then the story on display), the whole document otherwise.
 let private historyStep (handler: InputHandler) (step: Doc.Document -> CommandHistory -> Doc.Document * CommandHistory) : Doc.Document * CommandHistory =
     handler.HistoryStory <- None
+    handler.HistoryPlace <- None
     let whole, history = step (wholeDocument handler handler.Document) handler.History
     // (Nothing to step to: everything stays as it is.)
     if obj.ReferenceEquals(history, handler.History) then handler.Document, history else
@@ -312,6 +353,19 @@ let private historyStep (handler: InputHandler) (step: Doc.Document -> CommandHi
         if handler.Story.IsSome then hideStory handler
         whole, history
 
+/// Show the document a step of the history came to. A step that belongs to a
+/// page's header or footer (see HistoryPlace) is shown there: the editor
+/// enters it, which shows the document.
+let private showHistoryStep (handler: InputHandler) (doc: Doc.Document) =
+    match handler.HistoryPlace with
+    | Some (pageIndex, isHeader) ->
+        handler.HistoryPlace <- None
+        handler.Document <- doc
+        handler.OnChange doc
+        // (No such page any more: the document as it is, in the body.)
+        if not (handler.OnHistoryPlace pageIndex isHeader) then showDocument handler doc
+    | None -> showDocument handler doc
+
 /// Undo the last recorded change. Returns false when there is nothing to undo.
 let undo (handler: InputHandler) =
     if handler.History.Undos.IsEmpty then
@@ -319,7 +373,7 @@ let undo (handler: InputHandler) =
     else
         let doc, history = historyStep handler Cmd.undo
         handler.History <- history
-        showDocument handler doc
+        showHistoryStep handler doc
         true
 
 /// Redo the last undone change. Returns false when there is nothing to redo.
@@ -329,7 +383,7 @@ let redo (handler: InputHandler) =
     else
         let doc, history = historyStep handler Cmd.redo
         handler.History <- history
-        showDocument handler doc
+        showHistoryStep handler doc
         true
 
 /// Edit a header or footer in place: `session` says which (see StorySession;
@@ -392,6 +446,8 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         GoalX = None
         Story = None
         HistoryStory = None
+        HistoryPlace = None
+        OnHistoryPlace = fun _ _ -> false
         OnDoubleClick = fun _ _ -> false
     }
 
@@ -1334,6 +1390,20 @@ let applyEdit (handler: InputHandler) (description: string) (doc: Doc.Document) 
     recordChange handler description handler.Document doc
     updateDocument handler doc
 
+/// Apply a change of the whole document that was made from within a page's
+/// header or footer (no story is on display while it is applied) as one undo
+/// step; undo and redo of it put the caret back into that page's header.
+let applyEditAtStoryPlace (handler: InputHandler) (description: string) (pageIndex: int) (isHeader: bool) (doc: Doc.Document) =
+    let before = handler.History
+    recordChange handler description handler.Document doc
+    match handler.History.Undos with
+    | head :: rest when not (obj.ReferenceEquals(handler.History.Undos, before.Undos)) ->
+        let stepped page header = handler.HistoryPlace <- Some (page, header)
+        handler.History <- { handler.History with Undos = (StoryPlaceCommand(head, pageIndex, isHeader, stepped) :> ICommand) :: rest }
+    | _ -> ()
+    handler.Document <- doc
+    handler.OnChange doc
+
 /// Replace the document with a newly loaded one. Undo history belongs to the
 /// previous document and is discarded.
 let loadDocument (handler: InputHandler) (doc: Doc.Document) =
@@ -1357,6 +1427,7 @@ let create _ _ _ = ()
 let updateDocument _ _ = ()
 let repaint _ = ()
 let applyEdit _ _ _ = ()
+let applyEditAtStoryPlace _ _ _ _ _ = ()
 let loadDocument _ _ = ()
 let undo _ = false
 let redo _ = false

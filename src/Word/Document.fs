@@ -727,6 +727,25 @@ let rec mapParagraphsOfBlocks (mapper: ParagraphBlock -> ParagraphBlock) (blocks
         | Table table -> Table (mapTable table)
         | TextBox textBox -> TextBox { textBox with Content = textBox.Content |> List.map mapper })
 
+/// A copy of a block list in which every block has an id of its own:
+/// paragraphs (those in table cells, nested tables and text boxes too),
+/// tables with the tables in their cells, and text boxes. `newId kind` gives
+/// an id no block has ("paragraph" | "table" | "box").
+let copyBlocksWithNewIds (newId: string -> BlockId) (blocks: Block list) : Block list =
+    let rec copyTable (table: TableBlock) : TableBlock =
+        { table with
+            Id = newId "table"
+            Rows =
+                table.Rows
+                |> List.map (fun row ->
+                    { row with Cells = row.Cells |> List.map (fun cell -> { cell with NestedTables = cell.NestedTables |> List.map copyTable }) }) }
+    blocks
+    |> mapParagraphsOfBlocks (fun para -> { para with Id = newId "paragraph" })
+    |> List.map (function
+        | Table table -> Table (copyTable table)
+        | TextBox textBox -> TextBox { textBox with Id = newId "box" }
+        | block -> block)
+
 /// Every paragraph of the document: body, then header and footer parts.
 let allParagraphs (doc: Document) : ParagraphBlock list =
     paragraphsOfBlocks doc.Blocks
