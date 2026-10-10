@@ -507,7 +507,11 @@ let private generateReferenceRun (runObj: obj) (fallbackRun: EditorRun) =
             | _ ->
                 match optionalString (runObj?CommentId), optionalString (runObj?NoteId) with
                 | Some commentId, _ ->
-                    element "w:r" [] [selfClosing "w:commentReference" [("w:id", commentId)]]
+                    // The mark with the formatting of its run - but for the colour the editor shows a
+                    // mark without one in, which is not the file's.
+                    let ownColor = fallbackRun.Color |> Option.filter (fun color -> color.ToLowerInvariant() <> DocxReader.commentMarkDisplayColor)
+                    let rPr = orderedRunProps (runExtrasFromObject runObj) { fallbackRun with Color = ownColor }
+                    element "w:r" [] ((if List.isEmpty rPr then [] else [element "w:rPr" [] rPr]) @ [selfClosing "w:commentReference" [("w:id", commentId)]])
                 | None, Some noteId ->
                     let noteType = optionalString (runObj?NoteType) |> Option.defaultValue "footnote"
                     let elementName = if noteType = "endnote" then "w:endnoteReference" else "w:footnoteReference"

@@ -5558,6 +5558,32 @@ let editorImageSource (images: Map<string, string>) (img: ImageData) : string =
         |> Map.tryFind img.RelationshipId
         |> Option.defaultValue img.RelationshipId  // Fallback to relId if not found
 
+/// The colour a comment's mark is shown in when its run has none of its own.
+/// (Of the editor's display: the writer does not put it into the file.)
+let commentMarkDisplayColor = "#7c3aed"
+
+/// The formatting of the run of a reference mark (a comment's, a note's): what
+/// its own w:rPr and its styles give, as for a run of text - the mark made
+/// bold, or given a size, is that when the document is read again.
+let private referenceMarkFormat (styleMap: Map<string, StyleDefinition>) (theme: Theme option) (paraProps: ParagraphProperties) (run: Run) =
+    let props = resolvedRunProperties styleMap paraProps run.Properties
+    [ "Style" ==> run.Properties.Style
+      "Bold" ==> effectiveOnOff props.Bold
+      "Italic" ==> effectiveOnOff props.Italic
+      "Underline" ==> effectiveOnOff props.Underline
+      "UnderlineStyle" ==> props.UnderlineStyle
+      "UnderlineColor" ==> props.UnderlineColor
+      "AllCaps" ==> effectiveOnOff props.AllCaps
+      "SmallCaps" ==> effectiveOnOff props.SmallCaps
+      "Strike" ==> effectiveOnOff props.Strike
+      "DoubleStrike" ==> effectiveOnOff props.DoubleStrike
+      "Hidden" ==> effectiveOnOff props.Hidden
+      "FontSize" ==> wordFontSizeToPoints props.FontSize
+      "FontFamily" ==> wordFontFamilyToCss theme props
+      "Highlight" ==> props.Highlight
+      "IsImage" ==> false ]
+    @ explicitRunFields styleMap paraProps run
+
 let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinition>) (theme: Theme option) (content: DocumentContent list) (images: Map<string, string>) (noteBodies: Map<string * string, string>) : obj array =
     let _, documentDefaultParagraphProperties = resolveStyle styleMap (Some Styles.defaultStyleId)
     let documentDefaultMissingSpacingToZero =
@@ -5699,43 +5725,24 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                             "InactiveHyperlink" ==> (link.Target |> Option.filter (fun target -> not (isActiveHyperlinkTarget target)))
                         ] @ bookmarkRunProps run))
                         | CommentReference id ->
-                            Some (objFromFields [
+                            Some (objFromFields ([
                                 "Text" ==> (sprintf "[Comment %s]" id)
-                                "Bold" ==> false
-                                "Italic" ==> false
-                                "Underline" ==> false
-                                "AllCaps" ==> false
-                                "SmallCaps" ==> false
-                                "Strike" ==> false
-                                "FontSize" ==> 11.0
-                                "FontFamily" ==> "Calibri"
-                                "Color" ==> Some "#7c3aed"
-                                "Highlight" ==> None
-                                "IsImage" ==> false
+                                "Color" ==> (wordColorToCss effectiveRunProps.Color |> Option.orElse (Some commentMarkDisplayColor))
+                                "VertAlign" ==> effectiveRunProps.VertAlign
                                 "CommentId" ==> Some id
-                            ])
+                            ] @ referenceMarkFormat styleMap theme effectiveParaProps run))
                         | NoteRef note ->
                             // Render the reference as its superscript mark number
                             // (Word writes note ids sequentially) in the normal
                             // text colour, matching the native/PDF path.
-                            Some (objFromFields [
+                            Some (objFromFields ([
                                 "Text" ==> noteMark note.NoteType note.Id
-                                "Bold" ==> false
-                                "Italic" ==> false
-                                "Underline" ==> false
-                                "AllCaps" ==> false
-                                "SmallCaps" ==> false
-                                "Strike" ==> false
-                                "FontSize" ==> 11.0
-                                "FontFamily" ==> "Calibri"
-                                "Color" ==> None
-                                "Highlight" ==> None
-                                "VertAlign" ==> Some "superscript"
-                                "IsImage" ==> false
+                                "Color" ==> wordColorToCss effectiveRunProps.Color
+                                "VertAlign" ==> (effectiveRunProps.VertAlign |> Option.orElse (Some "superscript"))
                                 "NoteId" ==> Some note.Id
                                 "NoteType" ==> Some note.NoteType
                                 "NoteText" ==> (noteBodies |> Map.tryFind (note.NoteType, note.Id))
-                            ])
+                            ] @ referenceMarkFormat styleMap theme effectiveParaProps run))
                         | BookmarkStart bookmark ->
                             Some (objFromFields [
                                 "Text" ==> ""
@@ -6003,43 +6010,24 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                                 "InactiveHyperlink" ==> (link.Target |> Option.filter (fun target -> not (isActiveHyperlinkTarget target)))
                             ] @ bookmarkRunProps run))
                         | CommentReference id ->
-                            Some (objFromFields [
+                            Some (objFromFields ([
                                 "Text" ==> (sprintf "[Comment %s]" id)
-                                "Bold" ==> false
-                                "Italic" ==> false
-                                "Underline" ==> false
-                                "AllCaps" ==> false
-                                "SmallCaps" ==> false
-                                "Strike" ==> false
-                                "FontSize" ==> 11.0
-                                "FontFamily" ==> "Calibri"
-                                "Color" ==> Some "#7c3aed"
-                                "Highlight" ==> None
-                                "IsImage" ==> false
+                                "Color" ==> (wordColorToCss effectiveRunProps.Color |> Option.orElse (Some commentMarkDisplayColor))
+                                "VertAlign" ==> effectiveRunProps.VertAlign
                                 "CommentId" ==> Some id
-                            ])
+                            ] @ referenceMarkFormat styleMap theme effectiveParaProps run))
                         | NoteRef note ->
                             // Render the reference as its superscript mark number
                             // (Word writes note ids sequentially) in the normal
                             // text colour, matching the native/PDF path.
-                            Some (objFromFields [
+                            Some (objFromFields ([
                                 "Text" ==> noteMark note.NoteType note.Id
-                                "Bold" ==> false
-                                "Italic" ==> false
-                                "Underline" ==> false
-                                "AllCaps" ==> false
-                                "SmallCaps" ==> false
-                                "Strike" ==> false
-                                "FontSize" ==> 11.0
-                                "FontFamily" ==> "Calibri"
-                                "Color" ==> None
-                                "Highlight" ==> None
-                                "VertAlign" ==> Some "superscript"
-                                "IsImage" ==> false
+                                "Color" ==> wordColorToCss effectiveRunProps.Color
+                                "VertAlign" ==> (effectiveRunProps.VertAlign |> Option.orElse (Some "superscript"))
                                 "NoteId" ==> Some note.Id
                                 "NoteType" ==> Some note.NoteType
                                 "NoteText" ==> (noteBodies |> Map.tryFind (note.NoteType, note.Id))
-                            ])
+                            ] @ referenceMarkFormat styleMap theme effectiveParaProps run))
                         | BookmarkStart bookmark ->
                             Some (objFromFields [
                                 "Text" ==> ""
