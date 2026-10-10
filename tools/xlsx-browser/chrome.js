@@ -727,3 +727,73 @@ checks['validation-list-formula'] = async () => {
     finally { close(); }
     return lines;
 };
+// Cells of one row meet edge to edge whatever the column widths: no gap of a pixel (a white line through filled cells and the text running over them).
+checks['cells-meet'] = async () => {
+    const { lines, check } = makeLog();
+    const { bytesOf } = await import('/component.js');
+    const gaps = (host, rows) => {
+        const found = [];
+        for (const r of rows) {
+            const nodes = [...host.querySelectorAll(`.spreadsheet-cell[data-row="${r}"]`)].map((n) => ({ c: Number(n.getAttribute('data-col')), box: n.getBoundingClientRect() })).filter((n) => n.box.width > 0).sort((a, b) => a.c - b.c);
+            for (let i = 1; i < nodes.length; i++) if (nodes[i].c === nodes[i - 1].c + 1 && Math.abs(nodes[i].box.left - nodes[i - 1].box.right) > 0.01) found.push([r, nodes[i - 1].c, nodes[i].box.left - nodes[i - 1].box.right]);
+        }
+        return found;
+    };
+    {
+        const { grid, host, close } = mountGrid();
+        try {
+            await grid.ImportXlsx(await bytesOf('tests/real-world/milk-street-office.xlsx')); await frame(); await frame();
+            const b5 = host.querySelector('.spreadsheet-cell[data-row="4"][data-col="1"]'), c5 = host.querySelector('.spreadsheet-cell[data-row="4"][data-col="2"]');
+            check('milk-street Annual B5 runs over into C5, both filled', [b5.textContent, getComputedStyle(b5).backgroundColor, getComputedStyle(c5).backgroundColor, getComputedStyle(b5).overflow], ['Acquisition Overview:', 'rgb(31, 73, 125)', 'rgb(31, 73, 125)', 'visible']);
+            check('... no pixel between B5 and C5', c5.getBoundingClientRect().left - b5.getBoundingClientRect().right, 0);
+            check('... nor between any two cells of rows 1 to 30', gaps(host, [...Array(30).keys()]), []);
+        } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
+        finally { close(); }
+    }
+    {
+        const { grid, host, close } = mountGrid();
+        try {
+            for (let c = 0; c < 12; c++) { grid.SetColumnWidth(c, 17.4 + c * 3.3); for (let r = 0; r < 12; r++) grid.SetCell(r, c, 'x'); }
+            for (let r = 0; r < 12; r++) grid.SetRowHeight(r, 18.6 + r * 0.7);
+            await frame();
+            check('columns of fractional widths: the cells meet', gaps(host, [...Array(12).keys()]), []);
+            const down = [];
+            for (let c = 0; c < 3; c++) for (let r = 1; r < 12; r++) { const a = host.querySelector(`.spreadsheet-cell[data-row="${r - 1}"][data-col="${c}"]`).getBoundingClientRect(), b = host.querySelector(`.spreadsheet-cell[data-row="${r}"][data-col="${c}"]`).getBoundingClientRect(); if (Math.abs(b.top - a.bottom) > 0.01) down.push([r, c, b.top - a.bottom]); }
+            check('rows of fractional heights: the cells meet', down, []);
+            const header = (c) => host.querySelector(`.spreadsheet-col-header[data-col="${c}"]`).getBoundingClientRect(), cell = (c) => host.querySelector(`.spreadsheet-cell[data-row="0"][data-col="${c}"]`).getBoundingClientRect();
+            check('the column letters stand over their columns', [...Array(12).keys()].filter((c) => Math.abs(header(c).left - cell(c).left) > 0.01 || Math.abs(header(c).right - cell(c).right) > 1.01), []);
+        } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
+        finally { close(); }
+    }
+    return lines;
+};
+
+// A print area of several areas through the host API and a save.
+checks['print-areas'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, close } = mountGrid();
+    try {
+        for (let r = 0; r < 30; r++) for (let c = 0; c < 8; c++) grid.SetCell(r, c, String(r * 8 + c));
+        grid.SetPageSetup({ printArea: 'A1:C10,E1:G10' });
+        check('set as a comma list', [grid.GetPageSetup().printArea, grid.GetPageSetup().printAreas], ['A1:C10,E1:G10', ['A1:C10', 'E1:G10']]);
+        grid.SetPageSetup(grid.GetPageSetup());
+        check('what GetPageSetup gives can be given back', grid.GetPageSetup().printAreas, ['A1:C10', 'E1:G10']);
+        grid.SetPageSetup({ printAreas: ['B2:C3', 'E5:F6', 'A20:B22'] });
+        check('set as a list', grid.GetPageSetup().printArea, 'B2:C3,E5:F6,A20:B22');
+        grid.Undo();
+        check('undo', grid.GetPageSetup().printAreas, ['A1:C10', 'E1:G10']);
+        const bytes = await grid.ExportXlsx();
+        const book = await (await window.JSZip.loadAsync(bytes)).files['xl/workbook.xml'].async('string');
+        check('written: each area with its sheet', /_xlnm\.Print_Area"[^>]*>Sheet1!\$A\$1:\$C\$10,Sheet1!\$E\$1:\$G\$10</.test(book.replace(/&apos;/g, '')), true);
+        const again = await reopened(grid);
+        try { check('read back', again.grid.GetPageSetup().printAreas, ['A1:C10', 'E1:G10']); } finally { again.close(); }
+        grid.InsertRows(0, 2);
+        check('inserted rows move every area', grid.GetPageSetup().printArea, 'A3:C12,E3:G12');
+        grid.SetPageSetup({ printArea: 'A1:B2' });
+        check('one area again', [grid.GetPageSetup().printArea, grid.GetPageSetup().printAreas], ['A1:B2', ['A1:B2']]);
+        grid.SetPageSetup({ printAreas: [] });
+        check('none', [grid.GetPageSetup().printArea, grid.GetPageSetup().printAreas], [null, []]);
+    } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
+    finally { close(); }
+    return lines;
+};

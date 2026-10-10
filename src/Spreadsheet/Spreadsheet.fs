@@ -3056,10 +3056,15 @@ type Spreadsheet(container: Element) =
         let css = System.Text.StringBuilder()
         let px (value: float) = string (int (value + 0.5)) + "px"
         let add (name: string) (value: string) = css.Append(name).Append(':').Append(value).Append(';') |> ignore
+        // (From the rounded left edge to the rounded right edge: rounding the
+        // width on its own leaves a pixel between this cell and the next
+        // when a column's width is not a whole number - a white line through
+        // a row of filled cells, and through text that runs across it.)
+        let span (start: float) (size: float) = string (int (start + size + 0.5) - int (start + 0.5)) + "px"
         add "left" (px x)
         add "top" (px y)
-        add "width" (px w)
-        add "height" (px h)
+        add "width" (span x w)
+        add "height" (span y h)
         add "line-height" (px (h - 4.0))
         // The colour of the cell's grid lines (a table has its own).
         let mutable gridColor = defaultGridColor
@@ -3601,7 +3606,7 @@ type Spreadsheet(container: Element) =
             node.Signature <- signature
             node.Index <- col
             setAttribute node.Element "data-col" (string col)
-            setCssText node.Element ("left:" + string (int (x + 0.5)) + "px;width:" + string (int (w + 0.5)) + "px;top:" + string gutterHeight + "px")
+            setCssText node.Element ("left:" + string (int (x + 0.5)) + "px;width:" + string (int (x + w + 0.5) - int (x + 0.5)) + "px;top:" + string gutterHeight + "px")
             setTextContent node.Label (columnToLetter col + sort)
             setStyle node.Label "cursor" (if readOnly then "default" else "pointer")
             match node.Button with
@@ -3616,7 +3621,7 @@ type Spreadsheet(container: Element) =
             node.Signature <- signature
             node.Index <- row
             setAttribute node.Element "data-row" (string row)
-            setCssText node.Element ("top:" + string (int (y + 0.5)) + "px;height:" + string (int (h + 0.5)) + "px;left:" + string gutterWidth + "px")
+            setCssText node.Element ("top:" + string (int (y + 0.5)) + "px;height:" + string (int (y + h + 0.5) - int (y + 0.5)) + "px;left:" + string gutterWidth + "px")
             setTextContent node.Label (string (row + 1))
             setStyle node.Handle "display" (if readOnly then "none" else "block")
 
