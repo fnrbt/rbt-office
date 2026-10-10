@@ -2304,6 +2304,15 @@ let private unescapeXmlText (raw: string) : string =
 let private escapeXmlText (text: string) : string =
     text.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;")
 
+/// Text for an element whose content was `raw`: quotation marks and
+/// apostrophes written as references when the content had them so. (A w:t
+/// that a character is typed into is written whole: the characters that were
+/// not touched stay the text they were - `&quot;Contribution&quot;` did not.)
+let private escapeXmlTextAs (raw: string) (text: string) : string =
+    let escaped = escapeXmlText text
+    let escaped = if raw.IndexOf "&quot;" >= 0 && raw.IndexOf '"' < 0 then escaped.Replace("\"", "&quot;") else escaped
+    if raw.IndexOf "&apos;" >= 0 && raw.IndexOf '\'' < 0 then escaped.Replace("'", "&apos;") else escaped
+
 /// The paragraphs of the body's own text in a piece of document.xml (those
 /// of tables, of tables in cells and of block content controls too; not the
 /// ones inside drawings and pictures), with where their text is.
@@ -2551,6 +2560,24 @@ let private planParagraphChange (xml: string) (para: SourceParagraph) (oldText: 
                         witnesses
                         |> Array.tryPick (fun witness -> segmentAt witness |> Option.filter (fun segment -> segment.Editable && segment.RunTyped))
                         |> Option.map (fun segment -> if segment.RunPropsStart >= 0 then xml.Substring(segment.RunPropsStart, segment.RunPropsEnd - segment.RunPropsStart) else "")
+                    elif joinAfter && offset = 0 && deleted = 0 && not para.SelfClosed then
+                        // Typed before a tab or a break the paragraph begins with, and formatted as it is (no
+                        // run of text is): the properties of the run that holds the tab - the paragraph's
+                        // first run, when that is what it holds.
+                        para.Children
+                        |> Seq.tryFind (fun (_, _, name) -> name <> "w:pPr")
+                        |> Option.bind (fun (start, fin, name) ->
+                            let run = xml.Substring(start, fin - start)
+                            let gt = tagEndIndex run 0
+                            let holds (tag: string) = run.IndexOf tag >= 0
+                            if name <> "w:r" || gt < 0 || run.[gt - 1] = '/' then None
+                            elif not (holds "<w:tab/>" || holds "<w:br/>" || holds "<w:br ") then None
+                            elif holds "fldChar" || holds "instrText" || holds "rPrChange" || holds "<w:drawing" || holds "<w:pict" || holds "<w:object" then None
+                            elif run.IndexOf("<w:rPr/>", gt + 1) = gt + 1 then Some ""
+                            elif run.IndexOf("<w:rPr>", gt + 1) = gt + 1 then
+                                let close = run.IndexOf("</w:rPr>", gt + 1)
+                                if close < 0 then None else Some (run.Substring(gt + 1, close + 8 - (gt + 1)))
+                            else Some "")
                     elif markStyle && not para.SelfClosed && para.Children.Count > 0 then
                         let (start, fin, name) = para.Children.[0]
                         if name <> "w:pPr" then Some ""
@@ -2578,7 +2605,7 @@ let private planParagraphChange (xml: string) (para: SourceParagraph) (oldText: 
                 let tagEnd = segment.ContentStart
                 let tag = xml.Substring(segment.TagStart, tagEnd - segment.TagStart)
                 let tag = if needsSpacePreserved text && tag.IndexOf "xml:space" < 0 then tag.Substring(0, tag.Length - 1) + " xml:space=\"preserve\">" else tag
-                replacements.Add((segment.TagStart, segment.ContentEnd, tag + escapeXmlText text))
+                replacements.Add((segment.TagStart, segment.ContentEnd, tag + escapeXmlTextAs (xml.Substring(segment.ContentStart, segment.ContentEnd - segment.ContentStart)) text))
             let remaining (segment: SourceTextSegment) =
                 let from = max offset segment.At - segment.At
                 let until = min deleteEnd (segment.At + segment.Text.Length) - segment.At
@@ -2605,7 +2632,8 @@ let private planParagraphChange (xml: string) (para: SourceParagraph) (oldText: 
                         let left, right = if touched then remaining segment else (let at = offset - segment.At in segment.Text.Substring(0, at), segment.Text.Substring at)
                         // The run's start tag and properties: both halves have them.
                         let head = xml.Substring(segment.RunStart, segment.TagStart - segment.RunStart)
-                        let half (text: string) = head + "<w:t xml:space=\"preserve\">" + escapeXmlText text + "</w:t></w:r>"
+                        let raw = xml.Substring(segment.ContentStart, segment.ContentEnd - segment.ContentStart)
+                        let half (text: string) = head + "<w:t xml:space=\"preserve\">" + escapeXmlTextAs raw text + "</w:t></w:r>"
                         replacements.Add((segment.RunStart, segment.RunEnd, half left + runsToken + half right))
                 elif touched then
                     let left, right = remaining segment
@@ -2663,8 +2691,6 @@ let rec private storyParagraphCount (item: obj) : int =
             |> Array.sumBy (fun cell -> (optionalArray (cell?Paragraphs)).Length + (optionalArray (cell?NestedTables) |> Array.sumBy storyParagraphCount)))
     | _ -> 1
 
-/// The XML of an element of the body with the changes of text of its items
-/// made in it. None when a change cannot be made there.
 // ---- a change of formatting made in the XML a paragraph was read from ---------
 // The editor says of a paragraph whose text is what it was that all of it was
 // made bold / italic / struck through / underlined (or not), or that its
@@ -2827,6 +2853,9 @@ let private planParagraphFormat (xml: string) (para: SourceParagraph) (text: str
                 | None -> ok <- false
         if ok then Some (List.ofSeq replacements) else None
 
+/// The XML of an element of the body with the changes of text, and of the
+/// formatting of whole paragraphs, of its items made in it. None when a
+/// change cannot be made there.
 let private patchSourceChunk (xml: string) (items: obj array) : string option =
     match scanSourceParagraphs xml with
     | None -> None

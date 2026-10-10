@@ -865,7 +865,13 @@ window.tenthFinish = async () => {
                 if (is[i] === was[i]) continue;
                 changed++;
                 if (byCharacter(was[i], is[i])) confined++;
-                else if (why.length < 3) why.push(`${JSON.stringify(was[i].slice(-160))} -> ${JSON.stringify(is[i].slice(-200))}`);
+                else if (why.length < 3) {
+                    // (Where the two begin to differ, and their ends.)
+                    let at = 0;
+                    while (at < was[i].length && was[i][at] === is[i][at]) at++;
+                    why.push(`at ${at}: ${JSON.stringify(was[i].slice(Math.max(0, at - 120), at + 200))} -> ${JSON.stringify(is[i].slice(Math.max(0, at - 120), at + 240))}`);
+                    why.push(`  ends: ${JSON.stringify(was[i].slice(-160))} -> ${JSON.stringify(is[i].slice(-200))}`);
+                }
             }
             rewritten = Math.max(0, chosen.length - confined);
             others = Math.max(0, changed - chosen.length);

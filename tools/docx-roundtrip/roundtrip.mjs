@@ -63,7 +63,7 @@
 // character alone (one character more in a w:t, or one run more that holds
 // it). The summary says how many paragraphs were written from the model
 // instead (the XML could not be matched with the text the editor had); at
-// least 95% must not be, and no paragraph nobody typed in may change (but in
+// least 99% must not be, and no paragraph nobody typed in may change (but in
 // the documents of tenthOthersKnown below). --no-tenth skips it.
 //
 // Usage:
@@ -111,7 +111,7 @@ const syntheticOnly = flag('--synthetic');
 const skipTenth = flag('--no-tenth');
 // Every tenth paragraph (see the header): the share of the paragraphs typed in that must differ by the character alone,
 // and the documents in which a paragraph nobody typed in may change (name fragments).
-const tenthConfinedShare = 0.95;
+const tenthConfinedShare = 0.99;
 // Every tenth paragraph made bold: the share that must be changed in its own XML (the others have a run without
 // text that the editor shows a character for - a tab, a break, a picture - and are written from the model).
 const boldConfinedShare = 0.85;
