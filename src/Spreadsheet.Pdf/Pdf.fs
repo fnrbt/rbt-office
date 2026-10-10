@@ -644,14 +644,10 @@ let private withCommentMarkersForPrint (model: SpreadsheetModel) : SpreadsheetMo
 
 let private directPrintDimensionRemapLimit = 100000
 
-let private printColumnWidthPx width =
-    let printScale = 15.0 / 14.0
-    if width <= 0.0 then width else width * printScale
+// (The sizes rows and columns print at are Pagination's: a host is told the same pages.)
+let private printColumnWidthPx width = Pagination.printColumnWidthPx width
 
-let private printRowHeightPx px =
-    if abs (px - 20.0) < 0.01 then 19.36      // Calibri 11 auto
-    elif abs (px - 21.0) < 0.01 then 20.64    // Calibri 12 auto
-    else px
+let private printRowHeightPx px = Pagination.printRowHeightPx px
 
 let private printDimensionBounds
     (model: SpreadsheetModel)
@@ -1340,8 +1336,8 @@ let toBytesWith (options: RenderOptions) (model: SpreadsheetModel)
     // Compute pagination from PageSetup. Empty workbook → one blank page.
     let pagination = Pagination.paginate model
     let ps = model.PageSetup
-    let pageWidthPt = ps.PageWidth
-    let pageHeightPt = ps.PageHeight
+    // (A landscape page is the wider way round, however the setup holds the paper's size.)
+    let pageWidthPt, pageHeightPt = Pagination.orientedPageSize ps
     let leftMarginPt = ps.Margins.Left * 72.0
     let rightMarginPt = ps.Margins.Right * 72.0
     let topMarginPt = ps.Margins.Top * 72.0

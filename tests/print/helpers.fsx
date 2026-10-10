@@ -1,4 +1,5 @@
 #r "nuget: Fable.Core, 4.3.0"
+#r "../../src/Spreadsheet/bin/Debug/netstandard2.0/Rbt.OfficeFormat.dll"
 #r "../../src/Spreadsheet/bin/Debug/netstandard2.0/Rbt.Spreadsheet.dll"
 #r "../../src/Spreadsheet.Pdf/bin/Debug/net10.0/Rbt.Spreadsheet.Pdf.dll"
 
@@ -183,6 +184,53 @@ let alone index = (Pagination.paginate (buildModel 30 8 { twoAreas with PrintAre
 ok "areas: fit to one page is one page for each area, at the scale the larger one needs"
    (fitted.Pages.Length = 2 && abs (fitted.Scale - min (alone 0) (alone 1)) < 1e-9 && alone 1 < alone 0)
    (sprintf "%d pages, scale %f (%f, %f)" fitted.Pages.Length fitted.Scale (alone 0) (alone 1))
+
+// ----- The pages of real workbooks: what the host API reports (Pagination.paginate, behind
+// GetPrintPages) is what the PDF has. Every sheet of several workbooks is rendered and its
+// pages counted in the PDF. -----
+let pdfPageCount (bytes: byte[]) =
+    let text = System.Text.Encoding.Latin1.GetString bytes
+    System.Text.RegularExpressions.Regex.Matches(text, "/Type\\s*/Page(?![a-zA-Z])").Count
+let mutable sheetsPaged = 0
+let mutable pagesCounted = 0
+for file in [ "real-world/milk-street-office.xlsx"; "real-world/lyric-multifamily.xlsx"; "real-world/dcf-stock-analysis.xlsx"; "real-world/dashboard-ecommerce-sales.xlsx"; "real-world/jumeirah-hotel.xlsx"; "test-documents-excel/poi-49156.xlsx" ] do
+    let path = System.IO.Path.Combine(__SOURCE_DIRECTORY__, "..", file)
+    let imported = Rbt.Spreadsheet.XlsxBridge.Import.importWorkbook (XlsxReader.loadBytesNative (System.IO.File.ReadAllBytes path) |> Option.get)
+    for sheet in imported.Sheets do
+        // (A sheet of a few hundred thousand cells is a few thousand pages: left to the PDF runner.)
+        if sheet.Model.Cells.Count < 20000 then
+            let pagination = Pagination.paginatePrinted sheet.Model
+            let options : Render.RenderOptions = { DefaultFontFamily = "Helvetica"; Fonts = []; CjkFallback = []; SheetName = sheet.Name; FileName = "book" }
+            let pdf = Render.toBytes options sheet.Model
+            sheetsPaged <- sheetsPaged + 1
+            pagesCounted <- pagesCounted + pagination.Pages.Length
+            ok (sprintf "pages: %s / %s" (System.IO.Path.GetFileName file) sheet.Name) (pdfPageCount pdf = max 1 pagination.Pages.Length)
+                (sprintf "the PDF has %d pages, the pagination %d" (pdfPageCount pdf) pagination.Pages.Length)
+            // Every cell of every print area is on exactly one page of its area.
+            let covered =
+                pagination.PrintAreas |> List.mapi (fun index area ->
+                    let pages = pagination.Pages |> List.filter (fun page -> page.Area = index)
+                    let cells = pages |> List.sumBy (fun page -> (page.RowEnd - page.RowStart + 1) * (page.ColEnd - page.ColStart + 1))
+                    let rows = match pagination.RepeatRows with Some (_, last) when last >= area.From.Row -> area.To.Row - max area.From.Row (last + 1) + 1 | _ -> area.To.Row - area.From.Row + 1
+                    let cols = match pagination.RepeatCols with Some (_, last) when last >= area.From.Col -> area.To.Col - max area.From.Col (last + 1) + 1 | _ -> area.To.Col - area.From.Col + 1
+                    cells = max 0 rows * max 0 cols)
+            ok (sprintf "pages: %s / %s cover their areas" (System.IO.Path.GetFileName file) sheet.Name) (List.forall id covered) (sprintf "%A" covered)
+// A landscape sheet is paginated the wider way round, whether its setup holds the paper's size
+// in portrait (a file read by the editor) or already turned (the native runner).
+do
+    let cells = [ for r in 0 .. 199 do for c in 0 .. 19 -> { Row = r; Col = c }, { Value = CellValue.Number 1.0; Format = defaultFormat; Comment = None } ] |> Map.ofList
+    let sheet setup = { createEmpty 200 20 with Cells = cells; PageSetup = setup }
+    let portrait = Pagination.paginatePrinted (sheet defaultPageSetup)
+    let landscape = Pagination.paginatePrinted (sheet { defaultPageSetup with Orientation = LandscapeOrientation })
+    let turned = Pagination.paginatePrinted (sheet { defaultPageSetup with Orientation = LandscapeOrientation; PageWidth = defaultPageSetup.PageHeight; PageHeight = defaultPageSetup.PageWidth })
+    let first (p: Pagination.Pagination) = let page = p.Pages.Head in page.RowEnd, page.ColEnd
+    ok "landscape: fewer rows and more columns to a page" (fst (first landscape) < fst (first portrait) && snd (first landscape) > snd (first portrait)) (sprintf "%A vs %A" (first landscape) (first portrait))
+    ok "landscape: the same pages with the turned size given" (landscape.Pages = turned.Pages) ""
+    let size (bytes: byte[]) = let m = System.Text.RegularExpressions.Regex.Match(System.Text.Encoding.Latin1.GetString bytes, "/MediaBox\\s*\\[\\s*0\\s+0\\s+([0-9.]+)\\s+([0-9.]+)") in float m.Groups.[1].Value, float m.Groups.[2].Value
+    let options : Render.RenderOptions = { DefaultFontFamily = "Helvetica"; Fonts = []; CjkFallback = []; SheetName = "S"; FileName = "f" }
+    let pdf = Render.toBytes options (sheet { defaultPageSetup with Orientation = LandscapeOrientation })
+    ok "landscape: the PDF's pages are the wider way round" (size pdf = (792.0, 612.0) && pdfPageCount pdf = landscape.Pages.Length) (sprintf "%A, %d pages (%d)" (size pdf) (pdfPageCount pdf) landscape.Pages.Length)
+ok "pages: sheets were paginated" (sheetsPaged >= 12 && pagesCounted > sheetsPaged) (sprintf "%d sheets, %d pages" sheetsPaged pagesCounted)
 
 printfn "Print-helper tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

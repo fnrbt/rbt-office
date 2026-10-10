@@ -25,6 +25,15 @@ let headingsOffsets (ps: PageSetup) : float * float =
     then printHeadingsColWidthPx, printHeadingsRowHeightPx
     else 0.0, 0.0
 
+/// The paper as it is printed on: (width, height) in points. A setup's
+/// `PageWidth` / `PageHeight` are the paper's in portrait where the setup
+/// came from a file through the editor, and already turned where a host put
+/// the turned size in; a landscape page is the wider way round either way.
+let orientedPageSize (ps: PageSetup) : float * float =
+    match ps.Orientation with
+    | LandscapeOrientation when ps.PageWidth < ps.PageHeight -> ps.PageHeight, ps.PageWidth
+    | _ -> ps.PageWidth, ps.PageHeight
+
 /// One page in the print layout — an inclusive 0-indexed rectangle.
 type PageSlice = {
     RowStart: int
@@ -148,8 +157,9 @@ let paginate (model: SpreadsheetModel) : Pagination =
     let topPt = ps.Margins.Top * 72.0
     let bottomPt = ps.Margins.Bottom * 72.0
     let pxPerPt = 96.0 / 72.0
-    let printableWidthPx = max 50.0 ((ps.PageWidth - leftPt - rightPt) * pxPerPt)
-    let printableHeightPx = max 50.0 ((ps.PageHeight - topPt - bottomPt) * pxPerPt)
+    let pageWidth, pageHeight = orientedPageSize ps
+    let printableWidthPx = max 50.0 ((pageWidth - leftPt - rightPt) * pxPerPt)
+    let printableHeightPx = max 50.0 ((pageHeight - topPt - bottomPt) * pxPerPt)
 
     let repeatRowsHeight =
         ps.RepeatRows
@@ -237,3 +247,28 @@ let paginate (model: SpreadsheetModel) : Pagination =
           RepeatRows = ps.RepeatRows
           RepeatCols = ps.RepeatCols }
     result
+
+/// The width a column prints at: Excel lays the grid out with the floored
+/// screen width of a character but prints with the unfloored one, 15/14
+/// wider (see `Render.withPrintColumnWidths` in Spreadsheet.Pdf).
+let printColumnWidthPx (width: float) : float =
+    let printScale = 15.0 / 14.0
+    if width <= 0.0 then width else width * printScale
+
+/// The height a row prints at: the automatic rows of Calibri 11 and 12
+/// print a fraction lower than the grid shows them.
+let printRowHeightPx (px: float) : float =
+    if abs (px - 20.0) < 0.01 then 19.36      // Calibri 11 auto
+    elif abs (px - 21.0) < 0.01 then 20.64    // Calibri 12 auto
+    else px
+
+/// The sheet with its rows and columns at the sizes they print at.
+let withPrintSizes (model: SpreadsheetModel) : SpreadsheetModel =
+    { model with
+        ColumnWidths = (if Map.isEmpty model.ColumnWidths then model.ColumnWidths else model.ColumnWidths |> Map.map (fun _ width -> printColumnWidthPx width))
+        RowHeights = (if Map.isEmpty model.RowHeights then model.RowHeights else model.RowHeights |> Map.map (fun _ px -> printRowHeightPx px)) }
+
+/// The pages the sheet prints on: `paginate` of the sheet at its print
+/// sizes - what the PDF export lays out, and what a host's print preview is told.
+let paginatePrinted (model: SpreadsheetModel) : Pagination =
+    paginate (withPrintSizes model)

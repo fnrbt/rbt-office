@@ -23,6 +23,8 @@
     <Compile Include="XlsxImporter.fs" />
     <Compile Include="Tabs.fs" />
     <Compile Include="HostShapes.fs" />
+    <Compile Include="PrintHeaderFooter.fs" />
+    <Compile Include="Pagination.fs" />
     <Compile Include="Spreadsheet.fs" />
     <Compile Include="SpreadsheetVba.fs" />
     <Compile Include="Toolbar.fs" />

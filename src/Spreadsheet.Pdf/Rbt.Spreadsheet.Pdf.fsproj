@@ -5,8 +5,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="HeaderFooter.fs" />
-    <Compile Include="Pagination.fs" />
     <Compile Include="Pdf.fs" />
   </ItemGroup>
 

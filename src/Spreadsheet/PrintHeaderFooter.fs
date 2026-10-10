@@ -172,7 +172,7 @@ let private resolveStyledSection (ctx: PageContext) (raw: string) : StyledSectio
     let parseHexColor startIndex =
         let stop = min raw.Length (startIndex + 6)
         let mutable j = startIndex
-        while j < stop && System.Uri.IsHexDigit raw.[j] do j <- j + 1
+        while j < stop && (let c = raw.[j] in (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) do j <- j + 1
         let len = j - startIndex
         let value =
             if len = 6 then

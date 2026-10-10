@@ -300,3 +300,62 @@ checks['opens-on-saved-sheet'] = async () => {
     }
     return lines;
 };
+
+// GetPrintPages: the pages a sheet prints on, as the PDF export lays them out (the numbers
+// below are what tests/print/helpers.fsx counts in the PDFs of the same workbooks).
+checks['print-pages'] = async () => {
+    const { lines, check } = makeLog();
+    const expected = [
+        ['tests/real-world/milk-street-office.xlsx', 'Annual', 6, 38, 'A1:L63'],
+        ['tests/real-world/milk-street-office.xlsx', 'Monthly', 40, 33, 'A1:R58'],
+        ['tests/real-world/lyric-multifamily.xlsx', 'Lyric-PF-DCF', 14, 32, 'A1:Q57'],
+        ['tests/real-world/lyric-multifamily.xlsx', 'Comp-Sales', 1, 40, 'A1:O24'],
+        ['tests/real-world/lyric-multifamily.xlsx', 'Apt-Comps', 2, 41, 'A1:P20'],
+        ['tests/real-world/lyric-multifamily.xlsx', 'Replacement-Cost', 1, 54, 'A1:I39'],
+        ['tests/real-world/dcf-stock-analysis.xlsx', 'Main', 2, 100, 'B2:J39'],
+        ['tests/real-world/dcf-stock-analysis.xlsx', 'Financial Model', 10, 100, 'A1:I53'],
+    ];
+    for (const file of [...new Set(expected.map((e) => e[0]))]) {
+        const { grid, close } = mountGrid();
+        try {
+            await grid.ImportXlsx(await bytesOf(file));
+            const names = grid.GetSheetNames();
+            for (const [, name, count, scale, first] of expected.filter((e) => e[0] === file)) {
+                const index = names.indexOf(name), shown = grid.GetActiveSheetIndex();
+                const print = grid.GetPrintPages(index);
+                check(`${name}: pages, scale and the first page as in the PDF`, [print.pageCount, print.pages.length, print.scale, print.pages[0].range, print.sheetName, print.sheetIndex], [count, count, scale, first, name, index]);
+                check(`${name}: asking does not switch sheets`, grid.GetActiveSheetIndex(), shown);
+                check(`${name}: the setup is GetPageSetup's`, JSON.stringify(print.setup), JSON.stringify(grid.GetPageSetup(index)));
+            }
+        } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+        close();
+    }
+    // A sheet of the editor's own: breaks, fitting, titles, headers.
+    const { grid, close } = mountGrid();
+    try {
+        for (let row = 0; row < 120; row++) for (let col = 0; col < 4; col++) grid.SetCell(row, col, String(row * 4 + col));
+        const plain = grid.GetPrintPages();
+        check('a new sheet: its used range in pages down the sheet', [plain.printAreas, plain.scale, plain.pageCount > 1, plain.pages[0].firstRow, plain.pages[plain.pageCount - 1].lastRow, plain.pages.every((p) => p.firstCol === 0 && p.lastCol === 3 && p.area === 0), plain.pages[0].header, plain.pages[0].number],
+            [['A1:D120'], 100, true, 0, 119, true, null, 1]);
+        check('the pages follow one another', plain.pages.every((p, i) => i === 0 || p.firstRow === plain.pages[i - 1].lastRow + 1), true);
+        grid.AddPageBreak(10);
+        const broken = grid.GetPrintPages();
+        check('a manual break ends a page', [broken.pageCount, broken.pages[0].lastRow + 1 === broken.pages[1].firstRow, broken.breaks.rows, [9, 10].includes(broken.pages[0].lastRow)], [plain.pageCount + 1, true, grid.GetPageBreaks().rows, true]);
+        grid.SetPageSetup({ header: '&LPage &P of &N&C&A&R&F', footer: 'Total &N', firstPageNumber: 5, printTitles: { rows: '1:2' } });
+        const titled = grid.GetPrintPages(null, 'book.xlsx');
+        check('print titles ride along: the body starts below them', [titled.printTitles, titled.pages[0].firstRow], [{ rows: { first: 0, last: 1 }, columns: null }, 2]);
+        check('headers and footers as printed', [titled.pages[1].header, titled.pages[1].footer, titled.pages[1].number, titled.pages[1].index],
+            [{ left: `Page 6 of ${titled.pageCount}`, center: 'Sheet1', right: 'book.xlsx' }, { left: '', center: `Total ${titled.pageCount}`, right: '' }, 6, 1]);
+        grid.SetPageSetup({ fitToWidth: 1, fitToHeight: 1 });
+        const fitted = grid.GetPrintPages();
+        check('fitted to one page: one page per manual break, at a smaller scale', [fitted.pageCount <= 2, fitted.scale < 100, fitted.setup.fitToWidth], [true, true, 1]);
+        grid.ClearPageBreaks();
+        check('... and one page without the break', grid.GetPrintPages().pageCount, 1);
+        grid.SetPageSetup({ scale: 100, orientation: 'landscape' });
+        check('landscape: fewer rows to a page', grid.GetPrintPages().pageCount > plain.pageCount - 1 && grid.GetPrintPages().pages[0].lastRow < plain.pages[0].lastRow, true);
+        let thrown = null; try { grid.GetPrintPages(7); } catch (e) { thrown = String(e.message || e); }
+        check('a sheet that is not there', thrown !== null && /GetPrintPages/.test(thrown), true);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};

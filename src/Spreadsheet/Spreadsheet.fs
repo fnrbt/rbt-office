@@ -7227,6 +7227,82 @@ type Spreadsheet(container: Element) =
     member _.GetPageSetup(?sheetIndex: obj) : obj =
         Host.pageSetupToObj (sheetArg "GetPageSetup" (defaultArg sheetIndex null)).PageSetup
 
+    /// The pages a sheet (the active one, or `sheetIndex`) prints on, as the
+    /// PDF export lays them out (the same pagination: manual page breaks,
+    /// the scale or the fit to pages, a print area of several areas, print
+    /// titles and the row / column headings taken off every page) - for a
+    /// print preview or a page-break view:
+    /// { sheetIndex, sheetName,
+    ///   setup: the object of GetPageSetup,
+    ///   scale: the scale the sheet is printed at, in percent (the one that
+    ///     fits it to its pages when it is fitted),
+    ///   printAreas: ["A1:F40", ...] (what is printed: the print area's areas
+    ///     in order, or the used range),
+    ///   printTitles: { rows: { first, last } | null, columns: { first, last } | null } (0-based),
+    ///   breaks: { rows: [...], columns: [...] } (the manual ones, as GetPageBreaks),
+    ///   pageCount,
+    ///   pages: [{ index (0-based), number (as &P prints it: firstPageNumber counts),
+    ///     area (index into printAreas), range: "A1:F40",
+    ///     firstRow, lastRow, firstCol, lastCol (0-based, the body of the
+    ///     page: print titles ride along beside it),
+    ///     header, footer: { left, center, right } | null - the texts as
+    ///     printed, codes resolved (&P &N &D &T &A &F ...; the first / even
+    ///     ones where the setup has them) }] }.
+    /// `fileName` is what &F prints (default ""). A sheet of an opened file
+    /// that was not needed so far is converted by this call.
+    member _.GetPrintPages(?sheetIndex: obj, ?fileName: obj) : obj =
+        let memberName = "GetPrintPages"
+        let index =
+            match Host.optionalArg (Host.intArg memberName "sheetIndex") (defaultArg sheetIndex null) with
+            | None -> activeSheetIndex
+            | Some index -> index
+        let source = sheetArg memberName (defaultArg sheetIndex null)
+        let file = Host.optionalArg (Host.stringArg memberName "fileName") (defaultArg fileName null) |> Option.defaultValue ""
+        let setup = source.PageSetup
+        let pagination = Rbt.Spreadsheet.Pdf.Pagination.paginatePrinted source
+        let pages = List.toArray pagination.Pages
+        let total = max 1 pages.Length
+        let offset = if setup.UseFirstPageNumber then setup.FirstPageNumber - 1 else 0
+        let now = System.DateTime.Now
+        let sectionObj (raw: string option) (number: int) : obj =
+            match raw with
+            | None -> null
+            | Some raw ->
+                let context : Rbt.Spreadsheet.Pdf.HeaderFooter.PageContext =
+                    { PageNumber = number + offset; TotalPages = total; SheetName = sheetNames.[index]; FileName = file; FilePath = ""; Now = now }
+                let resolved = Rbt.Spreadsheet.Pdf.HeaderFooter.resolve context raw
+                createObj [ "left" ==> resolved.Left.Text; "center" ==> resolved.Center.Text; "right" ==> resolved.Right.Text ]
+        let span (range: (int * int) option) : obj =
+            match range with
+            | Some (first, last) -> createObj [ "first" ==> first; "last" ==> last ]
+            | None -> null
+        createObj [
+            "sheetIndex" ==> index
+            "sheetName" ==> sheetNames.[index]
+            "setup" ==> Host.pageSetupToObj setup
+            "scale" ==> System.Math.Round (pagination.Scale * 10000.0) / 100.0
+            "printAreas" ==> (pagination.PrintAreas |> List.map SheetOps.rangeText |> List.toArray)
+            "printTitles" ==> createObj [ "rows" ==> span pagination.RepeatRows; "columns" ==> span pagination.RepeatCols ]
+            "breaks" ==> Host.pageBreaksToObj setup
+            "pageCount" ==> pages.Length
+            "pages" ==>
+                (pages |> Array.mapi (fun at page ->
+                    let header, footer =
+                        let hf = setup.HeaderFooter
+                        if hf.DifferentFirst && at = 0 then hf.FirstHeader, hf.FirstFooter
+                        elif hf.DifferentOddEven && (at + 1) % 2 = 0 then hf.EvenHeader, hf.EvenFooter
+                        else hf.OddHeader, hf.OddFooter
+                    createObj [
+                        "index" ==> at
+                        "number" ==> at + 1 + offset
+                        "area" ==> page.Area
+                        "range" ==> SheetOps.rangeText { From = { Row = page.RowStart; Col = page.ColStart }; To = { Row = page.RowEnd; Col = page.ColEnd } }
+                        "firstRow" ==> page.RowStart; "lastRow" ==> page.RowEnd
+                        "firstCol" ==> page.ColStart; "lastCol" ==> page.ColEnd
+                        "header" ==> sectionObj header (at + 1)
+                        "footer" ==> sectionObj footer (at + 1) ]))
+        ]
+
     /// Change the page setup of a sheet (the active one, or `sheetIndex`):
     /// `changes` is the object of GetPageSetup with only the keys to change
     /// (the whole object may be handed back). One undo step. `scale` switches
