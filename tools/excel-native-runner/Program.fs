@@ -567,7 +567,7 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
                                         elif span = 0.0 then 1.0
                                         else (n - rangeMin) / span
                                     let frac = max 0.0 (min 1.0 frac)
-                                    acc <- Map.add addr { cd with Format = { cd.Format with DataBar = Some (frac, "#" + barColor) } } acc
+                                    acc <- Map.add addr { cd with Format = { cd.Format with DataBar = Some (plainDataBar frac ("#" + barColor)) } } acc
                                 | None -> ()
                             | None -> ()
                     | "iconSet" ->
@@ -601,7 +601,7 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
                                     let mutable idx = 0
                                     for i in 0 .. thresholds.Length - 1 do
                                         if n >= thresholds.[i] then idx <- i
-                                    acc <- Map.add addr { cd with Format = { cd.Format with IconSet = Some (idx, iconCount) } } acc
+                                    acc <- Map.add addr { cd with Format = { cd.Format with IconSet = Some { Family = (match iconCount with 4 -> "4TrafficLights" | 5 -> "5Arrows" | _ -> "3TrafficLights1"); Index = idx; Count = iconCount; HideValue = false } } } acc
                                 | None -> ()
                             | None -> ()
                     | "top10" ->
@@ -1389,7 +1389,9 @@ let private buildWorkbookContext (xlsxWb: Xlsx.Workbook) : Rbt.Spreadsheet.Workb
       SheetOrder = sheets |> List.map fst
       ActiveSheet = (match sheets with (id, _) :: _ -> id | [] -> "sheet1")
       Tables = tables
-      Names = names }
+      Names = names
+      NameInfo = Map.empty
+      Iteration = None }
 
 let private escapeJson (value: string) =
     let sb = System.Text.StringBuilder(value.Length + 2)
