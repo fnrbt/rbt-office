@@ -252,6 +252,10 @@ async function main() {
                         tenthNotes.push(`${name}: ${tenth.edited} typed in, ${tenth.confined} changed by the character alone, ${tenth.rewritten} written from the model, ${tenth.others} others changed`);
                         if (verbose || process.env.TENTH_WHY) for (const line of tenth.why) tenthNotes.push('      ' + line);
                     }
+                    // Every paragraph typed in is changed by the character alone - also one that begins with an anchored
+                    // picture (file-sample.docx), where the character comes as a run of its own with the properties the
+                    // model gives it - but in the documents listed in the header.
+                    if (tenth.rewritten > 0 && !tenthOthersKnown.some((known) => name.includes(known))) problems.push(`every tenth paragraph: ${tenth.rewritten} paragraphs typed in were written from the model`);
                     // Paragraphs nobody typed in stay the text they were read from - but for the documents listed in the header.
                     if (tenth.others > 0 && !tenthOthersKnown.some((known) => name.includes(known))) problems.push(`every tenth paragraph: ${tenth.others} paragraphs nobody typed in are not the text they were read from`);
                 }
