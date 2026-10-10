@@ -771,18 +771,39 @@ let sortOptionsOfObj (memberName: string) (value: obj) : SortOptions =
         { HasHeader = (optionalArg (boolArg memberName "options.hasHeader") (getKey value "hasHeader") |> Option.defaultValue false)
           CaseSensitive = (optionalArg (boolArg memberName "options.caseSensitive") (getKey value "caseSensitive") |> Option.defaultValue false) }
 
-/// Filter criteria as a host reads them.
+/// A copy of what a host gave (objects, arrays, numbers, texts, Dates), so
+/// that neither side sees the other's later changes of it.
+[<Emit("(typeof structuredClone === 'function' ? structuredClone($0) : JSON.parse(JSON.stringify($0)))")>]
+let cloneGiven (value: obj) : obj = jsNative
+
+/// Filter criteria as a host reads them when the editor has only the
+/// model's (a filter of an opened file, or one set by the grid's own
+/// buttons): keys at their default are left out (`blanks: false`, `and`
+/// with one condition or when true, `percent` / `bottom: false`, `by:
+/// "cellColor"`), and the operand of a comparison that is written as a
+/// number is a number (a file does not say whether "5" was typed as text).
 let filterToObj (criteria: FilterCriteria) : obj =
     let description = describeFilter criteria
+    let some (pairs: (string * obj) option list) = createObj (pairs |> List.choose id)
     match description.Kind with
-    | "values" -> createObj [ "values" ==> Array.ofList description.Values; "blanks" ==> description.Blanks ]
+    | "values" -> some [ Some ("values", box (Array.ofList description.Values)); (if description.Blanks then Some ("blanks", box true) else None) ]
     | "conditions" ->
-        createObj [
-            "conditions" ==> [| for condition in description.Conditions -> createObj [ "operator" ==> condition.Operator; "value" ==> condition.Value ] |]
-            "and" ==> description.And
+        let valueOf (condition: FilterConditionDescription) : obj =
+            match condition.Operator with
+            | "contains" | "notContains" | "beginsWith" | "endsWith" -> box condition.Value
+            | _ ->
+                match System.Double.TryParse(condition.Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture) with
+                | true, number when string number = condition.Value -> box number
+                | _ -> box condition.Value
+        some [
+            Some ("conditions", box [| for condition in description.Conditions -> createObj [ "operator" ==> condition.Operator; "value" ==> valueOf condition ] |])
+            (if description.Conditions.Length > 1 && not description.And then Some ("and", box false) else None)
         ]
-    | "top" -> createObj [ "top" ==> createObj [ "count" ==> description.Count; "percent" ==> description.Percent; "bottom" ==> description.Bottom ] ]
-    | "color" -> createObj [ "color" ==> (if description.Color = "" then null else box description.Color); "by" ==> description.By ]
+    | "top" ->
+        createObj [ "top" ==> some [ Some ("count", box description.Count)
+                                     (if description.Percent then Some ("percent", box true) else None)
+                                     (if description.Bottom then Some ("bottom", box true) else None) ] ]
+    | "color" -> some [ Some ("color", (if description.Color = "" then null else box description.Color)); (if description.By <> "cellColor" then Some ("by", box description.By) else None) ]
     | "dynamic" -> createObj [ "dynamic" ==> description.Dynamic ]
     | _ -> createObj [ "kept" ==> true ]
 

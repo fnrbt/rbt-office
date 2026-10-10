@@ -1716,7 +1716,7 @@ checks['api-sortfilter'] = async () => {
         grid.SetFilter(0, { values: ['East'] });
         await frame();
         const filters = grid.GetFilters();
-        check('SetFilter by values (case-insensitive): the other rows are hidden', [filters.hiddenRows, filters.hiddenRowCount, filters.visibleRowCount, filters.columns], [[2, 4, 5, 6, 7], 5, 3, [{ column: 0, letter: 'A', criteria: { values: ['East'], blanks: false } }]]);
+        check('SetFilter by values (case-insensitive): the other rows are hidden', [filters.hiddenRows, filters.hiddenRowCount, filters.visibleRowCount, filters.columns], [[2, 4, 5, 6, 7], 5, 3, [{ column: 0, letter: 'A', criteria: { values: ['East'] } }]]);
         check('the grid draws the rows that are left, with their own numbers', [rowsDrawn(), cellDrawn(2, 0), cellDrawn(3, 0), grid.GetRowHeight(2) >= 0], [[0, 1, 3, 8, 9, 10, 11], false, true, true]);
         check('the hidden rows keep their cells', column(0, [2, 4, 5]), ['West', 'North', 'West']);
         check('SUBTOTAL leaves the hidden rows out, SUM does not', [grid.GetCell(10, 1).text, grid.GetCell(10, 2).text], ['70', '230']);
@@ -1733,7 +1733,35 @@ checks['api-sortfilter'] = async () => {
         check('text conditions', [hiddenFor(3, { conditions: [{ operator: 'contains', value: 'order' }] }), hiddenFor(3, { conditions: [{ operator: 'notContains', value: 'order' }] }), hiddenFor(3, { conditions: [{ operator: 'beginsWith', value: 's' }] }),
             hiddenFor(3, { conditions: [{ operator: 'endsWith', value: '?' }] }), hiddenFor(3, { conditions: [{ operator: 'equals', value: '5?% *' }] }), hiddenFor(0, { conditions: [{ operator: 'notEquals', value: 'west' }] })],
             [[2, 3, 4, 6, 7, 8], [1, 5], [1, 3, 4, 5, 6, 7, 8], [1, 2, 3, 4, 5, 6, 8], [1, 2, 3, 5, 6, 7, 8], [2, 5]]);
-        check('the criteria read back as they were given', grid.GetFilters().columns[0].criteria, { conditions: [{ operator: 'notEquals', value: 'west' }], and: true });
+        check('the criteria read back as they were given', grid.GetFilters().columns[0].criteria, { conditions: [{ operator: 'notEquals', value: 'west' }] });
+        // What was set is what is read: the types of the values, and no key that was not given.
+        const readBack = (col, criteria) => { grid.ClearFilter(); grid.SetFilter(col, criteria); return grid.GetFilters().columns[0].criteria; };
+        const five = readBack(1, { conditions: [{ operator: 'greaterThan', value: 5 }] });
+        check('a condition set with the number 5 reads back with the number 5, and nothing added', [five, typeof five.conditions[0].value, Object.keys(five)], [{ conditions: [{ operator: 'greaterThan', value: 5 }] }, 'number', ['conditions']]);
+        check('a condition set with the text "5" reads back with the text', readBack(1, { conditions: [{ operator: 'equals', value: '5' }] }), { conditions: [{ operator: 'equals', value: '5' }] });
+        check('two conditions with and: false, a number and a text', readBack(1, { conditions: [{ operator: 'lessThan', value: 20.5 }, { operator: 'greaterThan', value: '50' }], and: false }), { conditions: [{ operator: 'lessThan', value: 20.5 }, { operator: 'greaterThan', value: '50' }], and: false });
+        check('and: true is kept when it was given', readBack(1, { conditions: [{ operator: 'greaterOrEqual', value: 20 }, { operator: 'lessOrEqual', value: 40 }], and: true }), { conditions: [{ operator: 'greaterOrEqual', value: 20 }, { operator: 'lessOrEqual', value: 40 }], and: true });
+        const when = new Date(2024, 2, 31);
+        const dated = readBack(1, { conditions: [{ operator: 'lessThan', value: when }] });
+        check('a Date reads back as a Date (a copy)', [dated.conditions[0].value instanceof Date, dated.conditions[0].value.getTime() === when.getTime(), dated.conditions[0].value !== when], [true, true, true]);
+        check('values, top, colour and dynamic filters read back as given', [readBack(0, { values: ['East', 'west'], blanks: true }), readBack(0, { values: ['East'], blanks: false }), readBack(1, { top: { count: 2 } }), readBack(1, { top: { count: 3, percent: true, bottom: false } }), readBack(1, { color: '#ffff00' }), readBack(1, { color: null, by: 'fontColor' }), readBack(1, { dynamic: 'aboveAverage' })],
+            [{ values: ['East', 'west'], blanks: true }, { values: ['East'], blanks: false }, { top: { count: 2 } }, { top: { count: 3, percent: true, bottom: false } }, { color: '#ffff00' }, { color: null, by: 'fontColor' }, { dynamic: 'aboveAverage' }]);
+        const given = { conditions: [{ operator: 'greaterThan', value: 5 }] };
+        const first = readBack(1, given);
+        given.conditions[0].value = 99; first.conditions[0].value = 77;
+        check('what is read is a copy: neither side changes the filter', grid.GetFilters().columns[0].criteria, { conditions: [{ operator: 'greaterThan', value: 5 }] });
+        grid.SetFilter(1, { conditions: [{ operator: 'greaterThan', value: '30' }] }); grid.Undo();
+        check('undo brings the earlier filter back with its own types', grid.GetFilters().columns[0].criteria, { conditions: [{ operator: 'greaterThan', value: 5 }] });
+        grid.Redo();
+        check('redo the later one', grid.GetFilters().columns[0].criteria, { conditions: [{ operator: 'greaterThan', value: '30' }] });
+        {
+            // Through a file there is only what XLSX holds: defaults are left out and a comparison's number is a number.
+            grid.ClearFilter(); grid.SetFilter(1, { conditions: [{ operator: 'greaterThan', value: '5' }, { operator: 'lessThan', value: 45 }], and: true }); grid.SetFilter(0, { values: ['East', 'West'] }); grid.SetFilter(3, { conditions: [{ operator: 'contains', value: '5' }] });
+            const again = await reopened(grid);
+            check('after export and re-import: the documented canonical shape', again.grid.GetFilters().columns.map((entry) => entry.criteria),
+                [{ values: ['East', 'West'] }, { conditions: [{ operator: 'greaterThan', value: 5 }, { operator: 'lessThan', value: 45 }] }, { conditions: [{ operator: 'contains', value: '5' }] }]);
+            again.close();
+        }
         check('top and bottom', [hiddenFor(1, { top: { count: 2 } }), hiddenFor(1, { top: { count: 2, bottom: true } }), hiddenFor(1, { top: { count: 30, percent: true } })], [[1, 2, 3, 4, 7, 8], [1, 4, 5, 6, 7], [1, 2, 3, 4, 7, 8]]);
         check('by colour', [hiddenFor(1, { color: '#ffff00' }), hiddenFor(1, { color: '#FF0000', by: 'fontColor' }), hiddenFor(1, { color: null })], [[1, 2, 3, 4, 5, 6, 7], [1, 2, 4, 5, 6, 7, 8], [8]]);
         check('above and below average', [hiddenFor(1, { dynamic: 'aboveAverage' }), hiddenFor(1, { dynamic: 'belowAverage' })], [[1, 2, 3, 7, 8], [4, 5, 6, 7]]);
@@ -1805,7 +1833,7 @@ checks['api-sortfilter'] = async () => {
             boxes.forEach((box, i) => { box.checked = i === 1 || i === 2; });
             [...dropdown.querySelectorAll('button')].find((b) => b.textContent === 'Apply').click();
             await frame();
-            check('Apply sets a values filter on the column (an undo step)', [grid.GetFilters().columns.map((c) => [c.letter, c.criteria]), grid.GetFilters().hiddenRows], [[['A', { values: ['East'], blanks: false }], ['B', { values: ['20', '30'], blanks: false }]], [2, 4, 5, 6, 7]]);
+            check('Apply sets a values filter on the column (an undo step)', [grid.GetFilters().columns.map((c) => [c.letter, c.criteria]), grid.GetFilters().hiddenRows], [[['A', { values: ['East'] }], ['B', { values: ['20', '30'] }]], [2, 4, 5, 6, 7]]);
             grid.Undo();
             check('... that undo takes back', grid.GetFilters().columns.length, 1);
         }

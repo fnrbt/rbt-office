@@ -797,6 +797,10 @@ type Spreadsheet(container: Element) =
         calculatedWorkbook <- None
         engineGeneration <- engineGeneration + 1
 
+    /// What hosts gave SetFilter, by "sheet id|column", with the criteria it
+    /// became: GetFilters reads a column's filter back as it was given.
+    let filterGiven = System.Collections.Generic.Dictionary<string, FilterCriteria * obj>()
+
     let sheetIdForIndex (index: int) =
         match workbook with
         | Some wb when index >= 0 && index < List.length wb.SheetOrder ->
@@ -8646,6 +8650,9 @@ type Spreadsheet(container: Element) =
         | Some filter when not filter.Implicit && (col < filter.Range.From.Col || col > filter.Range.To.Col) ->
             Host.hostFail "SetFilter" (sprintf "column %s is outside the filter range %s" (columnToLetter col) (SheetOps.rangeText filter.Range))
         | _ -> ()
+        // (What the host gave is what GetFilters hands back for as long as
+        // the column's filter is this one - through undo and redo too.)
+        filterGiven.[sprintf "%s|%d" (sheetIdForIndex activeSheetIndex) col] <- (wanted, Host.cloneGiven criteria)
         if changeFilter (sprintf "Filter column %s" (columnToLetter col)) (setColumnFilter col wanted) then render()
 
     /// Take the filter off `column` (0-based or letters), or off every column
@@ -8668,16 +8675,26 @@ type Spreadsheet(container: Element) =
     /// { range: "A1:D20", columns: [{ column (0-based), letter, criteria }],
     ///   hiddenRows: number[] (0-based rows the filter hides), hiddenRowCount,
     ///   visibleRowCount (rows of the range below the header that are shown) }.
-    /// `criteria` has the shape SetFilter takes ({ kept: true } for a filter
-    /// of an opened file that the editor cannot evaluate).
+    /// `criteria` is what SetFilter was given for the column - the same keys
+    /// and the same types (a number stays a number, a text a text, a Date a
+    /// Date; nothing is added), as a copy. For a filter that did not come
+    /// through SetFilter (an opened file, the grid's own filter buttons) it
+    /// has the shape SetFilter takes with the keys at their default left
+    /// out, a comparison's operand a number when it is written as one, and
+    /// { kept: true } for a filter the editor cannot evaluate.
     member _.GetFilters(?sheetIndex: obj) : obj =
-        let sheet =
+        let sheetAt =
             match sheetIndex with
             | Some index when not (Host.isNullish index) ->
                 let index = Host.intArg "GetFilters" "sheetIndex" index
                 if index < 0 || index >= sheets.Length then Host.hostFail "GetFilters" (sprintf "there is no sheet %d (0 to %d)" index (sheets.Length - 1))
-                sheetModelAt index
-            | _ -> model
+                index
+            | _ -> activeSheetIndex
+        let sheet = if sheetAt = activeSheetIndex then model else sheetModelAt sheetAt
+        let criteriaOf (col: int) (criteria: FilterCriteria) : obj =
+            match filterGiven.TryGetValue (sprintf "%s|%d" (sheetIdForIndex sheetAt) col) with
+            | true, (set, given) when set = criteria -> Host.cloneGiven given
+            | _ -> Host.filterToObj criteria
         match sheet.AutoFilter with
         | None -> null
         | Some filter ->
@@ -8685,7 +8702,7 @@ type Spreadsheet(container: Element) =
             createObj [
                 "range" ==> SheetOps.rangeText filter.Range
                 "columns" ==> [| for KeyValue(col, columnFilter) in sheet.Filters ->
-                                    createObj [ "column" ==> col; "letter" ==> columnToLetter col; "criteria" ==> Host.filterToObj columnFilter.Criteria ] |]
+                                    createObj [ "column" ==> col; "letter" ==> columnToLetter col; "criteria" ==> criteriaOf col columnFilter.Criteria ] |]
                 // (A plain array: an int array is a typed array in JS.)
                 "hiddenRows" ==> [| for row in sheet.FilterHiddenRows -> box row |]
                 "hiddenRowCount" ==> sheet.FilterHiddenRows.Length

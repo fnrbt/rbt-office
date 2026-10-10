@@ -435,7 +435,9 @@ One of:
 - `{ dynamic: "aboveAverage" | "belowAverage" }`.
 - read only: `{ kept: true }`: a filter of an opened file that the editor does not evaluate (date groups, icon filters, the other dynamic filters). It is written back as it was; the rows the file had hidden stay hidden until the column gets another filter.
 
-Criteria are read back in the same shape; `contains` etc. come back as such, text patterns that are more than that as `equals` with the pattern.
+**Reading criteria back.** `GetFilters()` returns, for a column filtered with `SetFilter`, a copy of **what was given**: the same keys and the same types (a condition set with the number `5` reads back with the number `5`, one set with `"5"` with the text, a `Date` as a `Date`), and no key that was not given (no `and`, `blanks`, `percent`, `bottom` or `by` is added). This holds for as long as the column's filter is that one, through undo and redo.
+
+For a filter that did not come through `SetFilter` (an opened file - XLSX stores every operand as text - or the grid's own filter buttons) the criteria are derived from the model in a canonical shape: keys at their default are left out (`blanks: false`; `and` unless it is `false` with two conditions; `percent: false`, `bottom: false`; `by: "cellColor"`), the `value` of `equals` / `notEquals` / `greaterThan` / `greaterOrEqual` / `lessThan` / `lessOrEqual` is a number when it is written as one (else a text), dates are their serial numbers, and `contains` etc. come back as such (text patterns that are more than that as `equals` with the pattern).
 
 ### Filter semantics
 - Filtered rows are **hidden, not removed**: `GetCell` still reads them, `GetRowHeight` gives 0, the grid does not draw them and keeps the row numbers of the others. They are separate from rows hidden with `HideRows` (those are not listed in `hiddenRows`, are not shown by `ClearFilter`, and `GetHiddenRows` does not list filtered rows).
