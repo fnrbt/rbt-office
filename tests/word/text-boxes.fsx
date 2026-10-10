@@ -44,7 +44,7 @@ let commandsOf (doc: Document) =
     layouts, pages, commands
 /// The shape's fill: left, top, width, height.
 let fillOf (commands: Paint.PaintCommand list) =
-    Paint.flattenedCommands commands |> List.pick (function Paint.FillRect ("#ABCDEF", x, y, w, h) -> Some (x, y, w, h) | _ -> None)
+    Paint.flattenedCommands commands |> List.tryPick (function Paint.FillRect ("#ABCDEF", x, y, w, h) -> Some (x, y, w, h) | _ -> None) |> Option.defaultValue (0.0, 0.0, 0.0, 0.0)
 /// Where the shape's text is drawn: its left edge and its baseline.
 let textOf (commands: Paint.PaintCommand list) =
     Paint.flattenedCommands commands |> List.tryPick (function Paint.DrawText (text, _, x, baseline, _) when text.StartsWith "boxed" -> Some (x, baseline) | _ -> None) |> Option.defaultValue (0.0, 0.0)
@@ -115,6 +115,12 @@ match Paint.flattenedCommands watermarkCommands |> List.tryPick (function Paint.
     check "as wide as the shape" (near width 400.0, near size 160.0) (true, true)
 | None -> check "the watermark's text is drawn" false true
 check "at its opacity" (groupsOf watermarkCommands |> List.map (fun (_, _, _, opacity, _) -> opacity)) [ 0.5 ]
+
+// A line (prstGeom "line", a straight connector): from one corner of its box to the other, not a rectangle.
+let _, _, lineCommands = inBox (fun b -> { b with Geometry = GeoPreset "line"; Content = []; BorderColor = Some "#000000"; Width = 120.0; Height = 40.0 })
+check "a line is a line across its box"
+    (lineCommands |> List.tryPick (function Paint.DrawShape (_, Some "#000000", _, (x, y, _, _), segs) -> Some (segs = [ PMove (x, y); PLine (x + 120.0, y + 40.0) ]) | _ -> None))
+    (Some true)
 
 // ---------------------------------------------------------------------------
 // The body's text around the shape.

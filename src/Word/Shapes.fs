@@ -209,6 +209,8 @@ let presetPath (preset: string) (w: float) (h: float) : PathSeg list =
     | "flowChartTerminator" -> roundRectPath w h (h / 2.0)            // stadium
     | "flowChartDocument" -> rectPath w h
     | "round" | "pie" -> ellipsePath w h
+    // A line: from one corner of its box to the other (it was drawn as the box).
+    | "line" | "straightConnector1" -> [ PMove (0.0, 0.0); PLine (w, h) ]
     | _ -> rectPath w h
 
 /// Scale a custom path from its own coordinate space into the box (w,h).
