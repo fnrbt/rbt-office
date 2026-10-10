@@ -156,6 +156,35 @@ let elsewhere = fruit |> setValidationRanges [ block 0 0 9 0 ] (validationOf (Li
 eq "with the workbook's reader: a name" (invalid (checkEntryIn reader evaluateFormulaAt (at 2 0) (CellValue.String "South") elsewhere), invalid (checkEntryIn reader evaluateFormulaAt (at 2 0) (CellValue.String "East") elsewhere)) (false, true)
 eq "a source that cannot be read locks nothing" (invalid (checkEntry (at 2 0) (CellValue.String "East") elsewhere)) false
 
+// ---- a list whose source is a formula, or a name that is one ---------------------------
+do
+    let lists = { empty with Cells = Map.ofList [ at 0 0, str "North"; at 1 0, str "South"; at 2 0, str "East"; at 4 0, str "(not in the list)"; at 0 2, num 3.0 ] }
+    let entry = fruit |> setValidationRanges [ block 0 0 9 1 ] (validationOf (ListSource "Regions"))
+    let book : Rbt.Spreadsheet.Workbook.Workbook =
+        { Rbt.Spreadsheet.Workbook.createWorkbook () with
+            Sheets = Map.ofList [ "sheet1", ({ Id = "sheet1"; Name = "Entry"; Model = entry; Visible = true } : Rbt.Spreadsheet.Workbook.Sheet)
+                                  "sheet2", ({ Id = "sheet2"; Name = "Lists"; Model = lists; Visible = true } : Rbt.Spreadsheet.Workbook.Sheet) ]
+            SheetOrder = [ "sheet1"; "sheet2" ]; ActiveSheet = "sheet1" }
+        |> Rbt.Spreadsheet.Workbook.setDefinedName None "Regions" "=OFFSET(Lists!$A$1,0,0,Lists!$C$1,1)" None
+        |> Rbt.Spreadsheet.Workbook.setDefinedName None "Ends" "=Lists!$A$1:INDEX(Lists!$A:$A,COUNTA(Lists!$A$1:$A$3))" None
+        |> Rbt.Spreadsheet.Workbook.setDefinedName None "Elsewhere" "=Lists!$A$1:$A$2" None
+        |> Rbt.Spreadsheet.Workbook.setDefinedName None "Fixed" "={\"x\",\"y\"}" None
+    let inBook =
+        Ops.listSourceReaderIn (fun () -> Some book) (fun () -> Some "sheet1")
+            (fun name -> book.Sheets |> Map.toList |> List.tryPick (fun (_, sheet) -> if sheet.Name.ToLowerInvariant() = name.ToLowerInvariant() then Some sheet.Model else None))
+            (fun name -> Rbt.Spreadsheet.Workbook.getName (Some "sheet1") name book)
+    let listedIn source addr = fruit |> setValidationRanges [ block 0 0 9 1 ] (validationOf (ListSource source)) |> Ops.listValuesAt inBook addr
+    eq "a name that is an OFFSET formula: the cells it gives" (listedIn "Regions" (at 0 0)) (Some [ "North"; "South"; "East" ])
+    eq "a name that ends in INDEX" (listedIn "Ends" (at 2 0)) (Some [ "North"; "South"; "East" ])
+    eq "a name that is a range of another sheet" (listedIn "Elsewhere" (at 0 0)) (Some [ "North"; "South" ])
+    eq "the formula itself as the source" (listedIn "OFFSET(Lists!$A$1,1,0,2,1)" (at 0 0)) (Some [ "South"; "East" ])
+    eq "a formula of the sheet's own cells moves with the cell" (listedIn "OFFSET(H$1,0,0,2,1)" (at 4 1)) (Some [ "Red"; "Green" ])
+    eq "a name that is an array" (listedIn "Fixed" (at 0 0)) (Some [ "x"; "y" ])
+    eq "a name that is not there" (listedIn "Nowhere" (at 0 0)) None
+    eq "the plain reader does not evaluate" (listed "OFFSET($H$1,0,0,2,1)" (at 0 0)) None
+    eq "an entry is checked against the evaluated list"
+        (invalid (checkEntryIn inBook evaluateFormulaAt (at 2 0) (CellValue.String "East") entry), invalid (checkEntryIn inBook evaluateFormulaAt (at 2 0) (CellValue.String "West") entry)) (false, true)
+
 // ---- the invalid cells of a sheet ----------------------------------------------------
 let filled =
     { empty with Cells = Map.ofList [ at 0 0, num 5.0; at 1 0, num 50.0; at 2 0, str "x"; at 3 0, num 2.5; at 4 0, { Value = CellValue.Empty; Format = defaultFormat; Comment = None }

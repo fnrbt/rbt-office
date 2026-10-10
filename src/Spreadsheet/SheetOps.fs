@@ -1160,6 +1160,36 @@ let listSourceReader (lookupSheet: string -> SpreadsheetModel option) (lookupNam
                 | None -> sameSheetListValues model deltaRow deltaCol rest
         resolve 0 source
 
+/// `listSourceReader` for a sheet of a workbook, which also reads a source
+/// that is a formula - `OFFSET(...)`, `INDEX(...):INDEX(...)`, `INDIRECT(...)`,
+/// or a defined name whose refers-to is one (a dynamic range) or a range of
+/// several areas' worth of cells on any sheet: the formula is evaluated
+/// with the workbook in reach and the cells (or array items) it gives are
+/// the list, blanks and errors left out. `workbook` and `sheet` are asked
+/// each time (the workbook as it is now, the id of the rule's sheet).
+let listSourceReaderIn (workbook: unit -> Rbt.Spreadsheet.Workbook.Workbook option) (sheet: unit -> Rbt.Spreadsheet.Workbook.SheetId option)
+                       (lookupSheet: string -> SpreadsheetModel option) (lookupName: string -> string option) : ListSourceReader =
+    let plain = listSourceReader lookupSheet lookupName
+    fun model deltaRow deltaCol source ->
+        match plain model deltaRow deltaCol source with
+        | Some values -> Some values
+        | None ->
+            let cell = { Row = max 0 deltaRow; Col = max 0 deltaCol }
+            match Rbt.Spreadsheet.Formula.evaluateFormulaValuesShifted (workbook ()) (sheet ()) ("=" + formulaBody (source.Trim())) deltaRow deltaCol model cell with
+            | None -> None
+            | Some values ->
+                // (A formula that does not give cells or items - a name that
+                // is not there, a reference to nowhere - is one error.)
+                match values with
+                | [ CellValue.Error _ ] -> None
+                | _ ->
+                    Some [ for value in values do
+                            match value with
+                            | CellValue.Empty | CellValue.Error _ -> ()
+                            | other ->
+                                let shown = listItemText other
+                                if shown <> "" then yield shown ]
+
 /// The values the list validation on a cell offers (in order, as texts), or
 /// None when the cell has no list validation or its source cannot be read.
 let listValuesAt (reader: ListSourceReader) (addr: CellAddress) (model: SpreadsheetModel) : string list option =

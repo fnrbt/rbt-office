@@ -297,6 +297,15 @@ validations were removed or cut (0: nothing changed, no undo step). Throws for a
 The values the list validation on a cell offers, in order (a `source` range is read now, from another sheet if need be); `null` when the cell has no
 list validation or the source cannot be read. For hosts that draw their own dropdown.
 
+The `source` may be a range (`$J$1:$J$4`, `Lists!$A$1:$A$9`), a defined name, or **a formula that gives cells or an array**: `OFFSET(...)`,
+`Lists!$A$1:INDEX(Lists!$A:$A,COUNTA(Lists!$A:$A))`, `INDIRECT(...)`, or a defined name whose refers-to is one of these (a dynamic named
+range) or an array constant. A range and a name that is a range are read off the cells; anything else is evaluated by the formula engine
+with the workbook in reach (every sheet is converted for it) at the cell asked for - relative references move with the cell as in any
+rule - and the filled cells / items it gives are the list, blanks and errors left out, numbers as their plain text. The grid's own dropdown,
+entry checking (`SetCell`, typing) and `CircleInvalid` use the same list. The rule is written back as it was read (`<formula1>Regions</formula1>`);
+nothing is expanded into the file. (The engine now also reads a range operator after a sheet-qualified cell: `Sheet!A1:INDEX(...)`,
+`Sheet!A1:Sheet!B2`.)
+
 ### `ShowValidationList(): boolean`
 Opens the built-in dropdown of the active cell's list validation (what the button beside the cell and Alt+Down do); picking a value enters it
 like typed input (validated, one undo step). `false` when the cell has no list or the grid is read-only. The popup is `#validation-list-dropdown`

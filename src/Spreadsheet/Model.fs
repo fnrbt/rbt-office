@@ -3744,6 +3744,9 @@ let private displayText (v: CellValue) : string =
     | Boolean b -> if b then "TRUE" else "FALSE"
     | _ -> ""
 
+/// The text an item of a validation list has for a value ("" for none).
+let listItemText (v: CellValue) : string = displayText v
+
 /// Does `x` satisfy the comparison against its operand(s)?
 let compareHolds (op: CompareOperator) (x: float) (first: float) (second: float option) : bool =
     let lo, hi =

@@ -929,7 +929,12 @@ type Spreadsheet(container: Element) =
     /// it or on another sheet (which is converted when it was not needed so
     /// far), or a defined name that is one.
     let listReader : ListSourceReader =
-        SheetOps.listSourceReader
+        SheetOps.listSourceReaderIn
+            // (A source that is a formula is evaluated in the workbook as it is now, every sheet converted.)
+            (fun () ->
+                if not formulaSheetsConverted then convertAllSheets ()
+                Some (currentWorkbookSnapshot ()))
+            (fun () -> Some (sheetIdForIndex activeSheetIndex))
             (fun name ->
                 sheetNames
                 |> Array.tryFindIndex (fun known -> System.String.Equals(known, name, System.StringComparison.OrdinalIgnoreCase))

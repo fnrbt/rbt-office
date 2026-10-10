@@ -702,8 +702,15 @@ and private parseSheetQualified (p: Parser) (sheet: string option) : Expr =
         match parseRefToken ident with
         | Some refAst ->
             let withSheet = { refAst with Sheet = sheet }
+            // `Sheet!A1:B2` is one range of the sheet. Anything else after the
+            // colon - `Sheet!A1:INDEX(Sheet!A:A,3)`, `Sheet!A1:Sheet!B2`, a
+            // name - is the range operator's other operand (see parseRange).
+            let plainEnd =
+                match peekP p, (if p.Pos + 1 < p.Tokens.Length then p.Tokens.[p.Pos + 1] else TEnd), (if p.Pos + 2 < p.Tokens.Length then p.Tokens.[p.Pos + 2] else TEnd) with
+                | TColon, TIdent endIdent, after -> after <> TLParen && after <> TBang && (parseRefToken endIdent).IsSome
+                | _ -> false
             match peekP p with
-            | TColon ->
+            | TColon when plainEnd ->
                 p.Pos <- p.Pos + 1
                 match nextP p with
                 | TIdent endIdent ->
@@ -13837,6 +13844,25 @@ let evaluateFormulaShifted (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
             let arr = evalArray expr ctx
             if arr.Length > 0 && arr.[0].Length > 0 then unwrapValue arr.[0].[0] else CellValue.Error Err.value
         else unwrapValue (eval expr ctx)
+
+/// Every value a formula gives, row by row, evaluated as `evaluateFormulaShifted`
+/// evaluates it: the cells of a reference (a range, OFFSET, INDEX:INDEX, a
+/// defined name that is one of these), the items of an array, one value for
+/// anything else. None for a formula that cannot be read.
+let evaluateFormulaValuesShifted (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
+                                 (sheet: Rbt.Spreadsheet.Workbook.SheetId option)
+                                 (formula: string) (rows: int) (cols: int)
+                                 (model: SpreadsheetModel) (cell: CellAddress) : CellValue list option =
+    match parseFormulaShared formula with
+    | Result.Error _ -> None
+    | Ok expr ->
+        let expr = if rows = 0 && cols = 0 then expr else shiftExpr rows cols expr
+        let ctx = { Model = model; Workbook = workbook; Sheet = sheet; CurrentCell = Some cell }
+        try
+            let arr = evalArray expr ctx
+            Some [ for row in arr do
+                    for value in row -> unwrapValue value ]
+        with _ -> None
 
 /// Installs what Model.fs needs from this file, which compiles after it: the
 /// formula rewrites for paste, fill and row/column edits, and the evaluator

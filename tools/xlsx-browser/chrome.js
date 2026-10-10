@@ -601,3 +601,53 @@ checks['export-verbatim'] = async () => {
     finally { close(); }
     return lines;
 };
+
+// A list validation whose source is a defined name that is a formula (a dynamic range), or a formula itself.
+checks['validation-list-formula'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, close } = mountGrid();
+    try {
+        const lists = grid.AddSheet('Lists');
+        grid.SwitchSheet(lists);
+        ['North', 'South', 'East'].forEach((text, row) => grid.SetCell(row, 0, text));
+        grid.SwitchSheet(0);
+        grid.SetDefinedName('Regions', '=OFFSET(Lists!$A$1,0,0,COUNTA(Lists!$A:$A),1)');
+        grid.SetDefinedName('Ends', '=Lists!$A$1:INDEX(Lists!$A:$A,COUNTA(Lists!$A:$A))');
+        grid.SetDefinedName('Plain', '=Lists!$A$1:$A$2');
+        grid.SetValidation('B2:B5', { type: 'list', source: 'Regions' });
+        grid.SetValidation('C2', { type: 'list', source: 'Ends' });
+        grid.SetValidation('D2', { type: 'list', source: 'Plain' });
+        grid.SetValidation('E2', { type: 'list', source: 'OFFSET(Lists!$A$1,1,0,2,1)' });
+        check('a name that is an OFFSET formula', grid.GetValidationList(1, 1), ['North', 'South', 'East']);
+        check('... on another cell of the rule', grid.GetValidationList(4, 1), ['North', 'South', 'East']);
+        check('a name that ends in INDEX', grid.GetValidationList(1, 2), ['North', 'South', 'East']);
+        check('a name that is a range of another sheet', grid.GetValidationList(1, 3), ['North', 'South']);
+        check('a formula as the source', grid.GetValidationList(1, 4), ['South', 'East']);
+        grid.SwitchSheet(lists); grid.SetCell(3, 0, 'West'); grid.SwitchSheet(0);
+        check('the list follows the cells', grid.GetValidationList(1, 1), ['North', 'South', 'East', 'West']);
+        grid.SetCell(1, 1, 'West');
+        check('an item of it is accepted', grid.GetCell(1, 1).value, 'West');
+        check('nothing is circled', grid.CircleInvalid(false).length, 0);
+        grid.SetCell(2, 1, 'Nowhere');
+        check('... and something else is refused or flagged', [grid.GetCell(2, 1).value === 'Nowhere' ? grid.CircleInvalid(false).map((c) => c.address) : 'refused'].flat(), grid.GetCell(2, 1).value === 'Nowhere' ? ['B3'] : ['refused']);
+        // Saved and opened again: the rules say what they said, and the lists are read from the (not yet shown) sheet.
+        const bytes = await grid.ExportXlsx();
+        const zip = await window.JSZip.loadAsync(bytes);
+        const sheetXml = await zip.files['xl/worksheets/sheet1.xml'].async('string');
+        check('written: the sources as they are', [/<formula1>Regions<\/formula1>/.test(sheetXml), /<formula1>Ends<\/formula1>/.test(sheetXml), /OFFSET\(Lists!\$A\$1,1,0,2,1\)/.test(sheetXml)], [true, true, true]);
+        const workbookXml = await zip.files['xl/workbook.xml'].async('string');
+        check('written: the names', [/>OFFSET\(Lists!\$A\$1,0,0,COUNTA\(Lists!\$A:\$A\),1\)</.test(workbookXml), /Lists!\$A\$1:INDEX\(Lists!\$A:\$A,COUNTA\(Lists!\$A:\$A\)\)/.test(workbookXml)], [true, true]);
+        const again = mountGrid();
+        try {
+            await again.grid.ImportXlsx(bytes);
+            check('opened again: the evaluated lists', [again.grid.GetValidationList(1, 1), again.grid.GetValidationList(1, 2), again.grid.GetValidationList(1, 4)], [['North', 'South', 'East', 'West'], ['North', 'South', 'East', 'West'], ['South', 'East']]);
+            check('... the rule reads back with its source', again.grid.GetValidationAt(1, 1).source, 'Regions');
+            const twice = await again.grid.ExportXlsx();
+            const twiceXml = await (await window.JSZip.loadAsync(twice)).files['xl/worksheets/sheet1.xml'].async('string');
+            const rules = (xml) => (/<dataValidations[\s\S]*<\/dataValidations>/.exec(xml) || [''])[0];
+            check('... and an unchanged save writes the same rules', rules(twiceXml), rules(sheetXml));
+        } finally { again.close(); }
+    } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
+    finally { close(); }
+    return lines;
+};
