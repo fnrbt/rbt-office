@@ -4068,7 +4068,8 @@ let private nextBodyChild (cursor: BodyCursor) : (int * int * string) option =
             None
         else
             let fin = elementEndAt cursor.Xml lt
-            if fin < 0 then
+            // (An element that does not end, or ends after the body does: the tags do not match.)
+            if fin < 0 || fin > cursor.BodyClose then
                 failwith "The main part of the document is not well formed"
             else
                 cursor.Pos <- fin
@@ -4154,8 +4155,13 @@ type ProgressiveReader = {
     /// headers and footers, the notes, the comments, the page setup. (No
     /// Content, Shapes, Images or Preserved: see Finish.)
     Front: WordDocument
-    /// Whether the body is read to its end.
+    /// Whether the body is read to its end - or as far as it can be read (see Failure).
     IsDone: unit -> bool
+    /// Why the reading ended before the end of the body: the text of the main
+    /// part is not well formed from some element on, or an element could not
+    /// be made blocks of. The blocks before it were given (the last Read gave
+    /// those it had); nothing more is read, and Finish fails.
+    Failure: unit -> string option
     /// Read on until `count` more blocks are there (fewer at the end of the
     /// body; all the blocks of a main part that is read at once).
     Read: int -> ProgressiveBatch
@@ -4197,6 +4203,7 @@ let private wholeReader (doc: WordDocument) : ProgressiveReader =
     let mutable given = false
     { Front = { doc with Content = []; Shapes = []; Images = Map.empty; Revisions = []; Preserved = emptyPackagePreservation }
       IsDone = fun () -> given
+      Failure = fun () -> None
       Read =
         fun _ ->
             if given then { First = doc.Content.Length; Blocks = []; Shapes = [] }
@@ -4301,6 +4308,8 @@ let openProgressiveFromSource (keepContent: bool) (source: PartSource) : Progres
             let revisionTypes = [ "ins"; "del"; "rPrChange"; "moveFrom"; "moveTo" ]
             let revisions = revisionTypes |> List.map (fun _ -> ResizeArray<Revision>())
             let mutable finishedDocument : WordDocument option = None
+            // Why the body could not be read to its end (see ProgressiveReader.Failure).
+            let mutable failure : string option = None
 
             // ---- pictures, each made a data URL when it is first shown ----
             let imageCandidates = System.Collections.Generic.Dictionary<string, ResizeArray<string * Relationship>>()
@@ -4373,53 +4382,64 @@ let openProgressiveFromSource (keepContent: bool) (source: PartSource) : Progres
                 let shapesOut = ResizeArray<Shape>()
                 let first = blockChunks.Count
                 while not finished && more released.Count do
-                    match nextBodyChild cursor with
-                    | None ->
-                        finished <- true
-                        match held with
-                        | Some (raw, shapes, chunk, chunkEnd) ->
-                            held <- None
-                            deliver released shapesOut raw shapes chunk chunkEnd
-                        | None -> ()
-                    | Some (start, fin, name) ->
-                        let chunk = cursor.Count - 1
-                        let localName = Ns.stripNs name
-                        if localName = "sectPr" && firstSectionProperties < 0 then firstSectionProperties <- start
-                        let givesBlocks = localName = "p" || localName = "tbl" || localName = "sdt" || localName = "customXml"
-                        if givesBlocks || keepContent then
-                            let text = xml.Substring(start, fin - start)
-                            let node = parseElement cursor text
-                            if keepContent then
-                                List.iter2 (fun revisionType (found: ResizeArray<Revision>) ->
-                                    if indexOfText text revisionType 0 >= 0 then
-                                        found.AddRange (Ns.descendantsNs revisionType node |> List.choose Revisions.parseRevision)) revisionTypes revisions
-                            if givesBlocks then
-                                let blocks = Docx.contentOfChild renderedBreakCounter node
-                                // (A modelled shape has text or a geometry: see Docx.isModelledShape.)
-                                let blockNodes =
-                                    if indexOfText text "txbxContent" 0 >= 0 || indexOfText text "prstGeom" 0 >= 0 || indexOfText text "custGeom" 0 >= 0 then
-                                        Shapes.blockNodesOfChild node |> List.toArray
-                                    else [||]
-                                blocks
-                                |> List.iteri (fun i raw ->
-                                    let shapes =
-                                        if i < blockNodes.Length then
-                                            Shapes.shapesOfBlock (made + i) blockNodes.[i]
-                                            |> List.map (fun shape ->
-                                                { shape with Content = shape.Content |> List.map Para |> completeOpaqueObjects cursor.Root |> List.choose (function Para para -> Some para | Tbl _ -> None) })
-                                        else []
-                                    match held with
-                                    | Some (before, beforeShapes, beforeChunk, beforeEnd) -> deliver released shapesOut (Docx.normalizedSectionBreak before (Some raw)) beforeShapes beforeChunk beforeEnd
-                                    | None -> ()
-                                    held <- Some (raw, shapes, chunk, fin))
-                                made <- made + blocks.Length
+                  try
+                      match nextBodyChild cursor with
+                      | None ->
+                          finished <- true
+                          match held with
+                          | Some (raw, shapes, chunk, chunkEnd) ->
+                              held <- None
+                              deliver released shapesOut raw shapes chunk chunkEnd
+                          | None -> ()
+                      | Some (start, fin, name) ->
+                          let chunk = cursor.Count - 1
+                          let localName = Ns.stripNs name
+                          if localName = "sectPr" && firstSectionProperties < 0 then firstSectionProperties <- start
+                          let givesBlocks = localName = "p" || localName = "tbl" || localName = "sdt" || localName = "customXml"
+                          if givesBlocks || keepContent then
+                              let text = xml.Substring(start, fin - start)
+                              let node = parseElement cursor text
+                              if keepContent then
+                                  List.iter2 (fun revisionType (found: ResizeArray<Revision>) ->
+                                      if indexOfText text revisionType 0 >= 0 then
+                                          found.AddRange (Ns.descendantsNs revisionType node |> List.choose Revisions.parseRevision)) revisionTypes revisions
+                              if givesBlocks then
+                                  let blocks = Docx.contentOfChild renderedBreakCounter node
+                                  // (A modelled shape has text or a geometry: see Docx.isModelledShape.)
+                                  let blockNodes =
+                                      if indexOfText text "txbxContent" 0 >= 0 || indexOfText text "prstGeom" 0 >= 0 || indexOfText text "custGeom" 0 >= 0 then
+                                          Shapes.blockNodesOfChild node |> List.toArray
+                                      else [||]
+                                  blocks
+                                  |> List.iteri (fun i raw ->
+                                      let shapes =
+                                          if i < blockNodes.Length then
+                                              Shapes.shapesOfBlock (made + i) blockNodes.[i]
+                                              |> List.map (fun shape ->
+                                                  { shape with Content = shape.Content |> List.map Para |> completeOpaqueObjects cursor.Root |> List.choose (function Para para -> Some para | Tbl _ -> None) })
+                                          else []
+                                      match held with
+                                      | Some (before, beforeShapes, beforeChunk, beforeEnd) -> deliver released shapesOut (Docx.normalizedSectionBreak before (Some raw)) beforeShapes beforeChunk beforeEnd
+                                      | None -> ()
+                                      held <- Some (raw, shapes, chunk, fin))
+                                  made <- made + blocks.Length
+                  with error ->
+                    // The element cannot be read: the blocks before it are what there is.
+                    failure <- Some error.Message
+                    finished <- true
+                    match held with
+                    | Some (raw, shapes, chunk, chunkEnd) ->
+                        held <- None
+                        (try deliver released shapesOut raw shapes chunk chunkEnd with _ -> ())
+                    | None -> ()
                 { First = first; Blocks = List.ofSeq released; Shapes = List.ofSeq shapesOut }
             let read (count: int) : ProgressiveBatch = readWhile (fun given -> given < count)
 
             let finish () : WordDocument =
-                match finishedDocument with
-                | Some doc -> doc
-                | None ->
+                match finishedDocument, failure with
+                | Some doc, _ -> doc
+                | None, Some message -> failwith message
+                | None, None ->
                     while not finished do read System.Int32.MaxValue |> ignore
                     // (The first child of the body that is section properties: the last one, but in a
                     // body that has more than one.)
@@ -4454,6 +4474,7 @@ let openProgressiveFromSource (keepContent: bool) (source: PartSource) : Progres
                       NumberingDefinitions = main.NumberingDefinitions
                       Preserved = emptyPackagePreservation }
                   IsDone = fun () -> finished
+                  Failure = fun () -> failure
                   Read = read
                   OpenSection = (fun () -> if finished then finalPageSetup else openSection ())
                   AtOnce = false

@@ -1442,6 +1442,9 @@ type ImportStep = {
     Extend: Document -> Document
     /// The package is read to its end.
     Complete: bool
+    /// The package cannot be read to its end (Office.Formats' Progressive.Failed):
+    /// why. This is its last step - the document is what was read.
+    Failed: string option
 }
 
 /// The document of a package that is being read (see above).
@@ -1450,6 +1453,9 @@ type ProgressiveImport = {
     /// What is read so far, as a document.
     mutable Document: Document
     mutable Complete: bool
+    /// Why the package could not be read to its end, when it could not: the document stays
+    /// what was read (and cannot be saved, see PackageData.Imported).
+    mutable Failed: string option
     /// Told after each step.
     Listeners: ResizeArray<ImportStep -> unit>
     // (Kept between the steps.)
@@ -1528,7 +1534,13 @@ let private extension (appended: Block list) (stylesBefore: NamedStyle list) (st
 let private consumeProgressive (state: ProgressiveImport) : unit =
     let items = optionalArray (state.Package?Paragraphs)
     let complete = unbox<bool> (state.Package?Progressive?IsComplete)
-    if items.Length > state.Consumed || (complete && not state.Complete) || (state.Package?Progressive?PageSetupVersion |> intOrDefault 0) <> state.PageSetupVersion then
+    let failed =
+        let flag : obj = state.Package?Progressive?Failed
+        if state.Failed.IsNone && not complete && not (isNullOrUndefined flag) && unbox<bool> flag then
+            let error : obj = state.Package?Progressive?Error
+            Some (if isNullOrUndefined error then "The document could not be read to its end" else string error)
+        else None
+    if items.Length > state.Consumed || (complete && not state.Complete) || failed.IsSome || (state.Package?Progressive?PageSetupVersion |> intOrDefault 0) <> state.PageSetupVersion then
         let stylesBefore = state.Document.Styles
         let styleCount = state.StyleList.Count
         let appended = ResizeArray<Block>()
@@ -1574,9 +1586,10 @@ let private consumeProgressive (state: ProgressiveImport) : unit =
         let document = extend state.Document
         state.Document <- document
         state.Complete <- complete
+        if failed.IsSome then state.Failed <- failed
         // What the document was when it was read (see PackageData.Imported).
         state.Imported.Document <- { document with Package = { document.Package with Imported = null } }
-        let step = { Appended = blocks; Extend = extend; Complete = complete }
+        let step = { Appended = blocks; Extend = extend; Complete = complete; Failed = failed }
         for listener in state.Listeners.ToArray() do
             if state.Listeners.Contains listener then listener step
 
@@ -1612,6 +1625,7 @@ let private beginProgressive (package: obj) : ProgressiveImport =
         { Package = package
           Document = doc
           Complete = false
+          Failed = None
           Listeners = ResizeArray()
           StyleList = styleList
           StylesSeen = stylesSeen
@@ -1638,9 +1652,10 @@ let progressiveImportOf (package: obj) : ProgressiveImport option =
             importMapSet progressiveImports package state
             Some state
 
-/// Read the rest of the package now.
+/// Read the rest of the package now. (One that cannot be read to its end: as far as it can
+/// be - `state.Failed` says so afterwards.)
 let completeProgressiveImport (state: ProgressiveImport) : unit =
-    if not state.Complete then
+    if not state.Complete && state.Failed.IsNone then
         state.Package?Progressive?complete () |> ignore
         consumeProgressive state
 

@@ -60,6 +60,9 @@ module API =
         /// When the listeners were last told that more was read, and who waits for the end.
         mutable LoadNotified: float
         LoadWaiters: ResizeArray<unit -> unit>
+        /// Why the document on display could not be read to its end, when it
+        /// could not (see isLoadFailed): it is what was read, and is not saved.
+        mutable LoadFailure: string option
     }
 
     /// Read the document on display to its end now, when its package is
@@ -169,7 +172,9 @@ module API =
     let private loadDocumentOf (editor: Editor) (newDoc: Doc.Document) (loading: Docx.ProgressiveImport option) =
         // (The document that was on display may have been one that was being read.)
         stopLoading editor
+        editor.LoadFailure <- loading |> Option.bind (fun state -> state.Failed)
         match loading with
+        | Some state when state.Failed.IsSome -> ()
         | Some state ->
             let listener = fun (step: Docx.ImportStep) -> loadStep.Value editor step
             state.Listeners.Add listener
@@ -248,7 +253,9 @@ module API =
                         "LayoutChanged" ==> false
                         "LayoutComplete" ==> Ren.layoutIsComplete editor.Handler.RenderContext
                         "LoadChanged" ==> false
-                        "LoadComplete" ==> editor.Loading.IsNone
+                        "LoadComplete" ==> (editor.Loading.IsNone && editor.LoadFailure.IsNone)
+                        "LoadFailed" ==> editor.LoadFailure.IsSome
+                        "LoadError" ==> Option.toObj editor.LoadFailure
                     ]
                 // A listener may unsubscribe (or subscribe) while being called.
                 for listener in editor.Listeners.ToArray() do
@@ -269,7 +276,9 @@ module API =
                     "LayoutChanged" ==> layoutChanged
                     "LayoutComplete" ==> Ren.layoutIsComplete editor.Handler.RenderContext
                     "LoadChanged" ==> loadChanged
-                    "LoadComplete" ==> editor.Loading.IsNone
+                    "LoadComplete" ==> (editor.Loading.IsNone && editor.LoadFailure.IsNone)
+                    "LoadFailed" ==> editor.LoadFailure.IsSome
+                    "LoadError" ==> Option.toObj editor.LoadFailure
                 ]
             for listener in editor.Listeners.ToArray() do
                 if editor.Listeners.Contains listener then listener change
@@ -345,14 +354,18 @@ module API =
             let known, revision = editor.KnownRevisions.[index]
             editor.KnownRevisions.[index] <- (step.Extend known, revision)
         let wasWhole = Ren.documentExtended ctx blocksBefore
-        if step.Complete then stopLoading editor
+        // (A package that cannot be read on: the document is what was read, from here on. It is
+        // laid out, found in and counted as any document; it is not saved.)
+        let ended = step.Complete || step.Failed.IsSome
+        if step.Failed.IsSome then editor.LoadFailure <- step.Failed
+        if ended then stopLoading editor
         // (What was laid out was all there was: the view may reach into what is there now.)
         if wasWhole then Inp.repaint editor.Handler
         let now = nowMs ()
-        if step.Complete || now - editor.LoadNotified > 150.0 then
+        if ended || now - editor.LoadNotified > 150.0 then
             editor.LoadNotified <- now
             notifyProgress editor false true
-        if step.Complete then
+        if ended then
             // (The page count is known when the rest is laid out: in slices, from here on.)
             continueLayout editor
 
@@ -366,16 +379,36 @@ module API =
     /// document (saving, getText, find and replace, getPageCount, select all,
     /// Ctrl+End, the layout queries, entering a header or footer) reads the
     /// rest at once.
+    ///
+    /// A package whose body cannot be read to its end (text that is not well
+    /// formed somewhere in a long document) ends the load in a failed state:
+    /// the document is what was read before that place and stays on display.
+    /// isLoadComplete is false for good, isLoadFailed true and getLoadError
+    /// says why; the onChange listeners are told once ({ LoadChanged: true,
+    /// LoadComplete: false, LoadFailed: true, LoadError }), whenLoadComplete
+    /// resolves to false (it never rejects), and nothing more is read - what
+    /// goes by the whole document goes by what was read: the layout completes
+    /// over it, getText, find and getPageCount answer for it. It cannot be
+    /// saved: exportDocumentPackage and exportToDocx throw.
     let isLoadComplete (editor: Editor) : bool =
-        editor.Loading.IsNone
+        editor.Loading.IsNone && editor.LoadFailure.IsNone
 
-    /// A promise that resolves (to true) once the document is all there; at once when it is.
+    /// Whether the document on display could not be read to its end (see isLoadComplete).
+    let isLoadFailed (editor: Editor) : bool =
+        editor.LoadFailure.IsSome
+
+    /// Why the document on display could not be read to its end; null when it was, or is being, read.
+    let getLoadError (editor: Editor) : string =
+        Option.toObj editor.LoadFailure
+
+    /// A promise that resolves once the document is all there - to true; at
+    /// once when it is - or cannot be read on: to false (see isLoadFailed).
     let whenLoadComplete (editor: Editor) : JS.Promise<bool> =
         JS.Constructors.Promise.Create(fun resolve _ ->
             match editor.Loading with
-            | None -> resolve true
+            | None -> resolve editor.LoadFailure.IsNone
             | Some state ->
-                editor.LoadWaiters.Add (fun () -> resolve true)
+                editor.LoadWaiters.Add (fun () -> resolve editor.LoadFailure.IsNone)
                 // (A package that was opened not to read on by itself is read on from here.)
                 state.Package?Progressive?start () |> ignore)
 
@@ -556,6 +589,7 @@ module API =
             StopLoading = ignore
             LoadNotified = 0.0
             LoadWaiters = ResizeArray()
+            LoadFailure = None
         }
         handler.EnsureWhole <- fun () -> ensureLoaded editor
 
@@ -2806,10 +2840,13 @@ module API =
     /// shows the whole document: it is read to its end first.
     let importFromDocxPackage (editor: Editor) (package: obj) =
         match Docx.progressiveImportOf package with
+        | Some state when state.Failed.IsSome ->
+            // (It could not be read to its end: what was read, see isLoadFailed.)
+            loadDocumentOf editor state.Document (Some state)
         | Some state when not state.Complete ->
             if editor.Handler.RenderContext.Viewport.IsNone then
                 Docx.completeProgressiveImport state
-                loadDocument editor state.Document
+                loadDocumentOf editor state.Document (if state.Failed.IsSome then Some state else None)
             else
                 loadDocumentOf editor state.Document (Some state)
                 state.Package?Progressive?start () |> ignore
@@ -3142,14 +3179,24 @@ module API =
             |> Doc.setCurrentHeaderFooterReferences headerRefs footerRefs
         commitDocumentUpdate editor newDoc
 
+    /// A document that could not be read to its end is not saved: the file
+    /// written would be the start of the one that was opened.
+    let private refuseFailedLoad (editor: Editor) =
+        match editor.LoadFailure with
+        | Some error -> failwith ("The document could not be read to its end and cannot be saved (" + error + ")")
+        | None -> ()
+
     /// Export document to EditorParagraphs (Office.Formats format)
     /// Use with: Office.Formats WordWriter.writeFromEditor()
+    /// (Both exports throw for a document that could not be read to its end, see isLoadFailed.)
     let exportToDocx (editor: Editor) : obj array =
         ensureLoaded editor
+        refuseFailedLoad editor
         Docx.exportToEditor (wholeDocument editor)
 
     let exportDocumentPackage (editor: Editor) =
         ensureLoaded editor
+        refuseFailedLoad editor
         // One export for save and for callers: Docx.exportDocumentPackage knows the
         // document's styles and so leaves inherited formatting out of header/footer runs too.
         Docx.exportDocumentPackage (wholeDocument editor)
@@ -3197,6 +3244,8 @@ module API =
             "isLoadComplete" ==> isLoadComplete
             "whenLoadComplete" ==> whenLoadComplete
             "completeLoad" ==> completeLoad
+            "isLoadFailed" ==> isLoadFailed
+            "getLoadError" ==> getLoadError
             "onFontsDiscovered" ==> onFontsDiscovered
             "isLayoutComplete" ==> isLayoutComplete
             "whenLayoutComplete" ==> whenLayoutComplete

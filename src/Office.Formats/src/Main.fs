@@ -402,6 +402,17 @@ module Processors =
     //   Progressive.Slices / LongestSliceMs / LongestSlice   how many slices read it, what the longest
     //                               took (with what its listeners did: the page could not answer for
     //                               that long) and which it was (1: the first)
+    //   Progressive.Failed / Error  the body could not be read to its end (its text is not well
+    //                               formed from some element on, or an element could not be made
+    //                               blocks of): Failed is true and Error says why. Paragraphs holds
+    //                               what was read before that element (the shapes anchored in it
+    //                               after the blocks), IsComplete stays false and nothing more is
+    //                               read: readMore and complete return at once, the listeners were
+    //                               called a last time (complete false, Failed set by then), and
+    //                               whenComplete - a promise of the complete package - rejects with
+    //                               the error. Preserved is not filled in: such a package cannot be
+    //                               written back. (A main part that is read at once fails as
+    //                               forEditorPackage does: openProgressive rejects.)
     //
     // Preserved (what the writer needs of the package) is an object from the
     // start and is filled in when the body is read. PageSetup is, until then,
@@ -457,7 +468,7 @@ module Processors =
                 let listeners = ResizeArray<obj>()
                 let waiters = ResizeArray<(obj -> unit) * (exn -> unit)>()
                 let preserved = createObj []
-                let state = createObj [ "IsComplete" ==> false; "AtOnce" ==> reader.AtOnce; "Error" ==> null; "PageSetupVersion" ==> 0; "Slices" ==> 0; "LongestSliceMs" ==> 0.0; "LongestSlice" ==> 0 ]
+                let state = createObj [ "IsComplete" ==> false; "AtOnce" ==> reader.AtOnce; "Failed" ==> false; "Error" ==> null; "PageSetupVersion" ==> 0; "Slices" ==> 0; "LongestSliceMs" ==> 0.0; "LongestSlice" ==> 0 ]
                 let blocksOf (parts: DocxReader.HeaderFooter list) = parts |> List.collect (fun part -> part.Blocks)
                 let noteBlocks (notes: DocxReader.Note list) = notes |> List.collect (fun note -> note.Blocks)
                 let headerImages = reader.ImagesOf (blocksOf front.Headers @ blocksOf front.Footers)
@@ -495,6 +506,10 @@ module Processors =
                     if not batch.Shapes.IsEmpty then
                         shapeItems.AddRange (shapeObjectsFor { front with Shapes = batch.Shapes })
                     if not (reader.IsDone ()) then statePageSetup (reader.OpenSection ())
+                    // (What the reader could not read: the blocks before it were in the batch.)
+                    match reader.Failure () with
+                    | Some message -> failwith message
+                    | None -> ()
                 /// The body is read: the shapes after the blocks, what is kept for the writer, the page setup.
                 let finish () =
                     let final = reader.Finish ()
@@ -506,28 +521,34 @@ module Processors =
                     state?IsComplete <- true
                 let notify (first: int) =
                     let count = paragraphs.Length - first
-                    if count > 0 || complete then
+                    if count > 0 || complete || failed.IsSome then
                         for listener in listeners.ToArray() do
                             if listeners.Contains listener then callListener listener first count complete
                     if complete && waiters.Count > 0 then
                         let waiting = waiters.ToArray()
                         waiters.Clear()
                         for resolve, _ in waiting do resolve package
+                /// The body cannot be read on: what was read is what there is (the shapes anchored in
+                /// it after the blocks, as at the end).
                 let fail (error: exn) =
-                    failed <- Some error
-                    state?Error <- error.Message
-                    let waiting = waiters.ToArray()
-                    waiters.Clear()
-                    for _, reject in waiting do reject error
+                    if failed.IsNone then
+                        failed <- Some error
+                        for item in shapeItems do pushItem paragraphs item
+                        state?Failed <- true
+                        state?Error <- error.Message
+                let rejectWaiters () =
+                    match failed with
+                    | Some error when waiters.Count > 0 ->
+                        let waiting = waiters.ToArray()
+                        waiters.Clear()
+                        for _, reject in waiting do reject error
+                    | _ -> ()
                 // What the listeners took after the last slice (they make their blocks of the items):
                 // a slice reads for its time less that.
                 let mutable notifyMs = 0.0
                 /// Read on for about `budget` milliseconds (at least one step).
                 let readMore (budget: float) : bool =
-                    match failed with
-                    | Some error -> raise error
-                    | None -> ()
-                    if not complete then
+                    if not complete && failed.IsNone then
                         let first = paragraphs.Length
                         let started = nowMs ()
                         let mutable more = true
@@ -544,12 +565,11 @@ module Processors =
                                     // (Steps of about a millisecond: the slice ends near its time.)
                                     step <- max 1 (min 512 (int (float (max 1 batch.Blocks.Length) / took)))
                                     if nowMs () - started >= budget then more <- false
-                        with error ->
-                            fail error
-                            raise error
+                        with error -> fail error
                         let told = nowMs ()
                         notify first
                         notifyMs <- nowMs () - told
+                        rejectWaiters ()
                     complete
                 let mutable scheduled = false
                 let rec pump () =
@@ -588,9 +608,11 @@ module Processors =
                                 pump ()))
                 // The start of the document.
                 let begin' () =
-                    add (reader.Read firstBlocks)
-                    if reader.IsDone () then finish ()
-                    elif booleanOption options "autoStart" true then pump ()
+                    try
+                        add (reader.Read firstBlocks)
+                        if reader.IsDone () then finish ()
+                        elif booleanOption options "autoStart" true then pump ()
+                    with error -> fail error
                 begin' ()
                 return package
         }
@@ -600,13 +622,24 @@ module Processors =
         isNull package || isNull (package?Progressive) || unbox<bool> (package?Progressive?IsComplete)
 
     /// A promise of the package once it is read to its end (reading on in slices until then).
+    /// It rejects, with the error, for a package whose body cannot be read to its end
+    /// (Progressive.Failed; what was read stays in the package).
     let whenLoadComplete (package: obj) : Fable.Core.JS.Promise<obj> =
         if isLoadComplete package then Fable.Core.JS.Constructors.Promise.Create(fun resolve _ -> resolve package)
         else unbox<Fable.Core.JS.Promise<obj>> (package?Progressive?whenComplete ())
 
-    /// Read the rest of a package now.
+    /// Read the rest of a package now. (Of a package that cannot be read to its end it reads what
+    /// there is: isLoadComplete stays false, see isLoadFailed.)
     let completeLoad (package: obj) : unit =
         if not (isLoadComplete package) then package?Progressive?complete () |> ignore
+
+    /// Whether the body of a package could not be read to its end (Progressive.Failed).
+    let isLoadFailed (package: obj) : bool =
+        not (isNull package) && not (isNull (package?Progressive)) && unbox<bool> (package?Progressive?Failed)
+
+    /// Why not (Progressive.Error); null for a package that did not fail.
+    let getLoadError (package: obj) : string =
+        if isLoadFailed package then unbox<string> (package?Progressive?Error) else null
 
 // Public API for Word Writing
 module WordWriter =
@@ -1635,6 +1668,8 @@ let api () = {|
         isLoadComplete = Processors.isLoadComplete
         whenLoadComplete = Processors.whenLoadComplete
         completeLoad = Processors.completeLoad
+        isLoadFailed = Processors.isLoadFailed
+        getLoadError = Processors.getLoadError
         createDocument = WordWriter.createDocument
         addParagraph = WordWriter.addParagraph
         addParagraphWithRuns = WordWriter.addParagraphWithRuns

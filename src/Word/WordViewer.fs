@@ -86,9 +86,11 @@ module Viewer =
         let mutable loading : Docx.ProgressiveImport option = None
         let mutable stopLoading : unit -> unit = ignore
         let loadWaiters = ResizeArray<unit -> unit>()
+        // Why the document could not be read to its end, when it could not (see isLoadFailed).
+        let mutable loadFailure : string option = None
         let tellProgress (complete: bool) =
             if progressListeners.Count > 0 then
-                let progress = createObj [ "PageCount" ==> List.length (Ren.pageFrames ctx (current ())); "LayoutComplete" ==> complete; "LoadComplete" ==> loading.IsNone ]
+                let progress = createObj [ "PageCount" ==> List.length (Ren.pageFrames ctx (current ())); "LayoutComplete" ==> complete; "LoadComplete" ==> (loading.IsNone && loadFailure.IsNone); "LoadFailed" ==> loadFailure.IsSome; "LoadError" ==> Option.toObj loadFailure ]
                 for listener in progressListeners.ToArray() do
                     if progressListeners.Contains listener then listener progress
         // The rest of a document that is laid out from its start, in idle slices
@@ -113,16 +115,19 @@ module Viewer =
         let mutable loadTold = 0.0
         state?load <- fun (package: obj) (options: obj) ->
             endLoading ()
+            loadFailure <- None
             let progressive = not (isNull options) && not (isNull (options?progressive)) && unbox<bool> (options?progressive)
             let importing =
                 match Docx.progressiveImportOf package with
-                | Some importing when not importing.Complete ->
+                | Some importing when not importing.Complete && importing.Failed.IsNone ->
                     // (Not asked to show the document before it is all there: read to its end first.)
                     if progressive then Some importing
                     else
                         Docx.completeProgressiveImport importing
                         None
                 | _ -> None
+            // (A package that could not be read to its end: what was read.)
+            loadFailure <- Docx.progressiveImportOf package |> Option.bind (fun known -> known.Failed)
             // A viewer shows no caret.
             let doc = { Docx.importFromEditorPackage package with Selection = None }
             state?document <- doc
@@ -136,13 +141,16 @@ module Viewer =
                     let before = current ()
                     state?document <- { importing.Document with Selection = None }
                     let wasWhole = Ren.documentExtended ctx (List.length before.Blocks)
-                    if step.Complete then endLoading ()
+                    // (A package that cannot be read on: the document is what was read, laid out to its end.)
+                    let ended = step.Complete || step.Failed.IsSome
+                    if step.Failed.IsSome then loadFailure <- step.Failed
+                    if ended then endLoading ()
                     let now = JS.Constructors.Date.now ()
-                    if step.Complete || wasWhole || now - loadTold > 150.0 then
+                    if ended || wasWhole || now - loadTold > 150.0 then
                         loadTold <- now
                         // (What was laid out was all there was: the pages of what is there now, as far as the first slices go.)
                         tellProgress (Ren.layoutIsComplete ctx)
-                    if step.Complete then continueLayout ()
+                    if ended then continueLayout ()
                 importing.Listeners.Add listener
                 loading <- Some importing
                 stopLoading <- fun () -> importing.Listeners.Remove listener |> ignore
@@ -157,13 +165,19 @@ module Viewer =
         // Whether the document is all there: false while a package opened front
         // first (Office.Formats `word.openProgressive`, loaded with { progressive: true })
         // is still being read - the pages are then those of what is read so far.
-        state?isLoadComplete <- fun () -> loading.IsNone
+        // A package whose body cannot be read to its end ends the load failed: the pages are those
+        // of what was read (laid out to its end), isLoadComplete stays false, isLoadFailed is true,
+        // getLoadError says why, the progress notices carry LoadFailed / LoadError, and
+        // whenLoadComplete resolves to false.
+        state?isLoadComplete <- fun () -> loading.IsNone && loadFailure.IsNone
+        state?isLoadFailed <- fun () -> loadFailure.IsSome
+        state?getLoadError <- fun () -> Option.toObj loadFailure
         state?whenLoadComplete <- fun () ->
             JS.Constructors.Promise.Create(fun (resolve: obj -> unit) _ ->
                 match loading with
-                | None -> resolve (box true)
+                | None -> resolve (box loadFailure.IsNone)
                 | Some importing ->
-                    loadWaiters.Add (fun () -> resolve (box true))
+                    loadWaiters.Add (fun () -> resolve (box loadFailure.IsNone))
                     importing.Package?Progressive?start () |> ignore)
         state?completeLoad <- fun () -> ensureLoaded ()
         state?isLayoutComplete <- fun () -> Ren.layoutIsComplete ctx

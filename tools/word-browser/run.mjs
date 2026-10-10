@@ -47,6 +47,7 @@
 //   list-format-numbering  a list's number format changed: numbering.xml keeps the other lists and definitions as they were read; a definition shared with another list is copied for the list
 //   media-pruning    picture files and relationships nothing refers to are not written: a picture's paragraph written from the model over and over, a picture deleted
 //   progressive-read  a DOCX opened front first (openProgressive): the package read to its end is the package forEditorPackage makes, for every test document; an editor and a viewer show the first screens before the document is read, typing and scrolling meanwhile, what needs the whole document reads the rest
+//   progressive-failure  a DOCX opened front first whose body is not well formed at paragraph 7000 of 9000: the load ends failed (package, editor, viewer), what was read is laid out, getText / find / page count answer for it, saving refuses
 //   xml-scan         the DOCX reader's XML scanner gives the nodes the browser's parser gives, for every part of the test documents
 //
 // Environment (as tools/docx-roundtrip/roundtrip.mjs): PLAYWRIGHT, JSZIP_DIR, PORT (default 16022).
@@ -65,7 +66,7 @@ const opt = (name) => { const i = args.indexOf(name); if (i < 0) return undefine
 const dist = path.resolve(opt('--dist') ?? path.join(repo, 'dist'));
 const port = Number(process.env.PORT ?? 16022);
 const all = ['explicit-format', 'page-frames', 'ime', 'typing', 'track-changes', 'linked-images', 'opaque-click', 'viewport', 'selection-format',
-    'placeholder-and-frames', 'caret-movement', 'revision', 'viewer-measurers', 'page-centering', 'commands', 'image-handles', 'painter-frames', 'viewer-entry', 'keystroke-long', 'table-tools', 'caret-frames', 'viewer-first-page', 'required-fonts', 'progressive-layout', 'xml-scan', 'header-footer-edit', 'header-footer-variants', 'merged-cell-split', 'table-columns', 'anchored-objects', 'section-pages', 'table-borders', 'table-break-borders', 'body-page-field', 'nested-table-edit', 'edited-paragraph-xml', 'list-format-numbering', 'media-pruning', 'progressive-read'];
+    'placeholder-and-frames', 'caret-movement', 'revision', 'viewer-measurers', 'page-centering', 'commands', 'image-handles', 'painter-frames', 'viewer-entry', 'keystroke-long', 'table-tools', 'caret-frames', 'viewer-first-page', 'required-fonts', 'progressive-layout', 'xml-scan', 'header-footer-edit', 'header-footer-variants', 'merged-cell-split', 'table-columns', 'anchored-objects', 'section-pages', 'table-borders', 'table-break-borders', 'body-page-field', 'nested-table-edit', 'edited-paragraph-xml', 'list-format-numbering', 'media-pruning', 'progressive-read', 'progressive-failure'];
 const checks = args.length ? args : all;
 
 const jszipDir = [process.env.JSZIP_DIR, path.join(repo, 'node_modules/jszip'), path.resolve(repo, '../rbt-office/node_modules/jszip')].find((p) => p && fs.existsSync(p));

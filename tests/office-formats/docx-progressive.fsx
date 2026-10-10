@@ -99,6 +99,58 @@ for path in documents do
                                             && reader.Front.Footnotes = whole.Footnotes && reader.Front.Endnotes = whole.Endnotes && reader.Front.Comments = whole.Comments
                                             && reader.Front.PageSetup = whole.PageSetup && reader.Front.Theme = whole.Theme) "styles, headers, footers, notes, comments or page setup differ"
 
+// ---- a body that cannot be read to its end ------------------------------------
+// The text of the main part is not well formed at paragraph `at` of `count`: the reader gives the
+// blocks before it, says that it failed and why, reads nothing more, and has no document to finish.
+let withBody (count: int) (at: int) (broken: string) : byte[] =
+    let source = File.ReadAllBytes (Path.Combine(root, "tests/test-documents-wild/docx4j-getting-started.docx"))
+    use input = new Compression.ZipArchive(new MemoryStream(source), Compression.ZipArchiveMode.Read)
+    let output = new MemoryStream()
+    (use archive = new Compression.ZipArchive(output, Compression.ZipArchiveMode.Create, true)
+     for entry in input.Entries do
+        use reader = new StreamReader(entry.Open(), Text.Encoding.UTF8)
+        let target = archive.CreateEntry entry.FullName
+        if entry.FullName = "word/document.xml" then
+            let xml = reader.ReadToEnd()
+            let bodyOpen = xml.IndexOf('>', xml.IndexOf "<w:body") + 1
+            let bodyClose = xml.LastIndexOf "</w:body>"
+            let sect = xml.LastIndexOf("<w:sectPr", bodyClose)
+            let paragraphs =
+                [ for k in 1 .. count -> if k = at then broken else sprintf "<w:p><w:r><w:t>Paragraph %d of a long document.</w:t></w:r></w:p>" k ]
+                |> String.concat ""
+            use writer = new StreamWriter(target.Open(), Text.UTF8Encoding(false))
+            writer.Write(xml.Substring(0, bodyOpen) + paragraphs + xml.Substring(sect))
+        else
+            use from = entry.Open()
+            use into = target.Open()
+            from.CopyTo into)
+    output.ToArray()
+
+for label, broken in [ "tags that do not match", "<w:p><w:r><w:t>not well formed</w:r></w:p>"
+                       "an element that is not closed", "<w:p><w:r><w:t>not closed</w:t></w:p>"
+                       "a reference that is none", "<w:p><w:r><w:t>a & b</w:t></w:r></w:p>" ] do
+    for count, at in [ 9000, 7000; 300, 3; 300, 1 ] do
+        for step in [ 1; 64; Int32.MaxValue ] do
+            let label = sprintf "a body not well formed (%s) at %d of %d, %s at a time" label at count (if step = Int32.MaxValue then "all" else string step)
+            match (try DocxReader.openProgressiveNative true (withBody count at broken) with e -> None) with
+            | None -> ok (label + ": opens") false "the reader does not open it"
+            | Some reader ->
+                let blocks = ResizeArray<DocxReader.DocumentContent>()
+                let mutable steps = 0
+                let threw =
+                    try
+                        while not (reader.IsDone ()) do
+                            blocks.AddRange (reader.Read step).Blocks
+                            steps <- steps + 1
+                            if steps > 1000000 then failwith "the reader does not end"
+                        ""
+                    with e -> e.Message
+                ok (label + ": reading does not throw") (threw = "") threw
+                ok (label + ": the blocks before it are given") (blocks.Count = at - 1) (sprintf "%d blocks" blocks.Count)
+                ok (label + ": it says that it failed") ((reader.Failure ()).IsSome && not reader.AtOnce) (sprintf "%A" (reader.Failure ()))
+                ok (label + ": nothing more is read") ((reader.Read 10).Blocks.IsEmpty && reader.BlockCount () = at - 1) ""
+                ok (label + ": there is no document to finish") (try reader.Finish () |> ignore; false with e -> Some e.Message = reader.Failure ()) ""
+
 // A block is not given until the one after it is read: an empty paragraph that ends a section on a
 // new page gives way to a continuous break after it, whatever the step.
 printfn "docx progressive read: %d documents compared (%d read front first, %d at once); %d passed, %d failed" compared streamed atOnce pass fail
