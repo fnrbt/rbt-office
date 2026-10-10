@@ -109,6 +109,10 @@ type LayoutProgress = {
     mutable LongestSliceFrom: int
     /// Passes of the slice in hand.
     mutable SlicePasses: int
+    /// Most of a long document was changed at once (everything made bold):
+    /// it is laid out again from its start as a newly loaded one is - what is
+    /// in view first, the rest in slices (see `deferMassRelayout`).
+    mutable MassChange: bool
 }
 
 /// A header or footer that is edited in place. The document the editor
@@ -258,7 +262,7 @@ let createContext (canvas: HTMLCanvasElement) = {
     LastPaint = None
     Viewport = None
     PageFrame = None
-    Progress = { Scheduled = false; Epoch = 0; Chunk = 48; Notified = 0.0; Waiters = ResizeArray(); LoadPending = false
+    Progress = { MassChange = false; Scheduled = false; Epoch = 0; Chunk = 48; Notified = 0.0; Waiters = ResizeArray(); LoadPending = false
                  Slices = 0; LongestSliceMs = 0.0; LongestSlice = 0; LongestSlicePasses = 0; LongestSliceLayoutMs = 0.0; LongestSliceFrom = 0; SlicePasses = 0 }
     Story = None
     StoryPainted = false
@@ -563,6 +567,9 @@ let private coverSelection (ctx: RenderContext) (doc: Document) =
     if not (layoutIsWhole ctx) then
         match doc.Selection with
         | None -> ()
+        // (Everything selected and changed: the end of the selection is the end of the document,
+        // which is laid out with the rest - see deferMassRelayout. A caret is laid out as ever.)
+        | Some selection when ctx.Progress.MassChange && selection.Anchor <> selection.Focus -> ()
         | Some selection ->
             let indexOf (blockId: string) =
                 match locateBlock doc blockId with
@@ -576,6 +583,72 @@ let private coverSelection (ctx: RenderContext) (doc: Document) =
                 ctx.LayoutState.BlockLimit <- last + 96
             elif last + 4 >= limit then
                 ctx.LayoutState.BlockLimit <- last + 24
+
+/// Blocks a change must touch at once for the document to be laid out again as a newly loaded one is.
+let private massChangeBlocks = 400
+
+/// A change of most of a long document at once - everything selected and made
+/// bold, a font or a size given to all of it - has every paragraph measured
+/// and broken into lines again: a second and more for six hundred pages,
+/// before the keystroke returns. Through a viewport such a change is laid out
+/// as a newly loaded document is: from the first block that changed as far as
+/// is in view (the render sees to that), and the rest in slices - the layout
+/// is not complete meanwhile (`layoutIsComplete`), and what needs all of it
+/// lays the rest out at once. (What is in view half way down a long document
+/// has the half above it laid out first: pages are counted from the start.)
+let private deferMassRelayout (ctx: RenderContext) (doc: Document) =
+    if layoutIsWhole ctx && ctx.Progress.MassChange then ctx.Progress.MassChange <- false
+    match ctx.Viewport, ctx.Story, ctx.LayoutState.LastDocument with
+    | Some _, None, Some last when ctx.LayoutState.LastWasWhole && layoutIsWhole ctx && not ctx.Progress.LoadPending && not (obj.ReferenceEquals(last.Blocks, doc.Blocks)) ->
+        // The first block that is another object, and whether the ones after it are too (an
+        // edit of one paragraph leaves its neighbours the objects they were).
+        let mutable before = last.Blocks
+        let mutable after = doc.Blocks
+        let mutable prefix = 0
+        while not before.IsEmpty && not after.IsEmpty && obj.ReferenceEquals(before.Head, after.Head) do
+            before <- before.Tail
+            after <- after.Tail
+            prefix <- prefix + 1
+        let mutable probed = 0
+        let mutable differing = 0
+        let mutable probeBefore = before
+        let mutable probeAfter = after
+        while probed < 16 && not probeBefore.IsEmpty && not probeAfter.IsEmpty do
+            if not (obj.ReferenceEquals(probeBefore.Head, probeAfter.Head)) then differing <- differing + 1
+            probeBefore <- probeBefore.Tail
+            probeAfter <- probeAfter.Tail
+            probed <- probed + 1
+        if probed = 16 && differing = 16 then
+            let struct (_, suffix) = Rbt.Word.Layout.commonBlockEnds (List.toArray before) (List.toArray after)
+            let changed = List.length after - suffix
+            if changed >= massChangeBlocks then
+                // As far as was in view before the change, in one pass (a pass has a cost of its own
+                // that grows with what is laid out: raising the limit step by step to a view half way
+                // down six hundred pages took longer than laying all of them out at once). The render
+                // takes it further when the text got shorter.
+                let inView =
+                    match ctx.Viewport, ctx.LayoutState.LastSlices with
+                    | Some vp, Some slices when slices.SliceLayouts.Length > 0 ->
+                        let bottom = (vp.ScrollTop - vp.OriginY) / vp.Scale + 2.0 * vp.Height / vp.Scale
+                        // The first layout below that, and the block it belongs to.
+                        let layouts = slices.SliceLayouts
+                        let mutable lo = 0
+                        let mutable hi = layouts.Length
+                        while lo < hi do
+                            let mid = lo + (hi - lo) / 2
+                            if layouts.[mid].Y <= bottom then lo <- mid + 1 else hi <- mid
+                        let starts = slices.SliceStarts
+                        let mutable first = 0
+                        let mutable last = starts.Length - 1
+                        while first < last do
+                            let mid = first + (last - first + 1) / 2
+                            if starts.[mid] <= lo then first <- mid else last <- mid - 1
+                        first + 8
+                    | _ -> 0
+                ctx.LayoutState.BlockLimit <- max (prefix + 6) inView
+                ctx.Progress.Chunk <- 8
+                ctx.Progress.MassChange <- true
+    | _ -> ()
 
 /// One slice of the layout of the rest of the document: blocks are added for
 /// about `budget` milliseconds. True when the whole document is laid out.
@@ -1557,6 +1630,8 @@ let private frameLayoutLookup (frame: PaintFrame) =
 /// their index are the same objects - and a newly built frame otherwise.
 /// (The canvas size and the viewport are the caller's to compare.)
 let private frameFor (ctx: RenderContext) (doc: Document) hoveredImage =
+    // (Most of a long document changed at once: laid out again as a newly loaded one is.)
+    deferMassRelayout ctx doc
     // While a long document is being laid out from its start: what is in view
     // and what the selection is in are laid out before they are shown.
     if not (ctx.LayoutState.LastWasWhole && layoutIsWhole ctx) then

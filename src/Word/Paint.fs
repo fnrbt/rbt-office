@@ -4163,7 +4163,10 @@ let selectionCommandsInBand (settings: LayoutSettings) (measureRange: TextRangeM
     | Some sel when not sel.IsCollapsed ->
         match locateBlock doc sel.Anchor.BlockId, locateBlock doc sel.Focus.BlockId with
         | ValueSome (struct (anchorIndex, _)), ValueSome (struct (focusIndex, _))
-            when anchorIndex <> focusIndex && anchorIndex < slices.SliceBlocks.Length && focusIndex < slices.SliceBlocks.Length ->
+            // (An end beyond what is laid out - everything selected in a document that is being
+            // laid out: the selection is shown as far as the layout goes. It was looked up block
+            // by block in the whole document then, each block not found in a walk of all of them.)
+            when anchorIndex <> focusIndex && min anchorIndex focusIndex < slices.SliceBlocks.Length ->
             let startPos, endPos, first, last =
                 if anchorIndex < focusIndex then sel.Anchor, sel.Focus, anchorIndex, focusIndex
                 else sel.Focus, sel.Anchor, focusIndex, anchorIndex
@@ -4200,7 +4203,7 @@ let selectionCommandsInBand (settings: LayoutSettings) (measureRange: TextRangeM
                                 startX <- xForOffsetWithRange measureRange line lineStart
                                 endX <- xForOffsetWithRange measureRange line lineEnd
                             commands.Add(FillRect ("rgba(0, 120, 215, 0.3)", settings.PaddingLeft + startX + alignmentOffset layout line, line.Y, endX - startX, line.Height))
-            for index in first .. last do
+            for index in first .. min last (slices.SliceBlocks.Length - 1) do
                 let from = slices.SliceStarts.[index]
                 let until = slices.SliceStarts.[index + 1]
                 // (Nothing of the block in the band: nothing to look at.)
