@@ -217,6 +217,9 @@ let private ownBytesOf (data: obj): JS.Promise<byte[]> = jsNative
 [<Emit("Promise.resolve($0.slice())")>]
 let private resolvedCopy (bytes: byte[]): JS.Promise<byte[]> = jsNative
 
+[<Emit("new Uint8Array($0)")>]
+let private bytesOfArrayBuffer (buffer: obj): byte[] = jsNative
+
 /// The document content a workbook holds outside its sheets (defined names
 /// with their spelling and comments). A change of it is a change of the
 /// document: the revision and OnChange follow it as they follow the sheets.
@@ -6635,8 +6638,8 @@ type Spreadsheet(container: Element) =
     /// (drawings, named styles, theme, kept parts) ExportXlsx will carry over.
     member _.HasXlsxSource() : bool = xlsxSource.IsSome
 
-    /// The editor's workbook in the XLSX writer's shape (what ExportXlsx writes).
-    member _.ToXlsxWorkbook() : XlsxWriter.XlsxWorkbookOut =
+    /// The editor's workbook as what the XLSX export is made from.
+    member private _.XlsxExportInput() : Rbt.Spreadsheet.XlsxBridge.ExportInput =
         let current = Array.init sheets.Length (fun i -> if i = activeSheetIndex then model else sheets.[i])
         // The export names the scope of a defined name by the sheet's place
         // ("sheet1" is the first sheet). Sheets keep their ids when they are
@@ -6654,7 +6657,7 @@ type Spreadsheet(container: Element) =
                         let index = sheetIndexOfId id
                         if index < 0 then None else Some ((Some (Rbt.Spreadsheet.XlsxBridge.sheetIdOfIndex index), name), value))
                 |> Map.ofSeq
-        Rbt.Spreadsheet.XlsxBridge.Export.toWorkbookOut
+        let input : Rbt.Spreadsheet.XlsxBridge.ExportInput =
             { Sheets = current
               Names = Array.copy sheetNames
               Visible =
@@ -6668,6 +6671,13 @@ type Spreadsheet(container: Element) =
               Source = xlsxSource
               // A VBA project of the opened file is one of its kept parts.
               Macros = None }
+        input
+
+    /// The editor's workbook in the XLSX writer's shape. (ExportXlsx writes
+    /// this, with the sheets nothing was changed in as the file's own parts
+    /// where it has the file.)
+    member this.ToXlsxWorkbook() : XlsxWriter.XlsxWorkbookOut =
+        Rbt.Spreadsheet.XlsxBridge.Export.toWorkbookOut (this.XlsxExportInput())
         // (Iterative calculation is a setting of the workbook, not of what was kept of its file.)
         |> Rbt.Spreadsheet.XlsxBridge.Export.withIteration (workbook |> Option.bind (fun wb -> wb.Iteration))
 
@@ -6693,7 +6703,28 @@ type Spreadsheet(container: Element) =
         match importedPackage with
         | Some (bytes, openedAt, shown) when revision = openedAt && activeSheetIndex = shown && this.ShownAsOpened() ->
             resolvedCopy bytes
-        | _ -> packageBytes (XlsxWriter.writeWorkbookPackage (this.ToXlsxWorkbook()))
+        | Some (bytes, _, _) ->
+            // Sheets nothing was changed in go back as the parts they were
+            // read from: their bytes, and the styles and shared strings they
+            // index, are taken from the file that was opened.
+            let input = this.XlsxExportInput()
+            let write (parts: (string * byte[]) list) =
+                Rbt.Spreadsheet.XlsxBridge.Export.toWorkbookOutWith parts input
+                |> Rbt.Spreadsheet.XlsxBridge.Export.withIteration (workbook |> Option.bind (fun wb -> wb.Iteration))
+                |> XlsxWriter.writeWorkbookPackage
+                |> packageBytes
+            let wanted = try Rbt.Spreadsheet.XlsxBridge.Export.verbatimPartsWanted input with _ -> []
+            if wanted.IsEmpty then write []
+            else
+                let fetched : JS.Promise<(string * byte[]) list> =
+                    (ZipInterop.loadArchive (box bytes)).``then``(fun archive ->
+                        let files = wanted |> List.choose (fun path -> ZipInterop.tryFindFile archive path |> Option.map (fun file -> path, file)) |> List.toArray
+                        (JS.Constructors.Promise.all (files |> Array.map (fun (_, file) -> file.GetArrayBuffer())))
+                            .``then``(fun (all: obj) -> let buffers = unbox<obj array> all in files |> Array.mapi (fun i (path, _) -> path, bytesOfArrayBuffer buffers.[i]) |> Array.toList))
+                    |> unbox
+                // (A file that cannot be read again is written from the model, as before.)
+                (fetched.``catch``(fun _ -> [])).``then``(fun parts -> write parts) |> unbox<JS.Promise<byte[]>>
+        | None -> packageBytes (XlsxWriter.writeWorkbookPackage (this.ToXlsxWorkbook()))
 
     /// Render the current model through the shared portable paint command path.
     member _.RenderPortableCanvas(canvas: Element) = renderPortablePaintToCanvas canvas

@@ -184,10 +184,15 @@ let checkWritten (label: string) (bytes: byte[]) =
     eq (label + ": read again, the validations") (validationsOf again.Sheets.[0].Model |> List.map (fun (r, _, t, m) -> r, t, m)) (expectedValidations |> List.map (fun (r, _, t, m) -> r, t, m))
     again
 
-// Saved untouched.
-let untouched = export imported (modelsOf imported)
+// Saved with nothing of the rules touched. (Another zoom: a sheet nothing at
+// all was changed in goes back as the part it was read from, and this is
+// about what the writer makes of the model.)
+let zoomed (models: SpreadsheetModel array) = models |> Array.map (fun model -> { model with Zoom = 1.25 })
+let untouched = export imported (zoomed (modelsOf imported))
 let second = checkWritten "save" untouched
-checkWritten "second save" (export second (modelsOf second)) |> ignore
+checkWritten "second save" (export second (zoomed (modelsOf second))) |> ignore
+// ... and with nothing touched at all: the sheet is the file's part.
+ok "save: an untouched sheet is the part that was read" ((partsOf (export imported (modelsOf imported))).["xl/worksheets/sheet1.xml"] = (partsOf file).["xl/worksheets/sheet1.xml"]) ""
 // The reader's workbook straight to the writer.
 checkWritten "reader to writer" (XlsxWriter.writeWorkbookPackageBytes (XlsxWriter.packageFromReaderWorkbook (loadBytes file))) |> ignore
 

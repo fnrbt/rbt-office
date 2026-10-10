@@ -78,6 +78,18 @@ let reachable (parts: Map<string, byte[]>) : Set<string> =
     visit "_rels/.rels"
     Set.ofSeq seen
 
+/// Every part reachable from one part.
+let reachableFrom (parts: Map<string, byte[]>) (start: string) : Set<string> =
+    let seen = Collections.Generic.HashSet<string>()
+    let rec visit (part: string) =
+        let dir = Path.GetDirectoryName(part).Replace('\\', '/')
+        let relsPath = (if dir = "" then "" else dir + "/") + "_rels/" + Path.GetFileName part + ".rels"
+        match Map.tryFind relsPath parts with
+        | Some data -> for _, target in relTargets relsPath (text data) do if seen.Add target then visit target
+        | None -> ()
+    visit start
+    Set.ofSeq seen
+
 let hasContentType (types: string) (part: string) =
     types.Contains ("PartName=\"/" + part + "\"")
     || (let ext = Path.GetExtension(part).TrimStart('.') in ext <> "" && Text.RegularExpressions.Regex.IsMatch(types, "<Default\\b[^>]*Extension=\"" + Text.RegularExpressions.Regex.Escape ext + "\"", Text.RegularExpressions.RegexOptions.IgnoreCase))
@@ -147,6 +159,72 @@ for file in files do
                 let types = match Map.tryFind "[Content_Types].xml" written with Some data -> text data | None -> ""
                 let untyped = written |> Map.toList |> List.map fst |> List.filter (fun part -> part <> "[Content_Types].xml" && not (hasContentType types part))
                 ok (name + ": content types") untyped.IsEmpty (show untyped)
+                // One cell of the first worksheet edited: every other worksheet goes back as the part it was
+                // read from, byte for byte, and still means what it meant - the styles and shared strings
+                // its cells index are the file's, added to. (Not for a workbook in the 1904 date system: its
+                // serials are converted on import, so every sheet is written from the model.)
+                let isWorksheet (sheet: XlsxReader.Worksheet) = match sheet.Extras.SourcePart with Some (_, relType) -> relType.EndsWith "/worksheet" | None -> false
+                let sheetsRead = List.toArray workbook.Sheets
+                match sheetsRead |> Array.tryFindIndex isWorksheet with
+                | Some target when sheetsRead.Length > 1 ->
+                    let models = imported.Sheets |> Array.map (fun sheet -> sheet.Model)
+                    let at : Rbt.Spreadsheet.Model.CellAddress = { Row = 2; Col = 1 }
+                    let cell : Rbt.Spreadsheet.Model.CellData =
+                        { Value = Rbt.Spreadsheet.Model.CellValue.String "edited here"; Comment = None
+                          Format = { Rbt.Spreadsheet.Model.defaultFormat with Bold = true; BgColor = Some "#ABCDEF"; NumberFormat = Some "0.0000\"u\"" } }
+                    models.[target] <- { models.[target] with Cells = Map.add at cell models.[target].Cells }
+                    let editedBytes = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut { input with Sheets = models })
+                    let edited = partsOf editedBytes
+                    let others = sheetsRead |> Array.mapi (fun i sheet -> i, sheet) |> Array.filter (fun (i, sheet) -> i <> target && isWorksheet sheet)
+                    if not workbook.Date1904 then
+                        let differing =
+                            others |> Array.toList
+                            |> List.choose (fun (_, sheet) ->
+                                let path = fst sheet.Extras.SourcePart.Value
+                                match Map.tryFind path edited with
+                                | Some data when data = original.[path] -> None
+                                | _ -> Some path)
+                        ok (name + ": other sheets identical after an edit") differing.IsEmpty (show differing)
+                        // ... and everything those sheets reach is still there, as it was.
+                        let lost =
+                            wanted |> Set.toList
+                            |> List.filter (fun part ->
+                                not (part.StartsWith "xl/worksheets/sheet") && not (rewritten part && not (part.StartsWith "xl/comments" || part.StartsWith "xl/threadedComments/"))
+                                && (others |> Array.exists (fun (_, sheet) -> reachableFrom original (fst sheet.Extras.SourcePart.Value) |> Set.contains part))
+                                && (match Map.tryFind part edited with Some data -> data <> original.[part] | None -> true))
+                        ok (name + ": what the other sheets reach is identical") lost.IsEmpty (show lost)
+                    // Read again: every cell of every sheet has the value and the format it had (but the edited one).
+                    match (try XlsxReader.loadBytesNative editedBytes with _ -> None) with
+                    | None -> ok (name + ": edited export opens") false ""
+                    | Some again ->
+                        let describe (book: XlsxReader.Workbook) (sheet: XlsxReader.Worksheet) =
+                            [ for row in sheet.Rows do
+                                for c in row.Cells do
+                                    let value =
+                                        match c.Value with
+                                        | XlsxReader.SharedString index when index >= 0 && index < book.SharedStrings.Length -> XlsxReader.String book.SharedStrings.[index]
+                                        | other -> other
+                                    let format = XlsxWriter.formatOfReaderStyle c.Style
+                                    if value <> XlsxReader.Empty || c.Formula.IsSome || format <> XlsxWriter.defaultXlsxCellFormat then
+                                        yield (c.Reference.Row, c.Reference.Column), (value, c.Formula, format) ]
+                            |> Map.ofList
+                        let wrong =
+                            [ for i in 0 .. sheetsRead.Length - 1 do
+                                if i < again.Sheets.Length then
+                                    let was, now = describe workbook sheetsRead.[i], describe again again.Sheets.[i]
+                                    let was, now = (if i = target then Map.remove (3, "B") was, Map.remove (3, "B") now else was, now)
+                                    if was <> now then
+                                        let first = was |> Map.toSeq |> Seq.tryFind (fun (key, cell) -> Map.tryFind key now <> Some cell) |> Option.map (fun ((row, col), _) -> sprintf "%s%d" col row) |> Option.defaultValue "+"
+                                        yield sprintf "%s!%s" sheetsRead.[i].Name first ]
+                        ok (name + ": cells mean what they meant after an edit") wrong.IsEmpty (show wrong)
+                        let editedCell = again.Sheets.[target].Rows |> List.collect (fun row -> row.Cells) |> List.tryFind (fun c -> c.Reference.Row = 3 && c.Reference.Column = "B")
+                        ok (name + ": the edited cell")
+                            (match editedCell with
+                             | Some c ->
+                                (match c.Value with XlsxReader.SharedString index -> again.SharedStrings.[index] = "edited here" | XlsxReader.String text -> text = "edited here" | _ -> false)
+                                && (match c.Style with Some style -> style.Bold && style.NumberFormat = Some "0.0000\"u\"" && style.FillColor |> Option.exists (fun color -> color.ToUpperInvariant().EndsWith "ABCDEF") | None -> false)
+                             | None -> false) (sprintf "%A" (editedCell |> Option.map (fun c -> c.Value, c.Style)))
+                | _ -> ()
             with error -> ok (name + ": export") false (error.Message.Split('\n').[0])
 
 printfn "\nXLSX part carry-over tests: %d passed, %d failed (%d workbooks, %d files skipped)" pass fail books skipped

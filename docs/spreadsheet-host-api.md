@@ -772,10 +772,33 @@ before, which makes it whole). Selections and scrolling are not changes. Anythin
 hand (a new revision), another sheet on display - is written by the writer as before: sheets, styles and shared strings from the model
 (untouched cells, tables, validations and conditional formats as the file states them), everything else carried through (next section).
 Only `ImportXlsx` keeps the bytes (one copy of the file, compressed as it came); `ImportXlsxFromBuffer`, `InstallImportedWorkbook` and the
-.NET hosts always write. **Not done:** writing an untouched sheet's XML verbatim beside edited sheets. That needs the styles and shared
-strings to be extended in place (so the indices the untouched sheets use stay valid) instead of rebuilt, the raw sheet parts to be kept
-(the dashboard's are over 100 MB uncompressed, so as compressed entries), and the sheet's relationship ids to be kept; today a sheet that
-was never converted is written from the reader's rows, cell for cell as the file had them, but not character for character.
+.NET hosts always write.
+
+### A sheet nothing was changed in is written as the part it was read from
+When the workbook did change, `ExportXlsx()` still writes every **worksheet nothing was changed in** as the file's own part: the same
+bytes under the same name, with everything the part's relationships lead to (comments and their boxes, threaded comments, drawings, tables,
+pivot tables, printer settings) as it was. Only the sheets that changed are written from the model. So that the untouched parts keep their
+meaning, `xl/styles.xml` and `xl/sharedStrings.xml` are then **the file's parts, added to**: formats, fonts, fills, borders, number
+formats, dxfs and strings the edited sheets need and the file does not have are put behind the file's own, and no index of the file
+changes (named styles, the indexed palette, table styles and extensions of the styles part stay as they were, too).
+- "Nothing changed in a sheet" is: its cells (values, formulas, their cached results, formats, comments), sizes, outline, merges, rules,
+  validations, tables, drawings, threads, links, page setup, panes, filter, zoom, grid lines / headers / formulas / zeros and tab colour are
+  what they were when it was opened. A formula result that changed because another sheet was edited is a change (the sheet is written
+  from the model, with the new cached values). Renaming, hiding or moving the sheet is not (that is in `xl/workbook.xml`).
+- The one thing rewritten in such a part is `tabSelected` of its view, when the sheet on display is no longer the one the file had on
+  display (two sheets that say so are a group to Excel); the part is otherwise the file's text.
+- **Written from the model as before** (every sheet): a workbook in the 1904 date system (its serials are converted on import); a workbook
+  in which a sheet of the file was renamed or deleted (formulas of other sheets, kept or not, may name it); a styles or shared-strings
+  part the writer cannot add to (no `cellXfs` / `fonts` / `fills` / `borders`, element names with a prefix, or entries the reader counted
+  differently); a workbook that was not opened with `ImportXlsx` in a browser (`ImportXlsxFromBuffer`, `InstallImportedWorkbook`: the
+  editor does not have the file's bytes). A copy of a sheet (`DuplicateSheet`) is always written from the model.
+- .NET: `XlsxBridge.Export.toWorkbookOut` does the same for a workbook read with `XlsxReader.loadBytesNative` (the reader keeps the
+  bytes in `Preserved.SourceParts`). In a browser the reader does not keep the large parts; `Export.verbatimPartsWanted input` names the
+  parts to take from the file and `Export.toWorkbookOutWith parts input` writes with them (this is what `ExportXlsx` does with the bytes
+  `ImportXlsx` kept). `ToXlsxWorkbook()` is the workbook without those parts: every sheet from the model.
+- `tests/office-formats/xlsx-parts.fsx` edits one cell of the first sheet of every test workbook and asserts that every other worksheet
+  part and what it reaches is byte-identical, and that every cell of every sheet reads back with the value and format it had; the browser
+  check `export-keeps-parts` asserts the byte identity through `ImportXlsx` / `ExportXlsx`.
 
 ### Parts the editor does not model
 Nothing of an opened package is dropped on a save. Besides the parts made from the model (workbook, styles, shared strings, the worksheets,

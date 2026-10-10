@@ -43,7 +43,10 @@ for file in [ "real-world/milk-street-office.xlsx"; "real-world/saopaulo-condos.
     eq (file + " sheet names") (out.Sheets |> List.map (fun s -> s.Name, s.State)) (original.Sheets |> List.map (fun s -> s.Name, s.State))
     eq (file + " defined names") out.DefinedNames original.DefinedNames
     eq (file + " dxfs") out.Dxfs original.Dxfs
-    ok (file + " kept parts") (obj.ReferenceEquals(out.Preserved, original.Preserved) || out.Preserved = original.Preserved) "preserved parts differ"
+    // (The sheets go back as the parts they were read from: those parts, and the styles and shared strings they index, are added.)
+    let withoutSheetParts (kept: XlsxReader.WorkbookPreservation) = { kept with InPlace = false; Parts = kept.Parts |> List.filter (fun (path, _) -> original.Preserved.Parts |> List.exists (fun (known, _) -> known = path)) }
+    ok (file + " kept parts") (withoutSheetParts out.Preserved = original.Preserved) "preserved parts differ"
+    ok (file + " sheets as they were read") (out.Preserved.InPlace && out.Sheets |> List.forall (fun sheet -> sheet.Extras.Verbatim)) "not verbatim"
     for sheetOut, sheetOriginal, sheetImported in List.zip3 out.Sheets original.Sheets (List.ofArray imported.Sheets) do
         let label = sprintf "%s/%s" file sheetOut.Name
         let originals = cellsOf sheetOriginal
@@ -66,7 +69,7 @@ for file in [ "real-world/milk-street-office.xlsx"; "real-world/saopaulo-condos.
         eq (label + " conditional formats") sheetOut.ConditionalFormats sheetOriginal.ConditionalFormats
         eq (label + " hyperlinks") sheetOut.Hyperlinks sheetOriginal.Hyperlinks
         eq (label + " page setup") (sheetOut.PageSetup, sheetOut.PageMargins, sheetOut.PrintOptions, sheetOut.HeaderFooter, sheetOut.PrintArea, sheetOut.PrintTitleRows, sheetOut.PrintTitleCols) (sheetOriginal.PageSetup, sheetOriginal.PageMargins, sheetOriginal.PrintOptions, sheetOriginal.HeaderFooter, sheetOriginal.PrintArea, sheetOriginal.PrintTitleRows, sheetOriginal.PrintTitleCols)
-        ok (label + " drawings and threads") (sheetOut.Extras = sheetOriginal.Extras) "extras differ"
+        ok (label + " drawings and threads") ({ sheetOut.Extras with Verbatim = false } = sheetOriginal.Extras) "extras differ"
     // The written package reads back with the same cells, pictures and kept objects.
     let again = reread out
     let describe (workbook: XlsxReader.Workbook) =
@@ -371,7 +374,7 @@ eq "import: threaded comment with its reply" (extrasModel.Threads |> Map.toList 
 ok "import: the thread's cell shows a comment marker" ((extrasModel.Cells.[addr 1 1]).Format.HasComment) "no marker"
 let extrasInput (model: SpreadsheetModel) = inputOf extrasImported [| model |] extrasImported.Context.Names
 // Untouched: the file's drawings and threads go back exactly.
-eq "export: untouched extras are the file's" ((Bridge.Export.toWorkbookOut (extrasInput extrasModel)).Sheets.[0].Extras) ((XlsxWriter.packageFromReaderWorkbook extrasWb).Sheets.[0].Extras)
+eq "export: untouched extras are the file's" ({ (Bridge.Export.toWorkbookOut (extrasInput extrasModel)).Sheets.[0].Extras with Verbatim = false }) ((XlsxWriter.packageFromReaderWorkbook extrasWb).Sheets.[0].Extras)
 // Two rows inserted above everything, one column inserted before column C.
 let pictureRect (model: SpreadsheetModel) = Rbt.Spreadsheet.Layout.drawingRect model model.Drawings.[0]
 let movedModel = extrasModel |> applyStructureEdit (InsertRows (0, 2)) |> applyStructureEdit (InsertCols (2, 1))

@@ -592,6 +592,8 @@ type private StyleBook = {
     Xfs: XfKey list
     NumFmtIds: Map<string, int>
     StyleIndex: Map<XfKey, int>
+    /// The cellXfs index of a format given as its key (a column's default style).
+    KeyIndex: XfKey -> int option
     /// The cellXfs index of a cell format. Formats are looked up by identity
     /// first: the cells of a workbook share a few format records.
     StyleIdOf: XlsxCellFormat -> int
@@ -791,6 +793,7 @@ let private collectStyles (workbook: XlsxWorkbookOut) =
       Xfs = xfs
       NumFmtIds = customNumFmts
       StyleIndex = styleIndex
+      KeyIndex = (fun key -> Map.tryFind key styleIndex)
       StyleIdOf = styleIdOf }
 
 /// The shared strings of the workbook in order of first use, and the index
@@ -893,6 +896,36 @@ let private dxfXml (element: string) (d: XlsxReader.Dxf) =
         |> Option.defaultValue ""
     "<" + element + ">" + font + fill + "</" + element + ">"
 
+/// A cellXfs entry: the format with the ids of its number format, font,
+/// fill, border and the named cell style it is based on.
+let private xfXmlOf (numFmtId: int) (fontId: int) (fillId: int) (borderId: int) (xfId: int) (xf: XfKey) =
+    let alignmentAttrs = [
+        match xf.HorizontalAlign with Some v -> yield attr "horizontal" v | None -> ()
+        match xf.VerticalAlign with Some v -> yield attr "vertical" v | None -> ()
+        if xf.WrapText then yield "wrapText=\"1\""
+        if xf.Indent > 0 then yield sprintf "indent=\"%d\"" xf.Indent
+        if xf.ShrinkToFit then yield "shrinkToFit=\"1\""
+        if xf.TextRotation <> 0 then yield sprintf "textRotation=\"%d\"" xf.TextRotation
+    ]
+    let applyAlignment = not (List.isEmpty alignmentAttrs)
+    let attrs = [
+        yield sprintf "numFmtId=\"%d\"" numFmtId
+        yield sprintf "fontId=\"%d\"" fontId
+        yield sprintf "fillId=\"%d\"" fillId
+        yield sprintf "borderId=\"%d\"" borderId
+        // The named cell style the format is based on (Normal when the workbook has no such style).
+        yield sprintf "xfId=\"%d\"" xfId
+        if xf.NumFmt.IsSome then yield "applyNumberFormat=\"1\""
+        if fontId <> 0 then yield "applyFont=\"1\""
+        if fillId <> 0 then yield "applyFill=\"1\""
+        if borderId <> 0 then yield "applyBorder=\"1\""
+        if applyAlignment then yield "applyAlignment=\"1\""
+    ]
+    if applyAlignment then
+        sprintf "<xf %s><alignment %s/></xf>" (String.concat " " attrs) (String.concat " " alignmentAttrs)
+    else
+        sprintf "<xf %s/>" (String.concat " " attrs)
+
 let private stylesXml (book: StyleBook) =
     let numFmts =
         if Map.isEmpty book.NumFmtIds then ""
@@ -972,35 +1005,8 @@ let private stylesXml (book: StyleBook) =
                 |> Option.orElseWith (fun () -> Map.tryFind code book.NumFmtIds)
                 |> Option.defaultValue 0
             | None -> 0
-        let fontId = indexOf xf.Font book.Fonts
-        let fillId = fillIdOf xf.Fill
-        let borderId = indexOf xf.Border book.Borders
-        let alignmentAttrs = [
-            match xf.HorizontalAlign with Some v -> yield attr "horizontal" v | None -> ()
-            match xf.VerticalAlign with Some v -> yield attr "vertical" v | None -> ()
-            if xf.WrapText then yield "wrapText=\"1\""
-            if xf.Indent > 0 then yield sprintf "indent=\"%d\"" xf.Indent
-            if xf.ShrinkToFit then yield "shrinkToFit=\"1\""
-            if xf.TextRotation <> 0 then yield sprintf "textRotation=\"%d\"" xf.TextRotation
-        ]
-        let applyAlignment = not (List.isEmpty alignmentAttrs)
-        let attrs = [
-            yield sprintf "numFmtId=\"%d\"" numFmtId
-            yield sprintf "fontId=\"%d\"" fontId
-            yield sprintf "fillId=\"%d\"" fillId
-            yield sprintf "borderId=\"%d\"" borderId
-            // The named cell style the format is based on (Normal when the workbook has no such style).
-            yield sprintf "xfId=\"%d\"" (if xf.NamedStyle > 0 && xf.NamedStyle < named.Length then xf.NamedStyle else 0)
-            if xf.NumFmt.IsSome then yield "applyNumberFormat=\"1\""
-            if fontId <> 0 then yield "applyFont=\"1\""
-            if fillId <> 0 then yield "applyFill=\"1\""
-            if borderId <> 0 then yield "applyBorder=\"1\""
-            if applyAlignment then yield "applyAlignment=\"1\""
-        ]
-        if applyAlignment then
-            sprintf "<xf %s><alignment %s/></xf>" (String.concat " " attrs) (String.concat " " alignmentAttrs)
-        else
-            sprintf "<xf %s/>" (String.concat " " attrs)
+        xfXmlOf numFmtId (indexOf xf.Font book.Fonts) (fillIdOf xf.Fill) (indexOf xf.Border book.Borders)
+            (if xf.NamedStyle > 0 && xf.NamedStyle < named.Length then xf.NamedStyle else 0) xf
     let xfs = book.Xfs |> List.map xfXml |> String.concat ""
     declaration + "\n"
     + "<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">"
@@ -1037,20 +1043,22 @@ let private richRunXml (run: XlsxRichRun) =
     let pr = if List.isEmpty props then "" else "<rPr>" + String.concat "" props + "</rPr>"
     sprintf "<r>%s<t xml:space=\"preserve\">%s</t></r>" pr (escapedCellText run.Text)
 
+let private appendSharedStringItem (sb: StringBuilder) (item: SharedStringKey) =
+    if List.isEmpty item.Runs then
+        sb.Append("<si><t xml:space=\"preserve\">") |> ignore
+        appendCellText sb item.Text
+        sb.Append("</t></si>") |> ignore
+    else
+        sb.Append("<si>") |> ignore
+        for run in item.Runs do
+            sb.Append(richRunXml run) |> ignore
+        sb.Append("</si>") |> ignore
+
 let private sharedStringsXmlPreserved (items: SharedStringKey list) =
     let sb = StringBuilder()
     let count = string items.Length
     sb.Append(declaration).Append("\n<sst xmlns=\"").Append(Namespaces.spreadsheet).Append("\" count=\"").Append(count).Append("\" uniqueCount=\"").Append(count).Append("\">") |> ignore
-    for item in items do
-        if List.isEmpty item.Runs then
-            sb.Append("<si><t xml:space=\"preserve\">") |> ignore
-            appendCellText sb item.Text
-            sb.Append("</t></si>") |> ignore
-        else
-            sb.Append("<si>") |> ignore
-            for run in item.Runs do
-                sb.Append(richRunXml run) |> ignore
-            sb.Append("</si>") |> ignore
+    for item in items do appendSharedStringItem sb item
     sb.Append("</sst>").ToString()
 
 let private cachedValueXml (sharedIndex: string -> XlsxRichRun list -> int) value =
@@ -1172,7 +1180,7 @@ let private colsXml (styles: StyleBook) (sheet: XlsxSheetOut) =
     let styleIds =
         sheet.Extras.ColumnStyles
         |> List.collect (fun (first, last, style) ->
-            match Map.tryFind (columnStyleKey style) styles.StyleIndex with
+            match styles.KeyIndex (columnStyleKey style) with
             | Some id when id > 0 -> [ for col in max 0 first .. min 16383 last -> col, id ]
             | _ -> [])
         |> Map.ofList
@@ -2719,9 +2727,285 @@ let metadataWithDynamicArrays (existing: string) : string * int =
                 let at = tailAt text [ "valueMetadata" ]
                 text.Substring(0, at) + "<cellMetadata count=\"1\">" + record + "</cellMetadata>" + text.Substring at, 1
 
+// ---------------------------------------------------------------------------
+// Styles and shared strings extended in place (WorkbookPreservation.InPlace)
+// ---------------------------------------------------------------------------
+
+/// A run of a rich text of the file as the writer has it.
+let private richRunOfReader (props: XlsxReader.RunProps) (text: string) : XlsxRichRun =
+    { Text = text
+      Bold = Some props.Bold
+      Italic = Some props.Italic
+      Underline = Some props.Underline
+      UnderlineDouble = Some props.UnderlineDouble
+      Strikethrough = Some props.Strikethrough
+      Color = props.Color |> Option.map (fun c -> "#" + c.TrimStart('#'))
+      FontName = props.FontName
+      FontSize = props.FontSize
+      VertAlign =
+        match props.VertAlign with
+        | XlsxReader.VertAlignSuperscript -> Some XlsxSuperscript
+        | XlsxReader.VertAlignSubscript -> Some XlsxSubscript
+        | _ -> None }
+
+let private regexCount (pattern: string) (text: string) =
+    System.Text.RegularExpressions.Regex.Matches(text, pattern).Count
+
+/// The first element `name` of the text that has an end tag: where its start
+/// tag begins and ends and where its end tag begins.
+let private elementSpan (xml: string) (name: string) : (int * int * int) option =
+    let found = System.Text.RegularExpressions.Regex.Match(xml, "<" + name + "(?=[\\s>])[^>]*>")
+    if not found.Success then None
+    else
+        let close = xml.IndexOf ("</" + name + ">", found.Index + found.Length, System.StringComparison.Ordinal)
+        if close < 0 then None else Some (found.Index, found.Index + found.Length - 1, close)
+
+/// The element `name` with `items` added behind its children and its `count` set.
+let private withAppendedChildren (name: string) (childPattern: string) (items: string list) (xml: string) : string =
+    match (if items.IsEmpty then None else elementSpan xml name) with
+    | None -> xml
+    | Some (at, tagEnd, close) ->
+        let body = xml.Substring(tagEnd + 1, close - tagEnd - 1)
+        let total = regexCount childPattern body + items.Length
+        xml.Substring(0, at) + withTagAttribute "count" (Some (string total)) (xml.Substring(at, tagEnd - at + 1))
+        + body + String.concat "" items + xml.Substring close
+
+let private xmlAttributeDecoded (text: string) =
+    if text.IndexOf '&' < 0 then text
+    else text.Replace("&lt;", "<").Replace("&gt;", ">").Replace("&quot;", "\"").Replace("&apos;", "'").Replace("&amp;", "&")
+
+/// The file's styles part as a style book that only adds: a format the file
+/// has (the same font, fill, border, number format, alignment and named
+/// style) is its cellXfs entry of the file, any other becomes a new entry
+/// behind the file's - with its font, fill, border and number format added
+/// behind the file's own. So every style index the file's sheets use means
+/// what it meant. The second value gives the part when all cells have been
+/// written. None when the part is not one this can be done to (no cellXfs,
+/// fonts, fills or borders; entries the reader did not count the same way).
+let private inPlaceStyles (workbook: XlsxWorkbookOut) (stylesXml: string) : (StyleBook * (unit -> string)) option =
+    let kept = workbook.Preserved
+    let selfClosed (name: string) (text: string) =
+        System.Text.RegularExpressions.Regex.Replace(text, "<" + name + "((?:\\s[^>]*)?)/>", "<" + name + "$1></" + name + ">")
+    let xml = [ "numFmts"; "fonts"; "fills"; "borders"; "cellXfs"; "dxfs" ] |> List.fold (fun text name -> selfClosed name text) stylesXml
+    let bodyOf (name: string) = elementSpan xml name |> Option.map (fun (_, tagEnd, close) -> xml.Substring(tagEnd + 1, close - tagEnd - 1))
+    let fontPattern, fillPattern, borderPattern, xfPattern, dxfPattern, numFmtPattern =
+        "<font[\\s>/]", "<fill[\\s>/]", "<border[\\s>/]", "<xf[\\s>/]", "<dxf[\\s>/]", "<numFmt[\\s>/]"
+    match bodyOf "fonts", bodyOf "fills", bodyOf "borders", bodyOf "cellXfs", elementSpan xml "styleSheet" with
+    | Some fontsBody, Some fillsBody, Some bordersBody, Some xfsBody, Some _ ->
+        let fontCount, fillCount, borderCount, xfCount = regexCount fontPattern fontsBody, regexCount fillPattern fillsBody, regexCount borderPattern bordersBody, regexCount xfPattern xfsBody
+        let dxfCount = bodyOf "dxfs" |> Option.map (regexCount dxfPattern) |> Option.defaultValue 0
+        if xfCount = 0 || xfCount <> kept.CellFormats.Length || dxfCount <> kept.DxfCount || workbook.Dxfs.Length < dxfCount || fontCount = 0 || fillCount < 2 || borderCount = 0 then None
+        else
+            // The xfId of each named style, as the reader numbers them.
+            let styleXfCount = bodyOf "cellStyleXfs" |> Option.map (regexCount xfPattern) |> Option.defaultValue 0
+            let namedXfIds =
+                bodyOf "cellStyles" |> Option.defaultValue ""
+                |> fun body -> System.Text.RegularExpressions.Regex.Matches(body, "<cellStyle(?=[\\s>/])[^>]*>") |> Seq.cast<System.Text.RegularExpressions.Match>
+                |> Seq.choose (fun found ->
+                    match tagAttribute found.Value "name", tagAttribute found.Value "xfId" |> Option.map System.Int32.TryParse with
+                    | Some _, Some (true, xfId) when xfId >= 0 && xfId < styleXfCount -> Some xfId
+                    | _ -> None)
+                |> Seq.distinct |> Seq.sort |> Seq.toArray
+            // The custom number formats of the file.
+            let numFmtIds = System.Collections.Generic.Dictionary<string, int>()
+            let mutable nextNumFmt = 164
+            for found in System.Text.RegularExpressions.Regex.Matches(bodyOf "numFmts" |> Option.defaultValue "", "<numFmt(?=[\\s>/])[^>]*>") |> Seq.cast<System.Text.RegularExpressions.Match> do
+                match tagAttribute found.Value "numFmtId" |> Option.map System.Int32.TryParse, tagAttribute found.Value "formatCode" with
+                | Some (true, id), Some code ->
+                    nextNumFmt <- max nextNumFmt (id + 1)
+                    let code = xmlAttributeDecoded code
+                    if not (numFmtIds.ContainsKey code) then numFmtIds.[code] <- id
+                | _ -> ()
+            // The file's formats by what the writer knows of a format.
+            let xfIndex = System.Collections.Generic.Dictionary<XfKey, int>(HashIdentity.Structural)
+            kept.CellFormats
+            |> Array.iteri (fun index style ->
+                let named = if index < kept.CellXfNamedStyles.Length then max 0 kept.CellXfNamedStyles.[index] else 0
+                let key = { columnStyleKey style with NamedStyle = named }
+                // (Not entry 0: a cell is written without a style for it, and a blank
+                // one not at all - only the writer's own default format is that.)
+                if index > 0 && not (xfIndex.ContainsKey key) then xfIndex.[key] <- index)
+            xfIndex.[defaultXfKey] <- 0
+            let newNumFmts, newFonts, newFills, newBorders, newXfs = ResizeArray<string>(), ResizeArray<string>(), ResizeArray<string>(), ResizeArray<string>(), ResizeArray<string>()
+            let fontIds = System.Collections.Generic.Dictionary<FontKey, int>(HashIdentity.Structural)
+            let fillIds = System.Collections.Generic.Dictionary<string, int>()
+            let borderIds = System.Collections.Generic.Dictionary<BorderKey, int>(HashIdentity.Structural)
+            let indexOfKey (key: XfKey) =
+                match xfIndex.TryGetValue key with
+                | true, index -> index
+                | false, _ ->
+                    let numFmtId =
+                        match key.NumFmt with
+                        | None -> 0
+                        | Some code ->
+                            match builtInNumFmtId code with
+                            | Some id -> id
+                            | None ->
+                                match numFmtIds.TryGetValue code with
+                                | true, id -> id
+                                | false, _ ->
+                                    let id = nextNumFmt
+                                    nextNumFmt <- nextNumFmt + 1
+                                    numFmtIds.[code] <- id
+                                    newNumFmts.Add (sprintf "<numFmt numFmtId=\"%d\" formatCode=\"%s\"/>" id (escaped code))
+                                    id
+                    let fontId =
+                        if key.Font = defaultFontKey then 0
+                        else
+                            match fontIds.TryGetValue key.Font with
+                            | true, id -> id
+                            | false, _ ->
+                                let id = fontCount + newFonts.Count
+                                fontIds.[key.Font] <- id
+                                newFonts.Add (fontXml key.Font)
+                                id
+                    let fillId =
+                        match key.Fill with
+                        | None -> 0
+                        | Some color ->
+                            match fillIds.TryGetValue color with
+                            | true, id -> id
+                            | false, _ ->
+                                let id = fillCount + newFills.Count
+                                fillIds.[color] <- id
+                                newFills.Add (fillXml key.Fill)
+                                id
+                    let borderId =
+                        if key.Border = defaultBorderKey then 0
+                        else
+                            match borderIds.TryGetValue key.Border with
+                            | true, id -> id
+                            | false, _ ->
+                                let id = borderCount + newBorders.Count
+                                borderIds.[key.Border] <- id
+                                newBorders.Add (borderXml key.Border)
+                                id
+                    let xfId = if key.NamedStyle > 0 && key.NamedStyle < namedXfIds.Length then namedXfIds.[key.NamedStyle] else 0
+                    let index = xfCount + newXfs.Count
+                    newXfs.Add (xfXmlOf numFmtId fontId fillId borderId xfId key)
+                    xfIndex.[key] <- index
+                    index
+            let byIdentity = System.Collections.Generic.Dictionary<XlsxCellFormat, int>(HashIdentity.Reference)
+            let styleIdOf (format: XlsxCellFormat) =
+                match byIdentity.TryGetValue format with
+                | true, index -> index
+                | false, _ ->
+                    let index = indexOfKey (xfKey format)
+                    byIdentity.[format] <- index
+                    index
+            let finish () =
+                let newDxfs = workbook.Dxfs |> List.skip dxfCount |> List.map (dxfXml "dxf")
+                let insertedAfter (marks: string list) (element: string) (text: string) =
+                    let at = marks |> List.tryPick (fun mark -> match text.IndexOf (mark, System.StringComparison.Ordinal) with -1 -> None | found -> Some (found + mark.Length))
+                    match at with
+                    | Some at -> text.Substring(0, at) + element + text.Substring at
+                    | None -> text
+                let text =
+                    if newNumFmts.Count = 0 then xml
+                    elif (elementSpan xml "numFmts").IsSome then withAppendedChildren "numFmts" numFmtPattern (List.ofSeq newNumFmts) xml
+                    else
+                        // (The first child of the style sheet.)
+                        match elementSpan xml "styleSheet" with
+                        | Some (_, tagEnd, _) -> xml.Substring(0, tagEnd + 1) + sprintf "<numFmts count=\"%d\">%s</numFmts>" newNumFmts.Count (String.concat "" newNumFmts) + xml.Substring(tagEnd + 1)
+                        | None -> xml
+                let text =
+                    text
+                    |> withAppendedChildren "fonts" fontPattern (List.ofSeq newFonts)
+                    |> withAppendedChildren "fills" fillPattern (List.ofSeq newFills)
+                    |> withAppendedChildren "borders" borderPattern (List.ofSeq newBorders)
+                    |> withAppendedChildren "cellXfs" xfPattern (List.ofSeq newXfs)
+                if newDxfs.IsEmpty then text
+                elif (elementSpan text "dxfs").IsSome then withAppendedChildren "dxfs" dxfPattern newDxfs text
+                else insertedAfter [ "</cellStyles>"; "</cellXfs>" ] (sprintf "<dxfs count=\"%d\">%s</dxfs>" newDxfs.Length (String.concat "" newDxfs)) text
+            Some ({ NamedStyles = kept.NamedStyles; Dxfs = workbook.Dxfs; Fonts = []; Fills = []; Borders = []; Xfs = []; NumFmtIds = Map.empty; StyleIndex = Map.empty
+                    KeyIndex = (fun key -> Some (indexOfKey key)); StyleIdOf = styleIdOf },
+                  finish)
+    | _ -> None
+
+/// The file's shared strings as a table that only adds: a text the file has
+/// is its entry of the file, a new one is added behind the file's. The second
+/// value gives the part when all cells have been written. None when the part
+/// does not have the entries the reader counted.
+let private inPlaceSharedStrings (workbook: XlsxWorkbookOut) (sharedStringsXml: string) : ((string -> XlsxRichRun list -> int) * (unit -> string)) option =
+    let texts, runs = workbook.Preserved.SharedStrings
+    let xml =
+        if sharedStringsXml.Trim() = "" then declaration + "\n<sst xmlns=\"" + Namespaces.spreadsheet + "\" count=\"0\" uniqueCount=\"0\"></sst>"
+        else System.Text.RegularExpressions.Regex.Replace(sharedStringsXml, "<sst((?:\\s[^>]*)?)/>", "<sst$1></sst>")
+    let root = System.Text.RegularExpressions.Regex.Match(xml, "<sst(?=[\\s>])[^>]*>")
+    let close = xml.LastIndexOf ("</sst>", System.StringComparison.Ordinal)
+    if not root.Success || close < root.Index || regexCount "<si[\\s>/]" xml <> texts.Length then None
+    else
+        let plain = System.Collections.Generic.Dictionary<string, int>()
+        let rich = System.Collections.Generic.Dictionary<SharedStringKey, int>(HashIdentity.Structural)
+        for index in 0 .. texts.Length - 1 do
+            if index >= runs.Length || runs.[index].IsEmpty then
+                if not (plain.ContainsKey texts.[index]) then plain.[texts.[index]] <- index
+            else
+                let key = { Text = texts.[index]; Runs = runs.[index] |> List.map (fun (text, props) -> richRunOfReader props text) }
+                if not (rich.ContainsKey key) then rich.[key] <- index
+        let added = StringBuilder()
+        let mutable count = texts.Length
+        let indexOf (text: string) (textRuns: XlsxRichRun list) : int =
+            if textRuns.IsEmpty then
+                match plain.TryGetValue text with
+                | true, index -> index
+                | false, _ ->
+                    let index = count
+                    count <- count + 1
+                    appendSharedStringItem added { Text = text; Runs = [] }
+                    plain.[text] <- index
+                    index
+            else
+                let key = { Text = text; Runs = textRuns }
+                match rich.TryGetValue key with
+                | true, index -> index
+                | false, _ ->
+                    let index = count
+                    count <- count + 1
+                    appendSharedStringItem added key
+                    rich.[key] <- index
+                    index
+        let finish () =
+            if count = texts.Length then xml
+            else
+                let was = match tagAttribute root.Value "count" |> Option.map System.Int32.TryParse with Some (true, n) -> n | _ -> texts.Length
+                let rootTag = root.Value |> withTagAttribute "uniqueCount" (Some (string count)) |> withTagAttribute "count" (Some (string (was + count - texts.Length)))
+                xml.Substring(0, root.Index) + rootTag + xml.Substring(root.Index + root.Length, close - root.Index - root.Length) + added.ToString() + xml.Substring close
+        Some (indexOf, finish)
+
 let private workbookFiles (workbook: XlsxWorkbookOut) =
-    let styles = collectStyles workbook
-    let sharedItems, sharedIndex = collectSharedStrings workbook
+    // Styles and shared strings: the file's, added to (so that a sheet written
+    // as it was read still means what it meant), or made from the cells.
+    let partText (path: string) =
+        workbook.Preserved.Parts |> List.tryPick (fun (kept, data) -> if kept = path then Some (System.Text.Encoding.UTF8.GetString data) else None)
+    let inPlace =
+        if not workbook.Preserved.InPlace then None
+        else
+            let sharedText =
+                match workbook.Preserved.SharedStringsPart with
+                | Some path -> partText path
+                | None -> Some ""
+            match workbook.Preserved.StylesPart |> Option.bind partText |> Option.bind (inPlaceStyles workbook), sharedText |> Option.bind (inPlaceSharedStrings workbook) with
+            | Some styles, Some strings -> Some (styles, strings)
+            | _ -> None
+    // Without them a worksheet cannot go back as it was read: it is written from its cells.
+    let workbook =
+        if inPlace.IsSome then workbook
+        else
+            { workbook with
+                Sheets =
+                    workbook.Sheets
+                    |> List.map (fun sheet ->
+                        match sheet.Extras.Verbatim, sheet.Extras.SourcePart with
+                        | true, Some (_, relType) when relType.EndsWith "/worksheet" -> { sheet with Extras = { sheet.Extras with Verbatim = false } }
+                        | _ -> sheet) }
+    let styles, stylesText, sharedIndex, sharedText =
+        match inPlace with
+        | Some ((styles, stylesText), (sharedIndex, sharedText)) -> styles, stylesText, sharedIndex, sharedText
+        | None ->
+            let styles = collectStyles workbook
+            let sharedItems, sharedIndex = collectSharedStrings workbook
+            styles, (fun () -> stylesXml styles), sharedIndex, (fun () -> sharedStringsXmlPreserved sharedItems)
     let hasVba = workbook.VbaProjectSource |> Option.exists hasText
     let mutable tableId = 1
     let textFiles = ResizeArray<PackageFile>()
@@ -2773,8 +3057,6 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
                     i <- i + 1
                 same))
     let mediaExtensions = System.Collections.Generic.Dictionary<string, string>()
-    textFiles.Add { Path = "xl/styles.xml"; Content = stylesXml styles }
-    textFiles.Add { Path = "xl/sharedStrings.xml"; Content = sharedStringsXmlPreserved sharedItems }
     let placement = tablePlacement workbook
     List.zip workbook.Sheets placements
     |> List.iteri (fun i (sheet, placed) ->
@@ -2871,6 +3153,9 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
                         // (Not a part the writer can follow: a table of its own making under the part's name and id.)
                         let id = source |> Option.map (fun xml -> tableIdPattern.Match xml) |> Option.filter (fun found -> found.Success) |> Option.map (fun found -> int found.Groups.[1].Value) |> Option.defaultValue 1
                         textFiles.Add { Path = path; Content = tableXml id table })
+    // (After the sheets: styles and strings that are added to grow as the cells are written.)
+    textFiles.Add { Path = "xl/styles.xml"; Content = stylesText () }
+    textFiles.Add { Path = "xl/sharedStrings.xml"; Content = sharedText () }
     let written = textFiles |> Seq.map (fun file -> file.Path) |> Set.ofSeq
     let binaryFiles =
         (match workbook.VbaProjectSource with
@@ -2998,21 +3283,7 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
             let named = workbook.Preserved.CellXfNamedStyles.[index]
             if named > 0 then Some named else None
         | _ -> None
-    let runOf (props: XlsxReader.RunProps) text =
-        { Text = text
-          Bold = Some props.Bold
-          Italic = Some props.Italic
-          Underline = Some props.Underline
-          UnderlineDouble = Some props.UnderlineDouble
-          Strikethrough = Some props.Strikethrough
-          Color = props.Color |> Option.map (fun c -> "#" + c.TrimStart('#'))
-          FontName = props.FontName
-          FontSize = props.FontSize
-          VertAlign =
-            match props.VertAlign with
-            | XlsxReader.VertAlignSuperscript -> Some XlsxSuperscript
-            | XlsxReader.VertAlignSubscript -> Some XlsxSubscript
-            | _ -> None }
+    let runOf = richRunOfReader
     let plainValueOf (cell: XlsxReader.Cell) =
         match cell.Value with
         | XlsxReader.Number n -> XlsxNumber n

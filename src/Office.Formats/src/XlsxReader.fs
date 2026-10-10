@@ -907,12 +907,35 @@ type WorkbookPreservation = {
     /// The sheet that was on display when the file was saved (`<workbookView
     /// activeTab>`, an index into the workbook's sheets).
     ActiveTab: int
+    /// The styles and shared strings parts of the file, and what the file's
+    /// indexes into them mean: its cell formats by cellXfs index (the
+    /// workbook's `Styles`), its shared strings by index (texts and runs,
+    /// the workbook's own arrays), the number of its dxfs.
+    StylesPart: string option
+    SharedStringsPart: string option
+    CellFormats: CellStyle array
+    SharedStrings: string array * (string * RunProps) list array
+    DxfCount: int
+    /// Parts of the file a writer needs the bytes of to write a sheet as it
+    /// was read beside sheets it makes: the worksheet parts, the styles and
+    /// the shared strings, and what the worksheets' relationships lead to
+    /// that is not among `Parts` (comments, their boxes, threaded comments),
+    /// with those relationship parts. A reader that does not hold the bytes
+    /// of the large parts (the browser's: worksheets, shared strings) leaves
+    /// those out; a caller then supplies them.
+    SourceParts: (string * byte[]) list
+    /// For a writer: the styles and shared strings are the file's parts
+    /// (`StylesPart` and `SharedStringsPart`, among `Parts`) with what is new
+    /// added behind what they have, so that every index the file uses means
+    /// what it meant. Sheets marked `SheetExtras.Verbatim` need it.
+    InPlace: bool
 }
 
 let emptyWorkbookPreservation =
     { Parts = []; Defaults = []; Overrides = []; ThemePath = None; NamedStyles = []; Persons = []; CellXfNamedStyles = [||]
       WorkbookRelationships = []; ExternalReferencesXml = ""; PivotCachesXml = ""; WorkbookExtLstXml = ""
-      RootRelationships = []; CalcChain = None; PivotCacheSources = []; CalcIteration = None; ActiveTab = 0 }
+      RootRelationships = []; CalcChain = None; PivotCacheSources = []; CalcIteration = None; ActiveTab = 0
+      StylesPart = None; SharedStringsPart = None; CellFormats = [||]; SharedStrings = [||], [||]; DxfCount = 0; SourceParts = []; InPlace = false }
 
 type Worksheet = {
     Name: string
@@ -5502,6 +5525,8 @@ let private buildWorkbook (scanRows: bool) (source: PartSource) (header: Workboo
                 let path = ZipInterop.normalizePath target
                 source.Text path |> Option.bind pivotCacheSourceOf |> Option.map (fun (sheet, range) -> path, sheet, range))
     let defaults, overrides = contentTypesOf source
+    let sharedStringTexts = sharedStringEntries |> Array.map (fun e -> e.Text)
+    let sharedStringRuns = sharedStringEntries |> Array.map (fun e -> e.Runs)
     let namedStyles = stylesXml |> Option.map (fun xml -> try readNamedStyles xml with _ -> [], [||]) |> Option.defaultValue ([], [||])
     let preserved =
         { Parts = reachablePartsFrom source (List.distinct keptRoots)
@@ -5519,12 +5544,36 @@ let private buildWorkbook (scanRows: bool) (source: PartSource) (header: Workboo
           CalcChain = calcChain
           PivotCacheSources = pivotCacheSources
           CalcIteration = header.CalcIteration
-          ActiveTab = header.ActiveTab }
+          ActiveTab = header.ActiveTab
+          StylesPart = if source.Exists header.StylesPath then Some header.StylesPath else None
+          SharedStringsPart = if source.Exists header.SharedStringsPath then Some header.SharedStringsPath else None
+          CellFormats = styles
+          SharedStrings = sharedStringTexts, sharedStringRuns
+          DxfCount = dxfs.Length
+          SourceParts =
+            [ header.StylesPath; header.SharedStringsPath ] @ (worksheets |> List.choose (fun sheet -> sheet.Extras.SourcePart |> Option.map fst))
+            |> List.distinct
+            |> List.choose (fun path -> source.Bytes path |> Option.map (fun data -> path, data))
+          InPlace = false }
+    // ... and what the sheets' own relationships lead to (comments, their
+    // boxes, threaded comments ...) with those relationship parts.
+    let preserved =
+        let known = System.Collections.Generic.HashSet<string>(preserved.Parts @ preserved.SourceParts |> List.map fst)
+        let sheetPaths = worksheets |> List.choose (fun sheet -> sheet.Extras.SourcePart |> Option.map fst)
+        let targets =
+            sheetPaths
+            |> List.collect (fun path -> relationshipsOf source path |> List.filter isInternal |> List.map (relTargetPath path))
+            |> List.filter (fun path -> not (known.Contains path))
+        let more =
+            (reachablePartsFrom source (List.distinct targets)
+             @ (sheetPaths |> List.choose (fun path -> let rels = relsPathFor path in source.Bytes rels |> Option.map (fun data -> rels, data))))
+            |> List.filter (fun (path, _) -> known.Add path)
+        if more.IsEmpty then preserved else { preserved with SourceParts = preserved.SourceParts @ more }
 
     {
         Sheets = worksheets
-        SharedStrings = sharedStringEntries |> Array.map (fun e -> e.Text)
-        SharedStringRuns = sharedStringEntries |> Array.map (fun e -> e.Runs)
+        SharedStrings = sharedStringTexts
+        SharedStringRuns = sharedStringRuns
         Styles = styles
         Dxfs = dxfs
         Relationships = header.Rels

@@ -2078,7 +2078,39 @@ module Export =
     let private chartFormulaElements = [ "c:f"; "cx:f"; "c15:f"; "c16r3:f" ]
 
     /// The editor's workbook in the writer's shape (see the module comment).
-    let toWorkbookOut (input: ExportInput) : XlsxWriter.XlsxWorkbookOut =
+    /// Whether a sheet is what it was when it was opened, in everything a
+    /// save writes into its part: its cells and their texts, sizes, merges,
+    /// formats, rules, validations, tables, drawings, comments, links, page
+    /// setup, panes, the view's switches and zoom, the tab colour.
+    let private untouchedSheet (before: SpreadsheetModel) (model: SpreadsheetModel) : bool =
+        let same (pick: SpreadsheetModel -> 'T) = sameRef (pick before) (pick model) || pick before = pick model
+        sameRef before model
+        || (sameRef before.Cells model.Cells
+            && sameRef before.RichRuns model.RichRuns
+            && same (fun m -> m.RowHeights) && same (fun m -> m.ColumnWidths) && same (fun m -> m.Axes)
+            && before.RowCount = model.RowCount && before.ColCount = model.ColCount && before.StructureVersion = model.StructureVersion
+            && same (fun m -> m.MergedCells) && same (fun m -> m.ConditionalFormats) && same (fun m -> m.Validations)
+            && same (fun m -> m.Tables) && same (fun m -> m.Drawings) && same (fun m -> m.Threads) && same (fun m -> m.Hyperlinks)
+            && same (fun m -> m.ColumnStyles) && same (fun m -> m.DataTables) && same (fun m -> m.KeptRanges) && same (fun m -> m.ArrayMarks)
+            && same (fun m -> m.AutoFilter) && same (fun m -> m.Filters) && same (fun m -> m.SortState)
+            && same (fun m -> m.FilterVisibleRows) && same (fun m -> m.FilterHiddenRows)
+            && same (fun m -> m.PageSetup)
+            && before.FrozenRows = model.FrozenRows && before.FrozenCols = model.FrozenCols
+            && before.ShowGridLines = model.ShowGridLines && before.ShowHeaders = model.ShowHeaders && before.ShowFormulas = model.ShowFormulas
+            && before.ShowZeros = model.ShowZeros && before.Zoom = model.Zoom && before.TabColor = model.TabColor)
+
+    /// The workbook to write. `sourceParts` are parts of the opened file by
+    /// path - its worksheet parts, styles and shared strings - beyond those the
+    /// reader kept (`Preserved.SourceParts`; see `verbatimPartsWanted`). With
+    /// them, a worksheet nothing was changed in is written as the part it was
+    /// read from, byte for byte, beside the sheets that are written from
+    /// their models; the styles and shared strings are then the file's with
+    /// what is new added behind (no index of the file changes its meaning).
+    /// That is done for a workbook in the 1900 date system whose sheets all
+    /// still have the names the file gave them and of which none was deleted;
+    /// any other workbook, and any sheet whose part is not supplied, is written
+    /// from the model as before.
+    let toWorkbookOutWith (sourceParts: (string * byte[]) list) (input: ExportInput) : XlsxWriter.XlsxWorkbookOut =
         let original = input.Source |> Option.map (fun source -> XlsxWriter.packageFromReaderWorkbook source.Workbook)
         // Rules kept from the file refer to the file's dxfs by index, so those
         // keep their places; styles of new rules are added behind them.
@@ -2189,11 +2221,43 @@ module Export =
                             relId, relType, "/" + copyPath, false)
                 Some { XlsxReader.emptySheetExtras with DrawingRelationships = relationships }
             | _ -> None
+        // Sheets that go back as the parts they were read from.
+        let suppliedParts = Collections.Generic.Dictionary<string, byte[]>()
+        match input.Source with
+        | Some source ->
+            for path, data in source.Workbook.Preserved.SourceParts do suppliedParts.[path] <- data
+            for path, data in sourceParts do suppliedParts.[path] <- data
+        | None -> ()
+        let inPlaceParts : (string * byte[]) list option =
+            match input.Source with
+            | Some source when not source.Workbook.Date1904 && renames.Count = 0 && deletedTabs.IsEmpty ->
+                let kept = source.Workbook.Preserved
+                let part (path: string option) = path |> Option.bind (fun path -> match suppliedParts.TryGetValue path with | true, data -> Some (path, data) | _ -> None)
+                match part kept.StylesPart, kept.SharedStringsPart, part kept.SharedStringsPart with
+                | Some styles, None, _ -> Some [ styles ]
+                | Some styles, Some _, Some strings -> Some [ styles; strings ]
+                | _ -> None
+            | _ -> None
+        let verbatimParts = ResizeArray<string * byte[]>()
+        let verbatimOf (outSheet: XlsxWriter.XlsxSheetOut) (before: SpreadsheetModel) (model: SpreadsheetModel) : bool =
+            match inPlaceParts, outSheet.Extras.SourcePart with
+            | Some _, Some (path, relType) when relType.EndsWith "/worksheet" && suppliedParts.ContainsKey path ->
+                let current = match model.Deferred with Some deferred -> (match deferred.Loaded with Some loaded -> loaded | None -> model) | None -> model
+                let untouched =
+                    if isDeferredSheet model then model.TabColor = outSheet.View.TabColor
+                    else untouchedSheet before current
+                if untouched then verbatimParts.Add ((path, suppliedParts.[path]))
+                untouched
+            | _ -> false
         let sheets =
             input.Sheets
             |> Array.mapi (fun index model ->
                 let name = nameOf index
                 match sourceOf index with
+                | Some (_, outSheet, before) when verbatimOf outSheet before model ->
+                    // (As the file has it: should the writer not be able to add to
+                    // the file's styles, it writes the sheet from the file's cells.)
+                    { outSheet with Name = name; State = stateOf index model; Extras = { outSheet.Extras with Verbatim = true } }
                 | Some (readerSheet, outSheet, before) ->
                     // A sheet that was never converted goes back as the file had
                     // it (but for its name, visibility and tab colour, which
@@ -2281,6 +2345,22 @@ module Export =
                                     match renames.TryGetValue (sheet.ToUpperInvariant()) with
                                     | true, next -> path, next, range
                                     | false, _ -> path, sheet, range) }
+                // The parts of the sheets that go back as they were read, and the
+                // styles and shared strings they index.
+                let preserved =
+                    match inPlaceParts with
+                    | Some parts when verbatimParts.Count > 0 ->
+                        // (With what their relationships lead to: the writer leaves out what nothing written reaches.)
+                        let sheetPaths = source.Workbook.Sheets |> List.choose (fun sheet -> sheet.Extras.SourcePart |> Option.map fst) |> Set.ofList
+                        let own = parts @ List.ofSeq verbatimParts
+                        let ownNames = own |> List.map fst |> Set.ofList
+                        let others =
+                            source.Workbook.Preserved.SourceParts
+                            |> List.filter (fun (path, _) -> not (Set.contains path sheetPaths) && not (Set.contains path ownNames))
+                        let added = own @ others
+                        let names = added |> List.map fst |> Set.ofList
+                        { preserved with InPlace = true; Parts = (preserved.Parts |> List.filter (fun (path, _) -> not (Set.contains path names))) @ added }
+                    | _ -> preserved
                 if moved.IsEmpty then preserved
                 else
                     let cachePaths = preserved.PivotCacheSources |> List.map (fun (path, _, _) -> path) |> Set.ofList
@@ -2298,6 +2378,42 @@ module Export =
                                     path, Text.Encoding.UTF8.GetBytes rewritten
                                 | None -> path, data) }
             | None -> XlsxReader.emptyWorkbookPreservation }
+
+    /// The workbook to write (see `toWorkbookOutWith`): with the parts of the
+    /// file the reader kept the bytes of - all of them for a file read by a
+    /// .NET host, none of the large ones in a browser.
+    let toWorkbookOut (input: ExportInput) : XlsxWriter.XlsxWorkbookOut = toWorkbookOutWith [] input
+
+    /// The parts of the opened file `toWorkbookOutWith` has to be given so
+    /// that every sheet nothing was changed in goes back as it was read: the
+    /// parts of those sheets, the styles and the shared strings - less those
+    /// the reader kept. Empty when no sheet would go back that way.
+    let verbatimPartsWanted (input: ExportInput) : string list =
+        match input.Source with
+        | Some source when not source.Workbook.Date1904 ->
+            let kept = source.Workbook.Preserved
+            let readerSheets = List.toArray source.Workbook.Sheets
+            let claimed = Collections.Generic.HashSet<int>()
+            let sheetParts =
+                input.Sheets
+                |> Array.toList
+                |> List.choose (fun model ->
+                    match model.SourceSheet with
+                    | Some origin when origin.Book = source.Id && origin.Sheet >= 0 && origin.Sheet < readerSheets.Length && origin.Sheet < source.Baseline.Length && claimed.Add origin.Sheet ->
+                        let current = match model.Deferred with Some deferred -> (match deferred.Loaded with Some loaded -> loaded | None -> model) | None -> model
+                        let reader = readerSheets.[origin.Sheet]
+                        let untouched =
+                            if isDeferredSheet model then model.TabColor = reader.View.TabColor
+                            else untouchedSheet source.Baseline.[origin.Sheet] current
+                        match reader.Extras.SourcePart with
+                        | Some (path, relType) when untouched && relType.EndsWith "/worksheet" -> Some path
+                        | _ -> None
+                    | _ -> None)
+            if sheetParts.IsEmpty then []
+            else
+                let have = kept.SourceParts |> List.map fst |> Set.ofList
+                sheetParts @ Option.toList kept.StylesPart @ Option.toList kept.SharedStringsPart |> List.distinct |> List.filter (fun path -> not (Set.contains path have))
+        | _ -> []
 
     /// The workbook to write with the workbook's setting for the iterative
     /// calculation of circular references (`Workbook.Iteration`).

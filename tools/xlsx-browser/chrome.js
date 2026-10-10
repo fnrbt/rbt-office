@@ -424,6 +424,42 @@ checks['export-keeps-parts'] = async () => {
                 check('sheet3 names its VML drawing', [!!legacy, legacy && new RegExp(`Id="${legacy[1]}"[^>]*vmlDrawing1\\.vml|vmlDrawing1\\.vml"[^>]*Id="${legacy[1]}"`).test(sheet3Rels)], [true, true]);
                 check('the drawings keep their names', entries(unedited).filter((name) => /sheetDrawing/.test(name)), []);
             }
+            // Only the sheet on display changed (its zoom): every other worksheet is the part that was read, byte for byte,
+            // beside styles and shared strings that are the file's, added to.
+            const sheetParts = entries(before).filter((name) => /^xl\/worksheets\/[^/]+\.xml$/.test(name));
+            const sameSheets = async (zip) => { const same = []; for (const name of sheetParts) if (zip.files[name] && await base64(before, name) === await base64(zip, name)) same.push(name); return same; };
+            const date1904 = /date1904="(1|true)"/.test(await before.files['xl/workbook.xml'].async('string'));
+            if (sheetParts.length > 1 && !date1904) {
+                // (The sheet the file had on display is not the one shown here: its part no longer says tabSelected, and nothing else.)
+                let selectedParts = 0;
+                for (const name of sheetParts) {
+                    const was = await before.files[name].async('string');
+                    if (!/<sheetView\b[^>]*\btabSelected="(1|true)"/.test(was)) continue;
+                    const now = unedited.files[name] ? await unedited.files[name].async('string') : '';
+                    if (now === was.replace(/(<sheetView\b[^>]*?)\s+tabSelected="(1|true)"/, '$1')) selectedParts++;
+                }
+                const expected = 1 + selectedParts;
+                check(`${short}: another zoom: every other sheet is byte for byte the file's`, sheetParts.length - (await sameSheets(unedited)).length, expected);
+                // ... and so with one cell edited on it, outside everything.
+                const usedNow = grid.GetUsedRange();
+                grid.SetCell((usedNow ? usedNow.lastRow : 0) + 3, (usedNow ? usedNow.lastCol : 0) + 3, 'one edit');
+                const one = await compare('one cell edited', await grid.ExportXlsx());
+                check(`${short}: one cell edited: every other sheet is byte for byte the file's`, sheetParts.length - (await sameSheets(one)).length, expected);
+                const styles = await one.files['xl/styles.xml'].async('string'), stylesBefore = await before.files['xl/styles.xml'].async('string');
+                const xfs = (xml) => { const m = /<cellXfs\b[^>]*>([\s\S]*?)<\/cellXfs>/.exec(xml); return m ? m[1] : ''; };
+                check(`${short}: one cell edited: the file's cell formats keep their places`, xfs(styles).startsWith(xfs(stylesBefore)), true);
+                // The written file opens with what the edited sheet had, and the edit.
+                const { grid: again, close: closeAgain } = mountGrid();
+                try {
+                    await again.ImportXlsx(await grid.ExportXlsx());
+                    const shown = grid.GetActiveSheetIndex();
+                    if (shown > 0) again.SwitchSheet(shown);
+                    const ranges = [grid.GetUsedRange(), again.GetUsedRange()];
+                    check(`${short}: one cell edited: read again, the used range`, ranges[1], ranges[0]);
+                    const sample = (g) => { const u = g.GetUsedRange(); const out = []; if (u) for (let r = u.firstRow; r <= Math.min(u.lastRow, u.firstRow + 40); r++) for (let c = u.firstCol; c <= Math.min(u.lastCol, u.firstCol + 12); c++) { const cell = g.GetCell(r, c); out.push([cell.value, cell.text, cell.format && cell.format.bold, cell.format && cell.format.numberFormat, cell.format && cell.format.backgroundColor]); } return out; };
+                    check(`${short}: one cell edited: read again, cells and formats`, sample(again), sample(grid));
+                } finally { closeAgain(); }
+            }
             // An edit of a cell on every sheet: still nothing lost (drawings and tables of the edited sheets included).
             const sheets = grid.GetSheets();
             for (let index = 0; index < sheets.length; index++) { if (sheets[index].visibility && sheets[index].visibility !== 'visible') continue; grid.SwitchSheet(index); const used = grid.GetUsedRange(); grid.SetCell((used ? used.lastRow : 0) + 3, 0, 'edited'); }
