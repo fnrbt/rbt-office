@@ -2088,6 +2088,202 @@ let private blockIdOf (block: Block) =
     | Table table -> table.Id
     | TextBox textBox -> textBox.Id
 
+// ---- a changed block as a change of its text ----------------------------------
+//
+// A block of which only the text of some paragraphs was changed (typing,
+// deleting, replacing, formatting a piece) is not written from the model: the
+// writer makes the change in the XML the block was read from, so that
+// whatever the model does not hold of it (bookmarks, complex fields, revision
+// ids, properties and elements of later formats) stays as it was. Here the
+// change is found: per paragraph, the one stretch of characters that is not
+// what it was - a character being what it was when the character and its
+// run's formatting are.
+
+/// The paragraphs of a block that are paragraphs of the body's XML, in the
+/// order they have there (a vertically merged cell's content in its first
+/// cell, a nested table's where the table is). None for a text box.
+let private storyParagraphs (block: Block) : ParagraphBlock list option =
+    let rec ofTable (table: TableBlock) : ParagraphBlock list =
+        gatherVerticalMergeContent table.Rows
+        |> List.collect (fun row ->
+            row.Cells
+            |> List.collect (fun cell ->
+                if cell.NestedTables.IsEmpty then cell.Content
+                else
+                    let count = cell.Content.Length
+                    let anchors = cell.NestedTableAnchors |> List.toArray
+                    let nested =
+                        cell.NestedTables
+                        |> List.mapi (fun i inner -> inner, (if i < anchors.Length then anchors.[i] else count) |> max 0 |> min count)
+                        |> List.sortBy snd
+                    let before index = nested |> List.filter (fun (_, anchor) -> anchor = index) |> List.collect (fun (inner, _) -> ofTable inner)
+                    (cell.Content |> List.mapi (fun index para -> before index @ [ para ]) |> List.concat) @ before count))
+    match block with
+    | Paragraph para
+    | Heading (_, para) -> Some [ para ]
+    | Table table -> Some (ofTable table)
+    | TextBox _ -> None
+
+/// One entry per character: the run it is in.
+let private runsByCharacter (buffer: TextBuffer.TextBuffer) : TextBuffer.Run array =
+    let result = ResizeArray<TextBuffer.Run>()
+    for run in buffer.Runs do
+        match run with
+        | TextBuffer.Text text -> for _ in 1 .. text.Length do result.Add run
+        | TextBuffer.Image _ -> result.Add run
+    result.ToArray()
+
+/// The stretch of a paragraph that was changed, for the writer: where it
+/// starts in the text that was read, how many characters of that text it
+/// replaces, the text now there, whether it goes into the run before or
+/// after it, and otherwise where a run is that is formatted as it is. None when the paragraph was changed in another way (its properties,
+/// a picture), or not at all.
+let private paragraphTextChange (context: WordStyles.DocumentStyleContext option) (index: int) (before: ParagraphBlock) (after: ParagraphBlock) : obj option =
+    if obj.ReferenceEquals(before, after) || not (before.Metadata = after.Metadata) then None
+    else
+        let oldText = TextBuffer.toString before.Buffer
+        let newText = TextBuffer.toString after.Buffer
+        let oldRuns = runsByCharacter before.Buffer
+        let newRuns = runsByCharacter after.Buffer
+        if oldRuns.Length <> oldText.Length || newRuns.Length <> newText.Length then None
+        else
+            // (Characters of one run are compared once.)
+            let mutable lastA = Unchecked.defaultof<TextBuffer.Run>
+            let mutable lastB = Unchecked.defaultof<TextBuffer.Run>
+            let mutable lastSame = false
+            let sameRun (a: TextBuffer.Run) (b: TextBuffer.Run) =
+                if obj.ReferenceEquals(a, b) then true
+                elif obj.ReferenceEquals(a, lastA) && obj.ReferenceEquals(b, lastB) then lastSame
+                else
+                    let same =
+                        match a, b with
+                        // (The mark of a rendered page break aside: where the marks are is compared below.)
+                        | TextBuffer.Text x, TextBuffer.Text y ->
+                            obj.ReferenceEquals(x.Style, y.Style) || x.Style = y.Style
+                            || (x.Style.RenderedPageBreakBefore <> y.Style.RenderedPageBreakBefore && { x.Style with RenderedPageBreakBefore = y.Style.RenderedPageBreakBefore } = y.Style)
+                        | TextBuffer.Image x, TextBuffer.Image y -> { x with Start = 0 } = { y with Start = 0 }
+                        | _ -> false
+                    lastA <- a
+                    lastB <- b
+                    lastSame <- same
+                    same
+            let same (i: int) (j: int) = oldText.[i] = newText.[j] && sameRun oldRuns.[i] newRuns.[j]
+            let limit = min oldText.Length newText.Length
+            let mutable prefix = 0
+            while prefix < limit && same prefix prefix do prefix <- prefix + 1
+            let mutable suffix = 0
+            while suffix < limit - prefix && same (oldText.Length - 1 - suffix) (newText.Length - 1 - suffix) do suffix <- suffix + 1
+            let deleted = oldText.Length - prefix - suffix
+            let insertedLength = newText.Length - prefix - suffix
+            let isText (run: TextBuffer.Run) = match run with TextBuffer.Text _ -> true | TextBuffer.Image _ -> false
+            let allText (runs: TextBuffer.Run array) (start: int) (count: int) =
+                let mutable ok = true
+                for i in start .. start + count - 1 do
+                    if not (isText runs.[i]) then ok <- false
+                ok
+            // The marks of page breaks as they were rendered (each before the first character of
+            // its run) are where they were: in the XML a mark stays before the text it is before.
+            // Text typed just before a marked run has the mark instead of the run - it goes into
+            // the run's w:t, after the mark.
+            let marks (buffer: TextBuffer.TextBuffer) =
+                buffer.Runs |> List.choose (function TextBuffer.Text run when run.Style.RenderedPageBreakBefore && run.Length > 0 -> Some run.Start | _ -> None)
+            let marksKept =
+                let before = marks before.Buffer
+                let after = marks after.Buffer
+                if before.IsEmpty && after.IsEmpty then true
+                else
+                    let moved = before |> List.filter (fun at -> at < prefix || at >= prefix + deleted) |> List.map (fun at -> if at < prefix then at else at - deleted + insertedLength)
+                    let inside = before |> List.exists (fun at -> at >= prefix && at < prefix + deleted)
+                    not inside
+                    && (moved = after
+                        || (insertedLength > 0 && List.contains (prefix + deleted) before
+                            && (moved |> List.map (fun at -> if at = prefix + insertedLength then prefix else at)) = after))
+            if deleted = 0 && insertedLength = 0 then None
+            elif not marksKept then None
+            elif not (allText oldRuns prefix deleted) || not (allText newRuns prefix insertedLength) then None
+            else
+                // Text typed into a run: it has the formatting of the character before or after it.
+                let oneRun =
+                    insertedLength > 0
+                    && (let mutable one = true
+                        for i in prefix + 1 .. prefix + insertedLength - 1 do
+                            if not (sameRun newRuns.[prefix] newRuns.[i]) then one <- false
+                        one)
+                let joinsBefore = oneRun && prefix > 0 && sameRun oldRuns.[prefix - 1] newRuns.[prefix]
+                let joinsAfter = oneRun && suffix > 0 && sameRun oldRuns.[prefix + deleted] newRuns.[prefix]
+                // A run of the text that was read that is formatted as the new text is (links, fields and
+                // marks aside): the properties a run of its own is written with.
+                let plain =
+                    oneRun
+                    && (match newRuns.[prefix] with
+                        | TextBuffer.Text run -> not (TextBuffer.hasAnnotationIdentity run.Style)
+                        | TextBuffer.Image _ -> false)
+                let witnesses =
+                    if not plain then [||]
+                    else
+                        let formatted (run: TextBuffer.Run) =
+                            match run, newRuns.[prefix] with
+                            | TextBuffer.Text candidate, TextBuffer.Text typed ->
+                                obj.ReferenceEquals(candidate.Style, typed.Style) || TextBuffer.withoutAnnotations candidate.Style = typed.Style
+                            | _ -> false
+                        // (A character of the run that is one of a w:t: not a tab, a break, the place of an object.)
+                        let ordinary (c: char) = c >= ' ' && c <> '\uFFFC' && c <> '\u00AD' && c <> '\u2011' && c <> '\u2028'
+                        let found = ResizeArray<int>()
+                        let mutable lastRun = Unchecked.defaultof<TextBuffer.Run>
+                        let mutable lastFormatted = false
+                        let mutable taken = false
+                        // (From the change on, then before it; one character of each run, a few runs.)
+                        let order = seq { yield! seq { prefix + deleted .. oldRuns.Length - 1 }; yield! seq { prefix - 1 .. -1 .. 0 } }
+                        for i in order do
+                            if found.Count < 6 then
+                                if not (obj.ReferenceEquals(oldRuns.[i], lastRun)) then
+                                    lastRun <- oldRuns.[i]
+                                    lastFormatted <- formatted oldRuns.[i]
+                                    taken <- false
+                                if lastFormatted && not taken && ordinary oldText.[i] then
+                                    found.Add i
+                                    taken <- true
+                        found.ToArray()
+                // A paragraph without text: what is typed into it has the paragraph mark's formatting.
+                let markStyle = plain && witnesses.Length = 0 && not (oldRuns |> Array.exists isText)
+                Some (createObj [
+                        "Paragraph" ==> index
+                        "Offset" ==> prefix
+                        "Deleted" ==> deleted
+                        "Inserted" ==> newText.Substring(prefix, insertedLength)
+                        "JoinBefore" ==> joinsBefore
+                        "JoinAfter" ==> joinsAfter
+                        "RunsPlain" ==> plain
+                        "Witnesses" ==> witnesses
+                        "MarkStyle" ==> markStyle
+                        "NewText" ==> newText ])
+
+/// A changed block as changes of the text of its paragraphs (see above):
+/// the text every paragraph of the block had when it was read, in the order
+/// of the XML, and the changes. None when anything else of the block is not
+/// what it was.
+let private blockTextChanges (context: WordStyles.DocumentStyleContext option) (original: Block) (current: Block) : obj option =
+    match storyParagraphs original, storyParagraphs current with
+    | Some before, Some after when before.Length = after.Length && List.forall2 (fun (a: ParagraphBlock) (b: ParagraphBlock) -> a.Id = b.Id) before after ->
+        let changed = List.zip before after |> List.mapi (fun index pair -> index, pair) |> List.filter (fun (_, (a, b)) -> not (obj.ReferenceEquals(a, b)))
+        // With the paragraphs that were changed as they were, the block is what it was.
+        let originals = Dictionary<string, ParagraphBlock>()
+        for (_, (a, _)) in changed do originals.[a.Id] <- a
+        let restored =
+            [ current ]
+            |> mapParagraphsOfBlocks (fun para -> match originals.TryGetValue para.Id with | true, was -> was | _ -> para)
+            |> List.head
+        if changed.IsEmpty || jsonOf (blockToEditor context restored) <> jsonOf (blockToEditor context original) then None
+        else
+            let unchangedText (a: ParagraphBlock) (b: ParagraphBlock) = jsonOf (paragraphToEditor context "Paragraph" 0 a) = jsonOf (paragraphToEditor context "Paragraph" 0 b)
+            let edits = changed |> List.map (fun (index, (a, b)) -> if unchangedText a b then Some null else paragraphTextChange context index a b |> Option.map box)
+            if edits |> List.exists Option.isNone then None
+            else
+                Some (createObj [
+                        "Texts" ==> (before |> List.map (fun para -> TextBuffer.toString para.Buffer) |> List.toArray)
+                        "Edits" ==> (edits |> List.choose id |> List.filter (fun edit -> not (isNull edit)) |> List.toArray) ])
+    | _ -> None
+
 /// The body for the editor package. A block that was imported says which
 /// item of the imported package it was (SourceIndex) and whether it is still
 /// what it was then (SourceUnchanged: the same object, or one that exports to
@@ -2107,6 +2303,10 @@ let private exportBodyWithSource context (imported: Document option) (doc: Docum
                 let unchanged = sameBlockObject block originalBlock || jsonOf item = jsonOf (blockToEditor context originalBlock)
                 item?SourceIndex <- index
                 item?SourceUnchanged <- unchanged
+                if not unchanged then
+                    match blockTextChanges context originalBlock block with
+                    | Some changes -> item?SourceTextChanges <- changes
+                    | None -> ()
             | _ -> ()
             item)
         |> List.toArray

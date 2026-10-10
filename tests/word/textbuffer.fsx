@@ -2112,6 +2112,19 @@ check "format: no selection" (WS.selectionFormat { formatDoc with Selection = No
 check "format: toggling bold over a mixed range makes it bold" (WS.selectionFormat (WS.toggleBold (Doc.setSelection { BlockId = "f1"; Offset = 2 } { BlockId = "f1"; Offset = 13 } formatDoc))).Bold (WS.Uniform true)
 check "selected paragraph ranges" (Doc.selectedParagraphRanges (Doc.setSelection { BlockId = "f3"; Offset = 2 } { BlockId = "f1"; Offset = 4 } formatDoc) |> List.map (fun (para, s, e) -> para.Id, s, e)) [ "f1", 4, 14; "f2", 0, 7; "f3", 0, 2 ]
 
+// Text typed just before a run that begins with the mark of a page break as it
+// was rendered (w:lastRenderedPageBreak): the mark stays before the text - the
+// paragraph still begins the page, and it is saved as the mark and then the text.
+do
+    let marked = { empty with Rope = (ofString "which page").Rope; Runs = [ Text { Start = 0; Length = 10; Style = { defaultStyle with RenderedPageBreakBefore = true } } ] }
+    let typed = insert 0 "Q" marked
+    let runs = typed.Runs |> List.choose (function Text run -> Some (run.Start, run.Length, run.Style.RenderedPageBreakBefore) | Image _ -> None)
+    check "typed before a rendered page break: the mark is before the new text" runs [ (0, 1, true); (1, 10, false) ]
+    check "typed before a rendered page break: the text" (toString typed) "Qwhich page"
+    let inside = insert 3 "Q" marked
+    check "typed inside the marked run: the mark stays at its start" (inside.Runs |> List.choose (function Text run -> Some (run.Start, run.Style.RenderedPageBreakBefore) | Image _ -> None) |> List.head) (0, true)
+    check "withoutAnnotations: the formatting alone" ((withoutAnnotations { defaultStyle with Bold = true; RenderedPageBreakBefore = true; BookmarkName = Some "b"; FieldCode = Some "PAGE" }) = { defaultStyle with Bold = true }) true
+
 // removed: command-history retention/budget tests targeted the deleted cache machinery (RetainedSourceTextCharCount, trimHistory)
 printfn ""
 printfn "Word textbuffer tests: %d passed, %d failed" pass fail

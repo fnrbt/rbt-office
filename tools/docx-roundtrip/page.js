@@ -633,3 +633,106 @@ window.editKeptFinish = async (original, expect) => {
     window.roundTripState = undefined;
     return problems;
 };
+
+// A character typed (by roundtrip.mjs, with real key events) at the start of
+// every tenth paragraph of the body's text, and the document saved: the
+// saved document reads back with the text and the layout the editor had, and
+// document.xml differs from the original in those paragraphs only and, in
+// each, by the character alone - one character more in a w:t, or one run
+// more that holds it (an empty paragraph, a paragraph that starts with a
+// field, a tab, a picture). `confined` counts the paragraphs changed so,
+// `rewritten` those that are not the text they were read from in another way
+// (written from the model), `others` the paragraphs nobody typed in that
+// are not the text they were read from.
+window.tenthOpen = async (name) => {
+    const bytes = new Uint8Array(await (await fetch('/fixture?name=' + encodeURIComponent(name))).arrayBuffer());
+    if (!bytes.length) return 0;
+    const before = await parts(bytes);
+    if (before['word/document.xml'] === undefined) return 0;
+    const { pkg } = await open(bytes);
+    const handle = openEditor(pkg);
+    Word.completeLayout(handle.editor);
+    const seen = new Set(), ids = [];
+    for (const line of Word.getLayoutLines(handle.editor)) {
+        if (seen.has(line.BlockId)) continue;
+        seen.add(line.BlockId);
+        if (line.FrameIsSelected) continue; // (a paragraph of a text box: not one of the body's text)
+        Word.setSelection(handle.editor, line.BlockId, 0, line.BlockId, 0);
+        const selection = Word.getSelection(handle.editor);
+        if (selection && selection.FocusBlockId === line.BlockId) ids.push(line.BlockId);
+    }
+    const chosen = ids.filter((_, index) => index % 10 === 0);
+    window.tenthState = { handle, chosen, before, text: Word.getText(handle.editor) };
+    Word.getInputElement(handle.editor).focus();
+    return chosen.length;
+};
+window.tenthSelect = (index) => {
+    const { handle, chosen } = window.tenthState;
+    Word.setSelection(handle.editor, chosen[index], 0, chosen[index], 0);
+};
+window.tenthFinish = async () => {
+    const { handle, chosen, before, text } = window.tenthState;
+    const problems = [], why = [];
+    let confined = 0, rewritten = 0, others = 0;
+    try {
+        const editor = handle.editor;
+        const typed = Word.getText(editor);
+        if (typed.length !== text.length + chosen.length) problems.push(`every tenth paragraph: ${chosen.length} characters typed, the text is ${typed.length - text.length} longer`);
+        const layout = layoutOf(editor);
+        const bytes = new Uint8Array(await (await OF.word.writeFromEditorPackage(Word.exportDocumentPackage(editor))).arrayBuffer());
+        const reopened = await open(bytes);
+        const second = openEditor(reopened.pkg);
+        if (Word.getText(second.editor) !== typed) problems.push('every tenth paragraph: the saved document does not read back with the text that was saved');
+        const fp = layoutOf(second.editor);
+        closeEditor(second);
+        diffLayout('every tenth paragraph: layout of the saved document vs the editor that saved it', layout, fp, problems);
+        const saved = await parts(bytes);
+        for (const part of Object.keys(saved)) {
+            const found = [], inherited = [];
+            checkXml(part, saved[part], found);
+            if (before[part]) checkXml(part, before[part], inherited);
+            for (const problem of found) if (!inherited.includes(problem)) problems.push('every tenth paragraph: ' + problem);
+        }
+        // Paragraph by paragraph: the text up to each end tag (an empty element as a start and an end tag; the root's start tag aside).
+        const pieces = (xml) => xml.replace(/^﻿/, '').replace(/^[\s\S]*?<w:body>/, '').replace(/<w:p( [^>]*?)?\/>/g, '<w:p$1></w:p>').split('</w:p>');
+        const was = pieces(before['word/document.xml']), is = pieces(saved['word/document.xml']);
+        const plain = (piece) => piece.replace(/ xml:space="preserve"/g, '');
+        const byCharacter = (a, b) => {
+            // b is a with one Q more, or with one run more that holds the Q.
+            a = plain(a); b = plain(b);
+            let i = 0;
+            while (i < a.length && a[i] === b[i]) i++;
+            if (b[i] === 'Q' && b.slice(0, i) + b.slice(i + 1) === a) return true;
+            const extra = b.length - a.length;
+            if (extra <= 0) return false;
+            // (The run may begin a little before the first difference: what follows it begins with the same characters.)
+            for (let from = Math.max(0, i - extra); from <= i; from++) {
+                const run = b.slice(from, from + extra);
+                if (b.slice(0, from) + b.slice(from + extra) !== a) continue;
+                if (/^<w:r>(<w:rPr>[\s\S]*<\/w:rPr>|<w:rPr\/>)?<w:t>Q<\/w:t><\/w:r>$/.test(run)) return true;
+            }
+            return false;
+        };
+        if (was.length !== is.length) {
+            rewritten = chosen.length;
+            why.push(`document.xml has ${is.length - 1} paragraphs, the original ${was.length - 1}`);
+        } else {
+            const left = new Map();
+            for (const piece of was) left.set(piece, (left.get(piece) ?? 0) + 1);
+            let changed = 0;
+            for (let i = 0; i < is.length; i++) {
+                if (is[i] === was[i]) continue;
+                changed++;
+                if (byCharacter(was[i], is[i])) confined++;
+                else if (why.length < 3) why.push(`${JSON.stringify(was[i].slice(-160))} -> ${JSON.stringify(is[i].slice(-200))}`);
+            }
+            rewritten = Math.max(0, chosen.length - confined);
+            others = Math.max(0, changed - chosen.length);
+        }
+    } catch (e) {
+        problems.push('every tenth paragraph threw: ' + String(e && e.stack || e).split('\n').slice(0, 4).join(' | '));
+    }
+    closeEditor(handle);
+    window.tenthState = undefined;
+    return { problems, edited: chosen.length, confined, rewritten, others, why };
+};

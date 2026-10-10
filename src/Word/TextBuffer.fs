@@ -551,7 +551,7 @@ let private clearRevisionFields (style: TextStyle) =
 /// True when a run carries annotation identity (a field, hyperlink, comment,
 /// note reference, bookmark, equation or revision) rather than only
 /// character formatting.
-let private hasAnnotationIdentity (style: TextStyle) =
+let hasAnnotationIdentity (style: TextStyle) =
     style.Hyperlink.IsSome
     || style.InactiveHyperlink.IsSome
     || style.CommentId.IsSome
@@ -618,6 +618,11 @@ let private boundaryInsertStyle (style: TextStyle) (otherSide: TextStyle option)
             DeletedInsertion = None
             MoveName = None }
 
+/// A run's character formatting alone: what text typed next to it has when
+/// it is part of none of the run's field, link, comment, note, bookmark or
+/// tracked change.
+let withoutAnnotations (style: TextStyle) : TextStyle = boundaryInsertStyle style None
+
 /// Insert text at position
 let insert pos (text: string) buffer =
     if String.length text = 0 then buffer
@@ -650,8 +655,15 @@ let insert pos (text: string) buffer =
                             // Insert at start of run: nothing precedes the
                             // caret, so the text is outside this run's
                             // annotations.
-                            newRuns.Add(Text { Start = tr.Start; Length = textLen; Style = boundaryInsertStyle tr.Style None })
-                            newRuns.Add(Text { tr with Start = tr.Start + textLen })
+                            // (The mark of a page break as it was rendered stays
+                            // where it is: before the text typed there.)
+                            let typed = boundaryInsertStyle tr.Style None
+                            if tr.Style.RenderedPageBreakBefore then
+                                newRuns.Add(Text { Start = tr.Start; Length = textLen; Style = { typed with RenderedPageBreakBefore = true } })
+                                newRuns.Add(Text { tr with Start = tr.Start + textLen; Style = { tr.Style with RenderedPageBreakBefore = false } })
+                            else
+                                newRuns.Add(Text { Start = tr.Start; Length = textLen; Style = typed })
+                                newRuns.Add(Text { tr with Start = tr.Start + textLen })
                         elif pos = runEnd then
                             // Insert at end of run
                             let following =

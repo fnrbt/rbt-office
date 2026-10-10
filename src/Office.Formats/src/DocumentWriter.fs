@@ -2091,7 +2091,15 @@ let private childElementRanges (xml: string) (from: int) : ElementRanges option 
     let mutable depth = 0
     let mutable closeAt = -1
     let mutable broken = false
-    let startsWithAt (at: int) (value: string) = at + value.Length <= n && System.String.CompareOrdinal(xml, at, value, 0, value.Length) = 0
+    // (Character by character: String.CompareOrdinal with offsets does not compare in the JavaScript build.)
+    let startsWithAt (at: int) (value: string) =
+        at + value.Length <= n
+        && (let mutable same = true
+            let mutable i = 0
+            while same && i < value.Length do
+                if xml.[at + i] <> value.[i] then same <- false
+                i <- i + 1
+            same)
     let skipTo (at: int) (terminator: string) =
         let found = xml.IndexOf(terminator, at, System.StringComparison.Ordinal)
         if found < 0 then broken <- true else pos <- found + terminator.Length
@@ -2150,6 +2158,515 @@ let private countOccurrences (text: string) (from: int) (until: int) (value: str
             count <- count + 1
             pos <- found + value.Length
     count
+
+// ---- a change of text made in the XML a block was read from ---------------------
+//
+// A block of which only the text of paragraphs was changed (the editor says
+// which characters: SourceTextChanges) is not written from the model. The
+// change is made in its XML: characters go into and out of the w:t elements
+// they belong to, a run whose text is all deleted goes, text that does not
+// go into the run next to it comes as a run of its own with the properties
+// of a run of the paragraph that is formatted the same (of the paragraph
+// mark in a paragraph without text) - at the start or the end of the
+// paragraph, between two runs, or inside a run, which is split, both halves
+// with its properties. Everything else of the block stays the text it
+// was: bookmarks, fields, revision ids, properties the model does not know.
+// Whenever the XML cannot be matched with the text the editor had (a field
+// whose result was recomputed, an element the reader turned into text in a
+// way not known here), the block is written from the model as before.
+
+type private SourceTextSegment = {
+    /// The start tag of the w:t (w:delText, m:t) and the text between the tags.
+    TagStart: int
+    ContentStart: int
+    ContentEnd: int
+    /// A w:t of a run of the body's own text.
+    Editable: bool
+    /// The w:r it is in (-1: none).
+    RunStart: int
+    mutable RunEnd: int
+    /// The run holds its properties and this one w:t.
+    mutable RunSimple: bool
+    /// The run is a child of the paragraph (not of a hyperlink, a tracked change, a content control).
+    RunTopLevel: bool
+    /// The run is one text is typed into: not one of a content control or a field shown by its own element.
+    RunTyped: bool
+    /// The run's w:rPr (-1: none).
+    RunPropsStart: int
+    RunPropsEnd: int
+    mutable Text: string
+    /// The text without the white space around it when the w:t does not say xml:space="preserve"
+    /// (what the reader makes of such an element).
+    TrimmedText: string
+    /// An element that may stand for text of any kind (a note reference, a symbol) comes before it.
+    WideGapBefore: bool
+    /// Where its text starts in the paragraph's text.
+    mutable At: int
+}
+
+type private SourceParagraph = {
+    Start: int
+    /// The '>' of its start tag.
+    TagEnd: int
+    SelfClosed: bool
+    /// Where its end tag starts, and where the element ends.
+    mutable CloseAt: int
+    mutable End: int
+    Segments: ResizeArray<SourceTextSegment>
+    /// Its child elements: where each starts and ends, and its name.
+    Children: ResizeArray<int * int * string>
+    mutable WideGapAtEnd: bool
+    /// Text was found in a form that is not understood here.
+    mutable Unknown: bool
+}
+
+let private unescapeXmlText (raw: string) : string =
+    if raw.IndexOf '&' < 0 then raw
+    else
+        let sb = System.Text.StringBuilder()
+        let mutable i = 0
+        while i < raw.Length do
+            let c = raw.[i]
+            let semi = if c = '&' then raw.IndexOf(';', i) else -1
+            if semi > i && semi - i <= 10 then
+                let name = raw.Substring(i + 1, semi - i - 1)
+                let code =
+                    match name with
+                    | "amp" -> 38
+                    | "lt" -> 60
+                    | "gt" -> 62
+                    | "quot" -> 34
+                    | "apos" -> 39
+                    | _ when name.StartsWith "#x" || name.StartsWith "#X" ->
+                        (try System.Convert.ToInt32(name.Substring 2, 16) with _ -> -1)
+                    | _ when name.StartsWith "#" ->
+                        (match System.Int32.TryParse(name.Substring 1) with
+                         | true, value -> value
+                         | _ -> -1)
+                    | _ -> -1
+                if code < 0 then
+                    sb.Append c |> ignore
+                    i <- i + 1
+                else
+                    if code >= 0x10000 then
+                        let v = code - 0x10000
+                        sb.Append(char (0xD800 + (v >>> 10))).Append(char (0xDC00 + (v &&& 0x3FF))) |> ignore
+                    else sb.Append(char code) |> ignore
+                    i <- semi + 1
+            else
+                sb.Append c |> ignore
+                i <- i + 1
+        sb.ToString()
+
+let private escapeXmlText (text: string) : string =
+    text.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;")
+
+/// The paragraphs of the body's own text in a piece of document.xml (those
+/// of tables, of tables in cells and of block content controls too; not the
+/// ones inside drawings and pictures), with where their text is.
+let private scanSourceParagraphs (xml: string) : SourceParagraph list option =
+    let n = xml.Length
+    let paragraphs = ResizeArray<SourceParagraph>()
+    // The open elements: name and where each started.
+    let names = ResizeArray<string>()
+    let starts = ResizeArray<int>()
+    let mutable skipDepth = -1
+    let mutable current : SourceParagraph option = None
+    let mutable paragraphDepth = -1
+    let mutable runStart = -1
+    let mutable runDepth = -1
+    let mutable runTopLevel = false
+    let mutable runTyped = false
+    let mutable runPropsStart = -1
+    let mutable runPropsEnd = -1
+    let mutable runFirstSegment = 0
+    let mutable runTexts = 0
+    let mutable runOthers = 0
+    let mutable wideGap = false
+    let mutable pos = 0
+    let mutable broken = false
+    let startsWithAt (at: int) (value: string) =
+        at + value.Length <= n
+        && (let mutable same = true
+            let mutable i = 0
+            while same && i < value.Length do
+                if xml.[at + i] <> value.[i] then same <- false
+                i <- i + 1
+            same)
+    let isSkipped (name: string) = name = "w:drawing" || name = "w:pict" || name = "mc:AlternateContent" || name = "w:object"
+    let isWide (name: string) =
+        match name with
+        | "w:tab" | "w:br" | "w:cr" | "w:noBreakHyphen" | "w:softHyphen" | "w:ptab" | "w:rPr" | "w:lastRenderedPageBreak" | "w:fldChar" | "w:instrText" -> false
+        | _ -> true
+    while not broken && pos < n do
+        let lt = xml.IndexOf('<', pos)
+        if lt < 0 then pos <- n
+        elif startsWithAt lt "<!--" then
+            let fin = xml.IndexOf("-->", lt, System.StringComparison.Ordinal)
+            if fin < 0 then broken <- true else pos <- fin + 3
+        elif startsWithAt lt "<![CDATA[" then
+            current |> Option.iter (fun para -> para.Unknown <- true)
+            let fin = xml.IndexOf("]]>", lt, System.StringComparison.Ordinal)
+            if fin < 0 then broken <- true else pos <- fin + 3
+        elif lt + 1 < n && xml.[lt + 1] = '?' then
+            let fin = xml.IndexOf("?>", lt, System.StringComparison.Ordinal)
+            if fin < 0 then broken <- true else pos <- fin + 2
+        elif lt + 1 < n && xml.[lt + 1] = '/' then
+            let gt = xml.IndexOf('>', lt)
+            if gt < 0 || names.Count = 0 then
+                // (The end tag of an element that began before this piece: nothing of a paragraph.)
+                if gt < 0 then broken <- true else pos <- gt + 1
+            else
+                let depth = names.Count
+                let name = names.[depth - 1]
+                names.RemoveAt(depth - 1)
+                starts.RemoveAt(depth - 1)
+                if skipDepth = depth then skipDepth <- -1
+                if skipDepth < 0 then
+                    match current with
+                    | Some para ->
+                        if depth = paragraphDepth then
+                            para.CloseAt <- lt
+                            para.End <- gt + 1
+                            para.WideGapAtEnd <- wideGap
+                            paragraphs.Add para
+                            current <- None
+                            paragraphDepth <- -1
+                        elif depth = paragraphDepth + 1 then
+                            let (childStart, _, childName) = para.Children.[para.Children.Count - 1]
+                            para.Children.[para.Children.Count - 1] <- (childStart, gt + 1, childName)
+                        if runDepth >= 0 && depth = runDepth + 1 && name = "w:rPr" then runPropsEnd <- gt + 1
+                        if depth = runDepth then
+                            for i in runFirstSegment .. para.Segments.Count - 1 do
+                                para.Segments.[i].RunEnd <- gt + 1
+                                para.Segments.[i].RunSimple <- runTexts = 1 && runOthers = 0
+                            runDepth <- -1
+                            runStart <- -1
+                    | None -> ()
+                pos <- gt + 1
+        else
+            let gt = tagEndIndex xml lt
+            if gt < 0 then broken <- true
+            else
+                let selfClosing = xml.[gt - 1] = '/'
+                let name = tagNameAt xml lt
+                let depth = names.Count
+                if skipDepth < 0 then
+                    match current with
+                    | None ->
+                        if name = "w:p" then
+                            let para =
+                                { Start = lt; TagEnd = gt; SelfClosed = selfClosing; CloseAt = (if selfClosing then gt + 1 else -1); End = (if selfClosing then gt + 1 else -1)
+                                  Segments = ResizeArray(); Children = ResizeArray(); WideGapAtEnd = false; Unknown = false }
+                            wideGap <- false
+                            if selfClosing then paragraphs.Add para
+                            else
+                                current <- Some para
+                                paragraphDepth <- depth + 1
+                    | Some para ->
+                        if depth = paragraphDepth then para.Children.Add((lt, (if selfClosing then gt + 1 else -1), name))
+                        if name = "w:p" then para.Unknown <- true
+                        if isSkipped name then
+                            wideGap <- true
+                        elif name = "w:r" && not selfClosing then
+                            runStart <- lt
+                            runDepth <- depth + 1
+                            runTopLevel <- depth = paragraphDepth
+                            runTyped <-
+                                (let mutable plain = true
+                                 for i in paragraphDepth .. depth - 1 do
+                                     match names.[i] with
+                                     | "w:hyperlink" | "w:ins" | "w:smartTag" | "w:moveTo" -> ()
+                                     | _ -> plain <- false
+                                 plain)
+                            runPropsStart <- -1
+                            runPropsEnd <- -1
+                            runFirstSegment <- para.Segments.Count
+                            runTexts <- 0
+                            runOthers <- 0
+                        elif name = "w:t" || name = "w:delText" || name = "m:t" then
+                            let inRun = runDepth >= 0 && depth = runDepth
+                            let contentStart = gt + 1
+                            let contentEnd =
+                                if selfClosing then contentStart
+                                else
+                                    let next = xml.IndexOf('<', contentStart)
+                                    if next < 0 || not (startsWithAt next ("</" + name + ">")) then
+                                        para.Unknown <- true
+                                        contentStart
+                                    else next
+                            if inRun then runTexts <- runTexts + 1
+                            para.Segments.Add
+                                { TagStart = lt; ContentStart = contentStart; ContentEnd = contentEnd
+                                  Editable = name = "w:t" && inRun && not selfClosing
+                                  RunStart = (if inRun then runStart else -1); RunEnd = -1; RunSimple = false; RunTopLevel = inRun && runTopLevel
+                                  RunTyped = inRun && runTyped
+                                  RunPropsStart = (if inRun && runPropsEnd > runPropsStart then runPropsStart else -1)
+                                  RunPropsEnd = (if inRun && runPropsEnd > runPropsStart then runPropsEnd else -1)
+                                  Text = unescapeXmlText (xml.Substring(contentStart, contentEnd - contentStart))
+                                  TrimmedText =
+                                    (let text = unescapeXmlText (xml.Substring(contentStart, contentEnd - contentStart))
+                                     if xml.Substring(lt, gt - lt).IndexOf "xml:space=\"preserve\"" >= 0 then text else text.Trim())
+                                  WideGapBefore = wideGap; At = -1 }
+                            wideGap <- false
+                        else
+                            if runDepth >= 0 && depth = runDepth && name = "w:rPr" then
+                                runPropsStart <- lt
+                                runPropsEnd <- if selfClosing then gt + 1 else -1
+                            if runDepth >= 0 && depth = runDepth && name <> "w:rPr" then runOthers <- runOthers + 1
+                            if runDepth >= 0 && depth = runDepth && isWide name then wideGap <- true
+                            // (Text of an equation, a field shown by its own element, ...: of any kind.)
+                            if name = "w:fldSimple" || name = "m:oMath" || name = "m:oMathPara" || name = "w:ruby" then wideGap <- true
+                if not selfClosing then
+                    names.Add name
+                    starts.Add lt
+                    if skipDepth < 0 && isSkipped name then skipDepth <- depth + 1
+                pos <- gt + 1
+    if broken || current.IsSome then None else Some (List.ofSeq paragraphs)
+
+/// Characters the reader makes of elements that are not w:t (a tab, a break,
+/// a hyphen, the place of an object).
+let private isPlaceholderCharacter (c: char) =
+    c < ' ' || c = '￼' || c = '­' || c = '‑' || c = ' '
+
+/// Where each piece of text of a paragraph's XML is in the paragraph's text
+/// as the editor had it. False when the two do not match.
+let rec private alignSourceParagraph (para: SourceParagraph) (text: string) : bool =
+    if para.Unknown then false
+    else
+        alignSourceSegments para text
+        || (// As the reader has the text of elements that do not preserve their white space.
+            para.Segments |> Seq.exists (fun segment -> segment.Text <> segment.TrimmedText)
+            && (for segment in para.Segments do segment.Text <- segment.TrimmedText
+                alignSourceSegments para text))
+
+and private alignSourceSegments (para: SourceParagraph) (text: string) : bool =
+        let mutable cursor = 0
+        let mutable ok = true
+        let gapAllowed (from: int) (until: int) (wide: bool) =
+            wide
+            || (let mutable all = true
+                for i in from .. until - 1 do
+                    if not (isPlaceholderCharacter text.[i]) then all <- false
+                all)
+        for segment in para.Segments do
+            if ok then
+                if segment.Text.Length = 0 then segment.At <- cursor
+                else
+                    let found = text.IndexOf(segment.Text, cursor, System.StringComparison.Ordinal)
+                    if found < 0 || not (gapAllowed cursor found segment.WideGapBefore) then ok <- false
+                    else
+                        segment.At <- found
+                        cursor <- found + segment.Text.Length
+        ok && gapAllowed cursor text.Length para.WideGapAtEnd
+
+let private needsSpacePreserved (text: string) =
+    text.Length > 0 && (System.Char.IsWhiteSpace text.[0] || System.Char.IsWhiteSpace text.[text.Length - 1] || text.IndexOf "  " >= 0)
+
+/// The replacements (from, until, text) that make one change of text in a
+/// paragraph's XML.
+let private planParagraphChange (xml: string) (para: SourceParagraph) (oldText: string) (change: obj) : (int * int * string) list option =
+    let offset = intOrDefault 0 (change?Offset)
+    let deleted = intOrDefault 0 (change?Deleted)
+    let inserted = stringOrDefault "" (change?Inserted)
+    let joinBefore = boolOrDefault false (change?JoinBefore)
+    let joinAfter = boolOrDefault false (change?JoinAfter)
+    let runsPlain = boolOrDefault false (change?RunsPlain)
+    let witnesses = optionalArray (change?Witnesses) |> Array.map (fun at -> intOrDefault -1 at)
+    let markStyle = boolOrDefault false (change?MarkStyle)
+    let deleteEnd = offset + deleted
+    if offset < 0 || deleteEnd > oldText.Length || not (alignSourceParagraph para oldText) then None
+    else
+        let segments = para.Segments |> Seq.filter (fun segment -> segment.Text.Length > 0) |> Seq.toArray
+        let segmentAt (position: int) =
+            segments |> Array.tryFind (fun segment -> segment.At <= position && position < segment.At + segment.Text.Length)
+        // Every deleted character is one of a w:t.
+        let mutable covered = 0
+        let mutable deletable = true
+        for segment in segments do
+            let from = max offset segment.At
+            let until = min deleteEnd (segment.At + segment.Text.Length)
+            if until > from then
+                covered <- covered + (until - from)
+                if not segment.Editable then deletable <- false
+        let typable = inserted |> Seq.forall (fun c -> c >= ' ' && c <> '￼')
+        let joinTarget =
+            if inserted.Length = 0 || not typable then None
+            else
+                let typedInto (segment: SourceTextSegment) = segment.Editable && segment.RunTyped
+                let before = if joinBefore && offset > 0 then segmentAt (offset - 1) |> Option.filter typedInto else None
+                match before with
+                | Some _ -> before
+                | None -> if joinAfter && deleteEnd < oldText.Length then segmentAt deleteEnd |> Option.filter typedInto else None
+        // A run of its own for the text: with the properties of a run that is formatted as it is,
+        // or of the paragraph mark when the paragraph has no text.
+        let newRun : string option =
+            if inserted.Length = 0 || not runsPlain || not typable then None
+            else
+                let props =
+                    if witnesses.Length > 0 then
+                        witnesses
+                        |> Array.tryPick (fun witness -> segmentAt witness |> Option.filter (fun segment -> segment.Editable && segment.RunTyped))
+                        |> Option.map (fun segment -> if segment.RunPropsStart >= 0 then xml.Substring(segment.RunPropsStart, segment.RunPropsEnd - segment.RunPropsStart) else "")
+                    elif markStyle && not para.SelfClosed && para.Children.Count > 0 then
+                        let (start, fin, name) = para.Children.[0]
+                        if name <> "w:pPr" then Some ""
+                        else
+                            let tagEnd = tagEndIndex xml start
+                            if tagEnd < 0 || xml.[tagEnd - 1] = '/' then Some ""
+                            else
+                                childElementRanges xml (tagEnd + 1)
+                                |> Option.map (fun children ->
+                                    match children.Names |> Array.tryFindIndex (fun child -> child = "w:rPr") with
+                                    | Some index when children.Ends.[index] <= fin -> xml.Substring(children.Starts.[index], children.Ends.[index] - children.Starts.[index])
+                                    | _ -> "")
+                    elif markStyle then Some ""
+                    else None
+                props
+                // (Not the properties of a tracked change.)
+                |> Option.filter (fun rPr -> rPr.IndexOf "Change" < 0 && rPr.IndexOf "<w:ins" < 0 && rPr.IndexOf "<w:del" < 0 && rPr.IndexOf "<w:move" < 0)
+                |> Option.map (fun rPr -> "<w:r>" + rPr + (if needsSpacePreserved inserted then "<w:t xml:space=\"preserve\">" else "<w:t>") + escapeXmlText inserted + "</w:t></w:r>")
+        if not deletable || covered <> deleted then None
+        elif inserted.Length > 0 && joinTarget.IsNone && newRun.IsNone then None
+        else
+            let runsToken = defaultArg newRun ""
+            let replacements = ResizeArray<int * int * string>()
+            let setText (segment: SourceTextSegment) (text: string) =
+                let tagEnd = segment.ContentStart
+                let tag = xml.Substring(segment.TagStart, tagEnd - segment.TagStart)
+                let tag = if needsSpacePreserved text && tag.IndexOf "xml:space" < 0 then tag.Substring(0, tag.Length - 1) + " xml:space=\"preserve\">" else tag
+                replacements.Add((segment.TagStart, segment.ContentEnd, tag + escapeXmlText text))
+            let remaining (segment: SourceTextSegment) =
+                let from = max offset segment.At - segment.At
+                let until = min deleteEnd (segment.At + segment.Text.Length) - segment.At
+                if until > from then segment.Text.Substring(0, from), segment.Text.Substring until else segment.Text, ""
+            let isTarget (segment: SourceTextSegment) = match joinTarget with Some target -> obj.ReferenceEquals(target, segment) | None -> false
+            // The segment a new run would split: one w:t holds the character before and the one after the change.
+            let splitSegment =
+                if inserted.Length = 0 || joinTarget.IsSome || offset = 0 || deleteEnd = oldText.Length then None
+                else
+                    match segmentAt (offset - 1), segmentAt deleteEnd with
+                    | Some a, Some b when obj.ReferenceEquals(a, b) -> Some a
+                    | _ -> None
+            let mutable ok = true
+            for segment in segments do
+                let touched = min deleteEnd (segment.At + segment.Text.Length) > max offset segment.At
+                let split = match splitSegment with Some target -> obj.ReferenceEquals(target, segment) | None -> false
+                if isTarget segment then
+                    let at = max 0 (min segment.Text.Length (offset - segment.At))
+                    let left, right = if touched then remaining segment else segment.Text.Substring(0, at), segment.Text.Substring at
+                    setText segment (left + inserted + right)
+                elif split then
+                    if not (segment.RunSimple && segment.RunTopLevel && segment.Editable) then ok <- false
+                    else
+                        let left, right = if touched then remaining segment else (let at = offset - segment.At in segment.Text.Substring(0, at), segment.Text.Substring at)
+                        // The run's start tag and properties: both halves have them.
+                        let head = xml.Substring(segment.RunStart, segment.TagStart - segment.RunStart)
+                        let half (text: string) = head + "<w:t xml:space=\"preserve\">" + escapeXmlText text + "</w:t></w:r>"
+                        replacements.Add((segment.RunStart, segment.RunEnd, half left + runsToken + half right))
+                elif touched then
+                    let left, right = remaining segment
+                    if left.Length = 0 && right.Length = 0 && segment.RunSimple then replacements.Add((segment.RunStart, segment.RunEnd, ""))
+                    else setText segment (left + right)
+            // Runs of their own that split no run: at an end of the paragraph, or between two of its runs.
+            if ok && inserted.Length > 0 && joinTarget.IsNone && splitSegment.IsNone then
+                if offset = 0 then
+                    if para.SelfClosed then
+                        replacements.Add((para.Start, para.End, xml.Substring(para.Start, para.TagEnd - 1 - para.Start).TrimEnd() + ">" + runsToken + "</w:p>"))
+                    else
+                        let mutable at = para.TagEnd + 1
+                        let mutable leading = true
+                        para.Children
+                        |> Seq.iteri (fun index (start, fin, name) ->
+                            if leading then
+                                // After the properties, and after a page break the paragraph begins with
+                                // (the reader makes it a property of the paragraph: the text comes after it).
+                                let pageBreak =
+                                    name = "w:r" && fin > start
+                                    && (let run = xml.Substring(start, fin - start)
+                                        run.IndexOf "w:type=\"page\"" >= 0 && run.IndexOf "<w:t" < 0 && run.IndexOf "<w:drawing" < 0)
+                                if (index = 0 && name = "w:pPr") || pageBreak then at <- fin
+                                else leading <- false)
+                        replacements.Add((at, at, runsToken))
+                elif deleteEnd = oldText.Length then replacements.Add((para.CloseAt, para.CloseAt, runsToken))
+                else
+                    match segmentAt (offset - 1), segmentAt deleteEnd with
+                    | Some a, Some b when a.RunTopLevel && b.RunTopLevel ->
+                        let childIndex (segment: SourceTextSegment) = para.Children |> Seq.tryFindIndex (fun (start, _, _) -> start = segment.RunStart)
+                        match childIndex a, childIndex b with
+                        | Some first, Some last when first < last ->
+                            // A field that begins or ends between the two: the new text is outside it.
+                            let mutable begins = 0
+                            let mutable finishes = 0
+                            for i in first + 1 .. last - 1 do
+                                let (start, fin, _) = para.Children.[i]
+                                begins <- begins + countOccurrences xml start fin "w:fldCharType=\"begin\""
+                                finishes <- finishes + countOccurrences xml start fin "w:fldCharType=\"end\""
+                            if finishes = 0 then replacements.Add((a.RunEnd, a.RunEnd, runsToken))
+                            elif begins = 0 then replacements.Add((b.RunStart, b.RunStart, runsToken))
+                            else ok <- false
+                        | _ -> ok <- false
+                    | _ -> ok <- false
+            if ok then Some (List.ofSeq replacements) else None
+
+/// How many paragraphs of the body's own text an item of the editor's package holds.
+let rec private storyParagraphCount (item: obj) : int =
+    match item?Type |> stringOrDefault "Paragraph" with
+    | "TextBox" -> 0
+    | "Table" ->
+        optionalArray (item?Rows)
+        |> Array.sumBy (fun row ->
+            optionalArray (row?Cells)
+            |> Array.sumBy (fun cell -> (optionalArray (cell?Paragraphs)).Length + (optionalArray (cell?NestedTables) |> Array.sumBy storyParagraphCount)))
+    | _ -> 1
+
+/// The XML of an element of the body with the changes of text of its items
+/// made in it. None when a change cannot be made there.
+let private patchSourceChunk (xml: string) (items: obj array) : string option =
+    match scanSourceParagraphs xml with
+    | None -> None
+    | Some paragraphs ->
+        let paragraphs = List.toArray paragraphs
+        if (items |> Array.sumBy storyParagraphCount) <> paragraphs.Length then None
+        else
+            let replacements = ResizeArray<int * int * string>()
+            let mutable ok = true
+            let mutable first = 0
+            for item in items do
+                let count = storyParagraphCount item
+                let changes = item?SourceTextChanges
+                if ok && not (isNullOrUndefined changes) then
+                    let texts = optionalArray (changes?Texts) |> Array.map (fun text -> stringOrDefault "" text)
+                    if texts.Length <> count then ok <- false
+                    else
+                        let edited = System.Collections.Generic.HashSet<int>()
+                        for change in optionalArray (changes?Edits) do
+                            let index = intOrDefault -1 (change?Paragraph)
+                            if ok then
+                                if index < 0 || index >= count || not (edited.Add index) then ok <- false
+                                else
+                                    match planParagraphChange xml paragraphs.[first + index] texts.[index] change with
+                                    | Some planned -> replacements.AddRange planned
+                                    | None -> ok <- false
+                        // The others are the paragraphs the editor had there: the first text of each is in its text.
+                        for index in 0 .. count - 1 do
+                            if ok && not (edited.Contains index) then
+                                let para = paragraphs.[first + index]
+                                match para.Segments |> Seq.tryFind (fun segment -> segment.Editable && segment.Text.Length > 0) with
+                                | Some segment when texts.[index].IndexOf(segment.Text, System.StringComparison.Ordinal) < 0 -> ok <- false
+                                | _ -> ()
+                first <- first + count
+            if not ok then None
+            else
+                let ordered = replacements |> Seq.sortByDescending (fun (from, _, _) -> from) |> Seq.toArray
+                let mutable text = xml
+                let mutable limit = xml.Length
+                for (from, until, replacement) in ordered do
+                    if until > limit then ok <- false
+                    elif ok then
+                        text <- text.Substring(0, from) + replacement + text.Substring until
+                        limit <- from
+                if ok then Some text else None
 
 type private BodySegment =
     | SourceText of string
@@ -2224,6 +2741,8 @@ let private planBody (xml: string) (itemChunks: int array) (chunkCount: int) (it
             let lastAt = Array.create chunkCount (-1)
             let found = Array.zeroCreate<int> chunkCount
             let lastSource = Array.create chunkCount (-1)
+            let patched = Array.zeroCreate<bool> chunkCount
+            let patchedText = Array.create<string option> chunkCount None
             let mutable anchorChunk = -1
             items
             |> Array.iteri (fun position item ->
@@ -2237,7 +2756,10 @@ let private planBody (xml: string) (itemChunks: int array) (chunkCount: int) (it
                     lastSource.[chunk] <- index
                     lastAt.[chunk] <- position
                     found.[chunk] <- found.[chunk] + 1
-                    if not (boolOrDefault false (item?SourceUnchanged)) then keep.[chunk] <- false
+                    if not (boolOrDefault false (item?SourceUnchanged)) then
+                        // (Changed in its text alone: the change is made in the element's XML.)
+                        if isNullOrUndefined (item?SourceTextChanges) then keep.[chunk] <- false
+                        else patched.[chunk] <- true
                 if isTextBox item then
                     // A shape is written into the block it is anchored in: one that is new,
                     // or that now follows another block, makes that block's XML.
@@ -2247,6 +2769,10 @@ let private planBody (xml: string) (itemChunks: int array) (chunkCount: int) (it
                 else anchorChunk <- chunk)
             for chunk in 0 .. chunkCount - 1 do
                 if found.[chunk] <> originalCount.[chunk] then keep.[chunk] <- false
+                if keep.[chunk] && patched.[chunk] then
+                    let text = xml.Substring(textStart.[chunk], body.Ends.[chunk] - textStart.[chunk])
+                    patchedText.[chunk] <- patchSourceChunk text (Array.sub items firstAt.[chunk] originalCount.[chunk])
+                    if patchedText.[chunk].IsNone then keep.[chunk] <- false
             // A field that begins in one element and ends in a later one (a table of
             // contents): those elements go back together or not at all.
             let blockChunks = [| for chunk in 0 .. chunkCount - 1 do if originalCount.[chunk] > 0 then yield chunk |]
@@ -2282,7 +2808,9 @@ let private planBody (xml: string) (itemChunks: int array) (chunkCount: int) (it
                 let chunk = chunkOfItem.[position]
                 if chunk >= 0 && keep.[chunk] then
                     flush ()
-                    segments.Add (SourceText (xml.Substring(textStart.[chunk], body.Ends.[chunk] - textStart.[chunk])))
+                    match (if patched.[chunk] then patchedText.[chunk] else None) with
+                    | Some text -> segments.Add (SourceText text)
+                    | None -> segments.Add (SourceText (xml.Substring(textStart.[chunk], body.Ends.[chunk] - textStart.[chunk])))
                     anySource <- true
                     position <- position + originalCount.[chunk]
                 else
@@ -2290,7 +2818,9 @@ let private planBody (xml: string) (itemChunks: int array) (chunkCount: int) (it
                     regenerated.Add items.[position]
                     position <- position + 1
             flush ()
-            if not anySource then None
+            // (Nothing as it was read: a new body. Around it the document stays the text it
+            // was - the root's start tag, the section properties - when the page setup is.)
+            if not anySource && not pageSetupUnchanged then None
             else
                 let sectionStart = if sectIndex >= 0 then body.Starts.[sectIndex] else contentEnd
                 let sectionEnd = if sectIndex >= 0 then body.Ends.[sectIndex] else contentEnd

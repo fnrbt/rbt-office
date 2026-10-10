@@ -39,6 +39,16 @@
 //     saved document has it, its parts are well formed, and every other
 //     paragraph of document.xml is still the text it was read from.
 //
+// And a character is typed at the start of every tenth paragraph of the
+// body's text (real key events), and the document saved: it reads back with
+// the text and is laid out as the editor that saved it, and document.xml
+// differs from the original in those paragraphs only, in each by the
+// character alone (one character more in a w:t, or one run more that holds
+// it). The summary says how many paragraphs were written from the model
+// instead (the XML could not be matched with the text the editor had); at
+// least 95% must not be, and no paragraph nobody typed in may change (but in
+// the documents of tenthOthersKnown below). --no-tenth skips it.
+//
 // Usage:
 //   dotnet fable src/Office.Formats --outDir $DIST/office-formats --lang JavaScript --noCache
 //   dotnet fable src/Word           --outDir $DIST/word           --lang JavaScript --noCache
@@ -81,6 +91,13 @@ const verbose = flag('--verbose');
 const expectFailures = flag('--report-only');
 const xmlSummary = flag('--xml-summary');
 const syntheticOnly = flag('--synthetic');
+const skipTenth = flag('--no-tenth');
+// Every tenth paragraph (see the header): the share of the paragraphs typed in that must differ by the character alone,
+// and the documents in which a paragraph nobody typed in may change (name fragments).
+const tenthConfinedShare = 0.95;
+const tenthOthersKnown = [
+    'test-header-footer.docx', // w:sectPr is the first child of w:body: nothing of this body is written back as it was read (planBody)
+];
 const port = Number(process.env.PORT ?? 16021);
 
 const firstExisting = (candidates) => candidates.find((p) => p && fs.existsSync(p));
@@ -147,6 +164,8 @@ async function main() {
     const browser = await (playwright.chromium ?? playwright.default.chromium).launch();
     let failed = 0, identicalXml = 0, compared = 0;
     const notIdentical = [];
+    const tenthTotals = { edited: 0, confined: 0, rewritten: 0, others: 0 };
+    const tenthNotes = [];
     const xmlKinds = new Map(); // element / attribute kind -> how often it was in the originals and in the saved documents
     try {
         const tab = await browser.newPage();
@@ -171,6 +190,22 @@ async function main() {
             if (await tab.evaluate('window.editOpen(true)')) {
                 await tab.keyboard.type('Q');
                 problems.push(...await tab.evaluate(([n, expect]) => window.editKeptFinish(n, expect), [name, expectations.get(name) ?? []]));
+            }
+            // A character typed at the start of every tenth paragraph.
+            if (!skipTenth) {
+                const count = await tab.evaluate((n) => window.tenthOpen(n), name);
+                for (let i = 0; i < count; i++) { await tab.evaluate((index) => window.tenthSelect(index), i); await tab.keyboard.type('Q'); }
+                if (count > 0) {
+                    const tenth = await tab.evaluate('window.tenthFinish()');
+                    problems.push(...tenth.problems);
+                    tenthTotals.edited += tenth.edited; tenthTotals.confined += tenth.confined; tenthTotals.rewritten += tenth.rewritten; tenthTotals.others += tenth.others;
+                    if (tenth.rewritten || tenth.others) {
+                        tenthNotes.push(`${name}: ${tenth.edited} typed in, ${tenth.confined} changed by the character alone, ${tenth.rewritten} written from the model, ${tenth.others} others changed`);
+                        if (verbose || process.env.TENTH_WHY) for (const line of tenth.why) tenthNotes.push('      ' + line);
+                    }
+                    // Paragraphs nobody typed in stay the text they were read from - but for the documents listed in the header.
+                    if (tenth.others > 0 && !tenthOthersKnown.some((known) => name.includes(known))) problems.push(`every tenth paragraph: ${tenth.others} paragraphs nobody typed in are not the text they were read from`);
+                }
             }
             for (const [kind, [before, after]] of Object.entries(result.xmlDiff ?? {})) {
                 const entry = xmlKinds.get(kind) ?? { files: 0, before: 0, after: 0 };
@@ -205,6 +240,11 @@ async function main() {
         const rows = [...xmlKinds.entries()].sort((a, b) => b[1].files - a[1].files || a[0].localeCompare(b[0]));
         if (rows.length) console.log('Elements and attributes whose number changed (kind: documents, occurrences before -> after):');
         for (const [kind, e] of rows) console.log(`  ${kind}: ${e.files} documents, ${e.before} -> ${e.after}`);
+    }
+    if (!skipTenth) {
+        console.log(`\nA character typed at the start of every tenth paragraph: ${tenthTotals.edited} paragraphs; ${tenthTotals.confined} differ from the original by the character alone, ${tenthTotals.rewritten} were written from the model; ${tenthTotals.others} other paragraphs changed.`);
+        for (const line of tenthNotes) console.log('  ' + line);
+        if (tenthTotals.confined < tenthTotals.edited * tenthConfinedShare) { console.log(`  FAIL: fewer than ${tenthConfinedShare * 100}% by the character alone`); failed++; }
     }
     console.log(failed === 0 ? '\nDOCX ROUND TRIP: ALL PASSED' : `\nDOCX ROUND TRIP: ${failed} fixture(s) FAILED`);
     process.exit(failed === 0 || expectFailures ? 0 : 1);

@@ -37,6 +37,15 @@ const shapeAnchor = (id, name, o, spPr, text) =>
     `<a:graphic><a:graphicData uri="${WPS}"><wps:wsp><wps:cNvSpPr/><wps:spPr>${spPr}</wps:spPr>${text ? `<wps:txbx><w:txbxContent>${text}</w:txbxContent></wps:txbx>` : ''}<wps:bodyPr/></wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></mc:Choice>` +
     `<mc:Fallback><w:pict><v:shape xmlns:v="urn:schemas-microsoft-com:vml" id="vml${id}" type="#_x0000_t202" style="position:absolute;margin-left:10pt;margin-top:10pt;width:50pt;height:30pt"><v:textbox><w:txbxContent>${text || '<w:p/>'}</w:txbxContent></v:textbox></v:shape></w:pict></mc:Fallback></mc:AlternateContent></w:r>`;
 
+// A paragraph with what the model does not hold of a paragraph (see synthetic/edited-paragraph-kept).
+const editedKept = (typed = '') =>
+    `<w:p w:rsidR="00AA0001" w:rsidRDefault="00AA0003" w14:paraId="2A2B2C2D"><w:pPr><w:suppressAutoHyphens/><w:rPr><w:lang w:val="de-DE"/></w:rPr></w:pPr>${typed}` +
+    `<w:bookmarkStart w:id="3" w:name="kept"/><w:r w:rsidRPr="00AA0002"><w:rPr><w:noProof/><w:lang w:val="de-DE"/></w:rPr><w:t xml:space="preserve">start </w:t></w:r><w:bookmarkEnd w:id="3"/>` +
+    `<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> REF kept \\h </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:rPr><w:noProof/></w:rPr><w:t>result</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r>` +
+    `<w:hyperlink w:anchor="kept" w:tooltip="a tip" w:history="1"><w:r><w:rPr><w:u w:val="single"/></w:rPr><w:t xml:space="preserve"> link</w:t></w:r></w:hyperlink>` +
+    `<w:sdt><w:sdtPr><w:alias w:val="An alias"/><w:tag w:val="a tag"/><w:id w:val="5"/><w:lock w:val="sdtLocked"/></w:sdtPr><w:sdtContent><w:r><w:t xml:space="preserve"> control</w:t></w:r></w:sdtContent></w:sdt></w:p>`;
+const regexOf = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 // A package with every kind of part the editor does not model.
 function preservedParts(name, expect) {
     const PKG = 'http://schemas.openxmlformats.org/package/2006/relationships';
@@ -610,7 +619,23 @@ const docs = [
             { editKeeps: '<w:bookmarkStart w:id="7" w:name="between"/><w:bookmarkEnd w:id="7"/>' },
             { editKeeps: '<w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> TOC' }, { editKeeps: 'entry two</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/>' },
             { editKeeps: '<w:docPartGallery w:val="Table of Contents"/>' }, { editKeeps: '<w:sectPr w:rsidR="00A1B2C3">' }, { editKeeps: '<w:docGrid w:linePitch="360"/>' },
-            { editKeeps: 'Qedit me|edit meQ' }, { editLacks: 'w14:paraId="0A0B0C0D"' },
+            // (The paragraph that was typed in keeps what the model does not hold of it: the change is made in its XML.)
+            { editKeeps: '<w:p w:rsidR="00A1B2C3" w:rsidRDefault="00A1B2C3" w14:paraId="0A0B0C0D"><w:r w:rsidRPr="00112233"><w:t>Qedit me</w:t></w:r></w:p>' },
+        ],
+    },
+    {
+        // A paragraph that is typed in keeps everything of it the model does not
+        // hold - the change is made in its XML: the bookmark around its first run,
+        // the complex field (fldChar / instrText), the hyperlink's anchor and
+        // tooltip, the content control's properties, revision ids, w14:paraId,
+        // noProof / lang, the paragraph mark's properties. (The character typed
+        // before the bookmarked run is not part of the bookmark: it comes as a run
+        // of its own, with that run's properties, before the bookmark's start.)
+        name: 'synthetic/edited-paragraph-kept',
+        root: 'xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" mc:Ignorable="w14"',
+        body: editedKept() + p('second paragraph'),
+        expect: [
+            { editKeeps: regexOf(editedKept('<w:r><w:rPr><w:noProof/><w:lang w:val="de-DE"/></w:rPr><w:t>Q</w:t></w:r>')) }, { editKeeps: regexOf(p('second paragraph')) },
         ],
     },
 ];
