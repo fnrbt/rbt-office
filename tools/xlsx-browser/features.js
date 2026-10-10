@@ -359,3 +359,42 @@ checks['print-pages'] = async () => {
     close();
     return lines;
 };
+
+// A chart sheet has no cells: what was typed into one was shown and then lost at the save.
+// It takes no entry now (the grid is a viewer while it is on display), and says what it is.
+checks['chart-sheet-read-only'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        const original = await bytesOf('tests/test-documents-excel/pandas-chartsheet.xlsx');
+        await grid.ImportXlsx(original.slice());
+        const names = grid.GetSheetNames(), kinds = names.map((_, i) => grid.GetSheetKind(i));
+        const chart = kinds.indexOf('chartsheet'), sheet = kinds.indexOf('worksheet');
+        check('the kinds of the sheets', [chart >= 0, sheet >= 0, grid.GetSheetInfos().map((s) => s.kind), grid.GetSheetKind()], [true, true, kinds, kinds[grid.GetActiveSheetIndex()]]);
+        grid.SwitchSheet(chart);
+        const values = () => grid.GetRange('A1:C3').flat().map((cell) => cell.value ?? null).filter((v) => v !== null && v !== '');
+        check('on display: a chart sheet, not the host\'s viewer mode', [grid.GetSheetKind(), grid.IsReadOnly()], ['chartsheet', false]);
+        check('EnterText is refused, SetCell changes nothing', [grid.EnterText(0, 0, 'typed'), (grid.SetCell(1, 1, 'set'), values()), grid.IsModified()], [false, [], false]);
+        // The user's keys: no entry starts.
+        grid.SelectCell(2, 2);
+        host.querySelector('.spreadsheet-content').focus();
+        if (window.realType) { await window.realType('abc'); await window.realKey('Enter'); }
+        check('typing starts no entry', [values(), !!grid.GetModel().EditingCell], [[], false]);
+        // Saved: the chart sheet is the part it was read from.
+        const saved = await grid.ExportXlsx();
+        const zip0 = await window.JSZip.loadAsync(original), zip1 = await window.JSZip.loadAsync(saved);
+        const part = Object.keys(zip0.files).find((path) => /^xl\/chartsheets\/[^/]+\.xml$/.test(path));
+        // (But for tabSelected: it is the sheet on display now.)
+        const text = async (zip) => (await zip.files[part].async('string')).replace(/\s+tabSelected="[^"]*"/, '');
+        check('saved: the chart sheet\'s part is the file\'s', [!!part, part && zip1.files[part] ? await text(zip1) === await text(zip0) : null], [true, true]);
+        // A worksheet takes entries as before, also right after the chart sheet was shown.
+        grid.SwitchSheet(sheet);
+        check('a worksheet is edited as before', [grid.GetSheetKind(), grid.EnterText(30, 5, 'typed'), grid.GetRange('F31')[0][0].value], ['worksheet', true, 'typed']);
+        grid.SetReadOnly(true); grid.SwitchSheet(chart); grid.SwitchSheet(sheet);
+        check('the host\'s viewer mode stays through a chart sheet', grid.IsReadOnly(), true);
+        grid.SetReadOnly(false);
+        check('... and ends when the host ends it', [grid.IsReadOnly(), grid.EnterText(31, 5, 'again')], [false, true]);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};

@@ -636,6 +636,11 @@ type Spreadsheet(container: Element) =
     let mutable lastFullReason = ""
     let mutable lastRecalcStats : SpreadsheetRecalc.RecalcStats = { ChangedCells = 0; ReachedFormulas = 0; EvaluatedFormulas = 0; Evaluations = 0 }
     let mutable readOnly = false
+    /// What the host asked for (SetReadOnly). `readOnly` is that, or a sheet
+    /// on display that has no cells to edit (a chart sheet, a dialog sheet).
+    let mutable viewerMode = false
+    /// Whether the sheet on display takes no edits of its cells (see `sheetKindAt`).
+    let mutable sheetLocked = false
     /// Set by a change that is how a viewer looks at the sheet (a filter
     /// applied in read-only mode): the next look at the revision takes the
     /// sheets as they are for the state already known - no new revision, no
@@ -769,6 +774,25 @@ type Spreadsheet(container: Element) =
     // an edit of rows / columns has to reach its formulas). Until then
     // `sheets` holds a stand-in without cells (see Model.resolveSheet), and
     // ExportXlsx writes the sheet from the file.
+
+    /// What kind of sheet the file had the sheet at `index` as: "worksheet"
+    /// (also every sheet that is not a file's), "chartsheet" or "dialogsheet".
+    /// The last two have no cells: the editor shows them as an empty sheet
+    /// (a chart sheet with its chart on it) and writes them back as the parts
+    /// they were read from.
+    let sheetKindAt (index: int) : string =
+        if index < 0 || index >= sheets.Length then "worksheet"
+        else
+            match (if index = activeSheetIndex then model else sheets.[index]).SourceSheet, xlsxSource with
+            | Some origin, Some source when origin.Book = source.Id ->
+                match source.Workbook.Sheets |> List.tryItem origin.Sheet |> Option.bind (fun sheet -> sheet.Extras.SourcePart) with
+                | Some (_, relType) when relType.EndsWith "/chartsheet" -> "chartsheet"
+                | Some (_, relType) when relType.EndsWith "/dialogsheet" -> "dialogsheet"
+                | _ -> "worksheet"
+            | _ -> "worksheet"
+    let refreshSheetLock () =
+        sheetLocked <- sheetKindAt activeSheetIndex <> "worksheet"
+        readOnly <- viewerMode || sheetLocked
 
     /// Put the sheet at `index` in place of its stand-in (converting it now
     /// unless a formula already made it). Not a change of the workbook: what
@@ -1747,6 +1771,8 @@ type Spreadsheet(container: Element) =
     let tableEntryHook : (CellAddress * CellData option -> bool) ref = ref (fun _ -> false)
 
     let commitInput (addr: CellAddress) (text: string) (validate: bool) (undoable: bool) : bool =
+        // (A chart sheet has no cells: nothing typed into it could be saved.)
+        if sheetLocked then false else
         let oldCellData = getCell addr model
         // An entry that concerns a table (a header cell, a cell directly below or right of the
         // table, a formula in one of its columns) is a change of the workbook's tables: one
@@ -2453,6 +2479,7 @@ type Spreadsheet(container: Element) =
         convertInPlace active
         model <- sheets.[active]
         anchorCell <- sheetAnchors.[active]
+        refreshSheetLock ()
         lookedUpCells.Clear()
         if order.[active] <> activeBefore then
             scrollHome ()
@@ -2619,6 +2646,7 @@ type Spreadsheet(container: Element) =
                 "tabColor" ==> Host.orNull (tabColorHex sheetModel.TabColor)
                 "isLoaded" ==> (index = activeSheetIndex || not (isDeferredSheet sheets.[index]))
                 "isActive" ==> (index = activeSheetIndex)
+                "kind" ==> sheetKindAt index
             ])
 
     /// The list of sheets as one text: which sheets, their names, order, visibility and tab colours.
@@ -6178,14 +6206,28 @@ type Spreadsheet(container: Element) =
     /// progress is dropped. (The host's own calls - SetCell, Apply... - are
     /// not blocked.)
     member _.SetReadOnly(value: bool) =
-        if readOnly <> value then
-            readOnly <- value
+        if viewerMode <> value then
+            viewerMode <- value
+            refreshSheetLock ()
             if readOnly && model.EditingCell.IsSome then
                 finishEditing false |> ignore
             else render()
 
     /// Whether the grid is in viewer mode.
-    member _.IsReadOnly() : bool = readOnly
+    member _.IsReadOnly() : bool = viewerMode
+
+    /// What kind of sheet the sheet at `index` (default: the one on display)
+    /// is: "worksheet", or - for a sheet of an opened file that has no cells -
+    /// "chartsheet" / "dialogsheet". Such a sheet is shown as an empty sheet
+    /// (a chart sheet with the frame of its chart), is written back as the
+    /// part it was read from, and takes no entry: while it is on display the
+    /// grid behaves as in viewer mode, and SetCell / EnterText change nothing
+    /// (EnterText returns false).
+    member _.GetSheetKind(?index: obj) : string =
+        match Host.optionalArg (Host.intArg "GetSheetKind" "index") (defaultArg index null) with
+        | None -> sheetKindAt activeSheetIndex
+        | Some index when index >= 0 && index < sheets.Length -> sheetKindAt index
+        | Some index -> Host.hostFail "GetSheetKind" (sprintf "there is no sheet %d (the workbook has %d)" index sheets.Length)
 
     member _.Render() = render()
 
@@ -6221,6 +6263,7 @@ type Spreadsheet(container: Element) =
             activeSheetIndex <- index
             model <- sheets.[index]
             anchorCell <- (if index < sheetAnchors.Length then sheetAnchors.[index] else { Row = 0; Col = 0 })
+            refreshSheetLock ()
             selectedPicture <- None
             pictureDrag <- None
             // Scroll lives outside the SpreadsheetModel; a sheet starts at
@@ -6541,6 +6584,7 @@ type Spreadsheet(container: Element) =
         formulaSheetsConverted <- not (sheets |> Array.exists isDeferredSheet)
         activeSheetIndex <- safeIndex
         model <- sheets.[safeIndex]
+        refreshSheetLock ()
         workbook <-
             match context with
             | Some wb when List.length wb.SheetOrder = sheets.Length ->
@@ -6650,6 +6694,10 @@ type Spreadsheet(container: Element) =
             else imported.Sheets |> Array.tryFindIndex (fun sheet -> sheet.Visible) |> Option.defaultValue 0
         this.InstallWorkbook(models, names, active, Some imported.Context)
         if models.Length > 0 then xlsxSource <- Some imported.Source
+        // (What kind of sheet is on display is the file's to say.)
+        let wasLocked = sheetLocked
+        refreshSheetLock ()
+        if sheetLocked <> wasLocked then render()
         // A workbook that was just opened is the saved one.
         this.MarkSaved()
 
