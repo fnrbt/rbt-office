@@ -12,6 +12,9 @@
 // --profile prints the functions with the most self time in that phase (CPU profile);
 // with PROFILE_TOTAL=1 in the environment also the time under each function.
 // --sheet picks the sheet to scroll (default: the one with the most cells).
+// --first-cell "Sheet!B7" (or "Sheet!B7=0.07,0.05": the two numbers typed) is the cell the first edit types into (default D8 of the first sheet; the stats of the
+// recalculation are printed with it); --find-input lists the constant cells that the most formulas depend on
+// ("model inputs": what a host's user edits), to pick one.
 // Environment: PLAYWRIGHT, JSZIP_DIR, PORT (default 16101).
 import http from 'node:http';
 import fs from 'node:fs';
@@ -31,6 +34,8 @@ const steps = (opt('--steps') ?? '120,0').split(',').map(Number);
 const noJump = (() => { const i = args.indexOf('--no-jump'); if (i < 0) return false; args.splice(i, 1); return true; })();
 const noScroll = (() => { const i = args.indexOf('--no-scroll'); if (i < 0) return false; args.splice(i, 1); return true; })();
 const firstRuns = Number(opt('--first-runs') ?? 5);
+const firstCell = opt('--first-cell');
+const findInput = (() => { const i = args.indexOf('--find-input'); if (i < 0) return false; args.splice(i, 1); return true; })();
 const edits = (() => { const i = args.indexOf('--edits'); if (i < 0) return false; args.splice(i, 1); return true; })();
 const more = (() => { const i = args.indexOf('--more'); if (i < 0) return false; args.splice(i, 1); return true; })();
 const onlyFirst = (() => { const i = args.indexOf('--only-first'); if (i < 0) return false; args.splice(i, 1); return true; })();
@@ -80,14 +85,49 @@ try {
             grid = createSpreadsheet(host); grid.Mount();
             await grid.ImportXlsx(bytes);
         },
-        async firstEdit() {
+        async firstEdit(cell) {
+            let row = 7, col = 3, value = '54321', again = '12345';
+            if (cell) {
+                const [place, values] = cell.split('=');
+                const [sheet, ref] = place.split('!');
+                grid.SwitchSheet(grid.GetSheetNames().indexOf(sheet));
+                const m = /^([A-Z]+)([0-9]+)$/.exec(ref);
+                col = [...m[1]].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0) - 1; row = Number(m[2]) - 1;
+                // (Releases before 0.1.8 have no GetCell: fixed numbers there.)
+                const now = grid.GetCell ? grid.GetCell(row, col).value : null;
+                if (values) [value, again] = values.split(',');
+                else if (typeof now === 'number') { value = String(now * 1.1 + 1); again = String(now); } else { value = '0.07'; again = '0.05'; }
+                await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            }
             const t0 = performance.now();
-            grid.EnterText(7, 3, '54321');
+            grid.EnterText(row, col, value);
             const first = performance.now() - t0;
             const s = grid.GetRecalcStats ? grid.GetRecalcStats() : null;
             const t1 = performance.now();
-            grid.EnterText(7, 3, '12345');
-            return { first, second: performance.now() - t1, kind: s ? s.Kind + (s.Reason ? ': ' + s.Reason : '') + ', ' + s.Formulas + ' formulas in the graph' : '' };
+            grid.EnterText(row, col, again);
+            return { first, second: performance.now() - t1, kind: s ? s.Kind + (s.Reason ? ': ' + s.Reason : '') + ', ' + s.Formulas + ' formulas in the graph' + (cell ? ', ' + s.ReachedFormulas + ' reached, ' + s.EvaluatedFormulas + ' evaluated' : '') : '' };
+        },
+        // The constant number cells of every sheet that the most formulas depend on.
+        async findInputs() {
+            const found = [];
+            const sheets = grid.GetSheetNames().map((name) => ({ name }));
+            for (let index = 0; index < sheets.length; index++) {
+                grid.SwitchSheet(index);
+                const used = grid.GetUsedRange();
+                if (!used) continue;
+                let tried = 0;
+                for (let row = used.firstRow; row <= Math.min(used.lastRow, used.firstRow + 400) && tried < 400; row++)
+                    for (let col = used.firstCol; col <= Math.min(used.lastCol, used.firstCol + 30) && tried < 400; col++) {
+                        const cell = grid.GetCell(row, col);
+                        if (cell.formula || typeof cell.value !== 'number') continue;
+                        tried++;
+                        grid.EnterText(row, col, String(cell.value + 1));
+                        const stats = grid.GetRecalcStats();
+                        grid.Undo();
+                        if (stats.ReachedFormulas > 0) found.push({ cell: sheets[index].name + '!' + cell.address, reached: stats.ReachedFormulas, evaluated: stats.EvaluatedFormulas });
+                    }
+            }
+            return found.sort((a, b) => b.reached - a.reached).slice(0, 8);
         },
         // Edits that are more than cells (--more): a paste whose formulas close a circular reference
         // (milk-street: Annual!C21:N40 pasted at C101), rows inserted and deleted, a defined name,
@@ -259,18 +299,22 @@ try {
         const [reread] = await phase('reread', () => tab.evaluate(() => window.perf.reread()));
         console.log(`  re-read (sheet names)    ${ms(reread)}`);
         const sheets = await tab.evaluate(() => window.perf.sheets());
+        if (findInput) {
+            console.log('  constant cells the most formulas depend on:');
+            for (const input of await tab.evaluate(() => window.perf.findInputs())) console.log(`    ${input.cell}  ${input.reached} formulas reached, ${input.evaluated} evaluated`);
+        }
         if (edits) {
             // The median of several openings (--first-runs N, default 5): one run is off by tens of milliseconds.
             const firsts = [];
             let f = null;
             for (let run = 0; run < firstRuns; run++) {
                 await tab.evaluate((name) => window.perf.openFresh(name), file);
-                f = await (run === firstRuns - 1 ? phase('first', () => tab.evaluate(() => window.perf.firstEdit())) : tab.evaluate(() => window.perf.firstEdit()));
+                f = await (run === firstRuns - 1 ? phase('first', () => tab.evaluate((cell) => window.perf.firstEdit(cell), firstCell ?? null)) : tab.evaluate((cell) => window.perf.firstEdit(cell), firstCell ?? null));
                 if (run === firstRuns - 1 && profile === 'first') continue; // (the profiler's start gives the idle-time build the time to run first)
                 firsts.push(f.first);
             }
             const sortedFirsts = firsts.slice().sort((a, b) => a - b);
-            console.log(`  the first edit right after opening (a typed number): median ${ms(sortedFirsts[Math.floor(sortedFirsts.length / 2)])} of ${firsts.map((t) => t.toFixed(0)).join(', ')} ms [${f.kind}]; the same cell again ${ms(f.second)}`);
+            console.log(`  the first edit right after opening (a typed number${firstCell ? ' in ' + firstCell : ''}): median ${ms(sortedFirsts[Math.floor(sortedFirsts.length / 2)])} of ${firsts.map((t) => t.toFixed(0)).join(', ')} ms [${f.kind}]; the same cell again ${ms(f.second)}`);
             for (const sheet of (onlyFirst ? [] : sheetName ? sheets.filter((s) => s.name === sheetName) : [sheets[0], sheets.slice().sort((a, b) => b.cells - a.cells)[0]].filter((s, i, all) => all.indexOf(s) === i))) {
                 const e = await phase('edits', () => tab.evaluate((index) => window.perf.edits(index), sheet.index));
                 const both = ([call, total, kind]) => `${ms(call)} (${ms(total)} with the frame)${kind ? ' [' + kind + ']' : ''}`;

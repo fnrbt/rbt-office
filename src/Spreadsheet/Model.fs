@@ -2,11 +2,30 @@ module Rbt.Spreadsheet.Model
 
 open System
 
-/// Cell address (0-indexed)
-type CellAddress = {
-    Row: int
-    Col: int
-}
+/// Cell address (0-indexed). Ordered by row, then column, as the record's
+/// own comparison would order it: the comparison and equality are written
+/// out because every cell map and formula index of the engine is keyed by
+/// addresses, and the generic comparison of a record is slow in JavaScript
+/// (it was the largest single cost of a recalculation there).
+[<CustomEquality; CustomComparison>]
+type CellAddress =
+    { Row: int
+      Col: int }
+    override this.Equals(other: obj) =
+        match other with
+        | :? CellAddress as that -> this.Row = that.Row && this.Col = that.Col
+        | _ -> false
+    override this.GetHashCode() = (this.Row * 397) ^^^ this.Col
+    interface IComparable with
+        member this.CompareTo(other: obj) =
+            match other with
+            | :? CellAddress as that ->
+                if this.Row < that.Row then -1
+                elif this.Row > that.Row then 1
+                elif this.Col < that.Col then -1
+                elif this.Col > that.Col then 1
+                else 0
+            | _ -> 1
 
 /// Cell value types
 type CellValue =
