@@ -596,6 +596,12 @@ let private editorRunsToBuffer (runs: obj array) : TextBuffer =
                 PositionHAlign = optionalString (run?ImagePositionHAlign)
                 PositionVAlign = optionalString (run?ImagePositionVAlign)
                 WrapText = optionalString (run?ImageWrapText)
+                WrapPolygon =
+                    (let points = run?ImageWrapPolygon
+                     if isNullOrUndefined points then []
+                     else
+                         let values = unbox<float array> points
+                         [ for i in 0 .. values.Length / 2 - 1 -> values.[i * 2], values.[i * 2 + 1] ])
                 Opaque =
                     optionalString (run?OpaqueXml)
                     |> Option.map (fun xml ->
@@ -1604,6 +1610,7 @@ let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) 
                     "ImagePositionHAlign" ==> img.PositionHAlign
                     "ImagePositionVAlign" ==> img.PositionVAlign
                     "ImageWrapText" ==> img.WrapText
+                    "ImageWrapPolygon" ==> (if img.WrapPolygon.IsEmpty then null else box (img.WrapPolygon |> List.collect (fun (x, y) -> [ x; y ]) |> List.toArray))
                     "OpaqueXml" ==> (img.Opaque |> Option.map (fun opaque -> opaque.Xml))
                     "OpaqueKind" ==> (img.Opaque |> Option.map (fun opaque -> opaque.Kind))
                     "OpaqueParagraphLevel" ==> (img.Opaque |> Option.map (fun opaque -> opaque.ParagraphLevel))

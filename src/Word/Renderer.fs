@@ -1932,10 +1932,25 @@ let caretRect (ctx: RenderContext) (doc: Document) : (float * float * float) opt
 
 /// Hit test for images - returns blockId, offset, and image dimensions if clicking on an image
 let hitTestForImage (ctx: RenderContext) (doc: Document) (mouseX: float) (mouseY: float) : (string * int * float * float * float * float) option =
-    match ctx.Story with
-    | Some story -> hitTestForImageLayouts (layoutSettings ctx doc).PaddingLeft (storyLayouts ctx story doc) mouseX mouseY
-    | None ->
-    Rbt.Word.Layout.hitTestForImageIncremental ctx.LayoutState (layoutSettings ctx doc) (measureWithContext ctx) (measureRangeWithContext ctx) doc mouseX mouseY
+    let found =
+        match ctx.Story with
+        | Some story -> hitTestForImageLayouts (layoutSettings ctx doc).PaddingLeft (storyLayouts ctx story doc) mouseX mouseY
+        | None ->
+        Rbt.Word.Layout.hitTestForImageIncremental ctx.LayoutState (layoutSettings ctx doc) (measureWithContext ctx) (measureRangeWithContext ctx) doc mouseX mouseY
+    // (Text wraps along the outline of a "tight" picture: a point of its box outside the outline is on that text.)
+    match found with
+    | Some (blockId, offset, width, height, imageX, imageY) ->
+        let onPicture =
+            match Rbt.Word.Document.findParagraph doc blockId with
+            | Some para ->
+                para.Buffer.Runs
+                |> List.tryPick (function
+                    | TextBuffer.Image image when image.Start = offset -> Some (WordLayout.Floating.pointOnPicture image imageX imageY width height mouseX mouseY)
+                    | _ -> None)
+                |> Option.defaultValue true
+            | None -> true
+        if onPicture then found else None
+    | None -> None
 
 /// Render document with hover indicators for images
 let renderWithHover (ctx: RenderContext) (doc: Document) (hoveredImage: (string * int) option) =

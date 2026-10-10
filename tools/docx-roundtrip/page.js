@@ -26,7 +26,7 @@ const RUN_KEYS = ['Bold', 'Italic', 'Underline', 'UnderlineStyle', 'UnderlineCol
     'FontSize', 'CharacterSpacing', 'FontFamily', 'Color', 'Highlight', 'VertAlign', 'Position', 'EmphasisMark', 'Hyperlink', 'InactiveHyperlink',
     'RevisionType', 'RevisionAuthor', 'RevisionDate', 'InsertedRevisionId', 'InsertedRevisionAuthor', 'InsertedRevisionDate', 'RevisionMoveName',
     'FieldCode', 'NoteId', 'NoteType', 'CommentId', 'ExplicitColorAuto'];
-const IMAGE_KEYS = ['ImageLinked', 'ImageWidth', 'ImageHeight', 'ImageFloating', 'ImageWrap', 'ImageWrapText', 'ImagePositionX', 'ImagePositionY',
+const IMAGE_KEYS = ['ImageLinked', 'ImageWidth', 'ImageHeight', 'ImageFloating', 'ImageWrap', 'ImageWrapText', 'ImageWrapPolygon', 'ImagePositionX', 'ImagePositionY',
     'ImagePositionHRelativeFrom', 'ImagePositionVRelativeFrom', 'ImagePositionHAlign', 'ImagePositionVAlign', 'ImageBehindDoc', 'ImageRelativeHeight',
     'ImageDistanceLeft', 'ImageDistanceTop', 'ImageDistanceRight', 'ImageDistanceBottom', 'ImageCropLeft', 'ImageCropTop', 'ImageCropRight', 'ImageCropBottom',
     'ImageAllowOverlap', 'ImageLayoutInCell', 'ImageAlt', 'ImageTitle'];

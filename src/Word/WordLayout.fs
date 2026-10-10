@@ -377,6 +377,64 @@ module Floating =
     let relativeObstacleForBox contentLeft availableWidth (box: Box) =
         obstacleForBox availableWidth { box with X = box.X - contentLeft }
 
+    /// The obstacles of a picture with "tight" or "through" wrapping and an
+    /// outline (wp:wrapPolygon): the outline in slabs a few pixels high, each
+    /// as wide as the outline is there - with the picture's distance from
+    /// text to its left and right. Text beside the picture follows the
+    /// outline instead of standing clear of the picture's whole box. None
+    /// for any other picture (its box is its obstacle, see obstacleForBox).
+    let outlineObstacles (availableWidth: float) (box: Box) : (float * float * float * float) list option =
+        match box.Kind, box.Wrap with
+        | ImageBox img, (Some "tight" | Some "through") when img.WrapPolygon.Length >= 3 && box.Width > 0.0 && box.Height > 0.0 ->
+            let points = img.WrapPolygon |> List.map (fun (px, py) -> box.X + px / 21600.0 * box.Width, box.Y + py / 21600.0 * box.Height) |> List.toArray
+            let top = points |> Array.map snd |> Array.min
+            let bottom = points |> Array.map snd |> Array.max
+            let slab = 6.0
+            let obstacles = ResizeArray<float * float * float * float>()
+            let mutable y = top
+            while y < bottom - 0.01 do
+                let slabBottom = min bottom (y + slab)
+                // The outline's extent between y and slabBottom: its corners there, and where its edges cross the two lines.
+                let mutable left = System.Double.PositiveInfinity
+                let mutable right = System.Double.NegativeInfinity
+                let take (x: float) =
+                    if x < left then left <- x
+                    if x > right then right <- x
+                for i in 0 .. points.Length - 1 do
+                    let (x1, y1) = points.[i]
+                    let (x2, y2) = points.[(i + 1) % points.Length]
+                    if y1 >= y && y1 <= slabBottom then take x1
+                    if abs (y2 - y1) > 0.0001 then
+                        for edge in [ y; slabBottom ] do
+                            let t = (edge - y1) / (y2 - y1)
+                            if t >= 0.0 && t <= 1.0 then take (x1 + t * (x2 - x1))
+                if right > left then
+                    let obstacleX = max 0.0 (left - box.DistanceLeft)
+                    let obstacleRight = min availableWidth (right + box.DistanceRight)
+                    if obstacleRight > obstacleX then obstacles.Add((obstacleX, y, obstacleRight - obstacleX, slabBottom - y))
+                y <- slabBottom
+            if obstacles.Count = 0 then None else Some (List.ofSeq obstacles)
+        | _ -> None
+
+    /// Whether a point of a picture's box is on the picture as far as text
+    /// is concerned: inside its outline when text wraps along one ("tight" /
+    /// "through" with a wp:wrapPolygon) - text stands in the rest of the box,
+    /// and a click there is a click on that text - and anywhere in the box
+    /// otherwise. The box: `x`, `y`, `width`, `height`.
+    let pointOnPicture (img: ImageRun) (x: float) (y: float) (width: float) (height: float) (pointX: float) (pointY: float) : bool =
+        match img.Wrap with
+        | Some "tight" | Some "through" when img.Floating && img.WrapPolygon.Length >= 3 && width > 0.0 && height > 0.0 ->
+            let points = img.WrapPolygon |> List.map (fun (px, py) -> x + px / 21600.0 * width, y + py / 21600.0 * height) |> List.toArray
+            let mutable inside = false
+            for i in 0 .. points.Length - 1 do
+                let (x1, y1) = points.[i]
+                let (x2, y2) = points.[(i + 1) % points.Length]
+                if (y1 > pointY) <> (y2 > pointY) then
+                    let crossing = x1 + (pointY - y1) / (y2 - y1) * (x2 - x1)
+                    if pointX < crossing then inside <- not inside
+            inside
+        | _ -> true
+
     let wrapsText = function
         | Some "square"
         | Some "tight"
@@ -406,15 +464,83 @@ module Floating =
                     changed <- true
         adjusted
 
-    let imageCanvasBox marginLeft contentY currentX lineY paddingTop width height (img: ImageRun) =
+    /// The page an anchored object is placed on, as the paragraph that holds
+    /// its anchor is laid out: the page's size and margins (layout pixels).
+    type AnchorPage = {
+        PageWidth: float
+        PageHeight: float
+        MarginLeft: float
+        MarginRight: float
+        MarginTop: float
+        MarginBottom: float
+    }
+
+    /// Where an object of `size` is along a stretch that starts at `start`
+    /// and is `extent` long: by its alignment (wp:align: left / center /
+    /// right, top / center / bottom; inside and outside as left and right on
+    /// an odd page), else `offset` from the start (wp:posOffset).
+    let alignedPosition (align: string option) (start: float) (extent: float) (size: float) (offset: float) =
+        match align with
+        | Some "center" -> start + (extent - size) / 2.0
+        | Some "right" | Some "bottom" | Some "outside" -> start + extent - size
+        | Some "left" | Some "top" | Some "inside" -> start
+        | _ -> start + offset
+
+    /// The stretch a horizontal position is relative to (wp:positionH
+    /// relativeFrom), from the left edge of the text (the column's): its
+    /// start and its length. `currentX`: where the anchor's character is.
+    let horizontalReference (page: AnchorPage) (currentX: float) (relativeFrom: string option) : float * float =
+        let textWidth = page.PageWidth - page.MarginLeft - page.MarginRight
+        match relativeFrom with
+        | Some "page" -> -page.MarginLeft, page.PageWidth
+        | Some "margin" | Some "column" -> 0.0, textWidth
+        | Some "leftMargin" | Some "insideMargin" -> -page.MarginLeft, page.MarginLeft
+        | Some "rightMargin" | Some "outsideMargin" -> textWidth, page.MarginRight
+        // (character, and an object that says nothing: from where its anchor is in the line.)
+        | _ -> currentX, 0.0
+
+    /// The stretch a vertical position is relative to (wp:positionV
+    /// relativeFrom), in layout pixels down the canvas: its start and its
+    /// length. `pageTop`: the top of the page the anchor's line is on;
+    /// `paragraphTop` / `lineTop`: of the anchor's paragraph and line.
+    let verticalReference (page: AnchorPage) (pageTop: float) (paragraphTop: float) (lineTop: float) (relativeFrom: string option) : float * float =
+        match relativeFrom with
+        | Some "page" -> pageTop, page.PageHeight
+        | Some "margin" -> pageTop + page.MarginTop, page.PageHeight - page.MarginTop - page.MarginBottom
+        | Some "topMargin" | Some "insideMargin" -> pageTop, page.MarginTop
+        | Some "bottomMargin" | Some "outsideMargin" -> pageTop + page.PageHeight - page.MarginBottom, page.MarginBottom
+        | Some "paragraph" -> paragraphTop, 0.0
+        // (line, and an object that says nothing: from its anchor's line.)
+        | _ -> lineTop, 0.0
+
+    /// An anchored picture where its anchor puts it: relative to the page,
+    /// the margins, the column, the anchor's paragraph, line or character,
+    /// by an alignment or an offset (wp:positionH / wp:positionV). X is from
+    /// the left edge of the text, Y down the canvas. (It was placed from the
+    /// anchor's character and line unless page-relative - and page-relative
+    /// meant the first page; the alignments were not read.)
+    let imageCanvasBox (page: AnchorPage) contentY currentX lineY paddingTop width height (img: ImageRun) =
         let positionX = img.PositionX |> Option.defaultValue 0.0
         let positionY = img.PositionY |> Option.defaultValue 0.0
-        let x = lineRelativePosition marginLeft currentX img.PositionHRelativeFrom positionX
-        // Page-relative posV anchors the image to an absolute page-Y; body-relative
-        // (margin/paragraph/line) anchors it to an offset down from the current line.
+        let lineTop = contentY + (lineY - paddingTop)
+        // (On a page without an end - a strip that is placed afterwards - the page is where the paragraph is.)
+        let paged = page.PageHeight < 50000.0
+        let pageTop = if paged then Page.pageTopForY page.PageHeight lineTop else 0.0
+        let x =
+            let start, extent = horizontalReference page currentX img.PositionHRelativeFrom
+            alignedPosition img.PositionHAlign start extent width positionX
         let y =
-            if isPageRelative img.PositionVRelativeFrom then positionY
-            else contentY + (lineY - paddingTop) + positionY
+            let relativeFrom =
+                match img.PositionVRelativeFrom with
+                | Some "page" | Some "margin" | Some "topMargin" | Some "bottomMargin" | Some "insideMargin" | Some "outsideMargin" when not paged ->
+                    // (No page to go by: an offset from the page's top is one from the strip's top, as before.)
+                    None
+                | given -> given
+            match img.PositionVRelativeFrom, relativeFrom with
+            | Some "page", None -> positionY
+            | _ ->
+                let start, extent = verticalReference page pageTop contentY lineTop relativeFrom
+                alignedPosition img.PositionVAlign start extent height positionY
         {
             Kind = ImageBox img
             X = x

@@ -859,10 +859,17 @@ let private boolFlag defaultValue (value: obj) =
     if boolOrDefault defaultValue value then "1" else "0"
 
 /// wp:wrapNone / wrapSquare / wrapTight / wrapThrough / wrapTopAndBottom of an anchor.
-/// Tight and through need a wrap polygon; the model has none, so the bounding box is given.
-let private anchorWrapElement (wrap: string option) (wrapText: string option) =
+/// Tight and through have a wrap polygon: the object's own (`points`: x, y, x, y, ... in
+/// the file's units, wp:start first), or the bounding box when it has none.
+let private anchorWrapElement (wrap: string option) (wrapText: string option) (points: float array) =
     let side = wrapText |> Option.defaultValue "bothSides"
+    let number (value: float) = string (int (System.Math.Round value))
     let polygon =
+        if points.Length >= 6 then
+            element "wp:wrapPolygon" [("edited", "0")] [
+                for i in 0 .. points.Length / 2 - 1 ->
+                    selfClosing (if i = 0 then "wp:start" else "wp:lineTo") [("x", number points.[i * 2]); ("y", number points.[i * 2 + 1])] ]
+        else
         element "wp:wrapPolygon" [("edited", "0")] [
             selfClosing "wp:start" [("x", "0"); ("y", "0")]
             selfClosing "wp:lineTo" [("x", "0"); ("y", "21600")]
@@ -913,7 +920,8 @@ let private generateImageRun (asset: ImageAsset) (runObj: obj) =
         |> List.choose (fun (name, value) -> value |> Option.map (fun text -> name, text))
     let drawingContainer =
         if boolOrDefault false (runObj?ImageFloating) then
-            let wrap = anchorWrapElement (optionalString (runObj?ImageWrap)) (optionalString (runObj?ImageWrapText))
+            let wrapPoints = (let points = runObj?ImageWrapPolygon in if isNullOrUndefined points then [||] else unbox<float array> points)
+            let wrap = anchorWrapElement (optionalString (runObj?ImageWrap)) (optionalString (runObj?ImageWrapText)) wrapPoints
             fun children ->
                 element "wp:anchor" [
                     ("xmlns:wp", "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing")
@@ -1807,7 +1815,7 @@ let private generateTextBoxRun (packageSetup: PageSetupInfo) (hyperlinks: Map<st
                 selfClosing "wp:extent" [("cx", widthEmu); ("cy", heightEmu)]
                 selfClosing "wp:effectExtent" [("l", "0"); ("t", "0"); ("r", "0"); ("b", "0")]
                 // A text box made in the editor has no wrap mode; it floats over the text.
-                anchorWrapElement (optionalString (item?Wrap) |> Option.orElse (Some "none")) None
+                anchorWrapElement (optionalString (item?Wrap) |> Option.orElse (Some "none")) None [||]
                 docPr
                 selfClosing "wp:cNvGraphicFramePr" []
                 graphic

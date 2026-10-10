@@ -516,6 +516,7 @@ let private editorRunsToBufferWithImages (decorate: int -> Rbt.Word.TextBuffer.T
                 PositionHAlign = None
                 PositionVAlign = None
                 WrapText = None
+                WrapPolygon = []
                 Opaque = None
             } |> decorateImage runIndex)
             offset <- offset + 1
@@ -734,6 +735,7 @@ let private mkPara resolver images styleMap comments notes useDocumentMarkForPur
                     PositionHAlign = source.PositionHAlign
                     PositionVAlign = source.PositionVAlign
                     WrapText = source.WrapText
+                    WrapPolygon = source.WrapPolygon
                     // An opaque object shows its fallback picture, or a placeholder frame.
                     Src = (if source.Opaque.IsSome then DocxReader.editorImageSource images source else image.Src)
                     Opaque = source.Opaque |> Option.map (fun opaque -> ({ Xml = opaque.Xml; Kind = opaque.Kind; ParagraphLevel = opaque.ParagraphLevel }: Rbt.Word.TextBuffer.OpaqueObject)) }

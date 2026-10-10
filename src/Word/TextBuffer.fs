@@ -262,6 +262,10 @@ type ImageRun = {
     PositionVAlign: string option
     /// Which sides text wraps on (bothSides, left, right, largest).
     WrapText: string option
+    /// The outline text wraps along with "tight" and "through" wrapping
+    /// (wp:wrapPolygon): its points in the file's units, 21600 across the
+    /// picture's width and down its height. Empty: the picture's box.
+    WrapPolygon: (float * float) list
     /// Set when this is not a picture but a preserved object of the file.
     Opaque: OpaqueObject option
 }
@@ -1101,6 +1105,7 @@ let insertImageWithMetadata pos src linked width height alt name title floating 
         PositionHAlign = None
         PositionVAlign = None
         WrapText = None
+        WrapPolygon = []
         Opaque = None
     } buffer
 

@@ -89,6 +89,8 @@ type ImageData = {
     PositionVAlign: string option
     /// wrapText of wp:wrapSquare / wrapTight / wrapThrough (bothSides, left, right, largest).
     WrapText: string option
+    /// wp:wrapPolygon of wp:wrapTight / wp:wrapThrough: wp:start and the wp:lineTo points (x, y).
+    WrapPolygon: (float * float) list
     /// Set for an object the reader does not model (chart, SmartArt, OLE object,
     /// grouped / VML drawing, unknown mc:AlternateContent): the element as it is
     /// in the file, to be written back unchanged. The other fields then describe
@@ -1015,6 +1017,23 @@ module Docx =
                     match Xml.name child |> Option.map Ns.stripNs with
                     | Some "wrapSquare" | Some "wrapTight" | Some "wrapThrough" -> Xml.attr "wrapText" child
                     | _ -> None))
+        let wrapPolygon =
+            anchor
+            |> Option.bind (fun a -> Ns.childNs "wrapTight" a |> Option.orElseWith (fun () -> Ns.childNs "wrapThrough" a))
+            |> Option.bind (Ns.childNs "wrapPolygon")
+            |> Option.map (fun polygon ->
+                Xml.children polygon
+                |> List.choose (fun point ->
+                    match Xml.name point |> Option.map Ns.stripNs with
+                    | Some "start" | Some "lineTo" ->
+                        match Xml.attr "x" point, Xml.attr "y" point with
+                        | Some x, Some y ->
+                            match System.Double.TryParse(x: string), System.Double.TryParse(y: string) with
+                            | (true, px), (true, py) -> Some (px, py)
+                            | _ -> None
+                        | _ -> None
+                    | _ -> None))
+            |> Option.defaultValue []
         let positionRelativeFrom localName =
             anchor
             |> Option.bind (Ns.childNs localName)
@@ -1093,6 +1112,7 @@ module Docx =
             PositionHAlign = positionAlign "positionH"
             PositionVAlign = positionAlign "positionV"
             WrapText = wrapText
+            WrapPolygon = wrapPolygon
             Opaque = None
         }
 
@@ -1139,6 +1159,7 @@ module Docx =
             PositionHAlign = None
             PositionVAlign = None
             WrapText = None
+            WrapPolygon = []
             Opaque = None
         }
         let drawingImage =
@@ -1243,7 +1264,7 @@ module Docx =
           Floating = false; Wrap = None; PositionX = None; PositionY = None; PositionHRelativeFrom = None; PositionVRelativeFrom = None
           BehindDoc = None; AllowOverlap = None; LayoutInCell = None; DistanceTop = None; DistanceBottom = None; DistanceLeft = None
           DistanceRight = None; RelativeHeight = None; Locked = None; SimplePosition = None; SimplePositionX = None; SimplePositionY = None
-          CropLeft = None; CropTop = None; CropRight = None; CropBottom = None; PositionHAlign = None; PositionVAlign = None; WrapText = None
+          CropLeft = None; CropTop = None; CropRight = None; CropBottom = None; PositionHAlign = None; PositionVAlign = None; WrapText = None; WrapPolygon = []
           Opaque = None }
 
     /// An object the reader does not model, as an image-like run: its frame
@@ -4582,6 +4603,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                             "ImagePositionHAlign" ==> img.PositionHAlign
                             "ImagePositionVAlign" ==> img.PositionVAlign
                             "ImageWrapText" ==> img.WrapText
+                            "ImageWrapPolygon" ==> (if img.WrapPolygon.IsEmpty then null else box (img.WrapPolygon |> List.collect (fun (x, y) -> [ x; y ]) |> List.toArray))
                             "OpaqueXml" ==> (img.Opaque |> Option.map (fun opaque -> opaque.Xml))
                             "OpaqueKind" ==> (img.Opaque |> Option.map (fun opaque -> opaque.Kind))
                             "OpaqueParagraphLevel" ==> (img.Opaque |> Option.map (fun opaque -> opaque.ParagraphLevel))
@@ -4883,6 +4905,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                                 "ImagePositionHAlign" ==> img.PositionHAlign
                                 "ImagePositionVAlign" ==> img.PositionVAlign
                                 "ImageWrapText" ==> img.WrapText
+                                "ImageWrapPolygon" ==> (if img.WrapPolygon.IsEmpty then null else box (img.WrapPolygon |> List.collect (fun (x, y) -> [ x; y ]) |> List.toArray))
                                 "OpaqueXml" ==> (img.Opaque |> Option.map (fun opaque -> opaque.Xml))
                                 "OpaqueKind" ==> (img.Opaque |> Option.map (fun opaque -> opaque.Kind))
                                 "OpaqueParagraphLevel" ==> (img.Opaque |> Option.map (fun opaque -> opaque.ParagraphLevel))

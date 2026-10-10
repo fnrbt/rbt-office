@@ -347,7 +347,7 @@ const docs = [
         body:
             `<w:p><w:r><w:t>text</w:t></w:r><w:r><w:drawing><wp:anchor distT="45720" distB="91440" distL="114300" distR="228600" simplePos="0" relativeHeight="251659264" behindDoc="1" locked="0" layoutInCell="1" allowOverlap="0">` +
             `<wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="margin"><wp:align>right</wp:align></wp:positionH><wp:positionV relativeFrom="page"><wp:posOffset>914400</wp:posOffset></wp:positionV>` +
-            `<wp:extent cx="1371600" cy="685800"/><wp:wrapTight wrapText="left"><wp:wrapPolygon edited="0"><wp:start x="0" y="0"/><wp:lineTo x="0" y="21600"/><wp:lineTo x="21600" y="21600"/><wp:lineTo x="21600" y="0"/><wp:lineTo x="0" y="0"/></wp:wrapPolygon></wp:wrapTight>` +
+            `<wp:extent cx="1371600" cy="685800"/><wp:wrapTight wrapText="left"><wp:wrapPolygon edited="0"><wp:start x="0" y="0"/><wp:lineTo x="0" y="21600"/><wp:lineTo x="21600" y="10800"/><wp:lineTo x="10800" y="-300"/><wp:lineTo x="0" y="0"/></wp:wrapPolygon></wp:wrapTight>` +
             `<wp:docPr id="7" name="Picture 7" descr="alt text" title="the title"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="7" name="Picture 7"/><pic:cNvPicPr/></pic:nvPicPr>` +
             `<pic:blipFill><a:blip r:embed="rId1"/><a:srcRect l="10000" t="5000" r="20000" b="15000"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="1371600" cy="685800"/></a:xfrm><a:prstGeom prst="rect"/></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r></w:p>` +
             `<w:p>${drawing('rId1', 457200, 457200)}<w:r><w:t>inline picture</w:t></w:r></w:p>`,
@@ -357,7 +357,7 @@ const docs = [
         expect: [
             { part: 'word/document.xml', has: '<wp:anchor [^>]*distT="45720" distB="91440" distL="114300" distR="228600"[^>]*relativeHeight="251659264" behindDoc="1"[^>]*allowOverlap="0"' },
             { part: 'word/document.xml', has: '<wp:positionH relativeFrom="margin"><wp:align>right</wp:align></wp:positionH><wp:positionV relativeFrom="page"><wp:posOffset>914400</wp:posOffset>' },
-            { part: 'word/document.xml', has: '<wp:wrapTight wrapText="left">' }, { part: 'word/document.xml', has: '<a:srcRect l="10000" t="5000" r="20000" b="15000"/>' },
+            { part: 'word/document.xml', has: '<wp:wrapTight wrapText="left"><wp:wrapPolygon edited="0"><wp:start x="0" y="0"/><wp:lineTo x="0" y="21600"/><wp:lineTo x="21600" y="10800"/><wp:lineTo x="10800" y="-300"/><wp:lineTo x="0" y="0"/></wp:wrapPolygon></wp:wrapTight>' }, { part: 'word/document.xml', has: '<a:srcRect l="10000" t="5000" r="20000" b="15000"/>' },
             { part: 'word/document.xml', has: 'descr="alt text" title="the title"' }, { part: 'word/document.xml', has: '<wp:inline[^>]*><wp:extent cx="457200" cy="457200"/>' },
         ],
     },

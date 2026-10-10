@@ -2030,10 +2030,15 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
         | TextBuffer.Image imgRun ->
             let imgWidth, imgHeight = WordLayout.Image.canvasSize imgRun.Width imgRun.Height
 
-            if currentX + imgWidth > currentLineEnd && currentSegments.Count > 0 then
+            // (A picture in the line goes to the next line when it does not fit; an anchored one
+            // takes no room in the line - its anchor broke the line where it stood.)
+            if not imgRun.Floating && currentX + imgWidth > currentLineEnd && currentSegments.Count > 0 then
                 flushLine ()
 
-            let rawFloatingBox = WordLayout.Floating.imageCanvasBox settings.PaddingLeft contentY currentX y settings.PaddingTop imgWidth imgHeight imgRun
+            let anchorPage : WordLayout.Floating.AnchorPage =
+                { PageWidth = settings.Width; PageHeight = settings.PageHeight; MarginLeft = settings.PaddingLeft; MarginRight = settings.MarginRight
+                  MarginTop = settings.PaddingTop; MarginBottom = settings.MarginBottom }
+            let rawFloatingBox = WordLayout.Floating.imageCanvasBox anchorPage contentY currentX y settings.PaddingTop imgWidth imgHeight imgRun
             let floatingBox = if imgRun.AllowOverlap = Some false then WordLayout.Floating.avoidOverlap placedBoxes rawFloatingBox else rawFloatingBox
             let imageX = if imgRun.Floating then floatingBox.X else currentX
             let yOffset = if imgRun.Floating then floatingBox.Y - (contentY + (y - settings.PaddingTop)) else 0.0
@@ -2053,7 +2058,10 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
                     floatObstacles <- (0.0, obstacleTop, availableWidth, obstacleHeight) :: floatObstacles
                     moveToWrappableLine ()
                 else
-                    floatObstacles <- (obstacleX, obstacleTop, obstacleWidth, obstacleHeight) :: floatObstacles
+                    // (A picture with an outline to wrap along: the outline, slab by slab; else its box.)
+                    match WordLayout.Floating.outlineObstacles availableWidth floatingBox with
+                    | Some outline -> floatObstacles <- outline @ floatObstacles
+                    | None -> floatObstacles <- (obstacleX, obstacleTop, obstacleWidth, obstacleHeight) :: floatObstacles
                     pendingIntervals <- wrapIntervalsForY y
                     private_setIntervalToFirst ()
             elif imgRun.Floating && alreadyPlaced then
@@ -5206,9 +5214,13 @@ let private computeAnchorExtendedObstacles
     let mutable anyExtended = false
     let extended =
         placed
-        |> List.choose (fun box ->
-            if not (WordLayout.Floating.participatesInWrap box) then None
+        |> List.collect (fun box ->
+            if not (WordLayout.Floating.participatesInWrap box) then []
             else
+            // (A picture text wraps along the outline of: the outline as it is - it is not stretched up to a line.)
+            match WordLayout.Floating.outlineObstacles availableWidth box with
+            | Some outline -> outline
+            | None ->
                 let obstacleX, obstacleTop, obstacleWidth, obstacleHeight =
                     WordLayout.Floating.obstacleForBox availableWidth box
                 let floatBottom = obstacleTop + obstacleHeight
@@ -5221,7 +5233,7 @@ let private computeAnchorExtendedObstacles
                     // picture even when they'd naturally fit above. Just
                     // widen the in-place obstacle horizontally so the second
                     // pass treats it as full-width without re-adding.
-                    Some (0.0, obstacleTop, availableWidth, obstacleHeight)
+                    [ (0.0, obstacleTop, availableWidth, obstacleHeight) ]
                 elif
                     match box.Kind with
                     | WordLayout.Floating.ImageBox img ->
@@ -5237,7 +5249,7 @@ let private computeAnchorExtendedObstacles
                     // further upward extension. Keeping the obstacle at its
                     // literal posV offset lets lines above the image flow
                     // full width, matching Word.
-                    Some (obstacleX, obstacleTop, obstacleWidth, obstacleHeight)
+                    [ (obstacleX, obstacleTop, obstacleWidth, obstacleHeight) ]
                 else
                     let firstOverlap =
                         lineSpans
@@ -5250,7 +5262,7 @@ let private computeAnchorExtendedObstacles
                             lineTop
                         | _ -> obstacleTop
                     let extendedHeight = obstacleHeight + (obstacleTop - extendedTop)
-                    Some (obstacleX, extendedTop, obstacleWidth, extendedHeight))
+                    [ (obstacleX, extendedTop, obstacleWidth, extendedHeight) ])
     if anyExtended then extended, placed else [], []
 
 let private shiftSegmentX dx segment =
