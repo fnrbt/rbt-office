@@ -339,6 +339,46 @@ do
     whole "a copy removed" withoutBytes
     eq "its chart parts are not written" (chartPaths (partsOf withoutBytes)).Length (2 * charts.Length)
 
+// A sheet with pivot tables, and one with a slicer, copied: the pivot tables and the slicer stay with
+// the source (the copy has the pivot's cells as values), the copy is a sheet of its own with its own
+// drawing, and the package is whole - no slicer frame without a slicer, no relationship into nothing.
+do
+    let bytes = bytesOf "real-world/dashboard-ecommerce-sales.xlsx"
+    let original = partsOf bytes
+    let imported = Bridge.Import.importWorkbook (loadBytes bytes)
+    let wb = imported.Context
+    let sheetsOf (book: Wb.Workbook) = book.SheetOrder |> List.map (fun id -> (Map.find id book.Sheets).Model) |> List.toArray
+    let namesIn (book: Wb.Workbook) = book.SheetOrder |> List.map (fun id -> (Map.find id book.Sheets).Name) |> List.toArray
+    let pivotParts (parts: Map<string, byte[]>) = parts |> Map.toList |> List.map fst |> List.filter (fun path -> Regex.IsMatch(path, "^xl/pivotTables/pivotTable\\d+\\.xml$"))
+    let slicerParts (parts: Map<string, byte[]>) = parts |> Map.toList |> List.map fst |> List.filter (fun path -> Regex.IsMatch(path, "^xl/slicers/slicer\\d+\\.xml$"))
+    for name in [ "Waterfall Chart"; "KPI"; "Dashboard" ] do
+        let index = imported.Sheets |> Array.findIndex (fun sheet -> sheet.Name = name)
+        let sourceId = List.item index wb.SheetOrder
+        let copied = Wb.duplicateSheet sourceId "copyOfIt" (name + " (2)") (index + 1) wb
+        let copiedBytes = export imported (sheetsOf copied) (namesIn copied)
+        let parts = partsOf copiedBytes
+        whole (sprintf "%s copied" name) copiedBytes
+        eq (sprintf "%s copied: the pivot tables and slicers are the file's, no more" name) (pivotParts parts, slicerParts parts) (pivotParts original, slicerParts original)
+        // The copy's sheet part and what it leads to.
+        let reread = loadBytes copiedBytes
+        let copy = reread.Sheets |> List.find (fun sheet -> sheet.Name = name + " (2)")
+        let source = reread.Sheets |> List.find (fun sheet -> sheet.Name = name)
+        let partOf (sheet: XlsxReader.Worksheet) = fst sheet.Extras.SourcePart.Value
+        let relsOf (path: string) = textOf parts (path.Replace("xl/worksheets/", "xl/worksheets/_rels/") + ".rels")
+        ok (sprintf "%s copied: the copy has no pivot table or slicer of its own" name) (not ((relsOf (partOf copy)).Contains "pivotTable") && not ((relsOf (partOf copy)).Contains "slicer") && not ((textOf parts (partOf copy)).Contains "slicerList")) (relsOf (partOf copy))
+        ok (sprintf "%s copied: the source still lists what it listed" name)
+            (Regex.Matches(relsOf (partOf source), "pivotTable\"|slicer\"").Count = Regex.Matches(textOf original ((partOf (List.item index (loadBytes bytes).Sheets)).Replace("xl/worksheets/", "xl/worksheets/_rels/") + ".rels"), "pivotTable\"|slicer\"").Count) ""
+        // No frame of a slicer in the copy's drawing; the source's drawing has its frames.
+        let drawingOf (sheet: XlsxReader.Worksheet) = sheet.Extras.DrawingPart |> Option.map (textOf parts) |> Option.defaultValue ""
+        let hadSlicers = Regex.Matches(drawingOf source, "<sle:slicer ").Count
+        eq (sprintf "%s copied: no slicer frame in the copy (the source has %d)" name hadSlicers) (Regex.Matches(drawingOf copy, "<sle:slicer |timeslicer ").Count) 0
+        eq (sprintf "%s copied: the copy has the source's other objects" name)
+            (copy.Extras.Objects |> List.filter (fun item -> item.Kind = "chart") |> List.length, copy.Extras.Images.Length)
+            (source.Extras.Objects |> List.filter (fun item -> item.Kind = "chart") |> List.length, source.Extras.Images.Length)
+        eq (sprintf "%s copied: the copy has the cells" name) (Bridge.Import.importWorkbook reread).Sheets.[index + 1].Model.Cells.Count imported.Sheets.[index].Model.Cells.Count
+    ok "copied: the workbook has slicer frames to leave behind"
+        (imported.Sheets |> Array.exists (fun sheet -> sheet.Model.Drawings |> List.exists (fun d -> match d.Content with Rbt.Spreadsheet.Model.KeptObject (_, xml) -> xml.Contains "<sle:slicer " | _ -> false))) ""
+
 // A pivot cache that reads a range of a sheet, a chart on another sheet, a link into a sheet, a sparkline:
 // renamed and deleted sheets.
 do

@@ -1030,7 +1030,17 @@ let duplicateSheet (sourceId: SheetId) (newId: SheetId) (newName: string) (index
             { mapModelFormulas rewrite sourceModel with
                 Tables = sourceModel.Tables |> List.map (fun table -> { table with Name = renamedTable table.Name })
                 // (The kept drawing objects - charts, shapes - come along: an export copies
-                // the chart parts behind them. Pivot tables stay with the source.)
+                // the chart parts behind them. Pivot tables stay with the source - the
+                // copy has their cells as values - and so do the slicers and timelines
+                // that filter them: the frame of one is not copied, a sheet that shows
+                // a slicer it does not list is a damaged file to Excel.)
+                Drawings =
+                    sourceModel.Drawings
+                    |> List.filter (fun drawing ->
+                        match drawing.Content with
+                        | KeptObject (_, xml) ->
+                            not (xml.Contains "drawing/2010/slicer" || xml.Contains "drawing/2012/timeslicer" || xml.Contains ":slicer " || xml.Contains ":timeslicer ")
+                        | _ -> true)
                 KeptRanges = []
                 SourceSheet = None
                 KeptFrom = (match sourceModel.SourceSheet with Some origin -> Some origin | None -> sourceModel.KeptFrom)
