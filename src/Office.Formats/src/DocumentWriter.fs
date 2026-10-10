@@ -2665,6 +2665,168 @@ let rec private storyParagraphCount (item: obj) : int =
 
 /// The XML of an element of the body with the changes of text of its items
 /// made in it. None when a change cannot be made there.
+// ---- a change of formatting made in the XML a paragraph was read from ---------
+// The editor says of a paragraph whose text is what it was that all of it was
+// made bold / italic / struck through / underlined (or not), or that its
+// alignment was changed (Docx.paragraphFormatChange). The properties are set
+// in the paragraph's own XML - w:b and its like in the w:rPr of every run that
+// holds text, w:jc in the w:pPr - in the place the schema gives them; all else
+// of the paragraph stays the text it was read from: bookmarks, fields,
+// revision ids, properties the model does not hold. Where the XML is not of
+// the plain kind this can be done in (a run without a w:t that the model
+// shows a character for - a tab, a break, a picture; tracked changes of the
+// properties themselves) the block is written from the model, as before.
+
+/// The schema's order of the children of w:rPr and of w:pPr (local names).
+let private runPropertyOrder =
+    [ "rStyle"; "rFonts"; "b"; "bCs"; "i"; "iCs"; "caps"; "smallCaps"; "strike"; "dstrike"; "outline"; "shadow"; "emboss"; "imprint"
+      "noProof"; "snapToGrid"; "vanish"; "webHidden"; "color"; "spacing"; "w"; "kern"; "position"; "sz"; "szCs"; "highlight"; "u"
+      "effect"; "bdr"; "shd"; "fitText"; "vertAlign"; "rtl"; "cs"; "em"; "lang"; "eastAsianLayout"; "specVanish"; "oMath" ]
+let private paragraphPropertyOrder =
+    [ "pStyle"; "keepNext"; "keepLines"; "pageBreakBefore"; "framePr"; "widowControl"; "numPr"; "suppressLineNumbers"; "pBdr"; "shd"
+      "tabs"; "suppressAutoHyphens"; "kinsoku"; "wordWrap"; "overflowPunct"; "topLinePunct"; "autoSpaceDE"; "autoSpaceDN"; "bidi"
+      "adjustRightInd"; "snapToGrid"; "spacing"; "ind"; "contextualSpacing"; "mirrorIndents"; "suppressOverlap"; "jc"; "textDirection"
+      "textAlignment"; "textboxTightWrap"; "outlineLvl"; "divId"; "cnfStyle"; "rPr"; "sectPr"; "pPrChange" ]
+
+/// The child elements of the element a text is of (`<w:x ...> ... </w:x>` or
+/// `<w:x .../>`): (name, where it starts, where it ends) of each, and where the
+/// element's content ends (-1: the element has none, it is closed in its start
+/// tag). None when the text is not that of one well-formed element.
+let private childElementsOf (element: string) : ((string * int * int) list * int) option =
+    if element.Length < 4 || element.[0] <> '<' then None
+    else
+        let gt = tagEndIndex element 0
+        if gt < 0 then None
+        elif element.[gt - 1] = '/' then (if gt = element.Length - 1 then Some ([], -1) else None)
+        else
+            let found = ResizeArray<string * int * int>()
+            let mutable pos = gt + 1
+            let mutable depth = 0
+            let mutable childStart = -1
+            let mutable childName = ""
+            let mutable contentEnd = -1
+            let mutable ok = true
+            while ok && contentEnd < 0 do
+                let lt = element.IndexOf('<', pos)
+                if lt < 0 || lt + 1 >= element.Length then ok <- false
+                elif element.[lt + 1] = '!' || element.[lt + 1] = '?' then ok <- false
+                elif element.[lt + 1] = '/' then
+                    let fin = element.IndexOf('>', lt)
+                    if fin < 0 then ok <- false
+                    elif depth = 0 then
+                        if fin = element.Length - 1 then contentEnd <- lt else ok <- false
+                    else
+                        depth <- depth - 1
+                        if depth = 0 then found.Add ((childName, childStart, fin + 1))
+                        pos <- fin + 1
+                else
+                    let fin = tagEndIndex element lt
+                    if fin < 0 then ok <- false
+                    else
+                        if depth = 0 then
+                            childStart <- lt
+                            childName <- tagNameAt element lt
+                        if element.[fin - 1] = '/' then
+                            if depth = 0 then found.Add ((childName, childStart, fin + 1))
+                        else depth <- depth + 1
+                        pos <- fin + 1
+            if ok then Some (List.ofSeq found, contentEnd) else None
+
+/// The text of a properties element (w:rPr, w:pPr; "" - there is none yet)
+/// with child elements set: each (local name, Some text of the element | None:
+/// it goes) replaces the child of that name and stands where `order` puts it.
+/// None when the element is not one this can be done in.
+let private withPropertiesSet (container: string) (order: string list) (properties: string) (changes: (string * string option) list) : string option =
+    let indexOf (name: string) = order |> List.tryFindIndex (fun known -> "w:" + known = name)
+    let apply (children: (string * int * int) list) (source: string) : string option =
+        // (A tracked change of the properties holds the properties as they were: not touched here.)
+        if children |> List.exists (fun (name, _, _) -> name.EndsWith "Change" || (indexOf name).IsNone) then None
+        else
+            let kept =
+                children
+                |> List.filter (fun (name, _, _) -> not (changes |> List.exists (fun (changed, _) -> "w:" + changed = name)))
+                |> List.map (fun (name, start, fin) -> (indexOf name).Value, source.Substring(start, fin - start))
+            let added =
+                changes |> List.choose (fun (name, text) -> text |> Option.map (fun text -> (indexOf ("w:" + name)).Value, text))
+            // (In the schema's order: after what comes before it there; what was there keeps its own order.)
+            let result = ResizeArray<int * string>(kept)
+            for (rank, text) in added do
+                let mutable at = 0
+                while at < result.Count && fst result.[at] <= rank do at <- at + 1
+                result.Insert (at, (rank, text))
+            Some (result |> Seq.map snd |> String.concat "")
+    if changes |> List.exists (fun (name, _) -> not (List.contains name order)) then None
+    elif properties = "" then
+        match apply [] "" with
+        | Some "" -> Some ""
+        | Some content -> Some ("<" + container + ">" + content + "</" + container + ">")
+        | None -> None
+    else
+        match childElementsOf properties with
+        | None -> None
+        | Some (children, contentEnd) ->
+            if tagNameAt properties 0 <> container then None
+            else
+                match apply children properties with
+                | None -> None
+                | Some content ->
+                    let gt = tagEndIndex properties 0
+                    // (The start tag as it was - a w:rPr has no attributes, but it is not this function's to say.)
+                    let startTag = if contentEnd < 0 then properties.Substring(0, gt - 1).TrimEnd() + ">" else properties.Substring(0, gt + 1)
+                    Some (startTag + content + "</" + container + ">")
+
+/// The change of a paragraph's formatting (see above) as replacements in the
+/// XML: (from, until, text). None: not in this XML.
+let private planParagraphFormat (xml: string) (para: SourceParagraph) (text: string) (change: obj) : (int * int * string) list option =
+    let onOffOf (value: obj) : bool option = if isNullOrUndefined value then None else Some (unbox<bool> value)
+    let toggles =
+        [ "b", onOffOf (change?Bold); "i", onOffOf (change?Italic); "strike", onOffOf (change?Strike) ]
+        |> List.choose (fun (name, value) -> value |> Option.map (fun isOn -> name, Some (toggle ("w:" + name) isOn)))
+    let underline =
+        match onOffOf (change?Underline) with
+        | Some isOn -> [ "u", Some (selfClosing "w:u" [("w:val", (if isOn then "single" else "none"))]) ]
+        | None -> []
+    let runChanges = toggles @ underline
+    if para.SelfClosed || not (alignSourceParagraph para text) then None
+    // (A check box of a content control is shown by the control's state, not by the run that holds its mark.)
+    elif not runChanges.IsEmpty && xml.Substring(para.Start, para.End - para.Start).Contains "checkbox" then None
+    else
+        let replacements = ResizeArray<int * int * string>()
+        let mutable ok = true
+        if not runChanges.IsEmpty then
+            let segments = para.Segments |> Seq.filter (fun segment -> segment.Text.Length > 0) |> Seq.toArray
+            // Every character the editor shows is one of a w:t of a run (no tab, break or object of a run without one).
+            let covered = segments |> Array.sumBy (fun segment -> segment.Text.Length)
+            if covered <> text.Length || segments |> Array.exists (fun segment -> segment.RunStart < 0) then ok <- false
+            else
+                let seen = System.Collections.Generic.HashSet<int>()
+                for segment in segments do
+                    if ok && seen.Add segment.RunStart then
+                        if segment.RunPropsStart >= 0 then
+                            match withPropertiesSet "w:rPr" runPropertyOrder (xml.Substring(segment.RunPropsStart, segment.RunPropsEnd - segment.RunPropsStart)) runChanges with
+                            | Some properties -> replacements.Add ((segment.RunPropsStart, segment.RunPropsEnd, properties))
+                            | None -> ok <- false
+                        else
+                            let gt = tagEndIndex xml segment.RunStart
+                            if gt < 0 || xml.[gt - 1] = '/' || tagNameAt xml segment.RunStart <> "w:r" then ok <- false
+                            else
+                                match withPropertiesSet "w:rPr" runPropertyOrder "" runChanges with
+                                | Some properties -> replacements.Add ((gt + 1, gt + 1, properties))
+                                | None -> ok <- false
+        if ok && boolOrDefault false (change?AlignmentChanged) then
+            let alignment = optionalString (change?Alignment) |> Option.map InverseConversion.alignmentToWord
+            let jc = [ "jc", alignment |> Option.map (fun value -> selfClosing "w:jc" [("w:val", value)]) ]
+            match para.Children |> Seq.tryFind (fun (_, _, name) -> name = "w:pPr") with
+            | Some (start, fin, _) ->
+                match withPropertiesSet "w:pPr" paragraphPropertyOrder (xml.Substring(start, fin - start)) jc with
+                | Some properties -> replacements.Add ((start, fin, properties))
+                | None -> ok <- false
+            | None ->
+                match withPropertiesSet "w:pPr" paragraphPropertyOrder "" jc with
+                | Some properties -> if properties <> "" then replacements.Add ((para.TagEnd + 1, para.TagEnd + 1, properties))
+                | None -> ok <- false
+        if ok then Some (List.ofSeq replacements) else None
+
 let private patchSourceChunk (xml: string) (items: obj array) : string option =
     match scanSourceParagraphs xml with
     | None -> None
@@ -2688,7 +2850,10 @@ let private patchSourceChunk (xml: string) (items: obj array) : string option =
                             if ok then
                                 if index < 0 || index >= count || not (edited.Add index) then ok <- false
                                 else
-                                    match planParagraphChange xml paragraphs.[first + index] texts.[index] change with
+                                    let planned =
+                                        if boolOrDefault false (change?Format) then planParagraphFormat xml paragraphs.[first + index] texts.[index] change
+                                        else planParagraphChange xml paragraphs.[first + index] texts.[index] change
+                                    match planned with
                                     | Some planned -> replacements.AddRange planned
                                     | None -> ok <- false
                         // The others are the paragraphs the editor had there: the first text of each is in its text.

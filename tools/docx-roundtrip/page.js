@@ -878,3 +878,91 @@ window.tenthFinish = async () => {
     problems.push(...integrityProblems());
     return { problems, edited: chosen.length, confined, rewritten, others, why };
 };
+
+// Every tenth paragraph of the body's text made bold as a whole (selected from its start to its
+// end, toggleBold), and the document saved: it reads back with the text and the layout the
+// editor had, and document.xml differs from the original in those paragraphs only and, in each,
+// by the bold alone - w:b elements in its runs' properties, a w:rPr where a run had none; what
+// the model does not hold of the paragraph is the text it was. `confined` counts the paragraphs
+// changed so, `rewritten` those written from the model (a run without text the editor shows a
+// character for - a tab, a break, a picture; an empty paragraph), `others` paragraphs nobody
+// made bold that are not the text they were read from.
+window.formatTenth = async (name) => {
+    const problems = [], why = [];
+    let confined = 0, rewritten = 0, others = 0, edited = 0;
+    const bytes = new Uint8Array(await (await fetch('/fixture?name=' + encodeURIComponent(name))).arrayBuffer());
+    if (!bytes.length) return { problems, edited, confined, rewritten, others, why };
+    const before = await parts(bytes);
+    if (before['word/document.xml'] === undefined) return { problems, edited, confined, rewritten, others, why };
+    const { pkg } = await open(bytes);
+    const handle = openEditor(pkg);
+    try {
+        const editor = handle.editor;
+        Word.completeLayout(editor);
+        const ends = new Map();
+        for (const line of Word.getLayoutLines(editor)) {
+            if (line.FrameIsSelected) continue;
+            ends.set(line.BlockId, Math.max(ends.get(line.BlockId) ?? 0, (line.StartOffset ?? 0) + (line.Text ?? '').length));
+        }
+        const ids = [];
+        for (const [id, end] of ends) {
+            if (end === 0) continue;
+            Word.setSelection(editor, id, 0, id, end);
+            const selection = Word.getSelection(editor);
+            if (selection && selection.FocusBlockId === id && selection.AnchorBlockId === id && selection.FocusOffset !== selection.AnchorOffset) ids.push([id, end]);
+        }
+        const chosen = ids.filter((_, index) => index % 10 === 0);
+        const text = Word.getText(editor);
+        for (const [id, end] of chosen) {
+            Word.setSelection(editor, id, 0, id, end);
+            const revision = Word.getRevision(editor);
+            Word.toggleBold(editor);
+            if (Word.getRevision(editor) !== revision) edited++;
+        }
+        if (Word.getText(editor) !== text) problems.push('every tenth paragraph made bold: the text changed');
+        const layout = layoutOf(editor);
+        const out = await writePackage(Word.exportDocumentPackage(editor), 'every tenth paragraph made bold');
+        const reopened = await open(out);
+        const second = openEditor(reopened.pkg);
+        if (Word.getText(second.editor) !== text) problems.push('every tenth paragraph made bold: the saved document does not read back with the text that was saved');
+        const fp = layoutOf(second.editor);
+        closeEditor(second);
+        const layoutProblems = [];
+        diffLayout('every tenth paragraph made bold: layout of the saved document vs the editor that saved it', layout, fp, layoutProblems);
+        const saved = await parts(out);
+        for (const part of Object.keys(saved)) {
+            const found = [], inherited = [];
+            checkXml(part, saved[part], found);
+            if (before[part]) checkXml(part, before[part], inherited);
+            for (const problem of found) if (!inherited.includes(problem)) problems.push('every tenth paragraph made bold: ' + problem);
+        }
+        const pieces = (xml) => xml.replace(/^\uFEFF/, '').replace(/^[\s\S]*?<w:body>/, '').replace(/<w:p( [^>]*?)?\/>/g, '<w:p$1></w:p>').split('</w:p>');
+        // (A paragraph without its bold: the w:b elements, and a w:rPr that holds nothing else.)
+        const unbold = (piece) => piece.replace(/<w:b(?: w:val="[^"]*")?\/>/g, '').replace(/<w:rPr><\/w:rPr>/g, '').replace(/<w:rPr\/>/g, '');
+        const was = pieces(before['word/document.xml']), is = pieces(saved['word/document.xml']);
+        if (was.length !== is.length) {
+            rewritten = edited;
+            why.push(`document.xml has ${is.length - 1} paragraphs, the original ${was.length - 1}`);
+        } else {
+            let changed = 0;
+            for (let i = 0; i < is.length; i++) {
+                if (is[i] === was[i]) continue;
+                changed++;
+                if (unbold(is[i]) === unbold(was[i])) confined++;
+                else if (why.length < 4) why.push(`${JSON.stringify(was[i].slice(-200))} -> ${JSON.stringify(is[i].slice(-240))}`);
+            }
+            rewritten = Math.max(0, Math.min(edited, changed) - confined);
+            others = Math.max(0, changed - edited);
+        }
+        // Where every paragraph was changed in its own XML the saved document is laid out as the editor's.
+        // (A block written from the model is what it was before this was done: all of it is written - the
+        // other paragraphs of a table too - and the bold of a comment's or a note's mark is not saved.)
+        if (rewritten === 0 && others === 0) problems.push(...layoutProblems);
+        else for (const problem of layoutProblems.slice(0, 1)) why.push('(written from the model) ' + problem.slice(0, 300));
+    } catch (e) {
+        problems.push('every tenth paragraph made bold threw: ' + String(e && e.stack || e).split('\n').slice(0, 4).join(' | '));
+    }
+    closeEditor(handle);
+    problems.push(...integrityProblems());
+    return { problems, edited, confined, rewritten, others, why };
+};

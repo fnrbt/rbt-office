@@ -112,6 +112,9 @@ const skipTenth = flag('--no-tenth');
 // Every tenth paragraph (see the header): the share of the paragraphs typed in that must differ by the character alone,
 // and the documents in which a paragraph nobody typed in may change (name fragments).
 const tenthConfinedShare = 0.95;
+// Every tenth paragraph made bold: the share that must be changed in its own XML (the others have a run without
+// text that the editor shows a character for - a tab, a break, a picture - and are written from the model).
+const boldConfinedShare = 0.85;
 const tenthOthersKnown = [
     'test-header-footer.docx', // w:sectPr is the first child of w:body: nothing of this body is written back as it was read (planBody)
 ];
@@ -185,6 +188,8 @@ async function main() {
     const asRead = { total: 0, same: 0, notes: [] }; // relationship parts and [Content_Types].xml of unedited saves
     const tenthTotals = { edited: 0, confined: 0, rewritten: 0, others: 0 };
     const tenthNotes = [];
+    const boldTotals = { edited: 0, confined: 0, rewritten: 0, others: 0 };
+    const boldNotes = [];
     const xmlKinds = new Map(); // element / attribute kind -> how often it was in the originals and in the saved documents
     try {
         const tab = await browser.newPage();
@@ -224,6 +229,14 @@ async function main() {
                     }
                     // Paragraphs nobody typed in stay the text they were read from - but for the documents listed in the header.
                     if (tenth.others > 0 && !tenthOthersKnown.some((known) => name.includes(known))) problems.push(`every tenth paragraph: ${tenth.others} paragraphs nobody typed in are not the text they were read from`);
+                }
+                // Every tenth paragraph made bold as a whole (window.formatTenth in page.js).
+                const bold = await tab.evaluate((n) => window.formatTenth(n), name);
+                problems.push(...bold.problems);
+                boldTotals.edited += bold.edited; boldTotals.confined += bold.confined; boldTotals.rewritten += bold.rewritten; boldTotals.others += bold.others;
+                if (bold.rewritten || bold.others) {
+                    boldNotes.push(`${name}: ${bold.edited} made bold, ${bold.confined} changed by the bold alone, ${bold.rewritten} written from the model, ${bold.others} others changed`);
+                    if (verbose || process.env.TENTH_WHY) for (const line of bold.why) boldNotes.push('      ' + line);
                 }
             }
             for (const [kind, [before, after]] of Object.entries(result.xmlDiff ?? {})) {
@@ -272,6 +285,9 @@ async function main() {
         console.log(`\nA character typed at the start of every tenth paragraph: ${tenthTotals.edited} paragraphs; ${tenthTotals.confined} differ from the original by the character alone, ${tenthTotals.rewritten} were written from the model; ${tenthTotals.others} other paragraphs changed.`);
         for (const line of tenthNotes) console.log('  ' + line);
         if (tenthTotals.confined < tenthTotals.edited * tenthConfinedShare) { console.log(`  FAIL: fewer than ${tenthConfinedShare * 100}% by the character alone`); failed++; }
+        console.log(`\nEvery tenth paragraph made bold as a whole: ${boldTotals.edited} paragraphs; ${boldTotals.confined} differ from the original by the bold alone (what the model does not hold of them is the text it was), ${boldTotals.rewritten} were written from the model; ${boldTotals.others} other paragraphs changed.`);
+        for (const line of boldNotes) console.log('  ' + line);
+        if (boldTotals.confined < boldTotals.edited * boldConfinedShare) { console.log(`  FAIL: fewer than ${boldConfinedShare * 100}% by the bold alone`); failed++; }
     }
     console.log(failed === 0 ? '\nDOCX ROUND TRIP: ALL PASSED' : `\nDOCX ROUND TRIP: ${failed} fixture(s) FAILED`);
     process.exit(failed === 0 || expectFailures ? 0 : 1);

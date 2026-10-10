@@ -2551,6 +2551,72 @@ let private paragraphTextChange (context: WordStyles.DocumentStyleContext option
                         "MarkStyle" ==> markStyle
                         "NewText" ==> newText ])
 
+/// A paragraph whose text is what it was and whose formatting was changed as
+/// a whole - every character of it made bold (or not bold), italic, struck
+/// through or underlined, by a selection that covered it; its alignment - and
+/// in nothing else: what was set, for the writer to set in the properties of
+/// the paragraph's own XML (its runs' w:rPr, its w:pPr) instead of writing
+/// the paragraph from the model. None when anything else of it changed, or a
+/// part of its text only.
+let private paragraphFormatChange (context: WordStyles.DocumentStyleContext option) (index: int) (before: ParagraphBlock) (after: ParagraphBlock) : obj option =
+    if TextBuffer.toString before.Buffer <> TextBuffer.toString after.Buffer then None
+    else
+        let textRuns (buffer: TextBuffer.TextBuffer) =
+            buffer.Runs |> List.choose (function TextBuffer.Text run when run.Length > 0 -> Some run | _ -> None)
+        let beforeRuns = textRuns before.Buffer
+        let afterRuns = textRuns after.Buffer
+        // A property every character of the paragraph states, with one value, and did not all state so before.
+        let stated (flag: int) (pick: TextBuffer.TextStyle -> bool) : bool option =
+            match afterRuns with
+            | [] -> None
+            | first :: _ ->
+                let value = pick first.Style
+                let all (runs: TextBuffer.TextRun list) = runs |> List.forall (fun run -> run.Style.Explicit &&& flag <> 0 && pick run.Style = value)
+                if all afterRuns && not (all beforeRuns) then Some value else None
+        let bold = stated TextBuffer.ExplicitFormat.Bold (fun style -> style.Bold)
+        let italic = stated TextBuffer.ExplicitFormat.Italic (fun style -> style.Italic)
+        let strike = stated TextBuffer.ExplicitFormat.Strike (fun style -> style.Strike)
+        // (An underline of the plain kind: one with a style or a colour of its own is written from the model.)
+        let underline =
+            stated TextBuffer.ExplicitFormat.Underline (fun style -> style.Underline)
+            |> Option.filter (fun _ ->
+                afterRuns |> List.forall (fun run -> (run.Style.UnderlineStyle.IsNone || run.Style.UnderlineStyle = Some "single") && run.Style.UnderlineColor.IsNone))
+        let alignmentChanged = before.Metadata.Alignment <> after.Metadata.Alignment || before.Metadata.ExplicitAlignment <> after.Metadata.ExplicitAlignment
+        if bold.IsNone && italic.IsNone && strike.IsNone && underline.IsNone && not alignmentChanged then None
+        else
+            // The paragraph as it was, with those properties set as they are now, is the paragraph as it is.
+            let set (style: TextBuffer.TextStyle) =
+                let style = match bold with Some on -> TextBuffer.withExplicitBold on style | None -> style
+                let style = match italic with Some on -> TextBuffer.withExplicitItalic on style | None -> style
+                let style = match strike with Some on -> TextBuffer.withExplicitStrike on style | None -> style
+                match underline with Some on -> TextBuffer.withExplicitUnderline on style | None -> style
+            // (Runs that are formatted alike afterwards are one run, as they are in the paragraph the editor has.)
+            let merged (runs: TextBuffer.Run list) =
+                List.foldBack (fun (run: TextBuffer.Run) (rest: TextBuffer.Run list) ->
+                    match run, rest with
+                    | TextBuffer.Text current, TextBuffer.Text next :: others when current.Start + current.Length = next.Start && current.Style = next.Style ->
+                        TextBuffer.Text { current with Length = current.Length + next.Length } :: others
+                    | _ -> run :: rest) runs []
+            let withSet (para: ParagraphBlock) =
+                { para with
+                    Buffer = { para.Buffer with Runs = para.Buffer.Runs |> List.map (function TextBuffer.Text run -> TextBuffer.Text { run with Style = set run.Style } | other -> other) |> merged }
+                    Metadata = { para.Metadata with Alignment = after.Metadata.Alignment; ExplicitAlignment = after.Metadata.ExplicitAlignment } }
+            let exported (para: ParagraphBlock) = paragraphToEditor context "Paragraph" 0 para
+            let now = exported after
+            if jsonOf (exported (withSet before)) <> jsonOf now then None
+            else
+                let toggle (value: bool option) : obj = match value with Some on -> box on | None -> null
+                Some (createObj [
+                        "Paragraph" ==> index
+                        "Format" ==> true
+                        "Bold" ==> toggle bold
+                        "Italic" ==> toggle italic
+                        "Strike" ==> toggle strike
+                        "Underline" ==> toggle underline
+                        "AlignmentChanged" ==> alignmentChanged
+                        // (What the paragraph states of its alignment now, as the writer reads it of a paragraph: null - its style's.)
+                        "Alignment" ==> now?ExplicitAlignment ])
+
 /// A changed block as changes of the text of its paragraphs (see above):
 /// the text every paragraph of the block had when it was read, in the order
 /// of the XML, and the changes. None when anything else of the block is not
@@ -2569,7 +2635,16 @@ let private blockTextChanges (context: WordStyles.DocumentStyleContext option) (
         if changed.IsEmpty || jsonOf (blockToEditor context restored) <> jsonOf (blockToEditor context original) then None
         else
             let unchangedText (a: ParagraphBlock) (b: ParagraphBlock) = jsonOf (paragraphToEditor context "Paragraph" 0 a) = jsonOf (paragraphToEditor context "Paragraph" 0 b)
-            let edits = changed |> List.map (fun (index, (a, b)) -> if unchangedText a b then Some null else paragraphTextChange context index a b |> Option.map box)
+            // (A paragraph whose text is what it was: a change of its formatting as a whole, see paragraphFormatChange.)
+            let edits =
+                changed
+                |> List.map (fun (index, (a, b)) ->
+                    if unchangedText a b then Some null
+                    else
+                        // (First: to the comparison of characters, text made bold is text typed again.)
+                        paragraphFormatChange context index a b
+                        |> Option.map box
+                        |> Option.orElseWith (fun () -> paragraphTextChange context index a b |> Option.map box))
             if edits |> List.exists Option.isNone then None
             else
                 Some (createObj [
