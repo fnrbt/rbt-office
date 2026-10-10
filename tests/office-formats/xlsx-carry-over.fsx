@@ -347,6 +347,34 @@ do
         (bare.Contains "totalsRowShown=\"0\"" && not (bare.Contains "totalsRowCount") && bare.Contains "headerRowCount=\"0\"" && not (bare.Contains "<autoFilter")
          && bare.Contains "totalsRowFunction=\"sum\"" && (try Xml.Linq.XDocument.Parse bare |> ignore; true with _ -> false)) bare
 
+// ---- a print area of several areas --------------------------------------------
+do
+    let source = bytesOf "real-world/milk-street-office.xlsx"
+    let imported = Bridge.Import.importWorkbook (loadBytes source)
+    let names = namesOf imported
+    let models = modelsOf imported
+    let areas = [ range 0 0 9 2; range 0 4 9 6; range 20 0 29 2 ]
+    models.[0] <- { models.[0] with PageSetup = { models.[0].PageSetup with PrintArea = Some areas.Head; ExtraPrintAreas = areas.Tail } }
+    let saved = export imported models names
+    let workbookXml = (textOf (partsOf saved) "xl/workbook.xml").Replace("&apos;", "'")
+    let quoted = if names.[0] |> Seq.forall Char.IsLetterOrDigit then names.[0] else "'" + names.[0] + "'"
+    ok "print areas: written as one name, each area with its sheet"
+        (workbookXml.Contains (sprintf ">%s!$A$1:$C$10,%s!$E$1:$G$10,%s!$A$21:$C$30</definedName>" quoted quoted quoted) || workbookXml.Contains (sprintf ">'%s'!$A$1:$C$10,'%s'!$E$1:$G$10,'%s'!$A$21:$C$30</definedName>" names.[0] names.[0] names.[0]))
+        (let at = workbookXml.IndexOf "_xlnm.Print_Area" in if at < 0 then "no print area" else workbookXml.Substring(at, min 200 (workbookXml.Length - at)))
+    let back = loadBytes saved
+    eq "print areas: read as the areas, without the sheet" back.Sheets.[0].PrintArea (Some "$A$1:$C$10,$E$1:$G$10,$A$21:$C$30")
+    let again = Bridge.Import.importWorkbook back
+    eq "print areas: in the model" (printAreasOf again.Sheets.[0].Model.PageSetup) areas
+    // Untouched, they go back as the file states them; a row inserted above moves them all.
+    let savedAgain = export again (modelsOf again) (namesOf again)
+    eq "print areas: an unchanged save" ((loadBytes savedAgain).Sheets.[0].PrintArea) (Some "$A$1:$C$10,$E$1:$G$10,$A$21:$C$30")
+    let moved = modelsOf again
+    moved.[0] <- applyStructureEdit (InsertRows (0, 2)) moved.[0]
+    eq "print areas: follow inserted rows" ((loadBytes (export again moved (namesOf again))).Sheets.[0].PrintArea) (Some "$A$3:$C$12,$E$3:$G$12,$A$23:$C$32")
+    let cut = modelsOf again
+    cut.[0] <- applyStructureEdit (DeleteCols (0, 3)) cut.[0]
+    eq "print areas: an area whose columns are deleted goes" ((loadBytes (export again cut (namesOf again))).Sheets.[0].PrintArea) (Some "$B$1:$D$10")
+
 // ---- column default styles follow their columns --------------------------------
 do
     let wb = loadBytes (bytesOf "real-world/saopaulo-condos.xlsx")

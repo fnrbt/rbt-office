@@ -3249,6 +3249,8 @@ type PageSetupChange =
     /// that is not given keeps its number.
     | SetFitTo of width: int option * height: int option
     | SetPrintArea of CellRange option
+    /// A print area of several areas, each printed as its own run of pages ([]: none).
+    | SetPrintAreas of CellRange list
     | SetRepeatRows of (int * int) option
     | SetRepeatCols of (int * int) option
     /// "header" | "footer" | "firstHeader" | "firstFooter" | "evenHeader" | "evenFooter".
@@ -3304,7 +3306,13 @@ let applyPageSetupChange (memberName: string) (setup: PageSetup) (change: PageSe
         match area with
         | Some range when range.From.Row < 0 || range.From.Col < 0 || range.To.Row > maxSheetRow || range.To.Col > maxSheetCol || range.To.Row < range.From.Row || range.To.Col < range.From.Col ->
             fail "printArea is not a range of the sheet"
-        | _ -> { setup with PrintArea = area }
+        | _ -> { setup with PrintArea = area; ExtraPrintAreas = [] }
+    | SetPrintAreas areas ->
+        if areas |> List.exists (fun range -> range.From.Row < 0 || range.From.Col < 0 || range.To.Row > maxSheetRow || range.To.Col > maxSheetCol || range.To.Row < range.From.Row || range.To.Col < range.From.Col) then
+            fail "printArea is not a range of the sheet"
+        match areas with
+        | [] -> { setup with PrintArea = None; ExtraPrintAreas = [] }
+        | first :: rest -> { setup with PrintArea = Some first; ExtraPrintAreas = rest }
     | SetRepeatRows rows ->
         match rows with
         | Some (first, last) when first < 0 || last < first || last > maxSheetRow -> fail "printTitles.rows is not a run of rows"

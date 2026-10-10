@@ -2399,7 +2399,10 @@ let private workbookXmlFull (workbook: XlsxWorkbookOut) =
         workbook.Sheets
         |> List.mapi (fun i s ->
             [ match s.PrintArea with
-              | Some v -> yield { Name = "_xlnm.Print_Area"; RefersTo = sprintf "%s!%s" (quoted s.Name) v; LocalSheetIndex = Some i; Comment = None; Hidden = false }
+              | Some v ->
+                  // (Each area of a print area of several is named with its sheet.)
+                  let areas = v.Split(',') |> Array.map (fun area -> sprintf "%s!%s" (quoted s.Name) (area.Trim())) |> String.concat ","
+                  yield { Name = "_xlnm.Print_Area"; RefersTo = areas; LocalSheetIndex = Some i; Comment = None; Hidden = false }
               | None -> ()
               match s.PrintTitleRows, s.PrintTitleCols with
               | None, None -> ()

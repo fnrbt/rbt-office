@@ -31,6 +31,8 @@ type PageSlice = {
     RowEnd: int
     ColStart: int
     ColEnd: int
+    /// Which of the print areas the page is of (`Pagination.PrintAreas`, 0-based).
+    Area: int
 }
 
 /// Full pagination for one sheet. Pages are emitted in the "down then
@@ -41,6 +43,11 @@ type Pagination = {
     /// The print bounds — either the explicit `PrintArea` from PageSetup
     /// or the model's used range when none is set.
     PrintBounds: CellRange
+    /// Every area that is printed, in order: the areas of the sheet's print
+    /// area (one, or several - each paginated on its own, its pages following
+    /// those of the area before), or the used range when none is set.
+    /// `PrintBounds` is the first.
+    PrintAreas: CellRange list
     /// Scale (1.0 = no scale). Honors fit-to-page or the manual scale.
     Scale: float
     /// Repeat rows / cols, copied from PageSetup so the emitter doesn't
@@ -130,10 +137,11 @@ let private axisBreaks
 /// available size by 1/scale before computing the breaks.
 let paginate (model: SpreadsheetModel) : Pagination =
     let ps = model.PageSetup
-    let printRange =
-        match ps.PrintArea with
-        | Some range -> range
-        | None -> usedRange model
+    let printRanges =
+        match printAreasOf ps with
+        | [] -> [ usedRange model ]
+        | areas -> areas
+    let printRange = List.head printRanges
 
     let leftPt = ps.Margins.Left * 72.0
     let rightPt = ps.Margins.Right * 72.0
@@ -162,15 +170,19 @@ let paginate (model: SpreadsheetModel) : Pagination =
     // fit but don't blow up to fill — matching Excel).
     let scale =
         if ps.FitToPage then
-            let contentW = rangeSum (colWidthPx model) printRange.From.Col printRange.To.Col
-            let contentH = rangeSum (rowHeightPx model) printRange.From.Row printRange.To.Row
-            let sx =
-                if ps.FitToWidth > 0 && contentW > 0.0
-                then (availableW * float ps.FitToWidth) / contentW else 1.0
-            let sy =
-                if ps.FitToHeight > 0 && contentH > 0.0
-                then (availableH * float ps.FitToHeight) / contentH else 1.0
-            min sx sy |> min 1.0 |> max 0.1
+            // (Each area has to fit the pages it is given: the smallest scale of them all.)
+            printRanges
+            |> List.map (fun printRange ->
+                let contentW = rangeSum (colWidthPx model) printRange.From.Col printRange.To.Col
+                let contentH = rangeSum (rowHeightPx model) printRange.From.Row printRange.To.Row
+                let sx =
+                    if ps.FitToWidth > 0 && contentW > 0.0
+                    then (availableW * float ps.FitToWidth) / contentW else 1.0
+                let sy =
+                    if ps.FitToHeight > 0 && contentH > 0.0
+                    then (availableH * float ps.FitToHeight) / contentH else 1.0
+                min sx sy)
+            |> List.min |> min 1.0 |> max 0.1
         else
             float ps.Scale / 100.0 |> max 0.1
 
@@ -183,42 +195,44 @@ let paginate (model: SpreadsheetModel) : Pagination =
     let manualRow = breakSet ps.ManualRowBreaks
     let manualCol = breakSet ps.ManualColBreaks
 
-    // Body range excludes the repeat rows / cols — they ride along on every
-    // page separately. Without this the first row / column would render
-    // twice on page 1 (once as the repeat band, once as the first body row).
-    let bodyRowStart =
-        match ps.RepeatRows with
-        | Some (_, rEnd) when rEnd >= printRange.From.Row -> max printRange.From.Row (rEnd + 1)
-        | _ -> printRange.From.Row
-    let bodyColStart =
-        match ps.RepeatCols with
-        | Some (_, cEnd) when cEnd >= printRange.From.Col -> max printRange.From.Col (cEnd + 1)
-        | _ -> printRange.From.Col
+    let pagesOf (area: int) (printRange: CellRange) =
+        // Body range excludes the repeat rows / cols — they ride along on every
+        // page separately. Without this the first row / column would render
+        // twice on page 1 (once as the repeat band, once as the first body row).
+        let bodyRowStart =
+            match ps.RepeatRows with
+            | Some (_, rEnd) when rEnd >= printRange.From.Row -> max printRange.From.Row (rEnd + 1)
+            | _ -> printRange.From.Row
+        let bodyColStart =
+            match ps.RepeatCols with
+            | Some (_, cEnd) when cEnd >= printRange.From.Col -> max printRange.From.Col (cEnd + 1)
+            | _ -> printRange.From.Col
 
-    let colRanges =
-        axisBreaks bodyColStart printRange.To.Col manualCol (colWidthPx model) effW
-    let rowRanges =
-        axisBreaks bodyRowStart printRange.To.Row manualRow (rowHeightPx model) effH
+        let colRanges =
+            axisBreaks bodyColStart printRange.To.Col manualCol (colWidthPx model) effW
+        let rowRanges =
+            axisBreaks bodyRowStart printRange.To.Row manualRow (rowHeightPx model) effH
 
-    // Walk order from PageSetup. DownThenOver (Excel default) emits all
-    // row-pages of the first column-slice before the next column-slice;
-    // OverThenDown inverts the outer/inner loops.
-    let pages =
+        // Walk order from PageSetup. DownThenOver (Excel default) emits all
+        // row-pages of the first column-slice before the next column-slice;
+        // OverThenDown inverts the outer/inner loops.
         let result = ResizeArray<PageSlice>()
         match ps.PageOrder with
         | DownThenOver ->
             for (cs, ce) in colRanges do
                 for (rs, re) in rowRanges do
-                    result.Add { RowStart = rs; RowEnd = re; ColStart = cs; ColEnd = ce }
+                    result.Add { RowStart = rs; RowEnd = re; ColStart = cs; ColEnd = ce; Area = area }
         | OverThenDown ->
             for (rs, re) in rowRanges do
                 for (cs, ce) in colRanges do
-                    result.Add { RowStart = rs; RowEnd = re; ColStart = cs; ColEnd = ce }
+                    result.Add { RowStart = rs; RowEnd = re; ColStart = cs; ColEnd = ce; Area = area }
         resizeArrayToList result
+    let pages = printRanges |> List.mapi pagesOf |> List.concat
 
     let result =
         { Pages = pages
           PrintBounds = printRange
+          PrintAreas = printRanges
           Scale = scale
           RepeatRows = ps.RepeatRows
           RepeatCols = ps.RepeatCols }

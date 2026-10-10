@@ -815,6 +815,11 @@ type PageSetup = {
     /// 0-indexed inclusive range to print; None = print the whole used
     /// range. From `_xlnm.Print_Area`.
     PrintArea: CellRange option
+    /// The further areas of a print area of several (`Print_Area` =
+    /// `Sheet1!$A$1:$C$10,Sheet1!$E$1:$G$10`), in the order given. Each area
+    /// prints as its own run of pages, `PrintArea` first. Empty unless
+    /// `PrintArea` is set.
+    ExtraPrintAreas: CellRange list
     /// Rows to repeat at the top of every page (inclusive, 0-indexed).
     /// From the row part of `_xlnm.Print_Titles`. None = no repeat.
     RepeatRows: (int * int) option
@@ -873,6 +878,7 @@ let defaultPageSetup = {
     ManualRowBreaks = []
     ManualColBreaks = []
     PrintArea = None
+    ExtraPrintAreas = []
     FirstPageNumber = 1
     UseFirstPageNumber = false
     PageOrder = DownThenOver
@@ -881,6 +887,13 @@ let defaultPageSetup = {
     RepeatRows = None
     RepeatCols = None
 }
+
+/// The areas a sheet prints, in order: its print area and the further areas
+/// of one of several. Empty: the sheet prints what it uses.
+let printAreasOf (setup: PageSetup) : CellRange list =
+    match setup.PrintArea with
+    | Some first -> first :: setup.ExtraPrintAreas
+    | None -> []
 
 /// Standard OOXML paper-size codes → (width, height) in points (portrait).
 /// Defaults to Letter when the code is unknown.
@@ -3127,6 +3140,17 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
                 else
                     moveSpan area.From.Col area.To.Col
                     |> Option.map (fun (lo, hi) -> { From = { area.From with Col = lo }; To = { area.To with Col = hi } }))
+        let moveArea (area: CellRange) =
+            if onRows then
+                moveSpan area.From.Row area.To.Row
+                |> Option.map (fun (lo, hi) -> { From = { area.From with Row = lo }; To = { area.To with Row = hi } })
+            else
+                moveSpan area.From.Col area.To.Col
+                |> Option.map (fun (lo, hi) -> { From = { area.From with Col = lo }; To = { area.To with Col = hi } })
+        // (An area that is deleted goes; the next one is then the first.)
+        let areas = (Option.toList setup.PrintArea @ setup.ExtraPrintAreas) |> List.choose moveArea
+        let printArea = if setup.ExtraPrintAreas.IsEmpty then printArea else List.tryHead areas
+        let extraAreas = if setup.ExtraPrintAreas.IsEmpty then [] else (match areas with _ :: rest -> rest | [] -> [])
         let moveBreaks (breaks: int list) =
             breaks
             |> List.choose (fun after -> moveIndex (after - 1) |> Option.map (fun index -> index + 1))
@@ -3134,6 +3158,7 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
         let updated =
             { setup with
                 PrintArea = printArea
+                ExtraPrintAreas = extraAreas
                 RepeatRows = if onRows then setup.RepeatRows |> Option.bind (fun (lo, hi) -> moveSpan lo hi) else setup.RepeatRows
                 RepeatCols = if onRows then setup.RepeatCols else setup.RepeatCols |> Option.bind (fun (lo, hi) -> moveSpan lo hi)
                 ManualRowBreaks = if onRows then moveBreaks setup.ManualRowBreaks else setup.ManualRowBreaks

@@ -658,11 +658,12 @@ let private printDimensionBounds
     (overlays: (int * int * float * float * PaintItem list) list) =
     let mutable maxCol = 0
     let mutable maxRow = 0
-    match model.PageSetup.PrintArea with
-    | Some printRange ->
-        maxCol <- max printRange.From.Col printRange.To.Col
-        maxRow <- max printRange.From.Row printRange.To.Row
-    | None ->
+    match printAreasOf model.PageSetup with
+    | _ :: _ as areas ->
+        for printRange in areas do
+            maxCol <- max maxCol (max printRange.From.Col printRange.To.Col)
+            maxRow <- max maxRow (max printRange.From.Row printRange.To.Row)
+    | [] ->
         for KeyValue(addr, _) in model.Cells do
             if addr.Col > maxCol then maxCol <- addr.Col
             if addr.Row > maxRow then maxRow <- addr.Row

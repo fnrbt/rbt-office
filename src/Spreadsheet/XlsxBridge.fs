@@ -669,6 +669,13 @@ module Import =
             |> Option.map (fun m -> ({ Top = m.Top; Bottom = m.Bottom; Left = m.Left; Right = m.Right; Header = m.Header; Footer = m.Footer } : PageMargins))
             |> Option.defaultValue defaultPageMargins
         let wholeSheet = parseRangeClipped 1048575 16383
+        let printAreas : CellRange list =
+            match sheet.PrintArea with
+            | Some text ->
+                text.Split(',') |> Array.toList
+                |> List.choose (fun part -> wholeSheet (part.Trim()))
+                |> List.map (fun (sr, sc, er, ec) -> ({ From = { Row = sr; Col = sc }; To = { Row = er; Col = ec } } : CellRange))
+            | None -> []
         { setup with
             Margins = margins
             Options =
@@ -688,10 +695,9 @@ module Import =
                   ScaleWithDoc = sheet.HeaderFooter.ScaleWithDoc }
             ManualRowBreaks = sheet.RowBreaks
             ManualColBreaks = sheet.ColBreaks
-            PrintArea =
-                sheet.PrintArea
-                |> Option.bind wholeSheet
-                |> Option.map (fun (sr, sc, er, ec) -> ({ From = { Row = sr; Col = sc }; To = { Row = er; Col = ec } } : CellRange))
+            // (A print area of several areas names them with commas between.)
+            PrintArea = printAreas |> List.tryHead
+            ExtraPrintAreas = (match printAreas with _ :: rest -> rest | [] -> [])
             RepeatRows = sheet.PrintTitleRows |> Option.bind wholeSheet |> Option.map (fun (sr, _, er, _) -> sr, er)
             RepeatCols = sheet.PrintTitleCols |> Option.bind wholeSheet |> Option.map (fun (_, sc, _, ec) -> sc, ec) }
 
@@ -1663,7 +1669,7 @@ module Export =
           HeaderFooter = Some (headerFooter model.PageSetup.HeaderFooter)
           RowBreaks = model.PageSetup.ManualRowBreaks
           ColBreaks = model.PageSetup.ManualColBreaks
-          PrintArea = model.PageSetup.PrintArea |> Option.map rangeRef
+          PrintArea = (match printAreasOf model.PageSetup with [] -> None | areas -> Some (areas |> List.map rangeRef |> String.concat ","))
           PrintTitleRows = model.PageSetup.RepeatRows |> Option.map (fun (a, b) -> sprintf "$%d:$%d" (a + 1) (b + 1))
           PrintTitleCols = model.PageSetup.RepeatCols |> Option.map (fun (a, b) -> sprintf "$%s:$%s" (columnToLetter a) (columnToLetter b))
           // Pictures and threads of the model. Kept objects need the parts of
@@ -1790,7 +1796,7 @@ module Export =
                     Some { pageSetup model.PageSetup with Kept = kept }
             PrintOptions = if before.PageSetup.Options = model.PageSetup.Options then original.PrintOptions else fromModel.PrintOptions
             HeaderFooter = if before.PageSetup.HeaderFooter = model.PageSetup.HeaderFooter then original.HeaderFooter else fromModel.HeaderFooter
-            PrintArea = if before.PageSetup.PrintArea = model.PageSetup.PrintArea then original.PrintArea else fromModel.PrintArea
+            PrintArea = if printAreasOf before.PageSetup = printAreasOf model.PageSetup then original.PrintArea else fromModel.PrintArea
             PrintTitleRows = if before.PageSetup.RepeatRows = model.PageSetup.RepeatRows then original.PrintTitleRows else fromModel.PrintTitleRows
             PrintTitleCols = if before.PageSetup.RepeatCols = model.PageSetup.RepeatCols then original.PrintTitleCols else fromModel.PrintTitleCols
             Extras =

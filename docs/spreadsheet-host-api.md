@@ -714,7 +714,8 @@ The `pageSetup` object:
   margins: { top, bottom, left, right, header, footer: number },   // INCHES (as the file and Excel's dialog); 0..49
   scale: number | null,                   // percent 10..400; null while the sheet is fitted to pages
   fitToWidth, fitToHeight: number | null, // pages, 0 = as many as it takes; null while a scale applies
-  printArea: "A1:F40" | null,             // one area
+  printArea: "A1:F40" | "A1:C10,E1:G10" | null,   // one area, or several separated by commas
+  printAreas: ["A1:C10", "E1:G10"],       // the same, one entry per area ([] when none); give printArea or printAreas, not both
   printTitles: { rows: "1:2" | null, columns: "A:B" | null },
   header, footer, firstHeader, firstFooter, evenHeader, evenFooter: { left, center, right, raw: string },
   differentFirst, differentOddEven, scaleHeaderFooter: boolean,
@@ -723,6 +724,11 @@ The `pageSetup` object:
   firstPageNumber: number | null,         // null: automatic
   comments: "none" | "asDisplayed" | "atEnd" }
 ```
+- **A print area of several areas** (`Print_Area` = `Sheet1!$A$1:$C$10,Sheet1!$E$1:$G$10`) is read, kept and written (each area with its
+  sheet). Each area is **its own run of pages**, in the order given: the paginator and the PDF output lay out the first area's pages, then
+  the next area's (page order, manual breaks and print titles apply within each; cells between the areas are on no page). Fit-to-page
+  fits each area into the pages given, all at one scale - the smallest any area needs. Areas follow inserted / deleted rows and columns;
+  an area that is deleted whole goes. `PageSetup.PrintArea` is the first area, `PageSetup.ExtraPrintAreas` the others (`Model.printAreasOf`).
 - Setting: `scale` (a number) switches fitting off; `fitToWidth` and / or `fitToHeight` switch it on (the side not given keeps its number, initially 1); giving a scale and a fit in one call throws; `null` for any of the three is ignored (so the object of `GetPageSetup` can be handed back). `paperSize`: a name, a code number or `{ code }`. `margins` may name some sides. `printArea`: an A1 range (`$` allowed) or `null`. `printTitles`: `{ rows?, columns? }` (whole rows `"1:2"` / whole columns `"A:B"`, `null` clears that one) or `null` (clears both). `firstPageNumber: null` = automatic.
 - Headers and footers are text in Excel's code syntax: `&P` page number, `&N` number of pages, `&D` date, `&T` time, `&F` file name, `&A` sheet name, `&&` a literal ampersand, `&"Font,Style"`, `&12` font size, `&K RRGGBB` colour, `&B` `&I` `&U` toggles. `left` / `center` / `right` are the sections of `raw` (`&L...&C...&R...`; text before the first marker belongs to the centre). To set one: a string (the raw text), `null` (none), `{ raw }`, or `{ left?, center?, right? }` (sections not given stay as they are). At most 255 characters with the codes. `firstHeader` / `firstFooter` apply when `differentFirst`, `evenHeader` / `evenFooter` when `differentOddEven` (the flags are separate keys and are not set implicitly).
 - The print area, the print titles and the breaks follow inserted and deleted rows / columns (and their undo); the print names follow a sheet rename (they are written from the page setup, not stored as defined names: `GetDefinedNames` does not list them and `SetDefinedName` refuses `_xlnm.` names).

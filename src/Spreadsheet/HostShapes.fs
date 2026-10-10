@@ -1117,7 +1117,9 @@ let pageSetupToObj (setup: PageSetup) : obj =
         "scale" ==> (if setup.FitToPage then null else box setup.Scale)
         "fitToWidth" ==> (if setup.FitToPage then box setup.FitToWidth else null)
         "fitToHeight" ==> (if setup.FitToPage then box setup.FitToHeight else null)
-        "printArea" ==> orNull (setup.PrintArea |> Option.map rangeText)
+        // (A print area of several areas: "A1:C10,E1:G10", and each area in `printAreas`.)
+        "printArea" ==> (match printAreasOf setup with [] -> null | areas -> box (areas |> List.map rangeText |> String.concat ","))
+        "printAreas" ==> (printAreasOf setup |> List.map rangeText |> List.toArray)
         "printTitles" ==> createObj [ "rows" ==> orNull (setup.RepeatRows |> Option.map (axisRunText true))
                                       "columns" ==> orNull (setup.RepeatCols |> Option.map (axisRunText false)) ]
         "header" ==> headerFooterToObj hf.OddHeader
@@ -1206,8 +1208,19 @@ let pageSetupChangesOfObj (memberName: string) (current: PageSetup) (value: obj)
       if given "scale" then yield SetScale (intArg memberName "scale" (getKey value "scale"))
       if given "fitToWidth" || given "fitToHeight" then
           yield SetFitTo (optionalArg (intArg memberName "fitToWidth") (getKey value "fitToWidth"), optionalArg (intArg memberName "fitToHeight") (getKey value "fitToHeight"))
+      if present "printArea" && present "printAreas" then hostFail memberName "give printArea or printAreas, not both"
       if present "printArea" then
-          yield SetPrintArea (optionalArg (rangeArg memberName) (getKey value "printArea"))
+          // One range, or several separated by commas ("A1:C10,E1:G10").
+          let given = getKey value "printArea"
+          if isNullish given then yield SetPrintArea None
+          else
+              match (stringArg memberName "printArea" given).Split(',') |> Array.map (fun part -> part.Trim()) |> Array.filter (fun part -> part <> "") |> Array.toList with
+              | [ one ] -> yield SetPrintArea (Some (parseRange memberName one))
+              | parts -> yield SetPrintAreas (parts |> List.map (parseRange memberName))
+      if present "printAreas" then
+          let given = getKey value "printAreas"
+          if isNullish given then yield SetPrintArea None
+          else yield SetPrintAreas (unbox<obj array> given |> Array.toList |> List.map (rangeArg memberName))
       if present "printTitles" then
           let titles = getKey value "printTitles"
           if isNullish titles then

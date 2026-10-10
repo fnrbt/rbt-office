@@ -4473,6 +4473,20 @@ module NamedRanges =
         | -1 -> s
         | i -> s.Substring(i + 1)
 
+    /// The areas of a reference to several (`A,B`): split at the commas that
+    /// are not inside a quoted sheet name.
+    let private splitAreas (text: string) : string list =
+        let parts = ResizeArray<string>()
+        let mutable start = 0
+        let mutable quoted = false
+        for i in 0 .. text.Length - 1 do
+            if text.[i] = '\'' then quoted <- not quoted
+            elif text.[i] = ',' && not quoted then
+                parts.Add (text.Substring(start, i - start))
+                start <- i + 1
+        parts.Add (text.Substring start)
+        parts |> Seq.map (fun part -> part.Trim()) |> Seq.filter (fun part -> part <> "") |> Seq.toList
+
     let private isRowsRef (s: string) =
         // "$1:$3" — only digits, '$', ':'.
         s.Length > 0
@@ -4501,7 +4515,8 @@ module NamedRanges =
         for nr in names do
             match nr.Name, parseScope nr.Scope with
             | "_xlnm.Print_Area", Some idx ->
-                update idx (fun w -> { w with PrintArea = Some (stripSheetQualifier nr.RefersTo) })
+                // (Several areas: `Sheet1!$A$1:$C$10,Sheet1!$E$1:$G$10`, kept as `$A$1:$C$10,$E$1:$G$10`.)
+                update idx (fun w -> { w with PrintArea = Some (splitAreas nr.RefersTo |> List.map stripSheetQualifier |> String.concat ",") })
             | "_xlnm.Print_Titles", Some idx ->
                 // Comma-separated rows part + cols part; either may be absent.
                 let parts = nr.RefersTo.Split(',') |> Array.map stripSheetQualifier
