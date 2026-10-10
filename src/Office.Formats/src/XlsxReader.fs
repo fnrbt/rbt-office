@@ -771,6 +771,19 @@ let emptyAutoFilterColumn : AutoFilterColumn =
     { ColId = 0; Kind = "other"; Values = []; Blank = false; Custom = []; And = false; Top = true; Percent = false; Value = 10.0
       DxfId = None; CellColor = true; DynamicType = ""; Xml = "" }
 
+/// For a writer: what of a sheet is not what its part of the file says, when
+/// that is little enough for the part to be written again with only this
+/// changed (see `SheetExtras.Patch`).
+type SheetPatch = {
+    /// The cells that are not the file's - changed, new, or gone: row and
+    /// column (from 0), and whether the cell still holds the formula it had
+    /// with another result (its `<f>` then stays the file's, shared or not).
+    Cells: (int * int * bool) list
+    /// The elements of the worksheet made from the sheet as it is now:
+    /// "cols", "mergeCells", "conditionalFormatting", "dataValidations".
+    Sections: string list
+}
+
 /// What a sheet holds beyond its cells: pictures, other drawing objects and threaded comments.
 /// A value that is worked out when it is first asked for (and then kept;
 /// what it is worked out from is let go). Two of these are equal when their
@@ -955,13 +968,19 @@ type SheetExtras = {
     /// editor has no model of (chart sheets, dialog sheets); a writer's caller
     /// says so for a worksheet nothing was changed in.
     Verbatim: bool
+    /// With `Verbatim`: the sheet is written as that part with these cells
+    /// and sections replaced by the sheet's (the rest of the part - sheetPr,
+    /// the views, the rows and their attributes, shared formulas,
+    /// ignoredErrors, the extensions - stays as it was read). A writer that
+    /// cannot patch the part writes the sheet from its cells.
+    Patch: SheetPatch option
 }
 
 let emptySheetExtras =
     { Images = []; Objects = []; ThreadedComments = []; DrawingRelationships = []; Format = None; Columns = []; ColumnStyles = []
       SheetId = None; KeptRelationships = []; KeptExtensions = []; KeptElements = []; DrawingPart = None; TableParts = []; PivotLocations = []; DataTables = []
       KeptCellExtensions = []; PrinterSettingsRelId = None; RowAxis = []; ColumnAxis = []; AutoFilter = None; ArrayFormulas = []
-      SourcePart = None; CommentsPart = None; CommentRuns = []; UncachedFormulas = None; Verbatim = false }
+      SourcePart = None; CommentsPart = None; CommentRuns = []; UncachedFormulas = None; Verbatim = false; Patch = None }
 
 /// A named cell style (cellStyles / cellStyleXfs of styles.xml), with the
 /// font, fill, border and number format its xf refers to given as their XML so
@@ -1046,6 +1065,11 @@ type WorkbookPreservation = {
     /// of the large parts (the browser's: worksheets, shared strings) leaves
     /// those out; a caller then supplies them.
     SourceParts: (string * byte[]) list
+    /// The parts that hold the package together, as the file had them, by
+    /// path: `[Content_Types].xml`, `_rels/.rels` and the workbook's
+    /// relationships. A writer keeps them as they are while they still say
+    /// what is written, and otherwise takes entries out and adds entries.
+    PackageTexts: (string * string) list
     /// For a writer: the styles and shared strings are the file's parts
     /// (`StylesPart` and `SharedStringsPart`, among `Parts`) with what is new
     /// added behind what they have, so that every index the file uses means
@@ -1057,7 +1081,7 @@ let emptyWorkbookPreservation =
     { Parts = []; Defaults = []; Overrides = []; ThemePath = None; NamedStyles = []; Persons = []; CellXfNamedStyles = [||]
       WorkbookRelationships = []; ExternalReferencesXml = ""; PivotCachesXml = ""; WorkbookExtLstXml = ""
       RootRelationships = []; CalcChain = None; PivotCacheSources = []; CalcIteration = None; ActiveTab = 0
-      StylesPart = None; SharedStringsPart = None; WorkbookPart = None; CellFormats = [||]; SharedStrings = [||], [||]; DxfCount = 0; SourceParts = []; InPlace = false }
+      StylesPart = None; SharedStringsPart = None; WorkbookPart = None; CellFormats = [||]; SharedStrings = [||], [||]; DxfCount = 0; SourceParts = []; PackageTexts = []; InPlace = false }
 
 type Worksheet = {
     Name: string
@@ -5875,6 +5899,9 @@ let private buildWorkbook (scanRows: bool) (source: PartSource) (header: Workboo
             [ header.WorkbookPath; header.StylesPath; header.SharedStringsPath ] @ (worksheets |> List.choose (fun sheet -> sheet.Extras.SourcePart |> Option.map fst))
             |> List.distinct
             |> List.choose (fun path -> source.Bytes path |> Option.map (fun data -> path, data))
+          PackageTexts =
+            [ "[Content_Types].xml"; "_rels/.rels"; relsPathFor header.WorkbookPath ]
+            |> List.choose (fun path -> (try source.Text path with _ -> None) |> Option.map (fun text -> path, text))
           InPlace = false }
     // ... and what the sheets' own relationships lead to (comments, their
     // boxes, threaded comments ...) with those relationship parts.

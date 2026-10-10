@@ -2159,6 +2159,62 @@ module Export =
             && before.ShowGridLines = model.ShowGridLines && before.ShowHeaders = model.ShowHeaders && before.ShowFormulas = model.ShowFormulas
             && before.ShowZeros = model.ShowZeros && before.Zoom = model.Zoom && before.TabColor = model.TabColor)
 
+    /// What of a sheet is not the file's, when it is only cells (values,
+    /// formulas, formats), column widths, merged cells, conditional formats,
+    /// validations, the view (zoom, switches, frozen panes) or the tab
+    /// colour: the sheet's part is then written again with just that
+    /// replaced. None when more changed (rows or columns inserted, deleted
+    /// or hidden, row heights, a sort or filter, comments, tables, drawings,
+    /// links, the page setup): such a sheet is written from its model.
+    let private patchOfSheet (before: SpreadsheetModel) (model: SpreadsheetModel) : XlsxReader.SheetPatch option =
+        let same (pick: SpreadsheetModel -> 'T) = sameRef (pick before) (pick model) || pick before = pick model
+        let rest =
+            model.Deferred.IsNone && before.StructureVersion = model.StructureVersion
+            && same (fun m -> m.RowHeights) && same (fun m -> m.Axes)
+            && same (fun m -> m.Tables) && same (fun m -> m.Drawings) && same (fun m -> m.Threads) && same (fun m -> m.Hyperlinks)
+            && same (fun m -> m.DataTables) && same (fun m -> m.KeptRanges) && same (fun m -> m.ArrayMarks) && same (fun m -> m.Spill)
+            && same (fun m -> m.AutoFilter) && same (fun m -> m.Filters) && same (fun m -> m.SortState)
+            && same (fun m -> m.FilterVisibleRows) && same (fun m -> m.FilterHiddenRows)
+            && same (fun m -> m.PageSetup)
+        if not rest then None
+        else
+            let cells = ResizeArray<int * int * bool>()
+            let mutable sound = true
+            if not (sameRef before.Cells model.Cells && sameRef before.RichRuns model.RichRuns) then
+                let sameRuns = sameRef before.RichRuns model.RichRuns
+                let runsSame (addr: CellAddress) = sameRuns || Map.tryFind addr before.RichRuns = Map.tryFind addr model.RichRuns
+                for KeyValue(addr, data) in model.Cells do
+                    match Map.tryFind addr before.Cells with
+                    | Some previous when (sameRef previous data || previous = data || onlyBecameError previous data) && runsSame addr -> ()
+                    | Some previous ->
+                        // (A note is in the sheet's comments part, not in its cells.)
+                        if previous.Comment <> data.Comment then sound <- false
+                        let valueOnly =
+                            match previous.Value, data.Value with
+                            | CellValue.Formula (formulaBefore, _), CellValue.Formula (formulaNow, _) ->
+                                formulaBefore = formulaNow && (sameRef previous.Format data.Format || previous.Format = data.Format) && runsSame addr
+                            | _ -> false
+                        cells.Add ((addr.Row, addr.Col, valueOnly))
+                    | None ->
+                        if data.Comment.IsSome then sound <- false
+                        cells.Add ((addr.Row, addr.Col, false))
+                for KeyValue(addr, previous) in before.Cells do
+                    if not (Map.containsKey addr model.Cells) then
+                        if previous.Comment.IsSome then sound <- false
+                        cells.Add ((addr.Row, addr.Col, false))
+            if not sound then None
+            else
+                Some { Cells = List.ofSeq cells
+                       Sections =
+                        [ if before.TabColor <> model.TabColor then yield "sheetPr"
+                          if before.FrozenRows <> model.FrozenRows || before.FrozenCols <> model.FrozenCols
+                             || before.ShowGridLines <> model.ShowGridLines || before.ShowHeaders <> model.ShowHeaders || before.ShowFormulas <> model.ShowFormulas
+                             || before.ShowZeros <> model.ShowZeros || before.Zoom <> model.Zoom then yield "sheetViews"
+                          if not (same (fun m -> m.ColumnWidths)) || not (same (fun m -> m.ColumnStyles)) then yield "cols"
+                          if not (same (fun m -> m.MergedCells)) then yield "mergeCells"
+                          if not (same (fun m -> m.ConditionalFormats)) then yield "conditionalFormatting"
+                          if not (same (fun m -> m.Validations)) then yield "dataValidations" ] }
+
     /// The workbook to write. `sourceParts` are parts of the opened file by
     /// path - its worksheet parts, styles and shared strings - beyond those the
     /// reader kept (`Preserved.SourceParts`; see `verbatimPartsWanted`). With
@@ -2323,6 +2379,17 @@ module Export =
                 | _ -> None
             | _ -> None
         let verbatimParts = ResizeArray<string * byte[]>()
+        // A sheet with little changed (cells, widths, merges, rules) goes back
+        // as its part with that changed in it.
+        let patchOf (outSheet: XlsxWriter.XlsxSheetOut) (before: SpreadsheetModel) (model: SpreadsheetModel) : XlsxReader.SheetPatch option =
+            match inPlaceParts, outSheet.Extras.SourcePart with
+            | Some _, Some (path, relType) when verbatimAllowed && relType.EndsWith "/worksheet" && suppliedParts.ContainsKey path && not (namesChangedTab suppliedParts.[path]) ->
+                match patchOfSheet before model with
+                | Some patch ->
+                    verbatimParts.Add ((path, suppliedParts.[path]))
+                    Some patch
+                | None -> None
+            | _ -> None
         let verbatimOf (outSheet: XlsxWriter.XlsxSheetOut) (before: SpreadsheetModel) (model: SpreadsheetModel) : bool =
             match inPlaceParts, outSheet.Extras.SourcePart with
             | Some _, Some (path, relType) when verbatimAllowed && relType.EndsWith "/worksheet" && suppliedParts.ContainsKey path ->
@@ -2348,7 +2415,11 @@ module Export =
                     // it (but for its name, visibility and tab colour, which
                     // change without converting it).
                     if isDeferredSheet model then withKeptFormulas { outSheet with Name = name; State = stateOf index model; View = { outSheet.View with TabColor = model.TabColor } }
-                    else withKeptFormulas (sourcedSheet cache dxfIndex name (stateOf index model) outSheet readerSheet (filterRowsAsHidden before) (filterRowsAsHidden model))
+                    else
+                        let written = withKeptFormulas (sourcedSheet cache dxfIndex name (stateOf index model) outSheet readerSheet (filterRowsAsHidden before) (filterRowsAsHidden model))
+                        match patchOf outSheet before model with
+                        | Some patch -> { written with Extras = { written.Extras with Verbatim = true; Patch = Some patch } }
+                        | None -> written
                 | None ->
                     let written = modelSheet cache dxfIndex name (stateOf index model) (filterRowsAsHidden model)
                     match copyExtras index model with
@@ -2499,8 +2570,10 @@ module Export =
                         let untouched =
                             if isDeferredSheet model then model.TabColor = reader.View.TabColor
                             else untouchedSheet source.Baseline.[origin.Sheet] current
+                        // (... or with so little changed that its part is written again with that changed.)
+                        let patched = not untouched && not (isDeferredSheet model) && (patchOfSheet source.Baseline.[origin.Sheet] model).IsSome
                         match reader.Extras.SourcePart with
-                        | Some (path, relType) when untouched && relType.EndsWith "/worksheet" -> Some path
+                        | Some (path, relType) when (untouched || patched) && relType.EndsWith "/worksheet" -> Some path
                         | _ -> None
                     | _ -> None)
             (

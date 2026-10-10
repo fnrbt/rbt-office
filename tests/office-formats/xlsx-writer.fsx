@@ -529,7 +529,7 @@ match XlsxReader.loadBytesNative extrasPackage with
         && stylesPart.Contains "<name val=\"Georgia\"/>" && stylesPart.Contains "FFFFC7CE" && stylesPart.Contains "formatCode=\"0.000 &quot;kg&quot;\""
         && stylesPart.Contains "<alignment horizontal=\"center\"/>")
        stylesPart
-    ok "theme-written-back-unchanged" ((part "xl/theme/theme1.xml").Contains "name=\"Kept theme\"" && (part "xl/_rels/workbook.xml.rels").Contains "/theme\" Target=\"/xl/theme/theme1.xml\"") (part "xl/_rels/workbook.xml.rels")
+    ok "theme-written-back-unchanged" ((part "xl/theme/theme1.xml").Contains "name=\"Kept theme\"" && System.Text.RegularExpressions.Regex.IsMatch(part "xl/_rels/workbook.xml.rels", "/theme\" Target=\"(/xl/)?theme/theme1.xml\"")) (part "xl/_rels/workbook.xml.rels")
     ok "chart-part-written-back-unchanged" ((part "xl/charts/chart1.xml") = "<c:chartSpace xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\"><c:chart><c:plotArea/></c:chart></c:chartSpace>") (part "xl/charts/chart1.xml")
     ok "threaded-comments-written"
        ((part "xl/threadedComments/threadedComment1.xml").Contains "parentId=\"{AAAAAAAA-0000-0000-0000-000000000001}\"" && (part "xl/persons/person.xml").Contains "displayName=\"Bob Reply\"" && (part "[Content_Types].xml").Contains "threadedcomments+xml")

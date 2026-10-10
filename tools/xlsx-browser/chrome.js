@@ -479,6 +479,24 @@ checks['export-keeps-parts'] = async () => {
                 grid.SetCell((usedNow ? usedNow.lastRow : 0) + 3, (usedNow ? usedNow.lastCol : 0) + 3, 'one edit');
                 const one = await compare('one cell edited', await grid.ExportXlsx());
                 check(`${short}: one cell edited: every other sheet is byte for byte the file's`, sheetParts.length - (await sameSheets(one)).length, expected);
+                // The edited sheet is the file's part with the new cell (and the zoom) in it: nothing else of it is written anew.
+                const tally = async (zip) => {
+                    const found = { shared: 0, styledRows: 0, rowHeights: 0, sheetPr: [], ignoredErrors: 0, headerFooter: 0, selections: 0, strings: ((await zip.files['xl/sharedStrings.xml']?.async('string')) ?? '').split('<si').length - 1 };
+                    for (const name of sheetParts) {
+                        const xml = await zip.files[name].async('string');
+                        found.shared += (xml.match(/t="shared"/g) || []).length;
+                        found.styledRows += (xml.match(/<row\b[^>]*\scustomFormat="1"/g) || []).length;
+                        found.rowHeights += (xml.match(/<row\b[^>]*\sht="/g) || []).length;
+                        found.sheetPr.push((/<sheetPr\b[^>]*\/>|<sheetPr\b[^>]*>[\s\S]*?<\/sheetPr>/.exec(xml) || [''])[0]);
+                        found.ignoredErrors += (xml.match(/<ignoredError\b/g) || []).length;
+                        found.headerFooter += (xml.match(/<headerFooter\b/g) || []).length;
+                        found.selections += (xml.match(/<selection\b/g) || []).length;
+                    }
+                    return found;
+                };
+                check(`${short}: one cell edited: shared formulas, row formats and heights, sheet properties, ignored errors, selections and the shared strings are the file's`, await tally(one), { ...(await tally(before)), strings: (await tally(before)).strings + 1 });
+                const plumbingChanged = []; for (const name of ['[Content_Types].xml', '_rels/.rels', 'xl/_rels/workbook.xml.rels']) if (await base64(before, name) !== await base64(one, name)) plumbingChanged.push(name);
+                check(`${short}: one cell edited: content types and relationships are the file's`, plumbingChanged, []);
                 const styles = await one.files['xl/styles.xml'].async('string'), stylesBefore = await before.files['xl/styles.xml'].async('string');
                 // What the editor has no model of stays in the styles and the workbook part; untouched comments are the file's part.
                 const element = (xml, name) => { const m = new RegExp(`<${name}(?=[\\s>/])[^>]*/>|<${name}(?=[\\s>])[^>]*>[\\s\\S]*?</${name}>`).exec(xml); return m ? m[0] : ''; };
@@ -784,7 +802,7 @@ checks['print-areas'] = async () => {
         check('undo', grid.GetPageSetup().printAreas, ['A1:C10', 'E1:G10']);
         const bytes = await grid.ExportXlsx();
         const book = await (await window.JSZip.loadAsync(bytes)).files['xl/workbook.xml'].async('string');
-        check('written: each area with its sheet', /_xlnm\.Print_Area"[^>]*>Sheet1!\$A\$1:\$C\$10,Sheet1!\$E\$1:\$G\$10</.test(book.replace(/&apos;/g, '')), true);
+        check('written: each area with its sheet', /_xlnm\.Print_Area"[^>]*>Sheet1!\$A\$1:\$C\$10,Sheet1!\$E\$1:\$G\$10</.test(book.replace(/&apos;|'/g, '')), true);
         const again = await reopened(grid);
         try { check('read back', again.grid.GetPageSetup().printAreas, ['A1:C10', 'E1:G10']); } finally { again.close(); }
         grid.InsertRows(0, 2);

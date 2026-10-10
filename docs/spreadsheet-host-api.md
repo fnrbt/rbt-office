@@ -850,10 +850,36 @@ changes (named styles, the indexed palette, table styles and extensions of the s
 - In a browser a sheet that goes back as it was read, and every other part the reader kept that is written as the file's bytes (chart
   parts, pivot caches and their records, media, the theme ...), is put into the new package as **the compressed entry it was** (not
   deflated again).
+- **A sheet with little changed is the file's part with that changed in it** (not written from the model). "Little" is: cells
+  (values, formulas, formats, rich-text runs - typed, pasted, filled, cleared, or formulas with another result after a recalculation),
+  column widths and column styles, merged cells, conditional formats, validations, the view (zoom, grid lines / headers / formulas /
+  zeros, frozen panes) and the tab colour. Then only this is replaced in the part's text: the `<c>` elements of the changed cells (a
+  new cell is put into its row, a new row among the rows, a removed cell is taken out; a formula that only has another result keeps
+  its `<f>` - shared, array - and gets the new `<v>`), `<dimension>` when a cell lies outside it, and the elements whose content
+  changed: `<cols>`, `<mergeCells>`, `<conditionalFormatting>`, `<dataValidations>` made from the model; `<sheetView>` with only the
+  changed switches / `zoomScale` set (selection, `topLeftCell`, `zoomScaleNormal` stay; other panes: the view is made anew);
+  `<sheetPr>` with only `<tabColor>` replaced. Everything else is the file's text, character for character: `sheetPr` (`codeName`,
+  `pageSetUpPr`), the views, `sheetFormatPr`, every `<row>` with its attributes (`s`, `customFormat`, `ht`, `spans` unless a cell was
+  added to the row), untouched cells, shared formulas, `ignoredErrors`, page setup and margins, `extLst`, and every relationship id
+  (the sheet's `.rels` and what it leads to are the file's). Nothing the file did not have is added (no empty `<headerFooter>`).
+  The sheet is **written from its model** instead when rows / columns were inserted, deleted, hidden or grouped, a row height
+  changed, a range was sorted or filtered, comments / threads / tables / drawings / hyperlinks / the page setup / data tables changed, a
+  changed cell is the master of a shared formula other cells still use, rules or validations of the x14 list are involved, the
+  workbook is in the 1904 date system, the part names a renamed or deleted sheet, or the part is not laid out as expected (a prefix on
+  its elements, rows or cells without `r`, comments between elements). (`SheetExtras.Patch`; `XlsxBridge` decides, `XlsxWriter` patches.)
+- **A formula's text result is written in its cell** (`t="str"`), as Excel does; it is never added to `xl/sharedStrings.xml` (which
+  stays byte-identical unless a text was typed that the file does not have).
+- **`[Content_Types].xml`, `_rels/.rels` and `xl/_rels/workbook.xml.rels` are the file's text** while they say what is written: same
+  entries, same order, same (relative) targets, same ids. When a part is added or goes, only its entry is added (at the end) or taken
+  out. A sheet of the file keeps the relationship id the file's workbook names it by; styles, shared strings and theme likewise.
+  In `xl/workbook.xml` the `<sheets>` and `<definedNames>` elements stay the file's text while they say the same (defined names in
+  any order, a sheet name quoted or not); `activeTab` is touched only when another sheet is on display; an apostrophe in a defined
+  name's text is written as it is (`'My Sheet'!$A$1`, not `&apos;`). `xl/styles.xml` is byte-identical when no format was added (a
+  `<dxfs count="0"/>` is opened only to add a dxf).
 - "Nothing changed in a sheet" is: its cells (values, formulas, their cached results, formats, comments), sizes, outline, merges, rules,
   validations, tables, drawings, threads, links, page setup, panes, filter, zoom, grid lines / headers / formulas / zeros and tab colour are
-  what they were when it was opened. A formula result that changed because another sheet was edited is a change (the sheet is written
-  from the model, with the new cached values). Renaming, hiding or moving the sheet is not (that is in `xl/workbook.xml`).
+  what they were when it was opened. A formula result that changed because another sheet was edited is a change (the cell's `<v>` is
+  replaced in the sheet's part, see above). Renaming, hiding or moving the sheet is not (that is in `xl/workbook.xml`).
 - The one thing rewritten in such a part is `tabSelected` of its view, when the sheet on display is no longer the one the file had on
   display (two sheets that say so are a group to Excel); the part is otherwise the file's text.
 - **Every sheet is written from the model** (the styles, strings and workbook part are still the file's, added to) in a workbook in the

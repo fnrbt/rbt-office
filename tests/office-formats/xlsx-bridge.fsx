@@ -643,7 +643,7 @@ let partText (bytes: byte[]) (path: string) =
 let valuesSheetXml = partText valuesBytes "xl/worksheets/sheet1.xml"
 ok "filter: the element as Excel writes it" (valuesSheetXml.Contains "<autoFilter ref=\"B1:E7\"><filterColumn colId=\"0\"><filters><filter val=\"East\"/><filter val=\"West\"/></filters></filterColumn></autoFilter>") valuesSheetXml
 ok "filter: it comes after the rows and before the merges / page setup" (valuesSheetXml.IndexOf "<autoFilter" > valuesSheetXml.IndexOf "</sheetData>" && valuesSheetXml.IndexOf "<autoFilter" < valuesSheetXml.IndexOf "<pageMargins") "order"
-ok "filter: the hidden name of the sheet" ((partText valuesBytes "xl/workbook.xml").Contains "<definedName name=\"_xlnm._FilterDatabase\" localSheetId=\"0\" hidden=\"1\">&apos;Axes&apos;!$B$1:$E$7</definedName>") (partText valuesBytes "xl/workbook.xml")
+ok "filter: the hidden name of the sheet" ((partText valuesBytes "xl/workbook.xml").Contains "<definedName name=\"_xlnm._FilterDatabase\" localSheetId=\"0\" hidden=\"1\">'Axes'!$B$1:$E$7</definedName>") (partText valuesBytes "xl/workbook.xml")
 let valuesFile = XlsxReader.loadBytesNative valuesBytes |> Option.get
 eq "filter: the name is the filter's, not a defined name of the workbook" ((Bridge.Import.importWorkbook valuesFile).Context.Names |> Map.count, valuesFile.NamedRanges.Length) (0, 0)
 // A filter with no column filtered: the range alone.

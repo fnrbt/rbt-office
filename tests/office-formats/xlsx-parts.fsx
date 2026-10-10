@@ -251,5 +251,103 @@ for file in files do
                 | _ -> ()
             with error -> ok (name + ": export") false (error.Message.Split('\n').[0])
 
+// ---- an edited sheet is the file's part with the edit in it ------------------
+// A value typed into a cell, a fill on another, formulas with other results:
+// the sheet's part is the file's with those <c> elements replaced, nothing
+// else of it written anew - sheetPr, the views, ignoredErrors, the rows and
+// their attributes, the shared formulas and the page setup are the file's.
+if named.Length = 0 then
+    let M = Rbt.Spreadsheet.Model.setCell
+    let milk = File.ReadAllBytes(Path.Combine(root, "real-world/milk-street-office.xlsx"))
+    let workbook = XlsxReader.loadBytesNative milk |> Option.get
+    let imported = Bridge.Import.importWorkbook workbook
+    let index = imported.Sheets |> Array.findIndex (fun sheet -> sheet.Name = "Annual")
+    let sheetPath = (List.item index workbook.Sheets).Extras.SourcePart |> Option.get |> fst
+    let before = partsOf milk
+    let was = text before.[sheetPath]
+    let addr row col : Rbt.Spreadsheet.Model.CellAddress = { Row = row; Col = col }
+    let cellOfRef (reference: string) =
+        let letters = reference |> Seq.takeWhile Char.IsLetter |> Seq.toArray |> String
+        addr (int (reference.Substring letters.Length) - 1) ((letters |> Seq.fold (fun acc ch -> acc * 26 + int ch - int 'A' + 1) 0) - 1)
+    // A cell that takes its formula from another (`<f t="shared" si/>`), holding a number.
+    let sharedRef = Text.RegularExpressions.Regex.Match(was, "<c r=\"([A-Z]+[0-9]+)\"(?: s=\"[0-9]+\")?><f t=\"shared\" si=\"[0-9]+\"/><v>").Groups.[1].Value
+    let exportWith (edit: Rbt.Spreadsheet.Model.SpreadsheetModel -> Rbt.Spreadsheet.Model.SpreadsheetModel) =
+        let sheets = imported.Sheets |> Array.map (fun sheet -> sheet.Model)
+        sheets.[index] <- edit sheets.[index]
+        let input : Bridge.ExportInput =
+            { Sheets = sheets; Names = imported.Sheets |> Array.map (fun sheet -> sheet.Name); Visible = imported.Sheets |> Array.map (fun sheet -> sheet.Visible)
+              ActiveSheetIndex = workbook.Preserved.ActiveTab; NameInfo = imported.Context.NameInfo; DefinedNames = imported.Context.Names
+              Source = Some imported.Source; Macros = None }
+        XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
+    let typed (model: Rbt.Spreadsheet.Model.SpreadsheetModel) =
+        let cell at = Rbt.Spreadsheet.Model.getCell at model
+        let b3 = cell (addr 2 1) |> Option.defaultValue { Value = Rbt.Spreadsheet.Model.CellValue.Empty; Format = Rbt.Spreadsheet.Model.defaultFormat; Comment = None }
+        let shared = cell (cellOfRef sharedRef) |> Option.get
+        model
+        |> M (addr 397 13) { Value = Rbt.Spreadsheet.Model.CellValue.Number 5.0; Format = Rbt.Spreadsheet.Model.defaultFormat; Comment = None }
+        |> M (addr 2 1) { b3 with Format = { b3.Format with BgColor = Some "#FFEE00" } }
+        |> M (cellOfRef sharedRef) { shared with Value = (match shared.Value with Rbt.Spreadsheet.Model.CellValue.Formula (formula, _) -> Rbt.Spreadsheet.Model.CellValue.Formula (formula, Rbt.Spreadsheet.Model.CellValue.Number 123.25) | other -> other) }
+    let saved = exportWith typed
+    let after = partsOf saved
+    let now = text after.[sheetPath]
+    let element (name: string) (xml: string) =
+        let found = Text.RegularExpressions.Regex.Match(xml, sprintf "<%s(?=[\\s>/])[^>]*/>|<%s(?=[\\s>])[^>]*>[\\s\\S]*?</%s>" name name name)
+        if found.Success then found.Value else ""
+    let count (pattern: string) (xml: string) = Text.RegularExpressions.Regex.Matches(xml, pattern).Count
+    ok "edited sheet: the file has what the check is about"
+        (sharedRef <> "" && (element "sheetPr" was).Contains "codeName" && element "ignoredErrors" was <> "" && count "t=\"shared\"" was > 100 && element "headerFooter" was = "")
+        (sprintf "shared %s, sheetPr %s" sharedRef (element "sheetPr" was))
+    for name in [ "sheetPr"; "sheetViews"; "sheetFormatPr"; "cols"; "ignoredErrors"; "pageMargins"; "pageSetup"; "headerFooter"; "mergeCells"; "extLst"; "drawing"; "legacyDrawing" ] do
+        ok (sprintf "edited sheet: <%s> is the file's" name) (element name now = element name was) (sprintf "%s  <-  %s" (element name now |> fun t -> t.Substring(0, min 200 t.Length)) (element name was |> fun t -> t.Substring(0, min 200 t.Length)))
+    let rowTags (xml: string) = [ for found in Text.RegularExpressions.Regex.Matches(xml, "<row\\b[^>]*>") -> Text.RegularExpressions.Regex.Replace(found.Value, " spans=\"[^\"]*\"", "") ]
+    ok "edited sheet: the rows keep their attributes (style, height)" (rowTags now = rowTags was) (sprintf "%d rows, %d in the file" (rowTags now).Length (rowTags was).Length)
+    ok "edited sheet: the shared formulas stay shared" (count "t=\"shared\"" now = count "t=\"shared\"" was) (sprintf "%d of %d" (count "t=\"shared\"" now) (count "t=\"shared\"" was))
+    // But for the three cells the part is the file's, character for character.
+    let without (xml: string) =
+        [ "N398"; "B3"; sharedRef ]
+        |> List.fold (fun (acc: string) reference -> Text.RegularExpressions.Regex.Replace(acc, sprintf "<c r=\"%s\"(?:[^>]*/>|[^>]*>[\\s\\S]*?</c>)" reference, "")) xml
+        // (A row with a new cell loses its `spans`; the dimension holds the new cell.)
+        |> fun stripped -> Text.RegularExpressions.Regex.Replace(stripped, " spans=\"[^\"]*\"|<dimension[^>]*>", "")
+    ok "edited sheet: nothing but the edited cells differs from the file's part" (without now = without was) (sprintf "%d chars, the file's %d" (without now).Length (without was).Length)
+    ok "edited sheet: the dimension holds the new cell" ((element "dimension" was).Contains "B1:L398" && (element "dimension" now).Contains "B1:N398") (element "dimension" now)
+    ok "edited sheet: the typed value is in its cell" (Text.RegularExpressions.Regex.IsMatch(now, "<c r=\"N398\"[^>]*><v>5</v></c>")) "N398"
+    ok "edited sheet: a formula with another result keeps its shared formula"
+        (Text.RegularExpressions.Regex.IsMatch(now, sprintf "<c r=\"%s\"[^>]*><f t=\"shared\" si=\"[0-9]+\"/><v>123.25</v></c>" sharedRef)) sharedRef
+    ok "edited sheet: the shared strings are the file's" (after.["xl/sharedStrings.xml"] = before.["xl/sharedStrings.xml"]) "sharedStrings.xml differs"
+    let reread = Bridge.Import.importWorkbook (XlsxReader.loadBytesNative saved |> Option.get)
+    let cellNow at = Rbt.Spreadsheet.Model.getCell at reread.Sheets.[index].Model
+    ok "edited sheet: read back: the value, the fill and the formula's result"
+        ((cellNow (addr 397 13) |> Option.map (fun cell -> cell.Value)) = Some (Rbt.Spreadsheet.Model.CellValue.Number 5.0)
+         && (cellNow (addr 2 1) |> Option.bind (fun cell -> cell.Format.BgColor) |> Option.map (fun color -> color.ToUpperInvariant())) = Some "#FFEE00"
+         && (match cellNow (cellOfRef sharedRef) |> Option.map (fun cell -> cell.Value) with Some (Rbt.Spreadsheet.Model.CellValue.Formula (_, Rbt.Spreadsheet.Model.CellValue.Number 123.25)) -> true | _ -> false))
+        (sprintf "%A" (cellNow (addr 2 1) |> Option.map (fun cell -> cell.Format.BgColor)))
+    // What holds the package together is the file's: the content types, the relationships, the workbook part.
+    let plumbing = [ "[Content_Types].xml"; "_rels/.rels"; "xl/_rels/workbook.xml.rels"; "xl/workbook.xml" ]
+    ok "edited sheet: content types, relationships and the workbook part are the file's" (plumbing |> List.forall (fun path -> after.[path] = before.[path]))
+        (plumbing |> List.filter (fun path -> after.[path] <> before.[path]) |> String.concat ", ")
+    // Only a value typed: every part but the sheet's is the file's, byte for byte (no format was added to the styles).
+    let onlyTyped = partsOf (exportWith (M (addr 397 13) { Value = Rbt.Spreadsheet.Model.CellValue.Number 5.0; Format = Rbt.Spreadsheet.Model.defaultFormat; Comment = None }))
+    let differing = before |> Map.toList |> List.filter (fun (path, data) -> Map.tryFind path onlyTyped <> Some data) |> List.map fst
+    ok "a value typed: only the sheet's part is not the file's" (differing = [ sheetPath ] && onlyTyped.Count = before.Count) (String.concat ", " differing)
+    // Another zoom and tab colour: the view keeps its selection and where it is scrolled to.
+    let zoomed = text (partsOf (exportWith (fun model -> { model with Zoom = 0.75; TabColor = Some "#00B050" }))).[sheetPath]
+    let viewNow, viewWas = element "sheetViews" zoomed, element "sheetViews" was
+    ok "zoomed sheet: the view is the file's with the new zoom"
+        (viewNow = viewWas.Replace(" tabSelected=\"1\"", " tabSelected=\"1\" zoomScale=\"75\"").Replace(" zoomScaleNormal=\"100\" workbookViewId", " zoomScaleNormal=\"100\" workbookViewId") || (viewNow.Contains "zoomScale=\"75\"" && viewNow.Contains "topLeftCell=\"A308\"" && viewNow.Contains "<selection activeCell=\"B308\"" && viewNow.Length = viewWas.Length + " zoomScale=\"75\"".Length))
+        viewNow
+    ok "zoomed sheet: the tab colour is in the file's sheetPr" (element "sheetPr" zoomed = (element "sheetPr" was).Replace("<pageSetUpPr", "<tabColor rgb=\"FF00B050\"/><pageSetUpPr")) (element "sheetPr" zoomed)
+    let strip (xml: string) = xml.Replace(element "sheetViews" xml, "").Replace(element "sheetPr" xml, "")
+    ok "zoomed sheet: the rest of the part is the file's" (strip zoomed = strip was) "differs"
+    // A row inserted: the sheet is written from its model. The results of
+    // formulas that are texts stay in their cells - none becomes a shared string.
+    let restructured = partsOf (exportWith (Rbt.Spreadsheet.Model.insertRow 500))
+    let strings (parts: Map<string, byte[]>) = count "<si[\\s>]" (text parts.["xl/sharedStrings.xml"])
+    ok "row inserted: no result of a formula is added to the shared strings" (strings restructured = strings before) (sprintf "%d strings, the file has %d" (strings restructured) (strings before))
+    let restructuredSheet = text restructured.[sheetPath]
+    ok "row inserted: nothing the file did not say is added (an empty header and footer, fit-to-page counts)"
+        (not (restructuredSheet.Contains "<headerFooter") && not (restructuredSheet.Contains "fitToWidth") && not (restructuredSheet.Contains "fitToHeight") && not (was.Contains "fitToWidth"))
+        (element "pageSetup" restructuredSheet + element "headerFooter" restructuredSheet)
+    ok "row inserted: text results are written in their cells" (count "t=\"str\"[^>]*><f" (text restructured.[sheetPath]) = count "t=\"str\"[^>]*><f" was) (sprintf "%d of %d" (count "t=\"str\"[^>]*><f" (text restructured.[sheetPath])) (count "t=\"str\"[^>]*><f" was))
+
 printfn "\nXLSX part carry-over tests: %d passed, %d failed (%d workbooks, %d files skipped)" pass fail books skipped
 if fail > 0 then exit 1
