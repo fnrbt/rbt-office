@@ -243,8 +243,86 @@ let private cellDataIsFormula (cell: CellData) =
     | Formula _ -> true
     | _ -> false
 
+// ---------------------------------------------------------------------------
+// The formula index of a sheet's cells
+// ---------------------------------------------------------------------------
+// Which cells of a cell map hold formulas, kept beside the map (a map never
+// changes, so what was found for it stays true): a recalculation of a sheet
+// of several hundred thousand values and a handful of formulas then goes to
+// its formulas without walking the values. The index is made when a file is
+// opened (the reader knows the formulas), follows `setCell` / `clearCell` and
+// a recalculation (which changes values, not which cells are formulas), and
+// is otherwise found by one walk of the map, the first time it is asked for.
+// It is held weakly: it goes when its map goes.
+#if FABLE_COMPILER
+[<Fable.Core.Emit("new WeakMap()")>]
+let private newFormulaIndexTable () : obj = failwith "JS only"
+[<Fable.Core.Emit("$0.get($1)")>]
+let private formulaIndexGet (table: obj) (key: obj) : obj = failwith "JS only"
+[<Fable.Core.Emit("$0.set($1, $2)")>]
+let private formulaIndexSet (table: obj) (key: obj) (value: obj) : unit = failwith "JS only"
+let private formulaIndexTable = newFormulaIndexTable ()
+
+/// The formula cells of a cell map, when they are known.
+let tryFormulaIndex (cells: Map<CellAddress, CellData>) : Set<CellAddress> option =
+    let found = formulaIndexGet formulaIndexTable (box cells)
+    if isNull found then None else Some (unbox<Set<CellAddress>> found)
+
+/// State which cells of a map hold formulas (the caller knows).
+let registerFormulaIndex (cells: Map<CellAddress, CellData>) (index: Set<CellAddress>) : unit =
+    formulaIndexSet formulaIndexTable (box cells) (box index)
+#else
+let private formulaIndexTable = System.Runtime.CompilerServices.ConditionalWeakTable<obj, Set<CellAddress>>()
+
+/// The formula cells of a cell map, when they are known.
+let tryFormulaIndex (cells: Map<CellAddress, CellData>) : Set<CellAddress> option =
+    match formulaIndexTable.TryGetValue (box cells) with
+    | true, index -> Some index
+    | false, _ -> None
+
+/// State which cells of a map hold formulas (the caller knows).
+let registerFormulaIndex (cells: Map<CellAddress, CellData>) (index: Set<CellAddress>) : unit =
+    lock formulaIndexTable (fun () ->
+        formulaIndexTable.Remove (box cells) |> ignore
+        formulaIndexTable.Add (box cells, index))
+#endif
+
+/// The formula cells of a cell map: known, or found by walking the map (and
+/// known from then on).
+let formulaIndexOf (cells: Map<CellAddress, CellData>) : Set<CellAddress> =
+    match tryFormulaIndex cells with
+    | Some index -> index
+    | None ->
+        let found = ResizeArray<CellAddress>()
+        cells |> Map.iter (fun addr cell -> if cellDataIsFormula cell then found.Add addr)
+        let index = if found.Count = 0 then Set.empty else Set.ofSeq found
+        registerFormulaIndex cells index
+        index
+
+/// `after` holds formulas in the same cells as `before` (values changed,
+/// formats changed): what is known of the one is known of the other.
+let inheritFormulaIndex (before: Map<CellAddress, CellData>) (after: Map<CellAddress, CellData>) : unit =
+    if not (obj.ReferenceEquals(before, after)) then
+        match tryFormulaIndex before with
+        | Some index -> registerFormulaIndex after index
+        | None -> ()
+
+/// `after` is `before` with the cell at `addr` set to `data` (None: removed).
+let private followFormulaIndex (before: Map<CellAddress, CellData>) (after: Map<CellAddress, CellData>) (addr: CellAddress) (data: CellData option) : unit =
+    match tryFormulaIndex before with
+    | Some index ->
+        let isFormula = match data with Some cell -> cellDataIsFormula cell | None -> false
+        let index =
+            if isFormula then (if Set.contains addr index then index else Set.add addr index)
+            elif index.IsEmpty || not (Set.contains addr index) then index
+            else Set.remove addr index
+        registerFormulaIndex after index
+    | None -> ()
+
 let cellsHaveFormulaCells (cells: Map<CellAddress, CellData>) =
-    cells |> Map.exists (fun _ cell -> cellDataIsFormula cell)
+    match tryFormulaIndex cells with
+    | Some index -> not index.IsEmpty
+    | None -> cells |> Map.exists (fun _ cell -> cellDataIsFormula cell)
 
 /// Selection types
 type Selection =
@@ -1258,7 +1336,9 @@ let setCell (addr: CellAddress) (data: CellData) (model: SpreadsheetModel): Spre
                 match existing with
                 | Some ghost when ghost.Value = data.Value -> model.Spill
                 | _ -> Map.remove addr model.Spill
-        { model with Cells = Map.add addr data model.Cells; Spill = spill } |> invalidateFilterProjection
+        let cells = Map.add addr data model.Cells
+        followFormulaIndex model.Cells cells addr (Some data)
+        { model with Cells = cells; Spill = spill } |> invalidateFilterProjection
 
 let setCellFormat (addr: CellAddress) (update: CellFormat -> CellFormat) (model: SpreadsheetModel): SpreadsheetModel =
     let existing = getCell addr model |> Option.defaultValue { Value = Empty; Format = defaultFormat; Comment = None }
@@ -1357,7 +1437,9 @@ let setCellBorder (addr: CellAddress) (side: string) (style: string) (color: str
 /// Clear cell at address
 let clearCell (addr: CellAddress) (model: SpreadsheetModel): SpreadsheetModel =
     if Map.containsKey addr model.Cells then
-        { model with Cells = Map.remove addr model.Cells } |> invalidateFilterProjection
+        let cells = Map.remove addr model.Cells
+        followFormulaIndex model.Cells cells addr None
+        { model with Cells = cells } |> invalidateFilterProjection
     else
         model
 
@@ -2558,27 +2640,32 @@ let private moveEditSpan isInsert at count lo hi =
 let rewriteFormulasForEdit (edit: StructureEdit) (targetsEditedSheet: string option -> bool) (model: SpreadsheetModel) : SpreadsheetModel =
     let mutable cells = model.Cells
     let mutable changed = false
-    for KeyValue(addr, cellData) in model.Cells do
-        match cellData.Value with
-        | Formula (formula, cached) ->
+    // (Its formulas, by the sheet's formula index: the values are not walked.)
+    for addr in formulaIndexOf model.Cells do
+        match Map.tryFind addr model.Cells with
+        | Some ({ Value = Formula (formula, cached) } as cellData) ->
             let adjusted = adjustFormulaForEdit edit targetsEditedSheet formula
             if adjusted <> formula then
                 cells <- Map.add addr { cellData with Value = Formula (adjusted, cached) } cells
                 changed <- true
         | _ -> ()
-    if changed then { model with Cells = cells } |> invalidateFilterProjection else model
+    if changed then
+        inheritFormulaIndex model.Cells cells
+        { model with Cells = cells } |> invalidateFilterProjection
+    else model
 
 /// Apply `rewrite` to every formula a sheet holds: its formula cells, the
 /// formulas of its conditional formats and of its validations. The model
 /// itself when nothing changed.
 let mapModelFormulas (rewrite: string -> string) (model: SpreadsheetModel) : SpreadsheetModel =
     let mutable cells = model.Cells
-    for KeyValue(addr, cellData) in model.Cells do
-        match cellData.Value with
-        | Formula (formula, cached) ->
+    for addr in formulaIndexOf model.Cells do
+        match Map.tryFind addr model.Cells with
+        | Some ({ Value = Formula (formula, cached) } as cellData) ->
             let rewritten = rewrite formula
             if rewritten <> formula then cells <- Map.add addr { cellData with Value = Formula (rewritten, cached) } cells
         | _ -> ()
+    inheritFormulaIndex model.Cells cells
     let threshold (value: CfThreshold) =
         match value.Kind with
         | CfvoFormula -> { value with Value = value.Value |> Option.map rewrite }
@@ -2643,6 +2730,8 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
             | Some moved -> Map.add moved value acc
             | None -> acc) Map.empty
 
+    // (The formula cells are noted as they go by: the new map has its formula index.)
+    let formulaCells = ResizeArray<CellAddress>()
     let cells =
         model.Cells
         |> Map.fold (fun acc addr cellData ->
@@ -2652,11 +2741,13 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
                 let cellData =
                     match cellData.Value with
                     | Formula (formula, cached) ->
+                        formulaCells.Add moved
                         let adjusted = adjustFormulaForEdit edit targetsEditedSheet formula
                         if adjusted = formula then cellData
                         else { cellData with Value = Formula (adjusted, cached) }
                     | _ -> cellData
                 Map.add moved cellData acc) Map.empty
+    registerFormulaIndex cells (if formulaCells.Count = 0 then Set.empty else Set.ofSeq formulaCells)
 
     // A deleted selection falls back onto the row/column that took its place.
     let moveSelected index =

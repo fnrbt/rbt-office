@@ -117,6 +117,26 @@ let fullRecalculation (wb: Wb.Workbook) =
         fullDifference <- difference result reference
     result
 
+/// The formula index of a sheet's cells (`Model.formulaIndexOf`), wherever one is known, names exactly
+/// the cells that hold formulas: it follows setCell / clearCell and both recalculations.
+let mutable indexChecks = 0
+let mutable indexKnown = 0
+let checkFormulaIndex (label: string) (wb: Wb.Workbook) =
+    for KeyValue (sheetId, sheet) in wb.Sheets do
+        match sheet.Model.Deferred with
+        | Some deferred when deferred.Loaded.IsNone -> ()
+        | _ ->
+            let cells = (resolveSheet sheet.Model).Cells
+            indexChecks <- indexChecks + 1
+            match tryFormulaIndex cells with
+            | Some index ->
+                indexKnown <- indexKnown + 1
+                let walked = cells |> Map.toSeq |> Seq.filter (fun (_, cell) -> match cell.Value with CellValue.Formula _ -> true | _ -> false) |> Seq.map fst |> Set.ofSeq
+                if index <> walked then
+                    fail <- fail + 1
+                    printfn "FAIL %s: the formula index of %s names %d cells, the sheet has %d formulas (%A)" label sheetId index.Count walked.Count ((index - walked) + (walked - index) |> Seq.truncate 3 |> List.ofSeq)
+            | None -> ()
+
 /// An edit both ways: incrementally, and by a full recalculation.
 type Outcome = Incremental of Recalc.RecalcStats | Declined
 /// How often the engine declined, by the reason it gave.
@@ -128,16 +148,20 @@ let mutable current = Unchecked.defaultof<Wb.Workbook>
 let start (wb: Wb.Workbook) =
     current <- fullRecalculation wb
     countFull "start"
+    checkFormulaIndex "start" current
     engine <- Recalc.build current
 let edit label (hint: (string * CellAddress) list option) (change: Wb.Workbook -> Wb.Workbook) =
     let edited = change current
+    checkFormulaIndex (label + " (edited)") edited
     let full = fullRecalculation edited
+    checkFormulaIndex (label + " (full)") full
     // (How often one run of the reference - the pass as it was - is short of the values.)
     referenceSteps <- referenceSteps + 1
     if (difference (Formula.recalculateWorkbookSettling edited) full).IsSome then referenceShort <- referenceShort + 1
     match Recalc.recalculate engine edited hint with
     | Some result ->
         countFull label
+        checkFormulaIndex (label + " (incremental)") result
         (match difference result full with
          | None -> pass <- pass + 1
          | Some detail -> fail <- fail + 1; printfn "FAIL %s: incremental differs from full at %s" label detail)
@@ -544,6 +568,53 @@ ok "no edit is declined for OFFSET / INDIRECT / 3-D references (only circular re
     (sprintf "%A" (List.ofSeq declines.Keys))
 ok "the random edits with OFFSET / INDIRECT / 3-D references were nearly all incremental" (dynamicIncremental * 10 > dynamicSeeds * spillSteps * 9) (sprintf "%d of %d" dynamicIncremental (dynamicSeeds * spillSteps))
 reportFullRuns "with OFFSET / INDIRECT / 3-D references"
+
+// The formula index: known for most of the cell maps that went by, and never wrong (checked in `edit`).
+printfn "  formula index: known for %d of %d cell maps checked" indexKnown indexChecks
+ok "the formula index was known for most cell maps" (indexKnown * 2 > indexChecks) (sprintf "%d of %d" indexKnown indexChecks)
+// A sheet of values with a few formulas: an opened file's index is there without a walk, and it is exact.
+do
+    let dashboard = load "real-world/dashboard-sales-analysis.xlsx"
+    for KeyValue (sheetId, sheet) in dashboard.Sheets do
+        let cells = (resolveSheet sheet.Model).Cells
+        let walked = cells |> Map.toSeq |> Seq.filter (fun (_, cell) -> match cell.Value with CellValue.Formula _ -> true | _ -> false) |> Seq.map fst |> Set.ofSeq
+        eq (sprintf "an opened sheet has its formula index (%s)" sheetId) (tryFormulaIndex cells) (Some walked)
+    let recalculated = Formula.recalculateWorkbook dashboard
+    checkFormulaIndex "the opened workbook recalculated" recalculated
+
+// "Does this formula spill" is asked of every formula when the graph is built, in one walk of the
+// formula: it answers as the two walks it replaced, on every formula of the real workbooks and on
+// formulas of every shape the test looks at.
+do
+    let shapes =
+        [ "=A1"; "=A1:A3"; "=A:A"; "=1:1"; "=SUM(A1:A3)"; "=SUM(A1:A3*2)"; "=A1:A3*2"; "=-A1:A3"; "=LEN(A1:A3)"; "=LEN(A:A)"; "=SEQUENCE(3)"; "=SUM(SEQUENCE(3))"
+          "=IF(A1,SEQUENCE(2),1)"; "=OFFSET(A1,0,0,3,1)"; "=SUM(OFFSET(A1,0,0,3,1))"; "=OFFSET(A1,SEQUENCE(2),0)"; "=INDIRECT(\"A1:A3\")"; "=INDEX(A1:C3,0,2)"; "=INDEX(A1:C3,2,2)"
+          "=INDEX(A1:C3,B1:B2,1)"; "=INDEX(A1:A9,2)"; "=INDEX(A1:C3,2)"; "=INDEX(SEQUENCE(3),2)"; "=ROW(A1:A5)"; "=ROW(A1)"; "=COLUMN(A1:C1)"; "=ROWS(A1:A5)"; "={1,2;3,4}"; "=SUM({1,2})"
+          "=A1#"; "=SUM(A1#)"; "=Sheet1:Data!A1"; "=SUM(Sheet1:Data!A1)"; "=(A1:A3,C1:C3)"; "=SUM((A1:A3,C1:C3))"; "=A1:C3 B2:D4"; "=A1:INDEX(A:A,3)"; "=SUM(A1:INDEX(A:A,3))"
+          "=VLOOKUP(A1:A3,C1:D9,2,0)"; "=VLOOKUP(A1,C1:D9,2,0)"; "=IF(A1:A3>1,1,0)"; "=SUMPRODUCT(A1:A3,B1:B3)"; "=SUMPRODUCT((A1:A3>1)*B1:B3)"; "=MYSTERY(A1:A3)"; "=MYSTERY(SORT(A1:A3))"
+          "=TEXT(A1:A2,\"0\")&\"x\""; "=T[@Amount]"; "=T[Amount]"; "=SUM(T[Amount])"; "=FILTER(A1:A9,B1:B9>1)"; "=LET(x,A1:A3,x*2)"; "=1+2"; "=NOW()"; "=RATE*2" ]
+    let mutable asked = 0
+    let mutable differ = 0
+    let ask (formula: string) =
+        match Formula.parseFormula formula with
+        | Ok expr ->
+            asked <- asked + 1
+            for dynamicReferences in [ false; true ] do
+                let one = if dynamicReferences then Formula.exprSpills expr else Formula.exprSpillsStatically expr
+                if one <> Formula.exprSpillsReference dynamicReferences expr then
+                    differ <- differ + 1
+                    if differ <= 5 then printfn "FAIL one walk says %b of %s (OFFSET / INDIRECT counted: %b)" one formula dynamicReferences
+        | Result.Error _ -> ()
+    for formula in shapes do ask formula
+    ok "the shapes parse" (asked >= shapes.Length - 3) (string asked)
+    if Environment.GetEnvironmentVariable "SKIP_FILES" <> "1" then
+        for file in [ "milk-street-office.xlsx"; "lyric-multifamily.xlsx"; "dcf-stock-analysis.xlsx"; "saopaulo-condos.xlsx"; "jumeirah-hotel.xlsx"; "dashboard-sales-analysis.xlsx"; "chart-zoo.xlsx"; "conditional-formatting-tutorial.xlsx" ] do
+            for KeyValue (_, sheet) in (load ("real-world/" + file)).Sheets do
+                for KeyValue (_, cell) in (resolveSheet sheet.Model).Cells do
+                    match cell.Value with
+                    | CellValue.Formula (formula, _) -> ask formula
+                    | _ -> ()
+    eq (sprintf "spills: one walk answers as two (%d formulas)" asked) differ 0
 
 printfn "stage32-recalc: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

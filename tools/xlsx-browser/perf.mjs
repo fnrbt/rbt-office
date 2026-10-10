@@ -4,12 +4,13 @@
 // reading the written file again, and frame times while scrolling a sheet.
 //
 // Usage:
-//   node tools/xlsx-browser/perf.mjs --dist $DIST [--profile load|export|reread|scroll|edits|first] [--sheet NAME] [--frames N] [--steps 120,0] [--no-scroll] [--no-jump] [--edits] [file.xlsx ...]
+//   node tools/xlsx-browser/perf.mjs --dist $DIST [--profile load|export|reread|scroll|edits|first] [--first-runs N] [--only-first] [--sheet NAME] [--frames N] [--steps 120,0] [--no-scroll] [--no-jump] [--edits] [file.xlsx ...]
 // (--edits also times edits of a large block: a format on 10 000 cells, a paste of 1 000 x 20
 // cells, a typed entry and their undo, on the first sheet and on the sheet with the most cells.)
 // (--no-jump leaves out the jumps to the far end: 0.1.4 took minutes for one frame there.)
 // With no files: tests/real-world/dashboard-sales-analysis.xlsx and milk-street-office.xlsx.
-// --profile prints the functions with the most self time in that phase (CPU profile).
+// --profile prints the functions with the most self time in that phase (CPU profile);
+// with PROFILE_TOTAL=1 in the environment also the time under each function.
 // --sheet picks the sheet to scroll (default: the one with the most cells).
 // Environment: PLAYWRIGHT, JSZIP_DIR, PORT (default 16101).
 import http from 'node:http';
@@ -29,7 +30,9 @@ const frames = Number(opt('--frames') ?? 120);
 const steps = (opt('--steps') ?? '120,0').split(',').map(Number);
 const noJump = (() => { const i = args.indexOf('--no-jump'); if (i < 0) return false; args.splice(i, 1); return true; })();
 const noScroll = (() => { const i = args.indexOf('--no-scroll'); if (i < 0) return false; args.splice(i, 1); return true; })();
+const firstRuns = Number(opt('--first-runs') ?? 5);
 const edits = (() => { const i = args.indexOf('--edits'); if (i < 0) return false; args.splice(i, 1); return true; })();
+const onlyFirst = (() => { const i = args.indexOf('--only-first'); if (i < 0) return false; args.splice(i, 1); return true; })();
 const port = Number(process.env.PORT ?? 16101);
 const jszipDir = [process.env.JSZIP_DIR, path.join(repo, 'node_modules/jszip'), path.resolve(repo, '../rbt-office/node_modules/jszip')].find((p) => p && fs.existsSync(p));
 if (!jszipDir) { console.error('jszip not found; set JSZIP_DIR'); process.exit(2); }
@@ -69,11 +72,14 @@ try {
         // (model, recalculation, render) and the frame that follows it.
         // The first edit of a workbook that was just opened: the sheets with formulas are
         // converted and the dependency graph is built (it is built in idle time otherwise).
-        async firstEdit(name) {
+        // (In two calls, so that a profile of the edit does not hold the opening.)
+        async openFresh(name) {
             const bytes = new Uint8Array(await (await fetch('/file?name=' + encodeURIComponent(name))).arrayBuffer());
             if (grid) grid.Dispose();
             grid = createSpreadsheet(host); grid.Mount();
             await grid.ImportXlsx(bytes);
+        },
+        async firstEdit() {
             const t0 = performance.now();
             grid.EnterText(7, 3, '54321');
             const first = performance.now() - t0;
@@ -187,6 +193,23 @@ try {
                 const key = `${frame.functionName || '(anonymous)'}  ${frame.url.split('/').slice(-2).join('/')}:${frame.lineNumber + 1}`;
                 self.set(key, (self.get(key) ?? 0) + interval);
             }
+            if (process.env.PROFILE_TOTAL) {
+                // Time under each function (itself and what it calls; a recursive one counts once per chain).
+                const selfOf = new Map(); for (const id of cpu.samples) selfOf.set(id, (selfOf.get(id) ?? 0) + interval);
+                const total = new Map();
+                const keyOf = (node) => `${node.callFrame.functionName || '(anonymous)'}  ${node.callFrame.url.split('/').slice(-2).join('/')}:${node.callFrame.lineNumber + 1}`;
+                const walk = (node, open) => {
+                    let sum = selfOf.get(node.id) ?? 0;
+                    const key = keyOf(node), mine = !open.has(key);
+                    if (mine) open.add(key);
+                    for (const child of node.children ?? []) sum += walk(byId.get(child), open);
+                    if (mine) { open.delete(key); total.set(key, (total.get(key) ?? 0) + sum); }
+                    return sum;
+                };
+                walk(cpu.nodes[0], new Set());
+                console.log(`  -- time under, ${name} --`);
+                for (const [key, time] of [...total.entries()].sort((a, b) => b[1] - a[1]).slice(0, 45)) console.log(`  ${time.toFixed(0).padStart(7)} ms  ${key}`);
+            }
             console.log(`  -- self time, ${name} --`);
             for (const [key, time] of [...self.entries()].sort((a, b) => b[1] - a[1]).slice(0, 40)) console.log(`  ${time.toFixed(0).padStart(7)} ms  ${key}`);
             return result;
@@ -200,9 +223,18 @@ try {
         console.log(`  re-read (sheet names)    ${ms(reread)}`);
         const sheets = await tab.evaluate(() => window.perf.sheets());
         if (edits) {
-            const f = await phase('first', () => tab.evaluate((name) => window.perf.firstEdit(name), file));
-            console.log(`  the first edit right after opening (a typed number): ${ms(f.first)} [${f.kind}]; the same cell again ${ms(f.second)}`);
-            for (const sheet of (sheetName ? sheets.filter((s) => s.name === sheetName) : [sheets[0], sheets.slice().sort((a, b) => b.cells - a.cells)[0]].filter((s, i, all) => all.indexOf(s) === i))) {
+            // The median of several openings (--first-runs N, default 5): one run is off by tens of milliseconds.
+            const firsts = [];
+            let f = null;
+            for (let run = 0; run < firstRuns; run++) {
+                await tab.evaluate((name) => window.perf.openFresh(name), file);
+                f = await (run === firstRuns - 1 ? phase('first', () => tab.evaluate(() => window.perf.firstEdit())) : tab.evaluate(() => window.perf.firstEdit()));
+                if (run === firstRuns - 1 && profile === 'first') continue; // (the profiler's start gives the idle-time build the time to run first)
+                firsts.push(f.first);
+            }
+            const sortedFirsts = firsts.slice().sort((a, b) => a - b);
+            console.log(`  the first edit right after opening (a typed number): median ${ms(sortedFirsts[Math.floor(sortedFirsts.length / 2)])} of ${firsts.map((t) => t.toFixed(0)).join(', ')} ms [${f.kind}]; the same cell again ${ms(f.second)}`);
+            for (const sheet of (onlyFirst ? [] : sheetName ? sheets.filter((s) => s.name === sheetName) : [sheets[0], sheets.slice().sort((a, b) => b.cells - a.cells)[0]].filter((s, i, all) => all.indexOf(s) === i))) {
                 const e = await phase('edits', () => tab.evaluate((index) => window.perf.edits(index), sheet.index));
                 const both = ([call, total, kind]) => `${ms(call)} (${ms(total)} with the frame)${kind ? ' [' + kind + ']' : ''}`;
                 console.log(`  edits on "${sheet.name}" (${sheet.cells} cells):`);

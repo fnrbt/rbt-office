@@ -287,8 +287,7 @@ let parseSheetReference (ref: string): (string option * string) =
     else
         (None, ref)
 
-/// Resolve sheet name to sheet ID
-let resolveSheetName (name: string) (workbook: Workbook): SheetId option =
+let private findSheetNamed (name: string) (workbook: Workbook): SheetId option =
     workbook.Sheets
     |> Map.tryPick (fun id sheet ->
         if sheet.Name.Equals(name, System.StringComparison.OrdinalIgnoreCase) then
@@ -296,6 +295,52 @@ let resolveSheetName (name: string) (workbook: Workbook): SheetId option =
         else
             None
     )
+
+#if FABLE_COMPILER
+// Asked for every sheet-qualified reference of every formula when the
+// dependency graph is built: what a name (as written) resolved to is kept
+// for as long as the questions are about the same sheets.
+// (The sheets are held weakly: a workbook that is let go of is not kept by this.)
+[<Fable.Core.Emit("new WeakRef($0)")>]
+let weakRefOf (target: obj) : obj = failwith "JS only"
+[<Fable.Core.Emit("($0 !== null && $0.deref() === $1)")>]
+let weakRefIs (reference: obj) (target: obj) : bool = failwith "JS only"
+let mutable private sheetNamesOf : obj = null
+let private sheetNamesFound = System.Collections.Generic.Dictionary<string, SheetId option>()
+
+/// Resolve sheet name to sheet ID
+let resolveSheetName (name: string) (workbook: Workbook): SheetId option =
+    if not (weakRefIs sheetNamesOf (box workbook.Sheets)) then
+        sheetNamesOf <- weakRefOf (box workbook.Sheets)
+        sheetNamesFound.Clear()
+    match sheetNamesFound.TryGetValue name with
+    | true, found -> found
+    | false, _ ->
+        let found = findSheetNamed name workbook
+        sheetNamesFound.[name] <- found
+        found
+#else
+// (The same on .NET, per thread: workbooks are calculated on any thread.)
+type private SheetNameMemo() =
+    [<System.ThreadStatic; DefaultValue>]
+    static val mutable private sheets : System.WeakReference
+    [<System.ThreadStatic; DefaultValue>]
+    static val mutable private found : System.Collections.Generic.Dictionary<string, SheetId option>
+    static member Resolve (name: string, workbook: Workbook) : SheetId option =
+        if isNull SheetNameMemo.found then SheetNameMemo.found <- System.Collections.Generic.Dictionary<string, SheetId option>()
+        if isNull SheetNameMemo.sheets || not (obj.ReferenceEquals(SheetNameMemo.sheets.Target, workbook.Sheets)) then
+            SheetNameMemo.sheets <- System.WeakReference(box workbook.Sheets)
+            SheetNameMemo.found.Clear()
+        match SheetNameMemo.found.TryGetValue name with
+        | true, known -> known
+        | false, _ ->
+            let resolved = findSheetNamed name workbook
+            SheetNameMemo.found.[name] <- resolved
+            resolved
+
+/// Resolve sheet name to sheet ID
+let resolveSheetName (name: string) (workbook: Workbook): SheetId option = SheetNameMemo.Resolve (name, workbook)
+#endif
 
 /// Define a table (structured reference)
 let defineTable (table: Table) (workbook: Workbook): Workbook =

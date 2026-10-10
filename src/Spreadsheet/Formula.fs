@@ -967,8 +967,8 @@ let private parseFormulaShared (input: string) : Result<Expr, string> =
 /// name's refers-to text is itself a formula — usually a range, sometimes
 /// a constant or another name; name→name hops are followed with a cycle
 /// guard. Returns None when the name is unknown, won't parse, or cycles.
-let resolveNameExpr (name: string) (currentSheet: Rbt.Spreadsheet.Workbook.SheetId option)
-                    (workbook: Rbt.Spreadsheet.Workbook.Workbook) : Expr option =
+let private resolveNameExprUncached (name: string) (currentSheet: Rbt.Spreadsheet.Workbook.SheetId option)
+                                    (workbook: Rbt.Spreadsheet.Workbook.Workbook) : Expr option =
     let rec resolve (n: string) (seen: Set<string>) (hops: int) =
         let key = n.ToUpperInvariant()
         if hops > 16 || Set.contains key seen then None
@@ -982,6 +982,30 @@ let resolveNameExpr (name: string) (currentSheet: Rbt.Spreadsheet.Workbook.Sheet
                 | Ok (NameRef inner) -> resolve inner (Set.add key seen) (hops + 1)
                 | Ok expr -> Some expr
     resolve name Set.empty 0
+
+#if FABLE_COMPILER
+// Asked for every use of a name by every formula when the dependency graph
+// is built: what a name resolved to is kept for as long as the questions are
+// about the same set of names.
+let mutable private resolvedNamesOf : obj = null
+let private resolvedNames = Dictionary<string, Expr option>()
+let resolveNameExpr (name: string) (currentSheet: Rbt.Spreadsheet.Workbook.SheetId option)
+                    (workbook: Rbt.Spreadsheet.Workbook.Workbook) : Expr option =
+    if not (Rbt.Spreadsheet.Workbook.weakRefIs resolvedNamesOf (box workbook.Names)) then
+        resolvedNamesOf <- Rbt.Spreadsheet.Workbook.weakRefOf (box workbook.Names)
+        resolvedNames.Clear()
+    let key = (match currentSheet with Some sheet -> sheet | None -> "") + "|" + name
+    match resolvedNames.TryGetValue key with
+    | true, known -> known
+    | false, _ ->
+        let resolved = resolveNameExprUncached name currentSheet workbook
+        resolvedNames.[key] <- resolved
+        resolved
+#else
+let resolveNameExpr (name: string) (currentSheet: Rbt.Spreadsheet.Workbook.SheetId option)
+                    (workbook: Rbt.Spreadsheet.Workbook.Workbook) : Expr option =
+    resolveNameExprUncached name currentSheet workbook
+#endif
 
 // ---------------------------------------------------------------------------
 // Value helpers + coercion
@@ -1378,18 +1402,21 @@ let iterReferenceAreas (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
     // The sheets a reference is on: its own, the one it names, or - a 3-D
     // reference (`Sheet1:Sheet3!A1`) - every sheet from the first to the last
     // it names, in tab order.
-    let onSheets (name: string option) (visit: Rbt.Spreadsheet.Workbook.SheetId -> unit) =
+    // (Spelled out for one area: this runs for every reference of every
+    // formula when the dependency graph is built, and a closure per
+    // reference shows there.)
+    let onSheets (name: string option) (r0: int) (c0: int) (r1: int) (c1: int) =
         match name with
-        | None -> visit homeSheet
+        | None -> onArea homeSheet r0 c0 r1 c1
         | Some n ->
             match workbook with
             | None -> ()
             | Some wb ->
                 if n.IndexOf ':' >= 0 then
-                    for sid in threeDSheetIds wb n do visit sid
+                    for sid in threeDSheetIds wb n do onArea sid r0 c0 r1 c1
                 else
                     match Rbt.Spreadsheet.Workbook.resolveSheetName n wb with
-                    | Some sid -> visit sid
+                    | Some sid -> onArea sid r0 c0 r1 c1
                     | None -> ()
     let stack = ResizeArray<struct (Set<string> * Expr)>()
     stack.Add(struct (Set.empty, expr))
@@ -1409,11 +1436,10 @@ let iterReferenceAreas (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
                 match workbook |> Option.bind (resolveNameExpr name (Some homeSheet)) with
                 | Some resolved -> stack.Add(struct (Set.add key seen, resolved))
                 | None -> ()
-        | CellRef r | SpillRef r ->
-            onSheets r.Sheet (fun sid -> onArea sid r.Row r.Col r.Row r.Col)
+        | CellRef r | SpillRef r -> onSheets r.Sheet r.Row r.Col r.Row r.Col
         | RangeRef (a, b) ->
             let sr, sc, er, ec = normalizeRange a b
-            onSheets a.Sheet (fun sid -> onArea sid sr sc er ec)
+            onSheets a.Sheet sr sc er ec
         | UnaryOp (_, inner) -> stack.Add(struct (seen, inner))
         | BinOp (l, _, r) ->
             stack.Add(struct (seen, l))
@@ -13410,6 +13436,80 @@ let containsArrayFunction (e: Expr) : bool =
         | _ -> ()
     found
 
+/// `containsArrayFunction e || isArrayExprCore false dynamicReferences e` in
+/// one walk of the formula (it is asked of every formula when the dependency
+/// graph is built). Every node is visited once, with whether it stands where
+/// `isArrayExprCore` would look at it (`deep`): there the whole test applies,
+/// elsewhere only "is it a call of an array function".
+let private spillsInOneWalk (dynamicReferences: bool) (e: Expr) : bool =
+    let stack = ResizeArray<Expr>()
+    let deepStack = ResizeArray<bool>()
+    stack.Add e
+    deepStack.Add true
+    let mutable found = false
+    while not found && stack.Count > 0 do
+        let last = stack.Count - 1
+        let expr = stack.[last]
+        let deep = deepStack.[last]
+        stack.RemoveAt last
+        deepStack.RemoveAt last
+        match expr with
+        | Function (name, args) ->
+            if isArrayFunction name then found <- true
+            elif not deep then
+                for arg in args do
+                    stack.Add arg
+                    deepStack.Add false
+            elif name = unionOperatorName then found <- true
+            elif isReferenceFunction name then
+                if dynamicReferences then found <- true
+                else
+                    let operands = name = rangeOperatorName || name = intersectionOperatorName
+                    for arg in args do
+                        stack.Add arg
+                        deepStack.Add operands
+            elif isIndexFunction name then
+                if indexMaySelectArea args then found <- true
+                else
+                    let mutable first = true
+                    for arg in args do
+                        stack.Add arg
+                        deepStack.Add (not first)
+                        first <- false
+            else
+                let numbersLines =
+                    match args with
+                    | [ RangeRef _ ] -> equalsOrdinalIgnoreCase name "ROW" || equalsOrdinalIgnoreCase name "COLUMN"
+                    | _ -> false
+                if numbersLines then found <- true
+                else
+                    match functionSignature name with
+                    | ValueSome signature ->
+                        let mutable index = 0
+                        for arg in args do
+                            stack.Add arg
+                            deepStack.Add (paramKindAt signature index = ScalarParam)
+                            index <- index + 1
+                    | ValueNone ->
+                        for arg in args do
+                            stack.Add arg
+                            deepStack.Add false
+        | UnaryOp (_, inner) ->
+            stack.Add inner
+            deepStack.Add deep
+        | BinOp (left, _, right) ->
+            stack.Add left
+            deepStack.Add deep
+            stack.Add right
+            deepStack.Add deep
+        | _ when not deep -> ()
+        | RangeRef (a, b) -> if not (isWholeColumnRange a b || isWholeRowRange a b) then found <- true
+        | CellRef r -> if isThreeDSheet r.Sheet then found <- true
+        | TableRef sel when sel.Item = TblThisRow && sel.ColEnd.IsNone -> ()
+        | TableRef _ | ArrayLit _ | SpillRef _ -> found <- true
+        | _ -> ()
+    found
+
 /// Does a formula written in a cell produce an array that spills into its
 /// neighbours? It does when it uses a dynamic-array function, or when its
 /// value is otherwise an array: a multi-cell reference (`=A1:A3`,
@@ -13417,15 +13517,18 @@ let containsArrayFunction (e: Expr) : bool =
 /// function applied to one (`=A1:A3*2`, `=LEN(A1:A3)`), an array constant.
 /// A whole-column / whole-row reference in a scalar position does not count —
 /// that is implicit intersection, see `eval`.
-let exprSpills (e: Expr) : bool =
-    containsArrayFunction e || isArrayExprCore false true e
+let exprSpills (e: Expr) : bool = spillsInOneWalk true e
 
 /// `exprSpills` without the benefit of the doubt for OFFSET / INDIRECT: true
 /// only when the formula's text alone shows it yields an array. The
 /// incremental engine uses it — a single-cell OFFSET is ordinary there, and
 /// one that did spill has left its mark in the sheet's spill map.
-let exprSpillsStatically (e: Expr) : bool =
-    containsArrayFunction e || isArrayExprCore false false e
+let exprSpillsStatically (e: Expr) : bool = spillsInOneWalk false e
+
+/// `exprSpills` / `exprSpillsStatically` as they are defined - two walks of
+/// the formula: the reference the tests check the one walk against.
+let exprSpillsReference (dynamicReferences: bool) (e: Expr) : bool =
+    containsArrayFunction e || isArrayExprCore false dynamicReferences e
 
 /// True if the expression holds a 3-D reference (`Sheet1:Sheet3!A1`). Its
 /// precedents span several sheets and are only known with the workbook's tab

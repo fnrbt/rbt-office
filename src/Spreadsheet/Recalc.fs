@@ -321,6 +321,9 @@ let private unwire (engine: Engine) (node: Node) =
     if node.Dependents.Count = 0 then
         node.Sheet.Nodes.Remove (keyOf node.Row node.Col) |> ignore
 
+let private noNodes : Node array = [||]
+let private noGroups : RangeGroup array = [||]
+
 /// Put a formula into the graph.
 let private wire (engine: Engine) (workbook: Workbook) (sheet: SheetState) (row: int) (col: int) (formula: string) : Node =
     let node = nodeAt sheet row col
@@ -335,8 +338,11 @@ let private wire (engine: Engine) (workbook: Workbook) (sheet: SheetState) (row:
         // (A cell or a range the formula names twice is one precedent.)
         engine.EdgeMark <- engine.EdgeMark + 1
         let mark = engine.EdgeMark
+        // (Most references are to the formula's own sheet, or to the sheet of the reference before.)
+        let lastTarget = ref sheet
         iterReferenceAreas (Some workbook) sheet.Id (Some { Row = row; Col = col }) expr (fun sheetId r0 c0 r1 c1 ->
-            let target = sheetState engine sheetId
+            if not (obj.ReferenceEquals(sheetId, lastTarget.Value.Id)) && sheetId <> lastTarget.Value.Id then lastTarget.Value <- sheetState engine sheetId
+            let target = lastTarget.Value
             if r0 = r1 && c0 = c1 then
                 let precedent = nodeAt target r0 c0
                 if precedent.EdgeMark <> mark then
@@ -349,8 +355,8 @@ let private wire (engine: Engine) (workbook: Workbook) (sheet: SheetState) (row:
                     group.Mark <- mark
                     ranges.Add group
                     group.Owners.Add node)
-        node.Precedents <- precedents.ToArray()
-        node.Ranges <- ranges.ToArray()
+        node.Precedents <- (if precedents.Count = 0 then noNodes else precedents.ToArray())
+        node.Ranges <- (if ranges.Count = 0 then noGroups else ranges.ToArray())
         let traits = classify engine workbook sheet.Id expr
         if traits &&& 3 <> 0 then
             node.Volatile <- true
@@ -405,12 +411,12 @@ let private buildGraph (unloadedToo: bool) (workbook: Workbook) : Engine =
                 for addr, formula in deferred.Formulas () do
                     wire engine workbook state addr.Row addr.Col formula |> ignore
         | _ ->
-            // (Map.iter: walking a large sheet's cells with an enumerator takes twice as long.)
-            loadedCells sheet.Model
-            |> Map.iter (fun addr cell ->
-                match cell.Value with
-                | CellValue.Formula (formula, _) -> wire engine workbook state addr.Row addr.Col formula |> ignore
-                | _ -> ())
+            // (The sheet's formula index: its values are not walked to find its formulas.)
+            let cells = loadedCells sheet.Model
+            for addr in formulaIndexOf cells do
+                match Map.tryFind addr cells with
+                | Some { Value = CellValue.Formula (formula, _) } -> wire engine workbook state addr.Row addr.Col formula |> ignore
+                | _ -> ()
     engine
 
 /// Build the dependency graph of a workbook. The formulas' cached values are
@@ -755,6 +761,8 @@ let private run (full: bool) (engine: Engine) (edited: Workbook) (hint: (SheetId
         let changes = if full then ResizeArray<CellChange>() else collectChanges engine edited hint restyled
         let mutable workbook = edited
         let models = Dictionary<SheetId, SpreadsheetModel>()
+        /// The cells of a sheet as the pass first took them: the pass changes values, never which cells hold formulas.
+        let cellsAtStart = Dictionary<SheetId, Map<CellAddress, CellData>>()
         let touched = HashSet<SheetId>()
         let modelOf (state: SheetState) =
             match models.TryGetValue state.Id with
@@ -763,6 +771,7 @@ let private run (full: bool) (engine: Engine) (edited: Workbook) (hint: (SheetId
                 // (A formula is evaluated in its sheet, not in the sheet's stand-in.)
                 let model = resolveSheet (Map.find state.Id workbook.Sheets).Model
                 models.[state.Id] <- model
+                if not (cellsAtStart.ContainsKey state.Id) then cellsAtStart.[state.Id] <- model.Cells
                 model
         /// The sheet's spill map as the pass has it now (a sheet that is not loaded has none to speak of).
         let spillOf (state: SheetState) : Map<CellAddress, CellAddress> =
@@ -1285,6 +1294,10 @@ let private run (full: bool) (engine: Engine) (edited: Workbook) (hint: (SheetId
                 // As the full recalculation leaves a sheet whose formulas gave other values.
                 for sheetId in touched do
                     let model = models.[sheetId]
+                    // (The formula index of the sheet goes on to its recalculated cells.)
+                    match cellsAtStart.TryGetValue sheetId with
+                    | true, before -> inheritFormulaIndex before model.Cells
+                    | false, _ -> ()
                     let projected = invalidateFilterProjection model
                     if not (obj.ReferenceEquals(model, projected)) then
                         workbook <- updateSheetModel sheetId projected workbook

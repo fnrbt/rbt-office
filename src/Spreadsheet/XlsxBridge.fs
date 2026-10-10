@@ -755,6 +755,8 @@ module Import =
                     converted
 
         let mutable cellMap = Map.empty<CellAddress, CellData>
+        // The cells that hold formulas: the sheet's formula index (`Model.formulaIndexOf`).
+        let formulaCells = ResizeArray<CellAddress>()
         let mutable richRuns = Map.empty<CellAddress, (string * RunOverride) list>
         // The other cells of a legacy array formula (<f t="array" ref="F94:H94">)
         // hold results the anchor's formula spilled there: they belong to the
@@ -790,6 +792,7 @@ module Import =
                     if value <> CellValue.Empty || cellFormat <> defaultFormat || comment.IsSome then
                         let addr : CellAddress = { Row = r; Col = c }
                         cellMap <- Map.add addr { Value = value; Format = cellFormat; Comment = comment } cellMap
+                        (match value with CellValue.Formula _ -> formulaCells.Add addr | _ -> ())
                         let runs =
                             if not (List.isEmpty cell.InlineRuns) then cell.InlineRuns
                             else
@@ -975,6 +978,11 @@ module Import =
                        |> Option.map (fun (sr, sc, er, ec) ->
                            ({ Key = path; Range = { From = { Row = sr; Col = sc }; To = { Row = er; Col = ec } } } : KeptRange))))
 
+        // (A cell the file lists twice is the later one: only what the map holds counts.)
+        registerFormulaIndex cellMap
+            (formulaCells
+             |> Seq.filter (fun addr -> match Map.tryFind addr cellMap with Some { Value = CellValue.Formula _ } -> true | _ -> false)
+             |> Set.ofSeq)
         let model =
             { createEmpty modelRows modelCols with
                 Hyperlinks = hyperlinks
@@ -1020,8 +1028,12 @@ module Import =
     /// every formula that did have a cached result gets it back, so values Excel
     /// computed are never replaced by ours.
     let private computeUncachedFormulas (context: Wb.Workbook) : Wb.Workbook =
+        // (Only a formula can lack its result: the sheets' formula indexes say where to look.)
         let needsWork =
-            context.Sheets |> Map.exists (fun _ sheet -> sheet.Model.Cells |> Map.exists (fun _ cell -> isUncached cell))
+            context.Sheets
+            |> Map.exists (fun _ sheet ->
+                let cells = sheet.Model.Cells
+                formulaIndexOf cells |> Set.exists (fun addr -> match Map.tryFind addr cells with Some cell -> isUncached cell | None -> false))
         if not needsWork then context
         else
             let recalculated = Rbt.Spreadsheet.Formula.recalculateWorkbook context
@@ -1119,14 +1131,19 @@ module Import =
     /// The formula cells of a reader sheet, as `importSheet` makes them (see `cellValue`).
     let private readerSheetFormulas (sheet: XlsxReader.Worksheet) : (CellAddress * string) array =
         let formulas = ResizeArray<CellAddress * string>()
+        // (A sheet of several hundred thousand values and a handful of formulas:
+        // a cell's row and column are worked out only when it holds a formula.)
+        let add (cell: XlsxReader.Cell) (formula: string) =
+            let r = cell.Reference.Row - 1
+            let c = columnIndexOfLetters cell.Reference.Column
+            if r >= 0 && c >= 0 then formulas.Add ({ Row = r; Col = c }, formula)
         for row in sheet.Rows do
             for cell in row.Cells do
-                let r = cell.Reference.Row - 1
-                let c = columnIndexOfLetters cell.Reference.Column
-                if r >= 0 && c >= 0 then
-                    match cell.Formula, cell.Value with
-                    | Some formula, _ when not (String.IsNullOrWhiteSpace formula) -> formulas.Add ({ Row = r; Col = c }, formula)
-                    | None, XlsxReader.Formula formula when not (String.IsNullOrWhiteSpace formula) -> formulas.Add ({ Row = r; Col = c }, formula)
+                match cell.Formula with
+                | Some formula -> if not (String.IsNullOrWhiteSpace formula) then add cell formula
+                | None ->
+                    match cell.Value with
+                    | XlsxReader.Formula formula when not (String.IsNullOrWhiteSpace formula) -> add cell formula
                     | _ -> ()
         formulas.ToArray()
     let private readerCellIsUncached (cell: XlsxReader.Cell) =
@@ -1174,6 +1191,15 @@ module Import =
                     let hasFormulas =
                         not sheet.ConditionalFormats.IsEmpty || not sheet.DataValidations.IsEmpty
                         || sheet.Rows |> List.exists (fun row -> row.Cells |> List.exists readerCellIsFormula)
+                    // (Read off the file once: the graph of a workbook is built more than once.)
+                    let mutable formulasRead : (CellAddress * string) array option = None
+                    let formulasOf () =
+                        match formulasRead with
+                        | Some known -> known
+                        | None ->
+                            let read = readerSheetFormulas sheet
+                            formulasRead <- Some read
+                            read
                     standIns.[index] <-
                         { createEmpty options.MinRows options.MinCols with
                             Tables = sheetTables
@@ -1185,7 +1211,7 @@ module Import =
                                 Some { Loaded = None
                                        Load = (fun () -> convert index)
                                        HasFormulas = hasFormulas
-                                       Formulas = (fun () -> readerSheetFormulas sheet) } }
+                                       Formulas = formulasOf } }
                     baseline.[index] <- standIns.[index]
                     columns)
                 |> Array.fold (fun acc columns -> Map.fold (fun m k v -> Map.add k v m) acc columns) Map.empty
