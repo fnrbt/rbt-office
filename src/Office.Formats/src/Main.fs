@@ -399,9 +399,15 @@ module Processors =
     //                               Paragraphs (count of them from index first; the shapes
     //                               come last, with complete); returns the unsubscribe function
     //   Progressive.whenComplete()  a promise of the package, complete
+    //   Progressive.Slices / LongestSliceMs / LongestSlice   how many slices read it, what the longest
+    //                               took (with what its listeners did: the page could not answer for
+    //                               that long) and which it was (1: the first)
     //
     // Preserved (what the writer needs of the package) is an object from the
-    // start and is filled in when the body is read.
+    // start and is filled in when the body is read. PageSetup is, until then,
+    // the page setup of the section the blocks read so far end in - the pages
+    // of a section are on its paper before the paragraph that ends it is read -
+    // and Progressive.PageSetupVersion counts its changes.
 
     [<Emit("performance.now()")>]
     let private nowMs () : float = jsNative
@@ -428,10 +434,9 @@ module Processors =
 
     /// Open a DOCX front first (see above). `options` (optional):
     ///   firstBlocks  how many blocks of the body are read before the package is handed over
-    ///                (default 64: two screens; the first section is read to its end when
-    ///                that is near, so that the first pages are laid out on its paper)
+    ///                (default 64: two screens)
     ///   autoStart    false: the rest is read only when asked for (start / readMore / complete)
-    ///   sliceMs      how long a slice reads (default 12)
+    ///   sliceMs      how long a slice takes, with what its listeners do (default 13)
     let openProgressive (fileData: obj) (options: obj) : Fable.Core.JS.Promise<obj> =
         promise {
             let! archive = loadArchive fileData
@@ -445,14 +450,14 @@ module Processors =
             | Some reader ->
                 let front = reader.Front
                 let firstBlocks = max 1 (int (numberOption options "firstBlocks" 64.0))
-                let sliceMs = max 1.0 (numberOption options "sliceMs" 12.0)
+                let sliceMs = max 1.0 (numberOption options "sliceMs" 13.0)
                 let convert = DocxReader.editorParagraphConverter front.Theme front.Styles front.NumberingDefinitions front.Footnotes front.Endnotes
                 let paragraphs : obj array = [||]
                 let shapeItems = ResizeArray<obj>()
                 let listeners = ResizeArray<obj>()
                 let waiters = ResizeArray<(obj -> unit) * (exn -> unit)>()
                 let preserved = createObj []
-                let state = createObj [ "IsComplete" ==> false; "AtOnce" ==> reader.AtOnce; "Error" ==> null ]
+                let state = createObj [ "IsComplete" ==> false; "AtOnce" ==> reader.AtOnce; "Error" ==> null; "PageSetupVersion" ==> 0; "Slices" ==> 0; "LongestSliceMs" ==> 0.0; "LongestSlice" ==> 0 ]
                 let blocksOf (parts: DocxReader.HeaderFooter list) = parts |> List.collect (fun part -> part.Blocks)
                 let noteBlocks (notes: DocxReader.Note list) = notes |> List.collect (fun note -> note.Blocks)
                 let headerImages = reader.ImagesOf (blocksOf front.Headers @ blocksOf front.Footers)
@@ -474,6 +479,14 @@ module Processors =
                     ]
                 let mutable complete = false
                 let mutable failed : exn option = None
+                // The page setup the package states: that of the section the blocks read so far end
+                // in, until the body is read (see ProgressiveReader.OpenSection).
+                let mutable pageSetup = front.PageSetup
+                let statePageSetup (setup: DocxReader.PageSetup option) =
+                    if setup <> pageSetup then
+                        pageSetup <- setup
+                        package?PageSetup <- DocxReader.toEditorPageSetup { front with PageSetup = setup }
+                        state?PageSetupVersion <- unbox<int> (state?PageSetupVersion) + 1
                 // Blocks a pass of about a millisecond reads: what the last ones say.
                 let mutable step = 8
                 let add (batch: DocxReader.ProgressiveBatch) =
@@ -481,13 +494,14 @@ module Processors =
                         for item in convert batch.Blocks (reader.ImagesOf batch.Blocks) do pushItem paragraphs item
                     if not batch.Shapes.IsEmpty then
                         shapeItems.AddRange (shapeObjectsFor { front with Shapes = batch.Shapes })
+                    if not (reader.IsDone ()) then statePageSetup (reader.OpenSection ())
                 /// The body is read: the shapes after the blocks, what is kept for the writer, the page setup.
                 let finish () =
                     let final = reader.Finish ()
                     let shapes = shapeItems.ToArray()
                     assignFields preserved (preservedWithItemChunks final paragraphs shapes)
                     for item in shapes do pushItem paragraphs item
-                    if final.PageSetup <> front.PageSetup then package?PageSetup <- DocxReader.toEditorPageSetup final
+                    statePageSetup final.PageSetup
                     complete <- true
                     state?IsComplete <- true
                 let notify (first: int) =
@@ -505,6 +519,9 @@ module Processors =
                     let waiting = waiters.ToArray()
                     waiters.Clear()
                     for _, reject in waiting do reject error
+                // What the listeners took after the last slice (they make their blocks of the items):
+                // a slice reads for its time less that.
+                let mutable notifyMs = 0.0
                 /// Read on for about `budget` milliseconds (at least one step).
                 let readMore (budget: float) : bool =
                     match failed with
@@ -530,7 +547,9 @@ module Processors =
                         with error ->
                             fail error
                             raise error
+                        let told = nowMs ()
                         notify first
+                        notifyMs <- nowMs () - told
                     complete
                 let mutable scheduled = false
                 let rec pump () =
@@ -539,8 +558,16 @@ module Processors =
                         afterThisTask (fun () ->
                             scheduled <- false
                             if not complete && failed.IsNone then
+                                let sliceStart = nowMs ()
                                 // A page that is not shown gets its tasks rarely: longer slices then.
-                                (try readMore (if pageIsHidden () then 200.0 else sliceMs) |> ignore with _ -> ())
+                                (try readMore (if pageIsHidden () then 200.0 else max 2.0 (sliceMs - notifyMs)) |> ignore with _ -> ())
+                                // (What a slice took with everything that followed it: the listeners make
+                                // their blocks of the items and show them.)
+                                let took = nowMs () - sliceStart
+                                state?Slices <- unbox<int> (state?Slices) + 1
+                                if took > unbox<float> (state?LongestSliceMs) then
+                                    state?LongestSliceMs <- took
+                                    state?LongestSlice <- unbox<int> (state?Slices)
                                 pump ())
                 state?Progress <- (fun () -> if complete then 1.0 else reader.Progress ())
                 state?BlockCount <- (fun () -> reader.BlockCount ())
@@ -561,7 +588,7 @@ module Processors =
                                 pump ()))
                 // The start of the document.
                 let begin' () =
-                    add (reader.ReadStart firstBlocks 1500000)
+                    add (reader.Read firstBlocks)
                     if reader.IsDone () then finish ()
                     elif booleanOption options "autoStart" true then pump ()
                 begin' ()

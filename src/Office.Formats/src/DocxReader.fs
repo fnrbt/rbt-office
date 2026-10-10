@@ -4159,11 +4159,13 @@ type ProgressiveReader = {
     /// Read on until `count` more blocks are there (fewer at the end of the
     /// body; all the blocks of a main part that is read at once).
     Read: int -> ProgressiveBatch
-    /// The start of the document: `count` blocks, and on to the end of the
-    /// first section when that is within `reach` characters of the body's
-    /// start (the first pages are laid out on the first section's paper, which
-    /// the paragraph that ends the section says).
-    ReadStart: int -> int -> ProgressiveBatch
+    /// The page setup of the section the blocks read so far end in: the
+    /// section properties that come next in the text - those of a paragraph
+    /// that is not read yet, or the body's own (Front.PageSetup) in the last
+    /// section. What is read is laid out with it as the page setup of the
+    /// document: the pages of a section are then on its paper before the
+    /// paragraph that ends the section (and says so) is read.
+    OpenSection: unit -> PageSetup option
     /// Whether the main part was read at once (it cannot be read front first).
     AtOnce: bool
     /// How many of the body's blocks are read.
@@ -4201,12 +4203,7 @@ let private wholeReader (doc: WordDocument) : ProgressiveReader =
             else
                 given <- true
                 { First = 0; Blocks = doc.Content; Shapes = doc.Shapes }
-      ReadStart =
-        fun _ _ ->
-            if given then { First = doc.Content.Length; Blocks = []; Shapes = [] }
-            else
-                given <- true
-                { First = 0; Blocks = doc.Content; Shapes = doc.Shapes }
+      OpenSection = fun () -> doc.PageSetup
       AtOnce = true
       BlockCount = fun () -> if given then doc.Content.Length else 0
       Progress = fun () -> if given then 1.0 else 0.0
@@ -4257,12 +4254,42 @@ let openProgressiveFromSource (keepContent: bool) (source: PartSource) : Progres
             let mutable held : (DocumentContent * Shape list * int * int) option = None
             // Where the element of the last block given ends in the text.
             let mutable givenTo = cursor.Pos
-            let bodyStart = cursor.Pos
-            // Where the first section ends, when the body has more than one: the first section
-            // properties that are not the body's own.
-            let firstBreakAt =
-                let at = indexOfText xml "sectPr" cursor.Pos
-                if at >= 0 && at < finalStart then at else -1
+            // The section properties that come next in the text after what is given: where their
+            // start tag is (-1: none before the body's own; -2: not looked for), and the page setup they give.
+            let mutable openSectionAt = -2
+            let mutable openSectionSetup : PageSetup option = None
+            let isNameChar (c: char) = System.Char.IsLetterOrDigit c || c = '_' || c = '.' || c = '-'
+            /// Where the start tag of the next section properties element at or after `from` begins; -1: none.
+            let nextSectionProperties (from: int) : int =
+                let mutable at = indexOfText xml "sectPr" from
+                let mutable found = -1
+                while found < 0 && at >= 0 do
+                    let after = at + 6
+                    // (A start tag: "<sectPr" or "<prefix:sectPr", the name ending there.)
+                    let mutable start = at - 1
+                    if start >= 0 && xml.[start] = ':' then
+                        start <- start - 1
+                        while start >= 0 && isNameChar xml.[start] do start <- start - 1
+                    if start >= 0 && xml.[start] = '<' && after < xml.Length && (xml.[after] = ' ' || xml.[after] = '>' || xml.[after] = '/' || xml.[after] = '\n' || xml.[after] = '\t' || xml.[after] = '\r') then
+                        found <- start
+                    else at <- indexOfText xml "sectPr" after
+                found
+            let openSection () : PageSetup option =
+                // (Looked for again when the paragraph that holds them was given.)
+                if openSectionAt = -2 || (openSectionAt >= 0 && givenTo > openSectionAt) then
+                    let at = nextSectionProperties givenTo
+                    if at < 0 || at >= finalStart then
+                        openSectionAt <- -1
+                        openSectionSetup <- finalPageSetup
+                    else
+                        openSectionAt <- at
+                        openSectionSetup <-
+                            (try
+                                let fin = elementEndAt xml at
+                                if fin < 0 then finalPageSetup
+                                else parsePageSetup main.EvenAndOddHeaders (Some (parseElement cursor (xml.Substring(at, fin - at))))
+                             with _ -> finalPageSetup)
+                openSectionSetup
             let mutable made = 0
             let mutable finished = false
             // Where the first child of the body that is section properties starts (the page setup is read off it).
@@ -4388,9 +4415,6 @@ let openProgressiveFromSource (keepContent: bool) (source: PartSource) : Progres
                                 made <- made + blocks.Length
                 { First = first; Blocks = List.ofSeq released; Shapes = List.ofSeq shapesOut }
             let read (count: int) : ProgressiveBatch = readWhile (fun given -> given < count)
-            let readStart (count: int) (reach: int) : ProgressiveBatch =
-                if firstBreakAt >= 0 && firstBreakAt - bodyStart <= reach then readWhile (fun given -> given < count || givenTo <= firstBreakAt)
-                else read count
 
             let finish () : WordDocument =
                 match finishedDocument with
@@ -4431,7 +4455,7 @@ let openProgressiveFromSource (keepContent: bool) (source: PartSource) : Progres
                       Preserved = emptyPackagePreservation }
                   IsDone = fun () -> finished
                   Read = read
-                  ReadStart = readStart
+                  OpenSection = (fun () -> if finished then finalPageSetup else openSection ())
                   AtOnce = false
                   BlockCount = fun () -> blockChunks.Count
                   Progress = fun () -> if finished then 1.0 else float (cursor.Pos) / float (max 1 cursor.BodyClose)

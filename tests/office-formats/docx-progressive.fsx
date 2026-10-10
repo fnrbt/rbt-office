@@ -75,8 +75,11 @@ for path in documents do
                 let mutable steps = 0
                 let mutable firsts = true
                 let mutable images = true
+                let mutable openSections = true
                 while not (reader.IsDone ()) do
                     let batch = reader.Read step
+                    // (The section the blocks end in: a page setup there always is.)
+                    if (reader.OpenSection ()).IsNone && whole.PageSetup.IsSome then openSections <- false
                     if batch.First <> blocks.Count then firsts <- false
                     // (The pictures of the blocks, as the whole document's map has them.)
                     for KeyValue (key, source) in reader.ImagesOf batch.Blocks do
@@ -90,6 +93,7 @@ for path in documents do
                 let label = sprintf "%s (%s at a time)" name (if step = Int32.MaxValue then "all" else string step)
                 ok (label + ": the blocks as they were given") (List.ofSeq blocks = whole.Content && List.ofSeq shapes = whole.Shapes && firsts) (sprintf "%d blocks given, %d in the document" blocks.Count whole.Content.Length)
                 ok (label + ": pictures") images "a picture of a block is not the document's"
+                ok (label + ": the open section") (openSections && reader.OpenSection () = whole.PageSetup) "no page setup for the section being read, or not the document's at the end"
                 ok (label + ": the document") (final = whole) (difference whole final)
                 ok (label + ": the front") (reader.Front.Styles = whole.Styles && reader.Front.Headers = whole.Headers && reader.Front.Footers = whole.Footers
                                             && reader.Front.Footnotes = whole.Footnotes && reader.Front.Endnotes = whole.Endnotes && reader.Front.Comments = whole.Comments
