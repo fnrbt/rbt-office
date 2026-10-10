@@ -613,6 +613,40 @@ checks['export-verbatim'] = async () => {
     return lines;
 };
 
+// The strips' elements are reused from one drawing to the next: a bracket or a strip never keeps a button's digit.
+checks['chrome-outline-reuse'] = async () => {
+    const { lines, check } = makeLog();
+    const stray = (host) => [...host.querySelectorAll('.spreadsheet-outline-line, .spreadsheet-outline-strip')].filter((n) => n.textContent !== '' || n.hasAttribute('data-level') || n.hasAttribute('title')).map((n) => [n.className.replace('spreadsheet-outline ', ''), n.textContent]);
+    const labels = (host) => [[...host.querySelectorAll('.spreadsheet-outline-level')].every((n) => /^[1-8]$/.test(n.textContent)), [...host.querySelectorAll('.spreadsheet-outline-button')].every((n) => n.textContent === '+' || n.textContent === '\u2212')];
+    {
+        const { grid, host, close } = mountGrid();
+        try {
+            for (let r = 0; r < 40; r++) grid.SetCell(r, 0, String(r));
+            grid.GroupRows('22:30'); await frame();
+            grid.GroupRows('24:26'); await frame();
+            check('rows grouped, then a group inside: no text in a bracket or strip', [stray(host), labels(host)], [[], [true, true]]);
+            grid.UngroupRows('24:26'); await frame();
+            check('... ungrouped again', [stray(host), labels(host)], [[], [true, true]]);
+        } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
+        finally { close(); }
+    }
+    {
+        const { grid, host, close } = mountGrid();
+        try {
+            for (let r = 0; r < 12; r++) grid.SetCell(r, 0, String(r));
+            grid.GroupColumns('C:D'); await frame();
+            grid.GroupRows('4:6'); await frame();
+            grid.SetOutlineSummary(false, false); await frame();
+            grid.GroupRows('5:5'); await frame();
+            check('columns, rows, summaries moved, a group inside: no text in a bracket or strip', [stray(host), labels(host)], [[], [true, true]]);
+            grid.Undo(); await frame(); grid.Undo(); await frame(); grid.Undo(); await frame();
+            check('... undone step by step', [stray(host), labels(host)], [[], [true, true]]);
+        } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
+        finally { close(); }
+    }
+    return lines;
+};
+
 // A list validation whose source is a defined name that is a formula (a dynamic range), or a formula itself.
 checks['validation-list-formula'] = async () => {
     const { lines, check } = makeLog();

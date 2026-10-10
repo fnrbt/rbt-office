@@ -4151,6 +4151,10 @@ type Spreadsheet(container: Element) =
                     if not (isChildOf node parent) then appendChild parent node
                     setClassName node ("spreadsheet-outline " + className)
                     setCssText node css
+                    // (A node of the pool was something else in the last drawing - a
+                    // level button with its digit, a +/- button: nothing of that stays.)
+                    setTextContent node ""
+                    for name in [ "data-axis"; "data-first"; "data-last"; "data-level"; "data-collapsed"; "title" ] do removeAttribute node name
                     node
                 let stripBackground = "background:#f3f3f3;"
                 let cursor = ""
