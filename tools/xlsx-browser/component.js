@@ -639,7 +639,7 @@ checks['drawings-in-grid'] = async () => {
             // Threaded comments: a marker and the thread as the cell's tooltip; they follow their cell.
             const threads = excel.threadedComments(excel.sheet(name, before));
             if (threads.length > 0) {
-                const titles = () => [...host.querySelectorAll('.spreadsheet-content [title]')].map((n) => n.getAttribute('title')).filter((t) => t.includes('Is this right?'));
+                const titles = () => [...host.querySelectorAll('.spreadsheet-content [data-comment]')].map((n) => n.getAttribute('data-comment')).filter((t) => t.includes('Is this right?'));
                 check(`${short}: the thread is shown with its author and reply`, titles().map((t) => [t.includes('Ann Author'), t.includes('Bob Reply'), t.includes('Yes & checked')]), [[true, true, true]]);
                 grid.InsertRow(0);
                 const moved = await excel.load((await grid.ExportXlsx()).slice());

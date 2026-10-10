@@ -150,7 +150,7 @@ let toClear =
     createEmpty 100 10
     |> setCell (at 0 0) (cell (num 1.0) boldFormat)
     |> setCell (at 1 0) (cell (num 2.0) defaultFormat)
-    |> setCell (at 2 0) { Value = CellValue.String "noted"; Format = boldFormat; Comment = Some { Text = "why"; Author = None } }
+    |> setCell (at 2 0) { Value = CellValue.String "noted"; Format = boldFormat; Comment = Some { Text = "why"; Author = None; Runs = [] } }
     |> setCell (at 5 5) (cell (num 9.0) boldFormat)
 let shape (m: SpreadsheetModel) = m.Cells |> Map.toList |> List.map (fun (a, c) -> (a.Row, a.Col), c.Value, c.Format.Bold, c.Comment.IsSome)
 eq "clear contents keeps formats and comments" (shape (Ops.clearCells Ops.ClearContents (0, 0, 2, 0) toClear))

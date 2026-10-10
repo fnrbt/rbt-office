@@ -477,9 +477,49 @@ let validationOfObj (memberName: string) (value: obj) : ValidationDescription =
         ErrorTitle = text "errorTitle"
         ErrorMessage = text "errorMessage" }
 
+/// A run of a note: { text, bold, italic, underline, strikethrough: boolean,
+/// color: "#RRGGBB" | null, fontName: string | null, fontSize: number | null (points) }.
+let commentRunToObj (text: string, run: RunOverride) : obj =
+    createObj [
+        "text" ==> text
+        "bold" ==> (run.Bold = Some true)
+        "italic" ==> (run.Italic = Some true)
+        "underline" ==> (run.Underline = Some true)
+        "strikethrough" ==> (run.Strikethrough = Some true)
+        "color" ==> orNull run.Color
+        "fontName" ==> orNull run.FontName
+        "fontSize" ==> (match run.FontSize with Some size -> box size | None -> null)
+    ]
+
+/// The runs of a note as a host gives them: an array of
+/// { text, bold?, italic?, underline?, strikethrough?, color?, fontName?, fontSize? }.
+let commentRunsArg (memberName: string) (value: obj) : (string * RunOverride) list =
+    if not (isJsArray value) then hostFail memberName "the runs must be an array of { text, bold, italic, underline, strikethrough, color, fontName, fontSize }"
+    else
+        unbox<obj array> value
+        |> Array.toList
+        |> List.mapi (fun index run ->
+            let what key = sprintf "runs[%d].%s" index key
+            if not (isJsObject run) then hostFail memberName (sprintf "runs[%d] must be an object with a text" index)
+            let flag key = match optionalArg (boolArg memberName (what key)) (getKey run key) with Some true -> Some true | _ -> None
+            let size = optionalArg (numberArg memberName (what "fontSize")) (getKey run "fontSize")
+            (match size with
+             | Some size when size < 1.0 || size > 409.0 -> hostFail memberName (sprintf "%s must be between 1 and 409 points, got %g" (what "fontSize") size)
+             | _ -> ())
+            stringArg memberName (what "text") (getKey run "text"),
+            { emptyRunOverride with
+                Bold = flag "bold"
+                Italic = flag "italic"
+                Underline = flag "underline"
+                Strikethrough = flag "strikethrough"
+                Color = optionalArg (colorArg memberName (what "color")) (getKey run "color")
+                FontName = optionalArg (stringArg memberName (what "fontName")) (getKey run "fontName") |> Option.filter (fun name -> name.Trim() <> "")
+                FontSize = size })
+
 /// One cell as the host reads it (`GetCell`, `GetRange`):
-/// A comment of a cell: { text, author: string | null, thread } where
-/// `thread` is null for a note and, for a comment thread,
+/// A comment of a cell: { text, author: string | null, runs, thread } where
+/// `runs` is null for a plain text and else the note's text in runs (see
+/// commentRunToObj), `thread` is null for a note and, for a comment thread,
 /// { id, author, date, text, resolved: boolean, replies: [{ id, author, date, text }] }
 /// (`text` and `author` are then those of the thread's first comment).
 let commentToObj (info: CommentInfo) : obj =
@@ -488,6 +528,7 @@ let commentToObj (info: CommentInfo) : obj =
     createObj [
         "text" ==> info.Text
         "author" ==> orNull info.Author
+        "runs" ==> (if info.Runs.IsEmpty then null else box (info.Runs |> List.map commentRunToObj |> List.toArray))
         "thread" ==>
             (match info.Thread with
              | Some thread ->

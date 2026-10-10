@@ -45,6 +45,21 @@ ok "shared-string-plain-text"
 let preservedAndStyled =
     XlsxReader.Xlsx.sharedStrings
         """<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><si><t xml:space="preserve">  padded  </t></si><si><r><rPr><i/><u val="double"/><strike/><color rgb="FF112233"/><rFont val="Arial"/><sz val="12.5"/><vertAlign val="superscript"/><scheme val="minor"/></rPr><t>x</t></r></si></sst>"""
+// <u val="none"/> says a run is not underlined; <u/> and <u val="single"/> say it is.
+let underlinedRuns =
+    XlsxReader.Xlsx.sharedStrings
+        """<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><si><r><rPr><u val="none"/></rPr><t>a</t></r><r><rPr><u/></rPr><t>b</t></r><r><rPr><u val="single"/></rPr><t>c</t></r><r><rPr><b val="0"/></rPr><t>d</t></r></si></sst>"""
+ok "shared-string-underline-none"
+   (underlinedRuns.[0].Runs |> List.map (fun (text, props) -> text, props.Underline, props.UnderlineDouble) = [ "a", false, false; "b", true, false; "c", true, false; "d", false, false ])
+   (sprintf "%A" underlinedRuns.[0])
+// A comment's text in runs: the runs are read with it.
+let commentRuns =
+    XlsxReader.CellComments.parseComments
+        """<comments xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><authors><author>Ann</author></authors><commentList><comment ref="B2" authorId="0"><text><r><rPr><b/><sz val="9"/><rFont val="Tahoma"/></rPr><t>Ann:</t></r><r><rPr><sz val="9"/><color rgb="FFFF0000"/><rFont val="Tahoma"/></rPr><t xml:space="preserve"> red</t></r></text></comment><comment ref="C3" authorId="0"><text><t>plain</t></text></comment></commentList></comments>"""
+let commentRunsRead = commentRuns |> List.map (fun c -> c.CellRef.Column, c.Text, c.Author, c.Runs |> List.map (fun (text, props) -> text, props.Bold, props.Color, props.FontName, props.FontSize))
+ok "comment-runs"
+   (commentRunsRead = [ "B", "Ann: red", Some "Ann", [ "Ann:", true, None, Some "Tahoma", Some 9.0; " red", false, Some "FF0000", Some "Tahoma", Some 9.0 ]; "C", "plain", Some "Ann", [] ])
+   (sprintf "%A" commentRuns)
 ok "shared-string-preserves-space"
    (preservedAndStyled.[0].Text = "  padded  ")
    (sprintf "%A" preservedAndStyled.[0])
@@ -258,7 +273,8 @@ let styledSheet =
             [ for r in 1 .. styledRows ->
                 { CellRef = { Column = columnName styledCols; Row = r }
                   Author = None
-                  Text = "note" } ]
+                  Text = "note"
+                  Runs = [] } ]
         DataValidations =
             [ for i in 1 .. 16 ->
                 { Range =
@@ -677,6 +693,13 @@ for label, pad in bothPaths do
 
 let dateStyles =
     sprintf "<styleSheet xmlns=\"%s\"><fonts count=\"1\"><font/></fonts><fills count=\"1\"><fill/></fills><borders count=\"1\"><border/></borders><cellXfs count=\"3\"><xf numFmtId=\"0\"/><xf numFmtId=\"14\" applyNumberFormat=\"1\"/><xf numFmtId=\"4\" applyNumberFormat=\"1\"/></cellXfs></styleSheet>" ssNs
+// A font's <b val="0"/> and <u val="none"/> say what the font is not.
+let flagStyles =
+    sprintf "<styleSheet xmlns=\"%s\"><fonts count=\"3\"><font/><font><b val=\"0\"/><i val=\"false\"/><strike val=\"0\"/><u val=\"none\"/></font><font><b/><i val=\"1\"/><strike/><u/></font></fonts><fills count=\"1\"><fill/></fills><borders count=\"1\"><border/></borders><cellXfs count=\"3\"><xf numFmtId=\"0\"/><xf numFmtId=\"0\" fontId=\"1\" applyFont=\"1\"/><xf numFmtId=\"0\" fontId=\"2\" applyFont=\"1\"/></cellXfs></styleSheet>" ssNs
+for label, pad in bothPaths do
+    let wb = loadOne pad "<workbookPr/>" "<sheetData><row r=\"1\"><c r=\"A1\" s=\"1\"><v>1</v></c><c r=\"B1\" s=\"2\"><v>2</v></c></row></sheetData>" [ "xl/styles.xml", flagStyles ]
+    let flags index = wb.Styles.[index] |> fun style -> style.Bold, style.Italic, style.Underline, style.Strikethrough
+    ok (sprintf "font-flags-off-%s" label) (flags 1 = (false, false, false, false) && flags 2 = (true, true, true, true)) (sprintf "%A %A" (flags 1) (flags 2))
 let dateBody = "<sheetData><row r=\"1\"><c r=\"A1\" s=\"1\"><v>42000</v></c><c r=\"B1\"><v>42000</v></c><c r=\"C1\" s=\"2\"><v>42000</v></c><c r=\"D1\" s=\"1\"><f>A1+1</f><v>42001</v></c></row></sheetData>"
 for label, pad in bothPaths do
     let wb1904 = loadOne pad "<workbookPr date1904=\"1\"/>" dateBody [ "xl/styles.xml", dateStyles ]

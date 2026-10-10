@@ -415,8 +415,34 @@ let private extrasOfModel (original: XlsxReader.SheetExtras) (before: Spreadshee
                     | Some { Value = CellValue.Formula _ } ->
                         yield formatCellRef anchor.Row anchor.Col, rangeText anchor corner, true
                     | _ -> () ]
+    // The notes whose text is in runs (a thread's note is made from the thread).
+    let commentRuns =
+        match before with
+        | Some baseline when obj.ReferenceEquals(baseline.Cells, model.Cells) -> original.CommentRuns
+        | _ ->
+            let props (run: RunOverride) : XlsxReader.RunProps =
+                { Bold = run.Bold = Some true
+                  Italic = run.Italic = Some true
+                  Underline = run.Underline = Some true
+                  UnderlineDouble = run.UnderlineDouble = Some true
+                  Strikethrough = run.Strikethrough = Some true
+                  Color = run.Color |> Option.map (fun color -> color.TrimStart('#'))
+                  FontName = run.FontName
+                  FontSize = run.FontSize
+                  Scheme = ""
+                  VertAlign =
+                    match run.VertAlign with
+                    | Some VertAlignSuperscript -> XlsxReader.VertAlignSuperscript
+                    | Some VertAlignSubscript -> XlsxReader.VertAlignSubscript
+                    | _ -> XlsxReader.VertAlignBaseline }
+            [ for KeyValue (addr, data) in model.Cells do
+                match data.Comment with
+                | Some note when not note.Runs.IsEmpty && not (Map.containsKey addr model.Threads) ->
+                    yield (addr.Row, addr.Col), note.Runs |> List.map (fun (text, run) -> text, props run)
+                | _ -> () ]
     { original with
         Images = images; Objects = objects; ThreadedComments = threads; RowAxis = rowAxis; ColumnAxis = columnAxis; ArrayFormulas = arrayFormulas
+        CommentRuns = commentRuns
         // (The file's drawing part goes back as it is only with the file's pictures and objects.)
         DrawingPart = if drawingsUnchanged then original.DrawingPart else None }
 
@@ -782,7 +808,13 @@ module Import =
                 commentCells.Add((r, col)) |> ignore
                 // The first comment of a cell is the one shown.
                 if not (comments.ContainsKey((r, col))) && not (String.IsNullOrWhiteSpace c.Text) then
-                    comments.[(r, col)] <- { Text = c.Text; Author = c.Author }
+                    comments.[(r, col)] <-
+                        { Text = c.Text
+                          Author = c.Author
+                          // (One run without a format of its own is a plain text.)
+                          Runs =
+                            (let runs = c.Runs |> List.map (fun (text, props) -> text, runOverride props)
+                             if runs |> List.exists (fun (_, run) -> run <> emptyRunOverride) && (runs |> List.map fst |> String.concat "") = c.Text then runs else []) }
         // One CellFormat per style of the workbook, shared by every cell that uses it.
         let styleCache = Collections.Generic.Dictionary<int, CellFormat>()
         let styleFormat (cell: XlsxReader.Cell) =

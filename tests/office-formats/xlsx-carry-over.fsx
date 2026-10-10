@@ -257,7 +257,7 @@ do
     let withComment (cells: (int * int) list) (model: SpreadsheetModel) =
         cells |> List.fold (fun m (row, col) ->
             let cell = Map.tryFind (addr row col) m.Cells |> Option.defaultValue { Value = CellValue.Empty; Format = defaultFormat; Comment = None }
-            { m with Cells = Map.add (addr row col) { cell with Comment = Some { Text = sprintf "note %d %d" row col; Author = Some "Tester" } } m.Cells }) model
+            { m with Cells = Map.add (addr row col) { cell with Comment = Some { Text = sprintf "note %d %d" row col; Author = Some "Tester"; Runs = [] } } m.Cells }) model
     let models = modelsOf imported
     models.[index] <- withComment [ (3, 2); (40, 5) ] models.[index]
     let saved = export imported models (namesOf imported)

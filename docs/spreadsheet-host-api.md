@@ -48,7 +48,7 @@ type Cell = {
   formula: string | null;                             // with the leading "="
   format: Format;                                     // the cell's own format, else its column's default style, else the default; conditional formats are NOT applied
   isMerged: boolean; mergeRange: string | null;       // "B2:C3": the merged cell it is part of (content lives in the first cell)
-  comment: { text: string; author: string | null } | null;   // replies: GetCommentThread(row, col)
+  comment: { text: string; author: string | null; runs: CommentRun[] | null; thread: object | null } | null;   // see Comments
   hyperlink: { target: string; isInternal: boolean; range: string } | null;
   validation: {
     type: "list" | "whole" | "decimal" | "date" | "time" | "textLength" | "custom";
@@ -570,17 +570,18 @@ All on the active sheet unless a sheet index is taken. Every mutating member is 
 | Member | Arguments | Returns | Notes |
 |---|---|---|---|
 | `GetComment(row, col)` | 0-based | comment object \| `null` | Also what `GetCell(...).comment` is. |
-| `GetComments(sheetIndex?)` | | `[{ row, col, address, text, author, thread }]` | Row by row. Throws for a sheet that is not there. |
+| `GetComments(sheetIndex?)` | | `[{ row, col, address, text, author, runs, thread }]` | Row by row. Throws for a sheet that is not there. |
 | `SetComment(row, col, text, author?)` | | | A cell without a comment, or with a note, gets a note. On a cell with a thread the first comment's text (and author, when given) changes; replies stay. Throws on an empty text. (Was not an undo step before.) |
+| `SetCommentRuns(row, col, runs, author?)` | `runs: CommentRun[]` (only `text` is required) | | A note whose text is formatted in runs; the note's text is the runs' texts joined. Runs without text are dropped; with no formatting in any run the note is a plain one (`runs: null`). On a cell with a thread the first comment gets the joined text (threads hold plain text). Throws when the runs hold no text, on a `fontSize` outside 1..409 or a colour that is not `#RGB` / `#RRGGBB`. One undo step. |
 | `DeleteComment(row, col)` | | `boolean` (there was one) | Removes the note or the whole thread. `RemoveComment(row, col)` is the older name (returns nothing). |
 | `AddCommentReply(row, col, text, author?)` | | the reply's id (string) | A note becomes the first comment of a thread (Excel's "convert to comments"). Dated now (UTC). Throws when the cell has no comment or the text is empty. |
 | `DeleteCommentReply(row, col, replyId)` | | | Throws when the cell has no thread / no such reply. |
 | `ResolveComment(row, col, resolved = true)` | | | Marks a thread resolved / open. Throws on a note. |
 | `GetCommentThread(row, col)` | | `{ author, date, text, replies }` \| `null` | Older member, kept; prefer `GetComment`. |
 
-Comment object: `{ text, author: string | null, thread }`; `thread` is `null` for a note, else `{ id, author, date: "2026-01-02T03:04:05.00" | null, text, resolved: boolean, replies: [{ id, author, date, text }] }` (then `text` / `author` are the first comment's).
+Comment object: `{ text, author: string | null, runs, thread }`; `runs` is `null` for a plain note (and for a thread), else `CommentRun[]`: `{ text: string, bold: boolean, italic: boolean, underline: boolean, strikethrough: boolean, color: "#RRGGBB" | null, fontName: string | null, fontSize: number | null }` (points; `null` = the note's usual look); `thread` is `null` for a note, else `{ id, author, date: "2026-01-02T03:04:05.00" | null, text, resolved: boolean, replies: [{ id, author, date, text }] }` (then `text` / `author` are the first comment's).
 
-- The cell shows a corner marker (red for a note, violet for a thread) and the comment as its tooltip.
+- The cell shows a corner marker (red for a note, violet for a thread). While the pointer is over the cell (no button down) the comment is shown in a box beside it: `.spreadsheet-comment-box` with `data-row`, `data-col` and `data-kind="note" | "thread"`; a note in its runs (one `<span>` per run with its font, size, weight, style, decoration and colour), a thread as one `.spreadsheet-comment-entry` per comment (author, date, text; replies indented) and "Resolved" when it is. The box takes no pointer events. The cell element itself carries the comment's text as `data-comment` (it no longer has a `title` for it: the browser tooltip would cover the box).
 - Comments move with inserted / deleted rows and columns and with `SortRange`; `ClearAll` removes notes and threads; `ClearContents` / `ClearFormats` keep them.
 - XLSX: notes go to the comments part, threads to the threaded-comments part with their persons and the `done` mark, plus the note Excel keeps beside each thread for old versions. Ids of thread comments survive a save; a note has no id.
 
@@ -842,8 +843,10 @@ changes (named styles, the indexed palette, table styles and extensions of the s
   `fullCalcOnLoad` when a formula has no result) made anew: `fileVersion`, `workbookPr` (`hidePivotFieldList`, `codeName` ...; not
   `date1904`, see below), `workbookProtection`, the window of `bookViews`, `calcPr`'s other attributes, `mc:AlternateContent` and the
   extension list stay as they were.
-- **A sheet's comments part** (`xl/commentsN.xml`: rich text runs, `shapeId`, authors) goes back as it is while the sheet's comments are
-  the file's, also when the sheet itself is written from the model.
+- **A sheet's comments part** (`xl/commentsN.xml`: `shapeId`, authors, phonetic runs) goes back as it is while the sheet's comments are
+  the file's, also when the sheet itself is written from the model. When the comments changed the part is written from the model:
+  every note keeps its runs (font, size, bold, italic, underline, strikethrough, colour, super/subscript); a run's `charset` / `family`
+  and phonetic text are not kept.
 - In a browser a sheet that goes back as it was read, and every other part the reader kept that is written as the file's bytes (chart
   parts, pivot caches and their records, media, the theme ...), is put into the new package as **the compressed entry it was** (not
   deflated again).

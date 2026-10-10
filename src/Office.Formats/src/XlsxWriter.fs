@@ -2078,7 +2078,27 @@ let private worksheetXml (styles: StyleBook) sharedIndex (dynamicCm: int) sheetI
     + sheetExtLstXml conditionalFormatsExt (dataValidationsExtXml sheet.DataValidations) (sheet.Extras.KeptCellExtensions @ sheet.Extras.KeptExtensions)
     + "</worksheet>"
 
-let private commentsXml (cells: XlsxCellOut list) =
+/// A run of a rich text of the file as the writer has it.
+let private richRunOfReader (props: XlsxReader.RunProps) (text: string) : XlsxRichRun =
+    { Text = text
+      Bold = Some props.Bold
+      Italic = Some props.Italic
+      Underline = Some props.Underline
+      UnderlineDouble = Some props.UnderlineDouble
+      Strikethrough = Some props.Strikethrough
+      Color = props.Color |> Option.map (fun c -> "#" + c.TrimStart('#'))
+      FontName = props.FontName
+      FontSize = props.FontSize
+      VertAlign =
+        match props.VertAlign with
+        | XlsxReader.VertAlignSuperscript -> Some XlsxSuperscript
+        | XlsxReader.VertAlignSubscript -> Some XlsxSubscript
+        | _ -> None }
+
+/// The comments part of a sheet. `runs` has the notes whose text is in runs
+/// (by row and column); the others are one plain text.
+let private commentsXml (runs: ((int * int) * (string * XlsxReader.RunProps) list) list) (cells: XlsxCellOut list) =
+    let runsOf = if runs.IsEmpty then Map.empty else Map.ofList runs
     let comments = cells |> List.choose (fun c -> c.Comment |> Option.map (fun comment -> c, comment))
     if List.isEmpty comments then None
     else
@@ -2095,10 +2115,22 @@ let private commentsXml (cells: XlsxCellOut list) =
         let commentXml =
             comments
             |> List.map (fun (cell, (text, author)) ->
-                sprintf "<comment ref=\"%s\" authorId=\"%d\"><text><t xml:space=\"preserve\">%s</t></text></comment>"
+                let body =
+                    // (Runs that are not the note's text any more are not the note's.)
+                    match (if runsOf.IsEmpty then None else Map.tryFind (cell.Row, cell.Col) runsOf) with
+                    | Some textRuns when not textRuns.IsEmpty && (textRuns |> List.map fst |> String.concat "") = text ->
+                        // (Only what a run turns on is written.)
+                        let on (flag: bool option) = if flag = Some true then flag else None
+                        textRuns
+                        |> List.map (fun (runText, props) ->
+                            let run = richRunOfReader props runText
+                            richRunXml { run with Bold = on run.Bold; Italic = on run.Italic; Underline = on run.Underline; UnderlineDouble = on run.UnderlineDouble; Strikethrough = on run.Strikethrough })
+                        |> String.concat ""
+                    | _ -> sprintf "<t xml:space=\"preserve\">%s</t>" (escapedCellText text)
+                sprintf "<comment ref=\"%s\" authorId=\"%d\"><text>%s</text></comment>"
                     (cellRef cell.Row cell.Col)
                     (authorIndex author)
-                    (escapedCellText text))
+                    body)
             |> String.concat ""
         Some (sprintf "%s\n<comments xmlns=\"%s\"><authors>%s</authors><commentList>%s</commentList></comments>"
                   declaration Namespaces.spreadsheet authorXml commentXml)
@@ -2840,23 +2872,6 @@ let metadataWithDynamicArrays (existing: string) : string * int =
 // Styles and shared strings extended in place (WorkbookPreservation.InPlace)
 // ---------------------------------------------------------------------------
 
-/// A run of a rich text of the file as the writer has it.
-let private richRunOfReader (props: XlsxReader.RunProps) (text: string) : XlsxRichRun =
-    { Text = text
-      Bold = Some props.Bold
-      Italic = Some props.Italic
-      Underline = Some props.Underline
-      UnderlineDouble = Some props.UnderlineDouble
-      Strikethrough = Some props.Strikethrough
-      Color = props.Color |> Option.map (fun c -> "#" + c.TrimStart('#'))
-      FontName = props.FontName
-      FontSize = props.FontSize
-      VertAlign =
-        match props.VertAlign with
-        | XlsxReader.VertAlignSuperscript -> Some XlsxSuperscript
-        | XlsxReader.VertAlignSubscript -> Some XlsxSubscript
-        | _ -> None }
-
 let private regexCount (pattern: string) (text: string) =
     System.Text.RegularExpressions.Regex.Matches(text, pattern).Count
 
@@ -3267,7 +3282,7 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
         match sheetRelsXml sheetIndex sheet tableParts placed drawingPath with
         | Some rels -> textFiles.Add { Path = relsPathOf placed.SheetPath; Content = rels }
         | None -> ()
-        match (if (keptCommentsPart workbook sheet).IsSome then None else commentsXml sheet.Cells) with
+        match (if (keptCommentsPart workbook sheet).IsSome then None else commentsXml sheet.Extras.CommentRuns sheet.Cells) with
         | Some xml -> textFiles.Add { Path = placed.CommentsPath; Content = xml }
         | None -> ()
         match keptLegacyDrawing sheet with

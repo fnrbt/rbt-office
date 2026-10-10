@@ -85,7 +85,7 @@ eq "the result is read as input (a number)" (replace "n" "" options (cell (CellV
 eq "a number changes as it is shown" (replace "5" "7" options (cell (CellValue.Number 1525.0)) |> valueOf) (Some (CellValue.Number 1727.0))
 eq "replaced away: the cell is empty" (replace "apple" "" { options with WholeCell = true } (cell (CellValue.String "apple")) |> valueOf) (Some CellValue.Empty)
 eq "a dollar sign is a dollar sign" (replace "USD" "$1" options (cell (CellValue.String "USD x")) |> valueOf) (Some (CellValue.String "$1 x"))
-let bold = { cell (CellValue.String "apple") with Format = { defaultFormat with Bold = true }; Comment = Some { Text = "note"; Author = None } }
+let bold = { cell (CellValue.String "apple") with Format = { defaultFormat with Bold = true }; Comment = Some { Text = "note"; Author = None; Runs = [] } }
 eq "the cell keeps its format and note" (replace "apple" "pear" options bold |> Option.map (fun d -> d.Format.Bold, d.Comment.IsSome)) (Some (true, true))
 let formula = cell (CellValue.Formula ("SUM(B2,1)", CellValue.Number 1235.5))
 eq "values: a formula cell is left alone" (replace "1235" "9" options formula |> valueOf) None

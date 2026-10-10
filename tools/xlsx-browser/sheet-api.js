@@ -57,9 +57,9 @@ checks['api-read'] = async () => {
         check('another cell of it', pick(grid.GetCell(11, 3), ['value', 'isMerged', 'mergeRange']), { value: null, isMerged: true, mergeRange: 'B11:D12' });
         check('the cell beside it', pick(grid.GetCell(11, 4), ['isMerged', 'mergeRange']), { isMerged: false, mergeRange: null });
         grid.SetComment(2, 0, 'look here', 'Ada');
-        check('a comment', grid.GetCell(2, 0).comment, { text: 'look here', author: 'Ada', thread: null });
+        check('a comment', grid.GetCell(2, 0).comment, { text: 'look here', author: 'Ada', runs: null, thread: null });
         grid.SetComment(1, 0, 'anonymous', undefined);
-        check('a comment without an author', grid.GetCell(1, 0).comment, { text: 'anonymous', author: null, thread: null });
+        check('a comment without an author', grid.GetCell(1, 0).comment, { text: 'anonymous', author: null, runs: null, thread: null });
 
         // Invalid input.
         check('a row outside the sheet throws', thrown(() => grid.GetCell(-1, 0)), 'GetCell: row -1 is outside the sheet (0 to 999)');
@@ -1985,7 +1985,7 @@ checks['api-comments'] = async () => {
     const { grid, host, close } = mountGrid();
     try {
         const node = (row, col) => host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"]`);
-        const title = (row, col) => node(row, col)?.getAttribute('title') ?? null;
+        const title = (row, col) => node(row, col)?.getAttribute('data-comment') ?? null;
         const changes = [];
         const off = grid.OnChange((change) => changes.push(change));
         grid.SetCell(1, 1, '42');
@@ -1994,9 +1994,9 @@ checks['api-comments'] = async () => {
 
         // ---- a note ----
         grid.SetComment(1, 1, 'look here', 'Ada');
-        check('a note', grid.GetComment(1, 1), { text: 'look here', author: 'Ada', thread: null });
+        check('a note', grid.GetComment(1, 1), { text: 'look here', author: 'Ada', runs: null, thread: null });
         await frame();
-        check('the cell shows it: a marker and a tooltip', [node(1, 1).children.length > 0, title(1, 1)], [true, 'Ada:\nlook here']);
+        check('the cell shows it: a marker, and it says its comment (no browser tooltip)', [node(1, 1).children.length > 0, title(1, 1), node(1, 1).getAttribute('title')], [true, 'Ada:\nlook here', null]);
         check('it is a change with a new revision, and the value stays', [changes.length, grid.GetRevision() !== r0, grid.GetCell(1, 1).value, grid.GetCell(1, 1).comment.text], [1, true, 42, 'look here']);
         grid.Undo();
         await frame();
@@ -2004,7 +2004,7 @@ checks['api-comments'] = async () => {
         grid.Redo();
         check('redo puts it back', grid.GetComment(1, 1)?.text, 'look here');
         grid.SetComment(1, 1, 'look again');
-        check('a note is replaced (no author given: none)', grid.GetComment(1, 1), { text: 'look again', author: null, thread: null });
+        check('a note is replaced (no author given: none)', grid.GetComment(1, 1), { text: 'look again', author: null, runs: null, thread: null });
         grid.Undo();
         grid.SetComment(4, 3, 'on an empty cell', null);
         check('a note on an empty cell', [grid.GetComment(4, 3).text, grid.GetCell(4, 3).value], ['on an empty cell', null]);
@@ -2021,9 +2021,9 @@ checks['api-comments'] = async () => {
         check('a reply turns the note into a thread', [threaded.text, threaded.author, threaded.thread.text, threaded.thread.resolved, threaded.thread.replies.map((r) => [r.id, r.text, r.author, /^\d{4}-\d\d-\d\dT/.test(r.date)])],
             ['look here', 'Ada', 'look here', false, [[replyId, 'done', 'Bob', true]]]);
         await frame();
-        check('the tooltip has the reply', title(1, 1).includes('look here') && title(1, 1).includes('done'), true);
+        check('the cell says the reply too', title(1, 1).includes('look here') && title(1, 1).includes('done'), true);
         grid.Undo();
-        check('... one undo step: a note again', grid.GetComment(1, 1), { text: 'look here', author: 'Ada', thread: null });
+        check('... one undo step: a note again', grid.GetComment(1, 1), { text: 'look here', author: 'Ada', runs: null, thread: null });
         grid.Redo();
         const second = grid.AddCommentReply(1, 1, 'thanks');
         check('a second reply follows the first', grid.GetComment(1, 1).thread.replies.map((r) => [r.text, r.author]), [['done', 'Bob'], ['thanks', null]]);
@@ -2054,6 +2054,51 @@ checks['api-comments'] = async () => {
         check('resolving a note', thrown(() => grid.ResolveComment(6, 0)), 'ResolveComment: the cell A7 has no comment thread (a note cannot be resolved)');
         check('a sheet that is not there', /^GetComments: there is no sheet 5/.test(thrown(() => grid.GetComments(5)) ?? ''), true);
 
+        // ---- a note in runs, and the comment box ----
+        const hover = async (row, col, options = {}) => {
+            const [x, y] = await pointOfCell(grid, host, row, col), rect = host.getBoundingClientRect();
+            const target = document.elementFromPoint(rect.left + x, rect.top + y) ?? host.querySelector('.spreadsheet-content');
+            target.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, cancelable: true, clientX: rect.left + x, clientY: rect.top + y, buttons: 0, ...options }));
+        };
+        const box = () => { const el = host.querySelector('.spreadsheet-comment-box'); return el && el.style.display !== 'none' ? el : null; };
+        grid.SetCommentRuns(8, 2, [{ text: 'Cy:', bold: true }, { text: '\nred and big', color: '#f00', fontSize: 14, fontName: 'Georgia', italic: true, underline: true }, { text: '' }], 'Cy');
+        const rich = grid.GetComment(8, 2);
+        check('a note in runs: its text is the runs joined, runs without text are dropped', [rich.text, rich.author, rich.thread, rich.runs.length], ['Cy:\nred and big', 'Cy', null, 2]);
+        check('... the runs as they were given', rich.runs, [
+            { text: 'Cy:', bold: true, italic: false, underline: false, strikethrough: false, color: null, fontName: null, fontSize: null },
+            { text: '\nred and big', bold: false, italic: true, underline: true, strikethrough: false, color: '#FF0000', fontName: 'Georgia', fontSize: 14 }]);
+        check('GetCell has the same comment', grid.GetCell(8, 2).comment, rich);
+        await frame();
+        check('no box while the pointer is elsewhere', box(), null);
+        await hover(8, 2);
+        const shown = box();
+        const spans = shown ? [...shown.querySelectorAll('span')] : [];
+        check('the box of the note is shown beside its cell, in runs', [shown?.getAttribute('data-kind'), shown?.getAttribute('data-row'), shown?.getAttribute('data-col'), spans.map((n) => n.textContent)], ['note', '8', '2', ['Cy:', '\nred and big']]);
+        if (spans.length === 2) {
+            const first = getComputedStyle(spans[0]), second = getComputedStyle(spans[1]);
+            check('... each run with its look', [Number(first.fontWeight) >= 600, first.fontStyle, second.fontStyle, second.color, second.textDecorationLine, second.fontFamily.includes('Georgia'), Math.round(parseFloat(second.fontSize) * 72 / 96), Number(second.fontWeight) >= 600],
+                [true, 'normal', 'italic', 'rgb(255, 0, 0)', 'underline', true, 14, false]);
+            const cellBox = node(8, 2).getBoundingClientRect(), noteBox = shown.getBoundingClientRect();
+            check('... to the right of the cell, at its top', [noteBox.left >= cellBox.right, Math.abs(noteBox.top - cellBox.top) <= 2], [true, true]);
+        }
+        await hover(8, 2, { buttons: 1 });
+        check('not while a button is down', box(), null);
+        await hover(1, 1);
+        const threadBox = box();
+        check('the box of a thread: its comments with their authors', [threadBox?.getAttribute('data-kind'), [...(threadBox?.querySelectorAll('.spreadsheet-comment-entry') ?? [])].map((n) => n.children[0].textContent + '|' + n.lastChild.textContent), /Resolved/.test(threadBox?.textContent ?? '')],
+            ['thread', ['Ada|look there', 'Bob|done', '|thanks'], true]);
+        await hover(3, 0);
+        check('gone over a cell without a comment', box(), null);
+        await hover(6, 0);
+        check('a plain note: its author, then its text', [...(box()?.children ?? [])].map((n) => n.textContent), ['Cy:', 'a plain note']);
+        check('runs that hold no text', thrown(() => grid.SetCommentRuns(0, 0, [{ text: ' ' }])), 'SetCommentRuns: the runs hold no text (DeleteComment removes a comment)');
+        check('runs that are not an array', /^SetCommentRuns: the runs must be an array/.test(thrown(() => grid.SetCommentRuns(0, 0, 'x')) ?? ''), true);
+        check('a colour that is none', /^SetCommentRuns: runs\[0\]\.color must be a colour/.test(thrown(() => grid.SetCommentRuns(0, 0, [{ text: 'a', color: 'reddish' }])) ?? ''), true);
+        grid.SetCommentRuns(9, 2, [{ text: 'no ' }, { text: 'format' }]);
+        check('runs without formatting are a plain note', grid.GetComment(9, 2), { text: 'no format', author: null, runs: null, thread: null });
+        grid.Undo();
+        check('... one undo step', grid.GetComment(9, 2), null);
+
         // ---- through XLSX ----
         const before = grid.GetComments();
         const again = await reopened(grid);
@@ -2064,7 +2109,8 @@ checks['api-comments'] = async () => {
             const third = again.grid.AddCommentReply(1, 1, 'closing', 'Ada');
             const twice = await reopened(again.grid);
             try {
-                check('... and so do the edits of the reopened one', twice.grid.GetComments().map((c) => [c.address, c.text, c.thread?.resolved, c.thread?.replies.map((r) => [r.text, r.author])]),
+                check('the note in runs is still in its runs after two saves', twice.grid.GetComment(8, 2), rich);
+                check('... and so do the edits of the reopened one', twice.grid.GetComments().filter((c) => c.thread).map((c) => [c.address, c.text, c.thread?.resolved, c.thread?.replies.map((r) => [r.text, r.author])]),
                     [['B2', 'look there', true, [['done', 'Bob'], ['thanks', null], ['closing', 'Ada']]]]);
                 check('the new reply kept its id', twice.grid.GetComment(1, 1).thread.replies[2].id, third);
             } finally { twice.close(); }

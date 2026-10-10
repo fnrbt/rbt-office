@@ -90,6 +90,9 @@ type private PictureDrag = {
 [<Emit("new Date().toISOString().slice(0, 22)")>]
 let private commentDateNow (): string = jsNative
 
+[<Emit("($0.buttons | 0)")>]
+let private pointerButtons (e: obj): int = jsNative
+
 [<Emit("new Date().getFullYear()")>]
 let private currentYear (): int = jsNative
 
@@ -442,6 +445,8 @@ type private CellNode = {
     /// The render pass that last wanted the node.
     mutable Seen: int
     mutable HasTitle: bool
+    /// The cell element says what its comment is (`data-comment`).
+    mutable HasNote: bool
     mutable HasLink: bool
     /// The cell's text is wider than the cell: how it is drawn (run over the
     /// empty cells beside it, or cut off) depends on its neighbours.
@@ -476,6 +481,8 @@ type private GridLayers = {
     EditInput: Element
     Notice: Element
     InputMessage: Element
+    /// The box of the comment the pointer is over (a note, or a thread).
+    CommentBox: Element
     /// The button beside the active cell that opens its validation list.
     ListButton: Element
 }
@@ -1464,6 +1471,8 @@ type Spreadsheet(container: Element) =
     // and editing ends), "warning" and "information" rules accept it, and in
     // every case a note with the rule's title and message appears in the grid
     // and goes away by itself. Hosts can also listen for it.
+    /// The cell whose comment box is shown.
+    let mutable commentBoxCell: (CellAddress * SheetOps.CommentInfo) option = None
     let mutable validationNotice: (string * string * string * CellAddress) option = None   // style, title, message, cell
     let mutable noticeTimer: int option = None
     let validationListeners = System.Collections.Generic.List<string -> string -> string -> unit>()
@@ -3555,8 +3564,13 @@ type Spreadsheet(container: Element) =
             let indicator = createElement "div"
             setCssText indicator ("position:absolute;top:0;right:0;width:0;height:0;border-style:solid;border-width:0 6px 6px 0;border-color:transparent " + color + " transparent transparent;pointer-events:none")
             appendChild cell indicator
-            setAttribute cell "title" tooltip
-            node.HasTitle <- true
+            // The comment is shown in a box beside the cell while the pointer
+            // is over it (showCommentBox); the cell says its text.
+            setAttribute cell "data-comment" tooltip
+            node.HasNote <- true
+            if node.HasTitle then
+                removeAttribute cell "title"
+                node.HasTitle <- false
         // A linked cell says where it leads (its screen tip, else the
         // target) unless it has a comment to show; in a viewer the pointer
         // shows that a click follows it.
@@ -3577,6 +3591,9 @@ type Spreadsheet(container: Element) =
                               | Some author -> author + ":\n" + comment.Text
                               | None -> comment.Text)
         | _ ->
+            if node.HasNote then
+                removeAttribute cell "data-comment"
+                node.HasNote <- false
             match link with
             | Some link ->
                 setAttribute cell "title" (link.Tooltip |> Option.defaultValue link.Target)
@@ -3768,7 +3785,7 @@ type Spreadsheet(container: Element) =
                             else
                                 let element = createElement "div"
                                 setClassName element "spreadsheet-cell"
-                                { Element = element; Key = key; Pane = -1; Data = null; NearAbove = null; NearLeft = null; NearCorner = null; X = 0.0; Y = 0.0; W = 0.0; H = 0.0; Epoch = -1; Seen = 0; HasTitle = false; HasLink = false; Wide = false }
+                                { Element = element; Key = key; Pane = -1; Data = null; NearAbove = null; NearLeft = null; NearCorner = null; X = 0.0; Y = 0.0; W = 0.0; H = 0.0; Epoch = -1; Seen = 0; HasTitle = false; HasNote = false; HasLink = false; Wide = false }
                         node.Key <- key
                         node.Seen <- generation
                         cellNodes.[key] <- node
@@ -5643,7 +5660,103 @@ type Spreadsheet(container: Element) =
                    EditInput = editBox
                    Notice = overlay "spreadsheet-validation-notice" content
                    InputMessage = overlay "spreadsheet-input-message" content
+                   CommentBox = overlay "spreadsheet-comment-box" content
                    ListButton = overlay "spreadsheet-list-button" content }
+
+        // The box of a comment, beside its cell while the pointer is over the
+        // cell: a note in its runs (font, size, bold, italic, underline,
+        // colour), a thread as its comments with their authors.
+        let hideCommentBox () =
+            if commentBoxCell.IsSome then
+                commentBoxCell <- None
+                match layers with
+                | Some layer -> setStyle layer.CommentBox "display" "none"
+                | None -> ()
+        let showCommentBox (addr: CellAddress) =
+            match layers, SheetOps.commentAt model addr with
+            | Some layer, Some info when commentBoxCell <> Some (addr, info) ->
+                commentBoxCell <- Some (addr, info)
+                let panel = layer.CommentBox
+                let metrics = SpreadsheetLayout.metricsOf model
+                // (Beside the whole of a merged cell.)
+                let right, top =
+                    match findMergedCell addr model with
+                    | Some merged -> merged.EndCol, merged.StartRow
+                    | None -> addr.Col, addr.Row
+                let x = rowHeaderWidth + metrics.ColPrefix.[min metrics.ColCount (right + 1)] + (if right < model.FrozenCols then scrollLeft else 0.0) + 6.0
+                let y = headerHeight + metrics.RowPrefix.[min metrics.RowCount (max 0 top)] + (if top < model.FrozenRows then scrollTop else 0.0)
+                setCssText panel
+                    ("position:absolute;left:" + string (int x) + "px;top:" + string (int y) + "px;min-width:96px;max-width:280px;padding:3px 5px;background:"
+                     + (if info.Thread.IsSome then "#FFFFFF" else "#FFFFE1") + ";border:1px solid " + (if info.Thread.IsSome then "#7b61ff" else "#000000")
+                     + ";box-shadow:2px 2px 4px rgba(0,0,0,0.3);font-family:Tahoma, Arial, sans-serif;font-size:12px;color:#000000;white-space:pre-wrap;overflow-wrap:break-word;pointer-events:none;z-index:31")
+                setAttribute panel "data-row" (string addr.Row)
+                setAttribute panel "data-col" (string addr.Col)
+                setInnerHTML panel ""
+                let line (parent: Element) (text: string) (css: string) =
+                    let element = createElement "div"
+                    setTextContent element text
+                    if css <> "" then setCssText element css
+                    appendChild parent element
+                match info.Thread with
+                | Some thread ->
+                    setAttribute panel "data-kind" "thread"
+                    let entry (indent: bool) (comment: CommentThread) =
+                        let block = createElement "div"
+                        setClassName block "spreadsheet-comment-entry"
+                        setCssText block ((if indent then "margin:6px 0 0 12px" else "margin:0"))
+                        line block (comment.Author |> Option.defaultValue "") "font-weight:bold"
+                        (match comment.Date with
+                         | Some date -> line block (date.Replace("T", " ")) "font-size:10px;color:#666666"
+                         | None -> ())
+                        line block comment.Text ""
+                        appendChild panel block
+                    entry false thread
+                    for reply in thread.Replies do entry true reply
+                    if thread.Done then line panel "Resolved" "margin-top:6px;font-size:10px;color:#1E7B34;font-weight:bold"
+                | None ->
+                    setAttribute panel "data-kind" "note"
+                    if info.Runs.IsEmpty then
+                        // (A note that starts with its author's name says who wrote it.)
+                        (match info.Author with
+                         | Some author when author <> "" && not (info.Text.StartsWith author) -> line panel (author + ":") "font-weight:bold"
+                         | _ -> ())
+                        line panel info.Text ""
+                    else
+                        for text, run in info.Runs do
+                            let span = createElement "span"
+                            setTextContent span text
+                            let css =
+                                [ (if run.Bold = Some true then "font-weight:bold" else "")
+                                  (if run.Italic = Some true then "font-style:italic" else "")
+                                  (match run.Underline = Some true, run.Strikethrough = Some true with
+                                   | true, true -> "text-decoration:underline line-through"
+                                   | true, false -> "text-decoration:underline"
+                                   | false, true -> "text-decoration:line-through"
+                                   | false, false -> "")
+                                  (match run.Color with Some color -> "color:" + color | None -> "")
+                                  (match run.FontName with Some name -> "font-family:'" + name.Replace("'", "") + "', Tahoma, Arial, sans-serif" | None -> "")
+                                  (match run.FontSize with Some size -> "font-size:" + string size + "pt" | None -> "") ]
+                                |> List.filter (fun part -> part <> "")
+                                |> String.concat ";"
+                            if css <> "" then setCssText span css
+                            appendChild panel span
+            | _, None -> hideCommentBox ()
+            | _ -> ()
+        listen content "mousemove" (fun e ->
+            // (Not while a button is down: a drag selects, resizes or moves.)
+            if pointerButtons e <> 0 then hideCommentBox ()
+            else
+                match hitTestEvent e with
+                | SpreadsheetLayout.Cell addr ->
+                    // A merged cell's comment is on its first cell.
+                    let addr = match findMergedCell addr model with Some merged -> { Row = merged.StartRow; Col = merged.StartCol } | None -> addr
+                    let commented =
+                        (not (Map.isEmpty model.Threads) && Map.containsKey addr model.Threads)
+                        || (match Map.tryFind addr model.Cells with Some { Comment = Some _ } -> true | _ -> false)
+                    if commented then showCommentBox addr else hideCommentBox ()
+                | _ -> hideCommentBox ())
+        listen content "mouseleave" (fun _ -> hideCommentBox ())
+        listen content "mousedown" (fun _ -> hideCommentBox ())
 
         // Add event listeners
         listen gridDiv "scroll" handleScroll
@@ -8026,13 +8139,15 @@ type Spreadsheet(container: Element) =
         | None -> null
 
     /// Every comment of a sheet (the active one, or the one at `sheetIndex`),
-    /// row by row: [{ row, col, address, text, author, thread }] (see GetComment).
+    /// row by row: [{ row, col, address, text, author, runs, thread }] (see GetComment).
     member _.GetComments(sheetIndex: obj) : obj array =
         SheetOps.allComments (sheetArg "GetComments" sheetIndex)
         |> List.map (fun info ->
+            let comment = Host.commentToObj info
             createObj [ "row" ==> info.Cell.Row; "col" ==> info.Cell.Col; "address" ==> formatCellRef info.Cell.Row info.Cell.Col
                         "text" ==> info.Text; "author" ==> Host.orNull info.Author
-                        "thread" ==> Host.getKey (Host.commentToObj info) "thread" ])
+                        "runs" ==> Host.getKey comment "runs"
+                        "thread" ==> Host.getKey comment "thread" ])
         |> List.toArray
 
     /// Put a comment on a cell of the active sheet (one undo step). A cell
@@ -8046,6 +8161,20 @@ type Spreadsheet(container: Element) =
         if System.String.IsNullOrWhiteSpace text then Host.hostFail "SetComment" "the text is empty (DeleteComment removes a comment)"
         let author = commentAuthorArg "SetComment" author
         if changeComments "Comment" (SheetOps.setComment addr text author) then render()
+
+    /// Put a note whose text is formatted in runs on a cell of the active
+    /// sheet (one undo step): `runs` is an array of { text, bold?, italic?,
+    /// underline?, strikethrough?, color? ("#RRGGBB"), fontName?, fontSize?
+    /// (points) }; what a run leaves out is the note's usual look. The note's
+    /// text is the runs' texts joined. On a cell with a comment thread the
+    /// first comment gets that text (threads hold plain text). Throws when
+    /// the runs hold no text.
+    member _.SetCommentRuns(row: obj, col: obj, runs: obj, author: obj) =
+        let addr = { Row = Host.rowArg "SetCommentRuns" model row; Col = Host.colArg "SetCommentRuns" model col }
+        let runs = Host.commentRunsArg "SetCommentRuns" runs
+        if runs |> List.forall (fun (text, _) -> System.String.IsNullOrWhiteSpace text) then Host.hostFail "SetCommentRuns" "the runs hold no text (DeleteComment removes a comment)"
+        let author = commentAuthorArg "SetCommentRuns" author
+        if changeComments "Comment" (SheetOps.setCommentRuns addr runs author) then render()
 
     /// Remove the comment of a cell of the active sheet - a note, or a thread
     /// with its replies - as one undo step. True when the cell had one.

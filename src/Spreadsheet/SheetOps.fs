@@ -2074,16 +2074,18 @@ type CommentInfo = {
     /// The note's text, or the text of the thread's first comment.
     Text: string
     Author: string option
+    /// The runs of a note whose text is formatted in runs; empty otherwise.
+    Runs: (string * RunOverride) list
     Thread: CommentThread option
 }
 
 /// The comment on a cell: its thread when it has one, else its note.
 let commentAt (model: SpreadsheetModel) (addr: CellAddress) : CommentInfo option =
     match (if Map.isEmpty model.Threads then None else Map.tryFind addr model.Threads) with
-    | Some thread -> Some { Cell = addr; Text = thread.Text; Author = thread.Author; Thread = Some thread }
+    | Some thread -> Some { Cell = addr; Text = thread.Text; Author = thread.Author; Runs = []; Thread = Some thread }
     | None ->
         match Map.tryFind addr model.Cells with
-        | Some { Comment = Some note } -> Some { Cell = addr; Text = note.Text; Author = note.Author; Thread = None }
+        | Some { Comment = Some note } -> Some { Cell = addr; Text = note.Text; Author = note.Author; Runs = note.Runs; Thread = None }
         | _ -> None
 
 /// Every comment of a sheet, row by row.
@@ -2121,7 +2123,18 @@ let setComment (addr: CellAddress) (text: string) (author: string option) (model
     | Some thread ->
         let edited = { thread with Text = text; Author = (match author with Some _ -> author | None -> thread.Author); PersonId = (if author.IsSome && author <> thread.Author then None else thread.PersonId) }
         if edited = thread then model else { model with Threads = Map.add addr edited model.Threads }
-    | None -> withNote addr (Some { Text = text; Author = author }) true model
+    | None -> withNote addr (Some (plainNote text author)) true model
+
+/// Put a note whose text is in runs on a cell (runs without text do not
+/// count; with no formatting in any run it is a plain note). A thread on the
+/// cell gets the joined text, as `setComment` gives it.
+let setCommentRuns (addr: CellAddress) (runs: (string * RunOverride) list) (author: string option) (model: SpreadsheetModel) : SpreadsheetModel =
+    let runs = runs |> List.filter (fun (text, _) -> text <> "")
+    let text = runs |> List.map fst |> String.concat ""
+    if Map.containsKey addr model.Threads then setComment addr text author model
+    else
+        let formatted = runs |> List.exists (fun (_, run) -> run <> emptyRunOverride)
+        withNote addr (Some { Text = text; Author = author; Runs = (if formatted then runs else []) }) true model
 
 /// Take the comment off a cell: its note and its thread. The same model when it had neither.
 let deleteComment (addr: CellAddress) (model: SpreadsheetModel) : SpreadsheetModel =
@@ -2180,7 +2193,8 @@ let setCommentResolved (addr: CellAddress) (resolved: bool) (model: SpreadsheetM
 let threadPlaceholderNote (thread: CommentThread) : CellComment =
     { Text = "[Threaded comment]\n\nYour version of Excel allows you to read this threaded comment; however, any edits to it will get removed if the file is opened in a newer version of Excel. Learn more: https://go.microsoft.com/fwlink/?linkid=870924\n\nComment:\n    " + thread.Text
                + (thread.Replies |> List.map (fun reply -> "\nReply:\n    " + reply.Text) |> String.concat "")
-      Author = Some ("tc=" + thread.Id) }
+      Author = Some ("tc=" + thread.Id)
+      Runs = [] }
 
 // --- hyperlinks -----------------------------------------------------------------
 // A link is on a range of cells and points out of the workbook (an address)

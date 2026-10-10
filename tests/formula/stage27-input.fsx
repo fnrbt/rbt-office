@@ -125,7 +125,7 @@ eq "null"             (parseInputIn 2024 null).Value CellValue.Empty
 // --- the cell that results --------------------------------------------------
 let general = cellFromInput 2024 None "12%"
 eq "cell-format-applied" (general.Value, general.Format.NumberFormat) (N 0.12, Some "0%")
-let formatted = Some { Value = N 1.0; Format = { defaultFormat with NumberFormat = Some "0.000"; Bold = true }; Comment = Some { Text = "note"; Author = None } }
+let formatted = Some { Value = N 1.0; Format = { defaultFormat with NumberFormat = Some "0.000"; Bold = true }; Comment = Some { Text = "note"; Author = None; Runs = [] } }
 let kept = cellFromInput 2024 formatted "$5"
 eq "cell-format-kept"    (kept.Value, kept.Format.NumberFormat, kept.Format.Bold, kept.Comment.IsSome) (N 5.0, Some "0.000", true, true)
 let generalCode = Some { Value = N 1.0; Format = { defaultFormat with NumberFormat = Some "General" }; Comment = None }

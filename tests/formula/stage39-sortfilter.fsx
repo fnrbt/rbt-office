@@ -100,7 +100,7 @@ let calc =
         Threads = Map.ofList [ at 0 0, { Id = "t1"; Author = None; PersonId = None; Date = None; Text = "thirty"; Replies = []; Done = false } ]
         Hyperlinks = [ { Range = range 1 0 1 0; Target = "https://example.com"; IsInternal = false; Tooltip = None; Display = None }; { Range = range 0 0 2 0; Target = "Sheet2!A1"; IsInternal = true; Tooltip = None; Display = None } ]
         RowHeights = Map.ofList [ 0, 40.0 ] }
-    |> setCell (at 1 0) { num 10.0 with Comment = Some { Text = "ten"; Author = None } }
+    |> setCell (at 1 0) { num 10.0 with Comment = Some { Text = "ten"; Author = None; Runs = [] } }
 let sortedCalc = Ops.sortRange "t" (range 0 0 2 2) [ key 0 ] plain calc
 eq "sort: values in order" (column 0 sortedCalc [ 0 .. 2 ]) [ "10"; "20"; "30" ]
 eq "sort: a formula keeps pointing at its own row" ([ 0 .. 2 ] |> List.map (fun row -> formulaAt row 1 sortedCalc)) [ "=A1*2"; "=A2*2"; "=A3*2" ]

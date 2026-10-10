@@ -245,11 +245,6 @@ let defaultFormat = {
 }
 
 /// Cell comment/note
-type CellComment = {
-    Text: string
-    Author: string option
-}
-
 /// Vertical glyph alignment within a run / cell. Renderers shift the
 /// baseline and scale the glyph size for super/subscript. Maps from
 /// Excel's `<vertAlign val="superscript"/>` element.
@@ -284,6 +279,19 @@ let emptyRunOverride = {
     FontSize = None
     VertAlign = None
 }
+
+/// A note on a cell.
+type CellComment = {
+    Text: string
+    Author: string option
+    /// The text in runs with a font, a size, bold, italic, underline or a
+    /// colour of their own (their texts joined are `Text`); empty for a
+    /// plain note.
+    Runs: (string * RunOverride) list
+}
+
+/// A plain note.
+let plainNote (text: string) (author: string option) : CellComment = { Text = text; Author = author; Runs = [] }
 
 /// An array formula as a file had it (`<f t="array" ref>`).
 type ArrayFormulaMark = {

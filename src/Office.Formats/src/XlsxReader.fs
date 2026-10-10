@@ -202,6 +202,10 @@ type CellComment = {
     CellRef: CellReference
     Author: string option
     Text: string
+    /// The runs of a text written in runs (`<r>` with a font, a size, bold,
+    /// a colour ...), in order; `Text` is their texts joined. Empty for a
+    /// text without runs.
+    Runs: (string * RunProps) list
 }
 
 /// One `<cfvo>` + `<color>` pair inside a `<colorScale>`. The cfvo
@@ -937,6 +941,10 @@ type SheetExtras = {
     /// the file's, that part goes back as it is (rich text, shape ids,
     /// authors), also for a sheet that is otherwise written anew.
     CommentsPart: string option
+    /// For the writer: the runs of the notes whose text is written in runs,
+    /// by cell (row and column from 0). A note that is not here is written
+    /// as one plain text.
+    CommentRuns: ((int * int) * (string * RunProps) list) list
     /// For the writer, of a sheet of a file whose cells were not made yet:
     /// whether it has a formula the file holds no value for (None: not known,
     /// the cells say).
@@ -953,7 +961,7 @@ let emptySheetExtras =
     { Images = []; Objects = []; ThreadedComments = []; DrawingRelationships = []; Format = None; Columns = []; ColumnStyles = []
       SheetId = None; KeptRelationships = []; KeptExtensions = []; KeptElements = []; DrawingPart = None; TableParts = []; PivotLocations = []; DataTables = []
       KeptCellExtensions = []; PrinterSettingsRelId = None; RowAxis = []; ColumnAxis = []; AutoFilter = None; ArrayFormulas = []
-      SourcePart = None; CommentsPart = None; UncachedFormulas = None; Verbatim = false }
+      SourcePart = None; CommentsPart = None; CommentRuns = []; UncachedFormulas = None; Verbatim = false }
 
 /// A named cell style (cellStyles / cellStyleXfs of styles.xml), with the
 /// font, fill, border and number format its xf refers to given as their XML so
@@ -1343,7 +1351,8 @@ module Xlsx =
                 | "subscript" -> VertAlignSubscript
                 | _ -> VertAlignBaseline)
             |> Option.defaultValue VertAlignBaseline
-        let underline = boolChild "u"
+        // (<u/> is a single underline; <u val="none"/> says there is none.)
+        let underline = boolChild "u" && (sElem "u" rPr |> Option.bind (Xml.attr "val")) <> Some "none"
         let underlineDouble =
             sElem "u" rPr
             |> Option.bind (Xml.attr "val")
@@ -1439,6 +1448,8 @@ module Xlsx =
                         underline <- sharedStringBoolAttr reader
                         match reader.GetAttribute("val") with
                         | "double" | "doubleAccounting" -> underlineDouble <- true
+                        // (<u val="none"/> says there is no underline.)
+                        | "none" -> underline <- false
                         | _ -> ()
                     | "color" ->
                         match reader.GetAttribute("rgb") with
@@ -3743,15 +3754,17 @@ module Xlsx =
     // theme-font resolution happens later, after the workbook theme
     // majorFont/minorFont arrays have been parsed.
     let parseFont (themeColors: string array) (fontNode: XmlNode) : (bool * bool * bool * bool * bool * string option * float option * string option * string) =
-        let bold = sElem "b" fontNode |> Option.isSome
-        let italic = sElem "i" fontNode |> Option.isSome
-        let underline = sElem "u" fontNode |> Option.isSome
+        // (<b/> is bold, <b val="0"/> is not; <u val="none"/> is no underline.)
+        let on (name: string) = match sElem name fontNode with Some node -> (match Xml.attr "val" node with Some ("0" | "false") -> false | _ -> true) | None -> false
+        let bold = on "b"
+        let italic = on "i"
+        let underline = on "u" && (sElem "u" fontNode |> Option.bind (Xml.attr "val")) <> Some "none"
         let underlineDouble =
             sElem "u" fontNode
             |> Option.bind (Xml.attr "val")
             |> Option.map (fun v -> v = "double" || v = "doubleAccounting")
             |> Option.defaultValue false
-        let strike = sElem "strike" fontNode |> Option.isSome
+        let strike = on "strike"
         let color = sElem "color" fontNode |> Option.bind (resolveColorElement themeColors)
         let size = sElem "sz" fontNode |> Option.bind (Xml.attr "val") |> Option.bind tryParseFloat
         let name = sElem "name" fontNode |> Option.bind (Xml.attr "val")
@@ -4336,10 +4349,15 @@ module CellComments =
                 match Ns.childNs "text" commentNode with
                 | Some textNode -> Xlsx.descendantTextConcat "t" textNode
                 | None -> Xlsx.descendantTextConcat "t" commentNode
+            let runs =
+                match Ns.childNs "text" commentNode with
+                | Some textNode -> Xlsx.richRunsOf textNode
+                | None -> []
             {
                 CellRef = cellRef
                 Author = author
                 Text = text
+                Runs = runs
             })
 
     let parseComment (commentNode: XmlNode) : CellComment option =

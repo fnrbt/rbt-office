@@ -94,7 +94,7 @@ let edited =
     let withValues =
         first
         |> setCell (addr 0 30) { Value = CellValue.String "edited text"; Format = { defaultFormat with Bold = true; BgColor = Some "#FFEE00" }; Comment = None }
-        |> setCell (addr 1 30) { Value = CellValue.Number 1234.5; Format = { defaultFormat with NumberFormat = Some "#,##0.00" }; Comment = Some { Text = "a note"; Author = Some "Tester" } }
+        |> setCell (addr 1 30) { Value = CellValue.Number 1234.5; Format = { defaultFormat with NumberFormat = Some "#,##0.00" }; Comment = Some { Text = "a note"; Author = Some "Tester"; Runs = [] } }
         |> setCell (addr 2 30) { Value = CellValue.Formula ("=AE2*2", CellValue.Number 2469.0); Format = defaultFormat; Comment = None }
         |> setCell (addr 3 30) { Value = CellValue.Formula ("AE2+1", CellValue.Empty); Format = defaultFormat; Comment = None }
     let context = { imported.Context with Sheets = imported.Context.Sheets |> Map.add sheetId { imported.Context.Sheets.[sheetId] with Model = withValues } }
@@ -968,6 +968,42 @@ do
                 | CellValue.Number _, CellValue.Error "CYCLE" -> true
                 | _ -> false) |> Seq.length)
     eq "iteration: the file's circular model keeps its values through a full recalculation" moved 0
+
+// ---- notes in runs --------------------------------------------------------
+// A note of a file is read with its runs (font, size, bold, colour); when the
+// sheet's comments change the comments part is written from the model, and
+// every note keeps its runs.
+do
+    let wb = load "real-world/jumeirah-hotel.xlsx"
+    let imported = Bridge.Import.importWorkbook wb
+    let sheetIndex = wb.Sheets |> List.findIndex (fun sheet -> sheet.Comments |> List.exists (fun c -> c.CellRef.Column = "E" && c.CellRef.Row = 49))
+    let model = imported.Sheets.[sheetIndex].Model
+    let runsAt (m: SpreadsheetModel) row col =
+        match Ops.commentAt m (addr row col) with
+        | Some info -> info.Runs |> List.map (fun (text, run) -> text.Trim().Split('\n').[0], run.Bold, run.FontName, run.FontSize)
+        | None -> []
+    eq "note runs: the file's note has its runs" (runsAt model 48 4 |> List.map (fun (text, bold, font, size) -> text.StartsWith "BIWS:" || text.StartsWith "4% tax", bold, font, size))
+        [ true, Some true, Some "Tahoma", Some 9.0; true, None, Some "Tahoma", Some 9.0 ]
+    eq "note runs: the note's text is the runs joined" (Ops.commentAt model (addr 48 4) |> Option.map (fun info -> info.Text = (info.Runs |> List.map fst |> String.concat ""))) (Some true)
+    // Another note on the sheet: the comments are not the file's any more.
+    let red = { emptyRunOverride with Color = Some "#FF0000"; Italic = Some true; Underline = Some true; FontSize = Some 14.0; FontName = Some "Georgia" }
+    let edited = model |> Ops.setCommentRuns (addr 0 0) [ "plain ", emptyRunOverride; "red", red; "", red ] (Some "Ann") |> Ops.setComment (addr 1 0) "just text" None
+    eq "note runs: runs without text are dropped" (Ops.commentAt edited (addr 0 0) |> Option.map (fun info -> info.Text, info.Runs.Length)) (Some ("plain red", 2))
+    eq "note runs: a note without formatting is a plain note" ((edited |> Ops.setCommentRuns (addr 2 0) [ "a", emptyRunOverride; "b", emptyRunOverride ] None |> fun m -> Ops.commentAt m (addr 2 0)) |> Option.map (fun info -> info.Text, info.Runs)) (Some ("ab", []))
+    let sheets = modelsOf imported
+    sheets.[sheetIndex] <- edited
+    let back = reread (Bridge.Export.toWorkbookOut (inputOf imported sheets imported.Context.Names))
+    let commentOf (column: string) (row: int) = back.Sheets.[sheetIndex].Comments |> List.find (fun c -> c.CellRef.Column = column && c.CellRef.Row = row)
+    eq "note runs: the file's note keeps its runs when the sheet's comments changed"
+        ((commentOf "E" 49).Runs |> List.map (fun (text, props) -> text.Trim().StartsWith "BIWS:" || text.Trim().StartsWith "4% tax", props.Bold, props.FontName, props.FontSize))
+        [ true, true, Some "Tahoma", Some 9.0; true, false, Some "Tahoma", Some 9.0 ]
+    eq "note runs: a note made in runs is written in runs"
+        ((commentOf "A" 1).Runs |> List.map (fun (text, props) -> text, props.Italic, props.Underline, props.Color |> Option.map (fun c -> c.ToUpperInvariant().EndsWith "FF0000"), props.FontName, props.FontSize))
+        [ "plain ", false, false, None, None, None; "red", true, true, Some true, Some "Georgia", Some 14.0 ]
+    eq "note runs: a plain note is written as one text" ((commentOf "A" 2).Text, (commentOf "A" 2).Runs) ("just text", [])
+    let again = (Bridge.Import.importWorkbook back).Sheets.[sheetIndex].Model
+    eq "note runs: read back as they were" (Ops.commentAt again (addr 0 0) |> Option.map (fun info -> info.Text, info.Author, info.Runs)) (Ops.commentAt edited (addr 0 0) |> Option.map (fun info -> info.Text, info.Author, info.Runs))
+    eq "note runs: the file's note reads back as it was" (runsAt again 48 4) (runsAt model 48 4)
 
 printfn ""
 printfn "XLSX bridge tests: %d passed, %d failed" pass fail
