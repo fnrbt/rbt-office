@@ -253,6 +253,9 @@ module Processors =
 
     /// Build editor "TextBox" objects (incl. preset/custom geometry + gradient)
     /// for every drawing shape in the document.
+    [<Fable.Core.Emit("($0.AnchorBlock == null ? -1 : $0.AnchorBlock)")>]
+    let private anchorBlockOrMinusOne (_shape: obj) : int = Fable.Core.Util.jsNative
+
     let private shapeObjectsFor (doc: DocxReader.WordDocument) : obj array =
         let styleMap = DocumentProcessors.StyleResolution.buildStyleMapWithTheme doc.Theme doc.Styles
         let comments = doc.Comments |> List.map (fun comment -> comment.Id, comment) |> Map.ofList
@@ -327,6 +330,22 @@ module Processors =
             ])
         |> List.toArray
 
+    /// The kept parts, with the child element of w:body each item of
+    /// Paragraphs was read from (a shape: the element of the block it is
+    /// anchored in): the writer puts an element back as it was when its items
+    /// were not changed.
+    let private preservedWithItemChunks (doc: DocxReader.WordDocument) (contentItems: obj array) (shapeItems: obj array) : obj =
+        let preserved = DocxReader.toEditorPreserved doc.Preserved
+        let contentChunks = doc.Preserved.BodyContentChunks |> List.toArray
+        if contentChunks.Length = contentItems.Length then
+            let shapeChunks =
+                shapeItems
+                |> Array.map (fun shape ->
+                    let anchor = anchorBlockOrMinusOne shape
+                    if anchor >= 0 && anchor < contentChunks.Length then contentChunks.[anchor] else -1)
+            preserved?BodyItemChunks <- Array.append contentChunks shapeChunks
+        preserved
+
     let forEditorPackage (fileData: obj) : Fable.Core.JS.Promise<obj> =
         promise {
             let! archive = loadArchive fileData
@@ -336,7 +355,9 @@ module Processors =
             | Some doc ->
                 let paragraphs =
                     DocxReader.toEditorParagraphsWithStylesThemeAndNumbering doc.Theme doc.Content doc.Images doc.Styles doc.NumberingDefinitions doc.Footnotes doc.Endnotes
-                let paragraphs = Array.append paragraphs (shapeObjectsFor doc)
+                let shapeItems = shapeObjectsFor doc
+                let preserved = preservedWithItemChunks doc paragraphs shapeItems
+                let paragraphs = Array.append paragraphs shapeItems
                 return createObj [
                     "Paragraphs" ==> paragraphs
                     "Styles" ==> (doc.Styles |> List.map (styleToObj doc.Theme) |> List.toArray)
@@ -346,7 +367,7 @@ module Processors =
                     "Footnotes" ==> DocxReader.toEditorNotes doc.Theme doc.Images doc.Styles doc.NumberingDefinitions doc.Footnotes
                     "Endnotes" ==> DocxReader.toEditorNotes doc.Theme doc.Images doc.Styles doc.NumberingDefinitions doc.Endnotes
                     "Comments" ==> DocxReader.toEditorComments doc.Theme doc.Images doc.Styles doc.NumberingDefinitions doc.Comments
-                    "Preserved" ==> DocxReader.toEditorPreserved doc.Preserved
+                    "Preserved" ==> preserved
                     "Theme" ==> (doc.Theme |> Option.map (fun theme -> createObj [ "MajorFont" ==> theme.MajorFont; "MinorFont" ==> theme.MinorFont; "Colors" ==> createObj (theme.Colors |> Map.toList |> List.map (fun (key, value) -> key ==> value)) ]))
                 ]
             | None ->

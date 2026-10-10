@@ -1396,7 +1396,9 @@ let private convertEditorPackage (package: obj) : Document =
                     Preserved = (if isNullOrUndefined package?Preserved then null else package?Preserved)
                     ImportedStyles = doc.Styles } }
         |> withCommentDetails comments
-    if isNullOrUndefined package?PageSetup then doc else { doc with PageSetup = pageSetupFromEditor package?PageSetup }
+    let doc = if isNullOrUndefined package?PageSetup then doc else { doc with PageSetup = pageSetupFromEditor package?PageSetup }
+    // What the document was when it was read (see PackageData.Imported).
+    if isNull doc.Package.Preserved then doc else { doc with Package = { doc.Package with Imported = box doc } }
 
 [<Emit("new WeakMap()")>]
 let private newPackageMap () : obj = jsNative
@@ -2068,21 +2070,130 @@ let private commentsToEditor context (doc: Document) : obj array =
 
 /// The whole document as the package DocumentWriter.writeFromEditorPackage
 /// takes: the inverse of importFromEditorPackage.
+[<Emit("JSON.stringify($0)")>]
+let private jsonOf (_value: obj) : string = jsNative
+
+let private sameBlockObject (a: Block) (b: Block) =
+    match a, b with
+    | Paragraph x, Paragraph y -> obj.ReferenceEquals(x, y)
+    | Heading (levelX, x), Heading (levelY, y) -> levelX = levelY && obj.ReferenceEquals(x, y)
+    | Table x, Table y -> obj.ReferenceEquals(x, y)
+    | TextBox x, TextBox y -> obj.ReferenceEquals(x, y)
+    | _ -> false
+
+let private blockIdOf (block: Block) =
+    match block with
+    | Paragraph para
+    | Heading (_, para) -> para.Id
+    | Table table -> table.Id
+    | TextBox textBox -> textBox.Id
+
+/// The body for the editor package. A block that was imported says which
+/// item of the imported package it was (SourceIndex) and whether it is still
+/// what it was then (SourceUnchanged: the same object, or one that exports to
+/// the same item - a character typed and deleted again): the writer puts the
+/// XML of such a block back as it was in the file.
+let private exportBodyWithSource context (imported: Document option) (doc: Document) : obj array =
+    match imported with
+    | None -> exportToEditor doc
+    | Some original ->
+        let known = Dictionary<string, int * Block>()
+        original.Blocks |> List.iteri (fun index block -> known.[blockIdOf block] <- (index, block))
+        blocksInAnchorOrder doc.Blocks
+        |> List.map (fun block ->
+            let item = blockToEditor context block
+            match known.TryGetValue (blockIdOf block) with
+            | true, (index, originalBlock) ->
+                let unchanged = sameBlockObject block originalBlock || jsonOf item = jsonOf (blockToEditor context originalBlock)
+                item?SourceIndex <- index
+                item?SourceUnchanged <- unchanged
+            | _ -> ()
+            item)
+        |> List.toArray
+
+/// (list id, level) -> how the paragraphs of that list level are numbered.
+let private listSignatures (doc: Document) =
+    let signatures = Dictionary<string, string>()
+    let blocks =
+        doc.Blocks
+        @ (doc.HeaderParts @ doc.FooterParts |> List.collect (fun part -> part.Blocks))
+        @ (doc.Package.Notes |> List.collect (fun note -> note.Blocks))
+        @ (doc.Package.Comments |> List.collect (fun comment -> comment.Blocks))
+    for para in paragraphsOfBlocks blocks do
+        let metadata = para.Metadata
+        match metadata.ListId with
+        | Some listId when metadata.ListStyle <> NoList ->
+            let key = listId + "/" + string metadata.ListLevel
+            let value =
+                String.concat "\u0000" [
+                    listStyleToString metadata.ListStyle
+                    metadata.ListNumberFormat |> Option.defaultValue ""
+                    metadata.ListLevelText |> Option.defaultValue ""
+                    (match metadata.ListStart with Some start -> string start | None -> "") ]
+            // (The first paragraph of a level says what the level is.)
+            if not (signatures.ContainsKey key) then signatures.[key] <- value
+        | _ -> ()
+    signatures
+
 let exportDocumentPackage (doc: Document) : obj =
     let context = Some (WordStyles.styleContext doc)
+    let imported : Document option = if isNull doc.Package.Imported then None else Some (unbox<Document> doc.Package.Imported)
+    let footnotes = notesToEditor context "footnote" doc
+    let endnotes = notesToEditor context "endnote" doc
+    let comments = commentsToEditor context doc
+    // A header / footer that is what it was when the document was read.
+    let partsWithSource (parts: HeaderFooterPart list) (originalParts: HeaderFooterPart list) =
+        let items = headerFooterPartsToEditor context parts
+        parts
+        |> List.iteri (fun index part ->
+            match part.RelationshipId |> Option.bind (fun id -> originalParts |> List.tryFind (fun candidate -> candidate.RelationshipId = Some id)) with
+            | Some originalPart ->
+                let unchanged =
+                    obj.ReferenceEquals(part, originalPart)
+                    || obj.ReferenceEquals(part.Blocks, originalPart.Blocks) && part.Kind = originalPart.Kind
+                    || jsonOf items.[index] = jsonOf (headerFooterPartsToEditor context [ originalPart ]).[0]
+                items.[index]?SourceUnchanged <- unchanged
+            | None -> ())
+        items
+    let sameAsImported (current: obj array) (ofOriginal: Document -> obj array) =
+        match imported with
+        | Some original -> jsonOf current = jsonOf (ofOriginal original)
+        | None -> false
+    let listsUnchanged =
+        match imported with
+        | Some original ->
+            let before = listSignatures original
+            let after = listSignatures doc
+            after |> Seq.forall (fun entry ->
+                match before.TryGetValue entry.Key with
+                | true, value -> value = entry.Value
+                | _ -> true)
+        | None -> false
+    let partIds (parts: HeaderFooterPart list) = parts |> List.map (fun part -> part.Kind, part.RelationshipId)
     createObj [
-        "Footnotes" ==> notesToEditor context "footnote" doc
-        "Endnotes" ==> notesToEditor context "endnote" doc
-        "Comments" ==> commentsToEditor context doc
+        "Footnotes" ==> footnotes
+        "Endnotes" ==> endnotes
+        "Comments" ==> comments
+        // What is still as it was read (the writer then writes it back from the file's own XML).
+        "FootnotesUnchanged" ==> sameAsImported footnotes (notesToEditor context "footnote")
+        "EndnotesUnchanged" ==> sameAsImported endnotes (notesToEditor context "endnote")
+        "CommentsUnchanged" ==> sameAsImported comments (commentsToEditor context)
+        "ListsUnchanged" ==> listsUnchanged
+        "PageSetupUnchanged" ==> (match imported with
+                                  | Some original ->
+                                      doc.PageSetup = original.PageSetup
+                                      && partIds doc.HeaderParts = partIds original.HeaderParts
+                                      && partIds doc.FooterParts = partIds original.FooterParts
+                                  | None -> false)
         "Preserved" ==> doc.Package.Preserved
         // Styles changed in the editor (or new): the others keep their original definition.
         "ChangedStyles" ==> (doc.Styles
                              |> List.filter (fun style -> not (doc.Package.ImportedStyles |> List.exists (fun imported -> imported = style)))
                              |> List.map (fun style -> style.StyleType + ":" + style.Id)
                              |> List.toArray)
-        "Paragraphs" ==> exportToEditor doc
+        "Paragraphs" ==> exportBodyWithSource context imported doc
         "PageSetup" ==> exportPageSetupToEditor doc.PageSetup
         "Styles" ==> exportStylesToEditor doc.Styles
-        "HeaderParts" ==> headerFooterPartsToEditor (Some (WordStyles.styleContext doc)) doc.HeaderParts
-        "FooterParts" ==> headerFooterPartsToEditor (Some (WordStyles.styleContext doc)) doc.FooterParts
+        "HeaderParts" ==> partsWithSource doc.HeaderParts (imported |> Option.map (fun original -> original.HeaderParts) |> Option.defaultValue [])
+        "FooterParts" ==> partsWithSource doc.FooterParts (imported |> Option.map (fun original -> original.FooterParts) |> Option.defaultValue [])
     ]

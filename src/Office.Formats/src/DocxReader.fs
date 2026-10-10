@@ -602,9 +602,31 @@ type PackagePreservation = {
     /// The original styles and settings parts: the writer merges into them.
     StylesXml: string option
     SettingsXml: string option
+    /// The parts the writer regenerates, as they were read: "document", the
+    /// relationship id of a header / footer, "footnotes", "endnotes",
+    /// "comments", "numbering". What was not changed in the editor is written
+    /// back from here as it was (a body block, a whole header, the notes).
+    SourceXml: Map<string, string>
+    /// Every relationship of those parts that the writer does not produce
+    /// itself (pictures and hyperlinks included): what a part or a body block
+    /// written back as it was refers to. Keys as PartRelationships.
+    SourceRelationships: Map<string, PreservedRelationship list>
+    /// Parts reachable from SourceRelationships only (the pictures the
+    /// editor holds as data): written when something is written back as it was.
+    SourceParts: PreservedPart list
+    /// For each block of the body (WordDocument.Content), the index of the
+    /// child element of w:body it was read from.
+    BodyContentChunks: int list
+    /// How many child elements w:body has.
+    BodyChunkCount: int
 }
 
 let emptyPackagePreservation = {
+    SourceXml = Map.empty
+    SourceRelationships = Map.empty
+    SourceParts = []
+    BodyContentChunks = []
+    BodyChunkCount = 0
     Parts = []
     RootRelationships = []
     DocumentRelationshipId = "rId1"
@@ -2204,6 +2226,22 @@ module Docx =
     let bodyContent (bodyNode: XmlNode) : DocumentContent list =
         bodyContentWithFinalSection None bodyNode
 
+    /// For each block bodyContent gives, the index of the child element of
+    /// w:body it comes from (a block-level content control gives several
+    /// blocks), and the number of child elements.
+    let bodyContentChunks (bodyNode: XmlNode) : int list * int =
+        let rec blockCount (node: XmlNode) =
+            match Xml.name node |> Option.map Ns.stripNs with
+            | Some "p" | Some "tbl" -> 1
+            | Some "sdt" ->
+                match Ns.childNs "sdtContent" node with
+                | Some content -> Xml.children content |> List.sumBy blockCount
+                | None -> 0
+            | Some "customXml" -> Xml.children node |> List.sumBy blockCount
+            | _ -> 0
+        let elements = Xml.children bodyNode |> List.filter (fun child -> (Xml.name child).IsSome)
+        elements |> List.mapi (fun index element -> List.replicate (blockCount element) index) |> List.concat, elements.Length
+
 // Style parsing
 module Styles =
     let defaultStyleId = "__docDefaults"
@@ -3453,6 +3491,18 @@ let private keptRelationships (baseDir: string) (rels: Relationship list) (opaqu
           Target = if isExternal then rel.Target else "/" + resolveRelationshipTarget baseDir rel.Target
           External = isExternal })
 
+/// Every relationship of a part but those of the parts the writer produces
+/// itself: what the part, written back as it was read, refers to.
+let private sourceRelationships (baseDir: string) (rels: Relationship list) : PreservedRelationship list =
+    rels
+    |> List.filter (fun rel -> not (isRegeneratedRelationshipType rel.Type))
+    |> List.map (fun rel ->
+        let isExternal = rel.TargetMode = Some "External"
+        { Id = rel.Id
+          Type = rel.Type
+          Target = if isExternal then rel.Target else "/" + resolveRelationshipTarget baseDir rel.Target
+          External = isExternal })
+
 /// Every part reachable from `roots` through the parts' own relationships,
 /// with those relationship parts, in a stable order.
 let private reachableParts (source: PartSource) (excluded: Set<string>) (roots: PreservedRelationship list) : PreservedPart list =
@@ -3636,8 +3686,41 @@ let parseFromSource (source: PartSource) : WordDocument option =
               for _, path, _ in headerParts @ footerParts do yield path ]
             |> Set.ofList
         let defaults, overrides = contentTypeEntries (source.Text "[Content_Types].xml")
+        // ---- what is written back as it was when the editor did not change it ----
+        let sourceRels =
+            [ yield "document", sourceRelationships docDir rels
+              for part, path, partRels in headerParts @ footerParts do
+                  match part.RelationshipId with
+                  | Some partId -> yield partId, sourceRelationships (parentPath path) partRels
+                  | None -> ()
+              yield footnotesPartKey, sourceRelationships (parentPath footnotesPath) footnotesRels
+              yield endnotesPartKey, sourceRelationships (parentPath endnotesPath) endnotesRels
+              yield commentsPartKey, sourceRelationships (parentPath commentsPath) commentsRels ]
+            |> List.filter (fun (_, kept) -> not kept.IsEmpty)
+        let sourceXml =
+            [ yield "document", Some xml
+              for part, path, _ in headerParts @ footerParts do
+                  match part.RelationshipId with
+                  | Some partId -> yield partId, source.Text path
+                  | None -> ()
+              yield footnotesPartKey, source.Text footnotesPath
+              yield endnotesPartKey, source.Text endnotesPath
+              yield commentsPartKey, source.Text commentsPath
+              yield "numbering", numberingXml ]
+            |> List.choose (fun (key, text) -> text |> Option.map (fun value -> key, value))
+        let keptParts = reachableParts source regenerated (rootKept @ (partKept |> List.collect snd))
+        let keptPaths = keptParts |> List.map (fun part -> part.Path) |> Set.ofList
+        let bodyChunks, bodyChunkCount =
+            body |> Option.map Docx.bodyContentChunks |> Option.defaultValue ([], 0)
         let preserved =
-            { Parts = reachableParts source regenerated (rootKept @ (partKept |> List.collect snd))
+            { SourceXml = Map.ofList sourceXml
+              SourceRelationships = Map.ofList sourceRels
+              SourceParts =
+                reachableParts source regenerated (sourceRels |> List.collect snd)
+                |> List.filter (fun part -> not (Set.contains part.Path keptPaths))
+              BodyContentChunks = bodyChunks
+              BodyChunkCount = bodyChunkCount
+              Parts = keptParts
               RootRelationships = rootKept
               DocumentRelationshipId = mainRelationship |> Option.map (fun rel -> rel.Id) |> Option.defaultValue "rId1"
               PartRelationships = Map.ofList partKept
@@ -5595,5 +5678,13 @@ let toEditorPreserved (preserved: PackagePreservation) : obj =
         "Overrides" ==> (preserved.Overrides |> List.map (fun (partName, contentType) -> objFromFields [ "PartName" ==> partName; "ContentType" ==> contentType ]) |> List.toArray)
         "MainContentType" ==> preserved.MainContentType
         "StylesXml" ==> preserved.StylesXml
+        "SourceXml" ==> (preserved.SourceXml |> Map.toList |> List.map (fun (key, text) -> objFromFields [ "Part" ==> key; "Xml" ==> text ]) |> List.toArray)
+        "SourceRelationships" ==> (preserved.SourceRelationships
+                                   |> Map.toList
+                                   |> List.map (fun (key, rels) -> objFromFields [ "Part" ==> key; "Relationships" ==> relationships rels ])
+                                   |> List.toArray)
+        "SourceParts" ==> (preserved.SourceParts |> List.map (fun part -> objFromFields [ "Path" ==> part.Path; "Data" ==> part.Data ]) |> List.toArray)
+        "BodyContentChunks" ==> (preserved.BodyContentChunks |> List.toArray)
+        "BodyChunkCount" ==> preserved.BodyChunkCount
         "SettingsXml" ==> preserved.SettingsXml
     ]

@@ -590,9 +590,24 @@ type PreservedPackage = {
     MainContentType: string option
     StylesXml: string option
     SettingsXml: string option
+    /// The regenerated parts as they were read, by key ("document", a header /
+    /// footer relationship id, "footnotes", "endnotes", "comments", "numbering").
+    SourceXml: Map<string, string>
+    /// All the relationships those parts had (but those to parts the writer makes).
+    SourceRelationships: Map<string, PreservedRelationshipInfo list>
+    /// Parts only SourceRelationships lead to.
+    SourceParts: (string * byte[]) list
+    /// The child element of w:body each item of the imported body came from.
+    BodyItemChunks: int array
+    BodyChunkCount: int
 }
 
 let private emptyPreservedPackage = {
+    SourceXml = Map.empty
+    SourceRelationships = Map.empty
+    SourceParts = []
+    BodyItemChunks = [||]
+    BodyChunkCount = 0
     Parts = []
     RootRelationships = []
     DocumentRelationshipId = "rId1"
@@ -615,7 +630,26 @@ let private preservedRelationshipsFromObject (value: obj) : PreservedRelationshi
 let private preservedPackageFromObject (value: obj) : PreservedPackage =
     if isNullOrUndefined value then emptyPreservedPackage
     else
-        { Parts =
+        let partList (parts: obj) =
+            optionalArray parts
+            |> Array.toList
+            |> List.choose (fun part ->
+                if isNullOrUndefined part?Data then None
+                else optionalString (part?Path) |> Option.map (fun path -> path, unbox<byte[]> part?Data))
+        { SourceXml =
+            optionalArray (value?SourceXml)
+            |> Array.toList
+            |> List.choose (fun entry -> Option.map2 (fun key text -> key, text) (optionalString (entry?Part)) (optionalString (entry?Xml)))
+            |> Map.ofList
+          SourceRelationships =
+            optionalArray (value?SourceRelationships)
+            |> Array.toList
+            |> List.choose (fun entry -> optionalString (entry?Part) |> Option.map (fun key -> key, preservedRelationshipsFromObject (entry?Relationships)))
+            |> Map.ofList
+          SourceParts = partList (value?SourceParts)
+          BodyItemChunks = optionalArray (value?BodyItemChunks) |> Array.map (fun chunk -> intOrDefault (-1) chunk)
+          BodyChunkCount = intOrDefault 0 (value?BodyChunkCount)
+          Parts =
             optionalArray (value?Parts)
             |> Array.toList
             |> List.choose (fun part ->
@@ -1918,7 +1952,10 @@ let private generateDocumentItem (hyperlinks: Map<string, string>) (item: obj) :
 let generateParagraph (para: obj) : string =
     generateParagraphWithHyperlinks Map.empty para
 
-type HeaderFooterPartInfo = { Kind: string; RelId: string; Target: string; PartName: string; Blocks: obj array; IsGlobal: bool }
+type HeaderFooterPartInfo = {
+    Kind: string; RelId: string; Target: string; PartName: string; Blocks: obj array; IsGlobal: bool
+    /// The part says it is what it was when the document was read.
+    Unchanged: bool }
 type HeaderFooterPartPackage = { Info: HeaderFooterPartInfo; Images: ImageScope; Hyperlinks: Map<string, string> }
 
 let private partBlocks (part: obj) =
@@ -1938,7 +1975,8 @@ let private headerFooterInfos scopedRelationshipIds prefix startIndex (parts: ob
           Target = fileName
           PartName = sprintf "/word/%s" fileName
           Blocks = partBlocks part
-          IsGlobal = not (Set.contains relId scopedRelationshipIds) })
+          IsGlobal = not (Set.contains relId scopedRelationshipIds)
+          Unchanged = explicitRelId.IsSome && boolOrDefault false (part?SourceUnchanged) })
 
 let private generateHeaderFooterXml rootName (hyperlinks: Map<string, string>) (images: ImageScope) (blocks: obj array) =
     let content = blocks |> generateBlocks (generateDocumentItemWithImages hyperlinks images) (generateTextBoxRun defaultPageSetupInfo hyperlinks images)
@@ -1998,6 +2036,314 @@ let private generateDocumentXmlWithFormattingAndImages (paragraphs: obj array) (
             [body]
 
     document doc
+
+// ---- the body as it was read ---------------------------------------------------
+//
+// A document that was opened is not written from the model alone: a child
+// element of w:body whose blocks the editor did not change goes back into
+// document.xml as the text it was read from, with everything in it the model
+// does not hold (revision ids, proofing marks, complex fields, content
+// control properties, attributes and elements of later formats). Only the
+// blocks that were changed, added or moved next to a change are written from
+// the model.
+
+type private ElementRanges = { Starts: int array; Ends: int array; Names: string array; CloseAt: int }
+
+/// Index of the '>' that ends the tag starting at `lt` (an attribute value may hold one).
+let private tagEndIndex (xml: string) (lt: int) : int =
+    let n = xml.Length
+    let mutable i = lt + 1
+    let mutable inQuote = false
+    let mutable quote = '"'
+    let mutable found = -1
+    while found < 0 && i < n do
+        let c = xml.[i]
+        if inQuote then
+            if c = quote then inQuote <- false
+        elif c = '"' || c = '\'' then
+            inQuote <- true
+            quote <- c
+        elif c = '>' then found <- i
+        i <- i + 1
+    found
+
+let private tagNameAt (xml: string) (lt: int) : string =
+    let mutable i = lt + 1
+    let mutable fin = false
+    while not fin && i < xml.Length do
+        let c = xml.[i]
+        if c = ' ' || c = '>' || c = '/' || c = '\n' || c = '\t' || c = '\r' then fin <- true else i <- i + 1
+    xml.Substring(lt + 1, i - lt - 1)
+
+let private localNameOf (name: string) =
+    let colon = name.IndexOf ':'
+    if colon >= 0 then name.Substring(colon + 1) else name
+
+/// Where the child elements of an element are in the text: `from` is just
+/// after its start tag; CloseAt is where its end tag starts. None for text
+/// that is not well formed.
+let private childElementRanges (xml: string) (from: int) : ElementRanges option =
+    let n = xml.Length
+    let starts = ResizeArray<int>()
+    let ends = ResizeArray<int>()
+    let names = ResizeArray<string>()
+    let mutable pos = from
+    let mutable depth = 0
+    let mutable closeAt = -1
+    let mutable broken = false
+    let startsWithAt (at: int) (value: string) = at + value.Length <= n && System.String.CompareOrdinal(xml, at, value, 0, value.Length) = 0
+    let skipTo (at: int) (terminator: string) =
+        let found = xml.IndexOf(terminator, at, System.StringComparison.Ordinal)
+        if found < 0 then broken <- true else pos <- found + terminator.Length
+    while closeAt < 0 && not broken do
+        let lt = if pos < n then xml.IndexOf('<', pos) else -1
+        if lt < 0 || lt + 1 >= n then broken <- true
+        elif startsWithAt lt "<!--" then skipTo lt "-->"
+        elif startsWithAt lt "<![CDATA[" then skipTo lt "]]>"
+        elif xml.[lt + 1] = '?' then skipTo lt "?>"
+        elif xml.[lt + 1] = '/' then
+            let gt = xml.IndexOf('>', lt)
+            if gt < 0 then broken <- true
+            elif depth = 0 then closeAt <- lt
+            else
+                depth <- depth - 1
+                if depth = 0 then ends.Add(gt + 1)
+                pos <- gt + 1
+        else
+            let gt = tagEndIndex xml lt
+            if gt < 0 then broken <- true
+            else
+                let selfClosing = xml.[gt - 1] = '/'
+                if depth = 0 then
+                    starts.Add lt
+                    names.Add (tagNameAt xml lt)
+                    if selfClosing then ends.Add(gt + 1)
+                if not selfClosing then depth <- depth + 1
+                pos <- gt + 1
+    if broken || starts.Count <> ends.Count then None
+    else Some { Starts = starts.ToArray(); Ends = ends.ToArray(); Names = names.ToArray(); CloseAt = closeAt }
+
+/// Where the root element's start tag begins.
+let private rootTagStart (xml: string) : int =
+    let mutable pos = 0
+    let mutable found = -1
+    while found < 0 && pos >= 0 && pos < xml.Length do
+        let lt = xml.IndexOf('<', pos)
+        if lt < 0 || lt + 1 >= xml.Length then pos <- -1
+        elif xml.[lt + 1] = '?' then
+            let fin = xml.IndexOf("?>", lt, System.StringComparison.Ordinal)
+            pos <- if fin < 0 then -1 else fin + 2
+        elif xml.[lt + 1] = '!' then
+            let fin = xml.IndexOf('>', lt)
+            pos <- if fin < 0 then -1 else fin + 1
+        else found <- lt
+    found
+
+let private countOccurrences (text: string) (from: int) (until: int) (value: string) : int =
+    let mutable count = 0
+    let mutable pos = from
+    let mutable fin = false
+    while not fin do
+        let found = text.IndexOf(value, pos, System.StringComparison.Ordinal)
+        if found < 0 || found >= until then fin <- true
+        else
+            count <- count + 1
+            pos <- found + value.Length
+    count
+
+type private BodySegment =
+    | SourceText of string
+    | ModelBlocks of obj array
+
+type private BodyPlan = {
+    /// The text up to and including the start tag of w:body.
+    Prefix: string
+    Segments: BodySegment list
+    /// What stands between the last block and the body's section properties.
+    BeforeSection: string
+    /// The body's own w:sectPr as it was read, when the page setup is what it was.
+    Section: string option
+    AfterSection: string
+    /// From the end tag of w:body on.
+    Suffix: string
+    /// The items written from the model.
+    Regenerated: obj array
+}
+
+[<Fable.Core.Emit("(typeof $0.SourceIndex === 'number' ? $0.SourceIndex : -1)")>]
+let private sourceIndexOf (_item: obj) : int = jsNative
+
+/// Which of the body's elements go back as they were read. None when the
+/// text cannot be matched with what the reader made of it (the body is then
+/// written from the model, as a new document is), or when nothing is as it was.
+let private planBody (xml: string) (itemChunks: int array) (chunkCount: int) (items: obj array) (pageSetupUnchanged: bool) : BodyPlan option =
+    let rootAt = rootTagStart xml
+    let rootEnd = if rootAt < 0 then -1 else tagEndIndex xml rootAt
+    let bodyOfRoot =
+        if rootEnd < 0 || xml.[rootEnd - 1] = '/' then None
+        else
+            childElementRanges xml (rootEnd + 1)
+            |> Option.bind (fun children ->
+                children.Names
+                |> Array.tryFindIndex (fun name -> localNameOf name = "body")
+                |> Option.bind (fun index ->
+                    let bodyTagEnd = tagEndIndex xml children.Starts.[index]
+                    if bodyTagEnd < 0 || xml.[bodyTagEnd - 1] = '/' then None
+                    else childElementRanges xml (bodyTagEnd + 1) |> Option.map (fun body -> bodyTagEnd + 1, body)))
+    match bodyOfRoot with
+    | Some (contentStart, body) when body.Starts.Length = chunkCount && chunkCount > 0 ->
+        let contentEnd = body.CloseAt
+        let isSection index = localNameOf body.Names.[index] = "sectPr"
+        let sectIndex = if isSection (chunkCount - 1) then chunkCount - 1 else -1
+        let strayFinalSection = [ 0 .. chunkCount - 2 ] |> List.exists isSection
+        // How many items each element gave when it was read.
+        let originalCount = Array.zeroCreate<int> chunkCount
+        let mutable mapped = true
+        for chunk in itemChunks do
+            if chunk >= chunkCount then mapped <- false
+            elif chunk >= 0 then originalCount.[chunk] <- originalCount.[chunk] + 1
+        if strayFinalSection || not mapped || (sectIndex >= 0 && originalCount.[sectIndex] > 0) then None
+        else
+            // An element's text starts where the block element before it ends: what
+            // stands between two blocks (a bookmark end, white space) goes with the second.
+            let textStart = Array.zeroCreate<int> chunkCount
+            let mutable previousEnd = contentStart
+            for chunk in 0 .. chunkCount - 1 do
+                textStart.[chunk] <- previousEnd
+                if originalCount.[chunk] > 0 then previousEnd <- body.Ends.[chunk]
+            let tailStart = previousEnd
+            // The items there are now, by the element they came from.
+            let chunkOfItem =
+                items
+                |> Array.map (fun item ->
+                    let index = sourceIndexOf item
+                    if index >= 0 && index < itemChunks.Length then itemChunks.[index] else -1)
+            let isTextBox (item: obj) = (item?Type |> stringOrDefault "Paragraph") = "TextBox"
+            let keep = Array.init chunkCount (fun chunk -> originalCount.[chunk] > 0)
+            let firstAt = Array.create chunkCount (-1)
+            let lastAt = Array.create chunkCount (-1)
+            let found = Array.zeroCreate<int> chunkCount
+            let lastSource = Array.create chunkCount (-1)
+            let mutable anchorChunk = -1
+            items
+            |> Array.iteri (fun position item ->
+                let chunk = chunkOfItem.[position]
+                if chunk >= 0 then
+                    if firstAt.[chunk] < 0 then firstAt.[chunk] <- position
+                    // (All of an element's items stand together, in the order they were read in.)
+                    if lastAt.[chunk] >= 0 && lastAt.[chunk] <> position - 1 then keep.[chunk] <- false
+                    let index = sourceIndexOf item
+                    if index <= lastSource.[chunk] then keep.[chunk] <- false
+                    lastSource.[chunk] <- index
+                    lastAt.[chunk] <- position
+                    found.[chunk] <- found.[chunk] + 1
+                    if not (boolOrDefault false (item?SourceUnchanged)) then keep.[chunk] <- false
+                if isTextBox item then
+                    // A shape is written into the block it is anchored in: one that is new,
+                    // or that now follows another block, makes that block's XML.
+                    if chunk <> anchorChunk then
+                        if chunk >= 0 then keep.[chunk] <- false
+                        if anchorChunk >= 0 then keep.[anchorChunk] <- false
+                else anchorChunk <- chunk)
+            for chunk in 0 .. chunkCount - 1 do
+                if found.[chunk] <> originalCount.[chunk] then keep.[chunk] <- false
+            // A field that begins in one element and ends in a later one (a table of
+            // contents): those elements go back together or not at all.
+            let blockChunks = [| for chunk in 0 .. chunkCount - 1 do if originalCount.[chunk] > 0 then yield chunk |]
+            let mutable depth = 0
+            let group = ResizeArray<int>()
+            let closeGroup () =
+                if group.Count > 1 then
+                    let together =
+                        group |> Seq.forall (fun chunk -> keep.[chunk])
+                        && (Seq.pairwise group |> Seq.forall (fun (a, b) -> firstAt.[b] = lastAt.[a] + 1))
+                    if not together then
+                        for chunk in group do keep.[chunk] <- false
+                group.Clear()
+            for chunk in blockChunks do
+                let begins = countOccurrences xml textStart.[chunk] body.Ends.[chunk] "w:fldCharType=\"begin\""
+                let finishes = countOccurrences xml textStart.[chunk] body.Ends.[chunk] "w:fldCharType=\"end\""
+                if depth > 0 || begins > finishes then
+                    group.Add chunk
+                    depth <- max 0 (depth + begins - finishes)
+                    if depth = 0 then closeGroup ()
+            closeGroup ()
+            // In the order the items have now.
+            let segments = ResizeArray<BodySegment>()
+            let pending = ResizeArray<obj>()
+            let regenerated = ResizeArray<obj>()
+            let flush () =
+                if pending.Count > 0 then
+                    segments.Add (ModelBlocks (pending.ToArray()))
+                    pending.Clear()
+            let mutable position = 0
+            let mutable anySource = false
+            while position < items.Length do
+                let chunk = chunkOfItem.[position]
+                if chunk >= 0 && keep.[chunk] then
+                    flush ()
+                    segments.Add (SourceText (xml.Substring(textStart.[chunk], body.Ends.[chunk] - textStart.[chunk])))
+                    anySource <- true
+                    position <- position + originalCount.[chunk]
+                else
+                    pending.Add items.[position]
+                    regenerated.Add items.[position]
+                    position <- position + 1
+            flush ()
+            if not anySource then None
+            else
+                let sectionStart = if sectIndex >= 0 then body.Starts.[sectIndex] else contentEnd
+                let sectionEnd = if sectIndex >= 0 then body.Ends.[sectIndex] else contentEnd
+                Some { Prefix = xml.Substring(0, contentStart)
+                       Segments = List.ofSeq segments
+                       BeforeSection = xml.Substring(tailStart, max 0 (sectionStart - tailStart))
+                       Section = if pageSetupUnchanged then Some (xml.Substring(sectionStart, sectionEnd - sectionStart)) else None
+                       AfterSection = xml.Substring(sectionEnd, contentEnd - sectionEnd)
+                       Suffix = xml.Substring contentEnd
+                       Regenerated = regenerated.ToArray() }
+    | _ -> None
+
+/// The root start tag with the namespaces the writer's own elements use.
+let private withWriterNamespaces (prefix: string) : string =
+    let rootAt = rootTagStart prefix
+    if rootAt < 0 then prefix
+    else
+        let name = tagNameAt prefix rootAt
+        let insertAt = rootAt + 1 + name.Length
+        let missing =
+            [ "xmlns:w", Namespaces.word; "xmlns:r", Namespaces.relationships; "xmlns:m", Namespaces.math ]
+            |> List.filter (fun (attribute, _) -> prefix.IndexOf(" " + attribute + "=", System.StringComparison.Ordinal) < 0)
+            |> List.map (fun (attribute, uri) -> sprintf " %s=\"%s\"" attribute uri)
+            |> String.concat ""
+        prefix.Substring(0, insertAt) + missing + prefix.Substring insertAt
+
+/// document.xml of a document that was opened: the elements of the plan that
+/// are as they were read, the others from the model.
+let private generateDocumentXmlFromPlan (plan: BodyPlan) (images: ImageScope) (hyperlinks: Map<string, string>) (pageSetup: PageSetupInfo option) (headers: HeaderFooterPartInfo array) (footers: HeaderFooterPartInfo array) : string =
+    let setup = pageSetup |> Option.defaultValue defaultPageSetupInfo
+    let parts = ResizeArray<string>()
+    let mutable fromModel = false
+    for segment in plan.Segments do
+        match segment with
+        | SourceText text -> parts.Add text
+        | ModelBlocks items ->
+            fromModel <- true
+            parts.Add (items |> generateBlocks (generateDocumentItemWithImagesAndPageSetup setup hyperlinks images) (generateTextBoxRun setup hyperlinks images))
+    parts.Add plan.BeforeSection
+    match plan.Section with
+    | Some text -> parts.Add text
+    | None ->
+        fromModel <- true
+        let globalHeaders = headers |> Array.filter (fun part -> part.IsGlobal)
+        let globalFooters = footers |> Array.filter (fun part -> part.IsGlobal)
+        parts.Add (generateSectionProperties pageSetup globalHeaders globalFooters)
+    parts.Add plan.AfterSection
+    parts.Add plan.Suffix
+    (if fromModel then withWriterNamespaces plan.Prefix else plan.Prefix) + String.concat "" parts
+
+let private numberAttributePattern = System.Text.RegularExpressions.Regex("w:(?:numId|abstractNumId)=\"(\\d+)\"|<w:(?:numId|abstractNumId) w:val=\"(\\d+)\"")
+let private numElementPattern = System.Text.RegularExpressions.Regex("<w:num(?:\\s[^>]*)?\\sw:numId=\"(\\d+)\"")
+let private firstNumPattern = System.Text.RegularExpressions.Regex("<w:num[\\s>]")
 
 let generateDocumentXmlPackage (paragraphs: obj array) (images: ImageScope) (pageSetup: PageSetupInfo option) (headers: HeaderFooterPartInfo array) (footers: HeaderFooterPartInfo array) : string =
     let hyperlinks = hyperlinkMap paragraphs
@@ -2783,6 +3129,13 @@ let private mergeStyles (originalXml: string) (changed: Set<string> option) (sty
             |> Set.ofList
         let hasDefaults = children |> List.exists (fun child -> localName child = Some "docDefaults")
         let defaults = styles |> List.tryFind (fun style -> style.StyleType = "defaults")
+        // Nothing was changed and nothing is new: the part as it was read (writing
+        // it out again from its nodes reordered the attributes of every style).
+        let untouched =
+            (changed |> Option.exists Set.isEmpty)
+            && (hasDefaults || defaults.IsNone)
+            && (styles |> List.forall (fun style -> style.StyleType = "defaults" || Set.contains (style.StyleType, style.StyleId) present))
+        if untouched then originalXml else
         let body =
             [ // No docDefaults in the original: the catalog's, if it has any.
               if not hasDefaults then
@@ -2892,6 +3245,81 @@ let generateNumbering (customInfos: NumberingInfo list) : string =
 
     document (element "w:numbering" [("xmlns:w", Namespaces.word)] (abstracts @ nums))
 
+/// The numbering part as it was read, with definitions added for the lists
+/// that were made in the editor (and, when a paragraph written from the model
+/// has a list without an id, the two default lists). The definitions of the
+/// file keep what the model does not hold of them: the bullet fonts, the
+/// alignment and the tab of the number, picture bullets, the levels no
+/// paragraph uses yet, the links to numbering styles. None when the part is
+/// not what this expects (it is then generated as for a new document).
+let private mergeNumbering (original: string) (customInfos: NumberingInfo list) (needsDefaults: bool) : string option =
+    let closing = "</w:numbering>"
+    // (A part without a list is an empty element.)
+    let original =
+        let trimmed = original.TrimEnd()
+        if original.IndexOf(closing, System.StringComparison.Ordinal) < 0 && original.IndexOf("<w:numbering", System.StringComparison.Ordinal) >= 0 && trimmed.EndsWith "/>"
+           && (needsDefaults || not customInfos.IsEmpty) then
+            trimmed.Substring(0, trimmed.Length - 2) + ">" + closing
+        else original
+    let closeAt = original.LastIndexOf(closing, System.StringComparison.Ordinal)
+    if closeAt < 0 then (if not needsDefaults && customInfos.IsEmpty then Some original else None)
+    else
+        let known = [ for m in numElementPattern.Matches original -> m.Groups.[1].Value ] |> Set.ofList
+        let highest =
+            [ for m in numberAttributePattern.Matches original do
+                let text = if m.Groups.[1].Success then m.Groups.[1].Value else m.Groups.[2].Value
+                match System.Int32.TryParse text with
+                | true, value -> yield value
+                | _ -> () ]
+            |> List.fold max 0
+        let unknown = customInfos |> List.filter (fun info -> not (Set.contains info.NumId known))
+        let added = unknown |> List.filter (fun info -> not info.Undefined) |> List.groupBy (fun info -> info.NumId)
+        let addedIds = unknown |> List.groupBy (fun info -> info.NumId) |> List.choose (fun (numId, _) -> match System.Int32.TryParse numId with | true, value -> Some value | _ -> None)
+        let mutable nextFree = (List.fold max highest addedIds) + 1
+        let fresh () =
+            let id = string nextFree
+            nextFree <- nextFree + 1
+            id
+        let abstracts = ResizeArray<string>()
+        let nums = ResizeArray<string>()
+        if needsDefaults then
+            let bulletId, numberedId = fresh (), fresh ()
+            defaultListNumIds <- (bulletId, numberedId)
+            let defaultLevels format text =
+                [0..8] |> List.map (fun level -> numberingLevel true level (Some 1) format (if format = "bullet" then text else "%" + string (level + 1) + "."))
+            abstracts.Add (element "w:abstractNum" [("w:abstractNumId", bulletId)] (defaultLevels "bullet" "\u2022"))
+            abstracts.Add (element "w:abstractNum" [("w:abstractNumId", numberedId)] (defaultLevels "decimal" ""))
+            nums.Add (element "w:num" [("w:numId", bulletId)] [selfClosing "w:abstractNumId" [("w:val", bulletId)]])
+            nums.Add (element "w:num" [("w:numId", numberedId)] [selfClosing "w:abstractNumId" [("w:val", numberedId)]])
+        for numId, infos in added do
+            let abstractId = fresh ()
+            let levels =
+                infos
+                |> List.sortBy (fun info -> info.Level)
+                |> List.map (fun info -> numberingLevelWithIndents false info.IndentLeft info.FirstLineIndent info.Level info.Start info.Format info.LevelText)
+            let overrides =
+                infos
+                |> List.filter (fun info -> info.HasOverride)
+                |> List.sortBy (fun info -> info.Level)
+                |> List.map (fun info ->
+                    element "w:lvlOverride" [("w:ilvl", string info.Level)] [
+                        selfClosing "w:startOverride" [("w:val", string (info.Start |> Option.defaultValue 1))]
+                    ])
+            abstracts.Add (element "w:abstractNum" [("w:abstractNumId", abstractId)] levels)
+            nums.Add (element "w:num" [("w:numId", numId)] (selfClosing "w:abstractNumId" [("w:val", abstractId)] :: overrides))
+        if abstracts.Count = 0 then Some original
+        else
+            // CT_Numbering: the abstract definitions, then the lists, then numIdMacAtCleanup.
+            let cleanupAt = original.IndexOf("<w:numIdMacAtCleanup", System.StringComparison.Ordinal)
+            let numsAt = if cleanupAt >= 0 then cleanupAt else closeAt
+            let firstNum = firstNumPattern.Match original
+            let abstractsAt = if firstNum.Success then firstNum.Index else numsAt
+            Some (original.Substring(0, abstractsAt)
+                  + String.concat "" abstracts
+                  + original.Substring(abstractsAt, numsAt - abstractsAt)
+                  + String.concat "" nums
+                  + original.Substring numsAt)
+
 let private generateSettings (pageSetup: PageSetupInfo option) =
     let children = [
         match pageSetup with
@@ -2922,6 +3350,15 @@ let private patchSettings (originalXml: string) (pageSetup: PageSetupInfo option
         let localName node = XmlDsl.Xml.name node |> Option.map XmlDsl.Ns.stripNs
         let others = children |> List.filter (fun child -> localName child <> Some "evenAndOddHeaders")
         let evenAndOdd = pageSetup |> Option.exists (fun setup -> setup.EvenAndOddHeaders)
+        // The setting is what the part says already: the part as it was read.
+        let hadEvenAndOdd =
+            children
+            |> List.exists (fun child ->
+                localName child = Some "evenAndOddHeaders"
+                && (match XmlDsl.Xml.attr "w:val" child with
+                    | Some "0" | Some "false" | Some "off" -> false
+                    | _ -> true))
+        if hadEvenAndOdd = evenAndOdd then originalXml else
         let insertAt =
             others
             |> List.mapi (fun index child -> index, child)
@@ -2979,13 +3416,42 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
     // What was kept of the opened package: written back around the parts the
     // editor owns. A package without it (a new document) is written from scratch.
     let preserved = preservedPackageFromObject (package?Preserved)
-    let keptFor (key: string) = preserved.PartRelationships |> Map.tryFind key |> Option.defaultValue []
+    // RegenerateAll: every part is written from the model, as it was before
+    // unchanged content was written back as it was read (the round-trip
+    // checks use it to see what the model alone gives).
+    let regenerateAll = boolOrDefault false (package?RegenerateAll)
+    let sourceOf (key: string) = if regenerateAll then None else Map.tryFind key preserved.SourceXml
+    let paragraphs = optionalArray (package?Paragraphs)
+    // The body's elements that go back as they were read (see planBody).
+    let bodyPlan =
+        match sourceOf "document" with
+        | Some xml when preserved.BodyItemChunks.Length > 0 ->
+            planBody xml preserved.BodyItemChunks preserved.BodyChunkCount paragraphs (boolOrDefault false (package?PageSetupUnchanged))
+        | _ -> None
+    /// The parts that are written back as they were read keep all the
+    /// relationships they had; a part written from the model keeps those the
+    /// writer does not make itself.
+    let sourceParts = System.Collections.Generic.HashSet<string>()
+    if bodyPlan.IsSome then sourceParts.Add "document" |> ignore
+    for part in Array.append (optionalArray (package?HeaderParts)) (optionalArray (package?FooterParts)) do
+        match optionalString (part?RelationshipId) with
+        | Some relId when boolOrDefault false (part?SourceUnchanged) && (sourceOf relId).IsSome -> sourceParts.Add relId |> ignore
+        | _ -> ()
+    for key, flag in [ "footnotes", package?FootnotesUnchanged; "endnotes", package?EndnotesUnchanged; "comments", package?CommentsUnchanged ] do
+        if boolOrDefault false flag && (sourceOf key).IsSome then sourceParts.Add key |> ignore
+    let keptFor (key: string) =
+        let ofMap (map: Map<string, PreservedRelationshipInfo list>) = map |> Map.tryFind key |> Option.defaultValue []
+        if sourceParts.Contains key then
+            let all = ofMap preserved.SourceRelationships
+            let known = all |> List.map (fun rel -> rel.Id) |> Set.ofList
+            all @ (ofMap preserved.PartRelationships |> List.filter (fun rel -> not (Set.contains rel.Id known)))
+        else ofMap preserved.PartRelationships
+    // (The ids and the pictures of what is written back as it was read are taken.)
     reservedRelationshipIds <-
-        preserved.PartRelationships
-        |> Map.toList
+        (Map.toList preserved.PartRelationships @ (Map.toList preserved.SourceRelationships |> List.filter (fun (key, _) -> sourceParts.Contains key)))
         |> List.collect (fun (_, rels) -> rels |> List.map (fun rel -> rel.Id))
         |> Set.ofList
-    reservedPartPaths <- preserved.Parts |> List.map fst |> Set.ofList
+    reservedPartPaths <- (preserved.Parts @ (if sourceParts.Count > 0 then preserved.SourceParts else [])) |> List.map fst |> Set.ofList
     nextMoveRangeId <- 900000
     let withRelationshipsOf (key: string) (blocks: obj array) (generate: unit -> string) =
         currentPartRelationshipIds <- keptFor key |> List.map (fun rel -> rel.Id) |> Set.ofList
@@ -3001,7 +3467,6 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
         let xml = generate ()
         currentPartRelationshipIds <- Set.empty
         xml
-    let paragraphs = optionalArray (package?Paragraphs)
     let pageSetup = optionalPageSetup (package?PageSetup)
     let hasSettings = preserved.SettingsXml.IsSome || (pageSetup |> Option.exists (fun setup -> setup.EvenAndOddHeaders))
     // Relationship ids some section refers to; the parts behind the others are
@@ -3014,25 +3479,26 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
         Set.union (collectSectionReferenceIds paragraphs) (Set.ofList finalIds)
     let headerParts = optionalArray (package?HeaderParts) |> headerFooterInfos sectionReferenceIds "header" 1
     let footerParts = optionalArray (package?FooterParts) |> headerFooterInfos sectionReferenceIds "footer" 1
-    let bodyImages, nextAfterBody = buildImageScope 1 paragraphs
+    // A header / footer that is what it was when it was read goes back as its text.
+    let partSource (part: HeaderFooterPartInfo) = if part.Unchanged then sourceOf part.RelId else None
+    // The blocks of the body that are written from the model: their pictures
+    // and hyperlinks are the ones the writer makes relationships for.
+    let bodyModelBlocks = bodyPlan |> Option.map (fun plan -> plan.Regenerated) |> Option.defaultValue paragraphs
+    let bodyImages, nextAfterBody = buildImageScope 1 bodyModelBlocks
     let mutable nextMediaIndex = nextAfterBody
-    let headerPackages =
-        headerParts
-        |> Array.map (fun part ->
+    let partPackage (part: HeaderFooterPartInfo) =
+        if (partSource part).IsSome then { Info = part; Images = emptyImageScope; Hyperlinks = Map.empty }
+        else
             let images, next = buildImageScope nextMediaIndex part.Blocks
             nextMediaIndex <- next
-            { Info = part; Images = images; Hyperlinks = hyperlinkMap part.Blocks })
-    let footerPackages =
-        footerParts
-        |> Array.map (fun part ->
-            let images, next = buildImageScope nextMediaIndex part.Blocks
-            nextMediaIndex <- next
-            { Info = part; Images = images; Hyperlinks = hyperlinkMap part.Blocks })
+            { Info = part; Images = images; Hyperlinks = hyperlinkMap part.Blocks }
+    let headerPackages = headerParts |> Array.map partPackage
+    let footerPackages = footerParts |> Array.map partPackage
     let contentBlocks =
         [| yield! paragraphs
            for part in headerParts do yield! part.Blocks
            for part in footerParts do yield! part.Blocks |]
-    let hyperlinks = hyperlinkMap paragraphs
+    let hyperlinks = hyperlinkMap bodyModelBlocks
     // Note and comment bodies come with the package; a reference whose body
     // is not there is written from the text on the reference run.
     let comments = mergeCommentParts (commentPartsFromPackage (package?Comments)) (collectComments contentBlocks)
@@ -3046,9 +3512,13 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
     let footnoteBlocks = footnotes |> List.toArray |> Array.collect (fun note -> note.Blocks)
     let endnoteBlocks = endnotes |> List.toArray |> Array.collect (fun note -> note.Blocks)
     let commentBlocks = comments |> List.toArray |> Array.collect (fun comment -> comment.Blocks)
-    let footnoteImages, footnoteLinks = bodyPart footnoteBlocks
-    let endnoteImages, endnoteLinks = bodyPart endnoteBlocks
-    let commentImages, commentLinks = bodyPart commentBlocks
+    // The notes and the comments as they were read, when nothing of them was changed.
+    let footnotesSource = if boolOrDefault false (package?FootnotesUnchanged) then sourceOf "footnotes" else None
+    let endnotesSource = if boolOrDefault false (package?EndnotesUnchanged) then sourceOf "endnotes" else None
+    let commentsSource = if boolOrDefault false (package?CommentsUnchanged) then sourceOf "comments" else None
+    let footnoteImages, footnoteLinks = if footnotesSource.IsSome then emptyImageScope, Map.empty else bodyPart footnoteBlocks
+    let endnoteImages, endnoteLinks = if endnotesSource.IsSome then emptyImageScope, Map.empty else bodyPart endnoteBlocks
+    let commentImages, commentLinks = if commentsSource.IsSome then emptyImageScope, Map.empty else bodyPart commentBlocks
     let partBody (images: ImageScope) (links: Map<string, string>) (blocks: obj array) =
         blocks |> generateBlocks (generateDocumentItemWithImages links images) (generateTextBoxRun defaultPageSetupInfo links images)
     let allImages =
@@ -3064,23 +3534,52 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
            yield! endnoteBlocks
            yield! commentBlocks |]
     // Rendered first: it picks the default list ids the paragraph writer uses.
-    let numberingXml = generateNumbering (collectNumberingInfo allBlocks)
+    let numberingXml =
+        let infos = collectNumberingInfoOf (not (isNullOrUndefined (package?Preserved))) allBlocks
+        // Blocks written from the model with a list that has no id of the file.
+        let modelBlocks =
+            [| yield! bodyModelBlocks
+               for part in Array.append headerParts footerParts do
+                   if (partSource part).IsNone then yield! part.Blocks
+               if footnotesSource.IsNone then yield! footnoteBlocks
+               if endnotesSource.IsNone then yield! endnoteBlocks
+               if commentsSource.IsNone then yield! commentBlocks |]
+        let needsDefaults =
+            modelBlocks
+            |> Array.toList
+            |> List.collect collectItemParagraphs
+            |> List.exists (fun para ->
+                let listStyle = para?ListStyle |> stringOrDefault "none"
+                (listStyle = "bullet" || listStyle = "numbered") && (optionalIntString (para?ListId)).IsNone)
+        let merged =
+            // (Also with RegenerateAll: the lists are not blocks, and they are as they were.)
+            if boolOrDefault false (package?ListsUnchanged) then
+                Map.tryFind "numbering" preserved.SourceXml |> Option.bind (fun original -> mergeNumbering original infos needsDefaults)
+            else None
+        merged |> Option.defaultWith (fun () -> generateNumbering infos)
     let styles =
         (collectPackageStyles (optionalArray (package?Styles)) @ collectStyles allBlocks)
         |> List.distinctBy (fun style -> style.StyleType, style.StyleId)
         // The document defaults are not a style: a style of that name (inferred by
         // the editor from table cell paragraphs) would take their place when read.
         |> List.filter (fun style -> style.StyleId <> documentDefaultsStyleId || style.StyleType = "defaults")
-    let hasComments = not comments.IsEmpty
-    let hasFootnotes = not footnotes.IsEmpty
-    let hasEndnotes = not endnotes.IsEmpty
+    let hasComments = not comments.IsEmpty || commentsSource.IsSome
+    let hasFootnotes = not footnotes.IsEmpty || footnotesSource.IsSome
+    let hasEndnotes = not endnotes.IsEmpty || endnotesSource.IsSome
+    // Pictures and other parts that only content written back as it was read refers to.
+    let preserved = if sourceParts.Count > 0 then { preserved with Parts = preserved.Parts @ preserved.SourceParts } else preserved
     let partRelsNeeded (key: string) (images: ImageScope) (links: Map<string, string>) =
         images.Assets.Length > 0 || not links.IsEmpty || not (keptFor key).IsEmpty
 
     let files = [
         yield { Path = "[Content_Types].xml"; Content = generateContentTypesPreserved preserved hasSettings hasComments hasFootnotes hasEndnotes headerParts footerParts allImages }
         yield { Path = "_rels/.rels"; Content = generateRootRelsPreserved preserved }
-        yield { Path = "word/document.xml"; Content = withRelationshipsOf "document" paragraphs (fun () -> generateDocumentXmlPackage paragraphs bodyImages pageSetup headerParts footerParts) }
+        yield { Path = "word/document.xml"
+                Content =
+                    withRelationshipsOf "document" bodyModelBlocks (fun () ->
+                        match bodyPlan with
+                        | Some plan -> generateDocumentXmlFromPlan plan bodyImages hyperlinks pageSetup headerParts footerParts
+                        | None -> generateDocumentXmlPackage paragraphs bodyImages pageSetup headerParts footerParts) }
         yield { Path = "word/_rels/document.xml.rels"; Content = generateDocumentRelsPreserved (keptFor "document") hasSettings hyperlinks hasComments hasFootnotes hasEndnotes headerParts footerParts bodyImages }
         yield { Path = "word/styles.xml"
                 Content =
@@ -3101,23 +3600,43 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
             if not (keptFor "settings").IsEmpty then
                 yield { Path = "word/_rels/settings.xml.rels"; Content = generatePartRelsWithKept (keptFor "settings") Map.empty emptyImageScope }
         for header in headerPackages do
-            yield { Path = "word/" + header.Info.Target; Content = withRelationshipsOf header.Info.RelId header.Info.Blocks (fun () -> generateHeaderFooterXml "w:hdr" header.Hyperlinks header.Images header.Info.Blocks) }
+            yield { Path = "word/" + header.Info.Target
+                    Content =
+                        match partSource header.Info with
+                        | Some text -> text
+                        | None -> withRelationshipsOf header.Info.RelId header.Info.Blocks (fun () -> generateHeaderFooterXml "w:hdr" header.Hyperlinks header.Images header.Info.Blocks) }
             if partRelsNeeded header.Info.RelId header.Images header.Hyperlinks then
                 yield { Path = sprintf "word/_rels/%s.rels" header.Info.Target; Content = generatePartRelsWithKept (keptFor header.Info.RelId) header.Hyperlinks header.Images }
         for footer in footerPackages do
-            yield { Path = "word/" + footer.Info.Target; Content = withRelationshipsOf footer.Info.RelId footer.Info.Blocks (fun () -> generateHeaderFooterXml "w:ftr" footer.Hyperlinks footer.Images footer.Info.Blocks) }
+            yield { Path = "word/" + footer.Info.Target
+                    Content =
+                        match partSource footer.Info with
+                        | Some text -> text
+                        | None -> withRelationshipsOf footer.Info.RelId footer.Info.Blocks (fun () -> generateHeaderFooterXml "w:ftr" footer.Hyperlinks footer.Images footer.Info.Blocks) }
             if partRelsNeeded footer.Info.RelId footer.Images footer.Hyperlinks then
                 yield { Path = sprintf "word/_rels/%s.rels" footer.Info.Target; Content = generatePartRelsWithKept (keptFor footer.Info.RelId) footer.Hyperlinks footer.Images }
         if hasComments then
-            yield { Path = "word/comments.xml"; Content = withRelationshipsOf "comments" commentBlocks (fun () -> generateCommentsPart (partBody commentImages commentLinks) comments) }
+            yield { Path = "word/comments.xml"
+                    Content =
+                        match commentsSource with
+                        | Some text -> text
+                        | None -> withRelationshipsOf "comments" commentBlocks (fun () -> generateCommentsPart (partBody commentImages commentLinks) comments) }
             if partRelsNeeded "comments" commentImages commentLinks then
                 yield { Path = "word/_rels/comments.xml.rels"; Content = generatePartRelsWithKept (keptFor "comments") commentLinks commentImages }
         if hasFootnotes then
-            yield { Path = "word/footnotes.xml"; Content = withRelationshipsOf "footnotes" footnoteBlocks (fun () -> generateNotesPart "w:footnotes" "w:footnote" "w:footnoteRef" (partBody footnoteImages footnoteLinks) footnotes) }
+            yield { Path = "word/footnotes.xml"
+                    Content =
+                        match footnotesSource with
+                        | Some text -> text
+                        | None -> withRelationshipsOf "footnotes" footnoteBlocks (fun () -> generateNotesPart "w:footnotes" "w:footnote" "w:footnoteRef" (partBody footnoteImages footnoteLinks) footnotes) }
             if partRelsNeeded "footnotes" footnoteImages footnoteLinks then
                 yield { Path = "word/_rels/footnotes.xml.rels"; Content = generatePartRelsWithKept (keptFor "footnotes") footnoteLinks footnoteImages }
         if hasEndnotes then
-            yield { Path = "word/endnotes.xml"; Content = withRelationshipsOf "endnotes" endnoteBlocks (fun () -> generateNotesPart "w:endnotes" "w:endnote" "w:endnoteRef" (partBody endnoteImages endnoteLinks) endnotes) }
+            yield { Path = "word/endnotes.xml"
+                    Content =
+                        match endnotesSource with
+                        | Some text -> text
+                        | None -> withRelationshipsOf "endnotes" endnoteBlocks (fun () -> generateNotesPart "w:endnotes" "w:endnote" "w:endnoteRef" (partBody endnoteImages endnoteLinks) endnotes) }
             if partRelsNeeded "endnotes" endnoteImages endnoteLinks then
                 yield { Path = "word/_rels/endnotes.xml.rels"; Content = generatePartRelsWithKept (keptFor "endnotes") endnoteLinks endnoteImages }
     ]

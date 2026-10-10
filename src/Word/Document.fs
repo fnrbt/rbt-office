@@ -644,6 +644,10 @@ type PackageData = {
     /// The style catalog as imported. A style that still equals its entry here
     /// was not changed in the editor, and its original definition is kept.
     ImportedStyles: NamedStyle list
+    /// The document as it was imported (a boxed Document; null for one made
+    /// from scratch). A block, a header or a note that still exports as it
+    /// did then was not changed, and is written back as it is in the file.
+    Imported: obj
 }
 
 let emptyPackageData = {
@@ -651,6 +655,7 @@ let emptyPackageData = {
     Comments = []
     Preserved = null
     ImportedStyles = []
+    Imported = null
 }
 
 let defaultPageSetup = {
