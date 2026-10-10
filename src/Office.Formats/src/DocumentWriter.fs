@@ -455,7 +455,16 @@ let private isDeletedRun (runObj: obj) =
     optionalString (runObj?RevisionType) = Some "delete"
 
 let private generateRunWithObjectProps (runObj: obj) (run: EditorRun) : string =
-    runElement (orderedRunProps (runExtrasFromObject runObj) run) (isDeletedRun runObj) run.Text
+    let rPr = orderedRunProps (runExtrasFromObject runObj) run
+    let deleted = isDeletedRun runObj
+    // Where the page ended when the document was last laid out by its author's
+    // application: the layout keeps those page ends, so a save that dropped the
+    // hint repaginated the document (75 pages came back as 53).
+    if boolOrDefault false (runObj?RenderedPageBreakBefore) && not deleted then
+        let rPrElement = if List.isEmpty rPr then [] else [element "w:rPr" [] rPr]
+        element "w:r" [] (rPrElement @ [selfClosing "w:lastRenderedPageBreak" []] @ runTextElements deleted run.Text)
+    else
+        runElement rPr deleted run.Text
 
 let private generateFieldRun (runObj: obj) (fallbackRun: EditorRun) (fieldCode: string) =
     let result = optionalString (runObj?FieldResult) |> Option.defaultValue fallbackRun.Text
