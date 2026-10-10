@@ -5,6 +5,8 @@ open System.IO
 open Rbt.Renderer
 
 module Xlsx = XlsxReader
+// (The PNG encoder of the widgets' X11 viewer, compiled in: it is in the widgets' namespace.)
+module PngEncode = Rbt.Widgets.PngEncode
 
 open Rbt.Spreadsheet.Model
 
@@ -1770,7 +1772,7 @@ let main argv =
             let wb : Rbt.Spreadsheet.Workbook.Workbook =
                 { Sheets = Map.ofList [ "sheet1", ({ Id="sheet1"; Name="Sheet1"; Model=withDemo; Visible=true }: Rbt.Spreadsheet.Workbook.Sheet) ]
                   SheetOrder = [ "sheet1" ]; ActiveSheet = "sheet1"
-                  Tables = Map.ofList [ mt.Name, wtable ]; Names = Map.empty }
+                  Tables = Map.ofList [ mt.Name, wtable ]; Names = Map.empty; NameInfo = Map.empty; Iteration = None }
             let recomputed = Rbt.Spreadsheet.Formula.recalculateAllFormulas (Some wb) (Some "sheet1") withDemo
             let w, h = 360, 260
             let widget = Rbt.Widgets.Composit.Ui.SpreadsheetGrid.widgetWith (float w) (float h) recomputed []
