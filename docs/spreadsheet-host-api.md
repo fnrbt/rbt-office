@@ -862,11 +862,37 @@ changes (named styles, the indexed palette, table styles and extensions of the s
   `pageSetUpPr`), the views, `sheetFormatPr`, every `<row>` with its attributes (`s`, `customFormat`, `ht`, `spans` unless a cell was
   added to the row), untouched cells, shared formulas, `ignoredErrors`, page setup and margins, `extLst`, and every relationship id
   (the sheet's `.rels` and what it leads to are the file's). Nothing the file did not have is added (no empty `<headerFooter>`).
-  The sheet is **written from its model** instead when rows / columns were inserted, deleted, hidden or grouped, a row height
-  changed, a range was sorted or filtered, comments / threads / tables / drawings / hyperlinks / the page setup / data tables changed, a
-  changed cell is the master of a shared formula other cells still use, rules or validations of the x14 list are involved, the
-  workbook is in the 1904 date system, the part names a renamed or deleted sheet, or the part is not laid out as expected (a prefix on
-  its elements, rows or cells without `r`, comments between elements). (`SheetExtras.Patch`; `XlsxBridge` decides, `XlsxWriter` patches.)
+  The same goes for **rows and what else the part itself says**: a row height, hidden / shown rows (also those an AutoFilter hides),
+  outline levels and collapsed marks are set on the `<row>` start tags they concern (`ht` + `customHeight`, `hidden`,
+  `outlineLevel`, `collapsed`; the row's other attributes and its cells stay), `sheetFormatPr` gets the deepest outline level, hidden
+  and grouped columns are in `<cols>`; the AutoFilter (`<autoFilter>` made from the model; the file's `<sortState>` is taken out when
+  the sort changed), the outline's summary sides and fit-to-page (`<sheetPr>`: `outlinePr`, `pageSetUpPr`, the rest of it kept) and
+  the page setup (`<printOptions>`, `<pageMargins>`, `<pageSetup>` - with the file's printer attributes and `r:id` -,
+  `<headerFooter>`, `<rowBreaks>`, `<colBreaks>`, each only when it changed) are replaced the same way.
+  **A changed cell that holds a shared formula** (`<f t="shared" ref>`) no longer makes the sheet be written anew: the next cell of
+  its group that stays as it is holds the formula from then on (`ref` from there to the end of the group), the others still share it
+  (a group over a block of several rows and columns is the exception: the sheet is written from its cells).
+- **Comments, threads, tables, drawings or hyperlinks changed** (they are in other parts, or name one by relationship), or rules /
+  validations of the x14 list changed: **the rows are still the file's** with the changed cells and rows in them (row attributes,
+  styles, shared formulas, `spans`), and the rest of the part is made from the sheet - as for a sheet written from its model, below.
+- **A sheet written from its model** (rows / columns inserted or deleted; a spilled or array formula or a what-if table changed; the
+  part names a renamed or deleted sheet; the part is not laid out as expected - a prefix on its elements, rows or cells without `r`,
+  comments between elements; the 1904 date system) **still says what its part said beyond what a model holds**, by where the rows and
+  columns of the file are now (the model keeps the list of its row / column edits, `StructureLog`): the worksheet's start tag (its
+  namespaces, `mc:Ignorable`, `xr:uid`), `sheetPr` (`codeName`, `filterMode`, `pageSetUpPr`'s other attributes ...), the views (the
+  selection, `topLeftCell`, `zoomScaleNormal`, `view` ...; `activeCell`, `sqref` and `topLeftCell` follow the edits, a selection of
+  deleted cells is dropped), `sheetFormatPr`'s attributes, **each row's own attributes** (`s` + `customFormat` - a row's style -,
+  `thickBot`, `x14ac:dyDescent`, a height stated without `customHeight`; a hidden row that stated no height states none),
+  `sheetCalcPr`, `sheetProtection`, `protectedRanges` and **`ignoredErrors` with their `sqref` moved** (a range shrinks or grows with
+  the rows in it; an entry whose cells are all gone is taken out), `phoneticPr`, and - while no row or column moved - `scenarios`,
+  `dataConsolidate`, `customSheetViews`, `cellWatches`, `smartTags` and the `<sortState>` of an unchanged sort. **Formulas that
+  read the same from one cell to the next** (down a column, else along a row) are written once (`<f t="shared" ref si>` on the first
+  cell, `<f t="shared" si/>` on the others) when the file wrote shared formulas: a formula is shared only where the reader's own
+  expansion of the first cell's formula gives exactly the text the cell holds. The file's row heights and column widths are found by
+  where their rows and columns are now (before, a row inserted above made rows take the heights of their old numbers). Not kept
+  when rows or columns moved: sparklines and x14 rules the model does not hold (`KeptCellExtensions`), and what a manual page break
+  says besides its row (`max`, `min`).
+  (`SheetExtras.Patch`, `SheetPatch.Rows` / `.Whole`, `SheetExtras.SourceXml` / `.Moves`; `XlsxBridge` decides, `XlsxWriter` patches.)
 - **A formula's text result is written in its cell** (`t="str"`), as Excel does; it is never added to `xl/sharedStrings.xml` (which
   stays byte-identical unless a text was typed that the file does not have).
 - **`[Content_Types].xml`, `_rels/.rels` and `xl/_rels/workbook.xml.rels` are the file's text** while they say what is written: same
@@ -894,7 +920,12 @@ changes (named styles, the indexed palette, table styles and extensions of the s
 - .NET: `XlsxBridge.Export.toWorkbookOut` does the same for a workbook read with `XlsxReader.loadBytesNative` (the reader keeps the
   bytes in `Preserved.SourceParts`). In a browser the reader does not keep the large parts; `Export.verbatimPartsWanted input` names the
   parts to take from the file and `Export.toWorkbookOutWith parts input` writes with them (this is what `ExportXlsx` does with the bytes
-  `ImportXlsx` kept). `ToXlsxWorkbook()` is the workbook without those parts: every sheet from the model.
+  `ImportXlsx` kept; the part of every sheet of the file that was converted to a model is among them - untouched, patched, or
+  written from the model with what the part says beyond that). `ToXlsxWorkbook()` is the workbook without those parts: every sheet
+  from the model.
+- `tests/office-formats/xlsx-regenerated.fsx` asserts the above per kind of edit on `milk-street-office.xlsx` (what differs from the
+  file's part, what stays), and for every test workbook that after a link added, a row hidden, a row inserted and a column deleted
+  and inserted the part is in schema order and every formula reads back as the model has it.
 - `tests/office-formats/xlsx-parts.fsx` edits one cell of the first sheet of every test workbook and asserts that every other worksheet
   part and what it reaches is byte-identical, and that every cell of every sheet reads back with the value and format it had; the browser
   check `export-keeps-parts` asserts the byte identity through `ImportXlsx` / `ExportXlsx`.

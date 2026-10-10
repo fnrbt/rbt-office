@@ -184,10 +184,15 @@ let checkWritten (label: string) (bytes: byte[]) =
     eq (label + ": read again, the validations") (validationsOf again.Sheets.[0].Model |> List.map (fun (r, _, t, m) -> r, t, m)) (expectedValidations |> List.map (fun (r, _, t, m) -> r, t, m))
     again
 
-// Saved with nothing of the rules touched. (A row made higher: a sheet nothing at
-// all was changed in goes back as the part it was read from, and this is
-// about what the writer makes of the model.)
-let zoomed (models: SpreadsheetModel array) = models |> Array.map (fun model -> { model with RowHeights = Map.add 200 30.0 model.RowHeights })
+// Saved with nothing of the rules touched. (A link added: a sheet nothing at
+// all was changed in goes back as the part it was read from, one with another
+// zoom or row height as that part with the change in it, and this is about
+// what the writer makes of the model.)
+let zoomed (models: SpreadsheetModel array) =
+    models
+    |> Array.map (fun model ->
+        let at : CellAddress = { Row = 300 + model.Hyperlinks.Length; Col = 0 }
+        { model with Hyperlinks = model.Hyperlinks @ [ { Range = { From = at; To = at }; Target = "https://example.com/"; IsInternal = false; Tooltip = None; Display = None } ] })
 let untouched = export imported (zoomed (modelsOf imported))
 let second = checkWritten "save" untouched
 checkWritten "second save" (export second (zoomed (modelsOf second))) |> ignore

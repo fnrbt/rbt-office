@@ -546,8 +546,8 @@ eq "axes: an untouched sheet of a file is written as the file had it" (rowAttrib
 let axesEdited = axesAgain |> Ops.unhideAxis true 2 2 |> Ops.setGroupCollapsed "test" true 6 false |> Ops.changeOutlineLevel false 4 5 -1 |> Ops.hideAxis false 7 7
 let axesEditedFile = XlsxReader.loadBytesNative (XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (axesInput axesEdited (Some axesImported.Source)))) |> Option.get
 eq "axes: edited rows of a file's sheet" (rowAttributes axesEditedFile)
-    // (A row of the file that was hidden without a height of its own has the file's default height from then on.)
-    [ 4, true, Some 15.0, 0, false; 6, false, None, 1, false; 7, false, Some 15.0, 2, false; 8, false, Some 15.0, 2, false; 9, false, None, 1, false ]
+    // (A row of the file that was hidden without a height of its own still states none: the rows are the file's with what changed.)
+    [ 4, true, None, 0, false; 6, false, None, 1, false; 7, false, None, 2, false; 8, false, None, 2, false; 9, false, None, 1, false ]
 eq "axes: the row shown again has its height" (axesEditedFile.Sheets.[0].Rows |> List.tryFind (fun r -> r.Index = 3) |> Option.bind (fun r -> r.Height) |> Option.map (fun h -> Math.Round (h * 1.333))) (Some 40.0)
 eq "axes: edited columns" (columnAttributes axesEditedFile |> List.map (fun (first, last, hidden, _, level, collapsed) -> first, last, hidden, level, collapsed)) [ 2, 2, true, 0, false; 3, 3, true, 0, false; 5, 6, true, 0, false; 8, 8, true, 0, false ]
 

@@ -1311,6 +1311,10 @@ type SpreadsheetModel = {
     /// The row / column edit that gave the sheet its `StructureVersion` (as `StructureMove`),
     /// when that was one edit: a recalculation then knows which cells moved.
     StructureMove: StructureMove option
+    /// Every such edit the sheet has seen, the latest first (an undo brings
+    /// the earlier list back): a save follows them to where the rows and
+    /// columns of the opened file are now.
+    StructureLog: StructureMove list
 
     /// Set on the stand-in for a sheet of an opened file that has not been
     /// converted to a model yet (a sheet is converted when it is first shown,
@@ -1406,6 +1410,7 @@ let createEmpty rowCount colCount = {
     KeptFrom = None
     StructureVersion = 0
     StructureMove = None
+    StructureLog = []
     Deferred = None
 }
 
@@ -3348,6 +3353,7 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
     { model with
         StructureVersion = model.StructureVersion + 1
         StructureMove = Some { OnRows = onRows; Insert = isInsert; At = at; Count = count; Version = model.StructureVersion + 1 }
+        StructureLog = { OnRows = onRows; Insert = isInsert; At = at; Count = count; Version = model.StructureVersion + 1 } :: model.StructureLog
         Hyperlinks = hyperlinks
         KeptRanges = keptRanges
         DataTables = dataTables

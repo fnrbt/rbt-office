@@ -1714,6 +1714,12 @@ module Export =
 
     let private sameRef (a: 'T) (b: 'T) = obj.ReferenceEquals(a, b)
 
+    let private xmlTextDecoded (text: string) =
+        if text.IndexOf '&' < 0 then text
+        else text.Replace("&lt;", "<").Replace("&gt;", ">").Replace("&quot;", "\"").Replace("&apos;", "'").Replace("&amp;", "&")
+    let private xmlTextEncoded (text: string) =
+        text.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;")
+
     /// The same formula, its value now an error where the file had a result:
     /// a function this engine lacks. The file's value stands.
     let private onlyBecameError (before: CellData) (after: CellData) =
@@ -1803,9 +1809,33 @@ module Export =
                     | _ -> cellOut cache model addr data)
         let fromModel = modelSheetWith cells dxfIndex name state model
         let unchanged (pick: SpreadsheetModel -> 'T) = sameRef (pick before) (pick model) || pick before = pick model
+        let movedSizes (onRows: bool) (fileSizes: (int * float) list) (sizesBefore: Map<int, float>) (sizesNow: Map<int, float>) (pixelsPerUnit: float) (defaultPixels: float) (modelSizes: (int * float) list) =
+            if before.StructureVersion = model.StructureVersion then patchSizes fileSizes sizesBefore sizesNow pixelsPerUnit defaultPixels
+            elif model.StructureLog.Length <> model.StructureVersion - before.StructureVersion || before.StructureVersion <> 0 then modelSizes
+            else
+                let moves = List.rev model.StructureLog |> List.filter (fun move -> move.OnRows = onRows)
+                if moves.IsEmpty then patchSizes fileSizes sizesBefore sizesNow pixelsPerUnit defaultPixels
+                else
+                    let moved (index: int) : int option =
+                        moves
+                        |> List.fold (fun (at: int option) move ->
+                            match at with
+                            | None -> None
+                            | Some index ->
+                                if move.Insert then Some (if index >= move.At then index + move.Count else index)
+                                elif index >= move.At + move.Count then Some (index - move.Count)
+                                elif index >= move.At then None
+                                else Some index) (Some index)
+                    let fileMoved = fileSizes |> List.choose (fun (index, size) -> moved index |> Option.map (fun index -> index, size))
+                    let beforeMoved = sizesBefore |> Map.toList |> List.choose (fun (index, size) -> moved index |> Option.map (fun index -> index, size)) |> Map.ofList
+                    patchSizes fileMoved beforeMoved sizesNow pixelsPerUnit defaultPixels
         { fromModel with
-            ColumnWidths = patchSizes original.ColumnWidths before.ColumnWidths model.ColumnWidths 7.0 100.0
-            RowHeights = patchSizes original.RowHeights before.RowHeights model.RowHeights 1.333 25.0
+            // (The file's sizes are by index: with rows or columns inserted or
+            // deleted, each index has the size the model gives it.)
+            // (The file's sizes are by index: with rows or columns inserted or
+            // deleted, by where each row and column of the file is now.)
+            ColumnWidths = movedSizes false original.ColumnWidths before.ColumnWidths model.ColumnWidths 7.0 100.0 fromModel.ColumnWidths
+            RowHeights = movedSizes true original.RowHeights before.RowHeights model.RowHeights 1.333 25.0 fromModel.RowHeights
             Tables =
                 if unchanged (fun m -> m.Tables) then original.Tables
                 else
@@ -1891,9 +1921,92 @@ module Export =
                 // Sparklines and x14 conditional formats name cells; the
                 // editor does not model them, so they only go back while the
                 // sheet's rows and columns are where the file had them.
+                // With rows or columns inserted or deleted, the cells and ranges they
+                // name (`xm:sqref`, `xm:f`) follow, a sparkline whose cell or data is
+                // gone is taken out, and any other extension that lost a cell is dropped.
                 let extras =
-                    if before.StructureVersion = model.StructureVersion then extras
-                    else { extras with KeptCellExtensions = [] }
+                    if before.StructureVersion = model.StructureVersion || extras.KeptCellExtensions.IsEmpty then extras
+                    elif model.StructureLog.Length <> model.StructureVersion || before.StructureVersion <> 0 
+                         // (No formula engine at hand to move a reference with.)
+                         || adjustFormulaForEdit (InsertRows (0, 1)) (fun _ -> true) "=A1" = "=A1" then { extras with KeptCellExtensions = [] }
+                    else
+                        let moves = List.rev model.StructureLog
+                        let movedSpan (onRows: bool) (low: int) (high: int) : (int * int) option =
+                            moves
+                            |> List.fold (fun (span: (int * int) option) move ->
+                                match span with
+                                | Some (low, high) when move.OnRows = onRows ->
+                                    if move.Insert then
+                                        if low >= move.At then Some (low + move.Count, high + move.Count)
+                                        elif high >= move.At then Some (low, high + move.Count)
+                                        else span
+                                    else
+                                        let stop = move.At + move.Count
+                                        let newLow = if low >= stop then low - move.Count elif low >= move.At then move.At else low
+                                        let newHigh = if high >= stop then high - move.Count elif high >= move.At then move.At - 1 else high
+                                        if newHigh < newLow then None else Some (newLow, newHigh)
+                                | _ -> span) (Some (low, high))
+                        let movedRanges (sqref: string) : string option =
+                            let parts =
+                                sqref.Split(' ')
+                                |> Array.filter (fun part -> part <> "")
+                                |> Array.map (fun part ->
+                                    parsePlainRange (part.Replace("$", ""))
+                                    |> Option.bind (fun (sr, sc, er, ec) ->
+                                        match movedSpan true sr er, movedSpan false sc ec with
+                                        | Some (sr, er), Some (sc, ec) when er <= 1048575 && ec <= 16383 ->
+                                            Some (if sr = er && sc = ec then formatCellRef sr sc else formatCellRef sr sc + ":" + formatCellRef er ec)
+                                        | _ -> None))
+                            if parts.Length = 0 || parts |> Array.exists Option.isNone then None else Some (parts |> Array.choose id |> String.concat " ")
+                        let ownName = readerSheet.Name
+                        let onThisSheet (sheet: string option) =
+                            match sheet with
+                            | None -> true
+                            | Some other -> other.Trim('\'').Equals(ownName, StringComparison.OrdinalIgnoreCase)
+                        let movedFormula (formula: string) : string option =
+                            let adjusted =
+                                moves
+                                |> List.fold (fun (text: string) move ->
+                                    let edit =
+                                        match move.OnRows, move.Insert with
+                                        | true, true -> InsertRows (move.At, move.Count)
+                                        | true, false -> DeleteRows (move.At, move.Count)
+                                        | false, true -> InsertCols (move.At, move.Count)
+                                        | false, false -> DeleteCols (move.At, move.Count)
+                                    adjustFormulaForEdit edit onThisSheet text) ("=" + xmlTextDecoded formula)
+                            if adjusted.Contains "#REF!" then None else Some (xmlTextEncoded (if adjusted.StartsWith "=" then adjusted.Substring 1 else adjusted))
+                        // The text with every `<name>...</name>` moved; None when one of them is gone.
+                        let withMoved (name: string) (move: string -> string option) (xml: string) : string option =
+                            let mutable lost = false
+                            let moved =
+                                Text.RegularExpressions.Regex.Replace(xml, "<" + name + ">([^<]*)</" + name + ">", (fun (found: Text.RegularExpressions.Match) ->
+                                    match move found.Groups.[1].Value with
+                                    | Some text -> "<" + name + ">" + text + "</" + name + ">"
+                                    | None ->
+                                        lost <- true
+                                        found.Value))
+                            if lost then None else Some moved
+                        let movedText (xml: string) = withMoved "xm:sqref" movedRanges xml |> Option.bind (withMoved "xm:f" movedFormula)
+                        let movedExtension (xml: string) : string option =
+                            if not (xml.Contains "<x14:sparklineGroups") then movedText xml
+                            else
+                                // Sparkline by sparkline; a group, and the list, with none left goes.
+                                let sparklines =
+                                    Text.RegularExpressions.Regex.Replace(xml, "<x14:sparkline>[\\s\\S]*?</x14:sparkline>", (fun (found: Text.RegularExpressions.Match) ->
+                                        movedText found.Value |> Option.defaultValue ""))
+                                let groups =
+                                    Text.RegularExpressions.Regex.Replace(sparklines, "<x14:sparklineGroup(?=[\\s>])[^>]*>[\\s\\S]*?</x14:sparklineGroup>", (fun (found: Text.RegularExpressions.Match) ->
+                                        if not (found.Value.Contains "<x14:sparkline>") then ""
+                                        else
+                                            // (What the group itself names: the range of its dates.)
+                                            let listAt = found.Value.IndexOf "<x14:sparklines>"
+                                            if listAt < 0 then found.Value
+                                            else
+                                                match movedText (found.Value.Substring(0, listAt)) with
+                                                | Some head -> head + found.Value.Substring listAt
+                                                | None -> ""))
+                                if groups.Contains "<x14:sparklineGroup" && (groups.Contains "<x14:sparklineGroup>" || groups.Contains "<x14:sparklineGroup ") then Some groups else None
+                        { extras with KeptCellExtensions = extras.KeptCellExtensions |> List.choose (fun xml -> try movedExtension xml with _ -> None) }
                 // Column default styles follow their columns. The file's own
                 // `<col>` list is by position: it is only kept while no
                 // column was inserted or deleted.
@@ -2053,11 +2166,6 @@ module Export =
                     i <- i + 1
             sb.ToString()
 
-    let private xmlTextDecoded (text: string) =
-        if text.IndexOf '&' < 0 then text
-        else text.Replace("&lt;", "<").Replace("&gt;", ">").Replace("&quot;", "\"").Replace("&apos;", "'").Replace("&amp;", "&")
-    let private xmlTextEncoded (text: string) =
-        text.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;")
 
     /// `xml` with the text of every element named one of `names` (as written,
     /// with its prefix) passed through `change`.
@@ -2159,27 +2267,27 @@ module Export =
             && before.ShowGridLines = model.ShowGridLines && before.ShowHeaders = model.ShowHeaders && before.ShowFormulas = model.ShowFormulas
             && before.ShowZeros = model.ShowZeros && before.Zoom = model.Zoom && before.TabColor = model.TabColor)
 
-    /// What of a sheet is not the file's, when it is only cells (values,
-    /// formulas, formats), column widths, merged cells, conditional formats,
-    /// validations, the view (zoom, switches, frozen panes) or the tab
-    /// colour: the sheet's part is then written again with just that
-    /// replaced. None when more changed (rows or columns inserted, deleted
-    /// or hidden, row heights, a sort or filter, comments, tables, drawings,
-    /// links, the page setup): such a sheet is written from its model.
+    /// What of a sheet is not the file's, when no row or column was inserted
+    /// or deleted: the cells (values, formulas, formats) and rows (height,
+    /// hidden, outline) that changed, and the elements of the worksheet that
+    /// are made anew - column widths, merged cells, conditional formats,
+    /// validations, the view (zoom, switches, frozen panes), the tab colour,
+    /// the AutoFilter, the page setup. The sheet's part is then written
+    /// again with just that replaced. When comments, tables, drawings or
+    /// links changed too (`Whole`), the rows are still the file's with the
+    /// changed cells, and the rest of the part is made from the sheet. None
+    /// when rows or columns were inserted or deleted, or array formulas and
+    /// what-if tables changed: such a sheet is written from its model.
     let private patchOfSheet (before: SpreadsheetModel) (model: SpreadsheetModel) : XlsxReader.SheetPatch option =
         let same (pick: SpreadsheetModel -> 'T) = sameRef (pick before) (pick model) || pick before = pick model
         let rest =
             model.Deferred.IsNone && before.StructureVersion = model.StructureVersion
-            && same (fun m -> m.RowHeights) && same (fun m -> m.Axes)
-            && same (fun m -> m.Tables) && same (fun m -> m.Drawings) && same (fun m -> m.Threads) && same (fun m -> m.Hyperlinks)
             && same (fun m -> m.DataTables) && same (fun m -> m.KeptRanges) && same (fun m -> m.ArrayMarks) && same (fun m -> m.Spill)
-            && same (fun m -> m.AutoFilter) && same (fun m -> m.Filters) && same (fun m -> m.SortState)
-            && same (fun m -> m.FilterVisibleRows) && same (fun m -> m.FilterHiddenRows)
-            && same (fun m -> m.PageSetup)
         if not rest then None
         else
             let cells = ResizeArray<int * int * bool>()
-            let mutable sound = true
+            // (A note is in the sheet's comments part, not in its cells.)
+            let mutable notes = false
             if not (sameRef before.Cells model.Cells && sameRef before.RichRuns model.RichRuns) then
                 let sameRuns = sameRef before.RichRuns model.RichRuns
                 let runsSame (addr: CellAddress) = sameRuns || Map.tryFind addr before.RichRuns = Map.tryFind addr model.RichRuns
@@ -2187,8 +2295,7 @@ module Export =
                     match Map.tryFind addr before.Cells with
                     | Some previous when (sameRef previous data || previous = data || onlyBecameError previous data) && runsSame addr -> ()
                     | Some previous ->
-                        // (A note is in the sheet's comments part, not in its cells.)
-                        if previous.Comment <> data.Comment then sound <- false
+                        if previous.Comment <> data.Comment then notes <- true
                         let valueOnly =
                             match previous.Value, data.Value with
                             | CellValue.Formula (formulaBefore, _), CellValue.Formula (formulaNow, _) ->
@@ -2196,24 +2303,77 @@ module Export =
                             | _ -> false
                         cells.Add ((addr.Row, addr.Col, valueOnly))
                     | None ->
-                        if data.Comment.IsSome then sound <- false
+                        if data.Comment.IsSome then notes <- true
                         cells.Add ((addr.Row, addr.Col, false))
                 for KeyValue(addr, previous) in before.Cells do
                     if not (Map.containsKey addr model.Cells) then
-                        if previous.Comment.IsSome then sound <- false
+                        if previous.Comment.IsSome then notes <- true
                         cells.Add ((addr.Row, addr.Col, false))
-            if not sound then None
-            else
-                Some { Cells = List.ofSeq cells
-                       Sections =
-                        [ if before.TabColor <> model.TabColor then yield "sheetPr"
-                          if before.FrozenRows <> model.FrozenRows || before.FrozenCols <> model.FrozenCols
-                             || before.ShowGridLines <> model.ShowGridLines || before.ShowHeaders <> model.ShowHeaders || before.ShowFormulas <> model.ShowFormulas
-                             || before.ShowZeros <> model.ShowZeros || before.Zoom <> model.Zoom then yield "sheetViews"
-                          if not (same (fun m -> m.ColumnWidths)) || not (same (fun m -> m.ColumnStyles)) then yield "cols"
-                          if not (same (fun m -> m.MergedCells)) then yield "mergeCells"
-                          if not (same (fun m -> m.ConditionalFormats)) then yield "conditionalFormatting"
-                          if not (same (fun m -> m.Validations)) then yield "dataValidations" ] }
+            // The rows as a file states them: those an AutoFilter hides are hidden rows.
+            let was = filterRowsAsHidden before
+            let now = filterRowsAsHidden model
+            let rows =
+                if sameRef was.RowHeights now.RowHeights && (sameRef was.Axes now.Axes || was.Axes = now.Axes) then []
+                else
+                    // Hidden or not, the height it has when it is shown, outline level, collapsed.
+                    let stateOf (m: SpreadsheetModel) (row: int) =
+                        let hidden, height =
+                            match Map.tryFind row m.RowHeights with
+                            | Some size when size <= 0.0 -> true, Map.tryFind row m.Axes.HiddenRowSizes
+                            | size -> false, size
+                        hidden, height, (Map.tryFind row m.Axes.RowLevels |> Option.defaultValue 0), Set.contains row m.Axes.CollapsedRows
+                    let touched = Collections.Generic.HashSet<int>()
+                    let diff (a: Map<int, 'V>) (b: Map<int, 'V>) =
+                        if not (sameRef a b) then
+                            for KeyValue(row, value) in a do (if Map.tryFind row b <> Some value then touched.Add row |> ignore)
+                            for KeyValue(row, _) in b do (if not (Map.containsKey row a) then touched.Add row |> ignore)
+                    diff was.RowHeights now.RowHeights
+                    diff was.Axes.HiddenRowSizes now.Axes.HiddenRowSizes
+                    diff was.Axes.RowLevels now.Axes.RowLevels
+                    if not (sameRef was.Axes.CollapsedRows now.Axes.CollapsedRows) then
+                        for row in was.Axes.CollapsedRows do (if not (Set.contains row now.Axes.CollapsedRows) then touched.Add row |> ignore)
+                        for row in now.Axes.CollapsedRows do (if not (Set.contains row was.Axes.CollapsedRows) then touched.Add row |> ignore)
+                    [ for row in Seq.sort touched do
+                        if row >= 0 then
+                            let hiddenWas, heightWas, levelWas, collapsedWas = stateOf was row
+                            let hidden, height, level, collapsed = stateOf now row
+                            // (A row hidden at the height every row has keeps what the file says of its height.)
+                            let heightChanged =
+                                heightWas <> height
+                                && not (heightWas.IsNone && hidden && (match height with Some size -> abs (size - 25.0) < 0.01 | None -> true))
+                            if hiddenWas <> hidden || heightChanged || levelWas <> level || collapsedWas <> collapsed then
+                                yield ({ Row = row; HeightChanged = heightChanged; Height = height |> Option.map (fun size -> size / 1.333)
+                                         Hidden = hidden; Level = level; Collapsed = collapsed } : XlsxReader.SheetRowPatch) ]
+            let levelsOf (levels: Map<int, int>) = levels |> Map.fold (fun deepest _ level -> max deepest level) 0
+            let setup (pick: PageSetup -> 'T) = pick before.PageSetup = pick model.PageSetup
+            let setupSame = same (fun m -> m.PageSetup)
+            Some { Cells = List.ofSeq cells
+                   Rows = rows
+                   Whole =
+                    notes || not (same (fun m -> m.Tables)) || not (same (fun m -> m.Drawings)) || not (same (fun m -> m.Threads)) || not (same (fun m -> m.Hyperlinks))
+                   Sections =
+                    [ if before.TabColor <> model.TabColor || before.Axes.SummaryBelow <> model.Axes.SummaryBelow || before.Axes.SummaryRight <> model.Axes.SummaryRight
+                         || before.PageSetup.FitToPage <> model.PageSetup.FitToPage then yield "sheetPr"
+                      if before.FrozenRows <> model.FrozenRows || before.FrozenCols <> model.FrozenCols
+                         || before.ShowGridLines <> model.ShowGridLines || before.ShowHeaders <> model.ShowHeaders || before.ShowFormulas <> model.ShowFormulas
+                         || before.ShowZeros <> model.ShowZeros || before.Zoom <> model.Zoom || before.Axes.ShowSymbols <> model.Axes.ShowSymbols then yield "sheetViews"
+                      if levelsOf before.Axes.RowLevels <> levelsOf model.Axes.RowLevels || levelsOf before.Axes.ColLevels <> levelsOf model.Axes.ColLevels then yield "sheetFormatPr"
+                      if not (same (fun m -> m.ColumnWidths)) || not (same (fun m -> m.ColumnStyles))
+                         || before.Axes.HiddenColSizes <> model.Axes.HiddenColSizes || before.Axes.ColLevels <> model.Axes.ColLevels
+                         || before.Axes.CollapsedCols <> model.Axes.CollapsedCols then yield "cols"
+                      if not (same (fun m -> m.AutoFilter)) || not (same (fun m -> m.Filters)) then yield "autoFilter"
+                      if not (same (fun m -> m.SortState)) then yield "sortState"
+                      if not (same (fun m -> m.MergedCells)) then yield "mergeCells"
+                      if not (same (fun m -> m.ConditionalFormats)) then yield "conditionalFormatting"
+                      if not (same (fun m -> m.Validations)) then yield "dataValidations"
+                      if not setupSame then
+                          if not (setup (fun p -> p.Options)) then yield "printOptions"
+                          if not (setup (fun p -> p.Margins)) then yield "pageMargins"
+                          // (Paper, orientation, scale ...: whatever else the setup says.)
+                          yield "pageSetup"
+                          if not (setup (fun p -> p.HeaderFooter)) then yield "headerFooter"
+                          if not (setup (fun p -> p.ManualRowBreaks)) then yield "rowBreaks"
+                          if not (setup (fun p -> p.ManualColBreaks)) then yield "colBreaks" ] }
 
     /// The workbook to write. `sourceParts` are parts of the opened file by
     /// path - its worksheet parts, styles and shared strings - beyond those the
@@ -2395,10 +2555,21 @@ module Export =
             | Some _, Some (path, relType) when verbatimAllowed && relType.EndsWith "/worksheet" && suppliedParts.ContainsKey path && not (namesChangedTab suppliedParts.[path]) ->
                 match patchOfSheet before model with
                 | Some patch ->
-                    verbatimParts.Add ((path, suppliedParts.[path]))
+                    if not patch.Whole then verbatimParts.Add ((path, suppliedParts.[path]))
                     Some patch
                 | None -> None
             | _ -> None
+        // A sheet of the file that is written from its model keeps what its part
+        // says and a model does not hold (see `SheetExtras.SourceXml`), by where
+        // the rows and columns of the file are now.
+        let withSource (outSheet: XlsxWriter.XlsxSheetOut) (model: SpreadsheetModel) (written: XlsxWriter.XlsxSheetOut) : XlsxWriter.XlsxSheetOut =
+            match outSheet.Extras.SourcePart with
+            | Some (path, relType) when relType.EndsWith "/worksheet" && suppliedParts.ContainsKey path ->
+                let moves =
+                    if model.StructureLog.Length <> model.StructureVersion then None
+                    else Some (model.StructureLog |> List.rev |> List.map (fun move -> move.OnRows, move.Insert, move.At, move.Count))
+                { written with Extras = { written.Extras with SourceXml = Some (Text.Encoding.UTF8.GetString suppliedParts.[path]); Moves = moves } }
+            | _ -> written
         let verbatimOf (outSheet: XlsxWriter.XlsxSheetOut) (before: SpreadsheetModel) (model: SpreadsheetModel) : bool =
             match inPlaceParts, outSheet.Extras.SourcePart with
             | Some _, Some (path, relType) when verbatimAllowed && relType.EndsWith "/worksheet" && suppliedParts.ContainsKey path ->
@@ -2427,8 +2598,9 @@ module Export =
                     else
                         let written = withKeptFormulas (sourcedSheet cache dxfIndex name (stateOf index model) outSheet readerSheet (filterRowsAsHidden before) (filterRowsAsHidden model))
                         match patchOf outSheet before model with
-                        | Some patch -> { written with Extras = { written.Extras with Verbatim = true; Patch = Some patch } }
-                        | None -> written
+                        | Some patch when not patch.Whole -> { written with Extras = { written.Extras with Verbatim = true; Patch = Some patch } }
+                        | Some patch -> withSource outSheet model { written with Extras = { written.Extras with Patch = Some patch } }
+                        | None -> withSource outSheet model written
                 | None ->
                     let written = modelSheet cache dxfIndex name (stateOf index model) (filterRowsAsHidden model)
                     match copyExtras index model with
@@ -2579,10 +2751,10 @@ module Export =
                         let untouched =
                             if isDeferredSheet model then model.TabColor = reader.View.TabColor
                             else untouchedSheet source.Baseline.[origin.Sheet] current
-                        // (... or with so little changed that its part is written again with that changed.)
-                        let patched = not untouched && not (isDeferredSheet model) && (patchOfSheet source.Baseline.[origin.Sheet] model).IsSome
+                        // (... or changed: its part is written again with that changed in it, or the
+                        // sheet is written from its model with what the part says beyond a model.)
                         match reader.Extras.SourcePart with
-                        | Some (path, relType) when (untouched || patched) && relType.EndsWith "/worksheet" -> Some path
+                        | Some (path, relType) when (untouched || not (isDeferredSheet model)) && relType.EndsWith "/worksheet" -> Some path
                         | _ -> None
                     | _ -> None)
             (

@@ -533,6 +533,65 @@ checks['export-keeps-parts'] = async () => {
     return lines;
 };
 
+// A sheet with more than cells changed keeps what its part says (ExportXlsx): a hidden row and another row
+// height are put into the file's part; a link makes the rest of the part be written from the sheet, the rows
+// still the file's; with a row inserted the sheet is written from its cells and still has the code name, the
+// rows' styles, ignoredErrors (where their cells are now), the selection, and its formulas written once.
+checks['export-edited-sheet-keeps-part'] = async () => {
+    const { lines, check } = makeLog();
+    const { bytesOf } = await import('/component.js');
+    const file = 'tests/real-world/milk-street-office.xlsx', part = 'xl/worksheets/sheet1.xml';
+    const element = (xml, name) => { const m = new RegExp(`<${name}(?=[\\s>/])[^>]*/>|<${name}(?=[\\s>])[^>]*>[\\s\\S]*?</${name}>`).exec(xml); return m ? m[0] : ''; };
+    const count = (xml, pattern) => (xml.match(pattern) || []).length;
+    const rowTag = (xml, number) => (new RegExp(`<row r="${number}"[^>]*>`).exec(xml) || [''])[0];
+    const original = await bytesOf(file);
+    const was = await (await window.JSZip.loadAsync(original)).files[part].async('string');
+    const edited = async (edit) => {
+        const { grid, close } = mountGrid();
+        try {
+            await grid.ImportXlsx(original.slice());
+            grid.SwitchSheet(0);
+            edit(grid);
+            const bytes = await grid.ExportXlsx();
+            const xml = await (await window.JSZip.loadAsync(bytes)).files[part].async('string');
+            const { grid: again, close: closeAgain } = mountGrid();
+            try {
+                await again.ImportXlsx(bytes);
+                again.SwitchSheet(0);
+                const formulas = (g) => { const out = []; for (let r = 60; r < 130; r++) for (let c = 3; c < 11; c++) out.push(g.GetCell(r, c).formula ?? null); return out; };
+                return { xml, same: JSON.stringify(formulas(again)) === JSON.stringify(formulas(grid)), again: { hidden: again.GetHiddenRows(), height: again.GetRowHeight(5) } };
+            } finally { closeAgain(); }
+        } finally { close(); }
+    };
+    try {
+        check('the file has what the check is about', [element(was, 'sheetPr').includes('codeName'), element(was, 'ignoredErrors') !== '', count(was, /t="shared"/g) > 100, count(was, /<row\b[^>]*\ss="/g) > 10], [true, true, true, true]);
+        // A hidden row, another row height: the part is the file's but for those two row tags.
+        const rows = await edited((grid) => { grid.HideRows(9); grid.SetRowHeight(5, 53); });
+        const withoutRows = (xml) => xml.replace(/<row r="(6|10)"[^>]*>/g, '');
+        check('row hidden and row height: nothing but the two row tags differs from the file\'s part', withoutRows(rows.xml) === withoutRows(was), true);
+        check('row hidden: the row says so and keeps what it said', rowTag(rows.xml, 10), rowTag(was, 10).replace('>', ' hidden="1">'));
+        check('row height: the row states it', [/ ht="39\.\d+"| ht="40"/.test(rowTag(rows.xml, 6)), rowTag(rows.xml, 6).includes('customHeight="1"'), rowTag(rows.xml, 6).includes('x14ac:dyDescent')], [true, true, true]);
+        check('row hidden and row height: read again', [rows.again.hidden.includes('10:10'), Math.round(rows.again.height)], [true, 53]);
+        // A link: the rows are the file's, and so is what the part says beyond a sheet.
+        const linked = await edited((grid) => grid.SetHyperlink('B401', 'https://example.com/a?b=1&c=2'));
+        check('link added: the part names it', element(linked.xml, 'hyperlinks').includes('ref="B401"'), true);
+        check('link added: shared formulas, styled rows, sheetPr, the views, sheetFormatPr and ignoredErrors are the file\'s',
+            [count(linked.xml, /t="shared"/g), count(linked.xml, /<row\b[^>]*\ss="/g), element(linked.xml, 'sheetPr'), element(linked.xml, 'sheetViews'), element(linked.xml, 'sheetFormatPr'), element(linked.xml, 'ignoredErrors')],
+            [count(was, /t="shared"/g), count(was, /<row\b[^>]*\ss="/g), element(was, 'sheetPr'), element(was, 'sheetViews'), element(was, 'sheetFormatPr'), element(was, 'ignoredErrors')]);
+        check('link added: the formulas read as they did', linked.same, true);
+        // A row inserted: written from the cells, with what the part said where the rows are now.
+        const inserted = await edited((grid) => grid.InsertRows(100, 1));
+        check('row inserted: sheetPr and sheetFormatPr are the file\'s', [element(inserted.xml, 'sheetPr'), element(inserted.xml, 'sheetFormatPr')], [element(was, 'sheetPr'), element(was, 'sheetFormatPr')]);
+        check('row inserted: ignoredErrors follow their cells', [element(inserted.xml, 'ignoredErrors').includes('E96:E110'), element(inserted.xml, 'ignoredErrors').includes('F138:K158'), count(element(inserted.xml, 'ignoredErrors'), /<ignoredError /g)],
+            [true, true, count(element(was, 'ignoredErrors'), /<ignoredError /g)]);
+        check('row inserted: the rows keep their own styles', count(inserted.xml, /<row\b[^>]*\ss="/g), count(was, /<row\b[^>]*\ss="/g));
+        check('row inserted: the selection follows', [element(inserted.xml, 'sheetViews').includes('activeCell="B309"'), element(inserted.xml, 'sheetViews').includes('topLeftCell="A309"')], [true, true]);
+        check('row inserted: formulas that read alike are written once', count(inserted.xml, /t="shared"/g) * 10 >= count(was, /t="shared"/g) * 8, true);
+        check('row inserted: the formulas read as the sheet has them', inserted.same, true);
+    } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
+    return lines;
+};
+
 // Spill ranges for hosts: GetCell(...).spill, GetSpillRange, and the outline around the active cell's array.
 checks['chrome-spill'] = async () => {
     const { lines, check } = makeLog();

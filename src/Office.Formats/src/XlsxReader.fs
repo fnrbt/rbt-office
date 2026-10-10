@@ -780,8 +780,32 @@ type SheetPatch = {
     /// with another result (its `<f>` then stays the file's, shared or not).
     Cells: (int * int * bool) list
     /// The elements of the worksheet made from the sheet as it is now:
-    /// "cols", "mergeCells", "conditionalFormatting", "dataValidations".
+    /// "sheetPr", "sheetViews", "sheetFormatPr", "cols", "autoFilter",
+    /// "sortState" (taken out), "mergeCells", "conditionalFormatting",
+    /// "dataValidations", "printOptions", "pageMargins", "pageSetup",
+    /// "headerFooter", "rowBreaks", "colBreaks".
     Sections: string list
+    /// The rows whose own attributes are not the file's (see `SheetRowPatch`).
+    Rows: SheetRowPatch list
+    /// More changed than the part's own text says - comments, tables,
+    /// drawings, links (they are in other parts, named by relationship):
+    /// everything of the worksheet but its rows is then made from the sheet
+    /// as it is now (with what the file's part says beyond what a sheet
+    /// holds, see `SheetExtras.SourceXml`); the rows are the file's with
+    /// `Cells` and `Rows` changed in them.
+    Whole: bool
+}
+
+/// A row of a sheet whose attributes are to be those of the sheet as it is
+/// now: hidden or not, its outline level and collapsed mark; and, with
+/// `HeightChanged`, its height in points (None: the sheet's default height).
+and SheetRowPatch = {
+    Row: int
+    HeightChanged: bool
+    Height: float option
+    Hidden: bool
+    Level: int
+    Collapsed: bool
 }
 
 /// What a sheet holds beyond its cells: pictures, other drawing objects and threaded comments.
@@ -974,13 +998,25 @@ type SheetExtras = {
     /// ignoredErrors, the extensions - stays as it was read). A writer that
     /// cannot patch the part writes the sheet from its cells.
     Patch: SheetPatch option
+    /// For a writer, of a sheet that is written from its cells: the text of
+    /// the part it was read from. What that part says and a sheet does not
+    /// hold is taken from it - the worksheet's namespaces, sheetPr (the code
+    /// name), the views' selection, sheetFormatPr, the rows' own attributes
+    /// (a row's style), the sheet's protection, ignoredErrors.
+    SourceXml: string option
+    /// With `SourceXml`: the rows and columns inserted and deleted since the
+    /// part was read, in the order it was done - on rows (else columns), an
+    /// insertion (else a deletion), the index (from 0) and the count. What
+    /// is taken from the part by row or cell follows them. None: not known
+    /// (nothing that names a row or cell is then taken from the part).
+    Moves: (bool * bool * int * int) list option
 }
 
 let emptySheetExtras =
     { Images = []; Objects = []; ThreadedComments = []; DrawingRelationships = []; Format = None; Columns = []; ColumnStyles = []
       SheetId = None; KeptRelationships = []; KeptExtensions = []; KeptElements = []; DrawingPart = None; TableParts = []; PivotLocations = []; DataTables = []
       KeptCellExtensions = []; PrinterSettingsRelId = None; RowAxis = []; ColumnAxis = []; AutoFilter = None; ArrayFormulas = []
-      SourcePart = None; CommentsPart = None; CommentRuns = []; UncachedFormulas = None; Verbatim = false; Patch = None }
+      SourcePart = None; CommentsPart = None; CommentRuns = []; UncachedFormulas = None; Verbatim = false; Patch = None; SourceXml = None; Moves = None }
 
 /// A named cell style (cellStyles / cellStyleXfs of styles.xml), with the
 /// font, fill, border and number format its xf refers to given as their XML so
