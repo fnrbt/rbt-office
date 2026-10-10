@@ -480,6 +480,17 @@ checks['export-keeps-parts'] = async () => {
                 const one = await compare('one cell edited', await grid.ExportXlsx());
                 check(`${short}: one cell edited: every other sheet is byte for byte the file's`, sheetParts.length - (await sameSheets(one)).length, expected);
                 const styles = await one.files['xl/styles.xml'].async('string'), stylesBefore = await before.files['xl/styles.xml'].async('string');
+                // What the editor has no model of stays in the styles and the workbook part; untouched comments are the file's part.
+                const element = (xml, name) => { const m = new RegExp(`<${name}(?=[\\s>/])[^>]*/>|<${name}(?=[\\s>])[^>]*>[\\s\\S]*?</${name}>`).exec(xml); return m ? m[0] : ''; };
+                const count = (xml, needle) => xml.split(needle).length - 1;
+                check(`${short}: one cell edited: table styles, palette and extensions of the styles stay`, ['tableStyles', 'colors', 'extLst', 'cellStyles'].filter((name) => element(styles, name) !== element(stylesBefore, name)), []);
+                check(`${short}: one cell edited: protection, quote prefix and pivot buttons stay`, [count(styles, '<protection') >= count(stylesBefore, '<protection'), count(styles, 'quotePrefix="1"') >= count(stylesBefore, 'quotePrefix="1"'), count(styles, 'pivotButton="1"') >= count(stylesBefore, 'pivotButton="1"')], [true, true, true]);
+                const bookNow = await one.files['xl/workbook.xml'].async('string'), bookBefore = await before.files['xl/workbook.xml'].async('string');
+                const bookTags = (xml) => (xml.match(/<(fileVersion|workbookPr|workbookProtection|calcPr|workbookView)(?=[\s>\/])[^>]*>/g) || []).map((tag) => tag.replace(/\s(activeTab|firstSheet|fullCalcOnLoad)="[^"]*"/g, ''));
+                check(`${short}: one cell edited: the workbook part keeps its properties, version, window and calculation settings`, bookTags(bookNow), bookTags(bookBefore));
+                const commentParts = entries(before).filter((name) => /^xl\/comments[^/]*\.xml$/.test(name));
+                const commentsChanged = []; for (const name of commentParts) if (!one.files[name] || await base64(before, name) !== await base64(one, name)) commentsChanged.push(name);
+                check(`${short}: one cell edited: the comments parts are the file's`, commentsChanged, []);
                 const xfs = (xml) => { const m = /<cellXfs\b[^>]*>([\s\S]*?)<\/cellXfs>/.exec(xml); return m ? m[1] : ''; };
                 check(`${short}: one cell edited: the file's cell formats keep their places`, xfs(styles).startsWith(xfs(stylesBefore)), true);
                 // The written file opens with what the edited sheet had, and the edit.

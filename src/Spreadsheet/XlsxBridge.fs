@@ -1821,11 +1821,14 @@ module Export =
                         if kept.Length = extras.TableParts.Length then extras else { extras with TableParts = kept }
                 // The file's VML drawing of the comment boxes stands only while
                 // the comments are the file's: with other comments it is made anew.
+                let commentsOf (m: SpreadsheetModel) = m.Cells |> Map.toList |> List.choose (fun (addr, data) -> data.Comment |> Option.map (fun comment -> addr, comment))
+                let commentsSame = sameRef before.Cells model.Cells || commentsOf before = commentsOf model
+                // ... and so does its comments part (rich text, shape ids).
+                let extras = if commentsSame then extras else { extras with CommentsPart = None }
                 let extras =
                     if not (extras.KeptElements |> List.exists (fun (elementName, _) -> elementName = "legacyDrawingNotes")) then extras
                     else
-                        let commentsOf (m: SpreadsheetModel) = m.Cells |> Map.toList |> List.choose (fun (addr, data) -> data.Comment |> Option.map (fun comment -> addr, comment))
-                        if sameRef before.Cells model.Cells || commentsOf before = commentsOf model then extras
+                        if commentsSame then extras
                         else
                             let dropped = extras.KeptElements |> List.filter (fun (elementName, _) -> elementName = "legacyDrawingNotes") |> List.collect (fun (_, xml) -> DocxReader.relationshipIdsInXml xml) |> Set.ofList
                             { extras with
@@ -2235,9 +2238,16 @@ module Export =
             for path, data in source.Workbook.Preserved.SourceParts do suppliedParts.[path] <- data
             for path, data in sourceParts do suppliedParts.[path] <- data
         | None -> ()
+        // (Sheets go back as they were read only in the 1900 date system and
+        // while every sheet of the file is there under its name; the styles
+        // and shared strings are added to whenever the file's are at hand.)
+        let verbatimAllowed =
+            match input.Source with
+            | Some source -> not source.Workbook.Date1904 && renames.Count = 0 && deletedTabs.IsEmpty
+            | None -> false
         let inPlaceParts : (string * byte[]) list option =
             match input.Source with
-            | Some source when not source.Workbook.Date1904 && renames.Count = 0 && deletedTabs.IsEmpty ->
+            | Some source ->
                 let kept = source.Workbook.Preserved
                 let part (path: string option) = path |> Option.bind (fun path -> match suppliedParts.TryGetValue path with | true, data -> Some (path, data) | _ -> None)
                 match part kept.StylesPart, kept.SharedStringsPart, part kept.SharedStringsPart with
@@ -2248,7 +2258,7 @@ module Export =
         let verbatimParts = ResizeArray<string * byte[]>()
         let verbatimOf (outSheet: XlsxWriter.XlsxSheetOut) (before: SpreadsheetModel) (model: SpreadsheetModel) : bool =
             match inPlaceParts, outSheet.Extras.SourcePart with
-            | Some _, Some (path, relType) when relType.EndsWith "/worksheet" && suppliedParts.ContainsKey path ->
+            | Some _, Some (path, relType) when verbatimAllowed && relType.EndsWith "/worksheet" && suppliedParts.ContainsKey path ->
                 let current = match model.Deferred with Some deferred -> (match deferred.Loaded with Some loaded -> loaded | None -> model) | None -> model
                 let untouched =
                     if isDeferredSheet model then model.TabColor = outSheet.View.TabColor
@@ -2356,7 +2366,7 @@ module Export =
                 // styles and shared strings they index.
                 let preserved =
                     match inPlaceParts with
-                    | Some parts when verbatimParts.Count > 0 ->
+                    | Some parts ->
                         // (With what their relationships lead to: the writer leaves out what nothing written reaches.)
                         let sheetPaths = source.Workbook.Sheets |> List.choose (fun sheet -> sheet.Extras.SourcePart |> Option.map fst) |> Set.ofList
                         let own = parts @ List.ofSeq verbatimParts
@@ -2367,7 +2377,16 @@ module Export =
                         let added = own @ others
                         let names = added |> List.map fst |> Set.ofList
                         { preserved with InPlace = true; Parts = (preserved.Parts |> List.filter (fun (path, _) -> not (Set.contains path names))) @ added }
-                    | _ -> preserved
+                    | None ->
+                        // (Without them: what the reader kept beside the sheets - the workbook part, comments parts.)
+                        let known = preserved.Parts |> List.map fst |> Set.ofList
+                        let sheetPaths = source.Workbook.Sheets |> List.choose (fun sheet -> sheet.Extras.SourcePart |> Option.map fst) |> Set.ofList
+                        let others =
+                            source.Workbook.Preserved.SourceParts
+                            |> List.filter (fun (path, _) ->
+                                not (Set.contains path sheetPaths) && not (Set.contains path known)
+                                && Some path <> preserved.StylesPart && Some path <> preserved.SharedStringsPart)
+                        if others.IsEmpty then preserved else { preserved with Parts = preserved.Parts @ others }
                 if moved.IsEmpty then preserved
                 else
                     let cachePaths = preserved.PivotCacheSources |> List.map (fun (path, _, _) -> path) |> Set.ofList
@@ -2416,11 +2435,15 @@ module Export =
                         | Some (path, relType) when untouched && relType.EndsWith "/worksheet" -> Some path
                         | _ -> None
                     | _ -> None)
-            if sheetParts.IsEmpty then []
-            else
+            (
                 let have = kept.SourceParts |> List.map fst |> Set.ofList
-                sheetParts @ Option.toList kept.StylesPart @ Option.toList kept.SharedStringsPart |> List.distinct |> List.filter (fun path -> not (Set.contains path have))
-        | _ -> []
+                sheetParts @ Option.toList kept.StylesPart @ Option.toList kept.SharedStringsPart |> List.distinct |> List.filter (fun path -> not (Set.contains path have)))
+        | Some source ->
+            // (The 1904 date system: no sheet goes back as it was read, the styles and shared strings are still added to.)
+            let kept = source.Workbook.Preserved
+            let have = kept.SourceParts |> List.map fst |> Set.ofList
+            Option.toList kept.StylesPart @ Option.toList kept.SharedStringsPart |> List.filter (fun path -> not (Set.contains path have))
+        | None -> []
 
     /// The workbook to write with the workbook's setting for the iterative
     /// calculation of circular references (`Workbook.Iteration`).

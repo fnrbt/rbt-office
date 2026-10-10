@@ -193,6 +193,30 @@ for file in files do
                                 && (others |> Array.exists (fun (_, sheet) -> reachableFrom original (fst sheet.Extras.SourcePart.Value) |> Set.contains part))
                                 && (match Map.tryFind part edited with Some data -> data <> original.[part] | None -> true))
                         ok (name + ": what the other sheets reach is identical") lost.IsEmpty (show lost)
+                    // The styles are the file's, added to: what the editor has no model of stays (table styles, the
+                    // palette, extensions, protection, quote prefix, pivot buttons), and every format keeps its place.
+                    (match Map.tryFind "xl/styles.xml" original, Map.tryFind "xl/styles.xml" edited with
+                     | Some was, Some now ->
+                        let was, now = text was, text now
+                        let element (name: string) (xml: string) =
+                            let found = Text.RegularExpressions.Regex.Match(xml, "<" + name + "(?=[\\s>/])[^>]*/>|<" + name + "(?=[\\s>])[^>]*>[\\s\\S]*?</" + name + ">")
+                            if found.Success then found.Value else ""
+                        let inner (name: string) (xml: string) = let e = element name xml in if e = "" || e.EndsWith "/>" then "" else e.Substring(e.IndexOf '>' + 1, e.LastIndexOf "</" - e.IndexOf '>' - 1)
+                        let lost = [ "tableStyles"; "colors"; "extLst"; "cellStyles"; "cellStyleXfs" ] |> List.filter (fun name -> element name was <> element name now)
+                        ok (name + ": styles keep what is not modelled") lost.IsEmpty (show lost)
+                        let grown = [ "cellXfs"; "fonts"; "fills"; "borders"; "dxfs"; "numFmts" ] |> List.filter (fun name -> not ((inner name now).StartsWith (inner name was)))
+                        ok (name + ": styles are added to, nothing renumbered") grown.IsEmpty (show grown)
+                     | _ -> ())
+                    // The workbook part keeps what is not the sheet list, the names or the calculation flags.
+                    (let was, now = text original.["xl/workbook.xml"], text edited.["xl/workbook.xml"]
+                     let tags (xml: string) = [ for m in Text.RegularExpressions.Regex.Matches(xml, "<(fileVersion|workbookPr|workbookProtection|fileSharing|workbookView)(?=[\\s>/])[^>]*>") -> Text.RegularExpressions.Regex.Replace(m.Value, "\\s(activeTab|firstSheet|date1904)=\"[^\"]*\"", "") ]
+                     ok (name + ": workbook properties, version and window stay") (tags was = tags now) (sprintf "%A / %A" (tags was) (tags now))
+                     let extLst (xml: string) = let at = xml.LastIndexOf "<extLst" in if at < 0 then "" else xml.Substring at
+                     ok (name + ": workbook extensions stay") (extLst was = extLst now) "")
+                    // The comments of the edited sheet were not touched: its comments part is the file's.
+                    (let commentParts = reachableFrom original (fst sheetsRead.[target].Extras.SourcePart.Value) |> Set.filter (fun part -> part.StartsWith "xl/comments" && Map.containsKey part original)
+                     let changedComments = commentParts |> Set.filter (fun part -> Map.tryFind part edited <> Some original.[part]) |> Set.toList
+                     ok (name + ": the edited sheet's comments part is the file's") changedComments.IsEmpty (show changedComments))
                     // Read again: every cell of every sheet has the value and the format it had (but the edited one).
                     match (try XlsxReader.loadBytesNative editedBytes with _ -> None) with
                     | None -> ok (name + ": edited export opens") false ""
@@ -206,7 +230,7 @@ for file in files do
                                         | other -> other
                                     let format = XlsxWriter.formatOfReaderStyle c.Style
                                     if value <> XlsxReader.Empty || c.Formula.IsSome || format <> XlsxWriter.defaultXlsxCellFormat then
-                                        yield (c.Reference.Row, c.Reference.Column), (value, c.Formula, format) ]
+                                        yield (c.Reference.Row, c.Reference.Column), (value, c.Formula, format, (if workbook.Date1904 || c.StyleIndex = Some 0 then None else c.StyleIndex)) ]
                             |> Map.ofList
                         let wrong =
                             [ for i in 0 .. sheetsRead.Length - 1 do

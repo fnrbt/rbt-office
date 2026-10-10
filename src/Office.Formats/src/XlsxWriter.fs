@@ -296,6 +296,11 @@ type XlsxCellFormat = {
     /// The named cell style the format is based on: an index into the
     /// workbook's `Preserved.NamedStyles`. None is the first one (Normal).
     NamedStyle: int option
+    /// The cell format of the opened file this is, exactly (its cellXfs
+    /// index). A writer that adds to the file's styles writes the cell with
+    /// that entry, so what the model does not hold of it - protection, quote
+    /// prefix, pivot button, theme colours - stays. None: a format of the model.
+    SourceXf: int option
 }
 
 type XlsxVertAlign =
@@ -539,6 +544,7 @@ let defaultXlsxCellFormat = {
     DiagonalUp = false
     DiagonalDown = false
     NamedStyle = None
+    SourceXf = None
 }
 
 type private FontKey = {
@@ -1699,6 +1705,10 @@ let private verbatimPart (workbook: XlsxWorkbookOut) (sheet: XlsxSheetOut) : (st
     if not sheet.Extras.Verbatim then None
     else sheet.Extras.SourcePart |> Option.filter (fun (path, _) -> workbook.Preserved.Parts |> List.exists (fun (kept, _) -> kept = path))
 
+/// The file's comments part of a sheet whose comments are the file's (see SheetExtras.CommentsPart).
+let private keptCommentsPart (workbook: XlsxWorkbookOut) (sheet: XlsxSheetOut) : string option =
+    sheet.Extras.CommentsPart |> Option.filter (fun path -> workbook.Preserved.Parts |> List.exists (fun (kept, _) -> kept = path))
+
 /// Where the parts of a sheet are written.
 type private SheetPlacement = {
     /// The file's part of a sheet written as it was read, and its relationship type.
@@ -1740,15 +1750,15 @@ let private sheetPlacements (workbook: XlsxWorkbookOut) (keptPaths: Set<string>)
         while taken.Contains (name at) do at <- at + 1
         taken.Add (name at) |> ignore
         name at
-    List.zip own verbatim
-    |> List.mapi (fun i (own, verbatim) ->
+    List.zip3 own verbatim workbook.Sheets
+    |> List.mapi (fun i (own, verbatim, sheet) ->
         let number = i + 1
         match verbatim with
         | Some (path, _) -> { Verbatim = verbatim; SheetPath = path; CommentsPath = ""; VmlPath = ""; ThreadsPath = ""; DrawingPath = "" }
         | None ->
             { Verbatim = None
               SheetPath = (match own with Some path -> path | None -> free (sprintf "xl/worksheets/sheet%d.xml") number)
-              CommentsPath = free (sprintf "xl/comments%d.xml") number
+              CommentsPath = (match keptCommentsPart workbook sheet with Some path -> path | None -> free (sprintf "xl/comments%d.xml") number)
               VmlPath =
                 // (The boxes of new comments: not under the name of a kept VML drawing.)
                 (let usual = sprintf "xl/drawings/vmlDrawing%d.vml" number
@@ -2452,6 +2462,72 @@ let private workbookXmlFull (workbook: XlsxWorkbookOut) =
     // Child order is fixed by CT_Workbook: sheets, externalReferences,
     // definedNames, calcPr, pivotCaches, extLst.
     let kept = workbook.Preserved
+    // The file's own workbook part with the sheet list, the names, the active
+    // tab and the calculation settings made anew: its file version, workbook
+    // properties and protection, window, views and extensions stay.
+    let fromFile =
+        kept.WorkbookPart
+        |> Option.bind (fun path -> kept.Parts |> List.tryPick (fun (known, data) -> if known = path then Some (System.Text.Encoding.UTF8.GetString data) else None))
+        |> Option.bind (fun source ->
+            let root = System.Text.RegularExpressions.Regex.Match(source, "<workbook(?=[\\s>])[^>]*>")
+            let prefix = System.Text.RegularExpressions.Regex.Match((if root.Success then root.Value else ""), "xmlns:([A-Za-z0-9_]+)=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"")
+            let sheetsAt = System.Text.RegularExpressions.Regex.Match(source, "<sheets(?=[\\s>])[^>]*>[\\s\\S]*?</sheets>")
+            if not root.Success || not prefix.Success || not sheetsAt.Success then None
+            else
+                let sheetsXml =
+                    workbook.Sheets
+                    |> List.mapi (fun i s ->
+                        let visible =
+                            match s.State with
+                            | XlsxReader.SheetVisible -> ""
+                            | XlsxReader.SheetHidden -> " state=\"hidden\""
+                            | XlsxReader.SheetVeryHidden -> " state=\"veryHidden\""
+                        sprintf "<sheet %s sheetId=\"%d\" %s:id=\"%s\"%s/>" (attr "name" s.Name) ids.[i] prefix.Groups.[1].Value relIds.[i] visible)
+                    |> String.concat ""
+                let text = source.Substring(0, sheetsAt.Index) + "<sheets>" + sheetsXml + "</sheets>" + source.Substring(sheetsAt.Index + sheetsAt.Length)
+                let replaceTag (pattern: string) (change: string -> string) (text: string) =
+                    let found = System.Text.RegularExpressions.Regex.Match(text, pattern)
+                    if found.Success then text.Substring(0, found.Index) + change found.Value + text.Substring(found.Index + found.Length) else text
+                let insertAfter (marks: string list) (element: string) (text: string) =
+                    match marks |> List.tryPick (fun mark -> match text.IndexOf (mark, System.StringComparison.Ordinal) with -1 -> None | at -> Some (at + mark.Length)) with
+                    | Some at -> text.Substring(0, at) + element + text.Substring at
+                    | None -> text
+                // (The sheets are written in the 1900 date system: see the reader.)
+                let text = text |> replaceTag "<workbookPr(?=[\\s>/])[^>]*>" (withTagAttribute "date1904" None)
+                // The sheet on display.
+                let active = string (max 0 workbook.ActiveSheetIndex)
+                let text =
+                    if System.Text.RegularExpressions.Regex.IsMatch(text, "<workbookView(?=[\\s>/])") then
+                        text |> replaceTag "<workbookView(?=[\\s>/])[^>]*>" (fun tag -> tag |> withTagAttribute "activeTab" (Some active) |> withTagAttribute "firstSheet" None)
+                    elif active = "0" then text
+                    else
+                        let at = text.IndexOf ("<sheets>", System.StringComparison.Ordinal)
+                        text.Substring(0, at) + "<bookViews><workbookView activeTab=\"" + active + "\"/></bookViews>" + text.Substring at
+                // The defined names.
+                let namesPattern = "<definedNames(?=[\\s>])[^>]*>[\\s\\S]*?</definedNames>|<definedNames(?=[\\s>/])[^>]*/>"
+                let text =
+                    if System.Text.RegularExpressions.Regex.IsMatch(text, namesPattern) then replaceTag namesPattern (fun _ -> definedNames) text
+                    elif definedNames = "" then text
+                    else insertAfter [ "</externalReferences>"; "</functionGroups>"; "</sheets>" ] definedNames text
+                // Calculation: the file's settings, with what the workbook says of iteration and of formulas without a result.
+                let iterate (tag: string) =
+                    match kept.CalcIteration with
+                    | Some (count, delta) ->
+                        tag
+                        |> withTagAttribute "iterate" (Some "1")
+                        |> withTagAttribute "iterateCount" (if count <> 100 then Some (string count) else None)
+                        |> withTagAttribute "iterateDelta" (if delta <> 0.001 then Some (numberText delta) else None)
+                    | None -> tag |> withTagAttribute "iterate" None |> withTagAttribute "iterateCount" None |> withTagAttribute "iterateDelta" None
+                let calcPattern = "<calcPr(?=[\\s>/])[^>]*>"
+                let text =
+                    if System.Text.RegularExpressions.Regex.IsMatch(text, calcPattern) then
+                        text |> replaceTag calcPattern (fun tag -> iterate tag |> fun tag -> if hasUncachedFormula then withTagAttribute "fullCalcOnLoad" (Some "1") tag else tag)
+                    elif calcPr = "" then text
+                    else insertAfter [ "</definedNames>"; "</externalReferences>"; "</functionGroups>"; "</sheets>" ] calcPr text
+                Some text)
+    match fromFile with
+    | Some text -> text
+    | None ->
     sprintf "%s\n<workbook xmlns=\"%s\" xmlns:r=\"%s\"><bookViews><workbookView activeTab=\"%d\"/></bookViews><sheets>%s</sheets>%s%s%s%s%s</workbook>"
         declaration Namespaces.spreadsheet Namespaces.relationships (max 0 workbook.ActiveSheetIndex) sheets
         kept.ExternalReferencesXml definedNames calcPr kept.PivotCachesXml kept.WorkbookExtLstXml
@@ -2512,7 +2588,8 @@ let private contentTypesXmlFull (workbook: XlsxWorkbookOut) (placements: SheetPl
     let comments =
         written
         |> List.map (fun (s, placement) ->
-            if s.Cells |> List.exists (fun c -> c.Comment.IsSome) then
+            // (A comments part of the file is typed with the kept parts.)
+            if (keptCommentsPart workbook s).IsNone && s.Cells |> List.exists (fun c -> c.Comment.IsSome) then
                 sprintf "<Override PartName=\"/%s\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml\"/>" placement.CommentsPath
             else "")
         |> String.concat ""
@@ -2583,7 +2660,10 @@ let private reachableKeptParts (workbook: XlsxWorkbookOut) (themePath: string op
     for sheet in workbook.Sheets do
         match verbatimPart workbook sheet with
         | Some (path, _) -> want path false
-        | None -> ()
+        | None ->
+            match keptCommentsPart workbook sheet with
+            | Some path when sheet.Cells |> List.exists (fun c -> c.Comment.IsSome) -> want path false
+            | _ -> ()
         for _, _, target, isExternal in sheet.Extras.KeptRelationships do want target isExternal
         match keptDrawingPart workbook sheet with
         | Some path -> want path false
@@ -2893,12 +2973,15 @@ let private inPlaceStyles (workbook: XlsxWorkbookOut) (stylesXml: string) : (Sty
                     index
             let byIdentity = System.Collections.Generic.Dictionary<XlsxCellFormat, int>(HashIdentity.Reference)
             let styleIdOf (format: XlsxCellFormat) =
-                match byIdentity.TryGetValue format with
-                | true, index -> index
-                | false, _ ->
-                    let index = indexOfKey (xfKey format)
-                    byIdentity.[format] <- index
-                    index
+                match format.SourceXf with
+                | Some index when index >= 0 && index < xfCount -> index
+                | _ ->
+                    match byIdentity.TryGetValue format with
+                    | true, index -> index
+                    | false, _ ->
+                        let index = indexOfKey (xfKey format)
+                        byIdentity.[format] <- index
+                        index
             let finish () =
                 let newDxfs = workbook.Dxfs |> List.skip dxfCount |> List.map (dxfXml "dxf")
                 let insertedAfter (marks: string list) (element: string) (text: string) =
@@ -3088,7 +3171,7 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
         match sheetRelsXml sheetIndex sheet tableParts placed drawingPath with
         | Some rels -> textFiles.Add { Path = relsPathOf placed.SheetPath; Content = rels }
         | None -> ()
-        match commentsXml sheet.Cells with
+        match (if (keptCommentsPart workbook sheet).IsSome then None else commentsXml sheet.Cells) with
         | Some xml -> textFiles.Add { Path = placed.CommentsPath; Content = xml }
         | None -> ()
         match keptLegacyDrawing sheet with
@@ -3175,6 +3258,14 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
 let writeWorkbookPackage (workbook: XlsxWorkbookOut) : Fable.Core.JS.Promise<obj> =
     let textFiles, binaryFiles = workbookFiles workbook
     createPackageWithBinary textFiles binaryFiles
+
+/// `writeWorkbookPackage` for a workbook some of whose parts are entries of
+/// the opened package (`source`, a raw archive; `reuse`: the bytes read from
+/// it by path): a part that is written as those very bytes is put into the
+/// new package as the compressed entry it was.
+let writeWorkbookPackageReusing (source: obj) (reuse: (string * byte[]) list) (workbook: XlsxWorkbookOut) : Fable.Core.JS.Promise<obj> =
+    let textFiles, binaryFiles = workbookFiles workbook
+    createPackageReusing source reuse textFiles binaryFiles
 
 #if !FABLE_COMPILER
 let writeWorkbookPackageBytes (workbook: XlsxWorkbookOut) : byte[] =
@@ -3319,9 +3410,7 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
         | true, format -> format
         | false, _ ->
             let format =
-                match namedStyleOf cell with
-                | None -> styleOf cell.Style
-                | named -> { styleOf cell.Style with NamedStyle = named }
+                { styleOf cell.Style with NamedStyle = namedStyleOf cell; SourceXf = Some (defaultArg cell.StyleIndex 0) }
             formatCache.[key] <- format
             format
     { Sheets =

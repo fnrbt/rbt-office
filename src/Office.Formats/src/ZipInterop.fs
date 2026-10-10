@@ -219,6 +219,23 @@ let private buildArchive (archive: obj) : ZipArchive =
 
     { Files = fileMap }
 
+[<Emit("(function (zip, path) { var file = zip.files[path]; return file && !file.dir ? file.async('uint8array') : Promise.resolve(null); })($0, $1)")>]
+let private rawEntryBytes (zip: obj) (path: string) : Fable.Core.JS.Promise<byte[]> = jsNative
+
+/// A package as the JSZip object itself: for a writer that puts entries of
+/// it into a new package as they are (`ZipWriter.createPackageReusing`).
+let loadRawArchive (data: obj) : Fable.Core.JS.Promise<obj> = loadZip JSZip data
+
+/// The bytes of entries of a raw archive, by their exact names; an entry
+/// that is not there is left out.
+let rawArchiveBytes (zip: obj) (paths: string list) : Fable.Core.JS.Promise<(string * byte[]) list> =
+    let wanted = List.toArray paths
+    Fable.Core.JS.Constructors.Promise.all (wanted |> Array.map (rawEntryBytes zip))
+    |> Promise.map (fun found ->
+        let found : byte[] array = unbox found
+        [ for i in 0 .. wanted.Length - 1 do
+            if not (isNull (box found.[i])) then yield wanted.[i], found.[i] ])
+
 let loadArchive (data: obj) : Fable.Core.JS.Promise<ZipArchive> =
     loadZip JSZip data |> Promise.map buildArchive
 

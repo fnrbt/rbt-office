@@ -64,6 +64,24 @@ let createPackageWithBinary (textFiles: PackageFile list) (binaryFiles: (string 
         return blob
     }
 
+[<Emit("(function (zip, source, path) { var file = source.files[path]; if (!file || file.dir) return false; zip.files[path] = file; return true; })($0, $1, $2)")>]
+let private reuseEntry (zip: obj) (source: obj) (path: string) : bool = jsNative
+
+/// `createPackageWithBinary`, with entries of an opened package put into the
+/// new one as they are - the compressed data itself, neither inflated nor
+/// deflated again: every binary file that is the very array `reuse` names
+/// for its path (bytes read from `source`, see ZipInterop.rawArchiveBytes).
+let createPackageReusing (source: obj) (reuse: (string * byte[]) list) (textFiles: PackageFile list) (binaryFiles: (string * byte[]) list) : Fable.Core.JS.Promise<obj> =
+    promise {
+        let zip = createZip JSZip
+        textFiles |> List.iter (fun file -> addFile zip file.Path file.Content |> ignore)
+        binaryFiles |> List.iter (fun (path, content) ->
+            let same = reuse |> List.exists (fun (known, data) -> known = path && obj.ReferenceEquals (data, content))
+            if not (same && reuseEntry zip source path) then addBinaryFile zip path content |> ignore)
+        let! blob = generateBlob zip
+        return blob
+    }
+
 #if !FABLE_COMPILER
 /// Native version of `createPackage` that returns the zipped bytes
 /// directly (no JS Blob involved). Apps can then write to disk or send

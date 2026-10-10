@@ -834,6 +834,10 @@ type SheetExtras = {
     /// The part the sheet was read from and the type of the workbook's
     /// relationship to it (a worksheet, a chart sheet, a dialog sheet).
     SourcePart: (string * string) option
+    /// The sheet's comments part in the file. While the sheet's comments are
+    /// the file's, that part goes back as it is (rich text, shape ids,
+    /// authors), also for a sheet that is otherwise written anew.
+    CommentsPart: string option
     /// The sheet is written as that part, byte for byte, with everything the
     /// part's own relationships lead to (the part's bytes are one of the
     /// workbook's `Preserved.Parts`). The reader says so for the sheets the
@@ -846,7 +850,7 @@ let emptySheetExtras =
     { Images = []; Objects = []; ThreadedComments = []; DrawingRelationships = []; Format = None; Columns = []; ColumnStyles = []
       SheetId = None; KeptRelationships = []; KeptExtensions = []; KeptElements = []; DrawingPart = None; TableParts = []; PivotLocations = []; DataTables = []
       KeptCellExtensions = []; PrinterSettingsRelId = None; RowAxis = []; ColumnAxis = []; AutoFilter = None; ArrayFormulas = []
-      SourcePart = None; Verbatim = false }
+      SourcePart = None; CommentsPart = None; Verbatim = false }
 
 /// A named cell style (cellStyles / cellStyleXfs of styles.xml), with the
 /// font, fill, border and number format its xf refers to given as their XML so
@@ -916,6 +920,10 @@ type WorkbookPreservation = {
     /// the workbook's own arrays), the number of its dxfs.
     StylesPart: string option
     SharedStringsPart: string option
+    /// The workbook part (among `SourceParts`): a writer puts it back with its
+    /// sheet list, defined names, active tab and calculation settings made
+    /// anew and everything else as it is.
+    WorkbookPart: string option
     CellFormats: CellStyle array
     SharedStrings: string array * (string * RunProps) list array
     DxfCount: int
@@ -938,7 +946,7 @@ let emptyWorkbookPreservation =
     { Parts = []; Defaults = []; Overrides = []; ThemePath = None; NamedStyles = []; Persons = []; CellXfNamedStyles = [||]
       WorkbookRelationships = []; ExternalReferencesXml = ""; PivotCachesXml = ""; WorkbookExtLstXml = ""
       RootRelationships = []; CalcChain = None; PivotCacheSources = []; CalcIteration = None; ActiveTab = 0
-      StylesPart = None; SharedStringsPart = None; CellFormats = [||]; SharedStrings = [||], [||]; DxfCount = 0; SourceParts = []; InPlace = false }
+      StylesPart = None; SharedStringsPart = None; WorkbookPart = None; CellFormats = [||]; SharedStrings = [||], [||]; DxfCount = 0; SourceParts = []; InPlace = false }
 
 type Worksheet = {
     Name: string
@@ -5469,6 +5477,11 @@ let private buildWorkbook (scanRows: bool) (source: PartSource) (header: Workboo
                         PrinterSettingsRelId = pageSetupRelId xml |> Option.filter (fun id -> Set.contains id keptIds)
                         PivotLocations = pivotLocations
                         SourcePart = Some (sheetPath, sheetRelType)
+                        CommentsPart =
+                            sheetRels
+                            |> List.tryFind (fun r -> r.Type.EndsWith "/comments" && isInternal r)
+                            |> Option.map (relTargetPath sheetPath)
+                            |> Option.filter (fun path -> (source.Bytes path).IsSome)
                         Verbatim = isForeignSheetRelType sheetRelType && (source.Bytes sheetPath).IsSome }
                 // A fresh context per sheet: shared-formula groups are sheet-local.
                 let ctx = Xlsx.newSheetContext (Some styles) header.Date1904
@@ -5566,11 +5579,12 @@ let private buildWorkbook (scanRows: bool) (source: PartSource) (header: Workboo
           ActiveTab = header.ActiveTab
           StylesPart = if source.Exists header.StylesPath then Some header.StylesPath else None
           SharedStringsPart = if source.Exists header.SharedStringsPath then Some header.SharedStringsPath else None
+          WorkbookPart = Some header.WorkbookPath
           CellFormats = styles
           SharedStrings = sharedStringTexts, sharedStringRuns
           DxfCount = dxfs.Length
           SourceParts =
-            [ header.StylesPath; header.SharedStringsPath ] @ (worksheets |> List.choose (fun sheet -> sheet.Extras.SourcePart |> Option.map fst))
+            [ header.WorkbookPath; header.StylesPath; header.SharedStringsPath ] @ (worksheets |> List.choose (fun sheet -> sheet.Extras.SourcePart |> Option.map fst))
             |> List.distinct
             |> List.choose (fun path -> source.Bytes path |> Option.map (fun data -> path, data))
           InPlace = false }

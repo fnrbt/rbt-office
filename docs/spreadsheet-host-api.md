@@ -801,15 +801,29 @@ pivot tables, printer settings) as it was. Only the sheets that changed are writ
 meaning, `xl/styles.xml` and `xl/sharedStrings.xml` are then **the file's parts, added to**: formats, fonts, fills, borders, number
 formats, dxfs and strings the edited sheets need and the file does not have are put behind the file's own, and no index of the file
 changes (named styles, the indexed palette, table styles and extensions of the styles part stay as they were, too).
+- **The styles and shared strings are added to in every save of an opened workbook**, also when every sheet changed: a cell that keeps
+  its format is written with the very `cellXfs` entry the file gave it (`XlsxCellFormat.SourceXf`), so `<protection locked="0"/>`,
+  `quotePrefix`, `pivotButton`, theme colours and anything else of that entry stay; custom `<tableStyles>`, `<colors>` (indexed palette,
+  `mruColors`), the styles' `<extLst>` (slicer styles, timeline styles, x14 dxfs), named styles and dxfs stay where they are. Only a cell
+  whose format was changed gets an entry made from the model (without what the model does not hold: protection, quote prefix).
+- **`xl/workbook.xml` is the file's part** with the sheet list, the defined names, `activeTab` and the calculation flags (`iterate...`,
+  `fullCalcOnLoad` when a formula has no result) made anew: `fileVersion`, `workbookPr` (`hidePivotFieldList`, `codeName` ...; not
+  `date1904`, see below), `workbookProtection`, the window of `bookViews`, `calcPr`'s other attributes, `mc:AlternateContent` and the
+  extension list stay as they were.
+- **A sheet's comments part** (`xl/commentsN.xml`: rich text runs, `shapeId`, authors) goes back as it is while the sheet's comments are
+  the file's, also when the sheet itself is written from the model.
+- In a browser a sheet that goes back as it was read is put into the new package as **the compressed entry it was** (not inflated and
+  deflated again).
 - "Nothing changed in a sheet" is: its cells (values, formulas, their cached results, formats, comments), sizes, outline, merges, rules,
   validations, tables, drawings, threads, links, page setup, panes, filter, zoom, grid lines / headers / formulas / zeros and tab colour are
   what they were when it was opened. A formula result that changed because another sheet was edited is a change (the sheet is written
   from the model, with the new cached values). Renaming, hiding or moving the sheet is not (that is in `xl/workbook.xml`).
 - The one thing rewritten in such a part is `tabSelected` of its view, when the sheet on display is no longer the one the file had on
   display (two sheets that say so are a group to Excel); the part is otherwise the file's text.
-- **Written from the model as before** (every sheet): a workbook in the 1904 date system (its serials are converted on import); a workbook
-  in which a sheet of the file was renamed or deleted (formulas of other sheets, kept or not, may name it); a styles or shared-strings
-  part the writer cannot add to (no `cellXfs` / `fonts` / `fills` / `borders`, element names with a prefix, or entries the reader counted
+- **Every sheet is written from the model** (the styles, strings and workbook part are still the file's, added to) in a workbook in the
+  1904 date system (its serials are converted on import, and `date1904` is not written) and in a workbook in which a sheet of the file
+  was renamed or deleted (formulas of other sheets, kept or not, may name it). **Everything is written from the model as before** with a
+  styles or shared-strings part the writer cannot add to (no `cellXfs` / `fonts` / `fills` / `borders`, element names with a prefix, or entries the reader counted
   differently); a workbook that was not opened with `ImportXlsx` in a browser (`ImportXlsxFromBuffer`, `InstallImportedWorkbook`: the
   editor does not have the file's bytes). A copy of a sheet (`DuplicateSheet`) is always written from the model.
 - .NET: `XlsxBridge.Export.toWorkbookOut` does the same for a workbook read with `XlsxReader.loadBytesNative` (the reader keeps the

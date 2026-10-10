@@ -930,7 +930,7 @@ do
     eq "iteration: read from the file (Excel's defaults)" imported.Context.Iteration (Some { Wb.IterativeCalculation.MaxIterations = 100; MaxChange = 0.001 })
     let out = Bridge.Export.toWorkbookOut (inputOf imported (modelsOf imported) imported.Context.Names)
     let bytes = XlsxWriter.writeWorkbookPackageBytes out
-    ok "iteration: an opened workbook keeps it when written" ((textOf bytes "xl/workbook.xml").Contains "<calcPr iterate=\"1\"") ""
+    ok "iteration: an opened workbook keeps it when written" (Text.RegularExpressions.Regex.IsMatch(textOf bytes "xl/workbook.xml", "<calcPr\\b[^>]*\\biterate=\"1\"")) (textOf bytes "xl/workbook.xml")
     eq "iteration: ... and when read again" (Bridge.Import.importWorkbook (XlsxReader.loadBytesNative bytes |> Option.get)).Context.Iteration imported.Context.Iteration
     // Switched off in the editor, and set with other numbers.
     let off = XlsxWriter.writeWorkbookPackageBytes (out |> Bridge.Export.withIteration None)

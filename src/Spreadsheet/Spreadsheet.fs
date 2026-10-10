@@ -6736,22 +6736,22 @@ type Spreadsheet(container: Element) =
             // read from: their bytes, and the styles and shared strings they
             // index, are taken from the file that was opened.
             let input = this.XlsxExportInput()
-            let write (parts: (string * byte[]) list) =
-                Rbt.Spreadsheet.XlsxBridge.Export.toWorkbookOutWith parts input
-                |> Rbt.Spreadsheet.XlsxBridge.Export.withIteration (workbook |> Option.bind (fun wb -> wb.Iteration))
-                |> XlsxWriter.writeWorkbookPackage
+            let write (source: obj) (parts: (string * byte[]) list) =
+                let out =
+                    Rbt.Spreadsheet.XlsxBridge.Export.toWorkbookOutWith parts input
+                    |> Rbt.Spreadsheet.XlsxBridge.Export.withIteration (workbook |> Option.bind (fun wb -> wb.Iteration))
+                // (A sheet that goes back as it was read is the file's compressed entry, not deflated again.)
+                (if isNull source || parts.IsEmpty then XlsxWriter.writeWorkbookPackage out else XlsxWriter.writeWorkbookPackageReusing source parts out)
                 |> packageBytes
             let wanted = try Rbt.Spreadsheet.XlsxBridge.Export.verbatimPartsWanted input with _ -> []
-            if wanted.IsEmpty then write []
+            if wanted.IsEmpty then write null []
             else
-                let fetched : JS.Promise<(string * byte[]) list> =
-                    (ZipInterop.loadArchive (box bytes)).``then``(fun archive ->
-                        let files = wanted |> List.choose (fun path -> ZipInterop.tryFindFile archive path |> Option.map (fun file -> path, file)) |> List.toArray
-                        (JS.Constructors.Promise.all (files |> Array.map (fun (_, file) -> file.GetArrayBuffer())))
-                            .``then``(fun (all: obj) -> let buffers = unbox<obj array> all in files |> Array.mapi (fun i (path, _) -> path, bytesOfArrayBuffer buffers.[i]) |> Array.toList))
+                let fetched : JS.Promise<obj * (string * byte[]) list> =
+                    (ZipInterop.loadRawArchive (box bytes)).``then``(fun source ->
+                        (ZipInterop.rawArchiveBytes source wanted).``then``(fun parts -> source, parts))
                     |> unbox
                 // (A file that cannot be read again is written from the model, as before.)
-                (fetched.``catch``(fun _ -> [])).``then``(fun parts -> write parts) |> unbox<JS.Promise<byte[]>>
+                (fetched.``catch``(fun _ -> null, [])).``then``(fun (source, parts) -> write source parts) |> unbox<JS.Promise<byte[]>>
         | None -> packageBytes (XlsxWriter.writeWorkbookPackage (this.ToXlsxWorkbook()))
 
     /// Render the current model through the shared portable paint command path.
