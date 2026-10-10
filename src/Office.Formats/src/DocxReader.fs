@@ -619,6 +619,13 @@ type PackagePreservation = {
     BodyContentChunks: int list
     /// How many child elements w:body has.
     BodyChunkCount: int
+    /// The package path of each header / footer part, by its relationship id:
+    /// a part is written under the name it had.
+    PartPaths: Map<string, string>
+    /// [Content_Types].xml and the relationship parts of the package and of
+    /// the parts the writer produces, by package path, as they were read: one
+    /// that says what the written one would say is written back as it was.
+    OriginalText: Map<string, string>
 }
 
 let emptyPackagePreservation = {
@@ -627,6 +634,8 @@ let emptyPackagePreservation = {
     SourceParts = []
     BodyContentChunks = []
     BodyChunkCount = 0
+    PartPaths = Map.empty
+    OriginalText = Map.empty
     Parts = []
     RootRelationships = []
     DocumentRelationshipId = "rId1"
@@ -3503,6 +3512,17 @@ let private sourceRelationships (baseDir: string) (rels: Relationship list) : Pr
           Target = if isExternal then rel.Target else "/" + resolveRelationshipTarget baseDir rel.Target
           External = isExternal })
 
+/// Every relationship of a part, as kept relationships (a part that is not
+/// written from the model has no relationship the writer makes).
+let private allRelationships (baseDir: string) (rels: Relationship list) : PreservedRelationship list =
+    rels
+    |> List.map (fun rel ->
+        let isExternal = rel.TargetMode = Some "External"
+        { Id = rel.Id
+          Type = rel.Type
+          Target = if isExternal then rel.Target else "/" + resolveRelationshipTarget baseDir rel.Target
+          External = isExternal })
+
 /// Every part reachable from `roots` through the parts' own relationships,
 /// with those relationship parts, in a stable order.
 let private reachableParts (source: PartSource) (excluded: Set<string>) (roots: PreservedRelationship list) : PreservedPart list =
@@ -3573,7 +3593,8 @@ let parseFromSource (source: PartSource) : WordDocument option =
         let stylesXml = source.Text stylesPath
         let settingsXml = source.Text settingsPath
         let themeXml = source.Text (partPath "/theme" "theme/theme1.xml")
-        let numberingXml = source.Text (partPath "/numbering" "numbering.xml")
+        let numberingPath = partPath "/numbering" "numbering.xml"
+        let numberingXml = source.Text numberingPath
         let propsXml = source.Text (partPathOfType "" rootRels "/core-properties" "docProps/core.xml")
 
         // Notes and comments are parts of their own, each with its own relationships.
@@ -3672,14 +3693,18 @@ let parseFromSource (source: PartSource) : WordDocument option =
               yield endnotesPartKey, keptRelationships (parentPath endnotesPath) endnotesRels (endnotes |> List.collect (fun note -> opaqueXmlOfBlocks note.Blocks))
               yield commentsPartKey, keptRelationships (parentPath commentsPath) commentsRels (comments |> List.collect (fun comment -> opaqueXmlOfBlocks comment.Blocks))
               // The settings part is patched, not regenerated: all its relationships stay (an attached template).
-              yield "settings", keptRelationships (parentPath settingsPath) (source.Text (partRelsPath settingsPath) |> relationshipsOfXml) [] ]
+              yield "settings", keptRelationships (parentPath settingsPath) (source.Text (partRelsPath settingsPath) |> relationshipsOfXml) []
+              // The lists and the styles go back as they were read, or with something added: what they
+              // refer to (the picture of a picture bullet) stays with them.
+              yield "numbering", allRelationships (parentPath numberingPath) (source.Text (partRelsPath numberingPath) |> relationshipsOfXml)
+              yield "styles", allRelationships (parentPath stylesPath) (source.Text (partRelsPath stylesPath) |> relationshipsOfXml) ]
             |> List.filter (fun (_, kept) -> not kept.IsEmpty)
         // Parts the writer produces itself are never carried over as they are.
         let regenerated =
             [ yield mainPath
               yield stylesPath
               yield settingsPath
-              yield partPath "/numbering" "numbering.xml"
+              yield numberingPath
               yield commentsPath
               yield footnotesPath
               yield endnotesPath
@@ -3720,6 +3745,26 @@ let parseFromSource (source: PartSource) : WordDocument option =
                 |> List.filter (fun part -> not (Set.contains part.Path keptPaths))
               BodyContentChunks = bodyChunks
               BodyChunkCount = bodyChunkCount
+              PartPaths =
+                [ for part, path, _ in headerParts @ footerParts do
+                      match part.RelationshipId with
+                      | Some partId -> yield partId, path
+                      | None -> () ]
+                |> Map.ofList
+              OriginalText =
+                [ yield "[Content_Types].xml"
+                  yield "_rels/.rels"
+                  yield partRelsPath mainPath
+                  for _, path, _ in headerParts @ footerParts do yield partRelsPath path
+                  yield partRelsPath footnotesPath
+                  yield partRelsPath endnotesPath
+                  yield partRelsPath commentsPath
+                  yield partRelsPath settingsPath
+                  yield partRelsPath numberingPath
+                  yield partRelsPath stylesPath ]
+                |> List.distinct
+                |> List.choose (fun path -> source.Text path |> Option.map (fun text -> path, text))
+                |> Map.ofList
               Parts = keptParts
               RootRelationships = rootKept
               DocumentRelationshipId = mainRelationship |> Option.map (fun rel -> rel.Id) |> Option.defaultValue "rId1"
@@ -5686,5 +5731,7 @@ let toEditorPreserved (preserved: PackagePreservation) : obj =
         "SourceParts" ==> (preserved.SourceParts |> List.map (fun part -> objFromFields [ "Path" ==> part.Path; "Data" ==> part.Data ]) |> List.toArray)
         "BodyContentChunks" ==> (preserved.BodyContentChunks |> List.toArray)
         "BodyChunkCount" ==> preserved.BodyChunkCount
+        "PartPaths" ==> (preserved.PartPaths |> Map.toList |> List.map (fun (key, path) -> objFromFields [ "Part" ==> key; "Path" ==> path ]) |> List.toArray)
+        "OriginalText" ==> (preserved.OriginalText |> Map.toList |> List.map (fun (path, text) -> objFromFields [ "Path" ==> path; "Text" ==> text ]) |> List.toArray)
         "SettingsXml" ==> preserved.SettingsXml
     ]

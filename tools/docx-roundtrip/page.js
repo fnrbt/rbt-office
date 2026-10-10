@@ -359,11 +359,75 @@ async function open(bytes) {
     return { pkg, doc: Docx.importFromEditorPackage(pkg) };
 }
 
+// ---- package integrity -------------------------------------------------------
+// Of every package that is written (an unedited save, a save from the model
+// alone, every edited one): each relationship id a part's XML uses is one the
+// part has, each relationship target is in the package, no relationship id is
+// used twice, each part has a content type, and [Content_Types].xml names no
+// part that is not there. (What the original document has wrong already is
+// not the writer's: those are left out.)
+async function packageIntegrity(bytes) {
+    const zip = await window.JSZip.loadAsync(bytes);
+    const names = Object.keys(zip.files).filter((name) => !zip.files[name].dir);
+    const lower = new Set(names.map((name) => name.toLowerCase()));
+    const text = {};
+    for (const name of names) if (/\.(xml|rels|vml)$/i.test(name)) text[name] = await zip.files[name].async('string');
+    const problems = [];
+    const types = text['[Content_Types].xml'] ?? '';
+    const defaults = new Set([...types.matchAll(/<Default\b[^>]*\bExtension="([^"]*)"/g)].map((m) => m[1].toLowerCase()));
+    const overrides = new Set([...types.matchAll(/<Override\b[^>]*\bPartName="([^"]*)"/g)].map((m) => m[1].toLowerCase()));
+    for (const name of names) {
+        if (name === '[Content_Types].xml') continue;
+        const ext = name.slice(name.lastIndexOf('.') + 1).toLowerCase();
+        if (!overrides.has('/' + name.toLowerCase()) && !defaults.has(ext)) problems.push(`${name}: no content type`);
+    }
+    for (const name of overrides) if (!lower.has(name.slice(1))) problems.push(`[Content_Types].xml: names ${name}, which is not in the package`);
+    const relsPathOf = (part) => { const at = part.lastIndexOf('/'); return (at < 0 ? '' : part.slice(0, at + 1)) + '_rels/' + part.slice(at + 1) + '.rels'; };
+    const idsOf = new Map();
+    for (const [relsName, relsXml] of Object.entries(text)) {
+        if (!relsName.endsWith('.rels')) continue;
+        const owner = relsName.replace(/_rels\/([^/]*)\.rels$/, '$1');
+        const base = owner.includes('/') ? owner.slice(0, owner.lastIndexOf('/')) : '';
+        const ids = new Set();
+        idsOf.set(relsName, ids);
+        if (owner !== '' && !lower.has(owner.toLowerCase())) problems.push(`${relsName}: the relationships of a part that is not in the package`);
+        for (const m of relsXml.matchAll(/<Relationship\b[^>]*>/g)) {
+            const id = /\bId="([^"]*)"/.exec(m[0])?.[1];
+            if (ids.has(id)) problems.push(`${relsName}: relationship id ${id} twice`);
+            ids.add(id);
+            if (/TargetMode="External"/.test(m[0])) continue;
+            const target = /Target="([^"]*)"/.exec(m[0])?.[1] ?? '';
+            const resolved = target.startsWith('/') ? target.slice(1) : (base ? base + '/' : '') + target;
+            const segments = []; for (const seg of resolved.split('/')) { if (seg === '..') segments.pop(); else if (seg && seg !== '.') segments.push(seg); }
+            if (!lower.has(segments.join('/').toLowerCase())) problems.push(`${relsName}: relationship target ${target} is not in the package`);
+        }
+    }
+    for (const [part, xml] of Object.entries(text)) {
+        if (part.endsWith('.rels') || part === '[Content_Types].xml') continue;
+        const ids = idsOf.get(relsPathOf(part)) ?? new Set();
+        const missing = new Set();
+        for (const m of xml.matchAll(/\s(?:r:[A-Za-z]+|o:relid)="([^"]+)"/g)) if (!ids.has(m[1])) missing.add(m[1]);
+        for (const id of missing) problems.push(`${part}: refers to relationship ${id}, which the part does not have`);
+    }
+    return problems;
+}
+const integrity = { inherited: new Set(), found: [] };
+async function noteIntegrity(bytes, label) {
+    for (const problem of await packageIntegrity(bytes)) if (!integrity.inherited.has(problem)) integrity.found.push(`package integrity (${label}): ${problem}`);
+}
+// What the saves made since the last call have wrong.
+function integrityProblems() { const found = [...new Set(integrity.found)]; integrity.found = []; return found; }
+// The package the writer makes of an exported editor package, checked.
+async function writePackage(exported, label) {
+    const bytes = new Uint8Array(await (await OF.word.writeFromEditorPackage(exported)).arrayBuffer());
+    await noteIntegrity(bytes, label);
+    return bytes;
+}
+
 async function save(doc, mutate) {
     const exported = exportPackage(doc);
     if (mutate) mutate(exported);
-    const blob = await OF.word.writeFromEditorPackage(exported);
-    return new Uint8Array(await blob.arrayBuffer());
+    return writePackage(exported, exported.RegenerateAll ? 'written from the model' : 'save');
 }
 
 const toBase64 = (bytes) => { let s = ''; for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000)); return btoa(s); };
@@ -482,6 +546,7 @@ const referencedParts = (allParts) => {
 window.roundTrip = async (name, expect) => {
     const problems = [];
     let stats = '', saved = [], xml = '', xmlDiff = {}, xmlIdentical = false, pages = 0, changedParts = [];
+    const partsAsRead = { total: 0, same: 0, changed: [] };
     window.roundTripState = undefined;
     try {
         let original = new Uint8Array(await (await fetch('/fixture?name=' + encodeURIComponent(name))).arrayBuffer());
@@ -495,6 +560,8 @@ window.roundTrip = async (name, expect) => {
                 { Runs: [run('second paragraph')], Alignment: 'center' } ] });
             original = await save(fresh, null);
         }
+        integrity.inherited = new Set(await packageIntegrity(original));
+        integrity.found = [];
         const first = await open(original);
         const s0 = summarisePackage(first.pkg);
         // Import then export with no edit at all: the same number of body blocks
@@ -530,6 +597,16 @@ window.roundTrip = async (name, expect) => {
                 // (Section properties that are not the last element of the body - not a
                 // document Word writes - are put there: the body is then written from the model.)
                 const bodySectionLast = /<\/w:sectPr>\s*<\/w:body>/.test(p0['word/document.xml']) || !/<w:sectPr[\s>]/.test(p0['word/document.xml'].replace(/<w:p[\s>][\s\S]*?<\/w:p>/g, ''));
+                // No part is added (a document without lists gets no numbering part), and a header or a
+                // footer is the part it was, under the name it had.
+                const savedRaw = await rawParts(shown.bytes1);
+                for (const part of Object.keys(savedRaw)) if (raw0[part] === undefined) problems.push(`unedited save: ${part} was added to the package`);
+                for (const part of Object.keys(p0)) if (HEADER_FOOTER_PART.test(part) && referencedParts(p0).has(part) && text(shown.p1[part]) !== text(p0[part])) changedParts.push(part + ' (under its name)');
+                // The relationship parts and [Content_Types].xml that say what they said go back as they were read.
+                for (const part of Object.keys(p0)) if ((part.endsWith('.rels') || part === '[Content_Types].xml') && shown.p1[part] !== undefined) {
+                    partsAsRead.total++;
+                    if (text(shown.p1[part]) === text(p0[part])) partsAsRead.same++; else partsAsRead.changed.push(part);
+                }
                 for (const part of Object.keys(p0)) {
                     if (part === 'word/document.xml' && !bodySectionLast) continue;
                     // (A style the document uses and its style part does not have is added to it.)
@@ -548,7 +625,8 @@ window.roundTrip = async (name, expect) => {
     } catch (e) {
         problems.push('threw: ' + String(e && e.stack || e).split('\n').slice(0, 4).join(' | '));
     }
-    return { problems, stats, saved, xml, xmlDiff, xmlIdentical, changedParts, pages };
+    problems.push(...integrityProblems());
+    return { problems, stats, saved, xml, xmlDiff, xmlIdentical, changedParts, pages, partsAsRead };
 };
 
 // A trivial edit, made with real key events by roundtrip.mjs between these two
@@ -578,7 +656,7 @@ window.editFinish = async () => {
         if (Word.getRevision(editor) === state.revision) problems.push('trivial edit: the key events did not reach the editor');
         if (Word.getText(editor) !== state.text) problems.push('trivial edit: the text is not what it was after typing and deleting a character');
         const exported = Word.exportDocumentPackage(editor);
-        const bytes = new Uint8Array(await (await OF.word.writeFromEditorPackage(exported)).arrayBuffer());
+        const bytes = await writePackage(exported, 'trivial edit');
         const reopened = await open(bytes);
         diff('trivial edit, saved, vs original', state.s0, summarisePackage(reopened.pkg), problems);
         diffLayout('layout after a trivial edit and a save vs original', state.fp0, layoutOfPackage(reopened.pkg), problems);
@@ -586,6 +664,7 @@ window.editFinish = async () => {
         problems.push('trivial edit threw: ' + String(e && e.stack || e).split('\n').slice(0, 4).join(' | '));
     }
     closeEditor(state.handle);
+    problems.push(...integrityProblems());
     return problems;
 };
 
@@ -598,7 +677,7 @@ window.editKeptFinish = async (original, expect) => {
         const editor = state.handle.editor;
         const typed = Word.getText(editor);
         if (typed.length !== state.text.length + 1) problems.push(`edit: the typed character is not in the text (${JSON.stringify(state.text.slice(0, 80))} -> ${JSON.stringify(typed.slice(0, 80))}, selection ${JSON.stringify(Word.getSelection(editor))})`);
-        const bytes = new Uint8Array(await (await OF.word.writeFromEditorPackage(Word.exportDocumentPackage(editor))).arrayBuffer());
+        const bytes = await writePackage(Word.exportDocumentPackage(editor), 'edit');
         const reopened = await open(bytes);
         const handle = openEditor(reopened.pkg);
         if (Word.getText(handle.editor) !== typed) problems.push('edit: the saved document does not read back with the text that was saved');
@@ -617,6 +696,12 @@ window.editKeptFinish = async (original, expect) => {
             if (e.editKeeps && !new RegExp(e.editKeeps).test(is)) problems.push(`edit: word/document.xml lost /${e.editKeeps}/`);
             if (e.editLacks && new RegExp(e.editLacks).test(is)) problems.push(`edit: word/document.xml still has /${e.editLacks}/`);
         }
+        // The root element stays as it was read (a namespace is added to it only when what was written needs one).
+        const rootTag = (xml) => /<w:document\b[^>]*>/.exec(xml ?? '')?.[0];
+        if (was !== undefined && /<\/w:sectPr>\s*<\/w:body>/.test(was) && rootTag(was) !== rootTag(is) && !/<m:/.test(is.slice(is.indexOf('<w:body'))))
+            problems.push(`edit: the root element of document.xml changed: ${rootTag(is)?.slice(0, 300)} (was ${rootTag(was)?.slice(0, 300)})`);
+        // An edit of the text adds no part and takes none away.
+        for (const part of Object.keys(saved)) if (originalBytes.length && before[part] === undefined && !/^word\/media\//.test(part)) problems.push(`edit: ${part} was added to the package`);
         if (was !== undefined && /<\/w:sectPr>\s*<\/w:body>/.test(was)) {
             // Paragraph by paragraph (the text up to each end tag): how many of the original's are gone.
             const count = new Map();
@@ -631,6 +716,7 @@ window.editKeptFinish = async (original, expect) => {
     }
     closeEditor(state.handle);
     window.roundTripState = undefined;
+    problems.push(...integrityProblems());
     return problems;
 };
 
@@ -679,7 +765,7 @@ window.tenthFinish = async () => {
         const typed = Word.getText(editor);
         if (typed.length !== text.length + chosen.length) problems.push(`every tenth paragraph: ${chosen.length} characters typed, the text is ${typed.length - text.length} longer`);
         const layout = layoutOf(editor);
-        const bytes = new Uint8Array(await (await OF.word.writeFromEditorPackage(Word.exportDocumentPackage(editor))).arrayBuffer());
+        const bytes = await writePackage(Word.exportDocumentPackage(editor), 'every tenth paragraph');
         const reopened = await open(bytes);
         const second = openEditor(reopened.pkg);
         if (Word.getText(second.editor) !== typed) problems.push('every tenth paragraph: the saved document does not read back with the text that was saved');
@@ -734,5 +820,6 @@ window.tenthFinish = async () => {
     }
     closeEditor(handle);
     window.tenthState = undefined;
+    problems.push(...integrityProblems());
     return { problems, edited: chosen.length, confined, rewritten, others, why };
 };

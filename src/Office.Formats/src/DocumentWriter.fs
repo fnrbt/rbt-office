@@ -600,6 +600,10 @@ type PreservedPackage = {
     /// The child element of w:body each item of the imported body came from.
     BodyItemChunks: int array
     BodyChunkCount: int
+    /// The package path each header / footer part had, by its relationship id.
+    PartPaths: Map<string, string>
+    /// [Content_Types].xml and relationship parts as they were read, by path.
+    OriginalText: Map<string, string>
 }
 
 let private emptyPreservedPackage = {
@@ -608,6 +612,8 @@ let private emptyPreservedPackage = {
     SourceParts = []
     BodyItemChunks = [||]
     BodyChunkCount = 0
+    PartPaths = Map.empty
+    OriginalText = Map.empty
     Parts = []
     RootRelationships = []
     DocumentRelationshipId = "rId1"
@@ -649,6 +655,16 @@ let private preservedPackageFromObject (value: obj) : PreservedPackage =
           SourceParts = partList (value?SourceParts)
           BodyItemChunks = optionalArray (value?BodyItemChunks) |> Array.map (fun chunk -> intOrDefault (-1) chunk)
           BodyChunkCount = intOrDefault 0 (value?BodyChunkCount)
+          PartPaths =
+            optionalArray (value?PartPaths)
+            |> Array.toList
+            |> List.choose (fun entry -> Option.map2 (fun key path -> key, path) (optionalString (entry?Part)) (optionalString (entry?Path)))
+            |> Map.ofList
+          OriginalText =
+            optionalArray (value?OriginalText)
+            |> Array.toList
+            |> List.choose (fun entry -> Option.map2 (fun path text -> path, text) (optionalString (entry?Path)) (optionalString (entry?Text)))
+            |> Map.ofList
           Parts =
             optionalArray (value?Parts)
             |> Array.toList
@@ -1963,13 +1979,40 @@ let private partBlocks (part: obj) =
     elif not (isNullOrUndefined part?Paragraphs) then optionalArray (part?Paragraphs)
     else [||]
 
-let private headerFooterInfos scopedRelationshipIds prefix startIndex (parts: obj array) =
+/// `originalPaths`: the package path a part was read from, by its relationship
+/// id. A part that was directly in word/ keeps its name (the headers of a
+/// document are not renamed by a save); the others get the first free one.
+let private headerFooterInfos (originalPaths: Map<string, string>) scopedRelationshipIds prefix startIndex (parts: obj array) =
+    let originalName (part: obj) =
+        optionalString (part?RelationshipId)
+        |> Option.bind (fun relId -> Map.tryFind relId originalPaths)
+        |> Option.bind (fun path ->
+            if path.StartsWith "word/" && path.IndexOf('/', 5) < 0 && path.EndsWith ".xml" then Some (path.Substring 5) else None)
+    let taken = System.Collections.Generic.HashSet<string>()
+    for KeyValue (_, path) in originalPaths do
+        if path.StartsWith "word/" then taken.Add (path.Substring(5).ToLowerInvariant()) |> ignore
+    let given = System.Collections.Generic.HashSet<string>()
+    let names =
+        parts
+        |> Array.map (fun part ->
+            match originalName part with
+            | Some name when given.Add (name.ToLowerInvariant()) -> Some name
+            | _ -> None)
+    let mutable nextNumber = startIndex
+    let freshName () =
+        let mutable name = sprintf "%s%d.xml" prefix nextNumber
+        while taken.Contains name || given.Contains name do
+            nextNumber <- nextNumber + 1
+            name <- sprintf "%s%d.xml" prefix nextNumber
+        nextNumber <- nextNumber + 1
+        given.Add name |> ignore
+        name
     parts
     |> Array.mapi (fun index part ->
         let number = startIndex + index
         let explicitRelId = optionalString (part?RelationshipId)
         let relId = explicitRelId |> Option.defaultValue (freshRelationshipId (sprintf "rId%s%d" prefix number))
-        let fileName = sprintf "%s%d.xml" prefix number
+        let fileName = match names.[index] with Some name -> name | None -> freshName ()
         { Kind = part?Kind |> stringOrDefault (part?Type |> stringOrDefault "default")
           RelId = relId
           Target = fileName
@@ -2834,15 +2877,24 @@ let private planBody (xml: string) (itemChunks: int array) (chunkCount: int) (it
     | _ -> None
 
 /// The root start tag with the namespaces the writer's own elements use.
-let private withWriterNamespaces (prefix: string) : string =
+/// The root tag of a part with the namespaces declared that what was written
+/// from the model (`written`) uses and the root does not declare: the root
+/// element of a document stays as it was read unless something needs more.
+let private withWriterNamespaces (prefix: string) (written: string list) : string =
     let rootAt = rootTagStart prefix
     if rootAt < 0 then prefix
     else
         let name = tagNameAt prefix rootAt
         let insertAt = rootAt + 1 + name.Length
+        let uses (namespacePrefix: string) =
+            written
+            |> List.exists (fun text ->
+                text.IndexOf("<" + namespacePrefix + ":", System.StringComparison.Ordinal) >= 0
+                || text.IndexOf(" " + namespacePrefix + ":", System.StringComparison.Ordinal) >= 0)
         let missing =
-            [ "xmlns:w", Namespaces.word; "xmlns:r", Namespaces.relationships; "xmlns:m", Namespaces.math ]
-            |> List.filter (fun (attribute, _) -> prefix.IndexOf(" " + attribute + "=", System.StringComparison.Ordinal) < 0)
+            [ "xmlns:w", "w", Namespaces.word; "xmlns:r", "r", Namespaces.relationships; "xmlns:m", "m", Namespaces.math ]
+            |> List.filter (fun (attribute, namespacePrefix, _) -> uses namespacePrefix && prefix.IndexOf(" " + attribute + "=", System.StringComparison.Ordinal) < 0)
+            |> List.map (fun (attribute, _, uri) -> attribute, uri)
             |> List.map (fun (attribute, uri) -> sprintf " %s=\"%s\"" attribute uri)
             |> String.concat ""
         prefix.Substring(0, insertAt) + missing + prefix.Substring insertAt
@@ -2852,24 +2904,26 @@ let private withWriterNamespaces (prefix: string) : string =
 let private generateDocumentXmlFromPlan (plan: BodyPlan) (images: ImageScope) (hyperlinks: Map<string, string>) (pageSetup: PageSetupInfo option) (headers: HeaderFooterPartInfo array) (footers: HeaderFooterPartInfo array) : string =
     let setup = pageSetup |> Option.defaultValue defaultPageSetupInfo
     let parts = ResizeArray<string>()
-    let mutable fromModel = false
+    let written = ResizeArray<string>()
     for segment in plan.Segments do
         match segment with
         | SourceText text -> parts.Add text
         | ModelBlocks items ->
-            fromModel <- true
-            parts.Add (items |> generateBlocks (generateDocumentItemWithImagesAndPageSetup setup hyperlinks images) (generateTextBoxRun setup hyperlinks images))
+            let text = items |> generateBlocks (generateDocumentItemWithImagesAndPageSetup setup hyperlinks images) (generateTextBoxRun setup hyperlinks images)
+            written.Add text
+            parts.Add text
     parts.Add plan.BeforeSection
     match plan.Section with
     | Some text -> parts.Add text
     | None ->
-        fromModel <- true
         let globalHeaders = headers |> Array.filter (fun part -> part.IsGlobal)
         let globalFooters = footers |> Array.filter (fun part -> part.IsGlobal)
-        parts.Add (generateSectionProperties pageSetup globalHeaders globalFooters)
+        let text = generateSectionProperties pageSetup globalHeaders globalFooters
+        written.Add text
+        parts.Add text
     parts.Add plan.AfterSection
     parts.Add plan.Suffix
-    (if fromModel then withWriterNamespaces plan.Prefix else plan.Prefix) + String.concat "" parts
+    (if written.Count > 0 then withWriterNamespaces plan.Prefix (List.ofSeq written) else plan.Prefix) + String.concat "" parts
 
 let private numberAttributePattern = System.Text.RegularExpressions.Regex("w:(?:numId|abstractNumId)=\"(\\d+)\"|<w:(?:numId|abstractNumId) w:val=\"(\\d+)\"")
 let private numElementPattern = System.Text.RegularExpressions.Regex("<w:num(?:\\s[^>]*)?\\sw:numId=\"(\\d+)\"")
@@ -2922,11 +2976,11 @@ let private generateContentTypesWithImages hasComments hasFootnotes hasEndnotes 
 
 /// [Content_Types].xml for a package that carries kept parts: the original
 /// Default entries, the writer's own, and the Override entries of the kept parts.
-let private generateContentTypesPreserved (preserved: PreservedPackage) hasSettings hasComments hasFootnotes hasEndnotes (headers: HeaderFooterPartInfo array) (footers: HeaderFooterPartInfo array) (imageAssets: ImageAsset array) =
+let private generateContentTypesPreserved (preserved: PreservedPackage) hasNumbering hasSettings hasComments hasFootnotes hasEndnotes (headers: HeaderFooterPartInfo array) (footers: HeaderFooterPartInfo array) (imageAssets: ImageAsset array) =
     let own =
         [ yield "/word/document.xml", preserved.MainContentType |> Option.defaultValue "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"
           yield "/word/styles.xml", "application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"
-          yield "/word/numbering.xml", "application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"
+          if hasNumbering then yield "/word/numbering.xml", "application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"
           if hasSettings then yield "/word/settings.xml", "application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"
           for header in headers do yield header.PartName, "application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"
           for footer in footers do yield footer.PartName, "application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"
@@ -2979,10 +3033,11 @@ let generateRootRels () : string =
 /// Generate word/_rels/document.xml.rels
 /// The writer's own relationship ids are named, not numbered: kept
 /// relationships of the opened document have ids like rId1, rId2.
-let private documentRelationshipElements (hyperlinks: Map<string, string>) (hasComments: bool) (hasFootnotes: bool) (hasEndnotes: bool) =
+let private documentRelationshipElementsWith (hasNumbering: bool) (hyperlinks: Map<string, string>) (hasComments: bool) (hasFootnotes: bool) (hasEndnotes: bool) =
     let baseRels = [
         yield selfClosing "Relationship" [("Id", freshRelationshipId "rIdStyles"); ("Type", RelationshipTypes.styles); ("Target", "styles.xml")]
-        yield selfClosing "Relationship" [("Id", freshRelationshipId "rIdNumbering"); ("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering"); ("Target", "numbering.xml")]
+        if hasNumbering then
+            yield selfClosing "Relationship" [("Id", freshRelationshipId "rIdNumbering"); ("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering"); ("Target", "numbering.xml")]
         if hasComments then
             yield selfClosing "Relationship" [("Id", freshRelationshipId "rIdComments"); ("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments"); ("Target", "comments.xml")]
         if hasFootnotes then
@@ -2996,6 +3051,9 @@ let private documentRelationshipElements (hyperlinks: Map<string, string>) (hasC
         |> List.map (fun (url, relId) ->
             selfClosing "Relationship" [("Id", relId); ("Type", RelationshipTypes.hyperlink); ("Target", url); ("TargetMode", "External")])
     baseRels @ hyperlinkRels
+
+let private documentRelationshipElements (hyperlinks: Map<string, string>) (hasComments: bool) (hasFootnotes: bool) (hasEndnotes: bool) =
+    documentRelationshipElementsWith true hyperlinks hasComments hasFootnotes hasEndnotes
 
 let generateDocumentRels (hyperlinks: Map<string, string>) (hasComments: bool) (hasFootnotes: bool) (hasEndnotes: bool) : string =
     let rels = documentRelationshipElements hyperlinks hasComments hasFootnotes hasEndnotes
@@ -3032,13 +3090,13 @@ let generateDocumentRelsPackage hasSettings hyperlinks hasComments hasFootnotes 
     document root
 
 /// The relationships part of the main document: the writer's own, then the kept ones.
-let private generateDocumentRelsPreserved (kept: PreservedRelationshipInfo list) hasSettings hyperlinks hasComments hasFootnotes hasEndnotes (headers: HeaderFooterPartInfo array) (footers: HeaderFooterPartInfo array) (images: ImageScope) =
+let private generateDocumentRelsPreserved (kept: PreservedRelationshipInfo list) hasNumbering hasSettings hyperlinks hasComments hasFootnotes hasEndnotes (headers: HeaderFooterPartInfo array) (footers: HeaderFooterPartInfo array) (images: ImageScope) =
     let headerFooterRels =
         [ if hasSettings then yield selfClosing "Relationship" [("Id", freshRelationshipId "rIdSettings"); ("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings"); ("Target", "settings.xml")]
           for header in headers -> selfClosing "Relationship" [("Id", header.RelId); ("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/header"); ("Target", header.Target)]
           for footer in footers -> selfClosing "Relationship" [("Id", footer.RelId); ("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer"); ("Target", footer.Target)] ]
     let rels =
-        documentRelationshipElements hyperlinks hasComments hasFootnotes hasEndnotes
+        documentRelationshipElementsWith hasNumbering hyperlinks hasComments hasFootnotes hasEndnotes
         @ headerFooterRels
         @ generateImageRelationships images.Assets
         @ (kept |> List.map preservedRelationshipElement)
@@ -4002,6 +4060,83 @@ let private patchSettings (originalXml: string) (pageSetup: PageSetupInfo option
         document (rootStartTag rootName rootAttrs + String.concat "" body + "</" + rootName + ">")
     | _ -> generateSettings pageSetup
 
+// ---- relationship parts and [Content_Types].xml as they were read -------------
+// The writer makes these parts anew for every save: its own order, its own
+// ids for the parts nothing refers to by id (the styles, the lists, the
+// settings, the notes, the comments), absolute targets. A part that was read
+// and says what the new one says is written back as the text it was.
+
+let private relationshipTagPattern = System.Text.RegularExpressions.Regex("<Relationship\\s[^>]*>")
+let private attributeOfTag (tag: string) (name: string) : string option =
+    let m = System.Text.RegularExpressions.Regex.Match(tag, "\\s" + name + "\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')")
+    if not m.Success then None
+    elif m.Groups.[1].Success then Some m.Groups.[1].Value
+    else Some m.Groups.[2].Value
+
+/// Relationship types of the parts a document has one of, which nothing refers to by id.
+let private isImplicitRelationshipType (relType: string) =
+    [ "/styles"; "/numbering"; "/settings"; "/comments"; "/footnotes"; "/endnotes" ] |> List.exists (fun suffix -> relType.EndsWith suffix)
+
+/// What a relationships part says: one entry per relationship (its id - but
+/// for the parts nothing refers to by id -, type, mode and target, a target
+/// in the package as its path), sorted. None when it has something else.
+let private relationshipEntries (ownerDirectory: string) (xml: string) : string list option =
+    let tags = [ for m in relationshipTagPattern.Matches xml -> m.Value ]
+    let entries =
+        tags
+        |> List.map (fun tag ->
+            match attributeOfTag tag "Id", attributeOfTag tag "Type", attributeOfTag tag "Target" with
+            | Some id, Some relType, Some target ->
+                let isExternal = attributeOfTag tag "TargetMode" = Some "External"
+                let target = if isExternal then target else ZipInterop.resolveTarget ownerDirectory target
+                Some ((if isImplicitRelationshipType relType then "" else id) + "\n" + relType + "\n" + (if isExternal then "external" else "internal") + "\n" + target)
+            | _ -> None)
+    if entries |> List.exists Option.isNone then None else Some (entries |> List.choose id |> List.sort)
+
+/// The directory of the part a relationships part belongs to ("word/_rels/document.xml.rels" -> "word").
+let private relationshipsOwnerDirectory (relsPath: string) =
+    let at = relsPath.LastIndexOf "_rels/"
+    if at <= 0 then "" else relsPath.Substring(0, at).TrimEnd('/')
+
+let private contentTypeTagPattern = System.Text.RegularExpressions.Regex("<(Default|Override)\\s[^>]*>")
+
+/// The content type [Content_Types].xml gives each part: by its name, or by its extension.
+let private contentTypeLookup (xml: string) : (string -> string option) * string list =
+    let defaults = System.Collections.Generic.Dictionary<string, string>()
+    let overrides = System.Collections.Generic.Dictionary<string, string>()
+    for m in contentTypeTagPattern.Matches xml do
+        match m.Groups.[1].Value, attributeOfTag m.Value "ContentType" with
+        | "Default", Some contentType ->
+            match attributeOfTag m.Value "Extension" with
+            | Some extension -> defaults.[extension.ToLowerInvariant()] <- contentType
+            | None -> ()
+        | "Override", Some contentType ->
+            match attributeOfTag m.Value "PartName" with
+            | Some name -> overrides.[name.ToLowerInvariant()] <- contentType
+            | None -> ()
+        | _ -> ()
+    let lookup (path: string) =
+        match overrides.TryGetValue (("/" + path).ToLowerInvariant()) with
+        | true, contentType -> Some contentType
+        | false, _ ->
+            let dot = path.LastIndexOf '.'
+            if dot < 0 then None
+            else
+                match defaults.TryGetValue (path.Substring(dot + 1).ToLowerInvariant()) with
+                | true, contentType -> Some contentType
+                | false, _ -> None
+    lookup, [ for KeyValue (name, _) in overrides -> name ]
+
+/// Whether the [Content_Types].xml that was read is right for the package
+/// that is written: every part has the type the writer gives it, and it names
+/// no part that is not written.
+let private contentTypesStillRight (original: string) (generated: string) (writtenPaths: string list) =
+    let originalType, originalOverrides = contentTypeLookup original
+    let generatedType, _ = contentTypeLookup generated
+    let written = writtenPaths |> List.map (fun path -> ("/" + path).ToLowerInvariant()) |> Set.ofList
+    writtenPaths |> List.forall (fun path -> path = "[Content_Types].xml" || (match originalType path with Some contentType -> generatedType path = Some contentType | None -> false))
+    && originalOverrides |> List.forall (fun name -> Set.contains name written)
+
 /// Write DOCX from EditorFormat (Phase 2)
 let writeFromEditor (paragraphs: obj array) : Fable.Core.JS.Promise<obj> =
     nextShapeId <- 1000
@@ -4104,8 +4239,8 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
             |> Option.map (fun setup -> (setup.HeaderReferences @ setup.FooterReferences) |> List.map snd)
             |> Option.defaultValue []
         Set.union (collectSectionReferenceIds paragraphs) (Set.ofList finalIds)
-    let headerParts = optionalArray (package?HeaderParts) |> headerFooterInfos sectionReferenceIds "header" 1
-    let footerParts = optionalArray (package?FooterParts) |> headerFooterInfos sectionReferenceIds "footer" 1
+    let headerParts = optionalArray (package?HeaderParts) |> headerFooterInfos preserved.PartPaths sectionReferenceIds "header" 1
+    let footerParts = optionalArray (package?FooterParts) |> headerFooterInfos preserved.PartPaths sectionReferenceIds "footer" 1
     // A header / footer that is what it was when it was read goes back as its text.
     let partSource (part: HeaderFooterPartInfo) = if part.Unchanged then sourceOf part.RelId else None
     // The blocks of the body that are written from the model: their pictures
@@ -4190,7 +4325,18 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
                     Map.tryFind "numbering" preserved.SourceXml
                     |> Option.bind (fun original -> mergeNumbering original infos needsDefaults)
                     |> Option.bind (fun merged -> patchNumberingLevels merged infos changed)
-        merged |> Option.defaultWith (fun () -> generateNumbering infos)
+        // (Rendered also when it is not written: it picks the default list ids.)
+        let generated = lazy (generateNumbering infos)
+        match merged with
+        | Some text -> Some text
+        | None ->
+            let text = generated.Force()
+            // A document that was opened without a part for its lists, and has no list, is saved without one.
+            // (Nor is one made for lists the document refers to and never had a definition of.)
+            if not (isNullOrUndefined (package?Preserved)) && not (Map.containsKey "numbering" preserved.SourceXml)
+               && (infos |> List.forall (fun info -> info.Undefined)) && not needsDefaults then None
+            else Some text
+    let hasNumbering = numberingXml.IsSome
     let styles =
         (collectPackageStyles (optionalArray (package?Styles)) @ collectStyles allBlocks)
         |> List.distinctBy (fun style -> style.StyleType, style.StyleId)
@@ -4206,7 +4352,7 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
         images.Assets.Length > 0 || not links.IsEmpty || not (keptFor key).IsEmpty
 
     let files = [
-        yield { Path = "[Content_Types].xml"; Content = generateContentTypesPreserved preserved hasSettings hasComments hasFootnotes hasEndnotes headerParts footerParts allImages }
+        yield { Path = "[Content_Types].xml"; Content = generateContentTypesPreserved preserved hasNumbering hasSettings hasComments hasFootnotes hasEndnotes headerParts footerParts allImages }
         yield { Path = "_rels/.rels"; Content = generateRootRelsPreserved preserved }
         yield { Path = "word/document.xml"
                 Content =
@@ -4214,7 +4360,7 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
                         match bodyPlan with
                         | Some plan -> generateDocumentXmlFromPlan plan bodyImages hyperlinks pageSetup headerParts footerParts
                         | None -> generateDocumentXmlPackage paragraphs bodyImages pageSetup headerParts footerParts) }
-        yield { Path = "word/_rels/document.xml.rels"; Content = generateDocumentRelsPreserved (keptFor "document") hasSettings hyperlinks hasComments hasFootnotes hasEndnotes headerParts footerParts bodyImages }
+        yield { Path = "word/_rels/document.xml.rels"; Content = generateDocumentRelsPreserved (keptFor "document") hasNumbering hasSettings hyperlinks hasComments hasFootnotes hasEndnotes headerParts footerParts bodyImages }
         yield { Path = "word/styles.xml"
                 Content =
                     match preserved.StylesXml with
@@ -4224,7 +4370,15 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
                             else Some (optionalArray (package?ChangedStyles) |> Array.map (fun key -> unbox<string> key) |> Set.ofArray)
                         mergeStyles original changed styles
                     | None -> generateDefaultStylesWithStyles styles }
-        yield { Path = "word/numbering.xml"; Content = numberingXml }
+        if not (keptFor "styles").IsEmpty then
+            yield { Path = "word/_rels/styles.xml.rels"; Content = generatePartRelsWithKept (keptFor "styles") Map.empty emptyImageScope }
+        match numberingXml with
+        | Some text ->
+            yield { Path = "word/numbering.xml"; Content = text }
+            // (What the lists refer to: the picture of a picture bullet.)
+            if not (keptFor "numbering").IsEmpty then
+                yield { Path = "word/_rels/numbering.xml.rels"; Content = generatePartRelsWithKept (keptFor "numbering") Map.empty emptyImageScope }
+        | None -> ()
         if hasSettings then
             yield { Path = "word/settings.xml"
                     Content =
@@ -4320,6 +4474,25 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
             not (path.StartsWith "word/media/")
             || (let name = path.Substring(path.LastIndexOf '/' + 1)
                 relationshipTexts |> List.exists (fun text -> text.IndexOf("media/" + name + "\"", System.StringComparison.Ordinal) >= 0)))
+
+    // The relationship parts and [Content_Types].xml that say what they said when they were read go back as that text.
+    let files =
+        if regenerateAll || preserved.OriginalText.IsEmpty then files
+        else
+            let writtenPaths = (files |> List.map (fun file -> file.Path)) @ (binaryFiles |> List.map fst)
+            files
+            |> List.map (fun file ->
+                match Map.tryFind file.Path preserved.OriginalText with
+                | None -> file
+                | Some original ->
+                    if file.Path = "[Content_Types].xml" then
+                        if contentTypesStillRight original file.Content writtenPaths then { file with Content = original } else file
+                    elif file.Path.EndsWith ".rels" then
+                        let directory = relationshipsOwnerDirectory file.Path
+                        match relationshipEntries directory original, relationshipEntries directory file.Content with
+                        | Some before, Some after when before = after -> { file with Content = original }
+                        | _ -> file
+                    else file)
 
     reservedRelationshipIds <- Set.empty
     reservedPartPaths <- Set.empty

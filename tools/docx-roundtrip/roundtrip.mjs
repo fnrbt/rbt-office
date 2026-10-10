@@ -32,6 +32,17 @@
 //   * every relationship target is in the package, no relationship id is
 //     used twice, and every r:id the XML uses is one the part has.
 //
+// Package integrity is asserted of every package the writer makes here - the
+// unedited save, the save from the model alone, and each of the edited ones
+// below: every relationship id any part's XML uses (r:id, r:embed, r:link,
+// ..., o:relid) is one that part's relationships part has, every relationship
+// target is in the package, every part has a content type and
+// [Content_Types].xml names no part that is not there (what the original has
+// wrong already is left out). An unedited save adds no part (no numbering
+// part for a document without one), writes a header or footer under the name
+// it had, and the summary says how many relationship parts and
+// [Content_Types].xml files came back as the text they were read from.
+//
 // Then the document is edited with real key events:
 //   * one character typed and deleted again: the saved document reads back
 //     and is laid out as the original;
@@ -164,6 +175,7 @@ async function main() {
     const browser = await (playwright.chromium ?? playwright.default.chromium).launch();
     let failed = 0, identicalXml = 0, compared = 0;
     const notIdentical = [];
+    const asRead = { total: 0, same: 0, notes: [] }; // relationship parts and [Content_Types].xml of unedited saves
     const tenthTotals = { edited: 0, confined: 0, rewritten: 0, others: 0 };
     const tenthNotes = [];
     const xmlKinds = new Map(); // element / attribute kind -> how often it was in the originals and in the saved documents
@@ -212,6 +224,8 @@ async function main() {
                 entry.files++; entry.before += before; entry.after += after; xmlKinds.set(kind, entry);
             }
             if (result.xmlIdentical) identicalXml++; else notIdentical.push(name);
+            asRead.total += result.partsAsRead?.total ?? 0; asRead.same += result.partsAsRead?.same ?? 0;
+            if (result.partsAsRead?.changed.length) asRead.notes.push(`${name}: ${result.partsAsRead.changed.join(', ')}`);
             compared++;
             // An unedited save writes the parts it read back as they were.
             if (!expectations.get(name)?.some((e) => e.mutate) && !result.problems.some((p) => p.startsWith('threw'))) {
@@ -240,6 +254,10 @@ async function main() {
         const rows = [...xmlKinds.entries()].sort((a, b) => b[1].files - a[1].files || a[0].localeCompare(b[0]));
         if (rows.length) console.log('Elements and attributes whose number changed (kind: documents, occurrences before -> after):');
         for (const [kind, e] of rows) console.log(`  ${kind}: ${e.files} documents, ${e.before} -> ${e.after}`);
+    }
+    if (asRead.total) {
+        console.log(`\nRelationship parts and [Content_Types].xml of an unedited save: ${asRead.same} of ${asRead.total} are the text that was read.`);
+        if (xmlSummary || verbose) for (const line of asRead.notes) console.log('  not as read: ' + line);
     }
     if (!skipTenth) {
         console.log(`\nA character typed at the start of every tenth paragraph: ${tenthTotals.edited} paragraphs; ${tenthTotals.confined} differ from the original by the character alone, ${tenthTotals.rewritten} were written from the model; ${tenthTotals.others} other paragraphs changed.`);
