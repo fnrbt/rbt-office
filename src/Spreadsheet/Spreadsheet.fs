@@ -616,7 +616,7 @@ type Spreadsheet(container: Element) =
     let mutable incrementalRecalculation = true
     let mutable lastRecalculation = "none"
     let mutable lastFullReason = ""
-    let mutable lastRecalcStats : SpreadsheetRecalc.RecalcStats = { ChangedCells = 0; ReachedFormulas = 0; EvaluatedFormulas = 0 }
+    let mutable lastRecalcStats : SpreadsheetRecalc.RecalcStats = { ChangedCells = 0; ReachedFormulas = 0; EvaluatedFormulas = 0; Evaluations = 0 }
     let mutable readOnly = false
     let mutable scrollTop = 0.0
     let mutable scrollLeft = 0.0
@@ -6515,8 +6515,10 @@ type Spreadsheet(container: Element) =
 
     /// What the last recalculation was: { Kind: "incremental" | "full" |
     /// "none", Reason (why it was a full one), ChangedCells, ReachedFormulas,
-    /// EvaluatedFormulas (of the last incremental one), Formulas (in the
-    /// dependency graph, -1 before it is built) }. For hosts and checks that want to see that an edit
+    /// EvaluatedFormulas (distinct formulas evaluated), Evaluations (how
+    /// many evaluations: the formulas of an iterated circular reference are
+    /// evaluated once per sweep) - of the last incremental one -, Formulas
+    /// (in the dependency graph, -1 before it is built) }. For hosts and checks that want to see that an edit
     /// recalculated what it changed.
     member _.GetRecalcStats() : obj =
         createObj [
@@ -6525,6 +6527,7 @@ type Spreadsheet(container: Element) =
             "ChangedCells" ==> lastRecalcStats.ChangedCells
             "ReachedFormulas" ==> lastRecalcStats.ReachedFormulas
             "EvaluatedFormulas" ==> lastRecalcStats.EvaluatedFormulas
+            "Evaluations" ==> lastRecalcStats.Evaluations
             "Formulas" ==> (match recalcEngine with Some engine -> SpreadsheetRecalc.formulaCount engine | None -> -1)
         ]
 

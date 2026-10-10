@@ -202,7 +202,7 @@ let twoSheets () =
 let wb0, dataId = twoSheets ()
 start wb0
 eq "calculated: SUM(A1:A50)" (valueAt "sheet1" 2 1 current) (CellValue.Number 1275.0)
-let stats label outcome = match outcome with Incremental s -> s | Declined -> (ok label false "declined"; { ChangedCells = 0; ReachedFormulas = 0; EvaluatedFormulas = 0 } : Recalc.RecalcStats)
+let stats label outcome = match outcome with Incremental s -> s | Declined -> (ok label false "declined"; { ChangedCells = 0; ReachedFormulas = 0; EvaluatedFormulas = 0; Evaluations = 0 } : Recalc.RecalcStats)
 let typed = edit "a number typed" (Some [ "sheet1", at 0 0 ]) (setCells "sheet1" [ at 0 0, Some (number 11.0) ]) |> stats "a number typed"
 eq "typed A1: the formulas that read it, and theirs" (valueAt "sheet1" 0 1 current, valueAt "sheet1" 2 1 current, valueAt dataId 0 1 current) (CellValue.Number 22.0, CellValue.Number 1285.0, CellValue.Number 5140.0)
 ok "typed A1: not every formula was evaluated" (typed.EvaluatedFormulas >= 6 && typed.EvaluatedFormulas < Recalc.formulaCount engine) (sprintf "%A" typed)
@@ -803,6 +803,21 @@ do
                     | CellValue.Formula (formula, _) -> ask formula
                     | _ -> ()
     eq (sprintf "spills: one walk answers as two (%d formulas)" asked) differ 0
+
+// ---- the statistics of a pass: formulas evaluated, and evaluations ------------------------------
+// A circular reference that is iterated is evaluated once per sweep: the formulas are counted once,
+// the evaluations each time.
+do
+    start (moreWorkbook true)
+    let closed = edit "a cycle closed" None (setCells "sheet1" [ at 30 0, Some (formula "=A32*0.5+B2"); at 31 0, Some (formula "=A31*0.5+1"); at 32 0, Some (formula "=A32+1") ])
+    match closed with
+    | Incremental stats ->
+        ok "stats: an iterated cycle: more evaluations than formulas evaluated" (stats.Evaluations > stats.EvaluatedFormulas) (sprintf "%A" stats)
+        ok "stats: formulas are counted once: no more than the workbook has" (stats.EvaluatedFormulas <= Recalc.formulaCount engine && stats.EvaluatedFormulas >= 3) (sprintf "%A of %d" stats (Recalc.formulaCount engine))
+    | Declined -> ok "stats: an iterated cycle: by the engine" false (Recalc.lastDecline engine)
+    match edit "a plain edit" None (setCells "sheet1" [ at 40 0, Some (number 3.0); at 40 1, Some (formula "=A41*2") ]) with
+    | Incremental stats -> ok "stats: without a cycle in reach the two are the same" (stats.Evaluations = stats.EvaluatedFormulas && stats.EvaluatedFormulas >= 1) (sprintf "%A" stats)
+    | Declined -> ok "stats: a plain edit: by the engine" false (Recalc.lastDecline engine)
 
 printfn "stage32-recalc: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

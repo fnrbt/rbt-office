@@ -711,7 +711,7 @@ The `pageSetup` object:
 ## Calculation (groups 15 / 16)
 Nothing to call for the recalculation itself: every edit recalculates what it has to. What a host can read and set:
 
-- `GetRecalcStats()` -> `{ Kind: "incremental" | "full" | "none", Reason, ChangedCells, ReachedFormulas, EvaluatedFormulas, Formulas }` (existing; PascalCase keys).
+- `GetRecalcStats()` -> `{ Kind: "incremental" | "full" | "none", Reason, ChangedCells, ReachedFormulas, EvaluatedFormulas, Evaluations, Formulas }` (PascalCase keys). `EvaluatedFormulas` counts each formula once (never more than `Formulas`); `Evaluations` is how many evaluations the pass took: the formulas of a circular reference that is iterated are evaluated once per sweep, so it can be several times `EvaluatedFormulas`. (Before, `EvaluatedFormulas` was that total: "23006 of 13346" after a paste that closed a cycle.)
   The kind is "incremental" after an edit of cells - also in workbooks with dynamic arrays, OFFSET / INDIRECT and 3-D references, and when the edit
   makes or reaches a circular reference - and (since 0.1.9) after edits that are more than cells; only the formulas that can tell are evaluated:
   - a **circular reference** made or reached by the edit (a paste, a typed formula): its formulas show the cycle error, or - with iterative

@@ -158,8 +158,13 @@ type RecalcStats = {
     ChangedCells: int
     /// Formulas that read them, directly or through other formulas.
     ReachedFormulas: int
-    /// Of those, the formulas that were evaluated (something they read changed value).
+    /// Of those, the formulas that were evaluated (something they read
+    /// changed value): each formula once, however often it was evaluated.
     EvaluatedFormulas: int
+    /// How many evaluations that took: a formula of a circular reference
+    /// that is iterated is evaluated once per sweep, so this can be more than
+    /// `EvaluatedFormulas` (and more than the workbook has formulas).
+    Evaluations: int
 }
 
 type Engine = {
@@ -465,7 +470,7 @@ let private wire (engine: Engine) (workbook: Workbook) (sheet: SheetState) (row:
         node.Expr <- None
     node
 
-let private noStats = { ChangedCells = 0; ReachedFormulas = 0; EvaluatedFormulas = 0 }
+let private noStats = { ChangedCells = 0; ReachedFormulas = 0; EvaluatedFormulas = 0; Evaluations = 0 }
 
 let private buildGraph (unloadedToo: bool) (workbook: Workbook) : Engine =
     let engine = {
@@ -1554,6 +1559,7 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
 
             let mutable reachedTotal = 0
             let mutable evaluated = 0
+            let mutable evaluations = 0
             let mutable failure : string = null
             let mutable rounds = 0
             let mutable nextEval = ResizeArray<Node>()
@@ -1843,7 +1849,9 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                                 for at in index .. last do
                                     let node = order.[at]
                                     if node.IsFormula then
-                                        evaluated <- evaluated + 1
+                                        // (A formula of the cycle counts once; every sweep is an evaluation of it.)
+                                        if sweeps = 1 then evaluated <- evaluated + 1
+                                        evaluations <- evaluations + 1
                                         let state = node.Sheet
                                         let model = modelOf state
                                         let addr = { Row = node.Row; Col = node.Col }
@@ -1888,6 +1896,7 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                         let blocked = if lays then layOut node else false
                         if (node.NeedsEval || lays) && node.IsFormula then
                             evaluated <- evaluated + 1
+                            evaluations <- evaluations + 1
                             let state = node.Sheet
                             let model = modelOf state
                             let addr = { Row = node.Row; Col = node.Col }
@@ -1960,7 +1969,7 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                     if not (obj.ReferenceEquals(model, projected)) then
                         workbook <- updateSheetModel sheetId projected workbook
                 holdWorkbook engine workbook
-                engine.LastStats <- { ChangedCells = changes.Count; ReachedFormulas = reachedTotal; EvaluatedFormulas = evaluated }
+                engine.LastStats <- { ChangedCells = changes.Count; ReachedFormulas = reachedTotal; EvaluatedFormulas = evaluated; Evaluations = evaluations }
                 if full then
                     engine.LastCyclic <- cyclicCount
                     engine.CyclesKnown <- true
