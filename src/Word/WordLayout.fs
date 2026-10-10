@@ -448,6 +448,7 @@ module Floating =
     let participatesInWrap (box: Box) =
         match box.Kind with
         | ImageBox img when img.BehindDoc = Some true -> false
+        | TextBox textBox when textBox.BehindDoc = Some true -> false
         | _ -> wrapsText box.Wrap || wrapsTopAndBottom box.Wrap
 
     let private overlaps (a: Box) (b: Box) =
@@ -566,6 +567,48 @@ module Floating =
             DistanceRight = 0.0
             DistanceBottom = 0.0
             DistanceLeft = 0.0
+        }
+
+    /// The room between a shape's edge and its text: left, top, right, bottom
+    /// (wps:bodyPr lIns / tIns / rIns / bIns; 0.1 inch and 0.05 inch when the
+    /// shape does not say).
+    let textBoxInsets (textBox: TextBoxBlock) : float * float * float * float =
+        textBox.InsetLeft |> Option.defaultValue 9.6,
+        textBox.InsetTop |> Option.defaultValue 4.8,
+        textBox.InsetRight |> Option.defaultValue 9.6,
+        textBox.InsetBottom |> Option.defaultValue 4.8
+
+    /// How a shape's anchor wraps the text (none when it does not say; a
+    /// shape in the line stands on lines of its own).
+    let textBoxWrap (textBox: TextBoxBlock) : string option =
+        if textBox.Inline then Some "topAndBottom" else textBox.Wrap |> Option.orElse (Some "none")
+
+    /// A text box or shape where its anchor puts it, as `imageCanvasBox` puts
+    /// an anchored picture: relative to the page, the margins, the column or
+    /// the anchor's paragraph, by an alignment or an offset. X is from the
+    /// left edge of the text, Y down the canvas. `pageTop`: the top of the
+    /// page the anchor's paragraph starts on; `paragraphTop`: of that
+    /// paragraph; `height`: of the shape (of its text when it follows it).
+    /// (Every shape was placed on the first page, by its offset alone.)
+    let anchoredTextBoxBox (page: AnchorPage) (pageTop: float) (paragraphTop: float) (height: float) (textBox: TextBoxBlock) : Box =
+        let x, y =
+            if textBox.Inline then 0.0, paragraphTop
+            else
+                let startX, extentX = horizontalReference page 0.0 (textBox.PositionHRelativeFrom |> Option.orElse (Some "column"))
+                let startY, extentY = verticalReference page pageTop paragraphTop paragraphTop (textBox.PositionVRelativeFrom |> Option.orElse (Some "paragraph"))
+                alignedPosition textBox.PositionHAlign startX extentX textBox.Width (textBox.X |> Option.defaultValue 0.0),
+                alignedPosition textBox.PositionVAlign startY extentY height (textBox.Y |> Option.defaultValue 0.0)
+        {
+            Kind = TextBox textBox
+            X = x
+            Y = y
+            Width = textBox.Width
+            Height = height
+            Wrap = textBoxWrap textBox
+            DistanceTop = textBox.DistanceTop |> Option.defaultValue 0.0
+            DistanceRight = textBox.DistanceRight |> Option.defaultValue 0.0
+            DistanceBottom = textBox.DistanceBottom |> Option.defaultValue 0.0
+            DistanceLeft = textBox.DistanceLeft |> Option.defaultValue 0.0
         }
 
     let topLevelTextBoxes (blocks: Block list) =

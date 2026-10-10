@@ -1724,6 +1724,9 @@ and private generateTable (hyperlinks: Map<string, string>) (images: ImageScope)
 
 /// Shape ids must be unique in the document; they are handed out per save.
 let mutable private nextShapeId = 1000
+/// Every shape is written from the model, none as the element it was read
+/// from (a package that asks for everything from the model: RegenerateAll).
+let mutable private shapesFromModel = false
 
 let private drawingNamespaces =
     {| Wp = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
@@ -1821,7 +1824,13 @@ let private generateVmlShape (shapeId: string) (item: obj) (content: string) : s
                 yield ("strokecolor", optionalString (item?BorderColor) |> Option.defaultValue "#808080")
                 yield ("strokeweight", sprintf "%.2fpt" strokeWeight)
         ] [
-            element "v:textbox" [] [
+            element "v:textbox" [
+                // (The same insets and fit as the DrawingML choice says.)
+                let inset (value: obj) (fallback: float) = optionalFloat value |> Option.map pixelsToPoints |> Option.defaultValue fallback
+                if not (isNullOrUndefined item?InsetLeft && isNullOrUndefined item?InsetTop && isNullOrUndefined item?InsetRight && isNullOrUndefined item?InsetBottom) then
+                    yield ("inset", sprintf "%.2fpt,%.2fpt,%.2fpt,%.2fpt" (inset (item?InsetLeft) 7.2) (inset (item?InsetTop) 3.6) (inset (item?InsetRight) 7.2) (inset (item?InsetBottom) 3.6))
+                if boolOrDefault false (item?AutoFit) then yield ("style", "mso-fit-shape-to-text:t")
+            ] [
                 element "w:txbxContent" [] [content]
             ]
         ]
@@ -1832,7 +1841,94 @@ let private generateVmlShape (shapeId: string) (item: obj) (content: string) : s
 /// rotation, solid / gradient / no fill, line colour, width and dash, wrap
 /// mode and position are written from the model. (It used to be a bare VML
 /// text box rectangle, so an ellipse or a rotated arrow came back as a white box.)
-let private generateTextBoxRun (packageSetup: PageSetupInfo) (hyperlinks: Map<string, string>) (images: ImageScope) (item: obj) : string =
+let rec private generateTextBoxRun (packageSetup: PageSetupInfo) (hyperlinks: Map<string, string>) (images: ImageScope) (item: obj) : string =
+    // A shape that is what was read goes back as the element it was read from
+    // (its DrawingML and its VML fallback, with what the model does not hold
+    // of them) - when everything that element refers to is in this part.
+    let source =
+        (if shapesFromModel then None else optionalString (item?SourceXml))
+        |> Option.filter (fun xml ->
+            [ for m in relationshipIdPattern.Matches xml -> m.Groups.[1].Value ]
+            |> List.forall (fun id -> Set.contains id currentPartRelationshipIds))
+    match source with
+    | Some xml -> "<w:r>" + xml + "</w:r>"
+    | None when boolOrDefault false (item?FitText) -> generateWordArtRun item
+    | None -> generateTextBoxRunFromModel packageSetup hyperlinks images item
+
+/// Text drawn as large as its shape (WordArt, a watermark) from the model: a
+/// VML shape with a v:textpath, as Word writes a watermark - where it stands
+/// (aligned or by its margins, relative to the margins, the page or the
+/// text), turned, behind the text, the colour and opacity of its letters,
+/// their face. (Written as a text box it came back as small text in a frame.)
+and private generateWordArtRun (item: obj) : string =
+    let shapeNumber = nextShapeId
+    nextShapeId <- nextShapeId + 1
+    let paragraphs = if isNullOrUndefined item?Paragraphs then [||] else item?Paragraphs |> unbox<obj array>
+    let runs = paragraphs |> Array.collect (fun paragraph -> optionalArray (paragraph?Runs))
+    let text = runs |> Array.map (fun run -> optionalString (run?Text) |> Option.defaultValue "") |> String.concat ""
+    let first = runs |> Array.tryHead
+    let face = first |> Option.bind (fun run -> optionalString (run?FontFamily)) |> Option.defaultValue "Calibri"
+    let color = first |> Option.bind (fun run -> optionalString (run?Color)) |> Option.defaultValue "#C0C0C0"
+    let bold = first |> Option.exists (fun run -> boolOrDefault false (run?Bold))
+    let italic = first |> Option.exists (fun run -> boolOrDefault false (run?Italic))
+    let points (value: obj) (fallback: float) = optionalFloat value |> Option.map pixelsToPoints |> Option.defaultValue fallback
+    let rotation = floatOrDefault 0.0 (item?Rotation)
+    let relative (value: obj) (ofText: string) =
+        match optionalString value with
+        | Some "margin" -> Some "margin"
+        | Some "page" -> Some "page"
+        | Some "column" | Some "paragraph" -> Some ofText
+        | Some "character" -> Some "char"
+        | Some "line" -> Some "line"
+        | _ -> None
+    let style =
+        [ if not (boolOrDefault false (item?Inline)) then yield "position:absolute"
+          yield sprintf "margin-left:%.2fpt" (points (item?X) 0.0)
+          yield sprintf "margin-top:%.2fpt" (points (item?Y) 0.0)
+          yield sprintf "width:%.2fpt" (points (item?Width) 400.0)
+          yield sprintf "height:%.2fpt" (points (item?Height) 100.0)
+          if abs rotation >= 0.01 then yield sprintf "rotation:%.2f" rotation
+          yield (if boolOrDefault false (item?BehindDoc) then "z-index:-251658752" else "z-index:251658752")
+          match optionalString (item?PositionHAlign) with
+          | Some align -> yield "mso-position-horizontal:" + align
+          | None -> ()
+          match relative (item?PositionHRelativeFrom) "text" with
+          | Some name -> yield "mso-position-horizontal-relative:" + name
+          | None -> ()
+          match optionalString (item?PositionVAlign) with
+          | Some align -> yield "mso-position-vertical:" + align
+          | None -> ()
+          match relative (item?PositionVRelativeFrom) "text" with
+          | Some name -> yield "mso-position-vertical-relative:" + name
+          | None -> () ]
+        |> String.concat ";"
+    let pathStyle =
+        sprintf "font-family:\"%s\";font-size:1pt" face
+        + (if bold then ";font-weight:bold" else "")
+        + (if italic then ";font-style:italic" else "")
+    let shapeType =
+        "<v:shapetype id=\"_x0000_t136\" coordsize=\"21600,21600\" o:spt=\"136\" adj=\"10800\" path=\"m@7,l@8,m@5,21600l@6,21600e\">"
+        + "<v:formulas><v:f eqn=\"sum #0 0 10800\"/><v:f eqn=\"prod #0 2 1\"/><v:f eqn=\"sum 21600 0 @1\"/><v:f eqn=\"sum 0 0 @2\"/><v:f eqn=\"sum 21600 0 @3\"/><v:f eqn=\"if @0 @3 0\"/><v:f eqn=\"if @0 21600 @1\"/>"
+        + "<v:f eqn=\"if @0 0 @2\"/><v:f eqn=\"if @0 @4 21600\"/><v:f eqn=\"mid @5 @6\"/><v:f eqn=\"mid @8 @5\"/><v:f eqn=\"mid @7 @8\"/><v:f eqn=\"mid @6 @7\"/><v:f eqn=\"sum @6 0 @5\"/></v:formulas>"
+        + "<v:path textpathok=\"t\" o:connecttype=\"custom\" o:connectlocs=\"@9,0;@10,10800;@11,21600;@12,10800\" o:connectangles=\"270,180,90,0\"/><v:textpath on=\"t\" fitshape=\"t\"/>"
+        + "<v:handles><v:h position=\"#0,bottomRight\" xrange=\"6629,14971\"/></v:handles><o:lock v:ext=\"edit\" text=\"t\" shapetype=\"t\"/></v:shapetype>"
+    let opacity = optionalFloat (item?Opacity) |> Option.filter (fun value -> value >= 0.0 && value < 0.999)
+    element "w:r" [] [
+        element "w:pict" [("xmlns:v", "urn:schemas-microsoft-com:vml"); ("xmlns:o", "urn:schemas-microsoft-com:office:office")] [
+            shapeType
+            element "v:shape" [
+                ("id", optionalString (item?Name) |> Option.defaultValue (sprintf "WordArt%d" shapeNumber)); ("o:spid", sprintf "_x0000_s%d" shapeNumber); ("type", "#_x0000_t136")
+                ("style", style); ("o:allowincell", "f"); ("fillcolor", color); ("stroked", "f")
+            ] [
+                match opacity with
+                | Some value -> yield selfClosing "v:fill" [("opacity", sprintf "%.3f" value)]
+                | None -> ()
+                yield selfClosing "v:textpath" [("style", pathStyle); ("string", text)]
+            ]
+        ]
+    ]
+
+and private generateTextBoxRunFromModel (packageSetup: PageSetupInfo) (hyperlinks: Map<string, string>) (images: ImageScope) (item: obj) : string =
     let widthEmu = floatOrDefault 220.0 (item?Width) |> pixelsToEmus |> max 0 |> string
     let heightEmu = floatOrDefault 72.0 (item?Height) |> pixelsToEmus |> max 0 |> string
     let shapeNumber = nextShapeId
@@ -1859,7 +1955,14 @@ let private generateTextBoxRun (packageSetup: PageSetupInfo) (hyperlinks: Map<st
             ]
             if paragraphs.Length > 0 then
                 yield element "wps:txbx" [] [element "w:txbxContent" [] [content]]
-            yield selfClosing "wps:bodyPr" [("rot", "0"); ("vert", "horz"); ("wrap", "square"); ("lIns", "91440"); ("tIns", "45720"); ("rIns", "91440"); ("bIns", "45720"); ("anchor", "t"); ("anchorCtr", "0")]
+            // The room around the text, where it stands in the shape's height, whether the shape follows it.
+            let insetEmu (value: obj) (fallback: int) = optionalFloat value |> Option.map (fun px -> pixelsToEmus px |> max 0) |> Option.defaultValue fallback |> string
+            let bodyAttributes =
+                [ ("rot", "0"); ("vert", "horz"); ("wrap", (if boolOrDefault false (item?NoTextWrap) then "none" else "square"))
+                  ("lIns", insetEmu (item?InsetLeft) 91440); ("tIns", insetEmu (item?InsetTop) 45720); ("rIns", insetEmu (item?InsetRight) 91440); ("bIns", insetEmu (item?InsetBottom) 45720)
+                  ("anchor", optionalString (item?VerticalAnchor) |> Option.defaultValue "t"); ("anchorCtr", "0") ]
+            if boolOrDefault false (item?AutoFit) then yield element "wps:bodyPr" bodyAttributes [ selfClosing "a:spAutoFit" [] ]
+            else yield selfClosing "wps:bodyPr" bodyAttributes
         ]
     let graphic =
         element "a:graphic" [("xmlns:a", drawingNamespaces.A)] [
@@ -4393,6 +4496,7 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
     // unchanged content was written back as it was read (the round-trip
     // checks use it to see what the model alone gives).
     let regenerateAll = boolOrDefault false (package?RegenerateAll)
+    shapesFromModel <- regenerateAll
     let sourceOf (key: string) = if regenerateAll then None else Map.tryFind key preserved.SourceXml
     let paragraphs = optionalArray (package?Paragraphs)
     // The body's elements that go back as they were read (see planBody).

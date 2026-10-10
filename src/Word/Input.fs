@@ -138,6 +138,12 @@ type StorySession = {
     /// The parts with the story's blocks in their part, by those blocks: a
     /// state of the story that comes back (undo, redo) is the same document again.
     Folded: ResizeArray<struct (Doc.Block list * Doc.HeaderFooterPart list)>
+    /// The story is the text of this text box of the body (see
+    /// `enterTextBox`), not a header or footer: its blocks are the box's
+    /// paragraphs, and the whole document is the body with them in the box.
+    Box: Doc.BlockId option
+    /// The body's blocks with the story's blocks in the box, by those blocks (as Folded).
+    BoxFolded: ResizeArray<struct (Doc.Block list * Doc.Block list)>
 }
 
 /// Input handler state
@@ -233,6 +239,29 @@ let private storyParts (session: StorySession) (blocks: Doc.Block list) : Doc.He
 /// blocks in their part, the story's selection (and whatever else an edit of
 /// the story changed - the styles).
 let private foldStory (session: StorySession) (story: Doc.Document) : Doc.Document =
+    match session.Box with
+    | Some boxId ->
+        // A text box: the body as it was, the story's paragraphs in the box.
+        if obj.ReferenceEquals(story.Blocks, session.EntryBlocks) then { story with Blocks = session.Main.Blocks }
+        else
+            let mutable found = Unchecked.defaultof<Doc.Block list>
+            let mutable known = false
+            for struct (knownBlocks, knownBody) in session.BoxFolded do
+                if not known && obj.ReferenceEquals(knownBlocks, story.Blocks) then
+                    found <- knownBody
+                    known <- true
+            if known then { story with Blocks = found }
+            else
+                let content = Doc.paragraphsOfBlocks story.Blocks
+                let body =
+                    session.Main.Blocks
+                    |> List.map (function
+                        | Doc.TextBox box when box.Id = boxId -> Doc.TextBox { box with Content = content }
+                        | block -> block)
+                if session.BoxFolded.Count >= 256 then session.BoxFolded.RemoveAt 0
+                session.BoxFolded.Add(struct (story.Blocks, body))
+                { story with Blocks = body }
+    | None ->
     let parts = storyParts session story.Blocks
     // (The body, the plain header paragraphs and the sections' references are those of the
     // document the blocks belong in: a header made by the first edit comes with its reference.)
@@ -248,6 +277,24 @@ let private foldStory (session: StorySession) (story: Doc.Document) : Doc.Docume
 
 /// The story document of a whole document: the blocks of the story's part.
 let private unfoldStory (session: StorySession) (whole: Doc.Document) : Doc.Document =
+    match session.Box with
+    | Some boxId ->
+        let blocks =
+            if obj.ReferenceEquals(whole.Blocks, session.Main.Blocks) then session.EntryBlocks
+            else
+                let mutable found = Unchecked.defaultof<Doc.Block list>
+                let mutable known = false
+                for struct (knownBlocks, knownBody) in session.BoxFolded do
+                    if not known && obj.ReferenceEquals(knownBody, whole.Blocks) then
+                        found <- knownBlocks
+                        known <- true
+                if known then found
+                else
+                    match whole.Blocks |> List.tryPick (function Doc.TextBox box when box.Id = boxId -> Some box | _ -> None) with
+                    | Some box when not box.Content.IsEmpty -> box.Content |> List.map Doc.Paragraph
+                    | _ -> session.EntryBlocks
+        { whole with Blocks = blocks }
+    | None ->
     let parts = if session.IsHeader then whole.HeaderParts else whole.FooterParts
     let blocks =
         match List.tryItem session.PartIndex parts with
@@ -316,7 +363,7 @@ let private showStory (handler: InputHandler) (session: StorySession) =
             last.Add((story, folded))
             folded
     handler.Story <- Some session
-    ctx.Story <- Some { Whole = whole; PageIndex = session.PageIndex; IsHeader = session.IsHeader; Label = session.Label }
+    ctx.Story <- Some { Whole = whole; PageIndex = session.PageIndex; IsHeader = session.IsHeader; Label = session.Label; Box = session.Box }
     ctx.StoryLayouts <- None
 
 let private hideStory (handler: InputHandler) =
@@ -420,6 +467,34 @@ let exitStory (handler: InputHandler) : bool =
         handler.GoalX <- None
         showDocument handler whole
         true
+
+/// Edit the text of a text box of the body in place (as a header is: see
+/// `enterStory`): typing, selecting, formatting and undo work in it; Escape,
+/// or a click outside the box, goes back to the body. `selection`: where the
+/// caret goes (None: the start of the box's text). False when the document
+/// has no such box, or its text is not laid out as text (a watermark).
+let enterTextBox (handler: InputHandler) (boxId: Doc.BlockId) (selection: Doc.Selection option) : bool =
+    // (Another story - a header, another box - is left first.)
+    if handler.Story.IsSome then exitStory handler |> ignore
+    let doc = handler.Document
+    match doc.Blocks |> List.tryPick (function Doc.TextBox box when box.Id = boxId -> Some box | _ -> None) with
+    | Some box when not box.FitText ->
+        // (A box without a paragraph gets one with the first edit.)
+        let entry = (if box.Content.IsEmpty then [ Doc.newEmptyParagraph () ] else box.Content) |> List.map Doc.Paragraph
+        let pageIndex =
+            match shapeRects handler.RenderContext doc |> List.tryFind (fun (textBox, _, _, _, _) -> textBox.Id = boxId) with
+            | Some (_, x, y, _, height) ->
+                match pageRegionAt handler.RenderContext doc x (y + height / 2.0) with
+                | Some (index, _) -> index
+                | None -> 0
+            | None -> 0
+        let session : StorySession =
+            { IsHeader = false; PageIndex = pageIndex; Kind = "textbox"; Section = 0; PartIndex = -1; Label = "Text box"
+              Main = doc; Edited = doc; PartBlocks = []; EntryBlocks = entry; Folded = ResizeArray()
+              Box = Some boxId; BoxFolded = ResizeArray() }
+        enterStory handler session selection
+        true
+    | _ -> false
 
 let canUndo (handler: InputHandler) = not handler.History.Undos.IsEmpty
 let canRedo (handler: InputHandler) = not handler.History.Redos.IsEmpty
@@ -1218,6 +1293,20 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             e.preventDefault()
             canvas.focus()
         else
+        // A click in a text box edits its text; one outside the box that is edited goes back to the body.
+        let boxAt = shapeAt handler.RenderContext handler.Document x y
+        (match handler.Story with
+         | Some session when session.Box.IsSome ->
+            if boxAt <> session.Box then
+                exitStory handler |> ignore
+                match boxAt with
+                | Some boxId -> enterTextBox handler boxId None |> ignore
+                | None -> ()
+         | Some _ -> ()
+         | None ->
+            match boxAt with
+            | Some boxId -> enterTextBox handler boxId None |> ignore
+            | None -> ())
         // Check if clicking on an image first
         match hitTestForImage handler.RenderContext handler.Document x y with
         | Some (blockId, offset, width, height, imageX, imageY) ->
@@ -1458,6 +1547,7 @@ let updateDocument _ _ = ()
 let repaint _ = ()
 let applyEdit _ _ _ = ()
 let applyEditAtStoryPlace _ _ _ _ _ = ()
+let enterTextBox _ _ _ = false
 let loadDocument _ _ = ()
 let extendDocuments _ _ = ()
 let undo _ = false

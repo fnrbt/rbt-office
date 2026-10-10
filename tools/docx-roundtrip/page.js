@@ -33,7 +33,8 @@ const IMAGE_KEYS = ['ImageLinked', 'ImageWidth', 'ImageHeight', 'ImageFloating',
     'ImageAllowOverlap', 'ImageLayoutInCell', 'ImageAlt', 'ImageTitle'];
 const SHAPE_KEYS = ['Width', 'Height', 'X', 'Y', 'Geometry', 'CustomPath', 'CustomW', 'CustomH', 'Gradient', 'Rotation', 'FillColor', 'BorderColor', 'BorderWidth',
     'NoFill', 'NoLine', 'BorderDash', 'Inline', 'Wrap', 'PositionHRelativeFrom', 'PositionVRelativeFrom', 'PositionHAlign', 'PositionVAlign', 'BehindDoc',
-    'RelativeHeight', 'AnchorBlock', 'DistanceTop', 'DistanceBottom', 'DistanceLeft', 'DistanceRight'];
+    'RelativeHeight', 'AnchorBlock', 'DistanceTop', 'DistanceBottom', 'DistanceLeft', 'DistanceRight',
+    'InsetLeft', 'InsetTop', 'InsetRight', 'InsetBottom', 'VerticalAnchor', 'AutoFit', 'NoTextWrap', 'FitText', 'Opacity'];
 const PARA_KEYS = ['Type', 'Style', 'Alignment', 'ListStyle', 'ListLevel', 'ListId', 'ListNumberFormat', 'ListLevelText', 'ListStart',
     'IndentLeft', 'IndentRight', 'FirstLineIndent', 'SpacingBefore', 'SpacingAfter', 'LineSpacing', 'LineSpacingRule',
     'TabStops', 'Rtl', 'BackgroundColor', 'ParagraphBorders', 'PageBreakBefore', 'PageBreakBeforeDerived', 'PageBreakAfter', 'SectionBreak',
@@ -108,6 +109,11 @@ function summarise(items, prefix, out) {
             const props = pick(item, SHAPE_KEYS);
             // A shape that says nothing about these is written with what it then means.
             props.Geometry ??= 'rect'; props.Rotation ??= 0; props.BorderWidth ??= 1;
+            // (The insets a shape does not state are the tenth and the twentieth of an inch it is written with; the top is where its text is anchored.)
+            props.InsetLeft = Math.round((props.InsetLeft ?? 9.6) * 100) / 100; props.InsetRight = Math.round((props.InsetRight ?? 9.6) * 100) / 100;
+            props.InsetTop = Math.round((props.InsetTop ?? 4.8) * 100) / 100; props.InsetBottom = Math.round((props.InsetBottom ?? 4.8) * 100) / 100;
+            props.VerticalAnchor ??= 't'; props.AutoFit = props.AutoFit === true; props.NoTextWrap = props.NoTextWrap === true; props.FitText = props.FitText === true;
+            if (props.FitText) { props.InsetLeft = props.InsetRight = props.InsetTop = props.InsetBottom = null; props.VerticalAnchor = null; props.BorderWidth = null; props.BorderColor = null; props.RelativeHeight = null; props.Wrap = null; props.Geometry = null; props.FillColor = (props.FillColor ?? '').toUpperCase(); }
             if (!props.NoFill && !props.Gradient) props.FillColor = (props.FillColor ?? '#FFFFFF').toUpperCase();
             if (!props.NoLine) props.BorderColor = (props.BorderColor ?? '#808080').toUpperCase();
             if (!props.Inline) {

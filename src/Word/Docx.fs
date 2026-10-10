@@ -1086,6 +1086,16 @@ let rec private blockFromEditor (item: obj) =
                 DistanceRight = optionalNumberAsFloat (item?DistanceRight)
                 BorderDash = optionalString (item?BorderDash)
                 Name = optionalString (item?Name)
+                InsetLeft = optionalNumberAsFloat (item?InsetLeft)
+                InsetTop = optionalNumberAsFloat (item?InsetTop)
+                InsetRight = optionalNumberAsFloat (item?InsetRight)
+                InsetBottom = optionalNumberAsFloat (item?InsetBottom)
+                VerticalAnchor = optionalString (item?VerticalAnchor)
+                AutoFit = boolOrDefault false (item?AutoFit)
+                NoTextWrap = boolOrDefault false (item?NoTextWrap)
+                FitText = boolOrDefault false (item?FitText)
+                Opacity = optionalNumberAsFloat (item?Opacity) |> Option.defaultValue 1.0
+                SourceXml = optionalString (item?SourceXml)
         }
 
     | "Table" ->
@@ -2068,6 +2078,21 @@ let private gatherVerticalMergeContent (rows: TableRow list) : TableRow list =
                         cells.[rowIndex].[cellIndex] <- { cell with Content = cell.Content @ List.ofSeq gathered }
         rows |> List.mapi (fun rowIndex row -> { row with Cells = List.ofArray cells.[rowIndex] })
 
+/// The shapes of the document that was read, by their ids, while a document
+/// is exported for a save (null otherwise): a shape that is still what was
+/// read is written as the element it was read from - its DrawingML and its
+/// VML fallback as they were, whatever of them the model does not hold.
+let mutable private importedTextBoxes : Dictionary<string, TextBoxBlock> = null
+
+let private textBoxIsAsImported (textBox: TextBoxBlock) : bool =
+    textBox.SourceXml.IsSome
+    && not (isNull importedTextBoxes)
+    && (match importedTextBoxes.TryGetValue textBox.Id with
+        | true, original ->
+            obj.ReferenceEquals(original, textBox)
+            || (obj.ReferenceEquals(original.Content, textBox.Content) && { original with Content = [] } = { textBox with Content = [] })
+        | false, _ -> false)
+
 let rec private blockToEditor (context: WordStyles.DocumentStyleContext option) block =
     match block with
     | Paragraph para -> paragraphToEditor context "Paragraph" 0 para
@@ -2118,6 +2143,17 @@ let rec private blockToEditor (context: WordStyles.DocumentStyleContext option) 
             "DistanceRight" ==> textBox.DistanceRight
             "BorderDash" ==> textBox.BorderDash
             "Name" ==> textBox.Name
+            "InsetLeft" ==> textBox.InsetLeft
+            "InsetTop" ==> textBox.InsetTop
+            "InsetRight" ==> textBox.InsetRight
+            "InsetBottom" ==> textBox.InsetBottom
+            "VerticalAnchor" ==> textBox.VerticalAnchor
+            "AutoFit" ==> textBox.AutoFit
+            "NoTextWrap" ==> textBox.NoTextWrap
+            "FitText" ==> textBox.FitText
+            "Opacity" ==> (if textBox.Opacity < 0.999 then Some textBox.Opacity else None)
+            // (Its element as it was read, while the shape is what was read: see importedTextBoxes.)
+            "SourceXml" ==> (if textBoxIsAsImported textBox then textBox.SourceXml else None)
             "X" ==> textBox.X
             "Y" ==> textBox.Y
             "PositionHRelativeFrom" ==> textBox.PositionHRelativeFrom
@@ -2246,8 +2282,8 @@ let private headerFooterPartsToEditor context (parts: HeaderFooterPart list) : o
             "Type" ==> part.Kind
             "Kind" ==> part.Kind
             "RelationshipId" ==> part.RelationshipId
-            "Paragraphs" ==> (part.Blocks |> List.map (blockToEditor context) |> List.toArray)
-            "Blocks" ==> (part.Blocks |> List.map (blockToEditor context) |> List.toArray)
+            "Paragraphs" ==> (blocksInAnchorOrder part.Blocks |> List.map (blockToEditor context) |> List.toArray)
+            "Blocks" ==> (blocksInAnchorOrder part.Blocks |> List.map (blockToEditor context) |> List.toArray)
         ])
     |> List.toArray
 
@@ -2703,9 +2739,8 @@ let private listSignatures (doc: Document) =
         | _ -> ()
     signatures
 
-let exportDocumentPackage (doc: Document) : obj =
+let private exportDocumentPackageOf (doc: Document) (imported: Document option) : obj =
     let context = Some (WordStyles.styleContext doc)
-    let imported : Document option = importedDocumentOf doc.Package.Imported
     let footnotes = notesToEditor context "footnote" doc
     let endnotes = notesToEditor context "endnote" doc
     let comments = commentsToEditor context doc
@@ -2772,3 +2807,22 @@ let exportDocumentPackage (doc: Document) : obj =
         "HeaderParts" ==> partsWithSource doc.HeaderParts (imported |> Option.map (fun original -> original.HeaderParts) |> Option.defaultValue [])
         "FooterParts" ==> partsWithSource doc.FooterParts (imported |> Option.map (fun original -> original.FooterParts) |> Option.defaultValue [])
     ]
+
+let exportDocumentPackage (doc: Document) : obj =
+    let imported : Document option = importedDocumentOf doc.Package.Imported
+    // (The shapes that were read, for the ones that are written as they were: see importedTextBoxes.)
+    let shapes = Dictionary<string, TextBoxBlock>()
+    match imported with
+    | Some original ->
+        let note (blocks: Block list) =
+            for block in blocks do
+                match block with
+                | TextBox textBox when textBox.SourceXml.IsSome -> shapes.[textBox.Id] <- textBox
+                | _ -> ()
+        note original.Blocks
+        for part in original.HeaderParts do note part.Blocks
+        for part in original.FooterParts do note part.Blocks
+    | None -> ()
+    importedTextBoxes <- (if shapes.Count > 0 then shapes else null)
+    try exportDocumentPackageOf doc imported
+    finally importedTextBoxes <- null

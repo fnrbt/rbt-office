@@ -1023,6 +1023,28 @@ module API =
         let newDoc = Doc.setSelection { BlockId = anchorBlockId; Offset = anchorOffset } { BlockId = focusBlockId; Offset = focusOffset } editor.Doc
         commitDocumentUpdate editor newDoc
 
+    /// The shapes (text boxes) of the body where they are painted: Id, X (from
+    /// the left edge of the shape's page), Y (down the document), Width,
+    /// Height - layout pixels, as getLayoutLines -, BehindText, RelativeHeight,
+    /// Wrap, AnchorBlockId and Text.
+    let getShapeRects (editor: Editor) : obj array =
+        ensureLoaded editor
+        Ren.shapeRects editor.Handler.RenderContext editor.Doc
+        |> List.map (fun (textBox, x, y, width, height) ->
+            createObj [
+                "Id" ==> textBox.Id
+                "X" ==> x
+                "Y" ==> y
+                "Width" ==> width
+                "Height" ==> height
+                "BehindText" ==> (textBox.BehindDoc = Some true)
+                "RelativeHeight" ==> textBox.RelativeHeight
+                "Wrap" ==> WordLayout.Floating.textBoxWrap textBox
+                "AnchorBlockId" ==> textBox.AnchorBlockId
+                "Text" ==> (textBox.Content |> List.map (fun para -> TextBuffer.toString para.Buffer) |> String.concat "\n")
+            ])
+        |> List.toArray
+
     let getSelection (editor: Editor) =
         match editor.Doc.Selection with
         | None -> null
@@ -1091,7 +1113,8 @@ module API =
                             "Height" ==> height
                             "Floating" ==> floating
                             "Wrap" ==> wrap
-                            "RelativeHeight" ==> relativeHeight
+                            "RelativeHeight" ==> snd (Layout.splitSegmentHeight relativeHeight)
+                            "BehindText" ==> fst (Layout.splitSegmentHeight relativeHeight)
                         ])
                     | Layout.MathSegment (_, style, x, width, ascent, descent, startOffset, _) ->
                         result.Add(createObj [
@@ -1796,7 +1819,8 @@ module API =
                             "Height" ==> height
                             "Floating" ==> floating
                             "Wrap" ==> wrap
-                            "RelativeHeight" ==> relativeHeight
+                            "RelativeHeight" ==> snd (Layout.splitSegmentHeight relativeHeight)
+                            "BehindText" ==> fst (Layout.splitSegmentHeight relativeHeight)
                         ])
                     | Layout.MathSegment (_, _, x, width, _, _, startOffset, _) ->
                         text.Append "\uFFFC" |> ignore
@@ -2468,6 +2492,10 @@ module API =
 
     // ---- headers and footers edited in place ----------------------------------
 
+    /// The header or footer being edited in place (None in the body, and in a text box).
+    let private headerFooterStory (editor: Editor) : Inp.StorySession option =
+        editor.Handler.Story |> Option.filter (fun session -> session.Box.IsNone)
+
     let private storyLabel (isHeader: bool) (kind: string) =
         (match kind with
          | "first" -> "First Page "
@@ -2605,7 +2633,9 @@ module API =
                       Edited = edited
                       PartBlocks = part.Blocks
                       EntryBlocks = Paint.blocksWithRunningFields target.TargetFields part.Blocks
-                      Folded = ResizeArray() }
+                      Folded = ResizeArray()
+                      Box = None
+                      BoxFolded = ResizeArray() }
                 Inp.enterStory editor.Handler session None
                 true
 
@@ -2634,7 +2664,7 @@ module API =
     /// brought up to it, the caret staying where it is in the text. No undo
     /// step; a story nothing was changed in stays unchanged.
     let private refreshStoryFields (editor: Editor) =
-        match editor.Handler.Story with
+        match headerFooterStory editor with
         | Some session when not refreshingStoryFields ->
             let ctx = editor.Handler.RenderContext
             match Ren.runningFieldsOfPage ctx editor.Doc session.PageIndex with
@@ -2669,7 +2699,7 @@ module API =
     ///   the header of the section before it: it states none of its own),
     ///   CanLinkToPrevious (false in the first section) }; null in the body.
     let private headerFooterInfo (editor: Editor) : obj =
-        match editor.Handler.Story with
+        match headerFooterStory editor with
         | None -> null
         | Some session ->
             let whole = wholeDocument editor
@@ -2686,7 +2716,7 @@ module API =
     /// Whether the header or footer being edited is the one of the section
     /// before it ("Link to Previous"). False in the body and in the first section.
     let getHeaderFooterLinkToPrevious (editor: Editor) : bool =
-        match editor.Handler.Story with
+        match headerFooterStory editor with
         | Some session when session.Section > 0 ->
             not (sectionReferences (wholeDocument editor) session.Section session.IsHeader |> List.exists (fun (kind, _) -> kind = session.Kind))
         | _ -> false
@@ -2699,7 +2729,7 @@ module API =
     /// after undo and redo of the step.
     /// False when nothing changed (the body, the first section, already so).
     let setHeaderFooterLinkToPrevious (editor: Editor) (linked: bool) : bool =
-        match editor.Handler.Story with
+        match headerFooterStory editor with
         | Some session when session.Section > 0 && getHeaderFooterLinkToPrevious editor <> linked ->
             let pageIndex, kind, isHeader = session.PageIndex, session.Kind, session.IsHeader
             Inp.exitStory editor.Handler |> ignore
@@ -2764,7 +2794,7 @@ module API =
     /// while one is edited, back to the body. True when the click was taken.
     let private onDoubleClick (editor: Editor) (x: float) (y: float) : bool =
         let ctx = editor.Handler.RenderContext
-        match Ren.pageRegionAt ctx editor.Doc x y, editor.Handler.Story with
+        match Ren.pageRegionAt ctx editor.Doc x y, headerFooterStory editor with
         | Some (_, "body"), Some _ -> Inp.exitStory editor.Handler
         | Some (pageIndex, region), story when region = "header" || region = "footer" ->
             let here =
@@ -2806,10 +2836,12 @@ module API =
             "CanSplitCell" ==> context.CanSplitCell
             "InHyperlink" ==> context.InHyperlink
             "InList" ==> context.InList
-            "InHeaderFooter" ==> editor.Handler.Story.IsSome
+            "InHeaderFooter" ==> (headerFooterStory editor).IsSome
             "Story" ==> (match editor.Handler.Story with
+                         | Some session when session.Box.IsSome -> "textbox"
                          | Some session -> if session.IsHeader then "header" else "footer"
                          | None -> "body")
+            "TextBoxId" ==> (editor.Handler.Story |> Option.bind (fun session -> session.Box))
             "HeaderFooter" ==> headerFooterInfo editor
             "ImageSelected" ==> context.ImageSelected
         ]
@@ -2826,6 +2858,22 @@ module API =
     let insertTextBox (editor: Editor) (text: string) =
         let newDoc = Doc.insertTextBox text editor.Doc
         commitDocumentUpdate editor newDoc
+
+    /// Edit the text of a text box of the body in place (`id`: as
+    /// getShapeRects gives it): the caret goes to the start of its text, and
+    /// typing, selecting, formatting and undo work there as in the body.
+    /// getCaretContext says so (Story "textbox", TextBoxId); Escape, a click
+    /// outside the box, or exitTextBox goes back to the body. False when
+    /// there is no such box (or it is a watermark, whose text is not edited).
+    let enterTextBox (editor: Editor) (id: string) : bool =
+        ensureLoaded editor
+        Inp.enterTextBox editor.Handler id None
+
+    /// Back to the body from a text box that is edited in place. False when none was.
+    let exitTextBox (editor: Editor) : bool =
+        match editor.Handler.Story with
+        | Some session when session.Box.IsSome -> Inp.exitStory editor.Handler
+        | _ -> false
 
     let insertCaption (editor: Editor) (label: string) (captionText: string) =
         let newDoc = Doc.insertCaption label captionText editor.Doc
@@ -3418,6 +3466,7 @@ module API =
             "selectCommentAnchor" ==> selectCommentAnchor
             "getSelection" ==> getSelection
             "setSelection" ==> setSelection
+            "getShapeRects" ==> getShapeRects
             "clearSelection" ==> clearSelection
             "getImageHitTest" ==> getImageHitTest
             "getLayoutSegments" ==> getLayoutSegments
@@ -3546,6 +3595,8 @@ module API =
             "exportToDocx" ==> exportToDocx
             "exportDocumentPackage" ==> exportDocumentPackage
             "insertTextBox" ==> insertTextBox
+            "enterTextBox" ==> enterTextBox
+            "exitTextBox" ==> exitTextBox
             "insertCaption" ==> insertCaption
             "insertCrossReferenceToLatestCaption" ==> insertCrossReferenceToLatestCaption
             "insertEquation" ==> insertEquation

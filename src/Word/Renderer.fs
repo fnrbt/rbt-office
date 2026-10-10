@@ -65,10 +65,10 @@ type PaintFrame = {
     /// IncrementalLayoutState.LayoutSerial): a frame made while the start of a
     /// long document was laid out is not the frame of the layout that has more.
     LayoutSerial: int
-    /// Where the chunks of the pages' headers and footers start in Body (its
-    /// length when there are none): while a header is edited in place the
-    /// body is dimmed below them.
-    FurnitureStart: int
+    /// How many of the chunks of Body - the first ones - are the pages'
+    /// headers and footers: while a header is edited in place the body is
+    /// dimmed below them.
+    FurnitureCount: int
     /// The hover outline the overlay commands were built for.
     Hovered: (string * int) option
     /// The viewport the frame was painted through (None: whole-canvas mode).
@@ -123,6 +123,10 @@ type StoryView = {
     IsHeader: bool
     /// The name on the boundary ("Header", "First Page Footer", ...).
     Label: string
+    /// The story is the text of this text box of the body, not a header or
+    /// footer: the body is not dimmed, and the story's layouts are those of
+    /// the box's text where the page paints the box.
+    Box: BlockId option
 }
 
 /// Rendering context
@@ -448,6 +452,21 @@ let private storyLayouts (ctx: RenderContext) (story: StoryView) (doc: Document)
     let settings = layoutSettings ctx whole
     let bodyLayouts, layoutPages = layoutDocumentWithPages ctx whole
     let pages = framePages.Value ctx whole bodyLayouts layoutPages
+    match story.Box with
+    | Some boxId ->
+        // A text box: its text where the box is painted.
+        match bodyShapeRects settings (measureWithContext ctx) (measureRangeWithContext ctx) whole bodyLayouts pages |> List.tryFind (fun (textBox, _, _, _, _) -> textBox.Id = boxId) with
+        | None -> []
+        | Some (textBox, x, y, _, height) ->
+            let key = y + x / 1000000.0 + height / 1000000000.0
+            match ctx.StoryLayouts with
+            | Some (blocks, known, version, layouts) when obj.ReferenceEquals(blocks, doc.Blocks) && known = key && version = ctx.TextMeasurerVersion -> layouts
+            | _ ->
+                let shown = { textBox with Content = Rbt.Word.Document.paragraphsOfBlocks doc.Blocks }
+                let layouts = shapeTextLayouts settings (measureWithContext ctx) (measureRangeWithContext ctx) whole shown x y height
+                ctx.StoryLayouts <- Some (doc.Blocks, key, ctx.TextMeasurerVersion, layouts)
+                layouts
+    | None ->
     match List.tryItem story.PageIndex pages with
     | None -> []
     | Some page ->
@@ -1064,7 +1083,7 @@ let private shapeFillStyle (ctx: RenderContext) (fill: ShapeFill) (bx, by, bw, b
         g.Stops |> List.iter (fun s -> grad.addColorStop(max 0.0 (min 1.0 s.Offset), s.Color))
         Some (U3.Case2 grad)
 
-let private renderPaintCommand (ctx: RenderContext) = function
+let rec private renderPaintCommand (ctx: RenderContext) = function
     | DrawText (text, style, x, baseline, width) ->
         match ctx.TextPathPainter with
         | Some paint when paint text style x baseline width -> ()
@@ -1148,6 +1167,22 @@ let private renderPaintCommand (ctx: RenderContext) = function
             setLineDash ctx.Ctx [||]
             ctx.Ctx.stroke()
         | None -> ()
+    | DrawGroup (clip, rotation, centerX, centerY, opacity, _, commands) ->
+        ctx.Ctx.save()
+        if opacity < 0.999 then ctx.Ctx.globalAlpha <- ctx.Ctx.globalAlpha * (max 0.0 opacity)
+        if abs rotation >= 0.01 then
+            ctx.Ctx.translate(centerX, centerY)
+            ctx.Ctx.rotate(rotation * System.Math.PI / 180.0)
+            ctx.Ctx.translate(-centerX, -centerY)
+        match clip with
+        | Some (x, y, width, height) ->
+            ctx.Ctx.beginPath()
+            ctx.Ctx.rect(x, y, width, height)
+            ctx.Ctx.clip()
+        | None -> ()
+        for command in commands do
+            renderPaintCommand ctx command
+        ctx.Ctx.restore()
 
 let private commentAnchorCommands (ctx: RenderContext) (doc: Document) (layouts: BlockLayout list) =
     commentAnchorsForLayouts ctx doc layouts
@@ -1365,15 +1400,20 @@ let private renderFullFrame ctx doc frame =
 
     renderPages ctx frame.Pages
     match ctx.Story with
+    | Some story when story.Box.IsSome ->
+        // A text box edited in place: the page as it is, and over it the box's frame, selection and caret.
+        renderChunks ctx frame.Body
+        renderCommandList ctx frame.StaticOverlay
+        renderCommandList ctx ctx.StoryOverlay
     | Some _ ->
         // The body, dimmed; over it the headers and footers and the story's boundary, selection and caret.
-        let furniture = min frame.FurnitureStart frame.Body.Length
-        renderChunkRangeInBand ctx frame.Body 0 furniture System.Double.NegativeInfinity System.Double.PositiveInfinity
+        let furniture = min frame.FurnitureCount frame.Body.Length
+        renderChunkRangeInBand ctx frame.Body furniture frame.Body.Length System.Double.NegativeInfinity System.Double.PositiveInfinity
         renderCommandList ctx frame.StaticOverlay
         for page in frame.Pages do
             ctx.Ctx.fillStyle <- U3.Case1 storyDimColor
             ctx.Ctx.fillRect(0.0, page.Top, page.Width, page.Height)
-        renderChunkRangeInBand ctx frame.Body furniture frame.Body.Length System.Double.NegativeInfinity System.Double.PositiveInfinity
+        renderChunkRangeInBand ctx frame.Body 0 furniture System.Double.NegativeInfinity System.Double.PositiveInfinity
         renderCommandList ctx ctx.StoryOverlay
     | None ->
         renderChunks ctx frame.Body
@@ -1450,6 +1490,8 @@ let private buildFrame (ctx: RenderContext) (doc: Document) hoveredImage =
     // (The pages of the notes after the body are pages too: they have the headers and footers,
     // and the page count the fields show is theirs.)
     let pages = pageFramesForLayouts ctx settings doc layouts layoutPages
+    // (The chunks of the pages' headers and footers are the first ones: they lie below the body.)
+    let furnitureCount = ref 0
     let body =
         Rbt.Word.Layout.withTablePlanScope ctx.PlanScope (fun () ->
             let chunked =
@@ -1459,7 +1501,9 @@ let private buildFrame (ctx: RenderContext) (doc: Document) hoveredImage =
             ctx.LastLaidOutBlocks <- Rbt.Word.Layout.incrementalLayoutBlocksLaidOut ctx.LayoutState
             ctx.LastCollectedBlocks <- (match chunked with Some _ -> paintCacheCollectedBlocks ctx.PaintCache | None -> -1)
             match chunked with
-            | Some chunks -> chunks
+            | Some chunks ->
+                furnitureCount.Value <- paintCacheFurnitureCount ctx.PaintCache
+                chunks
             | None ->
                 // The whole document's commands at once, as one chunk.
                 let _, commands, _ = collectDocumentCommandsWithLayoutsAndPages settings ctx.FontFamily (measureWithContext ctx) (measureRangeWithContext ctx) doc layouts pages
@@ -1483,12 +1527,7 @@ let private buildFrame (ctx: RenderContext) (doc: Document) hoveredImage =
         PainterVersion = ctx.TextPathPainterVersion
         MeasurerVersion = ctx.TextMeasurerVersion
         LayoutSerial = ctx.LayoutState.LayoutSerial
-        FurnitureStart =
-            // (The chunks of the pages' headers and footers are the last ones, one per page of the layout.)
-            if ctx.LayoutState.LastSlices.IsSome && body.Length > 1
-               && not (doc.Headers.IsEmpty && doc.Footers.IsEmpty && doc.HeaderParts.IsEmpty && doc.FooterParts.IsEmpty) then
-                max 0 (body.Length - List.length pages)
-            else body.Length
+        FurnitureCount = furnitureCount.Value
         Hovered = hoveredImage
         Viewport = ctx.Viewport
         StaticOverlayIndex = None
@@ -1688,14 +1727,19 @@ let private renderViewportBand (ctx: RenderContext) (frame: PaintFrame) (vp: Vie
             ctx.Ctx.clip()
             renderPageSheet ctx page
             match ctx.Story with
+            | Some story when story.Box.IsSome ->
+                // A text box edited in place: the page as it is, and over it the box's frame, selection and caret.
+                renderChunksInBand ctx frame.Body pageTop pageBottom
+                renderChunksInBand ctx [| staticOverlayIndex frame |] pageTop pageBottom
+                renderCommandListInBand ctx { Top = pageTop; Bottom = pageBottom } ctx.StoryOverlay
             | Some _ ->
                 // The body, dimmed; over it the headers and footers and the story's boundary, selection and caret.
-                let furniture = min frame.FurnitureStart frame.Body.Length
-                renderChunkRangeInBand ctx frame.Body 0 furniture pageTop pageBottom
+                let furniture = min frame.FurnitureCount frame.Body.Length
+                renderChunkRangeInBand ctx frame.Body furniture frame.Body.Length pageTop pageBottom
                 renderChunksInBand ctx [| staticOverlayIndex frame |] pageTop pageBottom
                 ctx.Ctx.fillStyle <- U3.Case1 storyDimColor
                 ctx.Ctx.fillRect(0.0, pageTop, page.Width, pageBottom - pageTop)
-                renderChunkRangeInBand ctx frame.Body furniture frame.Body.Length pageTop pageBottom
+                renderChunkRangeInBand ctx frame.Body 0 furniture pageTop pageBottom
                 renderCommandListInBand ctx { Top = pageTop; Bottom = pageBottom } ctx.StoryOverlay
             | None ->
                 renderChunksInBand ctx frame.Body pageTop pageBottom
@@ -1778,7 +1822,19 @@ let private renderCore (ctx: RenderContext) (doc: Document) hoveredImage =
         let tryFind (blockId: string) = layouts |> List.tryFind (fun layout -> layout.BlockId = blockId)
         let boundary =
             let bodyLayouts, layoutPages = layoutDocumentWithPages ctx whole
-            match List.tryItem story.PageIndex (pageFramesForLayouts ctx settings whole bodyLayouts layoutPages) with
+            let pages = pageFramesForLayouts ctx settings whole bodyLayouts layoutPages
+            match story.Box with
+            | Some boxId ->
+                // A text box: a frame around it.
+                match bodyShapeRects settings (measureWithContext ctx) (measureRangeWithContext ctx) whole bodyLayouts pages |> List.tryFind (fun (textBox, _, _, _, _) -> textBox.Id = boxId) with
+                | Some (_, x, y, width, height) ->
+                    [ StrokeLine ("#5b9bd5", 1.0, 2, 0.0, x - 2.5, y - 2.5, x + width + 2.5, y - 2.5)
+                      StrokeLine ("#5b9bd5", 1.0, 2, 0.0, x + width + 2.5, y - 2.5, x + width + 2.5, y + height + 2.5)
+                      StrokeLine ("#5b9bd5", 1.0, 2, 0.0, x + width + 2.5, y + height + 2.5, x - 2.5, y + height + 2.5)
+                      StrokeLine ("#5b9bd5", 1.0, 2, 0.0, x - 2.5, y + height + 2.5, x - 2.5, y - 2.5) ]
+                | None -> []
+            | None ->
+            match List.tryItem story.PageIndex pages with
             | Some page -> storyBoundaryCommands settings ctx.FontFamily page story.IsHeader story.Label
             | None -> []
         ctx.StoryOverlay <-
@@ -1975,6 +2031,35 @@ let pageFrames (ctx: RenderContext) (doc: Document) =
     let layouts, pages = layoutDocumentWithPages ctx doc
     pageFramesForLayouts ctx (layoutSettings ctx doc) doc layouts pages
 
+/// Where the shapes (text boxes) of the body are painted: each with its left
+/// edge from the left edge of its page, its top down the canvas (layout
+/// pixels), its width and its height.
+let shapeRects (ctx: RenderContext) (doc: Document) : (TextBoxBlock * float * float * float * float) list =
+    let doc = bodyDocument ctx doc
+    if not (doc.Blocks |> List.exists (function TextBox _ -> true | _ -> false)) then []
+    else
+        let layouts, pages = layoutDocumentWithPages ctx doc
+        let settings = layoutSettings ctx doc
+        bodyShapeRects settings (measureWithContext ctx) (measureRangeWithContext ctx) doc layouts (pageFramesForLayouts ctx settings doc layouts pages)
+
+/// The text box in front of the text that a point (layout coordinates) is in
+/// - the one painted last of those that hold it. A box behind the text, and
+/// one whose text is drawn as large as the box (a watermark), is not found by
+/// a point: the text over it is.
+let shapeAt (ctx: RenderContext) (doc: Document) (x: float) (y: float) : BlockId option =
+    shapeRects ctx doc
+    |> List.filter (fun (textBox, left, top, width, height) ->
+        not (textBox.BehindDoc = Some true) && not textBox.FitText && x >= left && x <= left + width && y >= top && y <= top + height)
+    |> List.sortBy (fun (textBox, _, _, _, _) ->
+        match textBox.RelativeHeight with
+        | Some text ->
+            match System.Double.TryParse text with
+            | true, number -> number
+            | false, _ -> 0.0
+        | None -> 0.0)
+    |> List.tryLast
+    |> Option.map (fun (textBox, _, _, _, _) -> textBox.Id)
+
 /// Number of pages the document lays out to, including footnote/endnote areas.
 /// Pages are stacked with pageGap between them, but need not be the same size
 /// (sections); hosts size the canvas from pageFrames. The whole document is
@@ -2070,6 +2155,8 @@ let createContext _ = ()
 let render _ _ = ()
 let pageCount _ _ = 1
 let pageFrames _ _ = []
+let shapeRects _ _ = []
+let shapeAt _ _ _ _ = None
 let renderWithHover _ _ _ = ()
 let setViewport _ _ = ()
 let documentSize _ _ = 0.0, 0.0, 0

@@ -898,7 +898,7 @@ let private handleKey width height state (ev: KeyEvent) =
     | { Ctrl = false; Alt = false; Key = key } when key.Length = 1 -> applyDocumentChange state (insertPlainTextWithPendingStyle state key)
     | _ -> false
 
-let private toRendererCommand (resolveImage: string -> Framebuffer option) = function
+let rec private toRendererCommand (resolveImage: string -> Framebuffer option) = function
     | WordPaint.DrawText (text, style, x, baseline, _) ->
         let font = textFont style
         [ Cmd.DrawGlyphs(vec2 x baseline, Rbt.Renderer.Text.layout font (pointsToPixels style.FontSize) text, Solid (parseHexColor style.Color)) ]
@@ -967,6 +967,23 @@ let private toRendererCommand (resolveImage: string -> Framebuffer option) = fun
                 [ Cmd.StrokePath(rpath, style) ]
             | None -> []
         fillCmds @ strokeCmds
+
+    | WordPaint.DrawGroup (clip, rotation, centerX, centerY, opacity, _, inner) ->
+        // A text box or shape with its text: clipped to its box, turned about its centre, translucent.
+        let innerCmds = inner |> List.collect (toRendererCommand resolveImage)
+        let clipped =
+            match clip with
+            | Some (x, y, width, height) ->
+                [ Cmd.Clip([ MoveTo (vec2 x y); LineTo (vec2 (x + width) y); LineTo (vec2 (x + width) (y + height)); LineTo (vec2 x (y + height)); Close ], NonZero, innerCmds) ]
+            | None -> innerCmds
+        if abs rotation < 0.01 && opacity >= 0.999 then clipped
+        else
+            let angle = rotation * System.Math.PI / 180.0
+            let c, s = cos angle, sin angle
+            let xform : Matrix3x2 =
+                { M11 = c; M12 = s; M21 = -s; M22 = c
+                  DX = centerX - centerX * c + centerY * s; DY = centerY - centerX * s - centerY * c }
+            [ Cmd.Group(xform, opacity, clipped) ]
 
 let commands (width: float) (height: float) (resolveImage: string -> Framebuffer option) (hoveredImage: (BlockId * int) option) (doc: Document) =
     let settings = layoutSettings width doc

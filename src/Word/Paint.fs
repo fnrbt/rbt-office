@@ -152,6 +152,12 @@ type PaintCommand =
     /// A vector shape (preset/custom geometry) with absolute page-coordinate path
     /// segments, an optional stroke, and a gradient bounding box (for gradient fills).
     | DrawShape of fill: ShapeFill * stroke: string option * strokeWidth: float * bbox: (float * float * float * float) * segs: PathSeg list
+    /// Commands drawn together (a text box, a shape with its text, WordArt):
+    /// clipped to a rectangle (x, y, width, height) when one is given, turned
+    /// by `rotation` degrees clockwise about (`centerX`, `centerY`), at an
+    /// `opacity` (1: opaque). `bbox`: a rectangle (x, y, width, height) on the
+    /// page that holds all of it as it is painted - turned.
+    | DrawGroup of clip: (float * float * float * float) option * rotation: float * centerX: float * centerY: float * opacity: float * bbox: (float * float * float * float) * commands: PaintCommand list
 
 let commandYExtent = function
     | DrawText (_, style, _, baseline, _) ->
@@ -188,6 +194,65 @@ let commandYExtent = function
                 bottom <- max bottom (max c1y (max c2y sy))
             | PClose -> ()
         Some (top - pad, bottom + pad)
+    | DrawGroup (_, _, _, _, _, (_, y, _, height), _) ->
+        Some (y - 1.0, y + height + 1.0)
+
+// ---- anchored drawings and the order they are painted in --------------------
+// A page is painted in layers: the anchored drawings that stand behind the
+// text (wp:anchor behindDoc="1"), the text, the anchored drawings in front of
+// it - the drawings of a layer in the order of their relativeHeight, the
+// lowest first, and those of one height in the order of the document. The
+// headers and footers of a page - their drawings too, a watermark - lie below
+// all of the body. (Every drawing was painted with its paragraph, a text box
+// after all the text: what covered what followed from the order of the
+// paragraphs.)
+
+/// The paint commands of an anchored drawing (a floating picture, a text box,
+/// a shape) and its place among the drawings of its page.
+type Drawing = {
+    DrawingBehind: bool
+    DrawingZ: float
+    DrawingCommands: PaintCommand array
+}
+
+/// The number of a relativeHeight (0 when the file gives none).
+let private drawingHeight (value: string option) : float =
+    match value with
+    | Some text ->
+        // (The one-argument form: Fable's parse with a number style and a culture found no number.)
+        match System.Double.TryParse(text: string) with
+        | true, number -> number
+        | false, _ -> 0.0
+    | None -> 0.0
+
+/// Where the anchored drawings of what is being collected go (null: with the
+/// commands of their paragraph, in the order of the text).
+let mutable private drawingSink : ResizeArray<Drawing> = null
+
+/// `collect`, the anchored drawings of what it collects given to `sink`.
+let private withDrawingSink (sink: ResizeArray<Drawing>) (collect: unit -> 'T) : 'T =
+    let outer = drawingSink
+    drawingSink <- sink
+    try collect ()
+    finally drawingSink <- outer
+
+/// The drawings of a layer in the order they are painted in.
+let private drawingsInOrder (behind: bool) (drawings: ResizeArray<Drawing>) : Drawing list =
+    drawings
+    |> Seq.filter (fun drawing -> drawing.DrawingBehind = behind)
+    |> Seq.toList
+    // (List.sortBy keeps the order of the document among equal heights.)
+    |> List.sortBy (fun drawing -> drawing.DrawingZ)
+
+/// The commands of text and of its anchored drawings in the order of the layers.
+let private commandsInLayers (own: ResizeArray<PaintCommand>) (drawings: ResizeArray<Drawing>) : ResizeArray<PaintCommand> =
+    if drawings.Count = 0 then own
+    else
+        let result = ResizeArray<PaintCommand>(own.Count + drawings.Count * 2)
+        for drawing in drawingsInOrder true drawings do result.AddRange drawing.DrawingCommands
+        result.AddRange own
+        for drawing in drawingsInOrder false drawings do result.AddRange drawing.DrawingCommands
+        result
 
 type private LayoutIndex = {
     ById: Dictionary<BlockId, BlockLayout>
@@ -1065,7 +1130,9 @@ let private addParagraphCommandsWithBaselineOffset baselineOffset (settings: Lay
                         acc <- acc + cw
                 | _ -> ()
 
-            | ImageSegment (src, x, yOffset, width, height, _, _, _, _, cropLeft, cropTop, cropRight, cropBottom) ->
+            | ImageSegment (src, x, yOffset, width, height, _, floating, _, relativeHeight, cropLeft, cropTop, cropRight, cropBottom) ->
+                // (An anchored picture is a drawing of its page: see Drawing.)
+                let target = if floating && not (isNull drawingSink) then ResizeArray<PaintCommand>() else commands
                 let imageX = settings.PaddingLeft + x + lineAlignmentOffset
                 let imageY = line.Y + yOffset
                 if src.StartsWith TextBuffer.opaqueSourcePrefix then
@@ -1082,8 +1149,8 @@ let private addParagraphCommandsWithBaselineOffset baselineOffset (settings: Lay
                         | _ -> None
                     match label with
                     | Some text when width > 0.0 && height > 0.0 ->
-                        commands.Add(FillRect ("#F3F4F6", imageX, imageY, width, height))
-                        commands.Add(StrokeRect ("#9CA3AF", 1.0, imageX, imageY, width, height))
+                        target.Add(FillRect ("#F3F4F6", imageX, imageY, width, height))
+                        target.Add(StrokeRect ("#9CA3AF", 1.0, imageX, imageY, width, height))
                         // The label at its natural size, in the middle of the frame. (The
                         // width given to DrawText is the width the text is fitted to: it is
                         // the label's own width, not the frame's.) A frame too narrow for
@@ -1100,10 +1167,13 @@ let private addParagraphCommandsWithBaselineOffset baselineOffset (settings: Lay
                                 if shown > 0 then text.Substring(0, shown) + "\u2026" else ""
                         if height >= 20.0 && fitted <> "" then
                             let labelWidth = measureText fitted labelTextStyle
-                            commands.Add(DrawText (fitted, labelStyle, imageX + (width - labelWidth) / 2.0, imageY + height / 2.0 + 13.0 * 0.35, labelWidth))
+                            target.Add(DrawText (fitted, labelStyle, imageX + (width - labelWidth) / 2.0, imageY + height / 2.0 + 13.0 * 0.35, labelWidth))
                     | _ -> ()
                 else
-                    commands.Add(DrawImage (src, imageX, imageY, width, height, cropLeft, cropTop, cropRight, cropBottom))
+                    target.Add(DrawImage (src, imageX, imageY, width, height, cropLeft, cropTop, cropRight, cropBottom))
+                if not (obj.ReferenceEquals(target, commands)) && target.Count > 0 then
+                    let behind, height = splitSegmentHeight relativeHeight
+                    drawingSink.Add { DrawingBehind = behind; DrawingZ = drawingHeight height; DrawingCommands = target.ToArray() }
 
             | MathSegment (prims, style, x, _, _, _, _, _) ->
                 // Emit the pre-laid-out equation primitives relative to the math
@@ -1146,6 +1216,8 @@ type private ParagraphCommandsEntry = {
     Settings: LayoutSettings
     FontFamily: string
     Commands: PaintCommand array
+    /// The paragraph's anchored drawings (not among Commands).
+    Drawings: Drawing array
 }
 
 #if FABLE_COMPILER
@@ -1176,14 +1248,21 @@ let private rememberParagraphCommands (layout: BlockLayout) (entry: ParagraphCom
 /// `addParagraphCommands`, with the commands kept for the next time the same
 /// layout is painted.
 let private addParagraphCommandsKept (settings: LayoutSettings) (fontFamily: string) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (commands: ResizeArray<PaintCommand>) (layout: BlockLayout) =
-    match tryKnownParagraphCommands layout with
-    | Some entry when entry.FontFamily = fontFamily && (obj.ReferenceEquals(entry.Settings, settings) || entry.Settings = settings) ->
-        commands.AddRange entry.Commands
-    | _ ->
-        let start = commands.Count
-        addParagraphCommands settings fontFamily measureText measureRange commands layout
-        let own = Array.init (commands.Count - start) (fun index -> commands.[start + index])
-        rememberParagraphCommands layout { Settings = settings; FontFamily = fontFamily; Commands = own }
+    let entry =
+        match tryKnownParagraphCommands layout with
+        | Some entry when entry.FontFamily = fontFamily && (obj.ReferenceEquals(entry.Settings, settings) || entry.Settings = settings) -> entry
+        | _ ->
+            let own = ResizeArray<PaintCommand>()
+            let drawings = ResizeArray<Drawing>()
+            withDrawingSink drawings (fun () -> addParagraphCommands settings fontFamily measureText measureRange own layout)
+            let entry = { Settings = settings; FontFamily = fontFamily; Commands = own.ToArray(); Drawings = drawings.ToArray() }
+            rememberParagraphCommands layout entry
+            entry
+    commands.AddRange entry.Commands
+    if entry.Drawings.Length > 0 then
+        if isNull drawingSink then
+            for drawing in entry.Drawings do commands.AddRange drawing.DrawingCommands
+        else drawingSink.AddRange entry.Drawings
 
 // Keep line layout stable and correct only the drawn glyph baseline for Word's
 // spaced table cells, whose visual text boxes sit higher than our default paint.
@@ -1975,7 +2054,7 @@ let private blocksForPage (preferredKind: string) pageIndex fallbackBlocks (part
         | Some part -> part.Blocks
         | None -> []
 
-let private shiftCommandY dy command =
+let rec private shiftCommandY dy command =
     match command with
     | DrawText (t, s, x, b, w) -> DrawText (t, s, x, b + dy, w)
     | DrawUnderline (c, s, x, y, w) -> DrawUnderline (c, s, x, y + dy, w)
@@ -1985,6 +2064,8 @@ let private shiftCommandY dy command =
     | StrokeLine (c, lw, ds, doff, x1, y1, x2, y2) -> StrokeLine (c, lw, ds, doff, x1, y1 + dy, x2, y2 + dy)
     | DrawShape (fill, stroke, sw, (bx, by, bw, bh), segs) ->
         DrawShape (fill, stroke, sw, (bx, by + dy, bw, bh), Shapes.translatePath 0.0 dy segs)
+    | DrawGroup (clip, rotation, cx, cy, opacity, (bx, by, bw, bh), commands) ->
+        DrawGroup (clip |> Option.map (fun (x, y, w, h) -> (x, y + dy, w, h)), rotation, cx, cy + dy, opacity, (bx, by + dy, bw, bh), commands |> List.map (shiftCommandY dy))
 
 let private shiftCommandsY dy commands =
     if abs dy < 0.001 then
@@ -1999,40 +2080,172 @@ let private shiftCommandsY dy commands =
 let private storyTableDocument (doc: Document) (table: TableBlock) : Document =
     { Rbt.Word.Document.empty with Blocks = [ Table table ]; Selection = None; Styles = doc.Styles }
 
-let private repeatedBlockCommands (settings: LayoutSettings) fontFamily measureText measureRange (doc: Document) (values: RunningFieldValues) startY blocks =
+/// A shape's fill and outline, its box at `x`, `y` and `height` high (not turned).
+let private shapeFrameCommands (textBox: TextBoxBlock) (x: float) (y: float) (height: float) : PaintCommand list =
+    let commands = ResizeArray<PaintCommand>()
+    let borderWidth = textBox.BorderWidth |> Option.defaultValue 1.0
+    let useShape = (match textBox.Geometry with GeoRect -> false | _ -> true) || textBox.Gradient.IsSome || textBox.BorderDash.IsSome
+    if useShape then
+        let segs = Shapes.geometryPath textBox.Geometry textBox.Width height |> Shapes.translatePath x y
+        let fill =
+            match textBox.Gradient with
+            | Some g -> FillGradient g
+            | None -> match textBox.FillColor with Some c -> FillSolid c | None -> FillNone
+        if fill <> FillNone || textBox.BorderColor.IsSome then
+            commands.Add(DrawShape(fill, textBox.BorderColor, borderWidth, (x, y, textBox.Width, height), segs))
+    else
+        textBox.FillColor |> Option.iter (fun color -> commands.Add(FillRect (color, x, y, textBox.Width, height)))
+        textBox.BorderColor |> Option.iter (fun color -> commands.Add(StrokeRect (color, borderWidth, x, y, textBox.Width, height)))
+    resizeArrayToList commands
+
+/// Text drawn as large as its shape (WordArt, a watermark): one line in the
+/// face and colour of its first run, as wide as the shape or as high.
+let private fittedTextCommands (fontFamily: string) (measureText: TextMeasurer) (textBox: TextBoxBlock) (x: float) (y: float) (height: float) : PaintCommand list =
+    let text = textBox.Content |> List.map (fun para -> TextBuffer.toString para.Buffer) |> String.concat " "
+    if System.String.IsNullOrWhiteSpace text || textBox.Width <= 0.0 || height <= 0.0 then []
+    else
+        let style =
+            textBox.Content
+            |> List.tryPick (fun para -> para.Buffer.Runs |> List.tryPick (function TextBuffer.Text run -> Some run.Style | _ -> None))
+            |> Option.defaultValue TextBuffer.defaultStyle
+        let probe = { style with FontSize = 100.0 }
+        let natural = measureText text probe
+        if natural <= 0.0 then []
+        else
+            // (A line of a face is about 1.2 times its size high.)
+            let size = min (100.0 * textBox.Width / natural) (height / 1.2)
+            let fitted = { style with FontSize = size }
+            let width = measureText text fitted
+            let paintStyle = { styleFromTextStyle fitted with FontFamily = (styleFromTextStyle fitted).FontFamily |> Option.orElse (Some fontFamily) }
+            [ DrawText (text, paintStyle, x + (textBox.Width - width) / 2.0, y + height / 2.0 + size * 0.35, width) ]
+
+/// A text box or shape, its box at `x`, `y` (across and down the canvas) and
+/// `height` high: its fill and outline, and its text inside its insets -
+/// from the top, the middle or the bottom of the shape -, clipped to the
+/// shape when the shape has a height of its own; all of it turned when the
+/// shape is. (The text stood 6 pixels inside the box whatever the shape said,
+/// ran out of the box below, and stayed upright in a turned shape.)
+let private textBoxCommandsAt (settings: LayoutSettings) fontFamily measureText measureRange (styleContext: DocumentStyleContext) (textBox: TextBoxBlock) (x: float) (y: float) (height: float) : PaintCommand list =
+    let frame = shapeFrameCommands textBox x y height
+    let text = ResizeArray<PaintCommand>()
+    if textBox.FitText then text.AddRange (fittedTextCommands fontFamily measureText textBox x y height)
+    else
+        // (A picture anchored in the box's text is part of the box.)
+        let outerSink = drawingSink
+        drawingSink <- null
+        try
+            for layout in textBoxContentLayouts settings measureText measureRange styleContext textBox x y height do
+                addParagraphCommands settings fontFamily measureText measureRange text layout
+        finally drawingSink <- outerSink
+    let turned = abs textBox.Rotation >= 0.01
+    let clipped = text.Count > 0 && not textBox.AutoFit && not textBox.NoTextWrap && not textBox.FitText
+    let translucent = textBox.Opacity < 0.999
+    if not turned && not clipped && not translucent then frame @ resizeArrayToList text
+    else
+        let pad = (textBox.BorderWidth |> Option.defaultValue 1.0) + 1.0
+        let centerX, centerY = x + textBox.Width / 2.0, y + height / 2.0
+        let bbox =
+            if turned then
+                let radius = sqrt (textBox.Width * textBox.Width + height * height) / 2.0 + pad
+                (centerX - radius, centerY - radius, radius * 2.0, radius * 2.0)
+            else (x - pad, y - pad, textBox.Width + pad * 2.0, height + pad * 2.0)
+        let inner =
+            if clipped then frame @ [ DrawGroup (Some (x, y, textBox.Width, height), 0.0, centerX, centerY, 1.0, (x, y, textBox.Width, height), resizeArrayToList text) ]
+            else frame @ resizeArrayToList text
+        if not turned && not translucent then inner
+        else [ DrawGroup (None, textBox.Rotation, centerX, centerY, textBox.Opacity, bbox, inner) ]
+
+/// Where a shape is: its left edge and top (across and down the canvas) and
+/// its height. `anchorTop`: the top of the block it is anchored in, as laid
+/// out (None for a shape without an anchor, or whose anchor has no layout:
+/// by its offsets from the first page's margins, as before).
+let private textBoxPlace (settings: LayoutSettings) measureText measureRange (styleContext: DocumentStyleContext) (pages: PageInfo array) (anchorTop: float option) (textBox: TextBoxBlock) : struct (float * float * float) =
+    let height = textBoxFrameHeight settings measureText measureRange styleContext textBox
+    match anchorTop with
+    | Some top when pages.Length > 0 ->
+        let info = pages.[pageIndexForY pages top]
+        let page : WordLayout.Floating.AnchorPage =
+            { PageWidth = info.Width; PageHeight = info.Height; MarginLeft = info.MarginLeft; MarginRight = info.MarginRight; MarginTop = info.MarginTop; MarginBottom = info.MarginBottom }
+        let box = WordLayout.Floating.anchoredTextBoxBox page info.Top top height textBox
+        struct (info.MarginLeft + box.X, box.Y, height)
+    | _ ->
+        let box = WordLayout.Floating.textBoxCanvasBox settings.PaddingLeft settings.PaddingTop textBox
+        struct (box.X, box.Y, height)
+
+/// A text box as a drawing of its page.
+let private textBoxDrawing (settings: LayoutSettings) fontFamily measureText measureRange (styleContext: DocumentStyleContext) (pages: PageInfo array) (anchorTop: float option) (textBox: TextBoxBlock) : Drawing =
+    let struct (x, y, height) = textBoxPlace settings measureText measureRange styleContext pages anchorTop textBox
+    { DrawingBehind = (textBox.BehindDoc = Some true)
+      DrawingZ = drawingHeight textBox.RelativeHeight
+      DrawingCommands = textBoxCommandsAt settings fontFamily measureText measureRange styleContext textBox x y height |> List.toArray }
+
+/// The paragraph whose layout says where a block starts.
+let rec private firstParagraphIdOf (block: Block) : BlockId option =
+    match block with
+    | Paragraph para
+    | Heading (_, para) -> Some para.Id
+    | Table table ->
+        table.Rows |> List.tryPick (fun row -> row.Cells |> List.tryPick (fun cell -> cell.Content |> List.tryHead |> Option.map (fun para -> para.Id)))
+    | TextBox _ -> None
+
+let private repeatedBlockCommands (settings: LayoutSettings) fontFamily measureText measureRange (doc: Document) (values: RunningFieldValues) (page: PageInfo option) startY blocks =
     // (A header's paragraphs have the document's styles - "Header", the default paragraph
     // style - as the body's have: laid out without them they came out in the built-in 11 pt.)
     let styleContext = WordStyles.styleContext doc
     let repeatedSettings = { settings with MarginBottom = 0.0 }
     let maxWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
-    let commands = ResizeArray<PaintCommand>()
     let mutable y = startY
-    for rawBlock in blocks do
-        let block, _ = blockWithRunningFields values rawBlock
-        match block with
-        | Paragraph para
-        | Heading (_, para) ->
-            let safePara = { para with Metadata = { para.Metadata with PageBreakAfter = false } }
-            let layout, _ = layoutParagraphAtWithStyleWithRange repeatedSettings measureText measureRange maxWidth y 0.0 (forBlockInContext styleContext block) (effectiveBufferInContext styleContext) safePara Map.empty
-            addParagraphCommands settings fontFamily measureText measureRange commands layout
-            y <- layout.Y + layout.Height
-        | Table table ->
-            let tableCommands, nextY = tableBorderCommandsCore (Some styleContext) repeatedSettings measureText measureRange table y
-            commands.AddRange(tableCommands)
-            // The borders alone are not the table: lay its cells out as well
-            // and paint their text. The table is laid out at the body origin
-            // on an unpaged measuring page (a header/footer table never
-            // splits) and the resulting commands are moved to y.
-            let measureSettings = { repeatedSettings with PageHeight = max repeatedSettings.PageHeight 1000000.0 }
-            let tableDoc = storyTableDocument doc table
-            let cellCommands = ResizeArray<PaintCommand>()
-            for layout in layoutDocumentWithRange measureSettings measureText measureRange tableDoc do
-                if not (layout.BlockId.StartsWith footnoteBlockIdPrefix) && not (layout.BlockId.StartsWith endnoteBlockIdPrefix) then
-                    addParagraphCommands settings fontFamily measureText measureRange cellCommands layout
-            commands.AddRange(shiftCommandsY (y - measureSettings.PaddingTop) (resizeArrayToList cellCommands))
-            y <- nextY
-        | TextBox _ -> ()
-    resizeArrayToList commands
+    // (The header's own drawings below and above its text: see Drawing.)
+    let commands = ResizeArray<PaintCommand>()
+    let drawings = ResizeArray<Drawing>()
+    let outerSink = drawingSink
+    drawingSink <- drawings
+    // (Where the blocks start, for the shapes anchored in them.)
+    let tops = Dictionary<BlockId, float>()
+    try
+        for rawBlock in blocks do
+            let block, _ = blockWithRunningFields values rawBlock
+            (match block with
+             | Paragraph para
+             | Heading (_, para) -> tops.[para.Id] <- y
+             | Table table -> tops.[table.Id] <- y
+             | TextBox _ -> ())
+            match block with
+            | Paragraph para
+            | Heading (_, para) ->
+                let safePara = { para with Metadata = { para.Metadata with PageBreakAfter = false } }
+                let layout, _ = layoutParagraphAtWithStyleWithRange repeatedSettings measureText measureRange maxWidth y 0.0 (forBlockInContext styleContext block) (effectiveBufferInContext styleContext) safePara Map.empty
+                addParagraphCommands settings fontFamily measureText measureRange commands layout
+                y <- layout.Y + layout.Height
+            | Table table ->
+                let tableCommands, nextY = tableBorderCommandsCore (Some styleContext) repeatedSettings measureText measureRange table y
+                commands.AddRange(tableCommands)
+                // The borders alone are not the table: lay its cells out as well
+                // and paint their text. The table is laid out at the body origin
+                // on an unpaged measuring page (a header/footer table never
+                // splits) and the resulting commands are moved to y.
+                let measureSettings = { repeatedSettings with PageHeight = max repeatedSettings.PageHeight 1000000.0 }
+                let tableDoc = storyTableDocument doc table
+                let cellCommands = ResizeArray<PaintCommand>()
+                for layout in layoutDocumentWithRange measureSettings measureText measureRange tableDoc do
+                    if not (layout.BlockId.StartsWith footnoteBlockIdPrefix) && not (layout.BlockId.StartsWith endnoteBlockIdPrefix) then
+                        addParagraphCommands settings fontFamily measureText measureRange cellCommands layout
+                commands.AddRange(shiftCommandsY (y - measureSettings.PaddingTop) (resizeArrayToList cellCommands))
+                y <- nextY
+            | TextBox textBox ->
+                // A shape of the header: where its anchor puts it on the page (a watermark in the middle of it).
+                let anchorTop =
+                    match textBox.AnchorBlockId with
+                    | Some anchorId ->
+                        match tops.TryGetValue anchorId with
+                        | true, top -> Some top
+                        | false, _ -> None
+                    | None -> None
+                match page, anchorTop with
+                | Some info, Some _ -> drawings.Add (textBoxDrawing settings fontFamily measureText measureRange styleContext [| info |] anchorTop textBox)
+                | _ -> ()
+    finally drawingSink <- outerSink
+    resizeArrayToList (commandsInLayers commands drawings)
 
 /// The header and footer commands of one page, and what they were made from.
 type private HeaderFooterPageEntry = {
@@ -2158,9 +2371,10 @@ let private headerFooterPageSources (cache: HeaderFooterCache option) (settings:
                     runningFields.Add(struct (blocks, found))
                     found
         let staticRepeatedCommands = ResizeArray<struct (Block list * PaintCommand list)>()
-        let repeatedCommands (values: RunningFieldValues) startY blocks =
-            if hasRunningFields blocks then
-                repeatedBlockCommands settings fontFamily measureText measureRange doc values startY blocks
+        let repeatedCommands (values: RunningFieldValues) (info: PageInfo) startY (blocks: Block list) =
+            // (A shape is placed on its page: nothing of it is kept from page to page.)
+            if hasRunningFields blocks || (blocks |> List.exists (function TextBox _ -> true | _ -> false)) then
+                repeatedBlockCommands settings fontFamily measureText measureRange doc values (Some info) startY blocks
             else
                 let mutable originCommands = Unchecked.defaultof<PaintCommand list>
                 let mutable found = false
@@ -2172,7 +2386,7 @@ let private headerFooterPageSources (cache: HeaderFooterCache option) (settings:
                         found <- true
                     i <- i + 1
                 if not found then
-                    originCommands <- repeatedBlockCommands settings fontFamily measureText measureRange doc values 0.0 blocks
+                    originCommands <- repeatedBlockCommands settings fontFamily measureText measureRange doc values None 0.0 blocks
                     staticRepeatedCommands.Add(struct (blocks, originCommands))
                 shiftCommandsY startY originCommands
         let sectionPages = buildSectionPageIndex pagesArray layouts doc.PageSetup
@@ -2192,8 +2406,9 @@ let private headerFooterPageSources (cache: HeaderFooterCache option) (settings:
         let commandsOf (pageIndex: int) (source: HeaderFooterPageSource) : PaintCommand array =
             let values = valuesOf pageIndex
             let commands = ResizeArray<PaintCommand>()
-            if not source.SourceHeaders.IsEmpty then commands.AddRange(repeatedCommands values source.SourceHeaderY source.SourceHeaders)
-            if not source.SourceFooters.IsEmpty then commands.AddRange(repeatedCommands values source.SourceFooterY source.SourceFooters)
+            let info = pagesArray.[pageIndex]
+            if not source.SourceHeaders.IsEmpty then commands.AddRange(repeatedCommands values info source.SourceHeaderY source.SourceHeaders)
+            if not source.SourceFooters.IsEmpty then commands.AddRange(repeatedCommands values info source.SourceFooterY source.SourceFooters)
             commands.ToArray()
         pagesArray.Length, sourceOf, commandsOf, valuesOf
 
@@ -2375,38 +2590,40 @@ let storyBoundaryCommands (settings: LayoutSettings) fontFamily (page: PageInfo)
       StrokeRect ("#5b9bd5", 1.0, tabX + 0.5, tabY + 0.5, tabWidth - 1.0, tabHeight - 1.0)
       DrawText (label, style, tabX + 7.0, tabY + 14.0, 0.0) ]
 
-let private textBoxCommands (settings: LayoutSettings) fontFamily measureText measureRange (textBox: TextBoxBlock) =
-    let floatingBox = WordLayout.Floating.textBoxCanvasBox settings.PaddingLeft settings.PaddingTop textBox
-    let padding = 6.0
-    let maxWidth = max 1.0 (textBox.Width - padding * 2.0)
-    let mutable paraY = floatingBox.Y + padding
-    let commands = ResizeArray<PaintCommand>()
-
-    let useShape = (match textBox.Geometry with GeoRect -> false | _ -> true) || textBox.Gradient.IsSome
-    if useShape then
-        let placed =
-            Shapes.geometryPath textBox.Geometry textBox.Width textBox.Height
-            |> Shapes.translatePath floatingBox.X floatingBox.Y
-        let segs =
-            if abs textBox.Rotation < 0.01 then placed
-            else placed |> Shapes.rotatePath (floatingBox.X + textBox.Width / 2.0) (floatingBox.Y + textBox.Height / 2.0) textBox.Rotation
-        let fill =
-            match textBox.Gradient with
-            | Some g -> FillGradient g
-            | None -> match textBox.FillColor with Some c -> FillSolid c | None -> FillNone
-        let stroke = textBox.BorderColor
-        commands.Add(DrawShape(fill, stroke, textBox.BorderWidth |> Option.defaultValue 1.0,
-                               (floatingBox.X, floatingBox.Y, textBox.Width, textBox.Height), segs))
+/// Where the shapes of the body are: each with its left edge (from the left
+/// edge of its page), its top (down the canvas), its width and its height -
+/// where the painter draws them, from the layouts and pages of a layout pass.
+let bodyShapeRects (settings: LayoutSettings) measureText measureRange (doc: Document) (layouts: BlockLayout list) (pages: PageInfo list) : (TextBoxBlock * float * float * float * float) list =
+    let shapes = doc.Blocks |> List.choose (function TextBox textBox -> Some textBox | _ -> None)
+    if shapes.IsEmpty then []
     else
-        textBox.FillColor |> Option.iter (fun color -> commands.Add(FillRect (color, floatingBox.X, floatingBox.Y, textBox.Width, textBox.Height)))
-        textBox.BorderColor |> Option.iter (fun color -> commands.Add(StrokeRect (color, textBox.BorderWidth |> Option.defaultValue 1.0, floatingBox.X, floatingBox.Y, textBox.Width, textBox.Height)))
+        let styleContext = WordStyles.styleContext doc
+        let pageArray = List.toArray pages
+        let tops = Dictionary<BlockId, float>()
+        for layout in layouts do
+            if not (tops.ContainsKey layout.BlockId) then tops.[layout.BlockId] <- layout.Y
+        shapes
+        |> List.map (fun textBox ->
+            let anchorTop =
+                textBox.AnchorBlockId
+                |> Option.bind (fun anchorId ->
+                    doc.Blocks
+                    |> List.tryFind (function
+                        | Paragraph para
+                        | Heading (_, para) -> para.Id = anchorId
+                        | Table table -> table.Id = anchorId
+                        | TextBox _ -> false))
+                |> Option.bind firstParagraphIdOf
+                |> Option.bind (fun id ->
+                    match tops.TryGetValue id with
+                    | true, top -> Some top
+                    | false, _ -> None)
+            let struct (x, y, height) = textBoxPlace settings measureText measureRange styleContext pageArray anchorTop textBox
+            textBox, x, y, textBox.Width, height)
 
-    for para in textBox.Content do
-        let layout, _ = layoutParagraphAtWithRange settings measureText measureRange maxWidth paraY (floatingBox.X + padding - settings.PaddingLeft) para Map.empty
-        addParagraphCommands settings fontFamily measureText measureRange commands layout
-        paraY <- layout.Y + layout.Height
-
-    resizeArrayToList commands
+/// The layouts of a shape's text where the painter draws it (see `bodyShapeRects` for the shape's place).
+let shapeTextLayouts (settings: LayoutSettings) measureText measureRange (doc: Document) (textBox: TextBoxBlock) (x: float) (y: float) (height: float) : BlockLayout list =
+    if textBox.FitText then [] else textBoxContentLayouts settings measureText measureRange (WordStyles.styleContext doc) textBox x y height
 
 let private tableHasRowSpanningVerticalAlignment (tableBlock: TableBlock) =
     let mutable found = false
@@ -2545,7 +2762,7 @@ let private canonicalTableYFromLayouts (settings: LayoutSettings) measureText me
         | Some firstPlannedContentOffset -> Some (firstActualContentY - firstPlannedContentOffset)
         | None -> Some firstActualContentY
 
-let private shiftCommandX dx command =
+let rec private shiftCommandX dx command =
     match command with
     | DrawText (t, s, x, b, w) -> DrawText (t, s, x + dx, b, w)
     | DrawUnderline (c, s, x, y, w) -> DrawUnderline (c, s, x + dx, y, w)
@@ -2555,6 +2772,8 @@ let private shiftCommandX dx command =
     | StrokeLine (c, lw, ds, doff, x1, y1, x2, y2) -> StrokeLine (c, lw, ds, doff, x1 + dx, y1, x2 + dx, y2)
     | DrawShape (fill, stroke, sw, (bx, by, bw, bh), segs) ->
         DrawShape (fill, stroke, sw, (bx + dx, by, bw, bh), Shapes.translatePath dx 0.0 segs)
+    | DrawGroup (clip, rotation, cx, cy, opacity, (bx, by, bw, bh), commands) ->
+        DrawGroup (clip |> Option.map (fun (x, y, w, h) -> (x + dx, y, w, h)), rotation, cx + dx, cy, opacity, (bx + dx, by, bw, bh), commands |> List.map (shiftCommandX dx))
 
 let private shiftCommandsX dx commands =
     let shifted = ResizeArray<PaintCommand>()
@@ -2631,6 +2850,7 @@ let private clipCommandToBand (top: float) (bottom: float) (command: PaintComman
     | DrawUnderline (_, _, _, y, _) -> if y >= top && y <= bottom + slack then Some command else None
     | DrawImage (_, _, y, _, h, _, _, _, _) -> if y >= top - slack && y + h <= bottom + slack then Some command else None
     | DrawShape (_, _, _, (_, y, _, h), _) -> if y >= top - slack && y + h <= bottom + slack then Some command else None
+    | DrawGroup (_, _, _, _, _, (_, y, _, h), _) -> if y >= top - slack && y + h <= bottom + slack then Some command else None
 
 /// The borders and fills of a table in a multi-column section. The layout
 /// pass lays such a table out on a strip as wide as a column and places it row
@@ -2914,8 +3134,14 @@ let private collectDocumentCommandsWithLayoutsUncached (settings: LayoutSettings
     let commands = ResizeArray<PaintCommand>(max 16 (layoutCount * 2))
     let mutable currentY = doc.PageSetup.MarginTop
     let styleContext = WordStyles.styleContext doc
+    // (The anchored drawings of the body are painted below and above its text: see Drawing.)
+    let drawings = ResizeArray<Drawing>()
+    let pageArray = lazy (List.toArray pages)
+    let outerSink = drawingSink
+    drawingSink <- drawings
 
-    for block in doc.Blocks do
+    try
+     for block in doc.Blocks do
         match block with
         | Table tableBlock ->
             let tableCommands, nextY =
@@ -2925,7 +3151,21 @@ let private collectDocumentCommandsWithLayoutsUncached (settings: LayoutSettings
             if not tableBlock.Floating then currentY <- nextY
             addTableTextCommands settings fontFamily measureText measureRange index commands tableBlock
             addNestedTableBorders (Some styleContext) settings measureText measureRange index commands tableBlock
-        | TextBox textBox -> commands.AddRange(textBoxCommands settings fontFamily measureText measureRange textBox)
+        | TextBox textBox ->
+            // (Where the block it is anchored in starts.)
+            let anchorTop =
+                textBox.AnchorBlockId
+                |> Option.bind (fun anchorId ->
+                    doc.Blocks
+                    |> List.tryFind (function
+                        | Paragraph para
+                        | Heading (_, para) -> para.Id = anchorId
+                        | Table table -> table.Id = anchorId
+                        | TextBox _ -> false))
+                |> Option.bind firstParagraphIdOf
+                |> Option.bind (fun id -> tryFirstBlockLayout id index)
+                |> Option.map (fun layout -> layout.Y)
+            drawings.Add (textBoxDrawing settings fontFamily measureText measureRange styleContext pageArray.Value anchorTop textBox)
         | _ ->
             match Rbt.Word.Document.tryGetParagraph block with
             | None -> ()
@@ -2943,7 +3183,8 @@ let private collectDocumentCommandsWithLayoutsUncached (settings: LayoutSettings
                     if para.Metadata.PageBreakAfter || para.Metadata.SectionBreak = Some "nextPage" then
                         currentY <- WordLayout.Page.advanceToNextPage settings.PageHeight settings.PaddingTop currentY
 
-    addNoteAreaCommands settings fontFamily measureText measureRange commands index.Footnotes index.Endnotes
+     addNoteAreaCommands settings fontFamily measureText measureRange commands index.Footnotes index.Endnotes
+    finally drawingSink <- outerSink
 
     // Column separator rules (w:sep): a vertical line centred in each gap,
     // spanning the body content on each page.
@@ -2973,10 +3214,14 @@ let private collectDocumentCommandsWithLayoutsUncached (settings: LayoutSettings
                     commands.Add(StrokeLine ("#000000", 0.5, 0, 0.0, x, contentTop, x, pageBottom))
     | _ -> ()
 
-    if not doc.Headers.IsEmpty || not doc.Footers.IsEmpty || not doc.HeaderParts.IsEmpty || not doc.FooterParts.IsEmpty then
-        commands.AddRange(headerFooterCommands settings fontFamily measureText measureRange doc layouts pages)
-    let commandCount = commands.Count
-    layouts, resizeArrayToList commands, pages, commandCount
+    // The headers and footers lie below the body: a watermark is under the text.
+    let furniture =
+        if not doc.Headers.IsEmpty || not doc.Footers.IsEmpty || not doc.HeaderParts.IsEmpty || not doc.FooterParts.IsEmpty then
+            headerFooterCommands settings fontFamily measureText measureRange doc layouts pages
+        else []
+    let commands = commandsInLayers commands drawings
+    let commandCount = commands.Count + List.length furniture
+    layouts, (if furniture.IsEmpty then resizeArrayToList commands else furniture @ resizeArrayToList commands), pages, commandCount
 
 let collectDocumentCommandsWithLayouts (settings: LayoutSettings) fontFamily (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (cachedLayouts: BlockLayout list option) =
     let layouts, commands, pages, _ =
@@ -3026,6 +3271,22 @@ type PaintChunk = {
     mutable Pending: (unit -> PaintCommand array) option
 }
 
+/// Commands with those of their groups in their place (for what looks at
+/// every command: the pictures a document shows, its text).
+let rec flattenedCommands (commands: PaintCommand list) : PaintCommand list =
+    if commands |> List.exists (function DrawGroup _ -> true | _ -> false) then
+        commands |> List.collect (function
+            | DrawGroup (_, _, _, _, _, _, inner) -> flattenedCommands inner
+            | command -> [ command ])
+    else commands
+
+/// Whether commands (those in their groups too) draw a picture.
+let rec commandsHoldPicture (commands: PaintCommand list) : bool =
+    commands |> List.exists (function
+        | DrawImage _ -> true
+        | DrawGroup (_, _, _, _, _, _, inner) -> commandsHoldPicture inner
+        | _ -> false)
+
 let private fillChunk (chunk: PaintChunk) (commands: PaintCommand array) =
     let tops = Array.zeroCreate<float> commands.Length
     let bottoms = Array.zeroCreate<float> commands.Length
@@ -3040,6 +3301,9 @@ let private fillChunk (chunk: PaintChunk) (commands: PaintCommand array) =
             bottoms.[i] <- commandBottom
             match commands.[i] with
             | DrawImage _ ->
+                imageTop <- min imageTop commandTop
+                imageBottom <- max imageBottom commandBottom
+            | DrawGroup (_, _, _, _, _, _, inner) when commandsHoldPicture inner ->
                 imageTop <- min imageTop commandTop
                 imageBottom <- max imageBottom commandBottom
             | _ -> ()
@@ -3149,6 +3413,15 @@ let chunkDifferenceBand (before: PaintChunk array) (after: PaintChunk array) : C
     elif top > bottom then Choice1Of2 None
     else Choice1Of2 (Some (top, bottom))
 
+/// An anchored drawing in a chunk, with its place among the drawings (see Drawing).
+type private DrawingChunk = {
+    ChunkBehind: bool
+    ChunkZ: float
+    ChunkOfDrawing: PaintChunk
+}
+
+let private noDrawingChunks : DrawingChunk array = [||]
+
 type private BlockPaintEntry = {
     EntryBlock: Block
     /// The layouts the commands were collected from: EntryCount of EntryLayouts from EntryStart.
@@ -3162,6 +3435,11 @@ type private BlockPaintEntry = {
     EntryYIn: float
     EntryYOut: float
     EntryChunk: PaintChunk
+    /// The block's anchored drawings, each a chunk of its own (not in EntryChunk).
+    EntryDrawings: DrawingChunk array
+    /// Of a shape: the top of the block it is anchored in when it was drawn
+    /// (NaN: none - the shape stands where its offsets say).
+    EntryAnchorTop: float
 }
 
 /// A page's header and footer in a chunk, and what they were made from.
@@ -3197,6 +3475,8 @@ type PaintCache = private {
     mutable CollectedBlocks: int
     /// The layout pass (LayoutSlices.SliceGeneration) the entries were collected from.
     mutable CacheGeneration: int
+    /// How many of the chunks last handed out - the first ones - are the pages' headers and footers.
+    mutable CacheFurnitureCount: int
 }
 
 let createPaintCache () : PaintCache = {
@@ -3217,6 +3497,7 @@ let createPaintCache () : PaintCache = {
     CacheSectionEnds = [||]
     CollectedBlocks = 0
     CacheGeneration = 0
+    CacheFurnitureCount = 0
 }
 
 let clearPaintCache (cache: PaintCache) =
@@ -3232,6 +3513,10 @@ let clearPaintCache (cache: PaintCache) =
     cache.CacheHeaderFooterCommands <- [||]
     cache.CacheFurniture <- [||]
 
+/// How many of the chunks the last `collectDocumentChunks` gave - the first
+/// ones - are the pages' headers and footers (they lie below the body).
+let paintCacheFurnitureCount (cache: PaintCache) = cache.CacheFurnitureCount
+
 /// Blocks whose commands the last `collectDocumentChunks` made anew (the rest were kept).
 let paintCacheCollectedBlocks (cache: PaintCache) = cache.CollectedBlocks
 
@@ -3246,8 +3531,10 @@ let private sameLayoutList (left: BlockLayout list) (right: BlockLayout list) =
         else same <- false
     same && a.IsEmpty && b.IsEmpty
 
-/// The paint commands of a document in chunks - one per block, one for the
-/// note areas, one per page for its header and footer - in paint order, from
+/// The paint commands of a document in chunks - one per page for its header
+/// and footer, one per anchored drawing behind the text, one per block, one
+/// for the note areas, one per anchored drawing in front of the text - in
+/// paint order (see Drawing), from
 /// the layouts of a pass that knows them block by block. The commands are
 /// those of `collectDocumentCommandsWithLayoutsAndPages`; with the cache of
 /// the paint before, the chunks of what did not change are the same objects.
@@ -3291,6 +3578,8 @@ let collectDocumentChunksWith (deferCollection: bool) (cache: PaintCache) (setti
         let styleContext = WordStyles.styleContext doc
         let entries = Array.zeroCreate<BlockPaintEntry> blocks.Length
         let chunks = ResizeArray<PaintChunk>(blocks.Length + 8)
+        let furnitureChunks = ResizeArray<PaintChunk>()
+        let drawingChunks = ResizeArray<DrawingChunk>()
         let mutable collected = 0
         // The blocks the layout pass says kept their layouts from the pass the
         // cache was collected from keep their entries without a look: the
@@ -3338,16 +3627,41 @@ let collectDocumentChunksWith (deferCollection: bool) (cache: PaintCache) (setti
                         | _ -> yAfter (blockIndex - 1)
                 yAfterKnown.[blockIndex] <- y
                 y
+        // Where the block a shape is anchored in starts (NaN: it has no such block, or that block no layout).
+        let blockIndexById =
+            lazy (
+                let byId = Dictionary<BlockId, int>(blocks.Length)
+                for index in 0 .. blocks.Length - 1 do
+                    match blocks.[index] with
+                    | Paragraph para
+                    | Heading (_, para) -> byId.[para.Id] <- index
+                    | Table table -> byId.[table.Id] <- index
+                    | TextBox _ -> ()
+                byId)
+        let anchorTopOf (textBox: TextBoxBlock) : float =
+            match textBox.AnchorBlockId with
+            | None -> System.Double.NaN
+            | Some anchorId ->
+                match blockIndexById.Value.TryGetValue anchorId with
+                | true, index when slices.SliceStarts.[index + 1] > slices.SliceStarts.[index] -> layouts.[slices.SliceStarts.[index]].Y
+                | _ -> System.Double.NaN
+        let pageArray = lazy (List.toArray pages)
         let keepEntry (blockIndex: int) (entry: BlockPaintEntry) =
             entries.[blockIndex] <- entry
             chunks.Add entry.EntryChunk
+            if entry.EntryDrawings.Length > 0 then drawingChunks.AddRange entry.EntryDrawings
             if not (System.Double.IsNaN entry.EntryYOut) then yAfterKnown.[blockIndex] <- entry.EntryYOut
         // (An entry drawn at the running y stands while that y is what it was.)
         let entryStands (blockIndex: int) (entry: BlockPaintEntry) =
             System.Double.IsNaN entry.EntryYIn || entry.EntryYIn = yAfter (blockIndex - 1)
         for blockIndex in 0 .. blocks.Length - 1 do
-            if blockIndex < trustedPrefix then keepEntry blockIndex cache.CacheEntries.[blockIndex]
-            elif blockIndex >= suffixStart && entryStands blockIndex cache.CacheEntries.[blockIndex + shift] then keepEntry blockIndex cache.CacheEntries.[blockIndex + shift]
+            // (A shape is drawn from where its anchor is, not from layouts of its own: it is looked at every time.)
+            let anchorTop = match blocks.[blockIndex] with TextBox textBox -> anchorTopOf textBox | _ -> System.Double.NaN
+            let isShape = match blocks.[blockIndex] with TextBox _ -> true | _ -> false
+            let anchorStands (entry: BlockPaintEntry) =
+                not isShape || entry.EntryAnchorTop = anchorTop || (System.Double.IsNaN entry.EntryAnchorTop && System.Double.IsNaN anchorTop)
+            if blockIndex < trustedPrefix && not isShape then keepEntry blockIndex cache.CacheEntries.[blockIndex]
+            elif blockIndex >= suffixStart && not isShape && entryStands blockIndex cache.CacheEntries.[blockIndex + shift] then keepEntry blockIndex cache.CacheEntries.[blockIndex + shift]
             else
             let block = blocks.[blockIndex]
             let struct (start, count) = sliceOf blockIndex
@@ -3357,7 +3671,7 @@ let collectDocumentChunksWith (deferCollection: bool) (cache: PaintCache) (setti
                     elif blockIndex >= blocks.Length - suffix then ValueSome cache.CacheEntries.[blockIndex + shift]
                     else ValueNone
                 match candidate with
-                | ValueSome entry when entry.EntryCount = count && entryStands blockIndex entry ->
+                | ValueSome entry when entry.EntryCount = count && entryStands blockIndex entry && anchorStands entry ->
                     let mutable same = true
                     let mutable offset = 0
                     while same && offset < count do
@@ -3375,6 +3689,8 @@ let collectDocumentChunksWith (deferCollection: bool) (cache: PaintCache) (setti
                 let mutable deferred : PaintChunk option = None
                 let mutable yIn = System.Double.NaN
                 let mutable yOut = System.Double.NaN
+                // (The block's anchored drawings, which are not painted with it.)
+                let drawings = ResizeArray<Drawing>()
                 // The band the block's layouts lie in, the tallest of their lines, and whether they hold text alone.
                 let mutable plain = true
                 let mutable top = System.Double.PositiveInfinity
@@ -3421,13 +3737,12 @@ let collectDocumentChunksWith (deferCollection: bool) (cache: PaintCache) (setti
                         let bandBottom = bottom + reach
                         deferred <- Some (deferredChunk bandTop bandBottom (fun () -> withTablePlanScope scope (fun () -> (let struct (own, _, _) = collectTable () in own.ToArray()))))
                     else
-                        let struct (own, nextY, drawnAt) = collectTable ()
+                        let struct (own, nextY, drawnAt) = withDrawingSink drawings collectTable
                         commands <- own
                         yIn <- drawnAt
                         if not tableBlock.Floating then yOut <- nextY
                 | TextBox textBox ->
-                    commands <- ResizeArray<PaintCommand>()
-                    commands.AddRange(textBoxCommands settings fontFamily measureText measureRange textBox)
+                    drawings.Add (textBoxDrawing settings fontFamily measureText measureRange styleContext pageArray.Value (if System.Double.IsNaN anchorTop then None else Some anchorTop) textBox)
                 | _ ->
                     match Rbt.Word.Document.tryGetParagraph block with
                     | None -> ()
@@ -3445,14 +3760,21 @@ let collectDocumentChunksWith (deferCollection: bool) (cache: PaintCache) (setti
                                             addParagraphCommandsKept settings fontFamily measureText measureRange own layouts.[start + offset]
                                         own.ToArray()))
                             else
-                                commands <- ResizeArray<PaintCommand>()
-                                for offset in 0 .. count - 1 do
-                                    addParagraphCommandsKept settings fontFamily measureText measureRange commands layouts.[start + offset]
+                                let own = ResizeArray<PaintCommand>()
+                                withDrawingSink drawings (fun () ->
+                                    for offset in 0 .. count - 1 do
+                                        addParagraphCommandsKept settings fontFamily measureText measureRange own layouts.[start + offset])
+                                commands <- own
                 let chunk =
                     match deferred with
                     | Some chunk -> chunk
                     | None -> if isNull commands || commands.Count = 0 then emptyChunk else chunkOfCommands (commands.ToArray())
-                keepEntry blockIndex { EntryBlock = block; EntryLayouts = layouts; EntryStart = start; EntryCount = count; EntryYIn = yIn; EntryYOut = yOut; EntryChunk = chunk }
+                let ownDrawings =
+                    if drawings.Count = 0 then noDrawingChunks
+                    else
+                        drawings.ToArray()
+                        |> Array.map (fun drawing -> { ChunkBehind = drawing.DrawingBehind; ChunkZ = drawing.DrawingZ; ChunkOfDrawing = chunkOfCommands drawing.DrawingCommands })
+                keepEntry blockIndex { EntryBlock = block; EntryLayouts = layouts; EntryStart = start; EntryCount = count; EntryYIn = yIn; EntryYOut = yOut; EntryChunk = chunk; EntryDrawings = ownDrawings; EntryAnchorTop = anchorTop }
         cache.CacheBlocks <- blocks
         cache.CacheEntries <- entries
         cache.CollectedBlocks <- collected
@@ -3534,7 +3856,7 @@ let collectDocumentChunksWith (deferCollection: bool) (cache: PaintCache) (setti
                                     let page = pagesArray.[pageIndex]
                                     deferredChunk page.Top (page.Top + page.Height) (fun () -> withTablePlanScope scope (fun () -> commandsOf pageIndex source))
                             { FurnitureSource = source; FurnitureNumber = number; FurnitureCount = count; FurnitureFieldsKey = fieldsKey; FurnitureChunk = chunk }
-                    chunks.Add furniture.[pageIndex].FurnitureChunk
+                    furnitureChunks.Add furniture.[pageIndex].FurnitureChunk
                 cache.CacheFurniture <- furniture
             else
             let byPage = headerFooterCommandsByPage (Some cache.CacheHeaderFooter) settings fontFamily measureText measureRange doc sectionEnds pages
@@ -3546,11 +3868,25 @@ let collectDocumentChunksWith (deferCollection: bool) (cache: PaintCache) (setti
                     else chunkOfCommands byPage.[pageIndex]
             cache.CacheHeaderFooterCommands <- byPage
             cache.CacheHeaderFooterChunks <- pageChunks
-            chunks.AddRange pageChunks
+            furnitureChunks.AddRange pageChunks
         else
             // (Not looked at: nothing is known for these blocks.)
             cache.CacheSectionEnds <- [||]
-        Some (chunks.ToArray())
+        // In paint order: the headers and footers, the drawings behind the text, the text, the drawings in front of it.
+        cache.CacheFurnitureCount <- furnitureChunks.Count
+        if furnitureChunks.Count = 0 && drawingChunks.Count = 0 then Some (chunks.ToArray())
+        else
+            let layer (behind: bool) =
+                drawingChunks
+                |> Seq.filter (fun drawing -> drawing.ChunkBehind = behind)
+                |> Seq.toList
+                |> List.sortBy (fun drawing -> drawing.ChunkZ)
+            let ordered = ResizeArray<PaintChunk>(furnitureChunks.Count + chunks.Count + drawingChunks.Count)
+            ordered.AddRange furnitureChunks
+            for drawing in layer true do ordered.Add drawing.ChunkOfDrawing
+            ordered.AddRange chunks
+            for drawing in layer false do ordered.Add drawing.ChunkOfDrawing
+            Some (ordered.ToArray())
 
 /// `collectDocumentChunksWith`, the commands of plain paragraphs collected
 /// when they are first painted (see `PaintChunk.Pending`).

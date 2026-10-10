@@ -363,6 +363,26 @@ and TextBoxBlock = {
     Name: string option
     /// The body block (paragraph or table) the shape is anchored in.
     AnchorBlockId: BlockId option
+    /// The room between the shape's edge and its text (wps:bodyPr lIns / tIns /
+    /// rIns / bIns), in pixels. None: 0.1 inch left and right, 0.05 inch top and bottom.
+    InsetLeft: float option
+    InsetTop: float option
+    InsetRight: float option
+    InsetBottom: float option
+    /// Where the text stands in the shape's height (wps:bodyPr anchor): t | ctr | b.
+    VerticalAnchor: string option
+    /// The shape is as high as its text (a:spAutoFit).
+    AutoFit: bool
+    /// The text is not broken into lines at the shape's width (wps:bodyPr wrap="none").
+    NoTextWrap: bool
+    /// The text is drawn as large as the shape (WordArt, a watermark's
+    /// v:textpath): one line, scaled to the shape's width and height.
+    FitText: bool
+    /// The opacity of the fill and of fitted text (1: opaque).
+    Opacity: float
+    /// The element the shape was read from (mc:AlternateContent, w:drawing or
+    /// w:pict, as it stood in its run): written back while the shape is what was read.
+    SourceXml: string option
 }
 
 and TableRow = {
@@ -477,6 +497,16 @@ let defaultTextBox : TextBoxBlock = {
     BorderDash = None
     Name = None
     AnchorBlockId = None
+    InsetLeft = None
+    InsetTop = None
+    InsetRight = None
+    InsetBottom = None
+    VerticalAnchor = None
+    AutoFit = false
+    NoTextWrap = false
+    FitText = false
+    Opacity = 1.0
+    SourceXml = None
 }
 
 /// Cursor position
@@ -2680,20 +2710,42 @@ let private insertTopLevelBlockAfterSelection block doc =
         | None -> doc.Blocks @ [block]
     { doc with Blocks = blocks }
 
+/// A paragraph without text, with an id of its own.
+let newEmptyParagraph () : ParagraphBlock =
+    { Id = nextBlockId (); Buffer = TextBuffer.empty; Metadata = defaultMetadata }
+
+/// A text box anchored in the block the caret is in, a little below and
+/// right of where that block starts, in front of the text. (It stood on the
+/// first page whatever block the caret was in.)
 let insertTextBox text doc =
     let para = {
         Id = nextBlockId ()
         Buffer = TextBuffer.ofString text
         Metadata = defaultMetadata
     }
+    let anchor =
+        match doc.Selection with
+        | Some selection ->
+            doc.Blocks
+            |> List.tryPick (fun block ->
+                match block with
+                | TextBox _ -> None
+                | Paragraph p
+                | Heading (_, p) -> if p.Id = selection.Focus.BlockId then Some p.Id else None
+                | Table table -> if blockHolds selection.Focus.BlockId block then Some table.Id else None)
+        | None -> None
     let textBox = TextBox {
         defaultTextBox with
             Id = nextBlockId ()
             Content = [para]
-            X = Some 96.0
-            Y = Some 96.0
+            X = Some (if anchor.IsSome then 24.0 else 96.0)
+            Y = Some (if anchor.IsSome then 24.0 else 96.0)
             Width = 240.0
             Height = 96.0
+            AnchorBlockId = anchor
+            PositionHRelativeFrom = (if anchor.IsSome then Some "column" else None)
+            PositionVRelativeFrom = (if anchor.IsSome then Some "paragraph" else None)
+            Wrap = Some "none"
     }
     insertTopLevelBlockAfterSelection textBox doc
 

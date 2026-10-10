@@ -1037,8 +1037,8 @@ let importDoc (doc: DocxReader.WordDocument) =
 
     // Drawing shapes / autoshapes -> floating TextBox blocks (preset/custom
     // geometry + gradient), mirroring the Fable bridge in Office.Formats Main.
-    let shapeBlocks =
-        doc.Shapes
+    let shapeBlocksOf (prefix: string) (blocks: Block list) (shapes: DocxReader.Shape list) : Block list =
+        shapes
         |> List.filter (fun s -> not s.Content.IsEmpty || s.Preset.IsSome || not s.CustomPath.IsEmpty)
         |> List.mapi (fun i (shape: DocxReader.Shape) ->
             let content = shape.Content |> List.map (mkPara resolver doc.Images styleMap comments notes true false)
@@ -1074,7 +1074,7 @@ let importDoc (doc: DocxReader.WordDocument) =
                     | TextBox _ -> None)
             TextBox {
                 defaultTextBox with
-                    Id = sprintf "shape-%d" i
+                    Id = sprintf "%s-%d" prefix i
                     Content = content
                     X = shape.Position |> Option.map fst
                     Y = shape.Position |> Option.map snd
@@ -1103,9 +1103,18 @@ let importDoc (doc: DocxReader.WordDocument) =
                     BorderDash = shape.LineDash
                     Name = shape.Name
                     AnchorBlockId = anchorId
+                    InsetLeft = shape.InsetLeft
+                    InsetTop = shape.InsetTop
+                    InsetRight = shape.InsetRight
+                    InsetBottom = shape.InsetBottom
+                    VerticalAnchor = shape.VerticalAnchor
+                    AutoFit = shape.AutoFit
+                    NoTextWrap = shape.NoTextWrap
+                    FitText = shape.FitText
+                    Opacity = shape.Opacity |> Option.defaultValue 1.0
             })
 
-    let blocks = blocks @ shapeBlocks
+    let blocks = blocks @ shapeBlocksOf "shape" blocks doc.Shapes
 
     let firstParagraph =
         blocks
@@ -1116,8 +1125,13 @@ let importDoc (doc: DocxReader.WordDocument) =
             | TextBox textBox -> textBox.Content |> List.tryHead)
 
     let styles = doc.Styles |> List.map (namedStyle doc.Theme)
-    let headerParts = doc.Headers |> List.map (headerFooterPart resolver doc.Images styleMap tableStyleMap comments notes)
-    let footerParts = doc.Footers |> List.map (headerFooterPart resolver doc.Images styleMap tableStyleMap comments notes)
+    // (A header's shapes - a text box, a watermark - follow its blocks, as the body's follow the body's.)
+    let withPartShapes (part: HeaderFooterPart) : HeaderFooterPart =
+        match part.RelationshipId |> Option.bind (fun id -> Map.tryFind id doc.PartShapes) with
+        | Some shapes when not shapes.IsEmpty -> { part with Blocks = part.Blocks @ shapeBlocksOf ("shape-" + (part.RelationshipId |> Option.defaultValue "part")) part.Blocks shapes }
+        | _ -> part
+    let headerParts = doc.Headers |> List.map (headerFooterPart resolver doc.Images styleMap tableStyleMap comments notes >> withPartShapes)
+    let footerParts = doc.Footers |> List.map (headerFooterPart resolver doc.Images styleMap tableStyleMap comments notes >> withPartShapes)
 
     {
         Blocks = blocks

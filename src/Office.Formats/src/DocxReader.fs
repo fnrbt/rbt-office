@@ -529,6 +529,25 @@ type Shape = {
     LineDash: string option
     /// wp:docPr@name.
     Name: string option
+    /// The room between the shape's edge and its text, in pixels (wps:bodyPr
+    /// lIns / tIns / rIns / bIns; the inset of a v:textbox).
+    InsetLeft: float option
+    InsetTop: float option
+    InsetRight: float option
+    InsetBottom: float option
+    /// wps:bodyPr@anchor (t | ctr | b); v-text-anchor of a VML shape.
+    VerticalAnchor: string option
+    /// a:spAutoFit (mso-fit-shape-to-text of a v:textbox): the shape is as high as its text.
+    AutoFit: bool
+    /// wps:bodyPr@wrap = "none": the text is not broken at the shape's width.
+    NoTextWrap: bool
+    /// The text is a v:textpath (WordArt, a watermark): drawn as large as the shape.
+    FitText: bool
+    /// The opacity of the fill (v:fill@opacity), when it is not opaque.
+    Opacity: float option
+    /// The element the shape was read from as it stood in its run
+    /// (mc:AlternateContent, w:drawing, w:pict), with the namespaces it needs.
+    SourceXml: string option
 }
 
 type PageSetup = {
@@ -661,6 +680,9 @@ type WordDocument = {
     Endnotes: Note list
     Images: Map<string, string>  // relationshipId -> data URL
     Shapes: Shape list
+    /// The shapes of the headers and footers, by the part's relationship id
+    /// (Shape.AnchorBlock is an index among the part's blocks).
+    PartShapes: Map<string, Shape list>
     PageSetup: PageSetup option
     NumberingDefinitions: NumberingDefinition list
     Preserved: PackagePreservation
@@ -1255,6 +1277,8 @@ module Docx =
     // (prstGeom / custGeom), so autoshapes without text still render.
     let private hasShapeContent node =
         (Ns.descendantsNs "txbxContent" node |> List.isEmpty |> not)
+        // (WordArt, a watermark: a VML shape whose text is a v:textpath.)
+        || (Ns.descendantsNs "textpath" node |> List.exists (fun path -> (Xml.attr "string" path).IsSome))
         || (not (isPictureDrawing node)
             && ((Ns.descendantsNs "prstGeom" node |> List.isEmpty |> not)
                 || (Ns.descendantsNs "custGeom" node |> List.isEmpty |> not)))
@@ -3069,14 +3093,49 @@ module Shapes =
                 let raw = text.Substring(name.Length + 1).Trim()
                 if raw.EndsWith("pt") then raw.Substring(0, raw.Length - 2) |> parseFloat |> Option.map (fun pt -> pt * 96.0 / 72.0)
                 elif raw.EndsWith("px") then raw.Substring(0, raw.Length - 2) |> parseFloat
+                elif raw.EndsWith("in") then raw.Substring(0, raw.Length - 2) |> parseFloat |> Option.map (fun inches -> inches * 96.0)
+                elif raw.EndsWith("mm") then raw.Substring(0, raw.Length - 2) |> parseFloat |> Option.map (fun mm -> mm * 96.0 / 25.4)
+                elif raw.EndsWith("cm") then raw.Substring(0, raw.Length - 2) |> parseFloat |> Option.map (fun cm -> cm * 96.0 / 2.54)
                 else parseFloat raw
             else None)
 
+    let private namedColors =
+        Map.ofList [ "black", "#000000"; "white", "#FFFFFF"; "silver", "#C0C0C0"; "gray", "#808080"; "grey", "#808080"; "red", "#FF0000"; "maroon", "#800000"
+                     "yellow", "#FFFF00"; "olive", "#808000"; "lime", "#00FF00"; "green", "#008000"; "aqua", "#00FFFF"; "teal", "#008080"; "blue", "#0000FF"
+                     "navy", "#000080"; "fuchsia", "#FF00FF"; "purple", "#800080"; "orange", "#FFA500" ]
+
+    /// A colour as VML writes it: "#rgb", "#rrggbb", a name, each with or without a palette entry after it ("silver [3209]").
     let private normalizeColor (value: string option) =
-        match value with
+        match value |> Option.map (fun text -> (text.Trim().Split(' ')).[0]) with
         | Some "" | None -> None
+        | Some color when color.StartsWith("#") && color.Length = 4 ->
+            Some (sprintf "#%c%c%c%c%c%c" color.[1] color.[1] color.[2] color.[2] color.[3] color.[3])
         | Some color when color.StartsWith("#") -> Some color
-        | Some color -> Some ("#" + color)
+        | Some color ->
+            match Map.tryFind (color.ToLowerInvariant()) namedColors with
+            | Some hex -> Some hex
+            | None -> Some ("#" + color)
+
+    /// The value of a property of a VML style ("name:value;name:value").
+    let private styleText (name: string) (style: string) : string option =
+        style.Split(';')
+        |> Array.tryPick (fun part ->
+            let text = part.Trim()
+            if text.ToLowerInvariant().StartsWith(name + ":") then Some (text.Substring(name.Length + 1).Trim()) else None)
+
+    /// A VML length in pixels: points, inches, millimetres, centimetres, pixels; EMU without a unit.
+    let private vmlLength (text: string) : float option =
+        let raw = text.Trim().ToLowerInvariant()
+        let number (suffix: string) (factor: float) = raw.Substring(0, raw.Length - suffix.Length) |> parseFloat |> Option.map (fun value -> value * factor)
+        if raw.EndsWith "pt" then number "pt" (96.0 / 72.0)
+        elif raw.EndsWith "in" then number "in" 96.0
+        elif raw.EndsWith "mm" then number "mm" (96.0 / 25.4)
+        elif raw.EndsWith "cm" then number "cm" (96.0 / 2.54)
+        elif raw.EndsWith "px" then number "px" 1.0
+        else parseFloat raw |> Option.map (fun emu -> emu / 9525.0)
+
+    let private xmlEscaped (text: string) =
+        text.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;").Replace("\"", "&quot;")
 
     let private strokeWeightFromAttr (value: string option) =
         value
@@ -3183,12 +3242,37 @@ module Shapes =
         let shapeType = Xml.attr "type" shapeNode
 
         let txbxContent = Ns.descendantsNs "txbxContent" shapeNode |> List.tryHead
+        let vmlStyle = Xml.attr "style" shapeNode |> Option.defaultValue ""
+        // WordArt (a watermark): the text of a v:textpath, in its face and the shape's fill colour.
+        let textPath = Ns.descendantsNs "textpath" shapeNode |> List.tryFind (fun path -> (Xml.attr "string" path).IsSome)
         let paragraphs =
-            match txbxContent with
-            | Some content ->
+            match txbxContent, textPath with
+            | Some content, _ ->
                 Ns.descendantsNs "p" content
                 |> List.map Docx.paragraph
-            | None -> []
+            | None, Some path ->
+                let pathStyle = Xml.attr "style" path |> Option.defaultValue ""
+                let face = styleText "font-family" pathStyle |> Option.map (fun name -> name.Replace("&quot;", "").Replace("\"", "").Trim())
+                let color = Xml.attr "fillcolor" shapeNode |> normalizeColor |> Option.map (fun hex -> hex.TrimStart('#'))
+                let properties =
+                    (match face with Some name when name <> "" -> sprintf "<w:rFonts w:ascii=\"%s\" w:hAnsi=\"%s\"/>" (xmlEscaped name) (xmlEscaped name) | _ -> "")
+                    + (if (styleText "font-weight" pathStyle) = Some "bold" then "<w:b/>" else "")
+                    + (if (styleText "font-style" pathStyle) = Some "italic" then "<w:i/>" else "")
+                    + (match color with Some hex -> sprintf "<w:color w:val=\"%s\"/>" hex | None -> "")
+                let text = Xml.attr "string" path |> Option.defaultValue ""
+                [ XmlDsl.parse (sprintf "<w:p xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:pPr><w:jc w:val=\"center\"/></w:pPr><w:r><w:rPr>%s</w:rPr><w:t xml:space=\"preserve\">%s</w:t></w:r></w:p>" properties (xmlEscaped text))
+                  |> Docx.paragraph ]
+            | None, None -> []
+        let bodyPr = Ns.descendantsNs "bodyPr" shapeNode |> List.tryHead
+        let vmlTextBox = Ns.descendantsNs "textbox" shapeNode |> List.tryHead
+        let vmlInsets =
+            vmlTextBox
+            |> Option.bind (Xml.attr "inset")
+            |> Option.map (fun inset -> inset.Split(',') |> Array.map vmlLength)
+            |> Option.defaultValue [||]
+        let inset (name: string) (index: int) =
+            bodyPr |> Option.bind (Xml.attr name) |> Option.bind parseFloat |> Option.map emuToPixels
+            |> Option.orElseWith (fun () -> if index < vmlInsets.Length then vmlInsets.[index] else None)
 
         let extent = Ns.descendantsNs "extent" shapeNode |> List.tryHead
         let style = Xml.attr "style" shapeNode
@@ -3227,7 +3311,39 @@ module Shapes =
         let custom = parseCustom shapeNode
         // VML shapes use a "#_x0000_t202"-style type ref; only surface a clean
         // DrawingML preset name as the geometry hint.
-        let preset = parsePreset shapeNode
+        let preset =
+            parsePreset shapeNode
+            |> Option.orElseWith (fun () ->
+                match shapeNode with
+                | XmlDsl.Element ("v:oval", _, _) -> Some "ellipse"
+                | XmlDsl.Element ("v:roundrect", _, _) -> Some "roundRect"
+                | _ -> None)
+        let isVml = match shapeNode with XmlDsl.Element (name, _, _) -> name.StartsWith "v:" | _ -> false
+        // A VML shape says in its style where it stands: aligned or by its margins, relative to what, behind the text.
+        let vmlAlign (name: string) = if isVml then styleText name vmlStyle |> Option.filter (fun value -> value <> "absolute" && value <> "") else None
+        let vmlRelative (name: string) =
+            if not isVml then None
+            else
+                match styleText name vmlStyle with
+                | Some "margin" -> Some "margin"
+                | Some "page" -> Some "page"
+                | Some "text" -> Some (if name.Contains "horizontal" then "column" else "paragraph")
+                | Some "char" -> Some "character"
+                | Some "line" -> Some "line"
+                | _ -> None
+        let vmlWrap =
+            if not isVml then None
+            else
+                Ns.descendantsNs "wrap" shapeNode |> List.tryHead |> Option.bind (Xml.attr "type")
+                |> Option.map (fun kind -> match kind with "topAndBottom" | "square" | "tight" | "through" | "none" -> kind | _ -> "none")
+        let vmlBehind =
+            if not isVml then None
+            else styleText "z-index" vmlStyle |> Option.bind parseFloat |> Option.bind (fun z -> if z < 0.0 then Some true else None)
+        let vmlRotation =
+            if not isVml then None
+            else
+                styleText "rotation" vmlStyle
+                |> Option.bind (fun text -> if text.EndsWith "fd" then text.Substring(0, text.Length - 2) |> parseFloat |> Option.map (fun fd -> fd / 65536.0) else parseFloat text)
         let isAnchor = Xml.name shapeNode |> Option.map Ns.stripNs = Some "anchor"
         let isInline = Xml.name shapeNode |> Option.map Ns.stripNs = Some "inline"
         let anchorBool name = if isAnchor then Xml.attr name shapeNode |> Option.map (fun value -> value = "1" || value.ToLowerInvariant() = "true") else None
@@ -3260,15 +3376,15 @@ module Shapes =
             CustomW = custom |> Option.map (fun (_, w, _) -> w)
             CustomH = custom |> Option.map (fun (_, _, h) -> h)
             Gradient = parseGradient shapeNode
-            Rotation = parseRotation shapeNode
+            Rotation = vmlRotation |> Option.defaultWith (fun () -> parseRotation shapeNode)
             AnchorBlock = None
-            Inline = isInline
-            Wrap = wrapChild
-            PositionHRelativeFrom = posH |> Option.bind (Xml.attr "relativeFrom")
-            PositionVRelativeFrom = posV |> Option.bind (Xml.attr "relativeFrom")
-            PositionHAlign = posH |> Option.bind (Ns.childNs "align") |> Option.bind Xml.text
-            PositionVAlign = posV |> Option.bind (Ns.childNs "align") |> Option.bind Xml.text
-            BehindDoc = anchorBool "behindDoc"
+            Inline = isInline || (isVml && not (vmlStyle.Replace(" ", "").ToLowerInvariant().Contains "position:absolute"))
+            Wrap = wrapChild |> Option.orElse vmlWrap
+            PositionHRelativeFrom = posH |> Option.bind (Xml.attr "relativeFrom") |> Option.orElse (vmlRelative "mso-position-horizontal-relative")
+            PositionVRelativeFrom = posV |> Option.bind (Xml.attr "relativeFrom") |> Option.orElse (vmlRelative "mso-position-vertical-relative")
+            PositionHAlign = posH |> Option.bind (Ns.childNs "align") |> Option.bind Xml.text |> Option.orElse (vmlAlign "mso-position-horizontal")
+            PositionVAlign = posV |> Option.bind (Ns.childNs "align") |> Option.bind Xml.text |> Option.orElse (vmlAlign "mso-position-vertical")
+            BehindDoc = anchorBool "behindDoc" |> Option.orElse vmlBehind
             AllowOverlap = anchorBool "allowOverlap"
             LayoutInCell = anchorBool "layoutInCell"
             RelativeHeight = if isAnchor then Xml.attr "relativeHeight" shapeNode else None
@@ -3279,11 +3395,43 @@ module Shapes =
             NoFill =
                 (spPr |> Option.exists (fun props -> (childNamed "noFill" props).IsSome))
                 || vmlBool (Xml.attr "filled" shapeNode) = Some false
+                // (The fill of WordArt is the colour of its letters.)
+                || (txbxContent.IsNone && textPath.IsSome)
             NoLine =
                 (line |> Option.exists (fun ln -> (childNamed "noFill" ln).IsSome))
                 || vmlBool (Xml.attr "stroked" shapeNode) = Some false
+                || (txbxContent.IsNone && textPath.IsSome)
             LineDash = line |> Option.bind (childNamed "prstDash") |> Option.bind (Xml.attr "val")
-            Name = Ns.descendantsNs "docPr" shapeNode |> List.tryHead |> Option.bind (Xml.attr "name")
+            // (A VML shape is known by its id: a watermark's is how Word finds it.)
+            Name =
+                Ns.descendantsNs "docPr" shapeNode |> List.tryHead |> Option.bind (Xml.attr "name")
+                |> Option.orElseWith (fun () -> if isVml then Xml.attr "id" shapeNode else None)
+            InsetLeft = inset "lIns" 0
+            InsetTop = inset "tIns" 1
+            InsetRight = inset "rIns" 2
+            InsetBottom = inset "bIns" 3
+            VerticalAnchor =
+                bodyPr |> Option.bind (Xml.attr "anchor")
+                |> Option.orElseWith (fun () ->
+                    match styleText "v-text-anchor" vmlStyle with
+                    | Some "middle" -> Some "ctr"
+                    | Some "bottom" -> Some "b"
+                    | Some "top" -> Some "t"
+                    | _ -> None)
+            AutoFit =
+                (bodyPr |> Option.exists (fun body -> (childNamed "spAutoFit" body).IsSome))
+                || (vmlTextBox |> Option.bind (Xml.attr "style") |> Option.exists (fun style -> style.Replace(" ", "").ToLowerInvariant().Contains "mso-fit-shape-to-text:t"))
+            NoTextWrap =
+                (bodyPr |> Option.bind (Xml.attr "wrap") = Some "none")
+                || (isVml && styleText "mso-wrap-style" vmlStyle = Some "none")
+            FitText = txbxContent.IsNone && textPath.IsSome
+            Opacity =
+                // (Of WordArt: the opacity of its letters.)
+                (if txbxContent.IsNone && textPath.IsSome then Ns.descendantsNs "fill" shapeNode else [])
+                |> List.tryPick (Xml.attr "opacity")
+                |> Option.bind (fun text -> if text.EndsWith "f" then text.Substring(0, text.Length - 1) |> parseFloat |> Option.map (fun f -> f / 65536.0) else parseFloat text)
+                |> Option.filter (fun value -> value >= 0.0 && value < 1.0)
+            SourceXml = None
         }
 
     /// Shapes of the document body, each with the index of the body block
@@ -3302,6 +3450,50 @@ module Shapes =
         Docx.modelledShapeRoots block
         |> List.choose parseShape
         |> List.map (fun shape -> { shape with AnchorBlock = Some index })
+
+    /// The shapes of a header or footer part (`root`: w:hdr / w:ftr), each with
+    /// the index of the part's block it is anchored in.
+    let parseShapesOfPart (root: XmlNode) : Shape list =
+        Xml.children root
+        |> List.collect blockNodesOfChild
+        |> List.mapi shapesOfBlock
+        |> List.concat
+
+    /// The shapes of a block with the element each was read from: the
+    /// block's opaque runs that are shapes (their XML complete with its
+    /// namespaces - see completeOpaqueObjects), in the order of the shapes.
+    /// A shape whose element is not certain (a w:pict of several shapes) has none.
+    let withShapeSources (completed: DocumentContent list) (shapes: Shape list) : Shape list =
+        if shapes.IsEmpty then shapes
+        else
+            let sources =
+                blockParagraphs completed
+                |> List.collect (fun para ->
+                    para.Runs |> List.choose (fun run ->
+                        match run.Content with
+                        | Image { Opaque = Some opaque } when opaque.ShapeCandidate -> Some opaque.Xml
+                        | _ -> None))
+            let names (shape: Shape) (xml: string) =
+                match shape.Name, shape.Id with
+                | Some name, _ -> xml.Contains ("name=\"" + xmlEscaped name + "\"")
+                | None, Some id -> xml.Contains ("id=\"" + xmlEscaped id + "\"")
+                | None, None -> true
+            if sources.Length = shapes.Length && List.forall2 names shapes sources then
+                List.map2 (fun (shape: Shape) xml -> { shape with SourceXml = Some xml }) shapes sources
+            else shapes
+
+    /// `withShapeSources` for the shapes of several blocks (`blocks`: those
+    /// Shape.AnchorBlock counts, before the shapes' runs are dropped).
+    let withShapeSourcesOf (blocks: DocumentContent list) (shapes: Shape list) : Shape list =
+        if shapes.IsEmpty then shapes
+        else
+            let blockArray = List.toArray blocks
+            shapes
+            |> List.groupBy (fun shape -> shape.AnchorBlock)
+            |> List.collect (fun (anchor, group) ->
+                match anchor with
+                | Some index when index >= 0 && index < blockArray.Length -> withShapeSources [ blockArray.[index] ] group
+                | _ -> group)
 
     let parseShapes (doc: XmlNode) : Shape list =
         match Ns.childNs "body" doc with
@@ -3611,6 +3803,8 @@ type private MainPart = {
 type private Stories = {
     HeaderParts: (HeaderFooter * string * Relationship list) list
     FooterParts: (HeaderFooter * string * Relationship list) list
+    /// The shapes of those parts, by relationship id.
+    PartShapes: Map<string, Shape list>
     Comments: Comment list
     Footnotes: Note list
     Endnotes: Note list
@@ -3677,15 +3871,35 @@ let private readMainPart (source: PartSource) : MainPart option =
 let private readStories (main: MainPart) (headerRefTypes: Map<string, string>) (footerRefTypes: Map<string, string>) : Stories =
     let source = main.Source
     // (part, its path, its relationships)
+    // The shapes of a header or footer (a text box, a watermark) are modelled as the body's are.
+    let partShapes = ResizeArray<string * Shape list>()
     let loadHeaderFooter (refTypes: Map<string, string>) (rel: Relationship) =
         let path = ZipInterop.resolveTarget main.DocDir rel.Target
         let partRels = source.Text (partRelsPath path) |> relationshipsOfXml
         source.Text path
         |> Option.map (fun value ->
             let hfType = refTypes |> Map.tryFind rel.Id |> Option.defaultValue "default"
-            (HeaderFooter.parseHeaderFooter value hfType (Some rel.Id) |> resolveHeaderFooterHyperlinks partRels), path, partRels)
-    { HeaderParts = main.Rels |> List.filter (fun rel -> rel.Type.EndsWith "/header") |> List.choose (loadHeaderFooter headerRefTypes)
-      FooterParts = main.Rels |> List.filter (fun rel -> rel.Type.EndsWith "/footer") |> List.choose (loadHeaderFooter footerRefTypes)
+            let part = HeaderFooter.parseHeaderFooter value hfType (Some rel.Id) |> resolveHeaderFooterHyperlinks partRels
+            let holds (name: string) = value.IndexOf(name, System.StringComparison.Ordinal) >= 0
+            let part =
+                if holds "txbxContent" || holds "prstGeom" || holds "custGeom" || holds "textpath" then
+                    let root = XmlDsl.parse value
+                    let shapes =
+                        Shapes.parseShapesOfPart root
+                        |> List.map (fun shape ->
+                            { shape with Content = shape.Content |> List.map Para |> completeOpaqueObjects root |> List.choose (function Para para -> Some para | Tbl _ -> None) })
+                        |> Shapes.withShapeSourcesOf part.Blocks
+                    if not shapes.IsEmpty then partShapes.Add((rel.Id, shapes))
+                    { part with
+                        Blocks = dropModelledShapeRuns part.Blocks
+                        Content = part.Content |> List.map Para |> dropModelledShapeRuns |> List.choose (function Para para -> Some para | Tbl _ -> None) }
+                else part
+            part, path, partRels)
+    let headerParts = main.Rels |> List.filter (fun rel -> rel.Type.EndsWith "/header") |> List.choose (loadHeaderFooter headerRefTypes)
+    let footerParts = main.Rels |> List.filter (fun rel -> rel.Type.EndsWith "/footer") |> List.choose (loadHeaderFooter footerRefTypes)
+    { HeaderParts = headerParts
+      FooterParts = footerParts
+      PartShapes = Map.ofSeq partShapes
       Comments =
         source.Text main.CommentsPath |> Option.map Comments.parseComments |> Option.defaultValue [] |> List.map (resolveCommentHyperlinks main.CommentsRels)
       Footnotes =
@@ -3836,6 +4050,7 @@ let private assembleDocument (main: MainPart) (stories: Stories) (content: Docum
         Footnotes = footnotes
         Endnotes = endnotes
         Shapes = shapes
+        PartShapes = stories.PartShapes
         Images = images
         PageSetup = pageSetup
         NumberingDefinitions = main.NumberingDefinitions
@@ -3866,11 +4081,13 @@ let parseFromSource (source: PartSource) : WordDocument option =
 
         // Shapes the body models are text boxes; everything else that is not a
         // picture stays in the text as an opaque object.
-        let content =
+        let completedContent =
             body
             |> Option.map (fun bodyNode -> Docx.bodyContentWithFinalSection (Ns.childNs "sectPr" bodyNode) bodyNode)
             |> Option.defaultValue []
             |> completeOpaqueObjects doc
+        let content =
+            completedContent
             |> dropModelledShapeRuns
             |> (fun blocks -> if docHolds "moveFrom" || docHolds "moveTo" then withMoveNames doc blocks else blocks)
 
@@ -3882,9 +4099,10 @@ let parseFromSource (source: PartSource) : WordDocument option =
         let revisions = Revisions.parseRevisionsWhere docHolds doc
         let shapes =
             // (A modelled shape has text or a geometry: see Docx.isModelledShape.)
-            (if docHolds "txbxContent" || docHolds "prstGeom" || docHolds "custGeom" then Shapes.parseShapes doc else [])
+            (if docHolds "txbxContent" || docHolds "prstGeom" || docHolds "custGeom" || docHolds "textpath" then Shapes.parseShapes doc else [])
             |> List.map (fun shape ->
                 { shape with Content = shape.Content |> List.map Para |> completeOpaqueObjects doc |> List.choose (function Para para -> Some para | Tbl _ -> None) })
+            |> Shapes.withShapeSourcesOf completedContent
 
         let bodyChunks, bodyChunkCount =
             body |> Option.map Docx.bodyContentChunks |> Option.defaultValue ([], 0)
@@ -4362,9 +4580,10 @@ let openProgressiveFromSource (keepContent: bool) (source: PartSource) : Progres
             /// A block as it is delivered, noted for the end.
             let deliver (released: ResizeArray<DocumentContent>) (shapesOut: ResizeArray<Shape>) (raw: DocumentContent) (shapes: Shape list) (chunk: int) (chunkEnd: int) =
                 givenTo <- chunkEnd
+                let completed = [ raw ] |> completeOpaqueObjects cursor.Root
+                let shapes = Shapes.withShapeSources completed shapes
                 let block =
-                    [ raw ]
-                    |> completeOpaqueObjects cursor.Root
+                    completed
                     |> dropModelledShapeRuns
                     |> mapBlockRuns (resolveHyperlinkRun hyperlinks)
                 for id in opaqueReferences block do referenced.Add id |> ignore
@@ -4407,7 +4626,7 @@ let openProgressiveFromSource (keepContent: bool) (source: PartSource) : Progres
                                   let blocks = Docx.contentOfChild renderedBreakCounter node
                                   // (A modelled shape has text or a geometry: see Docx.isModelledShape.)
                                   let blockNodes =
-                                      if indexOfText text "txbxContent" 0 >= 0 || indexOfText text "prstGeom" 0 >= 0 || indexOfText text "custGeom" 0 >= 0 then
+                                      if indexOfText text "txbxContent" 0 >= 0 || indexOfText text "prstGeom" 0 >= 0 || indexOfText text "custGeom" 0 >= 0 || indexOfText text "textpath" 0 >= 0 then
                                           Shapes.blockNodesOfChild node |> List.toArray
                                       else [||]
                                   blocks
@@ -4469,6 +4688,7 @@ let openProgressiveFromSource (keepContent: bool) (source: PartSource) : Progres
                       Footnotes = stories.Footnotes
                       Endnotes = stories.Endnotes
                       Shapes = []
+                      PartShapes = stories.PartShapes
                       Images = Map.empty
                       PageSetup = finalPageSetup
                       NumberingDefinitions = main.NumberingDefinitions

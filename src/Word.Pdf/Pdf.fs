@@ -670,6 +670,7 @@ let private commandBounds = function
     | WordPaint.StrokeLine (_, lineWidth, _, _, x1, y1, x2, y2) ->
         Some (min x1 x2 - lineWidth, min y1 y2 - lineWidth, max x1 x2 + lineWidth, max y1 y2 + lineWidth)
     | WordPaint.DrawShape (_, _, sw, (x, y, w, h), _) -> Some (x - sw, y - sw, x + w + sw, y + h + sw)
+    | WordPaint.DrawGroup (_, _, _, _, _, (x, y, w, h), _) -> Some (x, y, x + w, y + h)
 
 let private intersectsPage pageTop pageHeight command =
     match commandBounds command with
@@ -741,7 +742,7 @@ let private cropValue (value: string option) =
         | false, _ -> 0.0
     | None -> 0.0
 
-let private pdfOpsForCommand (textContext: TextContext) (usage: GlyphUsage) (imageNames: Map<string, string>) pageTop pageHeight =
+let rec private pdfOpsForCommand (textContext: TextContext) (usage: GlyphUsage) (imageNames: Map<string, string>) pageTop pageHeight =
     let yPdf y = pageHeight - (y - pageTop)
     function
     | WordPaint.DrawText (text, style, x, baseline, width) ->
@@ -791,6 +792,28 @@ let private pdfOpsForCommand (textContext: TextContext) (usage: GlyphUsage) (ima
           PdfDraw.LineTo (x2, yPdf y2)
           PdfDraw.Stroke
           PdfDraw.SetDash ([], 0.0) ]
+    | WordPaint.DrawGroup (clip, rotation, centerX, centerY, opacity, _, commands) ->
+        // A text box or shape with its text: clipped, turned about its centre (the page's y runs up), translucent.
+        let ops = ResizeArray<PdfDraw.DrawOp>()
+        ops.Add PdfDraw.SaveState
+        if opacity < 0.999 then
+            ops.Add (PdfDraw.SetFillAlpha (max 0.0 opacity))
+            ops.Add (PdfDraw.SetStrokeAlpha (max 0.0 opacity))
+        if abs rotation >= 0.01 then
+            let angle = -rotation * Math.PI / 180.0
+            let c, s = cos angle, sin angle
+            let cx, cy = centerX, yPdf centerY
+            ops.Add (PdfDraw.Transform (c, s, -s, c, cx - cx * c + cy * s, cy - cx * s - cy * c))
+        match clip with
+        | Some (x, y, width, height) ->
+            ops.Add (PdfDraw.Rect (x, yPdf (y + height), width, height))
+            ops.Add PdfDraw.ClipPath
+            ops.Add PdfDraw.EndPath
+        | None -> ()
+        for command in commands do
+            ops.AddRange (pdfOpsForCommand textContext usage imageNames pageTop pageHeight command)
+        ops.Add PdfDraw.RestoreState
+        List.ofSeq ops
     | WordPaint.DrawShape (fill, stroke, strokeWidth, _, segs) ->
         let fillColor =
             match fill with
@@ -995,8 +1018,8 @@ let private collectPaintPlanWithCachedLayouts (cachedLayouts: WordCanvasLayout.B
     { Settings = settings
       Commands = commands
       Pages = pages
-      ImageSources = imageSourcesFromCommands commands
-      ImageUses = imageUsesFromCommands commands
+      ImageSources = imageSourcesFromCommands (WordPaint.flattenedCommands commands)
+      ImageUses = imageUsesFromCommands (WordPaint.flattenedCommands commands)
       PageUnit = CssPixels }
 
 let collectPaintPlan (options: RenderOptions) (doc: Document) =
@@ -1021,7 +1044,7 @@ let toBytesWithPaintPlan (options: RenderOptions) (plan: PaintPlan) =
     let pageCount = pages.Length
     trace (sprintf "toBytes:paintPlan commands=%d pages=%d" commands.Length pageCount)
     let builder = PdfDoc.create()
-    let usedImageSources = usedImageSourcesForPlan plan.ImageSources commands
+    let usedImageSources = usedImageSourcesForPlan plan.ImageSources (WordPaint.flattenedCommands commands)
     let images = usedImagesForPlan usedImageSources options.Images
     let imageNames = addImages builder images
     let commandBuckets = bucketCommandsByPage pages commands

@@ -164,6 +164,24 @@ type Segment =
     /// baseline), the run style (colour/font), box metrics, and the run's offset span.
     | MathSegment of prims: Eq.MathPrim list * style: TextBuffer.TextStyle * x: float * width: float * ascent: float * descent: float * startOffset: int * length: int
 
+/// A picture segment's `relativeHeight` says where the picture stands among the
+/// anchored drawings of its page (wp:anchor relativeHeight: the higher, the
+/// further in front) - and, by this mark before the number, that it stands
+/// behind the text (behindDoc). The painter reads both (see Paint.Drawing).
+let behindTextMark = "behind:"
+
+/// What a picture's segment carries as its relativeHeight (see behindTextMark).
+let imageSegmentHeight (image: TextBuffer.ImageRun) : string option =
+    if image.Floating && image.BehindDoc = Some true then Some (behindTextMark + (image.RelativeHeight |> Option.defaultValue "")) else image.RelativeHeight
+
+/// Whether a segment's relativeHeight says "behind the text", and the height the file gave.
+let splitSegmentHeight (value: string option) : bool * string option =
+    match value with
+    | Some text when text.StartsWith behindTextMark ->
+        let rest = text.Substring behindTextMark.Length
+        true, (if rest = "" then None else Some rest)
+    | other -> false, other
+
 /// Measured line for layout.
 type MeasuredLine = {
     Segments: Segment list
@@ -2045,7 +2063,7 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
             let floatingBox = if imgRun.AllowOverlap = Some false then WordLayout.Floating.avoidOverlap placedBoxes rawFloatingBox else rawFloatingBox
             let imageX = if imgRun.Floating then floatingBox.X else currentX
             let yOffset = if imgRun.Floating then floatingBox.Y - (contentY + (y - settings.PaddingTop)) else 0.0
-            let segment = ImageSegment (TextBuffer.displayedImageSource imgRun, imageX, yOffset, imgWidth, imgHeight, imgRun.Start, imgRun.Floating, imgRun.Wrap, imgRun.RelativeHeight, imgRun.CropLeft, imgRun.CropTop, imgRun.CropRight, imgRun.CropBottom)
+            let segment = ImageSegment (TextBuffer.displayedImageSource imgRun, imageX, yOffset, imgWidth, imgHeight, imgRun.Start, imgRun.Floating, imgRun.Wrap, imageSegmentHeight imgRun, imgRun.CropLeft, imgRun.CropTop, imgRun.CropRight, imgRun.CropBottom)
             currentSegments.Add segment
             if not imgRun.Floating then
                 currentHasFlowContent <- true
@@ -4438,6 +4456,85 @@ let private samePassState (left: PassCheckpoint) (right: PassCheckpoint) =
 
 /// How many blocks two block arrays have in common at the start and (of the
 /// rest) at the end: the same objects in the same order.
+// ---- text boxes and shapes ---------------------------------------------------
+// A shape's text is laid out in the shape: at its width less its insets
+// (wps:bodyPr lIns / rIns), from its top inset down, or - by its vertical
+// anchor - in the middle or at the bottom of its height. A shape that is as
+// high as its text (a:spAutoFit) has no height of its own.
+
+/// The block id of any block.
+let private blockIdOfAny (block: Block) : BlockId =
+    match block with
+    | Paragraph para
+    | Heading (_, para) -> para.Id
+    | Table table -> table.Id
+    | TextBox textBox -> textBox.Id
+
+let private textBoxSettings (settings: LayoutSettings) : LayoutSettings =
+    // (A shape's text is not broken over pages: no page to end on.)
+    { settings with MarginBottom = 0.0; InTableCell = false }
+
+/// The paragraphs of a shape's text from `top` down, their left edge at
+/// `left` (down and across the canvas), each `width` wide at most.
+let private textBoxParagraphLayouts (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (styleContext: DocumentStyleContext) (textBox: TextBoxBlock) (left: float) (top: float) (width: float) : BlockLayout list =
+    let boxSettings = textBoxSettings settings
+    let result = ResizeArray<BlockLayout>()
+    let mutable y = top
+    let mutable counters : Map<string * int, int> = Map.empty
+    for para in textBox.Content do
+        let layout, next =
+            layoutParagraphAtWithStyleWithRange boxSettings measureText measureRange width y (left - settings.PaddingLeft) (forBlockInContext styleContext (Paragraph para)) (effectiveBufferInContext styleContext) para counters
+        counters <- next
+        result.Add layout
+        y <- layout.Y + layout.Height
+    List.ofSeq result
+
+/// The width a shape's text is broken at.
+let textBoxTextWidth (textBox: TextBoxBlock) : float =
+    let left, _, right, _ = WordLayout.Floating.textBoxInsets textBox
+    if textBox.NoTextWrap || textBox.FitText then 100000.0 else max 1.0 (textBox.Width - left - right)
+
+/// The height of a shape's text.
+let textBoxContentHeight (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (styleContext: DocumentStyleContext) (textBox: TextBoxBlock) : float =
+    match textBoxParagraphLayouts settings measureText measureRange styleContext textBox settings.PaddingLeft 0.0 (textBoxTextWidth textBox) with
+    | [] -> 0.0
+    | layouts -> (let last = List.last layouts in last.Y + last.Height)
+
+/// The height of a shape: its own, or that of its text and insets when it follows its text.
+let textBoxFrameHeight (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (styleContext: DocumentStyleContext) (textBox: TextBoxBlock) : float =
+    if textBox.AutoFit && not textBox.FitText && not textBox.Content.IsEmpty then
+        let _, top, _, bottom = WordLayout.Floating.textBoxInsets textBox
+        max 1.0 (textBoxContentHeight settings measureText measureRange styleContext textBox + top + bottom)
+    else textBox.Height
+
+/// The layouts of a shape's text, the shape's box at `x`, `y` (across and
+/// down the canvas) and `height` high: where the painter draws the text and
+/// where a click in the shape finds it.
+let textBoxContentLayouts (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (styleContext: DocumentStyleContext) (textBox: TextBoxBlock) (x: float) (y: float) (height: float) : BlockLayout list =
+    let left, top, _, bottom = WordLayout.Floating.textBoxInsets textBox
+    let width = textBoxTextWidth textBox
+    let layouts = textBoxParagraphLayouts settings measureText measureRange styleContext textBox (x + left) (y + top) width
+    let contentHeight =
+        match layouts with
+        | [] -> 0.0
+        | _ -> (let last = List.last layouts in last.Y + last.Height - (y + top))
+    let room = height - top - bottom
+    let shift =
+        match textBox.VerticalAnchor with
+        | Some "ctr" when contentHeight < room -> (room - contentHeight) / 2.0
+        | Some "b" when contentHeight < room -> room - contentHeight
+        | _ -> 0.0
+    if shift = 0.0 then layouts
+    else textBoxParagraphLayouts settings measureText measureRange styleContext textBox (x + left) (y + top + shift) width
+
+/// The block a shape that text goes around is anchored in.
+let private wrappingAnchorOf (block: Block) : BlockId option =
+    match block with
+    | TextBox textBox when textBox.AnchorBlockId.IsSome && not (textBox.BehindDoc = Some true) ->
+        let wrap = WordLayout.Floating.textBoxWrap textBox
+        if WordLayout.Floating.wrapsText wrap || WordLayout.Floating.wrapsTopAndBottom wrap then textBox.AnchorBlockId else None
+    | _ -> None
+
 let commonBlockEnds (before: Block array) (after: Block array) =
     let limit = min before.Length after.Length
     let mutable prefix = 0
@@ -4644,6 +4741,48 @@ let private layoutDocumentPassKept
                 adjustment <- adjustment + max 0.0 (fontSize * (wordTableFollowSingleLineBoxFactor - wordSingleLineBoxFactor))
             adjustment
         | _ -> 0.0
+
+    // The shapes that text goes around, by the block they are anchored in. A
+    // shape is placed when the block it is anchored in is laid out - from
+    // where that block starts - and the lines of that block and of what
+    // follows go around it, as around an anchored picture. (A shape was an
+    // obstacle where it stood in the list of blocks - after all of them, for a
+    // document that was read - and always on the first page.)
+    let anchoredBoxes =
+        let mutable found : Dictionary<BlockId, ResizeArray<TextBoxBlock>> = null
+        for block in blocks do
+            match block, wrappingAnchorOf block with
+            | TextBox textBox, Some anchorId ->
+                if isNull found then found <- Dictionary<BlockId, ResizeArray<TextBoxBlock>>()
+                match found.TryGetValue anchorId with
+                | true, boxes -> boxes.Add textBox
+                | false, _ ->
+                    let boxes = ResizeArray<TextBoxBlock>()
+                    boxes.Add textBox
+                    found.[anchorId] <- boxes
+            | _ -> ()
+        found
+    let withAnchoredBoxes (anchorId: BlockId) (atY: float) (obstacles: FloatingObstacle list) (placed: PlacedFloatingBox list) : struct (FloatingObstacle list * PlacedFloatingBox list) =
+        if isNull anchoredBoxes then struct (obstacles, placed)
+        else
+            match anchoredBoxes.TryGetValue anchorId with
+            | true, boxes ->
+                let page : WordLayout.Floating.AnchorPage =
+                    { PageWidth = settings.Width; PageHeight = settings.PageHeight; MarginLeft = settings.PaddingLeft; MarginRight = settings.MarginRight
+                      MarginTop = settings.PaddingTop; MarginBottom = settings.MarginBottom }
+                let pageTop = if settings.PageHeight < 50000.0 then WordLayout.Page.pageTopForY settings.PageHeight atY else 0.0
+                let mutable obstacles = obstacles
+                let mutable placed = placed
+                for textBox in boxes do
+                    let height = textBoxFrameHeight settings measureText measureRange styleContext textBox
+                    let box = WordLayout.Floating.anchoredTextBoxBox page pageTop atY height textBox
+                    let obstacleX, obstacleTop, obstacleWidth, obstacleHeight = WordLayout.Floating.obstacleForBox maxWidth box
+                    obstacles <-
+                        (if WordLayout.Floating.wrapsTopAndBottom box.Wrap then (0.0, obstacleTop, maxWidth, obstacleHeight)
+                         else (obstacleX, obstacleTop, obstacleWidth, obstacleHeight)) :: obstacles
+                    placed <- box :: placed
+                struct (obstacles, placed)
+            | false, _ -> struct (obstacles, placed)
 
     let addTextBoxObstacle (textBox: TextBoxBlock) =
         let rawFloatingBox = WordLayout.Floating.textBoxCanvasBox settings.PaddingLeft settings.PaddingTop textBox
@@ -4859,11 +4998,17 @@ let private layoutDocumentPassKept
     let layoutBlock (index: int) =
         let block = blocks.[index]
         match block with
+        | TextBox textBox when textBox.AnchorBlockId.IsSome ->
+            // (Placed with the block it is anchored in: see anchoredBoxes.)
+            ()
         | TextBox textBox ->
             resetPreviousParagraph ()
             addTextBoxObstacle textBox
         | Table tableBlock ->
             let tableY = y + tableFollowDefaultLineHeightAdjustment ()
+            (let struct (obstacles, placed) = withAnchoredBoxes tableBlock.Id tableY floatingObstacles placedFloatingBoxes
+             floatingObstacles <- obstacles
+             placedFloatingBoxes <- placed)
             resetPreviousParagraph ()
             let blockStart = timingStart ()
             let nextY, tableWidth = layoutTableAt tableBlock tableY
@@ -4910,7 +5055,9 @@ let private layoutDocumentPassKept
                     y <- collapseParagraphSpacing y previousPara previousStyle previousMetadata previousSpacingAfter para paragraphStyle effectiveMetadata
                 | None -> ()
             let initialStart = timingStart ()
-            let initialLayout, initialCounters, initialObstacles, initialPlacedBoxes = layoutParagraphWithMemo memo settings measureText measureRange maxWidth y 0.0 paragraphStyle (effectiveBufferInContext styleContext) para numberedCounters floatingObstacles placedFloatingBoxes
+            // (With the shapes anchored in the paragraph that text goes around, placed from its top.)
+            let struct (obstaclesAtY, placedAtY) = withAnchoredBoxes para.Id y floatingObstacles placedFloatingBoxes
+            let initialLayout, initialCounters, initialObstacles, initialPlacedBoxes = layoutParagraphWithMemo memo settings measureText measureRange maxWidth y 0.0 paragraphStyle (effectiveBufferInContext styleContext) para numberedCounters obstaclesAtY placedAtY
             if traceTimingEnabled then traceSlow (sprintf "block[%d]:initial lines=%d" index initialLayout.Lines.Length) initialStart
             let keepWithNextY =
                 if WordStyles.keepNext paragraphStyle para.Metadata then
@@ -4994,7 +5141,8 @@ let private layoutDocumentPassKept
                 else
                     let relayoutStart = timingStart ()
                     let result =
-                        layoutParagraphWithMemo memo settings measureText measureRange maxWidth pagedY 0.0 paragraphStyle (effectiveBufferInContext styleContext) para numberedCounters floatingObstacles placedFloatingBoxes
+                        let struct (obstaclesPaged, placedPaged) = withAnchoredBoxes para.Id pagedY floatingObstacles placedFloatingBoxes
+                        layoutParagraphWithMemo memo settings measureText measureRange maxWidth pagedY 0.0 paragraphStyle (effectiveBufferInContext styleContext) para numberedCounters obstaclesPaged placedPaged
                     if traceTimingEnabled then traceSlow (sprintf "block[%d]:relayout" index) relayoutStart
                     result
             let layout =
@@ -5065,6 +5213,20 @@ let private layoutDocumentPassKept
                 | Some para -> WordStyles.keepNext (forBlockInContext styleContext blocks.[index]) para.Metadata
                 | None -> false
             let mutable restart = prefix
+            // A shape that text goes around is placed with the block it is anchored in:
+            // one that changed (or came, or went) has that block laid out again.
+            let anchors = HashSet<BlockId>()
+            let noteAnchor (block: Block) =
+                match wrappingAnchorOf block with
+                | Some id -> anchors.Add id |> ignore
+                | None -> ()
+            for index in prefix .. blocks.Length - suffix - 1 do noteAnchor blocks.[index]
+            for index in prefix .. record.PassBlocks.Length - suffix - 1 do noteAnchor record.PassBlocks.[index]
+            if anchors.Count > 0 then
+                let mutable index = 0
+                while index < restart do
+                    if anchors.Contains (blockIdOfAny blocks.[index]) then restart <- index
+                    index <- index + 1
             let mutable moved = true
             while moved do
                 moved <- false

@@ -353,6 +353,50 @@ const docs = [
         ],
     },
     {
+        // Text boxes: the room around the text (wps:bodyPr lIns ..., the inset of the VML fallback), where the text
+        // stands in the box's height, a box as high as its text, text that is not broken at the box's width; a
+        // watermark (WordArt: a VML shape with a v:textpath) in the header and a text box there - read as shapes of
+        // their part, written from the model as what they are, and - nobody having changed them - as the elements
+        // they were read from, with what the model does not hold of them (wps:style).
+        name: 'synthetic/text-boxes',
+        body:
+            p('before the boxes') +
+            `<w:p><w:r><w:t>anchor paragraph</w:t></w:r>` +
+            shapeAnchor(1, 'Inset box', { relH: 'column', relV: 'paragraph', x: 381000, y: 190500, cx: 1905000, cy: 762000, wrap: '<wp:wrapSquare wrapText="bothSides"/>', behind: 0, z: 7, dist: 0 },
+                `<a:xfrm><a:off x="0" y="0"/><a:ext cx="1905000" cy="762000"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="FFF2CC"/></a:solidFill><a:ln w="12700"><a:solidFill><a:srgbClr val="7F6000"/></a:solidFill></a:ln>`,
+                p('in the box')).replace('<wps:bodyPr/>', '<wps:style><a:lnRef idx="2"><a:schemeClr val="accent1"/></a:lnRef><a:fillRef idx="1"><a:schemeClr val="accent1"/></a:fillRef><a:effectRef idx="0"><a:schemeClr val="accent1"/></a:effectRef><a:fontRef idx="minor"><a:schemeClr val="lt1"/></a:fontRef></wps:style><wps:bodyPr rot="0" vert="horz" wrap="square" lIns="182880" tIns="91440" rIns="45720" bIns="22860" anchor="ctr" anchorCtr="0"><a:noAutofit/></wps:bodyPr>') +
+            shapeAnchor(2, 'Fitted box', { relH: 'margin', relV: 'paragraph', x: 2857500, y: 0, cx: 1428750, cy: 285750, wrap: '<wp:wrapNone/>', behind: 0, z: 9, dist: 0 },
+                `<a:xfrm><a:off x="0" y="0"/><a:ext cx="1428750" cy="285750"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/><a:ln w="9525"><a:solidFill><a:srgbClr val="000000"/></a:solidFill></a:ln>`,
+                p('as high as its text') + p('a second line')).replace('<wps:bodyPr/>', '<wps:bodyPr rot="0" vert="horz" wrap="none" lIns="91440" tIns="45720" rIns="91440" bIns="45720" anchor="b" anchorCtr="0"><a:spAutoFit/></wps:bodyPr>') +
+            `</w:p>` + p('after the boxes'),
+        sect: '<w:sectPr><w:headerReference w:type="default" r:id="rId30"/><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr>',
+        rels: `<Relationship Id="rId30" Type="${REL}/header" Target="header1.xml"/>`,
+        types: '<Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/>',
+        extra: {
+            'word/header1.xml': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<w:hdr ${W} xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office"><w:p><w:r><w:t>header text</w:t></w:r>` +
+                `<w:r><w:pict><v:shape id="PowerPlusWaterMarkObject1" o:spid="_x0000_s2049" type="#_x0000_t136" style="position:absolute;margin-left:0;margin-top:0;width:468pt;height:117pt;rotation:315;z-index:-251658752;mso-position-horizontal:center;mso-position-horizontal-relative:margin;mso-position-vertical:center;mso-position-vertical-relative:margin" o:allowincell="f" fillcolor="silver" stroked="f"><v:fill opacity=".5"/><v:textpath style="font-family:&quot;Calibri&quot;;font-size:1pt" string="DRAFT"/></v:shape></w:pict></w:r></w:p></w:hdr>`,
+        },
+        expect: [
+            { read: 'pkg.Paragraphs.length', equals: 5 }, { read: 'pkg.Paragraphs.3.AnchorBlock', equals: 1 },
+            { read: 'pkg.Paragraphs.3.InsetLeft', equals: 19.2 }, { read: 'pkg.Paragraphs.3.InsetTop', equals: 9.6 }, { read: 'pkg.Paragraphs.3.InsetRight', equals: 4.8 }, { read: 'pkg.Paragraphs.3.InsetBottom', equals: 2.4 },
+            { read: 'pkg.Paragraphs.3.VerticalAnchor', equals: 'ctr' },
+            { read: 'pkg.Paragraphs.4.AutoFit', equals: true }, { read: 'pkg.Paragraphs.4.NoTextWrap', equals: true }, { read: 'pkg.Paragraphs.4.VerticalAnchor', equals: 'b' },
+            // The header's shapes: the watermark, behind the text, centred in the margins, turned, half opaque.
+            { read: 'pkg.HeaderParts.0.Paragraphs.length', equals: 2 }, { read: 'pkg.HeaderParts.0.Paragraphs.1.FitText', equals: true }, { read: 'pkg.HeaderParts.0.Paragraphs.1.Rotation', equals: 315 },
+            { read: 'pkg.HeaderParts.0.Paragraphs.1.BehindDoc', equals: true }, { read: 'pkg.HeaderParts.0.Paragraphs.1.PositionHAlign', equals: 'center' }, { read: 'pkg.HeaderParts.0.Paragraphs.1.PositionVRelativeFrom', equals: 'margin' },
+            { read: 'pkg.HeaderParts.0.Paragraphs.1.Opacity', equals: 0.5 }, { read: 'pkg.HeaderParts.0.Paragraphs.1.Width', equals: 624 },
+            // Written from the model.
+            { part: 'word/document.xml', has: '<wps:bodyPr rot="0" vert="horz" wrap="square" lIns="182880" tIns="91440" rIns="45720" bIns="22860" anchor="ctr" anchorCtr="0"/>' },
+            { part: 'word/document.xml', has: '<wps:bodyPr rot="0" vert="horz" wrap="none" lIns="91440" tIns="45720" rIns="91440" bIns="45720" anchor="b" anchorCtr="0"><a:spAutoFit/></wps:bodyPr>' },
+            { part: 'word/document.xml', has: '<v:textbox inset="14.40pt,7.20pt,3.60pt,1.80pt">' }, { part: 'word/document.xml', has: '<v:textbox inset="7.20pt,3.60pt,7.20pt,3.60pt" style="mso-fit-shape-to-text:t">' },
+            { part: 'word/header1.xml', has: '<v:shape id="PowerPlusWaterMarkObject1" o:spid="_x0000_s\\d+" type="#_x0000_t136" style="position:absolute;margin-left:0.00pt;margin-top:0.00pt;width:468.00pt;height:117.00pt;rotation:315.00;z-index:-251658752;mso-position-horizontal:center;mso-position-horizontal-relative:margin;mso-position-vertical:center;mso-position-vertical-relative:margin" o:allowincell="f" fillcolor="#C0C0C0" stroked="f"><v:fill opacity="0.500"/><v:textpath style="font-family:&quot;Calibri&quot;;font-size:1pt" string="DRAFT"/></v:shape>' },
+            // The editor's save of the unchanged document: what the model does not hold is there.
+            { part: 'word/document.xml', kept: '<wps:style><a:lnRef idx="2">' }, { part: 'word/header1.xml', kept: 'id="PowerPlusWaterMarkObject1" o:spid="_x0000_s2049"' },
+            // One character typed into the first paragraph: the boxes' paragraph is as it was read.
+            { editKeeps: '<wps:style><a:lnRef idx="2">.*?<wps:bodyPr rot="0" vert="horz" wrap="square" lIns="182880"' },
+        ],
+    },
+    {
         // A floating picture: crop, wrap mode and side, alignment-based position,
         // relative-from, behind-text and z-order survive.
         name: 'synthetic/floating-image',
@@ -433,7 +477,8 @@ const docs = [
             { part: 'word/_rels/document.xml.rels', has: 'Id="rId38" Type="[^"]*/image" Target="/word/media/fallback.png"' },
             { part: '[Content_Types].xml', has: 'PartName="/word/charts/chart1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart\\+xml"' },
             { part: '[Content_Types].xml', has: 'Extension="xlsx"' }, { part: '[Content_Types].xml', has: 'PartName="/word/diagrams/colors1.xml"' },
-            { part: 'word/header1.xml', has: '<w:pict[^>]*><v:shape [^>]*id="PowerPlusWaterMarkObject1"[^>]*><v:textpath [^>]*string="DRAFT"[^>]*/></v:shape></w:pict>' },
+            // (The watermark is a shape of the header's now: WordArt, written from the model as what it is, under the id Word knows it by.)
+            { part: 'word/header1.xml', has: '<w:pict[^>]*>(<v:shapetype .*?</v:shapetype>)?<v:shape [^>]*id="PowerPlusWaterMarkObject1"[^>]*type="#_x0000_t136"[^>]*rotation:315[^>]*><v:textpath [^>]*string="DRAFT"[^>]*/></v:shape></w:pict>' },
             { same: 'word/charts/chart1.xml' }, { same: 'word/charts/_rels/chart1.xml.rels' }, { same: 'word/embeddings/Workbook1.xlsx' }, { same: 'word/embeddings/Sheet1.xlsx' },
             { same: 'word/diagrams/data1.xml' }, { same: 'word/diagrams/colors1.xml' }, { same: 'word/media/ole1.png' }, { same: 'word/media/fallback.png' }, { same: 'word/charts/chartEx1.xml' },
             { read: 'pkg.Paragraphs.0.Runs.1.OpaqueKind', equals: 'chart' }, { read: 'pkg.Paragraphs.0.Runs.1.ImageSrc', equals: 'opaque:chart' }, { read: 'pkg.Paragraphs.0.Runs.1.ImageWidth', equals: 288 },
@@ -441,7 +486,7 @@ const docs = [
             // The chart with a fallback picture shows that picture.
             { read: 'pkg.Paragraphs.3.Runs.0.ImageSrc.length', equals: 22 + Math.ceil(PNG2.length / 3) * 4 },
             { read: 'pkg.Paragraphs.4.Runs.0.OpaqueKind', equals: 'drawing' }, { read: 'pkg.Paragraphs.length', equals: 6 },
-            { read: 'pkg.HeaderParts.0.Paragraphs.0.Runs.0.OpaqueKind', equals: 'shape' },
+            { read: 'pkg.HeaderParts.0.Paragraphs.1.FitText', equals: true }, { read: 'pkg.HeaderParts.0.Paragraphs.1.Name', equals: 'PowerPlusWaterMarkObject1' },
         ],
     },
     {

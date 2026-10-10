@@ -51,6 +51,7 @@
 //   progressive-cancel  the reading of a DOCX opened front first is cancelled: Progressive.cancel, cancelLoad, an editor / viewer done with the package (another document, dispose), a package shown twice; no slice afterwards
 //   fonts-pending    setFontAvailability / getPendingFonts / FontsPending; onFontsDiscovered is called before the blocks are given to an editor, also by getPageCount at open: a host with the bytes at hand has the final page count the first time
 //   formatted-paragraph-xml  a paragraph made bold / italic / struck through / underlined as a whole, or aligned, is saved as its own XML with the properties set in it: bookmark, complex field, hyperlink anchor, content control properties, rsids, w14:paraId kept
+//   drawing-order    the layers of a page in pixels (a header's drawings and watermark below the body, drawings behind the text, the text, drawings in front by relativeHeight); text boxes placed by their anchor, their text in their insets and clipped, text around them; a text box saved as the element it was read from, a changed one from the model in choice and fallback
 //   xml-scan         the DOCX reader's XML scanner gives the nodes the browser's parser gives, for every part of the test documents
 //
 // Environment (as tools/docx-roundtrip/roundtrip.mjs): PLAYWRIGHT, JSZIP_DIR, PORT (default 16022).
@@ -69,7 +70,7 @@ const opt = (name) => { const i = args.indexOf(name); if (i < 0) return undefine
 const dist = path.resolve(opt('--dist') ?? path.join(repo, 'dist'));
 const port = Number(process.env.PORT ?? 16022);
 const all = ['explicit-format', 'page-frames', 'ime', 'typing', 'track-changes', 'linked-images', 'opaque-click', 'viewport', 'selection-format',
-    'placeholder-and-frames', 'caret-movement', 'revision', 'viewer-measurers', 'page-centering', 'commands', 'image-handles', 'painter-frames', 'viewer-entry', 'keystroke-long', 'table-tools', 'caret-frames', 'viewer-first-page', 'required-fonts', 'progressive-layout', 'xml-scan', 'header-footer-edit', 'header-footer-variants', 'merged-cell-split', 'table-columns', 'anchored-objects', 'section-pages', 'table-borders', 'table-break-borders', 'body-page-field', 'nested-table-edit', 'edited-paragraph-xml', 'list-format-numbering', 'media-pruning', 'progressive-read', 'progressive-failure', 'progressive-cancel', 'fonts-pending', 'formatted-paragraph-xml'];
+    'placeholder-and-frames', 'caret-movement', 'revision', 'viewer-measurers', 'page-centering', 'commands', 'image-handles', 'painter-frames', 'viewer-entry', 'keystroke-long', 'table-tools', 'caret-frames', 'viewer-first-page', 'required-fonts', 'progressive-layout', 'xml-scan', 'header-footer-edit', 'header-footer-variants', 'merged-cell-split', 'table-columns', 'anchored-objects', 'section-pages', 'table-borders', 'table-break-borders', 'body-page-field', 'nested-table-edit', 'edited-paragraph-xml', 'list-format-numbering', 'media-pruning', 'progressive-read', 'progressive-failure', 'progressive-cancel', 'fonts-pending', 'formatted-paragraph-xml', 'drawing-order'];
 const checks = args.length ? args : all;
 
 const jszipDir = [process.env.JSZIP_DIR, path.join(repo, 'node_modules/jszip'), path.resolve(repo, '../rbt-office/node_modules/jszip')].find((p) => p && fs.existsSync(p));

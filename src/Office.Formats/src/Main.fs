@@ -271,10 +271,10 @@ module Processors =
         doc.Shapes
         |> List.filter (fun shape -> not shape.Content.IsEmpty || shape.Preset.IsSome || not shape.CustomPath.IsEmpty)
         |> List.map (fun shape ->
+            // (As the body's paragraphs are made: the same properties in the same units. They were made
+            // by an older path that gave an indent in points where the editor reads pixels.)
             let paragraphs =
-                shape.Content
-                |> List.map (DocumentProcessors.EditorProcessor.toEditorParagraph doc.Theme styleMap comments notes >> editorParagraphToObj)
-                |> List.toArray
+                DocxReader.toEditorParagraphsWithStylesThemeAndNumbering doc.Theme (shape.Content |> List.map DocxReader.Para) doc.Images doc.Styles doc.NumberingDefinitions doc.Footnotes doc.Endnotes
             let geometry =
                 if not shape.CustomPath.IsEmpty then "custom"
                 else shape.Preset |> Option.defaultValue "rect"
@@ -326,9 +326,33 @@ module Processors =
                 "NoLine" ==> shape.NoLine
                 "BorderDash" ==> shape.LineDash
                 "Name" ==> shape.Name
+                "InsetLeft" ==> shape.InsetLeft
+                "InsetTop" ==> shape.InsetTop
+                "InsetRight" ==> shape.InsetRight
+                "InsetBottom" ==> shape.InsetBottom
+                "VerticalAnchor" ==> shape.VerticalAnchor
+                "AutoFit" ==> shape.AutoFit
+                "NoTextWrap" ==> shape.NoTextWrap
+                "FitText" ==> shape.FitText
+                "Opacity" ==> shape.Opacity
+                "SourceXml" ==> shape.SourceXml
                 "Paragraphs" ==> paragraphs
             ])
         |> List.toArray
+
+    /// The header / footer parts for the editor with their shapes: a part's
+    /// shapes follow its blocks, as the body's follow the body's.
+    let private headerFootersWithShapes (doc: DocxReader.WordDocument) (parts: DocxReader.HeaderFooter list) (images: Map<string, string>) : obj array =
+        let items = DocxReader.toEditorHeaderFootersWithStylesAndTheme doc.Theme parts images doc.Styles
+        parts
+        |> List.iteri (fun index part ->
+            match part.RelationshipId |> Option.bind (fun id -> Map.tryFind id doc.PartShapes) with
+            | Some shapes when not shapes.IsEmpty && index < items.Length ->
+                let shapeItems = shapeObjectsFor { doc with Shapes = shapes }
+                let paragraphs : obj array = items.[index]?Paragraphs |> unbox
+                items.[index]?Paragraphs <- Array.append paragraphs shapeItems
+            | _ -> ())
+        items
 
     /// The kept parts, with the child element of w:body each item of
     /// Paragraphs was read from (a shape: the element of the block it is
@@ -368,8 +392,8 @@ module Processors =
                 return createObj [
                     "Paragraphs" ==> paragraphs
                     "Styles" ==> (doc.Styles |> List.map (styleToObj doc.Theme) |> List.toArray)
-                    "HeaderParts" ==> DocxReader.toEditorHeaderFootersWithStylesAndTheme doc.Theme doc.Headers doc.Images doc.Styles
-                    "FooterParts" ==> DocxReader.toEditorHeaderFootersWithStylesAndTheme doc.Theme doc.Footers doc.Images doc.Styles
+                    "HeaderParts" ==> headerFootersWithShapes doc doc.Headers doc.Images
+                    "FooterParts" ==> headerFootersWithShapes doc doc.Footers doc.Images
                     "PageSetup" ==> DocxReader.toEditorPageSetup doc
                     "Footnotes" ==> DocxReader.toEditorNotes doc.Theme doc.Images doc.Styles doc.NumberingDefinitions doc.Footnotes
                     "Endnotes" ==> DocxReader.toEditorNotes doc.Theme doc.Images doc.Styles doc.NumberingDefinitions doc.Endnotes
@@ -521,8 +545,8 @@ module Processors =
                     createObj [
                         "Paragraphs" ==> paragraphs
                         "Styles" ==> (front.Styles |> List.map (styleToObj front.Theme) |> List.toArray)
-                        "HeaderParts" ==> DocxReader.toEditorHeaderFootersWithStylesAndTheme front.Theme front.Headers headerImages front.Styles
-                        "FooterParts" ==> DocxReader.toEditorHeaderFootersWithStylesAndTheme front.Theme front.Footers headerImages front.Styles
+                        "HeaderParts" ==> headerFootersWithShapes front front.Headers headerImages
+                        "FooterParts" ==> headerFootersWithShapes front front.Footers headerImages
                         "PageSetup" ==> DocxReader.toEditorPageSetup front
                         "Footnotes" ==> DocxReader.toEditorNotes front.Theme noteImages front.Styles front.NumberingDefinitions front.Footnotes
                         "Endnotes" ==> DocxReader.toEditorNotes front.Theme noteImages front.Styles front.NumberingDefinitions front.Endnotes

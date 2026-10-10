@@ -100,7 +100,7 @@ let layoutSettings (width: float) (doc: Document) : WordLayout.LayoutSettings =
       TableContinuationHeaderHeight = 0.0
       LongTrailingSpaceFitSafety = 0.25 }
 
-let toRendererCommand = function
+let rec toRendererCommand = function
     | WordPaint.DrawText(text, style, x, baseline, _) ->
         [ Cmd.DrawGlyphs(vec2 x baseline, Rbt.Renderer.Text.layout (textFont style) (pointsToPixels style.FontSize) text, Solid(parseHexColor style.Color)) ]
     | WordPaint.DrawUnderline(color, _, x, y, width) ->
@@ -114,6 +114,8 @@ let toRendererCommand = function
     | WordPaint.StrokeLine(color, lineWidth, _, _, x1, y1, x2, y2) ->
         [ Cmd.Line(vec2 x1 y1, vec2 x2 y2, parseHexColor color, px lineWidth) ]
     | WordPaint.DrawShape _ -> []
+    // (A text box's text and fill, unclipped and upright: this painter draws no shapes.)
+    | WordPaint.DrawGroup (_, _, _, _, _, _, inner) -> inner |> List.collect toRendererCommand
 
 /// All paint commands for the document, laid out to `width`, in page-local coordinates.
 let documentCommands (width: float) (doc: Document) : Cmd list =

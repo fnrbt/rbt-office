@@ -88,7 +88,8 @@ try {
     check('tight, with an outline: each line starts right of the outline at its height - further left the further down', [starts.length >= 4, starts.every((x, i) => i === 0 || x <= starts[i - 1] + 1), starts[0] - starts[starts.length - 1] > 60], [true, true, true]);
     check('the last of them inside the picture\'s box (square keeps it clear)', [starts[starts.length - 1] < tight.frame.MarginLeft + 192 - 40, Math.min(...square.beside.map((line) => line.X)) >= square.frame.MarginLeft + 192 - 1], [true, true]);
     // Pixels: text in the lower right half of the picture's box (whole-canvas mode: layout pixels are canvas pixels).
-    const inkBetween = (x0, x1, y0, y1) => { const data = context.getImageData(Math.round(x0), Math.round(y0), Math.max(1, Math.round(x1 - x0)), Math.max(1, Math.round(y1 - y0))).data; let ink = 0; for (let i = 0; i < data.length; i += 4) if (data[i] < 110 && data[i + 1] < 110 && data[i + 2] < 110) ink++; return ink; };
+    // (The picture is in front of the text - it is not behindDoc -, and it is half transparent blue: the text under it is dark but for the blue.)
+    const inkBetween = (x0, x1, y0, y1) => { const data = context.getImageData(Math.round(x0), Math.round(y0), Math.max(1, Math.round(x1 - x0)), Math.max(1, Math.round(y1 - y0))).data; let ink = 0; for (let i = 0; i < data.length; i += 4) if (data[i] < 110 && data[i + 1] < 110 && data[i + 2] < 160) ink++; return ink; };
     const last = tight.beside[tight.beside.length - 1];
     const boxRight = tight.frame.MarginLeft + 192;
     check('painted: text inside the picture\'s box, right of the outline, on the last line beside it', inkBetween(last.X, boxRight - 4, last.Y + 2, last.Y + last.Height - 2) > 30, true);
