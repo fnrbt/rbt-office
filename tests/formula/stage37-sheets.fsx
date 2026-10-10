@@ -154,8 +154,11 @@ eq "copy: its formulas name the copy, and the copy of the table" (formulaAt "she
 eq "copy: the original is as it was" (obj.ReferenceEquals(copied.Sheets.["sheet1"].Model, source), formulaAt "sheet1" 5 0 copied) (true, "=SUM(Sales[Amount])+Data!A1")
 eq "copy: tables" (copy.Tables |> List.map (fun t -> t.Name), copied.Tables |> Map.toList |> List.map (fun (key, t) -> key, t.Name, t.SheetId, t.Columns)) ([ "Sales_2" ], [ "Sales", "Sales", "sheet1", [ "Amount"; "Tax" ]; "Sales_2", "Sales_2", "sheet4", [ "Amount"; "Tax" ] ])
 eq "copy: the names of the sheet's scope" (Wb.getName (Some "sheet4") "Local" copied, Wb.getName (Some "sheet1") "Local" copied, (Wb.definedNames copied |> List.filter (fun n -> n.Name = "Local") |> List.map (fun n -> n.Scope, n.Comment))) (Some "'Data (2)'!$A$1", Some "Data!$A$1", [ Some "sheet1", Some "of the data sheet"; Some "sheet4", Some "of the data sheet" ])
-// (The kept drawing objects - charts - come along: written to XLSX, their chart parts are copied for the copy. Pivot tables do not.)
-eq "copy: pictures and kept objects come along, pivots do not" (copy.Drawings |> List.map (fun d -> d.Name), copy.KeptRanges, copy.SourceSheet, copy.KeptFrom) ([ Some "p"; Some "chart" ], [], None, Some { Book = 1; Sheet = 0 })
+// (The kept drawing objects - charts - come along: written to XLSX, their chart parts are copied for the copy, and so are
+// the pivot table parts, each where the copy has its cells; the range a pivot cache reads stays the source's alone.)
+eq "copy: pictures, kept objects and where the pivot tables are come along" (copy.Drawings |> List.map (fun d -> d.Name), copy.KeptRanges, copy.SourceSheet, copy.KeptFrom)
+    ([ Some "p"; Some "chart" ], source.KeptRanges |> List.filter (fun kept -> kept.Key.StartsWith "xl/pivotTables/"), None, Some { Book = 1; Sheet = 0 })
+eq "copy: the source has a pivot table to copy" (source.KeptRanges |> List.exists (fun kept -> kept.Key.StartsWith "xl/pivotTables/")) true
 eq "copy of a copy: the kept objects are still the file's" ((Wb.duplicateSheet "sheet4" "sheet5" "Data (3)" 2 copied).Sheets.["sheet5"].Model.KeptFrom) (Some { Book = 1; Sheet = 0 })
 eq "copy: rules name the copy" (copy.ConditionalFormats |> List.map (fun f -> f.Format.Rule)) [ Expression "Summary!$B$1>'Data (2)'!$A$1" ]
 let copiedCalc = calc copied

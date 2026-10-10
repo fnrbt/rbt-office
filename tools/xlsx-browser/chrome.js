@@ -592,6 +592,52 @@ checks['export-edited-sheet-keeps-part'] = async () => {
     return lines;
 };
 
+// A sheet with a pivot table copied, deleted, renamed (DuplicateSheet, DeleteSheet, RenameSheet, ExportXlsx): the
+// copy has a pivot table of its own; the slicers no longer list a deleted sheet's pivot tables, and a chart
+// drawn from one names none; a renamed sheet is named in the charts of its pivot table.
+checks['pivot-sheets-copied-deleted-renamed'] = async () => {
+    const { lines, check } = makeLog();
+    const { bytesOf } = await import('/component.js');
+    const { grid, close } = mountGrid();
+    try {
+        const original = await bytesOf('tests/real-world/dashboard-sales-analysis.xlsx');
+        const before = await window.JSZip.loadAsync(original);
+        const pivots = (zip) => Object.keys(zip.files).filter((name) => /^xl\/pivotTables\/pivotTable\d+\.xml$/.test(name)).sort();
+        const tabIds = async (zip) => { const out = []; for (const name of Object.keys(zip.files).sort()) if (/^xl\/slicerCaches\/slicerCache\d+\.xml$/.test(name)) for (const m of (await zip.files[name].async('string')).matchAll(/<pivotTable tabId="(\d+)"/g)) out.push(m[1]); return out; };
+        const sources = async (zip) => { const out = []; for (const name of Object.keys(zip.files).sort()) if (/^xl\/charts\/chart\d+\.xml$/.test(name)) { const m = /<c:pivotSource><c:name>([^<]*)<\/c:name>/.exec(await zip.files[name].async('string')); if (m) out.push(m[1]); } return out; };
+        await grid.ImportXlsx(original.slice());
+        const indexOf = (name) => grid.GetSheetNames().indexOf(name);
+        // -- copied
+        const copyIndex = grid.DuplicateSheet(indexOf('Category Pivot'));
+        const copied = await window.JSZip.loadAsync(await grid.ExportXlsx());
+        const added = pivots(copied).filter((name) => !before.files[name]);
+        check('copied: one pivot table part more', [pivots(copied).length, added.length], [pivots(before).length + 1, 1]);
+        const root = (xml) => /<pivotTableDefinition\b[^>]*>/.exec(xml)[0];
+        const copyRoot = root(await copied.files[added[0]].async('string')), sourceRoot = root(await before.files['xl/pivotTables/pivotTable2.xml'].async('string'));
+        const attr = (tag, name) => (new RegExp(`\\s${name}="([^"]*)"`).exec(tag) || [])[1];
+        check('copied: another name and uid, the same cache', [attr(copyRoot, 'name'), attr(copyRoot, 'cacheId'), attr(copyRoot, 'xr:uid') !== attr(sourceRoot, 'xr:uid')], [attr(sourceRoot, 'name') + '_2', attr(sourceRoot, 'cacheId'), true]);
+        const book = await copied.files['xl/workbook.xml'].async('string');
+        check('copied: the copy is a sheet of the workbook', new RegExp(`<sheet name="${grid.GetSheetNames()[copyIndex].replace(/[()]/g, '\\$&')}"`).test(book), true);
+        check('copied: the slicers list what they listed', await tabIds(copied), await tabIds(before));
+        // -- deleted (the copy first: back to the file's sheets)
+        grid.DeleteSheet(copyIndex);
+        const lineId = /<sheet name="Line Pivot" sheetId="(\d+)"/.exec(await before.files['xl/workbook.xml'].async('string'))[1];
+        grid.DeleteSheet(indexOf('Line Pivot'));
+        const deleted = await window.JSZip.loadAsync(await grid.ExportXlsx());
+        check('deleted: the slicers list no pivot table of the sheet', await tabIds(deleted), (await tabIds(before)).filter((id) => id !== lineId));
+        check('deleted: the charts of its pivot table name none, the others theirs', await sources(deleted), (await sources(before)).filter((name) => !name.includes(']Line Pivot!')));
+        check('deleted: the pivot table parts are the file\'s less the sheet\'s', pivots(deleted).length, pivots(before).length - 1);
+        // -- renamed
+        grid.RenameSheet(indexOf('Category Pivot'), 'Categories');
+        const renamed = await window.JSZip.loadAsync(await grid.ExportXlsx());
+        check('renamed: the charts name the pivot table on the renamed sheet', await sources(renamed), (await sources(before)).filter((name) => !name.includes(']Line Pivot!')).map((name) => name.replace(']Category Pivot!', ']Categories!')));
+        const { grid: again, close: closeAgain } = mountGrid();
+        try { await again.ImportXlsx(await grid.ExportXlsx()); check('read again: the sheets', again.GetSheetNames(), grid.GetSheetNames()); } finally { closeAgain(); }
+    } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
+    finally { close(); }
+    return lines;
+};
+
 // A workbook in the 1904 date system stays in it: GetDateSystem, the file's serials, typed dates, the texts
 // of dates, and the save - beside a grid with a workbook in the 1900 system on the same page.
 checks['date-system-1904'] = async () => {

@@ -2500,6 +2500,70 @@ module Export =
                             relId, relType, "/" + copyPath, false)
                 Some { XlsxReader.emptySheetExtras with DrawingRelationships = relationships }
             | _ -> None
+        // ... and so has it the source's pivot tables: each is a part of its own
+        // for the copy (another name, the same cache), where the copy has its cells.
+        let pivotNames = Collections.Generic.HashSet<string>()
+        let pivotRootPattern = Text.RegularExpressions.Regex("<pivotTableDefinition(?=[\\s>])[^>]*>")
+        let pivotNameOf (xml: string) =
+            let root = pivotRootPattern.Match xml
+            let name = if root.Success then Text.RegularExpressions.Regex.Match(root.Value, "\\sname=\"([^\"]*)\"") else root
+            if root.Success && name.Success then Some name.Groups.[1].Value else None
+        match input.Source with
+        | Some source ->
+            for path, data in source.Workbook.Preserved.Parts do
+                if path.StartsWith "xl/pivotTables/" && path.EndsWith ".xml" then
+                    match pivotNameOf (Text.Encoding.UTF8.GetString data) with
+                    | Some name -> pivotNames.Add (name.ToUpperInvariant()) |> ignore
+                    | None -> ()
+        | None -> ()
+        let copyPivots (model: SpreadsheetModel) : (string * string * string * bool) list =
+            match input.Source, model.KeptFrom with
+            | Some source, Some origin when origin.Book = source.Id && origin.Sheet >= 0 && origin.Sheet < source.Workbook.Sheets.Length ->
+                let readerSheet = List.item origin.Sheet source.Workbook.Sheets
+                let partOf (path: string) = source.Workbook.Preserved.Parts |> List.tryFind (fun (kept, _) -> kept = path) |> Option.map snd
+                let relsOf (part: string) = let cut = part.LastIndexOf '/' in part.Substring(0, cut) + "/_rels/" + part.Substring(cut + 1) + ".rels"
+                readerSheet.Extras.KeptRelationships
+                |> List.choose (fun (relId, relType, target, isExternal) ->
+                    let path = target.TrimStart '/'
+                    if isExternal || not (relType.EndsWith "/pivotTable") || not (path.EndsWith ".xml") then None
+                    else
+                        // (Where the copy has the table's cells; with those deleted from the copy there is none.)
+                        match partOf path, model.KeptRanges |> List.tryFind (fun kept -> kept.Key = path) with
+                        | Some data, Some kept ->
+                            let text = Text.Encoding.UTF8.GetString data
+                            let root = pivotRootPattern.Match text
+                            match pivotNameOf text with
+                            | Some name when root.Success ->
+                                let stem = path.Substring(0, path.Length - 4)
+                                let mutable digits = 0
+                                while digits < stem.Length && Char.IsDigit stem.[stem.Length - 1 - digits] do digits <- digits + 1
+                                let prefix = stem.Substring(0, stem.Length - digits)
+                                let mutable number = 1
+                                while takenPaths.Contains (sprintf "%s%d.xml" prefix number) do number <- number + 1
+                                let copyPath = sprintf "%s%d.xml" prefix number
+                                takenPaths.Add copyPath |> ignore
+                                let mutable count = 2
+                                while pivotNames.Contains ((sprintf "%s_%d" name count).ToUpperInvariant()) do count <- count + 1
+                                let copyName = sprintf "%s_%d" name count
+                                pivotNames.Add (copyName.ToUpperInvariant()) |> ignore
+                                let tag =
+                                    root.Value.Replace(" name=\"" + name + "\"", " name=\"" + copyName + "\"")
+                                    |> fun tag -> Text.RegularExpressions.Regex.Replace(tag, "(\\s[A-Za-z0-9]+:uid)=\"\\{[^\"]*\\}\"", (fun (found: Text.RegularExpressions.Match) ->
+                                        found.Value.Substring(0, found.Value.IndexOf '=') + "=\"{" + (Guid.NewGuid().ToString()).ToUpperInvariant() + "}\""))
+                                let copied = XlsxReader.withPivotLocation (cellRangeText kept.Range) (text.Substring(0, root.Index) + tag + text.Substring(root.Index + root.Length))
+                                clonedParts.Add ((copyPath, Text.Encoding.UTF8.GetBytes copied))
+                                (match partOf (relsOf path) with
+                                 | Some rels ->
+                                    clonedParts.Add ((relsOf copyPath, rels))
+                                    takenPaths.Add (relsOf copyPath) |> ignore
+                                 | None -> ())
+                                (match source.Workbook.Preserved.Overrides |> List.tryFind (fun (name, _) -> name.TrimStart('/').Equals(path, StringComparison.OrdinalIgnoreCase)) with
+                                 | Some (_, contentType) -> clonedOverrides.Add (("/" + copyPath, contentType))
+                                 | None -> ())
+                                Some (relId, relType, "/" + copyPath, false)
+                            | _ -> None
+                        | _ -> None)
+            | _ -> []
         // Sheets that go back as the parts they were read from.
         let suppliedParts = Collections.Generic.Dictionary<string, byte[]>()
         match input.Source with
@@ -2603,11 +2667,15 @@ module Export =
                         | None -> withSource outSheet model written
                 | None ->
                     let written = modelSheet cache dxfIndex name (stateOf index model) (filterRowsAsHidden model)
-                    match copyExtras index model with
-                    | Some kept ->
-                        let extras = extrasOfModel kept None model
-                        { written with Extras = { written.Extras with Objects = extras.Objects; Images = extras.Images; DrawingRelationships = extras.DrawingRelationships } }
-                    | None -> written)
+                    let written =
+                        match copyExtras index model with
+                        | Some kept ->
+                            let extras = extrasOfModel kept None model
+                            { written with Extras = { written.Extras with Objects = extras.Objects; Images = extras.Images; DrawingRelationships = extras.DrawingRelationships } }
+                        | None -> written
+                    match copyPivots model with
+                    | [] -> written
+                    | pivots -> { written with Extras = { written.Extras with KeptRelationships = written.Extras.KeptRelationships @ pivots } })
             |> Array.toList
         { Sheets = sheets
           ActiveSheetIndex = max 0 (min (input.Sheets.Length - 1) input.ActiveSheetIndex)
@@ -2662,11 +2730,50 @@ module Export =
                     if renames.Count = 0 && deletedTabs.IsEmpty && clonedParts.Count = 0 then preserved
                     else
                         let cachePaths = preserved.PivotCacheSources |> List.map (fun (path, _, _) -> path) |> Set.ofList
+                        // The `sheetId`s of the deleted sheets.
+                        let deletedIds =
+                            source.Workbook.Sheets
+                            |> List.filter (fun sheet -> deletedTabs |> List.exists (fun name -> name.Equals(sheet.Name, StringComparison.OrdinalIgnoreCase)))
+                            |> List.choose (fun sheet -> sheet.Extras.SheetId |> Option.map string)
+                            |> Set.ofList
+                        // A chart of a pivot table names it by sheet (`<c:pivotSource><c:name>[book]Sheet!Pivot`):
+                        // the name follows a renamed sheet, and with the sheet deleted the chart is one of its cached values.
+                        let pivotSourceFollows (text: string) : string =
+                            if text.IndexOf "<c:pivotSource>" < 0 then text
+                            else
+                                Text.RegularExpressions.Regex.Replace(text, "<c:pivotSource>[\\s\\S]*?</c:pivotSource>", (fun (found: Text.RegularExpressions.Match) ->
+                                    let name = Text.RegularExpressions.Regex.Match(found.Value, "<c:name>([^<]*)</c:name>")
+                                    if not name.Success then found.Value
+                                    else
+                                        let full = xmlTextDecoded name.Groups.[1].Value
+                                        let close = full.IndexOf ']'
+                                        let bang = full.LastIndexOf '!'
+                                        if bang <= close then found.Value
+                                        else
+                                            let quoted = full.Substring(close + 1, bang - close - 1)
+                                            let sheet = if quoted.Length >= 2 && quoted.StartsWith "'" && quoted.EndsWith "'" then quoted.Substring(1, quoted.Length - 2).Replace("''", "'") else quoted
+                                            if deletedTabs |> List.exists (fun gone -> gone.Equals(sheet, StringComparison.OrdinalIgnoreCase)) then ""
+                                            else
+                                                match renames.TryGetValue (sheet.ToUpperInvariant()) with
+                                                | true, next ->
+                                                    let named = if quoted = sheet then next else "'" + next.Replace("'", "''") + "'"
+                                                    found.Value.Replace(name.Value, "<c:name>" + xmlTextEncoded (full.Substring(0, close + 1) + named + full.Substring bang) + "</c:name>")
+                                                | false, _ -> found.Value))
                         let follows (path: string) (data: byte[]) : byte[] =
                             if renames.Count = 0 && deletedTabs.IsEmpty then data
                             elif isChartPart path then
                                 let text = Text.Encoding.UTF8.GetString data
-                                let rewritten = keptFormulasFollow chartFormulaElements renames deletedTabs fileTabs text
+                                let rewritten = keptFormulasFollow chartFormulaElements renames deletedTabs fileTabs text |> pivotSourceFollows
+                                if rewritten = text then data else Text.Encoding.UTF8.GetBytes rewritten
+                            elif (path.StartsWith "xl/slicerCaches/" || path.StartsWith "xl/timelineCaches/") && path.EndsWith ".xml" && not deletedIds.IsEmpty then
+                                // A slicer or timeline filters pivot tables it names by sheet (`tabId`) and
+                                // name: those of a deleted sheet are gone (a slicer with none left filters nothing).
+                                let text = Text.Encoding.UTF8.GetString data
+                                let without =
+                                    Text.RegularExpressions.Regex.Replace(text, "<pivotTable(?=[\\s/>])[^>]*?/>", (fun (found: Text.RegularExpressions.Match) ->
+                                        let tab = Text.RegularExpressions.Regex.Match(found.Value, "\\stabId=\"([0-9]+)\"")
+                                        if tab.Success && Set.contains tab.Groups.[1].Value deletedIds then "" else found.Value))
+                                let rewritten = if without = text then text else Text.RegularExpressions.Regex.Replace(without, "<pivotTables(?=[\\s>])[^>]*>\\s*</pivotTables>", "")
                                 if rewritten = text then data else Text.Encoding.UTF8.GetBytes rewritten
                             elif Set.contains path cachePaths then
                                 let text = Text.Encoding.UTF8.GetString data

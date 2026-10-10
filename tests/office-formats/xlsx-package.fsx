@@ -339,9 +339,10 @@ do
     whole "a copy removed" withoutBytes
     eq "its chart parts are not written" (chartPaths (partsOf withoutBytes)).Length (2 * charts.Length)
 
-// A sheet with pivot tables, and one with a slicer, copied: the pivot tables and the slicer stay with
-// the source (the copy has the pivot's cells as values), the copy is a sheet of its own with its own
-// drawing, and the package is whole - no slicer frame without a slicer, no relationship into nothing.
+// A sheet with pivot tables, and one with a slicer, copied: the copy has pivot tables of its own (parts
+// of their own under another name, on the source's cache), the slicer stays with the source, the copy
+// is a sheet of its own with its own drawing, and the package is whole - no slicer frame without a
+// slicer, no relationship into nothing.
 do
     let bytes = bytesOf "real-world/dashboard-ecommerce-sales.xlsx"
     let original = partsOf bytes
@@ -358,14 +359,43 @@ do
         let copiedBytes = export imported (sheetsOf copied) (namesIn copied)
         let parts = partsOf copiedBytes
         whole (sprintf "%s copied" name) copiedBytes
-        eq (sprintf "%s copied: the pivot tables and slicers are the file's, no more" name) (pivotParts parts, slicerParts parts) (pivotParts original, slicerParts original)
+        // The pivot tables of the source sheet, by the file's relationships.
+        let sourcePivots =
+            [ for m in Regex.Matches(textOf original ((fst (List.item index (loadBytes bytes).Sheets).Extras.SourcePart.Value).Replace("xl/worksheets/", "xl/worksheets/_rels/") + ".rels"), "Target=\"\\.\\./pivotTables/(pivotTable\\d+\\.xml)\"") -> "xl/pivotTables/" + m.Groups.[1].Value ]
+        let newPivots = pivotParts parts |> List.filter (fun path -> not (Map.containsKey path original))
+        eq (sprintf "%s copied: a pivot table part more for each of the source's, the slicers are the file's" name) (newPivots.Length, slicerParts parts) (sourcePivots.Length, slicerParts original)
+        ok (sprintf "%s copied: the file's pivot table parts are as they were" name) (pivotParts original |> List.forall (fun path -> Map.tryFind path parts = Map.tryFind path original)) ""
+        let rootOf (from: Map<string, byte[]>) (path: string) = Regex.Match(textOf from path, "<pivotTableDefinition\\b[^>]*>").Value
+        let attr (name: string) (tag: string) = Regex.Match(tag, "\\s" + name + "=\"([^\"]*)\"").Groups.[1].Value
+        // (Pivot tables on different sheets of the file may have the same name: a copy's is no other's.)
+        let fileNames = pivotParts original |> List.map (fun path -> attr "name" (rootOf original path))
+        let newNames = newPivots |> List.map (fun path -> attr "name" (rootOf parts path))
+        ok (sprintf "%s copied: each copy has a name no other pivot table has" name)
+            ((List.distinct newNames).Length = newNames.Length && newNames |> List.forall (fun copyName -> not (List.contains copyName fileNames))) (sprintf "%A" newNames)
+        ok (sprintf "%s copied: each copy is on a cache of the file, has another uid, its relationships part and a content type" name)
+            (newPivots |> List.forall (fun path ->
+                let root = rootOf parts path
+                let twin = sourcePivots |> List.tryFind (fun known -> attr "name" root = attr "name" (rootOf original known) + "_2")
+                match twin with
+                | Some known ->
+                    attr "cacheId" root = attr "cacheId" (rootOf original known) && attr "xr:uid" root <> attr "xr:uid" (rootOf original known)
+                    && Map.tryFind (path.Replace("xl/pivotTables/", "xl/pivotTables/_rels/") + ".rels") parts = Map.tryFind (known.Replace("xl/pivotTables/", "xl/pivotTables/_rels/") + ".rels") original
+                    && (textOf parts "[Content_Types].xml").Contains (sprintf "PartName=\"/%s\"" path)
+                    && Regex.Match(textOf parts path, "<location[^>]*>").Value = Regex.Match(textOf original known, "<location[^>]*>").Value
+                | None -> false))
+            (sprintf "%A" (newPivots |> List.map (rootOf parts)))
         // The copy's sheet part and what it leads to.
         let reread = loadBytes copiedBytes
         let copy = reread.Sheets |> List.find (fun sheet -> sheet.Name = name + " (2)")
         let source = reread.Sheets |> List.find (fun sheet -> sheet.Name = name)
         let partOf (sheet: XlsxReader.Worksheet) = fst sheet.Extras.SourcePart.Value
         let relsOf (path: string) = textOf parts (path.Replace("xl/worksheets/", "xl/worksheets/_rels/") + ".rels")
-        ok (sprintf "%s copied: the copy has no pivot table or slicer of its own" name) (not ((relsOf (partOf copy)).Contains "pivotTable") && not ((relsOf (partOf copy)).Contains "slicer") && not ((textOf parts (partOf copy)).Contains "slicerList")) (relsOf (partOf copy))
+        ok (sprintf "%s copied: the copy lists its pivot tables, and no slicer" name)
+            (Regex.Matches(relsOf (partOf copy), "/pivotTable\"").Count = sourcePivots.Length && newPivots |> List.forall (fun path -> (relsOf (partOf copy)).Contains ("/" + path))
+             && not ((relsOf (partOf copy)).Contains "slicer") && not ((textOf parts (partOf copy)).Contains "slicerList"))
+            (relsOf (partOf copy))
+        eq (sprintf "%s copied: read again, the copy has its pivot tables where the source has them" name)
+            (copy.Extras.PivotLocations |> List.map snd |> List.sort) (source.Extras.PivotLocations |> List.map snd |> List.sort)
         ok (sprintf "%s copied: the source still lists what it listed" name)
             (Regex.Matches(relsOf (partOf source), "pivotTable\"|slicer\"").Count = Regex.Matches(textOf original ((partOf (List.item index (loadBytes bytes).Sheets)).Replace("xl/worksheets/", "xl/worksheets/_rels/") + ".rels"), "pivotTable\"|slicer\"").Count) ""
         // No frame of a slicer in the copy's drawing; the source's drawing has its frames.
@@ -404,6 +434,49 @@ do
     ok "charts: no series names the old sheet" (not (after |> List.exists readData) && after.Length = before.Length) (sprintf "%A" (after |> List.filter readData |> List.truncate 3))
     eq "charts: those that read it read the renamed sheet" (after |> List.filter (fun f -> f.StartsWith "'Raw &lt;Data&gt;'!") |> List.length) (before |> List.filter readData |> List.length)
     eq "charts: the other series are untouched" (after |> List.filter (fun f -> not (f.StartsWith "'Raw &lt;Data&gt;'!"))) (before |> List.filter (fun f -> not (readData f)))
+
+// A sheet with pivot tables deleted or renamed: what names it elsewhere follows - the slicers that
+// filter its pivot tables (by `tabId`), the charts drawn from them (`c:pivotSource`).
+do
+    let bytes = bytesOf "real-world/dashboard-sales-analysis.xlsx"
+    let original = partsOf bytes
+    let workbook = loadBytes bytes
+    let imported = Bridge.Import.importWorkbook workbook
+    let names = namesOf imported
+    let caches (from: Map<string, byte[]>) = from |> Map.toList |> List.map fst |> List.filter (fun path -> Regex.IsMatch(path, "^xl/slicerCaches/slicerCache\\d+\\.xml$"))
+    let tabIds (from: Map<string, byte[]>) = caches from |> List.collect (fun path -> [ for m in Regex.Matches(textOf from path, "<pivotTable tabId=\"(\\d+)\"") -> m.Groups.[1].Value ])
+    let pivotSources (from: Map<string, byte[]>) =
+        [ for KeyValue (path, _) in from do
+            if Regex.IsMatch(path, "^xl/charts/chart\\d+\\.xml$") then
+                let m = Regex.Match(textOf from path, "<c:pivotSource><c:name>([^<]*)</c:name>")
+                if m.Success then yield path, m.Groups.[1].Value ]
+    let idOf (name: string) = (workbook.Sheets |> List.find (fun sheet -> sheet.Name = name)).Extras.SheetId |> Option.get |> string
+    ok "the file has what the check is about" (tabIds original |> List.contains (idOf "Line Pivot") && pivotSources original |> List.exists (fun (_, name) -> name.Contains "]Line Pivot!")) (sprintf "%A" (pivotSources original))
+    // -- deleted
+    let keep = names |> Array.mapi (fun index name -> index, name) |> Array.filter (fun (_, name) -> name <> "Line Pivot") |> Array.map fst
+    let deletedBytes = export imported (keep |> Array.map (fun index -> (modelsOf imported).[index])) (keep |> Array.map (fun index -> names.[index]))
+    let deleted = partsOf deletedBytes
+    whole "a sheet with a pivot table deleted" deletedBytes
+    eq "deleted: no slicer names a pivot table of the sheet, the others are as they were" (tabIds deleted) (tabIds original |> List.filter (fun id -> id <> idOf "Line Pivot"))
+    ok "deleted: every tabId a slicer names is a sheet of the workbook"
+        (let ids = [ for m in Regex.Matches(textOf deleted "xl/workbook.xml", "<sheet [^>]*sheetId=\"(\\d+)\"") -> m.Groups.[1].Value ] in tabIds deleted |> List.forall (fun id -> List.contains id ids)) ""
+    eq "deleted: the charts of its pivot table name no pivot table, the others theirs"
+        (pivotSources deleted) (pivotSources original |> List.filter (fun (_, name) -> not (name.Contains "]Line Pivot!")))
+    ok "deleted: those charts are still there" (pivotSources original |> List.forall (fun (path, _) -> Map.containsKey path deleted)) ""
+    // -- every sheet with a pivot table deleted: the slicers filter nothing, and say so
+    let fewer = names |> Array.mapi (fun index name -> index, name) |> Array.filter (fun (_, name) -> not (name.EndsWith " Pivot")) |> Array.map fst
+    let bareBytes = export imported (fewer |> Array.map (fun index -> (modelsOf imported).[index])) (fewer |> Array.map (fun index -> names.[index]))
+    let bare = partsOf bareBytes
+    whole "every sheet with a pivot table deleted" bareBytes
+    ok "all deleted: the slicer caches list no pivot table" (caches bare = caches original && caches bare |> List.forall (fun path -> not ((textOf bare path).Contains "<pivotTable"))) (textOf bare (List.head (caches bare)))
+    eq "all deleted: no chart names a pivot table" (pivotSources bare) []
+    // -- renamed
+    let renamedBytes = export imported (modelsOf imported) (names |> Array.map (fun name -> if name = "Line Pivot" then "Lines & Co" else name))
+    let renamed = partsOf renamedBytes
+    whole "a sheet with a pivot table renamed" renamedBytes
+    eq "renamed: the charts name the pivot table on the renamed sheet"
+        (pivotSources renamed) (pivotSources original |> List.map (fun (path, name) -> path, name.Replace("]Line Pivot!", "]Lines &amp; Co!")))
+    eq "renamed: the slicers are as they were" (tabIds renamed) (tabIds original)
 
 printfn "xlsx-package: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
