@@ -763,6 +763,20 @@ Nothing to call for the recalculation itself: every edit recalculates what it ha
 
 ## XLSX: what is written how
 
+### An unchanged workbook is exported as the file that was opened
+`ExportXlsx()` of a workbook that `ImportXlsx` opened and in which **nothing was changed** resolves to a copy of the bytes that were opened:
+every part byte-identical, nothing regenerated. "Nothing changed" is: `GetRevision()` is the revision the workbook opened with (also after
+undoing every change back to it), the sheet on display is the one shown after opening, every converted sheet is shown as its file says
+(zoom, grid lines, headers, formulas, zeros), and the package declares its workbook part's content type (a rough package is written anew, as
+before, which makes it whole). Selections and scrolling are not changes. Anything else - an edit, a setting switched and switched back by
+hand (a new revision), another sheet on display - is written by the writer as before: sheets, styles and shared strings from the model
+(untouched cells, tables, validations and conditional formats as the file states them), everything else carried through (next section).
+Only `ImportXlsx` keeps the bytes (one copy of the file, compressed as it came); `ImportXlsxFromBuffer`, `InstallImportedWorkbook` and the
+.NET hosts always write. **Not done:** writing an untouched sheet's XML verbatim beside edited sheets. That needs the styles and shared
+strings to be extended in place (so the indices the untouched sheets use stay valid) instead of rebuilt, the raw sheet parts to be kept
+(the dashboard's are over 100 MB uncompressed, so as compressed entries), and the sheet's relationship ids to be kept; today a sheet that
+was never converted is written from the reader's rows, cell for cell as the file had them, but not character for character.
+
 ### Parts the editor does not model
 Nothing of an opened package is dropped on a save. Besides the parts made from the model (workbook, styles, shared strings, the worksheets,
 comments, threaded comments and persons) every part goes back **as it was read, under its own name, with its relationship and content type**:

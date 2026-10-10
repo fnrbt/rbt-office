@@ -209,6 +209,14 @@ let private clientCenterOf (el: Element): float array = jsNative
 [<Emit("$0.then((written) => (written instanceof Uint8Array ? written : (written && typeof written.arrayBuffer === 'function' ? written.arrayBuffer().then((buffer) => new Uint8Array(buffer)) : new Uint8Array(written))))")>]
 let private packageBytes (written: JS.Promise<obj>): JS.Promise<byte[]> = jsNative
 
+/// The bytes of what ImportXlsx was given (an ArrayBuffer, a typed array or
+/// a Blob), as a Uint8Array of their own.
+[<Emit("(typeof Blob !== 'undefined' && $0 instanceof Blob ? $0.arrayBuffer().then((b) => new Uint8Array(b)) : Promise.resolve($0 instanceof ArrayBuffer ? new Uint8Array($0.slice(0)) : new Uint8Array($0.buffer.slice($0.byteOffset, $0.byteOffset + $0.byteLength))))")>]
+let private ownBytesOf (data: obj): JS.Promise<byte[]> = jsNative
+
+[<Emit("Promise.resolve($0.slice())")>]
+let private resolvedCopy (bytes: byte[]): JS.Promise<byte[]> = jsNative
+
 /// The document content a workbook holds outside its sheets (defined names
 /// with their spelling and comments). A change of it is a change of the
 /// document: the revision and OnChange follow it as they follow the sheets.
@@ -514,6 +522,11 @@ type Spreadsheet(container: Element) =
     let mutable revision = 0
     let mutable lastRevision = 0
     let mutable savedRevision = 0
+    /// The file ImportXlsx opened, while the workbook is still that file:
+    /// its bytes, and the revision and the sheet on display right after
+    /// opening. ExportXlsx gives these bytes back for a workbook nothing was
+    /// changed in.
+    let mutable importedPackage: (byte[] * int * int) option = None
     /// The content the current revision was given to.
     let mutable revisionSheets: SpreadsheetModel array = Array.copy sheets
     let mutable revisionNames: string array = Array.copy sheetNames
@@ -6453,6 +6466,7 @@ type Spreadsheet(container: Element) =
     /// would resolve sheet ids, tables and names against sheets that are gone.
     member _.InstallWorkbook(newSheets: SpreadsheetModel array, names: string array, activeIndex: int, context: Workbook option) =
         if newSheets.Length = 0 then () else
+        importedPackage <- None
         invalidateCalcEngine()
         invalidCircles.Clear()
         // The file the previous workbook came from stays the source as long as
@@ -6576,9 +6590,38 @@ type Spreadsheet(container: Element) =
     /// left untouched.
     member this.ImportXlsx(data: obj): JS.Promise<unit> =
         reportRejection
-            ((loadReaderWorkbook data None).``then``(fun readerWorkbook ->
-                this.InstallImportedWorkbook(Rbt.Spreadsheet.XlsxBridge.Import.importWorkbookLazy (fun _ -> false) readerWorkbook, -1)))
+            ((ownBytesOf data).``then``(fun (bytes: byte[]) ->
+                (loadReaderWorkbook data None).``then``(fun readerWorkbook ->
+                    this.InstallImportedWorkbook(Rbt.Spreadsheet.XlsxBridge.Import.importWorkbookLazy (fun _ -> false) readerWorkbook, -1)
+                    // (For an export of the workbook as it was opened: see ExportXlsx.)
+                    observeRevision ()
+                    importedPackage <- Some (bytes, revision, activeSheetIndex))) |> unbox<JS.Promise<unit>>)
             (reportError "ImportXlsx")
+
+    /// Whether every sheet is shown as its file says (zoom, grid lines,
+    /// headers, formulas, zeros: what an export writes besides the content),
+    /// and the file is a package that says what its parts are (a writer
+    /// makes a whole package of one that does not).
+    member private _.ShownAsOpened() : bool =
+        match xlsxSource with
+        | None -> false
+        | Some source ->
+            let fileSheets = source.Workbook.Sheets |> Array.ofList
+            let typed =
+                source.Workbook.Preserved.Overrides
+                |> List.exists (fun (_, contentType) -> contentType.EndsWith ".main+xml" && contentType.Contains "sheet")
+            typed
+            && Seq.forall (fun i ->
+                    let sheet = if i = activeSheetIndex then model else sheets.[i]
+                    // (A sheet that was never converted is the file's.)
+                    isDeferredSheet sheet
+                    || (match sheet.SourceSheet with
+                        | Some from when from.Book = source.Id && from.Sheet = i && from.Sheet < fileSheets.Length ->
+                            let file = fileSheets.[from.Sheet]
+                            sheet.Zoom = float file.View.ZoomScale / 100.0 && sheet.ShowGridLines = file.ShowGridLines && sheet.ShowHeaders = file.View.ShowRowColHeaders
+                            && sheet.ShowFormulas = file.View.ShowFormulas && sheet.ShowZeros = file.ShowZeros
+                        | _ -> false))
+                (seq { 0 .. sheets.Length - 1 })
 
     /// Whether the sheet at `index` has been converted to a model. After
     /// ImportXlsx only the sheet on display is; the others are converted when
@@ -6638,8 +6681,19 @@ type Spreadsheet(container: Element) =
     /// kept parts - is carried over from that file, and cells, tables,
     /// validations and conditional formats the user did not touch are written
     /// exactly as the file had them. Resolves to the file's bytes (Uint8Array).
+    ///
+    /// A workbook that ImportXlsx opened and in which nothing was changed
+    /// since (the revision is the one it opened with - also after undoing
+    /// every change -, the same sheet is on display, and zoom, grid lines,
+    /// headers, formulas and zeros are shown as when it opened) is not written
+    /// anew: the promise resolves to a copy of the bytes that were opened, so
+    /// every part of the package is the file's, byte for byte.
     member this.ExportXlsx() : JS.Promise<byte[]> =
-        packageBytes (XlsxWriter.writeWorkbookPackage (this.ToXlsxWorkbook()))
+        observeRevision ()
+        match importedPackage with
+        | Some (bytes, openedAt, shown) when revision = openedAt && activeSheetIndex = shown && this.ShownAsOpened() ->
+            resolvedCopy bytes
+        | _ -> packageBytes (XlsxWriter.writeWorkbookPackage (this.ToXlsxWorkbook()))
 
     /// Render the current model through the shared portable paint command path.
     member _.RenderPortableCanvas(canvas: Element) = renderPortablePaintToCanvas canvas

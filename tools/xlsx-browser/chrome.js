@@ -407,7 +407,15 @@ checks['export-keeps-parts'] = async () => {
                 check(`${short}: ${label}: what is not made from the model is byte for byte the file's`, changed, []);
                 return after;
             };
-            const unedited = await compare('unedited', await grid.ExportXlsx());
+            // Nothing changed at all: the bytes that were opened.
+            const same = (a, b) => a.length === b.length && a.every((value, index) => value === b[index]);
+            const untouched = await grid.ExportXlsx();
+            check(`${short}: nothing changed: the export is the opened file, byte for byte`, [same(untouched, original), untouched.buffer !== original.buffer], [true, true]);
+            // (From here on the writer writes: another zoom is not the file as it was opened.)
+            grid.SetZoom(grid.GetZoom() === 0.9 ? 0.8 : 0.9);
+            const zoomed = await grid.ExportXlsx();
+            check(`${short}: another zoom: written anew`, same(zoomed, original), false);
+            const unedited = await compare('unedited', zoomed);
             if (short === 'dashboard-ecommerce-sales.xlsx') {
                 const rels = await unedited.files['xl/_rels/workbook.xml.rels'].async('string'), types = await unedited.files['[Content_Types].xml'].async('string');
                 check('the data model and the metadata are related and typed', [/Target="(\/xl\/)?model\/item\.data"/.test(rels), /Target="(\/xl\/)?metadata"/.test(rels), /PartName="\/xl\/model\/item\.data"|Extension="data"/.test(types), /PartName="\/xl\/metadata"/.test(types)], [true, true, true, true]);
@@ -471,6 +479,54 @@ checks['chrome-spill'] = async () => {
             check('opened again: the ranges', [again.grid.GetSpillRange(2, 2), again.grid.GetSpillRange(1, 5), again.grid.GetCell(1, 1).formula], [{ anchor: 'B2', range: 'B2:C3' }, { anchor: 'F1', range: 'F1:F2' }, '=SEQUENCE(2,2)']);
         } finally { again.close(); }
         check('row / col outside the sheet throw', (() => { try { grid.GetSpillRange(-1, 0); return null; } catch (e) { return /GetSpillRange/.test(String(e.message)); } })(), true);
+    } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
+    finally { close(); }
+    return lines;
+};
+
+// An export of a workbook nothing was changed in is the file that was opened; any change writes it anew.
+checks['export-verbatim'] = async () => {
+    const { lines, check } = makeLog();
+    const { bytesOf } = await import('/component.js');
+    const { grid, close } = mountGrid();
+    try {
+        const original = await bytesOf('tests/real-world/milk-street-office.xlsx');
+        const same = (a, b) => a.length === b.length && a.every((value, index) => value === b[index]);
+        const given = original.slice();
+        await grid.ImportXlsx(given);
+        given.fill(0);   // (the host's buffer is its own: the grid keeps a copy)
+        check('opened, nothing done: the opened bytes', same(await grid.ExportXlsx(), original), true);
+        grid.SelectCell(5, 3); grid.SelectRange(2, 2, 6, 4);
+        check('a selection is not a change', same(await grid.ExportXlsx(), original), true);
+        const revision = grid.GetRevision();
+        grid.EnterText(40, 12, 'typed');
+        const edited = await grid.ExportXlsx();
+        check('an edit: written anew, with the edit', [same(edited, original), grid.GetRevision() !== revision], [false, true]);
+        const zip = await window.JSZip.loadAsync(edited);
+        check('... a package of its own', Object.keys(zip.files).length > 5, true);
+        grid.Undo();
+        check('the edit undone: the opened bytes again', [grid.GetRevision() === revision, same(await grid.ExportXlsx(), original)], [true, true]);
+        grid.Redo(); grid.Undo();
+        grid.SwitchSheet(1);
+        check('another sheet on display: written anew (the file says which sheet is shown)', same(await grid.ExportXlsx(), original), false);
+        grid.SwitchSheet(0);
+        check('back on the first: the opened bytes', [same(await grid.ExportXlsx(), original), grid.GetRevision() === revision, grid.IsModified(), grid.GetActiveSheetIndex(), grid.GetZoom()], [true, true, false, 0, 1]);
+        grid.SetShowGridLines(!grid.GetShowGridLines());
+        check('grid lines switched: written anew', same(await grid.ExportXlsx(), original), false);
+        grid.SetShowGridLines(!grid.GetShowGridLines());
+        // (Switched back by hand it is a new revision - the grid does not know it is where it was -; undone it is the old one.)
+        check('... and back by hand: as the revision says', same(await grid.ExportXlsx(), original), grid.GetRevision() === revision);
+        grid.Undo(); grid.Undo();
+        check('... undone: the opened bytes', [grid.GetRevision() === revision, same(await grid.ExportXlsx(), original)], [true, true]);
+        grid.SetDefinedName('Fresh', '=Annual!$A$1');
+        check('a defined name: written anew', same(await grid.ExportXlsx(), original), false);
+        // A workbook that was not opened from a file is always written.
+        const made = mountGrid();
+        try { made.grid.SetCell(0, 0, '1'); check('a workbook made here is written', (await made.grid.ExportXlsx()).length > 1000, true); } finally { made.close(); }
+        // The same grid opening another file forgets the first.
+        const other = await bytesOf('tests/real-world/chart-zoo.xlsx');
+        await grid.ImportXlsx(other.slice());
+        check('another file opened: its bytes', same(await grid.ExportXlsx(), other), true);
     } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
     finally { close(); }
     return lines;
