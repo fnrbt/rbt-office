@@ -2647,7 +2647,7 @@ let private bufferOfCharacters (text: string) (runs: TextBuffer.Run array) : Tex
 ///   Regenerate  the paragraph was changed in another way - a link, a note,
 ///           a bookmark, a picture, a tracked change: it is written from the
 ///           model.
-let private paragraphEdit (context: WordStyles.DocumentStyleContext option) (export: ParagraphBlock -> obj) (index: int) (a: ParagraphBlock) (b: ParagraphBlock) : obj =
+let private paragraphEdit (context: WordStyles.DocumentStyleContext option) (exportBefore: ParagraphBlock -> obj) (export: ParagraphBlock -> obj) (index: int) (a: ParagraphBlock) (b: ParagraphBlock) : obj =
     let afterItem = export b
     let regenerate () = createObj [ "Paragraph" ==> index; "Regenerate" ==> true; "After" ==> afterItem ]
     let ma = a.Metadata
@@ -2717,7 +2717,7 @@ let private paragraphEdit (context: WordStyles.DocumentStyleContext option) (exp
                 match textEdit with
                 | None -> regenerate ()
                 | Some text ->
-                    let middleItem = export middle
+                    let middleItem = exportBefore middle
                     createObj [
                         "Paragraph" ==> index
                         "Text" ==> text
@@ -2725,12 +2725,267 @@ let private paragraphEdit (context: WordStyles.DocumentStyleContext option) (exp
                         "After" ==> afterItem
                         "NewText" ==> newText ]
 
+// ---- paragraphs that were split, joined, or are in a block written anew --------
+//
+// A paragraph that was split in two (Enter) is two paragraphs of the one
+// that was read; paragraphs that were joined (Backspace at the start of the
+// second) are one of two. And a paragraph of a block that is written from
+// the model - a table that got a row, a new block - may still be a paragraph
+// that was read. The writer is told (SourcePara of the paragraph's item, or
+// Cut / Join of its edit), and makes each of the XML it was read from.
+
+/// What a paragraph of the document is of the paragraphs that were read.
+type private Derivation = {
+    /// The paragraph it is (a part) of: the index of its block among the blocks that were read,
+    /// which of the block's paragraphs, the paragraph, and the heading level its block had (0: none).
+    Block: int
+    Para: int
+    Original: ParagraphBlock
+    Level: int
+    /// The stretch of that paragraph's text it has: all of it, but of a paragraph that was split.
+    From: int
+    Until: int
+    /// The paragraphs that were joined to its end (block, paragraph of the block, paragraph, heading level).
+    Joined: (int * int * ParagraphBlock * int) list
+}
+
+/// The paragraphs of the blocks that were read, in the order of the XML: (block, paragraph of the block, paragraph, heading level).
+let private originalStory (original: Document) : (int * int * ParagraphBlock * int) array * int array =
+    let story = ResizeArray<int * int * ParagraphBlock * int>()
+    let counts = ResizeArray<int>()
+    original.Blocks
+    |> List.iteri (fun index block ->
+        let level = match block with Heading (level, _) -> level | _ -> 0
+        match storyParagraphs block with
+        | Some paragraphs ->
+            paragraphs |> List.iteri (fun at para -> story.Add ((index, at, para, level)))
+            counts.Add paragraphs.Length
+        | None -> counts.Add 0)
+    story.ToArray(), counts.ToArray()
+
+/// Which paragraph of the document is which that was read (by the id of the paragraph it is now).
+let private derivationsOf (story: (int * int * ParagraphBlock * int) array) (doc: Document) : Dictionary<string, Derivation> =
+    let result = Dictionary<string, Derivation>()
+    // A paragraph that was read, by its id - where the id is one paragraph's alone.
+    let byId = Dictionary<string, int>()
+    let twice = HashSet<string>()
+    story |> Array.iteri (fun at (_, _, para, _) -> if byId.ContainsKey para.Id then twice.Add para.Id |> ignore else byId.[para.Id] <- at)
+    for id in twice do byId.Remove id |> ignore
+    let present = HashSet<string>()
+    for para in paragraphsOfBlocks doc.Blocks do present.Add para.Id |> ignore
+    let textOf (para: ParagraphBlock) = TextBuffer.toString para.Buffer
+    /// The paragraphs that stand one after the other in one place: the body's, a cell's.
+    let consider (siblings: ParagraphBlock array) =
+        let mutable i = 0
+        while i < siblings.Length do
+            let para = siblings.[i]
+            let mutable next = i + 1
+            match byId.TryGetValue para.Id with
+            | true, at when not (result.ContainsKey para.Id) ->
+                let (block, index, original, level) = story.[at]
+                let whole = { Block = block; Para = index; Original = original; Level = level; From = 0; Until = TextBuffer.length original.Buffer; Joined = [] }
+                let was = if obj.ReferenceEquals(para, original) then "" else textOf original
+                let now = if obj.ReferenceEquals(para, original) then "" else textOf para
+                if now = was then result.[para.Id] <- whole
+                elif now.Length < was.Length && was.StartsWith(now, System.StringComparison.Ordinal) then
+                    // Split: the paragraphs after it that are new hold the rest of its text.
+                    let parts = ResizeArray<ParagraphBlock * int * int>()
+                    parts.Add ((para, 0, now.Length))
+                    let mutable covered = now.Length
+                    let mutable more = true
+                    while more && covered < was.Length && next < siblings.Length do
+                        let candidate = siblings.[next]
+                        let text = textOf candidate
+                        if not (byId.ContainsKey candidate.Id) && not (result.ContainsKey candidate.Id)
+                           && covered + text.Length <= was.Length && was.Substring(covered, text.Length) = text then
+                            parts.Add ((candidate, covered, covered + text.Length))
+                            covered <- covered + text.Length
+                            next <- next + 1
+                        else more <- false
+                    if covered = was.Length && parts.Count > 1 then
+                        for (part, from, until) in parts do result.[part.Id] <- { whole with From = from; Until = until }
+                    else
+                        next <- i + 1
+                        result.[para.Id] <- whole
+                elif now.Length > was.Length && now.StartsWith(was, System.StringComparison.Ordinal) then
+                    // Joined: the paragraphs that came after it and are gone are the rest of its text.
+                    let joined = ResizeArray<int * int * ParagraphBlock * int>()
+                    let mutable covered = was.Length
+                    let mutable follower = at + 1
+                    let mutable more = true
+                    while more && covered < now.Length && follower < story.Length do
+                        let (otherBlock, otherIndex, other, otherLevel) = story.[follower]
+                        let text = textOf other
+                        // (Of the same table, or the next paragraph of the body.)
+                        let adjacent =
+                            let (lastBlock, _, _, _) = story.[follower - 1]
+                            otherBlock = lastBlock || (otherBlock = lastBlock + 1 && otherIndex = 0)
+                        // (And of this one's style: what its runs inherited there they inherit here. Not one
+                        // that ends a section or a page: that is its own.)
+                        if adjacent && other.Metadata.Style = original.Metadata.Style && otherLevel = level
+                           && other.Metadata.SectionBreak.IsNone && not other.Metadata.PageBreakAfter && not original.Metadata.PageBreakAfter
+                           && not (present.Contains other.Id) && covered + text.Length <= now.Length && now.Substring(covered, text.Length) = text then
+                            joined.Add ((otherBlock, otherIndex, other, otherLevel))
+                            covered <- covered + text.Length
+                            follower <- follower + 1
+                        else more <- false
+                    result.[para.Id] <- (if covered = now.Length && joined.Count > 0 then { whole with Joined = List.ofSeq joined } else whole)
+                else result.[para.Id] <- whole
+            | _ -> ()
+            i <- next
+    let rec ofTable (table: TableBlock) =
+        for row in gatherVerticalMergeContent table.Rows do
+            for cell in row.Cells do
+                consider (List.toArray cell.Content)
+                for inner in cell.NestedTables do ofTable inner
+    consider (doc.Blocks |> List.choose (function Paragraph para | Heading (_, para) -> Some para | _ -> None) |> List.toArray)
+    for block in doc.Blocks do
+        match block with
+        | Table table -> ofTable table
+        | _ -> ()
+    result
+
+/// The paragraph a derivation says the paragraph was before anything else was done to it: the
+/// stretch of the original it has, with the paragraphs joined to it.
+let private derivedOriginal (derivation: Derivation) : ParagraphBlock =
+    let original = derivation.Original
+    let length = TextBuffer.length original.Buffer
+    if derivation.From = 0 && derivation.Until = length && derivation.Joined.IsEmpty then original
+    else
+        let runs = ResizeArray<TextBuffer.Run>()
+        let text = System.Text.StringBuilder()
+        let own = runsByCharacter original.Buffer
+        let ownText = TextBuffer.toString original.Buffer
+        if own.Length = ownText.Length then
+            for at in derivation.From .. derivation.Until - 1 do runs.Add own.[at]
+            text.Append(ownText.Substring(derivation.From, derivation.Until - derivation.From)) |> ignore
+        for (_, _, other, _) in derivation.Joined do
+            runs.AddRange (runsByCharacter other.Buffer)
+            text.Append(TextBuffer.toString other.Buffer) |> ignore
+        { original with Buffer = bufferOfCharacters (text.ToString()) (runs.ToArray()) }
+
+/// The account of a paragraph for the writer, with what a derivation adds to it: the stretch
+/// that was cut out of the paragraph that was read, the paragraphs joined to it.
+let private derivedEdit (context: WordStyles.DocumentStyleContext option) (exportBefore: ParagraphBlock -> obj) (export: ParagraphBlock -> obj) (index: int) (derivation: Derivation) (para: ParagraphBlock) : obj =
+    let before = derivedOriginal derivation
+    let isPart = derivation.From > 0 || derivation.Until < TextBuffer.length derivation.Original.Buffer
+    let edit =
+        // (A paragraph with a page break after it that was split: the break is the second half's - written from the model.)
+        if isPart && derivation.Original.Metadata.PageBreakAfter then createObj [ "Paragraph" ==> index; "Regenerate" ==> true; "After" ==> export para ]
+        elif obj.ReferenceEquals(before, para) || jsonOf (exportBefore before) = jsonOf (export para) then
+            createObj [ "Paragraph" ==> index; "Text" ==> null; "Before" ==> null; "After" ==> export para; "NewText" ==> TextBuffer.toString para.Buffer ]
+        else paragraphEdit context exportBefore export index before para
+    if derivation.From > 0 || derivation.Until < TextBuffer.length derivation.Original.Buffer then
+        edit?Cut <- [| derivation.From; derivation.Until |]
+    if not derivation.Joined.IsEmpty then
+        edit?Join <- (derivation.Joined
+                      |> List.map (fun (block, index, other, _) -> createObj [ "Block" ==> block; "Para" ==> index; "Text" ==> TextBuffer.toString other.Buffer ])
+                      |> List.toArray)
+    edit
+
+/// The paragraph items of a block's item, in the order of the block's paragraphs (storyParagraphs).
+let rec private storyItems (item: obj) : obj list =
+    match item?Type |> stringOrDefault "Paragraph" with
+    | "TextBox" -> []
+    | "Table" ->
+        (item?Rows |> unbox<obj array>)
+        |> Array.toList
+        |> List.collect (fun row ->
+            (row?Cells |> unbox<obj array>)
+            |> Array.toList
+            |> List.collect (fun cell ->
+                let paragraphs = cell?Paragraphs |> unbox<obj array> |> Array.toList
+                let nested = if isNullOrUndefined cell?NestedTables then [] else cell?NestedTables |> unbox<obj array> |> Array.toList
+                if nested.IsEmpty then paragraphs
+                else
+                    let count = paragraphs.Length
+                    let anchors = if isNullOrUndefined cell?NestedTableAnchors then [||] else cell?NestedTableAnchors |> unbox<int array>
+                    let placed = nested |> List.mapi (fun i inner -> inner, (if i < anchors.Length then anchors.[i] else count) |> max 0 |> min count) |> List.sortBy snd
+                    let before index = placed |> List.filter (fun (_, anchor) -> anchor = index) |> List.collect (fun (inner, _) -> storyItems inner)
+                    (paragraphs |> List.mapi (fun index para -> before index @ [ para ]) |> List.concat) @ before count))
+    | _ -> [ item ]
+
+[<Emit("JSON.stringify(Object.assign({}, $0, { Cells: undefined, Rows: undefined, Paragraphs: undefined, NestedTables: undefined, NestedTableAnchors: undefined, SourceRow: undefined, SourceCell: undefined, SourceTable: undefined, SourceIndex: undefined, SourceUnchanged: undefined, SourceWhy: undefined }))")>]
+let private jsonOfOwnProperties (_value: obj) : string = jsNative
+
+/// A table that is written from the model, when it is a table that was read: which of its rows
+/// and cells are rows and cells that were read (by the paragraphs in them), and whether each is
+/// still what it was - for the writer to put back the XML of those that are, and to change the
+/// properties of the others in the XML they were read from (SourceTable, SourceRow, SourceCell).
+let private markDerivedTable (index: int) (original: TableBlock) (originalItem: obj) (current: TableBlock) (item: obj) : unit =
+    let wasRows = gatherVerticalMergeContent original.Rows |> List.toArray
+    let nowRows = gatherVerticalMergeContent current.Rows |> List.toArray
+    let wasItems = originalItem?Rows |> unbox<obj array>
+    let nowItems = item?Rows |> unbox<obj array>
+    if wasRows.Length = wasItems.Length && nowRows.Length = nowItems.Length then
+        // The cell each paragraph that was read was in - where its id is one paragraph's alone.
+        let place = Dictionary<string, int * int>()
+        let twice = HashSet<string>()
+        wasRows |> Array.iteri (fun r row ->
+            row.Cells |> List.iteri (fun c cell ->
+                for para in cell.Content do
+                    if place.ContainsKey para.Id then twice.Add para.Id |> ignore else place.[para.Id] <- (r, c)))
+        for id in twice do place.Remove id |> ignore
+        let usedRows = HashSet<int>()
+        item?SourceTable <- createObj [
+            "Block" ==> index
+            "RowCount" ==> wasRows.Length
+            "Before" ==> (if jsonOfOwnProperties item = jsonOfOwnProperties originalItem then null else originalItem) ]
+        nowRows |> Array.iteri (fun i row ->
+            let cells = List.toArray row.Cells
+            let cellItems = nowItems.[i]?Cells |> unbox<obj array>
+            if cells.Length = cellItems.Length then
+                let placed = cells |> Array.map (fun cell -> cell.Content |> List.tryPick (fun para -> match place.TryGetValue para.Id with | true, found -> Some found | _ -> None))
+                match placed |> Array.tryPick id with
+                | Some (r, _) when not (usedRows.Contains r) ->
+                    usedRows.Add r |> ignore
+                    let wasRow = wasItems.[r]
+                    let wasCells = wasRow?Cells |> unbox<obj array>
+                    nowItems.[i]?SourceRow <- createObj [
+                        "Row" ==> r
+                        "CellCount" ==> wasCells.Length
+                        "Same" ==> (jsonOf nowItems.[i] = jsonOf wasRow)
+                        "Before" ==> (if jsonOfOwnProperties nowItems.[i] = jsonOfOwnProperties wasRow then null else wasRow) ]
+                    let usedCells = HashSet<int>()
+                    placed |> Array.iteri (fun j found ->
+                        match found with
+                        | Some (cellRow, c) when cellRow = r && c < wasCells.Length && usedCells.Add c ->
+                            cellItems.[j]?SourceCell <- createObj [
+                                "Cell" ==> c
+                                "Same" ==> (jsonOf cellItems.[j] = jsonOf wasCells.[c])
+                                "Before" ==> (if jsonOfOwnProperties cellItems.[j] = jsonOfOwnProperties wasCells.[c] then null else wasCells.[c]) ]
+                        | _ -> ())
+                | _ -> ())
+
+/// A block that is written from the model: its paragraphs that are paragraphs that were read
+/// say so (SourcePara), for the writer to make each of the XML it was read from.
+let private markDerivedParagraphs (context: WordStyles.DocumentStyleContext option) (derivations: Dictionary<string, Derivation>) (block: Block) (item: obj) : unit =
+    match storyParagraphs block with
+    | Some paragraphs ->
+        let items = storyItems item
+        if items.Length = paragraphs.Length then
+            let level = match block with Heading (level, _) -> level | _ -> 0
+            let export (para: ParagraphBlock) = if level > 0 then paragraphToEditor context "Heading" level para else paragraphToEditor context "Paragraph" 0 para
+            List.iter2 (fun (para: ParagraphBlock) (paragraphItem: obj) ->
+                match derivations.TryGetValue para.Id with
+                | true, derivation ->
+                    let exportBefore (was: ParagraphBlock) = if derivation.Level > 0 then paragraphToEditor context "Heading" derivation.Level was else paragraphToEditor context "Paragraph" 0 was
+                    let spec = derivedEdit context exportBefore export 0 derivation para
+                    spec?Block <- derivation.Block
+                    spec?Para <- derivation.Para
+                    spec?OldText <- TextBuffer.toString derivation.Original.Buffer
+                    // (Nothing was done to it: it goes back as it was read.)
+                    spec?Verbatim <- (obj.ReferenceEquals(derivation.Original, para) && derivation.From = 0 && derivation.Joined.IsEmpty)
+                    paragraphItem?SourcePara <- spec
+                | _ -> ()) paragraphs items
+    | None -> ()
+
 /// A changed block as changes of its paragraphs (see paragraphEdit): the
 /// text every paragraph of the block had when it was read, in the order of
 /// the XML, and what was done to each that is not what it was. None when
 /// anything else of the block is not what it was (its paragraphs are others,
 /// a table's rows or cells).
-let private blockTextChanges (context: WordStyles.DocumentStyleContext option) (original: Block) (current: Block) : Result<obj, string> =
+let private blockTextChanges (context: WordStyles.DocumentStyleContext option) (derivations: Dictionary<string, Derivation>) (original: Block) (current: Block) : Result<obj, string> =
     match storyParagraphs original, storyParagraphs current with
     | Some before, Some after when before.Length = after.Length && List.forall2 (fun (a: ParagraphBlock) (b: ParagraphBlock) -> a.Id = b.Id) before after ->
         let changed = List.zip before after |> List.mapi (fun index pair -> index, pair) |> List.filter (fun (_, (a, b)) -> not (obj.ReferenceEquals(a, b)))
@@ -2772,7 +3027,12 @@ let private blockTextChanges (context: WordStyles.DocumentStyleContext option) (
             let edits =
                 changed
                 |> List.filter (fun (_, (a, b)) -> not (unchangedText a b))
-                |> List.map (fun (index, (a, b)) -> paragraphEdit context export index a b)
+                |> List.map (fun (index, (a, b)) ->
+                    // (One half of a paragraph that was split, or one with others joined to it: see derivationsOf.)
+                    match derivations.TryGetValue b.Id with
+                    | true, derivation when obj.ReferenceEquals(derivation.Original, a) && (derivation.From > 0 || derivation.Until < TextBuffer.length a.Buffer || not derivation.Joined.IsEmpty) ->
+                        derivedEdit context export export index derivation b
+                    | _ -> paragraphEdit context export export index a b)
             Ok (createObj [
                     "Texts" ==> (before |> List.map (fun para -> TextBuffer.toString para.Buffer) |> List.toArray)
                     "Edits" ==> List.toArray edits ])
@@ -2784,28 +3044,48 @@ let private blockTextChanges (context: WordStyles.DocumentStyleContext option) (
 /// what it was then (SourceUnchanged: the same object, or one that exports to
 /// the same item - a character typed and deleted again): the writer puts the
 /// XML of such a block back as it was in the file.
-let private exportBodyWithSource context (imported: Document option) (doc: Document) : obj array =
+let private exportBodyWithSource context (imported: Document option) (doc: Document) : obj array * int array =
     match imported with
-    | None -> exportToEditor doc
+    | None -> exportToEditor doc, [||]
     | Some original ->
         let known = Dictionary<string, int * Block>()
         original.Blocks |> List.iteri (fun index block -> known.[blockIdOf block] <- (index, block))
-        blocksInAnchorOrder doc.Blocks
-        |> List.map (fun block ->
-            let item = blockToEditor context block
-            match known.TryGetValue (blockIdOf block) with
-            | true, (index, originalBlock) ->
-                let unchanged = sameBlockObject block originalBlock || jsonOf item = jsonOf (blockToEditor context originalBlock)
-                item?SourceIndex <- index
-                item?SourceUnchanged <- unchanged
-                if not unchanged then
-                    match blockTextChanges context originalBlock block with
-                    | Ok changes -> item?SourceTextChanges <- changes
-                    // (Why the block is written from the model: for the writer's account of the save.)
-                    | Error why -> item?SourceWhy <- why
-            | _ -> ()
-            item)
-        |> List.toArray
+        // (Which paragraph is which that was read: asked for by the first block that is not what it was.)
+        let story : ((int * int * ParagraphBlock * int) array * int array) option ref = ref None
+        let derivations : Dictionary<string, Derivation> option ref = ref None
+        let derivationsNow () =
+            match derivations.Value with
+            | Some found -> found
+            | None ->
+                let known = originalStory original
+                story.Value <- Some known
+                let found = derivationsOf (fst known) doc
+                derivations.Value <- Some found
+                found
+        let items =
+            blocksInAnchorOrder doc.Blocks
+            |> List.map (fun block ->
+                let item = blockToEditor context block
+                match known.TryGetValue (blockIdOf block) with
+                | true, (index, originalBlock) ->
+                    let unchanged = sameBlockObject block originalBlock || jsonOf item = jsonOf (blockToEditor context originalBlock)
+                    item?SourceIndex <- index
+                    item?SourceUnchanged <- unchanged
+                    if not unchanged then
+                        match blockTextChanges context (derivationsNow ()) originalBlock block with
+                        | Ok changes -> item?SourceTextChanges <- changes
+                        // (Why the block is written from the model: for the writer's account of the save.)
+                        | Error why ->
+                            item?SourceWhy <- why
+                            // (The rows and cells first: they are compared as they are exported.)
+                            match block, originalBlock with
+                            | Table table, Table originalTable -> markDerivedTable index originalTable (blockToEditor context originalBlock) table item
+                            | _ -> ()
+                            markDerivedParagraphs context (derivationsNow ()) block item
+                | _ -> markDerivedParagraphs context (derivationsNow ()) block item
+                item)
+            |> List.toArray
+        items, (match story.Value with Some (_, counts) -> counts | None -> [||])
 
 /// (list id, level) -> how the paragraphs of that list level are numbered.
 let private listSignatures (doc: Document) =
@@ -2869,6 +3149,7 @@ let private exportDocumentPackageOf (doc: Document) (imported: Document option) 
             |> Seq.toArray
         | None -> [||]
     let listsUnchanged = imported.IsSome && changedListLevels.Length = 0
+    let body = exportBodyWithSource context imported doc
     let partIds (parts: HeaderFooterPart list) = parts |> List.map (fun part -> part.Kind, part.RelationshipId)
     createObj [
         "Footnotes" ==> footnotes
@@ -2893,7 +3174,9 @@ let private exportDocumentPackageOf (doc: Document) (imported: Document option) 
                              |> List.filter (fun style -> not (doc.Package.ImportedStyles |> List.exists (fun imported -> imported = style)))
                              |> List.map (fun style -> style.StyleType + ":" + style.Id)
                              |> List.toArray)
-        "Paragraphs" ==> exportBodyWithSource context imported doc
+        "Paragraphs" ==> fst body
+        // (How many paragraphs each block that was read holds: with SourcePara, see markDerivedParagraphs.)
+        "SourceStoryCounts" ==> snd body
         "PageSetup" ==> exportPageSetupToEditor doc.PageSetup
         "Styles" ==> exportStylesToEditor doc.Styles
         "HeaderParts" ==> partsWithSource doc.HeaderParts (imported |> Option.map (fun original -> original.HeaderParts) |> Option.defaultValue [])

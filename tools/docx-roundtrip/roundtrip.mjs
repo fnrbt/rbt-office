@@ -73,7 +73,13 @@
 // summary says, per kind, how many of the paragraphs were kept in the XML
 // they were read from (the change made in it), how many were written from
 // the model, and how many paragraphs nobody edited changed (none may, but in
-// the documents of passOthersKnown below).
+// the documents of passOthersKnown below). A paragraph in ten is split in
+// two with Enter, and joined to the one before it with Backspace (real key
+// events): both halves, and the joined paragraph, are made of the XML that
+// was read. And a paragraph in seven has, where it is in a table, a row
+// inserted after its row, its row deleted, a column inserted, its cell
+// shaded: the paragraphs of the table that were read are written as the XML
+// they were read from, the new cells' from the model.
 //
 // Usage:
 //   dotnet fable src/Office.Formats --outDir $DIST/office-formats --lang JavaScript --noCache
@@ -125,11 +131,14 @@ const tenthConfinedShare = 0.99;
 // content control, a body whose section properties come first).
 const boldConfinedShare = 0.97;
 // The edit passes (page.js, EDIT_PASSES): the share of the edited paragraphs that must be changed in their own XML.
-const passConfinedShare = {};
+// (A row or a column of a table that is new is the model's: its paragraphs are written from the model.)
+const passConfinedShare = { 'split in two (Enter)': 0.5, 'joined to the one before (Backspace)': 0.5, 'a table row inserted': 0, 'a table row deleted': 0, 'a table column inserted': 0, 'a table cell shaded': 0 };
 // The documents in which an edit pass may change paragraphs nobody edited (name fragments): a paragraph of a
 // vertically merged cell of a table inside a table is, in the editor, a paragraph of the cell below - whose own
 // empty paragraph is formatted with it.
-const passOthersKnown = ['test-header-footer.docx', 'complex-tables.docx', 'calibre-demo', 'wikipedia-sample.docx', 'microsoft-word-sample.docx', 'sample-formatted.docx'];
+// (And: a paragraph in a block-level content control that is split or joined - docx4j-hyperlink-binding,
+// docx4j-invoice-2013 - where the control's own XML is written anew.)
+const passOthersKnown = ['test-header-footer.docx', 'complex-tables.docx', 'calibre-demo', 'wikipedia-sample.docx', 'microsoft-word-sample.docx', 'sample-formatted.docx', 'docx4j-hyperlink-binding.docx', 'docx4j-invoice-2013.docx'];
 const tenthOthersKnown = [
     'test-header-footer.docx', // w:sectPr is the first child of w:body: nothing of this body is written back as it was read (planBody)
 ];
@@ -260,11 +269,29 @@ async function main() {
                 for (const kind of await tab.evaluate('window.editPassKinds()')) {
                     const pass = await tab.evaluate(([n, k]) => window.editPass(n, k), [name, kind]);
                     problems.push(...pass.problems);
-                    if (pass.others > 0 && !passOthersKnown.some((known) => name.includes(known))) problems.push(`every tenth paragraph, ${kind}: ${pass.others} paragraphs nobody edited are not the text they were read from`);
+                    if (pass.others > 0 && !pass.dragged && !passOthersKnown.some((known) => name.includes(known))) problems.push(`every tenth paragraph, ${kind}: ${pass.others} paragraphs nobody edited are not the text they were read from`);
                     const totals = passTotals.get(kind) ?? { edited: 0, kept: 0, model: 0, others: 0, notes: [] };
                     totals.edited += pass.edited; totals.kept += pass.kept; totals.model += pass.model; totals.others += pass.others;
                     if (pass.model || pass.others) {
-                        totals.notes.push(`${name}: ${pass.edited} edited, ${pass.kept} kept in their own XML, ${pass.model} from the model, ${pass.others} others changed`);
+                        totals.notes.push(`${name}: ${pass.edited} edited, ${pass.model} paragraphs from the model, ${pass.others} others changed`);
+                        if (verbose || process.env.TENTH_WHY) for (const line of pass.why) totals.notes.push('      ' + line);
+                    }
+                    passTotals.set(kind, totals);
+                }
+            }
+            // A paragraph in ten split in two, and joined to the one before it, with real keys (window.keyPass* in page.js).
+            if (!skipTenth) {
+                for (const [kind, key] of await tab.evaluate('window.keyPassKinds()')) {
+                    const count = await tab.evaluate(([n, k]) => window.keyPassOpen(n, k), [name, kind]);
+                    if (count === 0) continue;
+                    for (let i = 0; i < count; i++) { await tab.evaluate((index) => window.keyPassSelect(index), i); await tab.keyboard.press(key); await tab.evaluate('window.keyPassAfter()'); }
+                    const pass = await tab.evaluate('window.keyPassFinish()');
+                    problems.push(...pass.problems);
+                    if (pass.others > 0 && !pass.dragged && !passOthersKnown.some((known) => name.includes(known))) problems.push(`every tenth paragraph, ${kind}: ${pass.others} paragraphs nobody edited are not the text they were read from`);
+                    const totals = passTotals.get(kind) ?? { edited: 0, kept: 0, model: 0, others: 0, notes: [] };
+                    totals.edited += pass.edited; totals.kept += pass.kept; totals.model += pass.model; totals.others += pass.others;
+                    if (pass.model || pass.others) {
+                        totals.notes.push(`${name}: ${pass.edited} edited, ${pass.model} paragraphs from the model, ${pass.others} others changed`);
                         if (verbose || process.env.TENTH_WHY) for (const line of pass.why) totals.notes.push('      ' + line);
                     }
                     passTotals.set(kind, totals);
@@ -321,7 +348,7 @@ async function main() {
         if (boldTotals.confined < boldTotals.edited * boldConfinedShare) { console.log(`  FAIL: fewer than ${boldConfinedShare * 100}% by the bold alone`); failed++; }
     }
     for (const [kind, totals] of passTotals) {
-        console.log(`\nEdit pass - every tenth paragraph, ${kind}: ${totals.edited} paragraphs; ${totals.kept} kept in their own XML, ${totals.model} from the model; ${totals.others} other paragraphs changed.`);
+        console.log(`\nEdit pass - every tenth paragraph, ${kind}: ${totals.edited} edits; ${totals.kept} kept in their own XML, ${totals.model} paragraphs written from the model; ${totals.others} other paragraphs changed.`);
         for (const line of totals.notes) console.log('  ' + line);
         if (totals.kept < totals.edited * (passConfinedShare[kind] ?? 0.95)) { console.log(`  FAIL: fewer than ${(passConfinedShare[kind] ?? 0.95) * 100}% kept in their own XML`); failed++; }
     }

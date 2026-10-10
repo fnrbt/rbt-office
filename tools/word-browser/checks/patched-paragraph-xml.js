@@ -51,7 +51,7 @@ try {
         const starts = ids.filter((id) => Word.getLayoutLines(editor).some((line) => line.BlockId === id && (line.Text ?? '').startsWith('alpha')));
         const tracked = ids.find((id) => Word.getLayoutLines(editor).some((line) => line.BlockId === id && (line.Text ?? '').startsWith('tracked')));
         const startsWith = (start) => ids.find((id) => Word.getLayoutLines(editor).some((line) => line.BlockId === id && (line.Text ?? '').startsWith(start)));
-        const id = where === 'body' ? starts[0] : where === 'cell' ? starts[1] : where === 'list' ? startsWith('a list item') : where === 'after' ? startsWith('after the table') : tracked;
+        const id = where === 'body' ? starts[0] : where === 'cell' || where === 'table' ? starts[1] : where === 'list' ? startsWith('a list item') : where === 'after' ? startsWith('after the table') : tracked;
         if (where === 'list' || where === 'after') Word.setSelection(editor, id, 2, id, 2);
         const select = (word, source = text) => { const at = source.indexOf(word); Word.setSelection(editor, id, at, id, at + word.length); };
         edit(editor, select, id);
@@ -64,24 +64,26 @@ try {
         if (!same[1] && window.location.search.includes('patched')) { const a = JSON.parse(modelOf(editor)), b = JSON.parse(modelOf(again)); const flat = (v) => JSON.stringify(v).split('","'); const fa = flat(a), fb = flat(b); const at = fa.findIndex((v, i) => v !== fb[i]); check(`${label}: (the first difference of the model)`, [fa[at], fb[at]], []); }
         if (!same[2] && where !== 'list' && where !== 'after') { const a = layoutText(editor), b = layoutText(again); let at = 0; while (at < a.length && a[at] === b[at]) at++; check(`${label}: (the first difference of the layout)`, [a.slice(Math.max(0, at - 200), at + 200), b.slice(Math.max(0, at - 200), at + 200)], []); }
         Word.dispose(again); Word.dispose(editor);
-        const own = where === 'body' ? bodyOf(xml) : where === 'cell' ? cellOf(xml) : where === 'tracked' ? tableOf(xml) : xml.slice(xml.indexOf('</w:tbl>') + 8);
+        const own = where === 'body' ? bodyOf(xml) : where === 'cell' ? cellOf(xml) : where === 'tracked' || where === 'table' ? tableOf(xml) : xml.slice(xml.indexOf('</w:tbl>') + 8);
         for (const [what, piece] of expectXml) {
             const found = piece instanceof RegExp ? piece.test(own) : own.includes(piece);
             // (What is there instead, when it is not.)
             check(`${label}: ${what}`, found ? true : own, true);
         }
         if (where === 'body' || where === 'cell') check(`${label}: everything the model does not hold of the paragraph is kept`, kept(where === 'body' ? '01' : '02').filter((piece) => !own.includes(piece)), []);
-        check(`${label}: the table's own XML is kept`, tableKept.filter((piece) => !xml.includes(piece)), []);
+        if (where !== 'table') check(`${label}: the table's own XML is kept`, tableKept.filter((piece) => !xml.includes(piece)), []);
         if (where === 'body') check(`${label}: the table is the text it was`, xml.includes(tableOf(original)), true);
         else check(`${label}: the paragraph of the body is the text it was`, xml.includes(bodyOf(original)), true);
         if (where === 'tracked') check(`${label}: the other paragraph of the table is the text it was`, xml.includes(cellOf(original)), true);
-        check(`${label}: the writer's account`, [report.PatchedParagraphs, report.ModelParagraphsInTables, report.ModelBlocks], expectReport);
+        if (where === 'table') check(`${label}: the paragraphs the model wrote`, report.GeneratedParagraphs, expectReport);
+        else check(`${label}: the writer's account`, [report.PatchedParagraphs, report.ModelParagraphsInTables, report.ModelBlocks], expectReport);
         // (A list item whose level or list was changed is laid out with the level's indents and number once it is read again.)
         if (where === 'list' || where === 'after') check(`${label}: read again, the editor's text`, same[0], true);
         else check(`${label}: read again, the editor's text, formatting and layout`, same, [true, true, true]);
         return xml;
     };
     check('the fixture', [original.includes(kept('01')[0]), original.includes(kept('02')[0]), tableKept.filter((piece) => !original.includes(piece))], [true, true, []]);
+    const regexOf = (piece) => piece.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const props = '<w:rFonts w:ascii="Georgia" w:hAnsi="Georgia" w:eastAsia="MS Mincho" w:cs="Georgia"/>';
 
     // A word made bold: its run is split in three, each with the run's start tag and properties.
@@ -137,5 +139,36 @@ try {
         ['the word bold, from the model', /<w:b\/>(<[^>]*>)*<\/w:rPr><w:t[^>]*>format<\/w:t>/],
         ['the cell it is in', /<w:tcFitText\/><\/w:tcPr><w:p>/],
     ], [0, 1, 0]);
+
+    // ---- the table's rows, columns and cells: what was read goes back as it was read ----
+    const table = tableOf(original);
+    const rowsOf = (xml) => xml.split('</w:tr>').slice(0, -1).map((row) => row.slice(row.indexOf('<w:tr')) + '</w:tr>');
+    const [firstRow, secondRow] = rowsOf(table);
+    const cellsOf = (row) => row.split('</w:tc>').slice(0, -1).map((cell) => cell.slice(cell.indexOf('<w:tc>')) + '</w:tc>');
+    const tableHead = table.slice(0, table.indexOf('<w:tr'));
+    check('the fixture\'s table', [rowsOf(table).length, cellsOf(firstRow).length, tableHead.includes('<w:tblCaption')], [2, 2, true]);
+    // A row inserted: the rows that were read are the text they were, the new row between them.
+    await stage('a row inserted', (editor, select) => { select('gamma'); Word.insertTableRowAfter(editor); }, 'table', [
+        ['the table\'s properties and grid as they were read', tableHead],
+        ['the first row as it was read', firstRow], ['the second row as it was read', secondRow],
+        ['the new row between them', new RegExp(regexOf(firstRow) + '<w:tr>.*?</w:tr>' + regexOf(secondRow))],
+    ], 2);
+    // A row deleted: the other row and the table's properties are the text they were.
+    await stage('a row deleted', (editor, select) => { select('gamma'); Word.deleteTableRow(editor); }, 'table', [
+        ['the table is its properties and the other row, as they were read', tableHead + secondRow + '</w:tbl>'],
+    ], 0);
+    // A column inserted: every cell that was read is the text it was, in its row's own start tag and properties.
+    await stage('a column inserted', (editor, select) => { select('gamma'); Word.insertTableColumnAfter(editor); }, 'table', [
+        ['the table\'s properties as they were read', table.slice(0, table.indexOf('<w:tblGrid>'))],
+        ['the first row: its start tag, its properties, its cells with a new one between', new RegExp(regexOf(firstRow.slice(0, firstRow.indexOf('<w:tc>')) + cellsOf(firstRow)[0]) + '<w:tc>.*?</w:tc>' + regexOf(cellsOf(firstRow)[1] + '</w:tr>'))],
+        ['the second row likewise', new RegExp(regexOf(secondRow.slice(0, secondRow.indexOf('<w:tc>')) + cellsOf(secondRow)[0]) + '<w:tc>.*?</w:tc>' + regexOf(cellsOf(secondRow)[1] + '</w:tr>'))],
+    ], 2);
+    // A cell shaded: the shading in the cell's properties, which keep what the model does not hold; the rest as it was read.
+    await stage('a cell shaded', (editor, select) => { select('gamma'); Word.setSelectedTableCellStyleWithShading(editor, '#FFEEAA', '', '', 0, '', 0, '', -1, -1, -1, -1); }, 'table', [
+        ['the shading where the schema puts it, beside what was there', /<w:tr w:rsidR="00BB0005" w14:paraId="4A4B4C01"><w:trPr><w:cantSplit\/><w:tblHeader\/><\/w:trPr><w:tc><w:tcPr><w:tcW w:w="2400" w:type="dxa"\/><w:shd [^>]*w:fill="FFEEAA"[^>]*\/><w:noWrap\/><w:hideMark\/><\/w:tcPr><w:p w:rsidR="00BB0001"/],
+        ['the cell\'s paragraph as it was read', cellOf(original)],
+        ['the cell beside it, and the other row, as they were read', cellsOf(firstRow)[1] + '</w:tr>' + secondRow],
+        ['the table\'s properties and grid as they were read', tableHead],
+    ], 0);
 } catch (e) { fail(e); }
 finish();

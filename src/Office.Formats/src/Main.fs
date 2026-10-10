@@ -755,12 +755,17 @@ module WordWriter =
 
     /// What the last writeFromEditorPackage made of the body of a document
     /// that was opened: { PatchedParagraphs, ModelParagraphsInTables,
-    /// ModelBlocks, ModelBlockParagraphs, SourceBlocks, Reasons } - the paragraphs that
-    /// were changed in the XML they were read from, the paragraphs of tables
-    /// that were written from the model into the table's own XML, the blocks
-    /// (and the paragraphs in them) that were written from the model whole,
-    /// the blocks that went back as the XML they were read from, and why the
-    /// first few of the others did not.
+    /// ModelBlocks, ModelBlockParagraphs, SourceBlocks, DerivedParagraphs,
+    /// GeneratedParagraphs, Reasons } - the paragraphs that were changed in
+    /// the XML they were read from, the paragraphs of tables that were
+    /// written from the model into the table's own XML, the blocks (and the
+    /// paragraphs in them) that were written from the model whole, the
+    /// blocks that went back as the XML they were read from, the paragraphs
+    /// of blocks written from the model that were made of the XML of a
+    /// paragraph that was read (a paragraph of a table whose rows changed,
+    /// the second half of a split paragraph), the paragraphs the model
+    /// wrote (of all parts), and why the first few blocks did not go back
+    /// as they were read.
     let getLastSaveReport () : obj =
         DocumentWriter.lastSaveReport ()
 

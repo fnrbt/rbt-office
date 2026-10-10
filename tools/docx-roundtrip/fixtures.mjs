@@ -707,7 +707,9 @@ const docs = [
             `<w:tr w:rsidR="00BB0006"><w:tc><w:tcPr><w:tcW w:w="2400" w:type="dxa"/><w:tcFitText/></w:tcPr>` +
             `<w:p w14:paraId="3A3B3C03"><w:r><w:rPr><w:i/><w:rPrChange w:id="9" w:author="A" w:date="2020-01-01T00:00:00Z"><w:rPr/></w:rPrChange></w:rPr><w:t xml:space="preserve">tracked format here</w:t></w:r></w:p></w:tc>${cell(p('last cell'))}</w:tr></w:tbl>` +
             p('after the table') +
-            `<w:p w14:paraId="3A3B3C04"><w:pPr><w:keepNext/><w:numPr><w:ilvl w:val="0"/><w:numId w:val="3"/></w:numPr><w:suppressAutoHyphens/></w:pPr><w:r><w:t>a list item</w:t></w:r></w:p>`,
+            `<w:p w14:paraId="3A3B3C04"><w:pPr><w:keepNext/><w:numPr><w:ilvl w:val="0"/><w:numId w:val="3"/></w:numPr><w:suppressAutoHyphens/></w:pPr><w:r><w:t>a list item</w:t></w:r></w:p>` +
+            p('first of two') +
+            `<w:p w14:paraId="3A3B3C05"><w:pPr><w:keepLines/></w:pPr><w:bookmarkStart w:id="11" w:name="second"/><w:r w:rsidR="00BB0007"><w:rPr><w:noProof/></w:rPr><w:t>second of two</w:t></w:r><w:bookmarkEnd w:id="11"/></w:p>`,
         rels: `<Relationship Id="rId30" Type="${REL}/hyperlink" Target="https://example.com/kept" TargetMode="External"/>`,
     },
 ];

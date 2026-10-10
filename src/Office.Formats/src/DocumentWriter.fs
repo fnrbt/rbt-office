@@ -483,6 +483,8 @@ let private generateFieldRun (runObj: obj) (fallbackRun: EditorRun) (fieldCode: 
         // (A field without a result is shown as "[Field:<code>]": that is not its result.)
         let placeholder = fallbackRun.Text.StartsWith "[Field:" && fallbackRun.Text.EndsWith "]"
         let result = optionalString (runObj?FieldResult) |> Option.defaultValue (if placeholder then "" else fallbackRun.Text)
+        // (A part of the result alone - the paragraph was split in the field's result: what the run shows.)
+        let result = if not placeholder && fallbackRun.Text <> "" && fallbackRun.Text.Length < result.Length && result.Contains fallbackRun.Text then fallbackRun.Text else result
         let resultRun = generateRunWithObjectProps runObj { fallbackRun with Text = result }
         element "w:fldSimple" [("w:instr", fieldCode)] [resultRun]
     | parts ->
@@ -1360,6 +1362,18 @@ let generateParaProps (para: obj) : string =
     generateParaPropsWithPageSetup defaultPageSetupInfo para
 
 /// Generate a paragraph element with formatting (handles JS objects)
+/// The XML of a paragraph that is made of a paragraph that was read (its SourcePara: see
+/// paragraphOfSource further down, which this stands for).
+type private ParagraphSource =
+    abstract Of: obj -> string option
+let mutable private paragraphSource : ParagraphSource = { new ParagraphSource with member _.Of _ = None }
+/// Whether the paragraphs being written may be made of the XML they were read from (see generateTable).
+let mutable private paragraphsInContext = true
+/// How many paragraphs the last save wrote from the model, and how many of the XML they were read from
+/// in blocks that were written from the model.
+let mutable private reportGenerated = 0
+let mutable private reportDerived = 0
+
 /// The run of the editor's package as the record the run writers take.
 let private editorRunOfObject (runObj: obj) : EditorRun =
     {
@@ -1423,10 +1437,17 @@ let private editorRunOfObject (runObj: obj) : EditorRun =
 
 /// The properties the model writes for a run of the editor's package (none for a picture).
 let private modelRunProperties (runObj: obj) : string list =
-    if boolOrDefault false (runObj?IsImage) || not (isNullOrUndefined runObj?OpaqueXml) then []
+    // (NoProps: a run of which nothing is taken to be written - see Docx.derivedEdit.)
+    if boolOrDefault false (runObj?IsImage) || not (isNullOrUndefined runObj?OpaqueXml) || boolOrDefault false (runObj?NoProps) then []
     else orderedRunProps (runExtrasFromObject runObj) (editorRunOfObject runObj)
 
 let private generateParagraphWithHyperlinksAndImagesWithPageSetup (packageSetup: PageSetupInfo) (hyperlinks: Map<string, string>) (images: ImageScope) (para: obj) : string =
+  match (if isNullOrUndefined (para?SourcePara) || not paragraphsInContext then None else paragraphSource.Of (para?SourcePara)) with
+  | Some xml ->
+    reportDerived <- reportDerived + 1
+    xml
+  | None ->
+    reportGenerated <- reportGenerated + 1
     let pPr = generateParaPropsWithPageSetup packageSetup para
     // The mark of a comment or a note is one element: where the editor holds it as two runs
     // (a part of the mark was formatted) it is still one reference, written with the first.
@@ -1636,34 +1657,10 @@ let private generateTableGrid (table: obj) =
         |> List.map (fun width -> selfClosing "w:gridCol" [("w:w", string (roundToInt width))])
     if columns.IsEmpty then "" else element "w:tblGrid" [] columns
 
-let rec private generateTableCell (hyperlinks: Map<string, string>) (images: ImageScope) (cell: obj) : string =
-    let paragraphs =
-        optionalArray (cell?Paragraphs)
-        |> Array.map (generateParagraphWithHyperlinksAndImages hyperlinks images)
-    let nestedTables = optionalArray (cell?NestedTables)
-    // NestedTableAnchors.[i] = how many of the cell's paragraphs precede nested
-    // table i. The writer used to read only Paragraphs, so a nested table and
-    // everything in it was deleted on save.
-    let anchors = optionalArray (cell?NestedTableAnchors) |> Array.map (fun value -> jsNumber value |> roundToInt)
-    let content = ResizeArray<string>()
-    let mutable lastIsTable = false
-    let emitTablesAt index =
-        nestedTables
-        |> Array.iteri (fun tableIndex nested ->
-            let anchor = if tableIndex < anchors.Length then anchors.[tableIndex] else paragraphs.Length
-            if (min anchor paragraphs.Length) = index then
-                content.Add (generateTable hyperlinks images nested)
-                lastIsTable <- true)
-    for index in 0 .. paragraphs.Length - 1 do
-        emitTablesAt index
-        content.Add paragraphs.[index]
-        lastIsTable <- false
-    emitTablesAt paragraphs.Length
-    // A cell must contain, and end with, a paragraph.
-    if content.Count = 0 || lastIsTable then content.Add (element "w:p" [] [])
-
+/// The properties the model writes for a cell, a row and a table (the children of w:tcPr, w:trPr, w:tblPr).
+let private tableCellProperties (cell: obj) : string list =
     // CT_TcPr order: tcW, gridSpan, vMerge, tcBorders, shd, tcMar, vAlign.
-    let tcPrChildren = [
+    [
         match optionalTableWidth "w:tcW" (cell?PreferredWidth) (cell?PreferredWidthType) with
         | Some width -> yield width
         | None ->
@@ -1704,14 +1701,9 @@ let rec private generateTableCell (hyperlinks: Map<string, string>) (images: Ima
         | _ -> ()
     ]
 
-    element "w:tc" [] ((if tcPrChildren.IsEmpty then [] else [element "w:tcPr" [] tcPrChildren]) @ List.ofSeq content)
 
-and private generateTableRow (hyperlinks: Map<string, string>) (images: ImageScope) (row: obj) : string =
-    let cells =
-        optionalArray (row?Cells)
-        |> Array.map (generateTableCell hyperlinks images)
-        |> String.concat ""
-
+/// (And the row's w:tblPrEx, "" when it has none.)
+let private tableRowProperties (row: obj) : string * string list =
     // Row-level cell margins live in w:tblPrEx, which precedes w:trPr.
     let rowExceptions =
         match cellMarginsElement "w:tblCellMar" row with
@@ -1731,18 +1723,11 @@ and private generateTableRow (hyperlinks: Map<string, string>) (images: ImageSco
         | Some spacing -> yield spacing
         | None -> ()
     ]
-    let rowProps = if rowPropChildren.IsEmpty then "" else element "w:trPr" [] rowPropChildren
+    rowExceptions, rowPropChildren
 
-    element "w:tr" [] [rowExceptions; rowProps; cells]
-
-and private generateTable (hyperlinks: Map<string, string>) (images: ImageScope) (table: obj) : string =
-    let rows =
-        optionalArray (table?Rows)
-        |> Array.map (generateTableRow hyperlinks images)
-        |> String.concat ""
-
+let private tablePropertyElements (table: obj) : string list =
     // CT_TblPr order: tblStyle, tblW, jc, tblCellSpacing, tblBorders, shd, tblLayout, tblCellMar, tblLook.
-    let tblPrChildren = [
+    [
         // The table keeps its style: the reader resolves the style's formatting
         // into the cells from the reference (and the style itself is kept in
         // styles.xml), so dropping it changed how the saved table read back.
@@ -1799,11 +1784,176 @@ and private generateTable (hyperlinks: Map<string, string>) (images: ImageScope)
             ]
     ]
 
-    element "w:tbl" [] [
-        element "w:tblPr" [] tblPrChildren
-        generateTableGrid table
-        rows
-    ]
+
+/// The schema's order of the children of w:tcPr, w:trPr and w:tblPr (local names).
+let private cellPropertyOrder =
+    [ "cnfStyle"; "tcW"; "gridSpan"; "hMerge"; "vMerge"; "tcBorders"; "shd"; "noWrap"; "tcMar"; "textDirection"; "tcFitText"; "vAlign"; "hideMark"; "headers"; "cellIns"; "cellDel"; "cellMerge"; "tcPrChange" ]
+let private rowPropertyOrder =
+    [ "cnfStyle"; "divId"; "gridBefore"; "gridAfter"; "wBefore"; "wAfter"; "cantSplit"; "trHeight"; "tblHeader"; "tblCellSpacing"; "jc"; "hidden"; "ins"; "del"; "trPrChange" ]
+let private tablePropertyOrder =
+    [ "tblStyle"; "tblpPr"; "tblOverlap"; "bidiVisual"; "tblStyleRowBandSize"; "tblStyleColBandSize"; "tblW"; "jc"; "tblCellSpacing"; "tblInd"; "tblBorders"; "shd"; "tblLayout"; "tblCellMar"; "tblLook"; "tblCaption"; "tblDescription"; "tblPrChange" ]
+
+/// A table of the body as it was read, for a table that is written from the model (its
+/// SourceTable): the text of its properties and grid, and of each row - whole, its start tag,
+/// its w:tblPrEx and w:trPr - and of each of the row's cells: whole, and its w:tcPr ("" where
+/// there is none). And how the properties that were read are changed (see withPropertiesMerged).
+type private SourceCellText = { CellXml: string; CellProps: string }
+type private SourceRowText = { RowXml: string; RowStartTag: string; RowExceptions: string; RowProps: string; RowCells: SourceCellText array }
+type private SourceTableText = { TableProps: string; TableGrid: string; TableRows: SourceRowText array }
+type private TableSource =
+    abstract Of: obj -> SourceTableText option
+    /// container, schema order, the properties that were read, what the model wrote before and writes now -> the properties, or None.
+    abstract Merge: string * string list * string * string list * string list -> string option
+let mutable private tableSource : TableSource =
+    { new TableSource with
+        member _.Of _ = None
+        member _.Merge (_, _, _, _, _) = None }
+/// The table, and the row, being written of a table that was read; and whether the paragraphs of
+/// what is being written may be made of the XML they were read from: those of a cell that is
+/// written with the properties its table, row and cell were read with - what a paragraph's XML
+/// leaves to its table's style it takes from there.
+let mutable private currentSourceTable : SourceTableText option = None
+let mutable private currentSourceRow : SourceRowText option = None
+
+let rec private generateTableCell (hyperlinks: Map<string, string>) (images: ImageScope) (cell: obj) : string =
+    let source =
+        match currentSourceRow with
+        | Some row when not (isNullOrUndefined (cell?SourceCell)) ->
+            let index = intOrDefault -1 (cell?SourceCell?Cell)
+            if index >= 0 && index < row.RowCells.Length then Some row.RowCells.[index] else None
+        | _ -> None
+    match source with
+    | Some known when boolOrDefault false (cell?SourceCell?Same) -> known.CellXml
+    | _ ->
+        // Its properties: the ones it was read with - changed where the model's changed - or the model's.
+        let tcPrChildren = tableCellProperties cell
+        let properties =
+            match source with
+            | Some known ->
+                let before = cell?SourceCell?Before
+                if isNullOrUndefined before then Some known.CellProps
+                else tableSource.Merge ("w:tcPr", cellPropertyOrder, known.CellProps, tableCellProperties before, tcPrChildren)
+            | None -> None
+        let outerContext = paragraphsInContext
+        let outerTable = currentSourceTable
+        let outerRow = currentSourceRow
+        paragraphsInContext <- outerContext && properties.IsSome
+        let paragraphs =
+            optionalArray (cell?Paragraphs)
+            |> Array.map (generateParagraphWithHyperlinksAndImages hyperlinks images)
+        let nestedTables = optionalArray (cell?NestedTables)
+        // NestedTableAnchors.[i] = how many of the cell's paragraphs precede nested
+        // table i. The writer used to read only Paragraphs, so a nested table and
+        // everything in it was deleted on save.
+        let anchors = optionalArray (cell?NestedTableAnchors) |> Array.map (fun value -> jsNumber value |> roundToInt)
+        let content = ResizeArray<string>()
+        let mutable lastIsTable = false
+        let emitTablesAt index =
+            nestedTables
+            |> Array.iteri (fun tableIndex nested ->
+                let anchor = if tableIndex < anchors.Length then anchors.[tableIndex] else paragraphs.Length
+                if (min anchor paragraphs.Length) = index then
+                    // (A table in the cell is written from the model: so are its paragraphs.)
+                    let inContext = paragraphsInContext
+                    paragraphsInContext <- false
+                    currentSourceTable <- None
+                    currentSourceRow <- None
+                    content.Add (generateTable hyperlinks images nested)
+                    paragraphsInContext <- inContext
+                    currentSourceTable <- outerTable
+                    currentSourceRow <- outerRow
+                    lastIsTable <- true)
+        for index in 0 .. paragraphs.Length - 1 do
+            emitTablesAt index
+            content.Add paragraphs.[index]
+            lastIsTable <- false
+        emitTablesAt paragraphs.Length
+        // A cell must contain, and end with, a paragraph.
+        if content.Count = 0 || lastIsTable then content.Add (element "w:p" [] [])
+
+
+        paragraphsInContext <- outerContext
+        let propertiesXml =
+            match properties with
+            | Some text -> text
+            | None -> if tcPrChildren.IsEmpty then "" else element "w:tcPr" [] tcPrChildren
+        element "w:tc" [] (propertiesXml :: List.ofSeq content)
+
+and private generateTableRow (hyperlinks: Map<string, string>) (images: ImageScope) (row: obj) : string =
+    let source =
+        match currentSourceTable with
+        | Some table when not (isNullOrUndefined (row?SourceRow)) ->
+            let index = intOrDefault -1 (row?SourceRow?Row)
+            if index >= 0 && index < table.TableRows.Length && table.TableRows.[index].RowCells.Length = intOrDefault -1 (row?SourceRow?CellCount) then Some table.TableRows.[index] else None
+        | _ -> None
+    match source with
+    | Some known when boolOrDefault false (row?SourceRow?Same) -> known.RowXml
+    | _ ->
+        let rowExceptions, rowPropChildren = tableRowProperties row
+        // Its start tag and properties: the ones it was read with - changed where the model's changed - or the model's.
+        let head =
+            match source with
+            | Some known ->
+                let before = row?SourceRow?Before
+                if isNullOrUndefined before then Some (known.RowStartTag + known.RowExceptions + known.RowProps)
+                else
+                    let (exceptionsBefore, propsBefore) = tableRowProperties before
+                    tableSource.Merge ("w:trPr", rowPropertyOrder, known.RowProps, propsBefore, rowPropChildren)
+                    |> Option.map (fun props -> known.RowStartTag + (if exceptionsBefore = rowExceptions then known.RowExceptions else rowExceptions) + props)
+            | None -> None
+        let outerContext = paragraphsInContext
+        let outerRow = currentSourceRow
+        paragraphsInContext <- outerContext && head.IsSome
+        currentSourceRow <- (if head.IsSome then source else None)
+        let cells =
+            optionalArray (row?Cells)
+            |> Array.map (generateTableCell hyperlinks images)
+            |> String.concat ""
+        paragraphsInContext <- outerContext
+        currentSourceRow <- outerRow
+        match head with
+        | Some text -> text + cells + "</w:tr>"
+        | None ->
+            let rowProps = if rowPropChildren.IsEmpty then "" else element "w:trPr" [] rowPropChildren
+            element "w:tr" [] [rowExceptions; rowProps; cells]
+
+and private generateTable (hyperlinks: Map<string, string>) (images: ImageScope) (table: obj) : string =
+    let tblPrChildren = tablePropertyElements table
+    // A table that was read: its properties are the ones it was read with - changed where the
+    // model's changed - and its rows and cells may be (see generateTableRow).
+    let source =
+        if isNullOrUndefined (table?SourceTable) then None
+        else tableSource.Of (table?SourceTable) |> Option.filter (fun known -> known.TableRows.Length = intOrDefault -1 (table?SourceTable?RowCount))
+    let properties =
+        match source with
+        | Some known ->
+            let before = table?SourceTable?Before
+            if isNullOrUndefined before then Some (known.TableProps + known.TableGrid)
+            else
+                tableSource.Merge ("w:tblPr", tablePropertyOrder, known.TableProps, tablePropertyElements before, tblPrChildren)
+                |> Option.map (fun props -> props + generateTableGrid table)
+        | None -> None
+    let outerContext = paragraphsInContext
+    let outerTable = currentSourceTable
+    let outerRow = currentSourceRow
+    paragraphsInContext <- properties.IsSome
+    currentSourceTable <- (if properties.IsSome then source else None)
+    currentSourceRow <- None
+    let rows =
+        optionalArray (table?Rows)
+        |> Array.map (generateTableRow hyperlinks images)
+        |> String.concat ""
+    paragraphsInContext <- outerContext
+    currentSourceTable <- outerTable
+    currentSourceRow <- outerRow
+    match properties with
+    | Some text -> "<w:tbl>" + text + rows + "</w:tbl>"
+    | None ->
+        element "w:tbl" [] [
+            element "w:tblPr" [] tblPrChildren
+            generateTableGrid table
+            rows
+        ]
 
 /// Shape ids must be unique in the document; they are handed out per save.
 let mutable private nextShapeId = 1000
@@ -3356,6 +3506,39 @@ let private sourceRunsOf (xml: string) (para: SourceParagraph) (text: string) : 
                         run.ReachUntil <- (match next with Some j -> runs.[j].From | None -> text.Length)
             Some (runs.ToArray())
 
+/// The part of a run that stands for the characters [pieceFrom, pieceUntil) of the paragraph's
+/// text, as a run of its own: the run's start tag, `properties` (a w:rPr, or ""), and the run's
+/// parts shared out by the characters they stand for - a text the piece has a part of is cut,
+/// what stands for no character goes with the character after it (with the run's last piece
+/// when none follows). The run is one of which every part's characters are known (Exact).
+let private runPiece (xml: string) (run: SourceRunInfo) (properties: string) (pieceFrom: int) (pieceUntil: int) : string option =
+    let built = System.Text.StringBuilder()
+    let mutable ok = true
+    built.Append(xml.Substring(run.RunStart, run.ContentStart - run.RunStart)).Append(properties) |> ignore
+    let last = pieceUntil = run.Until
+    let mutable at = run.From
+    for index in 0 .. run.Parts.Length - 1 do
+        let (_, start, close) = run.Parts.[index]
+        let count = run.PartChars.[index]
+        if count = 0 then
+            if (at >= pieceFrom && at < pieceUntil) || (last && at = run.Until) then built.Append(xml.Substring(start, close - start)) |> ignore
+        elif at >= pieceFrom && at + count <= pieceUntil then built.Append(xml.Substring(start, close - start)) |> ignore
+        elif at < pieceUntil && at + count > pieceFrom then
+            // A text that the piece has a part of.
+            match run.PartSegments.[index] with
+            | Some segment ->
+                let cutFrom = max pieceFrom at - at
+                let cutUntil = min pieceUntil (at + count) - at
+                let piece = segment.Text.Substring(cutFrom, cutUntil - cutFrom)
+                let tag = xml.Substring(segment.TagStart, segment.ContentStart - segment.TagStart)
+                let tag = if needsSpacePreserved piece && tag.IndexOf "xml:space" < 0 then tag.Substring(0, tag.Length - 1) + " xml:space=\"preserve\">" else tag
+                let name = tagNameAt tag 0
+                built.Append(tag).Append(escapeXmlTextAs (xml.Substring(segment.ContentStart, segment.ContentEnd - segment.ContentStart)) piece).Append("</" + name + ">") |> ignore
+            | None -> ok <- false
+        at <- at + count
+    built.Append("</w:r>") |> ignore
+    if ok then Some (built.ToString()) else None
+
 /// How many characters of a paragraph's text a run of the editor's package stands for.
 let private runObjectLength (run: obj) : int =
     if boolOrDefault false (run?IsImage) then 1 else (stringOrDefault "" (run?Text)).Length
@@ -3447,7 +3630,6 @@ let private planParagraphProperties (xml: string) (para: SourceParagraph) (text:
                                 else
                                     // Split where the change changes: each piece the run's start tag, its
                                     // properties with the piece's change, and the parts of the piece.
-                                    let head = xml.Substring(run.RunStart, run.ContentStart - run.RunStart)
                                     let props = propsOf run
                                     let signatureAt (i: int) = match changesAt i with Some (_, signature) -> signature | None -> ""
                                     let pieces = ResizeArray<int * int>()
@@ -3463,30 +3645,9 @@ let private planParagraphProperties (xml: string) (para: SourceParagraph) (text:
                                             match withPropertiesMerged "w:rPr" runPropertyOrder props changes with
                                             | None -> ok <- false
                                             | Some properties ->
-                                                built.Append(head).Append(properties) |> ignore
-                                                let last = pieceUntil = run.Until
-                                                let mutable at = run.From
-                                                for index in 0 .. run.Parts.Length - 1 do
-                                                    let (_, start, close) = run.Parts.[index]
-                                                    let count = run.PartChars.[index]
-                                                    if count = 0 then
-                                                        // (What stands for no character goes with the character after it.)
-                                                        if (at >= pieceFrom && at < pieceUntil) || (last && at = run.Until) then built.Append(xml.Substring(start, close - start)) |> ignore
-                                                    elif at >= pieceFrom && at + count <= pieceUntil then built.Append(xml.Substring(start, close - start)) |> ignore
-                                                    elif at < pieceUntil && at + count > pieceFrom then
-                                                        // A text that the piece has a part of.
-                                                        match run.PartSegments.[index] with
-                                                        | Some segment ->
-                                                            let cutFrom = max pieceFrom at - at
-                                                            let cutUntil = min pieceUntil (at + count) - at
-                                                            let piece = segment.Text.Substring(cutFrom, cutUntil - cutFrom)
-                                                            let tag = xml.Substring(segment.TagStart, segment.ContentStart - segment.TagStart)
-                                                            let tag = if needsSpacePreserved piece && tag.IndexOf "xml:space" < 0 then tag.Substring(0, tag.Length - 1) + " xml:space=\"preserve\">" else tag
-                                                            let name = tagNameAt tag 0
-                                                            built.Append(tag).Append(escapeXmlTextAs (xml.Substring(segment.ContentStart, segment.ContentEnd - segment.ContentStart)) piece).Append("</" + name + ">") |> ignore
-                                                        | None -> ok <- false
-                                                    at <- at + count
-                                                built.Append("</w:r>") |> ignore
+                                                match runPiece xml run properties pieceFrom pieceUntil with
+                                                | Some piece -> built.Append(piece) |> ignore
+                                                | None -> ok <- false
                                     if ok then
                                         replacements.Add ((run.RunStart, run.RunEnd, built.ToString()))
                                         for i in run.From .. run.Until - 1 do covered.[i] <- true
@@ -3539,6 +3700,8 @@ let private noteReason (reason: string) = if reportReasons.Count < 24 then repor
 let lastSaveReport () : obj =
     createObj [
         "Reasons" ==> reportReasons.ToArray()
+        "DerivedParagraphs" ==> reportDerived
+        "GeneratedParagraphs" ==> reportGenerated
         "PatchedParagraphs" ==> reportPatched
         "ModelParagraphsInTables" ==> reportInline
         "ModelBlocks" ==> reportModelBlocks
@@ -3551,6 +3714,143 @@ let private inlineMarkCharacter = '\u0001'
 let private inlineMark (number: int) = string inlineMarkCharacter + string number + string inlineMarkCharacter
 let mutable private nextInlineNumber = 0
 
+// ---- a paragraph that was split, and paragraphs that were joined ---------------
+//
+// A paragraph split in two (Enter) is, in the file, two paragraphs made of
+// the one that was read: each has the paragraph's properties and the runs,
+// bookmarks, fields and links of its part of the text - the run the split is
+// in is split. Paragraphs joined (Backspace at the start of the second) are
+// the first with the content of the second at its end. Neither is written
+// from the model.
+
+/// The XML of a paragraph of the body as it was read: by the index of its block among the
+/// items that were read, and which of the block's paragraphs it is. (Set while a body is
+/// written of which the XML is known: see planBody.)
+let mutable private sourceBodyXml : string = ""
+/// Per element of the body: where its text starts and ends; per item that was read: the element
+/// it came from, and how many paragraphs of the body's text it holds.
+let mutable private sourceChunkStarts : int array = [||]
+let mutable private sourceChunkEnds : int array = [||]
+let mutable private sourceItemChunks : int array = [||]
+let mutable private sourceStoryCounts : int array = [||]
+let private sourceChunkParagraphs = System.Collections.Generic.Dictionary<int, string array>()
+let private forgetSourceBody () =
+    sourceBodyXml <- ""
+    sourceChunkStarts <- [||]
+    sourceChunkEnds <- [||]
+    sourceItemChunks <- [||]
+    sourceStoryCounts <- [||]
+    sourceChunkParagraphs.Clear()
+let private sourceParagraphXml (block: int) (para: int) : string option =
+    if block < 0 || para < 0 || block >= sourceItemChunks.Length || block >= sourceStoryCounts.Length || para >= sourceStoryCounts.[block] then None
+    else
+        let chunk = sourceItemChunks.[block]
+        if chunk < 0 || chunk >= sourceChunkStarts.Length then None
+        else
+            let paragraphs =
+                match sourceChunkParagraphs.TryGetValue chunk with
+                | true, known -> known
+                | _ ->
+                    let text = sourceBodyXml.Substring(sourceChunkStarts.[chunk], sourceChunkEnds.[chunk] - sourceChunkStarts.[chunk])
+                    let found =
+                        match scanSourceParagraphs text with
+                        | Some paragraphs -> paragraphs |> List.map (fun paragraph -> text.Substring(paragraph.Start, paragraph.End - paragraph.Start)) |> List.toArray
+                        | None -> [||]
+                    sourceChunkParagraphs.[chunk] <- found
+                    found
+            // (The paragraphs of the items of the element before this one come first.)
+            let mutable before = 0
+            let mutable total = 0
+            for index in 0 .. sourceItemChunks.Length - 1 do
+                if sourceItemChunks.[index] = chunk && index < sourceStoryCounts.Length then
+                    if index < block then before <- before + sourceStoryCounts.[index]
+                    total <- total + sourceStoryCounts.[index]
+            if total <> paragraphs.Length then None else Some paragraphs.[before + para]
+
+/// An element that ends what an element before it began: it stays with the text before it.
+let private endsRange (xml: string) (start: int) (name: string) =
+    match name with
+    | "w:bookmarkEnd" | "w:commentRangeEnd" | "w:moveFromRangeEnd" | "w:moveToRangeEnd" | "w:permEnd" | "w:customXmlInsRangeEnd" | "w:customXmlDelRangeEnd" -> true
+    | "w:proofErr" -> (let gt = tagEndIndex xml start in gt > 0 && xml.Substring(start, gt - start).IndexOf "End\"" >= 0)
+    | _ -> false
+
+/// The paragraph with the stretch [from, until) of its text alone: its properties, and of its
+/// children those of that stretch. A part that does not begin the text is a paragraph of its
+/// own: without the ids of the paragraph it was a part of. None: not in this XML.
+let private cutSourceParagraph (xml: string) (para: SourceParagraph) (text: string) (from: int) (until: int) : string option =
+    let length = text.Length
+    let startTag () =
+        let tag = xml.Substring(para.Start, para.TagEnd + 1 - para.Start)
+        if from = 0 then tag
+        else System.Text.RegularExpressions.Regex.Replace(tag, "\\sw14:(?:paraId|textId)=\"[^\"]*\"", "")
+    if from < 0 || until > length || from > until then None
+    elif para.SelfClosed then (if length = 0 then Some (startTag ()) else None)
+    elif not (alignSourceParagraph para text) then None
+    else
+        match sourceRunsOf xml para text with
+        | None -> None
+        | Some runs ->
+            // Whether what stands at `at` for no character is of this part.
+            let owns (ending: bool) (at: int) =
+                if ending then (from < at && at <= until) || (at = 0 && from = 0 && (until > 0 || length = 0))
+                else (from <= at && at < until) || (at = length && until = length && (from < length || length = 0))
+            let parts = System.Text.StringBuilder()
+            let mutable ok = true
+            let mutable cursor = 0
+            for (start, fin, name) in para.Children do
+                if ok then
+                    let own = xml.Substring(start, fin - start)
+                    if name = "w:pPr" then parts.Append(own) |> ignore
+                    else
+                        let inside = runs |> Array.filter (fun run -> run.RunStart >= start && run.RunEnd <= fin)
+                        // Where its characters are: known, or between what is known.
+                        let lowest = inside |> Array.map (fun run -> if run.Exact then run.From else run.ReachFrom)
+                        let highest = inside |> Array.map (fun run -> if run.Exact then run.Until else run.ReachUntil)
+                        let low = if inside.Length = 0 then cursor else Array.min lowest
+                        let high = if inside.Length = 0 then cursor else Array.max highest
+                        if low < 0 || high < low then ok <- false
+                        elif high = low then
+                            // (The marks of a field's end stay with the field's result, as an element that ends a range.)
+                            let ending = endsRange xml start name || (name = "w:r" && own.IndexOf "w:fldCharType=\"end\"" >= 0)
+                            if owns ending low then parts.Append(own) |> ignore
+                        elif low >= from && high <= until then parts.Append(own) |> ignore
+                        elif high <= from || low >= until then ()
+                        else
+                            // The split is in it: a run of which every part is known is split.
+                            match inside with
+                            | [| run |] when name = "w:r" && run.Exact ->
+                                let properties = if run.PropsStart >= 0 then xml.Substring(run.PropsStart, run.PropsEnd - run.PropsStart) else ""
+                                match runPiece xml run properties (max from run.From) (min until run.Until) with
+                                | Some piece -> parts.Append(piece) |> ignore
+                                | None -> ok <- false
+                            | _ -> ok <- false
+                        cursor <- max cursor high
+            let content = parts.ToString()
+            // (A field is whole in one part.)
+            if not ok || countOccurrences content 0 content.Length "w:fldCharType=\"begin\"" <> countOccurrences content 0 content.Length "w:fldCharType=\"end\"" then None
+            else Some (startTag () + content + "</w:p>")
+
+/// A paragraph's XML with the content of another paragraph's (its children but its properties) at its end.
+let private joinSourceParagraphs (xml: string) (other: string) : string option =
+    match scanSourceParagraphs xml, scanSourceParagraphs other with
+    | Some [ first ], Some [ second ] when first.Start = 0 && first.End = xml.Length && second.Start = 0 && second.End = other.Length ->
+        let content =
+            if second.SelfClosed then ""
+            else
+                second.Children
+                |> Seq.filter (fun (_, _, name) -> name <> "w:pPr")
+                |> Seq.map (fun (start, fin, _) -> other.Substring(start, fin - start))
+                |> String.concat ""
+        if first.SelfClosed then Some (xml.Substring(0, first.TagEnd - 1).TrimEnd() + ">" + content + "</w:p>")
+        else Some (xml.Substring(0, first.CloseAt) + content + xml.Substring first.CloseAt)
+    | _ -> None
+
+/// A paragraph that is not one to take out of its block: a shape is anchored in it (the model holds
+/// it as a block of its own), or a field begins in it and ends in another paragraph.
+let private paragraphIsBound (own: string) =
+    own.IndexOf "<mc:AlternateContent" >= 0 || own.IndexOf "<w:pict" >= 0 || own.IndexOf "<wps:" >= 0 || own.IndexOf "<wpg:" >= 0
+    || countOccurrences own 0 own.Length "w:fldCharType=\"begin\"" <> countOccurrences own 0 own.Length "w:fldCharType=\"end\""
+
 /// The XML of one paragraph with what was done to the paragraph (the editor's
 /// account of it: Docx.paragraphEdit) done in it - the change of its text,
 /// then that of its formatting. None when the XML does not allow it.
@@ -3561,34 +3861,115 @@ let private patchSourceParagraph (paragraphXml: string) (oldText: string) (edit:
             match scanSourceParagraphs xml with
             | Some [ para ] when para.Start = 0 && para.End = xml.Length -> Some para
             | _ -> None
-        let textChange = edit?Text
-        let withText =
-            if isNullOrUndefined textChange then Some paragraphXml
+        // A part of the paragraph that was read (it was split), and paragraphs joined to its end: first.
+        let cut = optionalArray (edit?Cut) |> Array.map (fun value -> intOrDefault -1 value)
+        let afterCut =
+            if cut.Length <> 2 then Some (paragraphXml, oldText)
+            elif cut.[0] < 0 || cut.[1] > oldText.Length || cut.[0] > cut.[1] then None
             else
-                // The properties the model writes for what was typed (the run the first new character is in).
-                let modelProps =
-                    let offset = intOrDefault 0 (textChange?Offset)
-                    let mutable at = 0
-                    let mutable found : string option = None
-                    if not (isNullOrUndefined (edit?After)) && (stringOrDefault "" (textChange?Inserted)).Length > 0 then
-                        for run in optionalArray (edit?After?Runs) do
-                            let length = runObjectLength run
-                            if found.IsNone && offset >= at && offset < at + length && not (boolOrDefault false (run?IsImage)) then
-                                found <- Some (match modelRunProperties run with [] -> "" | properties -> element "w:rPr" [] properties)
-                            at <- at + length
-                    found
                 scanned paragraphXml
-                |> Option.bind (fun para -> planParagraphChange paragraphXml para oldText textChange modelProps)
-                |> Option.bind (withReplacements paragraphXml)
-        withText
-        |> Option.bind (fun xml ->
-            let before = edit?Before
-            if isNullOrUndefined before then Some xml
+                |> Option.bind (fun para -> cutSourceParagraph paragraphXml para oldText cut.[0] cut.[1])
+                |> Option.map (fun xml -> xml, oldText.Substring(cut.[0], cut.[1] - cut.[0]))
+        let afterJoin =
+            optionalArray (edit?Join)
+            |> Array.fold (fun (state: (string * string) option) (joined: obj) ->
+                state
+                |> Option.bind (fun (xml, text) ->
+                    sourceParagraphXml (intOrDefault -1 (joined?Block)) (intOrDefault -1 (joined?Para))
+                    |> Option.filter (fun other -> not (paragraphIsBound other))
+                    |> Option.bind (joinSourceParagraphs xml)
+                    |> Option.map (fun xml -> xml, text + stringOrDefault "" (joined?Text)))) afterCut
+        match afterJoin with
+        | None -> None
+        | Some (paragraphXml, oldText) ->
+            let textChange = edit?Text
+            let withText =
+                if isNullOrUndefined textChange then Some paragraphXml
+                else
+                    // The properties the model writes for what was typed (the run the first new character is in).
+                    let modelProps =
+                        let offset = intOrDefault 0 (textChange?Offset)
+                        let mutable at = 0
+                        let mutable found : string option = None
+                        if not (isNullOrUndefined (edit?After)) && (stringOrDefault "" (textChange?Inserted)).Length > 0 then
+                            for run in optionalArray (edit?After?Runs) do
+                                let length = runObjectLength run
+                                if found.IsNone && offset >= at && offset < at + length && not (boolOrDefault false (run?IsImage)) then
+                                    found <- Some (match modelRunProperties run with [] -> "" | properties -> element "w:rPr" [] properties)
+                                at <- at + length
+                        found
+                    scanned paragraphXml
+                    |> Option.bind (fun para -> planParagraphChange paragraphXml para oldText textChange modelProps)
+                    |> Option.bind (withReplacements paragraphXml)
+            withText
+            |> Option.bind (fun xml ->
+                let before = edit?Before
+                if isNullOrUndefined before then Some xml
+                else
+                    let text = if isNullOrUndefined (edit?NewText) then oldText else stringOrDefault "" (edit?NewText)
+                    scanned xml
+                    |> Option.bind (fun para -> planParagraphProperties xml para text before (edit?After))
+                    |> Option.bind (withReplacements xml))
+
+// The XML of a paragraph of a block that is written from the model, when the paragraph is one
+// that was read (or a part of one, or several joined): made of that paragraph's XML, with what
+// was done to it since. `spec` is the paragraph's SourcePara (Docx.fs): Block, Para and OldText say
+// which paragraph it was and what its text was; the rest is the account of an edit.
+paragraphSource <-
+    { new ParagraphSource with
+        member _.Of (spec: obj) =
+            sourceParagraphXml (intOrDefault -1 (spec?Block)) (intOrDefault -1 (spec?Para))
+            |> Option.filter (fun own -> not (paragraphIsBound own))
+            |> Option.bind (fun own ->
+                if boolOrDefault false (spec?Verbatim) then Some own
+                else patchSourceParagraph own (stringOrDefault "" (spec?OldText)) spec) }
+
+// The table a block came from, taken apart (see TableSource): only a table whose element is the
+// block's alone and holds nothing but its properties, its grid and plain rows of plain cells.
+tableSource <-
+    { new TableSource with
+        member _.Of (spec: obj) =
+            let block = intOrDefault -1 (spec?Block)
+            let chunk = if block >= 0 && block < sourceItemChunks.Length then sourceItemChunks.[block] else -1
+            if chunk < 0 || chunk >= sourceChunkStarts.Length || (sourceItemChunks |> Array.filter (fun other -> other = chunk)).Length <> 1 then None
             else
-                let text = if isNullOrUndefined (edit?NewText) then oldText else stringOrDefault "" (edit?NewText)
-                scanned xml
-                |> Option.bind (fun para -> planParagraphProperties xml para text before (edit?After))
-                |> Option.bind (withReplacements xml))
+                let text = sourceBodyXml.Substring(sourceChunkStarts.[chunk], sourceChunkEnds.[chunk] - sourceChunkStarts.[chunk])
+                let at = text.IndexOf "<w:tbl>"
+                if at < 0 || text.Substring(0, at).Trim() <> "" then None
+                else
+                    let table = text.Substring at
+                    let partOf (element: string) (children: (string * int * int) list) (name: string) =
+                        children |> List.tryFind (fun (child, _, _) -> child = name) |> Option.map (fun (_, start, fin) -> element.Substring(start, fin - start)) |> Option.defaultValue ""
+                    match childElementsOf table with
+                    | Some (children, _) when children |> List.forall (fun (name, _, _) -> name = "w:tblPr" || name = "w:tblGrid" || name = "w:tr") ->
+                        let rows =
+                            children
+                            |> List.filter (fun (name, _, _) -> name = "w:tr")
+                            |> List.map (fun (_, start, fin) ->
+                                let row = table.Substring(start, fin - start)
+                                match childElementsOf row with
+                                | Some (parts, contentEnd) when contentEnd >= 0 && parts |> List.forall (fun (name, _, _) -> name = "w:tblPrEx" || name = "w:trPr" || name = "w:tc") ->
+                                    let cells =
+                                        parts
+                                        |> List.filter (fun (name, _, _) -> name = "w:tc")
+                                        |> List.map (fun (_, cellStart, cellEnd) ->
+                                            let cell = row.Substring(cellStart, cellEnd - cellStart)
+                                            match childElementsOf cell with
+                                            | Some (inner, _) -> Some { CellXml = cell; CellProps = partOf cell inner "w:tcPr" }
+                                            | None -> None)
+                                    if cells |> List.exists Option.isNone then None
+                                    else
+                                        Some { RowXml = row
+                                               RowStartTag = row.Substring(0, tagEndIndex row 0 + 1)
+                                               RowExceptions = partOf row parts "w:tblPrEx"
+                                               RowProps = partOf row parts "w:trPr"
+                                               RowCells = cells |> List.choose id |> List.toArray }
+                                | _ -> None)
+                        if rows |> List.exists Option.isNone then None
+                        else Some { TableProps = partOf table children "w:tblPr"; TableGrid = partOf table children "w:tblGrid"; TableRows = rows |> List.choose id |> List.toArray }
+                    | _ -> None
+        member _.Merge (container: string, order: string list, source: string, was: string list, now: string list) =
+            withPropertiesMerged container order source (propertyChanges was now) }
 
 /// The XML of an element of the body with what was done to the paragraphs of
 /// its items done in it (see patchSourceParagraph). A paragraph of a table
@@ -3682,7 +4063,7 @@ let private sourceIndexOf (_item: obj) : int = jsNative
 /// Which of the body's elements go back as they were read. None when the
 /// text cannot be matched with what the reader made of it (the body is then
 /// written from the model, as a new document is), or when nothing is as it was.
-let private planBody (xml: string) (itemChunks: int array) (chunkCount: int) (items: obj array) (pageSetupUnchanged: bool) : BodyPlan option =
+let private planBody (xml: string) (itemChunks: int array) (storyCounts: int array) (chunkCount: int) (items: obj array) (pageSetupUnchanged: bool) : BodyPlan option =
     let rootAt = rootTagStart xml
     let rootEnd = if rootAt < 0 then -1 else tagEndIndex xml rootAt
     let bodyOfRoot =
@@ -3718,6 +4099,13 @@ let private planBody (xml: string) (itemChunks: int array) (chunkCount: int) (it
                 textStart.[chunk] <- previousEnd
                 if originalCount.[chunk] > 0 then previousEnd <- body.Ends.[chunk]
             let tailStart = previousEnd
+            // (The paragraphs that were read, for those that are written of them: see sourceParagraphXml.)
+            sourceBodyXml <- xml
+            sourceChunkStarts <- textStart
+            sourceChunkEnds <- Array.init chunkCount (fun chunk -> body.Ends.[chunk])
+            sourceItemChunks <- itemChunks
+            sourceStoryCounts <- storyCounts
+            sourceChunkParagraphs.Clear()
             // The items there are now, by the element they came from.
             let chunkOfItem =
                 items
@@ -5178,6 +5566,9 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
     reportModelParagraphs <- 0
     reportSourceBlocks <- 0
     reportReasons.Clear()
+    reportGenerated <- 0
+    reportDerived <- 0
+    forgetSourceBody ()
     shapesFromModel <- regenerateAll
     let sourceOf (key: string) = if regenerateAll then None else Map.tryFind key preserved.SourceXml
     let paragraphs = optionalArray (package?Paragraphs)
@@ -5185,7 +5576,7 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
     let bodyPlan =
         match sourceOf "document" with
         | Some xml when preserved.BodyItemChunks.Length > 0 ->
-            planBody xml preserved.BodyItemChunks preserved.BodyChunkCount paragraphs (boolOrDefault false (package?PageSetupUnchanged))
+            planBody xml preserved.BodyItemChunks (optionalArray (package?SourceStoryCounts) |> Array.map (fun count -> intOrDefault 0 count)) preserved.BodyChunkCount paragraphs (boolOrDefault false (package?PageSetupUnchanged))
         | _ -> None
     /// The parts that are written back as they were read keep all the
     /// relationships they had; a part written from the model keeps those the
@@ -5520,4 +5911,5 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
 
     reservedRelationshipIds <- Set.empty
     reservedPartPaths <- Set.empty
+    forgetSourceBody ()
     createPackageWithBinary files binaryFiles

@@ -1021,7 +1021,124 @@ const EDIT_PASSES = {
         const [from, until] = middle(end); Word.setSelection(editor, id, from, id, until); Word.toggleItalic(editor);
     },
 };
+// Changes of a table's rows, columns and cells (through the API, the caret in a paragraph of a table: elsewhere they do nothing).
+const TABLE_PASSES = {
+    'a table row inserted': (editor, id) => { Word.setSelection(editor, id, 0, id, 0); Word.insertTableRowAfter(editor); },
+    'a table row deleted': (editor, id) => { Word.setSelection(editor, id, 0, id, 0); Word.deleteTableRow(editor); },
+    'a table column inserted': (editor, id) => { Word.setSelection(editor, id, 0, id, 0); Word.insertTableColumnAfter(editor); },
+    'a table cell shaded': (editor, id) => { Word.setSelection(editor, id, 0, id, 0); Word.setSelectedTableCellStyleWithShading(editor, '#FFEEAA', '', '', 0, '', 0, '', -1, -1, -1, -1); },
+};
+Object.assign(EDIT_PASSES, TABLE_PASSES);
+// The passes in which a paragraph is split or joined with real keys (roundtrip.mjs presses them): where the caret goes first.
+const KEY_PASSES = {
+    'split in two (Enter)': { key: 'Enter', place: (editor, id, end) => { const at = Math.floor(end / 2); Word.setSelection(editor, id, at, id, at); } },
+    'joined to the one before (Backspace)': { key: 'Backspace', place: (editor, id) => { Word.setSelection(editor, id, 0, id, 0); } },
+};
 window.editPassKinds = () => Object.keys(EDIT_PASSES);
+window.keyPassKinds = () => Object.entries(KEY_PASSES).map(([kind, pass]) => [kind, pass.key]);
+// The paragraphs of the body's text an edit pass may take: [id, length of its text].
+const passParagraphs = (editor) => {
+    const ends = new Map();
+    for (const line of Word.getLayoutLines(editor)) {
+        if (line.FrameIsSelected) continue;
+        ends.set(line.BlockId, Math.max(ends.get(line.BlockId) ?? 0, (line.StartOffset ?? 0) + (line.Text ?? '').length));
+    }
+    const ids = [];
+    for (const [id, end] of ends) {
+        if (end < 3) continue;
+        Word.setSelection(editor, id, 0, id, end);
+        const selection = Word.getSelection(editor);
+        if (selection && selection.FocusBlockId === id && selection.AnchorBlockId === id && selection.FocusOffset !== selection.AnchorOffset) ids.push([id, end]);
+    }
+    return ids;
+};
+// What a pass made of the document, once it is edited: saved, read again, compared (see editPass).
+const passResult = async (handle, before, label, result, piecesPerEdit) => {
+    const { problems, why } = result;
+    const editor = handle.editor;
+    const text = Word.getText(editor);
+    const layout = layoutOf(editor);
+    const out = await writePackage(Word.exportDocumentPackage(editor), label);
+    const report = OF.word.getLastSaveReport();
+    const reopened = await open(out);
+    const second = openEditor(reopened.pkg);
+    const read = Word.getText(second.editor);
+    if (read !== text) {
+        // (Where the two begin to differ.)
+        let at = 0;
+        while (at < text.length && text[at] === read[at]) at++;
+        problems.push(`${label}: the saved document does not read back with the text that was saved: ${JSON.stringify(text.slice(Math.max(0, at - 60), at + 60))} was read as ${JSON.stringify(read.slice(Math.max(0, at - 60), at + 60))}`);
+    }
+    const fp = layoutOf(second.editor);
+    closeEditor(second);
+    const layoutProblems = [];
+    diffLayout(`${label}: layout of the saved document vs the editor that saved it`, layout, fp, layoutProblems);
+    const saved = await parts(out);
+    for (const part of Object.keys(saved)) {
+        const found = [], inherited = [];
+        checkXml(part, saved[part], found);
+        if (before[part]) checkXml(part, before[part], inherited);
+        for (const problem of found) if (!inherited.includes(problem)) problems.push(`${label}: ${problem}`);
+    }
+    // Paragraph by paragraph (the text up to each end tag): how many of the original's are not in the saved document.
+    const pieces = (xml) => xml.replace(/^\uFEFF/, '').replace(/^[\s\S]*?<w:body>/, '').replace(/<w:p( [^>]*?)?\/>/g, '<w:p$1></w:p>').split('</w:p>');
+    const was = pieces(before['word/document.xml']), is = pieces(saved['word/document.xml']);
+    const left = new Map();
+    for (const piece of is) left.set(piece, (left.get(piece) ?? 0) + 1);
+    let changed = 0;
+    for (const piece of was) { const count = left.get(piece) ?? 0; if (count > 0) left.set(piece, count - 1); else changed++; }
+    // (The paragraphs the model wrote, of the body: a block written whole, a paragraph of a table written alone.)
+    result.model = report.GeneratedParagraphs;
+    result.kept = Math.max(0, result.edited - result.model);
+    result.others = Math.max(0, changed - result.edited * piecesPerEdit);
+    // (A block the model wrote takes the paragraphs in it along: a table whose rows are in content controls.)
+    result.dragged = report.GeneratedParagraphs > 0;
+    // Where nothing was written from the model the saved document is laid out as the editor's. (Not where rows
+    // or columns of a table came or went: read again, the rows after them are formatted as their table's style
+    // formats rows in their new place - banding, a first row - while the editor shows them as they were.)
+    // (Nor where paragraphs were joined: the text of the second keeps, in the editor, what its own paragraph's
+    // style gave it - a size, a colour - which nothing in the model says is its own; saved, it is text of the first.)
+    if (result.model === 0 && result.others === 0 && !result.restructured) problems.push(...layoutProblems);
+    else if (result.restructured) for (const problem of layoutProblems.slice(0, 1)) why.push('(not asserted) ' + problem.slice(0, 300));
+    else for (const problem of layoutProblems.slice(0, 1)) why.push('(written from the model) ' + problem.slice(0, 300));
+    if (result.model > 0) for (const reason of (report.Reasons ?? []).slice(0, 4)) why.push('the writer: ' + reason);
+};
+window.keyPassOpen = async (name, kind) => {
+    const bytes = new Uint8Array(await (await fetch('/fixture?name=' + encodeURIComponent(name))).arrayBuffer());
+    if (!bytes.length) return 0;
+    const before = await parts(bytes);
+    if (before['word/document.xml'] === undefined) return 0;
+    const { pkg } = await open(bytes);
+    const handle = openEditor(pkg);
+    Word.completeLayout(handle.editor);
+    const chosen = passParagraphs(handle.editor).filter((_, index) => index % 10 === 5);
+    window.keyPassState = { handle, chosen, before, kind, edited: 0, revision: 0 };
+    Word.getInputElement(handle.editor).focus();
+    return chosen.length;
+};
+window.keyPassSelect = (index) => {
+    const state = window.keyPassState;
+    const [id, end] = state.chosen[index];
+    KEY_PASSES[state.kind].place(state.handle.editor, id, end);
+    state.revision = Word.getRevision(state.handle.editor);
+};
+window.keyPassAfter = () => { const state = window.keyPassState; if (Word.getRevision(state.handle.editor) !== state.revision) state.edited++; };
+window.keyPassFinish = async () => {
+    const { handle, before, kind, edited } = window.keyPassState;
+    const result = { problems: [], why: [], edited, kept: 0, model: 0, others: 0 };
+    const label = `every tenth paragraph, ${kind}`;
+    try {
+        // (A paragraph split is one paragraph of the original that is not there any more; paragraphs joined are two.)
+        result.restructured = kind.startsWith('joined');
+        if (edited > 0) await passResult(handle, before, label, result, kind.startsWith('joined') ? 2 : 1);
+    } catch (e) {
+        result.problems.push(`${label} threw: ` + String(e && e.stack || e).split('\n').slice(0, 4).join(' | '));
+    }
+    closeEditor(handle);
+    window.keyPassState = undefined;
+    result.problems.push(...integrityProblems());
+    return result;
+};
 window.editPass = async (name, kind) => {
     const problems = [], why = [];
     const result = { problems, why, edited: 0, kept: 0, model: 0, others: 0 };
@@ -1035,57 +1152,18 @@ window.editPass = async (name, kind) => {
     try {
         const editor = handle.editor;
         Word.completeLayout(editor);
-        const ends = new Map();
-        for (const line of Word.getLayoutLines(editor)) {
-            if (line.FrameIsSelected) continue;
-            ends.set(line.BlockId, Math.max(ends.get(line.BlockId) ?? 0, (line.StartOffset ?? 0) + (line.Text ?? '').length));
-        }
-        const ids = [];
-        for (const [id, end] of ends) {
-            if (end < 3) continue;
-            Word.setSelection(editor, id, 0, id, end);
-            const selection = Word.getSelection(editor);
-            if (selection && selection.FocusBlockId === id && selection.AnchorBlockId === id && selection.FocusOffset !== selection.AnchorOffset) ids.push([id, end]);
-        }
-        const chosen = ids.filter((_, index) => index % 10 === 0);
+        const table = kind in TABLE_PASSES;
+        // (Of a table: one paragraph in seven, taken as long as it is still there - a row deleted takes its paragraphs away.)
+        const chosen = passParagraphs(editor).filter((_, index) => index % (table ? 7 : 10) === 0);
         for (const [id, end] of chosen) {
+            if (table && !Word.getLayoutLines(editor).some((line) => line.BlockId === id)) continue;
             const revision = Word.getRevision(editor);
             EDIT_PASSES[kind](editor, id, end);
             if (Word.getRevision(editor) !== revision) result.edited++;
         }
-        if (result.edited === 0) return result;
-        const text = Word.getText(editor);
-        const layout = layoutOf(editor);
-        const out = await writePackage(Word.exportDocumentPackage(editor), label);
-        const report = OF.word.getLastSaveReport();
-        const reopened = await open(out);
-        const second = openEditor(reopened.pkg);
-        if (Word.getText(second.editor) !== text) problems.push(`${label}: the saved document does not read back with the text that was saved`);
-        const fp = layoutOf(second.editor);
-        closeEditor(second);
-        const layoutProblems = [];
-        diffLayout(`${label}: layout of the saved document vs the editor that saved it`, layout, fp, layoutProblems);
-        const saved = await parts(out);
-        for (const part of Object.keys(saved)) {
-            const found = [], inherited = [];
-            checkXml(part, saved[part], found);
-            if (before[part]) checkXml(part, before[part], inherited);
-            for (const problem of found) if (!inherited.includes(problem)) problems.push(`${label}: ${problem}`);
-        }
-        // Paragraph by paragraph (the text up to each end tag): how many are not the text they were.
-        const pieces = (xml) => xml.replace(/^﻿/, '').replace(/^[\s\S]*?<w:body>/, '').replace(/<w:p( [^>]*?)?\/>/g, '<w:p$1></w:p>').split('</w:p>');
-        const was = pieces(before['word/document.xml']), is = pieces(saved['word/document.xml']);
-        const left = new Map();
-        for (const piece of is) left.set(piece, (left.get(piece) ?? 0) + 1);
-        let changed = 0;
-        for (const piece of was) { const count = left.get(piece) ?? 0; if (count > 0) left.set(piece, count - 1); else changed++; }
-        result.kept = report.PatchedParagraphs;
-        result.model = Math.max(0, result.edited - report.PatchedParagraphs);
-        result.others = Math.max(0, changed - result.edited);
-        // Where every paragraph was changed in its own XML the saved document is laid out as the editor's.
-        if (result.model === 0 && result.others === 0) problems.push(...layoutProblems);
-        else for (const problem of layoutProblems.slice(0, 1)) why.push('(written from the model) ' + problem.slice(0, 300));
-        if (result.model > 0) for (const reason of (report.Reasons ?? []).slice(0, 4)) why.push('the writer: ' + reason);
+        // (A row or a column of a table changes the paragraphs of its cells: what is counted is what the model wrote.)
+        result.restructured = table && kind !== 'a table cell shaded';
+        if (result.edited > 0) await passResult(handle, before, label, result, table ? 1e9 : 1);
     } catch (e) {
         problems.push(`${label} threw: ` + String(e && e.stack || e).split('\n').slice(0, 4).join(' | '));
     }
