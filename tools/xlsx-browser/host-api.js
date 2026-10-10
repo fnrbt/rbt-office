@@ -725,7 +725,8 @@ checks['lazy-sheets'] = async () => {
             const a = mountGrid(), b = mountGrid();
             try {
                 await a.grid.ImportXlsx(bytes);
-                b.grid.InstallImportedWorkbook(await importer.importWorkbookPromise(bytes.buffer.slice(0)), -1);
+                // (On the sheet ImportXlsx shows: the one the file was saved on.)
+                b.grid.InstallImportedWorkbook(await importer.importWorkbookPromise(bytes.buffer.slice(0)), a.grid.GetActiveSheetIndex());
                 const loadedAtOpen = a.grid.GetSheetNames().filter((_, i) => a.grid.IsSheetLoaded(i)).length;
                 edit(a.grid); edit(b.grid);
                 // Saved with what is converted so far, then read back.

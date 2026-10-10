@@ -6653,8 +6653,9 @@ type Spreadsheet(container: Element) =
         // A workbook that was just opened is the saved one.
         this.MarkSaved()
 
-    /// Open an XLSX file: every sheet is read and the first visible one
-    /// shown; the other sheets are converted to models as they are needed
+    /// Open an XLSX file: the sheet the file was saved on is shown (its
+    /// `activeTab`; the first visible sheet when that one is hidden - see
+    /// GetActiveSheetIndex); the other sheets are converted to models as they are needed
     /// (see IsSheetLoaded). `data` is an ArrayBuffer, Uint8Array or Blob. The promise
     /// rejects when the file cannot be read; the current workbook is then
     /// left untouched.
@@ -6662,7 +6663,10 @@ type Spreadsheet(container: Element) =
         reportRejection
             ((ownBytesOf data).``then``(fun (bytes: byte[]) ->
                 (loadReaderWorkbook data None).``then``(fun readerWorkbook ->
-                    this.InstallImportedWorkbook(Rbt.Spreadsheet.XlsxBridge.Import.importWorkbookLazy (fun _ -> false) readerWorkbook, -1)
+                    // The sheet the file was saved on is shown (the first visible one when that one is hidden).
+                    let imported = Rbt.Spreadsheet.XlsxBridge.Import.importWorkbookLazy (fun _ -> false) readerWorkbook
+                    let saved = readerWorkbook.Preserved.ActiveTab
+                    this.InstallImportedWorkbook(imported, (if saved >= 0 && saved < imported.Sheets.Length && imported.Sheets.[saved].Visible then saved else -1))
                     // (For an export of the workbook as it was opened: see ExportXlsx.)
                     observeRevision ()
                     importedPackage <- Some (bytes, revision, activeSheetIndex))) |> unbox<JS.Promise<unit>>)

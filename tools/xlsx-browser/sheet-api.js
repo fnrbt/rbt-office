@@ -1190,7 +1190,8 @@ checks['api-view'] = async () => {
         grid.SwitchSheet(1); grid.SetCell(0, 0, 'second');
         const again = await reopened(grid);
         try {
-            check('the file keeps the view of each sheet', [again.grid.GetViewOptions(), (again.grid.SwitchSheet(1), again.grid.GetViewOptions())],
+            check('the file opens on the sheet it was saved on', again.grid.GetActiveSheetIndex(), 1);
+            check('the file keeps the view of each sheet', [(again.grid.SwitchSheet(0), again.grid.GetViewOptions()), (again.grid.SwitchSheet(1), again.grid.GetViewOptions())],
                 [{ zoom: 1.35, showGridLines: false, showHeaders: false, showFormulas: true, showZeros: false, frozen: { rows: 3, cols: 2 } }, { zoom: 0.75, showGridLines: true, showHeaders: true, showFormulas: false, showZeros: true, frozen: { rows: 0, cols: 0 } }]);
             again.grid.SwitchSheet(0); await frame();
             const cell = again.host.querySelector('.spreadsheet-cell[data-row="1"][data-col="0"]');
@@ -1335,7 +1336,7 @@ checks['api-sheets'] = async () => {
         const again = await reopened(grid);
         try {
             const reinfos = again.grid.GetSheetInfos().map((s) => `${s.index}:${s.name}:${s.visibility}${s.tabColor ? ':' + s.tabColor : ''}${s.isActive ? '*' : ''}`);
-            check('saved and opened again: names, order, visibility, tab colours', reinfos, ['0:Third:veryHidden', '1:Data:visible:#FF8800*', '2:Data (2):visible:#FF8800', '3:Summary:hidden:#00AA55']);
+            check('saved and opened again: names, order, visibility, tab colours', reinfos, ['0:Third:veryHidden', '1:Data:visible:#FF8800', '2:Data (2):visible:#FF8800*', '3:Summary:hidden:#00AA55']);   // (on the sheet it was saved on)
             check('... formulas and names', [again.grid.GetRange("'Data (2)'!A7")[0][0].formula, again.grid.GetRange('Summary!A1:A3').map((row) => [row[0].formula, row[0].value]), again.grid.GetDefinedNames().map((n) => [n.name, n.scope, n.refersTo]).sort()],
                 ["='Data (2)'!A1+1", [['=SUM(Data!A1:A3)', 6], ['=Data!$A$2*10', 20], ['=SUM(Total)', 6]], [['Local', 1, 'Data!$A$1'], ['Local', 2, "'Data (2)'!$A$1"], ['Total', null, 'Data!$A$1:$A$3']]]);
             again.grid.SetSheetVisibility(0, 'visible');

@@ -797,6 +797,18 @@ Nothing to call for the recalculation itself: every edit recalculates what it ha
 
 ## XLSX: what is written how
 
+### What is read when
+`ImportXlsx` shows **the sheet the file was saved on** (`activeTab` of `xl/workbook.xml`; the first visible sheet when that one is hidden
+or the file names none) - `GetActiveSheetIndex()` says which. `ImportXlsxFromBuffer(buffer, name)` and `InstallImportedWorkbook(wb, -1)`
+show the sheet asked for, else the first visible one, as before. Only the sheet on display is converted (`IsSheetLoaded`); the **rows of
+the other sheets are not even read** from their parts until something asks for them (the sheet is shown or read by a formula or a host
+call, or - for a sheet with formulas - in a task of its own right after the workbook is shown, so that the first edit does not wait for
+it; not in a viewer). The formulas the dependency graph needs and the row heights a save needs are found in the part without its other
+cells. A sheet nobody looks at costs the inflating of its part at open and nothing at a save.
+`XlsxReader.Worksheet.Rows` (office-formats) is now a member that reads the rows on demand (`RowSource: SheetRows`, with `IsLoaded`,
+`FormulaCells`, `Headers`); `XlsxWriter.XlsxSheetOut.Cells` likewise (`CellSource`; build one with `XlsxWriter.sheetCells cells`). A sheet
+with a what-if data table is read at once.
+
 ### An unchanged workbook is exported as the file that was opened
 `ExportXlsx()` of a workbook that `ImportXlsx` opened and in which **nothing was changed** resolves to a copy of the bytes that were opened:
 every part byte-identical, nothing regenerated. "Nothing changed" is: `GetRevision()` is the revision the workbook opened with (also after
@@ -818,15 +830,20 @@ changes (named styles, the indexed palette, table styles and extensions of the s
 - **The styles and shared strings are added to in every save of an opened workbook**, also when every sheet changed: a cell that keeps
   its format is written with the very `cellXfs` entry the file gave it (`XlsxCellFormat.SourceXf`), so `<protection locked="0"/>`,
   `quotePrefix`, `pivotButton`, theme colours and anything else of that entry stay; custom `<tableStyles>`, `<colors>` (indexed palette,
-  `mruColors`), the styles' `<extLst>` (slicer styles, timeline styles, x14 dxfs), named styles and dxfs stay where they are. Only a cell
-  whose format was changed gets an entry made from the model (without what the model does not hold: protection, quote prefix).
+  `mruColors`), the styles' `<extLst>` (slicer styles, timeline styles, x14 dxfs), named styles and dxfs stay where they are. A cell
+  whose format was changed gets a new entry **made from the file's entry** (`XlsxCellFormat.BasedOnXf`): what the change touched - the
+  number format, the font, the fill, the border, the alignment, each only when it is no longer what the file's entry said - is replaced,
+  everything else of the entry stays (`xfId` / the named style, `<protection>`, `quotePrefix`, `pivotButton`, unmodelled attributes of
+  `<xf>` and `<alignment>`, `<extLst>`, and the fonts / fills / borders the change left alone, with their theme colours). A cell the
+  file did not have gets an entry made from the model.
 - **`xl/workbook.xml` is the file's part** with the sheet list, the defined names, `activeTab` and the calculation flags (`iterate...`,
   `fullCalcOnLoad` when a formula has no result) made anew: `fileVersion`, `workbookPr` (`hidePivotFieldList`, `codeName` ...; not
   `date1904`, see below), `workbookProtection`, the window of `bookViews`, `calcPr`'s other attributes, `mc:AlternateContent` and the
   extension list stay as they were.
 - **A sheet's comments part** (`xl/commentsN.xml`: rich text runs, `shapeId`, authors) goes back as it is while the sheet's comments are
   the file's, also when the sheet itself is written from the model.
-- In a browser a sheet that goes back as it was read is put into the new package as **the compressed entry it was** (not inflated and
+- In a browser a sheet that goes back as it was read, and every other part the reader kept that is written as the file's bytes (chart
+  parts, pivot caches and their records, media, the theme ...), is put into the new package as **the compressed entry it was** (not
   deflated again).
 - "Nothing changed in a sheet" is: its cells (values, formulas, their cached results, formats, comments), sizes, outline, merges, rules,
   validations, tables, drawings, threads, links, page setup, panes, filter, zoom, grid lines / headers / formulas / zeros and tab colour are
@@ -835,8 +852,10 @@ changes (named styles, the indexed palette, table styles and extensions of the s
 - The one thing rewritten in such a part is `tabSelected` of its view, when the sheet on display is no longer the one the file had on
   display (two sheets that say so are a group to Excel); the part is otherwise the file's text.
 - **Every sheet is written from the model** (the styles, strings and workbook part are still the file's, added to) in a workbook in the
-  1904 date system (its serials are converted on import, and `date1904` is not written) and in a workbook in which a sheet of the file
-  was renamed or deleted (formulas of other sheets, kept or not, may name it). **Everything is written from the model as before** with a
+  1904 date system (its serials are converted on import, and `date1904` is not written). In a workbook in which **a sheet of the file was
+  renamed or deleted**, a sheet whose part names one of those sheets anywhere in its text (a formula, a rule, a link) is written from the
+  model, where the references have followed; the sheets that do not name any still go back as the parts they were read from (none does
+  when such a name has characters other than letters, digits, space, `_ - . ( )`). **Everything is written from the model as before** with a
   styles or shared-strings part the writer cannot add to (no `cellXfs` / `fonts` / `fills` / `borders`, element names with a prefix, or entries the reader counted
   differently); a workbook that was not opened with `ImportXlsx` in a browser (`ImportXlsxFromBuffer`, `InstallImportedWorkbook`: the
   editor does not have the file's bytes). A copy of a sheet (`DuplicateSheet`) is always written from the model.

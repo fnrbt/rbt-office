@@ -1,7 +1,7 @@
 // Browser side of run.mjs, fourth part: features of the Spreadsheet component that are
 // persisted in XLSX the way Excel writes them (dynamic arrays, ...). Each check returns a
 // list of "ok ..." / "FAIL ..." lines.
-import { checks, makeLog, mountGrid } from '/component.js';
+import { checks, makeLog, mountGrid, bytesOf } from '/component.js';
 import { reopened } from '/sheet-api.js';
 
 const text = async (bytes, path) => { const zip = await window.JSZip.loadAsync(bytes); return zip.files[path] ? zip.files[path].async('string') : null; };
@@ -271,5 +271,32 @@ checks['table-entry'] = async () => {
         } finally { again.close(); }
     } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
     close();
+    return lines;
+};
+
+// A workbook opens on the sheet it was saved on (workbook.xml's activeTab), and is then
+// exported as the file that was opened; ImportXlsx never shows a hidden sheet.
+checks['opens-on-saved-sheet'] = async () => {
+    const { lines, check } = makeLog();
+    for (const [file, saved] of [['tests/real-world/dashboard-ecommerce-sales.xlsx', 2], ['tests/real-world/dcf-stock-analysis.xlsx', 1], ['tests/real-world/milk-street-office.xlsx', 0]]) {
+        const { grid, close } = mountGrid();
+        try {
+            const bytes = await bytesOf(file);
+            await grid.ImportXlsx(bytes.slice());
+            const label = file.split('/').pop();
+            const loaded = grid.GetSheetNames().map((_, i) => grid.IsSheetLoaded(i));
+            check(`${label}: the sheet the file was saved on is shown`, [grid.GetActiveSheetIndex(), grid.GetSheetInfos()[saved].isActive, loaded.filter(Boolean).length, loaded[saved]], [saved, true, 1, true]);
+            const out = await grid.ExportXlsx();
+            check(`${label}: unedited, it is exported as the bytes that were opened`, [out.length, out.every((b, i) => b === bytes[i])], [bytes.length, true]);
+            // An edit on that sheet: the saved file still opens on it.
+            grid.SetCell(40, 40, 'edited');
+            const again = mountGrid();
+            try {
+                await again.grid.ImportXlsx(await grid.ExportXlsx());
+                check(`${label}: saved after an edit, it opens on that sheet again`, again.grid.GetActiveSheetIndex(), saved);
+            } finally { again.close(); }
+        } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+        close();
+    }
     return lines;
 };
