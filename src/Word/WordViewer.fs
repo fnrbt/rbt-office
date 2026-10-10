@@ -213,7 +213,7 @@ module Viewer =
             | None -> ()
             if progressive then
                 ctx.LayoutState.BlockLimit <- 48
-                ctx.Progress.Chunk <- 48
+                ctx.Progress.Chunk <- 8
                 continueLayout ()
             else Ren.completeLayout ctx
         // Whether the document is all there: false while a package opened front

@@ -141,6 +141,14 @@ try {
         [Word.getPageCount(editor), JSON.stringify(Word.getPageFrames(editor)) === wholeFrames, linesOf(editor) === wholeLines],
         [pageCount, true, true]);
     check('and the first screen is the same pixels', samePixels(pixelsOf(canvas), wholeFirstScreen), true);
+    {
+        // How the slices went, for a host that wants to know what held its page: the reading's and the layout's.
+        const stats = Word.getRenderStats(editor), reading = pkg.Progressive;
+        check('the package and the editor say how their slices went', [reading.Slices >= 2, reading.LongestSlice >= 1 && reading.LongestSlice <= reading.Slices, reading.LongestSliceMs > 0, reading.LongestSliceItems >= 0, reading.LongestSlicePassMs <= reading.LongestSliceMs, reading.LongestSliceNotifyMs <= reading.LongestSliceMs,
+            stats.LayoutSlices >= 2, stats.LongestLayoutSlice >= 1 && stats.LongestLayoutSlice <= stats.LayoutSlices, stats.LongestLayoutSliceMs > 0, stats.LongestLayoutSliceLayoutMs <= stats.LongestLayoutSliceMs, stats.LongestLayoutSlicePasses >= 1, stats.LongestLayoutSliceFrom >= 1],
+            [true, true, true, true, true, true, true, true, true, true, true, true]);
+        note(`reading: ${reading.Slices} slices, the longest ${reading.LongestSliceMs.toFixed(1)} ms; layout: ${stats.LayoutSlices} slices, the longest ${stats.LongestLayoutSliceMs.toFixed(1)} ms`);
+    }
     note(`the rest was read in ${readRest.toFixed(0)} ms (${loadNotices.length} notices, longest time without an answer ${longest.toFixed(0)} ms)`);
     off();
     Word.dispose(editor); canvas.remove();

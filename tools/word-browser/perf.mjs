@@ -128,7 +128,8 @@ try {
             let notices = 0, longest = 0, last = performance.now();
             const off = Word.onChange ? Word.onChange(editor, (change) => { if (change.LayoutChanged) notices += 1; }) : () => {};
             // (How long the page could not answer while the rest was laid out: the longest gap between two timer ticks.)
-            const ticker = setInterval(() => { const now = performance.now(); longest = Math.max(longest, now - last); last = now; }, 4);
+            let longestAt = null;
+            const ticker = setInterval(() => { const now = performance.now(); if (now - last > longest) { longest = now - last; const stats = Word.getRenderStats(editor); longestAt = { reading: Word.isLoadComplete ? !Word.isLoadComplete(editor) : false, layoutSlices: stats.LayoutSlices ?? 0, readSlices: editorPackage.Progressive?.Slices ?? 0, laidOut: stats.LaidOutLimit }; } last = now; }, 4);
             t1 = performance.now();
             // (A document that is still being read: read to its end, in slices, then laid out.)
             let readAll = 0, longestRead = 0;
@@ -136,6 +137,7 @@ try {
             if (oneShot && Word.completeLayout) Word.completeLayout(editor);
             if (Word.whenLayoutComplete) await Word.whenLayoutComplete(editor);
             const rest = performance.now() - t1;
+            const sliceStats = { ...Word.getRenderStats(editor) };
             clearInterval(ticker); off();
             const loaded = performance.now() - t0;
             const size = Word.getDocumentSize(editor);
@@ -145,8 +147,8 @@ try {
             const framesTime = performance.now() - t1;
             const target = frames[Math.floor(frames.length / 2)];
             Word.setViewport(editor, { scale: 1, devicePixelRatio: 1, scrollTop: target.Top, scrollLeft: 0, width: 1000, height: 800 });
-            return { loaded, read, imported, installed, fonts, faces, frames: framesTime, progressive: !!progressive, firstItems, readAll, longestRead, atOnce: !!(editorPackage.Progressive && editorPackage.Progressive.AtOnce), slices: editorPackage.Progressive?.Slices ?? 0, longestSlice: editorPackage.Progressive?.LongestSliceMs ?? 0, longestSliceAt: editorPackage.Progressive?.LongestSlice ?? 0, pages: size.PageCount, top: target.Top, measured: window.perfMeasure ?? null,
-                firstPaint, firstPages: firstSize.PageCount, firstBlocks, firstComplete: firstSize.LayoutComplete, ink, rest, notices, longest, passes: Word.getRenderStats(editor).LayoutPasses };
+            return { loaded, read, imported, installed, fonts, faces, frames: framesTime, progressive: !!progressive, firstItems, readAll, longestRead, atOnce: !!(editorPackage.Progressive && editorPackage.Progressive.AtOnce), slices: editorPackage.Progressive?.Slices ?? 0, longestSlice: editorPackage.Progressive?.LongestSliceMs ?? 0, longestSliceAt: editorPackage.Progressive?.LongestSlice ?? 0, longestSliceNotify: editorPackage.Progressive?.LongestSliceNotifyMs ?? 0, longestSliceItems: editorPackage.Progressive?.LongestSliceItems ?? 0, longestSlicePass: editorPackage.Progressive?.LongestSlicePassMs ?? 0, pages: size.PageCount, top: target.Top, measured: window.perfMeasure ?? null,
+                firstPaint, firstPages: firstSize.PageCount, firstBlocks, firstComplete: firstSize.LayoutComplete, ink, rest, notices, longest, passes: Word.getRenderStats(editor).LayoutPasses, sliceStats, longestAt };
         },
         // Put the caret into a paragraph of plain text on the page in view (by clicking at a point of the canvas).
         caretAt(x, y) { return Word.getSelectionInformation ? JSON.stringify(Word.getCaretRect(editor)) : null; },
@@ -295,7 +297,9 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
         console.log(`  getRequiredFonts(package): ${loaded.fonts.toFixed(0)} ms (${loaded.faces} faces), before the import`);
         console.log(`  opening: read the package ${(loaded.read / 1000).toFixed(2)} s, import and first paint ${(loaded.imported / 1000).toFixed(2)} s${painter ? `, measurers and painter installed ${(loaded.installed / 1000).toFixed(2)} s` : ''}, page frames ${loaded.frames.toFixed(0)} ms`);
         console.log(`  first paint ${(loaded.firstPaint / 1000).toFixed(2)} s after the bytes (${loaded.firstBlocks} blocks, ${loaded.firstPages} pages laid out, ${loaded.ink} dark pixels on the first screen${loaded.firstComplete ? '; the whole document' : ''}); the rest of the layout ${(loaded.rest / 1000).toFixed(2)} s in ${loaded.passes} passes, ${loaded.notices} notices to onChange, the longest time without an answer ${loaded.longest.toFixed(0)} ms`);
-        if (loaded.progressive) console.log(`  opened front first: ${loaded.firstItems} blocks in the package when it was handed over${loaded.atOnce ? ' (the main part was read at once)' : ''}; read to its end ${(loaded.readAll / 1000).toFixed(2)} s after the bytes, in ${loaded.slices} slices of which the longest (slice ${loaded.longestSliceAt}) took ${loaded.longestSlice.toFixed(1)} ms (the longest time between two timer ticks while it was read: ${loaded.longestRead.toFixed(0)} ms)`);
+        if (loaded.sliceStats && loaded.sliceStats.LayoutSlices) console.log(`  the layout's slices: ${loaded.sliceStats.LayoutSlices}, the longest (slice ${loaded.sliceStats.LongestLayoutSlice}, from ${loaded.sliceStats.LongestLayoutSliceFrom} blocks) ${loaded.sliceStats.LongestLayoutSliceMs.toFixed(1)} ms: ${loaded.sliceStats.LongestLayoutSlicePasses} passes in ${loaded.sliceStats.LongestLayoutSliceLayoutMs.toFixed(1)} ms, the rest what followed it (repaint, listeners)`);
+        if (loaded.longestAt) console.log(`  the longest time without an answer ended ${loaded.longestAt.reading ? 'while the document was read' : 'while it was laid out'}: after ${loaded.longestAt.readSlices} slices of reading and ${loaded.longestAt.layoutSlices} of layout (${loaded.longestAt.laidOut} blocks laid out)`);
+        if (loaded.progressive) console.log(`  opened front first: ${loaded.firstItems} blocks in the package when it was handed over${loaded.atOnce ? ' (the main part was read at once)' : ''}; read to its end ${(loaded.readAll / 1000).toFixed(2)} s after the bytes, in ${loaded.slices} slices of which the longest (slice ${loaded.longestSliceAt}) took ${loaded.longestSlice.toFixed(1)} ms - ${loaded.longestSliceItems} items, its longest pass ${loaded.longestSlicePass.toFixed(1)} ms, the listeners ${loaded.longestSliceNotify.toFixed(1)} ms - (the longest time between two timer ticks while it was read: ${loaded.longestRead.toFixed(0)} ms)`);
         if (loaded.measured) console.log(`  measurers: ${loaded.measured.calls} calls, ${loaded.measured.shaped} runs shaped at ${measureCost} microseconds`);
         console.log(`docx4j-getting-started x ${repeat}: ${loaded.pages} pages, loaded in ${(loaded.loaded / 1000).toFixed(2)} s${painter ? ' (text path painter and measurers installed)' : ''}`);
         // A click into the text of the page in view puts the caret there.

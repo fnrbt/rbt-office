@@ -401,7 +401,9 @@ module Processors =
     //   Progressive.whenComplete()  a promise of the package, complete
     //   Progressive.Slices / LongestSliceMs / LongestSlice   how many slices read it, what the longest
     //                               took (with what its listeners did: the page could not answer for
-    //                               that long) and which it was (1: the first)
+    //                               that long) and which it was (1: the first); of that slice,
+    //                               LongestSliceItems (the items it added), LongestSlicePassMs (its
+    //                               longest pass of reading) and LongestSliceNotifyMs (the listeners)
     //   Progressive.Failed / Error  the body could not be read to its end (its text is not well
     //                               formed from some element on, or an element could not be made
     //                               blocks of): Failed is true and Error says why. Paragraphs holds
@@ -442,11 +444,17 @@ module Processors =
     [<Emit("(typeof document !== 'undefined' && document.hidden === true)")>]
     let private pageIsHidden () : bool = jsNative
     // (As the layout's slices are scheduled, see Renderer.afterThisTask: a task of its own after
-    // the current one, so that input events and frames that are waiting come first.)
+    // the current one, so that input events and frames that are waiting come first. In two hops:
+    // a timer that came due during the slice is made ready when the slice's task ends - after a
+    // next slice posted from inside it, which then ran first, and the page's timers saw two
+    // slices as one. The next slice is posted from a task of nothing, behind the timers.)
     [<Emit("""(function (run) {
-        if (typeof scheduler !== 'undefined' && scheduler && typeof scheduler.postTask === 'function') { scheduler.postTask(run, { priority: 'user-visible' }); return; }
-        if (typeof MessageChannel === 'function') { var channel = new MessageChannel(); channel.port1.onmessage = function () { channel.port1.close(); run(); }; channel.port2.postMessage(0); return; }
-        setTimeout(run, 0);
+        var hop = function (next) {
+            if (typeof scheduler !== 'undefined' && scheduler && typeof scheduler.postTask === 'function') { scheduler.postTask(next, { priority: 'user-visible' }); return; }
+            if (typeof MessageChannel === 'function') { var channel = new MessageChannel(); channel.port1.onmessage = function () { channel.port1.close(); next(); }; channel.port2.postMessage(0); return; }
+            setTimeout(next, 0);
+        };
+        hop(function () { hop(run); });
     })($0)""")>]
     let private afterThisTask (_callback: unit -> unit) : unit = jsNative
     [<Emit("(($0 != null && typeof $0[$1] === 'number') ? $0[$1] : $2)")>]
@@ -458,7 +466,9 @@ module Processors =
     ///   firstBlocks  how many blocks of the body are read before the package is handed over
     ///                (default 64: two screens)
     ///   autoStart    false: the rest is read only when asked for (start / readMore / complete)
-    ///   sliceMs      how long a slice takes, with what its listeners do (default 13)
+    ///   sliceMs      how long a slice aims to take, with what its listeners do (default 10: a
+    ///                slice that meets a block that costs many times the others, or a collection
+    ///                of garbage, still ends within a frame)
     let openProgressive (fileData: obj) (options: obj) : Fable.Core.JS.Promise<obj> =
         promise {
             let! archive = loadArchive fileData
@@ -486,7 +496,7 @@ module Processors =
                         Finish = (fun () -> failwith "The reading of the document was cancelled") }
                 let reader () : DocxReader.ProgressiveReader = match current with | Some reader -> reader | None -> cancelledReader
                 let firstBlocks = max 1 (int (numberOption options "firstBlocks" 64.0))
-                let sliceMs = max 1.0 (numberOption options "sliceMs" 13.0)
+                let sliceMs = max 1.0 (numberOption options "sliceMs" 10.0)
                 let convert = DocxReader.editorParagraphConverter front.Theme front.Styles front.NumberingDefinitions front.Footnotes front.Endnotes
                 let paragraphs : obj array = [||]
                 let shapeItems = ResizeArray<obj>()
@@ -575,6 +585,7 @@ module Processors =
                 // What the listeners took after the last slice (they make their blocks of the items):
                 // a slice reads for its time less that.
                 let mutable notifyMs = 0.0
+                let mutable longestPass = 0.0
                 /// Read on for about `budget` milliseconds (at least one step).
                 let readMore (budget: float) : bool =
                     if not complete && failed.IsNone then
@@ -591,8 +602,13 @@ module Processors =
                                     more <- false
                                 else
                                     let took = max 0.05 (nowMs () - passStart)
-                                    // (Steps of about a millisecond: the slice ends near its time.)
-                                    step <- max 1 (min 512 (int (float (max 1 batch.Blocks.Length) / took)))
+                                    if took > longestPass then longestPass <- took
+                                    // (Steps of about half a millisecond, no more than twice the last one: the
+                                    // slice ends near its time, and blocks that cost more than the last ones
+                                    // said - a table after headings - are met a few at a time.)
+                                    // (And never many: a run of empty paragraphs says that hundreds fit, the
+                                    // paragraphs of text after them do not.)
+                                    step <- max 1 (min (min 32 (step * 2)) (int (float (max 1 batch.Blocks.Length) * 0.5 / took)))
                                     if nowMs () - started >= budget then more <- false
                         with error -> fail error
                         let told = nowMs ()
@@ -608,6 +624,8 @@ module Processors =
                             scheduled <- false
                             if not complete && failed.IsNone then
                                 let sliceStart = nowMs ()
+                                let itemsBefore = paragraphs.Length
+                                longestPass <- 0.0
                                 // A page that is not shown gets its tasks rarely: longer slices then.
                                 (try readMore (if pageIsHidden () then 200.0 else max 2.0 (sliceMs - notifyMs)) |> ignore with _ -> ())
                                 // (What a slice took with everything that followed it: the listeners make
@@ -617,6 +635,10 @@ module Processors =
                                 if took > unbox<float> (state?LongestSliceMs) then
                                     state?LongestSliceMs <- took
                                     state?LongestSlice <- unbox<int> (state?Slices)
+                                    // (What it was made of: the listeners' part, the items it read, its longest pass.)
+                                    state?LongestSliceNotifyMs <- notifyMs
+                                    state?LongestSliceItems <- paragraphs.Length - itemsBefore
+                                    state?LongestSlicePassMs <- longestPass
                                 pump ())
                 state?Progress <- (fun () -> if complete then 1.0 else (reader ()).Progress ())
                 state?BlockCount <- (fun () -> (reader ()).BlockCount ())

@@ -98,6 +98,17 @@ type LayoutProgress = {
     /// first): what is laid out, even all of what is there, is not the whole
     /// document yet.
     mutable LoadPending: bool
+    /// How the slices went (see `renderStats`): how many there were, how long the longest took
+    /// with what followed it (the host's repaint and its listeners), which it was, and what it was
+    /// made of: its passes, the layout's part of its time, the block limit it started from.
+    mutable Slices: int
+    mutable LongestSliceMs: float
+    mutable LongestSlice: int
+    mutable LongestSlicePasses: int
+    mutable LongestSliceLayoutMs: float
+    mutable LongestSliceFrom: int
+    /// Passes of the slice in hand.
+    mutable SlicePasses: int
 }
 
 /// A header or footer that is edited in place. The document the editor
@@ -243,7 +254,8 @@ let createContext (canvas: HTMLCanvasElement) = {
     LastPaint = None
     Viewport = None
     PageFrame = None
-    Progress = { Scheduled = false; Epoch = 0; Chunk = 48; Notified = 0.0; Waiters = ResizeArray(); LoadPending = false }
+    Progress = { Scheduled = false; Epoch = 0; Chunk = 48; Notified = 0.0; Waiters = ResizeArray(); LoadPending = false
+                 Slices = 0; LongestSliceMs = 0.0; LongestSlice = 0; LongestSlicePasses = 0; LongestSliceLayoutMs = 0.0; LongestSliceFrom = 0; SlicePasses = 0 }
     Story = None
     StoryPainted = false
     StoryOverlay = []
@@ -478,13 +490,21 @@ let whenLayoutComplete (ctx: RenderContext) (callback: unit -> unit) =
 /// viewport, where a part of the document is what is shown; a whole-canvas
 /// host sizes its canvas from all the pages.)
 let beginProgressiveLayout (ctx: RenderContext) =
+    ctx.Progress.Slices <- 0
+    ctx.Progress.LongestSliceMs <- 0.0
+    ctx.Progress.LongestSlice <- 0
+    ctx.Progress.LongestSlicePasses <- 0
+    ctx.Progress.LongestSliceLayoutMs <- 0.0
+    ctx.Progress.LongestSliceFrom <- 0
     match ctx.Viewport with
     | Some _ ->
         // (A few blocks: the render raises the limit until what is in view is laid out. Forty
         // to start with were twenty to eighty pages of a document of long paragraphs, tables
         // or page breaks - laid out before anything was shown.)
         ctx.LayoutState.BlockLimit <- 6
-        ctx.Progress.Chunk <- 48
+        // (Few blocks in the first pass of the slices: what a block costs is not known yet, and
+        // forty-eight of them took 140 ms with a host's shaped text.)
+        ctx.Progress.Chunk <- 8
     | None -> completeLayout ctx
 
 /// The bottom of what is laid out of the body.
@@ -543,15 +563,19 @@ let private coverSelection (ctx: RenderContext) (doc: Document) =
 let advanceLayout (ctx: RenderContext) (doc: Document) (budget: float) : bool =
     let progress = ctx.Progress
     let started = nowMs ()
-    let target = max 4.0 (min budget 30.0)
+    // (A pass aims at a third of the slice: the blocks differ in what they cost - a page of a
+    // table against a heading - and a pass that turns out three times as long as the last ones
+    // said still ends near the slice's time.)
+    let target = max 3.0 (min budget 30.0 / 3.0)
     let mutable more = not (layoutIsWhole ctx)
     while more do
         let passStart = nowMs ()
         let limit = ctx.LayoutState.BlockLimit
         // (Never a sliver of what is laid out already: a pass has a cost of its own that grows with the document.)
-        let chunk = max progress.Chunk (limit / 128)
+        let chunk = max progress.Chunk (limit / 512)
         ctx.LayoutState.BlockLimit <- limit + chunk
         layoutDocumentWithPages ctx doc |> ignore
+        progress.SlicePasses <- progress.SlicePasses + 1
         let took = max 0.25 (nowMs () - passStart)
         progress.Chunk <- max 8 (min (chunk * 2) (int (float chunk * target / took)))
         if layoutIsWhole ctx || nowMs () - started + took * 0.6 > budget then more <- false
@@ -563,11 +587,17 @@ let private pageIsHidden () : bool = jsNative
 // The next slice runs as a task of its own right after the current one:
 // input events and frames the browser has waiting come first, and no time is
 // spent waiting for an idle period (which comes once per frame at best - a
-// long document would take a second longer to lay out).
+// long document would take a second longer to lay out). In two hops: a timer
+// that came due during a slice is made ready when the slice's task ends,
+// behind a next slice that was posted from inside it - the page's timers
+// then saw two slices as one. The next slice is posted from a task of nothing.
 [<Emit("""(function (run) {
-    if (typeof scheduler !== 'undefined' && scheduler && typeof scheduler.postTask === 'function') { scheduler.postTask(run, { priority: 'user-visible' }); return; }
-    if (typeof MessageChannel === 'function') { var channel = new MessageChannel(); channel.port1.onmessage = function () { channel.port1.close(); run(); }; channel.port2.postMessage(0); return; }
-    setTimeout(run, 0);
+    var hop = function (next) {
+        if (typeof scheduler !== 'undefined' && scheduler && typeof scheduler.postTask === 'function') { scheduler.postTask(next, { priority: 'user-visible' }); return; }
+        if (typeof MessageChannel === 'function') { var channel = new MessageChannel(); channel.port1.onmessage = function () { channel.port1.close(); next(); }; channel.port2.postMessage(0); return; }
+        setTimeout(next, 0);
+    };
+    hop(function () { hop(run); });
 })($0)""")>]
 let private afterThisTask (_callback: unit -> unit) : unit = jsNative
 
@@ -589,11 +619,22 @@ let rec scheduleLayout (ctx: RenderContext) (currentDocument: unit -> Document) 
                 if not (layoutIsWhole ctx) then
                     // A page that is not shown gets its tasks rarely: longer slices then.
                     let budget = if pageIsHidden () then 250.0 else 24.0
+                    let sliceStart = nowMs ()
+                    let from = ctx.LayoutState.BlockLimit
+                    progress.SlicePasses <- 0
                     let complete = advanceLayout ctx (currentDocument ()) budget
                     let now = nowMs ()
                     let tell = complete || now - progress.Notified > 150.0
                     if tell then progress.Notified <- now
                     afterSlice complete tell
+                    let took = nowMs () - sliceStart
+                    progress.Slices <- progress.Slices + 1
+                    if took > progress.LongestSliceMs then
+                        progress.LongestSliceMs <- took
+                        progress.LongestSlice <- progress.Slices
+                        progress.LongestSlicePasses <- progress.SlicePasses
+                        progress.LongestSliceLayoutMs <- now - sliceStart
+                        progress.LongestSliceFrom <- from
                 scheduleLayout ctx currentDocument afterSlice)
 
 /// Call off the slices that are waiting (the context is not used any more).
@@ -1910,6 +1951,15 @@ let renderStats (ctx: RenderContext) (doc: Document) : obj =
         "LayoutComplete", box (layoutIsComplete ctx)
         "LayoutPasses", box ctx.LayoutState.LayoutSerial
         "LaidOutLimit", box (if layoutIsWhole ctx then List.length doc.Blocks else min ctx.LayoutState.BlockLimit (List.length doc.Blocks))
+        // The slices a long document was laid out in since it was loaded: how many, and the longest -
+        // what it took with the repaint and the listeners that followed it, which it was (1: the
+        // first), its passes, the layout's part of its time, the blocks that were laid out before it.
+        "LayoutSlices", box ctx.Progress.Slices
+        "LongestLayoutSliceMs", box ctx.Progress.LongestSliceMs
+        "LongestLayoutSlice", box ctx.Progress.LongestSlice
+        "LongestLayoutSlicePasses", box ctx.Progress.LongestSlicePasses
+        "LongestLayoutSliceLayoutMs", box ctx.Progress.LongestSliceLayoutMs
+        "LongestLayoutSliceFrom", box ctx.Progress.LongestSliceFrom
     ]
 
 /// Render document to canvas
