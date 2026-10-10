@@ -51,5 +51,20 @@ eq "level: with the summary above" ((above |> Ops.showOutlineLevel true 2).Axes.
 let colLevels = empty |> Ops.changeOutlineLevel false 1 3 1 |> Ops.showOutlineLevel false 1
 eq "level: columns" (Ops.hiddenRuns false colLevels, colLevels.Axes.CollapsedCols |> Set.toList) ([ 1, 3 ], [ 4 ])
 
+// ---- spilled arrays: the range a dynamic array fills ----------------------------------------------
+let at row col : CellAddress = { Row = row; Col = col }
+let spilling = { empty with Spill = Map.ofList [ at 1 2, at 1 1; at 2 1, at 1 1; at 2 2, at 1 1; at 3 1, at 1 1; at 3 2, at 1 1; at 6 5, at 5 5 ] }
+let b2c4 : CellRange = { From = at 1 1; To = at 3 2 }
+eq "spill: the anchor" (Ops.spillRangeAt (at 1 1) spilling) (Some (at 1 1, b2c4))
+eq "spill: a cell it filled" (Ops.spillRangeAt (at 3 2) spilling) (Some (at 1 1, b2c4))
+eq "spill: another array of the sheet" (Ops.spillRangeAt (at 6 5) spilling |> Option.map (fun (anchor, range) -> anchor, Ops.rangeText range)) (Some (at 5 5, "F6:F7"))
+eq "spill: a cell beside it" (Ops.spillRangeAt (at 4 1) spilling, Ops.spillRangeAt (at 0 0) spilling) (None, None)
+eq "spill: a sheet without arrays" (Ops.spillRangeAt (at 1 1) empty) None
+let respilled = { spilling with Spill = Map.ofList [ at 1 2, at 1 1 ] }
+eq "spill: worked out again when the arrays change" (Ops.spillRangeAt (at 1 1) respilled |> Option.map (fun (_, range) -> Ops.rangeText range), Ops.spillRangeAt (at 3 2) respilled) (Some "B2:C2", None)
+// Addresses order by row, then column, and are equal by value (the comparison is written out).
+eq "addresses: ordered by row, then column" ([ at 2 1; at 1 5; at 1 2; at 0 9 ] |> List.sort) [ at 0 9; at 1 2; at 1 5; at 2 1 ]
+eq "addresses: equal by value, as keys too" (at 3 4 = at 3 4, at 3 4 = at 4 3, (Map.ofList [ at 3 4, "x" ]).[at 3 4], (dict [ at 3 4, "y" ]).[at 3 4], compare (at 1 1) (at 1 1)) (true, false, "x", "y", 0)
+
 printfn "\nGrid chrome tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

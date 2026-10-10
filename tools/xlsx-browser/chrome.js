@@ -425,3 +425,53 @@ checks['export-keeps-parts'] = async () => {
     }
     return lines;
 };
+
+// Spill ranges for hosts: GetCell(...).spill, GetSpillRange, and the outline around the active cell's array.
+checks['chrome-spill'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        grid.SetCell(1, 1, '=SEQUENCE(4,3)'); grid.SetCell(0, 5, '=SEQUENCE(2)'); grid.SetCell(8, 0, '=1+1'); grid.SetCell(9, 0, 'text');
+        await frame();
+        const outlines = () => [...host.querySelectorAll('.spreadsheet-spill-outline')].filter((n) => n.getClientRects().length > 0);
+        check('the anchor: its range', [grid.GetCell(1, 1).spill, grid.GetSpillRange(1, 1)], [{ anchor: 'B2', range: 'B2:D5' }, { anchor: 'B2', range: 'B2:D5' }]);
+        check('a cell the array filled', [grid.GetCell(4, 3).spill, grid.GetCell(4, 3).formula, grid.GetCell(4, 3).value], [{ anchor: 'B2', range: 'B2:D5' }, null, 12]);
+        check('another array', grid.GetSpillRange(1, 5), { anchor: 'F1', range: 'F1:F2' });
+        check('a cell beside it, a plain formula, text', [grid.GetCell(5, 1).spill, grid.GetSpillRange(8, 0), grid.GetCell(9, 0).spill], [null, null, null]);
+        check('GetRange gives it per cell', grid.GetRange('A1:B2').map((row) => row.map((cell) => cell.spill && cell.spill.range)), [[null, null], [null, 'B2:D5']]);
+        check('the active cell is outside: no outline', [grid.GetSelectionRef(), outlines().length], ['A1', 0]);
+        // A real click inside the array.
+        const c3 = cellBox(host, 2, 2);
+        await realClick(c3.left + c3.width / 2, c3.top + c3.height / 2);
+        const first = cellBox(host, 1, 1), last = cellBox(host, 4, 3);
+        const outline = outlines()[0], box = outline && outline.getBoundingClientRect();
+        check('a click in the array: a thin outline around its range', [grid.GetSelectionRef(), outlines().length, outline && outline.getAttribute('data-range'), box && [near(box.left, first.left), near(box.top, first.top), near(box.right, last.right, 1.5), near(box.bottom, last.bottom, 1.5)], outline && getComputedStyle(outline).borderTopWidth], ['C3', 1, 'B2:D5', [true, true, true, true], '1px']);
+        const edge = await pixelAt(box.left + 40, box.top);
+        check('... drawn in blue', edge[2] > 150 && edge[0] < 120, true);
+        await window.realKey('ArrowUp'); await window.realKey('ArrowUp'); await frame();
+        check('the keyboard leaves the array: the outline goes', [grid.GetSelectionRef(), outlines().length], ['C1', 0]);
+        // Something in the way: #SPILL!, no range.
+        grid.EnterText(3, 2, 'blocked'); await frame();
+        check('blocked: #SPILL! and no range', [grid.GetCell(1, 1).value, grid.GetSpillRange(1, 1), grid.GetCell(2, 1).spill], ['#SPILL!', null, null]);
+        grid.Undo(); await frame();
+        check('undo: the array is back', [grid.GetSpillRange(4, 3), grid.GetCell(4, 3).value], [{ anchor: 'B2', range: 'B2:D5' }, 12]);
+        grid.Redo(); grid.Undo();
+        // The array changes size.
+        grid.EnterText(1, 1, '=SEQUENCE(2,2)'); await frame();
+        check('a smaller array: its range, and the cells it left', [grid.GetSpillRange(1, 1), grid.GetSpillRange(4, 3)], [{ anchor: 'B2', range: 'B2:C3' }, null]);
+        grid.SelectCell(2, 2); await frame();
+        check('the outline follows', outlines().map((n) => n.getAttribute('data-range')), ['B2:C3']);
+        // Frozen panes: one outline piece per pane.
+        grid.FreezeAt(2, 2); await frame();
+        check('over frozen panes: a piece in each pane the array reaches', outlines().length, 4);
+        grid.Unfreeze();
+        // Export, re-import.
+        const again = await reopened(grid);
+        try {
+            check('opened again: the ranges', [again.grid.GetSpillRange(2, 2), again.grid.GetSpillRange(1, 5), again.grid.GetCell(1, 1).formula], [{ anchor: 'B2', range: 'B2:C3' }, { anchor: 'F1', range: 'F1:F2' }, '=SEQUENCE(2,2)']);
+        } finally { again.close(); }
+        check('row / col outside the sheet throw', (() => { try { grid.GetSpillRange(-1, 0); return null; } catch (e) { return /GetSpillRange/.test(String(e.message)); } })(), true);
+    } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
+    finally { close(); }
+    return lines;
+};

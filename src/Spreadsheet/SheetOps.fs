@@ -1494,6 +1494,38 @@ let maxOutlineLevel = 7
 let private levelsOf (rows: bool) (model: SpreadsheetModel) = if rows then model.Axes.RowLevels else model.Axes.ColLevels
 let private collapsedOf (rows: bool) (model: SpreadsheetModel) = if rows then model.Axes.CollapsedRows else model.Axes.CollapsedCols
 
+// ---------------------------------------------------------------------------
+// Spilled arrays
+// ---------------------------------------------------------------------------
+
+/// The ranges the dynamic arrays of a sheet fill, by anchor, for the spill
+/// map they were last worked out for (one sheet's at a time: what a host
+/// asks about is the sheet on display).
+let mutable private spillRangesFor : obj = null
+let private spillRanges = System.Collections.Generic.Dictionary<CellAddress, CellRange>()
+
+/// The dynamic array a cell is part of: the formula cell that spills (the
+/// anchor) and the range it fills, the anchor included. None for a cell
+/// that is neither a spilling formula nor one it filled.
+let spillRangeAt (addr: CellAddress) (model: SpreadsheetModel) : (CellAddress * CellRange) option =
+    if Map.isEmpty model.Spill then None
+    else
+        if not (obj.ReferenceEquals(spillRangesFor, model.Spill)) then
+            spillRanges.Clear()
+            for KeyValue (ghost, anchor) in model.Spill do
+                let range =
+                    match spillRanges.TryGetValue anchor with
+                    | true, known -> known
+                    | false, _ -> { From = anchor; To = anchor }
+                spillRanges.[anchor] <-
+                    { From = { Row = min range.From.Row ghost.Row; Col = min range.From.Col ghost.Col }
+                      To = { Row = max range.To.Row ghost.Row; Col = max range.To.Col ghost.Col } }
+            spillRangesFor <- box model.Spill
+        let anchor = match Map.tryFind addr model.Spill with Some anchor -> anchor | None -> addr
+        match spillRanges.TryGetValue anchor with
+        | true, range -> Some (anchor, range)
+        | false, _ -> None
+
 /// Whether the summary of a group comes after it (rows: below, columns: to
 /// the right; Excel's default) or before it: the sheet's `outlinePr`.
 let summaryAfter (rows: bool) (model: SpreadsheetModel) : bool =

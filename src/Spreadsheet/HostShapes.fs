@@ -499,6 +499,14 @@ let commentToObj (info: CommentInfo) : obj =
 /// { row, col, address: "B2", value, valueType, text, formula, format,
 ///   isMerged, mergeRange, comment, hyperlink, validation } - see GetCell.
 /// `text` is the display text the caller worked out for the cell.
+/// { anchor: "A1", range: "A1:C5" } for a cell of a dynamic array (its
+/// formula cell or a cell it filled), else null.
+let spillToObj (model: SpreadsheetModel) (addr: CellAddress) : obj =
+    match Rbt.Spreadsheet.SheetOps.spillRangeAt addr model with
+    | Some (anchor, range) ->
+        createObj [ "anchor" ==> (columnToLetter anchor.Col + string (anchor.Row + 1)); "range" ==> Rbt.Spreadsheet.SheetOps.rangeText range ]
+    | None -> null
+
 let cellToObj (model: SpreadsheetModel) (addr: CellAddress) (text: string) : obj =
     let data = Map.tryFind addr model.Cells
     let value = match data with Some data -> data.Value | None -> CellValue.Empty
@@ -518,6 +526,7 @@ let cellToObj (model: SpreadsheetModel) (addr: CellAddress) (text: string) : obj
         "comment" ==> comment
         "hyperlink" ==> (match hyperlinkAt model addr with Some link -> hyperlinkToObj link | None -> null)
         "validation" ==> (match validationEntryAt addr model with Some entry -> validationAtToObj entry | None -> null)
+        "spill" ==> spillToObj model addr
     ]
 
 // ---------------------------------------------------------------------------

@@ -597,6 +597,8 @@ type Spreadsheet(container: Element) =
     let filterButtonListeners = ResizeArray<obj -> unit>()
     /// The button nodes on display (a pool: see `renderOverlays`).
     let filterButtonNodes = ResizeArray<Element>()
+    /// The outline of the active cell's dynamic array, one node per pane (made when first needed).
+    let spillOutlines : Element array = Array.zeroCreate 4
     let mutable workbook: Workbook option = None  // Optional workbook for table references
     /// The XLSX file the current workbook was imported from, for ExportXlsx:
     /// what the editor does not model is carried over from it.
@@ -4355,6 +4357,27 @@ type Spreadsheet(container: Element) =
             if getAttribute layer.ListButton "data-drawn" <> "1" then
                 setAttribute layer.ListButton "data-drawn" "1"
                 setTextContent layer.ListButton "\u25BC"
+        // The dynamic array the active cell is part of: a thin outline around
+        // the range it fills, as in Excel.
+        let spilled = if Map.isEmpty model.Spill then None else SheetOps.spillRangeAt active model
+        for pane in 0 .. 3 do
+            let rect =
+                match spilled with
+                | Some (_, range) when range.To.Row < rowCount && range.To.Col < colCount -> paneRect pane range.From.Row range.From.Col range.To.Row range.To.Col
+                | _ -> None
+            match rect with
+            | Some (x, y, w, h) when w > 0.0 && h > 0.0 ->
+                if isNull (box spillOutlines.[pane]) then
+                    let node = createElement "div"
+                    setClassName node "spreadsheet-spill-outline"
+                    spillOutlines.[pane] <- node
+                let node = spillOutlines.[pane]
+                place node pane
+                setAttribute node "data-range" (match spilled with Some (_, range) -> SheetOps.rangeText range | None -> "")
+                setCssText node
+                    ("position:absolute;left:" + px x + ";top:" + px y + ";width:" + px (w + 1.0) + ";height:" + px (h + 1.0)
+                     + ";box-sizing:border-box;border:1px solid #2b6cd4;pointer-events:none;z-index:4")
+            | _ -> if not (isNull (box spillOutlines.[pane])) then hide spillOutlines.[pane]
         // The filter buttons: one in each header cell of the AutoFilter and of
         // a filtered table, in the cell's pane (so a frozen header keeps its
         // buttons and a scrolled one takes them along). A viewer has them only
@@ -6943,11 +6966,23 @@ type Spreadsheet(container: Element) =
     ///   comment: { text, author: string | null, thread } | null (see GetComment),
     ///   hyperlink: { target, isInternal: boolean, range } | null,
     ///   validation: the rule object of the validation on the cell with its `id` and `range`
-    ///               (see GetValidations / GetValidationAt) | null }.
+    ///               (see GetValidations / GetValidationAt) | null,
+    ///   spill: { anchor: "A1", range: "A1:C5" } | null - the dynamic array the cell is part of
+    ///          (for its formula cell and for the cells it filled; see GetSpillRange) }.
     /// Throws when row / col are not whole numbers inside the sheet.
     member _.GetCell(row: obj, col: obj) : obj =
         let addr = { Row = Host.rowArg "GetCell" model row; Col = Host.colArg "GetCell" model col }
         Host.cellToObj model addr (cellText (getCell addr model))
+
+    /// The dynamic array a cell of the active sheet is part of:
+    /// { anchor: "A1" (the formula cell), range: "A1:C5" (what it fills, the
+    /// anchor included) }, or null for a cell that is neither a spilling
+    /// formula nor a cell one filled (a formula that gives one value, or
+    /// whose array is blocked - #SPILL! - has no range). Throws when row /
+    /// col are not whole numbers inside the sheet.
+    member _.GetSpillRange(row: obj, col: obj) : obj =
+        let addr = { Row = Host.rowArg "GetSpillRange" model row; Col = Host.colArg "GetSpillRange" model col }
+        Host.spillToObj model addr
 
     /// The cells of a range as rows of cell objects (see GetCell):
     /// GetRange("B2:D5") -> [[B2, C2, D2], [B3, ...], ...]. `a1` is "B2",

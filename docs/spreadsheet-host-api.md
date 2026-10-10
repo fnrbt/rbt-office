@@ -63,6 +63,13 @@ type Cell = {
 
 Throws when `row` / `col` are not whole numbers inside the sheet. Read-only; no undo step, no change event.
 
+### `GetSpillRange(row: number, col: number): { anchor: string, range: string } | null`
+The dynamic array a cell of the active sheet is part of: `anchor` is the formula cell (`"B2"`), `range` what the array fills, the anchor
+included (`"B2:D5"`). The same object is `GetCell(...).spill` (and each cell of `GetRange`): for the anchor **and** for every cell the array
+filled (those have `formula: null`). `null` for any other cell, for a formula that gives a single value, and for an array that is blocked
+(`#SPILL!`). Throws when `row` / `col` are not whole numbers inside the sheet. In the grid the array of the active cell has a thin blue
+outline (`.spreadsheet-spill-outline[data-range]`, one piece per frozen pane it reaches), as in Excel.
+
 ### `GetRange(a1: string): Cell[][]`
 
 Rows of `Cell` for a range of the active sheet, or of another sheet when qualified (`"Data!A1:B2"`, `"'My sheet'!A:A"`; a lazily loaded sheet is converted, which is not a document change). Whole columns / rows are clipped to the sheet's used range; a block is clipped to the sheet's last row / column (a block entirely outside gives `[]`). Throws when `a1` is not a string or not a range, when the sheet does not exist, or when the range holds more than 1 000 000 cells.
