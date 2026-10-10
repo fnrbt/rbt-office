@@ -2176,51 +2176,59 @@ module Docx =
             FloatingXml = tblPr |> Option.bind (wElem "tblpPr") |> Option.map xmlToString
         }
 
-    // Main document content extraction using document builder
+    // Main document content extraction
+    let private contentControlProps (sdtNode: XmlNode) =
+        let props = Ns.childNs "sdtPr" sdtNode
+        let id = props |> Option.bind (Ns.childNs "id") |> Option.bind (attr "val")
+        let tag = props |> Option.bind (Ns.childNs "tag") |> Option.bind (attr "val")
+        let alias = props |> Option.bind (Ns.childNs "alias") |> Option.bind (attr "val")
+        id, tag, alias
+    let private applyContentControl (id, tag, alias) = function
+        | Para para ->
+            Para { para with Properties = { para.Properties with ContentControlId = id; ContentControlTag = tag; ContentControlAlias = alias } }
+        | item -> item
+
+    /// The blocks one child element of the body (of a note, a header, a
+    /// content control ...) gives: a paragraph, a table, the blocks of a
+    /// block-level content control or of a custom XML element; nothing for
+    /// anything else. `renderedBreakCounter` counts the rendered page breaks
+    /// of the story's paragraphs, in document order.
+    let rec contentOfChild (renderedBreakCounter: int ref) (child: XmlNode) : DocumentContent list =
+        match Xml.name child with
+        | Some name when Ns.stripNs name = "p" ->
+            [ Para (paragraphWithRenderedBreakCounter (Some renderedBreakCounter) child) ]
+        | Some name when Ns.stripNs name = "tbl" ->
+            [ Tbl (table child) ]
+        | Some name when Ns.stripNs name = "sdt" ->
+            match Ns.childNs "sdtContent" child with
+            | Some content ->
+                let controlProps = contentControlProps child
+                contentOfChildren renderedBreakCounter content |> List.map (applyContentControl controlProps)
+            | None -> []
+        | Some name when Ns.stripNs name = "customXml" ->
+            contentOfChildren renderedBreakCounter child
+        | _ -> []
+    and private contentOfChildren (renderedBreakCounter: int ref) (node: XmlNode) : DocumentContent list =
+        Xml.children node |> List.collect (contentOfChild renderedBreakCounter)
+
+    /// An empty paragraph that ends a section on a new page, followed by a
+    /// paragraph that ends a continuous one, does not break the section: what
+    /// `item` is, given the block after it.
+    let normalizedSectionBreak (item: DocumentContent) (next: DocumentContent option) : DocumentContent =
+        match item, next with
+        | Para para, Some (Para nextPara) when para.Runs.IsEmpty && para.Properties.SectionBreak = Some "nextPage" && nextPara.Properties.SectionBreak = Some "continuous" ->
+            Para { para with Properties = { para.Properties with SectionBreak = None } }
+        | _ -> item
+
     let bodyContentWithFinalSection (finalSectPr: XmlNode option) (bodyNode: XmlNode) : DocumentContent list =
         let renderedBreakCounter = ref 0
-        let contentControlProps (sdtNode: XmlNode) =
-            let props = Ns.childNs "sdtPr" sdtNode
-            let id = props |> Option.bind (Ns.childNs "id") |> Option.bind (attr "val")
-            let tag = props |> Option.bind (Ns.childNs "tag") |> Option.bind (attr "val")
-            let alias = props |> Option.bind (Ns.childNs "alias") |> Option.bind (attr "val")
-            id, tag, alias
-        let applyContentControl (id, tag, alias) = function
-            | Para para ->
-                Para { para with Properties = { para.Properties with ContentControlId = id; ContentControlTag = tag; ContentControlAlias = alias } }
-            | item -> item
-        let rec contentFromNode node =
-            document {
-                for child in Xml.children node do
-                    match Xml.name child with
-                    | Some name when Ns.stripNs name = "p" ->
-                        yield Para (paragraphWithRenderedBreakCounter (Some renderedBreakCounter) child)
-                    | Some name when Ns.stripNs name = "tbl" ->
-                        yield Tbl (table child)
-                    | Some name when Ns.stripNs name = "sdt" ->
-                        match Ns.childNs "sdtContent" child with
-                        | Some content ->
-                            let controlProps = contentControlProps child
-                            yield! (contentFromNode content |> List.map (applyContentControl controlProps))
-                        | None -> ()
-                    | Some name when Ns.stripNs name = "customXml" ->
-                        yield! contentFromNode child
-                    | _ -> ()
-            }
 
         // Iterative: the recursive form was not a tail call and overflowed the JS
         // stack on documents with a few thousand body blocks (the file would not open).
         let normalizeSectionBreaks (items: DocumentContent list) =
             let source = List.toArray items
             source
-            |> Array.mapi (fun index item ->
-                match item with
-                | Para para when index + 1 < source.Length && para.Runs.IsEmpty && para.Properties.SectionBreak = Some "nextPage" ->
-                    match source.[index + 1] with
-                    | Para nextPara when nextPara.Properties.SectionBreak = Some "continuous" ->
-                        Para { para with Properties = { para.Properties with SectionBreak = None } }
-                    | _ -> item
-                | _ -> item)
+            |> Array.mapi (fun index item -> normalizedSectionBreak item (if index + 1 < source.Length then Some source.[index + 1] else None))
             |> Array.toList
 
         // Every section's properties stay on the section they belong to: a
@@ -2230,7 +2238,7 @@ module Docx =
         // paragraph after the first section break, which put the last section's
         // header on the second section of a document with three or more.
         ignore finalSectPr
-        contentFromNode bodyNode |> normalizeSectionBreaks
+        contentOfChildren renderedBreakCounter bodyNode |> normalizeSectionBreaks
 
     let bodyContent (bodyNode: XmlNode) : DocumentContent list =
         bodyContentWithFinalSection None bodyNode
@@ -3280,22 +3288,27 @@ module Shapes =
 
     /// Shapes of the document body, each with the index of the body block
     /// (as Docx.bodyContent numbers them) it is anchored in.
+    /// The elements under one child element of the body that are blocks (as
+    /// Docx.contentOfChild gives one block for each), in document order.
+    let rec blockNodesOfChild (child: XmlNode) : XmlNode list =
+        match Xml.name child |> Option.map Ns.stripNs with
+        | Some "p" | Some "tbl" -> [child]
+        | Some "sdt" -> Ns.childNs "sdtContent" child |> Option.map (fun content -> Xml.children content |> List.collect blockNodesOfChild) |> Option.defaultValue []
+        | Some "customXml" -> Xml.children child |> List.collect blockNodesOfChild
+        | _ -> []
+
+    /// The shapes anchored in the body block of an index.
+    let shapesOfBlock (index: int) (block: XmlNode) : Shape list =
+        Docx.modelledShapeRoots block
+        |> List.choose parseShape
+        |> List.map (fun shape -> { shape with AnchorBlock = Some index })
+
     let parseShapes (doc: XmlNode) : Shape list =
-        let rec blockNodes (node: XmlNode) : XmlNode list =
-            Xml.children node
-            |> List.collect (fun child ->
-                match Xml.name child |> Option.map Ns.stripNs with
-                | Some "p" | Some "tbl" -> [child]
-                | Some "sdt" -> Ns.childNs "sdtContent" child |> Option.map blockNodes |> Option.defaultValue []
-                | Some "customXml" -> blockNodes child
-                | _ -> [])
         match Ns.childNs "body" doc with
         | Some body ->
-            blockNodes body
-            |> List.mapi (fun index block ->
-                Docx.modelledShapeRoots block
-                |> List.choose parseShape
-                |> List.map (fun shape -> { shape with AnchorBlock = Some index }))
+            Xml.children body
+            |> List.collect blockNodesOfChild
+            |> List.mapi shapesOfBlock
             |> List.concat
         | None -> Docx.modelledShapeRoots doc |> List.choose parseShape
 
@@ -3486,8 +3499,7 @@ let private isRegeneratedRelationshipType (relType: string) =
 /// the writer does not produce itself. Pictures and hyperlinks are produced by
 /// the writer from the model, so those are kept only when an opaque object of
 /// the part refers to them.
-let private keptRelationships (baseDir: string) (rels: Relationship list) (opaqueXml: string list) : PreservedRelationship list =
-    let referenced = opaqueXml |> List.collect relationshipIdsInXml |> Set.ofList
+let private keptRelationshipsReferenced (baseDir: string) (rels: Relationship list) (referenced: Set<string>) : PreservedRelationship list =
     rels
     |> List.filter (fun rel ->
         if isRegeneratedRelationshipType rel.Type then false
@@ -3499,6 +3511,9 @@ let private keptRelationships (baseDir: string) (rels: Relationship list) (opaqu
           Type = rel.Type
           Target = if isExternal then rel.Target else "/" + resolveRelationshipTarget baseDir rel.Target
           External = isExternal })
+
+let private keptRelationships (baseDir: string) (rels: Relationship list) (opaqueXml: string list) : PreservedRelationship list =
+    keptRelationshipsReferenced baseDir rels (opaqueXml |> List.collect relationshipIdsInXml |> Set.ofList)
 
 /// Every relationship of a part but those of the parts the writer produces
 /// itself: what the part, written back as it was read, refers to.
@@ -3562,12 +3577,49 @@ let private contentTypeEntries (xml: string option) : (string * string) list * (
         entries "Default" "Extension", entries "Override" "PartName"
     | None -> [], []
 
-/// Parse a DOCX package.
-///
+/// What is read of a package before the content of its main part: where
+/// its parts are, the styles, the theme, the lists, the settings.
+type private MainPart = {
+    Source: PartSource
+    RootRels: Relationship list
+    MainRelationship: Relationship option
+    MainPath: string
+    DocDir: string
+    /// The text of the main part.
+    Xml: string
+    Rels: Relationship list
+    StylesPath: string
+    SettingsPath: string
+    NumberingPath: string
+    CommentsPath: string
+    FootnotesPath: string
+    EndnotesPath: string
+    StylesXml: string option
+    SettingsXml: string option
+    NumberingXml: string option
+    CommentsRels: Relationship list
+    FootnotesRels: Relationship list
+    EndnotesRels: Relationship list
+    Styles: StyleDefinition list
+    Theme: Theme option
+    NumberingDefinitions: NumberingDefinition list
+    EvenAndOddHeaders: bool
+    Properties: DocumentProperties option
+}
+
+/// The parts with text of their own. Headers and footers: (part, its path, its relationships).
+type private Stories = {
+    HeaderParts: (HeaderFooter * string * Relationship list) list
+    FooterParts: (HeaderFooter * string * Relationship list) list
+    Comments: Comment list
+    Footnotes: Note list
+    Endnotes: Note list
+}
+
 /// The main document part is the target of the package's officeDocument
 /// relationship (it need not be word/document.xml), and every other part is
 /// found through the relationships of the part that refers to it.
-let parseFromSource (source: PartSource) : WordDocument option =
+let private readMainPart (source: PartSource) : MainPart option =
     let rootRels = source.Text "_rels/.rels" |> relationshipsOfXml
     let mainRelationship = rootRels |> List.tryFind (fun rel -> rel.Type.EndsWith "/officeDocument" && rel.TargetMode <> Some "External")
     let mainPath =
@@ -3576,15 +3628,8 @@ let parseFromSource (source: PartSource) : WordDocument option =
         |> Option.filter (fun path -> (source.Text path).IsSome)
         |> Option.defaultValue "word/document.xml"
     let docDir = parentPath mainPath
-    let docXml = source.Text mainPath
-
-    docXml
+    source.Text mainPath
     |> Option.map (fun xml ->
-        // (The main part of a long document is megabytes of XML: it is scanned
-        // straight into nodes, and what it holds no element of is not looked for.)
-        let doc, docNames = Ns.parseWithLocalNames xml
-        let docHolds (name: string) = docNames.Contains name
-        let body = Ns.childNs "body" doc
         let rels = source.Text (partRelsPath mainPath) |> relationshipsOfXml
         let partPath typeSuffix fallback = partPathOfType docDir rels typeSuffix ((if docDir = "" then "" else docDir + "/") + fallback)
 
@@ -3601,15 +3646,211 @@ let parseFromSource (source: PartSource) : WordDocument option =
         let commentsPath = partPath "/comments" "comments.xml"
         let footnotesPath = partPath "/footnotes" "footnotes.xml"
         let endnotesPath = partPath "/endnotes" "endnotes.xml"
-        let commentsRels = source.Text (partRelsPath commentsPath) |> relationshipsOfXml
-        let footnotesRels = source.Text (partRelsPath footnotesPath) |> relationshipsOfXml
-        let endnotesRels = source.Text (partRelsPath endnotesPath) |> relationshipsOfXml
+        { Source = source
+          RootRels = rootRels
+          MainRelationship = mainRelationship
+          MainPath = mainPath
+          DocDir = docDir
+          Xml = xml
+          Rels = rels
+          StylesPath = stylesPath
+          SettingsPath = settingsPath
+          NumberingPath = numberingPath
+          CommentsPath = commentsPath
+          FootnotesPath = footnotesPath
+          EndnotesPath = endnotesPath
+          StylesXml = stylesXml
+          SettingsXml = settingsXml
+          NumberingXml = numberingXml
+          CommentsRels = source.Text (partRelsPath commentsPath) |> relationshipsOfXml
+          FootnotesRels = source.Text (partRelsPath footnotesPath) |> relationshipsOfXml
+          EndnotesRels = source.Text (partRelsPath endnotesPath) |> relationshipsOfXml
+          Styles = stylesXml |> Option.map Styles.parseStyles |> Option.defaultValue []
+          Theme = themeXml |> Option.map Theme.parseTheme
+          NumberingDefinitions = numberingXml |> Option.map Numbering.parseNumbering |> Option.defaultValue []
+          EvenAndOddHeaders = parseSettings settingsXml
+          Properties = propsXml |> Option.map Properties.parseProperties })
 
-        let styles = stylesXml |> Option.map Styles.parseStyles |> Option.defaultValue []
-        let theme = themeXml |> Option.map Theme.parseTheme
-        let numberingDefinitions = numberingXml |> Option.map Numbering.parseNumbering |> Option.defaultValue []
-        let evenAndOddHeaders = parseSettings settingsXml
-        let props = propsXml |> Option.map Properties.parseProperties
+/// The headers, the footers, the notes and the comments. `headerRefTypes` /
+/// `footerRefTypes`: what the sections' references say each part is
+/// (relationship id -> "default" | "first" | "even").
+let private readStories (main: MainPart) (headerRefTypes: Map<string, string>) (footerRefTypes: Map<string, string>) : Stories =
+    let source = main.Source
+    // (part, its path, its relationships)
+    let loadHeaderFooter (refTypes: Map<string, string>) (rel: Relationship) =
+        let path = ZipInterop.resolveTarget main.DocDir rel.Target
+        let partRels = source.Text (partRelsPath path) |> relationshipsOfXml
+        source.Text path
+        |> Option.map (fun value ->
+            let hfType = refTypes |> Map.tryFind rel.Id |> Option.defaultValue "default"
+            (HeaderFooter.parseHeaderFooter value hfType (Some rel.Id) |> resolveHeaderFooterHyperlinks partRels), path, partRels)
+    { HeaderParts = main.Rels |> List.filter (fun rel -> rel.Type.EndsWith "/header") |> List.choose (loadHeaderFooter headerRefTypes)
+      FooterParts = main.Rels |> List.filter (fun rel -> rel.Type.EndsWith "/footer") |> List.choose (loadHeaderFooter footerRefTypes)
+      Comments =
+        source.Text main.CommentsPath |> Option.map Comments.parseComments |> Option.defaultValue [] |> List.map (resolveCommentHyperlinks main.CommentsRels)
+      Footnotes =
+        source.Text main.FootnotesPath |> Option.map Notes.parseNotes |> Option.defaultValue [] |> List.map (resolveNoteHyperlinks main.FootnotesRels)
+      Endnotes =
+        source.Text main.EndnotesPath |> Option.map Notes.parseNotes |> Option.defaultValue [] |> List.map (resolveNoteHyperlinks main.EndnotesRels) }
+
+/// Every picture of the package the editor may show: image key (the
+/// relationship id; for a part other than the body see partImageKey) -> data URL.
+let private allImages (main: MainPart) (stories: Stories) : Map<string, string> =
+    let source = main.Source
+    let keyedImages key baseDir partRelationships =
+        loadImages source baseDir partRelationships
+        |> List.map (fun (relId, dataUrl) -> partImageKey key relId, dataUrl)
+    (loadImages source main.DocDir main.Rels
+     @ ((stories.HeaderParts @ stories.FooterParts)
+        |> List.collect (fun (part, path, partRels) ->
+            match part.RelationshipId with
+            | Some partId -> keyedImages partId (parentPath path) partRels
+            | None -> []))
+     @ keyedImages footnotesPartKey (parentPath main.FootnotesPath) main.FootnotesRels
+     @ keyedImages endnotesPartKey (parentPath main.EndnotesPath) main.EndnotesRels
+     @ keyedImages commentsPartKey (parentPath main.CommentsPath) main.CommentsRels)
+    |> Map.ofList
+
+/// The relationship ids the opaque objects of blocks refer to.
+let private opaqueReferences (blocks: DocumentContent list) : string list =
+    opaqueXmlOfBlocks blocks |> List.collect relationshipIdsInXml
+
+/// The document of a package whose parts are read. `content` is the body's
+/// blocks (as they are delivered: opaque objects completed, modelled shapes
+/// dropped), `documentReferenced` the relationship ids the opaque objects of
+/// the body and of its shapes refer to, `bodyChunks` / `bodyChunkCount` what
+/// Docx.bodyContentChunks says of the body.
+let private assembleDocument (main: MainPart) (stories: Stories) (content: DocumentContent list) (shapes: Shape list) (pageSetup: PageSetup option)
+                             (revisions: Revision list) (bodyChunks: int list) (bodyChunkCount: int) (documentReferenced: Set<string>) (images: Map<string, string>) : WordDocument =
+    let source = main.Source
+    let docDir = main.DocDir
+    let rels = main.Rels
+    let headerParts = stories.HeaderParts
+    let footerParts = stories.FooterParts
+    let footnotes = stories.Footnotes
+    let endnotes = stories.Endnotes
+    let comments = stories.Comments
+    // ---- what is kept of the package for the next save ----
+    let rootKept =
+        keptRelationships "" (main.RootRels |> List.filter (fun rel -> not (rel.Type.EndsWith "/officeDocument"))) []
+    let partKept =
+        [ yield "document", keptRelationshipsReferenced docDir rels documentReferenced
+          for part, path, partRels in headerParts @ footerParts do
+              match part.RelationshipId with
+              | Some partId -> yield partId, keptRelationships (parentPath path) partRels (opaqueXmlOfBlocks part.Blocks)
+              | None -> ()
+          yield footnotesPartKey, keptRelationships (parentPath main.FootnotesPath) main.FootnotesRels (footnotes |> List.collect (fun note -> opaqueXmlOfBlocks note.Blocks))
+          yield endnotesPartKey, keptRelationships (parentPath main.EndnotesPath) main.EndnotesRels (endnotes |> List.collect (fun note -> opaqueXmlOfBlocks note.Blocks))
+          yield commentsPartKey, keptRelationships (parentPath main.CommentsPath) main.CommentsRels (comments |> List.collect (fun comment -> opaqueXmlOfBlocks comment.Blocks))
+          // The settings part is patched, not regenerated: all its relationships stay (an attached template).
+          yield "settings", keptRelationships (parentPath main.SettingsPath) (source.Text (partRelsPath main.SettingsPath) |> relationshipsOfXml) []
+          // The lists and the styles go back as they were read, or with something added: what they
+          // refer to (the picture of a picture bullet) stays with them.
+          yield "numbering", allRelationships (parentPath main.NumberingPath) (source.Text (partRelsPath main.NumberingPath) |> relationshipsOfXml)
+          yield "styles", allRelationships (parentPath main.StylesPath) (source.Text (partRelsPath main.StylesPath) |> relationshipsOfXml) ]
+        |> List.filter (fun (_, kept) -> not kept.IsEmpty)
+    // Parts the writer produces itself are never carried over as they are.
+    let regenerated =
+        [ yield main.MainPath
+          yield main.StylesPath
+          yield main.SettingsPath
+          yield main.NumberingPath
+          yield main.CommentsPath
+          yield main.FootnotesPath
+          yield main.EndnotesPath
+          for _, path, _ in headerParts @ footerParts do yield path ]
+        |> Set.ofList
+    let defaults, overrides = contentTypeEntries (source.Text "[Content_Types].xml")
+    // ---- what is written back as it was when the editor did not change it ----
+    let sourceRels =
+        [ yield "document", sourceRelationships docDir rels
+          for part, path, partRels in headerParts @ footerParts do
+              match part.RelationshipId with
+              | Some partId -> yield partId, sourceRelationships (parentPath path) partRels
+              | None -> ()
+          yield footnotesPartKey, sourceRelationships (parentPath main.FootnotesPath) main.FootnotesRels
+          yield endnotesPartKey, sourceRelationships (parentPath main.EndnotesPath) main.EndnotesRels
+          yield commentsPartKey, sourceRelationships (parentPath main.CommentsPath) main.CommentsRels ]
+        |> List.filter (fun (_, kept) -> not kept.IsEmpty)
+    let sourceXml =
+        [ yield "document", Some main.Xml
+          for part, path, _ in headerParts @ footerParts do
+              match part.RelationshipId with
+              | Some partId -> yield partId, source.Text path
+              | None -> ()
+          yield footnotesPartKey, source.Text main.FootnotesPath
+          yield endnotesPartKey, source.Text main.EndnotesPath
+          yield commentsPartKey, source.Text main.CommentsPath
+          yield "numbering", main.NumberingXml ]
+        |> List.choose (fun (key, text) -> text |> Option.map (fun value -> key, value))
+    let keptParts = reachableParts source regenerated (rootKept @ (partKept |> List.collect snd))
+    let keptPaths = keptParts |> List.map (fun part -> part.Path) |> Set.ofList
+    let preserved =
+        { SourceXml = Map.ofList sourceXml
+          SourceRelationships = Map.ofList sourceRels
+          SourceParts =
+            reachableParts source regenerated (sourceRels |> List.collect snd)
+            |> List.filter (fun part -> not (Set.contains part.Path keptPaths))
+          BodyContentChunks = bodyChunks
+          BodyChunkCount = bodyChunkCount
+          PartPaths =
+            [ for part, path, _ in headerParts @ footerParts do
+                  match part.RelationshipId with
+                  | Some partId -> yield partId, path
+                  | None -> () ]
+            |> Map.ofList
+          OriginalText =
+            [ yield "[Content_Types].xml"
+              yield "_rels/.rels"
+              yield partRelsPath main.MainPath
+              for _, path, _ in headerParts @ footerParts do yield partRelsPath path
+              yield partRelsPath main.FootnotesPath
+              yield partRelsPath main.EndnotesPath
+              yield partRelsPath main.CommentsPath
+              yield partRelsPath main.SettingsPath
+              yield partRelsPath main.NumberingPath
+              yield partRelsPath main.StylesPath ]
+            |> List.distinct
+            |> List.choose (fun path -> source.Text path |> Option.map (fun text -> path, text))
+            |> Map.ofList
+          Parts = keptParts
+          RootRelationships = rootKept
+          DocumentRelationshipId = main.MainRelationship |> Option.map (fun rel -> rel.Id) |> Option.defaultValue "rId1"
+          PartRelationships = Map.ofList partKept
+          Defaults = defaults
+          Overrides = overrides
+          MainContentType = overrides |> List.tryPick (fun (partName, contentType) -> if normalizePath partName = main.MainPath then Some contentType else None)
+          StylesXml = main.StylesXml
+          SettingsXml = main.SettingsXml }
+
+    {
+        Content = content
+        Relationships = rels
+        Styles = main.Styles
+        Theme = main.Theme
+        Headers = headerParts |> List.map (fun (part, _, _) -> part)
+        Footers = footerParts |> List.map (fun (part, _, _) -> part)
+        Properties = main.Properties
+        Comments = comments
+        Revisions = revisions
+        Footnotes = footnotes
+        Endnotes = endnotes
+        Shapes = shapes
+        Images = images
+        PageSetup = pageSetup
+        NumberingDefinitions = main.NumberingDefinitions
+        Preserved = preserved
+    }
+
+/// Parse a DOCX package.
+let parseFromSource (source: PartSource) : WordDocument option =
+    readMainPart source
+    |> Option.map (fun main ->
+        // (The main part of a long document is megabytes of XML: it is scanned
+        // straight into nodes, and what it holds no element of is not looked for.)
+        let doc, docNames = Ns.parseWithLocalNames main.Xml
+        let docHolds (name: string) = docNames.Contains name
+        let body = Ns.childNs "body" doc
 
         // (Header and footer references are children of section properties: one walk finds both kinds.)
         let sectionProperties =
@@ -3621,20 +3862,7 @@ let parseFromSource (source: PartSource) : WordDocument option =
                 Xml.attr "r:id" refNode
                 |> Option.map (fun id -> (id, Docx.attr "type" refNode |> Option.defaultValue "default")))
             |> Map.ofList
-        let headerRefTypes = referenceTypes "headerReference"
-        let footerRefTypes = referenceTypes "footerReference"
-
-        // (part, its path, its relationships)
-        let loadHeaderFooter (refTypes: Map<string, string>) (rel: Relationship) =
-            let path = ZipInterop.resolveTarget docDir rel.Target
-            let partRels = source.Text (partRelsPath path) |> relationshipsOfXml
-            source.Text path
-            |> Option.map (fun value ->
-                let hfType = refTypes |> Map.tryFind rel.Id |> Option.defaultValue "default"
-                (HeaderFooter.parseHeaderFooter value hfType (Some rel.Id) |> resolveHeaderFooterHyperlinks partRels), path, partRels)
-
-        let headerParts = rels |> List.filter (fun rel -> rel.Type.EndsWith "/header") |> List.choose (loadHeaderFooter headerRefTypes)
-        let footerParts = rels |> List.filter (fun rel -> rel.Type.EndsWith "/footer") |> List.choose (loadHeaderFooter footerRefTypes)
+        let stories = readStories main (referenceTypes "headerReference") (referenceTypes "footerReference")
 
         // Shapes the body models are text boxes; everything else that is not a
         // picture stays in the text as an opaque object.
@@ -3649,151 +3877,566 @@ let parseFromSource (source: PartSource) : WordDocument option =
         let pageSetup =
             body
             |> Option.bind (Ns.childNs "sectPr")
-            |> parsePageSetup evenAndOddHeaders
+            |> parsePageSetup main.EvenAndOddHeaders
 
-        let comments =
-            source.Text commentsPath |> Option.map Comments.parseComments |> Option.defaultValue [] |> List.map (resolveCommentHyperlinks commentsRels)
         let revisions = Revisions.parseRevisionsWhere docHolds doc
-        let footnotes =
-            source.Text footnotesPath |> Option.map Notes.parseNotes |> Option.defaultValue [] |> List.map (resolveNoteHyperlinks footnotesRels)
-        let endnotes =
-            source.Text endnotesPath |> Option.map Notes.parseNotes |> Option.defaultValue [] |> List.map (resolveNoteHyperlinks endnotesRels)
         let shapes =
             // (A modelled shape has text or a geometry: see Docx.isModelledShape.)
             (if docHolds "txbxContent" || docHolds "prstGeom" || docHolds "custGeom" then Shapes.parseShapes doc else [])
             |> List.map (fun shape ->
                 { shape with Content = shape.Content |> List.map Para |> completeOpaqueObjects doc |> List.choose (function Para para -> Some para | Tbl _ -> None) })
 
-        let keyedImages key baseDir partRelationships =
-            loadImages source baseDir partRelationships
-            |> List.map (fun (relId, dataUrl) -> partImageKey key relId, dataUrl)
-
-        let images =
-            (loadImages source docDir rels
-             @ ((headerParts @ footerParts)
-                |> List.collect (fun (part, path, partRels) ->
-                    match part.RelationshipId with
-                    | Some partId -> keyedImages partId (parentPath path) partRels
-                    | None -> []))
-             @ keyedImages footnotesPartKey (parentPath footnotesPath) footnotesRels
-             @ keyedImages endnotesPartKey (parentPath endnotesPath) endnotesRels
-             @ keyedImages commentsPartKey (parentPath commentsPath) commentsRels)
-            |> Map.ofList
-
-        // ---- what is kept of the package for the next save ----
-        let rootKept =
-            keptRelationships "" (rootRels |> List.filter (fun rel -> not (rel.Type.EndsWith "/officeDocument"))) []
-        let partKept =
-            [ yield "document", keptRelationships docDir rels (opaqueXmlOfBlocks content @ (shapes |> List.collect (fun shape -> opaqueXmlOfBlocks (shape.Content |> List.map Para))))
-              for part, path, partRels in headerParts @ footerParts do
-                  match part.RelationshipId with
-                  | Some partId -> yield partId, keptRelationships (parentPath path) partRels (opaqueXmlOfBlocks part.Blocks)
-                  | None -> ()
-              yield footnotesPartKey, keptRelationships (parentPath footnotesPath) footnotesRels (footnotes |> List.collect (fun note -> opaqueXmlOfBlocks note.Blocks))
-              yield endnotesPartKey, keptRelationships (parentPath endnotesPath) endnotesRels (endnotes |> List.collect (fun note -> opaqueXmlOfBlocks note.Blocks))
-              yield commentsPartKey, keptRelationships (parentPath commentsPath) commentsRels (comments |> List.collect (fun comment -> opaqueXmlOfBlocks comment.Blocks))
-              // The settings part is patched, not regenerated: all its relationships stay (an attached template).
-              yield "settings", keptRelationships (parentPath settingsPath) (source.Text (partRelsPath settingsPath) |> relationshipsOfXml) []
-              // The lists and the styles go back as they were read, or with something added: what they
-              // refer to (the picture of a picture bullet) stays with them.
-              yield "numbering", allRelationships (parentPath numberingPath) (source.Text (partRelsPath numberingPath) |> relationshipsOfXml)
-              yield "styles", allRelationships (parentPath stylesPath) (source.Text (partRelsPath stylesPath) |> relationshipsOfXml) ]
-            |> List.filter (fun (_, kept) -> not kept.IsEmpty)
-        // Parts the writer produces itself are never carried over as they are.
-        let regenerated =
-            [ yield mainPath
-              yield stylesPath
-              yield settingsPath
-              yield numberingPath
-              yield commentsPath
-              yield footnotesPath
-              yield endnotesPath
-              for _, path, _ in headerParts @ footerParts do yield path ]
-            |> Set.ofList
-        let defaults, overrides = contentTypeEntries (source.Text "[Content_Types].xml")
-        // ---- what is written back as it was when the editor did not change it ----
-        let sourceRels =
-            [ yield "document", sourceRelationships docDir rels
-              for part, path, partRels in headerParts @ footerParts do
-                  match part.RelationshipId with
-                  | Some partId -> yield partId, sourceRelationships (parentPath path) partRels
-                  | None -> ()
-              yield footnotesPartKey, sourceRelationships (parentPath footnotesPath) footnotesRels
-              yield endnotesPartKey, sourceRelationships (parentPath endnotesPath) endnotesRels
-              yield commentsPartKey, sourceRelationships (parentPath commentsPath) commentsRels ]
-            |> List.filter (fun (_, kept) -> not kept.IsEmpty)
-        let sourceXml =
-            [ yield "document", Some xml
-              for part, path, _ in headerParts @ footerParts do
-                  match part.RelationshipId with
-                  | Some partId -> yield partId, source.Text path
-                  | None -> ()
-              yield footnotesPartKey, source.Text footnotesPath
-              yield endnotesPartKey, source.Text endnotesPath
-              yield commentsPartKey, source.Text commentsPath
-              yield "numbering", numberingXml ]
-            |> List.choose (fun (key, text) -> text |> Option.map (fun value -> key, value))
-        let keptParts = reachableParts source regenerated (rootKept @ (partKept |> List.collect snd))
-        let keptPaths = keptParts |> List.map (fun part -> part.Path) |> Set.ofList
         let bodyChunks, bodyChunkCount =
             body |> Option.map Docx.bodyContentChunks |> Option.defaultValue ([], 0)
-        let preserved =
-            { SourceXml = Map.ofList sourceXml
-              SourceRelationships = Map.ofList sourceRels
-              SourceParts =
-                reachableParts source regenerated (sourceRels |> List.collect snd)
-                |> List.filter (fun part -> not (Set.contains part.Path keptPaths))
-              BodyContentChunks = bodyChunks
-              BodyChunkCount = bodyChunkCount
-              PartPaths =
-                [ for part, path, _ in headerParts @ footerParts do
-                      match part.RelationshipId with
-                      | Some partId -> yield partId, path
-                      | None -> () ]
-                |> Map.ofList
-              OriginalText =
-                [ yield "[Content_Types].xml"
-                  yield "_rels/.rels"
-                  yield partRelsPath mainPath
-                  for _, path, _ in headerParts @ footerParts do yield partRelsPath path
-                  yield partRelsPath footnotesPath
-                  yield partRelsPath endnotesPath
-                  yield partRelsPath commentsPath
-                  yield partRelsPath settingsPath
-                  yield partRelsPath numberingPath
-                  yield partRelsPath stylesPath ]
-                |> List.distinct
-                |> List.choose (fun path -> source.Text path |> Option.map (fun text -> path, text))
-                |> Map.ofList
-              Parts = keptParts
-              RootRelationships = rootKept
-              DocumentRelationshipId = mainRelationship |> Option.map (fun rel -> rel.Id) |> Option.defaultValue "rId1"
-              PartRelationships = Map.ofList partKept
-              Defaults = defaults
-              Overrides = overrides
-              MainContentType = overrides |> List.tryPick (fun (partName, contentType) -> if normalizePath partName = mainPath then Some contentType else None)
-              StylesXml = stylesXml
-              SettingsXml = settingsXml }
-
-        {
-            Content = content
-            Relationships = rels
-            Styles = styles
-            Theme = theme
-            Headers = headerParts |> List.map (fun (part, _, _) -> part)
-            Footers = footerParts |> List.map (fun (part, _, _) -> part)
-            Properties = props
-            Comments = comments
-            Revisions = revisions
-            Footnotes = footnotes
-            Endnotes = endnotes
-            Shapes = shapes
-            Images = images
-            PageSetup = pageSetup
-            NumberingDefinitions = numberingDefinitions
-            Preserved = preserved
-        }
+        let documentReferenced =
+            opaqueReferences content @ (shapes |> List.collect (fun shape -> opaqueReferences (shape.Content |> List.map Para))) |> Set.ofList
+        assembleDocument main stories content shapes pageSetup revisions bodyChunks bodyChunkCount documentReferenced (allImages main stories)
         |> resolveHyperlinks)
+
+// ---- the main part read front first --------------------------------------------
+// A long document is megabytes of XML: scanning all of it into nodes and
+// making blocks of all of them is most of the time it takes to open one,
+// spent before anything is shown. The body is a sequence of child elements
+// (a paragraph, a table, a content control ...), each of which gives its
+// blocks on its own - apart from two things that span the body, kept across
+// elements here (the count of rendered page breaks, and an empty section-break
+// paragraph that looks at the block after it). A ProgressiveReader finds the
+// body's child elements in the text one after the other and gives the blocks
+// of as many as it is asked for; what it has given at the end is what
+// `parseFromSource` gives. A main part it cannot read that way (no body-level
+// section properties at the end of the body, tracked moves - whose names span
+// the part -, a document type declaration) is read at once.
+
+let private textAt (s: string) (at: int) (value: string) : bool =
+    if at < 0 || at + value.Length > s.Length then false
+    else
+        let mutable same = true
+        let mutable k = 0
+        while same && k < value.Length do
+            if s.[at + k] <> value.[k] then same <- false
+            k <- k + 1
+        same
+
+let private indexOfText (s: string) (value: string) (from: int) : int =
+#if FABLE_COMPILER
+    s.IndexOf(value, from)
+#else
+    s.IndexOf(value, from, System.StringComparison.Ordinal)
+#endif
+
+let private lastIndexOfText (s: string) (value: string) : int =
+#if FABLE_COMPILER
+    s.LastIndexOf(value)
+#else
+    s.LastIndexOf(value, System.StringComparison.Ordinal)
+#endif
+
+/// Index of the '>' that ends the tag starting at `lt` (an attribute value may hold one); -1: none.
+let private tagEndAt (xml: string) (lt: int) : int =
+    let n = xml.Length
+    let mutable i = lt + 1
+    let mutable inQuote = false
+    let mutable quote = '"'
+    let mutable found = -1
+    while found < 0 && i < n do
+        let c = xml.[i]
+        if inQuote then
+            if c = quote then inQuote <- false
+        elif c = '>' then found <- i
+        elif c = '"' || c = '\'' then
+            inQuote <- true
+            quote <- c
+        i <- i + 1
+    found
+
+let private tagNameAt (xml: string) (lt: int) : string =
+    let mutable i = lt + 1
+    let mutable fin = false
+    while not fin && i < xml.Length do
+        let c = xml.[i]
+        if c = ' ' || c = '>' || c = '/' || c = '\n' || c = '\t' || c = '\r' then fin <- true else i <- i + 1
+    xml.Substring(lt + 1, i - lt - 1)
+
+/// The next tag of an element's content from `pos` on that is not a comment,
+/// a CDATA section or a processing instruction: where its '<' is (-1: the
+/// text ends, or is not well formed).
+let private nextTagAt (xml: string) (pos: int) : int =
+    let n = xml.Length
+    let mutable at = pos
+    let mutable found = -2
+    while found = -2 do
+        let lt = if at >= 0 && at < n then xml.IndexOf('<', at) else -1
+        if lt < 0 || lt + 1 >= n then found <- -1
+        elif xml.[lt + 1] = '!' then
+            let terminator = if textAt xml lt "<!--" then "-->" elif textAt xml lt "<![CDATA[" then "]]>" else ""
+            if terminator = "" then found <- -1
+            else
+                let fin = indexOfText xml terminator lt
+                if fin < 0 then found <- -1 else at <- fin + terminator.Length
+        elif xml.[lt + 1] = '?' then
+            let fin = indexOfText xml "?>" lt
+            if fin < 0 then found <- -1 else at <- fin + 2
+        else found <- lt
+    found
+
+/// Index just after the element whose start tag begins at `lt`; -1 when the text is not well formed.
+let private elementEndAt (xml: string) (lt: int) : int =
+    let gt = tagEndAt xml lt
+    if gt < 0 then -1
+    elif xml.[gt - 1] = '/' then gt + 1
+    else
+        let mutable depth = 1
+        let mutable pos = gt + 1
+        while depth > 0 && pos >= 0 do
+            let next = nextTagAt xml pos
+            if next < 0 then pos <- -1
+            elif xml.[next + 1] = '/' then
+                let fin = xml.IndexOf('>', next)
+                if fin < 0 then pos <- -1
+                else
+                    depth <- depth - 1
+                    pos <- fin + 1
+            else
+                let fin = tagEndAt xml next
+                if fin < 0 then pos <- -1
+                else
+                    if xml.[fin - 1] <> '/' then depth <- depth + 1
+                    pos <- fin + 1
+        pos
+
+/// Where the child elements of the body are in the text of the main part,
+/// found one at a time.
+type private BodyCursor = {
+    Xml: string
+    /// The root element with its attributes (the namespaces of the part) and no content.
+    Root: XmlNode
+    /// The root's start tag and its name: what a child element is wrapped in for the platform's parser.
+    RootTag: string
+    RootName: string
+    /// Where the body's end tag starts.
+    BodyClose: int
+    /// Where the next child element is looked for.
+    mutable Pos: int
+    /// How many child elements were found.
+    mutable Count: int
+    mutable AtEnd: bool
+}
+
+/// The cursor at the first child element of the body; None for a main part
+/// that is read at once (a document type declaration, no body, an empty one).
+let private openBodyCursor (xml: string) : BodyCursor option =
+    // The root element: after the declaration and comments (a document type declaration is not read here).
+    let rootAt = nextTagAt xml 0
+    if rootAt < 0 || xml.[rootAt + 1] = '/' then None
+    else
+        let rootEnd = tagEndAt xml rootAt
+        if rootEnd < 0 || xml.[rootEnd - 1] = '/' then None
+        else
+            let rootName = tagNameAt xml rootAt
+            let rootTag = xml.Substring(rootAt, rootEnd + 1 - rootAt)
+            match XmlDsl.tryScan (rootTag.Substring(0, rootTag.Length - 1) + "/>") (System.Collections.Generic.HashSet<string>()) with
+            | None -> None
+            | Some root ->
+                // The first child of the root that is a body.
+                let mutable pos = rootEnd + 1
+                let mutable result = None
+                let mutable searching = true
+                while searching do
+                    let lt = nextTagAt xml pos
+                    if lt < 0 || xml.[lt + 1] = '/' then searching <- false
+                    else
+                        let name = tagNameAt xml lt
+                        if Ns.stripNs name = "body" then
+                            searching <- false
+                            let gt = tagEndAt xml lt
+                            let close = lastIndexOfText xml ("</" + name)
+                            if gt >= 0 && xml.[gt - 1] <> '/' && close > gt then
+                                result <- Some { Xml = xml; Root = root; RootTag = rootTag; RootName = rootName; BodyClose = close; Pos = gt + 1; Count = 0; AtEnd = false }
+                        else
+                            let fin = elementEndAt xml lt
+                            if fin < 0 then searching <- false else pos <- fin
+                result
+
+/// The next child element of the body: (where it starts, where it ends, its
+/// name); None at the end of the body. (Text that is not well formed ends the body.)
+let private nextBodyChild (cursor: BodyCursor) : (int * int * string) option =
+    if cursor.AtEnd then None
+    else
+        let lt = nextTagAt cursor.Xml cursor.Pos
+        if lt < 0 || cursor.Xml.[lt + 1] = '/' then
+            cursor.AtEnd <- true
+            None
+        else
+            let fin = elementEndAt cursor.Xml lt
+            if fin < 0 then
+                failwith "The main part of the document is not well formed"
+            else
+                cursor.Pos <- fin
+                cursor.Count <- cursor.Count + 1
+                Some (lt, fin, tagNameAt cursor.Xml lt)
+
+/// The last child element of the body when that is its section properties:
+/// (where it starts, where it ends).
+let private finalSectionPropertiesAt (cursor: BodyCursor) : (int * int) option =
+    let xml = cursor.Xml
+    let isSpace (c: char) = c = ' ' || c = '\n' || c = '\t' || c = '\r'
+    let mutable fin = cursor.BodyClose
+    while fin > 0 && isSpace xml.[fin - 1] do fin <- fin - 1
+    if fin < 2 || xml.[fin - 1] <> '>' then None
+    else
+        // The '<' of the tag that ends there (an attribute value holds none).
+        let mutable lt = fin - 1
+        while lt >= 0 && xml.[lt] <> '<' do lt <- lt - 1
+        if lt < 0 then None
+        elif xml.[fin - 2] = '/' then
+            if xml.[lt + 1] <> '/' && Ns.stripNs (tagNameAt xml lt) = "sectPr" then Some (lt, fin) else None
+        elif xml.[lt + 1] <> '/' then None
+        else
+            let name = xml.Substring(lt + 2, fin - 1 - (lt + 2)).Trim()
+            if Ns.stripNs name <> "sectPr" then None
+            else
+                // Back to the start tag this end tag closes (section properties may hold
+                // earlier ones of the same name, in a tracked change).
+                let opening = "<" + name
+                let closing = "</" + name
+                let mutable depth = 1
+                let mutable at = lt - 1
+                let mutable start = -1
+                while start < 0 && at >= 0 do
+                    if xml.[at] = '<' then
+                        if textAt xml at closing then depth <- depth + 1
+                        elif textAt xml at opening
+                             && (let after = at + opening.Length
+                                 after < xml.Length && (isSpace xml.[after] || xml.[after] = '>' || xml.[after] = '/')) then
+                            let gt = tagEndAt xml at
+                            if gt >= 0 && xml.[gt - 1] <> '/' then
+                                depth <- depth - 1
+                                if depth = 0 then start <- at
+                    at <- at - 1
+                // (It is a child of the body when the elements before it close up to there:
+                // the reader finds out as it goes, see ProgressiveReader.)
+                if start < 0 then None else Some (start, fin)
+
+let private referenceTagPattern = System.Text.RegularExpressions.Regex("<(?:[A-Za-z_][A-Za-z0-9_.\\-]*:)?(headerReference|footerReference)[\\s/][^>]*>")
+
+/// What the sections' header / footer references say each part is
+/// (relationship id -> type), read off the text of the main part: (headers, footers).
+let private referenceTypesInText (xml: string) : Map<string, string> * Map<string, string> =
+    let headers = ResizeArray<string * string>()
+    let footers = ResizeArray<string * string>()
+    if indexOfText xml "Reference" 0 >= 0 then
+        let names = System.Collections.Generic.HashSet<string>()
+        for m in referenceTagPattern.Matches xml do
+            let tag = m.Value
+            let closed = if tag.EndsWith "/>" then tag else tag.Substring(0, tag.Length - 1) + "/>"
+            match XmlDsl.tryScan closed names with
+            | Some node ->
+                match Xml.attr "r:id" node with
+                | Some id ->
+                    let entry = id, (Docx.attr "type" node |> Option.defaultValue "default")
+                    if m.Groups.[1].Value = "headerReference" then headers.Add entry else footers.Add entry
+                | None -> ()
+            | None -> ()
+    Map.ofSeq headers, Map.ofSeq footers
+
+/// Blocks a ProgressiveReader has read.
+type ProgressiveBatch = {
+    /// The index, among the body's blocks, of the first of them.
+    First: int
+    Blocks: DocumentContent list
+    /// The shapes anchored in them (Shape.AnchorBlock is an index among the body's blocks).
+    Shapes: Shape list
+}
+
+/// A package whose main part is read front first (see above).
+type ProgressiveReader = {
+    /// The document without its body: the styles, the theme, the lists, the
+    /// headers and footers, the notes, the comments, the page setup. (No
+    /// Content, Shapes, Images or Preserved: see Finish.)
+    Front: WordDocument
+    /// Whether the body is read to its end.
+    IsDone: unit -> bool
+    /// Read on until `count` more blocks are there (fewer at the end of the
+    /// body; all the blocks of a main part that is read at once).
+    Read: int -> ProgressiveBatch
+    /// The start of the document: `count` blocks, and on to the end of the
+    /// first section when that is within `reach` characters of the body's
+    /// start (the first pages are laid out on the first section's paper, which
+    /// the paragraph that ends the section says).
+    ReadStart: int -> int -> ProgressiveBatch
+    /// Whether the main part was read at once (it cannot be read front first).
+    AtOnce: bool
+    /// How many of the body's blocks are read.
+    BlockCount: unit -> int
+    /// How far the body is read: 0 .. 1.
+    Progress: unit -> float
+    /// The pictures blocks show: image key -> data URL, as WordDocument.Images
+    /// has them, for the keys the blocks use. (A picture is made a data URL
+    /// when a block that shows it is asked for.)
+    ImagesOf: DocumentContent list -> Map<string, string>
+    /// The document once the body is read (the rest is read first): what
+    /// `parseFromSource` gives - Content, Revisions and Images when the reader
+    /// was opened to keep them, else empty.
+    Finish: unit -> WordDocument
+}
+
+/// Image keys of the pictures blocks show.
+let private imageKeysOfBlocks (blocks: DocumentContent list) : string list =
+    blockParagraphs blocks
+    |> List.collect (fun para ->
+        para.Runs
+        |> List.choose (fun run ->
+            match run.Content with
+            | Image image -> Some image.RelationshipId
+            | _ -> None))
+
+/// A reader of a document that was read at once.
+let private wholeReader (doc: WordDocument) : ProgressiveReader =
+    let mutable given = false
+    { Front = { doc with Content = []; Shapes = []; Images = Map.empty; Revisions = []; Preserved = emptyPackagePreservation }
+      IsDone = fun () -> given
+      Read =
+        fun _ ->
+            if given then { First = doc.Content.Length; Blocks = []; Shapes = [] }
+            else
+                given <- true
+                { First = 0; Blocks = doc.Content; Shapes = doc.Shapes }
+      ReadStart =
+        fun _ _ ->
+            if given then { First = doc.Content.Length; Blocks = []; Shapes = [] }
+            else
+                given <- true
+                { First = 0; Blocks = doc.Content; Shapes = doc.Shapes }
+      AtOnce = true
+      BlockCount = fun () -> if given then doc.Content.Length else 0
+      Progress = fun () -> if given then 1.0 else 0.0
+      ImagesOf = fun _ -> doc.Images
+      Finish =
+        fun () ->
+            given <- true
+            doc }
+
+/// Open a package to read its main part front first. `keepContent`: Finish
+/// gives the whole document as `parseFromSource` does (the blocks, the
+/// revisions and every picture are kept for it); without it the blocks belong
+/// to whoever read them. None: not a document.
+let openProgressiveFromSource (keepContent: bool) (source: PartSource) : ProgressiveReader option =
+    match readMainPart source with
+    | None -> None
+    | Some main ->
+        let xml = main.Xml
+        let cursorAndFinal =
+            // (The names of tracked moves are found by following their range markers through the part.)
+            if indexOfText xml "moveFromRangeStart" 0 >= 0 || indexOfText xml "moveToRangeStart" 0 >= 0 then None
+            else
+                openBodyCursor xml
+                |> Option.bind (fun cursor -> finalSectionPropertiesAt cursor |> Option.map (fun final -> cursor, final))
+        let names = System.Collections.Generic.HashSet<string>()
+        /// One element of the main part as a node.
+        let parseElement (cursor: BodyCursor) (text: string) : XmlNode =
+            match XmlDsl.tryScan text names with
+            | Some node -> node
+            | None ->
+                // (What the scanner does not read: by the platform's parser, in the root's namespaces.)
+                match XmlDsl.parse (cursor.RootTag + text + "</" + cursor.RootName + ">") with
+                | XmlDsl.Element (_, _, children) -> children |> List.tryFind (fun child -> (Xml.name child).IsSome) |> Option.defaultValue XmlDsl.Empty
+                | _ -> XmlDsl.Empty
+        let finalSetup =
+            cursorAndFinal
+            |> Option.bind (fun (cursor, (start, fin)) ->
+                try Some (cursor, start, parsePageSetup main.EvenAndOddHeaders (Some (parseElement cursor (xml.Substring(start, fin - start)))))
+                with _ -> None)
+        match finalSetup with
+        | None -> parseFromSource source |> Option.map wholeReader
+        | Some (cursor, finalStart, finalPageSetup) ->
+            let headerRefTypes, footerRefTypes = referenceTypesInText xml
+            let stories = readStories main headerRefTypes footerRefTypes
+            let hyperlinks = hyperlinkTargets main.Rels
+            let renderedBreakCounter = ref 0
+            // The last block made, not given yet: what it is depends on the block after it.
+            let mutable held : (DocumentContent * Shape list * int * int) option = None
+            // Where the element of the last block given ends in the text.
+            let mutable givenTo = cursor.Pos
+            let bodyStart = cursor.Pos
+            // Where the first section ends, when the body has more than one: the first section
+            // properties that are not the body's own.
+            let firstBreakAt =
+                let at = indexOfText xml "sectPr" cursor.Pos
+                if at >= 0 && at < finalStart then at else -1
+            let mutable made = 0
+            let mutable finished = false
+            // Where the first child of the body that is section properties starts (the page setup is read off it).
+            let mutable firstSectionProperties = -1
+            let blockChunks = ResizeArray<int>()
+            let referenced = System.Collections.Generic.HashSet<string>()
+            let allShapes = ResizeArray<Shape>()
+            let allContent = ResizeArray<DocumentContent>()
+            let revisionTypes = [ "ins"; "del"; "rPrChange"; "moveFrom"; "moveTo" ]
+            let revisions = revisionTypes |> List.map (fun _ -> ResizeArray<Revision>())
+            let mutable finishedDocument : WordDocument option = None
+
+            // ---- pictures, each made a data URL when it is first shown ----
+            let imageCandidates = System.Collections.Generic.Dictionary<string, ResizeArray<string * Relationship>>()
+            let addImages (key: string -> string) (baseDir: string) (partRels: Relationship list) =
+                for rel in partRels do
+                    if rel.Type.Contains "/image" then
+                        let imageKey = key rel.Id
+                        if not (imageCandidates.ContainsKey imageKey) then imageCandidates.[imageKey] <- ResizeArray()
+                        imageCandidates.[imageKey].Add ((baseDir, rel))
+            addImages id main.DocDir main.Rels
+            for part, path, partRels in stories.HeaderParts @ stories.FooterParts do
+                match part.RelationshipId with
+                | Some partId -> addImages (partImageKey partId) (parentPath path) partRels
+                | None -> ()
+            addImages (partImageKey footnotesPartKey) (parentPath main.FootnotesPath) main.FootnotesRels
+            addImages (partImageKey endnotesPartKey) (parentPath main.EndnotesPath) main.EndnotesRels
+            addImages (partImageKey commentsPartKey) (parentPath main.CommentsPath) main.CommentsRels
+            let knownImages = System.Collections.Generic.Dictionary<string, string option>()
+            let imageOf (imageKey: string) : string option =
+                match knownImages.TryGetValue imageKey with
+                | true, known -> known
+                | false, _ ->
+                    let found =
+                        match imageCandidates.TryGetValue imageKey with
+                        | true, candidates ->
+                            // (The last relationship of an id that has a picture, as a map made of all of them keeps.)
+                            let mutable result = None
+                            let mutable i = candidates.Count - 1
+                            while result.IsNone && i >= 0 do
+                                let baseDir, rel = candidates.[i]
+                                result <-
+                                    if rel.TargetMode = Some "External" then Some rel.Target
+                                    else
+                                        main.Source.Bytes (resolveRelationshipTarget baseDir rel.Target)
+                                        |> Option.map (fun bytes -> dataUrlOfBytes (getMimeType rel.Target) bytes)
+                                i <- i - 1
+                            result
+                        | false, _ -> None
+                    knownImages.[imageKey] <- found
+                    found
+            let imagesOf (blocks: DocumentContent list) : Map<string, string> =
+                let mutable images = Map.empty
+                for imageKey in imageKeysOfBlocks blocks do
+                    if not (Map.containsKey imageKey images) then
+                        match imageOf imageKey with
+                        | Some source -> images <- Map.add imageKey source images
+                        | None -> ()
+                images
+
+            /// A block as it is delivered, noted for the end.
+            let deliver (released: ResizeArray<DocumentContent>) (shapesOut: ResizeArray<Shape>) (raw: DocumentContent) (shapes: Shape list) (chunk: int) (chunkEnd: int) =
+                givenTo <- chunkEnd
+                let block =
+                    [ raw ]
+                    |> completeOpaqueObjects cursor.Root
+                    |> dropModelledShapeRuns
+                    |> mapBlockRuns (resolveHyperlinkRun hyperlinks)
+                for id in opaqueReferences block do referenced.Add id |> ignore
+                for shape in shapes do
+                    for id in opaqueReferences (shape.Content |> List.map Para) do referenced.Add id |> ignore
+                blockChunks.Add chunk
+                allShapes.AddRange shapes
+                shapesOut.AddRange shapes
+                for item in block do
+                    released.Add item
+                    if keepContent then allContent.Add item
+
+            let readWhile (more: int -> bool) : ProgressiveBatch =
+                let released = ResizeArray<DocumentContent>()
+                let shapesOut = ResizeArray<Shape>()
+                let first = blockChunks.Count
+                while not finished && more released.Count do
+                    match nextBodyChild cursor with
+                    | None ->
+                        finished <- true
+                        match held with
+                        | Some (raw, shapes, chunk, chunkEnd) ->
+                            held <- None
+                            deliver released shapesOut raw shapes chunk chunkEnd
+                        | None -> ()
+                    | Some (start, fin, name) ->
+                        let chunk = cursor.Count - 1
+                        let localName = Ns.stripNs name
+                        if localName = "sectPr" && firstSectionProperties < 0 then firstSectionProperties <- start
+                        let givesBlocks = localName = "p" || localName = "tbl" || localName = "sdt" || localName = "customXml"
+                        if givesBlocks || keepContent then
+                            let text = xml.Substring(start, fin - start)
+                            let node = parseElement cursor text
+                            if keepContent then
+                                List.iter2 (fun revisionType (found: ResizeArray<Revision>) ->
+                                    if indexOfText text revisionType 0 >= 0 then
+                                        found.AddRange (Ns.descendantsNs revisionType node |> List.choose Revisions.parseRevision)) revisionTypes revisions
+                            if givesBlocks then
+                                let blocks = Docx.contentOfChild renderedBreakCounter node
+                                // (A modelled shape has text or a geometry: see Docx.isModelledShape.)
+                                let blockNodes =
+                                    if indexOfText text "txbxContent" 0 >= 0 || indexOfText text "prstGeom" 0 >= 0 || indexOfText text "custGeom" 0 >= 0 then
+                                        Shapes.blockNodesOfChild node |> List.toArray
+                                    else [||]
+                                blocks
+                                |> List.iteri (fun i raw ->
+                                    let shapes =
+                                        if i < blockNodes.Length then
+                                            Shapes.shapesOfBlock (made + i) blockNodes.[i]
+                                            |> List.map (fun shape ->
+                                                { shape with Content = shape.Content |> List.map Para |> completeOpaqueObjects cursor.Root |> List.choose (function Para para -> Some para | Tbl _ -> None) })
+                                        else []
+                                    match held with
+                                    | Some (before, beforeShapes, beforeChunk, beforeEnd) -> deliver released shapesOut (Docx.normalizedSectionBreak before (Some raw)) beforeShapes beforeChunk beforeEnd
+                                    | None -> ()
+                                    held <- Some (raw, shapes, chunk, fin))
+                                made <- made + blocks.Length
+                { First = first; Blocks = List.ofSeq released; Shapes = List.ofSeq shapesOut }
+            let read (count: int) : ProgressiveBatch = readWhile (fun given -> given < count)
+            let readStart (count: int) (reach: int) : ProgressiveBatch =
+                if firstBreakAt >= 0 && firstBreakAt - bodyStart <= reach then readWhile (fun given -> given < count || givenTo <= firstBreakAt)
+                else read count
+
+            let finish () : WordDocument =
+                match finishedDocument with
+                | Some doc -> doc
+                | None ->
+                    while not finished do read System.Int32.MaxValue |> ignore
+                    // (The first child of the body that is section properties: the last one, but in a
+                    // body that has more than one.)
+                    let pageSetup =
+                        if firstSectionProperties >= 0 && firstSectionProperties <> finalStart then
+                            let fin = elementEndAt xml firstSectionProperties
+                            parsePageSetup main.EvenAndOddHeaders (Some (parseElement cursor (xml.Substring(firstSectionProperties, fin - firstSectionProperties))))
+                        else finalPageSetup
+                    let doc =
+                        assembleDocument main stories (List.ofSeq allContent) (List.ofSeq allShapes) pageSetup
+                            (revisions |> List.collect List.ofSeq) (List.ofSeq blockChunks) cursor.Count (Set.ofSeq referenced)
+                            (if keepContent then allImages main stories else Map.empty)
+                    finishedDocument <- Some doc
+                    doc
+
+            Some
+                { Front =
+                    { Content = []
+                      Relationships = main.Rels
+                      Styles = main.Styles
+                      Theme = main.Theme
+                      Headers = stories.HeaderParts |> List.map (fun (part, _, _) -> part)
+                      Footers = stories.FooterParts |> List.map (fun (part, _, _) -> part)
+                      Properties = main.Properties
+                      Comments = stories.Comments
+                      Revisions = []
+                      Footnotes = stories.Footnotes
+                      Endnotes = stories.Endnotes
+                      Shapes = []
+                      Images = Map.empty
+                      PageSetup = finalPageSetup
+                      NumberingDefinitions = main.NumberingDefinitions
+                      Preserved = emptyPackagePreservation }
+                  IsDone = fun () -> finished
+                  Read = read
+                  ReadStart = readStart
+                  AtOnce = false
+                  BlockCount = fun () -> blockChunks.Count
+                  Progress = fun () -> if finished then 1.0 else float (cursor.Pos) / float (max 1 cursor.BodyClose)
+                  ImagesOf = imagesOf
+                  Finish = finish }
 
 #if FABLE_COMPILER
 [<Fable.Core.Emit("new Uint8Array($0)")>]
@@ -3814,11 +4457,11 @@ let private lookupPart (parts: Map<string, 'T>) (path: string) : 'T option =
         let wanted = path.ToLowerInvariant()
         parts |> Map.tryPick (fun name value -> if name.ToLowerInvariant() = wanted then Some value else None)
 
-// Parse DOCX archive
-let parseDocument (archive: ZipArchive) : Fable.Core.JS.Promise<WordDocument option> =
+/// The parts of an archive, every entry read (inflated) once, up front: the
+/// parser follows relationships from part to part, which a promise per part
+/// would turn inside out.
+let sourceOfArchive (archive: ZipArchive) : Fable.Core.JS.Promise<PartSource> =
     promise {
-        // Every entry is read once, up front: the parser follows relationships
-        // from part to part, which a promise per part would turn inside out.
         let! entries =
             archive.Files
             |> Map.toArray
@@ -3840,6 +4483,13 @@ let parseDocument (archive: ZipArchive) : Fable.Core.JS.Promise<WordDocument opt
                         let text = lookupPart bytes path |> Option.map textOfBytes
                         texts.[path] <- text
                         text }
+        return source
+    }
+
+// Parse DOCX archive
+let parseDocument (archive: ZipArchive) : Fable.Core.JS.Promise<WordDocument option> =
+    promise {
+        let! source = sourceOfArchive archive
         return parseFromSource source
     }
 
@@ -3857,6 +4507,11 @@ let loadBytesNative (data: byte[]) : WordDocument option =
     data
     |> loadArchiveNative
     |> parseDocumentNative
+
+/// A package opened to read its main part front first (see ProgressiveReader).
+let openProgressiveNative (keepContent: bool) (data: byte[]) : ProgressiveReader option =
+    let archive = loadArchiveNative data
+    openProgressiveFromSource keepContent { Text = getFileTextNative archive; Bytes = getFileBytesNative archive }
 
 // Extract all text with functional pipeline
 let extractText (doc: WordDocument) : string =
@@ -4638,8 +5293,7 @@ let editorImageSource (images: Map<string, string>) (img: ImageData) : string =
         |> Map.tryFind img.RelationshipId
         |> Option.defaultValue img.RelationshipId  // Fallback to relId if not found
 
-let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefinition list) (content: DocumentContent list) (images: Map<string, string>) (noteBodies: Map<string * string, string>) : obj array =
-    let styleMap = buildStyleMap styles
+let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinition>) (theme: Theme option) (content: DocumentContent list) (images: Map<string, string>) (noteBodies: Map<string * string, string>) : obj array =
     let _, documentDefaultParagraphProperties = resolveStyle styleMap (Some Styles.defaultStyleId)
     let documentDefaultMissingSpacingToZero =
         documentDefaultParagraphProperties |> Option.exists tableStyleParagraphResetsMissingSpacing
@@ -5351,7 +6005,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                 let nestedTables =
                     cell.NestedTables
                     |> List.choose (fun nested ->
-                        toEditorParagraphsInternal theme styles [Tbl nested] images noteBodies
+                        toEditorParagraphsOfStyleMap styleMap theme [Tbl nested] images noteBodies
                         |> Array.tryHead)
                     |> List.toArray
 
@@ -5478,7 +6132,11 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
     )
     |> List.toArray
 
-let private applyNumberingDefinitions (numberingDefinitions: NumberingDefinition list) (items: obj array) =
+let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefinition list) (content: DocumentContent list) (images: Map<string, string>) (noteBodies: Map<string * string, string>) : obj array =
+    toEditorParagraphsOfStyleMap (buildStyleMap styles) theme content images noteBodies
+
+/// What gives the items of a document the lists its numbering part defines.
+let private numberingApplier (numberingDefinitions: NumberingDefinition list) : obj array -> obj array =
     let isMissing (value: obj) = isNull value || isNull (box value)
     let optionalStringValue (value: obj) =
         if isMissing value then None
@@ -5593,7 +6251,10 @@ let private applyNumberingDefinitions (numberingDefinitions: NumberingDefinition
         else
             applyToParagraph item
 
-    items |> Array.map apply
+    fun (items: obj array) -> items |> Array.map apply
+
+let private applyNumberingDefinitions (numberingDefinitions: NumberingDefinition list) (items: obj array) =
+    numberingApplier numberingDefinitions items
 
 let toEditorParagraphs (content: DocumentContent list) (images: Map<string, string>) : obj array =
     toEditorParagraphsInternal None [] content images Map.empty
@@ -5616,6 +6277,16 @@ let private noteBodyMap (footnotes: Note list) (endnotes: Note list) : Map<strin
 let toEditorParagraphsWithStylesThemeAndNumbering (theme: Theme option) (content: DocumentContent list) (images: Map<string, string>) (styles: StyleDefinition list) (numberingDefinitions: NumberingDefinition list) (footnotes: Note list) (endnotes: Note list) : obj array =
     toEditorParagraphsInternal theme styles content images (noteBodyMap footnotes endnotes)
     |> applyNumberingDefinitions numberingDefinitions
+
+/// What toEditorParagraphsWithStylesThemeAndNumbering makes of blocks, for a
+/// document whose blocks come in steps: the styles, the lists and the notes
+/// are looked at once, and each step gives its blocks and their pictures.
+let editorParagraphConverter (theme: Theme option) (styles: StyleDefinition list) (numberingDefinitions: NumberingDefinition list) (footnotes: Note list) (endnotes: Note list)
+        : DocumentContent list -> Map<string, string> -> obj array =
+    let styleMap = buildStyleMap styles
+    let noteBodies = noteBodyMap footnotes endnotes
+    let applyNumbering = numberingApplier numberingDefinitions
+    fun content images -> toEditorParagraphsOfStyleMap styleMap theme content images noteBodies |> applyNumbering
 
 let toEditorHeaderFooters (items: HeaderFooter list) (images: Map<string, string>) : obj array =
     items

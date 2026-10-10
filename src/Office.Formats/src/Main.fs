@@ -377,6 +377,210 @@ module Processors =
                 ]
         }
 
+    // ---- a package opened front first ---------------------------------------------
+    // forEditorPackage reads the whole main part, makes blocks of all of it and
+    // editor items of all the blocks before it answers: for a long document that
+    // is most of the time until anything is shown. openProgressive answers once
+    // the parts around the body are read and the first blocks are there; the
+    // rest is read in slices of a few milliseconds between which input and
+    // frames come first. The object it gives is the editor package - the same
+    // fields; Paragraphs holds what is read so far - with a Progressive member:
+    //
+    //   Progressive.IsComplete      everything is read: the package is then, field for
+    //                               field, what forEditorPackage gives for the document
+    //   Progressive.AtOnce          the main part could not be read front first and was
+    //                               read whole when the package was opened
+    //   Progressive.Progress()      how far the body is read, 0 .. 1
+    //   Progressive.readMore(ms)    read on for about that long now; true when complete
+    //   Progressive.complete()      read the rest now
+    //   Progressive.start()         read the rest in slices from now on (done when the
+    //                               package is opened, unless { autoStart: false })
+    //   Progressive.subscribe(f)    f(first, count, complete) after items were added to
+    //                               Paragraphs (count of them from index first; the shapes
+    //                               come last, with complete); returns the unsubscribe function
+    //   Progressive.whenComplete()  a promise of the package, complete
+    //
+    // Preserved (what the writer needs of the package) is an object from the
+    // start and is filled in when the body is read.
+
+    [<Emit("performance.now()")>]
+    let private nowMs () : float = jsNative
+    [<Emit("Object.assign($0, $1)")>]
+    let private assignFields (_target: obj) (_source: obj) : unit = jsNative
+    [<Emit("$0.push($1)")>]
+    let private pushItem (_target: obj array) (_item: obj) : unit = jsNative
+    [<Emit("$0($1, $2, $3)")>]
+    let private callListener (_listener: obj) (_first: int) (_count: int) (_complete: bool) : unit = jsNative
+    [<Emit("(typeof document !== 'undefined' && document.hidden === true)")>]
+    let private pageIsHidden () : bool = jsNative
+    // (As the layout's slices are scheduled, see Renderer.afterThisTask: a task of its own after
+    // the current one, so that input events and frames that are waiting come first.)
+    [<Emit("""(function (run) {
+        if (typeof scheduler !== 'undefined' && scheduler && typeof scheduler.postTask === 'function') { scheduler.postTask(run, { priority: 'user-visible' }); return; }
+        if (typeof MessageChannel === 'function') { var channel = new MessageChannel(); channel.port1.onmessage = function () { channel.port1.close(); run(); }; channel.port2.postMessage(0); return; }
+        setTimeout(run, 0);
+    })($0)""")>]
+    let private afterThisTask (_callback: unit -> unit) : unit = jsNative
+    [<Emit("(($0 != null && typeof $0[$1] === 'number') ? $0[$1] : $2)")>]
+    let private numberOption (_options: obj) (_name: string) (_fallback: float) : float = jsNative
+    [<Emit("(($0 != null && typeof $0[$1] === 'boolean') ? $0[$1] : $2)")>]
+    let private booleanOption (_options: obj) (_name: string) (_fallback: bool) : bool = jsNative
+
+    /// Open a DOCX front first (see above). `options` (optional):
+    ///   firstBlocks  how many blocks of the body are read before the package is handed over
+    ///                (default 64: two screens; the first section is read to its end when
+    ///                that is near, so that the first pages are laid out on its paper)
+    ///   autoStart    false: the rest is read only when asked for (start / readMore / complete)
+    ///   sliceMs      how long a slice reads (default 12)
+    let openProgressive (fileData: obj) (options: obj) : Fable.Core.JS.Promise<obj> =
+        promise {
+            let! archive = loadArchive fileData
+            let! source = DocxReader.sourceOfArchive archive
+            match DocxReader.openProgressiveFromSource false source with
+            | None ->
+                return createObj [
+                    "Paragraphs" ==> [||]
+                    "Styles" ==> [||]
+                ]
+            | Some reader ->
+                let front = reader.Front
+                let firstBlocks = max 1 (int (numberOption options "firstBlocks" 64.0))
+                let sliceMs = max 1.0 (numberOption options "sliceMs" 12.0)
+                let convert = DocxReader.editorParagraphConverter front.Theme front.Styles front.NumberingDefinitions front.Footnotes front.Endnotes
+                let paragraphs : obj array = [||]
+                let shapeItems = ResizeArray<obj>()
+                let listeners = ResizeArray<obj>()
+                let waiters = ResizeArray<(obj -> unit) * (exn -> unit)>()
+                let preserved = createObj []
+                let state = createObj [ "IsComplete" ==> false; "AtOnce" ==> reader.AtOnce; "Error" ==> null ]
+                let blocksOf (parts: DocxReader.HeaderFooter list) = parts |> List.collect (fun part -> part.Blocks)
+                let noteBlocks (notes: DocxReader.Note list) = notes |> List.collect (fun note -> note.Blocks)
+                let headerImages = reader.ImagesOf (blocksOf front.Headers @ blocksOf front.Footers)
+                let noteImages = reader.ImagesOf (noteBlocks front.Footnotes @ noteBlocks front.Endnotes)
+                let commentImages = reader.ImagesOf (front.Comments |> List.collect (fun comment -> comment.Blocks))
+                let package =
+                    createObj [
+                        "Paragraphs" ==> paragraphs
+                        "Styles" ==> (front.Styles |> List.map (styleToObj front.Theme) |> List.toArray)
+                        "HeaderParts" ==> DocxReader.toEditorHeaderFootersWithStylesAndTheme front.Theme front.Headers headerImages front.Styles
+                        "FooterParts" ==> DocxReader.toEditorHeaderFootersWithStylesAndTheme front.Theme front.Footers headerImages front.Styles
+                        "PageSetup" ==> DocxReader.toEditorPageSetup front
+                        "Footnotes" ==> DocxReader.toEditorNotes front.Theme noteImages front.Styles front.NumberingDefinitions front.Footnotes
+                        "Endnotes" ==> DocxReader.toEditorNotes front.Theme noteImages front.Styles front.NumberingDefinitions front.Endnotes
+                        "Comments" ==> DocxReader.toEditorComments front.Theme commentImages front.Styles front.NumberingDefinitions front.Comments
+                        "Preserved" ==> preserved
+                        "Theme" ==> (front.Theme |> Option.map (fun theme -> createObj [ "MajorFont" ==> theme.MajorFont; "MinorFont" ==> theme.MinorFont; "Colors" ==> createObj (theme.Colors |> Map.toList |> List.map (fun (key, value) -> key ==> value)) ]))
+                        "Progressive" ==> state
+                    ]
+                let mutable complete = false
+                let mutable failed : exn option = None
+                // Blocks a pass of about a millisecond reads: what the last ones say.
+                let mutable step = 8
+                let add (batch: DocxReader.ProgressiveBatch) =
+                    if not batch.Blocks.IsEmpty then
+                        for item in convert batch.Blocks (reader.ImagesOf batch.Blocks) do pushItem paragraphs item
+                    if not batch.Shapes.IsEmpty then
+                        shapeItems.AddRange (shapeObjectsFor { front with Shapes = batch.Shapes })
+                /// The body is read: the shapes after the blocks, what is kept for the writer, the page setup.
+                let finish () =
+                    let final = reader.Finish ()
+                    let shapes = shapeItems.ToArray()
+                    assignFields preserved (preservedWithItemChunks final paragraphs shapes)
+                    for item in shapes do pushItem paragraphs item
+                    if final.PageSetup <> front.PageSetup then package?PageSetup <- DocxReader.toEditorPageSetup final
+                    complete <- true
+                    state?IsComplete <- true
+                let notify (first: int) =
+                    let count = paragraphs.Length - first
+                    if count > 0 || complete then
+                        for listener in listeners.ToArray() do
+                            if listeners.Contains listener then callListener listener first count complete
+                    if complete && waiters.Count > 0 then
+                        let waiting = waiters.ToArray()
+                        waiters.Clear()
+                        for resolve, _ in waiting do resolve package
+                let fail (error: exn) =
+                    failed <- Some error
+                    state?Error <- error.Message
+                    let waiting = waiters.ToArray()
+                    waiters.Clear()
+                    for _, reject in waiting do reject error
+                /// Read on for about `budget` milliseconds (at least one step).
+                let readMore (budget: float) : bool =
+                    match failed with
+                    | Some error -> raise error
+                    | None -> ()
+                    if not complete then
+                        let first = paragraphs.Length
+                        let started = nowMs ()
+                        let mutable more = true
+                        try
+                            while more do
+                                let passStart = nowMs ()
+                                let batch = reader.Read step
+                                add batch
+                                if reader.IsDone () then
+                                    finish ()
+                                    more <- false
+                                else
+                                    let took = max 0.05 (nowMs () - passStart)
+                                    // (Steps of about a millisecond: the slice ends near its time.)
+                                    step <- max 1 (min 512 (int (float (max 1 batch.Blocks.Length) / took)))
+                                    if nowMs () - started >= budget then more <- false
+                        with error ->
+                            fail error
+                            raise error
+                        notify first
+                    complete
+                let mutable scheduled = false
+                let rec pump () =
+                    if not complete && failed.IsNone && not scheduled then
+                        scheduled <- true
+                        afterThisTask (fun () ->
+                            scheduled <- false
+                            if not complete && failed.IsNone then
+                                // A page that is not shown gets its tasks rarely: longer slices then.
+                                (try readMore (if pageIsHidden () then 200.0 else sliceMs) |> ignore with _ -> ())
+                                pump ())
+                state?Progress <- (fun () -> if complete then 1.0 else reader.Progress ())
+                state?BlockCount <- (fun () -> reader.BlockCount ())
+                state?readMore <- (fun (budget: float) -> readMore (if isNull (box budget) then sliceMs else budget))
+                state?complete <- (fun () -> readMore System.Double.PositiveInfinity |> ignore)
+                state?start <- (fun () -> pump ())
+                state?subscribe <- (fun (listener: obj) ->
+                    listeners.Add listener
+                    fun () -> listeners.Remove listener |> ignore)
+                state?whenComplete <- (fun () ->
+                    Fable.Core.JS.Constructors.Promise.Create(fun resolve reject ->
+                        match failed with
+                        | Some error -> reject error
+                        | None ->
+                            if complete then resolve package
+                            else
+                                waiters.Add ((resolve, reject))
+                                pump ()))
+                // The start of the document.
+                let begin' () =
+                    add (reader.ReadStart firstBlocks 1500000)
+                    if reader.IsDone () then finish ()
+                    elif booleanOption options "autoStart" true then pump ()
+                begin' ()
+                return package
+        }
+
+    /// Whether a package is read to its end (one that forEditorPackage made always is).
+    let isLoadComplete (package: obj) : bool =
+        isNull package || isNull (package?Progressive) || unbox<bool> (package?Progressive?IsComplete)
+
+    /// A promise of the package once it is read to its end (reading on in slices until then).
+    let whenLoadComplete (package: obj) : Fable.Core.JS.Promise<obj> =
+        if isLoadComplete package then Fable.Core.JS.Constructors.Promise.Create(fun resolve _ -> resolve package)
+        else unbox<Fable.Core.JS.Promise<obj>> (package?Progressive?whenComplete ())
+
+    /// Read the rest of a package now.
+    let completeLoad (package: obj) : unit =
+        if not (isLoadComplete package) then package?Progressive?complete () |> ignore
+
 // Public API for Word Writing
 module WordWriter =
     /// Write paragraphs to DOCX (Phase 1: plain text only)
@@ -1400,6 +1604,10 @@ let api () = {|
         write = WordWriter.write
         writeFromEditor = WordWriter.writeFromEditor
         writeFromEditorPackage = WordWriter.writeFromEditorPackage
+        openProgressive = Processors.openProgressive
+        isLoadComplete = Processors.isLoadComplete
+        whenLoadComplete = Processors.whenLoadComplete
+        completeLoad = Processors.completeLoad
         createDocument = WordWriter.createDocument
         addParagraph = WordWriter.addParagraph
         addParagraphWithRuns = WordWriter.addParagraphWithRuns
@@ -1411,6 +1619,7 @@ let api () = {|
     |}
     processors = {|
         forEditorPackage = Processors.forEditorPackage
+        openProgressive = Processors.openProgressive
     |}
     excel = {|
         load = Excel.load
