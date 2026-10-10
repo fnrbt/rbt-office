@@ -647,6 +647,37 @@ checks['chrome-outline-reuse'] = async () => {
     return lines;
 };
 
+// An entry in a cell an array spilled into starts empty; the formula bar's text for it is the anchor's formula, as a ghost.
+checks['spill-edit'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        grid.SetCell(1, 1, '=SEQUENCE(3,2)'); grid.SetCell(0, 0, '=1+1'); await frame();
+        const states = []; const off = grid.OnEditStateChange ? grid.OnEditStateChange((state) => states.push(state)) : null;
+        grid.SelectCell(2, 2); await frame();
+        check('a spilled cell: its value', grid.GetCell(2, 2).value, 4);
+        check('... the formula of the cell is empty, the ghost is the anchor\'s', [grid.GetCurrentCellFormula(), grid.GetGhostFormula()], ['', '=SEQUENCE(3,2)']);
+        await window.realKey('F2'); await frame();
+        const box = host.querySelector('.spreadsheet-edit-input');
+        check('F2: the entry starts empty', [grid.IsEditing ? grid.IsEditing() : true, box ? box.value : null], [true, '']);
+        await window.realKey('Escape'); await frame();
+        check('Escape: the array is as it was', [grid.GetCell(2, 2).value, grid.GetCell(1, 1).formula], [4, '=SEQUENCE(3,2)']);
+        grid.StartEdit(); await frame();
+        check('StartEdit(): empty too', (host.querySelector('.spreadsheet-edit-input') || {}).value, '');
+        grid.CancelEdit(); await frame();
+        grid.SelectCell(1, 1); await frame();
+        check('the anchor: its formula, no ghost', [grid.GetCurrentCellFormula(), grid.GetGhostFormula()], ['=SEQUENCE(3,2)', null]);
+        await window.realKey('F2'); await frame();
+        check('F2 on the anchor: the formula', (host.querySelector('.spreadsheet-edit-input') || {}).value, '=SEQUENCE(3,2)');
+        await window.realKey('Escape'); await frame();
+        grid.SelectCell(0, 0); await frame();
+        check('an ordinary formula cell', [grid.GetCurrentCellFormula(), grid.GetGhostFormula()], ['=1+1', null]);
+        if (typeof off === 'function') off();
+    } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
+    finally { close(); }
+    return lines;
+};
+
 // A list validation whose source is a defined name that is a formula (a dynamic range), or a formula itself.
 checks['validation-list-formula'] = async () => {
     const { lines, check } = makeLog();

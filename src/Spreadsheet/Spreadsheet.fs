@@ -2673,7 +2673,8 @@ type Spreadsheet(container: Element) =
             let currentValue =
                 match seed with
                 | Some text -> text
-                | None -> SpreadsheetInput.editText (getCell addr model)
+                // (A cell an array spilled into holds nothing of its own: the entry starts empty, as in Excel.)
+                | None -> if Map.containsKey addr model.Spill then "" else SpreadsheetInput.editText (getCell addr model)
             editCaretAtEnd <- seed.IsSome
             validationNotice <- None
             (match noticeTimer with Some id -> clearTimeoutId id | None -> ())
@@ -9177,9 +9178,21 @@ type Spreadsheet(container: Element) =
                 (columnToLetter startCol) (startRow + 1)
                 (columnToLetter endCol) (endRow + 1)
 
-    /// The formula or value of the active cell, as it would be typed.
+    /// The formula or value of the active cell, as it would be typed: what
+    /// an entry in it starts with. "" for a cell a dynamic array spilled
+    /// into - the value it shows is not its own (see GetGhostFormula).
     member _.GetCurrentCellFormula(): string =
-        SpreadsheetInput.editText (getCell (activeCellAddress()) model)
+        let active = activeCellAddress()
+        if Map.containsKey active model.Spill then "" else SpreadsheetInput.editText (getCell active model)
+
+    /// For a cell a dynamic array spilled into: the formula of the array's
+    /// anchor cell, which Excel's formula bar shows greyed for such a cell
+    /// (it cannot be edited there). null for any other cell.
+    member _.GetGhostFormula(): string =
+        let active = activeCellAddress()
+        match Map.tryFind active model.Spill with
+        | Some anchor -> SpreadsheetInput.editText (getCell anchor model)
+        | None -> null
 
     /// Set the value of the active cell from a formula bar. The text is read
     /// like any typed entry and checked against the cell's validation; false
