@@ -1674,6 +1674,95 @@ let private hasDrawing (sheet: XlsxSheetOut) =
 let private keptDrawingPart (workbook: XlsxWorkbookOut) (sheet: XlsxSheetOut) : string option =
     sheet.Extras.DrawingPart |> Option.filter (fun path -> workbook.Preserved.Parts |> List.exists (fun (kept, _) -> kept = path))
 
+/// The file's own part of a sheet that is written as it was read (see
+/// SheetExtras.Verbatim): its path and the type of the workbook's
+/// relationship to it.
+let private verbatimPart (workbook: XlsxWorkbookOut) (sheet: XlsxSheetOut) : (string * string) option =
+    if not sheet.Extras.Verbatim then None
+    else sheet.Extras.SourcePart |> Option.filter (fun (path, _) -> workbook.Preserved.Parts |> List.exists (fun (kept, _) -> kept = path))
+
+/// Where the parts of a sheet are written.
+type private SheetPlacement = {
+    /// The file's part of a sheet written as it was read, and its relationship type.
+    Verbatim: (string * string) option
+    SheetPath: string
+    CommentsPath: string
+    /// The VML drawing made for the boxes of the comments.
+    VmlPath: string
+    ThreadsPath: string
+    /// The drawing part made from the sheet's pictures and objects.
+    DrawingPath: string
+}
+
+/// `xl/worksheets/sheet1.xml` -> `xl/worksheets/_rels/sheet1.xml.rels`.
+let private relsPathOf (path: string) =
+    match path.LastIndexOf '/' with
+    | -1 -> "_rels/" + path + ".rels"
+    | cut -> path.Substring(0, cut) + "/_rels/" + path.Substring(cut + 1) + ".rels"
+
+/// The parts of every sheet, in sheet order: the usual names by the sheet's
+/// number, unless a kept part (or the part of a sheet written as it was
+/// read) has that name - then the next number no part has.
+let private sheetPlacements (workbook: XlsxWorkbookOut) (keptPaths: Set<string>) : SheetPlacement list =
+    let taken = System.Collections.Generic.HashSet<string>(keptPaths)
+    let verbatim = workbook.Sheets |> List.map (verbatimPart workbook)
+    for part in verbatim do
+        match part with
+        | Some (path, _) -> taken.Add path |> ignore
+        | None -> ()
+    // A worksheet of the file is written under the name its part had.
+    let own =
+        List.zip workbook.Sheets verbatim
+        |> List.map (fun (sheet, verbatim) ->
+            match verbatim, sheet.Extras.SourcePart with
+            | None, Some (path, relType) when relType.EndsWith "/worksheet" && path.EndsWith ".xml" && taken.Add path -> Some path
+            | _ -> None)
+    let free (name: int -> string) (number: int) =
+        let mutable at = number
+        while taken.Contains (name at) do at <- at + 1
+        taken.Add (name at) |> ignore
+        name at
+    List.zip own verbatim
+    |> List.mapi (fun i (own, verbatim) ->
+        let number = i + 1
+        match verbatim with
+        | Some (path, _) -> { Verbatim = verbatim; SheetPath = path; CommentsPath = ""; VmlPath = ""; ThreadsPath = ""; DrawingPath = "" }
+        | None ->
+            { Verbatim = None
+              SheetPath = (match own with Some path -> path | None -> free (sprintf "xl/worksheets/sheet%d.xml") number)
+              CommentsPath = free (sprintf "xl/comments%d.xml") number
+              VmlPath =
+                // (The boxes of new comments: not under the name of a kept VML drawing.)
+                (let usual = sprintf "xl/drawings/vmlDrawing%d.vml" number
+                 if taken.Contains usual then free (sprintf "xl/drawings/commentsDrawing%d.vml") number
+                 else (taken.Add usual |> ignore; usual))
+              ThreadsPath = free (sprintf "xl/threadedComments/threadedComment%d.xml") number
+              DrawingPath = free (sprintf "xl/drawings/sheetDrawing%d.xml") number })
+
+let private tabSelectedPattern = System.Text.RegularExpressions.Regex("\\s+tabSelected=\"([^\"]*)\"")
+
+/// The XML of a sheet part with its first view saying whether the sheet is
+/// the one on display (`tabSelected`): two sheets that say so are a group to
+/// Excel. The text itself when it already says the right thing.
+let private withTabSelected (active: bool) (xml: string) : string =
+    let rec viewAt (from: int) =
+        let at = xml.IndexOf ("<sheetView", from, System.StringComparison.Ordinal)
+        if at < 0 || at + 10 >= xml.Length then -1
+        elif xml.[at + 10] = 's' then viewAt (at + 10)
+        else at
+    let at = viewAt 0
+    let tagEnd = if at < 0 then -1 else xml.IndexOf ('>', at)
+    if tagEnd < 0 then xml
+    else
+        let tag = xml.Substring(at, tagEnd - at + 1)
+        let found = tabSelectedPattern.Match tag
+        let selected = found.Success && (found.Groups.[1].Value = "1" || found.Groups.[1].Value = "true")
+        if selected = active then xml
+        else
+            let bare = if found.Success then tag.Remove(found.Index, found.Length) else tag
+            let tag = if active then "<sheetView tabSelected=\"1\"" + bare.Substring 10 else bare
+            xml.Substring(0, at) + tag + xml.Substring(tagEnd + 1)
+
 let private tableIdPattern = System.Text.RegularExpressions.Regex("<table\\b[^>]*?\\sid=\"(\\d+)\"")
 let private tableNumberPattern = System.Text.RegularExpressions.Regex("table(\\d+)\\.xml$")
 
@@ -1684,9 +1773,9 @@ let private tableNumberPattern = System.Text.RegularExpressions.Regex("table(\\d
 let private tablePlacement (workbook: XlsxWorkbookOut) : (string * int option) list list =
     let parts = System.Collections.Generic.Dictionary<string, byte[]>()
     for path, data in workbook.Preserved.Parts do parts.[path] <- data
+    let taken = System.Collections.Generic.HashSet<int>()
     let keptOf (sheet: XlsxSheetOut) (table: XlsxTableOut) =
         sheet.Extras.TableParts |> List.tryPick (fun (name, path) -> if name = table.Name && parts.ContainsKey path then Some path else None)
-    let taken = System.Collections.Generic.HashSet<int>()
     for sheet in workbook.Sheets do
         for table in sheet.Tables do
             match keptOf sheet table with
@@ -1699,7 +1788,8 @@ let private tablePlacement (workbook: XlsxWorkbookOut) : (string * int option) l
     let mutable next = 1
     workbook.Sheets
     |> List.map (fun sheet ->
-        sheet.Tables
+        // (The tables of a sheet written as it was read are parts of the file.)
+        (if (verbatimPart workbook sheet).IsSome then [] else sheet.Tables)
         |> List.map (fun table ->
             match keptOf sheet table with
             | Some path -> path, None
@@ -2004,7 +2094,8 @@ let private tableXml id (table: XlsxTableOut) =
     sprintf "%s\n<table xmlns=\"%s\" id=\"%d\" %s %s ref=\"%s\" headerRowCount=\"%d\" totalsRowCount=\"%d\">%s<tableColumns count=\"%d\">%s</tableColumns>%s</table>"
         declaration Namespaces.spreadsheet id (attr "name" table.Name) (attr "displayName" table.Name) refText table.HeaderRowCount table.TotalsRowCount autoFilter (table.EndCol - table.StartCol + 1) cols style
 
-let private sheetRelsXml sheetIndex (sheet: XlsxSheetOut) (tableParts: (string * int option) list) (commentsVmlPath: string) (drawingPath: string option) =
+let private sheetRelsXml sheetIndex (sheet: XlsxSheetOut) (tableParts: (string * int option) list) (placement: SheetPlacement) (drawingPath: string option) =
+    let commentsVmlPath = placement.VmlPath
     let rels = [
         for i, h in sheet.Hyperlinks |> List.mapi (fun i h -> i + 1, h) do
             if not h.IsInternal then
@@ -2012,14 +2103,14 @@ let private sheetRelsXml sheetIndex (sheet: XlsxSheetOut) (tableParts: (string *
         for i, (path, _) in tableParts |> List.mapi (fun i part -> i + 1, part) do
             yield sprintf "<Relationship Id=\"rIdTable%d\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/table\" Target=\"/%s\"/>" i path
         if sheet.Cells |> List.exists (fun c -> c.Comment.IsSome) then
-            yield sprintf "<Relationship Id=\"rIdComments%d\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments\" Target=\"../comments%d.xml\"/>" sheetIndex sheetIndex
+            yield sprintf "<Relationship Id=\"rIdComments%d\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments\" Target=\"/%s\"/>" sheetIndex placement.CommentsPath
             if keptLegacyDrawing sheet = "" then
                 yield sprintf "<Relationship Id=\"rIdCommentsVml%d\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing\" Target=\"/%s\"/>" sheetIndex commentsVmlPath
         match drawingPath with
         | Some path -> yield sprintf "<Relationship Id=\"rIdDrawing%d\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing\" Target=\"/%s\"/>" sheetIndex path
         | None -> ()
         if not sheet.Extras.ThreadedComments.IsEmpty then
-            yield sprintf "<Relationship Id=\"rIdThreaded%d\" Type=\"http://schemas.microsoft.com/office/2017/10/relationships/threadedComment\" Target=\"/xl/threadedComments/threadedComment%d.xml\"/>" sheetIndex sheetIndex
+            yield sprintf "<Relationship Id=\"rIdThreaded%d\" Type=\"http://schemas.microsoft.com/office/2017/10/relationships/threadedComment\" Target=\"/%s\"/>" sheetIndex placement.ThreadsPath
         // Pivot tables, slicers and timelines of the file, under the ids the
         // sheet's kept extensions name them by.
         for relId, relType, target, isExternal in sheet.Extras.KeptRelationships do
@@ -2134,10 +2225,12 @@ let private workbookXmlFull (workbook: XlsxWorkbookOut) =
         declaration Namespaces.spreadsheet Namespaces.relationships (max 0 workbook.ActiveSheetIndex) sheets
         kept.ExternalReferencesXml definedNames calcPr kept.PivotCachesXml kept.WorkbookExtLstXml
 
-let private workbookRelsXmlFull (workbook: XlsxWorkbookOut) hasVba (themePath: string option) (hasPersons: bool) (ownMetadata: bool) =
+let private workbookRelsXmlFull (workbook: XlsxWorkbookOut) (placements: SheetPlacement list) hasVba (themePath: string option) (hasPersons: bool) (ownMetadata: bool) =
     let sheetRels =
-        sheetRelationshipIds workbook
-        |> List.mapi (fun i id -> sprintf "<Relationship Id=\"%s\" Type=\"%s\" Target=\"worksheets/sheet%d.xml\"/>" id RelationshipTypes.worksheet (i + 1))
+        List.zip (sheetRelationshipIds workbook) placements
+        |> List.map (fun (id, placement) ->
+            let relType = match placement.Verbatim with Some (_, relType) when relType <> "" -> relType | _ -> RelationshipTypes.worksheet
+            sprintf "<Relationship Id=\"%s\" %s Target=\"/%s\"/>" id (attr "Type" relType) (escaped placement.SheetPath))
     let baseRels = [
         yield! sheetRels
         yield sprintf "<Relationship Id=\"rIdStyles\" Type=\"%s\" Target=\"styles.xml\"/>" RelationshipTypes.styles
@@ -2156,14 +2249,27 @@ let private workbookRelsXmlFull (workbook: XlsxWorkbookOut) hasVba (themePath: s
     ]
     sprintf "%s\n<Relationships xmlns=\"%s\">%s</Relationships>" declaration Namespaces.relationshipsPackage (String.concat "" baseRels)
 
-let private contentTypesXmlFull (workbook: XlsxWorkbookOut) (keptParts: (string * byte[]) list) (ownMetadata: bool) =
+let private contentTypesXmlFull (workbook: XlsxWorkbookOut) (placements: SheetPlacement list) (keptParts: (string * byte[]) list) (ownMetadata: bool) =
     let hasVba = workbook.VbaProjectSource |> Option.exists hasText
     let workbookType =
         if hasVba then "application/vnd.ms-excel.sheet.macroEnabled.main+xml"
         else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"
+    let worksheetType = "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"
     let sheetOverrides =
-        workbook.Sheets
-        |> List.mapi (fun i _ -> sprintf "<Override PartName=\"/xl/worksheets/sheet%d.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>" (i + 1))
+        placements
+        |> List.map (fun placement ->
+            // A sheet written as it was read is what the file said it is.
+            let contentType =
+                match placement.Verbatim with
+                | Some (path, relType) ->
+                    workbook.Preserved.Overrides
+                    |> List.tryPick (fun (name, contentType) -> if name.TrimStart('/').Equals(path, System.StringComparison.OrdinalIgnoreCase) then Some contentType else None)
+                    |> Option.defaultValue (
+                        if relType.EndsWith "/chartsheet" then "application/vnd.openxmlformats-officedocument.spreadsheetml.chartsheet+xml"
+                        elif relType.EndsWith "/dialogsheet" then "application/vnd.openxmlformats-officedocument.spreadsheetml.dialogsheet+xml"
+                        else worksheetType)
+                | None -> worksheetType
+            sprintf "<Override %s %s/>" (attr "PartName" ("/" + placement.SheetPath)) (attr "ContentType" contentType))
         |> String.concat ""
     let mutable tableId = 1
     let tableOverrides =
@@ -2171,14 +2277,16 @@ let private contentTypesXmlFull (workbook: XlsxWorkbookOut) (keptParts: (string 
         |> List.collect (List.choose (fun (path, id) ->
             id |> Option.map (fun _ -> sprintf "<Override PartName=\"/%s\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml\"/>" path)))
         |> String.concat ""
+    let written = List.zip workbook.Sheets placements |> List.filter (fun (_, placement) -> placement.Verbatim.IsNone)
     let comments =
-        workbook.Sheets
-        |> List.mapi (fun i s ->
+        written
+        |> List.map (fun (s, placement) ->
             if s.Cells |> List.exists (fun c -> c.Comment.IsSome) then
-                sprintf "<Override PartName=\"/xl/comments%d.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml\"/>" (i + 1)
+                sprintf "<Override PartName=\"/%s\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml\"/>" placement.CommentsPath
             else "")
         |> String.concat ""
     // Pictures, the kept parts (charts, theme, embedded data) and threaded comments.
+    let verbatimPaths = placements |> List.choose (fun placement -> placement.Verbatim |> Option.map (fun (path, _) -> ("/" + path).ToLowerInvariant())) |> Set.ofList
     let keptPaths = keptParts |> List.map (fun (path, _) -> ("/" + path).ToLowerInvariant()) |> Set.ofList
     let ownDefaults =
         [ yield "rels", "application/vnd.openxmlformats-package.relationships+xml"
@@ -2195,17 +2303,17 @@ let private contentTypesXmlFull (workbook: XlsxWorkbookOut) (keptParts: (string 
         |> List.map (fun (extension, contentType) -> sprintf "<Default %s %s/>" (attr "Extension" extension) (attr "ContentType" contentType))
         |> String.concat ""
     let extraOverrides =
-        [ for i, sheet in workbook.Sheets |> List.mapi (fun i sheet -> i + 1, sheet) do
+        [ for sheet, placement in written do
               if hasDrawing sheet && (keptDrawingPart workbook sheet).IsNone then
-                  yield sprintf "<Override PartName=\"/xl/drawings/sheetDrawing%d.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.drawing+xml\"/>" i
+                  yield sprintf "<Override PartName=\"/%s\" ContentType=\"application/vnd.openxmlformats-officedocument.drawing+xml\"/>" placement.DrawingPath
               if not sheet.Extras.ThreadedComments.IsEmpty then
-                  yield sprintf "<Override PartName=\"/xl/threadedComments/threadedComment%d.xml\" ContentType=\"application/vnd.ms-excel.threadedcomments+xml\"/>" i
+                  yield sprintf "<Override PartName=\"/%s\" ContentType=\"application/vnd.ms-excel.threadedcomments+xml\"/>" placement.ThreadsPath
           if ownMetadata then
               yield "<Override PartName=\"/xl/metadata.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheetMetadata+xml\"/>"
           if workbook.Sheets |> List.exists (fun sheet -> not sheet.Extras.ThreadedComments.IsEmpty) then
               yield "<Override PartName=\"/xl/persons/person.xml\" ContentType=\"application/vnd.ms-excel.person+xml\"/>"
           for name, contentType in workbook.Preserved.Overrides do
-              if Set.contains (name.ToLowerInvariant()) keptPaths then
+              if Set.contains (name.ToLowerInvariant()) keptPaths && not (Set.contains (name.ToLowerInvariant()) verbatimPaths) then
                   yield sprintf "<Override %s %s/>" (attr "PartName" name) (attr "ContentType" contentType) ]
         |> String.concat ""
     declaration + "\n"
@@ -2242,6 +2350,9 @@ let private reachableKeptParts (workbook: XlsxWorkbookOut) (themePath: string op
     let want (target: string) (isExternal: bool) =
         if not isExternal && not (target.StartsWith "#") then pending.Enqueue (ZipInterop.normalizePath target)
     for sheet in workbook.Sheets do
+        match verbatimPart workbook sheet with
+        | Some (path, _) -> want path false
+        | None -> ()
         for _, _, target, isExternal in sheet.Extras.KeptRelationships do want target isExternal
         match keptDrawingPart workbook sheet with
         | Some path -> want path false
@@ -2418,14 +2529,15 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
             | None ->
                 textFiles.Add { Path = "xl/metadata.xml"; Content = dynamicArrayMetadataXml }
                 1
-    textFiles.Add { Path = "[Content_Types].xml"; Content = contentTypesXmlFull workbook keptParts ownMetadata }
+    let keptPartPaths = keptParts |> List.map fst |> Set.ofList
+    let placements = sheetPlacements workbook keptPartPaths
+    textFiles.Add { Path = "[Content_Types].xml"; Content = contentTypesXmlFull workbook placements keptParts ownMetadata }
     textFiles.Add { Path = "_rels/.rels"; Content = rootRelsXmlFull workbook }
     textFiles.Add { Path = "xl/workbook.xml"; Content = workbookXmlFull workbook }
     let persons = personsOf workbook
     let hasThreads = workbook.Sheets |> List.exists (fun sheet -> not sheet.Extras.ThreadedComments.IsEmpty)
-    textFiles.Add { Path = "xl/_rels/workbook.xml.rels"; Content = workbookRelsXmlFull workbook hasVba themePath hasThreads ownMetadata }
+    textFiles.Add { Path = "xl/_rels/workbook.xml.rels"; Content = workbookRelsXmlFull workbook placements hasVba themePath hasThreads ownMetadata }
     if hasThreads then textFiles.Add { Path = "xl/persons/person.xml"; Content = personsXml persons }
-    let keptPartPaths = keptParts |> List.map fst |> Set.ofList
     let mediaFiles = ResizeArray<string * byte[]>()
     let mutable nextMedia = 1
     // The same picture several times in the workbook is one media part.
@@ -2442,8 +2554,17 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
     textFiles.Add { Path = "xl/styles.xml"; Content = stylesXml styles }
     textFiles.Add { Path = "xl/sharedStrings.xml"; Content = sharedStringsXmlPreserved sharedItems }
     let placement = tablePlacement workbook
-    workbook.Sheets
-    |> List.iteri (fun i sheet ->
+    List.zip workbook.Sheets placements
+    |> List.iteri (fun i (sheet, placed) ->
+      // (A sheet written as it was read is one of the kept parts; only whether it is the one on display may differ.)
+      if placed.Verbatim.IsSome then
+        match keptParts |> List.tryFind (fun (path, _) -> path = placed.SheetPath) with
+        | Some (_, data) ->
+            let xml = System.Text.Encoding.UTF8.GetString data
+            let shown = withTabSelected (i = workbook.ActiveSheetIndex) xml
+            if not (obj.ReferenceEquals (shown, xml)) then textFiles.Add { Path = placed.SheetPath; Content = shown }
+        | None -> ()
+      else
         let sheetIndex = i + 1
         let tableParts = placement.[i]
         // The sheet's drawing: the file's part as it is, or one made from the pictures and objects.
@@ -2451,23 +2572,20 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
         let drawingPath =
             match keptDrawing with
             | Some path -> Some path
-            | None -> if hasDrawing sheet then Some (sprintf "xl/drawings/sheetDrawing%d.xml" sheetIndex) else None
-        textFiles.Add { Path = sprintf "xl/worksheets/sheet%d.xml" sheetIndex; Content = worksheetXml styles sharedIndex dynamicCm sheetIndex (i = workbook.ActiveSheetIndex) drawingPath.IsSome sheet }
-        // (The boxes of new comments: not under the name of a kept VML drawing.)
-        let commentsVmlPath =
-            let usual = sprintf "xl/drawings/vmlDrawing%d.vml" sheetIndex
-            if Set.contains usual keptPartPaths then sprintf "xl/drawings/commentsDrawing%d.vml" sheetIndex else usual
-        match sheetRelsXml sheetIndex sheet tableParts commentsVmlPath drawingPath with
-        | Some rels -> textFiles.Add { Path = sprintf "xl/worksheets/_rels/sheet%d.xml.rels" sheetIndex; Content = rels }
+            | None -> if hasDrawing sheet then Some placed.DrawingPath else None
+        textFiles.Add { Path = placed.SheetPath; Content = worksheetXml styles sharedIndex dynamicCm sheetIndex (i = workbook.ActiveSheetIndex) drawingPath.IsSome sheet }
+        let commentsVmlPath = placed.VmlPath
+        match sheetRelsXml sheetIndex sheet tableParts placed drawingPath with
+        | Some rels -> textFiles.Add { Path = relsPathOf placed.SheetPath; Content = rels }
         | None -> ()
         match commentsXml sheet.Cells with
-        | Some xml -> textFiles.Add { Path = sprintf "xl/comments%d.xml" sheetIndex; Content = xml }
+        | Some xml -> textFiles.Add { Path = placed.CommentsPath; Content = xml }
         | None -> ()
         match (if keptLegacyDrawing sheet = "" then vmlCommentsXml sheetIndex sheet.Cells else None) with
         | Some xml -> textFiles.Add { Path = commentsVmlPath; Content = xml }
         | None -> ()
         match threadedCommentsXml persons sheetIndex sheet with
-        | Some xml -> textFiles.Add { Path = sprintf "xl/threadedComments/threadedComment%d.xml" sheetIndex; Content = xml }
+        | Some xml -> textFiles.Add { Path = placed.ThreadsPath; Content = xml }
         | None -> ()
         if hasDrawing sheet && keptDrawing.IsNone then
             // One media part per picture (not under the name of a kept part), and
@@ -2492,10 +2610,10 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
                       yield sprintf "<Relationship Id=\"%s\" Type=\"%s\" Target=\"/%s\"/>" relId RelationshipTypes.image path
                   for relId, relType, target, isExternal in sheet.Extras.DrawingRelationships do
                       yield sprintf "<Relationship %s %s %s%s/>" (attr "Id" relId) (attr "Type" relType) (attr "Target" target) (if isExternal then " TargetMode=\"External\"" else "") ]
-            textFiles.Add { Path = sprintf "xl/drawings/sheetDrawing%d.xml" sheetIndex; Content = drawingXml sheet (imageRels |> List.map fst) }
+            textFiles.Add { Path = placed.DrawingPath; Content = drawingXml sheet (imageRels |> List.map fst) }
             if not relsBody.IsEmpty then
                 textFiles.Add
-                    { Path = sprintf "xl/drawings/_rels/sheetDrawing%d.xml.rels" sheetIndex
+                    { Path = relsPathOf placed.DrawingPath
                       Content = sprintf "%s\n<Relationships xmlns=\"%s\">%s</Relationships>" declaration Namespaces.relationshipsPackage (String.concat "" relsBody) }
         for table, (path, id) in List.zip sheet.Tables tableParts do
             match id with
@@ -2823,7 +2941,7 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
                             match column.Style with
                             | Some index when index > 0 && index < workbook.Styles.Length -> Some (column.Index - 1, column.MaxIndex - 1, workbook.Styles.[index])
                             | _ -> None) } })
-      ActiveSheetIndex = 0
+      ActiveSheetIndex = max 0 (min (workbook.Sheets.Length - 1) workbook.Preserved.ActiveTab)
       DefinedNames = workbook.NamedRanges |> List.map (fun n -> { Name = n.Name; RefersTo = n.RefersTo; LocalSheetIndex = n.Scope |> Option.bind (fun s -> match System.Int32.TryParse s with true, v -> Some v | _ -> None); Comment = n.Comment; Hidden = n.Hidden })
       VbaProjectSource = None
       Dxfs = workbook.Dxfs |> Array.toList

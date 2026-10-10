@@ -828,12 +828,22 @@ type SheetExtras = {
     /// true for a dynamic array (the cell gets the `cm` of the XLDAPR entry of
     /// xl/metadata.xml), false for a legacy Ctrl+Shift+Enter array formula.
     ArrayFormulas: (string * string * bool) list
+    /// The part the sheet was read from and the type of the workbook's
+    /// relationship to it (a worksheet, a chart sheet, a dialog sheet).
+    SourcePart: (string * string) option
+    /// The sheet is written as that part, byte for byte, with everything the
+    /// part's own relationships lead to (the part's bytes are one of the
+    /// workbook's `Preserved.Parts`). The reader says so for the sheets the
+    /// editor has no model of (chart sheets, dialog sheets); a writer's caller
+    /// says so for a worksheet nothing was changed in.
+    Verbatim: bool
 }
 
 let emptySheetExtras =
     { Images = []; Objects = []; ThreadedComments = []; DrawingRelationships = []; Format = None; Columns = []; ColumnStyles = []
       SheetId = None; KeptRelationships = []; KeptExtensions = []; KeptElements = []; DrawingPart = None; TableParts = []; PivotLocations = []; DataTables = []
-      KeptCellExtensions = []; PrinterSettingsRelId = None; RowAxis = []; ColumnAxis = []; AutoFilter = None; ArrayFormulas = [] }
+      KeptCellExtensions = []; PrinterSettingsRelId = None; RowAxis = []; ColumnAxis = []; AutoFilter = None; ArrayFormulas = []
+      SourcePart = None; Verbatim = false }
 
 /// A named cell style (cellStyles / cellStyleXfs of styles.xml), with the
 /// font, fill, border and number format its xf refers to given as their XML so
@@ -894,12 +904,15 @@ type WorkbookPreservation = {
     /// Iterative calculation of circular references (`<calcPr iterate="1">`):
     /// most iterations and the largest change that ends them. None: off.
     CalcIteration: (int * float) option
+    /// The sheet that was on display when the file was saved (`<workbookView
+    /// activeTab>`, an index into the workbook's sheets).
+    ActiveTab: int
 }
 
 let emptyWorkbookPreservation =
     { Parts = []; Defaults = []; Overrides = []; ThemePath = None; NamedStyles = []; Persons = []; CellXfNamedStyles = [||]
       WorkbookRelationships = []; ExternalReferencesXml = ""; PivotCachesXml = ""; WorkbookExtLstXml = ""
-      RootRelationships = []; CalcChain = None; PivotCacheSources = []; CalcIteration = None }
+      RootRelationships = []; CalcChain = None; PivotCacheSources = []; CalcIteration = None; ActiveTab = 0 }
 
 type Worksheet = {
     Name: string
@@ -3971,6 +3984,14 @@ module Xlsx =
         |> Option.map isTrueText
         |> Option.defaultValue false
 
+    /// `<workbookView activeTab>`: the sheet on display.
+    let activeTab (wbNode: XmlNode) : int =
+        sElem "bookViews" wbNode
+        |> Option.bind (sElem "workbookView")
+        |> Option.bind (Xml.attr "activeTab")
+        |> Option.bind tryParseInt
+        |> Option.defaultValue 0
+
     let sheets (wbNode: XmlNode) : SheetInfo list =
         let sheetsElem = sElem "sheets" wbNode
 
@@ -4678,6 +4699,7 @@ type private WorkbookHeader = {
     PivotCachesXml: string
     ExtLstXml: string
     CalcIteration: (int * float) option
+    ActiveTab: int
 }
 
 /// Relationship types of the workbook part whose targets are kept as they
@@ -4690,6 +4712,12 @@ let private isKeptWorkbookRelType (relType: string) =
     not ([ "/worksheet"; "/chartsheet"; "/dialogsheet"; "/macrosheet"; "/xlMacrosheet"; "/xlIntlMacrosheet"; "/styles"; "/sharedStrings"; "/theme"
            "/calcChain"; "/person"; "/vbaProject"; "/officeDocument" ]
          |> List.exists (fun suffix -> relType.EndsWith suffix))
+
+/// Sheets the editor has no model of: a chart sheet, a dialog sheet. They are
+/// shown as an empty sheet (a chart sheet with its chart on it) and written
+/// back as the parts they were read from.
+let private isForeignSheetRelType (relType: string) =
+    relType.EndsWith "/chartsheet" || relType.EndsWith "/dialogsheet"
 
 /// Relationship types of a sheet part whose targets are kept as they are:
 /// every one but those of what the model holds (the drawing, tables,
@@ -4779,6 +4807,7 @@ let private readWorkbookHeader (source: PartSource) (workbookPath: string) : Wor
             PivotCachesXml = keptChild "pivotCaches"
             ExtLstXml = extLst
             CalcIteration = Xlsx.calcIteration wb
+            ActiveTab = Xlsx.activeTab wb
             WorkbookPath = workbookPath
             Rels = rels
             SheetInfos = Xlsx.sheets wb
@@ -5306,6 +5335,8 @@ let private buildWorkbook (scanRows: bool) (source: PartSource) (header: Workboo
                     Map.tryFind sheetIdx header.PrintNames
                     |> Option.defaultValue emptyPrintNames
                 let sheetRels = relationshipsOf source sheetPath
+                let sheetRelType =
+                    Office.relById info.RelationshipId header.Rels |> Option.map (fun rel -> rel.Type) |> Option.defaultValue ""
                 let partsOfType (suffix: string) =
                     sheetRels
                     |> List.filter (fun r -> r.Type.EndsWith suffix && isInternal r)
@@ -5394,7 +5425,9 @@ let private buildWorkbook (scanRows: bool) (source: PartSource) (header: Workboo
                         KeptCellExtensions = cellExtensions
                         AutoFilter = (try sheetAutoFilterOf xml with _ -> None)
                         PrinterSettingsRelId = pageSetupRelId xml |> Option.filter (fun id -> Set.contains id keptIds)
-                        PivotLocations = pivotLocations }
+                        PivotLocations = pivotLocations
+                        SourcePart = Some (sheetPath, sheetRelType)
+                        Verbatim = isForeignSheetRelType sheetRelType && (source.Bytes sheetPath).IsSome }
                 // A fresh context per sheet: shared-formula groups are sheet-local.
                 let ctx = Xlsx.newSheetContext (Some styles) header.Date1904
                 ctx.DynamicCm <- dynamicCm
@@ -5437,6 +5470,8 @@ let private buildWorkbook (scanRows: bool) (source: PartSource) (header: Workboo
          |> List.collect (fun sheet -> sheet.Extras.DrawingRelationships)
          |> List.choose (fun (_, _, target, isExternal) -> if isExternal || target.StartsWith "#" then None else Some (ZipInterop.normalizePath target)))
         @ (if source.Exists header.ThemePath then [ header.ThemePath ] else [])
+        // A sheet that is written as the part it was read from.
+        @ (worksheets |> List.choose (fun sheet -> if sheet.Extras.Verbatim then sheet.Extras.SourcePart |> Option.map fst else None))
         // The drawing and table parts themselves, for the sheets that leave them as they are.
         @ (worksheets |> List.collect (fun sheet -> Option.toList sheet.Extras.DrawingPart @ List.map snd sheet.Extras.TableParts))
         // Pivot tables and slicers of the sheets, and the workbook's pivot
@@ -5483,7 +5518,8 @@ let private buildWorkbook (scanRows: bool) (source: PartSource) (header: Workboo
           RootRelationships = rootRels
           CalcChain = calcChain
           PivotCacheSources = pivotCacheSources
-          CalcIteration = header.CalcIteration }
+          CalcIteration = header.CalcIteration
+          ActiveTab = header.ActiveTab }
 
     {
         Sheets = worksheets

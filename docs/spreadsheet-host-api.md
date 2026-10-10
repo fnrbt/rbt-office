@@ -795,8 +795,12 @@ comments, threaded comments and persons) every part goes back **as it was read, 
   formulas, the query-table binding.) New table parts take numbers and ids no kept part uses.
 - A VML drawing that holds nothing but the boxes of the sheet's comments goes back while the comments are the file's and is made anew when
   they change; one that also holds form controls always goes back as it was (a comment added to such a sheet gets no box of its own).
-- Not carried: **chart sheets** (they are not sheets the editor has; the part and its drawing are dropped), and `xl/calcChain.xml` once a
-  formula cell was added, removed or moved (Excel rebuilds it).
+- **Chart sheets and dialog sheets** are sheets of the workbook the editor has no model of. They are listed like any sheet (a chart sheet
+  shows as an empty grid with its chart on it) and go back as the part they were read from, byte for byte, at their place in the sheet
+  order, as a chart sheet (relationship type, content type, the drawing and chart behind it). Only `tabSelected` of the part's view is
+  rewritten when the sheet on display changed. Cells typed into such a sheet are not saved. A copy of one (`DuplicateSheet`) is a worksheet.
+- A worksheet of the file is written under the name its part had (`xl/worksheets/sheet3.xml` stays that), new sheets under free numbers.
+- Not carried: `xl/calcChain.xml` once a formula cell was added, removed or moved (Excel rebuilds it).
 `tests/office-formats/xlsx-parts.fsx` asserts this for every workbook under `tests/real-world` and `tests/test-documents-excel`.
 
 ### Dynamic arrays and legacy array formulas

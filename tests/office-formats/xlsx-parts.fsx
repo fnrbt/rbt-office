@@ -70,8 +70,8 @@ let reachable (parts: Map<string, byte[]>) : Set<string> =
         match Map.tryFind relsPath parts with
         | Some data ->
             for relType, target in relTargets relsPath (text data) do
-                // (Chart sheets are not sheets the editor has: they, and what only they lead to, are not carried. A known gap.)
-                if not (relType.EndsWith "/chartsheet") && seen.Add target then
+                ignore relType
+                if seen.Add target then
                     let dir = Path.GetDirectoryName(target).Replace('\\', '/')
                     visit ((if dir = "" then "" else dir + "/") + "_rels/" + Path.GetFileName target + ".rels")
         | None -> ()
@@ -100,11 +100,15 @@ for file in files do
             books <- books + 1
             try
                 let imported = Bridge.Import.importWorkbook workbook
+                // (The sheet on display stays the one the file shows.)
+                let activeTab =
+                    let found = Text.RegularExpressions.Regex.Match(text original.["xl/workbook.xml"], "activeTab=\"(\\d+)\"")
+                    if found.Success then min (int found.Groups.[1].Value) (imported.Sheets.Length - 1) else 0
                 let input : Bridge.ExportInput =
                     { Sheets = imported.Sheets |> Array.map (fun sheet -> sheet.Model)
                       Names = imported.Sheets |> Array.map (fun sheet -> sheet.Name)
                       Visible = imported.Sheets |> Array.map (fun sheet -> sheet.Visible)
-                      ActiveSheetIndex = 0
+                      ActiveSheetIndex = activeTab
                       NameInfo = Map.empty; DefinedNames = imported.Context.Names
                       Source = Some imported.Source
                       Macros = None }
@@ -123,6 +127,20 @@ for file in files do
                     wanted |> Set.toList
                     |> List.filter (fun part -> not (rewritten part) && (match Map.tryFind part written with Some data -> data <> original.[part] | None -> false))
                 ok (name + ": untouched parts identical") changed.IsEmpty (show changed)
+                // The sheets, chart sheets among them, are listed in the file's order, each kind of sheet as what it was.
+                let sheetList (parts: Map<string, byte[]>) =
+                    let rels = relTargets "xl/_rels/workbook.xml.rels" (text parts.["xl/_rels/workbook.xml.rels"])
+                    let ids =
+                        [ for m in Text.RegularExpressions.Regex.Matches(text parts.["xl/_rels/workbook.xml.rels"], "<Relationship\\b[^>]*>") do
+                            let attr (name: string) = Text.RegularExpressions.Regex.Match(m.Value, "\\b" + name + "=\"([^\"]*)\"").Groups.[1].Value
+                            yield attr "Id", attr "Type" ] |> Map.ofList
+                    ignore rels
+                    [ for m in Text.RegularExpressions.Regex.Matches(text parts.["xl/workbook.xml"], "<sheet\\b[^>]*>") do
+                        let attr (name: string) = Text.RegularExpressions.Regex.Match(m.Value, "\\b" + name + "=\"([^\"]*)\"").Groups.[1].Value
+                        let relType = Map.tryFind (attr "r:id") ids |> Option.defaultValue "?"
+                        yield attr "name", relType.Substring(relType.LastIndexOf '/' + 1) ]
+                if original.ContainsKey "xl/workbook.xml" && original.ContainsKey "xl/_rels/workbook.xml.rels" then
+                    ok (name + ": sheets") (sheetList original = sheetList written) (sprintf "%A / %A" (sheetList original) (sheetList written))
                 let reached = reachable written
                 let unreached = wanted |> Set.filter (fun part -> Map.containsKey part written && not (Set.contains part reached)) |> Set.toList
                 ok (name + ": related") unreached.IsEmpty (show unreached)
