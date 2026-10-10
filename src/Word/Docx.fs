@@ -503,6 +503,7 @@ let private metadataFromEditor (item: obj) =
                     ||| flag (optionalBool (item?StyleContextualSpacing)).IsSome ParagraphExplicit.ContextualSpacing
                     ||| flag backgroundColor.IsSome ParagraphExplicit.BackgroundColor
                     ||| flag (not tabStops.IsEmpty || rightTabPosition.IsSome) ParagraphExplicit.Tabs
+                |> fun flags -> if pageBreakBefore && boolOrDefault false (item?PageBreakBeforeDerived) then flags ||| ParagraphExplicit.DerivedPageBreakBefore else flags
             HasMarkProperties = boolOrDefault false (item?HasMarkProperties)
             ExplicitMarkFontSize = optionalFloat (item?ExplicitMarkFontSize)
             MarkRevision =
@@ -1528,6 +1529,8 @@ let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) 
                     "ExplicitHidden" ==> explicitToggle ExplicitFormat.Hidden (fun style -> style.Hidden) inherited tr.Style
                     "ExplicitFontSize" ==> explicitFontSize inherited tr.Style
                     "ExplicitColorAuto" ==> (ExplicitFormat.has ExplicitFormat.ColorAuto tr.Style && tr.Style.Color.IsNone)
+                    // The font is what the paragraph's and the run's styles give: not direct formatting.
+                    "FontFamilyInherited" ==> (tr.Style.FontFamily.IsSome && inherited |> Option.exists (fun style -> style.FontFamily = tr.Style.FontFamily))
                     "Style" ==> tr.Style.Style
                     "Bold" ==> tr.Style.Bold
                     "Italic" ==> tr.Style.Italic
@@ -1699,6 +1702,7 @@ let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) 
         "ParagraphBorderBefore" ==> para.Metadata.ParagraphBorderBefore
         "ParagraphBorderAfter" ==> para.Metadata.ParagraphBorderAfter
         "PageBreakBefore" ==> para.Metadata.PageBreakBefore
+        "PageBreakBeforeDerived" ==> (para.Metadata.PageBreakBefore && ParagraphExplicit.has ParagraphExplicit.DerivedPageBreakBefore para.Metadata)
         "PageBreakAfter" ==> para.Metadata.PageBreakAfter
         "SectionBreak" ==> para.Metadata.SectionBreak
         "SectionPageNumberStart" ==> para.Metadata.SectionPageNumberStart

@@ -244,6 +244,10 @@ type ParagraphProperties = {
     KeepNext: bool option
     KeepLines: bool option
     PageBreakBefore: bool option
+    /// PageBreakBefore is not what the paragraph's own properties say: the
+    /// reader set it for a Heading 1 that started a page when the document was
+    /// last laid out. It is not written back as a page break of the paragraph.
+    PageBreakBeforeDerived: bool
     WidowControl: bool option
     ContextualSpacing: bool option
     BackgroundColor: string option
@@ -915,6 +919,7 @@ module Docx =
                 KeepNext = onOff "keepNext" props
                 KeepLines = onOff "keepLines" props
                 PageBreakBefore = onOff "pageBreakBefore" props
+                PageBreakBeforeDerived = false
                 WidowControl = onOff "widowControl" props
                 ContextualSpacing = onOff "contextualSpacing" props
                 BackgroundColor = getPropVal "shd" "fill" props
@@ -955,6 +960,7 @@ module Docx =
                 KeepNext = None
                 KeepLines = None
                 PageBreakBefore = None
+                PageBreakBeforeDerived = false
                 WidowControl = None
                 ContextualSpacing = None
                 BackgroundColor = None
@@ -1793,7 +1799,7 @@ module Docx =
         let props =
             let withRenderedBreak = { rawProps with RenderedPageBreakBefore = renderedPageBreakBefore }
             if hasRenderedPageBreak && rawProps.Style = Some "Heading1" then
-                { withRenderedBreak with PageBreakBefore = Some true }
+                { withRenderedBreak with PageBreakBefore = Some true; PageBreakBeforeDerived = rawProps.PageBreakBefore <> Some true }
             else
                 withRenderedBreak
 
@@ -2271,6 +2277,7 @@ module Styles =
             KeepNext = Docx.onOff "keepNext" pPr
             KeepLines = Docx.onOff "keepLines" pPr
             PageBreakBefore = Docx.onOff "pageBreakBefore" pPr
+            PageBreakBeforeDerived = false
             WidowControl = Docx.onOff "widowControl" pPr
             ContextualSpacing = Docx.onOff "contextualSpacing" pPr
             BackgroundColor = Ns.childNs "shd" pPr |> Option.bind (Docx.attr "fill")
@@ -4175,6 +4182,7 @@ let private mergeParagraphProperties baseProps props = {
     KeepNext = props.KeepNext |> Option.orElse baseProps.KeepNext
     KeepLines = props.KeepLines |> Option.orElse baseProps.KeepLines
     PageBreakBefore = props.PageBreakBefore |> Option.orElse baseProps.PageBreakBefore
+    PageBreakBeforeDerived = props.PageBreakBeforeDerived
     WidowControl = props.WidowControl |> Option.orElse baseProps.WidowControl
     ContextualSpacing = props.ContextualSpacing |> Option.orElse baseProps.ContextualSpacing
     BackgroundColor = props.BackgroundColor |> Option.orElse baseProps.BackgroundColor
@@ -4803,6 +4811,8 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                 "StyleKeepLines" ==> (styleKeepProperties styleMap para effectiveParaProps).KeepLines
                 "StylePageBreakBefore" ==> effectiveParaProps.PageBreakBefore
                 "PageBreakBefore" ==> effectiveParaProps.PageBreakBefore
+                // The break is the style's, or the reader's own (see PageBreakBeforeDerived): not the paragraph's.
+                "PageBreakBeforeDerived" ==> (effectiveParaProps.PageBreakBefore = Some true && (para.Properties.PageBreakBefore <> Some true || para.Properties.PageBreakBeforeDerived))
                 "StyleWidowControl" ==> effectiveParaProps.WidowControl
                 "StyleContextualSpacing" ==> effectiveParaProps.ContextualSpacing
                 "Alignment" ==> (effectiveParaProps.Alignment |> Option.defaultValue "left")
@@ -5094,6 +5104,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                     "StyleKeepLines" ==> (styleKeepProperties styleMap para effectiveParaProps).KeepLines
                     "StylePageBreakBefore" ==> effectiveParaProps.PageBreakBefore
                     "PageBreakBefore" ==> effectiveParaProps.PageBreakBefore
+                    "PageBreakBeforeDerived" ==> (effectiveParaProps.PageBreakBefore = Some true && (para.Properties.PageBreakBefore <> Some true || para.Properties.PageBreakBeforeDerived))
                     "StyleWidowControl" ==> effectiveParaProps.WidowControl
                     "StyleContextualSpacing" ==> effectiveParaProps.ContextualSpacing
                     "Alignment" ==> (effectiveParaProps.Alignment |> Option.defaultValue "left")

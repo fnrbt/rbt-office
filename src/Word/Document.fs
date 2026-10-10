@@ -193,6 +193,11 @@ module ParagraphExplicit =
     let BackgroundColor = 128
     [<Literal>]
     let Tabs = 256
+    /// Not something the paragraph states, the opposite: its PageBreakBefore
+    /// is its style's, or the reader's for a heading that started a page when
+    /// the document was last laid out. It is not saved as a break of the paragraph.
+    [<Literal>]
+    let DerivedPageBreakBefore = 512
 
     let has (flag: int) (metadata: BlockMetadata) = metadata.Explicit &&& flag <> 0
 

@@ -169,6 +169,7 @@ let private mergeParagraphProperties (baseProps: DocxReader.ParagraphProperties)
     KeepNext = props.KeepNext |> Option.orElse baseProps.KeepNext
     KeepLines = props.KeepLines |> Option.orElse baseProps.KeepLines
     PageBreakBefore = props.PageBreakBefore |> Option.orElse baseProps.PageBreakBefore
+    PageBreakBeforeDerived = props.PageBreakBeforeDerived
     WidowControl = props.WidowControl |> Option.orElse baseProps.WidowControl
     ContextualSpacing = props.ContextualSpacing |> Option.orElse baseProps.ContextualSpacing
     BackgroundColor = props.BackgroundColor |> Option.orElse baseProps.BackgroundColor

@@ -297,6 +297,8 @@ type private RunExtras = {
     ExplicitFontSize: float option
     /// w:color w:val="auto": the run has no colour and takes none from a style.
     ExplicitColorAuto: bool
+    /// The run's font is the one its styles give it: nothing to write.
+    FontInherited: bool
 }
 
 let private noRunExtras =
@@ -304,7 +306,7 @@ let private noRunExtras =
       UnderlineStyle = None; UnderlineColor = None; Position = 0.0; EmphasisMark = None
       HasExplicit = false; ExplicitBold = None; ExplicitItalic = None; ExplicitUnderline = None
       ExplicitAllCaps = None; ExplicitSmallCaps = None; ExplicitStrike = None; ExplicitDoubleStrike = None
-      ExplicitHidden = None; ExplicitFontSize = None; ExplicitColorAuto = false }
+      ExplicitHidden = None; ExplicitFontSize = None; ExplicitColorAuto = false; FontInherited = false }
 
 /// An on/off property written as direct formatting. "Off" has to be an
 /// explicit w:val="0": leaving the element out hands the property back to the
@@ -333,7 +335,10 @@ let private orderedRunProps (extras: RunExtras) (run: EditorRun) : string list =
         match extras.StyleId with
         | Some styleId when styleId <> "" -> yield selfClosing "w:rStyle" [("w:val", styleId)]
         | _ -> ()
-        yield selfClosing "w:rFonts" [("w:ascii", run.FontFamily); ("w:hAnsi", run.FontFamily); ("w:cs", run.FontFamily)]
+        // (A run that states the font its styles give it anyway would keep that
+        // font when the style's is changed; every run of a saved document did.)
+        if not (extras.HasExplicit && extras.FontInherited) then
+            yield selfClosing "w:rFonts" [("w:ascii", run.FontFamily); ("w:hAnsi", run.FontFamily); ("w:cs", run.FontFamily)]
         yield! runToggle extras "w:b" extras.ExplicitBold run.Bold
         yield! runToggle extras "w:i" extras.ExplicitItalic run.Italic
         yield! runToggle extras "w:caps" extras.ExplicitAllCaps extras.AllCaps
@@ -449,6 +454,7 @@ let private runExtrasFromObject (runObj: obj) = {
     ExplicitHidden = optionalBool (runObj?ExplicitHidden)
     ExplicitFontSize = optionalFloat (runObj?ExplicitFontSize)
     ExplicitColorAuto = boolOrDefault false (runObj?ExplicitColorAuto)
+    FontInherited = boolOrDefault false (runObj?FontFamilyInherited)
 }
 
 let private isDeletedRun (runObj: obj) =
@@ -467,7 +473,9 @@ let private generateRunWithObjectProps (runObj: obj) (run: EditorRun) : string =
         runElement rPr deleted run.Text
 
 let private generateFieldRun (runObj: obj) (fallbackRun: EditorRun) (fieldCode: string) =
-    let result = optionalString (runObj?FieldResult) |> Option.defaultValue fallbackRun.Text
+    // (A field without a result is shown as "[Field:<code>]": that is not its result.)
+    let placeholder = fallbackRun.Text.StartsWith "[Field:" && fallbackRun.Text.EndsWith "]"
+    let result = optionalString (runObj?FieldResult) |> Option.defaultValue (if placeholder then "" else fallbackRun.Text)
     let resultRun = generateRunWithObjectProps runObj { fallbackRun with Text = result }
     element "w:fldSimple" [("w:instr", fieldCode)] [resultRun]
 
@@ -503,7 +511,10 @@ let private generateReferenceRun (runObj: obj) (fallbackRun: EditorRun) =
                 | None, Some noteId ->
                     let noteType = optionalString (runObj?NoteType) |> Option.defaultValue "footnote"
                     let elementName = if noteType = "endnote" then "w:endnoteReference" else "w:footnoteReference"
-                    element "w:r" [] [selfClosing elementName [("w:id", noteId)]]
+                    // The mark keeps the formatting of its run (the reference style, a colour,
+                    // a size): written bare it took the paragraph's.
+                    let rPr = orderedRunProps (runExtrasFromObject runObj) fallbackRun
+                    element "w:r" [] ((if List.isEmpty rPr then [] else [element "w:rPr" [] rPr]) @ [selfClosing elementName [("w:id", noteId)]])
                 | None, None ->
                     if fallbackRun.Text = "" && bookmarkStartXml runObj |> Option.isSome || fallbackRun.Text = "" && bookmarkEndXml runObj |> Option.isSome then ""
                     else generateRunWithObjectProps runObj fallbackRun
@@ -1224,7 +1235,10 @@ let private generateParaPropsWithPageSetup (packageSetup: PageSetupInfo) (para: 
             if boolOrDefault false (para?HasExplicit) || not (isNullOrUndefined direct) then direct else effective
         yield! onOff "w:keepNext" (keepValue (para?KeepNext) (para?StyleKeepNext))
         yield! onOff "w:keepLines" (keepValue (para?KeepLines) (para?StyleKeepLines))
-        if boolOrDefault false (para?PageBreakBefore) then yield selfClosing "w:pageBreakBefore" []
+        // (Not the page break of the paragraph's style, nor the one the reader
+        // gives a heading that started a page: written, either would be the
+        // paragraph's own from then on.)
+        if boolOrDefault false (para?PageBreakBefore) && not (boolOrDefault false (para?PageBreakBeforeDerived)) then yield selfClosing "w:pageBreakBefore" []
         yield! onOff "w:widowControl" (para?WidowControl)
         if listStyle = "bullet" || listStyle = "numbered" then
             let numId = optionalIntString (para?ListId) |> Option.defaultValue (if listStyle = "bullet" then fst defaultListNumIds else snd defaultListNumIds)
@@ -2343,13 +2357,18 @@ type NumberingInfo = {
     /// one): what its paragraphs have without stating an indent themselves.
     IndentLeft: float option
     FirstLineIndent: float option
+    /// A list id of the file that the file's numbering part does not define
+    /// (the reader then has no format and no level text for it). It stays
+    /// undefined: a definition made up for it gave the paragraphs numbers
+    /// they do not have in Word. The id is still one that is taken.
+    Undefined: bool
 }
 
 /// One entry per (list id, level) used in the document. The list id, number
 /// format, level text and start value all come from the paragraph: without
 /// them every numbered paragraph was written with numId 2, which merged
 /// separate lists into one decimal list and lost letters / roman numerals.
-let private collectNumberingInfo (items: obj array) =
+let private collectNumberingInfoOf (undefinedLists: bool) (items: obj array) =
     items
     |> Array.toList
     |> List.collect collectItemParagraphs
@@ -2370,8 +2389,11 @@ let private collectNumberingInfo (items: obj array) =
                 // its own carries them as direct formatting instead.
                 let levelIndent (value: obj) = if boolOrDefault false (para?HasListLevelIndents) then optionalFloat value else None
                 { NumId = numId; Level = level; Format = format; LevelText = levelText; Start = start; HasOverride = restart
-                  IndentLeft = levelIndent (para?ListLevelIndentLeft); FirstLineIndent = levelIndent (para?ListLevelFirstLineIndent) }))
+                  IndentLeft = levelIndent (para?ListLevelIndentLeft); FirstLineIndent = levelIndent (para?ListLevelFirstLineIndent)
+                  Undefined = undefinedLists && (optionalString (para?ListNumberFormat)).IsNone && (optionalString (para?ListLevelText)).IsNone }))
     |> List.distinctBy (fun info -> info.NumId, info.Level)
+
+let private collectNumberingInfo (items: obj array) = collectNumberingInfoOf false items
 
 /// Generate minimal styles.xml
 type StyleInfo = {
@@ -2844,7 +2866,7 @@ let generateNumbering (customInfos: NumberingInfo list) : string =
     let defaultLevels format text =
         [0..8] |> List.map (fun level -> numberingLevel true level (Some 1) format (if format = "bullet" then text else "%" + string (level + 1) + "."))
 
-    let groups = customInfos |> List.groupBy (fun info -> info.NumId)
+    let groups = customInfos |> List.filter (fun info -> not info.Undefined) |> List.groupBy (fun info -> info.NumId)
     let abstracts =
         [ yield element "w:abstractNum" [("w:abstractNumId", bulletId)] (defaultLevels "bullet" "\u2022")
           yield element "w:abstractNum" [("w:abstractNumId", numberedId)] (defaultLevels "decimal" "")
