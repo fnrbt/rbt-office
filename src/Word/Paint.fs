@@ -1622,59 +1622,12 @@ type RunningFieldValues = {
 let runningFieldValues (pageNumber: int) (pageCount: int) : RunningFieldValues =
     { FieldPage = pageNumber; FieldPageFormat = "decimal"; FieldPageCount = pageCount; FieldSectionPages = pageCount; FieldSection = 1 }
 
-let private romanNumeral (number: int) =
-    if number <= 0 || number >= 4000 then string number
-    else
-        let values = [| 1000; 900; 500; 400; 100; 90; 50; 40; 10; 9; 5; 4; 1 |]
-        let letters = [| "M"; "CM"; "D"; "CD"; "C"; "XC"; "L"; "XL"; "X"; "IX"; "V"; "IV"; "I" |]
-        let text = System.Text.StringBuilder()
-        let mutable rest = number
-        for i in 0 .. values.Length - 1 do
-            while rest >= values.[i] do
-                text.Append(letters.[i]) |> ignore
-                rest <- rest - values.[i]
-        text.ToString()
-
-/// A, B, ... Z, AA, BB, ... as Word numbers pages by letters.
-let private letterNumeral (number: int) =
-    if number <= 0 then string number
-    else
-        let letter = string (char (int 'A' + (number - 1) % 26))
-        String.replicate ((number - 1) / 26 + 1) letter
-
-/// A page number in a number format of w:pgNumType w:fmt ("decimal",
-/// "upperRoman", "lowerRoman", "upperLetter", "lowerLetter", "numberInDash";
-/// any other as decimal).
+/// A page number in a number format of w:pgNumType w:fmt (see Document.formatPageNumber).
 let formatPageNumber (format: string) (number: int) : string =
-    match format with
-    | "upperRoman" -> romanNumeral number
-    | "lowerRoman" -> (romanNumeral number).ToLowerInvariant()
-    | "upperLetter" -> letterNumeral number
-    | "lowerLetter" -> (letterNumeral number).ToLowerInvariant()
-    | "numberInDash" -> "- " + string number + " -"
-    | _ -> string number
+    Rbt.Word.Document.formatPageNumber format number
 
-/// The number format a field states itself (the switch \* roman, \* ROMAN,
-/// \* alphabetic, \* ALPHABETIC, \* Arabic), if it does.
 let private fieldNumberFormat (code: string) : string option =
-    let mutable found = None
-    let mutable at = code.IndexOf "\\*"
-    while found.IsNone && at >= 0 do
-        let mutable i = at + 2
-        while i < code.Length && System.Char.IsWhiteSpace code.[i] do i <- i + 1
-        let start = i
-        while i < code.Length && not (System.Char.IsWhiteSpace code.[i]) && code.[i] <> '\\' do i <- i + 1
-        let name = code.Substring(start, i - start)
-        found <-
-            match name with
-            | "roman" -> Some "lowerRoman"
-            | "ROMAN" | "Roman" -> Some "upperRoman"
-            | "alphabetic" -> Some "lowerLetter"
-            | "ALPHABETIC" | "Alphabetic" -> Some "upperLetter"
-            | "Arabic" | "arabic" | "ARABIC" -> Some "decimal"
-            | _ -> None
-        at <- code.IndexOf("\\*", i)
-    found
+    Rbt.Word.Document.fieldNumberFormat code
 
 let private formatCodeOf (format: string) =
     match format with

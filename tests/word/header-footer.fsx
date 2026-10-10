@@ -232,6 +232,34 @@ do
     check "a page of notes after the body is a page: counted, numbered on, with the footer" (longer.Length, longerFooter 0, longerFooter (longer.Length - 1)) (total + 1, sprintf "Page i of %d / %d / I s1" (total + 1) frontPages, sprintf "Page F of %d / 2 / VI s3" (total + 1))
 
 // ---------------------------------------------------------------------------
+// A PAGE field in the text of the body shows the page's number as its section
+// writes page numbers (it was always decimal: "see page 2" beside a footer
+// that said "ii"), unless the field states a format of its own.
+// ---------------------------------------------------------------------------
+do
+    let fieldPara id (code: string) : Doc.Block =
+        let buffer = ofString "see page 0 here" |> applyStyle 9 1 (fun style -> { style with FieldCode = Some code; FieldResult = Some "0" })
+        Doc.Paragraph { Id = id; Buffer = buffer; Metadata = Doc.defaultMetadata }
+    let ending id format : Doc.Block =
+        Doc.Paragraph { para id "end of section" with Metadata = { Doc.defaultMetadata with SectionBreak = Some "nextPage"; SectionPageSetup = Some (geometry false); SectionPageNumberFormat = format } }
+    let fieldDoc =
+        { doc with
+            Blocks = [ fieldPara "f-front" " PAGE "; fieldPara "f-own" " PAGE \\* ROMAN "; ending "f-end1" (Some "lowerRoman") ] @ [ fieldPara "f-main" "PAGE"; ending "f-end2" None ] @ [ fieldPara "f-back" " PAGE " ]
+            PageSetup = { pageSetup with HeaderReferences = []; FooterReferences = []; PageNumberFormat = Some "upperLetter" }
+            HeaderParts = []
+            FooterParts = [] }
+    let anchor id page : Doc.PageFieldAnchor = { PageFieldBlockId = id; PageFieldStartOffset = 9; PageFieldCode = "PAGE"; PageNumber = page }
+    let pageMap : Doc.PageMap = { PageCount = 5; BlockAnchors = []; Fields = [ anchor "f-front" 2; anchor "f-own" 2; anchor "f-main" 3; anchor "f-back" 5 ]; Bookmarks = [] }
+    let refreshed = Doc.refreshFieldsWithPageMap pageMap fieldDoc
+    let textOf id = refreshed.Blocks |> List.pick (function Doc.Paragraph p when p.Id = id -> Some (toString p.Buffer) | _ -> None)
+    check "the section's format: roman in the front matter" (textOf "f-front") "see page ii here"
+    check "the field's own format wins" (textOf "f-own") "see page II here"
+    check "a section that states none: decimal" (textOf "f-main") "see page 3 here"
+    check "the last section: the format of the page setup" (textOf "f-back") "see page E here"
+    let formats = Doc.sectionNumberFormats fieldDoc
+    check "the format of each paragraph's section" ([ "f-front"; "f-end1"; "f-main"; "f-end2"; "f-back" ] |> List.map (fun id -> formats.[id])) [ "lowerRoman"; "lowerRoman"; "decimal"; "decimal"; "upperLetter" ]
+
+// ---------------------------------------------------------------------------
 // The copy of a header that "link to previous" off gives a section: every
 // block has an id of its own - the paragraphs, and the tables too (they kept
 // theirs: two tables with one id in the document).

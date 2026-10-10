@@ -2736,6 +2736,77 @@ let private collectSequenceRefreshTargets doc =
             | Image _ -> ()))
     sequences, bookmarks
 
+let private romanNumeral (number: int) =
+    if number <= 0 || number >= 4000 then string number
+    else
+        let values = [| 1000; 900; 500; 400; 100; 90; 50; 40; 10; 9; 5; 4; 1 |]
+        let letters = [| "M"; "CM"; "D"; "CD"; "C"; "XC"; "L"; "XL"; "X"; "IX"; "V"; "IV"; "I" |]
+        let text = System.Text.StringBuilder()
+        let mutable rest = number
+        for i in 0 .. values.Length - 1 do
+            while rest >= values.[i] do
+                text.Append(letters.[i]) |> ignore
+                rest <- rest - values.[i]
+        text.ToString()
+
+/// A, B, ... Z, AA, BB, ... as Word numbers pages by letters.
+let private letterNumeral (number: int) =
+    if number <= 0 then string number
+    else
+        let letter = string (char (int 'A' + (number - 1) % 26))
+        String.replicate ((number - 1) / 26 + 1) letter
+
+/// A page number in a number format of w:pgNumType w:fmt ("decimal",
+/// "upperRoman", "lowerRoman", "upperLetter", "lowerLetter", "numberInDash";
+/// any other as decimal).
+let formatPageNumber (format: string) (number: int) : string =
+    match format with
+    | "upperRoman" -> romanNumeral number
+    | "lowerRoman" -> (romanNumeral number).ToLowerInvariant()
+    | "upperLetter" -> letterNumeral number
+    | "lowerLetter" -> (letterNumeral number).ToLowerInvariant()
+    | "numberInDash" -> "- " + string number + " -"
+    | _ -> string number
+
+/// The number format a field states itself (the switch \* roman, \* ROMAN,
+/// \* alphabetic, \* ALPHABETIC, \* Arabic), if it does.
+let fieldNumberFormat (code: string) : string option =
+    let mutable found = None
+    let mutable at = code.IndexOf "\\*"
+    while found.IsNone && at >= 0 do
+        let mutable i = at + 2
+        while i < code.Length && System.Char.IsWhiteSpace code.[i] do i <- i + 1
+        let start = i
+        while i < code.Length && not (System.Char.IsWhiteSpace code.[i]) && code.[i] <> '\\' do i <- i + 1
+        let name = code.Substring(start, i - start)
+        found <-
+            match name with
+            | "roman" -> Some "lowerRoman"
+            | "ROMAN" | "Roman" -> Some "upperRoman"
+            | "alphabetic" -> Some "lowerLetter"
+            | "ALPHABETIC" | "Alphabetic" -> Some "upperLetter"
+            | "Arabic" | "arabic" | "ARABIC" -> Some "decimal"
+            | _ -> None
+        at <- code.IndexOf("\\*", i)
+    found
+
+/// The page number format of the section each paragraph is in: what the
+/// section's properties state (the paragraph that ends the section, the page
+/// setup for the last one), "decimal" where they state none.
+let sectionNumberFormats (doc: Document) : System.Collections.Generic.Dictionary<BlockId, string> =
+    let formats = System.Collections.Generic.Dictionary<BlockId, string>()
+    let mutable current = doc.PageSetup.PageNumberFormat |> Option.defaultValue "decimal"
+    for block in List.rev doc.Blocks do
+        // (The paragraph that carries the break is the last of its section.)
+        match block with
+        | Paragraph para
+        | Heading (_, para) when para.Metadata.SectionBreak.IsSome ->
+            current <- para.Metadata.SectionPageNumberFormat |> Option.defaultValue "decimal"
+        | _ -> ()
+        for para in paragraphsOfBlocks [ block ] do
+            formats.[para.Id] <- current
+    formats
+
 let refreshFieldsWithPageMap pageMap doc =
     let allSequenceResults, allBookmarkResults = collectSequenceRefreshTargets doc
     let mutable sequenceCounters: Map<string, int> = Map.empty
@@ -2800,6 +2871,7 @@ let refreshFieldsWithPageMap pageMap doc =
             let after = orderedBodyParas |> List.skip i
             pick before |> Option.orElseWith (fun () -> pick after)
 
+    let sectionFormats = lazy (sectionNumberFormats doc)
     let resultForField blockId startOffset style text =
         match style.FieldCode |> Option.map (fun code -> code, fieldCodeParts code) with
         | Some (code, "DATE" :: _) -> System.DateTime.Now.ToString(dateFieldFormat code)
@@ -2816,7 +2888,17 @@ let refreshFieldsWithPageMap pageMap doc =
             nextSeqResult label
         | Some (_, "REF" :: bookmarkName :: _) ->
             allBookmarkResults |> Map.tryFind bookmarkName |> Option.defaultValue text
-        | Some (_, "PAGE" :: _) -> string (fieldPage blockId startOffset)
+        // The page's number as its section writes page numbers (w:pgNumType w:fmt:
+        // roman in a preface, say), unless the field states a format itself. It was
+        // always decimal in the text, while the header beside it said "iv".
+        | Some (code, "PAGE" :: _) ->
+            let format =
+                fieldNumberFormat code
+                |> Option.defaultWith (fun () ->
+                    match sectionFormats.Value.TryGetValue blockId with
+                    | true, sectionFormat -> sectionFormat
+                    | false, _ -> "decimal")
+            formatPageNumber format (fieldPage blockId startOffset)
         | Some (_, "PAGEREF" :: bookmarkName :: _) -> string (bookmarkPage bookmarkName)
         | Some (_, "NUMPAGES" :: _) -> string pageMap.PageCount
         | _ -> text
