@@ -639,7 +639,7 @@ Nothing to call for the recalculation itself: every edit recalculates what it ha
   - **rows / columns inserted or deleted**: formulas that only follow their cells (`=B5` becoming `=B6`) are re-pointed and keep their value
     without being evaluated; evaluated are the formulas the edit really changes (a range it took cells from, `#REF!`), those that read the sheet
     at a place that stayed while cells moved under it (a whole column, `INDEX(B:B,3)`), ROW() / COLUMN() and the like, SUBTOTAL / AGGREGATE, and
-    the arrays of the sheet. The undo of such an edit evaluates what reads the sheet.
+    the arrays of the sheet. The undo (and redo) of such an edit is calculated the same way.
   - **sheets** added, deleted, moved, copied back by an undo: the formulas that read a deleted / restored sheet, formulas waiting for a sheet of
     that name, 3-D references and SHEET() / SHEETS(). (A rename and a copy change no value: the graph is built again at the next edit.)
   `EvaluatedFormulas` counts evaluations (the sweeps of an iterated circular reference count each time).

@@ -3249,7 +3249,8 @@ checks['api-recalc-more'] = async () => {
         both((grid) => grid.DeleteRows(2, 1));
         check('the row deleted', stepIs('a row deleted: by the engine', 'Sheet1!A1:F12').rows[7][1], '24');
         both((grid) => grid.Undo());
-        check('... undone', stepIs('the undo of a deleted row: by the engine', 'Sheet1!A1:F12').rows[8][1], '124');
+        now = stepIs('the undo of a deleted row: by the engine', 'Sheet1!A1:F12');
+        check('... undone: the values are back', now.rows[8][1], '124');
         both((grid) => grid.Redo());
         both((grid) => grid.InsertColumns(1, 1));
         now = stepIs('a column inserted: by the engine', 'Sheet1!A1:G12');

@@ -936,8 +936,11 @@ let private surroundingsOf (engine: Engine) (edited: Workbook) : Surroundings =
                     structural.Add sheetId |> ignore
                     visibility <- true
                     // (One edit on from the sheet as the engine holds it: which cells moved is known.)
-                    match after.StructureMove with
-                    | Some move when move.Version = after.StructureVersion && after.StructureVersion = before.StructureVersion + 1 -> moves.[sheetId] <- move
+                    match after.StructureMove, before.StructureMove with
+                    | Some move, _ when move.Version = after.StructureVersion && after.StructureVersion = before.StructureVersion + 1 -> moves.[sheetId] <- move
+                    // (One edit back - its undo: the rows that were inserted are deleted, those that were deleted are back.)
+                    | _, Some move when move.Version = before.StructureVersion && after.StructureVersion = before.StructureVersion - 1 ->
+                        moves.[sheetId] <- { move with Insert = not move.Insert; Version = after.StructureVersion }
                     | _ -> ()
         | _ -> added.Add sheetId
     for KeyValue (sheetId, state) in engine.Sheets do

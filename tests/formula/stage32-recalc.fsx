@@ -661,6 +661,17 @@ do
                                            "a row deleted that a formula read", "sheet2", DeleteRows (0, 1); "a column inserted before a 3-D reference", "sheet3", InsertCols (2, 2) ] do
         handledOrFail label (edit label None (fun wb -> fst (Wb.applyStructureEdit sheetId structureEdit wb)))
     // Sheets.
+    // The undo of a row / column edit is known as the edit taken back: formulas that only follow their cells keep their value unevaluated.
+    do
+        let before = current
+        let inserted, undo = Wb.applyStructureEdit "sheet1" (InsertRows (20, 1)) current
+        let forward = edit "a row inserted below the data" None (fun _ -> inserted)
+        let back = edit "... and the insert undone" None (Wb.undoStructureEdit undo)
+        match forward, back with
+        | Incremental there, Incremental home ->
+            ok "undo of a row insert: few formulas are evaluated, as for the insert" (home.EvaluatedFormulas <= there.EvaluatedFormulas + 2 && home.EvaluatedFormulas * 2 < Recalc.formulaCount engine) (sprintf "insert %A, undo %A of %d" there home (Recalc.formulaCount engine))
+        | _ -> ok "undo of a row insert: by the engine" false (Recalc.lastDecline engine)
+        ok "undo of a row insert: the workbook is what it was" ((difference current before).IsNone) (sprintf "%A" (difference current before))
     handledOrFail "a sheet renamed" (edit "a sheet renamed" None (Wb.renameSheetEverywhere "sheet2" "Numbers"))
     handledOrFail "a sheet renamed to a name formulas wait for" (edit "a sheet named Missing" None (fun wb -> Wb.addSheet "Missing" wb |> setCells "sheet4" [ at 0 0, Some (number 41.0) ]))
     eq "the reference to it resolves" (valueAt "sheet1" (if (match valueAt "sheet1" 20 1 current with CellValue.Number _ -> true | _ -> false) then 20 else 19) 1 current |> (fun v -> match v with CellValue.Number _ -> true | _ -> false)) true
@@ -676,24 +687,33 @@ let randomMore (iterate: bool) (seed: int) (steps: int) =
     start (moreWorkbook iterate)
     let mutable incremental = 0
     let mutable copies = 0
+    /// The row / column edit of the step before, to be taken back (an undo right after the edit).
+    let mutable lastStructure : Wb.StructureEditUndo option = None
     let failuresBefore = fail
     for step in 1 .. steps do
         if fail = failuresBefore then
             let ids = current.SheetOrder |> List.toArray
             let sheetId = ids.[random.Next ids.Length]
             let model = resolveSheet current.Sheets.[sheetId].Model
+            let undoable = lastStructure
+            lastStructure <- None
+            let structure (edit: StructureEdit) (wb: Wb.Workbook) =
+                let edited, undo = Wb.applyStructureEdit sheetId edit wb
+                lastStructure <- Some undo
+                edited
             let name, change =
-                match random.Next 16 with
+                match (if undoable.IsSome && random.Next 2 = 0 then 99 else random.Next 16) with
+                | 99 -> "the row / column edit undone", Wb.undoStructureEdit undoable.Value
                 | 0 | 1 -> "a number", setCells sheetId [ at (random.Next 14) (random.Next 3), Some (number (float (random.Next 90))) ]
                 | 2 ->
                     let bodies = [| "=SUBTOTAL(109,B2:B13)"; "=RATE*3"; "=SUM(Sales[Qty])"; "=Sheet1!B15+1"; "=SUM(Sheet1:Totals!F1)"; "=Data!A1"; "=AGGREGATE(9,5,B2:B9)"; "=E5+1"; "=F6*2"; "=Nowhere!B2"; "=ROW()+COLUMN()"; "=SUM(A:A)"; "=LOCALRATE"; "=INDEX(Sheet1!B:B,6)"; "=SEQUENCE(3)"; "=B2:B4*2"; "=SORT(Sheet1!B2:B5)"; "=OFFSET(Sheet1!A1,2,1)"; "=SUM(H3#)" |]
                     "a formula", setCells sheetId [ at (random.Next 22) (3 + random.Next 4), Some (formula bodies.[random.Next bodies.Length]) ]
                 | 3 -> "a name set", Wb.setDefinedName None (if random.Next 2 = 0 then "RATE" else "OTHER") (sprintf "=Data!$%s$%d" (if random.Next 2 = 0 then "A" else "F") (1 + random.Next 3)) None
                 | 4 -> "a name deleted", (fun wb -> Wb.deleteDefinedName None (if random.Next 2 = 0 then "RATE" else "OTHER") wb |> Option.defaultValue wb)
-                | 5 -> "rows inserted", (fun wb -> fst (Wb.applyStructureEdit sheetId (InsertRows (random.Next 16, 1 + random.Next 2)) wb))
-                | 6 -> "rows deleted", (fun wb -> fst (Wb.applyStructureEdit sheetId (DeleteRows (1 + random.Next 16, 1 + random.Next 2)) wb))
-                | 7 -> "columns inserted", (fun wb -> fst (Wb.applyStructureEdit sheetId (InsertCols (random.Next 5, 1)) wb))
-                | 8 -> "columns deleted", (fun wb -> fst (Wb.applyStructureEdit sheetId (DeleteCols (3 + random.Next 4, 1)) wb))
+                | 5 -> "rows inserted", structure (InsertRows (random.Next 16, 1 + random.Next 2))
+                | 6 -> "rows deleted", structure (DeleteRows (1 + random.Next 16, 1 + random.Next 2))
+                | 7 -> "columns inserted", structure (InsertCols (random.Next 5, 1))
+                | 8 -> "columns deleted", structure (DeleteCols (3 + random.Next 4, 1))
                 | 9 ->
                     "a filter", (fun wb ->
                         let m = resolveSheet wb.Sheets.[sheetId].Model
