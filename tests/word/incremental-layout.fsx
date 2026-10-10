@@ -997,5 +997,30 @@ do
     compare "sections moved: and in the first again" state (typeIn "one-p2" 3 "typed " grown) |> ignore
     assertProgressive "sections moved" movedDoc [ "the first section grows", insertAfter "one-p20" (Doc.Paragraph (para "one-grown" (words "grown" 700))) ]
 
+// A change of every paragraph, undone: undo brings back the very paragraphs
+// that were laid out before the change, and their lines are still known - no
+// line is broken (and no text measured) again. Redo likewise.
+do
+    let plain = document [ for i in 1 .. 300 -> Doc.Paragraph (para (sprintf "all-%d" i) (words (sprintf "w%d-" i) (20 + i % 40))) ]
+    let selected = Doc.selectAll plain
+    let bold = Doc.toggleBold selected
+    let state = Layout.createIncrementalLayoutState ()
+    compare "whole-document format: before" state selected |> ignore
+    Layout.resetIncrementalLayoutMeasurements state
+    compare "whole-document format: made bold" state bold |> ignore
+    check "whole-document format: every paragraph's lines are broken for the change" (Layout.incrementalLayoutMeasuredBlockCount state) 300
+    Layout.resetIncrementalLayoutMeasurements state
+    compare "whole-document format: undone" state selected |> ignore
+    check "whole-document format: undo breaks no line again" (Layout.incrementalLayoutMeasuredBlockCount state) 0
+    compare "whole-document format: redone" state bold |> ignore
+    check "whole-document format: redo breaks no line again" (Layout.incrementalLayoutMeasuredBlockCount state) 0
+    // (What is kept for it goes with the next sweep: typing on does not pile entries up.)
+    let mutable current = selected
+    for i in 1 .. 700 do
+        current <- { current with Blocks = current.Blocks |> List.mapi (fun index block -> if index = i % 300 then Doc.Paragraph (para (sprintf "all-%d" (index + 1)) (words (sprintf "t%d-" i) 12)) else block) }
+        Layout.layoutDocumentPagesIncremental state settings measureText measureRange current |> ignore
+    compare "whole-document format: after typing on" state current |> ignore
+    checkTrue (sprintf "whole-document format: the entries kept do not pile up (%d for 300 paragraphs)" state.Memo.MemoEntries.Count) (state.Memo.MemoEntries.Count <= 2 * 300 + 600)
+
 printfn "incremental-layout: %d passed, %d failed" pass fail
 if fail > 0 then failwithf "%d incremental layout checks failed" fail

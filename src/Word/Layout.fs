@@ -2606,10 +2606,19 @@ let private paragraphMemoEntry (memo: ParagraphLayoutMemo) (paragraphStyle: Para
     // each would put the other out. An id has a few slots: the one that holds
     // this paragraph is found by its buffer, a new entry takes a free slot or
     // one that this pass has not used.
+    //
+    // A slot nothing is in is taken before one whose paragraph the pass has
+    // not used: that one is the paragraph as it was before the last change,
+    // and undo brings it back - the very buffer, so its lines are found here
+    // and not broken again. (Making a 600-page document bold and undoing it
+    // broke, and measured, every line twice. What is kept for it is swept
+    // with the entries of paragraphs that are gone, see
+    // layoutDocumentPagesIncremental.)
     let slotKey (slot: int) = if slot = 0 then para.Id else para.Id + "\u0001" + string slot
     let slots = 3
     let mutable found = None
-    let mutable free = -1
+    let mutable empty = -1
+    let mutable unused = -1
     let mutable slot = 0
     while found.IsNone && slot < slots do
         match memo.MemoEntries.TryGetValue (slotKey slot) with
@@ -2618,8 +2627,8 @@ let private paragraphMemoEntry (memo: ParagraphLayoutMemo) (paragraphStyle: Para
                && sameOrEqual entry.MemoRawMetadata para.Metadata
                && sameOrEqual entry.MemoParagraphStyle paragraphStyle then
                 found <- Some entry
-            elif free < 0 && entry.MemoGeneration <> memo.Generation then free <- slot
-        | false, _ -> if free < 0 then free <- slot
+            elif unused < 0 && entry.MemoGeneration <> memo.Generation then unused <- slot
+        | false, _ -> if empty < 0 then empty <- slot
         slot <- slot + 1
     match found with
     | Some entry ->
@@ -2627,7 +2636,7 @@ let private paragraphMemoEntry (memo: ParagraphLayoutMemo) (paragraphStyle: Para
         entry
     | None ->
         let entry = fresh ()
-        memo.MemoEntries.[slotKey (if free < 0 then slots - 1 else free)] <- entry
+        memo.MemoEntries.[slotKey (if empty >= 0 then empty elif unused >= 0 then unused else slots - 1)] <- entry
         entry
 
 let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (maxWidth: float) (y: float) (xOffset: float) (paragraphStyle: ParagraphStyle) (effectiveBufferForParagraph: ParagraphStyle -> TextBuffer -> TextBuffer) (para: ParagraphBlock) (numberedCounters: Map<string * int, int>) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) (memoEntry: ParagraphLayoutMemoEntry option) =

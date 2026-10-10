@@ -230,6 +230,21 @@ try {
             Word.setViewport(editor, { scale: 1, devicePixelRatio: 1, scrollTop: top, scrollLeft: 0, width: 1000, height: 800 });
             return { select, asked, scroll: stats(times), collapse };
         },
+        // The whole document made bold, the step undone, redone and undone again: one step each
+        // (step: 'select' | 'bold' | 'undo' | 'redo' | 'collapse'), so that a profile is of one of them.
+        formatAll(step) {
+            const t = performance.now();
+            if (step === 'select') { window.perfCaret = Word.getSelection(editor); Word.selectAll(editor); }
+            else if (step === 'bold') Word.toggleBold(editor);
+            else if (step === 'undo') Word.undo(editor);
+            else if (step === 'redo') Word.redo(editor);
+            else if (step === 'collapse') { const c = window.perfCaret; Word.setSelection(editor, c.FocusBlockId, c.FocusOffset, c.FocusBlockId, c.FocusOffset); }
+            // (With what a host reads after every change.)
+            Word.getSelectionFormat(editor); Word.getDocumentSize(editor);
+            const took = performance.now() - t;
+            const stats = Word.getRenderStats(editor);
+            return { took, laidOut: stats.LaidOutBlocks, collected: stats.CollectedBlocks, blocks: stats.Blocks, pages: Word.getDocumentSize(editor).PageCount, complete: Word.isLayoutComplete ? Word.isLayoutComplete(editor) : true };
+        },
         // What the host reads after every change, and vertical caret moves.
         queries(count) {
             const context = [], format = [];
@@ -419,6 +434,45 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
             for (const [key, time] of [...total.entries()].filter(([key]) => /word\//.test(key)).sort((a, b) => b[1] - a[1]).slice(0, 40)) console.log(`  ${time.toFixed(1).padStart(7)} ms  ${key}`);
         }
         console.log(`  select all:  ${ms(all.select)}; getSelectionFormat / getCaretContext with everything selected (asked three times): ${all.asked.slice(0, 6).map(ms).join(', ')}; getSelectionFormat after selecting everything a second time ${ms(all.asked[6])}; a scroll frame (400 px) with everything selected: ${line(all.scroll)}; the caret placed again ${ms(all.collapse)}`);
+        {
+            // Bold on everything, and undo: --profile format prints the time under each function for the step named by --step (bold | undo | redo).
+            const profiled = opt('--step') ?? 'undo';
+            const steps = ['select', 'bold', 'undo', 'redo', 'undo', 'collapse'];
+            const results = [];
+            let done = false;
+            for (const step of steps) {
+                const wanted = profile === 'format' && step === profiled && !done;
+                if (wanted) { await cdp.send('Profiler.enable'); await cdp.send('Profiler.setSamplingInterval', { interval: 200 }); await cdp.send('Profiler.start'); }
+                results.push(await tab.evaluate((name) => window.perf.formatAll(name), step));
+                if (wanted) {
+                    done = true;
+                    const { profile: cpu } = await cdp.send('Profiler.stop');
+                    const interval = cpu.timeDeltas.reduce((a, b) => a + b, 0) / Math.max(1, cpu.samples.length) / 1000;
+                    const byId = new Map(cpu.nodes.map((node) => [node.id, node]));
+                    const selfById = new Map();
+                    for (const id of cpu.samples) selfById.set(id, (selfById.get(id) ?? 0) + interval);
+                    const keyOf = (frame) => `${frame.functionName || '(anonymous)'}  ${frame.url.split('/').slice(-2).join('/')}:${frame.lineNumber + 1}`;
+                    const total = new Map(), self = new Map();
+                    const walk = (node, open) => {
+                        const key = keyOf(node.callFrame);
+                        let sum = selfById.get(node.id) ?? 0;
+                        self.set(key, (self.get(key) ?? 0) + sum);
+                        const inside = open.has(key);
+                        if (!inside) open.add(key);
+                        for (const child of node.children ?? []) sum += walk(byId.get(child), open);
+                        if (!inside) { open.delete(key); total.set(key, (total.get(key) ?? 0) + sum); }
+                        return sum;
+                    };
+                    walk(cpu.nodes[0], new Set());
+                    console.log(`  -- ${step} of the whole document: time under a function --`);
+                    for (const [key, time] of [...total.entries()].sort((a, b) => b[1] - a[1]).slice(0, 45)) console.log(`  ${time.toFixed(1).padStart(7)} ms  ${key}`);
+                    console.log(`  -- ${step} of the whole document: self time --`);
+                    for (const [key, time] of [...self.entries()].sort((a, b) => b[1] - a[1]).slice(0, 25)) console.log(`  ${time.toFixed(1).padStart(7)} ms  ${key}`);
+                }
+            }
+            const [, bold, undo, redo, undoAgain] = results;
+            console.log(`  the whole document made bold: ${ms(bold.took)} (${bold.laidOut} of ${bold.blocks} blocks laid out, ${bold.pages} pages${bold.complete ? '' : ', the layout not complete'}); undo ${ms(undo.took)} (${undo.laidOut} laid out, ${undo.pages} pages); redo ${ms(redo.took)}; undo again ${ms(undoAgain.took)}`);
+        }
         const viewed = await tab.evaluate(() => window.perf.viewer(40));
         console.log(`  the viewer: package read ${(viewed.read / 1000).toFixed(2)} s, load and page frames ${(viewed.laidOut / 1000).toFixed(2)} s (${viewed.pages} pages), the first renderPage ${ms(viewed.first)}, the next 40: ${line(viewed.later)}`
             + (viewed.firstStats ? `; commands collected for the first page: ${viewed.firstStats.CollectedOnPaint} paragraphs of ${viewed.firstStats.Blocks} blocks, after 41 pages ${viewed.lastStats.CollectedOnPaint}` : ''));
