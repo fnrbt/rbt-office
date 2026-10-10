@@ -860,6 +860,7 @@ and private tableBlock resolver images styleMap tableStyleMap comments notes (ta
         PaddingBottom = tablePadding (fun p -> p.PaddingBottom)
         PaddingLeft = tablePadding (fun p -> p.PaddingLeft)
         Floating = table.Floating
+        FloatingXml = table.FloatingXml
         StyleId = table.StyleId
         Look =
             table.Look

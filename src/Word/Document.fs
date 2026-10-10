@@ -305,6 +305,8 @@ and TableBlock = {
     PaddingBottom: float option
     PaddingLeft: float option
     Floating: bool
+    /// The w:tblpPr of a floating table of the file, kept for the save.
+    FloatingXml: string option
     /// The table style (w:tblStyle) and the conditional formats of it that are
     /// switched on (w:tblLook). The style's formatting is already resolved into
     /// the cells; the reference is kept for the file.
@@ -2396,6 +2398,7 @@ let insertTable rows columns doc =
         PaddingBottom = None
         PaddingLeft = None
         Floating = false
+        FloatingXml = None
         StyleId = defaultTableStyleId
         Look = None
     }

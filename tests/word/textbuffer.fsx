@@ -229,6 +229,7 @@ let singleCellTable tableId cell : Doc.TableBlock =
       PaddingBottom = None
       PaddingLeft = None
       Floating = false
+      FloatingXml = None
       StyleId = None
       Look = None }
 let singleColumnTableRow cell : Doc.TableRow =

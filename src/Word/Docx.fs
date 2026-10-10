@@ -1179,6 +1179,7 @@ let rec private blockFromEditor (item: obj) =
             PaddingBottom = optionalDxaAsCanvasPixels (item?PaddingBottom)
             PaddingLeft = optionalDxaAsCanvasPixels (item?PaddingLeft)
             Floating = boolOrDefault false (item?Floating)
+            FloatingXml = optionalString (item?FloatingXml)
             StyleId = optionalString (item?TableStyleId)
             Look =
                 (let look = item?TableLook
@@ -1895,6 +1896,8 @@ let rec private blockToEditor (context: WordStyles.DocumentStyleContext option) 
                 "TableAlignment" ==> table.Alignment
                 "LayoutMode" ==> tableLayoutModeToString table.LayoutMode
                 "GridColumns" ==> (table.GridColumns |> List.map (fun width -> width.Value |> Option.defaultValue 0.0) |> List.toArray)
+                "Floating" ==> table.Floating
+                "FloatingXml" ==> table.FloatingXml
                 "Borders" ==> tableBordersToEditor table.Borders
                 "BackgroundColor" ==> table.BackgroundColor
                 "Shading" ==> shadingToEditor table.Shading

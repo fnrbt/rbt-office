@@ -1602,6 +1602,11 @@ and private generateTable (hyperlinks: Map<string, string>) (images: ImageScope)
         match optionalString (table?TableStyleId) with
         | Some styleId -> yield selfClosing "w:tblStyle" [("w:val", styleId)]
         | None -> ()
+        // A floating table stays one: without its w:tblpPr the table came back in
+        // the text flow and the paragraphs that ran beside it below it.
+        match optionalString (table?FloatingXml) with
+        | Some floatingXml when floatingXml.StartsWith "<w:tblpPr" -> yield floatingXml
+        | _ -> if boolOrDefault false (table?Floating) then yield selfClosing "w:tblpPr" [("w:leftFromText", "180"); ("w:rightFromText", "180"); ("w:vertAnchor", "text"); ("w:tblpY", "1")]
         match optionalTableWidth "w:tblW" (table?PreferredWidth) (table?PreferredWidthType) with
         | Some width -> yield width
         | None -> ()

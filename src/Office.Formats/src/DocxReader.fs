@@ -331,6 +331,9 @@ type Table = {
     LayoutMode: string option
     GridColumns: string list
     Floating: bool
+    /// The w:tblpPr of a floating table as it is in the file (where it floats
+    /// and how far text stays away): written back as it was.
+    FloatingXml: string option
 }
 and TableLook = {
     FirstRow: bool
@@ -2133,6 +2136,7 @@ module Docx =
             LayoutMode = layoutMode
             GridColumns = gridColumns
             Floating = floating
+            FloatingXml = tblPr |> Option.bind (wElem "tblpPr") |> Option.map xmlToString
         }
 
     // Main document content extraction using document builder
@@ -5325,6 +5329,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                 "LayoutMode" ==> table.LayoutMode
                 "GridColumns" ==> (table.GridColumns |> List.toArray)
                 "Floating" ==> table.Floating
+                "FloatingXml" ==> table.FloatingXml
                 "Borders" ==> bordersToEditor tableBorders
             ])
     )

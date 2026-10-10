@@ -2732,6 +2732,7 @@ module API =
           PaddingBottom = None
           PaddingLeft = None
           Floating = false
+          FloatingXml = None
           StyleId = None
           Look = None }
 
