@@ -833,8 +833,11 @@ const cellAtPoint = (host, x, y) => {
 export const pointOfCell = async (grid, host, row, col) => {
     const { columnLeft, rowTop } = await import('/spreadsheet/Layout.js');
     const model = grid.GetModel(), { scroller } = parts(host);
-    const x = 50 + (columnLeft(model, col) + columnLeft(model, col + 1)) / 2 - (col < model.FrozenCols ? 0 : scroller.scrollLeft);
-    const y = 30 + (rowTop(model, row) + rowTop(model, row + 1)) / 2 - (row < model.FrozenRows ? 0 : scroller.scrollTop);
+    // (The header area is the corner's: 50 x 30, plus the outline strips of a sheet with groups.)
+    const corner = host.querySelector('.spreadsheet-corner');
+    const headerWidth = model.ShowHeaders === false ? 0 : parseFloat(corner.style.width), headerHeight = model.ShowHeaders === false ? 0 : parseFloat(corner.style.height);
+    const x = headerWidth + (columnLeft(model, col) + columnLeft(model, col + 1)) / 2 - (col < model.FrozenCols ? 0 : scroller.scrollLeft);
+    const y = headerHeight + (rowTop(model, row) + rowTop(model, row + 1)) / 2 - (row < model.FrozenRows ? 0 : scroller.scrollTop);
     return [x, y];
 };
 export const mouse = async (grid, host, type, row, col, options = {}) => {
@@ -1210,7 +1213,8 @@ checks['grid-read-only'] = async () => {
     try {
         const { scroller, content } = parts(host);
         await grid.ImportXlsx((await bytesOf('tests/real-world/milk-street-office.xlsx')).slice());
-        const shown = (selector) => [...host.querySelectorAll(selector)].filter((node) => getComputedStyle(node).display !== 'none').length;
+        // (Not the parts of a header node that waits in the pool: those are in a hidden node.)
+        const shown = (selector) => [...host.querySelectorAll(selector)].filter((node) => getComputedStyle(node).display !== 'none' && node.getClientRects().length > 0).length;
         check('an editor shows a fill handle, filter buttons and resize handles', [shown('.spreadsheet-fill-handle') > 0, shown('.col-filter-btn') > 0, shown('.col-resize-handle') > 0, shown('.row-resize-handle') > 0], [true, true, true, true]);
         grid.SetReadOnly(true);
         check('a viewer shows none of them', [shown('.spreadsheet-fill-handle'), shown('.col-filter-btn'), shown('.col-resize-handle'), shown('.row-resize-handle'), grid.IsReadOnly()], [0, 0, 0, 0, true]);
@@ -1246,7 +1250,8 @@ checks['grid-read-only'] = async () => {
         // Sheets.
         const visible = grid.SheetVisibility(), other = grid.GetSheetNames().findIndex((_, index) => index !== grid.GetActiveSheetIndex() && visible[index]);
         grid.SwitchSheet(other);
-        check('sheets can be switched', [grid.GetActiveSheetIndex(), scroller.scrollTop, cellAtPoint(host, 60, 40)], [other, 0, [0, 0]]);
+        // (That sheet has grouped rows: its cells begin after the outline strip.)
+        check('sheets can be switched', [grid.GetActiveSheetIndex(), scroller.scrollTop, cellAtPoint(host, ...(await pointOfCell(grid, host, 0, 0)))], [other, 0, [0, 0]]);
         check('still no change was reported', changes.length, 0);
         // Back to an editor.
         grid.SetReadOnly(false);

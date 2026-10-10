@@ -160,3 +160,121 @@ checks['chrome-filter-buttons'] = async () => {
     finally { document.getElementById('filter-dropdown')?.remove(); close(); }
     return lines;
 };
+
+// The outline strips: brackets, +/- and level buttons for grouped rows / columns.
+checks['chrome-outline'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        for (let r = 0; r < 60; r++) for (let c = 0; c < 6; c++) grid.SetCell(r, c, String(r * 10 + c));
+        await frame();
+        // (From the inside of the grid's border.)
+        const inner = () => { const scroller = parts(host).scroller, box = scroller.getBoundingClientRect(); return [box.left + scroller.clientLeft, box.top + scroller.clientTop]; };
+        const origin = () => { const box = cellBox(host, 0, 0), [left, top] = inner(); return [Math.round(box.left - left), Math.round(box.top - top)]; };
+        const nodes = (kind) => [...host.querySelectorAll('.spreadsheet-outline-' + kind)];
+        const buttons = (axis) => nodes('button').filter((n) => n.getAttribute('data-axis') === axis).map((n) => [Number(n.getAttribute('data-first')), Number(n.getAttribute('data-last')), n.textContent]);
+        const buttonOf = (axis, first) => nodes('button').find((n) => n.getAttribute('data-axis') === axis && n.getAttribute('data-first') === String(first));
+        const levelOf = (axis, level) => nodes('level').find((n) => n.getAttribute('data-axis') === axis && n.getAttribute('data-level') === String(level));
+        const click = async (node) => { const box = node.getBoundingClientRect(); await realClick(box.left + box.width / 2, box.top + box.height / 2); };
+        const rowOfButton = (node) => { const box = node.getBoundingClientRect(), y = box.top + box.height / 2; return [...host.querySelectorAll('.spreadsheet-row-header')].filter((h) => { const b = h.getBoundingClientRect(); return b.height > 0 && y >= b.top && y <= b.bottom; }).map((h) => Number(h.getAttribute('data-row')))[0]; };
+        const colOfButton = (node) => { const box = node.getBoundingClientRect(), x = box.left + box.width / 2; return [...host.querySelectorAll('.spreadsheet-col-header')].filter((h) => { const b = h.getBoundingClientRect(); return b.width > 0 && x >= b.left && x <= b.right; }).map((h) => Number(h.getAttribute('data-col')))[0]; };
+        check('no groups: no strip, the cells begin after the headers', [host.querySelectorAll('.spreadsheet-outline').length, origin(), grid.GetShowOutline()], [0, [50, 30], true]);
+
+        grid.GroupRows('3:8'); grid.GroupRows('4:5');
+        await frame();
+        check('grouped rows: a strip of three steps left of the row numbers', [origin(), buttons('rows'), nodes('level').map((n) => n.textContent)], [[98, 30], [[2, 7, '−'], [3, 4, '−']], ['1', '2', '3']]);
+        check('the +/- buttons are on the summary rows (the row below each group)', [rowOfButton(buttonOf('rows', 2)), rowOfButton(buttonOf('rows', 3))], [8, 5]);
+        check('the row numbers moved right with the cells', Math.round(host.querySelector('.spreadsheet-row-header[data-row="0"]').getBoundingClientRect().left - inner()[0]), 48);
+        check('the brackets are drawn', nodes('line').length, 2);
+        // A cell is still where the pointer says it is.
+        const b2 = cellBox(host, 1, 1);
+        await realClick(b2.left + b2.width / 2, b2.top + b2.height / 2);
+        check('a click on a cell selects that cell', grid.GetSelectionRef(), 'B2');
+        await window.realType('77'); await window.realKey('Enter'); await frame();
+        check('... and typing goes there', grid.GetCell(1, 1).value, 77);
+
+        await click(buttonOf('rows', 3));
+        check('a click on the inner button collapses its group', [grid.GetHiddenRows(), grid.GetOutline().rows.map((g) => g.collapsed), buttons('rows'), grid.GetSelectionRef()], [['4:5'], [false, true], [[2, 7, '−'], [3, 4, '+']], 'B3']);
+        grid.Undo(); await frame();
+        check('undo', [grid.GetHiddenRows(), buttons('rows').map((b) => b[2])], [[], ['−', '−']]);
+        grid.Redo(); await frame();
+        check('redo', [grid.GetHiddenRows(), buttons('rows').map((b) => b[2])], [['4:5'], ['−', '+']]);
+        await click(buttonOf('rows', 3));
+        check('a click on + expands it', [grid.GetHiddenRows(), buttons('rows').map((b) => b[2])], [[], ['−', '−']]);
+        await click(levelOf('rows', 1));
+        check('level 1: every group collapsed', [grid.GetHiddenRows(), grid.GetOutline().rows.map((g) => g.collapsed), buttons('rows')], [['3:8'], [true, true], [[2, 7, '+']]]);
+        await click(levelOf('rows', 2));
+        check('level 2: the outer group open', [grid.GetHiddenRows(), buttons('rows').map((b) => b[2])], [['4:5'], ['−', '+']]);
+        await click(levelOf('rows', 3));
+        check('level 3: all rows', grid.GetHiddenRows(), []);
+        grid.ShowOutlineLevel('rows', 1);
+        check('ShowOutlineLevel does the same', grid.GetHiddenRows(), ['3:8']);
+        grid.Undo();
+        check('... as one undo step', grid.GetHiddenRows(), []);
+
+        // ---- columns ----
+        grid.GroupColumns('C:D'); await frame();
+        check('grouped columns: a strip above the column letters', [origin(), buttons('columns'), colOfButton(buttonOf('columns', 2)), nodes('level').filter((n) => n.getAttribute('data-axis') === 'columns').map((n) => n.textContent)], [[98, 63], [[2, 3, '−']], 4, ['1', '2']]);
+        await click(buttonOf('columns', 2));
+        check('a click collapses the columns', [grid.GetHiddenColumns(), buttons('columns')], [['C:D'], [[2, 3, '+']]]);
+        await click(buttonOf('columns', 2));
+        check('... and expands them', grid.GetHiddenColumns(), []);
+
+        // ---- the summary rows above ----
+        check('GetOutline says where the summaries are', [grid.GetOutline().summaryBelow, grid.GetOutline().summaryRight], [true, true]);
+        grid.SetOutlineSummary(false, true); await frame();
+        check('summary above: the buttons are on the row before each group', [grid.GetOutline().summaryBelow, rowOfButton(buttonOf('rows', 2)), rowOfButton(buttonOf('rows', 3))], [false, 1, 2]);
+        await click(buttonOf('rows', 3));
+        check('... and collapse it', [grid.GetHiddenRows(), grid.GetOutline().rows.map((g) => g.collapsed)], [['4:5'], [false, true]]);
+
+        // ---- zoom, frozen panes, scrolling ----
+        grid.SetZoom(1.5); await frame();
+        check('zoomed: the strip scales', origin(), [147, 95]);
+        await click(buttonOf('rows', 3));
+        check('... and its buttons are where they are drawn', grid.GetHiddenRows(), []);
+        grid.SetZoom(1); await frame();
+        grid.FreezeAt(2, 0); await frame();
+        const levelBox = levelOf('rows', 2).getBoundingClientRect();
+        parts(host).scroller.scrollTop = 400; await frame(); await frame();
+        const after = levelOf('rows', 2).getBoundingClientRect();
+        check('scrolled: the level buttons stay; the groups scroll away under the headers', [near(after.top, levelBox.top), near(after.left, levelBox.left), document.elementFromPoint(after.left + 6, after.top + 6) === levelOf('rows', 2)], [true, true, true]);
+        const visible = nodes('button').filter((n) => n.getAttribute('data-axis') === 'rows').map((n) => { const b = n.getBoundingClientRect(); return document.elementFromPoint(b.left + 6, b.top + 6) === n; });
+        check('... no group button of a row that scrolled away can be hit', visible.includes(true), false);
+        parts(host).scroller.scrollTop = 0; await frame(); grid.Unfreeze(); await frame();
+
+        // ---- switching it off; a sheet without headers ----
+        grid.SetShowOutline(false); await frame();
+        check('SetShowOutline(false): no strip, the cells are back', [host.querySelectorAll('.spreadsheet-outline').length, origin(), grid.GetShowOutline(), grid.GetOutline().rowLevels], [0, [50, 30], false, 2]);
+        grid.SetShowOutline(true); await frame();
+        check('SetShowOutline(true)', [origin(), nodes('button').length], [[98, 63], 3]);
+        grid.SetShowHeaders(false); await frame();
+        check('no headers: no strip', [host.querySelectorAll('.spreadsheet-outline').length, origin()], [0, [0, 0]]);
+        grid.SetShowHeaders(true); await frame();
+        check('headers again', origin(), [98, 63]);
+        grid.SetReadOnly(true); await frame();
+        await click(buttonOf('rows', 3));
+        check('a viewer draws the strip; its buttons do nothing', [nodes('button').length, grid.GetHiddenRows()], [3, []]);
+        grid.SetReadOnly(false);
+
+        // ---- export, re-import ----
+        grid.SetGroupCollapsed('rows', 3, true); grid.SetGroupCollapsed('columns', 2, true);
+        const bytes = await grid.ExportXlsx();
+        const zip = await window.JSZip.loadAsync(bytes);
+        const sheetXml = await zip.files['xl/worksheets/sheet1.xml'].async('string');
+        check('written: outlinePr, and the collapsed mark on the row above', [/<sheetPr><outlinePr summaryBelow="0"\/><\/sheetPr>/.test(sheetXml), /<row r="3"[^>]*collapsed="1"/.test(sheetXml), /<row r="4"[^>]*hidden="1"[^>]*outlineLevel="2"|<row r="4"[^>]*outlineLevel="2"[^>]*hidden="1"/.test(sheetXml)], [true, true, true]);
+        const again = mountGrid();
+        try {
+            await again.grid.ImportXlsx(bytes); await frame();
+            check('opened again: the outline', JSON.stringify(again.grid.GetOutline()), JSON.stringify(grid.GetOutline()));
+            check('... hidden rows and columns', [again.grid.GetHiddenRows(), again.grid.GetHiddenColumns()], [['4:5'], ['C:D']]);
+            const reButton = [...again.host.querySelectorAll('.spreadsheet-outline-button')].find((n) => n.getAttribute('data-axis') === 'rows' && n.getAttribute('data-first') === '3');
+            check('... its strip', [!!reButton, reButton && reButton.textContent], [true, '+']);
+            if (reButton) { await click(reButton); check('... expands by a click', again.grid.GetHiddenRows(), []); }
+            again.grid.Undo();
+            const twice = await reopened(again.grid);
+            try { check('written again from the file: the same outline', JSON.stringify(twice.grid.GetOutline()), JSON.stringify(grid.GetOutline())); } finally { twice.close(); }
+        } finally { again.close(); }
+    } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
+    finally { close(); }
+    return lines;
+};

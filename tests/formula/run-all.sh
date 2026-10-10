@@ -64,6 +64,7 @@ stages=(
     stage46-quicksort
     stage47-x14rules
     stage48-tableentry
+    stage49-chrome
     numbertext
 )
 

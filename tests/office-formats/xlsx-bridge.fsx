@@ -226,7 +226,7 @@ let viewOut =
           NameInfo = Map.empty; DefinedNames = Map.empty; Source = None; Macros = None }
 let viewBack = reread viewOut
 eq "view: written to the sheet view" (viewBack.Sheets |> List.map (fun s -> s.View, s.ShowZeros, s.ShowGridLines, s.FrozenPane))
-    [ { XlsxReader.ShowRowColHeaders = false; ShowFormulas = true; ZoomScale = 135; TabColor = None }, false, false, Some { XlsxReader.XSplit = 2; YSplit = 3 }
+    [ { XlsxReader.ShowRowColHeaders = false; ShowFormulas = true; ZoomScale = 135; TabColor = None; SummaryBelow = true; SummaryRight = true }, false, false, Some { XlsxReader.XSplit = 2; YSplit = 3 }
       XlsxReader.defaultSheetView, true, true, None ]
 let viewAgain = (Bridge.Import.importWorkbook viewBack).Sheets |> Array.map (fun sheet -> sheet.Model)
 eq "view: the import has what the export had"
@@ -547,6 +547,32 @@ eq "axes: edited rows of a file's sheet" (rowAttributes axesEditedFile)
     [ 4, true, Some 15.0, 0, false; 6, false, None, 1, false; 7, false, Some 15.0, 2, false; 8, false, Some 15.0, 2, false; 9, false, None, 1, false ]
 eq "axes: the row shown again has its height" (axesEditedFile.Sheets.[0].Rows |> List.tryFind (fun r -> r.Index = 3) |> Option.bind (fun r -> r.Height) |> Option.map (fun h -> Math.Round (h * 1.333))) (Some 40.0)
 eq "axes: edited columns" (columnAttributes axesEditedFile |> List.map (fun (first, last, hidden, _, level, collapsed) -> first, last, hidden, level, collapsed)) [ 2, 2, true, 0, false; 3, 3, true, 0, false; 5, 6, true, 0, false; 8, 8, true, 0, false ]
+
+// The outline's summary rows above / columns to the left (sheetPr outlinePr): the collapsed mark is on the row before the group.
+let summaryModel =
+    fresh |> Ops.setOutlineSummary false false
+    |> Ops.changeOutlineLevel true 5 8 1 |> Ops.setGroupCollapsed "test" true 6 true
+    |> Ops.changeOutlineLevel false 4 5 1 |> Ops.setGroupCollapsed "test" false 4 true
+let summaryBytes = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (axesInput summaryModel None))
+let summaryFile = XlsxReader.loadBytesNative summaryBytes |> Option.get
+let sheetXmlOf (bytes: byte array) =
+    use zip = new System.IO.Compression.ZipArchive(new MemoryStream(bytes))
+    use reader = new StreamReader(zip.GetEntry("xl/worksheets/sheet1.xml").Open())
+    reader.ReadToEnd()
+ok "outline: outlinePr is written before the dimension" ((sheetXmlOf summaryBytes).Contains "<sheetPr><outlinePr summaryBelow=\"0\" summaryRight=\"0\"/></sheetPr><dimension") (sheetXmlOf summaryBytes |> fun x -> x.Substring(0, min 400 x.Length))
+ok "outline: no outlinePr for Excel's default" (not ((sheetXmlOf (XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (axesInput axesModel None)))).Contains "outlinePr")) ""
+eq "outline: the file says where the summaries are" (summaryFile.Sheets.[0].View.SummaryBelow, summaryFile.Sheets.[0].View.SummaryRight) (false, false)
+eq "outline: summary above: the mark is on the row before the group" (rowAttributes summaryFile) [ 5, false, None, 0, true; 6, true, None, 1, false; 7, true, None, 1, false; 8, true, None, 1, false; 9, true, None, 1, false ]
+eq "outline: summary left: on the column before" (columnAttributes summaryFile |> List.map (fun (first, last, hidden, _, level, collapsed) -> first, last, hidden, level, collapsed)) [ 4, 4, false, 0, true; 5, 6, true, 1, false ]
+let summaryImported = Bridge.Import.importWorkbook summaryFile
+let summaryAgain = summaryImported.Sheets.[0].Model
+eq "outline: read back" (summaryAgain.Axes.SummaryBelow, summaryAgain.Axes.SummaryRight, Ops.outlineGroups true summaryAgain, Ops.outlineGroups false summaryAgain, summaryAgain.Axes.CollapsedRows |> Set.toList)
+    (false, false, [ 5, 8, 1, true ], [ 4, 5, 1, true ], [ 4 ])
+let summaryExpanded = summaryAgain |> Ops.setGroupCollapsed "test" true 6 false |> Ops.setOutlineSummary true false
+let summaryEditedBytes = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (axesInput summaryExpanded (Some summaryImported.Source)))
+let summaryEdited = XlsxReader.loadBytesNative summaryEditedBytes |> Option.get
+eq "outline: edited in a file's sheet: expanded, summary below again" (summaryEdited.Sheets.[0].View.SummaryBelow, summaryEdited.Sheets.[0].View.SummaryRight, rowAttributes summaryEdited |> List.map (fun (i, hidden, _, level, collapsed) -> i, hidden, level, collapsed))
+    (true, false, [ 6, false, 1, false; 7, false, 1, false; 8, false, 1, false; 9, false, 1, false ])
 
 // ---- the AutoFilter: its range, every kind of column filter, the rows it hides, the hidden name ----
 let filterCell value = { Value = value; Format = defaultFormat; Comment = None }

@@ -470,9 +470,15 @@ type SheetViewOptions = {
     /// for an rgb colour, else "theme:N" / "theme:N:tint" / "indexed:N" as
     /// the file has it. None = no colour.
     TabColor: string option
+    /// `<sheetPr><outlinePr summaryBelow summaryRight/>`: whether the summary
+    /// row of a group of rows is the one below it (else the one above) and
+    /// the summary column of a group of columns the one to its right (else
+    /// to its left). Both true when the file does not say.
+    SummaryBelow: bool
+    SummaryRight: bool
 }
 
-let defaultSheetView : SheetViewOptions = { ShowRowColHeaders = true; ShowFormulas = false; ZoomScale = 100; TabColor = None }
+let defaultSheetView : SheetViewOptions = { ShowRowColHeaders = true; ShowFormulas = false; ZoomScale = 100; TabColor = None; SummaryBelow = true; SummaryRight = true }
 
 /// The colour of a `<tabColor>` element from its attributes (see SheetViewOptions.TabColor).
 let tabColorOfAttributes (rgb: string option) (theme: string option) (tint: string option) (indexed: string option) : string option =
@@ -2321,13 +2327,21 @@ module Xlsx =
                 (match Xml.attr "zoomScale" view |> Option.bind tryParseInt with
                  | Some percent when percent >= 10 && percent <= 400 -> percent
                  | _ -> 100)
-              TabColor = None }
+              TabColor = None; SummaryBelow = true; SummaryRight = true }
 
     /// `<sheetPr><tabColor rgb | theme tint | indexed/></sheetPr>`.
     let private tabColorOf (sheet: XmlNode) : string option =
         sElem "sheetPr" sheet
         |> Option.bind (sElem "tabColor")
         |> Option.bind (fun node -> tabColorOfAttributes (Xml.attr "rgb" node) (Xml.attr "theme" node) (Xml.attr "tint" node) (Xml.attr "indexed" node))
+
+    /// `<sheetPr><outlinePr summaryBelow summaryRight/></sheetPr>` (both true when absent).
+    let private outlineSummaryOf (sheet: XmlNode) : bool * bool =
+        match sElem "sheetPr" sheet |> Option.bind (sElem "outlinePr") with
+        | Some node ->
+            let flag (name: string) = match Xml.attr name node with Some v -> not (v = "0" || v = "false") | None -> true
+            flag "summaryBelow", flag "summaryRight"
+        | None -> true, true
 
     /// `<sheetView showGridLines="0"/>`. Excel's default is true; polished
     /// workbooks turn it off and rely on explicit cell borders.
@@ -2744,7 +2758,7 @@ module Xlsx =
                             (match nativeFloatAttr reader "zoomScale" |> Option.map int with
                              | Some percent when percent >= 10 && percent <= 400 -> percent
                              | _ -> 100)
-                          TabColor = None }
+                          TabColor = None; SummaryBelow = true; SummaryRight = true }
                     if not reader.IsEmptyElement then
                         sheetViewDepth <- reader.Depth
                 | System.Xml.XmlNodeType.Element when reader.LocalName = "pane" && sheetViewDepth >= 0 ->
@@ -2765,10 +2779,12 @@ module Xlsx =
                 | _ -> ()
         showZerosValue, showGridLinesValue, pane, view
 
-    /// What `<sheetPr>` holds: the fit-to-page flag and the tab colour.
-    let private fitToPageNative (reader: System.Xml.XmlReader) : bool * string option =
+    /// What `<sheetPr>` holds: the fit-to-page flag, the tab colour and where
+    /// the summary rows / columns of the outline are (below, right).
+    let private fitToPageNative (reader: System.Xml.XmlReader) : bool * string option * (bool * bool) =
         let mutable fit = false
         let mutable tabColor = None
+        let mutable summary = true, true
         if not reader.IsEmptyElement then
             let depth = reader.Depth
             let mutable doneReading = false
@@ -2779,10 +2795,12 @@ module Xlsx =
                 | System.Xml.XmlNodeType.Element when reader.LocalName = "tabColor" ->
                     let attribute (name: string) = match reader.GetAttribute name with null -> None | value -> Some value
                     tabColor <- tabColorOfAttributes (attribute "rgb") (attribute "theme") (attribute "tint") (attribute "indexed")
+                | System.Xml.XmlNodeType.Element when reader.LocalName = "outlinePr" ->
+                    summary <- nativeBoolAttrDefault true reader "summaryBelow", nativeBoolAttrDefault true reader "summaryRight"
                 | System.Xml.XmlNodeType.EndElement when reader.Depth = depth ->
                     doneReading <- true
                 | _ -> ()
-        fit, tabColor
+        fit, tabColor, summary
 
     let private defaultPageSetupNative fit =
         {
@@ -2941,6 +2959,7 @@ module Xlsx =
             let mergedCells = System.Collections.Generic.List<MergeCell>()
             let hyperlinks = System.Collections.Generic.List<Hyperlink>()
             let mutable format = emptySheetFormat
+            let mutable summaryValue = true, true
             let mutable frozenPaneValue = None
             let mutable showZerosValue = true
             let mutable viewValue = defaultSheetView
@@ -2964,9 +2983,10 @@ module Xlsx =
                 | System.Xml.XmlNodeType.Element ->
                     match reader.LocalName with
                     | "sheetPr" ->
-                        let fit, tabColor = fitToPageNative reader
+                        let fit, tabColor, summary = fitToPageNative reader
                         fitToPage <- fit
                         tabColorValue <- tabColor
+                        summaryValue <- summary
                     | "sheetViews" ->
                         let showZeros, showGridLines, frozenPane, view = sheetViewsNative reader
                         viewValue <- view
@@ -3028,7 +3048,7 @@ module Xlsx =
                 FrozenPane = frozenPaneValue
                 ShowZeros = showZerosValue
                 ShowGridLines = showGridLinesValue
-                View = { viewValue with TabColor = tabColorValue }
+                View = { viewValue with TabColor = tabColorValue; SummaryBelow = fst summaryValue; SummaryRight = snd summaryValue }
                 Hyperlinks = resizeListToList hyperlinks
                 PageSetup = pageSetupFinal
                 PageMargins = pageMarginsValue
@@ -3084,7 +3104,7 @@ module Xlsx =
             FrozenPane = frozenPane sheet
             ShowZeros = showZeros sheet
             ShowGridLines = showGridLines sheet
-            View = { sheetViewOptions sheet with TabColor = tabColorOf sheet }
+            View = (let below, right = outlineSummaryOf sheet in { sheetViewOptions sheet with TabColor = tabColorOf sheet; SummaryBelow = below; SummaryRight = right })
             Hyperlinks = hyperlinks resolveRel sheet
             PageSetup = pageSetup sheet
             PageMargins = pageMargins sheet

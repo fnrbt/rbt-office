@@ -443,9 +443,14 @@ type XlsxSheetViewOut = {
     /// The tab's colour, as XlsxReader.SheetViewOptions.TabColor has it
     /// ("#RRGGBB", "theme:N", "theme:N:tint" or "indexed:N").
     TabColor: string option
+    /// Where the outline's summary rows / columns are: below their group
+    /// (else above), right of it (else left). Written as `<outlinePr>` when
+    /// one of them is false.
+    SummaryBelow: bool
+    SummaryRight: bool
 }
 
-let defaultSheetViewOut : XlsxSheetViewOut = { ShowZeros = true; ShowHeaders = true; ShowFormulas = false; ZoomScale = 100; TabColor = None }
+let defaultSheetViewOut : XlsxSheetViewOut = { ShowZeros = true; ShowHeaders = true; ShowFormulas = false; ZoomScale = 100; TabColor = None; SummaryBelow = true; SummaryRight = true }
 
 type XlsxSheetOut = {
     Name: string
@@ -1833,9 +1838,14 @@ let private worksheetXml (styles: StyleBook) sharedIndex (dynamicCm: int) sheetI
              | _ -> "")
         | Some color when color.StartsWith "indexed:" -> sprintf "<tabColor indexed=\"%s\"/>" (escaped (color.Substring 8))
         | _ -> ""
+    // (... and outlinePr between the two.)
+    let outlinePr =
+        if sheet.View.SummaryBelow && sheet.View.SummaryRight then ""
+        else
+            "<outlinePr" + (if sheet.View.SummaryBelow then "" else " summaryBelow=\"0\"") + (if sheet.View.SummaryRight then "" else " summaryRight=\"0\"") + "/>"
     let sheetPr =
-        if hasFitToPage || tabColor <> "" then
-            "<sheetPr>" + tabColor + (if hasFitToPage then "<pageSetUpPr fitToPage=\"1\"/>" else "") + "</sheetPr>"
+        if hasFitToPage || tabColor <> "" || outlinePr <> "" then
+            "<sheetPr>" + tabColor + outlinePr + (if hasFitToPage then "<pageSetUpPr fitToPage=\"1\"/>" else "") + "</sheetPr>"
         else ""
     declaration + "\n"
     + sprintf "<worksheet xmlns=\"%s\" xmlns:r=\"%s\">" Namespaces.spreadsheet Namespaces.relationships
@@ -2633,7 +2643,8 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
               FrozenRows = sheet.FrozenPane |> Option.map (fun p -> p.YSplit) |> Option.defaultValue 0
               FrozenCols = sheet.FrozenPane |> Option.map (fun p -> p.XSplit) |> Option.defaultValue 0
               ShowGridLines = sheet.ShowGridLines
-              View = { ShowZeros = sheet.ShowZeros; ShowHeaders = sheet.View.ShowRowColHeaders; ShowFormulas = sheet.View.ShowFormulas; ZoomScale = sheet.View.ZoomScale; TabColor = sheet.View.TabColor }
+              View = { ShowZeros = sheet.ShowZeros; ShowHeaders = sheet.View.ShowRowColHeaders; ShowFormulas = sheet.View.ShowFormulas; ZoomScale = sheet.View.ZoomScale; TabColor = sheet.View.TabColor
+                       SummaryBelow = sheet.View.SummaryBelow; SummaryRight = sheet.View.SummaryRight }
               Tables =
                 sheet.Tables
                 |> List.map (fun t ->

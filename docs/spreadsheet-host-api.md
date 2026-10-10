@@ -441,15 +441,28 @@ columns and is written to / read from XLSX (`<row ht hidden outlineLevel collaps
 | `GroupRows(target, count?)` / `GroupColumns(target, count?)` | | | Excel's Data > Group: the outline level of each row / column named goes up by one (max 7). |
 | `UngroupRows(target, count?)` / `UngroupColumns(target, count?)` | | | The level goes down by one (rows in no group are left alone). |
 | `SetGroupCollapsed(axis, index, collapsed)` | `axis` `"rows"` \| `"columns"`; `index` 0-based row / column inside the group; `collapsed` boolean | | Acts on the group the row / column is in at its own level (its neighbours at that level or deeper). Collapsing hides the group's rows; expanding shows them, except those of groups inside it that are collapsed themselves. The row / column after the group is its summary and carries the collapsed mark (Excel's default "summary below / right"). Throws when the row / column is in no group, or `axis` is not one of the two. |
-| `GetOutline()` | | `{ rows: [group], columns: [group], rowLevels, columnLevels }` with `group = { first, last, range: "3:7" \| "B:D", level: 1..7, collapsed }` | Outer groups come before the groups inside them; `rowLevels` / `columnLevels` are the deepest level (0 = no groups). |
+| `ShowOutlineLevel(axis, level)` | `axis` `"rows"` \| `"columns"`; `level` 1..8 | | Excel's level buttons: shows the rows / columns of the levels below `level`, collapses every group from `level` on (1 = only what is in no group, deepest + 1 = everything). Rows hidden by hand inside the groups are shown too. |
+| `SetOutlineSummary(below, right)` | two booleans | | Where a group's summary row / column is (the sheet's `<outlinePr summaryBelow summaryRight>`): below / right (`true`, Excel's default) or above / left. The +/- button and the `collapsed` mark of a group are on its summary row / column. Collapsed groups stay collapsed. |
+| `SetShowOutline(show)` / `GetShowOutline()` | boolean | boolean | Whether the grid draws the outline strips (default `true`). A setting of the component for every sheet: not saved, no undo step, no revision. |
+| `GetOutline()` | | `{ rows: [group], columns: [group], rowLevels, columnLevels, summaryBelow, summaryRight }` with `group = { first, last, range: "3:7" \| "B:D", level: 1..7, collapsed }` | Outer groups come before the groups inside them; `rowLevels` / `columnLevels` are the deepest level (0 = no groups). |
 
 In the grid: dragging a header's resize handle is now one undo step (it was none); a **double click on a resize handle** fits that column /
 row (`AutoFitColumns` / `AutoFitRows`), and when whole columns / rows are selected and the handle is one of theirs, all of them. Arrow keys,
 selection, drawing anchors, the portable painter and the PDF path treat hidden rows / columns as before (size 0).
 
-Limits: the grid draws **no outline gutter** (no +/- buttons, no level buttons): a host draws its own from `GetOutline()` and calls
-`SetGroupCollapsed`. Summary rows are always "below / right" (the sheet's `outlinePr` is not modelled; a file that says otherwise keeps its
-`sheetPr` only while written from the file). Auto-fit looks only at the cells that exist; on a very large sheet a whole column costs a
+**The outline strips.** A sheet with grouped rows gets a strip left of the row numbers, one with grouped columns a strip above the column
+letters, each `(deepest level + 1) x 15 + 3` px wide (48 px for two levels): a bracket per group (`.spreadsheet-outline-line`), a +/- button
+on the group's summary row / column (`.spreadsheet-outline-button` with `data-axis="rows|columns"`, `data-first`, `data-last`, `data-level`,
+`data-collapsed`), and the level buttons 1, 2, 3 ... in the corner (`.spreadsheet-outline-level` with `data-axis`, `data-level`). A click on
++/- is `SetGroupCollapsed`, on a level button `ShowOutlineLevel` (one undo step each); it selects nothing. **The cells and headers move right /
+down by the strip**: the header area is 50 x 30 px only on a sheet without groups (read it from `.spreadsheet-corner`'s size, or use
+`GetCellRect`-style members rather than fixed offsets). The strips scale with the zoom, stay in place while the sheet scrolls, and go with
+`SetShowOutline(false)` and with the headers (`SetShowHeaders(false)`: Excel keeps the strip there, the grid does not). A viewer draws them
+with inert buttons. A group whose summary row / column is hidden or off the sheet (a group at row 1 with the summary above) has no button:
+use the level buttons or `SetGroupCollapsed`. At most 1500 strip elements are drawn for the rows / columns in view.
+
+Limits: `SetShowOutline` is not the sheet's `showOutlineSymbols` (that attribute is not read or written).
+Auto-fit looks only at the cells that exist; on a very large sheet a whole column costs a
 pass over the sheet's cells (dashboard "Data", 846 000 cells: one column 0.46 s, eleven columns 3.4 s, all 76 931 rows 0.9 s).
 Auto-fit does not account for conditional-format icons / data bars, filter buttons, or rotation other than 90 degrees.
 A row that was hidden in an opened file without a height of its own is written with the file's default height once the sheet's rows change.

@@ -1646,11 +1646,11 @@ checks['api-rowcol'] = async () => {
         check('a width of 0 hides; any other width shows', [grid.GetHiddenColumns(), (grid.SetColumnWidth(3, 70), grid.GetHiddenColumns()), grid.GetColumnWidth(3)], [['D:D'], [], 70]);
 
         // ---- outline ----
-        check('no outline at first', grid.GetOutline(), { rows: [], columns: [], rowLevels: 0, columnLevels: 0 });
+        check('no outline at first', grid.GetOutline(), { rows: [], columns: [], rowLevels: 0, columnLevels: 0, summaryBelow: true, summaryRight: true });
         grid.GroupRows('11:16'); grid.GroupRows(11, 2); grid.GroupColumns('J:K');
         check('GroupRows / GroupColumns: levels', grid.GetOutline(), {
             rows: [{ first: 10, last: 15, range: '11:16', level: 1, collapsed: false }, { first: 11, last: 12, range: '12:13', level: 2, collapsed: false }],
-            columns: [{ first: 9, last: 10, range: 'J:K', level: 1, collapsed: false }], rowLevels: 2, columnLevels: 1 });
+            columns: [{ first: 9, last: 10, range: 'J:K', level: 1, collapsed: false }], rowLevels: 2, columnLevels: 1, summaryBelow: true, summaryRight: true });
         grid.SetGroupCollapsed('rows', 11, true);
         check('collapsing the inner group hides its rows', [grid.GetHiddenRows(), grid.GetOutline().rows.map((group) => group.collapsed)], [['12:13'], [false, true]]);
         grid.SetGroupCollapsed('rows', 14, true);

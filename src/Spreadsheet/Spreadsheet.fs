@@ -626,6 +626,26 @@ type Spreadsheet(container: Element) =
     let mutable headerHeight = 30.0
     let mutable rowHeaderWidth = 50.0
     let mutable appliedHeaders = true
+    // --- the outline gutter ----------------------------------------------------------
+    // A sheet with grouped rows has a strip left of its row numbers, one with
+    // grouped columns a strip above its column letters: a bracket and a +/-
+    // button per group and the level buttons (1, 2, 3 ...). The strips are part
+    // of the header area (`rowHeaderWidth` / `headerHeight` include them).
+    let mutable showOutline = true
+    /// The width of one level of the strip (a 13 px button and its gap).
+    let outlineStep = 15.0
+    /// The width of the rows' strip and the height of the columns' one, as drawn (0: none).
+    let mutable gutterWidth = 0.0
+    let mutable gutterHeight = 0.0
+    /// The groups of the sheet on display, per `SheetAxes` value.
+    let mutable outlineAxes: obj = null
+    let mutable outlineRowGroups: (int * int * int * bool) array = [||]
+    let mutable outlineColGroups: (int * int * int * bool) array = [||]
+    let mutable outlineRowDepth = 0
+    let mutable outlineColDepth = 0
+    let outlineNodes = ResizeArray<Element>()
+    let mutable outlineSignature: obj array = [||]
+    let mutable cornerElement: Element option = None
     /// The zoom the grid is drawn at (the zoom of the sheet on display, see
     /// syncView). The scrolled content - cells, headers, overlays, pictures,
     /// the edit box - is laid out at 100 % in sheet pixels and scaled as a
@@ -1431,10 +1451,27 @@ type Spreadsheet(container: Element) =
     /// its zoom (the content is scaled; the cell in the top-left corner stays
     /// there) and whether it shows its headers.
     let syncView () =
-        if model.ShowHeaders <> appliedHeaders then
+        if not (obj.ReferenceEquals(outlineAxes, model.Axes)) then
+            outlineAxes <- box model.Axes
+            outlineRowGroups <- SheetOps.outlineGroups true model |> Array.ofList
+            outlineColGroups <- SheetOps.outlineGroups false model |> Array.ofList
+            outlineRowDepth <- SheetOps.outlineDepth true model
+            outlineColDepth <- SheetOps.outlineDepth false model
+        // (The strips go with the headers: a sheet without headers has none.)
+        let strip (depth: int) = if showOutline && model.ShowHeaders && depth > 0 then float (depth + 1) * outlineStep + 3.0 else 0.0
+        let wantedWidth = strip outlineRowDepth
+        let wantedHeight = strip outlineColDepth
+        if model.ShowHeaders <> appliedHeaders || wantedWidth <> gutterWidth || wantedHeight <> gutterHeight then
             appliedHeaders <- model.ShowHeaders
-            headerHeight <- if appliedHeaders then 30.0 else 0.0
-            rowHeaderWidth <- if appliedHeaders then 50.0 else 0.0
+            gutterWidth <- wantedWidth
+            gutterHeight <- wantedHeight
+            headerHeight <- (if appliedHeaders then 30.0 else 0.0) + gutterHeight
+            rowHeaderWidth <- (if appliedHeaders then 50.0 else 0.0) + gutterWidth
+            match cornerElement with
+            | Some corner ->
+                setStyle corner "width" (string rowHeaderWidth + "px")
+                setStyle corner "height" (string headerHeight + "px")
+            | None -> ()
             match layers with
             | Some layer ->
                 let display = if appliedHeaders then "" else "none"
@@ -3522,12 +3559,12 @@ type Spreadsheet(container: Element) =
         // (A host that listens to the filter buttons has its own filter menu:
         // the button beside the column letter, which opens the grid's, goes.)
         let hosted = filterButtonListeners.Count > 0
-        let signature = string col + "|" + string x + "|" + string w + "|" + sort + "|" + string filtered + "|" + string readOnly + "|" + string hosted
+        let signature = string col + "|" + string x + "|" + string w + "|" + sort + "|" + string filtered + "|" + string readOnly + "|" + string hosted + "|" + string gutterHeight
         if node.Signature <> signature then
             node.Signature <- signature
             node.Index <- col
             setAttribute node.Element "data-col" (string col)
-            setCssText node.Element ("left:" + string (int (x + 0.5)) + "px;width:" + string (int (w + 0.5)) + "px")
+            setCssText node.Element ("left:" + string (int (x + 0.5)) + "px;width:" + string (int (w + 0.5)) + "px;top:" + string gutterHeight + "px")
             setTextContent node.Label (columnToLetter col + sort)
             setStyle node.Label "cursor" (if readOnly then "default" else "pointer")
             match node.Button with
@@ -3537,12 +3574,12 @@ type Spreadsheet(container: Element) =
             setStyle node.Handle "display" (if readOnly then "none" else "block")
 
     and drawRowHeader (node: HeaderNode) (row: int) (y: float) (h: float) =
-        let signature = string row + "|" + string y + "|" + string h + "|" + string readOnly
+        let signature = string row + "|" + string y + "|" + string h + "|" + string readOnly + "|" + string gutterWidth
         if node.Signature <> signature then
             node.Signature <- signature
             node.Index <- row
             setAttribute node.Element "data-row" (string row)
-            setCssText node.Element ("top:" + string (int (y + 0.5)) + "px;height:" + string (int (h + 0.5)) + "px")
+            setCssText node.Element ("top:" + string (int (y + 0.5)) + "px;height:" + string (int (h + 0.5)) + "px;left:" + string gutterWidth + "px")
             setTextContent node.Label (string (row + 1))
             setStyle node.Handle "display" (if readOnly then "none" else "block")
 
@@ -3757,6 +3794,7 @@ type Spreadsheet(container: Element) =
             placeHeaders rowHeaderNodes freeRowHeaders layer.RowHeaders newRowHeader
                 (fun node row -> drawRowHeader node row (headerHeight + rowPrefix.[row]) (rowPrefix.[row + 1] - rowPrefix.[row]))
                 frozenRows firstRow lastRow rowPrefix
+            renderOutline layer metrics frozenRows frozenCols firstRow lastRow firstCol lastCol
             renderDrawings content metrics
             renderOverlays layer metrics frozenRows frozenCols
             notifyChanges ()
@@ -3993,6 +4031,123 @@ type Spreadsheet(container: Element) =
     /// What sits on top of the cells: the selection, the active cell, the
     /// edit box, the selection's fill handle, the input message of the
     /// selected cell's validation, and the validation notice.
+    /// The outline strips (see `showOutline`): a background, a bracket and a
+    /// +/- button per group in view, the level buttons in the corner. Rows'
+    /// groups sit in the strip that scrolls with the row numbers, groups of
+    /// frozen rows / columns with the frozen headers.
+    and renderOutline (layer: GridLayers) (metrics: SpreadsheetLayout.SheetMetrics) (frozenRows: int) (frozenCols: int)
+                      (firstRow: int) (lastRow: int) (firstCol: int) (lastCol: int) =
+        if gutterWidth = 0.0 && gutterHeight = 0.0 then
+            if outlineNodes.Count > 0 then
+                for node in outlineNodes do detach node
+                outlineNodes.Clear()
+                outlineSignature <- [||]
+        else
+            let signature : obj array =
+                [| outlineAxes; box metrics.RowPrefix; box metrics.ColPrefix; box frozenRows; box frozenCols; box firstRow; box lastRow; box firstCol; box lastCol
+                   box gutterWidth; box gutterHeight; box readOnly |]
+            let same =
+                signature.Length = outlineSignature.Length
+                && Array.forall2 (fun (a: obj) (b: obj) -> obj.ReferenceEquals(a, b) || (not (isNull a) && a.Equals b)) signature outlineSignature
+            if not same then
+                outlineSignature <- signature
+                let px (value: float) = string (System.Math.Round value) + "px"
+                let mutable used = 0
+                let put (parent: Element) (className: string) (css: string) : Element =
+                    let node =
+                        if used < outlineNodes.Count then outlineNodes.[used]
+                        else
+                            let node = createElement "div"
+                            outlineNodes.Add node
+                            node
+                    used <- used + 1
+                    if not (isChildOf node parent) then appendChild parent node
+                    setClassName node ("spreadsheet-outline " + className)
+                    setCssText node css
+                    node
+                let stripBackground = "background:#f3f3f3;"
+                let cursor = if readOnly then "cursor:default;" else ""
+                let axis (rows: bool) =
+                    let prefix = if rows then metrics.RowPrefix else metrics.ColPrefix
+                    let count = if rows then metrics.RowCount else metrics.ColCount
+                    let frozen = if rows then frozenRows else frozenCols
+                    let first, last = if rows then firstRow, lastRow else firstCol, lastCol
+                    let groups = if rows then outlineRowGroups else outlineColGroups
+                    let depth = if rows then outlineRowDepth else outlineColDepth
+                    let thickness = if rows then gutterWidth else gutterHeight
+                    // Where the sheet's rows / columns begin on this axis, and the other axis' header band.
+                    let origin = if rows then headerHeight else rowHeaderWidth
+                    let band = if rows then gutterHeight else gutterWidth
+                    let bandSize = if rows then 30.0 else 50.0
+                    let scrolled = if rows then layer.RowHeaders else layer.ColHeaders
+                    // A box along the axis (`along`, `length`) and across the strip (`across`, `size`).
+                    let rect (along: float) (length: float) (across: float) (size: float) =
+                        if rows then "left:" + px across + ";top:" + px along + ";width:" + px size + ";height:" + px length + ";"
+                        else "top:" + px across + ";left:" + px along + ";height:" + px size + ";width:" + px length + ";"
+                    let edge = if rows then "border-right:1px solid #a6a6a6;" else "border-bottom:1px solid #a6a6a6;"
+                    if thickness > 0.0 then
+                        put scrolled "spreadsheet-outline-strip" (rect 0.0 (origin + prefix.[count]) 0.0 thickness + stripBackground + edge + "z-index:1") |> ignore
+                        // (Groups that scroll pass under the strip of the frozen rows / columns.)
+                        if frozen > 0 then
+                            put layer.FrozenHeaders "spreadsheet-outline-strip" (rect origin prefix.[frozen] 0.0 thickness + stripBackground + edge + "z-index:4") |> ignore
+                        let after = SheetOps.summaryAfter rows model
+                        for (groupFirst, groupLast, level, collapsed) in groups do
+                            let inView = groupFirst < frozen || (groupLast >= first - 1 && groupFirst <= last + 1)
+                            if inView && used < 1500 && groupLast < count then
+                                let parent = if groupLast < frozen then layer.FrozenHeaders else scrolled
+                                let across = float (level - 1) * outlineStep + 2.0
+                                let start = origin + prefix.[groupFirst]
+                                let length = prefix.[groupLast + 1] - prefix.[groupFirst]
+                                if length > 3.0 then
+                                    // The bracket: a line along the group with a tick at its far end.
+                                    let tick =
+                                        if rows then (if after then "border-top:1px solid #666;" else "border-bottom:1px solid #666;") + "border-left:1px solid #666;"
+                                        else (if after then "border-left:1px solid #666;" else "border-right:1px solid #666;") + "border-top:1px solid #666;"
+                                    put parent "spreadsheet-outline-line" (rect (start + 1.0) (length - 2.0) (across + 6.0) 5.0 + tick + "pointer-events:none;z-index:5") |> ignore
+                                let summary = SheetOps.summaryIndex rows groupFirst groupLast model
+                                if summary >= 0 && summary < count && prefix.[summary + 1] > prefix.[summary] then
+                                    let size = prefix.[summary + 1] - prefix.[summary]
+                                    let buttonParent = if summary < frozen then layer.FrozenHeaders else scrolled
+                                    let button =
+                                        put buttonParent "spreadsheet-outline-button"
+                                            ((if rows then "left:" + px across + ";top:" + px (origin + prefix.[summary] + (size - 13.0) / 2.0) + ";"
+                                              else "top:" + px across + ";left:" + px (origin + prefix.[summary] + (size - 13.0) / 2.0) + ";") + cursor)
+                                    setTextContent button (if collapsed then "+" else "\u2212")
+                                    setAttribute button "data-axis" (if rows then "rows" else "columns")
+                                    setAttribute button "data-first" (string groupFirst)
+                                    setAttribute button "data-last" (string groupLast)
+                                    setAttribute button "data-level" (string level)
+                                    setAttribute button "data-collapsed" (if collapsed then "1" else "0")
+                                    setAttribute button "title" (if collapsed then "Expand" else "Collapse")
+                        // The level buttons, in the corner beside the other axis' headers.
+                        for level in 1 .. depth + 1 do
+                            let across = float (level - 1) * outlineStep + 2.0
+                            let button =
+                                put layer.FrozenHeaders "spreadsheet-outline-level"
+                                    ((if rows then "left:" + px across + ";top:" + px (band + (bandSize - 13.0) / 2.0) + ";"
+                                      else "top:" + px across + ";left:" + px (band + (bandSize - 13.0) / 2.0) + ";") + cursor)
+                            setTextContent button (string level)
+                            setAttribute button "data-axis" (if rows then "rows" else "columns")
+                            setAttribute button "data-level" (string level)
+                            removeAttribute button "data-first"
+                            setAttribute button "title" ("Show level " + string level)
+                axis true
+                axis false
+                while outlineNodes.Count > used do
+                    detach outlineNodes.[outlineNodes.Count - 1]
+                    outlineNodes.RemoveAt (outlineNodes.Count - 1)
+
+    /// A press of a button of the outline strips: a group's +/- or a level button.
+    and pressOutline (node: Element) =
+        let rows = getAttribute node "data-axis" = "rows"
+        let number (name: string) = match System.Int32.TryParse (getAttribute node name) with | true, value -> value | _ -> -1
+        if readOnly then ()
+        elif number "data-first" >= 0 then
+            let collapse = getAttribute node "data-collapsed" <> "1"
+            if changeAxes (if collapse then "Collapse group" else "Expand group") (SheetOps.setGroupCollapsed "outline" rows (number "data-first") collapse) then render()
+        elif number "data-level" > 0 then
+            if changeAxes "Show outline level" (SheetOps.showOutlineLevel rows (number "data-level")) then render()
+
     /// The header cells that carry a filter button: (row, col, active, sorted)
     /// with sorted 1 ascending, -1 descending, 0 not sorted. The header row of
     /// the sheet's AutoFilter, then the header rows of the tables that have a
@@ -5237,15 +5392,19 @@ type Spreadsheet(container: Element) =
             // to its left - are an inset shadow, and borders are child elements; see drawCell.)
             (".spreadsheet-container .spreadsheet-cell{position:absolute;padding:3px 5px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;box-sizing:border-box;"
              + "font-family:Arial, sans-serif;font-size:11px;cursor:default;background:white;border:none;box-shadow:inset 0 1px 0 0 " + defaultGridColor + ",inset 1px 0 0 0 " + defaultGridColor + ";contain:strict}"
-             + ".spreadsheet-container .spreadsheet-col-header{position:absolute;top:0;height:" + string headerHeight + "px;border-right:1px solid #d0d0d0;border-bottom:1px solid #a6a6a6;"
+             + ".spreadsheet-container .spreadsheet-col-header{position:absolute;top:0;height:30px;border-right:1px solid #d0d0d0;border-bottom:1px solid #a6a6a6;"
              + "background:linear-gradient(180deg, #f8f8f8 0%, #e8e8e8 100%);display:flex;align-items:center;justify-content:space-between;padding:0 4px;box-sizing:border-box;"
              + "font-weight:normal;font-size:11px;font-family:Arial, sans-serif;color:#444;user-select:none}"
-             + ".spreadsheet-container .spreadsheet-row-header{position:absolute;left:0;width:" + string rowHeaderWidth + "px;border-right:1px solid #a6a6a6;border-bottom:1px solid #d0d0d0;"
+             + ".spreadsheet-container .spreadsheet-row-header{position:absolute;left:0;width:50px;border-right:1px solid #a6a6a6;border-bottom:1px solid #d0d0d0;"
              + "background:linear-gradient(90deg, #f8f8f8 0%, #e8e8e8 100%);display:flex;align-items:center;justify-content:center;box-sizing:border-box;"
              + "font-weight:normal;font-size:11px;font-family:Arial, sans-serif;color:#444;user-select:none;cursor:default}"
              + ".spreadsheet-container .col-header-text{flex:1;text-align:center}"
              + ".spreadsheet-container .col-filter-btn{width:16px;height:16px;align-items:center;justify-content:center;cursor:pointer;font-size:10px;border-radius:2px}"
              + ".spreadsheet-container .col-filter-btn:hover{background:#d0d0d0;opacity:1 !important}"
+             + ".spreadsheet-container .spreadsheet-outline{position:absolute;box-sizing:border-box;user-select:none;font-family:Arial, sans-serif}"
+             + ".spreadsheet-container .spreadsheet-outline-button,.spreadsheet-container .spreadsheet-outline-level{width:13px;height:13px;border:1px solid #777;background:#fff;color:#333;"
+             + "font-size:10px;line-height:11px;text-align:center;cursor:pointer;z-index:5}"
+             + ".spreadsheet-container .spreadsheet-outline-level{font-size:9px;background:#f8f8f8}"
              + ".spreadsheet-container .col-resize-handle{position:absolute;top:0;right:0;width:4px;height:100%;cursor:col-resize;z-index:10}"
              + ".spreadsheet-container .row-resize-handle{position:absolute;bottom:0;left:0;width:100%;height:4px;cursor:row-resize;z-index:10}")
         appendChild gridDiv sheetStyle
@@ -5284,6 +5443,7 @@ type Spreadsheet(container: Element) =
             ("position:absolute;top:0;left:0;width:" + string rowHeaderWidth + "px;height:" + string headerHeight
              + "px;border-right:1px solid #a6a6a6;border-bottom:1px solid #a6a6a6;background:linear-gradient(135deg, #f8f8f8 0%, #e0e0e0 100%);box-sizing:border-box;z-index:3")
         appendChild frozenHeaders corner
+        cornerElement <- Some corner
         let panes = [| content; frozenRowsPane; frozenColsPane; frozenCornerPane |]
         let overlay (className: string) (pane: Element) =
             let element = createElement "div"
@@ -5333,6 +5493,12 @@ type Spreadsheet(container: Element) =
                 preventDefault e
                 stopPropagation e
                 showValidationList () |> ignore
+            elif within target ".spreadsheet-outline" then
+                // The outline strips: a button collapses / expands; nothing is selected.
+                preventDefault e
+                stopPropagation e
+                let button = closest target ".spreadsheet-outline-button, .spreadsheet-outline-level"
+                if mouseButton e = 0 && not (isNull (box button)) then pressOutline button
             elif within target ".spreadsheet-filter-button" then
                 // (Not a click on the cell under it: the selection stays.)
                 preventDefault e
@@ -5683,6 +5849,10 @@ type Spreadsheet(container: Element) =
         appliedHeaders <- true
         headerHeight <- 30.0
         rowHeaderWidth <- 50.0
+        gutterWidth <- 0.0
+        gutterHeight <- 0.0
+        outlineNodes.Clear()
+        outlineSignature <- [||]
 
         // Initial render
         containerHeight <- gridClientHeight gridDiv
@@ -8368,8 +8538,8 @@ type Spreadsheet(container: Element) =
 
     /// Group rows (Excel's Data > Group): the outline level of the rows named
     /// (a row number with `count`, or an A1 range) goes up by one, to at most
-    /// 7. The grid draws no outline gutter: a host draws its own from
-    /// GetOutline and collapses with SetGroupCollapsed. One undo step.
+    /// 7. The grid draws the outline strip with its +/- and level buttons
+    /// (see SetShowOutline). One undo step.
     member _.GroupRows(target: obj, ?count: obj) : unit =
         let first, last = axisSpanArg "GroupRows" true target (defaultArg count null)
         if changeAxes "Group rows" (SheetOps.changeOutlineLevel true first last 1) then render()
@@ -8405,8 +8575,44 @@ type Spreadsheet(container: Element) =
         let collapse = Host.boolArg "SetGroupCollapsed" "collapsed" collapsed
         if changeAxes (if collapse then "Collapse group" else "Expand group") (SheetOps.setGroupCollapsed "SetGroupCollapsed" rows at collapse) then render()
 
+    /// Excel's outline level buttons: show the rows / columns (`axis` "rows"
+    /// or "columns") of the levels below `level` and collapse every group
+    /// from `level` on (1 = only what is in no group; one more than the
+    /// deepest level = everything). One undo step.
+    member _.ShowOutlineLevel(axis: obj, level: obj) : unit =
+        let rows =
+            match Host.stringArg "ShowOutlineLevel" "the axis" axis with
+            | "rows" -> true
+            | "columns" -> false
+            | other -> Host.hostFail "ShowOutlineLevel" (sprintf "the axis must be \"rows\" or \"columns\", got \"%s\"" other)
+        let level = Host.intArg "ShowOutlineLevel" "level" level
+        if level < 1 || level > SheetOps.maxOutlineLevel + 1 then Host.hostFail "ShowOutlineLevel" (sprintf "the level has to be 1..%d, not %d" (SheetOps.maxOutlineLevel + 1) level)
+        if changeAxes "Show outline level" (SheetOps.showOutlineLevel rows level) then render()
+
+    /// Where the summary rows / columns of the active sheet's groups are:
+    /// `below` true (Excel's default) = the row after a group, false = the
+    /// row before it; `right` likewise for columns (the sheet's outlinePr).
+    /// The +/- button of a group is on its summary row / column. Collapsed
+    /// groups stay collapsed. One undo step.
+    member _.SetOutlineSummary(below: obj, right: obj) : unit =
+        let below = Host.boolArg "SetOutlineSummary" "below" below
+        let right = Host.boolArg "SetOutlineSummary" "right" right
+        if changeAxes "Outline settings" (SheetOps.setOutlineSummary below right) then render()
+
+    /// Show (the default) or hide the outline strips the grid draws for
+    /// grouped rows / columns. A view setting of the component (every sheet;
+    /// not saved, no undo step).
+    member _.SetShowOutline(show: obj) : unit =
+        let show = Host.boolArg "SetShowOutline" "show" show
+        if show <> showOutline then
+            showOutline <- show
+            render()
+
+    member _.GetShowOutline() : bool = showOutline
+
     /// The outline of the active sheet: { rows: [group], columns: [group],
-    /// rowLevels, columnLevels (the deepest level, 0 = no groups) } with
+    /// rowLevels, columnLevels (the deepest level, 0 = no groups),
+    /// summaryBelow, summaryRight } with
     /// group = { first, last (0-based), range ("3:7" / "B:D"), level (1..7),
     /// collapsed }; outer groups come before the groups inside them.
     member _.GetOutline() : obj =
@@ -8422,6 +8628,8 @@ type Spreadsheet(container: Element) =
             "columns" ==> groups false
             "rowLevels" ==> deepest model.Axes.RowLevels
             "columnLevels" ==> deepest model.Axes.ColLevels
+            "summaryBelow" ==> model.Axes.SummaryBelow
+            "summaryRight" ==> model.Axes.SummaryRight
         ]
 
     /// Zoom the active sheet: `factor` 0.1 .. 4 (1 = 100 %; rounded to a whole

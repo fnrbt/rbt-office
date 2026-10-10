@@ -1494,6 +1494,17 @@ let maxOutlineLevel = 7
 let private levelsOf (rows: bool) (model: SpreadsheetModel) = if rows then model.Axes.RowLevels else model.Axes.ColLevels
 let private collapsedOf (rows: bool) (model: SpreadsheetModel) = if rows then model.Axes.CollapsedRows else model.Axes.CollapsedCols
 
+/// Whether the summary of a group comes after it (rows: below, columns: to
+/// the right; Excel's default) or before it: the sheet's `outlinePr`.
+let summaryAfter (rows: bool) (model: SpreadsheetModel) : bool =
+    if rows then model.Axes.SummaryBelow else model.Axes.SummaryRight
+
+/// The summary row / column of the group `first..last`: the one that carries
+/// the group's collapsed mark and its +/- button. (-1 for a group at the
+/// first row whose summary is above: it has none on the sheet.)
+let summaryIndex (rows: bool) (first: int) (last: int) (model: SpreadsheetModel) : int =
+    if summaryAfter rows model then last + 1 else first - 1
+
 /// The outline level of a row / column: 0 when it is in no group.
 let outlineLevel (rows: bool) (index: int) (model: SpreadsheetModel) : int =
     Map.tryFind index (levelsOf rows model) |> Option.defaultValue 0
@@ -1517,7 +1528,8 @@ let changeOutlineLevel (rows: bool) (first: int) (last: int) (delta: int) (model
         if levels = levelsOf rows model then model
         else
             // A summary row / column whose group is gone is no longer one.
-            let hasGroupBefore index = index > 0 && Map.containsKey (index - 1) levels
+            let after = summaryAfter rows model
+            let hasGroupBefore index = if after then index > 0 && Map.containsKey (index - 1) levels else Map.containsKey (index + 1) levels
             let collapsed = collapsedOf rows model |> Set.filter hasGroupBefore
             if rows then { model with Axes = { model.Axes with RowLevels = levels; CollapsedRows = collapsed } }
             else { model with Axes = { model.Axes with ColLevels = levels; CollapsedCols = collapsed } }
@@ -1535,8 +1547,8 @@ let outlineGroupAt (rows: bool) (index: int) (model: SpreadsheetModel) : (int * 
         Some (first, last, level)
 
 /// Collapse (hide) or expand (show) the group the row / column `index` is
-/// in. The row / column after the group is its summary and carries the
-/// collapsed mark, as in Excel's default layout. Expanding leaves the
+/// in. The group's summary row / column (see `summaryIndex`) carries the
+/// collapsed mark. Expanding leaves the
 /// groups inside that are themselves collapsed as they are.
 let setGroupCollapsed (memberName: string) (rows: bool) (index: int) (collapsed: bool) (model: SpreadsheetModel) : SpreadsheetModel =
     match outlineGroupAt rows index model with
@@ -1548,9 +1560,9 @@ let setGroupCollapsed (memberName: string) (rows: bool) (index: int) (collapsed:
             elif rows then { m with Axes = { m.Axes with CollapsedRows = marks } }
             else { m with Axes = { m.Axes with CollapsedCols = marks } }
         if collapsed then
-            hideAxis rows first last model |> withMarks (Set.add (last + 1) marks)
+            hideAxis rows first last model |> withMarks (Set.add (summaryIndex rows first last model) marks)
         else
-            let marks = Set.remove (last + 1) marks
+            let marks = Set.remove (summaryIndex rows first last model) marks
             let mutable result = model
             let rec expand (first: int) (last: int) (level: int) =
                 let mutable at = first
@@ -1561,7 +1573,7 @@ let setGroupCollapsed (memberName: string) (rows: bool) (index: int) (collapsed:
                     else
                         let mutable stop = at
                         while stop < last && outlineLevel rows (stop + 1) model > level do stop <- stop + 1
-                        if not (Set.contains (stop + 1) marks) then expand at stop (level + 1)
+                        if not (Set.contains (summaryIndex rows at stop model) marks) then expand at stop (level + 1)
                         at <- stop + 1
             expand first last level
             withMarks marks result
@@ -1579,7 +1591,7 @@ let outlineGroups (rows: bool) (model: SpreadsheetModel) : (int * int * int * bo
         for level in 1 .. deepest do
             let mutable start = -1
             let mutable previous = -2
-            let close () = if start >= 0 then groups.Add ((start, previous, level, Set.contains (previous + 1) marks))
+            let close () = if start >= 0 then groups.Add ((start, previous, level, Set.contains (summaryIndex rows start previous model) marks))
             for index, own in indices do
                 if own >= level then
                     if start < 0 || index <> previous + 1 then
@@ -1588,6 +1600,53 @@ let outlineGroups (rows: bool) (model: SpreadsheetModel) : (int * int * int * bo
                     previous <- index
             close ()
         groups |> Seq.sortBy (fun (first, _, level, _) -> first, level) |> List.ofSeq
+
+/// The deepest outline level of the rows / columns (0: no groups).
+let outlineDepth (rows: bool) (model: SpreadsheetModel) : int =
+    levelsOf rows model |> Map.fold (fun deepest _ level -> max deepest level) 0
+
+/// Excel's outline level buttons (1, 2, 3 ...): show the rows / columns up
+/// to `level` - 1 and collapse every group from `level` on. Level 1 shows
+/// only what is in no group; one more than the deepest level shows all.
+let showOutlineLevel (rows: bool) (level: int) (model: SpreadsheetModel) : SpreadsheetModel =
+    let levels = levelsOf rows model
+    if levels.IsEmpty then model
+    else
+        let groups = outlineGroups rows model
+        let marks = groups |> List.choose (fun (first, last, own, _) -> if own >= level then Some (summaryIndex rows first last model) else None) |> Set.ofList
+        // Runs of rows to hide (at `level` or deeper) and to show (above it).
+        let runsWhere (wanted: int -> bool) =
+            let runs = ResizeArray<int * int>()
+            let mutable start = -1
+            let mutable previous = -2
+            for KeyValue(index, own) in levels do
+                if wanted own then
+                    if start < 0 || index <> previous + 1 then
+                        if start >= 0 then runs.Add ((start, previous))
+                        start <- index
+                    previous <- index
+            if start >= 0 then runs.Add ((start, previous))
+            List.ofSeq runs
+        let mutable result = model
+        for (first, last) in runsWhere (fun own -> own < level) do result <- unhideAxis rows first last result
+        for (first, last) in runsWhere (fun own -> own >= level) do result <- hideAxis rows first last result
+        if marks = collapsedOf rows result then result
+        elif rows then { result with Axes = { result.Axes with CollapsedRows = marks } }
+        else { result with Axes = { result.Axes with CollapsedCols = marks } }
+
+/// Say where the summary rows / columns of the outline are (the sheet's
+/// `outlinePr`). The collapsed groups stay collapsed: their marks move to
+/// the new summary row / column.
+let setOutlineSummary (below: bool) (right: bool) (model: SpreadsheetModel) : SpreadsheetModel =
+    if model.Axes.SummaryBelow = below && model.Axes.SummaryRight = right then model
+    else
+        let collapsedGroups (rows: bool) = outlineGroups rows model |> List.filter (fun (_, _, _, collapsed) -> collapsed)
+        let rowGroups = collapsedGroups true
+        let colGroups = collapsedGroups false
+        let moved = { model with Axes = { model.Axes with SummaryBelow = below; SummaryRight = right } }
+        let marksOf (rows: bool) (groups: (int * int * int * bool) list) =
+            groups |> List.map (fun (first, last, _, _) -> summaryIndex rows first last moved) |> Set.ofList
+        { moved with Axes = { moved.Axes with CollapsedRows = marksOf true rowGroups; CollapsedCols = marksOf false colGroups } }
 
 // ---------------------------------------------------------------------------
 // Sorting a range

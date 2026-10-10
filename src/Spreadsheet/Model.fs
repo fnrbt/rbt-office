@@ -1040,7 +1040,10 @@ type SheetOrigin = {
 /// (every layout reads those); the size it goes back to when it is shown
 /// again is kept here. Outline levels (Excel's Group) are 1..7 per row /
 /// column; `CollapsedRows` / `CollapsedCols` are the summary rows / columns
-/// (the one after a group) whose group is collapsed.
+/// whose group is collapsed. The summary of a group is the row after it
+/// (`SummaryBelow`, Excel's default) or the one before it, the column to its
+/// right (`SummaryRight`) or to its left: the sheet's `outlinePr`. (A group
+/// that starts at the first row with its summary above has -1 there.)
 type SheetAxes = {
     HiddenRowSizes: Map<int, float>
     HiddenColSizes: Map<int, float>
@@ -1048,11 +1051,13 @@ type SheetAxes = {
     ColLevels: Map<int, int>
     CollapsedRows: Set<int>
     CollapsedCols: Set<int>
+    SummaryBelow: bool
+    SummaryRight: bool
 }
 
 let emptySheetAxes : SheetAxes =
     { HiddenRowSizes = Map.empty; HiddenColSizes = Map.empty; RowLevels = Map.empty; ColLevels = Map.empty
-      CollapsedRows = Set.empty; CollapsedCols = Set.empty }
+      CollapsedRows = Set.empty; CollapsedCols = Set.empty; SummaryBelow = true; SummaryRight = true }
 
 /// A row / column insertion or deletion as a recalculation needs to know it:
 /// rows (or columns) from `At` on moved by `Count` (down / right when

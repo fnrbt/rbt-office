@@ -365,7 +365,8 @@ let private extrasOfModel (original: XlsxReader.SheetExtras) (before: Spreadshee
         let indices = Collections.Generic.HashSet<int>()
         for KeyValue(index, size) in sizes do if size <= 0.0 then indices.Add index |> ignore
         for KeyValue(index, _) in levels do indices.Add index |> ignore
-        for index in collapsed do indices.Add index |> ignore
+        // (A group at the first row with its summary above has its mark at -1: not a row.)
+        for index in collapsed do if index >= 0 then indices.Add index |> ignore
         [ for index in Seq.sort indices ->
             let hidden = match Map.tryFind index sizes with Some size -> size <= 0.0 | None -> false
             index,
@@ -914,10 +915,12 @@ module Import =
                     if column.OutlineLevel > 0 then colLevels <- Map.add (idx - 1) (min 7 column.OutlineLevel) colLevels
                     if column.Collapsed then collapsedCols <- Set.add (idx - 1) collapsedCols
         let axes : SheetAxes =
-            if hiddenRowSizes.IsEmpty && hiddenColSizes.IsEmpty && rowLevels.IsEmpty && colLevels.IsEmpty && collapsedRows.IsEmpty && collapsedCols.IsEmpty then emptySheetAxes
+            if hiddenRowSizes.IsEmpty && hiddenColSizes.IsEmpty && rowLevels.IsEmpty && colLevels.IsEmpty && collapsedRows.IsEmpty && collapsedCols.IsEmpty
+               && sheet.View.SummaryBelow && sheet.View.SummaryRight then emptySheetAxes
             else
                 { HiddenRowSizes = hiddenRowSizes; HiddenColSizes = hiddenColSizes; RowLevels = rowLevels; ColLevels = colLevels
-                  CollapsedRows = collapsedRows; CollapsedCols = collapsedCols }
+                  CollapsedRows = collapsedRows; CollapsedCols = collapsedCols
+                  SummaryBelow = sheet.View.SummaryBelow; SummaryRight = sheet.View.SummaryRight }
 
         let merged =
             sheet.MergedCells
@@ -1642,7 +1645,9 @@ module Export =
               ShowHeaders = model.ShowHeaders
               ShowFormulas = model.ShowFormulas
               ZoomScale = max 10 (min 400 (int (System.Math.Round (model.Zoom * 100.0))))
-              TabColor = model.TabColor }
+              TabColor = model.TabColor
+              SummaryBelow = model.Axes.SummaryBelow
+              SummaryRight = model.Axes.SummaryRight }
           Tables = model.Tables |> List.map (table model)
           DataValidations = validations model
           ConditionalFormats = conditionalFormats dxfIndex model
