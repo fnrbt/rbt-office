@@ -8,7 +8,7 @@
 // comments and kept parts are compared.
 //
 // It then runs the checks of the Spreadsheet web component (component.js,
-// host-api.js, sheet-api.js, features.js): change events, dispose, sheet access and
+// host-api.js, sheet-api.js, features.js, chrome.js): change events, dispose, sheet access and
 // sizing, its XLSX export, what hosts rely on (borders, text overflow, row /
 // column counts, revisions, package integrity of exported files, lazy sheets,
 // incremental recalculation), and the host API ("api-..." checks: reading
@@ -62,7 +62,7 @@ const fixtures = new Map(files.map((file) => [path.basename(file), fs.readFileSy
 const componentFixture = (name) => { const file = path.join(repo, path.normalize(name)); return file.startsWith(repo) && fs.existsSync(file) ? fs.readFileSync(file) : null; };
 const componentPage = `<!doctype html><meta charset="utf-8"><body style="margin:0"><script src="/jszip.min.js"></script>
 <script type="importmap">{"imports":{"jszip":"/jszip-shim.js"}}</script><script type="module">
-try { await import('/component.js'); await import('/host-api.js'); await import('/sheet-api.js'); await import('/features.js'); window.componentReady = true; } catch (e) { window.loadError = String(e && e.stack || e); }
+try { await import('/component.js'); await import('/host-api.js'); await import('/sheet-api.js'); await import('/features.js'); await import('/chrome.js'); window.componentReady = true; } catch (e) { window.loadError = String(e && e.stack || e); }
 </script>`;
 
 const page = `<!doctype html><meta charset="utf-8"><script src="/jszip.min.js"></script>
@@ -157,6 +157,18 @@ try {
             if (process.env.SCREENSHOT_DIR) fs.writeFileSync(path.join(process.env.SCREENSHOT_DIR, `shot-${Date.now()}.png`), png);
             return png.toString('base64');
         });
+        // For the checks of what the user does: the browser's own mouse and keyboard (trusted events,
+        // hit-tested by the browser). realMouse('click' | 'move' | 'down' | 'up' | 'dblclick', x, y, options), realKey('Alt+ArrowDown').
+        await componentTab.exposeFunction('realMouse', async (type, x, y, options = {}) => {
+            if (type === 'click') await componentTab.mouse.click(x, y, options);
+            else if (type === 'dblclick') await componentTab.mouse.dblclick(x, y, options);
+            else if (type === 'move') await componentTab.mouse.move(x, y, options);
+            else if (type === 'down') await componentTab.mouse.down(options);
+            else if (type === 'up') await componentTab.mouse.up(options);
+            else throw new Error('realMouse: ' + type);
+        });
+        await componentTab.exposeFunction('realKey', async (key) => { await componentTab.keyboard.press(key); });
+        await componentTab.exposeFunction('realType', async (text) => { await componentTab.keyboard.type(text); });
         for (const name of await componentTab.evaluate('Object.keys(window.componentChecks)')) {
             if (only && !only.split(',').includes(name)) continue;
             componentChecks++;

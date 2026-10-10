@@ -28,6 +28,9 @@ let private getClientX (e: obj): float = jsNative
 [<Emit("$0.clientY")>]
 let private getClientY (e: obj): float = jsNative
 
+[<Emit("(function (el) { const r = el.getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; })($0)")>]
+let private boundingRect (el: Element): float array = jsNative
+
 [<Emit("$0.getBoundingClientRect().left")>]
 let private getBoundingLeft (el: Element): float = jsNative
 
@@ -581,6 +584,14 @@ type Spreadsheet(container: Element) =
             for listener in contextListeners.ToArray() do
                 if contextListeners.Contains listener then (try listener payload with error -> reportError "OnContextMenu" (box error))
             true
+    // --- AutoFilter buttons -------------------------------------------------------
+    // The grid draws a button in every header cell of the sheet's AutoFilter
+    // and of a table's header row. With an OnFilterButton subscriber a press
+    // of one (or Alt+Down on its cell) tells the subscriber where the button
+    // is; without one the grid opens its own checklist.
+    let filterButtonListeners = ResizeArray<obj -> unit>()
+    /// The button nodes on display (a pool: see `renderOverlays`).
+    let filterButtonNodes = ResizeArray<Element>()
     let mutable workbook: Workbook option = None  // Optional workbook for table references
     /// The XLSX file the current workbook was imported from, for ExportXlsx:
     /// what the editor does not model is carried over from it.
@@ -2837,6 +2848,10 @@ type Spreadsheet(container: Element) =
             else
                 match key with
                 // Alt+Down opens the list of a list validation, as in Excel.
+                // Alt+Down on a header cell with a filter button presses the button.
+                | "ArrowDown" when eventFlag e "altKey" && (filterButtonAt active.Row active.Col).IsSome ->
+                    preventDefault e
+                    filterButtonAt active.Row active.Col |> Option.iter pressFilterButton
                 | "ArrowDown" when eventFlag e "altKey" && not readOnly && showsListDropdown active model ->
                     preventDefault e
                     showValidationList () |> ignore
@@ -3504,7 +3519,10 @@ type Spreadsheet(container: Element) =
             | Some state when state.Column = col -> if state.Ascending then " ▲" else " ▼"
             | _ -> ""
         let filtered = Map.containsKey col model.Filters
-        let signature = string col + "|" + string x + "|" + string w + "|" + sort + "|" + string filtered + "|" + string readOnly
+        // (A host that listens to the filter buttons has its own filter menu:
+        // the button beside the column letter, which opens the grid's, goes.)
+        let hosted = filterButtonListeners.Count > 0
+        let signature = string col + "|" + string x + "|" + string w + "|" + sort + "|" + string filtered + "|" + string readOnly + "|" + string hosted
         if node.Signature <> signature then
             node.Signature <- signature
             node.Index <- col
@@ -3514,7 +3532,7 @@ type Spreadsheet(container: Element) =
             setStyle node.Label "cursor" (if readOnly then "default" else "pointer")
             match node.Button with
             | Some button ->
-                setCssText button ("opacity:" + (if filtered then "1.0" else "0.5") + ";display:" + (if readOnly then "none" else "flex"))
+                setCssText button ("opacity:" + (if filtered then "1.0" else "0.5") + ";display:" + (if readOnly || hosted then "none" else "flex"))
             | None -> ()
             setStyle node.Handle "display" (if readOnly then "none" else "block")
 
@@ -3975,6 +3993,66 @@ type Spreadsheet(container: Element) =
     /// What sits on top of the cells: the selection, the active cell, the
     /// edit box, the selection's fill handle, the input message of the
     /// selected cell's validation, and the validation notice.
+    /// The header cells that carry a filter button: (row, col, active, sorted)
+    /// with sorted 1 ascending, -1 descending, 0 not sorted. The header row of
+    /// the sheet's AutoFilter, then the header rows of the tables that have a
+    /// filter (a cell is listed once).
+    and filterButtonCells () : (int * int * bool * int) list =
+        let sortedOf (col: int) =
+            match model.SortState with
+            | Some state when state.Column = col -> if state.Ascending then 1 else -1
+            | _ -> 0
+        let ofSheet =
+            match model.AutoFilter with
+            | Some filter ->
+                [ for col in filter.Range.From.Col .. filter.Range.To.Col ->
+                    filter.Range.From.Row, col, Map.containsKey col model.Filters, sortedOf col ]
+            | None -> []
+        let taken = ofSheet |> List.map (fun (row, col, _, _) -> row, col) |> Set.ofList
+        let ofTables =
+            [ for table in model.Tables do
+                match table.AutoFilter with
+                | Some (firstCol, lastCol) when table.HeaderRowCount > 0 ->
+                    let row = table.StartRow - 1 + table.HeaderRowCount - 1
+                    // (The sheet has one filter: a table's button is lit when that filter is over the table's rows.)
+                    let filtersTable =
+                        match model.AutoFilter with
+                        | Some filter -> filter.Range.From.Row <= table.EndRow - 1 && filter.Range.To.Row >= row
+                        | None -> false
+                    for col in firstCol - 1 .. lastCol - 1 do
+                        if not (Set.contains (row, col) taken) then
+                            yield row, col, (filtersTable && Map.containsKey col model.Filters), sortedOf col
+                | _ -> () ]
+        ofSheet @ ofTables
+
+    /// What OnFilterButton subscribers and GetFilterButtonRects give for a button.
+    and filterButtonPayload (node: Element) : obj =
+        let number (name: string) = match System.Int32.TryParse (getAttribute node name) with | true, value -> value | _ -> -1
+        let rect: float array = boundingRect node
+        createObj [ "column" ==> number "data-col"; "row" ==> number "data-row"; "sheetIndex" ==> activeSheetIndex
+                    "clientRect" ==> createObj [ "left" ==> rect.[0]; "top" ==> rect.[1]; "width" ==> rect.[2]; "height" ==> rect.[3] ]
+                    "active" ==> (getAttribute node "data-active" = "1")
+                    "sorted" ==> (match getAttribute node "data-sorted" with
+                                  | "asc" -> box "asc"
+                                  | "desc" -> box "desc"
+                                  | _ -> null) ]
+
+    /// The button of a header cell, when it is on display.
+    and filterButtonAt (row: int) (col: int) : Element option =
+        filterButtonNodes |> Seq.tryFind (fun node -> getAttribute node "data-row" = string row && getAttribute node "data-col" = string col)
+
+    /// A filter button was pressed (or Alt+Down on its cell): subscribers are
+    /// told, and the grid's own checklist opens only when there is none.
+    and pressFilterButton (node: Element) =
+        if filterButtonListeners.Count > 0 then
+            let payload = filterButtonPayload node
+            for listener in filterButtonListeners.ToArray() do
+                if filterButtonListeners.Contains listener then (try listener payload with error -> reportError "OnFilterButton" (box error))
+        elif not readOnly then
+            match System.Int32.TryParse (getAttribute node "data-col") with
+            | true, col -> showFilterDropdown col (pageRight node) (pageBottom node)
+            | _ -> ()
+
     and renderOverlays (layer: GridLayers) (metrics: SpreadsheetLayout.SheetMetrics) (frozenRows: int) (frozenCols: int) =
         let rowPrefix = metrics.RowPrefix
         let colPrefix = metrics.ColPrefix
@@ -4063,6 +4141,46 @@ type Spreadsheet(container: Element) =
             if getAttribute layer.ListButton "data-drawn" <> "1" then
                 setAttribute layer.ListButton "data-drawn" "1"
                 setTextContent layer.ListButton "\u25BC"
+        // The filter buttons: one in each header cell of the AutoFilter and of
+        // a filtered table, in the cell's pane (so a frozen header keeps its
+        // buttons and a scrolled one takes them along). A viewer has them only
+        // for a host that listens (it decides what to offer).
+        let mutable buttons = 0
+        if (not readOnly || filterButtonListeners.Count > 0) && (model.AutoFilter.IsSome || not model.Tables.IsEmpty) then
+            for (row, col, active, sorted) in filterButtonCells () do
+                if row >= 0 && col >= 0 && row < rowCount && col < colCount then
+                    let w = colPrefix.[col + 1] - colPrefix.[col]
+                    let h = rowPrefix.[row + 1] - rowPrefix.[row]
+                    if w > 0.0 && h > 0.0 then
+                        let node =
+                            if buttons < filterButtonNodes.Count then filterButtonNodes.[buttons]
+                            else
+                                let node = createElement "div"
+                                setClassName node "spreadsheet-filter-button"
+                                filterButtonNodes.Add node
+                                node
+                        buttons <- buttons + 1
+                        place node (paneOf row col)
+                        let size = max 6.0 (min 16.0 (min (w - 2.0) (h - 2.0)))
+                        let signature = string row + "|" + string col + "|" + string active + "|" + string sorted
+                        if getAttribute node "data-state" <> signature then
+                            setAttribute node "data-state" signature
+                            setAttribute node "data-row" (string row)
+                            setAttribute node "data-col" (string col)
+                            setAttribute node "data-active" (if active then "1" else "0")
+                            setAttribute node "data-sorted" (if sorted > 0 then "asc" elif sorted < 0 then "desc" else "")
+                            setAttribute node "title" (if active then "Filtered" else "Filter")
+                            // An arrow for the sort order, a funnel-like mark for a filter, else the plain triangle.
+                            setTextContent node ((if sorted > 0 then "\u2191" elif sorted < 0 then "\u2193" else "") + (if active then "\u25BC\u0332" else "\u25BE"))
+                        setCssText node
+                            ("position:absolute;left:" + px (rowHeaderWidth + colPrefix.[col + 1] - size - 1.0) + ";top:" + px (headerHeight + rowPrefix.[row + 1] - size - 1.0)
+                             + ";width:" + px size + ";height:" + px size + ";box-sizing:border-box;border:1px solid " + (if active then "#217346" else "#8a8a8a")
+                             + ";background:" + (if active then "#d5eadd" else "#f3f3f3") + ";color:" + (if active then "#217346" else "#444")
+                             + ";font-size:" + (if sorted <> 0 then "7px" else "9px") + ";line-height:" + px (size - 2.0)
+                             + ";text-align:center;cursor:pointer;user-select:none;overflow:hidden;white-space:nowrap;z-index:8")
+        while filterButtonNodes.Count > buttons do
+            detach filterButtonNodes.[filterButtonNodes.Count - 1]
+            filterButtonNodes.RemoveAt (filterButtonNodes.Count - 1)
         // The circles of CircleInvalid: a red ellipse around each cell, in the cell's pane.
         let circled =
             match invalidCircles.TryGetValue activeSheetIndex with
@@ -5215,6 +5333,11 @@ type Spreadsheet(container: Element) =
                 preventDefault e
                 stopPropagation e
                 showValidationList () |> ignore
+            elif within target ".spreadsheet-filter-button" then
+                // (Not a click on the cell under it: the selection stays.)
+                preventDefault e
+                stopPropagation e
+                if mouseButton e = 0 then pressFilterButton (closest target ".spreadsheet-filter-button")
             elif within target ".spreadsheet-picture-handle, .spreadsheet-picture" then
                 // A picture is selected by a click on it, moved by dragging it
                 // and sized by dragging a handle of its frame.
@@ -5362,7 +5485,7 @@ type Spreadsheet(container: Element) =
                 match headerIndex target ".spreadsheet-row-header" "data-row" with
                 | Some row -> fitFromHandle true row
                 | None -> ()
-            elif not (within target ".spreadsheet-edit-input, .spreadsheet-col-header, .spreadsheet-row-header, .spreadsheet-corner, .spreadsheet-fill-handle, .spreadsheet-list-button, .spreadsheet-picture, .spreadsheet-picture-handle") then
+            elif not (within target ".spreadsheet-edit-input, .spreadsheet-col-header, .spreadsheet-row-header, .spreadsheet-corner, .spreadsheet-fill-handle, .spreadsheet-list-button, .spreadsheet-filter-button, .spreadsheet-picture, .spreadsheet-picture-handle") then
                 match hitTestEvent e with
                 | SpreadsheetLayout.Cell hitAddr -> startEditing hitAddr.Row hitAddr.Col
                 | _ -> ())
@@ -5372,7 +5495,7 @@ type Spreadsheet(container: Element) =
             // plain click: to a place in the workbook the grid goes itself,
             // an address is handed to the host (OnHyperlinkActivate).
             if mouseButton e = 0 && (readOnly || eventFlag e "ctrlKey" || eventFlag e "metaKey") && not model.Hyperlinks.IsEmpty
-               && not (within target ".spreadsheet-edit-input, .spreadsheet-col-header, .spreadsheet-row-header, .spreadsheet-corner, .spreadsheet-fill-handle, .spreadsheet-list-button, .spreadsheet-picture, .spreadsheet-picture-handle") then
+               && not (within target ".spreadsheet-edit-input, .spreadsheet-col-header, .spreadsheet-row-header, .spreadsheet-corner, .spreadsheet-fill-handle, .spreadsheet-list-button, .spreadsheet-filter-button, .spreadsheet-picture, .spreadsheet-picture-handle") then
                 match hitTestEvent e with
                 | SpreadsheetLayout.Cell hitAddr when (SheetOps.hyperlinkAt model hitAddr).IsSome ->
                     preventDefault e
@@ -6786,6 +6909,51 @@ type Spreadsheet(container: Element) =
         let listener = callback.Invoke
         contextListeners.Add listener
         System.Action(fun () -> contextListeners.Remove listener |> ignore)
+
+    /// Subscribe to the AutoFilter buttons: the callback gets { column, row,
+    /// sheetIndex, clientRect: { left, top, width, height }, active, sorted }
+    /// when a button in a header cell is pressed, or Alt+Down is typed on its
+    /// cell. While a subscriber is registered the grid's own checklist does
+    /// not open (the host shows its menu) and the legacy button beside the
+    /// column letters is hidden; the buttons in the cells stay and show
+    /// whether the column is filtered / sorted. Returns a function that
+    /// removes the subscription.
+    member _.OnFilterButton(callback: System.Action<obj>) : System.Action =
+        let listener = callback.Invoke
+        filterButtonListeners.Add listener
+        // (The buttons of a viewer and the legacy header buttons depend on it.)
+        let dropdown = getElementById "filter-dropdown"
+        if not (isNull dropdown) then closePopup dropdown
+        render ()
+        System.Action(fun () ->
+            if filterButtonListeners.Remove listener then render ())
+
+    /// The filter buttons that can be seen now (not scrolled away, not under
+    /// a frozen pane), each as the object OnFilterButton gives.
+    member _.GetFilterButtonRects() : obj array =
+        match gridContainer with
+        | Some grid when filterButtonNodes.Count > 0 ->
+            let zoom = appliedZoom
+            let gridRect: float array = boundingRect grid
+            let metrics = SpreadsheetLayout.metricsOf model
+            let frozenRows = max 0 (min metrics.RowCount model.FrozenRows)
+            let frozenCols = max 0 (min metrics.ColCount model.FrozenCols)
+            let right = gridRect.[0] + gridClientWidth grid
+            let bottom = gridRect.[1] + gridClientHeight grid
+            // Where the scrolled cells begin, on each axis.
+            let scrolledLeft = gridRect.[0] + (rowHeaderWidth + metrics.ColPrefix.[frozenCols]) * zoom
+            let scrolledTop = gridRect.[1] + (headerHeight + metrics.RowPrefix.[frozenRows]) * zoom
+            [| for node in filterButtonNodes do
+                let payload = filterButtonPayload node
+                let row: int = payload?row
+                let col: int = payload?column
+                let rect: float array = boundingRect node
+                let centerX = rect.[0] + rect.[2] / 2.0
+                let centerY = rect.[1] + rect.[3] / 2.0
+                let left = if col < frozenCols then gridRect.[0] else scrolledLeft
+                let top = if row < frozenRows then gridRect.[1] else scrolledTop
+                if centerX >= left && centerX <= right && centerY >= top && centerY <= bottom then yield payload |]
+        | _ -> [||]
 
     /// For a tab strip (the component draws none): tell the OnContextMenu
     /// subscribers of a right click on the tab of sheet `sheetIndex` at
