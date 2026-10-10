@@ -2061,6 +2061,64 @@ let private vmlCommentsXml (sheetIndex: int) (cells: XlsxCellOut list) =
             |> String.concat ""
         Some (sprintf "<xml xmlns:v=\"urn:schemas-microsoft-com:vml\" xmlns:o=\"urn:schemas-microsoft-com:office:office\" xmlns:x=\"urn:schemas-microsoft-com:office:excel\"><o:shapelayout v:ext=\"edit\"><o:idmap v:ext=\"edit\" data=\"%d\"/></o:shapelayout><v:shapetype id=\"_x0000_t202\" coordsize=\"21600,21600\" o:spt=\"202\" path=\"m,l,21600r21600,l21600,xe\"><v:stroke joinstyle=\"miter\"/><v:path gradientshapeok=\"t\" o:connecttype=\"rect\"/></v:shapetype>%s</xml>" sheetIndex shapes)
 
+let private vmlShapePattern = System.Text.RegularExpressions.Regex("<v:shape\\b[\\s\\S]*?</v:shape>")
+let private vmlRowPattern = System.Text.RegularExpressions.Regex("<x:Row>\\s*(\\d+)\\s*</x:Row>")
+let private vmlColumnPattern = System.Text.RegularExpressions.Regex("<x:Column>\\s*(\\d+)\\s*</x:Column>")
+let private vmlShapeIdPattern = System.Text.RegularExpressions.Regex("_x0000_s(\\d+)")
+let private vmlIdMapPattern = System.Text.RegularExpressions.Regex("<o:idmap\\b[^>]*\\bdata=\"(\\d+)")
+
+/// A VML drawing of the file (form controls, camera pictures, the boxes of
+/// its comments) with the boxes of the sheet's comments as they are now:
+/// the box of a comment that is gone is taken out, a comment without a box
+/// gets one, every other shape stays as it is. None when the drawing already
+/// has exactly the boxes of the comments.
+let vmlWithCommentBoxes (vml: string) (commentCells: (int * int) list) : string option =
+    let wanted = Set.ofList commentCells
+    let shapes = vmlShapePattern.Matches vml |> Seq.cast<System.Text.RegularExpressions.Match> |> Seq.toList
+    let noteCell (shape: System.Text.RegularExpressions.Match) : (int * int) option =
+        if shape.Value.IndexOf ("ObjectType=\"Note\"", System.StringComparison.Ordinal) < 0 then None
+        else
+            let row = vmlRowPattern.Match shape.Value
+            let column = vmlColumnPattern.Match shape.Value
+            if row.Success && column.Success then Some (int row.Groups.[1].Value, int column.Groups.[1].Value) else Some (-1, -1)
+    let notes = shapes |> List.choose (fun shape -> noteCell shape |> Option.map (fun cell -> shape, cell))
+    let boxed = notes |> List.map snd
+    if Set.ofList boxed = wanted && boxed.Length = wanted.Count then None
+    else
+        // The boxes that stay: the first of each comment's cell.
+        let kept = System.Collections.Generic.HashSet<int * int>()
+        let sb = StringBuilder()
+        let mutable at = 0
+        for shape, cell in notes do
+            if not (Set.contains cell wanted && kept.Add cell) then
+                sb.Append(vml.Substring(at, shape.Index - at)) |> ignore
+                at <- shape.Index + shape.Length
+        sb.Append(vml.Substring at) |> ignore
+        let body = sb.ToString()
+        let missing = commentCells |> List.distinct |> List.filter (fun cell -> not (kept.Contains cell))
+        if missing.IsEmpty then Some body
+        else
+            // Shape ids of a drawing are those of its block of 1024 (`<o:idmap data>`).
+            let highest =
+                vmlShapeIdPattern.Matches body |> Seq.cast<System.Text.RegularExpressions.Match>
+                |> Seq.fold (fun top found -> max top (int found.Groups.[1].Value)) 0
+            let first =
+                if highest > 0 then highest + 1
+                else
+                    let block = vmlIdMapPattern.Match body
+                    (if block.Success then int block.Groups.[1].Value else 1) * 1024 + 1
+            let shapeType =
+                if body.IndexOf ("id=\"_x0000_t202\"", System.StringComparison.Ordinal) >= 0 then ""
+                else "<v:shapetype id=\"_x0000_t202\" coordsize=\"21600,21600\" o:spt=\"202\" path=\"m,l,21600r21600,l21600,xe\"><v:stroke joinstyle=\"miter\"/><v:path gradientshapeok=\"t\" o:connecttype=\"rect\"/></v:shapetype>"
+            let added =
+                missing
+                |> List.mapi (fun i (row, col) ->
+                    sprintf "<v:shape id=\"_x0000_s%d\" type=\"#_x0000_t202\" style=\"position:absolute;margin-left:80pt;margin-top:5pt;width:108pt;height:59.25pt;z-index:%d;visibility:hidden\" fillcolor=\"#ffffe1\" o:insetmode=\"auto\"><v:fill color2=\"#ffffe1\"/><v:shadow on=\"t\" color=\"black\" obscured=\"t\"/><v:path o:connecttype=\"none\"/><v:textbox style=\"mso-direction-alt:auto\"><div style=\"text-align:left\"></div></v:textbox><x:ClientData ObjectType=\"Note\"><x:MoveWithCells/><x:SizeWithCells/><x:Anchor>%d, 15, %d, 2, %d, 15, %d, 16</x:Anchor><x:AutoFill>False</x:AutoFill><x:Row>%d</x:Row><x:Column>%d</x:Column></x:ClientData></v:shape>"
+                        (first + i) (shapes.Length + i + 1) (col + 1) (max 0 (row - 1)) (col + 3) (row + 3) row col)
+                |> String.concat ""
+            let close = body.LastIndexOf ("</xml>", System.StringComparison.Ordinal)
+            if close < 0 then None else Some (body.Substring(0, close) + shapeType + added + body.Substring close)
+
 let private tableXml id (table: XlsxTableOut) =
     let refText = sprintf "%s:%s" (cellRef (table.StartRow - 1) (table.StartCol - 1)) (cellRef (table.EndRow - 1) (table.EndCol - 1))
     let cols =
@@ -2581,9 +2639,29 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
         match commentsXml sheet.Cells with
         | Some xml -> textFiles.Add { Path = placed.CommentsPath; Content = xml }
         | None -> ()
-        match (if keptLegacyDrawing sheet = "" then vmlCommentsXml sheetIndex sheet.Cells else None) with
-        | Some xml -> textFiles.Add { Path = commentsVmlPath; Content = xml }
-        | None -> ()
+        match keptLegacyDrawing sheet with
+        | "" ->
+            match vmlCommentsXml sheetIndex sheet.Cells with
+            | Some xml -> textFiles.Add { Path = commentsVmlPath; Content = xml }
+            | None -> ()
+        | keptElement ->
+            // The file's own VML drawing stands (it may hold form controls):
+            // the boxes of the comments in it are made those of the comments now.
+            let ids = DocxReader.relationshipIdsInXml keptElement
+            let part =
+                sheet.Extras.KeptRelationships
+                |> List.tryPick (fun (id, _, target, isExternal) ->
+                    if isExternal || not (List.contains id ids) then None
+                    else
+                        let path = ZipInterop.normalizePath target
+                        keptParts |> List.tryFind (fun (kept, _) -> kept = path))
+            match part with
+            | Some (path, data) ->
+                let commentCells = sheet.Cells |> List.choose (fun c -> if c.Comment.IsSome then Some (c.Row, c.Col) else None)
+                match vmlWithCommentBoxes (System.Text.Encoding.UTF8.GetString data) commentCells with
+                | Some xml -> textFiles.Add { Path = path; Content = xml }
+                | None -> ()
+            | None -> ()
         match threadedCommentsXml persons sheetIndex sheet with
         | Some xml -> textFiles.Add { Path = placed.ThreadsPath; Content = xml }
         | None -> ()

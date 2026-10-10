@@ -794,7 +794,8 @@ comments, threaded comments and persons) every part goes back **as it was read, 
   the part says. (A table written from the model loses what the model does not hold: revision ids, per-column formats, calculated-column
   formulas, the query-table binding.) New table parts take numbers and ids no kept part uses.
 - A VML drawing that holds nothing but the boxes of the sheet's comments goes back while the comments are the file's and is made anew when
-  they change; one that also holds form controls always goes back as it was (a comment added to such a sheet gets no box of its own).
+  they change; one that also holds form controls or camera pictures keeps every such shape as it was, and the boxes of the comments in it
+  follow the comments (a new comment gets a box in that drawing, the box of a removed comment is taken out; untouched it stays the file's).
 - **Chart sheets and dialog sheets** are sheets of the workbook the editor has no model of. They are listed like any sheet (a chart sheet
   shows as an empty grid with its chart on it) and go back as the part they were read from, byte for byte, at their place in the sheet
   order, as a chart sheet (relationship type, content type, the drawing and chart behind it). Only `tabSelected` of the part's view is

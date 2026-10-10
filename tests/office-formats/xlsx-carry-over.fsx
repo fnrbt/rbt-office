@@ -243,6 +243,46 @@ do
     eq "hyperlinks: the linked row deleted" (edit [ DeleteRows (3, 1) ]) [ "C5:D6", "https://example.com/b?x=1&y=2", false; "A9", "Sheet1!A1", true ]
     eq "hyperlinks: part of a linked range deleted" (edit [ DeleteCols (3, 1) ]) [ "B4", "https://example.com/a", false; "C6:C7", "https://example.com/b?x=1&y=2", false; "A10", "Sheet1!A1", true ]
 
+// ---- comments on a sheet whose VML drawing holds other shapes ---------------
+do
+    let source = bytesOf "real-world/dashboard-ecommerce-sales.xlsx"
+    let original = partsOf source
+    let vmlPath = "xl/drawings/vmlDrawing1.vml"
+    let wb = loadBytes source
+    let imported = Bridge.Import.importWorkbook wb
+    // The sheet that names the VML drawing.
+    let index = wb.Sheets |> List.findIndex (fun sheet -> sheet.Extras.KeptRelationships |> List.exists (fun (_, _, target, _) -> target.EndsWith "vmlDrawing1.vml"))
+    let pictures = count "ObjectType=\"Pict\"" (textOf original vmlPath)
+    ok "vml: the file's drawing has camera pictures and no notes" (pictures > 0 && count "ObjectType=\"Note\"" (textOf original vmlPath) = 0) (string pictures)
+    let withComment (cells: (int * int) list) (model: SpreadsheetModel) =
+        cells |> List.fold (fun m (row, col) ->
+            let cell = Map.tryFind (addr row col) m.Cells |> Option.defaultValue { Value = CellValue.Empty; Format = defaultFormat; Comment = None }
+            { m with Cells = Map.add (addr row col) { cell with Comment = Some { Text = sprintf "note %d %d" row col; Author = Some "Tester" } } m.Cells }) model
+    let models = modelsOf imported
+    models.[index] <- withComment [ (3, 2); (40, 5) ] models.[index]
+    let saved = export imported models (namesOf imported)
+    let written = partsOf saved
+    let vml = textOf written vmlPath
+    eq "vml: the pictures stay" (count "ObjectType=\"Pict\"" vml) pictures
+    eq "vml: each new comment has a box" (count "ObjectType=\"Note\"" vml) 2
+    ok "vml: the boxes are at the comments' cells" (vml.Contains "<x:Row>3</x:Row><x:Column>2</x:Column>" && vml.Contains "<x:Row>40</x:Row><x:Column>5</x:Column>") ""
+    ok "vml: the note shape type is declared once" (count "id=\"_x0000_t202\"" vml = 1) ""
+    let ids = [ for m in Text.RegularExpressions.Regex.Matches(vml, "_x0000_s(\\d+)\"") -> m.Groups.[1].Value ]
+    ok "vml: shape ids are distinct" (ids.Length = (List.distinct ids).Length) (String.concat "," ids)
+    ok "vml: well formed" (try Xml.Linq.XDocument.Parse vml |> ignore; true with _ -> false) ""
+    ok "vml: one VML drawing for the sheet" (written |> Map.toList |> List.filter (fun (path, _) -> path.EndsWith ".vml") |> List.length = (original |> Map.toList |> List.filter (fun (path, _) -> path.EndsWith ".vml") |> List.length)) ""
+    // Opened again: the comments are there; one removed, its box goes and the other stays as it is.
+    let again = loadBytes saved
+    let reimported = Bridge.Import.importWorkbook again
+    let commentsOf (model: SpreadsheetModel) = model.Cells |> Map.toList |> List.choose (fun (a, d) -> d.Comment |> Option.map (fun _ -> a.Row, a.Col))
+    eq "vml: the comments are read back" (commentsOf reimported.Sheets.[index].Model) [ (3, 2); (40, 5) ]
+    let models2 = modelsOf reimported
+    models2.[index] <- { models2.[index] with Cells = models2.[index].Cells |> Map.add (addr 3 2) { models2.[index].Cells.[addr 3 2] with Comment = None } }
+    let vml2 = textOf (partsOf (export reimported models2 (namesOf reimported))) vmlPath
+    eq "vml: a removed comment's box is gone" (count "ObjectType=\"Note\"" vml2, vml2.Contains "<x:Row>40</x:Row>", count "ObjectType=\"Pict\"" vml2) (1, true, pictures)
+    // Nothing changed: the drawing is the file's.
+    ok "vml: untouched comments leave the drawing alone" ((partsOf (export reimported (modelsOf reimported) (namesOf reimported))).[vmlPath] = (partsOf saved).[vmlPath]) ""
+
 // ---- column default styles follow their columns --------------------------------
 do
     let wb = loadBytes (bytesOf "real-world/saopaulo-condos.xlsx")
