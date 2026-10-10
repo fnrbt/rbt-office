@@ -300,6 +300,9 @@ type TableLayoutPlanRow = {
     Height: float
     Measurement: TableRowMeasurement
     Fragments: TableRowFragmentPlan list
+    /// The row starts a page the table goes on to, below the header rows
+    /// repeated there: their height is left free above it.
+    HeadersAbove: bool
 }
 
 type TableLayoutPlan = {
@@ -4276,6 +4279,7 @@ and private buildTableLayoutPlanUncached (memo: ParagraphLayoutMemo option) (ini
             Height = rowHeight
             Measurement = plannedMeasurement
             Fragments = fragments
+            HeadersAbove = pagedRowY <> rowY && not row.IsHeader && not headerRows.IsEmpty && plannedY = pagedRowY + headerHeight
         }
         rowY <- plannedY + rowHeight
         rowIndex <- rowIndex + 1

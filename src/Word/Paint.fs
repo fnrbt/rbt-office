@@ -720,7 +720,11 @@ let private tableFragmentBorderGridStroke priority (stroke: WordLayout.Table.Pri
         Priority = priority
     }: RedBat.BorderGrid.Stroke))
 
-let private tableFragmentBorderCells (rowFragments: ResizeArray<TableCellFragmentPlan>) =
+/// The border cells of a row fragment. `topOf` / `bottomOf`: the border a
+/// cell has at its top / bottom edge (its own, or - where a page break parts
+/// the row from its neighbour - the one the neighbour holds, see
+/// tableFragmentPaintCommands).
+let private tableFragmentBorderCellsWith (topOf: TableCellFragmentPlan -> WordLayout.Table.PrintStroke option) (bottomOf: TableCellFragmentPlan -> WordLayout.Table.PrintStroke option) (rowFragments: ResizeArray<TableCellFragmentPlan>) =
     let result = ResizeArray<RedBat.BorderGrid.Cell>(rowFragments.Count)
     for cell in rowFragments do
         let fragmentStartsAfterRow = cell.FragmentY > cell.RowY + 0.01
@@ -735,13 +739,26 @@ let private tableFragmentBorderCells (rowFragments: ResizeArray<TableCellFragmen
             Width = cell.CellWidth
             Height = cell.CellHeight
             Edges = {
-                Top = if fragmentStartsAfterRow then None else tableFragmentBorderGridStroke 1 cell.BorderTop
+                Top = if fragmentStartsAfterRow then None else tableFragmentBorderGridStroke 1 (topOf cell)
                 Right = tableFragmentBorderGridStroke 1 cell.BorderRight
-                Bottom = if fragmentEndsBeforeRow then None else tableFragmentBorderGridStroke 1 cell.BorderBottom
+                Bottom = if fragmentEndsBeforeRow then None else tableFragmentBorderGridStroke 1 (bottomOf cell)
                 Left = tableFragmentBorderGridStroke 1 cell.BorderLeft
             }
         }: RedBat.BorderGrid.Cell)
     result
+
+/// A row fragment that is painted: where it is, its cells, and whether it is
+/// a header row painted again at the top of a later page.
+[<Struct>]
+type private PaintedRowFragment = {
+    PaintPage: int
+    PaintY: float
+    PaintHeight: float
+    PaintRow: int
+    PaintCells: ResizeArray<TableCellFragmentPlan>
+    PaintFills: ResizeArray<PaintCommand>
+    RepeatedHeader: bool
+}
 
 let tableFragmentPaintCommands (plan: TableLayoutPlan) =
     let commands = ResizeArray<PaintCommand>()
@@ -750,8 +767,22 @@ let tableFragmentPaintCommands (plan: TableLayoutPlan) =
     let tableBackgroundX = plan.TableX - tableSpacing * 2.0
     let cellFragments = tableCellPaintFragmentPlans plan
     let mutable remainingCellFragments = cellFragments
-    // The row fragments that are painted, in order: page, y, height, the fills, the border segments.
-    let painted = ResizeArray<struct (int * float * float * ResizeArray<PaintCommand> * RedBat.BorderGrid.Segment list)>()
+    ignore tablePaintX
+    // The row fragments that are painted, in order.
+    let painted = ResizeArray<PaintedRowFragment>()
+    // The cells of each row (of its first fragment): what a neighbour's border is taken from.
+    let rowCells = Dictionary<int, ResizeArray<TableCellFragmentPlan>>()
+    // The header rows as they stand at the top of the table: (y, height, cells).
+    let headerRows = ResizeArray<struct (float * float * ResizeArray<TableCellFragmentPlan>)>()
+    let headerHeight = plan.Rows |> List.sumBy (fun row -> if row.IsHeader && row.RowIndex < plan.HeaderRowCount then row.Height else 0.0)
+    let fillsOf (y: float) (height: float) (cells: ResizeArray<TableCellFragmentPlan>) =
+        let fills = ResizeArray<PaintCommand>()
+        tableFillCommands plan.Table.BackgroundColor plan.Table.Shading tableBackgroundX y plan.TableWidth height
+        |> List.iter fills.Add
+        for cellFragment in cells do
+            tableFillCommands cellFragment.CellBackgroundColor cellFragment.CellShading (cellFragment.CellX - cellFragment.CellSpacing) cellFragment.CellY cellFragment.CellWidth cellFragment.CellHeight
+            |> List.iter fills.Add
+        fills
 
     for row in plan.Rows do
         for fragment in row.Fragments do
@@ -767,39 +798,83 @@ let tableFragmentPaintCommands (plan: TableLayoutPlan) =
                     remainingCellFragments <- tail
                 | _ ->
                     consume <- false
+            if not (rowCells.ContainsKey row.RowIndex) then rowCells.[row.RowIndex] <- rowFragments
+            if row.IsHeader && row.RowIndex < plan.HeaderRowCount && row.Fragments.Length = 1 then
+                headerRows.Add(struct (fragment.Y, fragment.Height, rowFragments))
 
             let alreadyConsumedEmptyContinuation =
                 fragment.LineCount = 0
                 && fragment.ConsumedLineStart = fragment.ConsumedLineEnd
                 && fragment.ConsumedLineStart > 0
             if not alreadyConsumedEmptyContinuation then
-                let fills = ResizeArray<PaintCommand>()
-                tableFillCommands plan.Table.BackgroundColor plan.Table.Shading tableBackgroundX fragment.Y plan.TableWidth fragment.Height
-                |> List.iter fills.Add
-                let borderSegments =
-                    if rowFragments.Count > 0 then
-                        for cellFragment in rowFragments do
-                            tableFillCommands cellFragment.CellBackgroundColor cellFragment.CellShading (cellFragment.CellX - cellFragment.CellSpacing) cellFragment.CellY cellFragment.CellWidth cellFragment.CellHeight
-                            |> List.iter fills.Add
-                        tableFragmentBorderCells rowFragments |> RedBat.BorderGrid.resolveResizeArray
-                    else []
-                painted.Add(struct (fragment.Page, fragment.Y, fragment.Height, fills, borderSegments))
+                // The header rows are repeated above the first row of a later page (the
+                // layout leaves their height free there and lays their text out again):
+                // their fills and borders are painted there too.
+                let startsPage = painted.Count > 0 && painted.[painted.Count - 1].PaintPage < fragment.Page
+                if startsPage && row.HeadersAbove && headerRows.Count = plan.HeaderRowCount && headerHeight > 0.0
+                   && abs (fragment.Y - row.Y) < 0.01 then
+                    let mutable top = fragment.Y - headerHeight
+                    for struct (headerY, height, cells) in headerRows do
+                        let dy = top - headerY
+                        let moved = ResizeArray<TableCellFragmentPlan>(cells.Count)
+                        for cell in cells do
+                            moved.Add { cell with Page = fragment.Page; RowY = cell.RowY + dy; FragmentY = cell.FragmentY + dy; CellY = cell.CellY + dy; ContentY = cell.ContentY + dy }
+                        let headerRowIndex = if cells.Count > 0 then cells.[0].RowIndex else 0
+                        painted.Add { PaintPage = fragment.Page; PaintY = top; PaintHeight = height; PaintRow = headerRowIndex; PaintCells = moved; PaintFills = fillsOf top height moved; RepeatedHeader = true }
+                        top <- top + height
+                let fills =
+                    if rowFragments.Count > 0 then fillsOf fragment.Y fragment.Height rowFragments
+                    else fillsOf fragment.Y fragment.Height (ResizeArray<TableCellFragmentPlan>())
+                painted.Add { PaintPage = fragment.Page; PaintY = fragment.Y; PaintHeight = fragment.Height; PaintRow = row.RowIndex; PaintCells = rowFragments; PaintFills = fills; RepeatedHeader = false }
+
+    // The border between two rows belongs to one of them: the upper row's
+    // bottom or the lower row's top, whichever won where they meet. Where the
+    // two are not painted one under the other - a page break between them, a
+    // header row repeated above a row that is not the one after it - each has
+    // the line: the first row of a page had no top border when the row before
+    // it held the border, the last row of a page no bottom border when the
+    // row after it did.
+    let follows (upper: int) (lower: int) =
+        upper >= 0 && lower < painted.Count
+        && painted.[upper].PaintPage = painted.[lower].PaintPage
+        && abs (painted.[upper].PaintY + painted.[upper].PaintHeight - painted.[lower].PaintY) < 1.0
+    let covering (rowIndex: int) (column: int) =
+        match rowCells.TryGetValue rowIndex with
+        | true, cells -> cells |> Seq.tryFind (fun cell -> cell.StartColumn <= column && column < cell.StartColumn + cell.ColumnSpan)
+        | false, _ -> None
+    let segments = Array.zeroCreate<RedBat.BorderGrid.Segment list> painted.Count
+    for index in 0 .. painted.Count - 1 do
+        let fragment = painted.[index]
+        if fragment.PaintCells.Count = 0 then segments.[index] <- []
+        else
+            // (The first row of the table has its own top border, the last its own bottom.)
+            let naturalAbove = index > 0 && follows (index - 1) index && painted.[index - 1].PaintRow = fragment.PaintRow - 1 && not painted.[index - 1].RepeatedHeader
+            let naturalBelow = index + 1 < painted.Count && follows index (index + 1) && painted.[index + 1].PaintRow = fragment.PaintRow + 1 && not fragment.RepeatedHeader
+            let underSomething = index > 0 && follows (index - 1) index
+            let topOf (cell: TableCellFragmentPlan) =
+                match cell.BorderTop with
+                | Some stroke -> Some stroke
+                // (Below a repeated header row the header's bottom border is the line.)
+                | None when not naturalAbove && not underSomething -> covering (cell.RowIndex - 1) cell.StartColumn |> Option.bind (fun above -> above.BorderBottom)
+                | None -> None
+            let bottomOf (cell: TableCellFragmentPlan) =
+                match cell.BorderBottom with
+                | Some stroke -> Some stroke
+                | None when not naturalBelow && cell.RowSpan <= 1 -> covering (cell.RowIndex + 1) cell.StartColumn |> Option.bind (fun below -> below.BorderTop)
+                | None -> None
+            segments.[index] <- tableFragmentBorderCellsWith topOf bottomOf fragment.PaintCells |> RedBat.BorderGrid.resolveResizeArray
 
     // A row's borders are drawn with the row, and meet the borders of the rows next to it on
     // the page: where a line of a compound border ends depends on what crosses it there, and
     // at the bottom of a row that is the row below.
     for index in 0 .. painted.Count - 1 do
-        let struct (page, y, height, fills, borderSegments) = painted.[index]
-        commands.AddRange fills
+        commands.AddRange painted.[index].PaintFills
+        let borderSegments = segments.[index]
         if not borderSegments.IsEmpty then
             let neighbours =
-                [ if index > 0 then
-                    let struct (otherPage, otherY, otherHeight, _, others) = painted.[index - 1]
-                    if otherPage = page && abs (otherY + otherHeight - y) < 1.0 then yield! others
+                [ if follows (index - 1) index then yield! segments.[index - 1]
                   yield! borderSegments
-                  if index + 1 < painted.Count then
-                    let struct (otherPage, otherY, _, _, others) = painted.[index + 1]
-                    if otherPage = page && abs (y + height - otherY) < 1.0 then yield! others ]
+                  if index + 1 < painted.Count && follows index (index + 1) then yield! segments.[index + 1] ]
             let joinIndex = tableBorderJoinIndex neighbours
             for segment in borderSegments do
                 let startCap, endCap = tableBorderJoinCaps joinIndex segment
@@ -1282,7 +1357,28 @@ let rec private tableBorderCommandsCoreAt nestedTablePaintDepth (styleContext: D
         // the break (cell, x, width, the row it continues at, rows left).
         let continuations = ResizeArray<WordLayout.Table.ResolvedCell * float * float * int * int>()
 
-        let addRowCommands rowIndex (row: WordLayout.Table.ResolvedRow) currentY rowHeight =
+        // The border between two rows belongs to one of them (the upper row's
+        // bottom or the lower row's top, whichever won). Where a page break
+        // parts the two, each page gets the line: the first row of a page had
+        // no top border when the row before it held the border, the last row
+        // of a page no bottom border when the row after it did. The same for a
+        // header row repeated above a row that is not the one after it.
+        let bodyRowArray = List.toArray resolvedTable.BodyRows
+        let cellCovering (neighbour: int) (column: int) =
+            if neighbour < 0 || neighbour >= bodyRowArray.Length then None
+            else bodyRowArray.[neighbour].Cells |> List.tryFind (fun cell -> cell.StartColumn <= column && column < cell.StartColumn + cell.ColSpan)
+        let topAtBreak openAbove rowIndex (resolved: WordLayout.Table.ResolvedCell) =
+            match resolved.Borders.Top with
+            | Some stroke -> Some stroke
+            | None when openAbove -> cellCovering (rowIndex - 1) resolved.StartColumn |> Option.bind (fun above -> above.Borders.Bottom)
+            | None -> None
+        let bottomAtBreak openBelow rowIndex (resolved: WordLayout.Table.ResolvedCell) =
+            match resolved.Borders.Bottom with
+            | Some stroke -> Some stroke
+            | None when openBelow && resolved.RowSpan <= 1 -> cellCovering (rowIndex + 1) resolved.StartColumn |> Option.bind (fun below -> below.Borders.Top)
+            | None -> None
+
+        let addRowCommands (openAbove: bool) (openBelow: bool) rowIndex (row: WordLayout.Table.ResolvedRow) currentY rowHeight =
             let cellSpacing = WordLayout.Table.rowCellSpacing WordLayout.canvasScale tableBlock row.Source
             let outerStartInset = outerLeft + cellSpacing
             for fragmentY, fragmentHeight in rowFragments settings currentY rowHeight do
@@ -1362,10 +1458,10 @@ let rec private tableBorderCommandsCoreAt nestedTablePaintDepth (styleContext: D
                     Width = width
                     Height = cellHeight
                     Edges = {
-                        Top = borderStroke 1 resolved.Borders.Top
+                        Top = borderStroke 1 (topAtBreak openAbove rowIndex resolved)
                         Right = borderStroke 1 resolved.Borders.Right
                         // A merged cell cut by a page break is open at the break.
-                        Bottom = (if contiguousRows rowIndex resolved.RowSpan < resolved.RowSpan then None else borderStroke 1 resolved.Borders.Bottom)
+                        Bottom = (if contiguousRows rowIndex resolved.RowSpan < resolved.RowSpan then None else borderStroke 1 (bottomAtBreak openBelow rowIndex resolved))
                         Left = borderStroke 1 resolved.Borders.Left
                     }
                 }: RedBat.BorderGrid.Cell)
@@ -1423,29 +1519,49 @@ let rec private tableBorderCommandsCoreAt nestedTablePaintDepth (styleContext: D
         let headerRows = resolvedTable.HeaderRows
         let rows = resolvedTable.BodyRows
 
+        // Where the rows go, before anything is drawn: a row knows then whether
+        // a page break follows it.
+        let headerCount = List.length headerRows
+        let headerHeightAt headerIndex (headerRow: WordLayout.Table.ResolvedRow) =
+            if headerIndex < rowHeights.Count then rowHeights.[headerIndex] else rowHeightAt headerRow
+        let rowTop = Array.zeroCreate<float> rowHeights.Count
+        let movedDown = Array.zeroCreate<bool> rowHeights.Count
+        let headersAbove = Array.zeroCreate<bool> rowHeights.Count
+        let mutable placeIndex = 0
+        let mutable placeY = currentY
+        for row in rows do
+            let rowHeight = rowHeights.[placeIndex]
+            let pagedY = paginateTableRow settings row.Source placeY rowHeight
+            let pagedY =
+                match givenTop placeIndex with
+                | Some given when given > pagedY + 0.5 -> given
+                | _ -> pagedY
+            movedDown.[placeIndex] <- placeIndex > 0 && pagedY <> placeY
+            if pagedY <> placeY && not row.IsHeader && not headerRows.IsEmpty then
+                headersAbove.[placeIndex] <- true
+                placeY <- pagedY
+                headerRows |> List.iteri (fun headerIndex headerRow -> placeY <- placeY + headerHeightAt headerIndex headerRow)
+            else
+                placeY <- pagedY
+            rowTop.[placeIndex] <- placeY
+            placeY <- placeY + rowHeight
+            placeIndex <- placeIndex + 1
+
         let mutable rowIndex = 0
         for row in rows do
             let rowHeight = rowHeights.[rowIndex]
-            let pagedY = paginateTableRow settings row.Source currentY rowHeight
-            let pagedY =
-                match givenTop rowIndex with
-                | Some given when given > pagedY + 0.5 -> given
-                | _ -> pagedY
-
-            if pagedY <> currentY && not row.IsHeader && not headerRows.IsEmpty then
-                currentY <- pagedY
+            if headersAbove.[rowIndex] then
+                currentY <- rowTop.[rowIndex] - (headerRows |> List.mapi headerHeightAt |> List.sum)
                 let mutable headerIndex = 0
                 for headerRow in headerRows do
-                    let headerHeight =
-                        if headerIndex < rowHeights.Count then rowHeights.[headerIndex]
-                        else rowHeightAt headerRow
-                    addRowCommands headerIndex headerRow currentY headerHeight
+                    let headerHeight = headerHeightAt headerIndex headerRow
+                    // (The last header row stands above a row that is not its neighbour.)
+                    addRowCommands false (headerIndex = headerCount - 1) headerIndex headerRow currentY headerHeight
                     currentY <- currentY + headerHeight
                     headerIndex <- headerIndex + 1
-            else
-                currentY <- pagedY
-
-            addRowCommands rowIndex row currentY rowHeight
+            currentY <- rowTop.[rowIndex]
+            let breakAfter = rowIndex + 1 < rowHeights.Count && movedDown.[rowIndex + 1]
+            addRowCommands movedDown.[rowIndex] breakAfter rowIndex row currentY rowHeight
             currentY <- currentY + rowHeight
             rowIndex <- rowIndex + 1
 
@@ -2356,7 +2472,11 @@ let private firstActualTableContentLayout (index: LayoutIndex) tableBlock =
     for row in tableBlock.Rows do
         for cell in row.Cells do
             for para in cell.Content do
-                match tryLayout para.Id index with
+                // (Where the paragraph stands first: a header row's is laid out again
+                // on every page the table goes on to, and by its last place the table
+                // seemed to start at its first body row - the borders were drawn that
+                // far down, and the header rows had none.)
+                match tryFirstBlockLayout para.Id index with
                 | Some layout when layout.Y < firstY ->
                     firstId <- para.Id
                     firstY <- layout.Y
