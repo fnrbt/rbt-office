@@ -152,86 +152,58 @@ let private isSelected (selection: Selection) row col =
     | Range (sr, sc, er, ec) ->
         row >= sr && row <= er && col >= sc && col <= ec
 
-type private StyledTable = {
-    StartRow0: int
-    EndRow0: int
-    StartCol0: int
-    EndCol0: int
-    HeaderRowCount: int
-    Style: TableStyle
-    AutoFilter: (int * int) option
-}
-
 type private TableStyleLookup = {
-    Rows: Dictionary<int, ResizeArray<StyledTable>>
+    Rows: Dictionary<int, ResizeArray<Table>>
     IsEmpty: bool
 }
 
 let private emptyTableStyleLookup = {
-    Rows = Dictionary<int, ResizeArray<StyledTable>>()
+    Rows = Dictionary<int, ResizeArray<Table>>()
     IsEmpty = true
 }
 
-let private tryStyledTable (table: Table) =
-    match table.Style with
-    | Some style when style.HeaderFill.IsSome ->
-        Some {
-            StartRow0 = table.StartRow - 1
-            EndRow0 = table.EndRow - 1
-            StartCol0 = table.StartCol - 1
-            EndCol0 = table.EndCol - 1
-            HeaderRowCount = table.HeaderRowCount
-            Style = style
-            AutoFilter = table.AutoFilter
-        }
-    | _ -> None
-
+/// The styled tables of the sheet by the visible rows they cover.
 let private buildTableStyleLookup (model: SpreadsheetModel) (visible: VisibleRange) =
-    let rows = Dictionary<int, ResizeArray<StyledTable>>()
+    let rows = Dictionary<int, ResizeArray<Table>>()
     for table in model.Tables do
-        match tryStyledTable table with
-        | Some styled
-            when styled.EndRow0 >= visible.StartRow
-              && styled.StartRow0 < visible.EndRowExclusive
-              && styled.EndCol0 >= visible.StartCol
-              && styled.StartCol0 < visible.EndColExclusive ->
-            let firstRow = max visible.StartRow styled.StartRow0
-            let lastRow = min (visible.EndRowExclusive - 1) styled.EndRow0
+        match table.Style with
+        | Some style
+            when style.HeaderFill.IsSome
+              && table.EndRow - 1 >= visible.StartRow
+              && table.StartRow - 1 < visible.EndRowExclusive
+              && table.EndCol - 1 >= visible.StartCol
+              && table.StartCol - 1 < visible.EndColExclusive ->
+            let firstRow = max visible.StartRow (table.StartRow - 1)
+            let lastRow = min (visible.EndRowExclusive - 1) (table.EndRow - 1)
             for row in firstRow .. lastRow do
                 match rows.TryGetValue row with
-                | true, rowTables -> rowTables.Add styled
+                | true, rowTables -> rowTables.Add table
                 | false, _ ->
-                    let rowTables = ResizeArray<StyledTable>()
-                    rowTables.Add styled
+                    let rowTables = ResizeArray<Table>()
+                    rowTables.Add table
                     rows.[row] <- rowTables
         | _ -> ()
     if rows.Count = 0 then emptyTableStyleLookup
     else { Rows = rows; IsEmpty = false }
 
+/// The cell's format with the look of its table's style under it (header
+/// row, total row, bands, first / last column: `Model.tableCellLook`).
 let private tableStyleFormat row col (lookup: TableStyleLookup) (format: CellFormat) =
     let mutable fmt = format
-    let mutable rowTables = Unchecked.defaultof<ResizeArray<StyledTable>>
+    let mutable rowTables = Unchecked.defaultof<ResizeArray<Table>>
     if lookup.Rows.TryGetValue(row, &rowTables) then
         for table in rowTables do
-            if col >= table.StartCol0 && col <= table.EndCol0 then
-                let style = table.Style
-                let tableRow0 = table.StartRow0
-                let isHeader = row < tableRow0 + table.HeaderRowCount
-                let dataIdx = row - tableRow0 - table.HeaderRowCount
-                let isStripe = style.ShowRowStripes && dataIdx >= 0 && dataIdx % 2 = 0 && style.StripeFill.IsSome
-                if isHeader then
-                    let hasFilter =
-                        match table.AutoFilter with
+            match tableCellLook table row col with
+            | Some look ->
+                let isHeader = row < table.StartRow - 1 + table.HeaderRowCount
+                let hasFilter =
+                    isHeader
+                    && (match table.AutoFilter with
                         | Some (firstCol, lastCol) -> (col + 1) >= firstCol && (col + 1) <= lastCol
-                        | None -> false
-                    fmt <-
-                        { fmt with
-                            BgColor = fmt.BgColor |> Option.orElse style.HeaderFill
-                            TextColor = fmt.TextColor |> Option.orElse (Some "#FFFFFF")
-                            Bold = true
-                            FilterButton = fmt.FilterButton || hasFilter }
-                elif isStripe then
-                    fmt <- { fmt with BgColor = fmt.BgColor |> Option.orElse style.StripeFill }
+                        | None -> false)
+                let styled = formatWithTableLook look fmt
+                fmt <- if hasFilter then { styled with FilterButton = true } else styled
+            | None -> ()
     fmt
 
 let private isWhiteFill color =

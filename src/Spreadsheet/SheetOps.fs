@@ -2787,6 +2787,146 @@ let renameTable (memberName: string) (name: string) (newName: string) (workbook:
         let model = sheetModelOf table.SheetId rewritten.Book
         { rewritten with Book = putTable table { table with Name = newName } (fun t -> { t with Name = newName }) model rewritten.Book }
 
+/// Whether an entry typed at a cell of a sheet may concern one of its tables
+/// (`tableEntry`): the cell is in a table, or directly below or right of one.
+let entryConcernsTable (addr: CellAddress) (model: SpreadsheetModel) : bool =
+    not model.Tables.IsEmpty
+    && model.Tables |> List.exists (fun table ->
+        let r0, c0, r1, c1 = table.StartRow - 1, table.StartCol - 1, table.EndRow - 1, table.EndCol - 1
+        addr.Row >= r0 && addr.Row <= r1 + 1 && addr.Col >= c0 && addr.Col <= c1 + 1)
+
+/// What an entry typed into a cell does when it concerns a table, as Excel
+/// does it - the entry and everything that follows from it as one change:
+/// - in a header cell: the column takes the text as its name (a blank one
+///   "ColumnN", a name another column has gets a number appended), the cell
+///   holds that name as text, and structured references to the column in
+///   every formula of the workbook follow;
+/// - directly below the last row of a table without a total row, or directly
+///   right of its last column: the table grows by that row / column - unless
+///   a cell of the new row / column already holds something, or the table
+///   would run into another table or a merged cell. Calculated columns are
+///   filled into a new row; a new column gets its name in the header row;
+/// - a formula in a data cell of a column whose other data cells are empty
+///   (or hold that same calculated column): the formula fills the column.
+/// `entry` None is a cleared cell. None when the entry concerns no table:
+/// it is an ordinary entry then.
+let tableEntry (sheetId: Wb.SheetId) (addr: CellAddress) (entry: CellData option) (workbook: Wb.Workbook) : TableChange option =
+    let onSheet = workbook.Tables |> Map.toList |> List.map snd |> List.filter (fun table -> table.SheetId = sheetId)
+    let inside (table: Wb.Table) = addr.Row >= table.StartRow && addr.Row <= table.EndRow && addr.Col >= table.StartCol && addr.Col <= table.EndCol
+    let below (table: Wb.Table) = not table.HasTotals && addr.Row = table.EndRow + 1 && addr.Col >= table.StartCol && addr.Col <= table.EndCol
+    let beside (table: Wb.Table) = addr.Col = table.EndCol + 1 && addr.Row >= table.StartRow && addr.Row <= table.EndRow
+    let isBlank (value: CellValue) = match value with Empty | String "" -> true | _ -> false
+    let hasEntry = match entry with Some data -> not (isBlank data.Value) | None -> false
+    match onSheet |> List.tryFind inside |> Option.orElse (if hasEntry then onSheet |> List.tryFind (fun table -> below table || beside table) else None) with
+    | None -> None
+    | Some table ->
+        let model = sheetModelOf sheetId workbook
+        let touched = ResizeArray<Wb.SheetId * CellAddress>()
+        let write (target: CellAddress) (data: CellData option) (m: SpreadsheetModel) =
+            touched.Add((sheetId, target))
+            match data with
+            | Some data -> setCell target data m
+            | None -> clearCell target m
+        let blankAt (m: SpreadsheetModel) (row: int) (col: int) = isBlank (getCellValue { Row = row; Col = col } m)
+        // 1. The table grows to take the entry in (the cells it would cover have to be empty).
+        let grown : (CellRange * Wb.Workbook) option =
+            if inside table then None
+            else
+                let range =
+                    if below table then rangeOf table.StartRow table.StartCol (table.EndRow + 1) table.EndCol
+                    else rangeOf table.StartRow table.StartCol table.EndRow (table.EndCol + 1)
+                let free =
+                    if below table then [ table.StartCol .. table.EndCol ] |> List.forall (fun col -> blankAt model addr.Row col)
+                    else [ table.StartRow .. table.EndRow ] |> List.forall (fun row -> blankAt model row addr.Col)
+                if free && (tableRangeProblem (Some table.Name) sheetId range workbook).IsNone then Some (range, workbook) else None
+        if not (inside table) && grown.IsNone then None
+        else
+            // The entry itself.
+            let book = withSheetModel sheetId (write addr entry model) workbook
+            let book =
+                match grown with
+                | Some (range, _) ->
+                    let resized = resizeTable "tableEntry" table.Name range book
+                    touched.AddRange resized.Cells
+                    resized.Book
+                | None -> book
+            let table = (tryFindTable table.Name book).Value
+            let firstData = table.StartRow + (if table.HasHeaders then 1 else 0)
+            let lastData = if table.HasTotals then table.EndRow - 1 else table.EndRow
+            let formulaAt (m: SpreadsheetModel) (row: int) (col: int) =
+                match getCellValue { Row = row; Col = col } m with
+                | Formula (formula, _) -> Some formula
+                | _ -> None
+            /// The formula of a calculated column as it reads in `row`, when the
+            /// rows of `rows` all hold it (each the one above moved down).
+            let calculated (m: SpreadsheetModel) (col: int) (rows: int list) (row: int) : string option =
+                match rows with
+                | [] -> None
+                | first :: _ ->
+                    match formulaAt m first col with
+                    | Some formula when rows |> List.forall (fun r -> formulaAt m r col = Some (shiftFormulaReferences (r - first) 0 formula)) ->
+                        Some (shiftFormulaReferences (row - first) 0 formula)
+                    | _ -> None
+            let mutable m = sheetModelOf sheetId book
+            let fill (row: int) (col: int) (formula: string) =
+                let target = { Row = row; Col = col }
+                let existing = getCell target m |> Option.defaultValue { Value = Empty; Format = defaultFormat; Comment = None }
+                if existing.Value <> Formula (formula, Empty) then
+                    (match existing.Value with
+                     | Formula (current, _) when current = formula -> ()
+                     | _ -> m <- write target (Some { existing with Value = Formula (formula, Empty) }) m)
+            // 2. A new row takes the calculated columns of the table.
+            if grown.IsSome && addr.Row = lastData && addr.Row > firstData then
+                for col in table.StartCol .. table.EndCol do
+                    if col <> addr.Col then
+                        match calculated m col [ firstData .. lastData - 1 ] lastData with
+                        | Some formula -> fill lastData col formula
+                        | None -> ()
+            // 3. A formula in a data cell of a column that is otherwise empty (or the same
+            //    calculated column): the whole column takes it.
+            if addr.Row >= firstData && addr.Row <= lastData then
+                match entry with
+                | Some { Value = Formula (formula, _) } ->
+                    let others = [ firstData .. lastData ] |> List.filter (fun row -> row <> addr.Row)
+                    let allBlank = others |> List.forall (fun row -> blankAt m row addr.Col)
+                    let sameColumn = not others.IsEmpty && (calculated m addr.Col others addr.Row).IsSome
+                    if not others.IsEmpty && (allBlank || sameColumn) then
+                        for row in others do fill row addr.Col (shiftFormulaReferences (row - addr.Row) 0 formula)
+                | _ -> ()
+            let book = withSheetModel sheetId m book
+            // 4. A header cell: the column's name is the text.
+            if table.HasHeaders && addr.Row = table.StartRow && addr.Col >= table.StartCol && addr.Col <= table.EndCol && addr.Col - table.StartCol < table.Columns.Length then
+                let index = addr.Col - table.StartCol
+                let oldName = List.item index table.Columns
+                let typed = match entry with Some data -> displayValue data.Value | None -> ""
+                let wanted = if String.IsNullOrWhiteSpace typed then sprintf "Column%d" (index + 1) else typed
+                let taken = table.Columns |> List.mapi (fun at name -> at, name) |> List.filter (fun (at, _) -> at <> index) |> List.map (fun (_, name) -> name.ToUpperInvariant()) |> Set.ofList
+                let mutable name = wanted
+                let mutable next = 2
+                while Set.contains (name.ToUpperInvariant()) taken do
+                    name <- wanted + string next
+                    next <- next + 1
+                let model = sheetModelOf sheetId book
+                let header = getCell addr model |> Option.defaultValue { Value = Empty; Format = defaultFormat; Comment = None }
+                let model = if header.Value = String name then model else write addr (Some { header with Value = String name }) model
+                let columns = table.Columns |> List.mapi (fun at existing -> if at = index then name else existing)
+                let renamedBook = putTable table { table with Columns = columns } id model book
+                if name = oldName then Some { Book = renamedBook; Cells = List.distinct (List.ofSeq touched) }
+                else
+                    // Structured references follow: by the table's name anywhere, without it in the table's own cells.
+                    let rewritten =
+                        rewriteBookFormulas
+                            (fun formula -> formula.IndexOf(oldName, StringComparison.OrdinalIgnoreCase) >= 0 && formula.IndexOf('[') >= 0)
+                            (fun formulaSheet cell formula ->
+                                let ownCell =
+                                    match cell with
+                                    | Some at -> formulaSheet = sheetId && at.Row >= table.StartRow && at.Row <= table.EndRow && at.Col >= table.StartCol && at.Col <= table.EndCol
+                                    | None -> false
+                                rewriteFormulaForSheets (RenameTableColumnRefs (table.Name, oldName, name, ownCell)) formula)
+                            renamedBook
+                    Some { Book = rewritten.Book; Cells = List.distinct (List.ofSeq touched @ rewritten.Cells) }
+            else Some { Book = book; Cells = List.distinct (List.ofSeq touched) }
+
 /// Remove a table. Keeping the data (Excel's "convert to range") the cells
 /// stay as they are and every structured reference to the table becomes
 /// the plain reference it stood for; otherwise the table's cells are

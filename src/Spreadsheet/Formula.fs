@@ -1923,6 +1923,17 @@ let rewriteExprForSheets (change: SheetRewrite) (expr: Expr) : Expr =
             match reference with
             | TableRef selection when same selection.Table oldName -> TableRef { selection with Table = newName }
             | other -> other) expr
+    | RenameTableColumnRefs (table, oldName, newName, unqualified) ->
+        let renamed (column: string option) =
+            match column with
+            | Some name when same name oldName -> Some newName
+            | other -> other
+        mapExprReferences (fun reference ->
+            match reference with
+            | TableRef selection when same selection.Table table || (unqualified && selection.Table = "") ->
+                let moved = { selection with ColStart = renamed selection.ColStart; ColEnd = renamed selection.ColEnd }
+                if moved = selection then reference else TableRef moved
+            | other -> other) expr
 
 let rewriteFormulaTextForSheets (change: SheetRewrite) (formula: string) : string =
     rewriteFormulaText (rewriteExprForSheets change) formula

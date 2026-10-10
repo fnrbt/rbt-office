@@ -63,6 +63,7 @@ stages=(
     stage45-order
     stage46-quicksort
     stage47-x14rules
+    stage48-tableentry
     numbertext
 )
 

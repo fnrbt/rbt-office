@@ -202,3 +202,74 @@ checks['x14-rules'] = async () => {
     } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
     return lines;
 };
+
+// ---- tables: typing in and around them, the look of the built-in styles ----
+checks['table-entry'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    const frames = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    try {
+        const formula = (a1) => grid.GetRange(a1)[0][0].formula, value = (a1) => grid.GetRange(a1)[0][0].value;
+        const table = (g = grid) => g.GetTables().map((t) => `${t.name}!${t.range} [${t.columns.join('|')}]`);
+        const node = (row, col) => host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"]`);
+        const look = (row, col) => { const style = getComputedStyle(node(row, col)); return [style.backgroundColor, style.color, style.fontWeight === '700' || style.fontWeight === 'bold']; };
+        [['Region', 'Amount', 'Qty', 'Total'], ['East', '10', '1', '=[@Amount]*[@Qty]'], ['West', '20', '2', '=[@Amount]*[@Qty]'], ['East', '30', '3', '=[@Amount]*[@Qty]']]
+            .forEach((row, r) => row.forEach((text, c) => grid.SetCell(r, c, text)));
+        grid.SetCell(1, 6, '=SUM(Sales[Amount])'); grid.SetCell(2, 6, '=SUM(Sales[Total])');
+        grid.AddSheet('Other'); grid.SetCell(0, 0, '=SUM(Sales[Qty])'); grid.SwitchSheet(0);
+        grid.DefineTable('A1:D4', 'Sales', true, 'TableStyleMedium2');
+        check('the table', [table(), value('G2'), value('G3'), value('D4')], [['Sales!A1:D4 [Region|Amount|Qty|Total]'], 60, 140, 90]);
+        const revision = grid.GetRevision();
+
+        // ---- a header cell names its column ----
+        check('typed in a header cell', [grid.EnterText(0, 1, 'Price'), table(), formula('G2'), formula('D2'), value('G2'), value('D4')], [true, ['Sales!A1:D4 [Region|Price|Qty|Total]'], '=SUM(Sales[Price])', '=[@Price]*[@Qty]', 60, 90]);
+        check('the revision moved', grid.GetRevision() > revision, true);
+        grid.Undo();
+        check('one undo: the name, the cell and the formulas', [table(), value('B1'), formula('G2'), formula('D2'), value('G2')], [['Sales!A1:D4 [Region|Amount|Qty|Total]'], 'Amount', '=SUM(Sales[Amount])', '=[@Amount]*[@Qty]', 60]);
+        grid.Redo();
+        check('redo', [table(), formula('G2'), formula('D3')], [['Sales!A1:D4 [Region|Price|Qty|Total]'], '=SUM(Sales[Price])', '=[@Price]*[@Qty]']);
+        grid.Undo();
+        check('a name another column has, a blank one', [grid.EnterText(0, 2, 'region'), value('C1'), grid.GetRange('Other!A1')[0][0].formula, (grid.Undo(), grid.EnterText(0, 2, ''), value('C1')), (grid.Undo(), table())],
+            [true, 'region2', '=SUM(Sales[region2])', 'Column3', ['Sales!A1:D4 [Region|Amount|Qty|Total]']]);
+
+        // ---- typing below and right of the table ----
+        check('typed below the last row: the table grows, the calculated column with it', [grid.EnterText(4, 0, 'North'), table(), formula('D5'), value('D5')], [true, ['Sales!A1:D5 [Region|Amount|Qty|Total]'], '=[@Amount]*[@Qty]', 0]);
+        grid.EnterText(4, 1, '40'); grid.EnterText(4, 2, '2');
+        check('the new row is the table\'s', [value('D5'), value('G2'), value('G3')], [80, 100, 220]);
+        await frames();
+        check('... and has the band of the style', [look(4, 0)[0], look(3, 0)[0]], [look(2, 0)[0], look(1, 0)[0]]);
+        grid.Undo(); grid.Undo();
+        grid.Undo();
+        check('one undo takes the row out again', [table(), value('A5'), formula('D5'), value('G2')], [['Sales!A1:D4 [Region|Amount|Qty|Total]'], null, null, 60]);
+        grid.SetCell(4, 2, 'note');
+        check('not over a cell that holds something', [grid.EnterText(4, 0, 'North'), table(), value('A5')], [true, ['Sales!A1:D4 [Region|Amount|Qty|Total]'], 'North']);
+        grid.Undo(); grid.SetCell(4, 2, '');
+        check('a formula typed right of the table: a calculated column', [grid.EnterText(1, 4, '=[@Amount]*0.1'), table(), value('E1'), [formula('E3'), value('E3')], value('E4')], [true, ['Sales!A1:E4 [Region|Amount|Qty|Total|Column5]'], 'Column5', ['=[@Amount]*0.1', 2], 3]);
+        grid.Undo();
+        check('undone in one step', [table(), value('E1'), value('E2'), value('E3')], [['Sales!A1:D4 [Region|Amount|Qty|Total]'], null, null, null]);
+        check('a header typed right of the table', [grid.EnterText(0, 4, 'Tax'), table()], [true, ['Sales!A1:E4 [Region|Amount|Qty|Total|Tax]']]);
+        grid.EnterText(2, 4, '=[@Total]/10');
+        check('a formula in the empty column fills it', ['E2', 'E3', 'E4'].map(value), [1, 4, 9]);
+
+        // ---- the look of the built-in styles ----
+        await frames();
+        const white = 'rgb(255, 255, 255)', black = 'rgb(0, 0, 0)';
+        check('Medium2: header in the accent with white bold text, banded rows', [look(0, 0), look(1, 0)[0], look(2, 0)[0]], [['rgb(68, 114, 196)', white, true], 'rgb(218, 227, 243)', white]);
+        grid.SetTableStyle('Sales', 'TableStyleLight1'); await frames();
+        check('Light1: a bold header without a fill, grey bands, lines above and below the header', [look(0, 0), look(1, 0)[0], node(0, 0).querySelectorAll('.spreadsheet-edge').length >= 2], [[white, black, true], 'rgb(217, 217, 217)', true]);
+        grid.SetTableStyle('Sales', 'TableStyleDark2'); await frames();
+        check('Dark2: dark fills, white text', [look(0, 0), look(1, 0).slice(0, 2), look(2, 0).slice(0, 2)], [[black, white, true], ['rgb(51, 86, 147)', white], ['rgb(68, 114, 196)', white]]);
+        grid.SetTableStyle('Sales', { name: 'TableStyleMedium9', showFirstColumn: true }); grid.SetTableTotalRow('Sales', true); await frames();
+        check('Medium9: bands in two tints, the first column and the total row in the accent', [look(1, 1)[0], look(2, 1)[0], look(1, 0), look(4, 1)], ['rgb(180, 199, 231)', 'rgb(218, 227, 243)', ['rgb(68, 114, 196)', white, true], ['rgb(68, 114, 196)', white, true]]);
+        grid.SetTableTotalRow('Sales', false); grid.SetTableStyle('Sales', 'TableStyleMedium2');
+
+        // ---- saved and opened again ----
+        const again = await reopened(grid);
+        try {
+            check('opened again: the table, its columns, its formulas', [table(again.grid), again.grid.GetRange('E3')[0][0].formula, again.grid.GetRange('E3')[0][0].value, again.grid.GetRange('G2')[0][0].value], [['Sales!A1:E4 [Region|Amount|Qty|Total|Tax]'], '=[@Total]/10', 4, 60]);
+            check('... and typing below it still grows it', [again.grid.EnterText(4, 1, '5'), table(again.grid), again.grid.GetRange('E5')[0][0].formula], [true, ['Sales!A1:E5 [Region|Amount|Qty|Total|Tax]'], '=[@Total]/10']);
+        } finally { again.close(); }
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};

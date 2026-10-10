@@ -606,8 +606,32 @@ A table has a name (unique in the workbook, also against defined names), a range
 | `GetTableNames()` | | the names (an F# list, kept for older hosts; use `GetTables`) | |
 
 - Filtering a table: `SetAutoFilter(table.range without the total row)` + `SetFilter` (group 9; one filter per sheet). `SUBTOTAL` totals leave filtered rows out.
-- Rows / columns inserted or deleted inside a table grow / shrink it (a new column is `ColumnN`); deleting its header row removes the table. Typing below the last row does not extend a table. Editing a header cell does not rename the column (use the cell text only as a label; column names are fixed at `DefineTable` / `ResizeTable`).
-- The grid draws a styled table's header fill (white bold text) and row bands in the colours of the Office theme by style number (`TableStyleMedium2` blue, `...3` orange, ...); column stripes, first / last column emphasis and the Light / Dark variations are not drawn. A total row is bold.
+- Rows / columns inserted or deleted inside a table grow / shrink it (a new column is `ColumnN`); deleting its header row removes the table.
+- **Typing in and around a table** (an entry the user types in the grid, `EnterText`, `CommitEdit`, the formula bar - NOT `SetCell`, paste or fill,
+  which write cells only) does what Excel does, as ONE undo step that holds the entry and everything that follows from it (a workbook-level step: it
+  bumps the revision once, fires `OnChange` with `WorkbookChanged: true`, and the workbook is recalculated):
+  - *A header cell*: the column takes the text as its name. A cleared header becomes `ColumnN` (N = the column's place), a name another column of the
+    table has gets the next free number appended (`Region` -> `Region2`; names compare case-insensitively), a number or a formula result is stored as
+    its text. The header cell holds exactly that name, and structured references to the column follow in every formula of the workbook - cells,
+    conditional formats, validations, defined names; `Sales[Amount]`, `Sales[@Amount]`, `Sales[[Amount]:[Qty]]` anywhere and the unqualified
+    `[@Amount]` in the table's own cells. `GetTables()[i].columns` shows the new name at once.
+  - *Directly below the last row* (a table without a total row; any of its columns) or *directly right of the last column* (any of its rows): the
+    table grows by that row / column. It does not when the entry is empty, when another cell of the new row / column (within the table's width /
+    height) already holds something, or when the table would run into another table or a merged cell - the entry is then an ordinary one. A new row
+    takes the table's calculated columns (a column whose data cells all hold one formula); a new column is named by what is in the header row
+    (`ColumnN` when nothing is, written into the header cell). The AutoFilter range, the bands and the structured references cover the new cells.
+  - *A formula in a data cell of a column* whose other data cells are empty, or all hold the one formula of a calculated column: the formula fills
+    the whole column (relative references move row by row; `[@Col]` stays). A column that holds values or differing formulas keeps them.
+  Hosts that enter cells themselves on behalf of the user and want this should call `EnterText`; a host that must not get it uses `SetCell`.
+- **Table styles are drawn from the style's name**, in the DOM grid and by the portable painter (PNG / PDF / native), for the built-in families
+  `TableStyleLight1-21`, `TableStyleMedium1-28`, `TableStyleDark1-11`. The colour is the theme accent the number stands for (every seven: black, accent
+  1 ... accent 6; taken from the theme of an opened file, the Office theme otherwise). Drawn: the header row (filled with white bold text in Medium /
+  Dark and Light8-14, bold between lines in Light1-7 / 15-21), the total row (bold; a double line above it, or filled in Medium8-14 / 22-28 and
+  Dark1-7), banded rows (`showRowStripes`: tint bands; two tints in Medium8-14 / 22-28 and the Dark styles; grey in Medium15-21) and banded columns
+  (`showColumnStripes`), first / last column emphasis (`showFirstColumn` / `showLastColumn`: bold, filled where the style fills), the lines of the
+  Light styles (between rows in Light8-14, a full grid in Light15-21), dark fills with white text in Dark1-7. A cell's own fill, text colour and
+  borders win over the table's. Approximations: Dark8-11 use one accent (Excel pairs two), the inner lines of Medium1-7 are not drawn, custom
+  (workbook-defined) table styles draw as `TableStyleMedium2`-like header and bands in black.
 - XLSX: columns, `headerRowCount`, `totalsRowCount`, per-column `totalsRowLabel` / `totalsRowFunction` / `totalsRowFormula`, `autoFilter` (header + data), `tableStyleInfo`. Tables of an opened file that were not touched are written as the file had them; a deleted table's part is not written.
 - `DuplicateSheet` copies a sheet's tables under new names (`Sales_2`), `DeleteSheet` removes them, `RenameSheet` leaves them.
 

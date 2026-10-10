@@ -1653,8 +1653,17 @@ type Spreadsheet(container: Element) =
     /// Commit typed text to a cell: parse it the way Excel reads input, check
     /// it against the cell's validation, store it and recalculate, as one
     /// undoable step. False when a validation rule refused the entry.
+    /// Set once the workbook's table steps exist (`changeTables`): enters a cell as a
+    /// change of the tables; false when the entry concerns none.
+    let tableEntryHook : (CellAddress * CellData option -> bool) ref = ref (fun _ -> false)
+
     let commitInput (addr: CellAddress) (text: string) (validate: bool) (undoable: bool) : bool =
         let oldCellData = getCell addr model
+        // An entry that concerns a table (a header cell, a cell directly below or right of the
+        // table, a formula in one of its columns) is a change of the workbook's tables: one
+        // step with what follows from it (see `SheetOps.tableEntry`).
+        let asTableEntry (entry: CellData option) =
+            undoable && SheetOps.entryConcernsTable addr model && tableEntryHook.Value (addr, entry)
         // A cell a dynamic array had spilled into is that array's cell again
         // after the undo of an entry typed over it, not a cell in its way.
         let spilledFrom = Map.tryFind addr model.Spill
@@ -1665,6 +1674,7 @@ type Spreadsheet(container: Element) =
         if System.String.IsNullOrWhiteSpace text then
             // Empty input clears the cell.
             match oldCellData with
+            | Some _ when asTableEntry None -> ()
             | Some old ->
                 model <- clearCell addr model
                 recalculateFormulas()
@@ -1704,13 +1714,14 @@ type Spreadsheet(container: Element) =
                     // that follows settles it and everything that reads it.
                     | CellValue.Formula (formula, _) -> { parsed with Value = CellValue.Formula (formula, evaluateFormula formula model workbook) }
                     | _ -> parsed
-                recalculateSingleCellEdit addr cellData
-                if undoable then
-                    model <- pushCommand { Undo = (fun m -> (match oldCellData with
-                                                             | Some old -> setCell addr old m
-                                                             | None -> clearCell addr m) |> asItWas)
-                                           Redo = (fun m -> setCell addr cellData m)
-                                           Description = sprintf "Edit cell %s" (formatCellRef addr.Row addr.Col) } model
+                if not (asTableEntry (Some cellData)) then
+                    recalculateSingleCellEdit addr cellData
+                    if undoable then
+                        model <- pushCommand { Undo = (fun m -> (match oldCellData with
+                                                                 | Some old -> setCell addr old m
+                                                                 | None -> clearCell addr m) |> asItWas)
+                                               Redo = (fun m -> setCell addr cellData m)
+                                               Description = sprintf "Edit cell %s" (formatCellRef addr.Row addr.Col) } model
                 true
 
     /// Continue the block `source` in `direction` by `count` rows/columns as
@@ -2471,6 +2482,14 @@ type Spreadsheet(container: Element) =
             runBookStep description (apply true) (apply false)
             true
 
+    do
+        tableEntryHook.Value <- fun (addr, entry) ->
+            let sheetId = sheetIdForIndex activeSheetIndex
+            changeTables (sprintf "Edit cell %s" (formatCellRef addr.Row addr.Col)) (fun wb ->
+                match SheetOps.tableEntry sheetId addr entry wb with
+                | Some change -> change
+                | None -> { Book = wb; Cells = [] })
+
     /// The index of the sheet a table is on (throws for a table of no sheet).
     let tableSheetIndex (memberName: string) (table: SheetOps.TableInfo) : int =
         let index = sheetIndexOfId table.SheetId
@@ -2965,24 +2984,25 @@ type Spreadsheet(container: Element) =
                     Some (table.HasHeaders && row = table.StartRow, (row - table.StartRow - (if table.HasHeaders then 1 else 0)) % 2 = 0,
                           style, table.HasTotals && row = table.EndRow)
                 else None)
-        match tableInfo with
-        | Some (true, _, Some { HeaderFill = Some fill }, _) ->
-            add "background-color" fill
-            add "color" "white"
-            add "font-weight" "bold"
+        // What the table's style gives the cell (header, total row, bands, first / last column).
+        let tableLook =
+            if model.Tables.IsEmpty then None
+            else model.Tables |> List.tryPick (fun own -> tableCellLook own row col)
+        match tableLook with
+        | Some look ->
+            match look.Fill with Some fill -> add "background-color" fill | None -> ()
+            match look.Text with Some color -> add "color" color | None -> ()
+            if look.Bold then add "font-weight" "bold"
+            match look.Lines with Some color -> gridColor <- color | None -> ()
+        | None -> ()
+        match (if tableLook.IsSome then None else tableInfo) with
         | Some (true, _, _, _) ->
             add "background" "linear-gradient(180deg, #4472C4 0%, #2E5AA8 100%)"
             add "color" "white"
             add "font-weight" "bold"
             add "text-align" "center"
             gridColor <- "#2E5AA8"
-        | Some (false, isEvenRow, Some style, isTotals) ->
-            // The bands of the style: the first row of data and every second one after it.
-            if isTotals then add "font-weight" "bold"
-            else
-                match style.StripeFill with
-                | Some fill when style.ShowRowStripes && isEvenRow -> add "background-color" fill
-                | _ -> ()
+        | Some (false, _, Some _, isTotals) -> if isTotals then add "font-weight" "bold"
         | Some (false, isEvenRow, None, isTotals) ->
             add "background-color" (if isEvenRow then "#FFFFFF" else "#EDF2FA")
             if isTotals then add "font-weight" "bold"
@@ -3340,6 +3360,17 @@ type Spreadsheet(container: Element) =
                 else "transform:translate(-50%,-50%) rotate(" + string (-(Host.rotationDegrees rotation)) + "deg)"
             setCssText turned ("position:absolute;left:50%;top:50%;white-space:nowrap;line-height:normal;text-decoration:inherit;pointer-events:none;" + transform)
             appendChild cell turned
+        // The lines of the table's style above and below the cell (under a header, above a total row).
+        match tableLook with
+        | Some look ->
+            let line (side: string) (edge: (string * bool) option) =
+                match edge with
+                | Some (color, isDouble) ->
+                    edgeChildren.Add (1, "position:absolute;pointer-events:none;left:0;right:0;" + side + ":0;height:0;border-" + side + ":" + (if isDouble then "3px double " else "1px solid ") + color)
+                | None -> ()
+            line "top" look.Top
+            line "bottom" look.Bottom
+        | None -> ()
         // The weaker edge first: where two meet, the stronger is on top.
         if edgeChildren.Count > 0 then
             for _, style in edgeChildren |> Seq.sortBy fst do
