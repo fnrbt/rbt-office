@@ -753,6 +753,17 @@ module WordWriter =
     let writeFromEditorPackage (package: obj) =
         DocumentWriter.writeFromEditorPackage package
 
+    /// What the last writeFromEditorPackage made of the body of a document
+    /// that was opened: { PatchedParagraphs, ModelParagraphsInTables,
+    /// ModelBlocks, ModelBlockParagraphs, SourceBlocks, Reasons } - the paragraphs that
+    /// were changed in the XML they were read from, the paragraphs of tables
+    /// that were written from the model into the table's own XML, the blocks
+    /// (and the paragraphs in them) that were written from the model whole,
+    /// the blocks that went back as the XML they were read from, and why the
+    /// first few of the others did not.
+    let getLastSaveReport () : obj =
+        DocumentWriter.lastSaveReport ()
+
     /// Create document builder (Phase 3)
     let createDocument () = DocumentBuilder.create ()
 
@@ -1764,6 +1775,7 @@ let api () = {|
         write = WordWriter.write
         writeFromEditor = WordWriter.writeFromEditor
         writeFromEditorPackage = WordWriter.writeFromEditorPackage
+        getLastSaveReport = WordWriter.getLastSaveReport
         openProgressive = Processors.openProgressive
         isLoadComplete = Processors.isLoadComplete
         whenLoadComplete = Processors.whenLoadComplete

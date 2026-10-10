@@ -1772,44 +1772,45 @@ module Docx =
         else
             let runs = tokens |> collapseComplexFieldTokens |> attachRunMarkers
 
-            // Extract text from runs
-            let text =
-                runs
-                |> List.map (fun r ->
-                    match r.Content with
-                    | Text t -> t
-                    | _ -> "")
-                |> String.concat ""
-
-            let props =
-                runs
-                |> List.tryHead
-                |> Option.map (fun r -> hyperlinkRunProps r.Properties)
-                |> Option.defaultValue {
-                    Style = Some "Hyperlink"
-                    Bold = None; Italic = None; Underline = None; UnderlineStyle = None; UnderlineColor = None
-                    AllCaps = None; SmallCaps = None
-                    FontSize = None; CharacterSpacing = None; FontFamily = None; ThemeFont = None; Color = None
-                    ThemeColor = None; ThemeTint = None; ThemeShade = None; Highlight = None; Strike = None
-                    DoubleStrike = None; Hidden = None; Position = None; EmphasisMark = None; VertAlign = None
-                }
-
-            [RunToken {
-                Content = Link {
-                    Text = text
-                    Target = anchorTarget  // The relationship target is resolved later
-                    RelationshipId = rId
+            // A link's runs are runs of the link: each with its own text and properties (a part of
+            // a link that is bold is bold). A link without text is one run without text.
+            let defaultProps = {
+                Style = Some "Hyperlink"
+                Bold = None; Italic = None; Underline = None; UnderlineStyle = None; UnderlineColor = None
+                AllCaps = None; SmallCaps = None
+                FontSize = None; CharacterSpacing = None; FontFamily = None; ThemeFont = None; Color = None
+                ThemeColor = None; ThemeTint = None; ThemeShade = None; Highlight = None; Strike = None
+                DoubleStrike = None; Hidden = None; Position = None; EmphasisMark = None; VertAlign = None
+            }
+            let linkRun (text: string) (props: RunProperties) =
+                RunToken {
+                    Content = Link {
+                        Text = text
+                        Target = anchorTarget  // The relationship target is resolved later
+                        RelationshipId = rId
+                        Properties = props
+                    }
                     Properties = props
+                    BookmarkStart = None
+                    BookmarkEnd = None
+                    RenderedPageBreakBefore = false
+                    RevisionId = None
+                    RevisionType = None
+                    RevisionAuthor = None
+                    RevisionDate = None; InsertedRevision = None; MoveName = None
                 }
-                Properties = props
-                BookmarkStart = None
-                BookmarkEnd = None
-                RenderedPageBreakBefore = false
-                RevisionId = None
-                RevisionType = None
-                RevisionAuthor = None
-                RevisionDate = None; InsertedRevision = None; MoveName = None
-            }]
+            // (Runs that are formatted alike are one run, as they were before each was read on its own.)
+            let texts =
+                runs
+                |> List.choose (fun r -> match r.Content with | Text t when t <> "" -> Some (t, hyperlinkRunProps r.Properties) | _ -> None)
+                |> List.fold (fun (acc: (string * RunProperties) list) (text, props) ->
+                    match acc with
+                    | (previous, previousProps) :: rest when previousProps = props -> (previous + text, props) :: rest
+                    | _ -> (text, props) :: acc) []
+                |> List.rev
+            match texts with
+            | [] -> [ linkRun "" (runs |> List.tryHead |> Option.map (fun r -> hyperlinkRunProps r.Properties) |> Option.defaultValue defaultProps) ]
+            | _ -> texts |> List.map (fun (text, props) -> linkRun text props)
 
     // Hyperlink extraction
     let hyperlink (hlNode: XmlNode) : Run list =

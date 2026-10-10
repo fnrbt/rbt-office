@@ -161,18 +161,24 @@ try {
     const documentOf = async (editor) => (await (await window.JSZip.loadAsync(new Uint8Array(await (await OF.word.writeFromEditorPackage(Word.exportDocumentPackage(editor))).arrayBuffer()))).file('word/document.xml').async('string'));
     const source = keptBox.slice('<w:r>'.length, -'</w:r>'.length);
     check('an unchanged document: the text box as it was read', (await documentOf(saved.editor)).includes(source), true);
-    // Part of the anchor's paragraph made bold: its XML is made anew; the box's is not.
+    // Part of the anchor's paragraph made bold: the change is made in the paragraph's own XML, the box in it is the text it was.
     const anchorBlock = Word.getLayoutLines(saved.editor).filter((line) => (line.Text ?? '').startsWith('anchor paragraph'))[0];
     Word.setSelection(saved.editor, anchorBlock.BlockId, 0, anchorBlock.BlockId, 6);
     Word.toggleBold(saved.editor);
     const boldSaved = await documentOf(saved.editor);
     check('its paragraph changed: the bold is saved', /<w:b\/>[^]*?anchor/.test(boldSaved), true);
+    check('its paragraph changed: the box is the text it was read from', boldSaved.includes(source), true);
+    // A bookmark set in the paragraph: it is written from the model; the box's XML is not made anew.
+    Word.setSelection(saved.editor, anchorBlock.BlockId, 7, anchorBlock.BlockId, 16);
+    Word.setBookmark(saved.editor, 'beside_the_box');
+    const modelSaved = await documentOf(saved.editor);
+    check('its paragraph written from the model: the bookmark is saved', modelSaved.includes('w:name="beside_the_box"'), true);
     // (As the reader holds an element: its attributes in the order of their names, its namespaces declared on it.)
     const boxOf = (xml) => xml.slice(xml.indexOf('<mc:AlternateContent'), xml.indexOf('</mc:AlternateContent>'));
-    check('its paragraph changed: the box is still the element it was read from - choice, fallback and what the model does not hold',
-        [boxOf(boldSaved).includes(extra), /<wps:bodyPr anchor="ctr" anchorCtr="0" bIns="45720" lIns="190500" rIns="91440" rot="0" tIns="95250" vert="horz" wrap="square"><a:noAutofit\/><\/wps:bodyPr>/.test(boxOf(boldSaved)),
-            /<mc:Fallback><w:pict><v:shape fillcolor="#CCDDEE" id="vml51" stroked="f" style="position:absolute;margin-left:30pt;margin-top:30pt;width:150pt;height:60pt;z-index:7" type="#_x0000_t202"/.test(boxOf(boldSaved)),
-            (boxOf(boldSaved).match(/<[a-zA-Z0-9]+:[a-zA-Z0-9]+[ >\/]/g) ?? []).length === (source.match(/<[a-zA-Z0-9]+:[a-zA-Z0-9]+[ >\/]/g) ?? []).length],
+    check('its paragraph written from the model: the box is still the element it was read from - choice, fallback and what the model does not hold',
+        [boxOf(modelSaved).includes(extra), /<wps:bodyPr anchor="ctr" anchorCtr="0" bIns="45720" lIns="190500" rIns="91440" rot="0" tIns="95250" vert="horz" wrap="square"><a:noAutofit\/><\/wps:bodyPr>/.test(boxOf(modelSaved)),
+            /<mc:Fallback><w:pict><v:shape fillcolor="#CCDDEE" id="vml51" stroked="f" style="position:absolute;margin-left:30pt;margin-top:30pt;width:150pt;height:60pt;z-index:7" type="#_x0000_t202"/.test(boxOf(modelSaved)),
+            (boxOf(modelSaved).match(/<[a-zA-Z0-9]+:[a-zA-Z0-9]+[ >\/]/g) ?? []).length === (source.match(/<[a-zA-Z0-9]+:[a-zA-Z0-9]+[ >\/]/g) ?? []).length],
         [true, true, true, true]);
     check('read again: the same box', (await OF.processors.forEditorPackage(new Uint8Array(await (await OF.word.writeFromEditorPackage(Word.exportDocumentPackage(saved.editor))).arrayBuffer()))).Paragraphs.filter((item) => item.Type === 'TextBox').map((item) => [Math.round(item.InsetLeft), Math.round(item.InsetTop), item.VerticalAnchor, item.Width, item.Height]), [[20, 10, 'ctr', 200, 80]]);
     // The box itself changed (its fill): both the choice and the fallback are written from the model, with its insets and anchor.

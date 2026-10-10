@@ -1842,7 +1842,8 @@ let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) 
                     "ExplicitFontSize" ==> explicitFontSize inherited tr.Style
                     "ExplicitColorAuto" ==> (ExplicitFormat.has ExplicitFormat.ColorAuto tr.Style && tr.Style.Color.IsNone)
                     // The font is what the paragraph's and the run's styles give: not direct formatting.
-                    "FontFamilyInherited" ==> (tr.Style.FontFamily.IsSome && inherited |> Option.exists (fun style -> style.FontFamily = tr.Style.FontFamily))
+                    // (So is that of a run without a font of its own - text typed where no text was: it is shown in the font its styles give.)
+                    "FontFamilyInherited" ==> (tr.Style.FontFamily.IsNone || inherited |> Option.exists (fun style -> style.FontFamily = tr.Style.FontFamily))
                     "Style" ==> tr.Style.Style
                     "Bold" ==> tr.Style.Bold
                     "Italic" ==> tr.Style.Italic
@@ -2560,7 +2561,9 @@ let private paragraphTextChange (context: WordStyles.DocumentStyleContext option
                         let formatted (run: TextBuffer.Run) =
                             match run, newRuns.[prefix] with
                             | TextBuffer.Text candidate, TextBuffer.Text typed ->
-                                obj.ReferenceEquals(candidate.Style, typed.Style) || TextBuffer.withoutAnnotations candidate.Style = typed.Style
+                                // (Not a link's run: a link is shown underlined whatever its run's properties say.)
+                                obj.ReferenceEquals(candidate.Style, typed.Style)
+                                || (candidate.Style.Hyperlink.IsNone && candidate.Style.InactiveHyperlink.IsNone && TextBuffer.withoutAnnotations candidate.Style = typed.Style)
                             | _ -> false
                         // (A character of the run that is one of a w:t: not a tab, a break, the place of an object.)
                         let ordinary (c: char) = c >= ' ' && c <> '\uFFFC' && c <> '\u00AD' && c <> '\u2011' && c <> '\u2028'
@@ -2594,106 +2597,187 @@ let private paragraphTextChange (context: WordStyles.DocumentStyleContext option
                         "MarkStyle" ==> markStyle
                         "NewText" ==> newText ])
 
-/// A paragraph whose text is what it was and whose formatting was changed as
-/// a whole - every character of it made bold (or not bold), italic, struck
-/// through or underlined, by a selection that covered it; its alignment - and
-/// in nothing else: what was set, for the writer to set in the properties of
-/// the paragraph's own XML (its runs' w:rPr, its w:pPr) instead of writing
-/// the paragraph from the model. None when anything else of it changed, or a
-/// part of its text only.
-let private paragraphFormatChange (context: WordStyles.DocumentStyleContext option) (index: int) (before: ParagraphBlock) (after: ParagraphBlock) : obj option =
-    if TextBuffer.toString before.Buffer <> TextBuffer.toString after.Buffer then None
-    else
-        let textRuns (buffer: TextBuffer.TextBuffer) =
-            buffer.Runs |> List.choose (function TextBuffer.Text run when run.Length > 0 -> Some run | _ -> None)
-        let beforeRuns = textRuns before.Buffer
-        let afterRuns = textRuns after.Buffer
-        // A property every character of the paragraph states, with one value, and did not all state so before.
-        let stated (flag: int) (pick: TextBuffer.TextStyle -> bool) : bool option =
-            match afterRuns with
-            | [] -> None
-            | first :: _ ->
-                let value = pick first.Style
-                let all (runs: TextBuffer.TextRun list) = runs |> List.forall (fun run -> run.Style.Explicit &&& flag <> 0 && pick run.Style = value)
-                if all afterRuns && not (all beforeRuns) then Some value else None
-        let bold = stated TextBuffer.ExplicitFormat.Bold (fun style -> style.Bold)
-        let italic = stated TextBuffer.ExplicitFormat.Italic (fun style -> style.Italic)
-        let strike = stated TextBuffer.ExplicitFormat.Strike (fun style -> style.Strike)
-        // (An underline of the plain kind: one with a style or a colour of its own is written from the model.)
-        let underline =
-            stated TextBuffer.ExplicitFormat.Underline (fun style -> style.Underline)
-            |> Option.filter (fun _ ->
-                afterRuns |> List.forall (fun run -> (run.Style.UnderlineStyle.IsNone || run.Style.UnderlineStyle = Some "single") && run.Style.UnderlineColor.IsNone))
-        let alignmentChanged = before.Metadata.Alignment <> after.Metadata.Alignment || before.Metadata.ExplicitAlignment <> after.Metadata.ExplicitAlignment
-        if bold.IsNone && italic.IsNone && strike.IsNone && underline.IsNone && not alignmentChanged then None
-        else
-            // The paragraph as it was, with those properties set as they are now, is the paragraph as it is.
-            let set (style: TextBuffer.TextStyle) =
-                let style = match bold with Some on -> TextBuffer.withExplicitBold on style | None -> style
-                let style = match italic with Some on -> TextBuffer.withExplicitItalic on style | None -> style
-                let style = match strike with Some on -> TextBuffer.withExplicitStrike on style | None -> style
-                match underline with Some on -> TextBuffer.withExplicitUnderline on style | None -> style
-            // (Runs that are formatted alike afterwards are one run, as they are in the paragraph the editor has.)
-            let merged (runs: TextBuffer.Run list) =
-                List.foldBack (fun (run: TextBuffer.Run) (rest: TextBuffer.Run list) ->
-                    match run, rest with
-                    | TextBuffer.Text current, TextBuffer.Text next :: others when current.Start + current.Length = next.Start && current.Style = next.Style ->
-                        TextBuffer.Text { current with Length = current.Length + next.Length } :: others
-                    | _ -> run :: rest) runs []
-            let withSet (para: ParagraphBlock) =
-                { para with
-                    Buffer = { para.Buffer with Runs = para.Buffer.Runs |> List.map (function TextBuffer.Text run -> TextBuffer.Text { run with Style = set run.Style } | other -> other) |> merged }
-                    Metadata = { para.Metadata with Alignment = after.Metadata.Alignment; ExplicitAlignment = after.Metadata.ExplicitAlignment } }
-            let exported (para: ParagraphBlock) = paragraphToEditor context "Paragraph" 0 para
-            let now = exported after
-            if jsonOf (exported (withSet before)) <> jsonOf now then None
-            else
-                let toggle (value: bool option) : obj = match value with Some on -> box on | None -> null
-                Some (createObj [
-                        "Paragraph" ==> index
-                        "Format" ==> true
-                        "Bold" ==> toggle bold
-                        "Italic" ==> toggle italic
-                        "Strike" ==> toggle strike
-                        "Underline" ==> toggle underline
-                        "AlignmentChanged" ==> alignmentChanged
-                        // (What the paragraph states of its alignment now, as the writer reads it of a paragraph: null - its style's.)
-                        "Alignment" ==> now?ExplicitAlignment ])
+/// `style` with the character formatting of `format`. What is left to
+/// differ is what makes a run more than formatted text: its link, field,
+/// note, comment, bookmark, tracked change.
+let private withFormatOf (format: TextBuffer.TextStyle) (style: TextBuffer.TextStyle) : TextBuffer.TextStyle =
+    { style with
+        Style = format.Style; Bold = format.Bold; Italic = format.Italic; Underline = format.Underline
+        UnderlineStyle = format.UnderlineStyle; UnderlineColor = format.UnderlineColor; AllCaps = format.AllCaps
+        SmallCaps = format.SmallCaps; Strike = format.Strike; DoubleStrike = format.DoubleStrike; Hidden = format.Hidden
+        Position = format.Position; EmphasisMark = format.EmphasisMark; FontSize = format.FontSize
+        CharacterSpacing = format.CharacterSpacing; FontFamily = format.FontFamily; Color = format.Color
+        Highlight = format.Highlight; VertAlign = format.VertAlign; Explicit = format.Explicit
+        // (The mark of a rendered page break is where it was in the XML: see paragraphTextChange.)
+        RenderedPageBreakBefore = format.RenderedPageBreakBefore }
 
-/// A changed block as changes of the text of its paragraphs (see above):
-/// the text every paragraph of the block had when it was read, in the order
-/// of the XML, and the changes. None when anything else of the block is not
-/// what it was.
-let private blockTextChanges (context: WordStyles.DocumentStyleContext option) (original: Block) (current: Block) : obj option =
+/// A buffer of `text` in which each character is of the run given for it.
+let private bufferOfCharacters (text: string) (runs: TextBuffer.Run array) : TextBuffer.TextBuffer =
+    let result = ResizeArray<TextBuffer.Run>()
+    let mutable i = 0
+    while i < runs.Length do
+        match runs.[i] with
+        | TextBuffer.Image image ->
+            result.Add (TextBuffer.Image { image with Start = i })
+            i <- i + 1
+        | TextBuffer.Text run ->
+            let mutable j = i + 1
+            while j < runs.Length
+                  && (match runs.[j] with
+                      | TextBuffer.Text other -> obj.ReferenceEquals(other, run) || obj.ReferenceEquals(other.Style, run.Style) || other.Style = run.Style
+                      | TextBuffer.Image _ -> false) do
+                j <- j + 1
+            result.Add (TextBuffer.Text { Start = i; Length = j - i; Style = run.Style })
+            i <- j
+    { Rope = Rope.ofString text; Runs = List.ofSeq result }
+
+/// What was done to a paragraph, for the writer to do in the XML the
+/// paragraph was read from instead of writing the paragraph from the model:
+///
+///   Text    the one stretch of its text that was changed (paragraphTextChange),
+///           null when the text is what it was;
+///   Before  the paragraph with the text it has now and the formatting it
+///           had - of the paragraph, and of every character that was there -
+///           as the model writes it, when the formatting was changed: the
+///           writer sets what differs between the properties it would write
+///           for Before and for After in the properties the XML has. null
+///           when the formatting is what it was;
+///   After   the paragraph as it is now (what is written when the XML does
+///           not allow the change);
+///   Regenerate  the paragraph was changed in another way - a link, a note,
+///           a bookmark, a picture, a tracked change: it is written from the
+///           model.
+let private paragraphEdit (context: WordStyles.DocumentStyleContext option) (export: ParagraphBlock -> obj) (index: int) (a: ParagraphBlock) (b: ParagraphBlock) : obj =
+    let afterItem = export b
+    let regenerate () = createObj [ "Paragraph" ==> index; "Regenerate" ==> true; "After" ==> afterItem ]
+    let ma = a.Metadata
+    let mb = b.Metadata
+    // What of a paragraph is not in its properties: the content control around it, a page break after it.
+    if ma.ContentControlId <> mb.ContentControlId || ma.ContentControlTag <> mb.ContentControlTag || ma.ContentControlAlias <> mb.ContentControlAlias
+       || ma.PageBreakAfter <> mb.PageBreakAfter || ma.RenderedPageBreakBefore <> mb.RenderedPageBreakBefore then regenerate ()
+    else
+        let oldText = TextBuffer.toString a.Buffer
+        let newText = TextBuffer.toString b.Buffer
+        let oldRuns = runsByCharacter a.Buffer
+        let newRuns = runsByCharacter b.Buffer
+        if oldRuns.Length <> oldText.Length || newRuns.Length <> newText.Length then regenerate ()
+        else
+            // (Runs are compared once.)
+            let mutable lastA = Unchecked.defaultof<TextBuffer.Run>
+            let mutable lastB = Unchecked.defaultof<TextBuffer.Run>
+            let mutable lastSame = false
+            /// The two are one kind of text - the same link, field, note, change - however formatted.
+            let sameKind (x: TextBuffer.Run) (y: TextBuffer.Run) =
+                if obj.ReferenceEquals(x, y) then true
+                elif obj.ReferenceEquals(x, lastA) && obj.ReferenceEquals(y, lastB) then lastSame
+                else
+                    let same =
+                        match x, y with
+                        | TextBuffer.Text p, TextBuffer.Text q -> obj.ReferenceEquals(p.Style, q.Style) || withFormatOf p.Style q.Style = p.Style
+                        | TextBuffer.Image p, TextBuffer.Image q -> { p with Start = 0 } = { q with Start = 0 }
+                        | _ -> false
+                    lastA <- x
+                    lastB <- y
+                    lastSame <- same
+                    same
+            // The stretch of the text that is not the text it was.
+            let limit = min oldText.Length newText.Length
+            let mutable prefix = 0
+            while prefix < limit && oldText.[prefix] = newText.[prefix] do prefix <- prefix + 1
+            let mutable suffix = 0
+            while suffix < limit - prefix && oldText.[oldText.Length - 1 - suffix] = newText.[newText.Length - 1 - suffix] do suffix <- suffix + 1
+            let deleted = oldText.Length - prefix - suffix
+            let inserted = newText.Length - prefix - suffix
+            // The paragraph with its new text and the formatting it had: a character that was there
+            // as it was; a new one as the character it was typed next to, where it is of its kind.
+            let middle : ParagraphBlock =
+                if deleted = 0 && inserted = 0 then a
+                else
+                    let neighbour (typed: TextBuffer.Run) =
+                        let candidate (at: int) = if at >= 0 && at < oldRuns.Length && sameKind oldRuns.[at] typed then Some oldRuns.[at] else None
+                        match typed with
+                        | TextBuffer.Image _ -> typed
+                        | TextBuffer.Text _ -> candidate (prefix - 1) |> Option.orElse (candidate (prefix + deleted)) |> Option.defaultValue typed
+                    let runs =
+                        Array.init newText.Length (fun j ->
+                            if j < prefix then oldRuns.[j]
+                            elif j < prefix + inserted then neighbour newRuns.[j]
+                            else oldRuns.[j - inserted + deleted])
+                    { a with Buffer = bufferOfCharacters newText runs }
+            let middleRuns = if obj.ReferenceEquals(middle, a) then oldRuns else runsByCharacter middle.Buffer
+            let mutable kinds = middleRuns.Length = newRuns.Length
+            if kinds then
+                for j in 0 .. newRuns.Length - 1 do
+                    if kinds && not (sameKind middleRuns.[j] newRuns.[j]) then kinds <- false
+            if not kinds then regenerate ()
+            else
+                let textEdit : obj option =
+                    if obj.ReferenceEquals(middle, a) then Some null
+                    else paragraphTextChange context index a middle |> Option.map box
+                match textEdit with
+                | None -> regenerate ()
+                | Some text ->
+                    let middleItem = export middle
+                    createObj [
+                        "Paragraph" ==> index
+                        "Text" ==> text
+                        "Before" ==> (if jsonOf middleItem = jsonOf afterItem then null else middleItem)
+                        "After" ==> afterItem
+                        "NewText" ==> newText ]
+
+/// A changed block as changes of its paragraphs (see paragraphEdit): the
+/// text every paragraph of the block had when it was read, in the order of
+/// the XML, and what was done to each that is not what it was. None when
+/// anything else of the block is not what it was (its paragraphs are others,
+/// a table's rows or cells).
+let private blockTextChanges (context: WordStyles.DocumentStyleContext option) (original: Block) (current: Block) : Result<obj, string> =
     match storyParagraphs original, storyParagraphs current with
     | Some before, Some after when before.Length = after.Length && List.forall2 (fun (a: ParagraphBlock) (b: ParagraphBlock) -> a.Id = b.Id) before after ->
         let changed = List.zip before after |> List.mapi (fun index pair -> index, pair) |> List.filter (fun (_, (a, b)) -> not (obj.ReferenceEquals(a, b)))
         // With the paragraphs that were changed as they were, the block is what it was.
-        let originals = Dictionary<string, ParagraphBlock>()
-        for (_, (a, _)) in changed do originals.[a.Id] <- a
+        // (By the paragraph itself, not its id: the paragraphs of a table's cells need not have ids of their own.)
+        let originals = Dictionary<string, ResizeArray<ParagraphBlock * ParagraphBlock>>()
+        for (_, (a, b)) in changed do
+            match originals.TryGetValue b.Id with
+            | true, pairs -> pairs.Add ((b, a))
+            | _ ->
+                let pairs = ResizeArray<ParagraphBlock * ParagraphBlock>()
+                pairs.Add ((b, a))
+                originals.[b.Id] <- pairs
         let restored =
             [ current ]
-            |> mapParagraphsOfBlocks (fun para -> match originals.TryGetValue para.Id with | true, was -> was | _ -> para)
+            |> mapParagraphsOfBlocks (fun para ->
+                match originals.TryGetValue para.Id with
+                | true, pairs ->
+                    (match pairs |> Seq.tryFind (fun (now, _) -> obj.ReferenceEquals(now, para)) with
+                     | Some (_, was) -> was
+                     | None -> para)
+                | _ -> para)
             |> List.head
-        if changed.IsEmpty || jsonOf (blockToEditor context restored) <> jsonOf (blockToEditor context original) then None
+        let sameKindOfBlock =
+            match original, current with
+            | Heading (x, _), Heading (y, _) -> x = y
+            | Paragraph _, Paragraph _ | Table _, Table _ -> true
+            | _ -> false
+        if changed.IsEmpty then Error "something other than its paragraphs was changed"
+        elif not sameKindOfBlock then Error "it is another kind of block"
+        elif jsonOf (blockToEditor context restored) <> jsonOf (blockToEditor context original) then Error "more than its paragraphs was changed"
         else
-            let unchangedText (a: ParagraphBlock) (b: ParagraphBlock) = jsonOf (paragraphToEditor context "Paragraph" 0 a) = jsonOf (paragraphToEditor context "Paragraph" 0 b)
-            // (A paragraph whose text is what it was: a change of its formatting as a whole, see paragraphFormatChange.)
+            // (As the block's own paragraph is written: a heading's with the heading it is.)
+            let export (para: ParagraphBlock) =
+                match current with
+                | Heading (level, _) -> paragraphToEditor context "Heading" level para
+                | _ -> paragraphToEditor context "Paragraph" 0 para
+            let unchangedText (a: ParagraphBlock) (b: ParagraphBlock) = jsonOf (export a) = jsonOf (export b)
             let edits =
                 changed
-                |> List.map (fun (index, (a, b)) ->
-                    if unchangedText a b then Some null
-                    else
-                        // (First: to the comparison of characters, text made bold is text typed again.)
-                        paragraphFormatChange context index a b
-                        |> Option.map box
-                        |> Option.orElseWith (fun () -> paragraphTextChange context index a b |> Option.map box))
-            if edits |> List.exists Option.isNone then None
-            else
-                Some (createObj [
-                        "Texts" ==> (before |> List.map (fun para -> TextBuffer.toString para.Buffer) |> List.toArray)
-                        "Edits" ==> (edits |> List.choose id |> List.filter (fun edit -> not (isNull edit)) |> List.toArray) ])
-    | _ -> None
+                |> List.filter (fun (_, (a, b)) -> not (unchangedText a b))
+                |> List.map (fun (index, (a, b)) -> paragraphEdit context export index a b)
+            Ok (createObj [
+                    "Texts" ==> (before |> List.map (fun para -> TextBuffer.toString para.Buffer) |> List.toArray)
+                    "Edits" ==> List.toArray edits ])
+    | Some before, Some after -> Error (sprintf "its paragraphs are not the paragraphs it had (%d, it had %d)" after.Length before.Length)
+    | _ -> Error "a shape"
 
 /// The body for the editor package. A block that was imported says which
 /// item of the imported package it was (SourceIndex) and whether it is still
@@ -2716,8 +2800,9 @@ let private exportBodyWithSource context (imported: Document option) (doc: Docum
                 item?SourceUnchanged <- unchanged
                 if not unchanged then
                     match blockTextChanges context originalBlock block with
-                    | Some changes -> item?SourceTextChanges <- changes
-                    | None -> ()
+                    | Ok changes -> item?SourceTextChanges <- changes
+                    // (Why the block is written from the model: for the writer's account of the save.)
+                    | Error why -> item?SourceWhy <- why
             | _ -> ()
             item)
         |> List.toArray

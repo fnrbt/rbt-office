@@ -472,12 +472,22 @@ let private generateRunWithObjectProps (runObj: obj) (run: EditorRun) : string =
     else
         runElement rPr deleted run.Text
 
+/// The further runs of the result of the field whose first run is being written: a field's
+/// result that the editor holds as several runs (a part of it was formatted) is one field
+/// with those runs, each with its own text. (Set by the paragraph writer.)
+let mutable private fieldResultParts : (obj * EditorRun) list = []
+
 let private generateFieldRun (runObj: obj) (fallbackRun: EditorRun) (fieldCode: string) =
-    // (A field without a result is shown as "[Field:<code>]": that is not its result.)
-    let placeholder = fallbackRun.Text.StartsWith "[Field:" && fallbackRun.Text.EndsWith "]"
-    let result = optionalString (runObj?FieldResult) |> Option.defaultValue (if placeholder then "" else fallbackRun.Text)
-    let resultRun = generateRunWithObjectProps runObj { fallbackRun with Text = result }
-    element "w:fldSimple" [("w:instr", fieldCode)] [resultRun]
+    match fieldResultParts with
+    | [] ->
+        // (A field without a result is shown as "[Field:<code>]": that is not its result.)
+        let placeholder = fallbackRun.Text.StartsWith "[Field:" && fallbackRun.Text.EndsWith "]"
+        let result = optionalString (runObj?FieldResult) |> Option.defaultValue (if placeholder then "" else fallbackRun.Text)
+        let resultRun = generateRunWithObjectProps runObj { fallbackRun with Text = result }
+        element "w:fldSimple" [("w:instr", fieldCode)] [resultRun]
+    | parts ->
+        fieldResultParts <- []
+        element "w:fldSimple" [("w:instr", fieldCode)] (generateRunWithObjectProps runObj fallbackRun :: (parts |> List.map (fun (part, run) -> generateRunWithObjectProps part run)))
 
 let private bookmarkStartXml (runObj: obj) =
     optionalString (runObj?BookmarkStartId)
@@ -1350,13 +1360,122 @@ let generateParaProps (para: obj) : string =
     generateParaPropsWithPageSetup defaultPageSetupInfo para
 
 /// Generate a paragraph element with formatting (handles JS objects)
+/// The run of the editor's package as the record the run writers take.
+let private editorRunOfObject (runObj: obj) : EditorRun =
+    {
+      Text = runObj?Text |> unbox<string>
+      Bold = boolOrDefault false (runObj?Bold)
+      Italic = boolOrDefault false (runObj?Italic)
+      Underline = boolOrDefault false (runObj?Underline)
+      Strike = boolOrDefault false (runObj?Strike)
+      FontSize = optionalFloat (runObj?FontSize) |> Option.defaultValue defaultFontSizePixels
+      CharacterSpacing = optionalFloat (runObj?CharacterSpacing) |> Option.defaultValue 0.0
+      FontFamily = runObj?FontFamily |> stringOrDefault "Calibri"
+      Color = if isNullOrUndefined runObj?Color then None else unbox<string option> runObj?Color
+      Highlight = optionalString (runObj?Highlight)
+      VertAlign = optionalString (runObj?VertAlign)
+      CommentId = optionalString (runObj?CommentId)
+      CommentText = optionalString (runObj?CommentText)
+      CommentAuthor = optionalString (runObj?CommentAuthor)
+      CommentDate = optionalString (runObj?CommentDate)
+      NoteId = optionalString (runObj?NoteId)
+      NoteType = optionalString (runObj?NoteType)
+      NoteText = optionalString (runObj?NoteText)
+      Hyperlink = optionalString (runObj?Hyperlink)
+      BookmarkStartId = optionalString (runObj?BookmarkStartId)
+      BookmarkName = optionalString (runObj?BookmarkName)
+      BookmarkEndId = optionalString (runObj?BookmarkEndId)
+      FieldCode = optionalString (runObj?FieldCode)
+      FieldResult = optionalString (runObj?FieldResult)
+      EquationXml = optionalString (runObj?EquationXml)
+      RenderedPageBreakBefore = boolOrDefault false (runObj?RenderedPageBreakBefore)
+      IsImage = false
+      ImageSrc = None
+      ImageLinked = false
+      ImageWidth = None
+      ImageHeight = None
+      ImageAlt = None
+      ImageName = None
+      ImageTitle = None
+      ImageFloating = false
+      ImageWrap = None
+      ImagePositionX = None
+      ImagePositionY = None
+      ImagePositionHRelativeFrom = None
+      ImagePositionVRelativeFrom = None
+      ImageBehindDoc = None
+      ImageAllowOverlap = None
+      ImageLayoutInCell = None
+      ImageDistanceTop = None
+      ImageDistanceBottom = None
+      ImageDistanceLeft = None
+      ImageDistanceRight = None
+      ImageRelativeHeight = None
+      ImageLocked = None
+      ImageSimplePosition = None
+      ImageSimplePositionX = None
+      ImageSimplePositionY = None
+      ImageCropLeft = None
+      ImageCropTop = None
+      ImageCropRight = None
+      ImageCropBottom = None
+    }
+
+/// The properties the model writes for a run of the editor's package (none for a picture).
+let private modelRunProperties (runObj: obj) : string list =
+    if boolOrDefault false (runObj?IsImage) || not (isNullOrUndefined runObj?OpaqueXml) then []
+    else orderedRunProps (runExtrasFromObject runObj) (editorRunOfObject runObj)
+
 let private generateParagraphWithHyperlinksAndImagesWithPageSetup (packageSetup: PageSetupInfo) (hyperlinks: Map<string, string>) (images: ImageScope) (para: obj) : string =
     let pPr = generateParaPropsWithPageSetup packageSetup para
-    let runsArray = para?Runs |> unbox<obj array>
+    // The mark of a comment or a note is one element: where the editor holds it as two runs
+    // (a part of the mark was formatted) it is still one reference, written with the first.
+    let runsArray =
+        let all = para?Runs |> unbox<obj array>
+        let sameMark (a: obj) (b: obj) =
+            match optionalString (a?CommentId), optionalString (b?CommentId) with
+            | Some x, Some y -> x = y
+            | None, None ->
+                (match optionalString (a?NoteId), optionalString (b?NoteId) with
+                 | Some x, Some y -> x = y && optionalString (a?NoteType) = optionalString (b?NoteType)
+                 | _ -> false)
+            | _ -> false
+        all |> Array.mapi (fun index run -> index, run) |> Array.filter (fun (index, run) -> index = 0 || not (sameMark all.[index - 1] run)) |> Array.map snd
+    // The result of a field held as several runs (a part of it was formatted): one field, see fieldResultParts.
+    let fieldParts = System.Collections.Generic.Dictionary<int, (obj * EditorRun) list>()
+    let fieldPartRuns = System.Collections.Generic.HashSet<int>()
+    (let isPlainText (run: obj) = not (boolOrDefault false (run?IsImage)) && isNullOrUndefined run?OpaqueXml && not (boolOrDefault false (run?IsEquation))
+     let wrapper (run: obj) = (runHyperlinkTarget run, optionalString (run?RevisionType), optionalString (run?RevisionId), optionalString (run?CommentId), optionalString (run?NoteId))
+     let marked (run: obj) = (optionalString (run?BookmarkStartId)).IsSome || (optionalString (run?BookmarkEndId)).IsSome || (optionalString (run?BookmarkId)).IsSome
+     let mutable index = 0
+     while index < runsArray.Length do
+         let head = runsArray.[index]
+         let mutable next = index + 1
+         match (if isPlainText head then optionalString (head?FieldCode) else None), optionalString (head?FieldResult) with
+         | Some code, Some whole when code <> "" ->
+             let mutable text = stringOrDefault "" (head?Text)
+             while next < runsArray.Length
+                   && isPlainText runsArray.[next]
+                   && optionalString (runsArray.[next]?FieldCode) = Some code
+                   && optionalString (runsArray.[next]?FieldResult) = Some whole
+                   && wrapper runsArray.[next] = wrapper head
+                   && not (marked runsArray.[next])
+                   && text.Length < whole.Length do
+                 text <- text + stringOrDefault "" (runsArray.[next]?Text)
+                 next <- next + 1
+             if next > index + 1 && text = whole then
+                 fieldParts.[index] <- [ for part in index + 1 .. next - 1 -> runsArray.[part], editorRunOfObject runsArray.[part] ]
+                 for part in index + 1 .. next - 1 do fieldPartRuns.Add part |> ignore
+             else next <- index + 1
+         | _ -> ()
+         index <- next)
     let runs =
         runsArray
         |> Array.toList
-        |> List.map (fun runObj ->
+        |> List.mapi (fun runIndex runObj -> runIndex, runObj)
+        |> List.filter (fun (runIndex, _) -> not (fieldPartRuns.Contains runIndex))
+        |> List.map (fun (runIndex, runObj) ->
+            fieldResultParts <- (match fieldParts.TryGetValue runIndex with | true, parts -> parts | _ -> [])
             let runXml =
                 if not (isNullOrUndefined runObj?OpaqueXml) then
                     // An object kept from the file (chart, SmartArt, OLE object, ...):
@@ -1376,64 +1495,7 @@ let private generateParagraphWithHyperlinksAndImagesWithPageSetup (packageSetup:
                         let alt = optionalString (runObj?ImageAlt) |> Option.defaultValue "Image"
                         runElement [] (isDeletedRun runObj) alt
                 else
-                    let run: EditorRun = {
-                        Text = runObj?Text |> unbox<string>
-                        Bold = boolOrDefault false (runObj?Bold)
-                        Italic = boolOrDefault false (runObj?Italic)
-                        Underline = boolOrDefault false (runObj?Underline)
-                        Strike = boolOrDefault false (runObj?Strike)
-                        FontSize = optionalFloat (runObj?FontSize) |> Option.defaultValue defaultFontSizePixels
-                        CharacterSpacing = optionalFloat (runObj?CharacterSpacing) |> Option.defaultValue 0.0
-                        FontFamily = runObj?FontFamily |> stringOrDefault "Calibri"
-                        Color = if isNullOrUndefined runObj?Color then None else unbox<string option> runObj?Color
-                        Highlight = optionalString (runObj?Highlight)
-                        VertAlign = optionalString (runObj?VertAlign)
-                        CommentId = optionalString (runObj?CommentId)
-                        CommentText = optionalString (runObj?CommentText)
-                        CommentAuthor = optionalString (runObj?CommentAuthor)
-                        CommentDate = optionalString (runObj?CommentDate)
-                        NoteId = optionalString (runObj?NoteId)
-                        NoteType = optionalString (runObj?NoteType)
-                        NoteText = optionalString (runObj?NoteText)
-                        Hyperlink = optionalString (runObj?Hyperlink)
-                        BookmarkStartId = optionalString (runObj?BookmarkStartId)
-                        BookmarkName = optionalString (runObj?BookmarkName)
-                        BookmarkEndId = optionalString (runObj?BookmarkEndId)
-                        FieldCode = optionalString (runObj?FieldCode)
-                        FieldResult = optionalString (runObj?FieldResult)
-                        EquationXml = optionalString (runObj?EquationXml)
-                        RenderedPageBreakBefore = boolOrDefault false (runObj?RenderedPageBreakBefore)
-                        IsImage = false
-                        ImageSrc = None
-                        ImageLinked = false
-                        ImageWidth = None
-                        ImageHeight = None
-                        ImageAlt = None
-                        ImageName = None
-                        ImageTitle = None
-                        ImageFloating = false
-                        ImageWrap = None
-                        ImagePositionX = None
-                        ImagePositionY = None
-                        ImagePositionHRelativeFrom = None
-                        ImagePositionVRelativeFrom = None
-                        ImageBehindDoc = None
-                        ImageAllowOverlap = None
-                        ImageLayoutInCell = None
-                        ImageDistanceTop = None
-                        ImageDistanceBottom = None
-                        ImageDistanceLeft = None
-                        ImageDistanceRight = None
-                        ImageRelativeHeight = None
-                        ImageLocked = None
-                        ImageSimplePosition = None
-                        ImageSimplePositionX = None
-                        ImageSimplePositionY = None
-                        ImageCropLeft = None
-                        ImageCropTop = None
-                        ImageCropRight = None
-                        ImageCropBottom = None
-                    }
+                    let run = editorRunOfObject runObj
                     generateReferenceRun runObj run
             let runXml = revisionWrappedRun runObj runXml
             match runHyperlinkTarget runObj with
@@ -2641,7 +2703,9 @@ let private needsSpacePreserved (text: string) =
 
 /// The replacements (from, until, text) that make one change of text in a
 /// paragraph's XML.
-let private planParagraphChange (xml: string) (para: SourceParagraph) (oldText: string) (change: obj) : (int * int * string) list option =
+/// `modelProps`: the properties the model writes for the text that was typed (a w:rPr, or ""), for a
+/// run of its own where no run of the paragraph is formatted as it is.
+let private planParagraphChange (xml: string) (para: SourceParagraph) (oldText: string) (change: obj) (modelProps: string option) : (int * int * string) list option =
     let offset = intOrDefault 0 (change?Offset)
     let deleted = intOrDefault 0 (change?Deleted)
     let inserted = stringOrDefault "" (change?Inserted)
@@ -2717,6 +2781,7 @@ let private planParagraphChange (xml: string) (para: SourceParagraph) (oldText: 
                     elif markStyle then Some ""
                     else None
                 props
+                |> Option.orElse modelProps
                 // (Not the properties of a tracked change.)
                 |> Option.filter (fun rPr -> rPr.IndexOf "Change" < 0 && rPr.IndexOf "<w:ins" < 0 && rPr.IndexOf "<w:del" < 0 && rPr.IndexOf "<w:move" < 0)
                 |> Option.map (fun rPr -> "<w:r>" + rPr + (if needsSpacePreserved inserted then "<w:t xml:space=\"preserve\">" else "<w:t>") + escapeXmlText inserted + "</w:t></w:r>")
@@ -2816,16 +2881,26 @@ let rec private storyParagraphCount (item: obj) : int =
     | _ -> 1
 
 // ---- a change of formatting made in the XML a paragraph was read from ---------
-// The editor says of a paragraph whose text is what it was that all of it was
-// made bold / italic / struck through / underlined (or not), or that its
-// alignment was changed (Docx.paragraphFormatChange). The properties are set
-// in the paragraph's own XML - w:b and its like in the w:rPr of every run that
-// holds text, w:jc in the w:pPr - in the place the schema gives them; all else
-// of the paragraph stays the text it was read from: bookmarks, fields,
-// revision ids, properties the model does not hold. Where the XML is not of
-// the plain kind this can be done in (a run without a w:t that the model
-// shows a character for - a tab, a break, a picture; tracked changes of the
-// properties themselves) the block is written from the model, as before.
+//
+// The editor says of a paragraph whose text is what it was what it was
+// before its formatting was changed (the paragraph as the model writes it,
+// Before) and what it is now (After). Neither is written: what differs
+// between the properties the model writes for the two - of the paragraph, and
+// of the run each character is in - is set in the properties the paragraph's
+// own XML has. An element the model writes differently replaces the one of
+// that name (attribute by attribute where both are a single tag: an attribute
+// the model does not write stays, and the order of the attributes), one it
+// writes no more goes, a new one stands where the schema puts it. Where the
+// formatting of only a part of a run changed the run is split, each part with
+// the run's start tag (its revision ids) and properties, the run's children
+// shared out by the characters they stand for. Everything else of the
+// paragraph stays the text it was read from: bookmarks, fields, hyperlinks
+// and content controls around the runs, comment ranges, proofing marks,
+// properties and elements the model does not hold. Where the XML cannot be
+// matched with the characters the editor shows (a run that stands for text in
+// a way not known here, where the change does not cover all it may stand
+// for), or holds a tracked change of the properties themselves, the paragraph
+// is written from the model.
 
 /// The schema's order of the children of w:rPr and of w:pPr (local names).
 let private runPropertyOrder =
@@ -2882,117 +2957,662 @@ let private childElementsOf (element: string) : ((string * int * int) list * int
                         pos <- fin + 1
             if ok then Some (List.ofSeq found, contentEnd) else None
 
-/// The text of a properties element (w:rPr, w:pPr; "" - there is none yet)
-/// with child elements set: each (local name, Some text of the element | None:
-/// it goes) replaces the child of that name and stands where `order` puts it.
-/// None when the element is not one this can be done in.
-let private withPropertiesSet (container: string) (order: string list) (properties: string) (changes: (string * string option) list) : string option =
-    let indexOf (name: string) = order |> List.tryFindIndex (fun known -> "w:" + known = name)
-    let apply (children: (string * int * int) list) (source: string) : string option =
-        // (A tracked change of the properties holds the properties as they were: not touched here.)
-        if children |> List.exists (fun (name, _, _) -> name.EndsWith "Change" || (indexOf name).IsNone) then None
+/// The attributes of a start tag, in their order: (name, value as it is written).
+let private attributesOfTag (tag: string) : (string * string) list =
+    let result = ResizeArray<string * string>()
+    let n = tag.Length
+    let isSpace (c: char) = c = ' ' || c = '\t' || c = '\n' || c = '\r'
+    // (After the name.)
+    let mutable i = 1
+    while i < n && not (isSpace tag.[i]) && tag.[i] <> '/' && tag.[i] <> '>' do i <- i + 1
+    let mutable fin = false
+    while not fin do
+        while i < n && isSpace tag.[i] do i <- i + 1
+        if i >= n || tag.[i] = '/' || tag.[i] = '>' then fin <- true
         else
-            let kept =
-                children
-                |> List.filter (fun (name, _, _) -> not (changes |> List.exists (fun (changed, _) -> "w:" + changed = name)))
-                |> List.map (fun (name, start, fin) -> (indexOf name).Value, source.Substring(start, fin - start))
-            let added =
-                changes |> List.choose (fun (name, text) -> text |> Option.map (fun text -> (indexOf ("w:" + name)).Value, text))
-            // (In the schema's order: after what comes before it there; what was there keeps its own order.)
-            let result = ResizeArray<int * string>(kept)
-            for (rank, text) in added do
-                let mutable at = 0
-                while at < result.Count && fst result.[at] <= rank do at <- at + 1
-                result.Insert (at, (rank, text))
-            Some (result |> Seq.map snd |> String.concat "")
-    if changes |> List.exists (fun (name, _) -> not (List.contains name order)) then None
-    elif properties = "" then
-        match apply [] "" with
-        | Some "" -> Some ""
-        | Some content -> Some ("<" + container + ">" + content + "</" + container + ">")
-        | None -> None
-    else
-        match childElementsOf properties with
-        | None -> None
-        | Some (children, contentEnd) ->
-            if tagNameAt properties 0 <> container then None
+            let eq = tag.IndexOf('=', i)
+            if eq < 0 then fin <- true
             else
-                match apply children properties with
-                | None -> None
-                | Some content ->
+                let name = tag.Substring(i, eq - i).Trim()
+                let mutable q = eq + 1
+                while q < n && tag.[q] <> '"' && tag.[q] <> '\'' do q <- q + 1
+                if q >= n then fin <- true
+                else
+                    let close = tag.IndexOf(tag.[q], q + 1)
+                    if close < 0 then fin <- true
+                    else
+                        let value = tag.Substring(q + 1, close - q - 1)
+                        result.Add ((name, (if tag.[q] = '\'' then value.Replace("\"", "&quot;") else value)))
+                        i <- close + 1
+    List.ofSeq result
+
+/// An element of properties as it is to be: the one the XML has (None: it has
+/// none) with what the model changed of it - `was` and `now` are the element
+/// as the model writes it before and after the change (None: not at all).
+/// None: the element goes.
+let private mergedPropertyElement (source: string option) (was: string option) (now: string option) : string option =
+    match source, now with
+    | _, None -> None
+    | None, Some _ -> now
+    | Some sourceText, Some nowText ->
+        // (A single tag: nothing in it but attributes.)
+        let simple (text: string) = text.EndsWith "/>" && text.IndexOf('<', 1) < 0
+        let name = tagNameAt sourceText 0
+        if not (simple sourceText && simple nowText && (match was with Some text -> simple text | None -> true)) || tagNameAt nowText 0 <> name then now
+        else
+            let wasAttributes = match was with Some text -> attributesOfTag text | None -> []
+            let nowAttributes = attributesOfTag nowText
+            let valueIn (attributes: (string * string) list) (key: string) = attributes |> List.tryFind (fun (k, _) -> k = key) |> Option.map snd
+            // What the model writes now is what the element says (also where the XML said it
+            // another way than the model did before: a spacing that was automatic); an attribute
+            // the model wrote and writes no more goes; one it never writes stays - but for those
+            // that would overrule what is set: the same through the document's theme
+            // (w:asciiTheme beside w:ascii, w:themeColor beside w:val), or in other units
+            // (w:afterLines beside w:after, w:leftChars beside w:left).
+            let removed = wasAttributes |> List.map fst |> List.filter (fun key -> (valueIn nowAttributes key).IsNone)
+            let overrules (key: string) =
+                let lower = key.ToLowerInvariant()
+                (valueIn nowAttributes key).IsNone
+                && (if name = "w:rFonts" then lower.Contains "theme" && nowAttributes |> List.exists (fun (k, _) -> lower = k.ToLowerInvariant() + "theme")
+                    else lower.Contains "theme" || key.EndsWith "Lines" || key.EndsWith "Chars")
+            let kept =
+                attributesOfTag sourceText
+                |> List.filter (fun (key, _) -> not (List.contains key removed) && not (overrules key))
+                |> List.map (fun (key, value) -> key, (valueIn nowAttributes key |> Option.defaultValue value))
+            let added = nowAttributes |> List.filter (fun (key, _) -> (valueIn kept key).IsNone)
+            Some ("<" + name + (kept @ added |> List.map (fun (key, value) -> " " + key + "=\"" + value + "\"") |> String.concat "") + "/>")
+
+/// What differs between two lists of property elements as the model writes
+/// them: (local name, the element before, the element after).
+let private propertyChanges (was: string list) (now: string list) : (string * string option * string option) list =
+    let named (items: string list) = items |> List.map (fun text -> localNameOf (tagNameAt text 0), text)
+    let before = named was
+    let after = named now
+    [ for (name, text) in after do
+          match before |> List.tryFind (fun (known, _) -> known = name) with
+          | Some (_, old) when old = text -> ()
+          | Some (_, old) -> yield name, Some old, Some text
+          | None -> yield name, None, Some text
+      for (name, old) in before do
+          if not (after |> List.exists (fun (known, _) -> known = name)) then yield name, Some old, None ]
+
+/// The children of a properties element as the model wrote it (`<w:pPr>...</w:pPr>`, `<w:pPr/>`).
+let private propertyElementsOf (element: string) : string list =
+    match childElementsOf element with
+    | Some (children, _) -> children |> List.map (fun (_, start, fin) -> element.Substring(start, fin - start))
+    | None -> []
+
+/// The text of a properties element (w:rPr, w:pPr; "" - there is none yet)
+/// with the changes made in it (see mergedPropertyElement); "" when nothing is
+/// left in it. None when the element is not one this can be done in.
+let rec private withPropertiesMerged (container: string) (order: string list) (properties: string) (changes: (string * string option * string option) list) : string option =
+    let rankOf (name: string) = order |> List.tryFindIndex (fun known -> "w:" + known = name)
+    if changes.IsEmpty then Some properties
+    elif changes |> List.exists (fun (name, _, _) -> not (List.contains name order)) then None
+    else
+        let parsed =
+            if properties = "" then Some ([], "<" + container + ">")
+            else
+                match childElementsOf properties with
+                | Some (children, contentEnd) when tagNameAt properties 0 = container ->
                     let gt = tagEndIndex properties 0
-                    // (The start tag as it was - a w:rPr has no attributes, but it is not this function's to say.)
                     let startTag = if contentEnd < 0 then properties.Substring(0, gt - 1).TrimEnd() + ">" else properties.Substring(0, gt + 1)
-                    Some (startTag + content + "</" + container + ">")
+                    Some (children |> List.map (fun (name, start, fin) -> name, properties.Substring(start, fin - start)), startTag)
+                | _ -> None
+        match parsed with
+        | None -> None
+        // (A tracked change of the properties holds the properties as they were: not touched here.)
+        | Some (children, _) when children |> List.exists (fun (name, _) -> name.EndsWith "Change") -> None
+        | Some (children, startTag) ->
+            // What is there keeps its place; an element the schema does not name (of a later
+            // format) stands after the one before it.
+            let result = ResizeArray<int * string * string>()
+            let mutable lastRank = -1
+            for (name, text) in children do
+                let rank = match rankOf name with Some rank -> rank | None -> lastRank
+                lastRank <- max lastRank rank
+                result.Add ((rank, name, text))
+            // (The complex-script twin of bold and italic follows them where the XML states it.)
+            let changes =
+                changes
+                |> List.collect (fun (name, was, now) ->
+                    let twin = name + "Cs"
+                    if (name = "b" || name = "i") && children |> List.exists (fun (child, _) -> child = "w:" + twin) && not (changes |> List.exists (fun (other, _, _) -> other = twin)) then
+                        let asTwin (text: string option) = text |> Option.map (fun text -> "<w:" + twin + text.Substring(("<w:" + name).Length))
+                        [ name, was, now; twin, asTwin was, asTwin now ]
+                    else [ name, was, now ])
+            let mutable ok = true
+            for (name, was, now) in changes do
+                let full = "w:" + name
+                let at = result |> Seq.tryFindIndex (fun (_, child, _) -> child = full)
+                let source = at |> Option.map (fun index -> let (_, _, text) = result.[index] in text)
+                let merged =
+                    if name = "rPr" && container = "w:pPr" then
+                        // The properties of the paragraph mark: changed child by child, as a run's.
+                        let inner = propertyChanges (was |> Option.map propertyElementsOf |> Option.defaultValue []) (now |> Option.map propertyElementsOf |> Option.defaultValue [])
+                        match withPropertiesMerged "w:rPr" runPropertyOrder (defaultArg source "") inner with
+                        | Some "" -> None
+                        | Some text -> Some text
+                        | None ->
+                            ok <- false
+                            None
+                    else mergedPropertyElement source was now
+                match at, merged with
+                | Some index, Some text -> let (rank, child, _) = result.[index] in result.[index] <- (rank, child, text)
+                | Some index, None -> result.RemoveAt index
+                | None, Some text ->
+                    let rank = (rankOf full).Value
+                    let mutable position = 0
+                    while position < result.Count && (let (known, _, _) = result.[position] in known <= rank) do position <- position + 1
+                    result.Insert (position, (rank, full, text))
+                | None, None -> ()
+            if not ok then None
+            elif result.Count = 0 then Some ""
+            else Some (startTag + (result |> Seq.map (fun (_, _, text) -> text) |> String.concat "") + "</" + container + ">")
+
+/// A run of a paragraph's XML and the characters of the paragraph's text it stands for.
+type private SourceRunInfo = {
+    RunStart: int
+    RunEnd: int
+    /// Just after its start tag.
+    ContentStart: int
+    /// Its w:rPr (-1: none).
+    PropsStart: int
+    PropsEnd: int
+    /// Its other children: name, where each starts and ends.
+    Parts: (string * int * int) array
+    /// How many characters each stands for (-1: not known).
+    PartChars: int array
+    /// The w:t (w:delText) of each part that is one (null: another element).
+    PartSegments: SourceTextSegment option array
+    /// The characters it stands for, where they are known: [From, Until). -1: not known.
+    mutable From: int
+    mutable Until: int
+    /// Every character of [From, Until) is the one of a part.
+    mutable Exact: bool
+    /// Where the characters may be that are not known to be its own.
+    mutable ReachFrom: int
+    mutable ReachUntil: int
+    /// The field whose result it is a run of (a number of the paragraph's; -1: of none).
+    mutable Field: int
+}
+
+/// The runs of a paragraph's own text (not those of drawings and text boxes in it), in their order.
+/// The paragraph's segments are aligned with `text`. None: the XML is not understood.
+let private sourceRunsOf (xml: string) (para: SourceParagraph) (text: string) : SourceRunInfo array option =
+    let runs = ResizeArray<SourceRunInfo>()
+    let segmentAt = System.Collections.Generic.Dictionary<int, SourceTextSegment>()
+    for segment in para.Segments do segmentAt.[segment.TagStart] <- segment
+    let isSkipped (name: string) = name = "w:drawing" || name = "w:pict" || name = "mc:AlternateContent" || name = "w:object"
+    let mutable pos = para.TagEnd + 1
+    let mutable ok = not para.SelfClosed
+    let mutable depth = 0
+    let mutable skipDepth = -1
+    // The fields that are open: of w:fldSimple (the depth it is at), and of w:fldChar (whether its result has begun).
+    let simpleFields = ResizeArray<int * int>()
+    let complexFields = ResizeArray<int * bool>()
+    let mutable nextField = 1
+    let fin = para.CloseAt
+    while ok && pos < fin do
+        let lt = xml.IndexOf('<', pos)
+        if lt < 0 || lt >= fin then pos <- fin
+        elif lt + 1 < xml.Length && (xml.[lt + 1] = '!' || xml.[lt + 1] = '?') then
+            let gt = xml.IndexOf('>', lt)
+            if gt < 0 then ok <- false else pos <- gt + 1
+        elif xml.[lt + 1] = '/' then
+            let gt = xml.IndexOf('>', lt)
+            if gt < 0 then ok <- false
+            else
+                if skipDepth = depth then skipDepth <- -1
+                if simpleFields.Count > 0 && fst simpleFields.[simpleFields.Count - 1] = depth then simpleFields.RemoveAt(simpleFields.Count - 1)
+                depth <- depth - 1
+                pos <- gt + 1
+        else
+            let gt = tagEndIndex xml lt
+            if gt < 0 then ok <- false
+            else
+                let selfClosing = xml.[gt - 1] = '/'
+                let name = tagNameAt xml lt
+                if skipDepth < 0 && name = "w:fldSimple" && not selfClosing then
+                    simpleFields.Add ((depth + 1, nextField))
+                    nextField <- nextField + 1
+                if skipDepth < 0 && name = "w:r" && not selfClosing then
+                    // The whole run: to the end tag at its own depth.
+                    let mutable inner = 1
+                    let mutable at = gt + 1
+                    let mutable runEnd = -1
+                    while ok && runEnd < 0 do
+                        let next = xml.IndexOf('<', at)
+                        if next < 0 || next >= fin then ok <- false
+                        elif xml.[next + 1] = '/' then
+                            let close = xml.IndexOf('>', next)
+                            inner <- inner - 1
+                            if inner = 0 then runEnd <- close + 1
+                            at <- close + 1
+                        elif xml.[next + 1] = '!' || xml.[next + 1] = '?' then ok <- false
+                        else
+                            let close = tagEndIndex xml next
+                            if close < 0 then ok <- false
+                            else
+                                if xml.[close - 1] <> '/' then inner <- inner + 1
+                                at <- close + 1
+                    if ok then
+                        match childElementsOf (xml.Substring(lt, runEnd - lt)) with
+                        | None -> ok <- false
+                        | Some (children, _) ->
+                            let children = children |> List.map (fun (child, start, close) -> child, lt + start, lt + close)
+                            let props = children |> List.tryFind (fun (child, _, _) -> child = "w:rPr")
+                            let parts = children |> List.filter (fun (child, _, _) -> child <> "w:rPr") |> List.toArray
+                            let segments = parts |> Array.map (fun (child, start, _) -> if child = "w:t" || child = "w:delText" then (match segmentAt.TryGetValue start with | true, segment -> Some segment | _ -> None) else None)
+                            let chars =
+                                parts
+                                |> Array.mapi (fun index (child, start, close) ->
+                                    match child with
+                                    | "w:t" | "w:delText" -> (match segments.[index] with Some segment -> segment.Text.Length | None -> -1)
+                                    | "w:tab" | "w:cr" | "w:noBreakHyphen" | "w:softHyphen" -> 1
+                                    | "w:br" -> if xml.Substring(start, close - start).IndexOf "w:type=\"" >= 0 && xml.Substring(start, close - start).IndexOf "w:type=\"textWrapping\"" < 0 then -1 else 1
+                                    | "w:lastRenderedPageBreak" -> 0
+                                    | _ -> -1)
+                            // The field it is a run of the result of; the marks of a field open and close it.
+                            let mutable marks = false
+                            for (child, start, close) in parts do
+                                if child = "w:fldChar" then
+                                    marks <- true
+                                    let tag = xml.Substring(start, close - start)
+                                    if tag.IndexOf "\"begin\"" >= 0 then
+                                        complexFields.Add ((nextField, false))
+                                        nextField <- nextField + 1
+                                    elif tag.IndexOf "\"separate\"" >= 0 then
+                                        if complexFields.Count > 0 then complexFields.[complexFields.Count - 1] <- (fst complexFields.[complexFields.Count - 1], true)
+                                    elif tag.IndexOf "\"end\"" >= 0 then
+                                        if complexFields.Count > 0 then complexFields.RemoveAt(complexFields.Count - 1)
+                                        else
+                                            // (A field that began in a paragraph before: what came so far is of its result.)
+                                            for known in runs do
+                                                if known.Field < 0 then known.Field <- 0
+                                elif child = "w:instrText" then marks <- true
+                            let field =
+                                if marks then -1
+                                elif simpleFields.Count > 0 then snd simpleFields.[simpleFields.Count - 1]
+                                else
+                                    match complexFields |> Seq.tryFindBack snd with
+                                    | Some (id, _) -> id
+                                    | None -> -1
+                            runs.Add
+                                { RunStart = lt; RunEnd = runEnd; ContentStart = gt + 1
+                                  Field = field
+                                  PropsStart = (match props with Some (_, start, _) -> start | None -> -1)
+                                  PropsEnd = (match props with Some (_, _, close) -> close | None -> -1)
+                                  Parts = parts; PartChars = chars; PartSegments = segments
+                                  From = -1; Until = -1; Exact = false; ReachFrom = -1; ReachUntil = -1 }
+                            pos <- runEnd
+                else
+                    if not selfClosing then
+                        depth <- depth + 1
+                        if skipDepth < 0 && isSkipped name then skipDepth <- depth
+                    pos <- gt + 1
+    if not ok then None
+    else
+        // The character a part of one character stands for.
+        let standsFor (name: string) (c: char) =
+            match name with
+            | "w:tab" -> c = '\t'
+            | "w:br" | "w:cr" -> c = '\n' || c = ' ' || c = '\u000B'
+            | "w:noBreakHyphen" -> c = '‑'
+            | "w:softHyphen" -> c = '­'
+            | _ -> true
+        // Each run with text: from the text it holds, and what its other parts are known to stand for.
+        for run in runs do
+            let anchors = [ for index in 0 .. run.Parts.Length - 1 do match run.PartSegments.[index] with Some segment when segment.Text.Length > 0 && segment.At >= 0 -> yield index, segment | _ -> () ]
+            match anchors with
+            | [] -> ()
+            | (firstIndex, firstSegment) :: _ ->
+                let (lastIndex, lastSegment) = List.last anchors
+                let mutable exact = true
+                let mutable from = firstSegment.At
+                for index in firstIndex - 1 .. -1 .. 0 do
+                    if run.PartChars.[index] < 0 then exact <- false
+                    elif exact then from <- from - run.PartChars.[index]
+                let mutable until = lastSegment.At + lastSegment.Text.Length
+                let mutable trailing = true
+                for index in lastIndex + 1 .. run.Parts.Length - 1 do
+                    if run.PartChars.[index] < 0 then
+                        exact <- false
+                        trailing <- false
+                    elif trailing then until <- until + run.PartChars.[index]
+                // Between its texts: what the parts there stand for is what the text has there.
+                let mutable at = from
+                if exact then
+                    for index in 0 .. run.Parts.Length - 1 do
+                        let (name, _, _) = run.Parts.[index]
+                        match run.PartSegments.[index] with
+                        | Some segment when segment.Text.Length > 0 -> if segment.At <> at then exact <- false
+                        | _ -> ()
+                        if exact && run.PartChars.[index] = 1 && run.PartSegments.[index].IsNone then
+                            if at < 0 || at >= text.Length || not (standsFor name text.[at]) then exact <- false
+                        at <- at + max 0 run.PartChars.[index]
+                    if at <> until then exact <- false
+                if exact && from >= 0 && until <= text.Length then
+                    run.From <- from
+                    run.Until <- until
+                    run.Exact <- true
+                else
+                    run.From <- firstSegment.At
+                    run.Until <- lastSegment.At + lastSegment.Text.Length
+                    run.Exact <- false
+        // The runs without text between them: one after the other where what each stands for is
+        // known and fills the gap; otherwise they share the gap.
+        let mutable cursor = 0
+        let mutable index = 0
+        let mutable sound = true
+        while sound && index < runs.Count do
+            if runs.[index].From >= 0 then
+                if runs.[index].From < cursor then sound <- false
+                else
+                    runs.[index].ReachFrom <- (if runs.[index].Exact then runs.[index].From else cursor)
+                    cursor <- runs.[index].Until
+                    index <- index + 1
+            else
+                let first = index
+                while index < runs.Count && runs.[index].From < 0 do index <- index + 1
+                let gapEnd = if index < runs.Count then runs.[index].From else text.Length
+                if gapEnd < cursor then sound <- false
+                else
+                    let total (run: SourceRunInfo) = if run.PartChars |> Array.exists (fun count -> count < 0) then -1 else Array.sum run.PartChars
+                    let known = seq { first .. index - 1 } |> Seq.forall (fun i -> total runs.[i] >= 0)
+                    let sum = if known then seq { first .. index - 1 } |> Seq.sumBy (fun i -> total runs.[i]) else -1
+                    let mutable fits = known && sum = gapEnd - cursor
+                    if fits then
+                        // (And each part stands for the character that is there.)
+                        let mutable at = cursor
+                        for i in first .. index - 1 do
+                            for part in 0 .. runs.[i].Parts.Length - 1 do
+                                let (name, _, _) = runs.[i].Parts.[part]
+                                if runs.[i].PartChars.[part] = 1 && not (standsFor name text.[at]) then fits <- false
+                                at <- at + runs.[i].PartChars.[part]
+                    if fits then
+                        let mutable at = cursor
+                        for i in first .. index - 1 do
+                            runs.[i].From <- at
+                            runs.[i].Until <- at + total runs.[i]
+                            runs.[i].Exact <- true
+                            runs.[i].ReachFrom <- at
+                            runs.[i].ReachUntil <- runs.[i].Until
+                            at <- runs.[i].Until
+                    else
+                        for i in first .. index - 1 do
+                            runs.[i].ReachFrom <- cursor
+                            runs.[i].ReachUntil <- gapEnd
+                    cursor <- gapEnd
+        if not sound then None
+        else
+            // A run with text of which not every part is known reaches to the texts next to it.
+            for i in 0 .. runs.Count - 1 do
+                let run = runs.[i]
+                if run.From >= 0 && run.ReachUntil < 0 then
+                    if run.Exact then run.ReachUntil <- run.Until
+                    else
+                        let next = seq { i + 1 .. runs.Count - 1 } |> Seq.tryFind (fun j -> runs.[j].From >= 0)
+                        run.ReachUntil <- (match next with Some j -> runs.[j].From | None -> text.Length)
+            Some (runs.ToArray())
+
+/// How many characters of a paragraph's text a run of the editor's package stands for.
+let private runObjectLength (run: obj) : int =
+    if boolOrDefault false (run?IsImage) then 1 else (stringOrDefault "" (run?Text)).Length
 
 /// The change of a paragraph's formatting (see above) as replacements in the
-/// XML: (from, until, text). None: not in this XML.
-let private planParagraphFormat (xml: string) (para: SourceParagraph) (text: string) (change: obj) : (int * int * string) list option =
-    let onOffOf (value: obj) : bool option = if isNullOrUndefined value then None else Some (unbox<bool> value)
-    let toggles =
-        [ "b", onOffOf (change?Bold); "i", onOffOf (change?Italic); "strike", onOffOf (change?Strike) ]
-        |> List.choose (fun (name, value) -> value |> Option.map (fun isOn -> name, Some (toggle ("w:" + name) isOn)))
-    let underline =
-        match onOffOf (change?Underline) with
-        | Some isOn -> [ "u", Some (selfClosing "w:u" [("w:val", (if isOn then "single" else "none"))]) ]
-        | None -> []
-    let runChanges = toggles @ underline
-    if para.SelfClosed || not (alignSourceParagraph para text) then None
-    // (A check box of a content control is shown by the control's state, not by the run that holds its mark.)
-    elif not runChanges.IsEmpty && xml.Substring(para.Start, para.End - para.Start).Contains "checkbox" then None
+/// XML: (from, until, text). `text` is the paragraph's text, which `before`
+/// and `after` both have. None: not in this XML.
+let private planParagraphProperties (xml: string) (para: SourceParagraph) (text: string) (before: obj) (after: obj) : (int * int * string) list option =
+    let runsOf (item: obj) = optionalArray (item?Runs)
+    let byCharacter (item: obj) =
+        let result = ResizeArray<int>()
+        runsOf item |> Array.iteri (fun index run -> for _ in 1 .. runObjectLength run do result.Add index)
+        result.ToArray()
+    let oldRuns = runsOf before
+    let newRuns = runsOf after
+    let oldAt = byCharacter before
+    let newAt = byCharacter after
+    // (An item of a list the file does not have: the list's number is known when the lists are written.)
+    let ofNewList = (let style = after?ListStyle |> stringOrDefault "none" in style = "bullet" || style = "numbered") && (optionalIntString (after?ListId)).IsNone
+    if para.SelfClosed || ofNewList || oldAt.Length <> text.Length || newAt.Length <> text.Length || not (alignSourceParagraph para text) then None
     else
+        // What changed of the properties of the run each character is in: by the pair of runs.
+        let known = System.Collections.Generic.Dictionary<int, (string * string option * string option) list * string>()
+        let changesAt (i: int) : ((string * string option * string option) list * string) option =
+            let oldRun = oldRuns.[oldAt.[i]]
+            let newRun = newRuns.[newAt.[i]]
+            // (A picture has no properties of text.)
+            if boolOrDefault false (oldRun?IsImage) || boolOrDefault false (newRun?IsImage) then None
+            else
+                let key = oldAt.[i] * (newRuns.Length + 1) + newAt.[i]
+                match known.TryGetValue key with
+                | true, found -> Some found
+                | _ ->
+                    let changes = propertyChanges (modelRunProperties oldRun) (modelRunProperties newRun)
+                    let signature = changes |> List.map (fun (name, was, now) -> name + "\u0001" + defaultArg was "" + "\u0001" + defaultArg now "") |> String.concat "\u0002"
+                    known.[key] <- (changes, signature)
+                    Some (changes, signature)
+        let anyRunChange = seq { 0 .. text.Length - 1 } |> Seq.exists (fun i -> match changesAt i with Some (changes, _) -> not changes.IsEmpty | None -> false)
         let replacements = ResizeArray<int * int * string>()
         let mutable ok = true
-        if not runChanges.IsEmpty then
-            let segments = para.Segments |> Seq.filter (fun segment -> segment.Text.Length > 0) |> Seq.toArray
-            // Every character the editor shows is one of a w:t of a run (no tab, break or object of a run without one).
-            let covered = segments |> Array.sumBy (fun segment -> segment.Text.Length)
-            if covered <> text.Length || segments |> Array.exists (fun segment -> segment.RunStart < 0) then ok <- false
+        if anyRunChange then
+            // (A check box of a content control is shown by the control's state, not by the run that holds its mark.)
+            if xml.Substring(para.Start, para.End - para.Start).Contains "checkbox" then ok <- false
             else
-                let seen = System.Collections.Generic.HashSet<int>()
-                for segment in segments do
-                    if ok && seen.Add segment.RunStart then
-                        if segment.RunPropsStart >= 0 then
-                            match withPropertiesSet "w:rPr" runPropertyOrder (xml.Substring(segment.RunPropsStart, segment.RunPropsEnd - segment.RunPropsStart)) runChanges with
-                            | Some properties -> replacements.Add ((segment.RunPropsStart, segment.RunPropsEnd, properties))
-                            | None -> ok <- false
-                        else
-                            let gt = tagEndIndex xml segment.RunStart
-                            if gt < 0 || xml.[gt - 1] = '/' || tagNameAt xml segment.RunStart <> "w:r" then ok <- false
-                            else
-                                match withPropertiesSet "w:rPr" runPropertyOrder "" runChanges with
-                                | Some properties -> replacements.Add ((gt + 1, gt + 1, properties))
-                                | None -> ok <- false
-        if ok && boolOrDefault false (change?AlignmentChanged) then
-            let alignment = optionalString (change?Alignment) |> Option.map InverseConversion.alignmentToWord
-            let jc = [ "jc", alignment |> Option.map (fun value -> selfClosing "w:jc" [("w:val", value)]) ]
-            match para.Children |> Seq.tryFind (fun (_, _, name) -> name = "w:pPr") with
-            | Some (start, fin, _) ->
-                match withPropertiesSet "w:pPr" paragraphPropertyOrder (xml.Substring(start, fin - start)) jc with
-                | Some properties -> replacements.Add ((start, fin, properties))
+                match sourceRunsOf xml para text with
                 | None -> ok <- false
-            | None ->
-                match withPropertiesSet "w:pPr" paragraphPropertyOrder "" jc with
-                | Some properties -> if properties <> "" then replacements.Add ((para.TagEnd + 1, para.TagEnd + 1, properties))
-                | None -> ok <- false
+                | Some runs ->
+                    let covered = Array.zeroCreate<bool> text.Length
+                    let propsOf (run: SourceRunInfo) = if run.PropsStart >= 0 then xml.Substring(run.PropsStart, run.PropsEnd - run.PropsStart) else ""
+                    // (A run that shows nothing: the marks of a field, its code.)
+                    let shows (run: SourceRunInfo) =
+                        run.Parts |> Array.exists (fun (name, _, _) -> name <> "w:fldChar" && name <> "w:instrText" && name <> "w:lastRenderedPageBreak" && name <> "w:annotationRef")
+                    // The result of a field is read as one run (DocxReader): its runs are changed alike, or not here.
+                    let ofField = System.Collections.Generic.Dictionary<int, string>()
+                    for run in runs do
+                        if ok then
+                            let from = if run.Exact then run.From else run.ReachFrom
+                            let until = if run.Exact then run.Until else run.ReachUntil
+                            if run.Field >= 0 then
+                                for i in from .. until - 1 do
+                                    match changesAt i with
+                                    | Some (_, signature) ->
+                                        match ofField.TryGetValue run.Field with
+                                        | true, known -> if known <> signature then ok <- false
+                                        | _ -> ofField.[run.Field] <- signature
+                                    | None -> ()
+                            // The changes of the characters it stands for, or may stand for.
+                            let distinct = ResizeArray<string>()
+                            let mutable first : (string * string option * string option) list = []
+                            for i in from .. until - 1 do
+                                match changesAt i with
+                                | Some (changes, signature) ->
+                                    if not (distinct.Contains signature) then
+                                        if distinct.Count = 0 then first <- changes
+                                        distinct.Add signature
+                                | None -> ()
+                            if distinct.Count = 1 then
+                                if not first.IsEmpty && shows run then
+                                    match withPropertiesMerged "w:rPr" runPropertyOrder (propsOf run) first with
+                                    | Some properties ->
+                                        if run.PropsStart >= 0 then replacements.Add ((run.PropsStart, run.PropsEnd, properties))
+                                        else replacements.Add ((run.ContentStart, run.ContentStart, properties))
+                                        for i in from .. until - 1 do covered.[i] <- true
+                                    | None -> ok <- false
+                                elif first.IsEmpty then
+                                    for i in from .. until - 1 do covered.[i] <- true
+                            elif distinct.Count > 1 then
+                                if not run.Exact then ok <- false
+                                else
+                                    // Split where the change changes: each piece the run's start tag, its
+                                    // properties with the piece's change, and the parts of the piece.
+                                    let head = xml.Substring(run.RunStart, run.ContentStart - run.RunStart)
+                                    let props = propsOf run
+                                    let signatureAt (i: int) = match changesAt i with Some (_, signature) -> signature | None -> ""
+                                    let pieces = ResizeArray<int * int>()
+                                    let mutable pieceStart = run.From
+                                    for i in run.From + 1 .. run.Until do
+                                        if i = run.Until || signatureAt i <> signatureAt (i - 1) then
+                                            pieces.Add ((pieceStart, i))
+                                            pieceStart <- i
+                                    let built = System.Text.StringBuilder()
+                                    for (pieceFrom, pieceUntil) in pieces do
+                                        if ok then
+                                            let changes = match changesAt pieceFrom with Some (changes, _) -> changes | None -> []
+                                            match withPropertiesMerged "w:rPr" runPropertyOrder props changes with
+                                            | None -> ok <- false
+                                            | Some properties ->
+                                                built.Append(head).Append(properties) |> ignore
+                                                let last = pieceUntil = run.Until
+                                                let mutable at = run.From
+                                                for index in 0 .. run.Parts.Length - 1 do
+                                                    let (_, start, close) = run.Parts.[index]
+                                                    let count = run.PartChars.[index]
+                                                    if count = 0 then
+                                                        // (What stands for no character goes with the character after it.)
+                                                        if (at >= pieceFrom && at < pieceUntil) || (last && at = run.Until) then built.Append(xml.Substring(start, close - start)) |> ignore
+                                                    elif at >= pieceFrom && at + count <= pieceUntil then built.Append(xml.Substring(start, close - start)) |> ignore
+                                                    elif at < pieceUntil && at + count > pieceFrom then
+                                                        // A text that the piece has a part of.
+                                                        match run.PartSegments.[index] with
+                                                        | Some segment ->
+                                                            let cutFrom = max pieceFrom at - at
+                                                            let cutUntil = min pieceUntil (at + count) - at
+                                                            let piece = segment.Text.Substring(cutFrom, cutUntil - cutFrom)
+                                                            let tag = xml.Substring(segment.TagStart, segment.ContentStart - segment.TagStart)
+                                                            let tag = if needsSpacePreserved piece && tag.IndexOf "xml:space" < 0 then tag.Substring(0, tag.Length - 1) + " xml:space=\"preserve\">" else tag
+                                                            let name = tagNameAt tag 0
+                                                            built.Append(tag).Append(escapeXmlTextAs (xml.Substring(segment.ContentStart, segment.ContentEnd - segment.ContentStart)) piece).Append("</" + name + ">") |> ignore
+                                                        | None -> ok <- false
+                                                    at <- at + count
+                                                built.Append("</w:r>") |> ignore
+                                    if ok then
+                                        replacements.Add ((run.RunStart, run.RunEnd, built.ToString()))
+                                        for i in run.From .. run.Until - 1 do covered.[i] <- true
+                    // Every character whose formatting changed is one of a run that was changed.
+                    if ok then
+                        for i in 0 .. text.Length - 1 do
+                            match changesAt i with
+                            | Some (changes, _) when not changes.IsEmpty && not covered.[i] -> ok <- false
+                            | _ -> ()
+        // The properties of the paragraph.
+        if ok then
+            let was = propertyElementsOf (generateParaPropsWithPageSetup defaultPageSetupInfo before)
+            let now = propertyElementsOf (generateParaPropsWithPageSetup defaultPageSetupInfo after)
+            let changes = propertyChanges was now
+            if changes |> List.exists (fun (name, _, _) -> name = "sectPr") then ok <- false
+            elif not changes.IsEmpty then
+                match para.Children |> Seq.tryFind (fun (_, _, name) -> name = "w:pPr") with
+                | Some (start, fin, _) ->
+                    match withPropertiesMerged "w:pPr" paragraphPropertyOrder (xml.Substring(start, fin - start)) changes with
+                    | Some properties -> replacements.Add ((start, fin, properties))
+                    | None -> ok <- false
+                | None ->
+                    match withPropertiesMerged "w:pPr" paragraphPropertyOrder "" changes with
+                    | Some properties -> if properties <> "" then replacements.Add ((para.TagEnd + 1, para.TagEnd + 1, properties))
+                    | None -> ok <- false
         if ok then Some (List.ofSeq replacements) else None
 
-/// The XML of an element of the body with the changes of text, and of the
-/// formatting of whole paragraphs, of its items made in it. None when a
-/// change cannot be made there.
-let private patchSourceChunk (xml: string) (items: obj array) : string option =
+/// A text with replacements (from, until, text) made in it. None when two of them overlap.
+let private withReplacements (xml: string) (replacements: (int * int * string) list) : string option =
+    let ordered = replacements |> List.sortByDescending (fun (from, _, _) -> from) |> List.toArray
+    let mutable text = xml
+    let mutable limit = xml.Length
+    let mutable ok = true
+    for (from, until, replacement) in ordered do
+        if until > limit || from > until then ok <- false
+        elif ok then
+            text <- text.Substring(0, from) + replacement + text.Substring until
+            limit <- from
+    if ok then Some text else None
+
+/// What the last save made of the body (see Main's getLastSaveReport).
+let mutable private reportPatched = 0
+let mutable private reportInline = 0
+let mutable private reportModelBlocks = 0
+let mutable private reportModelParagraphs = 0
+let mutable private reportSourceBlocks = 0
+/// Why blocks and paragraphs were written from the model (the first few).
+let private reportReasons = ResizeArray<string>()
+let private noteReason (reason: string) = if reportReasons.Count < 24 then reportReasons.Add reason
+let lastSaveReport () : obj =
+    createObj [
+        "Reasons" ==> reportReasons.ToArray()
+        "PatchedParagraphs" ==> reportPatched
+        "ModelParagraphsInTables" ==> reportInline
+        "ModelBlocks" ==> reportModelBlocks
+        "ModelBlockParagraphs" ==> reportModelParagraphs
+        "SourceBlocks" ==> reportSourceBlocks ]
+
+/// Where a paragraph of a table that is written from the model goes in the
+/// table's XML: its number between two of these (see BodyPlan.Inline).
+let private inlineMarkCharacter = '\u0001'
+let private inlineMark (number: int) = string inlineMarkCharacter + string number + string inlineMarkCharacter
+let mutable private nextInlineNumber = 0
+
+/// The XML of one paragraph with what was done to the paragraph (the editor's
+/// account of it: Docx.paragraphEdit) done in it - the change of its text,
+/// then that of its formatting. None when the XML does not allow it.
+let private patchSourceParagraph (paragraphXml: string) (oldText: string) (edit: obj) : string option =
+    if boolOrDefault false (edit?Regenerate) then None
+    else
+        let scanned (xml: string) =
+            match scanSourceParagraphs xml with
+            | Some [ para ] when para.Start = 0 && para.End = xml.Length -> Some para
+            | _ -> None
+        let textChange = edit?Text
+        let withText =
+            if isNullOrUndefined textChange then Some paragraphXml
+            else
+                // The properties the model writes for what was typed (the run the first new character is in).
+                let modelProps =
+                    let offset = intOrDefault 0 (textChange?Offset)
+                    let mutable at = 0
+                    let mutable found : string option = None
+                    if not (isNullOrUndefined (edit?After)) && (stringOrDefault "" (textChange?Inserted)).Length > 0 then
+                        for run in optionalArray (edit?After?Runs) do
+                            let length = runObjectLength run
+                            if found.IsNone && offset >= at && offset < at + length && not (boolOrDefault false (run?IsImage)) then
+                                found <- Some (match modelRunProperties run with [] -> "" | properties -> element "w:rPr" [] properties)
+                            at <- at + length
+                    found
+                scanned paragraphXml
+                |> Option.bind (fun para -> planParagraphChange paragraphXml para oldText textChange modelProps)
+                |> Option.bind (withReplacements paragraphXml)
+        withText
+        |> Option.bind (fun xml ->
+            let before = edit?Before
+            if isNullOrUndefined before then Some xml
+            else
+                let text = if isNullOrUndefined (edit?NewText) then oldText else stringOrDefault "" (edit?NewText)
+                scanned xml
+                |> Option.bind (fun para -> planParagraphProperties xml para text before (edit?After))
+                |> Option.bind (withReplacements xml))
+
+/// The XML of an element of the body with what was done to the paragraphs of
+/// its items done in it (see patchSourceParagraph). A paragraph of a table
+/// whose XML does not allow that is marked to be written from the model, the
+/// one paragraph (the marks and their paragraphs are the second of the
+/// pair); in a paragraph of the body itself that fails the whole element is
+/// (None), as when the XML does not hold the paragraphs the editor had.
+let private patchSourceChunk (xml: string) (items: obj array) : (string * (int * obj) list * int) option =
     match scanSourceParagraphs xml with
     | None -> None
     | Some paragraphs ->
         let paragraphs = List.toArray paragraphs
-        if (items |> Array.sumBy storyParagraphCount) <> paragraphs.Length then None
+        if (items |> Array.sumBy storyParagraphCount) <> paragraphs.Length then
+            noteReason (sprintf "the XML of the block holds %d paragraphs, the editor %d" paragraphs.Length (items |> Array.sumBy storyParagraphCount))
+            None
         else
             let replacements = ResizeArray<int * int * string>()
+            let inlined = ResizeArray<int * obj>()
             let mutable ok = true
             let mutable first = 0
             for item in items do
                 let count = storyParagraphCount item
                 let changes = item?SourceTextChanges
+                let inTable = (item?Type |> stringOrDefault "Paragraph") = "Table"
                 if ok && not (isNullOrUndefined changes) then
                     let texts = optionalArray (changes?Texts) |> Array.map (fun text -> stringOrDefault "" text)
                     if texts.Length <> count then ok <- false
@@ -3003,31 +3623,36 @@ let private patchSourceChunk (xml: string) (items: obj array) : string option =
                             if ok then
                                 if index < 0 || index >= count || not (edited.Add index) then ok <- false
                                 else
-                                    let planned =
-                                        if boolOrDefault false (change?Format) then planParagraphFormat xml paragraphs.[first + index] texts.[index] change
-                                        else planParagraphChange xml paragraphs.[first + index] texts.[index] change
-                                    match planned with
-                                    | Some planned -> replacements.AddRange planned
-                                    | None -> ok <- false
+                                    let para = paragraphs.[first + index]
+                                    let own = xml.Substring(para.Start, para.End - para.Start)
+                                    match patchSourceParagraph own texts.[index] change with
+                                    | Some patched -> replacements.Add ((para.Start, para.End, patched))
+                                    | None ->
+                                        // (A shape anchored in the paragraph is not the paragraph's in the model: with it the table is written.)
+                                        let holdsShape = own.IndexOf "<mc:AlternateContent" >= 0 || own.IndexOf "<w:pict" >= 0 || own.IndexOf "<wps:" >= 0 || own.IndexOf "<wpg:" >= 0
+                                        // (A field that begins in the paragraph and ends in another: the paragraph is not on its own.)
+                                        let fieldOpen = countOccurrences own 0 own.Length "w:fldCharType=\"begin\"" <> countOccurrences own 0 own.Length "w:fldCharType=\"end\""
+                                        let why = if boolOrDefault false (change?Regenerate) then "changed in more than its text and formatting" else "the change cannot be made in its XML"
+                                        if not inTable || holdsShape || fieldOpen || isNullOrUndefined (change?After) then
+                                            noteReason (sprintf "paragraph %d of the block: %s%s" index why (if not inTable then "" elif holdsShape then "; a shape is anchored in it: the table is written" elif fieldOpen then "; a field begins or ends in it: the table is written" else ""))
+                                            ok <- false
+                                        else
+                                            noteReason (sprintf "paragraph %d of a table: %s" index why)
+                                            nextInlineNumber <- nextInlineNumber + 1
+                                            inlined.Add ((nextInlineNumber, change?After))
+                                            replacements.Add ((para.Start, para.End, inlineMark nextInlineNumber))
                         // The others are the paragraphs the editor had there: the first text of each is in its text.
                         for index in 0 .. count - 1 do
                             if ok && not (edited.Contains index) then
                                 let para = paragraphs.[first + index]
                                 match para.Segments |> Seq.tryFind (fun segment -> segment.Editable && segment.Text.Length > 0) with
-                                | Some segment when texts.[index].IndexOf(segment.Text, System.StringComparison.Ordinal) < 0 -> ok <- false
+                                | Some segment when texts.[index].IndexOf(segment.Text, System.StringComparison.Ordinal) < 0 ->
+                                    noteReason (sprintf "paragraph %d of the block is not the paragraph the editor had there" index)
+                                    ok <- false
                                 | _ -> ()
                 first <- first + count
             if not ok then None
-            else
-                let ordered = replacements |> Seq.sortByDescending (fun (from, _, _) -> from) |> Seq.toArray
-                let mutable text = xml
-                let mutable limit = xml.Length
-                for (from, until, replacement) in ordered do
-                    if until > limit then ok <- false
-                    elif ok then
-                        text <- text.Substring(0, from) + replacement + text.Substring until
-                        limit <- from
-                if ok then Some text else None
+            else withReplacements xml (List.ofSeq replacements) |> Option.map (fun text -> text, List.ofSeq inlined, replacements.Count - inlined.Count)
 
 type private BodySegment =
     | SourceText of string
@@ -3046,6 +3671,9 @@ type private BodyPlan = {
     Suffix: string
     /// The items written from the model.
     Regenerated: obj array
+    /// The paragraphs of tables that are written from the model into the table's own XML, by
+    /// the number of the mark that stands where each goes (see patchSourceChunk).
+    Inline: Map<int, obj>
 }
 
 [<Fable.Core.Emit("(typeof $0.SourceIndex === 'number' ? $0.SourceIndex : -1)")>]
@@ -3103,7 +3731,7 @@ let private planBody (xml: string) (itemChunks: int array) (chunkCount: int) (it
             let found = Array.zeroCreate<int> chunkCount
             let lastSource = Array.create chunkCount (-1)
             let patched = Array.zeroCreate<bool> chunkCount
-            let patchedText = Array.create<string option> chunkCount None
+            let patchedText = Array.create<(string * (int * obj) list * int) option> chunkCount None
             let mutable anchorChunk = -1
             items
             |> Array.iteri (fun position item ->
@@ -3119,7 +3747,9 @@ let private planBody (xml: string) (itemChunks: int array) (chunkCount: int) (it
                     found.[chunk] <- found.[chunk] + 1
                     if not (boolOrDefault false (item?SourceUnchanged)) then
                         // (Changed in its text alone: the change is made in the element's XML.)
-                        if isNullOrUndefined (item?SourceTextChanges) then keep.[chunk] <- false
+                        if isNullOrUndefined (item?SourceTextChanges) then
+                            if keep.[chunk] then noteReason (sprintf "block %d: %s" position (optionalString (item?SourceWhy) |> Option.defaultValue "changed"))
+                            keep.[chunk] <- false
                         else patched.[chunk] <- true
                 if isTextBox item then
                     // A shape is written into the block it is anchored in: one that is new,
@@ -3159,6 +3789,7 @@ let private planBody (xml: string) (itemChunks: int array) (chunkCount: int) (it
             let segments = ResizeArray<BodySegment>()
             let pending = ResizeArray<obj>()
             let regenerated = ResizeArray<obj>()
+            let inlined = ResizeArray<int * obj>()
             let flush () =
                 if pending.Count > 0 then
                     segments.Add (ModelBlocks (pending.ToArray()))
@@ -3170,13 +3801,22 @@ let private planBody (xml: string) (itemChunks: int array) (chunkCount: int) (it
                 if chunk >= 0 && keep.[chunk] then
                     flush ()
                     match (if patched.[chunk] then patchedText.[chunk] else None) with
-                    | Some text -> segments.Add (SourceText text)
+                    | Some (text, inlineParagraphs, patchedCount) ->
+                        segments.Add (SourceText text)
+                        reportPatched <- reportPatched + patchedCount
+                        for (number, para) in inlineParagraphs do
+                            inlined.Add ((number, para))
+                            regenerated.Add para
+                            reportInline <- reportInline + 1
                     | None -> segments.Add (SourceText (xml.Substring(textStart.[chunk], body.Ends.[chunk] - textStart.[chunk])))
                     anySource <- true
+                    reportSourceBlocks <- reportSourceBlocks + originalCount.[chunk]
                     position <- position + originalCount.[chunk]
                 else
                     pending.Add items.[position]
                     regenerated.Add items.[position]
+                    reportModelBlocks <- reportModelBlocks + 1
+                    reportModelParagraphs <- reportModelParagraphs + storyParagraphCount items.[position]
                     position <- position + 1
             flush ()
             // (Nothing as it was read: a new body. Around it the document stays the text it
@@ -3191,7 +3831,8 @@ let private planBody (xml: string) (itemChunks: int array) (chunkCount: int) (it
                        Section = if pageSetupUnchanged then Some (xml.Substring(sectionStart, sectionEnd - sectionStart)) else None
                        AfterSection = xml.Substring(sectionEnd, contentEnd - sectionEnd)
                        Suffix = xml.Substring contentEnd
-                       Regenerated = regenerated.ToArray() }
+                       Regenerated = regenerated.ToArray()
+                       Inline = Map.ofSeq inlined }
     | _ -> None
 
 /// The root start tag with the namespaces the writer's own elements use.
@@ -3225,7 +3866,20 @@ let private generateDocumentXmlFromPlan (plan: BodyPlan) (images: ImageScope) (h
     let written = ResizeArray<string>()
     for segment in plan.Segments do
         match segment with
-        | SourceText text -> parts.Add text
+        | SourceText text when text.IndexOf inlineMarkCharacter < 0 -> parts.Add text
+        | SourceText text ->
+            // The paragraphs of a table that are written from the model: each where its mark is.
+            let pieces = text.Split inlineMarkCharacter
+            pieces
+            |> Array.iteri (fun index piece ->
+                if index % 2 = 0 then parts.Add piece
+                else
+                    match System.Int32.TryParse piece with
+                    | true, number when plan.Inline.ContainsKey number ->
+                        let paragraph = generateParagraphWithHyperlinksAndImagesWithPageSetup setup hyperlinks images plan.Inline.[number]
+                        written.Add paragraph
+                        parts.Add paragraph
+                    | _ -> ())
         | ModelBlocks items ->
             let text = items |> generateBlocks (generateDocumentItemWithImagesAndPageSetup setup hyperlinks images) (generateTextBoxRun setup hyperlinks images)
             written.Add text
@@ -4518,6 +5172,12 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
     // unchanged content was written back as it was read (the round-trip
     // checks use it to see what the model alone gives).
     let regenerateAll = boolOrDefault false (package?RegenerateAll)
+    reportPatched <- 0
+    reportInline <- 0
+    reportModelBlocks <- 0
+    reportModelParagraphs <- 0
+    reportSourceBlocks <- 0
+    reportReasons.Clear()
     shapesFromModel <- regenerateAll
     let sourceOf (key: string) = if regenerateAll then None else Map.tryFind key preserved.SourceXml
     let paragraphs = optionalArray (package?Paragraphs)

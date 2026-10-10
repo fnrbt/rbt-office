@@ -991,3 +991,105 @@ window.formatTenth = async (name) => {
     problems.push(...integrityProblems());
     return { problems, edited, confined, rewritten, others, why };
 };
+
+// ---- edit passes --------------------------------------------------------------
+// Every tenth paragraph of the body's text (those of tables too) edited through the editor's
+// API in one way (`kind`, see EDIT_PASSES), and the document saved. The saved document reads
+// back with the text and - where nothing was written from the model - the layout the editor
+// had; its parts are well formed; and the writer says what it made of the body
+// (OF.word.getLastSaveReport): `kept` paragraphs changed in the XML they were read from, `model`
+// paragraphs written from the model (alone, into their table's XML, or with the block they are
+// in), and `others`: paragraphs nobody edited that are not the text they were read from.
+const middle = (end) => { const from = Math.floor(end / 3); return [from, Math.max(from + 1, Math.floor((2 * end) / 3))]; };
+const EDIT_PASSES = {
+    // A part of the paragraph made bold: its runs are split where the selection begins and ends.
+    'a part made bold': (editor, id, end) => { const [from, until] = middle(end); Word.setSelection(editor, id, from, id, until); Word.toggleBold(editor); },
+    // Font, size, colour, highlight, capitals, italic and position of a part.
+    'characters formatted': (editor, id, end) => {
+        const [from, until] = middle(end); Word.setSelection(editor, id, from, id, until);
+        Word.setFontFamily(editor, 'Arial'); Word.setFontSizePt(editor, 13); Word.setColor(editor, '#C00000'); Word.setHighlight(editor, 'yellow');
+        Word.toggleAllCaps(editor); Word.toggleItalic(editor); Word.setVertAlign(editor, 'superscript');
+    },
+    // Alignment, spacing and line spacing of the paragraph.
+    'paragraph formatted': (editor, id) => {
+        Word.setSelection(editor, id, 0, id, 0);
+        Word.alignCenter(editor); Word.setSpacingBefore(editor, 12); Word.setSpacingAfter(editor, 6); Word.setLineSpacing(editor, 1.5);
+    },
+    // Text typed into the paragraph and a part of it formatted, both before the save.
+    'typed in and formatted': (editor, id, end) => {
+        Word.setSelection(editor, id, end, id, end); Word.insertText(editor, ' typed');
+        const [from, until] = middle(end); Word.setSelection(editor, id, from, id, until); Word.toggleItalic(editor);
+    },
+};
+window.editPassKinds = () => Object.keys(EDIT_PASSES);
+window.editPass = async (name, kind) => {
+    const problems = [], why = [];
+    const result = { problems, why, edited: 0, kept: 0, model: 0, others: 0 };
+    const bytes = new Uint8Array(await (await fetch('/fixture?name=' + encodeURIComponent(name))).arrayBuffer());
+    if (!bytes.length) return result;
+    const before = await parts(bytes);
+    if (before['word/document.xml'] === undefined) return result;
+    const { pkg } = await open(bytes);
+    const handle = openEditor(pkg);
+    const label = `every tenth paragraph, ${kind}`;
+    try {
+        const editor = handle.editor;
+        Word.completeLayout(editor);
+        const ends = new Map();
+        for (const line of Word.getLayoutLines(editor)) {
+            if (line.FrameIsSelected) continue;
+            ends.set(line.BlockId, Math.max(ends.get(line.BlockId) ?? 0, (line.StartOffset ?? 0) + (line.Text ?? '').length));
+        }
+        const ids = [];
+        for (const [id, end] of ends) {
+            if (end < 3) continue;
+            Word.setSelection(editor, id, 0, id, end);
+            const selection = Word.getSelection(editor);
+            if (selection && selection.FocusBlockId === id && selection.AnchorBlockId === id && selection.FocusOffset !== selection.AnchorOffset) ids.push([id, end]);
+        }
+        const chosen = ids.filter((_, index) => index % 10 === 0);
+        for (const [id, end] of chosen) {
+            const revision = Word.getRevision(editor);
+            EDIT_PASSES[kind](editor, id, end);
+            if (Word.getRevision(editor) !== revision) result.edited++;
+        }
+        if (result.edited === 0) return result;
+        const text = Word.getText(editor);
+        const layout = layoutOf(editor);
+        const out = await writePackage(Word.exportDocumentPackage(editor), label);
+        const report = OF.word.getLastSaveReport();
+        const reopened = await open(out);
+        const second = openEditor(reopened.pkg);
+        if (Word.getText(second.editor) !== text) problems.push(`${label}: the saved document does not read back with the text that was saved`);
+        const fp = layoutOf(second.editor);
+        closeEditor(second);
+        const layoutProblems = [];
+        diffLayout(`${label}: layout of the saved document vs the editor that saved it`, layout, fp, layoutProblems);
+        const saved = await parts(out);
+        for (const part of Object.keys(saved)) {
+            const found = [], inherited = [];
+            checkXml(part, saved[part], found);
+            if (before[part]) checkXml(part, before[part], inherited);
+            for (const problem of found) if (!inherited.includes(problem)) problems.push(`${label}: ${problem}`);
+        }
+        // Paragraph by paragraph (the text up to each end tag): how many are not the text they were.
+        const pieces = (xml) => xml.replace(/^﻿/, '').replace(/^[\s\S]*?<w:body>/, '').replace(/<w:p( [^>]*?)?\/>/g, '<w:p$1></w:p>').split('</w:p>');
+        const was = pieces(before['word/document.xml']), is = pieces(saved['word/document.xml']);
+        const left = new Map();
+        for (const piece of is) left.set(piece, (left.get(piece) ?? 0) + 1);
+        let changed = 0;
+        for (const piece of was) { const count = left.get(piece) ?? 0; if (count > 0) left.set(piece, count - 1); else changed++; }
+        result.kept = report.PatchedParagraphs;
+        result.model = Math.max(0, result.edited - report.PatchedParagraphs);
+        result.others = Math.max(0, changed - result.edited);
+        // Where every paragraph was changed in its own XML the saved document is laid out as the editor's.
+        if (result.model === 0 && result.others === 0) problems.push(...layoutProblems);
+        else for (const problem of layoutProblems.slice(0, 1)) why.push('(written from the model) ' + problem.slice(0, 300));
+        if (result.model > 0) for (const reason of (report.Reasons ?? []).slice(0, 4)) why.push('the writer: ' + reason);
+    } catch (e) {
+        problems.push(`${label} threw: ` + String(e && e.stack || e).split('\n').slice(0, 4).join(' | '));
+    }
+    closeEditor(handle);
+    problems.push(...integrityProblems());
+    return result;
+};

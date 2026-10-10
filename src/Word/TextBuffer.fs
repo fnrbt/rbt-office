@@ -106,6 +106,10 @@ module ExplicitFormat =
 
     let has (flag: int) (style: TextStyle) = style.Explicit &&& flag <> 0
 
+/// The colour the reader gives the mark of a comment whose run has none of its
+/// own (DocxReader.commentMarkDisplayColor): of the display, not of the file.
+let commentMarkDisplayColor = "#7c3aed"
+
 /// Default text style
 let defaultStyle = {
     Style = None
@@ -601,6 +605,8 @@ let private boundaryInsertStyle (style: TextStyle) (otherSide: TextStyle option)
             CommentText = if keepComment then style.CommentText else None
             CommentAuthor = if keepComment then style.CommentAuthor else None
             CommentDate = if keepComment then style.CommentDate else None
+            // (The colour a comment's mark is shown in is the mark's: text typed beside it is not of that colour.)
+            Color = (if style.CommentId.IsSome && not keepComment && style.Color = Some commentMarkDisplayColor then None else style.Color)
             NoteId = None
             NoteType = None
             NoteText = None

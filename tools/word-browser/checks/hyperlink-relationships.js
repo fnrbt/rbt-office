@@ -43,6 +43,7 @@ try {
     check('a word made bold: the relationships of links are the file\'s', links(saved.rels), [['rId8', target]]);
     check('a word made bold: no relationship without a referrer', orphans(saved), []);
     check('a word made bold: no empty w:pPr', saved.xml.includes('<w:pPr/>'), false);
+    check('a word made bold: the paragraph is the XML it was read from, with the change (its ids, its link)', [paragraphOf(saved.xml, 'PHPWord').includes('w14:paraId="21C0B3CD" w14:textId="77777777" w:rsidR="000B6ACB"'), saved.rels === original.rels], [true, true]);
     check('a word made bold: the word is bold', /<w:b\/>(<[^>]*>)*<w:t[^>]*>\s?is\s?<\/w:t>/.test(paragraphOf(saved.xml, 'PHPWord')), true);
 
     // A bookmark set on a word: the paragraph is written from the model.

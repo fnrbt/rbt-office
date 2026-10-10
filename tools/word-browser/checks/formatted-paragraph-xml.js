@@ -5,8 +5,7 @@
 // it), not written from the model: what the model does not hold of it - a
 // bookmark, a complex field, the anchor and tooltip of a hyperlink, a content
 // control's properties, revision ids, w14:paraId, noProof / lang - is still
-// there. The saved document reads back as the editor's. A part of a run made
-// bold is still written from the model.
+// there. The saved document reads back as the editor's.
 import { check, note, finish, fail, loadWord, loadFormats, bytesOf } from './common.js';
 try {
     const OF = await loadFormats();
@@ -98,14 +97,14 @@ try {
     ], false);
     while (Word.canUndo(editor)) Word.undo(editor);
 
-    // A part of a run made bold is a change this is not done for: the block is written from the model
-    // (and still reads back as the editor's).
+    // A part of a run made bold: the run is split in the XML (see patched-paragraph-xml), the paragraph is still its own.
     Word.setSelection(editor, first, 1, first, 3);
     Word.toggleBold(editor);
     {
         const { xml, same } = await saved();
-        check('a part of a run made bold: written from the model, read back as the editor\'s', [same, xml.includes('w14:paraId="2A2B2C2D"')], [[true, true, true], false]);
-        note('a part of a run made bold is written from the model: the paragraph loses what the model does not hold');
+        check('a part of a run made bold: the run is split, each part with its start tag and properties', xml.includes('<w:r w:rsidRPr="00AA0002"><w:rPr><w:noProof/><w:lang w:val="de-DE"/></w:rPr><w:t xml:space="preserve">s</w:t></w:r><w:r w:rsidRPr="00AA0002"><w:rPr><w:b/><w:noProof/><w:lang w:val="de-DE"/></w:rPr><w:t xml:space="preserve">ta</w:t></w:r><w:r w:rsidRPr="00AA0002"><w:rPr><w:noProof/><w:lang w:val="de-DE"/></w:rPr><w:t xml:space="preserve">rt </w:t></w:r>'), true);
+        check('a part of a run made bold: everything else the model does not hold is kept', kept.slice(0, -1).filter((piece) => !xml.includes(piece)), []);
+        check('a part of a run made bold: read again, the editor\'s text, formatting and layout', same, [true, true, true]);
     }
 } catch (e) { fail(e); }
 finish();
