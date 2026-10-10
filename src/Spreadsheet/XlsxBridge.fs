@@ -1185,25 +1185,22 @@ module Import =
     let importWorkbook (wb: XlsxReader.Workbook) : ImportedWorkbook =
         importWorkbookWith defaultImportOptions wb
 
-    let private readerCellIsFormula (cell: XlsxReader.Cell) =
-        cell.Formula.IsSome || (match cell.Value with XlsxReader.Formula _ -> true | _ -> false)
     /// The formula cells of a reader sheet, as `importSheet` makes them (see `cellValue`).
     let private readerSheetFormulas (sheet: XlsxReader.Worksheet) : (CellAddress * string) array =
         let formulas = ResizeArray<CellAddress * string>()
-        // (A sheet of several hundred thousand values and a handful of formulas:
-        // a cell's row and column are worked out only when it holds a formula.)
         let add (cell: XlsxReader.Cell) (formula: string) =
             let r = cell.Reference.Row - 1
             let c = columnIndexOfLetters cell.Reference.Column
             if r >= 0 && c >= 0 then formulas.Add ({ Row = r; Col = c }, formula)
-        for row in sheet.Rows do
-            for cell in row.Cells do
-                match cell.Formula with
-                | Some formula -> if not (String.IsNullOrWhiteSpace formula) then add cell formula
-                | None ->
-                    match cell.Value with
-                    | XlsxReader.Formula formula when not (String.IsNullOrWhiteSpace formula) -> add cell formula
-                    | _ -> ()
+        // (A sheet of several hundred thousand values and a handful of formulas:
+        // the reader finds the cells with a formula without reading the others.)
+        for cell in sheet.FormulaCells do
+            match cell.Formula with
+            | Some formula -> if not (String.IsNullOrWhiteSpace formula) then add cell formula
+            | None ->
+                match cell.Value with
+                | XlsxReader.Formula formula when not (String.IsNullOrWhiteSpace formula) -> add cell formula
+                | _ -> ()
         formulas.ToArray()
     let private readerCellIsUncached (cell: XlsxReader.Cell) =
         match cell.Value with XlsxReader.Formula _ -> true | _ -> false
@@ -1224,7 +1221,7 @@ module Import =
         let readerSheets = List.toArray wb.Sheets
         if readerSheets.Length = 0 then failwith "XLSX workbook has no worksheets"
         let anyUncached =
-            readerSheets |> Array.exists (fun sheet -> sheet.Rows |> List.exists (fun row -> row.Cells |> List.exists readerCellIsUncached))
+            readerSheets |> Array.exists (fun sheet -> sheet.FormulaCells |> List.exists readerCellIsUncached)
         if anyUncached || readerSheets.Length = 1 then importWorkbookWith options wb
         else
             let names = readerSheets |> Array.map (fun sheet -> sheet.Name)
@@ -1251,7 +1248,7 @@ module Import =
                     let hasFormulas =
                         not sheet.ConditionalFormats.IsEmpty || not sheet.DataValidations.IsEmpty
                         || sheet.Hyperlinks |> List.exists (fun link -> link.IsInternal)
-                        || sheet.Rows |> List.exists (fun row -> row.Cells |> List.exists readerCellIsFormula)
+                        || not sheet.FormulaCells.IsEmpty
                     // (Read off the file once: the graph of a workbook is built more than once.)
                     let mutable formulasRead : (CellAddress * string) array option = None
                     let formulasOf () =
@@ -1643,7 +1640,7 @@ module Export =
     let private modelSheetWith (cells: XlsxWriter.XlsxCellOut list) (dxfIndex: XlsxReader.Dxf -> int) (name: string) (state: XlsxReader.SheetState) (model: SpreadsheetModel) : XlsxWriter.XlsxSheetOut =
         { Name = name
           State = state
-          Cells = cells
+          CellSource = XlsxWriter.sheetCells cells
           MergedCells = model.MergedCells |> List.map (fun m -> ({ StartRow = m.StartRow; StartCol = m.StartCol; EndRow = m.EndRow; EndCol = m.EndCol } : XlsxWriter.MergedCellRange))
           ColumnWidths = model.ColumnWidths |> Map.toList |> List.map (fun (c, px) -> c, px / 7.0)
           RowHeights = model.RowHeights |> Map.toList |> List.map (fun (r, px) -> r, px / 1.333)

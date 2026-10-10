@@ -116,7 +116,7 @@ do
 do
     let sheet name cells : XlsxWriter.XlsxSheetOut =
         { (XlsxWriter.packageFromReaderWorkbook (loadBytes (bytesOf "real-world/dcf-stock-analysis.xlsx"))).Sheets.Head with
-            Name = name; Cells = cells; MergedCells = []; Tables = []; ConditionalFormats = []; DataValidations = []; Hyperlinks = []
+            Name = name; CellSource = XlsxWriter.sheetCells cells; MergedCells = []; Tables = []; ConditionalFormats = []; DataValidations = []; Hyperlinks = []
             Extras = XlsxReader.emptySheetExtras; ColumnWidths = []; RowHeights = []; PrintArea = None; PrintTitleRows = None; PrintTitleCols = None }
     let cell row col value : XlsxWriter.XlsxCellOut = { Row = row; Col = col; Value = value; Format = XlsxWriter.defaultXlsxCellFormat; Comment = None }
     let book : XlsxWriter.XlsxWorkbookOut =
@@ -178,6 +178,56 @@ do
         |> Formula.recalculateWorkbook
     for index in 0 .. 4 do
         eq (sprintf "sheet %d: the cells of a full recalculation of the converted workbook" index) (resolveSheet hidden.Sheets.[ids.[index]].Model).Cells eagerEdited.Sheets.[ids.[index]].Model.Cells
+
+// A browser reads the rows of a sheet from the text of its part, and only
+// when they are asked for: opening a workbook reads the rows of the sheet
+// it shows; the formulas of the others (for the dependency graph) are found
+// without their rows, and converting a sheet reads its rows.
+for file in [ "real-world/dashboard-ecommerce-sales.xlsx"; "real-world/lyric-multifamily.xlsx" ] do
+    let label = Path.GetFileNameWithoutExtension file + " (rows on demand)"
+    let bytes = bytesOf file
+    let reader = XlsxReader.loadBytesNativeScanned bytes |> Option.get
+    let readerSheets = List.toArray reader.Sheets
+    // (A sheet with a what-if data table is read at once: the table is part of what the sheet is.)
+    let deferrable = readerSheets |> Array.map (fun sheet -> not sheet.RowSource.IsLoaded)
+    ok (label + ": the reader leaves rows unread") (deferrable |> Array.filter id |> Array.length >= readerSheets.Length - 1 && readerSheets.Length > 2) (sprintf "%A" deferrable)
+    let lazyBook = Bridge.Import.importWorkbookLazy (fun index -> index = 0) reader
+    eq (label + ": opening reads the rows of the sheet it shows only")
+        (readerSheets |> Array.mapi (fun index sheet -> index, sheet.RowSource.IsLoaded) |> Array.filter (fun (index, _) -> deferrable.[index]) |> Array.map snd)
+        (deferrable |> Array.mapi (fun index d -> index, d) |> Array.filter snd |> Array.map (fun (index, _) -> index = 0))
+    let eager = Bridge.Import.importWorkbook (loadBytes bytes)
+    let mutable formulas = 0
+    for index in 1 .. readerSheets.Length - 1 do
+        let fromFile = lazyBook.Sheets.[index].Model.Deferred.Value.Formulas ()
+        formulas <- formulas + fromFile.Length
+        let expected =
+            eager.Sheets.[index].Model.Cells |> Map.toArray
+            |> Array.choose (fun (cellAddr, data) -> match data.Value with CellValue.Formula (text, _) -> Some (cellAddr, text) | _ -> None)
+        eq (sprintf "%s: the formulas of sheet %d, read off the file" label index) (Array.sort fromFile |> Array.map fst) (Array.sort expected |> Array.map fst)
+    ok (label + ": there are formulas") (formulas > 10) (string formulas)
+    eq (label + ": the formulas were found without the rows")
+        (readerSheets |> Array.mapi (fun index sheet -> index > 0 && deferrable.[index] && sheet.RowSource.IsLoaded) |> Array.exists id) false
+    // An edit of the sheet on display, and a save: the other sheets go back as the parts they were
+    // read from, and their rows are still not read. The package is the one written with every row read.
+    let editedSheets (book: Bridge.ImportedWorkbook) =
+        book.Sheets |> Array.mapi (fun index sheet ->
+            if index > 0 then sheet.Model
+            else setCell (addr 1 1) { Value = CellValue.String "edited"; Format = defaultFormat; Comment = None } sheet.Model)
+    let written = partsOf (export lazyBook (editedSheets lazyBook))
+    eq (label + ": a save after an edit reads no rows of the other sheets")
+        (readerSheets |> Array.mapi (fun index sheet -> index > 0 && deferrable.[index] && sheet.RowSource.IsLoaded) |> Array.exists id) false
+    let readWhole = Bridge.Import.importWorkbookLazy (fun index -> index = 0) (loadBytes bytes)
+    let reference = partsOf (export readWhole (editedSheets readWhole))
+    eq (label + ": and writes the package it writes with every row read")
+        (written |> Map.toList |> List.filter (fun (path, data) -> Map.tryFind path reference <> Some data) |> List.map fst) []
+    let original = partsOf bytes
+    // (All but the one the file had on display: its tabSelected goes to the first sheet.)
+    ok (label + ": the other worksheets are the file's parts")
+        (readerSheets |> Array.mapi (fun index sheet -> index, sheet) |> Array.filter (fun (index, sheet) ->
+            index > 0 && (match sheet.Extras.SourcePart with Some (path, _) -> Map.tryFind path written <> Map.tryFind path original | None -> false)) |> Array.length <= 1) ""
+    let converted = resolveSheet lazyBook.Sheets.[1].Model
+    ok (label + ": converting a sheet reads its rows") readerSheets.[1].RowSource.IsLoaded ""
+    ok (label + ": to the eager model") (contentOf converted = contentOf eager.Sheets.[1].Model) ""
 
 printfn "xlsx-lazy: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

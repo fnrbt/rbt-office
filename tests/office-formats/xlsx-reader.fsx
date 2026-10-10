@@ -112,7 +112,7 @@ let mkSheetWithColumns columns rows : XlsxReader.Worksheet =
     {
         Name = "Sheet1"
         State = XlsxReader.SheetVisible
-        Rows = rows
+        RowSource = XlsxReader.SheetRows.Of rows
         MergedCells = []
         Columns = columns
         Format = XlsxReader.Xlsx.emptySheetFormat

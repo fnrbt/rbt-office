@@ -89,7 +89,7 @@ let validationsIn (sheet: XlsxReader.Worksheet) : ValidationRange list =
 
 let blankSheet name state cfs dvs : XlsxWriter.XlsxSheetOut =
     { Name = name; State = state
-      Cells = [ { Row = 0; Col = 0; Value = XlsxWriter.XlsxNumber 1.0; Format = XlsxWriter.defaultXlsxCellFormat; Comment = None } ]
+      CellSource = XlsxWriter.sheetCells [ { Row = 0; Col = 0; Value = XlsxWriter.XlsxNumber 1.0; Format = XlsxWriter.defaultXlsxCellFormat; Comment = None } ]
       MergedCells = []; ColumnWidths = []; RowHeights = []; FrozenRows = 0; FrozenCols = 0; ShowGridLines = true; View = XlsxWriter.defaultSheetViewOut; Tables = []
       DataValidations = dvs; ConditionalFormats = cfs; Hyperlinks = []
       PageMargins = None; PageSetup = None; PrintOptions = None; HeaderFooter = None

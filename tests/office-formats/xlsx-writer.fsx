@@ -212,7 +212,8 @@ let syntheticFormat =
 let syntheticSheet : XlsxWriter.XlsxSheetOut =
     { Name = "RoundTrip"
       State = XlsxReader.SheetVisible
-      Cells =
+      CellSource =
+        XlsxWriter.sheetCells <|
         [ { Row = 0; Col = 0; Value = XlsxWriter.XlsxText ("Header", []); Format = syntheticFormat; Comment = Some ("Note text", Some "Codex") }
           { Row = 1; Col = 0; Value = XlsxWriter.XlsxNumber 42.5; Format = syntheticFormat; Comment = None }
           { Row = 1; Col = 1; Value = XlsxWriter.XlsxFormula ("A2*2", Some (XlsxWriter.XlsxNumber 85.0)); Format = syntheticFormat; Comment = None } ]
@@ -281,7 +282,8 @@ let cfRule (kind: string) : XlsxReader.ConditionalFormatRule =
 let nastySheet : XlsxWriter.XlsxSheetOut =
     { syntheticSheet with
         Name = "Bob's <Q&A>"
-        Cells =
+        CellSource =
+          XlsxWriter.sheetCells <|
           [ { Row = 0; Col = 0; Value = XlsxWriter.XlsxText ("a\u0001b\r\nc _x0041_ end", []); Format = { syntheticFormat with FontName = Some "A&B \"Font\"" }; Comment = Some ("note\u0002!", Some "Me") }
             { Row = 1; Col = 0; Value = XlsxWriter.XlsxNumber 0.1; Format = { XlsxWriter.defaultXlsxCellFormat with FillColor = Some "#FF0000" }; Comment = None }
             { Row = 2; Col = 0; Value = XlsxWriter.XlsxFormula ("A2*2", Some (XlsxWriter.XlsxNumber 0.2)); Format = { XlsxWriter.defaultXlsxCellFormat with FillColor = Some "#00FF00" }; Comment = None }
@@ -600,7 +602,7 @@ ok "a cell format is written with the xfId of its named style"
 let calcWorkbook (cached: XlsxWriter.XlsxCellValue option) =
     let sheet = (XlsxWriter.packageFromReaderWorkbook (realWorkbook "test-documents-excel/poi-49156.xlsx")).Sheets.Head
     let formula : XlsxWriter.XlsxCellOut = { Row = 60; Col = 0; Value = XlsxWriter.XlsxFormula ("1+1", cached); Format = XlsxWriter.defaultXlsxCellFormat; Comment = None }
-    { (XlsxWriter.packageFromReaderWorkbook (realWorkbook "test-documents-excel/poi-49156.xlsx")) with Sheets = [ { sheet with Cells = sheet.Cells @ [ formula ] } ] }
+    { (XlsxWriter.packageFromReaderWorkbook (realWorkbook "test-documents-excel/poi-49156.xlsx")) with Sheets = [ { sheet with CellSource = XlsxWriter.sheetCells (sheet.Cells @ [ formula ]) } ] }
 let uncachedXml = partText (XlsxWriter.writeWorkbookPackageBytes (calcWorkbook None)) "xl/workbook.xml"
 ok "fullCalcOnLoad for a formula without a cached value" (uncachedXml.Contains "<calcPr fullCalcOnLoad=\"1\"/></workbook>") uncachedXml
 ok "no fullCalcOnLoad when the formula has its value" (not ((partText (XlsxWriter.writeWorkbookPackageBytes (calcWorkbook (Some (XlsxWriter.XlsxNumber 2.0)))) "xl/workbook.xml").Contains "calcPr")) "calcPr written"

@@ -768,6 +768,105 @@ let emptyAutoFilterColumn : AutoFilterColumn =
       DxfId = None; CellColor = true; DynamicType = ""; Xml = "" }
 
 /// What a sheet holds beyond its cells: pictures, other drawing objects and threaded comments.
+/// A value that is worked out when it is first asked for (and then kept;
+/// what it is worked out from is let go). Two of these are equal when their
+/// values are.
+[<AllowNullLiteral(false)>]
+type OnDemand<'T when 'T : equality> (load: (unit -> 'T) option, known: 'T) =
+    let mutable pending : (unit -> 'T) option = load
+    let mutable value : 'T = known
+    static member Of (value: 'T) : OnDemand<'T> = OnDemand<'T> (None, value)
+    static member Deferred (load: unit -> 'T) : OnDemand<'T> = OnDemand<'T> (Some load, Unchecked.defaultof<'T>)
+    member _.IsLoaded : bool = pending.IsNone
+    member _.Value : 'T =
+        match pending with
+        | None -> value
+        | Some work ->
+            let found = work ()
+            value <- found
+            pending <- None
+            found
+    override this.Equals (other: obj) =
+        match other with
+        | :? OnDemand<'T> as that -> this.Value = that.Value
+        | _ -> false
+    override this.GetHashCode () = 0
+
+/// The rows of a sheet. A reader that has the text of the sheet's part may
+/// leave the rows unread until something asks for them (`Value`): a workbook
+/// opens without the cost of the sheets nobody looks at. Two of these are
+/// equal when their rows are.
+[<AllowNullLiteral(false)>]
+type SheetRows (load: (unit -> Row list) option, known: Row list, quickFormulas: (unit -> Cell list option) option, quickHeaders: (unit -> Row list option) option) =
+    let mutable pending : (unit -> Row list) option = load
+    let mutable rows : Row list = known
+    let mutable quick : (unit -> Cell list option) option = quickFormulas
+    let mutable formulas : Cell list option = None
+    let mutable quickRows : (unit -> Row list option) option = quickHeaders
+    let mutable headers : Row list option = None
+    /// Rows that are already read.
+    static member Of (rows: Row list) : SheetRows = SheetRows (None, rows, None, None)
+    /// Rows read by `load` when they are first asked for; `quickFormulas`
+    /// (when there is one) finds the cells with a formula without them, and
+    /// `quickHeaders` the rows without their cells - or give None when they cannot.
+    static member Deferred (load: unit -> Row list, quickFormulas: (unit -> Cell list option) option, quickHeaders: (unit -> Row list option) option) : SheetRows =
+        SheetRows (Some load, [], quickFormulas, quickHeaders)
+    /// What the rows say of themselves (index, height, hidden, outline) - the
+    /// rows themselves when they are read, else the rows without their cells
+    /// where that can be had without reading them. Rows with no height of
+    /// their own that are neither hidden nor in an outline may be left out.
+    member this.Headers : Row list =
+        match pending, headers with
+        | None, _ -> rows
+        | Some _, Some known -> known
+        | Some _, None ->
+            match (match quickRows with Some scan -> scan () | None -> None) with
+            | Some found ->
+                headers <- Some found
+                quickRows <- None
+                found
+            | None -> this.Value
+    /// Whether the rows have been read.
+    member _.IsLoaded : bool = pending.IsNone
+    /// The rows (read now when they were not yet).
+    member _.Value : Row list =
+        match pending with
+        | None -> rows
+        | Some read ->
+            let found = read ()
+            rows <- found
+            pending <- None
+            quick <- None
+            quickRows <- None
+            headers <- None
+            found
+    /// The cells that hold a formula, in the order of the part: as `Value`
+    /// has them, but found without reading every row when the rows are not
+    /// read yet (a sheet of a million values and a dozen formulas).
+    member this.FormulaCells : Cell list =
+        match formulas with
+        | Some known -> known
+        | None ->
+            let scanned =
+                match pending, quick with
+                | Some _, Some scan -> scan ()
+                | _ -> None
+            let found =
+                match scanned with
+                | Some cells -> cells
+                | None ->
+                    this.Value
+                    |> List.collect (fun row ->
+                        row.Cells |> List.filter (fun cell -> cell.Formula.IsSome || (match cell.Value with Formula _ -> true | _ -> false)))
+            formulas <- Some found
+            quick <- None
+            found
+    override this.Equals (other: obj) =
+        match other with
+        | :? SheetRows as rows -> this.Value = rows.Value
+        | _ -> false
+    override this.GetHashCode () = hash (List.length this.Value)
+
 type SheetExtras = {
     Images: SheetImage list
     Objects: SheetObject list
@@ -838,6 +937,10 @@ type SheetExtras = {
     /// the file's, that part goes back as it is (rich text, shape ids,
     /// authors), also for a sheet that is otherwise written anew.
     CommentsPart: string option
+    /// For the writer, of a sheet of a file whose cells were not made yet:
+    /// whether it has a formula the file holds no value for (None: not known,
+    /// the cells say).
+    UncachedFormulas: bool option
     /// The sheet is written as that part, byte for byte, with everything the
     /// part's own relationships lead to (the part's bytes are one of the
     /// workbook's `Preserved.Parts`). The reader says so for the sheets the
@@ -850,7 +953,7 @@ let emptySheetExtras =
     { Images = []; Objects = []; ThreadedComments = []; DrawingRelationships = []; Format = None; Columns = []; ColumnStyles = []
       SheetId = None; KeptRelationships = []; KeptExtensions = []; KeptElements = []; DrawingPart = None; TableParts = []; PivotLocations = []; DataTables = []
       KeptCellExtensions = []; PrinterSettingsRelId = None; RowAxis = []; ColumnAxis = []; AutoFilter = None; ArrayFormulas = []
-      SourcePart = None; CommentsPart = None; Verbatim = false }
+      SourcePart = None; CommentsPart = None; UncachedFormulas = None; Verbatim = false }
 
 /// A named cell style (cellStyles / cellStyleXfs of styles.xml), with the
 /// font, fill, border and number format its xf refers to given as their XML so
@@ -952,7 +1055,8 @@ type Worksheet = {
     Name: string
     /// Tab visibility, from the workbook's `<sheet state>`.
     State: SheetState
-    Rows: Row list
+    /// The sheet's rows (see `Rows`): read from the part when first asked for.
+    RowSource: SheetRows
     MergedCells: MergeCell list
     Columns: ColumnInfo list
     Format: SheetFormat
@@ -996,6 +1100,11 @@ type Worksheet = {
     /// Pictures, charts and other drawing objects, and threaded comments.
     Extras: SheetExtras
 }
+with
+    /// The sheet's rows. (Reads them from the part when that was left for later.)
+    member this.Rows : Row list = this.RowSource.Value
+    /// The cells with a formula, without reading the other rows where the reader can tell.
+    member this.FormulaCells : Cell list = this.RowSource.FormulaCells
 
 type Workbook = {
     Sheets: Worksheet list
@@ -2193,7 +2302,7 @@ module Xlsx =
     /// the plain shape this scanner reads (a prefixed sheetData element,
     /// comments or CDATA among the rows): the caller then parses the whole part.
     /// Also returns the part with the rows cut out.
-    let internal scanSheetRows (ctx: SheetParseContext) (sheetXml: string) : (Row list * string) option =
+    let private scanSheetRowsWith (headersOnly: bool) (ctx: SheetParseContext) (sheetXml: string) : (Row list * string) option =
         let openAt = indexOfFrom sheetXml "<sheetData" 0
         if openAt < 0 then None
         else
@@ -2245,11 +2354,11 @@ module Xlsx =
                                 let rowEnd = if selfClosed then rowTagEnd else indexOfFrom sheetXml "</row>" rowTagEnd
                                 if rowEnd < 0 || rowEnd > closeAt then scan.Valid <- false
                                 else
-                                    let cells = if selfClosed then [] else scanRowCells scan rowIndex (rowTagEnd + 1) rowEnd
+                                    let cells = if headersOnly || selfClosed then [] else scanRowCells scan rowIndex (rowTagEnd + 1) rowEnd
                                     if scan.Valid then
                                         rows.Add
                                             { Index = rowIndex
-                                              Cells = rowSpanCells ctx rowIndex rowStyle customFormat spans cells
+                                              Cells = (if headersOnly then [] else rowSpanCells ctx rowIndex rowStyle customFormat spans cells)
                                               Height = (if customHeightAttr = Some true then rawHeight else None)
                                               RawHeight = rawHeight
                                               CustomHeight = customHeightAttr
@@ -2258,9 +2367,113 @@ module Xlsx =
                                               Collapsed = boolAttribute scan.RowValues.[8] |> Option.defaultValue false }
                                     pos <- if selfClosed then rowTagEnd + 1 else rowEnd + 6
                     if not scan.Valid then None
+                    elif headersOnly then Some (List.ofSeq rows, "")
                     else Some (List.ofSeq rows, sheetXml.Substring(0, openAt) + "<sheetData/>" + sheetXml.Substring(closeAt + 12))
 
     // Merged cells extraction
+    let internal scanSheetRows (ctx: SheetParseContext) (sheetXml: string) : (Row list * string) option =
+        scanSheetRowsWith false ctx sheetXml
+
+    /// The rows without their cells (what `scanSheetRows` gives, less the cells): see `SheetRows.Headers`.
+    /// Rows that say nothing of themselves may be left out - all of them are
+    /// when no row of the part has a height, is hidden or is in an outline.
+    let internal scanRowHeaders (ctx: SheetParseContext) (sheetXml: string) : Row list option =
+        let openAt = indexOfFrom sheetXml "<sheetData" 0
+        let closeAt = if openAt < 0 then -1 else indexOfFrom sheetXml "</sheetData>" openAt
+        let within (attribute: string) =
+            let at = indexOfFrom sheetXml attribute openAt
+            at >= 0 && at < closeAt
+        // (A cell has none of these attributes; text holds no quote that is not escaped... but for a
+        // quote in a formula or a value, which then only costs the reading of the rows' tags.)
+        if openAt >= 0 && closeAt >= 0 && not (within " ht=\"" || within " hidden=\"" || within " outlineLevel=\"" || within " collapsed=\"" || within " ht='" || within " hidden='" || within " outlineLevel='" || within " collapsed='") then
+            (if (indexOfFrom sheetXml "<!" openAt |> fun at -> at >= 0 && at < closeAt) then None else Some [])
+        else scanSheetRowsWith true ctx sheetXml |> Option.map fst
+
+    /// Where the rows of a sheet part are, when they are in the shape the
+    /// scanner reads: (the ">" of the sheetData start tag, the "<" of its end
+    /// tag). None for an empty or prefixed sheetData, or one with comments /
+    /// CDATA among the rows.
+    let private sheetDataBounds (sheetXml: string) : (int * int) option =
+        let openAt = indexOfFrom sheetXml "<sheetData" 0
+        if openAt < 0 then None
+        else
+            let openEnd = sheetXml.IndexOf('>', openAt)
+            if openEnd < 0 || codeAt sheetXml (openEnd - 1) = 47 then None
+            else
+                let closeAt = indexOfFrom sheetXml "</sheetData>" openEnd
+                let commentAt = if closeAt < 0 then -1 else indexOfFrom sheetXml "<!" openEnd
+                if closeAt < 0 || (commentAt >= 0 && commentAt < closeAt) then None else Some (openEnd, closeAt)
+
+    /// The part without its rows, for the XML parser (None: see `sheetDataBounds`).
+    let internal sheetWithoutRows (sheetXml: string) : string option =
+        match sheetDataBounds sheetXml with
+        | None -> None
+        | Some (_, closeAt) ->
+            let openAt = indexOfFrom sheetXml "<sheetData" 0
+            Some (sheetXml.Substring(0, openAt) + "<sheetData/>" + sheetXml.Substring(closeAt + 12))
+
+    /// The cells of a sheet part that hold a formula, in the order of the
+    /// part, exactly as `scanSheetRows` makes them - found by their `<f>`
+    /// without reading the other cells. `ctx` is a context of its own (the
+    /// masters of shared formulas are collected in it). None when the part
+    /// is not in the shape this reads: the caller then reads every row.
+    let internal scanFormulaCells (ctx: SheetParseContext) (sheetXml: string) : Cell list option =
+        match sheetDataBounds sheetXml with
+        | None -> (if indexOfFrom sheetXml "<sheetData" 0 >= 0 && indexOfFrom sheetXml "<f" 0 < 0 then Some [] else None)
+        | Some (openEnd, closeAt) ->
+            let scan =
+                { Xml = sheetXml
+                  Ctx = ctx
+                  ColumnNames = System.Collections.Generic.Dictionary<int, string>()
+                  RowNames = [||]
+                  RowValues = [||]
+                  CellNames = [| "r"; "s"; "t"; "cm" |]
+                  CellValues = Array.create 4 null
+                  FormulaNames = [| "t"; "ref"; "si" |]
+                  FormulaValues = Array.create 3 null
+                  NextInline = indexOfFrom sheetXml "<is" openEnd
+                  Valid = true
+                  PrevCol = 0 }
+            let cells = System.Collections.Generic.List<Cell>()
+            let mutable pos = openEnd + 1
+            while scan.Valid && pos < closeAt do
+                let at = indexOfFrom sheetXml "<f" pos
+                if at < 0 || at >= closeAt then pos <- closeAt
+                else
+                    let after = codeAt sheetXml (at + 2)
+                    if not (isSpaceCode after || after = 62 || after = 47) then pos <- at + 2
+                    else
+                        // The cell the formula is in: the nearest "<c" before it.
+                        let mutable cellAt = at - 1
+                        let isCellStart (index: int) =
+                            codeAt sheetXml index = 60 && codeAt sheetXml (index + 1) = 99
+                            && (let next = codeAt sheetXml (index + 2) in isSpaceCode next || next = 62)
+                        while cellAt > openEnd && not (isCellStart cellAt) do cellAt <- cellAt - 1
+                        let cellTagEnd = if cellAt > openEnd then sheetXml.IndexOf('>', cellAt) else -1
+                        let cellEnd = if cellTagEnd < 0 then -1 else indexOfFrom sheetXml "</c>" cellTagEnd
+                        if cellTagEnd < 0 || cellTagEnd > at || cellEnd < at || cellEnd > closeAt then scan.Valid <- false
+                        else
+                            scanAttributes sheetXml (cellAt + 2) cellTagEnd scan.CellNames scan.CellValues
+                            let reference = scan.CellValues.[0]
+                            let mutable row = 0
+                            let mutable letters = 0
+                            if not (isNull reference) then
+                                for i in 0 .. reference.Length - 1 do
+                                    let code = codeAt reference i
+                                    if code >= 48 && code <= 57 then row <- row * 10 + (code - 48)
+                                    elif (code >= 65 && code <= 90) || (code >= 97 && code <= 122) then letters <- letters + 1
+                            // (A cell that does not say where it is takes its place from the cells before it.)
+                            if row <= 0 || letters = 0 then scan.Valid <- false
+                            else
+                                if scan.NextInline >= 0 && scan.NextInline < cellAt then scan.NextInline <- indexOfFrom sheetXml "<is" cellAt
+                                let cell =
+                                    if scan.NextInline >= 0 && scan.NextInline < cellEnd then
+                                        cellFromNode ctx row 0 (XmlDsl.parse (sheetXml.Substring(cellAt, cellEnd + 4 - cellAt))) |> fst
+                                    else scanCell scan row cellAt cellTagEnd cellEnd false
+                                if cell.Formula.IsSome || (match cell.Value with Formula _ -> true | _ -> false) then cells.Add cell
+                                pos <- cellEnd + 4
+            if scan.Valid then Some (List.ofSeq cells) else None
+
     let parseMergeCell (ref: string) : MergeCell option =
         match ref.Split(':') with
         | [| start; finish |] ->
@@ -3095,7 +3308,7 @@ module Xlsx =
             Some {
                 Name = name
                 State = state
-                Rows = resizeListToList rows
+                RowSource = SheetRows.Of (resizeListToList rows)
                 MergedCells = resizeListToList mergedCells
                 Columns = resizeListToList columns
                 Format = format
@@ -3126,18 +3339,19 @@ module Xlsx =
         worksheetNativeFastCore (newSheetContext styles false) name SheetVisible sheetXml comments [] tables sheetRels printNames
 #endif
 
-    let internal worksheetFromNodeCore (ctx: SheetParseContext) (name: string) (state: SheetState) (sheet: XmlNode) (comments: CellComment list) (condFormats: ConditionalFormat list) (dataVals: DataValidation list) (charts: Chart list) (pivotTables: PivotTable list) (tables: TableDefinition list) (sheetRels: Relationship list) (printNames: WorksheetPrintNames) : Worksheet =
-        let sheetData = sElem "sheetData" sheet
-
+    /// The rows of a parsed sheet part.
+    let internal rowsFromNode (ctx: SheetParseContext) (sheet: XmlNode) : Row list =
         let mutable prevRow = 0
-        let rows =
-            sheetData
-            |> Option.map (childElems "row")
-            |> Option.defaultValue []
-            |> List.map (fun rowNode ->
-                let row = rowFromNode ctx prevRow rowNode
-                prevRow <- row.Index
-                row)
+        sElem "sheetData" sheet
+        |> Option.map (childElems "row")
+        |> Option.defaultValue []
+        |> List.map (fun rowNode ->
+            let row = rowFromNode ctx prevRow rowNode
+            prevRow <- row.Index
+            row)
+
+    let internal worksheetFromNodeCore (ctx: SheetParseContext) (name: string) (state: SheetState) (sheet: XmlNode) (comments: CellComment list) (condFormats: ConditionalFormat list) (dataVals: DataValidation list) (charts: Chart list) (pivotTables: PivotTable list) (tables: TableDefinition list) (sheetRels: Relationship list) (printNames: WorksheetPrintNames) : Worksheet =
+        let rows = rowsFromNode ctx sheet
 
         // Resolve hyperlink r:id values against the sheet rels: external
         // hyperlinks (Target on the Relationship is the actual URL) get
@@ -3151,7 +3365,7 @@ module Xlsx =
         {
             Name = name
             State = state
-            Rows = rows
+            RowSource = SheetRows.Of rows
             MergedCells = mergeCells sheet
             Columns = columns sheet
             Format = sheetFormatPr sheet
@@ -3191,7 +3405,33 @@ module Xlsx =
         | Some (rows, withoutRows) ->
             let sheet = XmlDsl.parse withoutRows
             let condFormats, dataVals = rest sheet
-            Some { worksheetFromNodeCore ctx name state sheet comments condFormats dataVals [] pivotTables tables sheetRels printNames with Rows = rows }
+            Some { worksheetFromNodeCore ctx name state sheet comments condFormats dataVals [] pivotTables tables sheetRels printNames with RowSource = SheetRows.Of rows }
+
+    /// As `worksheetScannedCore`, with the rows left in the text of the part
+    /// until something asks for them (`Worksheet.Rows`); the cells with a
+    /// formula can be had without the others (`Worksheet.FormulaCells`).
+    /// `newContext` makes a context for one reading of the rows. None when the
+    /// rows are not in the shape the scanner reads, or hold what the sheet
+    /// has to know of at once (a what-if data table).
+    let internal worksheetDeferredCore (newContext: unit -> SheetParseContext) (name: string) (state: SheetState) (sheetXml: string) (comments: CellComment list)
+                                       (rest: XmlNode -> ConditionalFormat list * DataValidation list)
+                                       (pivotTables: PivotTable list) (tables: TableDefinition list) (sheetRels: Relationship list) (printNames: WorksheetPrintNames) : Worksheet option =
+        if indexOfFrom sheetXml "\"dataTable\"" 0 >= 0 || indexOfFrom sheetXml "'dataTable'" 0 >= 0 then None
+        else
+            match sheetWithoutRows sheetXml with
+            | None -> None
+            | Some withoutRows ->
+                let sheet = XmlDsl.parse withoutRows
+                let condFormats, dataVals = rest sheet
+                let readRows () =
+                    match scanSheetRows (newContext ()) sheetXml with
+                    | Some (rows, _) -> rows
+                    // (Rows the scanner gives up on: the XML parser reads the part.)
+                    | None -> rowsFromNode (newContext ()) (XmlDsl.parse sheetXml)
+                let readFormulas () = scanFormulaCells (newContext ()) sheetXml
+                let readHeaders () = scanRowHeaders (newContext ()) sheetXml
+                Some { worksheetFromNodeCore (newContext ()) name state sheet comments condFormats dataVals [] pivotTables tables sheetRels printNames
+                         with RowSource = SheetRows.Deferred (readRows, Some readFormulas, Some readHeaders) }
 
     let worksheetFromNodeWithStyles (styles: CellStyle array option) (name: string) (sheet: XmlNode) (comments: CellComment list) (condFormats: ConditionalFormat list) (dataVals: DataValidation list) (charts: Chart list) (pivotTables: PivotTable list) (tables: TableDefinition list) (sheetRels: Relationship list) (printNames: WorksheetPrintNames) : Worksheet =
         worksheetFromNodeCore (newSheetContext styles false) name SheetVisible sheet comments condFormats dataVals charts pivotTables tables sheetRels printNames
@@ -4674,7 +4914,9 @@ let applyStyling (styles: CellStyle array) (sheet: Worksheet) : Worksheet =
     let applyToRow (row: Row) : Row =
         { row with Cells = row.Cells |> List.map applyToCell }
 
-    { sheet with Rows = sheet.Rows |> List.map applyToRow }
+    // (Rows that are not read yet are styled when they are.)
+    let source = sheet.RowSource
+    { sheet with RowSource = (if source.IsLoaded then SheetRows.Of (source.Value |> List.map applyToRow) else SheetRows.Deferred ((fun () -> source.Value |> List.map applyToRow), None, Some (fun () -> if source.IsLoaded then None else Some source.Headers))) }
 
 // ---------------------------------------------------------------------------
 // Workbook loading. One implementation, written against a synchronous part
@@ -5498,7 +5740,21 @@ let private buildWorkbook (scanRows: bool) (source: PartSource) (header: Workboo
                     Xlsx.worksheetScannedCore ctx info.Name info.State xml comments
                         (fun sheet -> ConditionalFormats.parseConditionalFormats themeColors sheet, DataValidations.parseDataValidations sheet)
                         pivots tables sheetRels printNames
+                // The rows of a sheet stay in the text of its part until they
+                // are asked for: opening a workbook does not read the sheets
+                // nobody looks at.
+                let newContext () =
+                    let fresh = Xlsx.newSheetContext (Some styles) header.Date1904
+                    fresh.DynamicCm <- dynamicCm
+                    fresh
+                let deferred () =
+                    Xlsx.worksheetDeferredCore newContext info.Name info.State xml comments
+                        (fun sheet -> ConditionalFormats.parseConditionalFormats themeColors sheet, DataValidations.parseDataValidations sheet)
+                        pivots tables sheetRels printNames
                 let scanned () =
+                    match deferred () with
+                    | Some sheet -> { sheet with Extras = extras }
+                    | None ->
                     match viaScan () with
                     | Some sheet -> withExtras sheet
                     | None ->

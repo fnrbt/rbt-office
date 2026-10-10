@@ -6761,18 +6761,21 @@ type Spreadsheet(container: Element) =
                 let out =
                     Rbt.Spreadsheet.XlsxBridge.Export.toWorkbookOutWith parts input
                     |> Rbt.Spreadsheet.XlsxBridge.Export.withIteration (workbook |> Option.bind (fun wb -> wb.Iteration))
-                // (A sheet that goes back as it was read is the file's compressed entry, not deflated again.)
-                (if isNull source || parts.IsEmpty then XlsxWriter.writeWorkbookPackage out else XlsxWriter.writeWorkbookPackageReusing source parts out)
+                // (A part that goes back as it was read - a sheet, and what the reader kept of the
+                // file: charts, pivot caches, media - is the file's compressed entry, not deflated again.)
+                let kept =
+                    match xlsxSource with
+                    | Some opened -> opened.Workbook.Preserved.Parts @ opened.Workbook.Preserved.SourceParts
+                    | None -> []
+                (if isNull source then XlsxWriter.writeWorkbookPackage out else XlsxWriter.writeWorkbookPackageReusing source (parts @ kept) out)
                 |> packageBytes
             let wanted = try Rbt.Spreadsheet.XlsxBridge.Export.verbatimPartsWanted input with _ -> []
-            if wanted.IsEmpty then write null []
-            else
-                let fetched : JS.Promise<obj * (string * byte[]) list> =
-                    (ZipInterop.loadRawArchive (box bytes)).``then``(fun source ->
-                        (ZipInterop.rawArchiveBytes source wanted).``then``(fun parts -> source, parts))
-                    |> unbox
-                // (A file that cannot be read again is written from the model, as before.)
-                (fetched.``catch``(fun _ -> null, [])).``then``(fun (source, parts) -> write source parts) |> unbox<JS.Promise<byte[]>>
+            let fetched : JS.Promise<obj * (string * byte[]) list> =
+                (ZipInterop.loadRawArchive (box bytes)).``then``(fun source ->
+                    (ZipInterop.rawArchiveBytes source wanted).``then``(fun parts -> source, parts))
+                |> unbox
+            // (A file that cannot be read again is written from the model, as before.)
+            (fetched.``catch``(fun _ -> null, [])).``then``(fun (source, parts) -> write source parts) |> unbox<JS.Promise<byte[]>>
         | None -> packageBytes (XlsxWriter.writeWorkbookPackage (this.ToXlsxWorkbook()))
 
     /// Render the current model through the shared portable paint command path.

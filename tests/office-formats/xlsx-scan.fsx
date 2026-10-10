@@ -30,6 +30,9 @@ let describeRow (row: XlsxReader.Row) =
 
 let mutable compared = 0
 let mutable cells = 0
+let mutable formulaCells = 0
+let mutable deferredSheets = 0
+let mutable quickSheets = 0
 for file in files do
     let name = Path.GetFileName file
     let bytes = File.ReadAllBytes file
@@ -37,6 +40,8 @@ for file in files do
     match load XlsxReader.loadBytesNative, load XlsxReader.loadBytesNativeScanned with
     | Choice1Of2 (Some expected), Choice1Of2 (Some scanned) ->
         compared <- compared + 1
+        // (A second reading, whose rows nothing has asked for.)
+        let fresh = XlsxReader.loadBytesNativeScanned bytes
         ok (name + " sheets") (expected.Sheets.Length = scanned.Sheets.Length) "sheet count differs"
         for a, b in List.zip expected.Sheets scanned.Sheets do
             let label = sprintf "%s/%s" name a.Name
@@ -53,6 +58,27 @@ for file in files do
                                 if firstDifference.IsNone && (not (obj.ReferenceEquals(cellA.Style, cellB.Style)) && cellA.Style <> cellB.Style || describeCell cellA <> describeCell cellB) then
                                     firstDifference <- Some (describeCell cellA + "  vs  " + describeCell cellB)
                 ok (label + " cells") firstDifference.IsNone (defaultArg firstDifference "")
+            // The cells with a formula, asked for before the rows are read, are the rows' formula cells.
+            let isFormula (cell: XlsxReader.Cell) = cell.Formula.IsSome || (match cell.Value with XlsxReader.Formula _ -> true | _ -> false)
+            let fromRows = a.Rows |> List.collect (fun row -> row.Cells |> List.filter isFormula) |> List.map describeCell
+            match fresh |> Option.bind (fun (w: XlsxReader.Workbook) -> w.Sheets |> List.tryFind (fun s -> s.Name = a.Name)) with
+            | Some unread ->
+                let wasLoaded = unread.RowSource.IsLoaded
+                // What the rows say of themselves, likewise without their cells.
+                let headers = unread.RowSource.Headers
+                // (Rows that say nothing of themselves may be left out.)
+                let telling (rows: XlsxReader.Row list) =
+                    rows |> List.filter (fun row -> row.RawHeight.IsSome || row.Hidden || row.OutlineLevel > 0 || row.Collapsed)
+                    |> List.map (fun row -> describeRow row, row.OutlineLevel, row.Collapsed)
+                ok (label + " row headers") (telling headers = telling a.Rows && (wasLoaded || not unread.RowSource.IsLoaded)) "differ"
+                ok (label + " row headers are rows") (headers |> List.forall (fun row -> a.Rows |> List.exists (fun other -> other.Index = row.Index)) || a.Rows.Length > 3000) "a row that is not there"
+                let quick = unread.FormulaCells |> List.map describeCell
+                formulaCells <- formulaCells + quick.Length
+                if not wasLoaded then
+                    deferredSheets <- deferredSheets + 1
+                    if not unread.RowSource.IsLoaded then quickSheets <- quickSheets + 1
+                ok (label + " formula cells") (quick = fromRows) (sprintf "%d vs %d; first difference %A" quick.Length fromRows.Length (List.zip (List.truncate (min quick.Length fromRows.Length) quick) (List.truncate (min quick.Length fromRows.Length) fromRows) |> List.tryFind (fun (x, y) -> x <> y)))
+            | None -> ok (label + " read again") false "missing"
             // Everything that is not a row comes from the same parser, on the part without its rows.
             let rest (s: XlsxReader.Worksheet) =
                 sprintf "%A" (s.MergedCells, s.Columns, s.Format, s.FrozenPane, s.ShowZeros, s.ShowGridLines, s.Hyperlinks, s.PageSetup, s.PageMargins, s.PrintOptions, s.HeaderFooter, s.RowBreaks, s.ColBreaks, s.Extras.DataTables, s.Extras.KeptExtensions)
@@ -65,6 +91,10 @@ for file in files do
     | a, b -> ok (name + " same outcome") false (sprintf "%A vs %A" (match a with Choice1Of2 w -> string w.IsSome | Choice2Of2 e -> e) (match b with Choice1Of2 w -> string w.IsSome | Choice2Of2 e -> e))
 
 ok "the corpus was read" (compared > 100 && cells > 100000) (sprintf "%d workbooks, %d cells" compared cells)
+
+// The rows of a sheet stay unread until they are asked for, and its formula cells are found without them.
+ok "rows are left for later" (deferredSheets > 120 && quickSheets = deferredSheets && formulaCells > 10000)
+    (sprintf "%d sheets deferred, %d gave their formula cells without their rows, %d formula cells" deferredSheets quickSheets formulaCells)
 
 printfn ""
 printfn "XLSX row scanner: %d workbooks, %d cells compared; %d passed, %d failed" compared cells pass fail

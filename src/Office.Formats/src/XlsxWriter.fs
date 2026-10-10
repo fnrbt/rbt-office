@@ -470,7 +470,10 @@ type XlsxSheetOut = {
     Name: string
     /// Visible, hidden, or very hidden (only un-hidable from VBA).
     State: XlsxReader.SheetState
-    Cells: XlsxCellOut list
+    /// The sheet's cells (see `Cells`). Those of a sheet of a file whose rows
+    /// were not read yet are made when something asks for them: a sheet that
+    /// goes back as the part it was read from never needs them.
+    CellSource: XlsxReader.OnDemand<XlsxCellOut list>
     MergedCells: MergedCellRange list
     ColumnWidths: (int * float) list
     RowHeights: (int * float) list
@@ -498,6 +501,12 @@ type XlsxSheetOut = {
     /// comments (in the reader's shape; XlsxReader.emptySheetExtras for none).
     Extras: XlsxReader.SheetExtras
 }
+with
+    /// The sheet's cells. (Makes them now when that was left for later.)
+    member this.Cells : XlsxCellOut list = this.CellSource.Value
+
+/// Cells for `XlsxSheetOut.CellSource`.
+let sheetCells (cells: XlsxCellOut list) : XlsxReader.OnDemand<XlsxCellOut list> = XlsxReader.OnDemand<XlsxCellOut list>.Of cells
 
 type XlsxDefinedName = {
     Name: string
@@ -2448,7 +2457,11 @@ let private workbookXmlFull (workbook: XlsxWorkbookOut) =
     // A formula written without a result has to be calculated when the file is opened.
     let hasUncachedFormula =
         workbook.Sheets
-        |> List.exists (fun s -> s.Cells |> List.exists (fun c -> match c.Value with XlsxFormula (_, None) -> true | _ -> false))
+        |> List.exists (fun s ->
+            // (The cells of a sheet of the file that were not made yet: the reader has looked.)
+            match (if s.CellSource.IsLoaded then None else s.Extras.UncachedFormulas) with
+            | Some known -> known
+            | None -> s.Cells |> List.exists (fun c -> match c.Value with XlsxFormula (_, None) -> true | _ -> false))
     // Iterative calculation of circular references is a setting of the workbook: without it Excel
     // opens a workbook that has them with a warning and zeros.
     let calcPr =
@@ -3303,7 +3316,7 @@ let private formattedToWorkbook (sheets: FormattedSheet list) =
         |> List.map (fun s ->
             { Name = s.Name
               State = XlsxReader.SheetVisible
-              Cells = s.Rows |> List.mapi (fun r row -> row.Cells |> List.mapi (fun c cell -> convertCell r c cell)) |> List.concat
+              CellSource = XlsxReader.OnDemand<XlsxCellOut list>.Of (s.Rows |> List.mapi (fun r row -> row.Cells |> List.mapi (fun c cell -> convertCell r c cell)) |> List.concat)
               MergedCells = s.MergedCells
               ColumnWidths = []
               RowHeights = []
@@ -3424,17 +3437,20 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
                 |> Map.ofList
             { Name = sheet.Name
               State = sheet.State
-              Cells =
-                sheet.Rows
-                |> List.collect (fun row ->
-                    row.Cells
-                    |> List.map (fun cell ->
-                        let r, c = cellRefFromReader cell.Reference
-                        { Row = r
-                          Col = c
-                          Value = valueOf cell
-                          Format = formatOf cell
-                          Comment = (if comments.IsEmpty then None else Map.tryFind (r, c) comments) }))
+              CellSource =
+                (let cells () =
+                    sheet.Rows
+                    |> List.collect (fun row ->
+                        row.Cells
+                        |> List.map (fun cell ->
+                            let r, c = cellRefFromReader cell.Reference
+                            { Row = r
+                              Col = c
+                              Value = valueOf cell
+                              Format = formatOf cell
+                              Comment = (if comments.IsEmpty then None else Map.tryFind (r, c) comments) }))
+                 // (Rows that are still in the text of their part stay there.)
+                 if sheet.RowSource.IsLoaded then XlsxReader.OnDemand<XlsxCellOut list>.Of (cells ()) else XlsxReader.OnDemand<XlsxCellOut list>.Deferred cells)
               MergedCells =
                 sheet.MergedCells
                 |> List.map (fun m ->
@@ -3450,7 +3466,7 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
                         | Some width -> [ for i in c.Index - 1 .. c.MaxIndex - 1 -> i, width ]
                         | None -> [])
               RowHeights =
-                sheet.Rows
+                sheet.RowSource.Headers
                 |> List.choose (fun r ->
                     if r.Hidden then Some (r.Index - 1, 0.0)
                     else r.Height |> Option.map (fun h -> r.Index - 1, h))
@@ -3536,13 +3552,15 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
                     Format = Some sheet.Format
                     Columns = sheet.Columns
                     ArrayFormulas =
-                        [ for row in sheet.Rows do
-                            for cell in row.Cells do
-                                match cell.Formula, cell.ArrayRef with
-                                | Some _, Some range when range <> "" -> yield cell.Reference.Column + string cell.Reference.Row, range, cell.ArrayDynamic
-                                | _ -> () ]
+                        [ for cell in sheet.FormulaCells do
+                            match cell.Formula, cell.ArrayRef with
+                            | Some _, Some range when range <> "" -> yield cell.Reference.Column + string cell.Reference.Row, range, cell.ArrayDynamic
+                            | _ -> () ]
+                    UncachedFormulas =
+                        (if sheet.RowSource.IsLoaded then None
+                         else Some (sheet.FormulaCells |> List.exists (fun cell -> match cell.Value with XlsxReader.Formula _ -> true | _ -> false)))
                     RowAxis =
-                        sheet.Rows
+                        sheet.RowSource.Headers
                         |> List.choose (fun row ->
                             if row.Hidden || row.OutlineLevel > 0 || row.Collapsed then
                                 Some (row.Index - 1, (if row.Hidden then row.Height else None), row.OutlineLevel, row.Collapsed)
