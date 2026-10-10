@@ -346,6 +346,12 @@ module Processors =
             preserved?BodyItemChunks <- Array.append contentChunks shapeChunks
         preserved
 
+    /// A copy of the file a package was opened from, when it was given as bytes: kept with what
+    /// the writer needs (Preserved.OpenedBytes), it is what an unchanged document is saved as
+    /// (see DocumentWriter.writeFromEditorPackage).
+    [<Emit("($0 instanceof Uint8Array ? $0.slice() : ($0 instanceof ArrayBuffer ? new Uint8Array($0.slice(0)) : null))")>]
+    let private openedBytesOf (_fileData: obj) : obj = jsNative
+
     let forEditorPackage (fileData: obj) : Fable.Core.JS.Promise<obj> =
         promise {
             let! archive = loadArchive fileData
@@ -357,6 +363,7 @@ module Processors =
                     DocxReader.toEditorParagraphsWithStylesThemeAndNumbering doc.Theme doc.Content doc.Images doc.Styles doc.NumberingDefinitions doc.Footnotes doc.Endnotes
                 let shapeItems = shapeObjectsFor doc
                 let preserved = preservedWithItemChunks doc paragraphs shapeItems
+                preserved?OpenedBytes <- openedBytesOf fileData
                 let paragraphs = Array.append paragraphs shapeItems
                 return createObj [
                     "Paragraphs" ==> paragraphs
@@ -503,6 +510,7 @@ module Processors =
                 let listeners = ResizeArray<obj>()
                 let waiters = ResizeArray<(obj -> unit) * (exn -> unit)>()
                 let preserved = createObj []
+                let openedBytes = openedBytesOf fileData
                 let state = createObj [ "IsComplete" ==> false; "AtOnce" ==> opened.AtOnce; "Failed" ==> false; "Cancelled" ==> false; "Error" ==> null; "PageSetupVersion" ==> 0; "Slices" ==> 0; "LongestSliceMs" ==> 0.0; "LongestSlice" ==> 0 ]
                 let blocksOf (parts: DocxReader.HeaderFooter list) = parts |> List.collect (fun part -> part.Blocks)
                 let noteBlocks (notes: DocxReader.Note list) = notes |> List.collect (fun note -> note.Blocks)
@@ -550,6 +558,8 @@ module Processors =
                     let final = (reader ()).Finish ()
                     let shapes = shapeItems.ToArray()
                     assignFields preserved (preservedWithItemChunks final paragraphs shapes)
+                    // (With the rest of what the writer needs, as forEditorPackage has it.)
+                    preserved?OpenedBytes <- openedBytes
                     for item in shapes do pushItem paragraphs item
                     statePageSetup final.PageSetup
                     complete <- true

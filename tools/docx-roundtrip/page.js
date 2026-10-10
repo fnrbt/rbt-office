@@ -418,10 +418,36 @@ async function noteIntegrity(bytes, label) {
 // What the saves made since the last call have wrong.
 function integrityProblems() { const found = [...new Set(integrity.found)]; integrity.found = []; return found; }
 // The package the writer makes of an exported editor package, checked.
+// (Written by the writer whatever the package says of itself: a document that was not changed is
+// otherwise answered with the file it was opened from - see unchangedSaveProblems.)
 async function writePackage(exported, label) {
+    if (exported && exported.Unchanged === true) exported.Unchanged = false;
     const bytes = new Uint8Array(await (await OF.word.writeFromEditorPackage(exported)).arrayBuffer());
     await noteIntegrity(bytes, label);
     return bytes;
+}
+
+// A document that is what it was when it was opened is saved as the file that was opened, byte
+// for byte (the container, not its parts zipped again): not edited, and edited with the edit undone.
+async function unchangedSaveProblems(editor, original, label) {
+    const problems = [];
+    const same = (a, b) => { if (a.length !== b.length) return false; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false; return true; };
+    const written = async (exported) => new Uint8Array(await (await OF.word.writeFromEditorPackage(exported)).arrayBuffer());
+    const unedited = Word.exportDocumentPackage(editor);
+    if (unedited.Unchanged !== true) problems.push(`${label}: the package of a document that was not edited does not say that it is unchanged`);
+    else if (!same(await written(unedited), original)) problems.push(`${label}: an unedited save is not the file that was opened, byte for byte`);
+    const revision = Word.getRevision(editor);
+    Word.insertText(editor, 'x');
+    if (Word.getRevision(editor) !== revision) {
+        const edited = Word.exportDocumentPackage(editor);
+        if (edited.Unchanged !== false) problems.push(`${label}: the package of an edited document says that it is unchanged`);
+        else if (same(await written(edited), original)) problems.push(`${label}: an edited document was saved as the file that was opened`);
+        Word.undo(editor);
+        const undone = Word.exportDocumentPackage(editor);
+        if (Word.getRevision(editor) !== revision || undone.Unchanged !== true) problems.push(`${label}: after undo the package does not say that the document is unchanged`);
+        else if (!same(await written(undone), original)) problems.push(`${label}: a save after undo is not the file that was opened, byte for byte`);
+    }
+    return problems;
 }
 
 async function save(doc, mutate) {
@@ -623,7 +649,8 @@ window.roundTrip = async (name, expect) => {
         // document read at once: the same model (what the editor exports of it), the same layout,
         // and an unedited save writes the same bytes into every part.
         if (!mutate && typeof OF.word.openProgressive === 'function') {
-            const modelText = (pkg) => JSON.stringify(pkg, (key, value) => (value instanceof Uint8Array ? `bytes:${value.length}` : value));
+            // (Unchanged: what the editor says of its document, see unchangedSaveProblems.)
+            const modelText = (pkg) => JSON.stringify(pkg, (key, value) => (key === 'Unchanged' || key === 'OpenedBytes' ? undefined : value instanceof Uint8Array ? `bytes:${value.length}` : value));
             const wholeModel = modelText(exportPackage(first.doc));
             const wholeLayout = JSON.stringify(fp0);
             const wholeParts = await rawParts(shown.bytes1);
@@ -640,6 +667,7 @@ window.roundTrip = async (name, expect) => {
                     if (JSON.stringify(layoutOf(handle.editor)) !== wholeLayout) diffLayout(`front first (${how}): layout vs the document read at once`, fp0, layoutOf(handle.editor), problems), problems.push(`front first (${how}): the layout fingerprint is not that of the document read at once`);
                     const writtenParts = await rawParts(await writePackage(exported, `front first, ${how}`));
                     const names = new Set([...Object.keys(wholeParts), ...Object.keys(writtenParts)]);
+                    problems.push(...await unchangedSaveProblems(handle.editor, original, `front first (${how})`));
                     for (const name of names) if (wholeParts[name] !== writtenParts[name]) problems.push(`front first (${how}): ${name} of an unedited save is not byte for byte what the document read at once saves`);
                 } finally { closeEditor(handle); }
             }

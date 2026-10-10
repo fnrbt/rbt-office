@@ -1,6 +1,6 @@
 // A document revision that undo and redo restore, and "modified since saved":
 // undoing back to the saved state is not modified.
-import { check, finish, fail, loadWord } from './common.js';
+import { check, finish, fail, loadWord, loadFormats, bytesOf } from './common.js';
 try {
     const Word = await loadWord();
     const editor = Word.initialize('c');
@@ -48,5 +48,48 @@ try {
     // Loading a document starts over, unmodified.
     Word.setParagraphs(editor, ['Another document.']);
     check('a newly loaded document is not modified and has a new revision', [Word.isModified(editor), Word.getRevision(editor) > branch, Word.canUndo(editor)], [false, true, false]);
+    // ---- a document that is what was opened is saved as the file that was opened ----
+    {
+        const OF = await loadFormats();
+        const original = await bytesOf('/repo/tests/test-documents-wild/docx4j-getting-started.docx');
+        const same = (a, b) => { if (a.length !== b.length) return false; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false; return true; };
+        const written = async (pkg) => new Uint8Array(await (await OF.word.writeFromEditorPackage(pkg)).arrayBuffer());
+        const pkg = await OF.processors.forEditorPackage(original);
+        Word.importFromDocxPackage(editor, pkg);
+        const opened = Word.getRevision(editor);
+        const unedited = Word.exportDocumentPackage(editor);
+        const first = await written(unedited);
+        check('an unedited document says so, and is saved as the file that was opened, byte for byte', [unedited.Unchanged, same(first, original)], [true, true]);
+        // (A copy each time: what the host does with the bytes does not reach the next save.)
+        first.fill(0);
+        check('the bytes are a copy', [same(await written(Word.exportDocumentPackage(editor)), original)], [true]);
+        Word.markSaved(editor);
+        check('saving it changes nothing of that', [Word.exportDocumentPackage(editor).Unchanged], [true]);
+        Word.insertText(editor, 'typed');
+        const edited = Word.exportDocumentPackage(editor);
+        const editedBytes = await written(edited);
+        const editedXml = await (await window.JSZip.loadAsync(editedBytes)).file('word/document.xml').async('string');
+        check('an edited document is written by the writer', [edited.Unchanged, same(editedBytes, original), editedXml.includes('typed')], [false, false, true]);
+        Word.markSaved(editor);
+        check('a saved edit is still a change of what was opened', [Word.isModified(editor), Word.exportDocumentPackage(editor).Unchanged], [false, false]);
+        Word.undo(editor);
+        const undone = Word.exportDocumentPackage(editor);
+        check('undone back to what was opened: the file that was opened again', [Word.getRevision(editor), undone.Unchanged, same(await written(undone), original)], [opened, true, true]);
+        Word.redo(editor);
+        check('redone: written by the writer', [Word.exportDocumentPackage(editor).Unchanged], [false]);
+        Word.undo(editor);
+        // A host that changes the package it exported says so; a package that was made from the model alone is written.
+        const changed = Word.exportDocumentPackage(editor);
+        changed.Unchanged = false;
+        const rewritten = await written(changed);
+        check('a package that does not say it is unchanged is written by the writer', [same(rewritten, original), (await window.JSZip.loadAsync(rewritten)).file('word/document.xml') !== null], [false, true]);
+        const regenerated = Word.exportDocumentPackage(editor);
+        regenerated.RegenerateAll = true;
+        check('so is one that is to be written from the model', [same(await written(regenerated), original)], [false]);
+        // A document that was not opened from a file has none to give back.
+        Word.setParagraphs(editor, ['A new document.']);
+        const fresh = Word.exportDocumentPackage(editor);
+        check('a new document is written', [fresh.Unchanged, (await written(fresh)).length > 500], [true, true]);
+    }
 } catch (e) { fail(e); }
 finish();

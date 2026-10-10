@@ -4173,7 +4173,24 @@ let writeFromEditor (paragraphs: obj array) : Fable.Core.JS.Promise<obj> =
 
     createPackageWithBinary files binaryFiles
 
+[<Emit("(($0 != null && $0.Unchanged === true && $0.RegenerateAll !== true && $0.Preserved != null && $0.Preserved.OpenedBytes instanceof Uint8Array) ? $0.Preserved.OpenedBytes : null)")>]
+let private openedBytesOfUnchanged (_package: obj) : obj = jsNative
+[<Emit("Promise.resolve(new Blob([$0.slice()], { type: 'application/zip' }))")>]
+let private blobOfCopy (_bytes: obj) : Fable.Core.JS.Promise<obj> = jsNative
+
+/// Write an editor package (Word's exportDocumentPackage) as a DOCX: a Blob.
+///
+/// A package that says `Unchanged: true` - the editor sets it when the
+/// document is what it was when it was opened: nothing was edited, or
+/// everything was undone - and that was opened from bytes (forEditorPackage /
+/// openProgressive keep a copy of them: Preserved.OpenedBytes) is written as
+/// the file that was opened, byte for byte: the same container, not its
+/// parts zipped again. A host that changes an exported package before it
+/// writes it sets Unchanged to false (or deletes it).
 let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
+  let opened = openedBytesOfUnchanged package
+  if not (isNull opened) then blobOfCopy opened
+  else
     nextShapeId <- 1000
     // What was kept of the opened package: written back around the parts the
     // editor owns. A package without it (a new document) is written from scratch.

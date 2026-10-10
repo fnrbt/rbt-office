@@ -42,6 +42,9 @@ module API =
         mutable LastRevision: int
         /// The revision the host last saved (see markSaved).
         mutable SavedRevision: int
+        /// The revision the document was loaded with: the document is what
+        /// was opened while (and whenever) it has this revision.
+        mutable OpenedRevision: int
         /// The document the current revision was given to, and the states
         /// undo / redo can come back to, newest first.
         mutable RevisionDocument: Doc.Document
@@ -201,6 +204,7 @@ module API =
         editor.KnownRevisions.Clear()
         observeRevision editor newDoc
         editor.SavedRevision <- editor.Revision
+        editor.OpenedRevision <- editor.Revision
 
     let private loadDocument (editor: Editor) newDoc = loadDocumentOf editor newDoc None
 
@@ -620,6 +624,7 @@ module API =
             Revision = 0
             LastRevision = 0
             SavedRevision = 0
+            OpenedRevision = 0
             RevisionDocument = doc
             KnownRevisions = ResizeArray()
             FontFamilies = [||]
@@ -3312,12 +3317,22 @@ module API =
         refuseFailedLoad editor
         Docx.exportToEditor (wholeDocument editor)
 
+    ///
+    /// The package says `Unchanged: true` when the document is what it was
+    /// when it was loaded - nothing was edited since, or every edit was undone
+    /// (its revision is the one it was loaded with). Office.Formats'
+    /// writeFromEditorPackage then answers with the very file the package was
+    /// opened from, byte for byte, instead of writing its parts into a new
+    /// container. A host that changes the exported package before it writes
+    /// it clears the flag.
     let exportDocumentPackage (editor: Editor) =
         ensureLoaded editor
         refuseFailedLoad editor
         // One export for save and for callers: Docx.exportDocumentPackage knows the
         // document's styles and so leaves inherited formatting out of header/footer runs too.
-        Docx.exportDocumentPackage (wholeDocument editor)
+        let package = Docx.exportDocumentPackage (wholeDocument editor)
+        package?Unchanged <- (editor.Revision = editor.OpenedRevision)
+        package
 
     /// Test rope operations
     let testRope () =
