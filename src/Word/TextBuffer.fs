@@ -684,7 +684,9 @@ let withBookmarks (keep: string -> string -> bool) (rename: string -> string -> 
 /// field refreshes), and the same goes for note references, bookmarks,
 /// equations and revisions. A hyperlink or comment is kept only when the run
 /// on the other side of the caret belongs to the same one, i.e. the caret is
-/// really inside it.
+/// really inside it - and so is the field, where the run on the other side is
+/// of the result of the same field (a part of the result was formatted, or
+/// text typed into it in another format: the result is several runs).
 let private boundaryInsertStyle (style: TextStyle) (otherSide: TextStyle option) =
     if not (hasAnnotationIdentity style) then
         style
@@ -696,6 +698,10 @@ let private boundaryInsertStyle (style: TextStyle) (otherSide: TextStyle option)
         let keepComment =
             match otherSide with
             | Some other -> style.CommentId.IsSome && other.CommentId = style.CommentId
+            | None -> false
+        let keepField =
+            match otherSide with
+            | Some other -> style.FieldCode.IsSome && style.FieldResult.IsSome && other.FieldCode = style.FieldCode && other.FieldResult = style.FieldResult
             | None -> false
         { style with
             Hyperlink = if keepHyperlink then style.Hyperlink else None
@@ -712,8 +718,8 @@ let private boundaryInsertStyle (style: TextStyle) (otherSide: TextStyle option)
             BookmarkStartId = None
             BookmarkName = None
             BookmarkEndId = None
-            FieldCode = None
-            FieldResult = None
+            FieldCode = (if keepField then style.FieldCode else None)
+            FieldResult = (if keepField then style.FieldResult else None)
             RenderedPageBreakBefore = false
             EquationXml = None
             RevisionId = None

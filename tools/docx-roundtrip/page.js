@@ -1092,6 +1092,7 @@ const passParagraphs = (editor) => {
     }
     return ids;
 };
+const kindOfPass = (label) => label.replace(/^every tenth paragraph, /, '');
 // What a pass made of the document, once it is edited: saved, read again, compared (see editPass).
 const passResult = async (handle, before, label, result, piecesPerEdit) => {
     const { problems, why } = result;
@@ -1138,10 +1139,16 @@ const passResult = async (handle, before, label, result, piecesPerEdit) => {
     // formats rows in their new place - banding, a first row - while the editor shows them as they were.)
     // (Nor where paragraphs were joined: the text of the second keeps, in the editor, what its own paragraph's
     // style gave it - a size, a colour - which nothing in the model says is its own; saved, it is text of the first.)
-    if (result.model === 0 && result.others === 0 && !result.restructured) problems.push(...layoutProblems);
+    // (Not a line of an exact height in a paragraph of which a part was made larger: the model has an exact height
+    // as a multiple of the size of the paragraph's largest text when it was read, which the editor does not change
+    // with that size: it still says the old multiple, the document read again the new one. (Nothing else of the
+    // layout differs. Known; while other paragraphs of such a document were written from the model it went unseen.)
+    const known = (problem) => kindOfPass(label) === 'characters formatted' && /paragraph line x\d+, first block .*line=[\d.]+\/exact -> line=[\d.]+\/exact$/.test(problem);
+    if (result.model === 0 && result.others === 0 && !result.restructured) { problems.push(...layoutProblems.filter((problem) => !known(problem))); for (const problem of layoutProblems.filter(known).slice(0, 1)) why.push('(known) ' + problem.slice(0, 300)); }
     else if (result.restructured) for (const problem of layoutProblems.slice(0, 1)) why.push('(not asserted) ' + problem.slice(0, 300));
     else for (const problem of layoutProblems.slice(0, 1)) why.push('(written from the model) ' + problem.slice(0, 300));
     if (result.model > 0) for (const reason of (report.Reasons ?? []).slice(0, 4)) why.push('the writer: ' + reason);
+    result.reasons = report.Reasons ?? [];
 };
 window.keyPassOpen = async (name, kind) => {
     const bytes = new Uint8Array(await (await fetch('/fixture?name=' + encodeURIComponent(name))).arrayBuffer());

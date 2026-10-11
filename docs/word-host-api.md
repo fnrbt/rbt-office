@@ -159,7 +159,29 @@ the model writes each bookmark once, with the id and the name the file had,
 and the document part is checked when it is put together: a range (a
 bookmark, a comment's, a permission's, moved text's) that the model's part
 would open twice, close twice, close without opening or leave open is put
-right - see `balancedRanges` in the writer.
+right - see `balancedRanges` in the writer. The headers, the footers, the
+notes and the comments are checked the same way when they are written from
+the model.
+
+What the model does not hold of ranges is written where the file had it when
+its paragraph is written from the model: a bookmark in a paragraph without
+text, the end of a bookmark before the first run of the next paragraph, a
+bookmark's start or end between two blocks, and the ranges of comments and of
+permissions (`w:commentRangeStart`, `w:permStart` and their ends). A block
+that is deleted takes the bookmark that started in it: its end is not left
+behind in the text after it.
+
+## Fields
+
+Text typed into the result of a field - also with a format chosen at the
+caret - is of that result. A result of which parts are formatted
+differently is as many runs in the model, each with the field's code
+(`FieldCode`) and whole result (`FieldResult`) and its own part of the text;
+it is read so, and saved in the paragraph's own XML with the result's run
+split. (The number of a page is one run: the editor shows its own.) An entry
+of a table of contents - one field over many paragraphs - is changed in its
+own XML, and an entry that is written from the model leaves the other
+entries the text they were.
 
 ## Pasting
 

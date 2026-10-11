@@ -509,7 +509,7 @@ module EditorProcessor =
         | BookmarkStart _ -> ""
         | BookmarkEnd _ -> ""
         | FieldRef field ->
-            match field.Result with
+            match field.Part |> Option.orElse field.Result with
             | Some result -> result
             | None -> field.Code
         | EquationXml _ -> "[Equation]"

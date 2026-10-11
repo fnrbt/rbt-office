@@ -40,6 +40,44 @@ ok "complex-field-order"
    (field |> Option.exists (fun value -> value.Code = "REF ManyRuns" && value.Result = Some "123456789012"))
    (sprintf "%A" field)
 
+// A result of which parts are formatted differently is as many runs, each with the field's
+// code, its whole result and its own part of the text; the number of a page stays one run.
+let mixedFieldParagraph (code: string) =
+    XmlDsl.parse (
+        "<w:p xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">"
+        + "<w:r><w:fldChar w:fldCharType=\"begin\"/></w:r><w:r><w:instrText>" + code + "</w:instrText></w:r><w:r><w:fldChar w:fldCharType=\"separate\"/></w:r>"
+        + "<w:r><w:t>pla</w:t></w:r><w:r><w:t xml:space=\"preserve\">in </w:t></w:r><w:r><w:rPr><w:b/></w:rPr><w:t>bold</w:t></w:r><w:r><w:t xml:space=\"preserve\"> tail</w:t></w:r>"
+        + "<w:r><w:fldChar w:fldCharType=\"end\"/></w:r></w:p>")
+let fieldPartsOf (code: string) =
+    (DocxReader.Docx.paragraph (mixedFieldParagraph code)).Runs
+    |> List.map (fun run ->
+        match run.Content with
+        | DocxReader.FieldRef field -> field.Code, field.Result, field.Part, run.Properties.Bold
+        | _ -> "", None, None, None)
+ok "complex-field-parts"
+   (fieldPartsOf " QUOTE x " = [ "QUOTE x", Some "plain bold tail", Some "plain ", None
+                                 "QUOTE x", Some "plain bold tail", Some "bold", Some true
+                                 "QUOTE x", Some "plain bold tail", Some " tail", None ])
+   (sprintf "%A" (fieldPartsOf " QUOTE x "))
+ok "complex-field-page-is-one-run"
+   (fieldPartsOf " PAGE " = [ "PAGE", Some "plain bold tail", None, None ])
+   (sprintf "%A" (fieldPartsOf " PAGE "))
+
+// The same of a field shown by its own element (w:fldSimple: what the writer makes of a field of the model).
+let simpleFieldParts =
+    let node =
+        XmlDsl.parse (
+            "<w:p xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:fldSimple w:instr=\" QUOTE x \">"
+            + "<w:r><w:t xml:space=\"preserve\">plain </w:t></w:r><w:r><w:rPr><w:b/></w:rPr><w:t>bold</w:t></w:r></w:fldSimple></w:p>")
+    (DocxReader.Docx.paragraph node).Runs
+    |> List.map (fun run ->
+        match run.Content with
+        | DocxReader.FieldRef field -> field.Result, field.Part, run.Properties.Bold
+        | _ -> None, None, None)
+ok "simple-field-parts"
+   (simpleFieldParts = [ Some "plain bold", Some "plain ", None; Some "plain bold", Some "bold", Some true ])
+   (sprintf "%A" simpleFieldParts)
+
 let perfNode = complexFieldParagraph 6000
 DocxReader.Docx.paragraph perfNode |> ignore
 GC.Collect()

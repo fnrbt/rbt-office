@@ -680,6 +680,46 @@ const docs = [
         ],
     },
     {
+        // The marks of ranges the model does not hold (tools/word-browser's range-marks): a bookmark that
+        // starts and ends between two blocks, one in a paragraph without runs, the end of one before the
+        // first run of the next paragraph, the range of a permission and of a comment, a permission in a
+        // paragraph of a table; a bookmark of a header that starts in one paragraph and ends in the next.
+        name: 'synthetic/range-marks',
+        body: p('first') +
+            `<w:bookmarkStart w:id="20" w:name="between_blocks"/><w:p><w:r><w:t>second, bookmarked from outside</w:t></w:r></w:p><w:bookmarkEnd w:id="20"/>` +
+            `<w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:bookmarkStart w:id="21" w:name="in_empty"/><w:bookmarkEnd w:id="21"/></w:p>` +
+            `<w:p><w:bookmarkStart w:id="22" w:name="spans"/><w:r><w:t>third</w:t></w:r></w:p>` +
+            `<w:p><w:bookmarkEnd w:id="22"/><w:permStart w:id="30" w:edGrp="everyone"/><w:r><w:t xml:space="preserve">fourth </w:t></w:r><w:commentRangeStart w:id="5"/><w:r><w:t>commented</w:t></w:r><w:commentRangeEnd w:id="5"/><w:r><w:commentReference w:id="5"/></w:r><w:permEnd w:id="30"/></w:p>` +
+            `<w:tbl><w:tblPr><w:tblW w:w="4800" w:type="dxa"/></w:tblPr><w:tblGrid><w:gridCol w:w="2400"/><w:gridCol w:w="2400"/></w:tblGrid><w:tr>` +
+            cell(`<w:p><w:permStart w:id="31" w:edGrp="everyone"/><w:r><w:t>cell text</w:t></w:r><w:permEnd w:id="31"/></w:p>`) + cell(p('other cell')) + `</w:tr></w:tbl>` +
+            p('last'),
+        sect: '<w:sectPr><w:headerReference w:type="default" r:id="rId11"/><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr>',
+        rels: `<Relationship Id="rId11" Type="${REL}/header" Target="header1.xml"/><Relationship Id="rId22" Type="${REL}/comments" Target="comments.xml"/>`,
+        types: '<Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/>' +
+            '<Override PartName="/word/comments.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"/>',
+        extra: {
+            'word/header1.xml': `<w:hdr ${W}><w:p><w:bookmarkStart w:id="1" w:name="in_header"/><w:r><w:t>header A</w:t></w:r></w:p><w:p><w:r><w:t>header B</w:t></w:r><w:bookmarkEnd w:id="1"/></w:p></w:hdr>`,
+            'word/comments.xml': `<w:comments ${W}><w:comment w:id="5" w:author="A" w:date="2024-01-01T00:00:00Z" w:initials="A"><w:p><w:r><w:t>a comment</w:t></w:r></w:p></w:comment></w:comments>`,
+        },
+        expect: [
+            { part: 'word/document.xml', kept: '<w:bookmarkStart w:id="21" w:name="in_empty"/><w:bookmarkEnd w:id="21"/>' },
+        ],
+    },
+    {
+        // Fields (tools/word-browser's field-results): a field with its result in one paragraph, a field
+        // that begins in one paragraph and ends in the third (a table of contents), and a result of
+        // which a part is bold.
+        name: 'synthetic/field-results',
+        body: p('plain') +
+            `<w:p><w:r><w:t xml:space="preserve">see </w:t></w:r><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> REF target \\h </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r w:rsidR="00CC0001"><w:rPr><w:i/></w:rPr><w:t>the result text</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r><w:r><w:t xml:space="preserve"> after</w:t></w:r></w:p>` +
+            `<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> TOC \\o "1-3" </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>entry one</w:t></w:r></w:p>` +
+            `<w:p w:rsidR="00CC0002"><w:r><w:t>entry two</w:t></w:r></w:p>` +
+            `<w:p w:rsidR="00CC0003"><w:r><w:t>entry three</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>` +
+            `<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> QUOTE "x" </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t xml:space="preserve">quoted </w:t></w:r><w:r><w:rPr><w:b/></w:rPr><w:t>bold</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>` +
+            p('last'),
+        expect: [],
+    },
+    {
         // A paragraph that is typed in keeps everything of it the model does not
         // hold - the change is made in its XML: the bookmark around its first run,
         // the complex field (fldChar / instrText), the hyperlink's anchor and

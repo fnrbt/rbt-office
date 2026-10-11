@@ -132,6 +132,10 @@ type Field = {
     FieldType: FieldType
     Code: string
     Result: string option
+    /// The text of this run where the result of the field is several runs - parts of it are
+    /// formatted differently: each run has the field's code and its whole result, and its
+    /// own part of the result's text.
+    Part: string option
 }
 
 type RunContent =
@@ -1450,32 +1454,46 @@ module Docx =
         elif upper.StartsWith("REF ") then Ref (normalized.Substring(4).Trim())
         else Unknown normalized
 
-    let simpleField (fldNode: XmlNode) : Run option =
+    /// The runs of a field shown by its own element (w:fldSimple): one run with the field's
+    /// code and its result - or, where the runs of its result are formatted differently, as
+    /// many runs, each with its own part of the result's text (see completeFieldRuns).
+    let simpleFieldRuns (fldNode: XmlNode) : Run list =
         // OOXML serialises the instruction code on the w: namespaced attribute
         // ("w:instr"). Xml.attr is a plain-string lookup on the attrs map, so
         // we have to ask for the prefixed form for documents that ship the
         // namespace declaration this way. Fall back to the bare local name
         // for parsers/serialisers that strip the prefix.
-        (Xml.attr "w:instr" fldNode |> Option.orElseWith (fun () -> Xml.attr "instr" fldNode))
-        |> Option.map (fun code ->
-            let result =
-                wElems "r" fldNode
-                |> List.choose (fun run -> wElem "t" run |> Option.bind Xml.text)
-                |> String.concat ""
-            let props =
-                wElems "r" fldNode
-                |> List.tryHead
-                |> Option.map runProps
-                |> Option.defaultValue (runProps fldNode)
-            { Content = FieldRef { FieldType = fieldTypeFromCode code; Code = code; Result = if result = "" then None else Some result }
-              Properties = props
-              BookmarkStart = None
-              BookmarkEnd = None
-              RenderedPageBreakBefore = false
-              RevisionId = None
-              RevisionType = None
-              RevisionAuthor = None
-              RevisionDate = None; InsertedRevision = None; MoveName = None })
+        match (Xml.attr "w:instr" fldNode |> Option.orElseWith (fun () -> Xml.attr "instr" fldNode)) with
+        | None -> []
+        | Some code ->
+            let runs = wElems "r" fldNode
+            let texts = runs |> List.map (fun run -> wElem "t" run |> Option.bind Xml.text |> Option.defaultValue "")
+            let result = String.concat "" texts
+            let fieldType = fieldTypeFromCode code
+            let fieldOf (props: RunProperties) (part: string option) : Run =
+                { Content = FieldRef { FieldType = fieldType; Code = code; Result = (if result = "" then None else Some result); Part = part }
+                  Properties = props
+                  BookmarkStart = None
+                  BookmarkEnd = None
+                  RenderedPageBreakBefore = false
+                  RevisionId = None
+                  RevisionType = None
+                  RevisionAuthor = None
+                  RevisionDate = None; InsertedRevision = None; MoveName = None }
+            let whole () = [ fieldOf (runs |> List.tryHead |> Option.map runProps |> Option.defaultValue (runProps fldNode)) None ]
+            let computed =
+                let upper = code.Trim().ToUpperInvariant()
+                upper.StartsWith "PAGE" || upper.StartsWith "NUMPAGES" || upper.StartsWith "SECTIONPAGES"
+            if runs.Length < 2 || computed then whole ()
+            else
+                // The stretches of runs that are formatted alike.
+                let groups = ResizeArray<RunProperties * System.Text.StringBuilder>()
+                List.iter2 (fun (run: XmlNode) (text: string) ->
+                    let props = runProps run
+                    if groups.Count > 0 && fst groups.[groups.Count - 1] = props then (snd groups.[groups.Count - 1]).Append(text) |> ignore
+                    else groups.Add ((props, System.Text.StringBuilder(text)))) runs texts
+                let parts = [ for (props, text) in groups do if text.Length > 0 then yield fieldOf props (Some (text.ToString())) ]
+                if parts.Length < 2 then whole () else parts
 
     let fieldData (rNode: XmlNode) : Field option =
         wElem "fldChar" rNode
@@ -1488,6 +1506,7 @@ module Docx =
                     FieldType = Unknown ""
                     Code = ""
                     Result = None
+                    Part = None
                 }
             | _ -> None)
 
@@ -1524,7 +1543,7 @@ module Docx =
         match run.Content with
         | Text text -> text
         | Link link -> link.Text
-        | FieldRef field -> field.Result |> Option.defaultValue field.Code
+        | FieldRef field -> field.Part |> Option.orElse field.Result |> Option.defaultValue field.Code
         | Image img -> img.Description |> Option.map (sprintf "[Image: %s]") |> Option.defaultValue "[Image]"
         | NoteRef note -> sprintf "[%s %s]" note.NoteType note.Id
         | EquationXml _ -> "[Equation]"
@@ -1541,7 +1560,12 @@ module Docx =
             current.ResultRuns.Add run
             output, stack
 
-    let private completeFieldRun (field: ComplexFieldState) : Run =
+    /// The run of a field that ends: its code, and the text of its result. A result of which
+    /// parts are formatted differently (text typed into it in another format, a part made
+    /// bold) is as many runs, each with the field's code, its whole result and its own part
+    /// of the text - as the editor holds a result a part of which was formatted. (Not the
+    /// number of a page: the editor shows its own.)
+    let private completeFieldRuns (field: ComplexFieldState) : Run list =
         let codeBuilder = System.Text.StringBuilder()
         for part in field.CodeParts do
             codeBuilder.Append part |> ignore
@@ -1550,29 +1574,42 @@ module Docx =
         for run in field.ResultRuns do
             resultBuilder.Append(textFromRun run) |> ignore
         let result = resultBuilder.ToString()
-        let props =
-            if field.ResultRuns.Count > 0 then field.ResultRuns.[0].Properties
-            else field.Properties
-        let firstResult =
-            if field.ResultRuns.Count > 0 then Some field.ResultRuns.[0]
-            else None
-        {
-            Content = FieldRef {
-                FieldType = fieldTypeFromCode code
-                Code = code
-                Result = if result = "" then None else Some result
+        let fieldType = fieldTypeFromCode code
+        let fieldOf (first: Run option) (part: string option) : Run =
+            {
+                Content = FieldRef {
+                    FieldType = fieldType
+                    Code = code
+                    Result = if result = "" then None else Some result
+                    Part = part
+                }
+                Properties = (match first with Some run -> run.Properties | None -> field.Properties)
+                BookmarkStart = first |> Option.bind (fun run -> run.BookmarkStart)
+                BookmarkEnd = first |> Option.bind (fun run -> run.BookmarkEnd)
+                RenderedPageBreakBefore = first |> Option.exists (fun run -> run.RenderedPageBreakBefore)
+                RevisionId = first |> Option.bind (fun run -> run.RevisionId)
+                RevisionType = first |> Option.bind (fun run -> run.RevisionType)
+                RevisionAuthor = first |> Option.bind (fun run -> run.RevisionAuthor)
+                RevisionDate = first |> Option.bind (fun run -> run.RevisionDate)
+                InsertedRevision = first |> Option.bind (fun run -> run.InsertedRevision)
+                MoveName = first |> Option.bind (fun run -> run.MoveName)
             }
-            Properties = props
-            BookmarkStart = firstResult |> Option.bind (fun run -> run.BookmarkStart)
-            BookmarkEnd = firstResult |> Option.bind (fun run -> run.BookmarkEnd)
-            RenderedPageBreakBefore = firstResult |> Option.exists (fun run -> run.RenderedPageBreakBefore)
-            RevisionId = firstResult |> Option.bind (fun run -> run.RevisionId)
-            RevisionType = firstResult |> Option.bind (fun run -> run.RevisionType)
-            RevisionAuthor = firstResult |> Option.bind (fun run -> run.RevisionAuthor)
-            RevisionDate = firstResult |> Option.bind (fun run -> run.RevisionDate)
-            InsertedRevision = firstResult |> Option.bind (fun run -> run.InsertedRevision)
-            MoveName = firstResult |> Option.bind (fun run -> run.MoveName)
-        }
+        let whole () = [ fieldOf (if field.ResultRuns.Count > 0 then Some field.ResultRuns.[0] else None) None ]
+        let computed =
+            let upper = code.ToUpperInvariant()
+            upper.StartsWith "PAGE" || upper.StartsWith "NUMPAGES" || upper.StartsWith "SECTIONPAGES"
+        let plain = field.ResultRuns |> Seq.forall (fun run -> match run.Content with Text _ -> true | _ -> false)
+        if field.ResultRuns.Count < 2 || computed || not plain then whole ()
+        else
+            // The stretches of runs that are formatted alike.
+            let groups = ResizeArray<Run * System.Text.StringBuilder>()
+            for run in field.ResultRuns do
+                let text = textFromRun run
+                if groups.Count > 0 && (let (first, _) = groups.[groups.Count - 1] in obj.ReferenceEquals(first.Properties, run.Properties) || first.Properties = run.Properties) then
+                    (snd groups.[groups.Count - 1]).Append(text) |> ignore
+                else groups.Add ((run, System.Text.StringBuilder(text)))
+            if groups.Count < 2 then whole ()
+            else [ for (first, text) in groups do if text.Length > 0 then yield fieldOf (Some first) (Some (text.ToString())) ]
 
     let private flattenIncompleteField (output: Run list) (stack: ComplexFieldState list) =
         match stack with
@@ -1620,10 +1657,10 @@ module Docx =
                 match stack with
                 | current :: rest ->
                     stack <- rest
-                    let fieldRun = completeFieldRun current
-                    let newOutput, newStack = appendRun output stack fieldRun
-                    output <- newOutput
-                    stack <- newStack
+                    for fieldRun in completeFieldRuns current do
+                        let newOutput, newStack = appendRun output stack fieldRun
+                        output <- newOutput
+                        stack <- newStack
                     if stack.IsEmpty then
                         for ending in endsAfterField do output <- ending :: output
                         endsAfterField.Clear()
@@ -1931,7 +1968,7 @@ module Docx =
                 | Some name when Ns.stripNs name = "hyperlink" ->
                     tokensFromHyperlink child
                 | Some name when Ns.stripNs name = "fldSimple" ->
-                    simpleField child |> Option.map RunToken |> Option.toList
+                    simpleFieldRuns child |> List.map RunToken
                 | Some name when Ns.stripNs name = "oMath" || Ns.stripNs name = "oMathPara" ->
                     [RunToken { Content = EquationXml (xmlToString child); Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None }]
                 | Some name when Ns.stripNs name = "bookmarkStart" ->
@@ -4862,7 +4899,7 @@ let extractText (doc: WordDocument) : string =
         | NoteRef ref -> $"[{ref.NoteType}:{ref.Id}]"
         | BookmarkStart _ -> ""
         | BookmarkEnd _ -> ""
-        | FieldRef field -> field.Result |> Option.defaultValue $"[Field:{field.Code}]"
+        | FieldRef field -> field.Part |> Option.orElse field.Result |> Option.defaultValue $"[Field:{field.Code}]"
         | EquationXml _ -> "[Equation]"
         | RenderedPageBreak -> ""
         | PageBreak -> "\n"
@@ -5852,7 +5889,7 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                             ])
                         | FieldRef field ->
                             Some (objFromFields ([
-                                "Text" ==> (field.Result |> Option.defaultValue (sprintf "[Field:%s]" field.Code))
+                                "Text" ==> (field.Part |> Option.orElse field.Result |> Option.defaultValue (sprintf "[Field:%s]" field.Code))
                                 "Style" ==> run.Properties.Style
                                 "Bold" ==> effectiveOnOff effectiveRunProps.Bold
                                 "Italic" ==> effectiveOnOff effectiveRunProps.Italic
@@ -6139,7 +6176,7 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                             ])
                         | FieldRef field ->
                             Some (objFromFields ([
-                                "Text" ==> (field.Result |> Option.defaultValue (sprintf "[Field:%s]" field.Code))
+                                "Text" ==> (field.Part |> Option.orElse field.Result |> Option.defaultValue (sprintf "[Field:%s]" field.Code))
                                 "Style" ==> run.Properties.Style
                                 "Bold" ==> effectiveOnOff effectiveRunProps.Bold
                                 "Italic" ==> effectiveOnOff effectiveRunProps.Italic

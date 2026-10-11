@@ -84,7 +84,7 @@
 // Usage:
 //   dotnet fable src/Office.Formats --outDir $DIST/office-formats --lang JavaScript --noCache
 //   dotnet fable src/Word           --outDir $DIST/word           --lang JavaScript --noCache
-//   node tools/docx-roundtrip/roundtrip.mjs --dist $DIST [--out DIR] [--verbose] [--synthetic] [--xml-summary] [--report-only] [fixture.docx ...]
+//   node tools/docx-roundtrip/roundtrip.mjs --dist $DIST [--out DIR] [--verbose] [--synthetic] [--xml-summary] [--report-only] [--reasons] [--only-pass TEXT] [fixture.docx ...]
 //
 // With no fixture arguments it runs the built-in synthetic documents (one per
 // feature the writer has to preserve, fixtures.mjs) and every DOCX under
@@ -124,6 +124,10 @@ const expectFailures = flag('--report-only');
 const xmlSummary = flag('--xml-summary');
 const syntheticOnly = flag('--synthetic');
 const skipTenth = flag('--no-tenth');
+// --reasons: per edit pass, why paragraphs were written from the model (the writer's account, grouped; numbers left out).
+const showReasons = flag('--reasons');
+// --only-pass TEXT: the edit passes whose name has TEXT alone (nothing else of a document is checked): to look into one pass.
+const onlyPass = opt('--only-pass');
 // Every tenth paragraph (see the header): the share of the paragraphs typed in that must differ by the character alone,
 // and the documents in which a paragraph nobody typed in may change (name fragments).
 const tenthConfinedShare = 0.99;
@@ -133,9 +137,10 @@ const boldConfinedShare = 0.97;
 // The edit passes (page.js, EDIT_PASSES): the share of the edited paragraphs that must be changed in their own XML.
 // (A row or a column of a table that is new is the model's: its paragraphs are written from the model.)
 // (The passes that type with a format chosen at the caret take, besides every tenth paragraph, those with a bookmark, a
-// comment or a field: many of these are entries of a table of contents - a field that begins in one paragraph and ends
-// in another - or stand in a table that holds a shape, and are written from the model whatever is changed in them.)
-const passConfinedShare = { 'bold chosen at a caret, 1 character typed': 0.6, 'bold chosen at a caret, 2 characters typed': 0.6, 'bold chosen at a caret, 5 characters typed': 0.6, 'split in two (Enter)': 0.5, 'joined to the one before (Backspace)': 0.5, 'a table row inserted': 0, 'a table row deleted': 0, 'a table column inserted': 0, 'a table cell shaded': 0 };
+// comment or a field - also the entries of a table of contents, and text in the result of a field. --reasons says, per
+// pass, why the others were written from the model. Over the corpus 98% are changed in their own XML; of the synthetic
+// documents alone 35 of 37 - the two are text typed into a tracked insertion, which is not of the insertion.)
+const passConfinedShare = { 'bold chosen at a caret, 1 character typed': 0.94, 'bold chosen at a caret, 2 characters typed': 0.94, 'bold chosen at a caret, 5 characters typed': 0.94, 'split in two (Enter)': 0.5, 'joined to the one before (Backspace)': 0.5, 'a table row inserted': 0, 'a table row deleted': 0, 'a table column inserted': 0, 'a table cell shaded': 0 };
 // The documents in which an edit pass may change paragraphs nobody edited (name fragments): a paragraph of a
 // vertically merged cell of a table inside a table is, in the editor, a paragraph of the cell below - whose own
 // empty paragraph is formatted with it.
@@ -218,6 +223,21 @@ async function main() {
     const boldTotals = { edited: 0, confined: 0, rewritten: 0, others: 0 };
     const boldNotes = [];
     const passTotals = new Map(); // kind of edit -> { edited, kept, model, others, notes }
+    const notePass = (kind, name, pass) => {
+        const totals = passTotals.get(kind) ?? { edited: 0, kept: 0, model: 0, others: 0, notes: [], reasons: new Map() };
+        totals.edited += pass.edited; totals.kept += pass.kept; totals.model += pass.model; totals.others += pass.others;
+        if (pass.model || pass.others) {
+            totals.notes.push(`${name}: ${pass.edited} edited, ${pass.model} paragraphs from the model, ${pass.others} others changed`);
+            if (verbose || process.env.TENTH_WHY) for (const line of pass.why) totals.notes.push('      ' + line);
+        }
+        // (Why: the writer's reasons without their numbers, each with the documents it was given in.)
+        for (const reason of pass.reasons ?? []) {
+            const key = reason.replace(/\d+/g, 'N');
+            const entry = totals.reasons.get(key) ?? { count: 0, documents: new Set() };
+            entry.count++; entry.documents.add(path.basename(name)); totals.reasons.set(key, entry);
+        }
+        passTotals.set(kind, totals);
+    };
     const xmlKinds = new Map(); // element / attribute kind -> how often it was in the originals and in the saved documents
     try {
         const tab = await browser.newPage();
@@ -230,6 +250,14 @@ async function main() {
 
         if (outDir) fs.mkdirSync(outDir, { recursive: true });
         for (const name of fixtures.keys()) {
+            if (onlyPass) {
+                for (const kind of (await tab.evaluate('window.editPassKinds()')).filter((k) => k.includes(onlyPass))) {
+                    const pass = await tab.evaluate(([n, k]) => window.editPass(n, k), [name, kind]);
+                    notePass(kind, name, pass);
+                    for (const p of pass.problems) console.log(`     ${name}: ${p}`);
+                }
+                continue;
+            }
             const result = await tab.evaluate(async ([n, expect]) => window.roundTrip(n, expect), [name, expectations.get(name) ?? []]);
             const problems = result.problems;
             // The trivial edit: one character typed and deleted with real key events.
@@ -277,13 +305,7 @@ async function main() {
                     const pass = await tab.evaluate(([n, k]) => window.editPass(n, k), [name, kind]);
                     problems.push(...pass.problems);
                     if (pass.others > 0 && !pass.dragged && !passOthersKnown.some((known) => name.includes(known))) problems.push(`every tenth paragraph, ${kind}: ${pass.others} paragraphs nobody edited are not the text they were read from`);
-                    const totals = passTotals.get(kind) ?? { edited: 0, kept: 0, model: 0, others: 0, notes: [] };
-                    totals.edited += pass.edited; totals.kept += pass.kept; totals.model += pass.model; totals.others += pass.others;
-                    if (pass.model || pass.others) {
-                        totals.notes.push(`${name}: ${pass.edited} edited, ${pass.model} paragraphs from the model, ${pass.others} others changed`);
-                        if (verbose || process.env.TENTH_WHY) for (const line of pass.why) totals.notes.push('      ' + line);
-                    }
-                    passTotals.set(kind, totals);
+                    notePass(kind, name, pass);
                 }
             }
             // A paragraph in ten split in two, and joined to the one before it, with real keys (window.keyPass* in page.js).
@@ -295,13 +317,7 @@ async function main() {
                     const pass = await tab.evaluate('window.keyPassFinish()');
                     problems.push(...pass.problems);
                     if (pass.others > 0 && !pass.dragged && !passOthersKnown.some((known) => name.includes(known))) problems.push(`every tenth paragraph, ${kind}: ${pass.others} paragraphs nobody edited are not the text they were read from`);
-                    const totals = passTotals.get(kind) ?? { edited: 0, kept: 0, model: 0, others: 0, notes: [] };
-                    totals.edited += pass.edited; totals.kept += pass.kept; totals.model += pass.model; totals.others += pass.others;
-                    if (pass.model || pass.others) {
-                        totals.notes.push(`${name}: ${pass.edited} edited, ${pass.model} paragraphs from the model, ${pass.others} others changed`);
-                        if (verbose || process.env.TENTH_WHY) for (const line of pass.why) totals.notes.push('      ' + line);
-                    }
-                    passTotals.set(kind, totals);
+                    notePass(kind, name, pass);
                 }
             }
             for (const [kind, [before, after]] of Object.entries(result.xmlDiff ?? {})) {
@@ -357,6 +373,7 @@ async function main() {
     for (const [kind, totals] of passTotals) {
         console.log(`\nEdit pass - every tenth paragraph, ${kind}: ${totals.edited} edits; ${totals.kept} kept in their own XML, ${totals.model} paragraphs written from the model; ${totals.others} other paragraphs changed.`);
         for (const line of totals.notes) console.log('  ' + line);
+        if (showReasons) for (const [reason, entry] of [...totals.reasons].sort((a, b) => b[1].count - a[1].count)) console.log(`  why ${String(entry.count).padStart(5)}  ${reason}  [${[...entry.documents].slice(0, 4).join(', ')}${entry.documents.size > 4 ? ', ...' : ''}]`);
         if (totals.kept < totals.edited * (passConfinedShare[kind] ?? 0.95)) { console.log(`  FAIL: fewer than ${(passConfinedShare[kind] ?? 0.95) * 100}% kept in their own XML`); failed++; }
     }
     console.log(failed === 0 ? '\nDOCX ROUND TRIP: ALL PASSED' : `\nDOCX ROUND TRIP: ${failed} fixture(s) FAILED`);

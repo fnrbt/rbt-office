@@ -2731,18 +2731,19 @@ let private bufferOfCharacters (text: string) (runs: TextBuffer.Run array) : Tex
 ///           model.
 let private paragraphEdit (context: WordStyles.DocumentStyleContext option) (exportBefore: ParagraphBlock -> obj) (export: ParagraphBlock -> obj) (index: int) (a: ParagraphBlock) (b: ParagraphBlock) : obj =
     let afterItem = export b
-    let regenerate () = createObj [ "Paragraph" ==> index; "Regenerate" ==> true; "After" ==> afterItem ]
+    // (Why: for the writer's account of the save.)
+    let regenerate (why: string) = createObj [ "Paragraph" ==> index; "Regenerate" ==> true; "After" ==> afterItem; "Why" ==> why ]
     let ma = a.Metadata
     let mb = b.Metadata
     // What of a paragraph is not in its properties: the content control around it, a page break after it.
     if ma.ContentControlId <> mb.ContentControlId || ma.ContentControlTag <> mb.ContentControlTag || ma.ContentControlAlias <> mb.ContentControlAlias
-       || ma.PageBreakAfter <> mb.PageBreakAfter || ma.RenderedPageBreakBefore <> mb.RenderedPageBreakBefore then regenerate ()
+       || ma.PageBreakAfter <> mb.PageBreakAfter || ma.RenderedPageBreakBefore <> mb.RenderedPageBreakBefore then regenerate "its content control or the page break after it was changed"
     else
         let oldText = TextBuffer.toString a.Buffer
         let newText = TextBuffer.toString b.Buffer
         let oldRuns = runsByCharacter a.Buffer
         let newRuns = runsByCharacter b.Buffer
-        if oldRuns.Length <> oldText.Length || newRuns.Length <> newText.Length then regenerate ()
+        if oldRuns.Length <> oldText.Length || newRuns.Length <> newText.Length then regenerate "its runs do not cover its text"
         else
             // (Runs are compared once.)
             let mutable lastA = Unchecked.defaultof<TextBuffer.Run>
@@ -2791,13 +2792,13 @@ let private paragraphEdit (context: WordStyles.DocumentStyleContext option) (exp
             if kinds then
                 for j in 0 .. newRuns.Length - 1 do
                     if kinds && not (sameKind middleRuns.[j] newRuns.[j]) then kinds <- false
-            if not kinds then regenerate ()
+            if not kinds then regenerate "a link, a field, a note, a comment, a bookmark, a tracked change or a picture of it was changed"
             else
                 let textEdit : obj option =
                     if obj.ReferenceEquals(middle, a) then Some null
                     else paragraphTextChange context index a middle |> Option.map box
                 match textEdit with
-                | None -> regenerate ()
+                | None -> regenerate "its text was changed in a way that is not one stretch of plain text (a picture, the mark of a rendered page break)"
                 | Some text ->
                     let middleItem = exportBefore middle
                     createObj [
@@ -2953,7 +2954,7 @@ let private derivedEdit (context: WordStyles.DocumentStyleContext option) (expor
     let isPart = derivation.From > 0 || derivation.Until < TextBuffer.length derivation.Original.Buffer
     let edit =
         // (A paragraph with a page break after it that was split: the break is the second half's - written from the model.)
-        if isPart && derivation.Original.Metadata.PageBreakAfter then createObj [ "Paragraph" ==> index; "Regenerate" ==> true; "After" ==> export para ]
+        if isPart && derivation.Original.Metadata.PageBreakAfter then createObj [ "Paragraph" ==> index; "Regenerate" ==> true; "After" ==> export para; "Why" ==> "a paragraph with a page break after it was split" ]
         elif obj.ReferenceEquals(before, para) || jsonOf (exportBefore before) = jsonOf (export para) then
             createObj [ "Paragraph" ==> index; "Text" ==> null; "Before" ==> null; "After" ==> export para; "NewText" ==> TextBuffer.toString para.Buffer ]
         else paragraphEdit context exportBefore export index before para

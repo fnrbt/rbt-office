@@ -1220,6 +1220,20 @@ match replacedDoc.Blocks with
     fail <- fail + 1
     printfn "FAIL %-28s expected two paragraphs got %A" "replace all shape" blocks.Length
 
+// Text typed between two runs of the result of one field (a part of the result was formatted)
+// is of that result; after the field's last run, and between two fields, it is not.
+let fieldPartsBuffer =
+    let field = { defaultStyle with FieldCode = Some " REF x "; FieldResult = Some "result" }
+    let other = { defaultStyle with FieldCode = Some " REF y "; FieldResult = Some "other" }
+    { Rope = Rbt.Word.Rope.ofString "resultother."
+      Runs = [ Text { Start = 0; Length = 3; Style = field }
+               Text { Start = 3; Length = 3; Style = { field with Bold = true } }
+               Text { Start = 6; Length = 5; Style = other }
+               Text { Start = 11; Length = 1; Style = defaultStyle } ] }
+check "typed inside a field's parts" ((getStyleAt 3 (insert 3 "Q" fieldPartsBuffer)).FieldCode) (Some " REF x ")
+check "typed between two fields" ((getStyleAt 6 (insert 6 "Q" fieldPartsBuffer)).FieldCode) None
+check "typed after a field" ((getStyleAt 11 (insert 11 "Q" fieldPartsBuffer)).FieldCode) None
+
 let boundaryReplaceBuffer =
     { Rope = Rbt.Word.Rope.ofString "abtargetcd"
       Runs =
