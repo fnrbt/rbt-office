@@ -164,6 +164,49 @@ module API =
     let private commitCharacterFormat (editor: Editor) (command: Doc.Document -> Doc.Document) =
         if not (Inp.formatAtCaret editor.Handler command) then commitDocumentUpdate editor (command editor.Doc)
 
+    /// A number a host gave where an offset is meant, as an offset: a whole
+    /// number (a fraction is cut off; no number at all - undefined, NaN - is 0).
+    [<Emit("(Number.isFinite($0) ? Math.trunc($0) : 0)")>]
+    let private offsetOf (_value: int) : int = jsNative
+
+    /// A position a host gave, as a position of the document on display: in
+    /// a paragraph it has, at an offset from 0 to the length of that
+    /// paragraph's text (an offset beyond either end is the end). None when
+    /// the document has no such paragraph.
+    let private positionIn (doc: Doc.Document) (blockId: string) (offset: int) : Doc.Position option =
+        if isNull (box blockId) then None
+        else
+            match Doc.findParagraph doc blockId with
+            | Some para -> Some { BlockId = blockId; Offset = max 0 (min (TextBuf.length para.Buffer) (offsetOf offset)) }
+            | None -> None
+
+    /// Select from one position to another, as setSelection does.
+    /// An offset beyond the end of its paragraph's text is the end of it (one
+    /// below 0 the start). False - and the selection stays as it is - when
+    /// the document has no paragraph with one of the ids, or when the two
+    /// ends are not in the same text (one in a text box, the other not).
+    let private selectPositions (editor: Editor) (anchorBlockId: string) (anchorOffset: int) (focusBlockId: string) (focusOffset: int) : bool =
+        match positionIn editor.Doc anchorBlockId anchorOffset, positionIn editor.Doc focusBlockId focusOffset with
+        | Some anchor, Some focus ->
+            let boxOf (id: string) =
+                match editor.Handler.Story with
+                | None -> Doc.textBoxOfParagraph editor.Doc id |> Option.map (fun box -> box.Id)
+                | Some _ -> None
+            match boxOf anchor.BlockId, boxOf focus.BlockId with
+            | Some anchorBox, Some focusBox when anchorBox = focusBox ->
+                Inp.enterTextBox editor.Handler focusBox (Some { Anchor = anchor; Focus = focus })
+            | None, None ->
+                commitDocumentUpdate editor (Doc.setSelection anchor focus editor.Doc)
+                true
+            | _ -> false
+        | _ -> false
+
+    /// The offsets of a range a host gave, within the paragraph's text and in order.
+    let private rangeIn (doc: Doc.Document) (blockId: string) (startOffset: int) (endOffset: int) : struct (int * int) =
+        match positionIn doc blockId startOffset, positionIn doc blockId endOffset with
+        | Some first, Some last -> struct (min first.Offset last.Offset, max first.Offset last.Offset)
+        | _ -> struct (max 0 (offsetOf startOffset), max 0 (offsetOf endOffset))
+
     /// Show a newly loaded document (import, setContent). It replaces the
     /// previous document wholesale, so the undo history is cleared rather
     /// than letting Ctrl+Z swap the old document back in.
@@ -1067,27 +1110,20 @@ module API =
         let blockId = anchor?BlockId |> unbox<string>
         let startOffset = anchor?StartOffset |> unbox<int>
         let endOffset = anchor?EndOffset |> unbox<int>
-        let newDoc = Doc.setSelection { BlockId = blockId; Offset = startOffset } { BlockId = blockId; Offset = endOffset } editor.Doc
-        commitDocumentUpdate editor newDoc
+        // (As setSelection: offsets within the paragraph's text, a paragraph the document has.)
+        selectPositions editor blockId startOffset blockId endOffset |> ignore
 
     /// Select from one document position to another (the same position twice
     /// places the caret). Positions are (block id, offset) as getSelection,
     /// hitTestPosition and getLayoutLines report them.
     /// A position in a text box of the body (what findText finds there)
     /// enters the box: its text is edited in the box, as after a click in it.
-    let setSelection (editor: Editor) (anchorBlockId: string) (anchorOffset: int) (focusBlockId: string) (focusOffset: int) =
-        let anchor : Doc.Position = { BlockId = anchorBlockId; Offset = anchorOffset }
-        let focus : Doc.Position = { BlockId = focusBlockId; Offset = focusOffset }
-        let box =
-            match editor.Handler.Story with
-            | None -> Doc.textBoxOfParagraph editor.Doc focusBlockId
-            | Some _ -> None
-        match box with
-        | Some box when box.Content |> List.exists (fun para -> para.Id = anchorBlockId) ->
-            Inp.enterTextBox editor.Handler box.Id (Some { Anchor = anchor; Focus = focus }) |> ignore
-        | _ ->
-            let newDoc = Doc.setSelection anchor focus editor.Doc
-            commitDocumentUpdate editor newDoc
+    /// An offset beyond the end of its paragraph's text is the end of it (one
+    /// below 0 the start). False - and the selection stays as it is - when
+    /// the document has no paragraph with one of the ids, or when the two
+    /// ends are not in the same text (one in a text box, the other not).
+    let setSelection (editor: Editor) (anchorBlockId: string) (anchorOffset: int) (focusBlockId: string) (focusOffset: int) : bool =
+        selectPositions editor anchorBlockId anchorOffset focusBlockId focusOffset
 
     /// The shapes (text boxes) of the body where they are painted: Id, X (from
     /// the left edge of the shape's page), Y (down the document), Width,
@@ -1610,6 +1646,7 @@ module API =
 
     let getRangeBounds (editor: Editor) (blockId: string) (startOffset: int) (endOffset: int) =
         ensureLoaded editor
+        let struct (startOffset, endOffset) = rangeIn editor.Doc blockId startOffset endOffset
         notePages editor
         let tryFindLayout = Ren.layoutLookupFor editor.Handler.RenderContext editor.Doc
         let measureRange = measureRangeForEditor editor
@@ -1682,6 +1719,7 @@ module API =
 
     let computeRangeStatistics (editor: Editor) (blockId: string) (startOffset: int) (endOffset: int) =
         ensureLoaded editor
+        let struct (startOffset, endOffset) = rangeIn editor.Doc blockId startOffset endOffset
         match Doc.findParagraph editor.Doc blockId with
         | None -> null
         | Some para ->
@@ -1763,6 +1801,7 @@ module API =
 
     let getRangeInformation (editor: Editor) (blockId: string) (startOffset: int) (endOffset: int) =
         ensureLoaded editor
+        let struct (startOffset, endOffset) = rangeIn editor.Doc blockId startOffset endOffset
         let layouts = layoutsForEditor editor
         let tryFindLayout = Ren.layoutLookupFor editor.Handler.RenderContext editor.Doc
         let contexts = paragraphContexts editor.Doc
@@ -2029,16 +2068,15 @@ module API =
             End = matchObj?End |> unbox<int>
             Text = matchObj?Text |> unbox<string>
         }
-        let newDoc = Doc.selectFindMatch matchInfo editor.Doc
-        commitDocumentUpdate editor newDoc
+        selectPositions editor matchInfo.BlockId matchInfo.Start matchInfo.BlockId matchInfo.End |> ignore
 
     let selectRevisionInfo (editor: Editor) (revisionObj: obj) =
         ensureLoaded editor
         let blockId = revisionObj?BlockId |> unbox<string>
         let startOffset = revisionObj?Start |> unbox<int>
         let endOffset = revisionObj?End |> unbox<int>
-        let newDoc = Doc.setSelection { BlockId = blockId; Offset = startOffset } { BlockId = blockId; Offset = endOffset } editor.Doc
-        commitDocumentUpdate editor newDoc
+        // (As setSelection: offsets within the paragraph's text, a paragraph the document has.)
+        selectPositions editor blockId startOffset blockId endOffset |> ignore
 
     /// Replace all literal text matches across editable paragraphs.
     let replaceAllText (editor: Editor) (query: string) (replacement: string) (matchCase: bool) =
