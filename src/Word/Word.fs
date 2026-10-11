@@ -1030,9 +1030,21 @@ module API =
     /// Select from one document position to another (the same position twice
     /// places the caret). Positions are (block id, offset) as getSelection,
     /// hitTestPosition and getLayoutLines report them.
+    /// A position in a text box of the body (what findText finds there)
+    /// enters the box: its text is edited in the box, as after a click in it.
     let setSelection (editor: Editor) (anchorBlockId: string) (anchorOffset: int) (focusBlockId: string) (focusOffset: int) =
-        let newDoc = Doc.setSelection { BlockId = anchorBlockId; Offset = anchorOffset } { BlockId = focusBlockId; Offset = focusOffset } editor.Doc
-        commitDocumentUpdate editor newDoc
+        let anchor : Doc.Position = { BlockId = anchorBlockId; Offset = anchorOffset }
+        let focus : Doc.Position = { BlockId = focusBlockId; Offset = focusOffset }
+        let box =
+            match editor.Handler.Story with
+            | None -> Doc.textBoxOfParagraph editor.Doc focusBlockId
+            | Some _ -> None
+        match box with
+        | Some box when box.Content |> List.exists (fun para -> para.Id = anchorBlockId) ->
+            Inp.enterTextBox editor.Handler box.Id (Some { Anchor = anchor; Focus = focus }) |> ignore
+        | _ ->
+            let newDoc = Doc.setSelection anchor focus editor.Doc
+            commitDocumentUpdate editor newDoc
 
     /// The shapes (text boxes) of the body where they are painted: Id, X (from
     /// the left edge of the shape's page), Y (down the document), Width,

@@ -1279,6 +1279,25 @@ let private editableParagraphsInOrder doc =
         | Table t -> tableParagraphsInOrder t
         | TextBox t -> t.Content)
 
+/// The paragraphs of the body's own text in reading order (table cells
+/// included): what the caret moves through and what "everything" selects. The
+/// text of a text box is a story of its own - entered by a click in the box,
+/// left by Escape -, wherever the box stands among the blocks.
+let private bodyParagraphsInOrder doc =
+    doc.Blocks
+    |> List.collect (function
+        | Paragraph p
+        | Heading (_, p) -> [p]
+        | Table t -> tableParagraphsInOrder t
+        | TextBox _ -> [])
+
+/// The text box of the document a paragraph is in.
+let textBoxOfParagraph (doc: Document) (paragraphId: BlockId) : TextBoxBlock option =
+    doc.Blocks
+    |> List.tryPick (function
+        | TextBox box when box.Content |> List.exists (fun para -> para.Id = paragraphId) -> Some box
+        | _ -> None)
+
 let private blockParagraphs (block: Block) =
     match block with
     | Paragraph p
@@ -1645,9 +1664,16 @@ let findBlockIndex doc blockId =
 
 /// Get normalized range with block IDs for multi-block selection
 let getNormalizedRange (sel: Selection) (doc: Document) =
-    let paragraphs = editableParagraphsInOrder doc
-    let anchorIdx = paragraphs |> List.tryFindIndex (fun p -> p.Id = sel.Anchor.BlockId)
-    let focusIdx = paragraphs |> List.tryFindIndex (fun p -> p.Id = sel.Focus.BlockId)
+    // (A range of the body is made of the body's paragraphs: a text box that stands among the blocks
+    // it reaches over is not in it. A range in a box that is not entered - set by a host - is the box's.)
+    let body = bodyParagraphsInOrder doc
+    let indexIn (paragraphs: ParagraphBlock list) (id: BlockId) = paragraphs |> List.tryFindIndex (fun p -> p.Id = id)
+    let paragraphs, anchorIdx, focusIdx =
+        match indexIn body sel.Anchor.BlockId, indexIn body sel.Focus.BlockId with
+        | (Some _ as a), (Some _ as f) -> body, a, f
+        | _ ->
+            let all = editableParagraphsInOrder doc
+            all, indexIn all sel.Anchor.BlockId, indexIn all sel.Focus.BlockId
 
     match anchorIdx, focusIdx with
     | Some aIdx, Some fIdx ->
@@ -1716,7 +1742,8 @@ let forEachSelectedParagraphRange (doc: Document) (visit: ParagraphBlock -> int 
                  | Paragraph p
                  | Heading (_, p) -> step p
                  | Table t -> for p in tableParagraphsInOrder t do (if state < 2 then step p)
-                 | TextBox t -> for p in t.Content do (if state < 2 then step p))
+                 // (A range that started in the body does not take in a box it reaches over.)
+                 | TextBox t -> if state = 0 then (for p in t.Content do (if state < 2 then step p)))
                 rest <- rest.Tail
             true
 
@@ -3401,10 +3428,14 @@ let clearHeading doc =
                 | _ -> block)
         if sameReference blocks doc.Blocks then doc else { doc with Blocks = blocks }
 
-/// The editable paragraph before or after the given one in reading order
-/// (table cells and text boxes included).
+/// The paragraph before or after the given one in the body's reading order
+/// (table cells included, text boxes not: see bodyParagraphsInOrder).
 let private neighbourParagraph forward doc paragraphId =
-    let paragraphs = editableParagraphsInOrder doc
+    // (From a paragraph of the body to the next one of the body; in a text box that is not entered, within the box.)
+    let paragraphs =
+        match textBoxOfParagraph doc paragraphId with
+        | Some box -> box.Content
+        | None -> bodyParagraphsInOrder doc
     match paragraphs |> List.tryFindIndex (fun para -> para.Id = paragraphId) with
     | None -> None
     | Some index ->
@@ -3606,9 +3637,10 @@ let selectRange startOffset endOffset doc =
                 Focus = { sel.Focus with Offset = endOffset }
             } }
 
-/// Select all text in document (all blocks)
+/// Select all the text of the body (see bodyParagraphsInOrder; in a text
+/// box that is edited the document is the box's text).
 let selectAll doc =
-    match editableParagraphsInOrder doc with
+    match bodyParagraphsInOrder doc with
     | [] -> doc
     | firstPara :: rest ->
         let lastPara =

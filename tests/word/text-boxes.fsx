@@ -154,5 +154,28 @@ check "and its lines start further right" ((layoutDocumentPagesIncremental state
 let removed = { widened with Blocks = widened.Blocks |> List.filter (function TextBox _ -> false | _ -> true) }
 check "the shape removed: the text takes its place" (layoutDocumentPagesIncremental state settings measureText measureRange removed = layoutDocumentPages settings measureText measureRange removed) true
 
+// Moving through the body does not go into a box: the text of a box is a story of its own.
+// (A box in the middle of the blocks and one after the last paragraph, as a file read has them.)
+let navDoc =
+    docOf [ Paragraph (para "n1" "one"); box (fun b -> { b with Id = "mid"; Content = [ para "mid-1" "middle box" ]; AnchorBlockId = Some "n1" })
+            Paragraph (para "n2" "two"); box (fun b -> { b with Id = "last"; Content = [ para "last-1" "last box"; para "last-2" "its second" ]; AnchorBlockId = Some "n2" }) ]
+let caretAt id offset doc = setSelection { BlockId = id; Offset = offset } { BlockId = id; Offset = offset } doc
+let focusOf (doc: Document) = doc.Selection |> Option.map (fun s -> s.Focus.BlockId, s.Focus.Offset)
+let everything = (selectAll navDoc).Selection.Value
+check "select everything: from the start of the body to the end of its last paragraph" ((everything.Anchor.BlockId, everything.Anchor.Offset), (everything.Focus.BlockId, everything.Focus.Offset)) (("n1", 0), ("n2", 3))
+check "right at the end of a paragraph: the next paragraph of the body, over the box" (navDoc |> caretAt "n1" 3 |> moveCursorRight |> focusOf) (Some ("n2", 0))
+check "right at the end of the body stays there" (navDoc |> caretAt "n2" 3 |> moveCursorRight |> focusOf) (Some ("n2", 3))
+check "left at the start of a paragraph: the one before it in the body" (navDoc |> caretAt "n2" 0 |> moveCursorLeft |> focusOf) (Some ("n1", 3))
+check "extending right over the end of a paragraph" ((navDoc |> caretAt "n1" 3 |> extendSelectionRight).Selection |> Option.map (fun s -> s.Focus.BlockId)) (Some "n2")
+let _, _, selectedIds = getNormalizedRange everything navDoc
+check "the range of everything is the body's paragraphs" selectedIds [ "n1"; "n2" ]
+check "and so are the paragraphs a selection touches" (selectedParagraphRanges (selectAll navDoc) |> List.map (fun (p, a, b) -> p.Id, a, b)) [ "n1", 0, 3; "n2", 0, 3 ]
+let boldAll = selectAll navDoc |> toggleBold
+let boldOf id = (paragraphsOfBlocks boldAll.Blocks |> List.find (fun p -> p.Id = id)).Buffer.Runs |> List.exists (function TB.Text run -> run.Style.Bold | _ -> false)
+check "everything made bold: the body, not the text of the boxes" (boldOf "n1", boldOf "n2", boldOf "mid-1", boldOf "last-1") (true, true, false, false)
+// (A position a host sets in a box that is not entered moves within the box.)
+check "in a box: right at the end of its paragraph goes to its next, and no further" (navDoc |> caretAt "last-1" 8 |> moveCursorRight |> focusOf, navDoc |> caretAt "last-2" 10 |> moveCursorRight |> focusOf, navDoc |> caretAt "mid-1" 10 |> moveCursorRight |> focusOf) (Some ("last-2", 0), Some ("last-2", 10), Some ("mid-1", 10))
+check "the box of a paragraph" (textBoxOfParagraph navDoc "last-2" |> Option.map (fun b -> b.Id), textBoxOfParagraph navDoc "n2" |> Option.map (fun b -> b.Id)) (Some "last", None)
+
 printfn "word text-boxes: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
