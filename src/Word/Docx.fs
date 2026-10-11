@@ -2182,6 +2182,24 @@ let private textBoxIsAsImported (textBox: TextBoxBlock) : bool =
             || (obj.ReferenceEquals(original.Content, textBox.Content) && { original with Content = [] } = { textBox with Content = [] })
         | false, _ -> false)
 
+/// A shape that was read and is what it was but for where it stands and how large it is
+/// (moveShape, resizeShape): the shape it was. Its element is written back with the anchor's
+/// offsets and extent changed in it (the writer's patchShapeAnchor) - whatever else the
+/// element holds that the model does not is still there.
+let private textBoxMovedFrom (textBox: TextBoxBlock) : TextBoxBlock option =
+    if textBox.SourceXml.IsNone || isNull importedTextBoxes then None
+    else
+        match importedTextBoxes.TryGetValue textBox.Id with
+        | true, original when not (obj.ReferenceEquals(original, textBox)) && obj.ReferenceEquals(original.Content, textBox.Content) ->
+            let placed =
+                { original with
+                    Content = []
+                    X = textBox.X; Y = textBox.Y; Width = textBox.Width; Height = textBox.Height
+                    PositionHAlign = textBox.PositionHAlign; PositionVAlign = textBox.PositionVAlign
+                    PositionHRelativeFrom = textBox.PositionHRelativeFrom; PositionVRelativeFrom = textBox.PositionVRelativeFrom }
+            if placed = { textBox with Content = [] } && placed <> { original with Content = [] } then Some original else None
+        | _ -> None
+
 let rec private blockToEditor (context: WordStyles.DocumentStyleContext option) block =
     match block with
     | Paragraph para -> paragraphToEditor context "Paragraph" 0 para
@@ -2242,7 +2260,15 @@ let rec private blockToEditor (context: WordStyles.DocumentStyleContext option) 
             "FitText" ==> textBox.FitText
             "Opacity" ==> (if textBox.Opacity < 0.999 then Some textBox.Opacity else None)
             // (Its element as it was read, while the shape is what was read: see importedTextBoxes.)
-            "SourceXml" ==> (if textBoxIsAsImported textBox then textBox.SourceXml else None)
+            "SourceXml" ==> (if textBoxIsAsImported textBox || (textBoxMovedFrom textBox).IsSome then textBox.SourceXml else None)
+            // (What of its anchor is not what the element says: see textBoxMovedFrom.)
+            "SourceMoved" ==> (textBoxMovedFrom textBox
+                               |> Option.map (fun original ->
+                                   createObj [
+                                       "H" ==> (original.X <> textBox.X || original.PositionHAlign <> textBox.PositionHAlign || original.PositionHRelativeFrom <> textBox.PositionHRelativeFrom)
+                                       "V" ==> (original.Y <> textBox.Y || original.PositionVAlign <> textBox.PositionVAlign || original.PositionVRelativeFrom <> textBox.PositionVRelativeFrom)
+                                       "Size" ==> (original.Width <> textBox.Width || original.Height <> textBox.Height) ])
+                               |> Option.toObj)
             "X" ==> textBox.X
             "Y" ==> textBox.Y
             "PositionHRelativeFrom" ==> textBox.PositionHRelativeFrom

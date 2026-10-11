@@ -203,6 +203,17 @@ do
     check "tracked, from the middle of the first to the middle of the third paragraph: the text is marked, every box stays as it is" (markedIn trackedMid, boxesOf trackedMid |> List.map fst, deletedIn trackedMid) ([ "p1"; "p2"; "p3" ], [ "b1"; "b2"; "b3" ], [])
     let trackedTyped = body |> select "p2" 7 "p3" 5 |> insertTrackedText "A" "2024-01-01T00:00:00Z" "X"
     check "tracked, typed over a selection: every box stays as it is" (boxesOf trackedTyped |> List.map fst, deletedIn trackedTyped) ([ "b1"; "b2"; "b3" ], [])
+    // A shape moved, resized and taken out (Word.moveShape, resizeShape, deleteShape).
+    let boxOf id (doc: Document) = doc.Blocks |> List.pick (function TextBox b when b.Id = id -> Some b | _ -> None)
+    let aligned = { body with Blocks = body.Blocks |> List.map (function TextBox b when b.Id = "b1" -> TextBox { b with X = Some 10.0; Y = Some 20.0; PositionHAlign = Some "center"; PositionHRelativeFrom = Some "margin"; PositionVRelativeFrom = Some "paragraph" } | block -> block) }
+    let movedBox = moveTextBox "b1" (Some (Some "page", 300.0)) (Some (None, 45.0)) aligned |> Option.map (boxOf "b1")
+    check "a shape moved: by the offsets given, from the frame given (the one it had where none is), aligned no more" (movedBox |> Option.map (fun b -> b.X, b.Y, b.PositionHAlign, b.PositionHRelativeFrom, b.PositionVRelativeFrom)) (Some (Some 300.0, Some 45.0, None, Some "page", Some "paragraph"))
+    check "a shape resized" (resizeTextBox "b2" 222.0 111.0 body |> Option.map (fun doc -> (boxOf "b2" doc).Width, (boxOf "b2" doc).Height, boxesOf doc |> List.length)) (Some (222.0, 111.0, 3))
+    check "to the size it has: the document it was" (resizeTextBox "b2" 100.0 50.0 body |> Option.map (fun doc -> obj.ReferenceEquals(doc, body))) (Some true)
+    let withCaretInBox = body |> select "b2-1" 3 "b2-1" 3
+    let removed = deleteTextBox "b2" withCaretInBox
+    check "a shape taken out: its text with it, the caret in the block it was anchored in" (removed |> Option.map (fun doc -> boxesOf doc |> List.map fst, textsOf doc |> List.length, doc.Selection |> Option.map (fun sel -> sel.Focus.BlockId, sel.Focus.Offset))) (Some ([ "b1"; "b3" ], 4, Some ("p2", 0)))
+    check "no shape of that id" ((moveTextBox "none" None None body).IsNone, (resizeTextBox "none" 1.0 1.0 body).IsNone, (deleteTextBox "none" body).IsNone) (true, true, true)
     // Everything selected and deleted: the body's paragraphs and what is anchored in them.
     let all = body |> selectAll |> deleteSelection
     check "everything selected and deleted: nothing is left" (boxesOf all, textsOf all) ([], [ "" ])

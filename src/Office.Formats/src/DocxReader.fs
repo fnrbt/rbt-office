@@ -3393,7 +3393,13 @@ module Shapes =
         let y =
             posV |> Option.bind (Ns.childNs "posOffset") |> Option.bind Xml.text |> Option.bind parseFloat |> Option.map emuToPixels
             |> Option.orElseWith (fun () -> style |> Option.bind (shapeNumberFromStyle "margin-top"))
-        let position = Option.map2 (fun x y -> (x, y)) x y
+        // (A shape that is aligned in one direction and placed by an offset in the other has the offset
+        // it states: the other is 0, and its alignment says where it stands. Both used to be dropped,
+        // so a shape centred between the margins an inch down the page stood at the top of the page.)
+        let position =
+            match x, y with
+            | None, None -> None
+            | _ -> Some (x |> Option.defaultValue 0.0, y |> Option.defaultValue 0.0)
         // DrawingML xfrm fallback for size/offset (a:ext / a:off) when the wp:
         // anchor extent/position is absent (bare wsp shapes).
         let xfrm = Ns.descendantsNs "xfrm" shapeNode |> List.tryHead

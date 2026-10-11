@@ -2985,6 +2985,66 @@ let newEmptyParagraph () : ParagraphBlock =
 /// A text box anchored in the block the caret is in, a little below and
 /// right of where that block starts, in front of the text. (It stood on the
 /// first page whatever block the caret was in.)
+/// A shape (text box) of the body with another place and size: `change` makes it of the shape
+/// it is. None: the body has no shape of that id.
+let private withTextBox (id: BlockId) (change: TextBoxBlock -> TextBoxBlock) (doc: Document) : Document option =
+    if not (doc.Blocks |> List.exists (function TextBox box -> box.Id = id | _ -> false)) then None
+    else
+        let mutable any = false
+        let blocks =
+            doc.Blocks
+            |> List.map (fun block ->
+                match block with
+                | TextBox box when box.Id = id ->
+                    let changed = change box
+                    if changed = box then block
+                    else
+                        any <- true
+                        TextBox changed
+                | _ -> block)
+        // (Nothing of it changes: the document it was.)
+        Some (if any then { doc with Blocks = blocks } else doc)
+
+/// A shape of the body where `place` says: for each direction the frame its offset is from
+/// (None: the one it has) and the offset, in layout pixels. A direction that is given is by
+/// its offset - not aligned any more. (Not a shape that stands in a line of text.)
+let moveTextBox (id: BlockId) (horizontal: (string option * float) option) (vertical: (string option * float) option) (doc: Document) : Document option =
+    doc
+    |> withTextBox id (fun box ->
+        if box.Inline then box
+        else
+            let box =
+                match horizontal with
+                | Some (frame, offset) -> { box with X = Some offset; PositionHAlign = None; PositionHRelativeFrom = frame |> Option.orElse box.PositionHRelativeFrom }
+                | None -> box
+            match vertical with
+            | Some (frame, offset) -> { box with Y = Some offset; PositionVAlign = None; PositionVRelativeFrom = frame |> Option.orElse box.PositionVRelativeFrom }
+            | None -> box)
+
+/// A shape of the body as wide and as high as given (layout pixels, at least one). A shape
+/// that was as high as its text (a:spAutoFit) is of the given height from then on.
+let resizeTextBox (id: BlockId) (width: float) (height: float) (doc: Document) : Document option =
+    doc |> withTextBox id (fun box -> { box with Width = max 1.0 width; Height = max 1.0 height; AutoFit = box.AutoFit && abs (height - box.Height) < 0.01 })
+
+/// The body without the shape of that id (its text goes with it). The caret, when it was in
+/// the shape's text, goes to the block the shape was anchored in.
+let deleteTextBox (id: BlockId) (doc: Document) : Document option =
+    match doc.Blocks |> List.tryPick (function TextBox box when box.Id = id -> Some box | _ -> None) with
+    | None -> None
+    | Some box ->
+        let blocks = doc.Blocks |> List.filter (function TextBox other -> other.Id <> id | _ -> true)
+        let inBox (position: Position) = box.Content |> List.exists (fun para -> para.Id = position.BlockId)
+        let selection =
+            match doc.Selection with
+            | Some sel when inBox sel.Anchor || inBox sel.Focus ->
+                let target =
+                    box.AnchorBlockId
+                    |> Option.bind (fun anchor -> paragraphsOfBlocks blocks |> List.tryFind (fun para -> para.Id = anchor))
+                    |> Option.orElse (paragraphsOfBlocks blocks |> List.tryHead)
+                target |> Option.map (fun para -> { Anchor = { BlockId = para.Id; Offset = 0 }; Focus = { BlockId = para.Id; Offset = 0 } })
+            | other -> other
+        Some { doc with Blocks = blocks; Selection = selection }
+
 let insertTextBox text doc =
     let para = {
         Id = nextBlockId ()

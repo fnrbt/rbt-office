@@ -3096,6 +3096,125 @@ module API =
             commitDocumentUpdate editor newDoc
             true
 
+    /// The shape of the body with that id where it is painted: the box, its left edge from
+    /// the left edge of its page, its top down the document, its size, and its page.
+    let private bodyShapeRect (editor: Editor) (id: string) =
+        ensureLoaded editor
+        // (Not while the text of a box, a header or a footer is edited: the document on display is that text.)
+        if editor.Handler.Story.IsSome then None
+        else
+            let ctx = editor.Handler.RenderContext
+            Ren.shapeRects ctx editor.Doc
+            |> List.tryFind (fun (textBox, _, _, _, _) -> textBox.Id = id)
+            |> Option.map (fun (textBox, x, y, width, height) ->
+                let page =
+                    Ren.pageFrames ctx editor.Doc
+                    |> List.tryFindBack (fun frame -> frame.Top <= y + 0.001)
+                textBox, x, y, width, height, page)
+
+    /// Move a shape (a text box) of the body by `dx` to the right and `dy`
+    /// down, in layout pixels (`id`: as getShapeRects gives it). The shape
+    /// keeps the frame its place is measured from - the page, the margin, the
+    /// column, its paragraph - and its offset from it changes; a direction in
+    /// which it was aligned (centred on the page, at the right margin) is by
+    /// its offset from the page from then on. One undo step. False - and
+    /// nothing changes - when the body has no shape of that id, the shape
+    /// stands in a line of text (wp:inline), both distances are 0, or the
+    /// text of a box, a header or a footer is being edited (exitTextBox /
+    /// exitHeaderFooter first). Saved in the element the shape was read
+    /// from, the offsets of its anchor changed.
+    let moveShape (editor: Editor) (id: string) (dx: float) (dy: float) : bool =
+        match bodyShapeRect editor id with
+        | Some (textBox, x, y, _, _, page) when not textBox.Inline && (abs dx > 0.0001 || abs dy > 0.0001) ->
+            let horizontal =
+                if abs dx <= 0.0001 then None
+                else
+                    match textBox.PositionHAlign, textBox.X with
+                    | None, Some offset -> Some (None, offset + dx)
+                    // (Aligned, or with no offset of its own: from the left edge of its page, where it is painted.)
+                    | _ -> Some (Some "page", x + dx)
+            let vertical =
+                if abs dy <= 0.0001 then None
+                else
+                    match textBox.PositionVAlign, textBox.Y with
+                    | None, Some offset -> Some (None, offset + dy)
+                    | _ -> Some (Some "page", y - (page |> Option.map (fun frame -> frame.Top) |> Option.defaultValue 0.0) + dy)
+            match Doc.moveTextBox id horizontal vertical editor.Doc with
+            | Some newDoc when not (obj.ReferenceEquals(newDoc, editor.Doc)) ->
+                commitDocumentUpdate editor newDoc
+                true
+            | _ -> false
+        | _ -> false
+
+    /// Make a shape of the body `width` wide and `height` high (layout
+    /// pixels, at least 1 each); its top left corner stays where it is (move
+    /// it with moveShape to resize by another corner). A shape that was as
+    /// high as its text keeps the height given. One undo step. False when the
+    /// body has no shape of that id, it is of that size, or the text of a
+    /// box, a header or a footer is being edited. Saved in the element the
+    /// shape was read from (wp:extent and the shape's own a:ext).
+    let resizeShape (editor: Editor) (id: string) (width: float) (height: float) : bool =
+        if editor.Handler.Story.IsSome || System.Double.IsNaN width || System.Double.IsNaN height then false
+        else
+            ensureLoaded editor
+            match Doc.resizeTextBox id width height editor.Doc with
+            | Some newDoc when not (obj.ReferenceEquals(newDoc, editor.Doc)) ->
+                commitDocumentUpdate editor newDoc
+                true
+            | _ -> false
+
+    /// Take a shape of the body out of the document, its text with it. One
+    /// undo step. False when the body has no shape of that id, or the text
+    /// of a box, a header or a footer is being edited.
+    let deleteShape (editor: Editor) (id: string) : bool =
+        if editor.Handler.Story.IsSome then false
+        else
+            ensureLoaded editor
+            match Doc.deleteTextBox id editor.Doc with
+            | Some newDoc ->
+                commitDocumentUpdate editor newDoc
+                true
+            | None -> false
+
+    /// The eight handles of a shape of the body, for a host that shows it
+    /// selected and lets it be dragged: Name ("nw", "n", "ne", "e", "se",
+    /// "s", "sw", "w"), X, Y, Width, Height (a square around the corner or the
+    /// middle of the edge, eight pixels on screen whatever the zoom; layout
+    /// pixels as getShapeRects, X from the left edge of the shape's page) and
+    /// Cursor (the CSS cursor of that handle). Empty when there is no such
+    /// shape. A host draws them, finds the one under the pointer with
+    /// hitTestShapeHandle, and calls resizeShape (and moveShape for a handle
+    /// of the left or the top edge) while it is dragged.
+    let getShapeHandles (editor: Editor) (id: string) : obj array =
+        match bodyShapeRect editor id with
+        | None -> [||]
+        | Some (_, x, y, width, height, _) ->
+            let size = 8.0 / max 0.01 (Ren.viewportScale editor.Handler.RenderContext)
+            [| "nw", 0.0, 0.0, "nwse-resize"; "n", 0.5, 0.0, "ns-resize"; "ne", 1.0, 0.0, "nesw-resize"; "e", 1.0, 0.5, "ew-resize"
+               "se", 1.0, 1.0, "nwse-resize"; "s", 0.5, 1.0, "ns-resize"; "sw", 0.0, 1.0, "nesw-resize"; "w", 0.0, 0.5, "ew-resize" |]
+            |> Array.map (fun (name, fx, fy, cursor) ->
+                createObj [
+                    "Name" ==> name
+                    "X" ==> x + width * fx - size / 2.0
+                    "Y" ==> y + height * fy - size / 2.0
+                    "Width" ==> size
+                    "Height" ==> size
+                    "Cursor" ==> cursor ])
+
+    /// What of a shape of the body is at a point (layout pixels, as
+    /// getShapeHandles): the Name of the handle there, "move" inside the
+    /// shape where no handle is, "" outside it.
+    let hitTestShapeHandle (editor: Editor) (id: string) (x: float) (y: float) : string =
+        let handle =
+            getShapeHandles editor id
+            |> Array.tryFind (fun handle ->
+                let left, top, size = unbox<float> handle?X, unbox<float> handle?Y, unbox<float> handle?Width
+                x >= left && x <= left + size && y >= top && y <= top + size)
+        match handle, bodyShapeRect editor id with
+        | Some found, _ -> unbox<string> found?Name
+        | None, Some (_, left, top, width, height, _) when x >= left && x <= left + width && y >= top && y <= top + height -> "move"
+        | _ -> ""
+
     /// Edit the text of a text box of the body in place (`id`: as
     /// getShapeRects gives it): the caret goes to the start of its text, and
     /// typing, selecting, formatting and undo work there as in the body.
@@ -3868,6 +3987,11 @@ module API =
             "exportToDocx" ==> exportToDocx
             "exportDocumentPackage" ==> exportDocumentPackage
             "insertTextBox" ==> insertTextBox
+            "moveShape" ==> moveShape
+            "resizeShape" ==> resizeShape
+            "deleteShape" ==> deleteShape
+            "getShapeHandles" ==> getShapeHandles
+            "hitTestShapeHandle" ==> hitTestShapeHandle
             "enterTextBox" ==> enterTextBox
             "exitTextBox" ==> exitTextBox
             "insertCaption" ==> insertCaption

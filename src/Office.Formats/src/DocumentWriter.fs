@@ -2258,6 +2258,64 @@ let private generateVmlShape (shapeId: string) (item: obj) (content: string) : s
 /// rotation, solid / gradient / no fill, line colour, width and dash, wrap
 /// mode and position are written from the model. (It used to be a bare VML
 /// text box rectangle, so an ellipse or a rotated arrow came back as a white box.)
+let private shapePositionHPattern = System.Text.RegularExpressions.Regex("<wp:positionH relativeFrom=\"([^\"]*)\">[\\s\\S]*?</wp:positionH>")
+let private shapePositionVPattern = System.Text.RegularExpressions.Regex("<wp:positionV relativeFrom=\"([^\"]*)\">[\\s\\S]*?</wp:positionV>")
+let private shapeExtentPattern = System.Text.RegularExpressions.Regex("<wp:extent cx=\"\\d+\" cy=\"\\d+\"\\s*/>")
+let private shapeOwnExtentPattern = System.Text.RegularExpressions.Regex("<a:ext cx=\"\\d+\" cy=\"\\d+\"\\s*/>")
+
+/// The element a shape was read from with the shape's place and size as they are now (a shape
+/// that was moved or resized and is otherwise what was read: Docx.textBoxMovedFrom): the
+/// offsets of wp:positionH / wp:positionV, wp:extent and the extent of the shape's own
+/// a:xfrm. Everything else of the element stays the text it was. Its VML fallback, which
+/// says the old place in its own way, is left out (the DrawingML is what a reader that knows
+/// it takes; Word writes the fallback anew). None: not in this element - a shape in a line
+/// of text that is moved, a group, a canvas, an anchor without the offsets.
+let private patchShapeAnchor (xml: string) (item: obj) : string option =
+    let moved = item?SourceMoved
+    let moveH = boolOrDefault false (moved?H)
+    let moveV = boolOrDefault false (moved?V)
+    let resize = boolOrDefault false (moved?Size)
+    let choiceEnd = xml.IndexOf("</mc:Choice>", System.StringComparison.Ordinal)
+    let drawing = if choiceEnd >= 0 then xml.Substring(0, choiceEnd) else xml
+    if drawing.IndexOf "<wpg:" >= 0 || drawing.IndexOf "<wpc:" >= 0 || drawing.IndexOf "<w:pict" >= 0 then None
+    elif (moveH || moveV) && drawing.IndexOf "<wp:anchor" < 0 then None
+    else
+        let emu (pixels: float) = string (int64 (System.Math.Round(pixels * 9525.0)))
+        let mutable text = drawing
+        let mutable ok = true
+        let replaceFirst (pattern: System.Text.RegularExpressions.Regex) (from: int) (replacement: string -> string) =
+            let from = max 0 from
+            let m = pattern.Match(text.Substring from)
+            if m.Success then text <- text.Substring(0, from + m.Index) + replacement (if m.Groups.Count > 1 then m.Groups.[1].Value else "") + text.Substring(from + m.Index + m.Length)
+            else ok <- false
+        if moveH then
+            match optionalFloat (item?X) with
+            | Some x ->
+                replaceFirst shapePositionHPattern 0 (fun was ->
+                    sprintf "<wp:positionH relativeFrom=\"%s\"><wp:posOffset>%s</wp:posOffset></wp:positionH>" (optionalString (item?PositionHRelativeFrom) |> Option.defaultValue was) (emu x))
+            | None -> ok <- false
+        if moveV then
+            match optionalFloat (item?Y) with
+            | Some y ->
+                replaceFirst shapePositionVPattern 0 (fun was ->
+                    sprintf "<wp:positionV relativeFrom=\"%s\"><wp:posOffset>%s</wp:posOffset></wp:positionV>" (optionalString (item?PositionVRelativeFrom) |> Option.defaultValue was) (emu y))
+            | None -> ok <- false
+        if resize then
+            match optionalFloat (item?Width), optionalFloat (item?Height) with
+            | Some width, Some height ->
+                replaceFirst shapeExtentPattern 0 (fun _ -> sprintf "<wp:extent cx=\"%s\" cy=\"%s\"/>" (emu width) (emu height))
+                // (The shape's own extent: in its properties.)
+                let properties = max (text.IndexOf "<wps:spPr") (text.IndexOf "<pic:spPr")
+                if properties >= 0 && shapeOwnExtentPattern.IsMatch(text.Substring properties) then
+                    replaceFirst shapeOwnExtentPattern properties (fun _ -> sprintf "<a:ext cx=\"%s\" cy=\"%s\"/>" (emu width) (emu height))
+            | _ -> ok <- false
+        if not ok then None
+        elif choiceEnd < 0 then Some text
+        else
+            // (Without the fallback: from the end of the choice to the end of the alternate content.)
+            let close = xml.LastIndexOf("</mc:AlternateContent>", System.StringComparison.Ordinal)
+            if close < choiceEnd then None else Some (text + "</mc:Choice>" + xml.Substring close)
+
 let rec private generateTextBoxRun (packageSetup: PageSetupInfo) (hyperlinks: Map<string, string>) (images: ImageScope) (item: obj) : string =
     // A shape that is what was read goes back as the element it was read from
     // (its DrawingML and its VML fallback, with what the model does not hold
@@ -2267,6 +2325,11 @@ let rec private generateTextBoxRun (packageSetup: PageSetupInfo) (hyperlinks: Ma
         |> Option.filter (fun xml ->
             [ for m in relationshipIdPattern.Matches xml -> m.Groups.[1].Value ]
             |> List.forall (fun id -> Set.contains id currentPartRelationshipIds))
+    // (Moved or resized, and otherwise what was read: its element with the anchor changed in it.)
+    let source =
+        match source with
+        | Some xml when not (isNullOrUndefined (item?SourceMoved)) -> patchShapeAnchor xml item
+        | other -> other
     match source with
     | Some xml -> "<w:r>" + xml + "</w:r>"
     | None when boolOrDefault false (item?FitText) -> generateWordArtRun item

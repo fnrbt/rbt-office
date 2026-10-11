@@ -141,6 +141,30 @@ any of them in place (a header's box on that page; what is typed is the
 header's on every page), and
 `setCurrentTextBoxStyle` sets its place, size, fill and border.
 
+A host that lets shapes be dragged: `getShapeHandles(editor, id)` gives the
+eight handles of a shape of the body (`Name`: `"nw"`, `"n"`, `"ne"`, `"e"`,
+`"se"`, `"s"`, `"sw"`, `"w"`; a square of eight pixels on screen around its
+corner or the middle of its edge, in the pixels of `getShapeRects`; the CSS
+`Cursor`), `hitTestShapeHandle(editor, id, x, y)` says what of the shape is
+at a point - a handle's name, `"move"` inside it, `""` outside -, and
+`moveShape(editor, id, dx, dy)`, `resizeShape(editor, id, width, height)`
+and `deleteShape(editor, id)` do it, each one undo step. The editor does not
+paint the handles or keep a selected shape: the host draws them over the
+canvas (convert with `documentToViewport`) and calls these while the pointer
+is dragged. A handle of the left or the top edge is a `moveShape` and a
+`resizeShape`. A shape that was aligned in the direction it is moved in
+(centred, at the right margin) is by its offset from the page from then on.
+They are for the shapes of the body (`Story: "body"`), not while the text of
+a box, a header or a footer is edited, and not for a shape that stands in a
+line of text (`moveShape`).
+
+A shape that was read and is only moved or resized is saved as the element
+it was read from with the offsets (`wp:positionH` / `wp:positionV`) and the
+extent (`wp:extent`, the shape's own `a:ext`) changed in it - its geometry
+and whatever else the model does not hold stay the text they were; its VML
+fallback, which says the old place, is left out. A group or a drawing
+canvas, or a shape changed in more, is written from the model.
+
 What is done in the body does not reach into a box that is not entered: the
 caret does not move into it, and typing, pasting or deleting over a
 selection of the body never changes a box's text. A box goes with the start
@@ -417,6 +441,11 @@ clipboard itself, or pastes from a menu, calls it.
 | `insertImage(editor, src: string, width: number, height: number, alt: string)` | Insert image at cursor. |
 | `resizeCurrentImage(editor, width: number, height: number)` | Give the selected picture a width and a height (layout pixels). |
 | `insertTextBox(editor, text: string): boolean` | Insert a text box with `text`, anchored in the paragraph (or the table) the caret is in: 240 x 96 px, 24 px right of and below the start of that paragraph, in front of the text (no wrap). |
+| `moveShape(editor, id: string, dx: number, dy: number): boolean` | Move a shape (a text box) of the body by `dx` to the right and `dy` down, in layout pixels (`id`: as getShapeRects gives it). |
+| `resizeShape(editor, id: string, width: number, height: number): boolean` | Make a shape of the body `width` wide and `height` high (layout pixels, at least 1 each); its top left corner stays where it is (move it with moveShape to resize by another corner). |
+| `deleteShape(editor, id: string): boolean` | Take a shape of the body out of the document, its text with it. |
+| `getShapeHandles(editor, id: string): object[]` | The eight handles of a shape of the body, for a host that shows it selected and lets it be dragged: Name ("nw", "n", "ne", "e", "se", "s", "sw", "w"), X, Y, Width, Height and Cursor. |
+| `hitTestShapeHandle(editor, id: string, x: number, y: number): string` | What of a shape of the body is at a point (layout pixels, as getShapeHandles): the Name of the handle there, "move" inside the shape where no handle is, "" outside it. |
 | `enterTextBox(editor, id: string): boolean` | Edit the text of a text box of the body in place (`id`: as getShapeRects gives it): the caret goes to the start of its text, and typing, selecting, formatting and undo work there as in the body. |
 | `exitTextBox(editor): boolean` | Back to the body from a text box that is edited in place. |
 | `insertCaption(editor, label: string, captionText: string)` | Insert a caption paragraph (label, a SEQ number, text) after the caret's paragraph. |
