@@ -2622,6 +2622,41 @@ let storyBlockLayouts (settings: LayoutSettings) (measureText: TextMeasurer) (me
         | TextBox _ -> ()
     resizeArrayToList layouts
 
+/// Where the shapes of a header or footer are on a page that shows it: each
+/// with its left edge (from the left edge of the page), its top (down the
+/// canvas), its width and its height - where the page paints them. `startY`:
+/// where the header's (footer's) blocks start on that page (headerFooterStartY).
+let storyShapeRects (settings: LayoutSettings) measureText measureRange (doc: Document) (page: PageInfo) (startY: float) (blocks: Block list) : (TextBoxBlock * float * float * float * float) list =
+    let shapes = blocks |> List.choose (function TextBox textBox -> Some textBox | _ -> None)
+    if shapes.IsEmpty then []
+    else
+        let styleContext = WordStyles.styleContext doc
+        let tops = Dictionary<BlockId, float>()
+        for layout in storyBlockLayouts settings measureText measureRange doc startY blocks do
+            if not (tops.ContainsKey layout.BlockId) then tops.[layout.BlockId] <- layout.Y
+        shapes
+        |> List.choose (fun textBox ->
+            let anchorTop =
+                textBox.AnchorBlockId
+                |> Option.bind (fun anchorId ->
+                    blocks
+                    |> List.tryFind (function
+                        | Paragraph para
+                        | Heading (_, para) -> para.Id = anchorId
+                        | Table table -> table.Id = anchorId
+                        | TextBox _ -> false))
+                |> Option.bind firstParagraphIdOf
+                |> Option.bind (fun id ->
+                    match tops.TryGetValue id with
+                    | true, top -> Some top
+                    | false, _ -> None)
+            match anchorTop with
+            | Some _ ->
+                let struct (x, y, height) = textBoxPlace settings measureText measureRange styleContext [| page |] anchorTop textBox
+                Some (textBox, x, y, textBox.Width, height)
+            // (A shape of a header that is anchored in nothing is not painted.)
+            | None -> None)
+
 /// The boundary of the header or footer that is being edited: a dashed line
 /// across the page where the body text begins (ends), and a tab with its name.
 let storyBoundaryCommands (settings: LayoutSettings) fontFamily (page: PageInfo) (isHeader: bool) (label: string) : PaintCommand list =

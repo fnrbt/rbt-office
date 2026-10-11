@@ -1173,15 +1173,19 @@ module API =
     let setSelection (editor: Editor) (anchorBlockId: string) (anchorOffset: int) (focusBlockId: string) (focusOffset: int) : bool =
         selectPositions editor anchorBlockId anchorOffset focusBlockId focusOffset
 
-    /// The shapes (text boxes) of the body where they are painted: Id, X (from
-    /// the left edge of the shape's page), Y (down the document), Width,
-    /// Height - layout pixels, as getLayoutLines -, BehindText, RelativeHeight,
-    /// Wrap, AnchorBlockId and Text.
+    /// The shapes (text boxes) where they are painted: Id, X (from the left
+    /// edge of the shape's page), Y (down the document), Width, Height - layout
+    /// pixels, as getLayoutLines -, BehindText, RelativeHeight, Wrap,
+    /// AnchorBlockId and Text; Story says where the shape is: "body", or
+    /// "header" / "footer" for a text box of a header or footer - listed once,
+    /// on the first page (PageIndex; -1 for a shape of the body) that shows
+    /// its header. enterTextBox takes the Id of any of them.
     let getShapeRects (editor: Editor) : obj array =
         ensureLoaded editor
-        Ren.shapeRects editor.Handler.RenderContext editor.Doc
-        |> List.map (fun (textBox, x, y, width, height) ->
+        let shapeToJs (story: string) (pageIndex: int) (textBox: Doc.TextBoxBlock, x: float, y: float, width: float, height: float) =
             createObj [
+                "Story" ==> story
+                "PageIndex" ==> pageIndex
                 "Id" ==> textBox.Id
                 "X" ==> x
                 "Y" ==> y
@@ -1192,8 +1196,13 @@ module API =
                 "Wrap" ==> WordLayout.Floating.textBoxWrap textBox
                 "AnchorBlockId" ==> textBox.AnchorBlockId
                 "Text" ==> (textBox.Content |> List.map (fun para -> TextBuffer.toString para.Buffer) |> String.concat "\n")
-            ])
-        |> List.toArray
+            ]
+        let ctx = editor.Handler.RenderContext
+        let body = Ren.shapeRects ctx editor.Doc |> List.map (shapeToJs "body" -1)
+        let furniture =
+            Ren.furnitureShapeRects ctx editor.Doc
+            |> List.map (fun (textBox, x, y, width, height, isHeader, pageIndex) -> shapeToJs (if isHeader then "header" else "footer") pageIndex (textBox, x, y, width, height))
+        body @ furniture |> List.toArray
 
     /// The block ids the document has more than once - among its paragraphs
     /// (those of table cells, of tables in cells, of text boxes, headers and
@@ -3091,6 +3100,9 @@ module API =
     /// getCaretContext says so (Story "textbox", TextBoxId); Escape, a click
     /// outside the box, or exitTextBox goes back to the body. False when
     /// there is no such box (or it is a watermark, whose text is not edited).
+    /// A text box of a header or footer is edited on the first page that
+    /// shows it (getShapeRects: Story, PageIndex); what is typed is the
+    /// header's on every page, and saved in its part.
     let enterTextBox (editor: Editor) (id: string) : bool =
         ensureLoaded editor
         Inp.enterTextBox editor.Handler id None

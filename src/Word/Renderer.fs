@@ -632,6 +632,18 @@ let bodyDocument (ctx: RenderContext) (doc: Document) =
 /// pages of the notes after them (`pageFramesForLayouts`, defined further down).
 let private framePages : (RenderContext -> Document -> BlockLayout list -> PageInfo list -> PageInfo list) ref = ref (fun _ _ _ pages -> pages)
 
+/// The shapes of a page's header or footer where the page paints them (see Paint.storyShapeRects).
+let private pageFurnitureShapeRects (ctx: RenderContext) (whole: Document) (bodyLayouts: BlockLayout list) (pages: PageInfo list) (pageIndex: int) (isHeader: bool) : (TextBoxBlock * float * float * float * float) list =
+    let settings = layoutSettings ctx whole
+    match List.tryItem pageIndex pages with
+    | None -> []
+    | Some page ->
+        let sectionEnds = bodyLayouts |> List.filter (fun layout -> endsSection layout.Metadata)
+        match headerFooterTargetForPage settings whole sectionEnds pages pageIndex isHeader |> Option.bind (fun target -> target.TargetPart) with
+        | Some part when part.Blocks |> List.exists (function TextBox _ -> true | _ -> false) ->
+            storyShapeRects settings (measureWithContext ctx) (measureRangeWithContext ctx) whole page (headerFooterStartY settings whole.PageSetup page isHeader) part.Blocks
+        | _ -> []
+
 /// The layouts of a story's blocks where its page paints them.
 let private storyLayouts (ctx: RenderContext) (story: StoryView) (doc: Document) : BlockLayout list =
     let whole = story.Whole doc
@@ -641,7 +653,9 @@ let private storyLayouts (ctx: RenderContext) (story: StoryView) (doc: Document)
     match story.Box with
     | Some boxId ->
         // A text box: its text where the box is painted.
-        match bodyShapeRects settings (measureWithContext ctx) (measureRangeWithContext ctx) whole bodyLayouts pages |> List.tryFind (fun (textBox, _, _, _, _) -> textBox.Id = boxId) with
+        match bodyShapeRects settings (measureWithContext ctx) (measureRangeWithContext ctx) whole bodyLayouts pages |> List.tryFind (fun (textBox, _, _, _, _) -> textBox.Id = boxId)
+              // (A text box of a header or footer: where the story's page paints it.)
+              |> Option.orElseWith (fun () -> pageFurnitureShapeRects ctx whole bodyLayouts pages story.PageIndex story.IsHeader |> List.tryFind (fun (textBox, _, _, _, _) -> textBox.Id = boxId)) with
         | None ->
             ctx.StoryTurn <- None
             []
@@ -2417,6 +2431,30 @@ let shapeRects (ctx: RenderContext) (doc: Document) : (TextBoxBlock * float * fl
         let settings = layoutSettings ctx doc
         bodyShapeRects settings (measureWithContext ctx) (measureRangeWithContext ctx) doc layouts (pageFramesForLayouts ctx settings doc layouts pages)
 
+/// The text boxes of the headers and footers, each on the first page (of
+/// those laid out) that shows its part: the box, its left edge, top, width
+/// and height as `shapeRects` gives them, whether it is a header's, and the
+/// page.
+let furnitureShapeRects (ctx: RenderContext) (doc: Document) : (TextBoxBlock * float * float * float * float * bool * int) list =
+    let doc = bodyDocument ctx doc
+    let boxesOf (parts: HeaderFooterPart list) =
+        parts |> List.sumBy (fun part -> part.Blocks |> List.sumBy (function TextBox _ -> 1 | _ -> 0))
+    let total = boxesOf doc.HeaderParts + boxesOf doc.FooterParts
+    if total = 0 then []
+    else
+        let layouts, layoutPages = layoutDocumentWithPages ctx doc
+        let pages = pageFramesForLayouts ctx (layoutSettings ctx doc) doc layouts layoutPages
+        let seen = System.Collections.Generic.HashSet<BlockId>()
+        let found = ResizeArray<TextBoxBlock * float * float * float * float * bool * int>()
+        let mutable pageIndex = 0
+        let pageCount = List.length pages
+        while pageIndex < pageCount && seen.Count < total do
+            for isHeader in [ true; false ] do
+                for (textBox, x, y, width, height) in pageFurnitureShapeRects ctx doc layouts pages pageIndex isHeader do
+                    if seen.Add textBox.Id then found.Add ((textBox, x, y, width, height, isHeader, pageIndex))
+            pageIndex <- pageIndex + 1
+        List.ofSeq found
+
 /// The text box in front of the text that a point (layout coordinates) is in
 /// - the one painted last of those that hold it. A box behind the text, and
 /// one whose text is drawn as large as the box (a watermark), is not found by
@@ -2560,6 +2598,7 @@ let render _ _ = ()
 let pageCount _ _ = 1
 let pageFrames _ _ = []
 let shapeRects _ _ = []
+let furnitureShapeRects _ _ = []
 let shapeAt _ _ _ _ = None
 let renderWithHover _ _ _ = ()
 let setViewport _ _ = ()

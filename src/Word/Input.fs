@@ -259,6 +259,28 @@ let private storyParts (session: StorySession) (blocks: Doc.Block list) : Doc.He
 /// the story changed - the styles).
 let private foldStory (session: StorySession) (story: Doc.Document) : Doc.Document =
     match session.Box with
+    | Some boxId when session.PartIndex >= 0 ->
+        // A text box of a header or footer: the document as it was, the story's paragraphs in the box of its part.
+        let main = session.Main
+        if obj.ReferenceEquals(story.Blocks, session.EntryBlocks) then { story with Blocks = main.Blocks; HeaderParts = main.HeaderParts; FooterParts = main.FooterParts }
+        else
+            let mutable parts = Unchecked.defaultof<Doc.HeaderFooterPart list>
+            let mutable known = false
+            for struct (knownBlocks, knownParts) in session.Folded do
+                if not known && obj.ReferenceEquals(knownBlocks, story.Blocks) then
+                    parts <- knownParts
+                    known <- true
+            if not known then
+                let content = Doc.paragraphsOfBlocks story.Blocks
+                parts <-
+                    (if session.IsHeader then main.HeaderParts else main.FooterParts)
+                    |> List.mapi (fun index part ->
+                        if index <> session.PartIndex then part
+                        else { part with Blocks = part.Blocks |> List.map (function Doc.TextBox box when box.Id = boxId -> Doc.TextBox { box with Content = content } | block -> block) })
+                if session.Folded.Count >= 256 then session.Folded.RemoveAt 0
+                session.Folded.Add(struct (story.Blocks, parts))
+            if session.IsHeader then { story with Blocks = main.Blocks; HeaderParts = parts; FooterParts = main.FooterParts }
+            else { story with Blocks = main.Blocks; HeaderParts = main.HeaderParts; FooterParts = parts }
     | Some boxId ->
         // A text box: the body as it was, the story's paragraphs in the box.
         if obj.ReferenceEquals(story.Blocks, session.EntryBlocks) then { story with Blocks = session.Main.Blocks }
@@ -297,6 +319,24 @@ let private foldStory (session: StorySession) (story: Doc.Document) : Doc.Docume
 /// The story document of a whole document: the blocks of the story's part.
 let private unfoldStory (session: StorySession) (whole: Doc.Document) : Doc.Document =
     match session.Box with
+    | Some boxId when session.PartIndex >= 0 ->
+        let parts = if session.IsHeader then whole.HeaderParts else whole.FooterParts
+        let entered = if session.IsHeader then session.Main.HeaderParts else session.Main.FooterParts
+        let blocks =
+            if obj.ReferenceEquals(parts, entered) then session.EntryBlocks
+            else
+                let mutable found = Unchecked.defaultof<Doc.Block list>
+                let mutable known = false
+                for struct (knownBlocks, knownParts) in session.Folded do
+                    if not known && obj.ReferenceEquals(knownParts, parts) then
+                        found <- knownBlocks
+                        known <- true
+                if known then found
+                else
+                    match List.tryItem session.PartIndex parts |> Option.bind (fun part -> part.Blocks |> List.tryPick (function Doc.TextBox box when box.Id = boxId -> Some box | _ -> None)) with
+                    | Some box when not box.Content.IsEmpty -> box.Content |> List.map Doc.Paragraph
+                    | _ -> session.EntryBlocks
+        { whole with Blocks = blocks }
     | Some boxId ->
         let blocks =
             if obj.ReferenceEquals(whole.Blocks, session.Main.Blocks) then session.EntryBlocks
@@ -603,7 +643,28 @@ let enterTextBox (handler: InputHandler) (boxId: Doc.BlockId) (selection: Doc.Se
               Box = Some boxId; BoxFolded = ResizeArray() }
         enterStory handler session selection
         true
-    | _ -> false
+    | Some _ -> false
+    | None ->
+        // A text box of a header or footer: edited where the first page that shows its part paints it.
+        let inParts (isHeader: bool) (parts: Doc.HeaderFooterPart list) =
+            parts
+            |> List.mapi (fun index part -> index, part)
+            |> List.tryPick (fun (index, part) ->
+                part.Blocks |> List.tryPick (function Doc.TextBox box when box.Id = boxId -> Some (isHeader, index, box) | _ -> None))
+        match inParts true doc.HeaderParts |> Option.orElseWith (fun () -> inParts false doc.FooterParts) with
+        | Some (isHeader, partIndex, box) when not box.FitText ->
+            match furnitureShapeRects handler.RenderContext doc |> List.tryFind (fun (textBox, _, _, _, _, _, _) -> textBox.Id = boxId) with
+            | Some (_, _, _, _, _, _, pageIndex) ->
+                let entry = (if box.Content.IsEmpty then [ Doc.newEmptyParagraph () ] else box.Content) |> List.map Doc.Paragraph
+                let session : StorySession =
+                    { IsHeader = isHeader; PageIndex = pageIndex; Kind = "textbox"; Section = 0; PartIndex = partIndex; Label = "Text box"
+                      Main = doc; Edited = doc; PartBlocks = []; EntryBlocks = entry; Folded = ResizeArray()
+                      Box = Some boxId; BoxFolded = ResizeArray() }
+                enterStory handler session selection
+                true
+            // (No page that is laid out shows that header.)
+            | None -> false
+        | _ -> false
 
 let canUndo (handler: InputHandler) = not handler.History.Undos.IsEmpty
 let canRedo (handler: InputHandler) = not handler.History.Redos.IsEmpty

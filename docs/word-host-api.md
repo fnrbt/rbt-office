@@ -131,8 +131,12 @@ the text (the text is not moved to the next tab stop).
 `insertTextBox(editor, text)` anchors a box in the caret's paragraph - in
 the body, and in a header or footer that is being edited (saved in that
 part); not while a text box is edited (a box does not hold another).
-`getShapeRects` gives the boxes of the body where they are painted,
-`enterTextBox(editor, id)` / `exitTextBox` edit a box's text in place, and
+`getShapeRects` gives the boxes where they are painted - those of the body
+(`Story: "body"`) and those of the headers and footers (`Story: "header"` /
+`"footer"`, once each, on the first page that shows the header:
+`PageIndex`) -, `enterTextBox(editor, id)` / `exitTextBox` edit the text of
+any of them in place (a header's box on that page; what is typed is the
+header's on every page), and
 `setCurrentTextBoxStyle` sets its place, size, fill and border.
 
 What is done in the body does not reach into a box that is not entered: the
@@ -143,6 +147,19 @@ its first character, is in the selection that is deleted, and stays when the
 selection begins further on in the paragraph or ends before its first
 character. `findText` and `replaceAllText` go by all the text of the story -
 the text of its boxes too.
+
+## Bookmarks
+
+A run of text has every bookmark that starts before it and ends after it
+(`getBookmarkInfos` lists them all; `removeBookmark` and `renameBookmark`
+take one of several). Text typed with a format chosen at the caret is a run
+of its own without the bookmarks of the text around it, and its paragraph is
+still changed in the XML it was read from. A paragraph that is written from
+the model writes each bookmark once, with the id and the name the file had,
+and the document part is checked when it is put together: a range (a
+bookmark, a comment's, a permission's, moved text's) that the model's part
+would open twice, close twice, close without opening or leave open is put
+right - see `balancedRanges` in the writer.
 
 ## Pasting
 
@@ -211,7 +228,7 @@ clipboard itself, or pastes from a menu, calls it.
 | `whenLayoutComplete(editor): Promise<object>` | A promise that resolves (with the document size, see getDocumentSize) once the whole document is laid out; at once when it is. |
 | `completeLayout(editor): void` | Lay out the rest of the document now (what getPageCount does, without the count). |
 | `getRenderStats(editor)` | Counters of the editor's renderer, for hosts and checks: { FrameBuilds (times a paint frame was built: the document was laid out and its paint commands collected - a caret move builds none), LaidOutBlocks / CollectedBlocks (of the last frame built: the top-level blocks that were laid out / whose paint commands were collected ... |
-| `getShapeRects(editor): object[]` | The shapes (text boxes) of the body where they are painted: Id, X (from the left edge of the shape's page), Y (down the document), Width, Height - layout pixels, as getLayoutLines -, BehindText, RelativeHeight, Wrap, AnchorBlockId and Text. |
+| `getShapeRects(editor): object[]` | The shapes (text boxes) where they are painted: Id, X (from the left edge of the shape's page), Y (down the document), Width, Height - layout pixels, as getLayoutLines -, BehindText, RelativeHeight, Wrap, AnchorBlockId and Text; Story says where the shape is: "body", or "header" / "footer" for a text box of a header or ... |
 | `getImageHitTest(editor, x: number, y: number)` | The picture under a point in layout coordinates: { BlockId, Offset, X, Y, Width, Height }, or null. |
 | `getPageFrames(editor)` | The page frames as shown on the canvas, top to bottom: each page's position and size (sections can differ in page size and orientation) and margins. |
 | `getPageCount(editor)` | The number of pages. Reads the rest of a document that is still being read and lays the whole document out. |
