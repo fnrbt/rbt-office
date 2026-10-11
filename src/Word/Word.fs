@@ -3236,6 +3236,27 @@ module API =
         let newDoc = Doc.setCurrentSectionBreak sectionBreak editor.Doc
         commitDocumentUpdate editor newDoc
 
+    /// How the text of a page that is not full stands between the top and the
+    /// bottom margin in the section the caret is in (w:vAlign): "top",
+    /// "center", "bottom" or "both" (the paragraphs spread from the top to the
+    /// bottom). One undo step; anything else is "top". False when nothing
+    /// changes (no caret, or the section is aligned so).
+    let setSectionVerticalAlignment (editor: Editor) (align: string) : bool =
+        let value =
+            match align with
+            | "center" | "bottom" | "both" -> Some align
+            | _ -> None
+        let newDoc = Doc.setCurrentSectionVerticalAlign value editor.Doc
+        if obj.ReferenceEquals(newDoc, editor.Doc) then false
+        else
+            commitDocumentUpdate editor newDoc
+            true
+
+    /// The vertical alignment of the section the caret is in: "top",
+    /// "center", "bottom" or "both" (see setSectionVerticalAlignment).
+    let getSectionVerticalAlignment (editor: Editor) : string =
+        Doc.currentSectionVerticalAlign editor.Doc
+
     /// Import document from EditorParagraphs (Office.Formats format)
     /// Use with: Office.Formats processors.forEditorPackage() Paragraphs output
     let importFromDocx (editor: Editor) (editorParagraphs: obj array) =
@@ -3816,6 +3837,8 @@ module API =
             "setCurrentTableCellMargins" ==> setCurrentTableCellMargins
             "setCurrentTableCellMarginsAndSpacing" ==> setCurrentTableCellMarginsAndSpacing
             "setSectionBreak" ==> setSectionBreak
+            "setSectionVerticalAlignment" ==> setSectionVerticalAlignment
+            "getSectionVerticalAlignment" ==> getSectionVerticalAlignment
             "importFromDocx" ==> importFromDocx
             "importFromDocxWithHeaderFooters" ==> importFromDocxWithHeaderFooters
             "importFromDocxWithHeaderFooterParts" ==> importFromDocxWithHeaderFooterParts

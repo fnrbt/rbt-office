@@ -82,6 +82,28 @@ try {
         check('a document of one section, centred', [lineOf(single, 'Alone').Y > 420, /<w:vAlign w:val="center"\/>/.test((await savedXml(single)).xml)], [true, true]);
         Word.insertText(single, 'x');
         check('and after an edit', /<w:vAlign w:val="center"\/>/.test((await savedXml(single)).xml), true);
+        // Set through the API: of the section the caret is in.
+        {
+            const editor = await open(await bytesFor(titleBody(null)));
+            const title = Word.findText(editor, 'Title', true)[0].BlockId, body = Word.findText(editor, 'Body', true)[0].BlockId;
+            const before = [lineOf(editor, 'Title').Y, lineOf(editor, 'Body').Y];
+            Word.setSelection(editor, title, 0, title, 0);
+            check('setSectionVerticalAlignment("center") with the caret in the first section: its text is in the middle of its page, the next section where it was',
+                [Word.getSectionVerticalAlignment(editor), Word.setSectionVerticalAlignment(editor, 'center'), Word.getSectionVerticalAlignment(editor), Math.abs(lineOf(editor, 'Title').Y - center.title) < 1, lineOf(editor, 'Body').Y === before[1]],
+                ['top', true, 'center', true, true]);
+            check('set again it changes nothing', Word.setSectionVerticalAlignment(editor, 'center'), false);
+            const xml = (await savedXml(editor)).xml;
+            check('saved in that section\'s properties, not in the last section\'s', [/<w:pPr><w:sectPr>(?:(?!<\/w:sectPr>).)*<w:vAlign w:val="center"\/>/.test(xml), (xml.match(/<w:vAlign /g) ?? []).length], [true, 1]);
+            check('one undo: from the top again', [Word.undo(editor), Word.getSectionVerticalAlignment(editor), lineOf(editor, 'Title').Y], [true, 'top', before[0]]);
+            // The last section (no paragraph ends it).
+            Word.setSelection(editor, body, 0, body, 0);
+            check('with the caret in the last section: "bottom" is that section\'s',
+                [Word.setSectionVerticalAlignment(editor, 'bottom'), Word.getSectionVerticalAlignment(editor), lineOf(editor, 'Body').Y > 860, lineOf(editor, 'Title').Y === before[0]], [true, 'bottom', true, true]);
+            const last = (await savedXml(editor)).xml;
+            check('saved in the body\'s section properties', [/<w:vAlign w:val="bottom"\/>(?:(?!<w:p[ >]).)*<\/w:sectPr><\/w:body>/.test(last), (last.match(/<w:vAlign /g) ?? []).length], [true, 1]);
+            check('"top" takes it away', [Word.setSectionVerticalAlignment(editor, 'top'), /<w:vAlign/.test((await savedXml(editor)).xml)], [true, false]);
+            Word.dispose(editor);
+        }
     }
 
     // ---- page break and column break in columns -----------------------------

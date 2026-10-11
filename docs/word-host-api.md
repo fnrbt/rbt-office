@@ -108,7 +108,9 @@ saves them so. For a host:
   pages `getPageFrames` gives, is numbered, and shows the header and footer
   the section's rules give a page of its number.
 - `w:vAlign` of a section (center, bottom, both) is read, laid out and
-  saved; there is no command that sets it.
+  saved. `setSectionVerticalAlignment(editor, align)` sets it for the section
+  the caret is in (`"top"`, `"center"`, `"bottom"`, `"both"`; one undo
+  step), `getSectionVerticalAlignment(editor)` says it.
 - A page break inside a section with columns starts a new page; a column
   break (read from a file) goes on in the next column. `insertPageBreak`
   inserts a page break.
@@ -371,6 +373,8 @@ clipboard itself, or pastes from a menu, calls it.
 | `insertSectionPageCountField(editor)` | Insert a field with the number of pages of the caret's section (SECTIONPAGES). |
 | `insertPageBreak(editor): boolean` | Insert a page break at the caret (Ctrl+Enter in Word). |
 | `setSectionBreak(editor, kind: string)` | A section break after the caret's paragraph (a paragraph of the body). |
+| `setSectionVerticalAlignment(editor, align: string): bool` | How the text of a page that is not full stands between the top and the bottom margin in the section the caret is in (w:vAlign): "top", "center", "bottom" or "both" (the paragraphs spread from the top to the bottom). |
+| `getSectionVerticalAlignment(editor): string` | The vertical alignment of the section the caret is in: "top", "center", "bottom" or "both" (see setSectionVerticalAlignment). |
 | `setPageSetup(editor, pageWidth: number, pageHeight: number, marginLeft: number, marginRight: number, marginTop: number, marginBottom: number, headerDistance: number, footerDistance: number)` | Page size, margins and header / footer distances (layout pixels) of the document (its last section). |
 | `setPageSetupOptions(editor, pageWidth: number, pageHeight: number, marginLeft: number, marginRight: number, marginTop: number, marginBottom: number, headerDistance: number, footerDistance: number, differentFirstPage: boolean, evenAndOddHeaders: boolean)` | As setPageSetup, with whether the first page and the even pages have headers and footers of their own. |
 | `getPageSetup(editor)` | The page setup of the document (its last section): PageWidth, PageHeight, margins, HeaderDistance, FooterDistance, DifferentFirstPage, EvenAndOddHeaders - layout pixels. |

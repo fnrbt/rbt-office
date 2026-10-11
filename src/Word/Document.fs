@@ -4923,6 +4923,56 @@ let setCurrentSectionBreak (sectionBreak: string option) (doc: Document) : Docum
             let pageSetup = setFollowingStart (Some kind) { doc.PageSetup with PageNumberStart = (if following >= 0 then doc.PageSetup.PageNumberStart else None) }
             { doc with Blocks = List.ofArray blocks; PageSetup = pageSetup }
 
+/// The paragraph that ends the section the caret is in (None: the final section, which no paragraph ends).
+let private currentSectionEnd (doc: Document) : ParagraphBlock option option =
+    match doc.Selection with
+    | None -> None
+    | Some sel ->
+        let containsFocus block =
+            match block with
+            | Table table -> table.Id = sel.Focus.BlockId || (paragraphsOfBlocks [ block ] |> List.exists (fun para -> para.Id = sel.Focus.BlockId))
+            | _ -> paragraphsOfBlocks [ block ] |> List.exists (fun para -> para.Id = sel.Focus.BlockId)
+        doc.Blocks
+        |> List.tryFindIndex containsFocus
+        |> Option.map (fun index ->
+            doc.Blocks
+            |> List.skip index
+            |> List.tryPick (fun block ->
+                match block with
+                | Paragraph para
+                | Heading (_, para) when para.Metadata.SectionBreak.IsSome -> Some para
+                | _ -> None))
+
+/// How the text of a page that is not full stands between the margins in the section the
+/// caret is in (w:vAlign): Some "center", "bottom" or "both" (spread from top to bottom);
+/// None (or "top"): from the top. On the paragraph that ends that section, or on the page
+/// setup for the final section.
+let setCurrentSectionVerticalAlign (align: string option) (doc: Document) : Document =
+    let align = match align with Some "top" | Some "" -> None | other -> other
+    match currentSectionEnd doc with
+    | None -> doc
+    | Some (Some para) ->
+        if para.Metadata.SectionVerticalAlign = align then doc
+        else
+            let newPara = { para with Metadata = { para.Metadata with SectionVerticalAlign = align } }
+            { doc with
+                Blocks =
+                    doc.Blocks
+                    |> List.map (fun block ->
+                        match block with
+                        | Paragraph current when current.Id = para.Id -> Paragraph newPara
+                        | Heading (level, current) when current.Id = para.Id -> Heading (level, newPara)
+                        | other -> other) }
+    | Some None ->
+        if doc.PageSetup.VerticalAlign = align then doc
+        else { doc with PageSetup = { doc.PageSetup with VerticalAlign = align } }
+
+/// The vertical alignment of the section the caret is in ("top" where it states none).
+let currentSectionVerticalAlign (doc: Document) : string =
+    match currentSectionEnd doc with
+    | Some (Some para) -> para.Metadata.SectionVerticalAlign |> Option.defaultValue "top"
+    | _ -> doc.PageSetup.VerticalAlign |> Option.defaultValue "top"
+
 /// Set the header / footer references of the section the cursor is in: on the
 /// paragraph that ends that section, or on the page setup for the final
 /// section (which no paragraph ends).
