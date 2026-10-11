@@ -1527,6 +1527,31 @@ let private mirrorCell (mirror: obj) (key: float) (cell: CellData) : unit = fail
 [<Fable.Core.Emit("$0.delete($1)")>]
 let private unmirrorCell (mirror: obj) (key: float) : unit = failwith "JS only"
 let private cellMirrors = newCellMirrors ()
+// (While a recalculation runs - `holdCellMirror` - the map last read is held with its
+// index: a recalculation reads the same map again and again, and looking it up among the
+// weakly held ones is most of a read. Nothing is held once it has ended.)
+let mutable private mirrorHeld = false
+let mutable private heldMirrorCells : obj = null
+let mutable private heldMirror : obj = null
+let inline private mirrorOf (cells: obj) : obj =
+    if obj.ReferenceEquals(cells, heldMirrorCells) then heldMirror
+    else
+        let mirror = cellMirrorGet cellMirrors cells
+        if mirrorHeld then
+            heldMirrorCells <- cells
+            heldMirror <- mirror
+        mirror
+#endif
+
+/// See `getCell`: from now on the cell map last read is held with its hash index (true),
+/// or no map is held any more (false). A recalculation switches it on for as long as it runs.
+let holdCellMirror (hold: bool) : unit =
+#if FABLE_COMPILER
+    mirrorHeld <- hold
+    heldMirrorCells <- null
+    heldMirror <- null
+#else
+    ignore hold
 #endif
 
 /// Give a cell map its hash index, unless it has one or holds more than `limit` cells.
@@ -1539,7 +1564,9 @@ let ensureCellMirror (limit: int) (cells: Map<CellAddress, CellData>) : unit =
             if count <= limit then
                 count <- count + 1
                 mirrorCell mirror (float addr.Row * 16384.0 + float addr.Col) cell
-        if count <= limit then cellMirrorSet cellMirrors (box cells) mirror
+        if count <= limit then
+            cellMirrorSet cellMirrors (box cells) mirror
+            if obj.ReferenceEquals(heldMirrorCells, cells) then heldMirror <- mirror
 #else
     ignore limit
     ignore cells
@@ -1550,7 +1577,7 @@ let ensureCellMirror (limit: int) (cells: Map<CellAddress, CellData>) : unit =
 let carryCellMirror (before: Map<CellAddress, CellData>) (addr: CellAddress) (cell: CellData option) (after: Map<CellAddress, CellData>) : unit =
 #if FABLE_COMPILER
     if not (obj.ReferenceEquals(before, after)) then
-        let mirror = cellMirrorGet cellMirrors (box before)
+        let mirror = mirrorOf (box before)
         if not (isNull mirror) then
             cellMirrorDelete cellMirrors (box before)
             let key = float addr.Row * 16384.0 + float addr.Col
@@ -1558,6 +1585,12 @@ let carryCellMirror (before: Map<CellAddress, CellData>) (addr: CellAddress) (ce
             | Some cell -> mirrorCell mirror key cell
             | None -> unmirrorCell mirror key
             cellMirrorSet cellMirrors (box after) mirror
+            if mirrorHeld then
+                heldMirrorCells <- box after
+                heldMirror <- mirror
+            elif obj.ReferenceEquals(heldMirrorCells, box before) then
+                heldMirrorCells <- null
+                heldMirror <- null
 #else
     ignore before
     ignore addr
@@ -1568,11 +1601,21 @@ let carryCellMirror (before: Map<CellAddress, CellData>) (addr: CellAddress) (ce
 /// Get cell data at address
 let getCell (addr: CellAddress) (model: SpreadsheetModel): CellData option =
 #if FABLE_COMPILER
-    let mirror = cellMirrorGet cellMirrors (box model.Cells)
+    let mirror = mirrorOf (box model.Cells)
     if isNull mirror then Map.tryFind addr model.Cells
     else mirroredCell mirror (float addr.Row * 16384.0 + float addr.Col)
 #else
     Map.tryFind addr model.Cells
+#endif
+
+/// `getCell` by row and column: with a hash index beside the map no address is made.
+let getCellAt (row: int) (col: int) (model: SpreadsheetModel): CellData option =
+#if FABLE_COMPILER
+    let mirror = mirrorOf (box model.Cells)
+    if isNull mirror then Map.tryFind { Row = row; Col = col } model.Cells
+    else mirroredCell mirror (float row * 16384.0 + float col)
+#else
+    Map.tryFind { Row = row; Col = col } model.Cells
 #endif
 
 /// Called after the cells of a sheet changed. The rows an AutoFilter hides

@@ -68,6 +68,7 @@ stages=(
     stage50-date1904
     stage51-resultformat
     stage52-charts
+    stage53-common
     numbertext
 )
 

@@ -563,11 +563,13 @@ let private addReadersMarked (mark: int) (sheet: SheetState) (row: int) (col: in
             reader.EdgeMark <- mark
             into.Add reader
     if not (isNull explicit) then
-        for reader in explicit do add reader
+        for at = 0 to explicit.Count - 1 do add explicit.[at]
     let inGroups (groups: ResizeArray<RangeGroup>) =
-        for group in groups do
+        for at = 0 to groups.Count - 1 do
+            let group = groups.[at]
             if row >= group.R0 && row <= group.R1 && col >= group.C0 && col <= group.C1 then
-                for owner in group.Owners do add owner
+                let owners = group.Owners
+                for owner = 0 to owners.Count - 1 do add owners.[owner]
     match sheet.ByRow.TryGetValue row with
     | true, groups -> inGroups groups
     | false, _ -> ()
@@ -1152,6 +1154,104 @@ let adopt (engine: Engine) (calculated: Workbook) : bool =
 /// changes no value by the workbook's largest change or more (that sweep is
 /// dropped, so a workbook that had settled is left exactly as it is), or the
 /// workbook's number of iterations is reached.
+// ---- the steps of a pass that run once per formula ------------------------------------
+// (Functions of their own, not part of `run`: that one is far too long for the browser's
+// optimising compiler, which leaves it as it is and whatever it calls a call. These are
+// small, and are compiled.)
+
+/// Whether a cell's value is what it was.
+let private sameValue (a: CellValue) (b: CellValue) : bool =
+    match a with
+    | CellValue.Number x -> (match b with CellValue.Number y -> x = y | _ -> false)
+    | CellValue.Boolean x -> (match b with CellValue.Boolean y -> x = y | _ -> false)
+    | CellValue.Empty -> (match b with CellValue.Empty -> true | _ -> false)
+    | _ -> a = b
+
+/// A node is part of the round `pass`: its state of the round starts, and what reads it is looked for.
+let private reachNode (pass: int) (reached: ResizeArray<Node>) (pending: Stack<Node>) (node: Node) : unit =
+    if node.Pass <> pass then
+        node.Pass <- pass
+        node.Pending <- 0
+        node.NeedsEval <- false
+        node.NeedsSpill <- false
+        node.Order <- -1
+        node.Outs <- null
+        reached.Add node
+        pending.Push node
+
+/// Everything that reads a reached cell - the cell itself or, of a formula that spilled, one
+/// of its spilled cells (`spill`: the sheet's spill map) - is reached, with the edge to it.
+let private expandNode (engine: Engine) (pass: int) (reached: ResizeArray<Node>) (pending: Stack<Node>) (node: Node) (spill: Map<CellAddress, CellAddress>) : unit =
+    let outs =
+        // (The same graph as at the last edit: the cell's readers are known.)
+        if node.KeptOutsVersion = engine.GraphVersion && not (isNull node.KeptOuts) && Map.isEmpty spill then node.KeptOuts
+        else
+            let outs = ResizeArray<Node>()
+            engine.EdgeMark <- engine.EdgeMark + 1
+            let mark = engine.EdgeMark
+            addReadersMarked mark node.Sheet node.Row node.Col node.Dependents outs
+            if not (Map.isEmpty spill) then
+                match (ghostsOf node.Sheet spill).TryGetValue (keyOf node.Row node.Col) with
+                | true, ghosts ->
+                    for ghost in ghosts do
+                        let explicit =
+                            match node.Sheet.Nodes.TryGetValue (keyOf ghost.Row ghost.Col) with
+                            | true, ghostNode -> ghostNode.Dependents
+                            | false, _ -> null
+                        addReadersMarked mark node.Sheet ghost.Row ghost.Col explicit outs
+                | false, _ -> ()
+                node.KeptOuts <- null
+            else
+                node.KeptOuts <- outs
+                node.KeptOutsVersion <- engine.GraphVersion
+            outs
+    node.Outs <- outs
+    for at = 0 to outs.Count - 1 do
+        let reader = outs.[at]
+        reachNode pass reached pending reader
+        reader.Pending <- reader.Pending + 1
+
+/// A node whose reached precedents are all in the order takes its place in it; what reads it may be ready then.
+let private placeInOrder (node: Node) (order: ResizeArray<Node>) (ready: Stack<Node>) : unit =
+    if node.Order < 0 then
+        node.Order <- order.Count
+        order.Add node
+        let outs = node.Outs
+        for at = 0 to outs.Count - 1 do
+            let reader = outs.[at]
+            reader.Pending <- reader.Pending - 1
+            if reader.Pending = 0 && reader.Order < 0 then ready.Push reader
+
+/// A formula of the pass evaluated in its sheet (`forced`: the value it has without being
+/// evaluated - the cycle error, #SPILL! - or null). `baseline`: the value what reads it was
+/// calculated with, when that is not the one the cell holds (null). What reads it has to be
+/// evaluated when the value is another one. Gives the sheet with the new value in the cell,
+/// or null when the cell holds it already (or there is no such cell).
+let private evaluateNode (node: Node) (model: SpreadsheetModel) (workbook: Workbook) (forced: CellValue) (baseline: CellValue) : SpreadsheetModel =
+    match getCellAt node.Row node.Col model with
+    | Some cell ->
+        let result =
+            if not (isNull (box forced)) then forced
+            else
+                match node.Expr with
+                | Some expr -> eval expr { Model = model; Workbook = Some workbook; Sheet = Some node.Sheet.Id; CurrentCell = Some { Row = node.Row; Col = node.Col } }
+                | None -> CellValue.Error Err.syntax
+        let previous = match cell.Value with CellValue.Formula (_, cached) -> cached | other -> other
+        let changed = not (sameValue previous result)
+        // What reads it was calculated with the value it had before the edit.
+        if (if isNull (box baseline) then changed else not (sameValue baseline result)) then
+            let outs = node.Outs
+            for at = 0 to outs.Count - 1 do outs.[at].NeedsEval <- true
+        if changed then
+            let addr = { Row = node.Row; Col = node.Col }
+            let calculated = { cell with Value = CellValue.Formula (node.Formula, result) }
+            let cells = Map.add addr calculated model.Cells
+            // (What reads the cell next finds it without walking the map: see `getCell`.)
+            carryCellMirror model.Cells addr (Some calculated) cells
+            { model with Cells = cells }
+        else Unchecked.defaultof<SpreadsheetModel>
+    | None -> Unchecked.defaultof<SpreadsheetModel>
+
 let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (SheetId * CellAddress) list option) : Workbook option =
     // 0: an edit (incremental); 1: the full recalculation; 2: no calculation - the circular references of the graph are looked for.
     let full = mode = 1
@@ -1187,15 +1287,34 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
         /// The cells of a sheet as the pass first took them: the pass changes values, never which cells hold formulas.
         let cellsAtStart = Dictionary<SheetId, Map<CellAddress, CellData>>()
         let touched = HashSet<SheetId>()
+        // (The sheet last asked for: formulas are mostly evaluated sheet by sheet.)
+        let mutable heldState : SheetState = Unchecked.defaultof<SheetState>
+        let mutable heldModel : SpreadsheetModel = Unchecked.defaultof<SpreadsheetModel>
+        let mutable touchedLast : SheetState = Unchecked.defaultof<SheetState>
         let modelOf (state: SheetState) =
-            match models.TryGetValue state.Id with
-            | true, model -> model
-            | false, _ ->
-                // (A formula is evaluated in its sheet, not in the sheet's stand-in.)
-                let model = resolveSheet (Map.find state.Id workbook.Sheets).Model
-                models.[state.Id] <- model
-                if not (cellsAtStart.ContainsKey state.Id) then cellsAtStart.[state.Id] <- model.Cells
+            if obj.ReferenceEquals(state, heldState) then heldModel
+            else
+                let model =
+                    match models.TryGetValue state.Id with
+                    | true, model -> model
+                    | false, _ ->
+                        // (A formula is evaluated in its sheet, not in the sheet's stand-in.)
+                        let model = resolveSheet (Map.find state.Id workbook.Sheets).Model
+                        models.[state.Id] <- model
+                        if not (cellsAtStart.ContainsKey state.Id) then cellsAtStart.[state.Id] <- model.Cells
+                        model
+                heldState <- state
+                heldModel <- model
                 model
+        /// The sheet as the pass has it from now on.
+        let setModel (state: SheetState) (updated: SpreadsheetModel) =
+            models.[state.Id] <- updated
+            if not (obj.ReferenceEquals(state, touchedLast)) then
+                touched.Add state.Id |> ignore
+                touchedLast <- state
+            workbook <- updateSheetModel state.Id updated workbook
+            heldState <- state
+            heldModel <- updated
         /// The sheet's spill map as the pass has it now (a sheet that is not loaded has none to speak of).
         let spillOf (state: SheetState) : Map<CellAddress, CellAddress> =
             match models.TryGetValue state.Id with
@@ -1215,16 +1334,7 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
         let mutable pass = 0
         let mutable reached = ResizeArray<Node>()
         let pending = Stack<Node>()
-        let reach (node: Node) =
-            if node.Pass <> pass then
-                node.Pass <- pass
-                node.Pending <- 0
-                node.NeedsEval <- false
-                node.NeedsSpill <- false
-                node.Order <- -1
-                node.Outs <- null
-                reached.Add node
-                pending.Push node
+        let reach (node: Node) = reachNode pass reached pending node
         let newRound () =
             engine.Pass <- engine.Pass + 1
             pass <- engine.Pass
@@ -1582,52 +1692,23 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                 rounds <- rounds + 1
                 // Everything that reads what was reached - a cell itself or, of a
                 // formula that spilled, one of its spilled cells - with the edges among them.
+                // (The spill map of the sheet in hand: nothing changes the sheets while the round is put together.)
+                let mutable spillState : SheetState = Unchecked.defaultof<SheetState>
+                let mutable spillHeld : Map<CellAddress, CellAddress> = Map.empty
                 while pending.Count > 0 do
                     let node = pending.Pop()
-                    let spill = spillOf node.Sheet
-                    let outs =
-                        // (The same graph as at the last edit: the cell's readers are known.)
-                        if node.KeptOutsVersion = engine.GraphVersion && not (isNull node.KeptOuts) && Map.isEmpty spill then node.KeptOuts
-                        else
-                            let outs = ResizeArray<Node>()
-                            engine.EdgeMark <- engine.EdgeMark + 1
-                            let mark = engine.EdgeMark
-                            addReadersMarked mark node.Sheet node.Row node.Col node.Dependents outs
-                            if not (Map.isEmpty spill) then
-                                match (ghostsOf node.Sheet spill).TryGetValue (keyOf node.Row node.Col) with
-                                | true, ghosts ->
-                                    for ghost in ghosts do
-                                        let explicit =
-                                            match node.Sheet.Nodes.TryGetValue (keyOf ghost.Row ghost.Col) with
-                                            | true, ghostNode -> ghostNode.Dependents
-                                            | false, _ -> null
-                                        addReadersMarked mark node.Sheet ghost.Row ghost.Col explicit outs
-                                | false, _ -> ()
-                                node.KeptOuts <- null
-                            else
-                                node.KeptOuts <- outs
-                                node.KeptOutsVersion <- engine.GraphVersion
-                            outs
-                    node.Outs <- outs
-                    for reader in outs do
-                        reach reader
-                        reader.Pending <- reader.Pending + 1
+                    if not (obj.ReferenceEquals(node.Sheet, spillState)) then
+                        spillState <- node.Sheet
+                        spillHeld <- spillOf node.Sheet
+                    expandNode engine pass reached pending node spillHeld
                 reachedTotal <- reachedTotal + reached.Count
                 // Dependency order: a formula is ready when everything reached that it reads is done.
                 let ready = Stack<Node>()
-                for node in reached do
+                for at = 0 to reached.Count - 1 do
+                    let node = reached.[at]
                     if node.Pending = 0 then ready.Push node
                 let order = ResizeArray<Node>(reached.Count)
-                let drain () =
-                    while ready.Count > 0 do
-                        let node = ready.Pop()
-                        if node.Order < 0 then
-                            node.Order <- order.Count
-                            order.Add node
-                            for reader in node.Outs do
-                                reader.Pending <- reader.Pending - 1
-                                if reader.Pending = 0 && reader.Order < 0 then ready.Push reader
-                drain ()
+                while ready.Count > 0 do placeInOrder (ready.Pop()) order ready
                 /// The circular references of the round, as stretches of the order: first index -> last.
                 let blocks = Dictionary<int, int>()
                 if order.Count < reached.Count then
@@ -1835,9 +1916,7 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                         if not (obj.ReferenceEquals(cells, model.Cells)) || not (obj.ReferenceEquals(spill, model.Spill)) then
                             if not (obj.ReferenceEquals(cells, model.Cells)) then valueChanged ()
                             let updated = { model with Cells = cells; Spill = spill }
-                            models.[state.Id] <- updated
-                            touched.Add state.Id |> ignore
-                            workbook <- updateSheetModel state.Id updated workbook
+                            setModel state updated
                         state.GhostsFor <- box spill
                         if blocked then noteBlocked node
                         // What reads the array as a whole (`A1#`) sees another one: other cells, or other values in them.
@@ -1863,9 +1942,7 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                                     match Map.tryFind addr model.Cells with
                                     | Some cell ->
                                         let updated = { model with Cells = Map.add addr { cell with Value = CellValue.Formula (node.Formula, CellValue.Empty) } model.Cells }
-                                        models.[node.Sheet.Id] <- updated
-                                        touched.Add node.Sheet.Id |> ignore
-                                        workbook <- updateSheetModel node.Sheet.Id updated workbook
+                                        setModel node.Sheet updated
                                     | None -> ()
                             let mutable sweeps = 0
                             let mutable going = true
@@ -1896,9 +1973,7 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                                                     | CellValue.Number a, CellValue.Number b -> max change (abs (a - b))
                                                     | _ -> System.Double.PositiveInfinity
                                                 let updated = { model with Cells = Map.add addr { cell with Value = CellValue.Formula (node.Formula, result) } model.Cells }
-                                                models.[state.Id] <- updated
-                                                touched.Add state.Id |> ignore
-                                                workbook <- updateSheetModel state.Id updated workbook
+                                                setModel state updated
                                         | None -> ()
                                 if change < setting.MaxChange || change = 0.0 then
                                     // Settled: the sweep's last small steps are not kept.
@@ -1907,6 +1982,7 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                                         workbook <- heldWorkbook
                                         models.Clear()
                                         for sheetId, held in heldModels do models.[sheetId] <- held
+                                        heldState <- Unchecked.defaultof<SheetState>
                             for at in index .. last do
                                 let node = order.[at]
                                 node.NeedsEval <- false
@@ -1926,34 +2002,15 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                             evaluated <- evaluated + 1
                             evaluations <- evaluations + 1
                             let state = node.Sheet
-                            let model = modelOf state
-                            let addr = { Row = node.Row; Col = node.Col }
-                            match getCell addr model with
-                            | Some cell ->
-                                let result =
-                                    if isCyclic node then CellValue.Error Err.cycle
-                                    elif blocked then spillError
-                                    else
-                                        match node.Expr with
-                                        | Some expr -> eval expr { Model = model; Workbook = Some workbook; Sheet = Some state.Id; CurrentCell = Some addr }
-                                        | None -> CellValue.Error Err.syntax
-                                let previous = match cell.Value with CellValue.Formula (_, cached) -> cached | other -> other
-                                if previous <> result then
-                                    valueChanged ()
-                                    let calculated = { cell with Value = CellValue.Formula (node.Formula, result) }
-                                    let cells = Map.add addr calculated model.Cells
-                                    // (What reads the cell next finds it without walking the map: see `getCell`.)
-                                    carryCellMirror model.Cells addr (Some calculated) cells
-                                    let updated = { model with Cells = cells }
-                                    models.[state.Id] <- updated
-                                    touched.Add state.Id |> ignore
-                                    workbook <- updateSheetModel state.Id updated workbook
-                                // What reads it was calculated with the value it had before the edit.
-                                let before = if node.BaselinePass = pass && pass = firstPass then node.Baseline else previous
-                                if before <> result then
-                                    for reader in node.Outs do
-                                        reader.NeedsEval <- true
-                            | None -> ()
+                            let forced =
+                                if isCyclic node then CellValue.Error Err.cycle
+                                elif blocked then spillError
+                                else Unchecked.defaultof<CellValue>
+                            let baseline = if node.BaselinePass = pass && pass = firstPass then node.Baseline else Unchecked.defaultof<CellValue>
+                            let updated = evaluateNode node (modelOf state) workbook forced baseline
+                            if not (isNull (box updated)) then
+                                valueChanged ()
+                                setModel state updated
                             if node.Dynamic then dynamicSeen <- true
                         index <- index + 1
                     if nextEval.Count = 0 && nextSpill.Count = 0 && not dynamicStale then running <- false
@@ -2018,9 +2075,15 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
 let findCycles (engine: Engine) : unit =
     if not engine.CyclesKnown then run 2 engine engine.Workbook None |> ignore
 
+/// A pass, with the cell map it reads held for as long as it runs (`Model.holdCellMirror`).
+let private runHeld (mode: int) (engine: Engine) (edited: Workbook) (hint: (SheetId * CellAddress) list option) : Workbook option =
+    holdCellMirror true
+    try run mode engine edited hint
+    finally holdCellMirror false
+
 /// See `run`.
 let recalculate (engine: Engine) (edited: Workbook) (hint: (SheetId * CellAddress) list option) : Workbook option =
-    Rbt.Spreadsheet.Workbook.withSheetNamesHeld edited (fun () -> run 0 engine edited hint)
+    Rbt.Spreadsheet.Workbook.withSheetNamesHeld edited (fun () -> runHeld 0 engine edited hint)
 
 /// The full recalculation of a workbook: every formula of every sheet (of the
 /// sheets that are converted; the stand-in of a sheet nothing asked for has no
@@ -2033,7 +2096,7 @@ let recalculateAll (workbook: Workbook) : Workbook * Engine =
     let hasWork = engine.Formulas > 0 || (workbook.Sheets |> Map.exists (fun _ sheet -> not (Map.isEmpty (loadedSpill sheet.Model))))
     if not hasWork then workbook, engine
     else
-        match Rbt.Spreadsheet.Workbook.withSheetNamesHeld workbook (fun () -> run 1 engine workbook None) with
+        match Rbt.Spreadsheet.Workbook.withSheetNamesHeld workbook (fun () -> runHeld 1 engine workbook None) with
         | Some recalculated -> recalculated, engine
         | None -> workbook, engine
 

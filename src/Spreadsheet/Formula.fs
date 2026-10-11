@@ -2120,9 +2120,12 @@ let private resolveModel (sheet: string option) (model: SpreadsheetModel)
 /// Read a single cell's value, resolving cross-sheet references.
 let private readCell (r: RefAst) (model: SpreadsheetModel)
                      (workbook: Rbt.Spreadsheet.Workbook.Workbook option) : CellValue =
-    match resolveModel r.Sheet model workbook with
-    | Some m -> getCellValue { Row = r.Row; Col = r.Col } m |> unwrapValue
-    | None -> err Err.ref
+    match r.Sheet with
+    | None -> (match getCellAt r.Row r.Col model with Some cell -> unwrapValue cell.Value | None -> CellValue.Empty)
+    | Some _ ->
+        match resolveModel r.Sheet model workbook with
+        | Some m -> (match getCellAt r.Row r.Col m with Some cell -> unwrapValue cell.Value | None -> CellValue.Empty)
+        | None -> err Err.ref
 
 /// Resolve a spill-range operator `A1#` to its (top-left, bottom-right) RefAst
 /// pair: the bounding rectangle of the anchor plus every cell that spilled from
@@ -2368,6 +2371,24 @@ let private monthsFromSerial (date1904: bool) (serial: float) (months: int) (end
             let dayOfEra2 = yearOfEra2 * 365 + yearOfEra2 / 4 - yearOfEra2 / 100 + dayOfYear2
             let result = float (era2 * 146097 + dayOfEra2 - 719468 + 25569)
             if result < 61.0 then ValueNone else ValueSome (result - dateSystemDays date1904)
+
+/// The calendar date of a whole serial as year * 10000 + month * 100 + day, in whole numbers
+/// (YEAR, MONTH and DAY of a model's timeline are asked for thousands of times an edit).
+/// -1 where `monthsFromSerial` gives none: the date object then says what it is.
+let private datePartsOfSerial (date1904: bool) (serial: float) : int =
+    let day = serial + dateSystemDays date1904
+    if day <> Math.Floor day || day < 61.0 || day > 2958465.0 then -1
+    else
+        let z = int day - 25569 + 719468
+        let era = (if z >= 0 then z else z - 146096) / 146097
+        let dayOfEra = z - era * 146097
+        let yearOfEra = (dayOfEra - dayOfEra / 1460 + dayOfEra / 36524 - dayOfEra / 146096) / 365
+        let dayOfYear = dayOfEra - (365 * yearOfEra + yearOfEra / 4 - yearOfEra / 100)
+        let marchMonth = (5 * dayOfYear + 2) / 153
+        let dayOfMonth = dayOfYear - (153 * marchMonth + 2) / 5 + 1
+        let month = if marchMonth < 10 then marchMonth + 3 else marchMonth - 9
+        let year = yearOfEra + era * 400 + (if month <= 2 then 1 else 0)
+        year * 10000 + month * 100 + dayOfMonth
 
 /// Shared RNG for the volatile RAND / RANDBETWEEN functions.
 let private rng = Random()
@@ -3974,6 +3995,11 @@ let private formTableSet (table: System.Runtime.CompilerServices.ConditionalWeak
 let private isArrayExprTable = newFormTable ()
 let private argsNeedPreparingTable = newFormTable ()
 let private argsArrayTable = newFormTable ()
+let private callPlanTable = newFormTable ()
+
+/// What a call is, worked out once for its list of arguments (`callPlanOf`): `Code` 0 for a
+/// call that goes the general way, else which of the common functions it is.
+type CallPlan = { PlanName: string; Code: int }
 
 let isArrayExpr (e: Expr) : bool =
     let known = formTableGet isArrayExprTable (box e)
@@ -4059,9 +4085,8 @@ let applyUnary (op: string) (v: CellValue) : CellValue =
     | "%" -> (match coerceNumber v with Ok n -> CellValue.Number (n / 100.0) | Result.Error e -> err e)
     | _ -> err Err.value
 
-/// Apply a binary operator to two values (shared by scalar eval and array
-/// broadcasting). Mirrors the scalar BinOp semantics exactly.
-let applyBin (op: string) (lv: CellValue) (rv: CellValue) : CellValue =
+/// `applyBin` for any two values.
+let private applyBinGeneral (op: string) (lv: CellValue) (rv: CellValue) : CellValue =
     match firstError [ lv; rv ] with
     | Some e -> e
     | None ->
@@ -4092,6 +4117,30 @@ let applyBin (op: string) (lv: CellValue) (rv: CellValue) : CellValue =
                 | "/" -> if b = 0.0 then err Err.div0 else finite (a / b)
                 | "^" -> (let p = a ** b in if Double.IsNaN p || Double.IsInfinity p then err Err.num else CellValue.Number p)
                 | _ -> err Err.value)
+
+/// Apply a binary operator to two values (shared by scalar eval and array
+/// broadcasting). Mirrors the scalar BinOp semantics exactly.
+/// (Two numbers - most of what a model calculates - without the detours of the general
+/// case: no list of the operands, no result wrappers. The outcome is `applyBinGeneral`'s.)
+let applyBin (op: string) (lv: CellValue) (rv: CellValue) : CellValue =
+    match lv with
+    | CellValue.Number a ->
+        match rv with
+        | CellValue.Number b ->
+            match op with
+            | "+" -> (let x = a + b in if Double.IsInfinity x || Double.IsNaN x then err Err.num else CellValue.Number x)
+            | "-" -> (let x = a - b in if Double.IsInfinity x || Double.IsNaN x then err Err.num else CellValue.Number x)
+            | "*" -> (let x = a * b in if Double.IsInfinity x || Double.IsNaN x then err Err.num else CellValue.Number x)
+            | "/" -> if b = 0.0 then err Err.div0 else (let x = a / b in if Double.IsInfinity x || Double.IsNaN x then err Err.num else CellValue.Number x)
+            | "=" -> CellValue.Boolean (compareFloats a b = 0)
+            | "<>" -> CellValue.Boolean (compareFloats a b <> 0)
+            | "<" -> CellValue.Boolean (compareFloats a b < 0)
+            | ">" -> CellValue.Boolean (compareFloats a b > 0)
+            | "<=" -> CellValue.Boolean (compareFloats a b <= 0)
+            | ">=" -> CellValue.Boolean (compareFloats a b >= 0)
+            | _ -> applyBinGeneral op lv rv
+        | _ -> applyBinGeneral op lv rv
+    | _ -> applyBinGeneral op lv rv
 
 /// Parse R1C1-style reference text (`R2C3`, `R[-1]C`, `R1C1:R3C2`, `C2`, `R5`,
 /// optionally `Sheet!`-qualified) — what INDIRECT accepts when its second
@@ -4251,6 +4300,8 @@ let private resolveNameForEval (name: string) (currentSheet: Rbt.Spreadsheet.Wor
 /// reference, reported as an error instead of recursing until the stack ends.
 let private namesBeingEvaluated = ResizeArray<string>()
 
+let private noCallPlan : CallPlan = { PlanName = ""; Code = 0 }
+
 /// Evaluate an expression to a scalar CellValue.
 let rec eval (expr: Expr) (ctx: EvalContext) : CellValue =
     let model = ctx.Model
@@ -4296,6 +4347,12 @@ let rec eval (expr: Expr) (ctx: EvalContext) : CellValue =
     | UnaryOp (op, operand) -> applyUnary op (eval operand ctx)
     | BinOp _ -> evalBinOpChain expr ctx
     | Function (name, args) ->
+        // (The functions a model is mostly made of - IF, AND, OR, the parts of a date,
+        // EOMONTH - with plain arguments: see `evalCommonFunction`.)
+        let common =
+            let plan = callPlanOf name args
+            if plan.Code = 0 then Unchecked.defaultof<CellValue> else evalCommonFunction plan.Code args ctx
+        if not (isNull (box common)) then common else
         // An array-producing function in scalar context collapses to its
         // top-left element (implicit intersection; spill placement is Step 2).
         let args = if argsNeedPreparing name args then prepareArgs name (keepsOpenRanges name) args ctx else args
@@ -4321,6 +4378,120 @@ let rec eval (expr: Expr) (ctx: EvalContext) : CellValue =
             try evalFunction name args ctx
             with :? System.ArgumentOutOfRangeException -> err Err.num
 #endif
+
+/// Which of the common functions a call is (`CallPlan.Code`), when its arguments are plain -
+/// none that has to be prepared (`argsNeedPreparing`), and for AND / OR none that is a range,
+/// a name, a table or an array: 1 IF(c,t), 2 IF(c,t,f), 3 AND, 4 OR, 5 NOT, 6 IFERROR,
+/// 7 YEAR, 8 MONTH, 9 DAY, 10 EOMONTH, 11 EDATE. 0 for every other call.
+and callPlanOf (name: string) (args: Expr list) : CallPlan =
+    if args.IsEmpty then noCallPlan
+    else
+        let known = formTableGet callPlanTable (box args)
+        let kept = if isNull known then Unchecked.defaultof<CallPlan> else unbox<CallPlan> known
+        if not (isNull (box kept)) && (obj.ReferenceEquals(kept.PlanName, name) || kept.PlanName = name) then kept
+        else
+            let count = List.length args
+            let plainScalars () =
+                args |> List.forall (fun arg ->
+                    match arg with
+                    | CellRef _ | BinOp _ | UnaryOp _ | Function _ | Number _ | Str _ | Bool _ -> not (isArrayExpr arg)
+                    | _ -> false)
+            let code =
+                if name.Length < 2 || name.Length > 7 then 0
+                else
+                    match name.ToUpperInvariant() with
+                    | "IF" -> if count = 2 then 1 elif count = 3 then 2 else 0
+                    | "AND" -> if plainScalars () then 3 else 0
+                    | "OR" -> if plainScalars () then 4 else 0
+                    | "NOT" -> if count = 1 then 5 else 0
+                    | "IFERROR" -> if count = 2 then 6 else 0
+                    | "YEAR" -> if count = 1 then 7 else 0
+                    | "MONTH" -> if count = 1 then 8 else 0
+                    | "DAY" -> if count = 1 then 9 else 0
+                    | "EOMONTH" -> if count = 2 then 10 else 0
+                    | "EDATE" -> if count = 2 then 11 else 0
+                    | _ -> 0
+            let code = if code <> 0 && argsNeedPreparingNow name args then 0 else code
+            let plan = { PlanName = name; Code = code }
+            formTableSet callPlanTable (box args) (box plan)
+            plan
+
+/// A call of one of the common functions (`callPlanOf`), with the outcome `evalFunction`
+/// gives for it - that function is the whole catalogue, and a call pays for its size.
+/// Null where this one has no answer (a date that is not a whole day of the calendar):
+/// the call then goes the general way.
+and evalCommonFunction (code: int) (args: Expr list) (ctx: EvalContext) : CellValue =
+    match code with
+    | 1 | 2 ->
+        let condition = unwrapValue (eval args.Head ctx)
+        let truth =
+            match condition with
+            | CellValue.Boolean b -> (if b then 1 else 0)
+            | CellValue.Number n -> (if n <> 0.0 then 1 else 0)
+            | other -> (match coerceBool other with Ok b -> (if b then 1 else 0) | Result.Error _ -> -1)
+        if truth = 1 then eval args.Tail.Head ctx
+        elif truth = 0 then (if code = 1 then CellValue.Boolean false else eval args.Tail.Tail.Head ctx)
+        else (match coerceBool condition with Result.Error e -> err e | Ok _ -> err Err.value)
+    | 3 | 4 ->
+        let isAnd = code = 3
+        let mutable seen = false
+        let mutable result = isAnd
+        let mutable firstError : string = null
+        let mutable remaining = args
+        while not remaining.IsEmpty do
+            (match unwrapValue (eval remaining.Head ctx) with
+             | CellValue.Empty -> ()
+             | CellValue.Boolean b ->
+                seen <- true
+                result <- (if isAnd then result && b else result || b)
+             | CellValue.Number n ->
+                seen <- true
+                result <- (if isAnd then result && n <> 0.0 else result || n <> 0.0)
+             | other ->
+                match coerceBool other with
+                | Ok b ->
+                    seen <- true
+                    result <- (if isAnd then result && b else result || b)
+                | Result.Error e -> if isNull firstError then firstError <- e)
+            remaining <- remaining.Tail
+        if not (isNull firstError) then err firstError
+        elif not seen then err Err.value
+        else CellValue.Boolean result
+    | 5 ->
+        (match coerceBool (eval args.Head ctx) with
+         | Ok b -> CellValue.Boolean (not b)
+         | Result.Error e -> err e)
+    | 6 ->
+        let value = eval args.Head ctx
+        (match unwrapValue value with
+         | CellValue.Error _ -> eval args.Tail.Head ctx
+         | _ -> value)
+    | 7 | 8 | 9 ->
+        (match unwrapValue (eval args.Head ctx) with
+         | CellValue.Number serial ->
+            let parts = datePartsOfSerial (date1904Of ctx) serial
+            if parts < 0 then Unchecked.defaultof<CellValue>
+            elif code = 7 then CellValue.Number (float (parts / 10000))
+            elif code = 8 then CellValue.Number (float (parts / 100 % 100))
+            else CellValue.Number (float (parts % 100))
+         | CellValue.Error e -> err e
+         | _ -> Unchecked.defaultof<CellValue>)
+    | 10 | 11 ->
+        (match unwrapValue (eval args.Head ctx) with
+         | CellValue.Error e -> err e
+         | CellValue.Number serial ->
+            (match unwrapValue (eval args.Tail.Head ctx) with
+             | CellValue.Error e -> err e
+             | CellValue.Number months ->
+                // (As `int months` reads it in both runtimes: toward zero, in the range the function takes.)
+                if Double.IsNaN months || months > 120000.0 || months < -120000.0 then Unchecked.defaultof<CellValue>
+                else
+                    match monthsFromSerial (date1904Of ctx) serial (int months) (code = 10) with
+                    | ValueSome moved -> CellValue.Number moved
+                    | ValueNone -> Unchecked.defaultof<CellValue>
+             | _ -> Unchecked.defaultof<CellValue>)
+         | _ -> Unchecked.defaultof<CellValue>)
+    | _ -> Unchecked.defaultof<CellValue>
 
 /// Do any of a call's arguments need rewriting before the function sees
 /// them? Functions recognise ranges by their syntax (`RangeRef`), so an
@@ -4658,6 +4829,17 @@ and resolveReferenceFunction (name: string) (args: Expr list) (ctx: EvalContext)
                             else RangeRef (corner top left, corner bottom right)
 
 and evalBinOpChain (expr: Expr) (ctx: EvalContext) : CellValue =
+    // (One operator, or two: no list of them is made. A long chain - `A1+A2+...` nests to
+    // the left as deep as it is long - is walked, not descended into.)
+    match expr with
+    | BinOp (left, op, right) when (match left with BinOp _ -> false | _ -> true) ->
+        let lv = eval left ctx
+        applyBin op lv (eval right ctx)
+    | BinOp (BinOp (first, op1, second), op2, third) when (match first with BinOp _ -> false | _ -> true) ->
+        let lv = eval first ctx
+        let inner = applyBin op1 lv (eval second ctx)
+        applyBin op2 inner (eval third ctx)
+    | _ ->
     let operations = ResizeArray<struct (string * Expr)>()
     let mutable current = expr
     let mutable collecting = true
