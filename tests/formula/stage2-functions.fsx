@@ -175,6 +175,28 @@ check "month"        "=MONTH(43831)"          (n 1.0)
 check "day"          "=DAY(43831)"            (n 1.0)
 check "weekday"      "=WEEKDAY(43831)"        (n 4.0)        // 2020-01-01 = Wednesday
 check "eomonth"      "=EOMONTH(43831,0)"      (n 43861.0)    // 2020-01-31
+// EDATE / EOMONTH of whole serials are worked out without a date object: the same as with one, day for day.
+do
+    let epoch = System.DateTime(1899, 12, 30)
+    let mutable wrong = []
+    let mutable tried = 0
+    for serial in [ 61 .. 53 .. 110000 ] @ [ 61; 62; 366; 425; 426; 36525; 36585; 36586; 43890; 43891; 44255; 44256; 73050; 73109; 73110; 2958465; 2958400 ] do
+        for months in [ -1200; -25; -13; -12; -11; -2; -1; 0; 1; 2; 11; 12; 13; 25; 600 ] do
+            let date = epoch.AddDays(float serial)
+            let ok = (try Some (date.AddMonths months) with _ -> None)
+            match ok with
+            | Some moved when moved.Year >= 1900 && (moved - epoch).TotalDays >= 61.0 ->
+                tried <- tried + 1
+                let wantEdate = (moved - epoch).TotalDays
+                let wantEom = (System.DateTime(moved.Year, moved.Month, System.DateTime.DaysInMonth(moved.Year, moved.Month)) - epoch).TotalDays
+                let gotEdate = evaluateFormula (sprintf "=EDATE(%d,%d)" serial months) model None
+                let gotEom = evaluateFormula (sprintf "=EOMONTH(%d,%d)" serial months) model None
+                if gotEdate <> CellValue.Number wantEdate || gotEom <> CellValue.Number wantEom then
+                    wrong <- (serial, months, gotEdate, wantEdate, gotEom, wantEom) :: wrong
+            | _ -> ()
+    if wrong.IsEmpty && tried > 20000 then pass <- pass + 1
+    else (fail <- fail + 1; printfn "FAIL edate/eomonth in whole numbers: %d of %d differ, e.g. %A" wrong.Length tried (List.truncate 3 wrong))
+check "edate (a time of day stays)" "=EDATE(43831.5,1)" (n 43862.5)
 
 printfn ""
 printfn "Stage 2 formula tests: %d passed, %d failed" pass fail

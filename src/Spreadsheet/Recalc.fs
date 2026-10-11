@@ -124,6 +124,12 @@ and Node(sheet: SheetState, row: int, col: int) =
     member val Pending = 0 with get, set
     member val NeedsEval = false with get, set
     member val Outs : ResizeArray<Node> = null with get, set
+    /// What reads the cell, as it was last worked out, and the wiring of the graph it was
+    /// worked out for (`Engine.GraphVersion`): while no formula is wired or unwired - and the
+    /// cell's sheet has no spilled array - the readers of a cell are the same from one edit
+    /// to the next, and are not looked for again.
+    member val KeptOuts : ResizeArray<Node> = null with get, set
+    member val KeptOutsVersion = -1 with get, set
     /// The cell's dynamic array has to be laid out again (its spilled cells written, cleared or blocked).
     member val NeedsSpill = false with get, set
     /// The node's place in the order of the pass in hand.
@@ -191,6 +197,8 @@ type Engine = {
     /// Formulas found on a circular reference (`Node.OnCycle`; entries whose flag is down are stale).
     /// With iterative calculation they are calculated again at every edit, as in Excel.
     mutable WireCount: int
+    /// Counts the changes of the graph's edges (a formula wired or unwired): see `Node.KeptOuts`.
+    mutable GraphVersion: int
     mutable Cyclic: ResizeArray<Node>
     /// Every circular reference of the graph is in `Cyclic` (a pass over all of it has looked).
     mutable CyclesKnown: bool
@@ -349,6 +357,7 @@ let private noGroups : RangeGroup array = [||]
 
 /// Take a formula out of the graph: what it read no longer leads to it.
 let private unwire (engine: Engine) (node: Node) =
+    engine.GraphVersion <- engine.GraphVersion + 1
     for precedent in node.Precedents do
         precedent.Dependents.Remove node |> ignore
         if not precedent.IsFormula && precedent.Dependents.Count = 0 then
@@ -383,6 +392,8 @@ let private unwire (engine: Engine) (node: Node) =
 /// taking them out one by one searches that list once for each, so each list
 /// is gone through once instead, for the whole batch.
 let private unwireMany (engine: Engine) (nodes: ResizeArray<Node>) =
+    // (An edit that takes no formula out leaves the graph as it is: see `Node.KeptOuts`.)
+    if nodes.Count > 4 then engine.GraphVersion <- engine.GraphVersion + 1
     if nodes.Count <= 4 then
         for node in nodes do
             if node.IsFormula then unwire engine node
@@ -418,6 +429,7 @@ let private wire (engine: Engine) (workbook: Workbook) (sheet: SheetState) (row:
     node.Formula <- formula
     node.IsFormula <- true
     engine.WireCount <- engine.WireCount + 1
+    engine.GraphVersion <- engine.GraphVersion + 1
     node.WireStamp <- engine.WireCount
     engine.Formulas <- engine.Formulas + 1
     match parseFormula formula with
@@ -488,6 +500,7 @@ let private buildGraph (unloadedToo: bool) (workbook: Workbook) : Engine =
         NameTraits = Dictionary<string, int>()
         ThreeD = 0
         WireCount = 0
+        GraphVersion = 0
         Cyclic = ResizeArray<Node>()
         CyclesKnown = false
     }
@@ -1571,21 +1584,30 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                 // formula that spilled, one of its spilled cells - with the edges among them.
                 while pending.Count > 0 do
                     let node = pending.Pop()
-                    let outs = ResizeArray<Node>()
-                    engine.EdgeMark <- engine.EdgeMark + 1
-                    let mark = engine.EdgeMark
-                    addReadersMarked mark node.Sheet node.Row node.Col node.Dependents outs
                     let spill = spillOf node.Sheet
-                    if not (Map.isEmpty spill) then
-                        match (ghostsOf node.Sheet spill).TryGetValue (keyOf node.Row node.Col) with
-                        | true, ghosts ->
-                            for ghost in ghosts do
-                                let explicit =
-                                    match node.Sheet.Nodes.TryGetValue (keyOf ghost.Row ghost.Col) with
-                                    | true, ghostNode -> ghostNode.Dependents
-                                    | false, _ -> null
-                                addReadersMarked mark node.Sheet ghost.Row ghost.Col explicit outs
-                        | false, _ -> ()
+                    let outs =
+                        // (The same graph as at the last edit: the cell's readers are known.)
+                        if node.KeptOutsVersion = engine.GraphVersion && not (isNull node.KeptOuts) && Map.isEmpty spill then node.KeptOuts
+                        else
+                            let outs = ResizeArray<Node>()
+                            engine.EdgeMark <- engine.EdgeMark + 1
+                            let mark = engine.EdgeMark
+                            addReadersMarked mark node.Sheet node.Row node.Col node.Dependents outs
+                            if not (Map.isEmpty spill) then
+                                match (ghostsOf node.Sheet spill).TryGetValue (keyOf node.Row node.Col) with
+                                | true, ghosts ->
+                                    for ghost in ghosts do
+                                        let explicit =
+                                            match node.Sheet.Nodes.TryGetValue (keyOf ghost.Row ghost.Col) with
+                                            | true, ghostNode -> ghostNode.Dependents
+                                            | false, _ -> null
+                                        addReadersMarked mark node.Sheet ghost.Row ghost.Col explicit outs
+                                | false, _ -> ()
+                                node.KeptOuts <- null
+                            else
+                                node.KeptOuts <- outs
+                                node.KeptOutsVersion <- engine.GraphVersion
+                            outs
                     node.Outs <- outs
                     for reader in outs do
                         reach reader

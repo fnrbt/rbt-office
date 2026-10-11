@@ -932,6 +932,20 @@ Nothing to call for the recalculation itself: every edit recalculates what it ha
   sheet of the span does not re-point a 3-D reference (Excel does not either: it is the same cells on every sheet of the span); it reads whatever is at
   those cells afterwards.
 
+### Recalculation after an edit: what 0.1.15 does less of
+- **The readers of a cell are kept from one edit to the next.** An edit reaches the formulas that read what changed, and for each
+  of them the formulas that read it: finding those (its direct readers and the owners of every range the cell is in) took 15 ms of
+  an edit that reaches 12 600 formulas. They are now worked out once per cell and kept while no formula is put into or taken out of
+  the graph (and the cell's sheet has no spilled array): typing numbers into a model looks nothing up again.
+- **`EDATE` and `EOMONTH` of a whole serial are worked out in whole numbers**, without a date object (a model's timeline is built of
+  them: 10 ms of that edit). The same values, day for day (checked against the date object for 27 000 serials and month counts); a
+  serial with a time of day, before 1 March 1900 or outside the calendar takes the old path.
+- Measured in one session with `tools/xlsx-browser/perf.mjs --edits --first-cell "Annual!E12"` on milk-street-office.xlsx (13 337
+  formulas, 12 034 evaluated per edit), on a machine that was busy with other work: the repeated edit **123 - 150 ms before, 92 -
+  113 ms after** (medians of seven, several runs each); the first edit after opening 351 - 375 ms before, 299 - 367 ms after (not
+  changed by this). The rest of an edit is the evaluation of the formulas themselves (`eval` / `evalFunction` / `readCell`: about
+  60 %) and the pass over what was reached (`run`: about 25 %): 80 ms is not reached yet.
+
 ## XLSX: what is written how
 
 ### What is read when

@@ -2332,6 +2332,43 @@ let private serialToDateIn (date1904: bool) (s: float) : DateTime =
 let private dateToSerialIn (date1904: bool) (d: DateTime) : float =
     (DateTime(d.Year, d.Month, d.Day, d.Hour, d.Minute, d.Second, d.Millisecond, DateTimeKind.Utc) - excelEpoch).TotalDays - dateSystemDays date1904
 
+/// A whole serial moved by a number of months (EDATE) or to the end of the month it is then
+/// in (EOMONTH), in whole numbers - no date object is made: these two are what a model's
+/// timeline is built of, thousands of times an edit. None for a serial with a time of day,
+/// one before 1 March 1900 (where Excel's calendar has a day too many) or outside the
+/// calendar: the date object then says what it is.
+let private monthsFromSerial (date1904: bool) (serial: float) (months: int) (endOfMonth: bool) : float voption =
+    let day = serial + dateSystemDays date1904
+    if day <> Math.Floor day || day < 61.0 || day > 2958465.0 || months > 120000 || months < -120000 then ValueNone
+    else
+        // The civil date of the day (days from 1 January 1970, serial 25569; years that begin in March).
+        let z = int day - 25569 + 719468
+        let era = (if z >= 0 then z else z - 146096) / 146097
+        let dayOfEra = z - era * 146097
+        let yearOfEra = (dayOfEra - dayOfEra / 1460 + dayOfEra / 36524 - dayOfEra / 146096) / 365
+        let dayOfYear = dayOfEra - (365 * yearOfEra + yearOfEra / 4 - yearOfEra / 100)
+        let marchMonth = (5 * dayOfYear + 2) / 153
+        let dayOfMonth = dayOfYear - (153 * marchMonth + 2) / 5 + 1
+        let month = if marchMonth < 10 then marchMonth + 3 else marchMonth - 9
+        let year = yearOfEra + era * 400 + (if month <= 2 then 1 else 0)
+        // The month that many months on, the day held at its last one.
+        let total = year * 12 + (month - 1) + months
+        let year2 = if total >= 0 then total / 12 else (total - 11) / 12
+        let month2 = total - year2 * 12 + 1
+        if year2 < 1900 || year2 > 9999 then ValueNone
+        else
+            let leap = (year2 % 4 = 0 && year2 % 100 <> 0) || year2 % 400 = 0
+            let last = (match month2 with 2 -> (if leap then 29 else 28) | 4 | 6 | 9 | 11 -> 30 | _ -> 31)
+            let day2 = if endOfMonth then last else min dayOfMonth last
+            // ... and its day number again.
+            let marchYear = if month2 <= 2 then year2 - 1 else year2
+            let era2 = (if marchYear >= 0 then marchYear else marchYear - 399) / 400
+            let yearOfEra2 = marchYear - era2 * 400
+            let dayOfYear2 = (153 * (if month2 > 2 then month2 - 3 else month2 + 9) + 2) / 5 + day2 - 1
+            let dayOfEra2 = yearOfEra2 * 365 + yearOfEra2 / 4 - yearOfEra2 / 100 + dayOfYear2
+            let result = float (era2 * 146097 + dayOfEra2 - 719468 + 25569)
+            if result < 61.0 then ValueNone else ValueSome (result - dateSystemDays date1904)
+
 /// Shared RNG for the volatile RAND / RANDBETWEEN functions.
 let private rng = Random()
 
@@ -11621,7 +11658,10 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
     | "EDATE" ->
         match argNum 0, argNum 1 with
         | Result.Error e, _ | _, Result.Error e -> err e
-        | Ok s, Ok months -> CellValue.Number (dateToSerial ((serialToDate s).AddMonths(int months)))
+        | Ok s, Ok months ->
+            match monthsFromSerial date1904 s (int months) false with
+            | ValueSome moved -> CellValue.Number moved
+            | ValueNone -> CellValue.Number (dateToSerial ((serialToDate s).AddMonths(int months)))
     | "DAYS" ->
         match argNum 0, argNum 1 with
         | Result.Error e, _ | _, Result.Error e -> err e
@@ -12317,6 +12357,9 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
         match argNum 0, argNum 1 with
         | Result.Error e, _ | _, Result.Error e -> err e
         | Ok s, Ok months ->
+            match monthsFromSerial date1904 s (int months) true with
+            | ValueSome moved -> CellValue.Number moved
+            | ValueNone ->
             let d = (serialToDate s).AddMonths(int months)
             let eom = utcDate d.Year d.Month (DateTime.DaysInMonth(d.Year, d.Month))
             CellValue.Number (dateToSerial eom)
