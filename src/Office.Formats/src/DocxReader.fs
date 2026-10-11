@@ -5883,6 +5883,8 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                 "ListStyle" ==> listStyle
                 "ListLevel" ==> listLevel
                 "ListId" ==> (effectiveParaProps.ListInfo |> Option.map (fun info -> info.ListId))
+                // (The paragraph itself refers to its numbering - it does not have it from its style.)
+                "ListDirect" ==> para.Properties.ListInfo.IsSome
                 "ListNumberFormat" ==> (effectiveListInfo effectiveParaProps |> Option.bind (fun info -> info.NumberFormat))
                 "ListLevelText" ==> (effectiveListInfo effectiveParaProps |> Option.bind (fun info -> info.LevelText))
                 "ListStart" ==> (effectiveListInfo effectiveParaProps |> Option.bind (fun info -> info.Start))
@@ -6161,6 +6163,8 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                          | Some info -> info.Level + 1
                          | None -> 0)
                     "ListId" ==> (effectiveParaProps.ListInfo |> Option.map (fun info -> info.ListId))
+                    // (The paragraph itself refers to its numbering - it does not have it from its style.)
+                    "ListDirect" ==> para.Properties.ListInfo.IsSome
                     "ListNumberFormat" ==> (effectiveListInfo effectiveParaProps |> Option.bind (fun info -> info.NumberFormat))
                     "ListLevelText" ==> (effectiveListInfo effectiveParaProps |> Option.bind (fun info -> info.LevelText))
                     "ListStart" ==> (effectiveListInfo effectiveParaProps |> Option.bind (fun info -> info.Start))
@@ -6485,8 +6489,16 @@ let private numberingApplier (numberingDefinitions: NumberingDefinition list) : 
                  | Some firstLine, _ -> Some firstLine
                  | None, Some hanging -> Some -hanging
                  | None, None -> None)
-            if isMissing (getProp item "IndentLeft") then setProp item "IndentLeft" (wordTwipsToPoints def.IndentLeft)
-            if isMissing (getProp item "FirstLineIndent") then
+            // An indent the paragraph states itself counts first; then the level's, when the
+            // paragraph itself refers to the numbering (w:pPr/w:numPr: the level's paragraph
+            // properties are applied over the paragraph style's); then the style's. A paragraph
+            // numbered through its style has the style's indent where the style states one, the
+            // level's where it does not. (The level's used to lose to the style's always: a
+            // "List Paragraph" bullet stood at the style's 0.5 in whatever its level said.)
+            let ownNumbering = listId.IsSome && Map.containsKey (listId.Value, max 0 (listLevel - 1)) numberingMap && (match getProp item "ListDirect" with | :? bool as direct -> direct | _ -> false)
+            let levelOver (explicitName: string) = ownNumbering && isMissing (getProp item explicitName)
+            if isMissing (getProp item "IndentLeft") || (levelOver "ExplicitIndentLeft" && def.IndentLeft.IsSome) then setProp item "IndentLeft" (wordTwipsToPoints def.IndentLeft)
+            if isMissing (getProp item "FirstLineIndent") || (levelOver "ExplicitFirstLineIndent" && (def.FirstLineIndent.IsSome || def.HangingIndent.IsSome)) then
                 let firstLineIndent =
                     match wordTwipsToPoints def.FirstLineIndent, wordTwipsToPoints def.HangingIndent with
                     | Some firstLine, _ -> Some firstLine

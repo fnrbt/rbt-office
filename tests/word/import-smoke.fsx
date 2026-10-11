@@ -480,5 +480,44 @@ for path in formatDocuments do
 ok "selection format over the test documents" (formatRanges > 250) (sprintf "%d ranges of %d documents" formatRanges formatDocuments.Length)
 pass <- pass + formatRanges
 
+// ----- the indents of a numbered paragraph ------------------------------------
+// What a paragraph states itself (w:pPr/w:ind) counts first; then the level of the numbering the
+// paragraph itself refers to (w:pPr/w:numPr: the level's w:pPr/w:ind, 17.9.23 - the numbering's
+// paragraph properties are applied over the paragraph style's); then the paragraph style; a
+// paragraph numbered through its style (the style has the w:numPr, the level names the style) has
+// the style's indent where the style states one and the level's where it does not. Attribute by
+// attribute: a paragraph that states w:left alone keeps the level's hanging indent.
+// file-sample.docx: "Simple Tables" is <w:pStyle w:val="ListParagraph"/> (w:ind w:left="720") with
+// w:numId 2, whose level 0 has <w:ind w:left="1080" w:hanging="360"/>: text at 1080 twips = 72 px
+// (0.75 in), the bullet 360 twips = 24 px before it.
+let fileSample = importFixture "tests/test-documents-online/file-sample.docx" Rbt.Word.Import.importDoc
+let indentsOf (doc: Document) (text: string) =
+    paragraphsOfBlocks doc.Blocks
+    |> List.tryFind (fun para -> (textOfPara para).StartsWith text)
+    |> Option.map (fun para -> para.Metadata.IndentLeft, para.Metadata.FirstLineIndent)
+check "file-sample: the level's indent, not the style's" (indentsOf fileSample "Simple Tables", indentsOf fileSample "Complex Tables") (Some (Some 72.0, Some -24.0), Some (Some 72.0, Some -24.0))
+let numberedDoc =
+    let numbered style extra text = sprintf """<w:p><w:pPr><w:pStyle w:val="%s"/>%s</w:pPr><w:r><w:t>%s</w:t></w:r></w:p>""" style extra text
+    let level left = sprintf """<w:ind w:left="%d" w:hanging="360"/>""" left
+    importPackage
+        (numbered "ListParagraph" """<w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>""" "by the level"
+         + numbered "ListParagraph" """<w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr><w:ind w:left="2010"/>""" "its own left"
+         + numbered "ListParagraph" """<w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr><w:ind w:left="2010" w:hanging="150"/>""" "its own both"
+         + numbered "ListParagraph" """<w:numPr><w:ilvl w:val="1"/><w:numId w:val="1"/></w:numPr>""" "second level"
+         + numbered "NumStyled" "" "style with an indent"
+         + numbered "NumPlain" "" "style without"
+         + numbered "ListParagraph" "" "not numbered")
+        [ "word/styles.xml",
+          sprintf """<w:styles %s><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style><w:style w:type="paragraph" w:styleId="ListParagraph"><w:name w:val="List Paragraph"/><w:basedOn w:val="Normal"/><w:pPr><w:ind w:left="720"/></w:pPr></w:style><w:style w:type="paragraph" w:styleId="NumStyled"><w:name w:val="Num Styled"/><w:basedOn w:val="Normal"/><w:pPr><w:numPr><w:numId w:val="2"/></w:numPr><w:ind w:left="300"/></w:pPr></w:style><w:style w:type="paragraph" w:styleId="NumPlain"><w:name w:val="Num Plain"/><w:basedOn w:val="Normal"/><w:pPr><w:numPr><w:numId w:val="3"/></w:numPr></w:pPr></w:style></w:styles>""" wNsAll
+          "word/numbering.xml",
+          sprintf """<w:numbering %s><w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%%1."/><w:pPr>%s</w:pPr></w:lvl><w:lvl w:ilvl="1"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%%2."/><w:pPr>%s</w:pPr></w:lvl></w:abstractNum><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:pStyle w:val="NumStyled"/><w:lvlText w:val="%%1."/><w:pPr>%s</w:pPr></w:lvl></w:abstractNum><w:abstractNum w:abstractNumId="2"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:pStyle w:val="NumPlain"/><w:lvlText w:val="%%1."/><w:pPr>%s</w:pPr></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num><w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num><w:num w:numId="3"><w:abstractNumId w:val="2"/></w:num></w:numbering>""" wNsAll (level 1080) (level 1800) (level 1440) (level 1440) ]
+check "numbered by its own numPr: the level's indents over the style's" (indentsOf numberedDoc "by the level") (Some (Some 72.0, Some -24.0))
+check "the paragraph's own left, the level's hanging" (indentsOf numberedDoc "its own left") (Some (Some 134.0, Some -24.0))
+check "the paragraph's own left and hanging" (indentsOf numberedDoc "its own both") (Some (Some 134.0, Some -10.0))
+check "the second level's" (indentsOf numberedDoc "second level") (Some (Some 120.0, Some -24.0))
+check "numbered through a style that states an indent: the style's left, the level's hanging" (indentsOf numberedDoc "style with an indent") (Some (Some 20.0, Some -24.0))
+check "numbered through a style that states none: the level's" (indentsOf numberedDoc "style without") (Some (Some 96.0, Some -24.0))
+check "not numbered: the style's" (indentsOf numberedDoc "not numbered") (Some (Some 48.0, None))
+
 printfn "word import smoke: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

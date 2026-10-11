@@ -592,6 +592,8 @@ let private paraMetadata styleMap resolver useDocumentMarkForPureEmpty defaultMi
     // EditorParagraph carries them as twips / 20; pointsToPixels brings those over.
     let pointsToPixels (value: float option) = value |> Option.map (fun points -> points * 20.0 / 15.0)
     let rawProps = effectiveRawParagraphProps props
+    // (The paragraph itself refers to the numbering - it does not have it from its style.)
+    let ownNumbering = props.ListInfo |> Option.exists (fun info -> resolver.ById |> Map.containsKey (info.ListId, info.Level))
     let numberingIndentLeft = numberingDef |> Option.bind (fun def -> twipsToCanvasPixels def.IndentLeft)
     let numberingRightTab = numberingDef |> Option.bind (fun def -> twipsToCanvasPixels def.RightTabPosition)
     let numberingFirstLineIndent =
@@ -624,11 +626,17 @@ let private paraMetadata styleMap resolver useDocumentMarkForPureEmpty defaultMi
             ContentControlAlias = props.ContentControlAlias
             Alignment = alignment editorPara.Alignment
             ExplicitAlignment = props.Alignment.IsSome
-            IndentLeft = pointsToPixels editorPara.IndentLeft |> Option.orElse numberingIndentLeft
+            // What the paragraph states counts first, then the level of the numbering the paragraph
+            // itself refers to (over the paragraph style's indent), then the style's; a paragraph
+            // numbered through its style has the level's indent where the style states none.
+            IndentLeft =
+                if props.IndentLeft.IsNone && ownNumbering && numberingIndentLeft.IsSome then numberingIndentLeft
+                else pointsToPixels editorPara.IndentLeft |> Option.orElse numberingIndentLeft
             IndentRight = pointsToPixels editorPara.IndentRight
             FirstLineIndent =
                 match twipsToCanvasPixels props.HangingIndent with
                 | Some hanging -> Some -hanging
+                | None when props.FirstLineIndent.IsNone && ownNumbering && numberingFirstLineIndent.IsSome -> numberingFirstLineIndent
                 | None -> pointsToPixels editorPara.FirstLineIndent |> Option.orElse numberingFirstLineIndent
             TabStops =
                 rawProps.TabStops
