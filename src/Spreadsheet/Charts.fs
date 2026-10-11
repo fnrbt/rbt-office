@@ -756,7 +756,11 @@ let private cellsOf (data: ChartData) (source: DataRef) : CellData option list o
     |> Option.bind (fun areas ->
         let blocks = areas |> List.map (fun (sheet, r0, c0, r1, c1) -> data.Cells sheet r0 c0 r1 c1)
         if blocks |> List.exists Option.isNone then None
-        else Some (blocks |> List.collect (fun block -> block.Value |> Array.toList |> List.collect Array.toList)))
+        else
+            let cells = blocks |> List.collect (fun block -> block.Value |> Array.toList |> List.collect Array.toList)
+            // (As many points as the file cached: the range a pivot chart names runs on over the
+            // pivot table's grand total - 13 cells for 12 points -, which is no point of the chart.)
+            Some (if source.Count > 0 && source.Count < cells.Length then List.truncate source.Count cells else cells))
 
 let rec private numberOfValue (value: CellValue) : float option =
     match value with

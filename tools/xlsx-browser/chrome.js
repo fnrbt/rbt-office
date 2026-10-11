@@ -1673,6 +1673,8 @@ checks['charts-in-grid'] = async () => {
                 grid.SwitchSheet(other); await frame();
                 const away = grid.GetChartLayouts();
                 grid.SwitchSheet(index); await frame();
+                // (Every sheet was shown: a pivot chart draws the points its cache has, not the pivot table's grand total.)
+                check('no chart has a "Grand Total" among its points, its source sheet shown or not', drawn().flatMap((node) => [...node.querySelectorAll('svg text')].map((text) => text.textContent)).filter((text) => text === 'Grand Total'), []);
                 check('shown again after another sheet: the same drawings, none laid out again', [grid.GetChartLayouts() - away, away - layouts, drawn().length === svgs.length && drawn().every((node, at) => node.innerHTML === svgs[at])], [0, 0, true]);
                 // Scrolling and an entry no object reads lay nothing out either.
                 host.querySelector('.spreadsheet-container').scrollTop = 400; await frame();

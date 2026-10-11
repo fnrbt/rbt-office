@@ -235,6 +235,41 @@ for file in [ "real-world/dashboard-ecommerce-sales.xlsx"; "real-world/dashboard
     ok (sprintf "%s: its charts are drawn, also those in groups" (Path.GetFileName file)) (drawnCharts >= 5) (sprintf "%d groups, %d charts" groups drawnCharts)
     printfn "  (%s: %d groups drawn, %d charts)" (Path.GetFileName file) groups drawnCharts
 
+// ---- a pivot chart reads the points its cache has, not the pivot table's grand total --------
+// The e-commerce dashboard's charts are of pivot tables: a series names the table's column down
+// to its last row (`$A$4:$A$16`, 13 cells) and caches 12 points - the 13th cell is "Grand Total".
+// A chart draws as many points as the file cached, from the cells as they are now: the same
+// chart whether its source sheet has been converted (shown) or not.
+do
+    let wb, book, parts, theme = openBook "real-world/dashboard-ecommerce-sales.xlsx"
+    let live = dataOf (book.Sheets |> Array.toList |> List.map (fun sheet -> sheet.Name, resolveSheet sheet.Model))
+    let rec textsIn (items: Charts.Primitive list) : string list =
+        items |> List.collect (fun entry ->
+            match entry with
+            | Charts.PGroup (_, _, _, _, inner) -> textsIn inner
+            | Charts.PText (_, _, value, _, _, _, _, _, _) -> [ value ]
+            | _ -> [])
+    let mutable charts, withTotal, differing = 0, [], []
+    for sheet in wb.Sheets do
+        let target (id: string) = sheet.Extras.DrawingRelationships |> List.tryPick (fun (known, _, target, isExternal) -> if known = id && not isExternal then Some (ZipInterop.normalizePath target) else None)
+        let drawing : Charts.DrawingParts =
+            { Theme = theme
+              Chart = (fun id -> target id |> Option.bind (fun path -> Map.tryFind path parts) |> Option.bind (fun bytes -> Charts.parseChart theme (text bytes)))
+              Picture = (fun id -> target id |> Option.map (fun path -> "blob:" + path)) }
+        for item in sheet.Extras.Objects do
+            if item.Xml.Contains "grpSp" || item.Kind = "chart" then
+                match Charts.objectScene drawing live item.Xml 600.0 400.0, Charts.objectScene drawing noData item.Xml 600.0 400.0 with
+                | Some fromCells, Some fromCache ->
+                    charts <- charts + 1
+                    if textsIn fromCells.Items |> List.exists (fun value -> value = "Grand Total") then withTotal <- sheet.Name :: withTotal
+                    // (The same categories and as many axis labels: the values are the cells', the points the cache's.)
+                    let months (scene: Charts.Scene) = textsIn scene.Items |> List.filter (fun value -> List.contains value [ "Jan"; "Feb"; "Mar"; "Apr"; "May"; "Jun"; "Jul"; "Aug"; "Sep"; "Oct"; "Nov"; "Dec"; "Grand Total" ])
+                    if months fromCells <> months fromCache then differing <- (sheet.Name, months fromCells, months fromCache) :: differing
+                | _ -> ()
+    ok "pivot charts: drawn from the cells and from the cache" (charts >= 5) (sprintf "%d" charts)
+    ok "pivot charts: no chart has the grand total among its points" withTotal.IsEmpty (sprintf "on %A" (List.distinct withTotal))
+    ok "pivot charts: the categories are the cache's whether the sheets are converted or not" differing.IsEmpty (sprintf "%A" (List.truncate 2 differing))
+
 // ---- a part of the newer kinds is told by its first tag -----------------------------------
 // dashboard-sales-analysis.xlsx has a map chart of 8 MB (`cx:chartSpace`): reading all of it to
 // find that it is not drawn took a tenth of a second of the workbook's opening.
