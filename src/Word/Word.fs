@@ -796,6 +796,9 @@ module API =
     /// Where the caret is: { X, Y, Height } in layout coordinates and
     /// { ViewportX, ViewportY, ViewportHeight } in CSS pixels relative to the
     /// canvas. null without a selection.
+    /// Rotation: degrees clockwise the caret is turned about its middle - 0
+    /// but in the text of a turned text box, where X, Y and Height are the
+    /// upright line of the caret's height through its middle.
     let getCaretRect (editor: Editor) : obj =
         let ctx = editor.Handler.RenderContext
         match Ren.caretRect ctx editor.Doc with
@@ -806,6 +809,7 @@ module API =
                 "X" ==> x
                 "Y" ==> top
                 "Height" ==> height
+                "Rotation" ==> Ren.caretTurn ctx
                 "ViewportX" ==> viewX
                 "ViewportY" ==> viewY
                 "ViewportHeight" ==> height * Ren.viewportScale ctx

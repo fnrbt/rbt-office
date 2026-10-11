@@ -198,6 +198,13 @@ type RenderContext = {
     mutable StoryOverlay: PaintCommand list
     /// The story's layouts, for the blocks and the place they were made for.
     mutable StoryLayouts: (Block list * float * int * BlockLayout list) option
+    /// The turn of the text box that is edited in place, when it is turned:
+    /// degrees clockwise and the centre it is turned about (layout
+    /// coordinates). Its text is laid out upright where the box is and
+    /// painted turned; its caret, selection and frame are drawn turned too,
+    /// and a point of the canvas is turned back before it is looked up in the
+    /// layouts (set by storyLayouts).
+    mutable StoryTurn: (float * float * float) option
     /// The page frames of a layout pass (by its serial): a host asks for them with every change.
     mutable KnownPageFrames: (int * PageInfo list) option
 }
@@ -268,6 +275,7 @@ let createContext (canvas: HTMLCanvasElement) = {
     StoryPainted = false
     StoryOverlay = []
     StoryLayouts = None
+    StoryTurn = None
     KnownPageFrames = None
 }
 
@@ -460,8 +468,11 @@ let private storyLayouts (ctx: RenderContext) (story: StoryView) (doc: Document)
     | Some boxId ->
         // A text box: its text where the box is painted.
         match bodyShapeRects settings (measureWithContext ctx) (measureRangeWithContext ctx) whole bodyLayouts pages |> List.tryFind (fun (textBox, _, _, _, _) -> textBox.Id = boxId) with
-        | None -> []
-        | Some (textBox, x, y, _, height) ->
+        | None ->
+            ctx.StoryTurn <- None
+            []
+        | Some (textBox, x, y, width, height) ->
+            ctx.StoryTurn <- (if abs textBox.Rotation >= 0.01 then Some (textBox.Rotation, x + width / 2.0, y + height / 2.0) else None)
             let key = y + x / 1000000.0 + height / 1000000000.0
             match ctx.StoryLayouts with
             | Some (blocks, known, version, layouts) when obj.ReferenceEquals(blocks, doc.Blocks) && known = key && version = ctx.TextMeasurerVersion -> layouts
@@ -471,6 +482,7 @@ let private storyLayouts (ctx: RenderContext) (story: StoryView) (doc: Document)
                 ctx.StoryLayouts <- Some (doc.Blocks, key, ctx.TextMeasurerVersion, layouts)
                 layouts
     | None ->
+    ctx.StoryTurn <- None
     match List.tryItem story.PageIndex pages with
     | None -> []
     | Some page ->
@@ -483,6 +495,21 @@ let private storyLayouts (ctx: RenderContext) (story: StoryView) (doc: Document)
                     storyBlockLayouts settings (measureWithContext ctx) (measureRangeWithContext ctx) whole startY doc.Blocks)
             ctx.StoryLayouts <- Some (doc.Blocks, startY, ctx.TextMeasurerVersion, layouts)
             layouts
+
+/// A point turned about a centre by `degrees` clockwise (as the canvas turns a shape).
+let turnedPoint (degrees: float) (centerX: float) (centerY: float) (x: float) (y: float) : float * float =
+    let angle = degrees * System.Math.PI / 180.0
+    let cos, sin = System.Math.Cos angle, System.Math.Sin angle
+    let dx, dy = x - centerX, y - centerY
+    centerX + dx * cos - dy * sin, centerY + dx * sin + dy * cos
+
+/// A point of the canvas as a point of the upright layout of the story on
+/// display: turned back when the story is the text of a turned text box.
+/// (Call after storyLayouts, which says how the box is turned.)
+let private storyPoint (ctx: RenderContext) (x: float) (y: float) : float * float =
+    match ctx.StoryTurn with
+    | Some (degrees, centerX, centerY) when ctx.Story.IsSome -> turnedPoint -degrees centerX centerY x y
+    | _ -> x, y
 
 /// The layouts the caret and the pointer go by: the body's, or - while a
 /// header or footer is edited in place - those of its blocks on its page.
@@ -1912,10 +1939,22 @@ let private renderCore (ctx: RenderContext) (doc: Document) hoveredImage =
             match List.tryItem story.PageIndex pages with
             | Some page -> storyBoundaryCommands settings ctx.FontFamily page story.IsHeader story.Label
             | None -> []
-        ctx.StoryOverlay <-
+        let overlay =
             List.concat [ boundary
                           selectionCommandsWithRangeLookup settings (measureRangeWithContext ctx) doc tryFind
                           hoverCommandsLookup settings tryFind hoveredImage ]
+        ctx.StoryOverlay <-
+            // (The frame, the selection and the caret of a turned box are turned as its text is.)
+            match ctx.StoryTurn, story.Box with
+            | Some (degrees, centerX, centerY), Some _ when not overlay.IsEmpty ->
+                let mutable radius = 0.0
+                for layout in layouts do
+                    for line in layout.Lines do
+                        radius <- max radius (abs (line.Y - centerY) + line.Height)
+                // (Everything of the overlay is within the box or its text: as far from the centre as the document is wide at most.)
+                let reach = max radius (settings.Width + settings.PageHeight)
+                [ DrawGroup (None, degrees, centerX, centerY, 1.0, (centerX - reach, centerY - reach, reach * 2.0, reach * 2.0), overlay) ]
+            | _ -> overlay
         renderBody ctx whole None
         ctx.StoryPainted <- true
 
@@ -2124,6 +2163,8 @@ let shapeRects (ctx: RenderContext) (doc: Document) : (TextBoxBlock * float * fl
 let shapeAt (ctx: RenderContext) (doc: Document) (x: float) (y: float) : BlockId option =
     shapeRects ctx doc
     |> List.filter (fun (textBox, left, top, width, height) ->
+        // (A turned box: the point as it is in the box before the turn.)
+        let x, y = if abs textBox.Rotation >= 0.01 then turnedPoint -textBox.Rotation (left + width / 2.0) (top + height / 2.0) x y else x, y
         not (textBox.BehindDoc = Some true) && not textBox.FitText && x >= left && x <= left + width && y >= top && y <= top + height)
     |> List.sortBy (fun (textBox, _, _, _, _) ->
         match textBox.RelativeHeight with
@@ -2156,6 +2197,8 @@ let hitTest (ctx: RenderContext) (doc: Document) (mouseX: float) (mouseY: float)
             for layout in layouts do
                 top <- min top layout.Y
                 bottom <- max bottom (layout.Y + layout.Height)
+            // (In a turned text box: the point as it is in the upright layout.)
+            let mouseX, mouseY = storyPoint ctx mouseX mouseY
             let y = max (top + 0.5) (min (bottom - 0.5) mouseY)
             hitTestLayoutArrayWithRange (measureRangeWithContext ctx) (layoutSettings ctx doc).PaddingLeft layouts mouseX y
     | None ->
@@ -2163,9 +2206,17 @@ let hitTest (ctx: RenderContext) (doc: Document) (mouseX: float) (mouseY: float)
     // unchanged) rather than a fresh full layout per mouse event.
     Rbt.Word.Layout.hitTestIncrementalWithRange ctx.LayoutState (layoutSettings ctx doc) (measureWithContext ctx) (measureRangeWithContext ctx) doc mouseX mouseY
 
-/// Where the caret (the selection focus) is on the canvas: x, top and height
-/// of its line, from the layout that is on screen. None without a selection.
-let caretRect (ctx: RenderContext) (doc: Document) : (float * float * float) option =
+/// How the caret is turned (degrees clockwise, about its middle): 0 but in
+/// the text of a turned text box that is edited in place.
+let caretTurn (ctx: RenderContext) : float =
+    match ctx.Story, ctx.StoryTurn with
+    | Some story, Some (degrees, _, _) when story.Box.IsSome -> degrees
+    | _ -> 0.0
+
+/// Where the caret (the selection focus) is in the layout that is on
+/// screen: x, top and height of its line - upright, also in a turned text
+/// box (see caretRect).
+let private uprightCaretRect (ctx: RenderContext) (doc: Document) : (float * float * float) option =
     match doc.Selection with
     | None -> None
     | Some selection ->
@@ -2196,11 +2247,28 @@ let caretRect (ctx: RenderContext) (doc: Document) : (float * float * float) opt
             let x = xForOffsetWithRange (measureRangeWithContext ctx) line offset
             Some (settings.PaddingLeft + x + alignmentOffset layout line, line.Y, line.Height)
 
+/// Where the caret (the selection focus) is on the canvas: x, top and height
+/// of its line, from the layout that is on screen. None without a selection.
+/// In a turned text box the caret is turned too (caretTurn): this is the
+/// upright line of its height through its middle.
+let caretRect (ctx: RenderContext) (doc: Document) : (float * float * float) option =
+    match uprightCaretRect ctx doc with
+    | Some (x, top, height) ->
+        match ctx.Story, ctx.StoryTurn with
+        | Some story, Some (degrees, centerX, centerY) when story.Box.IsSome ->
+            let middleX, middleY = turnedPoint degrees centerX centerY x (top + height / 2.0)
+            Some (middleX, middleY - height / 2.0, height)
+        | _ -> Some (x, top, height)
+    | None -> None
+
 /// Hit test for images - returns blockId, offset, and image dimensions if clicking on an image
 let hitTestForImage (ctx: RenderContext) (doc: Document) (mouseX: float) (mouseY: float) : (string * int * float * float * float * float) option =
     let found =
         match ctx.Story with
-        | Some story -> hitTestForImageLayouts (layoutSettings ctx doc).PaddingLeft (storyLayouts ctx story doc) mouseX mouseY
+        | Some story ->
+            let layouts = storyLayouts ctx story doc
+            let mouseX, mouseY = storyPoint ctx mouseX mouseY
+            hitTestForImageLayouts (layoutSettings ctx doc).PaddingLeft layouts mouseX mouseY
         | None ->
         Rbt.Word.Layout.hitTestForImageIncremental ctx.LayoutState (layoutSettings ctx doc) (measureWithContext ctx) (measureRangeWithContext ctx) doc mouseX mouseY
     // (Text wraps along the outline of a "tight" picture: a point of its box outside the outline is on that text.)
@@ -2242,4 +2310,5 @@ let viewportScale _ = 1.0
 let hitTest _ _ _ _ = None
 let hitTestForImage _ _ _ _ = None
 let caretRect _ _ = None
+let caretTurn _ = 0.0
 #endif
