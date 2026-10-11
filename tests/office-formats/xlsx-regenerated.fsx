@@ -194,6 +194,35 @@ do
     sameFormulas "note added: every formula reads as it did" noted edited
     ok "note added: read back" ((M.getCell (addr 401 2) (reread noted) |> Option.bind (fun cell -> cell.Comment)).IsSome) "no note"
 
+// ---- the comments part: a note that is what it was is the file's element -----------
+do
+    let commentsOf (saved: byte[]) = text (partsOf saved).["xl/comments1.xml"]
+    let commentsWas = text before.["xl/comments1.xml"]
+    let noteOf (reference: string) (xml: string) = Regex.Match(xml, sprintf "<comment ref=\"%s\"[^>]*>[\\s\\S]*?</comment>" reference).Value
+    let fileNote = noteOf "E113" commentsWas
+    ok "the file has a note in runs, with what a sheet does not hold of it" (fileNote.Contains "<color indexed=\"81\"/>" && fileNote.Contains "<family val=\"2\"/>" && fileNote.Contains "shapeId=\"0\"" && fileNote.Contains "xr:uid=") (short fileNote)
+    let noted, _ = exportWith (Ops.setComment (addr 401 2) "a note" (Some "me"))
+    let now = commentsOf noted
+    ok "note added: the file's note is the element the file wrote" (noteOf "E113" now = fileNote) (short (noteOf "E113" now))
+    ok "note added: the part's root and its authors are the file's, the new author behind them"
+        (Regex.Match(now, "<comments[^>]*>").Value = Regex.Match(commentsWas, "<comments[^>]*>").Value && now.Contains "<authors><author>BIWS</author><author>me</author></authors>") (short now)
+    ok "note added: the new note names its author" ((noteOf "C402" now).Contains "authorId=\"1\"" && (noteOf "C402" now).Contains "a note") (noteOf "C402" now)
+    ok "note added: the part is the file's but for the author and the note" (now.Replace("<author>me</author>", "").Replace(noteOf "C402" now, "") = commentsWas) (sprintf "%d chars, the file's %d" now.Length commentsWas.Length)
+    ok "note added: read back, both" (let again = reread noted in (M.getCell (addr 401 2) again |> Option.bind (fun cell -> cell.Comment)).IsSome && (M.getCell (addr 112 4) again |> Option.bind (fun cell -> cell.Comment)).IsSome) "a note is missing"
+    // The VML drawing: the file's shapes stay, the new note has a box.
+    let vmlPath = before |> Map.toList |> List.map fst |> List.find (fun path -> path.Contains "vmlDrawing")
+    let vmlWas, vmlNow = text before.[vmlPath], text (partsOf noted).[vmlPath]
+    let shapes (xml: string) = [ for found in Regex.Matches(xml, "<v:shape\\b[\\s\\S]*?</v:shape>") -> found.Value ]
+    ok "note added: the file's comment boxes are the shapes the file wrote, and there is one more" (shapes vmlWas |> List.forall (fun shape -> List.contains shape (shapes vmlNow)) && (shapes vmlNow).Length = (shapes vmlWas).Length + 1) (sprintf "%d shapes, the file has %d" (shapes vmlNow).Length (shapes vmlWas).Length)
+    // A row inserted above the note: the element is the file's, in the cell the note is in now.
+    let moved, _ = exportWith (M.insertRow 100)
+    ok "row inserted: the note is the file's element, one row down" (noteOf "E114" (commentsOf moved) = fileNote.Replace("ref=\"E113\"", "ref=\"E114\"") && commentsOf moved = commentsWas.Replace("ref=\"E113\"", "ref=\"E114\"")) (short (commentsOf moved))
+    // The note's text changed: that note is written from the sheet, a second note of the file would stay.
+    let changed, _ = exportWith (Ops.setComment (addr 112 4) "another text" (Some "BIWS") >> Ops.setComment (addr 401 2) "a note" None)
+    let now = commentsOf changed
+    ok "note changed: it is written from the sheet, by the file's author" ((noteOf "E113" now).Contains "another text" && (noteOf "E113" now).Contains "authorId=\"0\"" && not ((noteOf "E113" now).Contains "Based on actual")) (short (noteOf "E113" now))
+    ok "note changed: the part is still XML" (try (Xml.Linq.XDocument.Parse now |> ignore; true) with _ -> false) (short now)
+
 // ---- rows and columns inserted and deleted --------------------------------------
 // The sheet is written from its cells, and says what its part said of rows
 // and cells where they are now.
@@ -234,6 +263,40 @@ do
             a.Length = b.Length && List.forall2 (fun (n1, h1, c1, x1) (n2, h2, c2, x2) -> n1 = n2 && abs (h1 - h2) < 0.01 && c1 = c2 && x1 = x2) a b
          close (heights now) wanted && wanted.Length > 5)
         (String.concat " " [ for found in Regex.Matches(now, "<row r=\"([0-9]+)\"[^>]*>") do if (attribute "ht" found.Value).IsSome then yield found.Value ] |> short)
+// ---- a row inserted: the styles, the shared strings, the calculation chain ---------
+do
+    let saved, _ = exportWith (M.insertRow 100)
+    let parts = partsOf saved
+    let styles, stylesWas = text parts.["xl/styles.xml"], text before.["xl/styles.xml"]
+    let xfs (xml: string) = count "<xf[\s>/]" (element "cellXfs" xml)
+    ok "row inserted: the cells that moved have the file's formats (no cellXfs entry is added)" (xfs styles = xfs stylesWas) (sprintf "%d entries, the file has %d" (xfs styles) (xfs stylesWas))
+    ok "row inserted: the styles part is the file's" (styles = stylesWas) (sprintf "%d chars, the file's %d" styles.Length stylesWas.Length)
+    // The shared strings' count is the number of cells that name one.
+    let uses (all: Map<string, byte[]>) = all |> Map.toList |> List.sumBy (fun (path, data) -> if path.StartsWith "xl/worksheets/sheet" then count " t=\"s\"" (text data) else 0)
+    let said (all: Map<string, byte[]>) = attribute "count" (Regex.Match(text all.["xl/sharedStrings.xml"], "<sst[^>]*>").Value) |> Option.map int
+    ok "row inserted: the shared strings' count is the cells that use them" (said parts = Some (uses parts)) (sprintf "count %A, %d uses (the file: %A, %d)" (said parts) (uses parts) (said before) (uses before))
+    // The calculation chain lists cells that moved: the part goes, with its content type and its relationship.
+    ok "the file has a calculation chain" (before.ContainsKey "xl/calcChain.xml") ""
+    ok "row inserted: no calculation chain, no content type and no relationship of one"
+        (not (parts.ContainsKey "xl/calcChain.xml") && not ((text parts.["[Content_Types].xml"]).Contains "calcChain") && not ((text parts.["xl/_rels/workbook.xml.rels"]).Contains "calcChain"))
+        (sprintf "part %b, type %b, relationship %b" (parts.ContainsKey "xl/calcChain.xml") ((text parts.["[Content_Types].xml"]).Contains "calcChain") ((text parts.["xl/_rels/workbook.xml.rels"]).Contains "calcChain"))
+    // Text typed into two cells: two more uses, one more string.
+    let typed, _ = exportWith (M.setCell (addr 600 1) { Value = M.CellValue.String "a text no cell has"; Format = M.defaultFormat; Comment = None } >> M.setCell (addr 601 1) { Value = M.CellValue.String "a text no cell has"; Format = M.defaultFormat; Comment = None })
+    let parts = partsOf typed
+    ok "text typed twice: the shared strings' count is the cells that use them" (said parts = Some (uses parts) && uses parts = uses before + 2) (sprintf "count %A, %d uses (the file: %A, %d)" (said parts) (uses parts) (said before) (uses before))
+
+// ---- manual page breaks -------------------------------------------------------------
+do
+    let breaksWas = [ for found in Regex.Matches(element "rowBreaks" was, "<brk\\b[^>]*/>") -> found.Value ]
+    ok "the file has manual row breaks" (not breaksWas.IsEmpty) (element "rowBreaks" was)
+    let saved, _ = exportWith (fun model -> { model with PageSetup = { model.PageSetup with ManualRowBreaks = List.sort (450 :: model.PageSetup.ManualRowBreaks); ManualColBreaks = [ 3 ] } })
+    let now = sheetOf saved
+    let breaks = [ for found in Regex.Matches(element "rowBreaks" now, "<brk\\b[^>]*/>") -> found.Value ]
+    ok "break added: the file's breaks are as the file wrote them" (breaksWas |> List.forall (fun tag -> List.contains tag breaks) && breaks.Length = breaksWas.Length + 1) (element "rowBreaks" now)
+    ok "break added: a row break reaches as far as the file's do, a column break over the rows"
+        ((breaks |> List.exists (fun tag -> attribute "id" tag = Some "450" && attribute "max" tag = Some "11" && attribute "man" tag = Some "1")) && (element "colBreaks" now).Contains "<brk id=\"3\" max=\"1048575\" man=\"1\"/>")
+        (element "rowBreaks" now + element "colBreaks" now)
+
 do
     let saved, edited = exportWith (M.deleteRow 100 >> M.deleteRow 100)
     let now = sheetOf saved

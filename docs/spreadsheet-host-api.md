@@ -939,6 +939,22 @@ changes (named styles, the indexed palette, table styles and extensions of the s
   replaced in the sheet's part, see above). Renaming, hiding or moving the sheet is not (that is in `xl/workbook.xml`).
 - The one thing rewritten in such a part is `tabSelected` of its view, when the sheet on display is no longer the one the file had on
   display (two sheets that say so are a group to Excel); the part is otherwise the file's text.
+- **Rows or columns inserted or deleted: the cells that moved keep the file's formats.** A cell is followed back to where the file
+  had it (the sheet's log of row / column edits) and written with the `cellXfs` entry the file gave it; only a format the user
+  changed adds an entry. (Before, every cell below an inserted row got a new entry: milk-street-office's `cellXfs` went from 308
+  to 614 and `xl/styles.xml` from 73 KB to 124 KB; now the styles part is the file's, byte for byte.) The calculation chain of
+  such a workbook is dropped with its content type and its relationship (Excel builds a new one).
+- The shared strings' `count` is the number of cells that name a string: the file's count, less the uses in the sheet parts
+  that were written again, plus the uses in what was written (before, it only grew by the number of new strings).
+- **A changed note leaves the other notes as the file wrote them**: the comments part is the file's, with a note that is what
+  it was (the same text by the same author, in its cell or - rows having moved - in the cell it is in now) as the file's
+  `<comment>` element (`shapeId`, `xr:uid`, its runs' `<color indexed>` and `<family>`), a new or changed note written from the
+  sheet, new authors behind the file's. The VML drawing of the comment boxes is the file's too while the sheet has a note: the
+  boxes of notes that are gone are taken out, a box is added for a new note (also for a note whose cell moved). The sheet's
+  own part is still written from the sheet when a note is added (its rows are the file's).
+- A manual page break the file has is written as the file wrote it (`min` / `max`: how far it reaches); a new one reaches as far
+  as the file's breaks all do, else over every column (`max="16383"`, a row break) or every row (`max="1048575"`, a column
+  break - before, `16383` too).
 - **A workbook in the 1904 date system stays in it** (`GetDateSystem()` -> `1900` | `1904`): the serials in its cells are the file's
   (before, the numbers under a date format were moved to the 1900 system on import - the others not - and `date1904` was dropped on
   a save), a save writes `date1904` and its sheets go back as the parts they were read from, or patched, like any other workbook's.

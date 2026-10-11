@@ -1767,10 +1767,39 @@ module Export =
                     for KeyValue(addr, data) in before.Cells do previousCells.[key addr.Row addr.Col] <- data
                 let sameRuns = sameRef before.RichRuns model.RichRuns
                 let basedOnFormats = Collections.Generic.Dictionary<int, Collections.Generic.Dictionary<XlsxWriter.XlsxCellFormat, XlsxWriter.XlsxCellFormat>>()
+                // Where a cell of the sheet was in the file, when rows or columns were
+                // inserted or deleted since: a cell that only moved has the format the
+                // file gave it (its cellXfs entry), not a new one made for its new place.
+                // None: a cell of an inserted row or column.
+                let moves =
+                    if before.StructureVersion = model.StructureVersion then []
+                    elif model.StructureLog.Length <> model.StructureVersion - before.StructureVersion || before.StructureVersion <> 0 then []
+                    else model.StructureLog          // (the latest first: undone in that order)
+                let originOf (row: int) (col: int) : (int * int) option =
+                    let mutable row, col, known = row, col, true
+                    for move in moves do
+                        if known then
+                            let index = if move.OnRows then row else col
+                            let was =
+                                if move.Insert then
+                                    if index >= move.At + move.Count then index - move.Count
+                                    elif index >= move.At then -1
+                                    else index
+                                elif index >= move.At then index + move.Count
+                                else index
+                            if was < 0 then known <- false
+                            elif move.OnRows then row <- was
+                            else col <- was
+                    if known then Some (row, col) else None
                 model.Cells
                 |> Map.toList
                 |> List.map (fun (addr, data) ->
-                    let position = key addr.Row addr.Col
+                    let moved, position =
+                        if moves.IsEmpty then false, key addr.Row addr.Col
+                        else
+                            match originOf addr.Row addr.Col with
+                            | Some (row, col) -> (row <> addr.Row || col <> addr.Col), key row col
+                            | None -> true, -1.0
                     let previous =
                         if sameCells then Some data
                         else
@@ -1779,6 +1808,8 @@ module Export =
                             | false, _ -> None
                     let untouched =
                         match previous with
+                        // (A cell that moved is written where it is now, with what it holds now.)
+                        | Some _ when moved -> false
                         | Some previous ->
                             (sameRef previous data || previous = data || onlyBecameError previous data)
                             && (sameRuns || Map.tryFind addr before.RichRuns = Map.tryFind addr model.RichRuns)
@@ -1907,11 +1938,18 @@ module Export =
                 let commentsOf (m: SpreadsheetModel) = m.Cells |> Map.toList |> List.choose (fun (addr, data) -> data.Comment |> Option.map (fun comment -> addr, comment))
                 let commentsSame = sameRef before.Cells model.Cells || commentsOf before = commentsOf model
                 // ... and so does its comments part (rich text, shape ids).
-                let extras = if commentsSame then extras else { extras with CommentsPart = None }
+                // With other notes the part is the file's with those notes in it (the writer
+                // patches it); a sheet left without a note has no comments part.
+                let extras =
+                    if commentsSame then extras
+                    elif extras.CommentsPart.IsSome && model.Cells |> Map.exists (fun _ data -> data.Comment.IsSome) then { extras with CommentsChanged = true }
+                    else { extras with CommentsPart = None }
                 let extras =
                     if not (extras.KeptElements |> List.exists (fun (elementName, _) -> elementName = "legacyDrawingNotes")) then extras
                     else
-                        if commentsSame then extras
+                        // (While the sheet has notes the file's drawing stands: the writer takes out the
+                        // boxes of notes that are gone and adds boxes for new ones, the others are the file's shapes.)
+                        if commentsSame || model.Cells |> Map.exists (fun _ data -> data.Comment.IsSome) then extras
                         else
                             let dropped = extras.KeptElements |> List.filter (fun (elementName, _) -> elementName = "legacyDrawingNotes") |> List.collect (fun (_, xml) -> DocxReader.relationshipIdsInXml xml) |> Set.ofList
                             { extras with

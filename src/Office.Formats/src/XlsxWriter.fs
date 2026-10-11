@@ -1797,10 +1797,40 @@ let private pagePartsXml (sheet: XlsxSheetOut) =
     let printOptions, margins, pageSetup, headerFooter = pageParts sheet
     printOptions + margins + pageSetup + headerFooter
 
-let private breaksXml name breaks =
+/// The manual page breaks of a sheet. `was`: the file's element ("" for
+/// none) - a break the file has is written as the file wrote it (its `min`
+/// and `max`: how far the break reaches, which is the print area's extent),
+/// and a new one reaches as far as the file's breaks all do. Without that a
+/// row break reaches over every column (`max="16383"`) and a column break
+/// over every row (`max="1048575"`).
+let private breaksXml (name: string) (was: string) (breaks: int list) =
     if List.isEmpty breaks then ""
     else
-        let body = breaks |> List.map (fun id -> sprintf "<brk id=\"%d\" max=\"16383\" man=\"1\"/>" id) |> String.concat ""
+        let tagAttribute (tag: string) (attribute: string) =
+            let found = System.Text.RegularExpressions.Regex.Match(tag, "\\s" + attribute + "=\"([^\"]*)\"")
+            if found.Success then Some found.Groups.[1].Value else None
+        let known =
+            System.Text.RegularExpressions.Regex.Matches(was, "<brk(?=[\\s/>])[^>]*>") |> Seq.cast<System.Text.RegularExpressions.Match>
+            |> Seq.choose (fun found ->
+                match tagAttribute found.Value "id" |> Option.map System.Int32.TryParse with
+                | Some (true, id) when tagAttribute found.Value "man" = Some "1" || tagAttribute found.Value "man" = Some "true" ->
+                    Some (id, (if found.Value.EndsWith "/>" then found.Value else found.Value.Substring(0, found.Value.Length - 1) + "/>"))
+                | _ -> None)
+            |> Seq.toList
+        let common (attribute: string) =
+            match known |> List.map (fun (_, tag) -> tagAttribute tag attribute) |> List.distinct with
+            | [ Some value ] -> Some value
+            | _ -> None
+        let reach =
+            (match common "min" with Some value -> sprintf " min=\"%s\"" value | None -> "")
+            + sprintf " max=\"%s\"" (common "max" |> Option.defaultValue (if name = "colBreaks" then "1048575" else "16383"))
+        let body =
+            breaks
+            |> List.map (fun id ->
+                match known |> List.tryFind (fun (known, _) -> known = id) with
+                | Some (_, tag) -> tag
+                | None -> sprintf "<brk id=\"%d\"%s man=\"1\"/>" id reach)
+            |> String.concat ""
         sprintf "<%s count=\"%d\" manualBreakCount=\"%d\">%s</%s>" name breaks.Length breaks.Length body name
 
 let private tablePartsXml count =
@@ -2155,6 +2185,98 @@ let private richRunOfReader (props: XlsxReader.RunProps) (text: string) : XlsxRi
 
 /// The comments part of a sheet. `runs` has the notes whose text is in runs
 /// (by row and column); the others are one plain text.
+let private commentBodyXml (runsOf: Map<int * int, (string * XlsxReader.RunProps) list>) (cell: XlsxCellOut) (text: string) : string =
+    // (Runs that are not the note's text any more are not the note's.)
+    match (if runsOf.IsEmpty then None else Map.tryFind (cell.Row, cell.Col) runsOf) with
+    | Some textRuns when not textRuns.IsEmpty && (textRuns |> List.map fst |> String.concat "") = text ->
+        // (Only what a run turns on is written.)
+        let on (flag: bool option) = if flag = Some true then flag else None
+        textRuns
+        |> List.map (fun (runText, props) ->
+            let run = richRunOfReader props runText
+            richRunXml { run with Bold = on run.Bold; Italic = on run.Italic; Underline = on run.Underline; UnderlineDouble = on run.UnderlineDouble; Strikethrough = on run.Strikethrough })
+        |> String.concat ""
+    | _ -> sprintf "<t xml:space=\"preserve\">%s</t>" (escapedCellText text)
+
+let private commentElementPattern = System.Text.RegularExpressions.Regex("<comment(?=[\\s>])[^>]*>[\\s\\S]*?</comment>")
+let private commentAuthorPattern = System.Text.RegularExpressions.Regex("<author(?:\\s[^>]*)?(?:/>|>([\\s\\S]*?)</author>)")
+let private commentTextPattern = System.Text.RegularExpressions.Regex("<t(?:\\s[^>]*)?(?:/>|>([\\s\\S]*?)</t>)")
+
+/// The file's comments part with the notes of the sheet as they are now: a
+/// note that is what the file has - the same text by the same author, in
+/// its cell or (rows or columns having moved) in another - is the file's
+/// element as it was written (its runs' colours and font families, its
+/// `shapeId`, `xr:uid`), with its cell where it is now; any other note is
+/// written from the sheet; a note that is gone is left out. Authors are
+/// added behind the file's. None when the part has no list of comments.
+let private patchedCommentsXml (fileXml: string) (runs: ((int * int) * (string * XlsxReader.RunProps) list) list) (cells: XlsxCellOut list) : string option =
+    let listStart = fileXml.IndexOf ("<commentList>", System.StringComparison.Ordinal)
+    let listEnd = fileXml.LastIndexOf ("</commentList>", System.StringComparison.Ordinal)
+    let authorsStart = fileXml.IndexOf ("<authors>", System.StringComparison.Ordinal)
+    let authorsEnd = fileXml.IndexOf ("</authors>", System.StringComparison.Ordinal)
+    let comments = cells |> List.choose (fun c -> c.Comment |> Option.map (fun comment -> c, comment))
+    if listStart < 0 || listEnd < listStart || authorsStart < 0 || authorsEnd < authorsStart || authorsEnd > listStart || comments.IsEmpty then None
+    else
+        let decoded (text: string) =
+            let text = if text.IndexOf '&' < 0 then text else text.Replace("&lt;", "<").Replace("&gt;", ">").Replace("&quot;", "\"").Replace("&apos;", "'").Replace("&amp;", "&")
+            text.Replace("\r", "")
+        let attributeOf (tag: string) (name: string) =
+            let found = System.Text.RegularExpressions.Regex.Match(tag, "\\s" + name + "=\"([^\"]*)\"")
+            if found.Success then Some found.Groups.[1].Value else None
+        let authors = ResizeArray<string>()
+        for found in commentAuthorPattern.Matches(fileXml.Substring(authorsStart, authorsEnd - authorsStart)) |> Seq.cast<System.Text.RegularExpressions.Match> do
+            authors.Add (decoded found.Groups.[1].Value)
+        let fileAuthors = authors.Count
+        // The file's notes: cell, author, text, element.
+        let known =
+            commentElementPattern.Matches(fileXml.Substring(listStart, listEnd - listStart)) |> Seq.cast<System.Text.RegularExpressions.Match>
+            |> Seq.map (fun found ->
+                let tag = found.Value.Substring(0, found.Value.IndexOf '>' + 1)
+                let author =
+                    match attributeOf tag "authorId" |> Option.map System.Int32.TryParse with
+                    | Some (true, id) when id >= 0 && id < fileAuthors -> authors.[id]
+                    | _ -> ""
+                let text = commentTextPattern.Matches found.Value |> Seq.cast<System.Text.RegularExpressions.Match> |> Seq.map (fun t -> decoded t.Groups.[1].Value) |> String.concat ""
+                attributeOf tag "ref" |> Option.defaultValue "", author, text, found.Value)
+            |> Seq.toArray
+        let used = Array.create known.Length false
+        let runsOf = if runs.IsEmpty then Map.empty else Map.ofList runs
+        let authorId (author: string) =
+            match authors.IndexOf author with
+            | -1 -> authors.Add author; authors.Count - 1
+            | index -> index
+        // Each note of the sheet: the file's element for it, or none.
+        let wanted = comments |> List.map (fun (cell, (text, author)) -> cell, text, (author |> Option.defaultValue ""), cellRef cell.Row cell.Col)
+        let same (index: int) (text: string) (author: string) =
+            let _, knownAuthor, knownText, _ = known.[index]
+            not used.[index] && knownAuthor = author && knownText = text.Replace("\r", "")
+        let found = System.Collections.Generic.Dictionary<string, int>()
+        // (In its own cell first; then - the cells having moved - wherever the file has the same note.)
+        for _, text, author, reference in wanted do
+            match known |> Array.tryFindIndex (fun (knownRef, _, _, _) -> knownRef = reference) with
+            | Some index when same index text author -> used.[index] <- true; found.[reference] <- index
+            | _ -> ()
+        for _, text, author, reference in wanted do
+            if not (found.ContainsKey reference) then
+                match [ 0 .. known.Length - 1 ] |> List.tryFind (fun index -> same index text author) with
+                | Some index -> used.[index] <- true; found.[reference] <- index
+                | None -> ()
+        let elements =
+            wanted
+            |> List.map (fun (cell, text, author, reference) ->
+                match found.TryGetValue reference with
+                | true, index ->
+                    let knownRef, _, _, xml = known.[index]
+                    if knownRef = reference then xml
+                    else
+                        let cut = xml.IndexOf '>'
+                        xml.Substring(0, cut).Replace(" ref=\"" + knownRef + "\"", " ref=\"" + reference + "\"") + xml.Substring cut
+                | false, _ ->
+                    sprintf "<comment ref=\"%s\" authorId=\"%d\"><text>%s</text></comment>" reference (authorId author) (commentBodyXml runsOf cell text))
+            |> String.concat ""
+        let added = [ for index in fileAuthors .. authors.Count - 1 -> elemText "author" authors.[index] ] |> String.concat ""
+        Some (fileXml.Substring(0, authorsEnd) + added + fileXml.Substring(authorsEnd, listStart + 13 - authorsEnd) + elements + fileXml.Substring listEnd)
+
 let private commentsXml (runs: ((int * int) * (string * XlsxReader.RunProps) list) list) (cells: XlsxCellOut list) =
     let runsOf = if runs.IsEmpty then Map.empty else Map.ofList runs
     let comments = cells |> List.choose (fun c -> c.Comment |> Option.map (fun comment -> c, comment))
@@ -2171,18 +2293,7 @@ let private commentsXml (runs: ((int * int) * (string * XlsxReader.RunProps) lis
         let commentXml =
             comments
             |> List.map (fun (cell, (text, author)) ->
-                let body =
-                    // (Runs that are not the note's text any more are not the note's.)
-                    match (if runsOf.IsEmpty then None else Map.tryFind (cell.Row, cell.Col) runsOf) with
-                    | Some textRuns when not textRuns.IsEmpty && (textRuns |> List.map fst |> String.concat "") = text ->
-                        // (Only what a run turns on is written.)
-                        let on (flag: bool option) = if flag = Some true then flag else None
-                        textRuns
-                        |> List.map (fun (runText, props) ->
-                            let run = richRunOfReader props runText
-                            richRunXml { run with Bold = on run.Bold; Italic = on run.Italic; Underline = on run.Underline; UnderlineDouble = on run.UnderlineDouble; Strikethrough = on run.Strikethrough })
-                        |> String.concat ""
-                    | _ -> sprintf "<t xml:space=\"preserve\">%s</t>" (escapedCellText text)
+                let body = commentBodyXml runsOf cell text
                 sprintf "<comment ref=\"%s\" authorId=\"%d\"><text>%s</text></comment>"
                     (cellRef cell.Row cell.Col)
                     (authorIndex author)
@@ -2887,8 +2998,8 @@ let private patchedSheetXml (styles: StyleBook) (sharedIndex: string -> XlsxRich
         | "pageMargins" -> (let _, margins, _, _ = pageParts sheet in margins)
         | "pageSetup" -> (let _, _, pageSetup, _ = pageParts sheet in pageSetup)
         | "headerFooter" -> (let _, _, _, headerFooter = pageParts sheet in headerFooter)
-        | "rowBreaks" -> breaksXml "rowBreaks" sheet.RowBreaks
-        | "colBreaks" -> breaksXml "colBreaks" sheet.ColBreaks
+        | "rowBreaks" -> breaksXml "rowBreaks" (sourceElement "rowBreaks" |> Option.defaultValue "") sheet.RowBreaks
+        | "colBreaks" -> breaksXml "colBreaks" (sourceElement "colBreaks" |> Option.defaultValue "") sheet.ColBreaks
         // ("sortState": what the file says of a sort is not what the rows are sorted by now.)
         | _ -> ""
     let orderOf (name: string) = worksheetChildOrder |> List.tryFindIndex (fun known -> known = name) |> Option.defaultValue -1
@@ -3066,8 +3177,9 @@ let private worksheetXml (styles: StyleBook) sharedIndex (dynamicCm: int) sheetI
     + dataValidationsXml sheet.DataValidations
     + hyperlinksXml sheet.Hyperlinks
     + pagePartsXml sheet
-    + breaksXml "rowBreaks" sheet.RowBreaks
-    + breaksXml "colBreaks" sheet.ColBreaks
+    // (With rows or columns moved the file's breaks are not found by their place: only how far they reach is taken.)
+    + breaksXml "rowBreaks" (fromFile "rowBreaks") sheet.RowBreaks
+    + breaksXml "colBreaks" (fromFile "colBreaks") sheet.ColBreaks
     + keptElement "customProperties"
     + unmoved "cellWatches"
     + moved "ignoredErrors" "ignoredError"
@@ -4282,9 +4394,20 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
         match sheetRelsXml sheetIndex sheet tableParts placed drawingPath with
         | Some rels -> textFiles.Add { Path = relsPathOf placed.SheetPath; Content = rels }
         | None -> ()
-        match (if (keptCommentsPart workbook sheet).IsSome then None else commentsXml sheet.Extras.CommentRuns sheet.Cells) with
-        | Some xml -> textFiles.Add { Path = placed.CommentsPath; Content = xml }
-        | None -> ()
+        match keptCommentsPart workbook sheet with
+        | Some path when sheet.Extras.CommentsChanged ->
+            // The file's part with the notes that changed (or, a part without a list of comments, one made from the notes).
+            match partText path |> Option.bind (fun fileXml -> patchedCommentsXml fileXml sheet.Extras.CommentRuns sheet.Cells) with
+            | Some xml -> textFiles.Add { Path = path; Content = xml }
+            | None ->
+                match commentsXml sheet.Extras.CommentRuns sheet.Cells with
+                | Some xml -> textFiles.Add { Path = path; Content = xml }
+                | None -> ()
+        | Some _ -> ()
+        | None ->
+            match commentsXml sheet.Extras.CommentRuns sheet.Cells with
+            | Some xml -> textFiles.Add { Path = placed.CommentsPath; Content = xml }
+            | None -> ()
         match keptLegacyDrawing sheet with
         | "" ->
             match vmlCommentsXml sheetIndex sheet.Cells with
@@ -4355,7 +4478,48 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
                         textFiles.Add { Path = path; Content = tableXml id table })
     // (After the sheets: styles and strings that are added to grow as the cells are written.)
     textFiles.Add { Path = "xl/styles.xml"; Content = stylesText () }
-    textFiles.Add { Path = "xl/sharedStrings.xml"; Content = sharedText () }
+    // The shared strings' `count` is the number of cells that name one: what the file says, less
+    // the uses in the parts of the sheets that were written again, plus the uses in what was written.
+    let sharedXml =
+        let xml = sharedText ()
+        let fileCount =
+            workbook.Preserved.SharedStringsPart |> Option.bind partText
+            |> Option.bind (fun was -> tagAttribute (System.Text.RegularExpressions.Regex.Match(was, "<sst(?=[\\s>])[^>]*>").Value) "count")
+            |> Option.map System.Int32.TryParse
+        match inPlace, fileCount with
+        | Some _, Some (true, was) ->
+            let uses (text: string) =
+                let mutable found = 0
+                let mutable at = text.IndexOf (" t=\"s\"", System.StringComparison.Ordinal)
+                while at >= 0 do
+                    found <- found + 1
+                    at <- text.IndexOf (" t=\"s\"", at + 6, System.StringComparison.Ordinal)
+                found
+            let mutable delta = 0
+            let mutable known = true
+            List.zip workbook.Sheets placements
+            |> List.iteri (fun i (sheet, placed) ->
+                match textFiles |> Seq.tryFind (fun file -> file.Path = placed.SheetPath) with
+                | None -> ()
+                | Some file ->
+                    let source =
+                        match patchPlans.TryGetValue i with
+                        | true, plan -> Some plan.Source
+                        | false, _ ->
+                            match sheet.Extras.SourceXml, sheet.Extras.SourcePart with
+                            | Some xml, _ -> Some xml
+                            | None, Some (path, _) -> partText path
+                            | None, None -> Some ""          // (a sheet the file does not have)
+                    match source with
+                    | Some source -> delta <- delta + uses file.Content - uses source
+                    | None -> known <- false)
+            let root = System.Text.RegularExpressions.Regex.Match(xml, "<sst(?=[\\s>])[^>]*>")
+            if not known || not root.Success then xml
+            else
+                let tag = withTagAttribute "count" (Some (string (max 0 (was + delta)))) root.Value
+                if tag = root.Value then xml else xml.Substring(0, root.Index) + tag + xml.Substring(root.Index + root.Length)
+        | _ -> xml
+    textFiles.Add { Path = "xl/sharedStrings.xml"; Content = sharedXml }
     let written = textFiles |> Seq.map (fun file -> file.Path) |> Set.ofSeq
     let binaryFiles =
         (match workbook.VbaProjectSource with

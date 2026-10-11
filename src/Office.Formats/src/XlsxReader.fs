@@ -978,6 +978,10 @@ type SheetExtras = {
     /// the file's, that part goes back as it is (rich text, shape ids,
     /// authors), also for a sheet that is otherwise written anew.
     CommentsPart: string option
+    /// For the writer: the sheet's notes are not all the file's any more.
+    /// The comments part is then the file's with the notes that changed:
+    /// a note that is what it was goes back as the file wrote it.
+    CommentsChanged: bool
     /// For the writer: the runs of the notes whose text is written in runs,
     /// by cell (row and column from 0). A note that is not here is written
     /// as one plain text.
@@ -1016,7 +1020,7 @@ let emptySheetExtras =
     { Images = []; Objects = []; ThreadedComments = []; DrawingRelationships = []; Format = None; Columns = []; ColumnStyles = []
       SheetId = None; KeptRelationships = []; KeptExtensions = []; KeptElements = []; DrawingPart = None; TableParts = []; PivotLocations = []; DataTables = []
       KeptCellExtensions = []; PrinterSettingsRelId = None; RowAxis = []; ColumnAxis = []; AutoFilter = None; ArrayFormulas = []
-      SourcePart = None; CommentsPart = None; CommentRuns = []; UncachedFormulas = None; Verbatim = false; Patch = None; SourceXml = None; Moves = None }
+      SourcePart = None; CommentsPart = None; CommentsChanged = false; CommentRuns = []; UncachedFormulas = None; Verbatim = false; Patch = None; SourceXml = None; Moves = None }
 
 /// A named cell style (cellStyles / cellStyleXfs of styles.xml), with the
 /// font, fill, border and number format its xf refers to given as their XML so
