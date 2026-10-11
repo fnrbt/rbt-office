@@ -385,7 +385,7 @@ module Shell =
             host.Status.Value <- "Fields refreshed"
 
         let insertTextBox () =
-            runCommand host (fun editor -> WordApi.insertTextBox editor "Text box")
+            runCommand host (fun editor -> WordApi.insertTextBox editor "Text box" |> ignore)
             host.Status.Value <- "Text box inserted"
 
         let insertSectionBreak kind =

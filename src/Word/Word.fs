@@ -2457,8 +2457,25 @@ module API =
         commitDocumentUpdate editor (Doc.setSpacingAfter (if points >= 0.0 then Some (points * 96.0 / 72.0) else None) editor.Doc)
 
     /// Insert a page break at the caret (Ctrl+Enter in Word).
-    let insertPageBreak (editor: Editor) =
-        commitDocumentUpdate editor (Doc.insertPageBreak editor.Doc)
+    /// False - and nothing is done - where a page cannot break: in a text
+    /// box, a header or a footer (the story that is edited is not the body),
+    /// in a footnote, or with nothing selected.
+    let insertPageBreak (editor: Editor) : bool =
+        let inBody =
+            editor.Handler.Story.IsNone
+            && (match editor.Doc.Selection with
+                | Some selection ->
+                    (Doc.textBoxOfParagraph editor.Doc selection.Focus.BlockId).IsNone
+                    && not (selection.Focus.BlockId.StartsWith Layout.footnoteBlockIdPrefix)
+                    && not (selection.Focus.BlockId.StartsWith Layout.endnoteBlockIdPrefix)
+                | None -> false)
+        if not inBody then false
+        else
+            let newDoc = Doc.insertPageBreak editor.Doc
+            if obj.ReferenceEquals(newDoc, editor.Doc) then false
+            else
+                commitDocumentUpdate editor newDoc
+                true
 
     /// Insert a hyperlink to `target`: the selected text becomes the link;
     /// with a caret, `text` (or the target, when it is empty) is inserted as
@@ -2950,9 +2967,22 @@ module API =
             true
         | None -> false
 
-    let insertTextBox (editor: Editor) (text: string) =
-        let newDoc = Doc.insertTextBox text editor.Doc
-        commitDocumentUpdate editor newDoc
+    /// Insert a text box with `text`, anchored in the paragraph (or the table)
+    /// the caret is in: 240 x 96 px, 24 px right of and below the start of
+    /// that paragraph, in front of the text (no wrap). getShapeRects gives it;
+    /// enterTextBox edits its text. False - and nothing is done - while the
+    /// text of a text box is edited: a box does not hold another.
+    let insertTextBox (editor: Editor) (text: string) : bool =
+        let inBox =
+            (match editor.Handler.Story with Some session -> session.Box.IsSome | None -> false)
+            || (match editor.Doc.Selection with
+                | Some selection -> (Doc.textBoxOfParagraph editor.Doc selection.Focus.BlockId).IsSome
+                | None -> false)
+        if inBox then false
+        else
+            let newDoc = Doc.insertTextBox (if isNull (box text) then "" else text) editor.Doc
+            commitDocumentUpdate editor newDoc
+            true
 
     /// Edit the text of a text box of the body in place (`id`: as
     /// getShapeRects gives it): the caret goes to the start of its text, and

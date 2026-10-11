@@ -3,8 +3,12 @@
 // end (the next keystroke used to throw - charCodeAt of undefined), one below
 // 0 at the start, no number at all at 0; a block id the document does not
 // have is refused (false). The range queries take offsets the same way.
-import { check, note, finish, fail, loadWord } from './common.js';
+// And what cannot be done where the caret is, is refused: a page break in a
+// text box, a header or a footer, a text box in a text box (false, and
+// nothing changes).
+import { check, note, finish, fail, loadWord, loadFormats, bytesOf } from './common.js';
 try {
+    const OF = await loadFormats();
     const Word = await loadWord();
     const canvas = document.getElementById('c');
     const editor = Word.initialize('c');
@@ -45,6 +49,25 @@ try {
             Word.selectFindMatch(editor, { BlockId: ids[1], Start: 2, End: 99, Text: 'rld' });
             check('selectFindMatch: within the text', selection(), [1, 2, 1, 5]);
 
+            // ---- what cannot be done where the caret is ----
+            const second = Word.initializeCanvas(canvas);
+            Word.importFromDocxPackage(second, await OF.processors.forEditorPackage(await bytesOf('/repo/tests/test-documents-wild/docx4j-drawingml-wps.docx')));
+            const shape = Word.getShapeRects(second).find((item) => item.Text.length > 0);
+            const bodyLine = Word.getLayoutLines(second)[0];
+            const snapshot = () => [Word.getPageCount(second), Word.getShapeRects(second).length, Word.getText(second), Word.canUndo(second)];
+            Word.clearSelection(second);
+            check('no selection: no page break', [Word.insertPageBreak(second), Word.canUndo(second)], [false, false]);
+            check('the text of the box is entered', [Word.enterTextBox(second, shape.Id), Word.getCaretContext(second).Story], [true, 'textbox']);
+            const inBox = snapshot();
+            check('in a text box: no page break, no text box', [Word.insertPageBreak(second), Word.insertTextBox(second, 'inner'), snapshot()], [false, false, inBox]);
+            Word.exitTextBox(second);
+            check('in a header: no page break', [Word.enterHeaderFooter(second, 0, 'header'), Word.getCaretContext(second).Story, Word.insertPageBreak(second), Word.getPageCount(second)], [true, 'header', false, inBox[0]]);
+            Word.exitHeaderFooter(second);
+            Word.setSelection(second, bodyLine.BlockId, 4, bodyLine.BlockId, 4);
+            const before = snapshot();
+            check('in the body: a text box is made', [Word.insertTextBox(second, 'made'), Word.getShapeRects(second).length, Word.getShapeRects(second).some((item) => item.Text === 'made')], [true, before[1] + 1, true]);
+            Word.setSelection(second, bodyLine.BlockId, 4, bodyLine.BlockId, 4);
+            check('and a page break', [Word.insertPageBreak(second), Word.getPageCount(second), Word.getText(second).startsWith('Milk\n')], [true, before[0] + 1, true]);
         } catch (e) { fail(e); }
         finish();
     };
