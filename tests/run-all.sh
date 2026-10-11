@@ -53,6 +53,15 @@ for s in textbuffer layout incremental-layout faces-relayout font-set pdf import
     run_suite "word-$s" "tests/word/$s.fsx"
 done
 
+# The native painter (word-native) is built against the sibling checkouts
+# rbt-widgets and rbt-renderer, so it is not one of the projects above: its
+# suite runs where word-native was built (dotnet build word-native/Rbt.WordWidgets.fsproj).
+if [ -f word-native/bin/Debug/net10.0/Rbt.WordWidgets.dll ]; then
+    run_suite "word-native-painter" "tests/word/native-painter.fsx"
+else
+    echo "--- word-native-painter (word-native is not built, skipped) ---"
+fi
+
 echo "=== print ==="
 run_suite "print-helpers" "tests/print/helpers.fsx"
 

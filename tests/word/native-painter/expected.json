@@ -1,0 +1,14 @@
+{
+  "comment": "What the browser's layout of document.xml is (tools/word-browser, the native-fixture check asserts it): the page, each line of text relative to the page, the shape's rectangle. tests/word/native-painter.fsx holds the native painter's draw calls and pixels against the same numbers.",
+  "page": { "width": 816, "height": 1056 },
+  "lines": [
+    { "text": "First line", "x": 96, "y": 96, "height": 19.3 },
+    { "text": "Large line", "x": 96, "y": 147.3, "height": 42.93 },
+    { "text": "Third line", "x": 96, "y": 222.23, "height": 19.3 },
+    { "text": "Line of the shape", "x": 96, "y": 305.54, "height": 16.87 },
+    { "text": "Cell one", "x": 96, "y": 335.5, "height": 19.59 },
+    { "text": "Cell two", "x": 256, "y": 335.5, "height": 19.59 },
+    { "text": "Last line", "x": 96, "y": 367.1, "height": 19.3 }
+  ],
+  "shape": { "x": 192, "y": 480, "width": 144, "height": 96 }
+}
