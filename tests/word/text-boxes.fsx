@@ -194,6 +194,15 @@ do
     check "to the start of the third paragraph: its box stays, anchored in the paragraph it is part of now" (boxesOf toStart, textsOf toStart) ([ ("b1", "p1"); ("b3", "p1") ], [ "first third paragraph"; "fourth" ])
     let typedOver = body |> select "p2" 7 "p3" 5 |> insertText "X"
     check "typed over a selection: the box of the paragraph it starts in stays, its text untouched" (boxesOf typedOver, textsOf typedOver, typedOver.Blocks |> List.pick (function TextBox b when b.Id = "b2" -> Some (TB.toString b.Content.Head.Buffer) | _ -> None)) ([ ("b1", "p1"); ("b2", "p2") ], [ "first paragraph"; "second X paragraph"; "fourth" ], "text of b2")
+    // The same selections deleted with changes tracked: the body's text is marked as deleted and stays, and so
+    // does every box, its text untouched - a range of the body is made of the body's paragraphs (nothing of a
+    // box is deleted without a mark of it).
+    let deletedIn (doc: Document) = doc.Blocks |> List.choose (function TextBox b when b.Content |> List.exists (fun p -> p.Buffer.Runs |> List.exists (function TB.Text run -> run.Style.RevisionType.IsSome | _ -> false)) -> Some b.Id | _ -> None)
+    let markedIn (doc: Document) = doc.Blocks |> List.choose (function Paragraph p when p.Buffer.Runs |> List.exists (function TB.Text run -> run.Style.RevisionType = Some "delete" | _ -> false) -> Some p.Id | _ -> None)
+    let trackedMid = body |> select "p1" 6 "p3" 6 |> trackDeleteSelection "A" "2024-01-01T00:00:00Z"
+    check "tracked, from the middle of the first to the middle of the third paragraph: the text is marked, every box stays as it is" (markedIn trackedMid, boxesOf trackedMid |> List.map fst, deletedIn trackedMid) ([ "p1"; "p2"; "p3" ], [ "b1"; "b2"; "b3" ], [])
+    let trackedTyped = body |> select "p2" 7 "p3" 5 |> insertTrackedText "A" "2024-01-01T00:00:00Z" "X"
+    check "tracked, typed over a selection: every box stays as it is" (boxesOf trackedTyped |> List.map fst, deletedIn trackedTyped) ([ "b1"; "b2"; "b3" ], [])
     // Everything selected and deleted: the body's paragraphs and what is anchored in them.
     let all = body |> selectAll |> deleteSelection
     check "everything selected and deleted: nothing is left" (boxesOf all, textsOf all) ([], [ "" ])
