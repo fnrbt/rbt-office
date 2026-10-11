@@ -210,6 +210,9 @@ type InputHandler = {
     /// Called when the pending format changed: what the selection's format
     /// is said to be has changed though the document has not (set by the editor).
     mutable OnPendingFormat: unit -> unit
+    /// Put plain text in at the caret, or over the selection, as Ctrl+V does
+    /// (its lines are paragraphs; one undo step). Set when the handler is made.
+    mutable PasteText: string -> unit
 }
 
 [<Emit("$0.focus({ preventScroll: true })")>]
@@ -622,6 +625,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         EnsureWhole = ignore
         Pending = None
         OnPendingFormat = ignore
+        PasteText = ignore
     }
 
     // ---- caret movement over the layout that is on screen -------------------
@@ -914,6 +918,67 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
     let deleteSelectionForMode doc =
         if handler.TrackChanges then Doc.trackDeleteSelection handler.TrackChangesAuthor handler.TrackChangesDate doc else Doc.deleteSelection doc
 
+    /// Plain text put in at the caret of `beforeDoc`, or over its selection:
+    /// the lines of the text are paragraphs. With nothing selected the text
+    /// has the format chosen at the caret for what is typed next, if one was -
+    /// all of it, the lines after the first too.
+    let pastedText (text: string) (beforeDoc: Doc.Document) : Doc.Document =
+        let mutable doc' = beforeDoc
+        // Delete selection first if any
+        let hasSelection =
+            match doc'.Selection with
+            | Some sel when sel.Anchor <> sel.Focus -> true
+            | _ -> false
+        let pending = if hasSelection then None else pendingFormat handler
+        if hasSelection then
+            doc' <- deleteSelectionForMode doc'
+
+        let mutable segmentStart = 0
+        let mutable index = 0
+        let mutable sawLineBreak = false
+        let insertSegment segmentEnd =
+            doc' <- insertTextForMode (text.Substring(segmentStart, segmentEnd - segmentStart)) doc'
+
+        while index < text.Length do
+            let ch = text.[index]
+            if ch = '\r' || ch = '\n' then
+                sawLineBreak <- true
+                insertSegment index
+                doc' <- splitBlockForMode doc'
+                if ch = '\r' && index + 1 < text.Length && text.[index + 1] = '\n' then
+                    index <- index + 1
+                segmentStart <- index + 1
+            index <- index + 1
+
+        if sawLineBreak then
+            insertSegment text.Length
+        else
+            doc' <- insertTextForMode text doc'
+        // (The first line has the pending format from insertTextForMode; the paragraphs after it are given it here.)
+        match pending, beforeDoc.Selection, doc'.Selection with
+        | Some pending, Some was, Some now when was.IsCollapsed && now.IsCollapsed && now.Focus.BlockId <> was.Focus.BlockId ->
+            let styleOf (typed: TextBuffer.TextStyle) =
+                { pending.PendingStyle with
+                    RevisionId = typed.RevisionId; RevisionType = typed.RevisionType; RevisionAuthor = typed.RevisionAuthor
+                    RevisionDate = typed.RevisionDate; DeletedInsertion = typed.DeletedInsertion; MoveName = typed.MoveName }
+            let ranged = Doc.setSelection was.Focus now.Focus doc'
+            let styled = Doc.applyFormattingToSelection (fun start len buffer -> TextBuffer.applyStyle start len styleOf buffer) ranged
+            { styled with Selection = doc'.Selection }
+        | _ -> doc'
+
+    let pasteText (text: string) =
+        if not (isNull text) && text <> "" then
+            let beforeDoc = handler.Document
+            let doc' = pastedText text beforeDoc
+            if not (documentsEqualForChange doc' beforeDoc) then
+                let cmd = DeleteTextCommand(beforeDoc, doc', "Paste") :> ICommand
+                let doc'', hist' = Cmd.execute cmd beforeDoc handler.History
+                handler.Document <- doc''
+                handler.History <- storyHistory handler handler.History hist'
+                renderWithHover handler.RenderContext doc'' handler.HoveredImage
+                handler.OnChange doc''
+    handler.PasteText <- pasteText
+
     let deleteBackwardForMode doc =
         if handler.TrackChanges then Doc.trackDeleteBackward handler.TrackChangesAuthor handler.TrackChangesDate doc else Doc.deleteBackward doc
 
@@ -1068,49 +1133,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         | key when commandKey && keyEquals 'v' key ->
             // Paste (Ctrl+V)
             e.preventDefault()
-            Clipboard.pasteText().``then``(fun text ->
-                if text <> "" then
-                    let beforeDoc = handler.Document
-                    let mutable doc' = beforeDoc
-
-                    // Delete selection first if any
-                    let hasSelection =
-                        match doc'.Selection with
-                        | Some sel when sel.Anchor <> sel.Focus -> true
-                        | _ -> false
-
-                    if hasSelection then
-                        doc' <- deleteSelectionForMode doc'
-
-                    let mutable segmentStart = 0
-                    let mutable index = 0
-                    let mutable sawLineBreak = false
-                    let insertSegment segmentEnd =
-                        doc' <- insertTextForMode (text.Substring(segmentStart, segmentEnd - segmentStart)) doc'
-
-                    while index < text.Length do
-                        let ch = text.[index]
-                        if ch = '\r' || ch = '\n' then
-                            sawLineBreak <- true
-                            insertSegment index
-                            doc' <- splitBlockForMode doc'
-                            if ch = '\r' && index + 1 < text.Length && text.[index + 1] = '\n' then
-                                index <- index + 1
-                            segmentStart <- index + 1
-                        index <- index + 1
-
-                    if sawLineBreak then
-                        insertSegment text.Length
-                    else
-                        doc' <- insertTextForMode text doc'
-
-                    if not (documentsEqualForChange doc' beforeDoc) then
-                        let cmd = DeleteTextCommand(beforeDoc, doc', "Paste") :> ICommand
-                        let doc'', hist' = Cmd.execute cmd beforeDoc handler.History
-                        handler.Document <- doc''
-                        handler.History <- storyHistory handler handler.History hist'
-                        renderWithHover handler.RenderContext doc'' handler.HoveredImage
-                        handler.OnChange doc''
+            Clipboard.pasteText().``then``(fun text -> pasteText text
             ) |> ignore
         | "Backspace" ->
             let beforeDoc = handler.Document

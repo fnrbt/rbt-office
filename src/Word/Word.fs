@@ -2158,7 +2158,16 @@ module API =
         // (As setSelection: offsets within the paragraph's text, a paragraph the document has.)
         selectPositions editor blockId startOffset blockId endOffset |> ignore
 
-    /// Replace all literal text matches across editable paragraphs.
+    /// Replace every occurrence of `query` with `replacement` (literal text;
+    /// `matchCase`), as one undo step; returns how many were replaced. The
+    /// occurrences are those findText gives: in the text the editor is in -
+    /// the body with its tables and the text of its text boxes (also of boxes
+    /// that are not entered: find and replace go by all the text of the
+    /// story, as Word's do), or the header, footer or text box that is being
+    /// edited. Typing, pasting and deleting in the body do not reach into a
+    /// text box: a selection of the body is made of the body's paragraphs,
+    /// and a box that stands among them goes only with the start of the
+    /// paragraph it is anchored in.
     let replaceAllText (editor: Editor) (query: string) (replacement: string) (matchCase: bool) =
         ensureLoaded editor
         let (newDoc, count) = Doc.replaceAllText query replacement matchCase editor.Doc
@@ -2173,6 +2182,15 @@ module API =
             else Doc.insertText text editor.Doc
         // (With the format chosen at the caret for what is typed next, if one was.)
         commitDocumentUpdate editor (Inp.withPendingFormat editor.Handler editor.Doc newDoc)
+
+    /// Put plain text in at the caret, or over the selection, as Ctrl+V does
+    /// with the clipboard's text (a host that reads the clipboard itself, or
+    /// pastes from a menu, calls this): the lines of the text are paragraphs,
+    /// the whole is one undo step, and with nothing selected the text has
+    /// the format chosen at the caret for what is typed next (toggleBold with
+    /// nothing selected), if one was - every line of it.
+    let pasteText (editor: Editor) (text: string) : unit =
+        editor.Handler.PasteText text
 
     let insertFieldAt (editor: Editor) (fieldCode: string) (result: string) =
         let newDoc = Doc.insertField fieldCode result editor.Doc
@@ -3052,8 +3070,10 @@ module API =
     /// Insert a text box with `text`, anchored in the paragraph (or the table)
     /// the caret is in: 240 x 96 px, 24 px right of and below the start of
     /// that paragraph, in front of the text (no wrap). getShapeRects gives it;
-    /// enterTextBox edits its text. False - and nothing is done - while the
-    /// text of a text box is edited: a box does not hold another.
+    /// enterTextBox edits its text. In a header or footer that is being
+    /// edited the box is the header's: painted on every page that shows it and
+    /// saved in its part. False - and nothing is done - while the text of a
+    /// text box is edited: a box does not hold another.
     let insertTextBox (editor: Editor) (text: string) : bool =
         let inBox =
             (match editor.Handler.Story with Some session -> session.Box.IsSome | None -> false)
@@ -3697,6 +3717,7 @@ module API =
             "selectRevisionInfo" ==> selectRevisionInfo
             "replaceAllText" ==> replaceAllText
             "insertText" ==> insertTextAt
+            "pasteText" ==> pasteText
             "setContent" ==> setContent
             "setParagraphs" ==> setParagraphs
             "testRope" ==> testRope

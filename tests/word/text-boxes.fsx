@@ -177,5 +177,30 @@ check "everything made bold: the body, not the text of the boxes" (boldOf "n1", 
 check "in a box: right at the end of its paragraph goes to its next, and no further" (navDoc |> caretAt "last-1" 8 |> moveCursorRight |> focusOf, navDoc |> caretAt "last-2" 10 |> moveCursorRight |> focusOf, navDoc |> caretAt "mid-1" 10 |> moveCursorRight |> focusOf) (Some ("last-2", 0), Some ("last-2", 10), Some ("mid-1", 10))
 check "the box of a paragraph" (textBoxOfParagraph navDoc "last-2" |> Option.map (fun b -> b.Id), textBoxOfParagraph navDoc "n2" |> Option.map (fun b -> b.Id)) (Some "last", None)
 
+// A selection of the body that is deleted (or typed or pasted over) is made of the body's
+// paragraphs. A text box stands among the blocks next to the paragraph it is anchored in: it goes
+// with the start of that paragraph (where its anchor is), and stays when that start is not selected.
+do
+    let anchored id anchor : Block = TextBox { defaultTextBox with Id = id; Content = [ para (id + "-1") ("text of " + id) ]; Width = 100.0; Height = 50.0; AnchorBlockId = Some anchor; Wrap = Some "none" }
+    let body : Document = docOf [ Paragraph (para "p1" "first paragraph"); anchored "b1" "p1"; Paragraph (para "p2" "second paragraph"); anchored "b2" "p2"; Paragraph (para "p3" "third paragraph"); anchored "b3" "p3"; Paragraph (para "p4" "fourth") ]
+    let select a ao f fo (doc: Document) = { doc with Selection = Some { Anchor = { BlockId = a; Offset = ao }; Focus = { BlockId = f; Offset = fo } } }
+    let boxesOf (doc: Document) = doc.Blocks |> List.choose (function TextBox b -> Some (b.Id, b.AnchorBlockId |> Option.defaultValue "") | _ -> None)
+    let textsOf (doc: Document) = doc.Blocks |> List.choose (function Paragraph p -> Some (TB.toString p.Buffer) | _ -> None)
+    let midToMid = body |> select "p1" 6 "p3" 6 |> deleteSelection
+    check "from the middle of the first to the middle of the third paragraph: the first's box stays, the second's and the third's go" (boxesOf midToMid, textsOf midToMid) ([ ("b1", "p1") ], [ "first paragraph"; "fourth" ])
+    let fromStart = body |> select "p1" 0 "p2" 6 |> deleteSelection
+    check "from the start of the first paragraph: its box goes with it" (boxesOf fromStart, textsOf fromStart) ([ ("b3", "p3") ], [ " paragraph"; "third paragraph"; "fourth" ])
+    let toStart = body |> select "p1" 6 "p3" 0 |> deleteSelection
+    check "to the start of the third paragraph: its box stays, anchored in the paragraph it is part of now" (boxesOf toStart, textsOf toStart) ([ ("b1", "p1"); ("b3", "p1") ], [ "first third paragraph"; "fourth" ])
+    let typedOver = body |> select "p2" 7 "p3" 5 |> insertText "X"
+    check "typed over a selection: the box of the paragraph it starts in stays, its text untouched" (boxesOf typedOver, textsOf typedOver, typedOver.Blocks |> List.pick (function TextBox b when b.Id = "b2" -> Some (TB.toString b.Content.Head.Buffer) | _ -> None)) ([ ("b1", "p1"); ("b2", "p2") ], [ "first paragraph"; "second X paragraph"; "fourth" ], "text of b2")
+    // Everything selected and deleted: the body's paragraphs and what is anchored in them.
+    let all = body |> selectAll |> deleteSelection
+    check "everything selected and deleted: nothing is left" (boxesOf all, textsOf all) ([], [ "" ])
+    // Find and replace go by all the text: the body's and the boxes'.
+    let replaced, count = replaceAllText "paragraph" "PARA" true (docOf [ Paragraph (para "p1" "first paragraph"); anchored "b1" "p1" ] |> fun doc -> { doc with Blocks = doc.Blocks |> List.map (function TextBox b -> TextBox { b with Content = [ para "b1-1" "a paragraph in a box" ] } | block -> block) })
+    check "replace all: in the body and in the text of a box" (count, textsOf replaced, replaced.Blocks |> List.pick (function TextBox b -> Some (TB.toString b.Content.Head.Buffer) | _ -> None)) (2, [ "first PARA" ], "a PARA in a box")
+    check "find: the same" ((findText "paragraph" true (docOf [ Paragraph (para "p1" "first paragraph"); anchored "b1" "p1" ])) |> List.map (fun m -> m.BlockId)) [ "p1" ]
+
 printfn "word text-boxes: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

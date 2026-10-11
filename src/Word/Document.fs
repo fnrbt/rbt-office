@@ -2153,13 +2153,44 @@ let deleteSelection doc =
                                 |> List.choose id
                             { cell with Content = content; NestedTables = List.map fst tables; NestedTableAnchors = List.map snd tables }
 
+                    // A text box stands among the blocks next to the paragraph it is anchored
+                    // in, and goes with the start of that paragraph, where its anchor is: with
+                    // a block that is wholly inside the selection, with the first paragraph
+                    // when the selection starts at its first character, with the last one
+                    // when the selection reaches into it. It stays when its paragraph's start
+                    // is not selected - the selection begins further on in it, or ends before
+                    // its first character (it is then anchored in the paragraph that one
+                    // becomes part of).
+                    let goneAnchors = System.Collections.Generic.HashSet<BlockId>()
+                    doc.Blocks
+                    |> List.iteri (fun index block ->
+                        if index > firstIndex && index < lastIndex then
+                            match block with
+                            | Paragraph p
+                            | Heading (_, p) -> goneAnchors.Add p.Id |> ignore
+                            | Table table -> goneAnchors.Add table.Id |> ignore
+                            | TextBox _ -> ())
+                    if firstIsBlock && startPos.Offset = 0 then goneAnchors.Add firstBlockId |> ignore
+                    if lastIsBlock && endPos.Offset > 0 then goneAnchors.Add lastBlockId |> ignore
                     let newBlocks =
                         doc.Blocks
                         |> List.mapi (fun index block -> index, block)
                         |> List.choose (fun (index, block) ->
+                            match block with
+                            // (A box an end of the selection is in: its own text is edited.)
+                            | TextBox textBox when index = firstIndex || index = lastIndex ->
+                                Some (TextBox { textBox with Content = editContent textBox.Content })
+                            | TextBox textBox ->
+                                match textBox.AnchorBlockId with
+                                | Some anchor when goneAnchors.Contains anchor -> None
+                                | Some anchor when anchor = lastBlockId && lastIsBlock && joins -> Some (TextBox { textBox with AnchorBlockId = Some firstBlockId })
+                                | Some anchor when (anchor = firstBlockId && firstIsBlock) || (anchor = lastBlockId && lastIsBlock) -> Some block
+                                // (Anchored elsewhere, or nowhere: it goes when it stands inside the selection.)
+                                | _ when index > firstIndex && index < lastIndex -> None
+                                | _ -> Some block
+                            | _ ->
                             if index > firstIndex && index < lastIndex then
-                                // Wholly inside the selection, tables and
-                                // text boxes included.
+                                // Wholly inside the selection (a table too).
                                 None
                             else
                                 match block with
@@ -2169,8 +2200,6 @@ let deleteSelection doc =
                                 | Heading (level, p) when p.Id = lastBlockId -> if joins then None else Some (Heading (level, newLastPara))
                                 | Table table when index = firstIndex || index = lastIndex ->
                                     Some (Table (editTable table))
-                                | TextBox textBox when index = firstIndex || index = lastIndex ->
-                                    Some (TextBox { textBox with Content = editContent textBox.Content })
                                 | block -> Some block)
 
                     // Move cursor to the start of the deleted range
