@@ -2430,38 +2430,103 @@ let setCursor blockId offset doc =
             Focus = { BlockId = blockId; Offset = offset }
         } }
 
+/// An empty cell like `cell`: for a row or a column inserted next to it. It
+/// has the cell's properties - width, span, borders, shading, vertical
+/// alignment, margins - and one empty paragraph with the properties of the
+/// cell's first paragraph (style, alignment, indents, spacing and the size
+/// of its mark), so that the new row or column looks like the one it is
+/// inserted next to, in the editor and in the file. `span`: None keeps the
+/// cell's span (a row), Some 1 is a cell of one column.
+let private cellLike (span: int option) (cell: TableCell) : TableCell =
+    let paragraph =
+        match cell.Content with
+        | first :: _ ->
+            { Id = nextBlockId ()
+              Buffer = TextBuffer.empty
+              Metadata =
+                { first.Metadata with
+                    PageBreakBefore = false; PageBreakAfter = false; RenderedPageBreakBefore = None
+                    SectionBreak = None; SectionColumns = None; SectionPageSetup = None; SectionPageNumberStart = None; SectionPageNumberFormat = None
+                    HeaderReferences = []; FooterReferences = []
+                    ContentControlId = None; ContentControlTag = None; ContentControlAlias = None } }
+        | [] -> { Id = nextBlockId (); Buffer = TextBuffer.empty; Metadata = defaultMetadata }
+    { cell with
+        Content = [ paragraph ]
+        NestedTables = []
+        NestedTableAnchors = []
+        VerticalMerge = None
+        ColSpan = (match span with Some columns -> columns | None -> cell.ColSpan) }
+
+/// The grid column a cell of a row starts in.
+let private gridColumnOfCell (row: TableRow) (cellIndex: int) : int =
+    let mutable column = max 0 row.GridBefore
+    row.Cells |> List.iteri (fun i cell -> if i < cellIndex then column <- column + max 1 cell.ColSpan)
+    column
+
+/// The table's grid (w:tblGrid) with a column like the one at `like` put in at `at`.
+let private gridWithColumn (at: int) (like: int) (grid: TableWidth list) : TableWidth list =
+    if grid.IsEmpty || like < 0 || like >= grid.Length then grid
+    else
+        let at = max 0 (min grid.Length at)
+        List.truncate at grid @ [ grid.[like] ] @ List.skip at grid
+
+/// The table's grid without the column at `at`.
+let private gridWithoutColumn (at: int) (grid: TableWidth list) : TableWidth list =
+    if at < 0 || at >= grid.Length then grid
+    else List.truncate at grid @ List.skip (at + 1) grid
+
+/// A row like `row`, empty: the same properties (height, whether it may
+/// break, spacing, what stands before and after it in the grid), cell by
+/// cell the same cells. It is not a header row.
+let private rowLike (row: TableRow) : TableRow =
+    { row with Cells = row.Cells |> List.map (cellLike None); IsHeader = false }
+
+/// Insert a table row below the row containing the selection.
 let insertTableRowAfterSelection doc =
     match currentTableCell doc with
     | None -> doc
     | Some (tableId, rowIndex, _) ->
         updateTable doc tableId (fun table ->
-            let columnCount =
-                table.Rows
-                |> List.tryItem rowIndex
-                |> Option.map (fun row -> row.Cells.Length)
-                |> Option.defaultValue 1
-                |> max 1
-            let newRow = { Cells = [ for _ in 1 .. columnCount -> emptyTableCell () ]; IsHeader = false; Height = None; HeightRule = None; CanSplit = None; CellSpacing = None; PaddingTop = None; PaddingRight = None; PaddingBottom = None; PaddingLeft = None; GridBefore = 0; GridAfter = 0; WidthBefore = None; WidthAfter = None; BordersOverride = None }
-            { table with
-                Rows =
-                    table.Rows
-                    |> List.mapi (fun i row -> if i = rowIndex then [row; newRow] else [row])
-                    |> List.concat })
+            match List.tryItem rowIndex table.Rows with
+            | None -> table
+            | Some row ->
+                let newRow = rowLike row
+                { table with
+                    Rows =
+                        table.Rows
+                        |> List.mapi (fun i existing -> if i = rowIndex then [ existing; newRow ] else [ existing ])
+                        |> List.concat })
 
-let insertTableColumnAfterSelection doc =
+/// A column put into a table next to the cell at `colIndex` of each row
+/// (after it, or before it): each row gets a cell like its neighbour, and
+/// the table's grid a column as wide as the neighbour's.
+let private insertTableColumn (after: bool) doc =
     match currentTableCell doc with
     | None -> doc
-    | Some (tableId, _, colIndex) ->
+    | Some (tableId, rowIndex, colIndex) ->
         updateTable doc tableId (fun table ->
+            let grid =
+                match List.tryItem rowIndex table.Rows with
+                | Some row when colIndex < row.Cells.Length ->
+                    let first = gridColumnOfCell row colIndex
+                    let last = first + max 1 row.Cells.[colIndex].ColSpan - 1
+                    if after then gridWithColumn (last + 1) last table.GridColumns else gridWithColumn first first table.GridColumns
+                | _ -> table.GridColumns
             { table with
+                GridColumns = grid
                 Rows =
                     table.Rows
                     |> List.map (fun row ->
                         { row with
                             Cells =
                                 row.Cells
-                                |> List.mapi (fun i cell -> if i = colIndex then [cell; emptyTableCell ()] else [cell])
+                                |> List.mapi (fun i cell ->
+                                    if i <> colIndex then [ cell ]
+                                    elif after then [ cell; cellLike (Some 1) cell ]
+                                    else [ cellLike (Some 1) cell; cell ])
                                 |> List.concat }) })
+
+let insertTableColumnAfterSelection doc = insertTableColumn true doc
 
 /// Insert a table row above the row containing the selection.
 let insertTableRowBeforeSelection doc =
@@ -2473,7 +2538,7 @@ let insertTableRowBeforeSelection doc =
             | None -> table
             | Some row ->
                 // A row like the one it is inserted next to: the same cells, empty.
-                let newRow = { row with Cells = row.Cells |> List.map (fun cell -> { emptyTableCell () with ColSpan = cell.ColSpan; Width = cell.Width; PreferredWidth = cell.PreferredWidth }); IsHeader = false }
+                let newRow = rowLike row
                 { table with
                     Rows =
                         table.Rows
@@ -2481,20 +2546,7 @@ let insertTableRowBeforeSelection doc =
                         |> List.concat })
 
 /// Insert a table column to the left of the column containing the selection.
-let insertTableColumnBeforeSelection doc =
-    match currentTableCell doc with
-    | None -> doc
-    | Some (tableId, _, colIndex) ->
-        updateTable doc tableId (fun table ->
-            { table with
-                Rows =
-                    table.Rows
-                    |> List.map (fun row ->
-                        { row with
-                            Cells =
-                                row.Cells
-                                |> List.mapi (fun i cell -> if i = colIndex then [ emptyTableCell (); cell ] else [ cell ])
-                                |> List.concat }) })
+let insertTableColumnBeforeSelection doc = insertTableColumn false doc
 
 /// The table cells the selection spans: (table, first row, first cell, last
 /// row, last cell) when both ends of the selection are in cells of one table.
@@ -2662,7 +2714,14 @@ let deleteSelectedTableColumn doc =
             let maxColumns = table.Rows |> List.map (fun row -> row.Cells.Length) |> List.fold max 0
             if maxColumns <= 1 then table
             else
+                // (The grid loses the column the cell of the selection's row is in, when that cell is one column wide.)
+                let grid =
+                    match currentTableCell doc |> Option.bind (fun (_, rowIndex, _) -> List.tryItem rowIndex table.Rows) with
+                    | Some row when colIndex < row.Cells.Length && row.Cells.[colIndex].ColSpan <= 1 && table.GridColumns.Length > 1 ->
+                        gridWithoutColumn (gridColumnOfCell row colIndex) table.GridColumns
+                    | _ -> table.GridColumns
                 { table with
+                    GridColumns = grid
                     Rows =
                         table.Rows
                         |> List.map (fun row ->

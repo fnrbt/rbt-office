@@ -1650,6 +1650,29 @@ let private generateTableGrid (table: obj) =
         |> List.map (fun width -> selfClosing "w:gridCol" [("w:w", string (roundToInt width))])
     if columns.IsEmpty then "" else element "w:tblGrid" [] columns
 
+/// Whether a w:tblGrid that was read has the columns the table has now: as many, of the same
+/// widths. (A table the model holds no grid of keeps the one it was read with.)
+let private sourceGridIs (sourceGrid: string) (table: obj) : bool =
+    let now = optionalArray (table?GridColumns) |> Array.choose (fun value -> optionalFloat value) |> Array.map roundToInt
+    if now.Length = 0 then true
+    else
+        let read = ResizeArray<int>()
+        let mutable at = sourceGrid.IndexOf "<w:gridCol"
+        let mutable ok = true
+        while at >= 0 do
+            let close = sourceGrid.IndexOf (">", at)
+            let tag = if close > at then sourceGrid.Substring(at, close - at) else ""
+            let attribute = tag.IndexOf "w:w=\""
+            if attribute >= 0 then
+                let start = attribute + 5
+                let finish = tag.IndexOf ("\"", start)
+                match (if finish > start then System.Double.TryParse (tag.Substring(start, finish - start)) else (false, 0.0)) with
+                | true, width -> read.Add (roundToInt width)
+                | false, _ -> ok <- false
+            else ok <- false
+            at <- sourceGrid.IndexOf ("<w:gridCol", at + 1)
+        ok && read.Count = now.Length && (Array.forall2 (fun (a: int) (b: int) -> abs (a - b) <= 1) (read.ToArray()) now)
+
 /// The properties the model writes for a cell, a row and a table (the children of w:tcPr, w:trPr, w:tblPr).
 let private tableCellProperties (cell: obj) : string list =
     // CT_TcPr order: tcW, gridSpan, vMerge, tcBorders, shd, tcMar, vAlign.
@@ -1921,7 +1944,9 @@ and private generateTable (hyperlinks: Map<string, string>) (images: ImageScope)
         match source with
         | Some known ->
             let before = table?SourceTable?Before
-            if isNullOrUndefined before then Some (known.TableProps + known.TableGrid)
+            // (The grid that was read, unless the table has another by now - a column put in or taken out.)
+            let grid = if sourceGridIs known.TableGrid table then known.TableGrid else generateTableGrid table
+            if isNullOrUndefined before then Some (known.TableProps + grid)
             else
                 tableSource.Merge ("w:tblPr", tablePropertyOrder, known.TableProps, tablePropertyElements before, tblPrChildren)
                 |> Option.map (fun props -> props + generateTableGrid table)
