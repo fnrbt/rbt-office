@@ -1284,3 +1284,35 @@ checks['comment-box-in-view'] = async () => {
     return lines;
 };
 
+// The label of a chart, shape or slicer the grid does not draw is one line inside its frame, cut with an ellipsis.
+checks['object-label-fits'] = async () => {
+    const { lines, check, note } = makeLog();
+    const { bytesOf } = await import('/component.js');
+    const { grid, host, close } = mountGrid();
+    try {
+        let frames = 0, cut = 0;
+        for (const file of ['tests/real-world/chart-zoo.xlsx', 'tests/real-world/dashboard-sales-analysis.xlsx']) {
+            await grid.ImportXlsx((await bytesOf(file)).slice());
+            for (let index = 0; index < grid.GetSheetNames().length; index++) {
+                grid.SwitchSheet(index); await frame();
+                const wrong = [];
+                for (const node of host.querySelectorAll('.spreadsheet-object')) {
+                    frames++;
+                    const label = node.querySelector('.spreadsheet-object-label');
+                    if (!label) { wrong.push(`${node.title}: no label`); continue; }
+                    if (getComputedStyle(label).display === 'none') continue;
+                    const outer = node.getBoundingClientRect(), inner = label.getBoundingClientRect(), style = getComputedStyle(label);
+                    if (label.scrollWidth > label.clientWidth) cut++;
+                    if (inner.left < outer.left - 0.5 || inner.right > outer.right + 0.5 || inner.top < outer.top - 0.5 || inner.bottom > outer.bottom + 0.5) wrong.push(`${node.title}: the label reaches outside its frame`);
+                    if (style.whiteSpace !== 'nowrap' || style.textOverflow !== 'ellipsis' || inner.height > parseFloat(style.fontSize) * 1.6) wrong.push(`${node.title}: more than one line, or no ellipsis`);
+                    if (label.textContent !== node.title) wrong.push(`${node.title}: the label says "${label.textContent}"`);
+                }
+                check(`${file.split('/').pop()} / ${grid.GetSheetNames()[index]}: every label is one line inside its frame`, wrong, []);
+            }
+        }
+        note(`${frames} frames, ${cut} labels cut with an ellipsis`);
+        check('the workbooks have frames with labels', frames > 5, true);
+    } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
+    finally { close(); }
+    return lines;
+};

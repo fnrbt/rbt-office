@@ -4110,7 +4110,25 @@ type Spreadsheet(container: Element) =
                             | KeptObject (kind, _) ->
                                 let frame = createElement "div"
                                 setClassName frame ("spreadsheet-drawing spreadsheet-object spreadsheet-object-" + kind)
-                                setTextContent frame label
+                                // The label is one line inside the frame: cut with an ellipsis where the
+                                // frame is narrower than it, in smaller letters in a low frame, and
+                                // left out of a frame too small to say anything (the title still says it).
+                                let caption = createElement "span"
+                                setClassName caption "spreadsheet-object-label"
+                                setTextContent caption label
+                                let fontPx = if rect.Height >= 18.0 then 12 elif rect.Height >= 13.0 then 9 else 0
+                                setStyles caption [
+                                    "display", (if fontPx = 0 || rect.Width < 24.0 then "none" else "block")
+                                    "min-width", "0"
+                                    "max-width", "100%"
+                                    "padding", "0 4px"
+                                    "box-sizing", "border-box"
+                                    "white-space", "nowrap"
+                                    "overflow", "hidden"
+                                    "text-overflow", "ellipsis"
+                                    "line-height", "1.2"
+                                ]
+                                appendChild frame caption
                                 setStyles frame [
                                     "display", "flex"
                                     "align-items", "center"
@@ -4119,7 +4137,7 @@ type Spreadsheet(container: Element) =
                                     "background", "#f6f8fa"
                                     "border", "1px solid #8a94a6"
                                     "color", "#4a5568"
-                                    "font", "12px Arial, sans-serif"
+                                    "font", (string (max 9 fontPx) + "px Arial, sans-serif")
                                     "overflow", "hidden"
                                 ]
                                 frame
