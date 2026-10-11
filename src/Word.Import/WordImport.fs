@@ -694,6 +694,7 @@ let private paraMetadata styleMap resolver useDocumentMarkForPureEmpty defaultMi
             PageBreakAfter = para.Runs |> List.exists (fun run -> match run.Content with | DocxReader.PageBreak -> true | _ -> false)
             ColumnBreakAfter = props.ColumnBreak && (para.Runs |> List.exists (fun run -> match run.Content with | DocxReader.PageBreak -> true | _ -> false))
             SectionVerticalAlign = props.SectionVerticalAlign
+            OutlineLevel = para.Properties.OutlineLevel |> intOpt
             SectionBreak = props.SectionBreak
             SectionColumns = props.SectionColumns |> Option.map (fun c -> ({ Count = c.Count; Gap = c.Gap; Separator = c.Separator; Widths = c.Widths }: Rbt.Word.Document.SectionColumns))
             SectionPageSetup = props.SectionGeometry |> Option.map (fun g -> ({ PageWidth = g.PageWidth; PageHeight = g.PageHeight; MarginLeft = g.MarginLeft; MarginRight = g.MarginRight; MarginTop = g.MarginTop; MarginBottom = g.MarginBottom; HeaderDistance = g.HeaderDistance; FooterDistance = g.FooterDistance; DifferentFirstPage = g.DifferentFirstPage; EvenAndOddHeaders = false }: Rbt.Word.Document.SectionPageSetup))

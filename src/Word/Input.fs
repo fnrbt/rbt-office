@@ -537,6 +537,23 @@ let formatAtCaret (handler: InputHandler) (command: Doc.Document -> Doc.Document
         true
     | None -> false
 
+/// The style of text typed with a pending format: the format that was chosen,
+/// and of what the text is part of - a link, a comment's range, a tracked
+/// insertion - what typing there gives without one. It is not the bookmarks,
+/// the field or the note of the run the caret was in when the format was
+/// chosen (the chosen style is that of a character of that run): two
+/// characters typed one after the other are one run, and a bookmark around
+/// the run they are typed into is not theirs.
+let private pendingStyleOver (chosen: TextBuffer.TextStyle) (typed: TextBuffer.TextStyle) : TextBuffer.TextStyle =
+    { typed with
+        Style = chosen.Style; Bold = chosen.Bold; Italic = chosen.Italic; Underline = chosen.Underline
+        UnderlineStyle = chosen.UnderlineStyle; UnderlineColor = chosen.UnderlineColor; AllCaps = chosen.AllCaps
+        SmallCaps = chosen.SmallCaps; Strike = chosen.Strike; DoubleStrike = chosen.DoubleStrike; Hidden = chosen.Hidden
+        Position = chosen.Position; EmphasisMark = chosen.EmphasisMark; FontSize = chosen.FontSize
+        CharacterSpacing = chosen.CharacterSpacing; FontFamily = chosen.FontFamily; Color = chosen.Color
+        Highlight = chosen.Highlight; VertAlign = chosen.VertAlign; Explicit = chosen.Explicit
+        BookmarkStartId = None; BookmarkName = None; BookmarkEndId = None; RenderedPageBreakBefore = false }
+
 /// `after`: `before` with text typed at its caret. The text has the pending
 /// format of that caret, if there is one. (What says that the text is a
 /// tracked insertion stays as the insertion made it.)
@@ -547,10 +564,7 @@ let withPendingFormat (handler: InputHandler) (before: Doc.Document) (after: Doc
         | Some was, Some now when was.IsCollapsed && now.IsCollapsed && now.Focus.BlockId = was.Focus.BlockId && now.Focus.Offset > was.Focus.Offset ->
             match Doc.findParagraph after now.Focus.BlockId with
             | Some para ->
-                let styleOf (typed: TextBuffer.TextStyle) =
-                    { pending.PendingStyle with
-                        RevisionId = typed.RevisionId; RevisionType = typed.RevisionType; RevisionAuthor = typed.RevisionAuthor
-                        RevisionDate = typed.RevisionDate; DeletedInsertion = typed.DeletedInsertion; MoveName = typed.MoveName }
+                let styleOf (typed: TextBuffer.TextStyle) = pendingStyleOver pending.PendingStyle typed
                 let buffer = TextBuffer.applyStyle was.Focus.Offset (now.Focus.Offset - was.Focus.Offset) styleOf para.Buffer
                 { Doc.replaceParagraph after para.Id { para with Buffer = buffer } with Selection = after.Selection }
             | None -> after
@@ -957,10 +971,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         // (The first line has the pending format from insertTextForMode; the paragraphs after it are given it here.)
         match pending, beforeDoc.Selection, doc'.Selection with
         | Some pending, Some was, Some now when was.IsCollapsed && now.IsCollapsed && now.Focus.BlockId <> was.Focus.BlockId ->
-            let styleOf (typed: TextBuffer.TextStyle) =
-                { pending.PendingStyle with
-                    RevisionId = typed.RevisionId; RevisionType = typed.RevisionType; RevisionAuthor = typed.RevisionAuthor
-                    RevisionDate = typed.RevisionDate; DeletedInsertion = typed.DeletedInsertion; MoveName = typed.MoveName }
+            let styleOf (typed: TextBuffer.TextStyle) = pendingStyleOver pending.PendingStyle typed
             let ranged = Doc.setSelection was.Focus now.Focus doc'
             let styled = Doc.applyFormattingToSelection (fun start len buffer -> TextBuffer.applyStyle start len styleOf buffer) ranged
             { styled with Selection = doc'.Selection }

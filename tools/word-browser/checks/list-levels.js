@@ -108,5 +108,18 @@ try {
     saved = await save(editor);
     check('saved with three items moved: the numbering part still the one that was read', [saved.numbering === numbering, /<w:ilvl w:val="1"\/>/.test(paragraphXml(saved.document, 'another')), /<w:ilvl w:val="1"\/>/.test(paragraphXml(saved.document, 'six'))], [true, true, true]);
     check('and read again', items(await open(saved.bytes)), items(editor));
+    // file-sample.docx: Tab at the start of the list item "Lists" (it used to stay "2." at 48 px until the file was read again).
+    {
+        const sample = await open(await bytesOf('/repo/tests/test-documents-online/file-sample.docx'));
+        const marked = (target) => Word.getLayoutLines(target).filter((line) => line.ListMarker && line.ListMarker.trim() !== '').map((line) => [line.Text.trim(), line.ListMarker.trim(), Math.round(line.Indent)]);
+        const line = Word.getLayoutLines(sample).find((entry) => entry.ListMarker && entry.Text.startsWith('Lists'));
+        Word.setSelection(sample, line.BlockId, 0, line.BlockId, 0);
+        Word.getInputElement(sample).dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', code: 'Tab', bubbles: true, cancelable: true }));
+        const format = Word.getSelectionFormat(sample).Paragraph;
+        const shown = marked(sample);
+        check('file-sample.docx, Tab on "Lists": shown as "a." at the second level\'s indent, the items after it count on', [shown.slice(0, 3), format.ListLevel, format.IndentLeft], [[['Headings', '1.', 48], ['Lists', 'a.', 96], ['Links', '2.', 48]], 2, 96]);
+        const written = await save(sample);
+        check('and it is what the saved file shows when it is read again', marked(await open(written.bytes)), shown);
+    }
 } catch (e) { fail(e); }
 finish();

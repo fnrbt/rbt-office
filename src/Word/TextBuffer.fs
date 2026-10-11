@@ -634,6 +634,50 @@ let hasAnnotationIdentity (style: TextStyle) =
     || style.MoveName.IsSome
     || style.RenderedPageBreakBefore
 
+/// What parts the bookmarks of a run in BookmarkStartId, BookmarkName and
+/// BookmarkEndId: a run has all the bookmarks that start before it and end
+/// after it, their ids (and names) joined in the order of the file. A start
+/// "id!" is a bookmark that ends where it starts; an end "!id=name" one that
+/// is opened after the run (the last of its paragraph) and ends there,
+/// "!id=name<" one that ends further on.
+let bookmarkSeparator = '\u001F'
+
+/// The bookmarks that start before a run of this style: (id, name).
+let bookmarkStarts (style: TextStyle) : (string * string) list =
+    match style.BookmarkStartId with
+    | None -> []
+    | Some ids ->
+        let tokens = ids.Split bookmarkSeparator
+        let names = (style.BookmarkName |> Option.defaultValue "").Split bookmarkSeparator
+        [ for index in 0 .. tokens.Length - 1 -> tokens.[index].TrimEnd('!'), (if index < names.Length then names.[index] else "") ]
+
+/// A style whose bookmarks are those of `style` that `keep id name` says to
+/// keep, each with the name `rename id name` gives.
+let withBookmarks (keep: string -> string -> bool) (rename: string -> string -> string) (style: TextStyle) : TextStyle =
+    match style.BookmarkStartId with
+    | None -> style
+    | Some ids ->
+        let tokens = ids.Split bookmarkSeparator
+        let names = (style.BookmarkName |> Option.defaultValue "").Split bookmarkSeparator
+        let kept =
+            [ for index in 0 .. tokens.Length - 1 do
+                let id = tokens.[index].TrimEnd('!')
+                let name = if index < names.Length then names.[index] else ""
+                if keep id name then yield tokens.[index], rename id name ]
+        let gone = tokens |> Array.map (fun token -> token.TrimEnd('!')) |> Array.filter (fun id -> not (kept |> List.exists (fun (token, _) -> token.TrimEnd('!') = id)))
+        let ends =
+            match style.BookmarkEndId with
+            | None -> None
+            | Some ends ->
+                let left = ends.Split bookmarkSeparator |> Array.filter (fun token -> not (Array.contains token gone))
+                if left.Length = 0 then None else Some (System.String.Join(string bookmarkSeparator, left))
+        if kept.IsEmpty then { style with BookmarkStartId = None; BookmarkName = None; BookmarkEndId = ends }
+        else
+            { style with
+                BookmarkStartId = Some (System.String.Join(string bookmarkSeparator, kept |> List.map fst))
+                BookmarkName = Some (System.String.Join(string bookmarkSeparator, kept |> List.map snd))
+                BookmarkEndId = ends }
+
 /// Style for text typed at the edge of a run. The new text takes the run's
 /// character formatting but not its annotation identity: text typed after a
 /// field must not become part of the field (it would be thrown away when the

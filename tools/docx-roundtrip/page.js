@@ -428,6 +428,23 @@ async function packageIntegrity(bytes) {
             if (!owner.includes(`"${id}"`)) problems.push(`${relsName}: relationship ${id} (${/relationships\/(\w+)"/.exec(m[0])[1]}) without a referrer`);
         }
     }
+    // Ranges: in every part of the text a range that is opened is closed, once, and no id is
+    // used for two - bookmarks, comment ranges, permission ranges, the ranges of moved text.
+    for (const part of Object.keys(text)) {
+        if (!/^word\/(document|header\d*|footer\d*|footnotes|endnotes|comments)\.xml$/.test(part)) continue;
+        for (const [open, close, what] of [['bookmarkStart', 'bookmarkEnd', 'bookmark'], ['commentRangeStart', 'commentRangeEnd', 'comment range'], ['permStart', 'permEnd', 'permission range'],
+                                           ['moveFromRangeStart', 'moveFromRangeEnd', 'moved-from range'], ['moveToRangeStart', 'moveToRangeEnd', 'moved-to range']]) {
+            const idsOf = (tag) => [...text[part].matchAll(new RegExp(`<w:${tag}\\b[^>]*\\bw:id="([^"]*)"`, 'g'))].map((m) => m[1]);
+            const starts = idsOf(open), ends = idsOf(close);
+            const twice = (ids) => [...new Set(ids.filter((id, index) => ids.indexOf(id) !== index))];
+            for (const id of twice(starts)) problems.push(`${part}: ${what} ${id} is opened ${starts.filter((other) => other === id).length} times`);
+            for (const id of twice(ends)) problems.push(`${part}: ${what} ${id} is closed ${ends.filter((other) => other === id).length} times`);
+            const opened = new Set(starts), closed = new Set(ends);
+            for (const id of opened) if (!closed.has(id)) problems.push(`${part}: ${what} ${id} is opened and not closed`);
+            for (const id of closed) if (!opened.has(id)) problems.push(`${part}: ${what} ${id} is closed and was not opened`);
+            if (starts.length !== ends.length) problems.push(`${part}: ${starts.length} ${what} starts, ${ends.length} ends`);
+        }
+    }
     return problems;
 }
 const integrity = { inherited: new Set(), found: [] };
@@ -1020,6 +1037,29 @@ const EDIT_PASSES = {
         Word.setSelection(editor, id, end, id, end); Word.insertText(editor, ' typed');
         const [from, until] = middle(end); Word.setSelection(editor, id, from, id, until); Word.toggleItalic(editor);
     },
+    // A format chosen at a caret (nothing selected: Bold), then one, two and five characters typed there one by one:
+    // the typed characters are one run in that format, and what is around the caret - a bookmark, a comment's
+    // range, a link, a field - is what it was.
+    'bold chosen at a caret, 1 character typed': (editor, id, end) => pendingTyped(editor, id, end, 1),
+    'bold chosen at a caret, 2 characters typed': (editor, id, end) => pendingTyped(editor, id, end, 2),
+    'bold chosen at a caret, 5 characters typed': (editor, id, end) => pendingTyped(editor, id, end, 5),
+};
+const pendingTyped = (editor, id, end, count) => {
+    let at = Math.max(1, Math.floor(end / 3));
+    // (Not inside the mark of a comment: the mark is one reference, and text typed into its middle would part it.)
+    for (const anchor of Word.getCommentAnchors(editor)) if (anchor.BlockId === id && at > anchor.StartOffset && at < anchor.EndOffset) at = anchor.EndOffset;
+    Word.setSelection(editor, id, at, id, at);
+    Word.toggleBold(editor);
+    for (let index = 0; index < count; index++) Word.insertText(editor, 'Q');
+};
+// The paragraphs a pass that types with a chosen format takes besides every tenth: those with a bookmark, a
+// comment or a field in them (a link is in many of those).
+const annotatedParagraphs = (editor) => {
+    const ids = new Set();
+    for (const info of Word.getBookmarkInfos(editor)) ids.add(info.BlockId);
+    for (const anchor of Word.getCommentAnchors(editor)) ids.add(anchor.BlockId);
+    for (const line of Word.getLayoutLines(editor)) if (line.InFieldResult || line.InFieldCode) ids.add(line.BlockId);
+    return ids;
 };
 // Changes of a table's rows, columns and cells (through the API, the caret in a paragraph of a table: elsewhere they do nothing).
 const TABLE_PASSES = {
@@ -1154,7 +1194,9 @@ window.editPass = async (name, kind) => {
         Word.completeLayout(editor);
         const table = kind in TABLE_PASSES;
         // (Of a table: one paragraph in seven, taken as long as it is still there - a row deleted takes its paragraphs away.)
-        const chosen = passParagraphs(editor).filter((_, index) => index % (table ? 7 : 10) === 0);
+        const annotated = kind.startsWith('bold chosen at a caret') ? annotatedParagraphs(editor) : new Set();
+        let taken = 0;
+        const chosen = passParagraphs(editor).filter(([id], index) => index % (table ? 7 : 10) === 0 || (annotated.has(id) && taken++ < 60));
         for (const [id, end] of chosen) {
             if (table && !Word.getLayoutLines(editor).some((line) => line.BlockId === id)) continue;
             const revision = Word.getRevision(editor);

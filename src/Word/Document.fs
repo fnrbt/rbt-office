@@ -178,6 +178,8 @@ type BlockMetadata = {
     SectionPageNumberStart: int option
     /// w:pgNumType w:fmt of the section the paragraph ends ("decimal", "lowerRoman", ...).
     SectionPageNumberFormat: string option
+    /// w:outlineLvl the paragraph states itself (0-9; a title's 0): kept and saved.
+    OutlineLevel: int option
     /// w:vAlign of the section the paragraph ends: how the text of a page of
     /// it that is not full stands between the margins ("top", "center",
     /// "both" - spread from top to bottom -, "bottom").
@@ -281,6 +283,7 @@ let defaultMetadata = {
     PageBreakAfter = false
     ColumnBreakAfter = false
     SectionVerticalAlign = None
+    OutlineLevel = None
     SectionBreak = None
     SectionColumns = None
     SectionPageNumberStart = None
@@ -1416,9 +1419,9 @@ let buildPageMap (doc: Document) =
                 run.Style.FieldCode
                 |> Option.iter (fun code ->
                     fieldAnchors <- fieldAnchors @ [{ PageFieldBlockId = para.Id; PageFieldStartOffset = run.Start; PageFieldCode = code; PageNumber = pageNumber }])
-                run.Style.BookmarkName
-                |> Option.iter (fun name ->
-                    bookmarkAnchors <- bookmarkAnchors @ [{ PageBookmarkName = name; PageBookmarkBlockId = para.Id; PageBookmarkStartOffset = run.Start; PageNumber = pageNumber }])
+                for (_, name) in TextBuffer.bookmarkStarts run.Style do
+                    if name <> "" then
+                        bookmarkAnchors <- bookmarkAnchors @ [{ PageBookmarkName = name; PageBookmarkBlockId = para.Id; PageBookmarkStartOffset = run.Start; PageNumber = pageNumber }]
             | Image _ -> ())
 
     let restarts = pageNumberRestarts doc
@@ -1453,19 +1456,20 @@ let bookmarkInfos (doc: Document) =
         editableParagraphsInOrder doc
         |> List.collect (fun para ->
             para.Buffer.Runs
-            |> List.choose (function
+            |> List.collect (function
                 | Text run ->
-                    match run.Style.BookmarkStartId, run.Style.BookmarkName with
-                    | Some bookmarkId, Some bookmarkName ->
-                        Some {
+                    // (A run has all the bookmarks that start before it.)
+                    TextBuffer.bookmarkStarts run.Style
+                    |> List.filter (fun (_, name) -> name <> "")
+                    |> List.map (fun (bookmarkId, bookmarkName) ->
+                        {
                             Id = bookmarkId
                             Name = bookmarkName
                             BlockId = para.Id
                             StartOffset = run.Start
                             EndOffset = run.Start + run.Length
-                        }
-                    | _ -> None
-                | Image _ -> None))
+                        })
+                | Image _ -> []))
     rawInfos
     |> List.groupBy (fun info -> info.Name)
     |> List.map (fun (bookmarkName, infos) ->
@@ -1541,10 +1545,10 @@ let selectContentControl controlId doc =
                 } }
 
 let removeBookmark bookmarkId doc =
-    let clearBookmarkStyle style =
-        if style.BookmarkStartId = Some bookmarkId || style.BookmarkName = Some bookmarkId then
-            { style with BookmarkStartId = None; BookmarkName = None; BookmarkEndId = None }
-        else style
+    let clearBookmarkStyle (style: TextBuffer.TextStyle) =
+        // (That bookmark alone: the others of the run stay.)
+        if style.BookmarkStartId.IsNone then style
+        else TextBuffer.withBookmarks (fun id name -> id <> bookmarkId && name <> bookmarkId) (fun _ name -> name) style
 
     (doc, editableParagraphsInOrder doc)
     ||> List.fold (fun currentDoc para ->
@@ -1560,10 +1564,9 @@ let renameBookmark bookmarkId bookmarkName doc =
         if System.String.IsNullOrWhiteSpace bookmarkName then "Bookmark"
         else bookmarkName.Trim().Replace(" ", "_")
 
-    let renameBookmarkStyle style =
-        if style.BookmarkStartId = Some bookmarkId || style.BookmarkName = Some bookmarkId then
-            { style with BookmarkName = Some normalizedName }
-        else style
+    let renameBookmarkStyle (style: TextBuffer.TextStyle) =
+        if style.BookmarkStartId.IsNone then style
+        else TextBuffer.withBookmarks (fun _ _ -> true) (fun id name -> if id = bookmarkId || name = bookmarkId then normalizedName else name) style
 
     (doc, editableParagraphsInOrder doc)
     ||> List.fold (fun currentDoc para ->
@@ -2974,6 +2977,9 @@ let private nextBookmarkId doc =
         |> List.collect textRunsInBlock
         |> List.collect (fun run -> [run.Style.BookmarkStartId; run.Style.BookmarkEndId])
         |> List.choose id
+        // (A run has several: every id among them, as it is written - "id", "id!", "!id=name".)
+        |> List.collect (fun value -> value.Split TextBuffer.bookmarkSeparator |> Array.toList)
+        |> List.map (fun token -> (let body = token.TrimStart('!') in (if body.Contains "=" then body.Substring(0, body.IndexOf '=') else body).TrimEnd('!')))
         |> List.choose (fun value ->
             match System.Int32.TryParse(value) with
             | true, parsed -> Some parsed

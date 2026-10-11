@@ -1591,8 +1591,16 @@ module Docx =
         let mutable output: Run list = []
         let mutable stack: ComplexFieldState list = []
 
+        // A bookmark that starts or ends inside a field (between the field's characters: a form
+        // field's name) is not part of the field's result: it starts before the field's run and
+        // ends after it. (It used to be lost with the field's characters.)
+        let endsAfterField = ResizeArray<Run>()
         for token in tokens do
             match token with
+            | RunToken run when not stack.IsEmpty && (match run.Content with BookmarkStart _ -> true | _ -> false) ->
+                output <- run :: output
+            | RunToken run when not stack.IsEmpty && (match run.Content with BookmarkEnd _ -> true | _ -> false) ->
+                endsAfterField.Add run
             | RunToken run ->
                 let newOutput, newStack = appendRun output stack run
                 output <- newOutput
@@ -1616,43 +1624,67 @@ module Docx =
                     let newOutput, newStack = appendRun output stack fieldRun
                     output <- newOutput
                     stack <- newStack
+                    if stack.IsEmpty then
+                        for ending in endsAfterField do output <- ending :: output
+                        endsAfterField.Clear()
                 | [] -> ()
 
         while not stack.IsEmpty do
             let newOutput, newStack = flattenIncompleteField output stack
             output <- newOutput
             stack <- newStack
+        for ending in endsAfterField do output <- ending :: output
 
         List.rev output
 
+    /// What parts the bookmarks of a run in one string (see attachRunMarkers).
+    let bookmarkSeparator = "\u001F"
+
+    // The bookmarks that start before a run and end after it are the run's. A
+    // run can have several of each (three w:bookmarkStart before a heading's
+    // text): their ids, and the names, are joined with bookmarkSeparator - all
+    // of them, in the order of the file (only the first start and the last end
+    // used to be kept: the others were lost once the paragraph was written from
+    // the model). A bookmark that ends where it starts is one token of the run
+    // after it, its id followed by "!"; one that is opened after the last run
+    // (and whatever ends there) is written after that run: the end tokens
+    // "!id=name" (opened there) in the order of the file.
     let private attachRunMarkers (runs: Run list) =
-        let mutable pendingStart: BookmarkReference option = None
+        let pendingStarts = ResizeArray<string * string>()   // token, name
         let mutable pendingRenderedPageBreak = false
         let output = ResizeArray<Run>()
+        let join (values: string seq) = System.String.Join(bookmarkSeparator, values)
 
         let attachStart run =
             let withBookmark =
-                match pendingStart with
-                | None -> run
-                | Some first -> { run with BookmarkStart = Some first }
+                if pendingStarts.Count = 0 then run
+                else { run with BookmarkStart = Some { Id = join (pendingStarts |> Seq.map fst); Name = Some (join (pendingStarts |> Seq.map snd)) } }
             if pendingRenderedPageBreak then { withBookmark with RenderedPageBreakBefore = true } else withBookmark
+        let addEnd (token: string) =
+            if output.Count > 0 then
+                let previous = output.[output.Count - 1]
+                output.[output.Count - 1] <- { previous with BookmarkEnd = Some (match previous.BookmarkEnd with Some ends -> ends + bookmarkSeparator + token | None -> token) }
 
         for run in runs do
             match run.Content with
             | BookmarkStart bookmark ->
-                if pendingStart.IsNone then
-                    pendingStart <- Some bookmark
+                pendingStarts.Add (bookmark.Id, bookmark.Name |> Option.defaultValue "")
             | BookmarkEnd id ->
-                if output.Count > 0 then
-                    let previous = output.[output.Count - 1]
-                    output.[output.Count - 1] <- { previous with BookmarkEnd = Some id }
-                pendingStart <- None
+                // (A bookmark that ends where it starts: it stands before the next run.)
+                let mutable at = -1
+                for index in 0 .. pendingStarts.Count - 1 do
+                    if at < 0 && fst pendingStarts.[index] = id then at <- index
+                if at >= 0 then pendingStarts.[at] <- (id + "!", snd pendingStarts.[at])
+                else addEnd id
             | RenderedPageBreak ->
                 pendingRenderedPageBreak <- true
             | _ ->
                 output.Add(attachStart run)
-                pendingStart <- None
+                pendingStarts.Clear()
                 pendingRenderedPageBreak <- false
+        // (What is opened after the last run.)
+        for (token, name) in pendingStarts do
+            addEnd ("!" + token.TrimEnd('!') + "=" + name + (if token.EndsWith "!" then "" else "<"))
 
         output |> Seq.toList
 
@@ -5923,6 +5955,7 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                 "ListId" ==> (effectiveParaProps.ListInfo |> Option.map (fun info -> info.ListId))
                 // (The paragraph itself refers to its numbering - it does not have it from its style.)
                 "ListDirect" ==> para.Properties.ListInfo.IsSome
+                "OutlineLevel" ==> (para.Properties.OutlineLevel |> Option.bind (fun value -> match System.Int32.TryParse value with | true, level -> Some level | false, _ -> None))
                 "ListNumberFormat" ==> (effectiveListInfo effectiveParaProps |> Option.bind (fun info -> info.NumberFormat))
                 "ListLevelText" ==> (effectiveListInfo effectiveParaProps |> Option.bind (fun info -> info.LevelText))
                 "ListStart" ==> (effectiveListInfo effectiveParaProps |> Option.bind (fun info -> info.Start))
@@ -6203,6 +6236,7 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                     "ListId" ==> (effectiveParaProps.ListInfo |> Option.map (fun info -> info.ListId))
                     // (The paragraph itself refers to its numbering - it does not have it from its style.)
                     "ListDirect" ==> para.Properties.ListInfo.IsSome
+                    "OutlineLevel" ==> (para.Properties.OutlineLevel |> Option.bind (fun value -> match System.Int32.TryParse value with | true, level -> Some level | false, _ -> None))
                     "ListNumberFormat" ==> (effectiveListInfo effectiveParaProps |> Option.bind (fun info -> info.NumberFormat))
                     "ListLevelText" ==> (effectiveListInfo effectiveParaProps |> Option.bind (fun info -> info.LevelText))
                     "ListStart" ==> (effectiveListInfo effectiveParaProps |> Option.bind (fun info -> info.Start))

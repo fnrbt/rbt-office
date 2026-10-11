@@ -2248,15 +2248,14 @@ module API =
                                 PageNumber = pageNumber
                             }
                         | None -> ()
-                        match style.BookmarkName with
-                        | Some name when seenBookmarks.Add name ->
+                        for (_, name) in TextBuf.bookmarkStarts style do
+                          if name <> "" && seenBookmarks.Add name then
                             bookmarkAnchors.Add {
                                 PageBookmarkName = name
                                 PageBookmarkBlockId = layout.BlockId
                                 PageBookmarkStartOffset = startOffset
                                 PageNumber = pageNumber
                             }
-                        | _ -> ()
                     | Layout.ImageSegment _
                     | Layout.MathSegment _ -> ()
         // (The pages of the notes after the body are pages of the document: what getPageCount says.)

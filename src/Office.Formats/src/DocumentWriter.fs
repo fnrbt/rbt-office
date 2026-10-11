@@ -498,13 +498,28 @@ let private generateFieldRun (runObj: obj) (fallbackRun: EditorRun) (fieldCode: 
         fieldResultParts <- []
         element "w:fldSimple" [("w:instr", fieldCode)] (generateRunWithObjectProps runObj fallbackRun :: (parts |> List.map (fun (part, run) -> generateRunWithObjectProps part run)))
 
+/// What parts the bookmarks of a run in one string (as the reader joins them:
+/// a run has all the bookmarks that start before it and end after it).
+let private bookmarkSeparator = "\u001F"
+
+/// The bookmarks that start before a run: every one of them, once, in the
+/// order of the file. A token "id!" is a bookmark that ends where it starts.
 let private bookmarkStartXml (runObj: obj) =
     optionalString (runObj?BookmarkStartId)
     |> Option.orElse (optionalString (runObj?BookmarkId))
-    |> Option.map (fun id ->
-        let name = optionalString (runObj?BookmarkName) |> Option.defaultValue ("bookmark" + id)
-        selfClosing "w:bookmarkStart" [("w:id", id); ("w:name", name)])
+    |> Option.map (fun ids ->
+        let tokens = ids.Split(bookmarkSeparator.[0])
+        let names = (optionalString (runObj?BookmarkName) |> Option.defaultValue "").Split(bookmarkSeparator.[0])
+        tokens
+        |> Array.mapi (fun index token ->
+            let collapsed = token.EndsWith "!"
+            let id = if collapsed then token.Substring(0, token.Length - 1) else token
+            let name = if index < names.Length && names.[index] <> "" then names.[index] else "bookmark" + id
+            selfClosing "w:bookmarkStart" [("w:id", id); ("w:name", name)] + (if collapsed then selfClosing "w:bookmarkEnd" [("w:id", id)] else ""))
+        |> String.concat "")
 
+/// The bookmarks that end after a run (and those opened after the last run
+/// of a paragraph: "!id=name" ends there too, "!id=name<" ends further on).
 let private bookmarkEndXml (runObj: obj) =
     let explicitEnd =
         optionalString (runObj?BookmarkEndId)
@@ -512,9 +527,21 @@ let private bookmarkEndXml (runObj: obj) =
     let fieldWrappedEnd =
         optionalString (runObj?FieldCode)
         |> Option.bind (fun _ -> optionalString (runObj?BookmarkStartId))
+        |> Option.filter (fun ids -> not (ids.Contains bookmarkSeparator) && not (ids.EndsWith "!"))
     explicitEnd
     |> Option.orElse fieldWrappedEnd
-    |> Option.map (fun id -> selfClosing "w:bookmarkEnd" [("w:id", id)])
+    |> Option.map (fun ids ->
+        ids.Split(bookmarkSeparator.[0])
+        |> Array.map (fun token ->
+            if token.StartsWith "!" then
+                let opened = token.EndsWith "<"
+                let body = token.Substring(1, token.Length - (if opened then 2 else 1))
+                let at = body.IndexOf '='
+                let id = if at < 0 then body else body.Substring(0, at)
+                let name = if at < 0 || at = body.Length - 1 then "bookmark" + id else body.Substring(at + 1)
+                selfClosing "w:bookmarkStart" [("w:id", id); ("w:name", name)] + (if opened then "" else selfClosing "w:bookmarkEnd" [("w:id", id)])
+            else selfClosing "w:bookmarkEnd" [("w:id", token)])
+        |> String.concat "")
 
 let private generateReferenceRun (runObj: obj) (fallbackRun: EditorRun) =
     let inner =
@@ -1351,6 +1378,10 @@ let private generateParaPropsWithPageSetup (packageSetup: PageSetupInfo) (para: 
         match alignment with
         | Some value -> yield selfClosing "w:jc" [("w:val", value)]
         | None -> ()
+        // (The outline level the paragraph states itself: a title's 0, a body text level.)
+        match optionalInt (para?OutlineLevel) with
+        | Some level when level >= 0 && level <= 9 -> yield selfClosing "w:outlineLvl" [("w:val", string level)]
+        | _ -> ()
         match paragraphMarkRunProps para with
         | Some rPr -> yield rPr
         | None -> ()
@@ -1485,10 +1516,14 @@ let private generateParagraphWithHyperlinksAndImagesWithPageSetup (packageSetup:
                    && optionalString (runsArray.[next]?FieldResult) = Some whole
                    && wrapper runsArray.[next] = wrapper head
                    && not (marked runsArray.[next])
-                   && text.Length < whole.Length do
+                   // (Runs that make the result as it was read are that field: the next run with the same
+                   // code and result is another one - two page numbers side by side. A result that was
+                   // typed into - in another format: a run of its own - is not the text that was read
+                   // any more; its runs are still one field.)
+                   && text <> whole do
                  text <- text + stringOrDefault "" (runsArray.[next]?Text)
                  next <- next + 1
-             if next > index + 1 && text = whole then
+             if next > index + 1 then
                  fieldParts.[index] <- [ for part in index + 1 .. next - 1 -> runsArray.[part], editorRunOfObject runsArray.[part] ]
                  for part in index + 1 .. next - 1 do fieldPartRuns.Add part |> ignore
              else next <- index + 1
@@ -4273,10 +4308,109 @@ let private withWriterNamespaces (prefix: string) (written: string list) : strin
 
 /// document.xml of a document that was opened: the elements of the plan that
 /// are as they were read, the others from the model.
+let private rangeTagPattern =
+    System.Text.RegularExpressions.Regex("<w:(bookmark|commentRange|perm|moveFromRange|moveToRange)(Start|End)\\b[^>]*?\\bw:id=\"([^\"]*)\"[^>]*/>")
+
+/// The ranges of a part that is put together of text as it was read and text
+/// written from the model - bookmarks, comment ranges, permission ranges, the
+/// ranges of moved text - opened once and closed once each. `parts`: the
+/// pieces in order, and whether each was written from the model. Only what
+/// was written from the model is changed: a start an earlier piece of the
+/// model wrote (an end a later one writes) is not written again; an end of a
+/// range nothing opens is left out; a range the model
+/// opens and nothing closes - its end stood where the model does not keep
+/// one: between two paragraphs, before the first run of another - is closed
+/// at the end of its paragraph; one the file's text opens and nothing closes
+/// any more is closed at the start of the next piece of the model.
+let private balancedRanges (parts: (string * bool) array) : string array =
+    let occurrences = parts |> Array.map (fun (text, _) -> if text.IndexOf "w:id=" < 0 then [||] else [| for m in rangeTagPattern.Matches text -> m |])
+    if occurrences |> Array.forall (fun found -> found.Length = 0) then parts |> Array.map fst
+    else
+        let keyOf (m: System.Text.RegularExpressions.Match) = m.Groups.[1].Value + ":" + m.Groups.[3].Value
+        let sourceStarts = System.Collections.Generic.Dictionary<string, int>()   // key -> the first piece that has it
+        let sourceEnds = System.Collections.Generic.HashSet<string>()
+        let modelStarts = System.Collections.Generic.Dictionary<string, int>()    // key -> how many
+        let modelEnds = System.Collections.Generic.Dictionary<string, int>()
+        let count (table: System.Collections.Generic.Dictionary<string, int>) key = match table.TryGetValue key with | true, n -> n | false, _ -> 0
+        let mutable modelHasAny = false
+        for index in 0 .. parts.Length - 1 do
+            let isModel = snd parts.[index]
+            for m in occurrences.[index] do
+                let key = keyOf m
+                let opens = m.Groups.[2].Value = "Start"
+                if isModel then
+                    modelHasAny <- true
+                    if opens then modelStarts.[key] <- count modelStarts key + 1 else modelEnds.[key] <- count modelEnds key + 1
+                elif opens then (if not (sourceStarts.ContainsKey key) then sourceStarts.[key] <- index)
+                else sourceEnds.Add key |> ignore
+        // A range the file's text opens and nothing closes any more: closed at the start of the next piece of the model.
+        let closeAt = System.Collections.Generic.Dictionary<int, ResizeArray<string>>()
+        for KeyValue (key, at) in sourceStarts do
+            if not (sourceEnds.Contains key) && count modelEnds key = 0 then
+                let mutable next = -1
+                for index in at + 1 .. parts.Length - 1 do
+                    if next < 0 && snd parts.[index] then next <- index
+                if next >= 0 then
+                    if not (closeAt.ContainsKey next) then closeAt.[next] <- ResizeArray<string>()
+                    closeAt.[next].Add key
+        if not modelHasAny && closeAt.Count = 0 then parts |> Array.map fst
+        else
+            let endTag (key: string) = let at = key.IndexOf ':' in sprintf "<w:%sEnd w:id=\"%s\"/>" (key.Substring(0, at)) (key.Substring(at + 1))
+            let seenStarts = System.Collections.Generic.HashSet<string>()
+            let seenEnds = System.Collections.Generic.Dictionary<string, int>()
+            parts
+            |> Array.mapi (fun index (text, isModel) ->
+                if not isModel then text
+                else
+                    let builder = System.Text.StringBuilder()
+                    match closeAt.TryGetValue index with
+                    | true, keys -> for key in keys do builder.Append(endTag key) |> ignore
+                    | false, _ -> ()
+                    // The ends to put at the end of a paragraph: of the ranges opened in it that nothing closes.
+                    let pending = ResizeArray<string>()
+                    let mutable at = 0
+                    let flushTo (position: int) =
+                        // (Up to `position`: what is pending goes before the first end of a paragraph on the way.)
+                        let mutable from = at
+                        while pending.Count > 0 && from < position do
+                            let close = text.IndexOf("</w:p>", from, System.StringComparison.Ordinal)
+                            if close >= 0 && close < position then
+                                builder.Append(text.Substring(from, close - from)) |> ignore
+                                for key in pending do builder.Append(endTag key) |> ignore
+                                pending.Clear()
+                                from <- close
+                            else
+                                builder.Append(text.Substring(from, position - from)) |> ignore
+                                from <- position
+                        if from < position then builder.Append(text.Substring(from, position - from)) |> ignore
+                        at <- position
+                    for m in occurrences.[index] do
+                        flushTo m.Index
+                        let key = keyOf m
+                        let keep =
+                            if m.Groups.[2].Value = "Start" then
+                                // (The first the model writes. What the file's own text has is not looked at:
+                                // a file can use an id twice, and its text is left as it is.)
+                                let first = seenStarts.Add key
+                                if first && not (sourceEnds.Contains key) && count modelEnds key = 0 then pending.Add key
+                                first
+                            else
+                                let seen = count seenEnds key + 1
+                                seenEnds.[key] <- seen
+                                // (The last one the model writes, of a range that is opened.)
+                                seen = count modelEnds key && (sourceStarts.ContainsKey key || count modelStarts key > 0)
+                        if keep then builder.Append(m.Value) |> ignore
+                        at <- m.Index + m.Length
+                    flushTo text.Length
+                    for key in pending do builder.Append(endTag key) |> ignore
+                    builder.ToString())
+
 let private generateDocumentXmlFromPlan (plan: BodyPlan) (images: ImageScope) (hyperlinks: Map<string, string>) (pageSetup: PageSetupInfo option) (headers: HeaderFooterPartInfo array) (footers: HeaderFooterPartInfo array) : string =
     let setup = pageSetup |> Option.defaultValue defaultPageSetupInfo
     let parts = ResizeArray<string>()
     let written = ResizeArray<string>()
+    // (Which of the parts were written from the model: see balancedRanges.)
+    let fromModel = System.Collections.Generic.HashSet<int>()
     for segment in plan.Segments do
         match segment with
         | SourceText text when text.IndexOf inlineMarkCharacter < 0 -> parts.Add text
@@ -4291,12 +4425,17 @@ let private generateDocumentXmlFromPlan (plan: BodyPlan) (images: ImageScope) (h
                     | true, number when plan.Inline.ContainsKey number ->
                         let paragraph = generateParagraphWithHyperlinksAndImagesWithPageSetup setup hyperlinks images plan.Inline.[number]
                         written.Add paragraph
+                        fromModel.Add parts.Count |> ignore
                         parts.Add paragraph
                     | _ -> ())
         | ModelBlocks items ->
             let text = items |> generateBlocks (generateDocumentItemWithImagesAndPageSetup setup hyperlinks images) (generateTextBoxRun setup hyperlinks images)
             written.Add text
+            fromModel.Add parts.Count |> ignore
             parts.Add text
+    let balanced = balancedRanges (parts.ToArray() |> Array.mapi (fun index text -> text, fromModel.Contains index))
+    parts.Clear()
+    parts.AddRange balanced
     parts.Add plan.BeforeSection
     match plan.Section with
     | Some text -> parts.Add text
@@ -5777,7 +5916,7 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
                     withRelationshipsOf "document" bodyModelBlocks (fun () ->
                         match bodyPlan with
                         | Some plan -> generateDocumentXmlFromPlan plan bodyImages hyperlinks pageSetup headerParts footerParts
-                        | None -> generateDocumentXmlPackage paragraphs bodyImages pageSetup headerParts footerParts) }
+                        | None -> (balancedRanges [| generateDocumentXmlPackage paragraphs bodyImages pageSetup headerParts footerParts, true |]).[0]) }
         yield { Path = "word/_rels/document.xml.rels"; Content = generateDocumentRelsPreserved (keptFor "document") hasNumbering hasSettings newBodyHyperlinks hasComments hasFootnotes hasEndnotes headerParts footerParts bodyImages }
         yield { Path = "word/styles.xml"
                 Content =

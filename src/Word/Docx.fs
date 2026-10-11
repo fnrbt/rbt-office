@@ -501,6 +501,7 @@ let private metadataFromEditor (item: obj) =
             PageBreakAfter = pageBreakAfter
             ColumnBreakAfter = pageBreakAfter && (item?ColumnBreakAfter |> boolOrDefault false)
             SectionVerticalAlign = optionalString (item?SectionVerticalAlign)
+            OutlineLevel = optionalInt (item?OutlineLevel)
             SectionBreak = sectionBreak
             SectionPageNumberStart = sectionPageNumberStart
             SectionPageNumberFormat = sectionPageNumberFormat
@@ -1857,12 +1858,54 @@ let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) 
             | Some (_, style) when style.Alignment = Some metadata.Alignment -> None
             | _ -> Some metadata.Alignment
 
+    // A bookmark is written once. A run that was split - a part of it made bold, text typed
+    // into it in another format - leaves its bookmarks on every part: the start belongs to
+    // the first run of the paragraph that has it, the end to the last.
+    let bookmarkOwners =
+        let firstStart = System.Collections.Generic.Dictionary<string, TextBuffer.TextRun>()
+        let lastEnd = System.Collections.Generic.Dictionary<string, TextBuffer.TextRun>()
+        let mutable any = false
+        for run in buffer.Runs do
+            match run with
+            | Text tr ->
+                match tr.Style.BookmarkStartId with
+                | Some ids ->
+                    any <- true
+                    for token in ids.Split TextBuffer.bookmarkSeparator do
+                        if not (firstStart.ContainsKey token) then firstStart.[token] <- tr
+                | None -> ()
+                match tr.Style.BookmarkEndId with
+                | Some ids ->
+                    any <- true
+                    for token in ids.Split TextBuffer.bookmarkSeparator do lastEnd.[token] <- tr
+                | None -> ()
+            | Image _ -> ()
+        if any then Some (firstStart, lastEnd) else None
+    let ownBookmarks (tr: TextBuffer.TextRun) : string option * string option * string option =
+        match bookmarkOwners with
+        | None -> None, None, None
+        | Some (firstStart, lastEnd) ->
+            let join (values: string list) = if values.IsEmpty then None else Some (System.String.Join(string TextBuffer.bookmarkSeparator, values))
+            let starts =
+                match tr.Style.BookmarkStartId with
+                | None -> []
+                | Some ids ->
+                    let tokens = ids.Split TextBuffer.bookmarkSeparator
+                    let names = (tr.Style.BookmarkName |> Option.defaultValue "").Split TextBuffer.bookmarkSeparator
+                    [ for index in 0 .. tokens.Length - 1 do
+                        if obj.ReferenceEquals(firstStart.[tokens.[index]], tr) then yield tokens.[index], (if index < names.Length then names.[index] else "") ]
+            let ends =
+                match tr.Style.BookmarkEndId with
+                | None -> []
+                | Some ids -> [ for token in ids.Split TextBuffer.bookmarkSeparator do if obj.ReferenceEquals(lastEnd.[token], tr) then yield token ]
+            join (starts |> List.map fst), (if starts.IsEmpty then None else Some (System.String.Join(string TextBuffer.bookmarkSeparator, starts |> List.map snd))), join ends
     let runs =
         buffer.Runs
         |> List.choose (function
             | Text tr ->
                 let text = Rope.slice tr.Start tr.Length buffer.Rope
                 let inherited = inheritedStyle tr.Style
+                let bookmarkStartIds, bookmarkNames, bookmarkEndIds = ownBookmarks tr
                 Some (createObj [
                     "Text" ==> text
                     "HasExplicit" ==> true
@@ -1906,9 +1949,9 @@ let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) 
                     "NoteId" ==> tr.Style.NoteId
                     "NoteType" ==> tr.Style.NoteType
                     "NoteText" ==> tr.Style.NoteText
-                    "BookmarkStartId" ==> tr.Style.BookmarkStartId
-                    "BookmarkName" ==> tr.Style.BookmarkName
-                    "BookmarkEndId" ==> tr.Style.BookmarkEndId
+                    "BookmarkStartId" ==> bookmarkStartIds
+                    "BookmarkName" ==> bookmarkNames
+                    "BookmarkEndId" ==> bookmarkEndIds
                     "FieldCode" ==> tr.Style.FieldCode
                     "FieldResult" ==> tr.Style.FieldResult
                     "RenderedPageBreakBefore" ==> tr.Style.RenderedPageBreakBefore
@@ -2054,6 +2097,7 @@ let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) 
         "PageBreakAfter" ==> para.Metadata.PageBreakAfter
         "ColumnBreakAfter" ==> (para.Metadata.PageBreakAfter && para.Metadata.ColumnBreakAfter)
         "SectionVerticalAlign" ==> para.Metadata.SectionVerticalAlign
+        "OutlineLevel" ==> para.Metadata.OutlineLevel
         "SectionBreak" ==> para.Metadata.SectionBreak
         "SectionPageNumberStart" ==> para.Metadata.SectionPageNumberStart
         "SectionPageNumberFormat" ==> para.Metadata.SectionPageNumberFormat

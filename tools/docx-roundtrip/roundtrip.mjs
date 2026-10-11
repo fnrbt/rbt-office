@@ -132,7 +132,10 @@ const tenthConfinedShare = 0.99;
 const boldConfinedShare = 0.97;
 // The edit passes (page.js, EDIT_PASSES): the share of the edited paragraphs that must be changed in their own XML.
 // (A row or a column of a table that is new is the model's: its paragraphs are written from the model.)
-const passConfinedShare = { 'split in two (Enter)': 0.5, 'joined to the one before (Backspace)': 0.5, 'a table row inserted': 0, 'a table row deleted': 0, 'a table column inserted': 0, 'a table cell shaded': 0 };
+// (The passes that type with a format chosen at the caret take, besides every tenth paragraph, those with a bookmark, a
+// comment or a field: many of these are entries of a table of contents - a field that begins in one paragraph and ends
+// in another - or stand in a table that holds a shape, and are written from the model whatever is changed in them.)
+const passConfinedShare = { 'bold chosen at a caret, 1 character typed': 0.6, 'bold chosen at a caret, 2 characters typed': 0.6, 'bold chosen at a caret, 5 characters typed': 0.6, 'split in two (Enter)': 0.5, 'joined to the one before (Backspace)': 0.5, 'a table row inserted': 0, 'a table row deleted': 0, 'a table column inserted': 0, 'a table cell shaded': 0 };
 // The documents in which an edit pass may change paragraphs nobody edited (name fragments): a paragraph of a
 // vertically merged cell of a table inside a table is, in the editor, a paragraph of the cell below - whose own
 // empty paragraph is formatted with it.

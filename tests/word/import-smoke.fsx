@@ -227,6 +227,29 @@ check "native direct keepNext / keepLines"
     (directKeepDoc.Blocks |> List.choose (function Paragraph para | Heading (_, para) -> Some (para.Metadata.KeepNext, para.Metadata.KeepLines) | _ -> None))
     [ Some true, Some true; Some false, None; None, None ]
 
+// ----- bookmarks: a run has every bookmark that starts before it and ends after it -----
+do
+    let doc =
+        syntheticDocx
+            ("""<w:p><w:bookmarkStart w:id="0" w:name="A"/><w:bookmarkStart w:id="1" w:name="B"/><w:bookmarkStart w:id="2" w:name="C"/><w:r><w:t>three</w:t></w:r><w:bookmarkEnd w:id="2"/><w:bookmarkEnd w:id="0"/><w:r><w:t xml:space="preserve"> tail</w:t></w:r><w:bookmarkStart w:id="5" w:name="Point"/><w:bookmarkEnd w:id="5"/><w:r><w:t>after</w:t></w:r><w:bookmarkStart w:id="7" w:name="Open"/></w:p>"""
+             + """<w:p><w:r><w:t>next</w:t></w:r><w:bookmarkEnd w:id="1"/><w:bookmarkEnd w:id="7"/></w:p>"""
+             + """<w:p><w:r><w:t xml:space="preserve">form </w:t></w:r><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:bookmarkStart w:id="9" w:name="Text1"/><w:r><w:instrText> FORMTEXT </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>value</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r><w:bookmarkEnd w:id="9"/></w:p>""")
+        |> DocxReader.loadBytesNative |> Option.get |> Rbt.Word.Import.importDoc
+    let runsOf index = (doc.Blocks |> List.choose (function Paragraph para -> Some para | _ -> None)).[index].Buffer.Runs |> List.choose (function Rbt.Word.TextBuffer.Text run -> Some run | _ -> None)
+    let sep = string Rbt.Word.TextBuffer.bookmarkSeparator
+    let first = runsOf 0
+    check "three bookmarks start before a run: all three, with their names" (first.[0].Style.BookmarkStartId, first.[0].Style.BookmarkName) (Some ("0" + sep + "1" + sep + "2"), Some ("A" + sep + "B" + sep + "C"))
+    check "two end after it: both, in the order of the file" first.[0].Style.BookmarkEndId (Some ("2" + sep + "0"))
+    check "a bookmark that ends where it starts stands before the next run" (first.[2].Style.BookmarkStartId, first.[2].Style.BookmarkName) (Some "5!", Some "Point")
+    check "one that is opened after the last run of its paragraph" first.[2].Style.BookmarkEndId (Some "!7=Open<")
+    check "the bookmarks the document lists" (bookmarkInfos doc |> List.map (fun info -> info.Id, info.Name) |> List.sort) [ ("0", "A"); ("1", "B"); ("2", "C"); ("5", "Point"); ("9", "Text1") ]
+    let form = runsOf 2
+    check "a bookmark that starts inside a field (a form field's name) is the field's run's" (form |> List.map (fun run -> run.Style.BookmarkStartId, run.Style.BookmarkEndId, run.Style.FieldCode.IsSome)) [ (None, None, false); (Some "9", Some "9", true) ]
+    // One of the three removed: the other two stay, and the end of the one that is gone goes with it.
+    let removed = removeBookmark "A" doc
+    let after = (removed.Blocks |> List.choose (function Paragraph para -> Some para | _ -> None)).[0].Buffer.Runs |> List.choose (function Rbt.Word.TextBuffer.Text run -> Some run | _ -> None)
+    check "one of three removed" (after.[0].Style.BookmarkStartId, after.[0].Style.BookmarkName, after.[0].Style.BookmarkEndId) (Some ("1" + sep + "2"), Some ("B" + sep + "C"), Some "2")
+
 // ----- footnote / endnote / comment bodies ---------------------------------
 /// A package made of the given parts (word/document.xml gets the body wrapper).
 let syntheticPackage (body: string) (parts: (string * string) list) =
