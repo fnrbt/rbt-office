@@ -9767,6 +9767,13 @@ type Spreadsheet(container: Element) =
                         sheetIndexOfId table.SheetId, SheetOps.rangeOf table.StartRow table.StartCol table.EndRow table.EndCol
                     | _ -> Host.hostFail memberName (sprintf "\"%s\" is not a reference, a defined name or a table" text)
         if sheetIndex <> activeSheetIndex then this.SwitchSheet sheetIndex
+        // (Any cell a sheet can have - to row 1 048 576 and column XFD -, as SelectCell: the grid is given room for it.)
+        if range.From.Row < 0 || range.From.Col < 0 || range.To.Row > 1048575 || range.To.Col > 16383 then
+            Host.hostFail memberName (sprintf "%s is outside the sheet" (SheetOps.rangeText range))
+        if not sheetLocked then
+            giveRoomFor range.From
+            // (A whole row or column is that of the grid as it is.)
+            if range.To.Row < 1048575 && range.To.Col < 16383 then giveRoomFor range.To
         let range =
             match SheetOps.clipRange model.RowCount model.ColCount range with
             | Some clipped -> clipped

@@ -397,9 +397,12 @@ sheet-level one is deleted). One undo step. Throws when there is no such name in
 ### `GoTo(nameOrRef: string): { sheetIndex: number, range: string }`
 The name box: a reference (`"B3"`, `"$B$2:$D$5"`, `"A:A"`, `"Sheet2!B3:C9"`, `"'My sheet'!A1"`), a defined name that refers to a range (the
 active sheet's own name before a workbook-level one; `"Sheet2!Name"` for another sheet's; of several areas the first), or a table name.
-Switches the sheet if needed, selects the range (clipped to the sheet's rows and columns), scrolls its first cell into view; an entry in
-progress is committed. Not a document change. Throws when the text is not a reference, name or table, names a sheet that does not exist, lies
-outside the sheet, or is a name that does not refer to a range (a constant or formula).
+Switches the sheet if needed, selects the range, scrolls its first cell into view; an entry in progress is committed. Not a document
+change. **Any cell a sheet can have is reached** - to row 1 048 576 and column XFD, also through a name or on another sheet
+(`GoTo("AB600")`, `"A1048576"`, `"XFD1"`, `"A600:B700"`): the grid is given room for it, as `SelectCell` does (before 0.1.16 a
+reference beyond the rows and columns the grid had at the moment threw "... is outside the sheet"). A whole column or row (`"A:A"`)
+is that of the grid as it is. Throws when the text is not a reference, name or table, names a sheet that does not exist, lies
+outside what a sheet can have (`"A1048577"`, `"XFE1"`), or is a name that does not refer to a range (a constant or formula).
 
 ## Freeze panes and view
 
@@ -696,7 +699,10 @@ they were read (see "Parts the editor does not model"); drawing them does not mo
   at their place in the group.
 - **Values are live**: a series reads the cells its `c:f` names (`Sheet1!$B$2:$B$7`, several areas, another sheet) as they are now,
   with the cells' number formats for labels; a chart is drawn again in the frame after a cell it reads changed (an entry
-  that six charts read: 20 - 30 ms with its frame) - and only then: see "Recalculation after an edit: 0.1.16". Where a reference cannot be read - another workbook, a defined name, a sheet
+  that six charts read: 20 - 30 ms with its frame) - and only then: see "Recalculation after an edit: 0.1.16". **A series has as
+  many points as the file cached for it** (`c:ptCount`): a pivot chart names its pivot table's column down to the last row
+  (`$A$4:$A$16`, 13 cells for 12 points - the last is "Grand Total"), and drew the grand total as a point once the sheet it reads
+  had been shown (before that its cache was drawn: 12 points). Now it is the same chart either way, with the cells' values. Where a reference cannot be read - another workbook, a defined name, a sheet
   that is not there or was not converted yet (`IsSheetLoaded`) - the values the file cached (`c:numCache` / `c:strCache`) are drawn.
 - **Shapes** (`xdr:sp`, `xdr:cxnSp`): fill and outline (colour, width; the shape style's `fillRef` / `lnRef` when the shape states
   none), preset geometry - rectangle, rounded rectangle (its corner adjustment), ellipse, triangle, diamond, line / connectors; any

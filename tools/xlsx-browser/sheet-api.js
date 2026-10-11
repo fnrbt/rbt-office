@@ -960,6 +960,19 @@ checks['api-names'] = async () => {
         check("another sheet's name, qualified", [grid.GoTo("'Other sheet'!rate"), selection()], [{ sheetIndex: 1, range: 'B1' }, [1, 'B1']]);
         grid.SwitchSheet(0);
         check('a whole column is clipped to the sheet', grid.GoTo('B:B').range, 'B1:B' + grid.GetModel().RowCount);
+        // Any cell a sheet can have, as SelectCell: the grid is given room for it.
+        const rowsBefore = grid.GetModel().RowCount, colsBefore = grid.GetModel().ColCount;
+        check('a cell beyond the grid', [rowsBefore < 600 || colsBefore < 28, grid.GoTo('AB600'), selection(), grid.GetModel().RowCount >= 600, grid.GetModel().ColCount >= 28], [true, { sheetIndex: 0, range: 'AB600' }, [0, 'AB600'], true, true]);
+        check('a range beyond the grid', [grid.GoTo('A600:B700'), selection(), grid.GetModel().RowCount >= 700], [{ sheetIndex: 0, range: 'A600:B700' }, [0, 'A600:B700'], true]);
+        check('the last row of a sheet', [grid.GoTo('A1048576'), selection(), grid.GetActiveCell().Row], [{ sheetIndex: 0, range: 'A1048576' }, [0, 'A1048576'], 1048575]);
+        check('the last column of a sheet', [grid.GoTo('XFD1'), selection(), grid.GetActiveCell().Col], [{ sheetIndex: 0, range: 'XFD1' }, [0, 'XFD1'], 16383]);
+        check('a cell beyond the grid on another sheet', [grid.GoTo("'Other sheet'!AD900"), selection()], [{ sheetIndex: 1, range: 'AD900' }, [1, 'AD900']]);
+        grid.SwitchSheet(0);
+        grid.SetDefinedName('FarAway', '=' + "'" + grid.GetSheetNames()[0].replace(/'/g, "''") + "'" + '!$AC$5000:$AD$5001');
+        check('a name that leads beyond the grid', [grid.GoTo('FarAway'), selection()], [{ sheetIndex: 0, range: 'AC5000:AD5001' }, [0, 'AC5000:AD5001']]);
+        grid.DeleteDefinedName('FarAway');
+        check('what a sheet cannot have still throws', [thrown(() => grid.GoTo('A1048577')) !== null, thrown(() => grid.GoTo('XFE1')) !== null], [true, true]);
+        grid.GoTo('A1');
         grid.GoTo('A150');
         await frame();
         check('the place is scrolled into view', [!!host.querySelector('.spreadsheet-cell[data-row="149"][data-col="0"]'), host.querySelector('.spreadsheet-container').scrollTop > 1000], [true, true]);
