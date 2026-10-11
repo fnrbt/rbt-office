@@ -1470,7 +1470,7 @@ checks['page-break-preview'] = async () => {
     try {
         for (let row = 0; row < 120; row++) for (let col = 0; col < 4; col++) grid.SetCell(row, col, String(row * 10 + col));
         await frame();
-        check('the normal view: no page is outlined', [grid.GetViewMode(), pages().length, grid.GetViewOptions().viewMode], ['normal', 0, 'normal']);
+        check('the normal view: no page is outlined', [grid.GetViewMode(), pages().length, 'viewMode' in grid.GetViewOptions()], ['normal', 0, false]);
         const revision = grid.GetRevision();
         grid.SetViewMode('pageBreak'); await frame();
         const printed = grid.GetPrintPages().pages;

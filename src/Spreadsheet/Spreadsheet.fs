@@ -9663,7 +9663,6 @@ type Spreadsheet(container: Element) =
             "showHeaders" ==> model.ShowHeaders
             "showFormulas" ==> model.ShowFormulas
             "showZeros" ==> model.ShowZeros
-            "viewMode" ==> viewMode
             "frozen" ==> createObj [ "rows" ==> model.FrozenRows; "cols" ==> model.FrozenCols ] ]
 
     /// The view of the grid: "normal", or "pageBreak" - the page break preview, in which every
