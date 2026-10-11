@@ -2469,7 +2469,7 @@ module Export =
     /// When sheets of the file were renamed or deleted, that is done for the
     /// sheets whose parts do not name any of those. Any other sheet, and any
     /// whose part is not supplied, is written from the model as before.
-    let toWorkbookOutWith (sourceParts: (string * byte[]) list) (input: ExportInput) : XlsxWriter.XlsxWorkbookOut =
+    let private toWorkbookOutFromSheets (sourceParts: (string * byte[]) list) (input: ExportInput) : XlsxWriter.XlsxWorkbookOut =
         let original = input.Source |> Option.map (fun source -> XlsxWriter.packageFromReaderWorkbook source.Workbook)
         // Rules kept from the file refer to the file's dxfs by index, so those
         // keep their places; styles of new rules are added behind them.
@@ -2706,13 +2706,19 @@ module Export =
         // A sheet of the file that is written from its model keeps what its part
         // says and a model does not hold (see `SheetExtras.SourceXml`), by where
         // the rows and columns of the file are now.
-        let withSource (outSheet: XlsxWriter.XlsxSheetOut) (model: SpreadsheetModel) (written: XlsxWriter.XlsxSheetOut) : XlsxWriter.XlsxSheetOut =
+        let withSource (outSheet: XlsxWriter.XlsxSheetOut) (before: SpreadsheetModel) (model: SpreadsheetModel) (written: XlsxWriter.XlsxSheetOut) : XlsxWriter.XlsxSheetOut =
             match outSheet.Extras.SourcePart with
             | Some (path, relType) when relType.EndsWith "/worksheet" && suppliedParts.ContainsKey path ->
                 let moves =
                     if model.StructureLog.Length <> model.StructureVersion then None
                     else Some (model.StructureLog |> List.rev |> List.map (fun move -> move.OnRows, move.Insert, move.At, move.Count))
-                { written with Extras = { written.Extras with SourceXml = Some (Text.Encoding.UTF8.GetString suppliedParts.[path]); Moves = moves } }
+                let text = Text.Encoding.UTF8.GetString suppliedParts.[path]
+                // (The file's `<sortState>` follows its cells while the sheet was not sorted since:
+                // a sheet sorted in the editor is written without what the file says of a sort.)
+                let text =
+                    if before.SortState = model.SortState || text.IndexOf "<sortState" < 0 then text
+                    else Text.RegularExpressions.Regex.Replace(text, "<sortState(?=[\\s>/])[^>]*?/>|<sortState(?=[\\s>])[^>]*>[\\s\\S]*?</sortState>", "")
+                { written with Extras = { written.Extras with SourceXml = Some text; Moves = moves } }
             | _ -> written
         let verbatimOf (outSheet: XlsxWriter.XlsxSheetOut) (before: SpreadsheetModel) (model: SpreadsheetModel) : bool =
             match inPlaceParts, outSheet.Extras.SourcePart with
@@ -2743,8 +2749,8 @@ module Export =
                         let written = withKeptFormulas (sourcedSheet cache dxfIndex name (stateOf index model) outSheet readerSheet (filterRowsAsHidden before) (filterRowsAsHidden model))
                         match patchOf outSheet before model with
                         | Some patch when not patch.Whole -> { written with Extras = { written.Extras with Verbatim = true; Patch = Some patch } }
-                        | Some patch -> withSource outSheet model { written with Extras = { written.Extras with Patch = Some patch } }
-                        | None -> withSource outSheet model written
+                        | Some patch -> withSource outSheet before model { written with Extras = { written.Extras with Patch = Some patch } }
+                        | None -> withSource outSheet before model written
                 | None ->
                     let written = modelSheet cache dxfIndex name (stateOf index model) (filterRowsAsHidden model)
                     let written =
@@ -2914,6 +2920,92 @@ module Export =
                 // (A workbook that is not a file's is in the date system its sheets say.)
                 if input.Sheets |> Array.exists (fun sheet -> sheet.Date1904) then { XlsxReader.emptyWorkbookPreservation with Date1904 = true }
                 else XlsxReader.emptyWorkbookPreservation }
+
+    /// The workbook to write without the caches nothing written uses any more: a slicer cache
+    /// (a timeline cache) whose slicers were all on sheets that are gone, a pivot cache whose
+    /// pivot tables were - and that no slicer cache that stays filters by. The workbook's
+    /// relationship to such a cache goes (the part and what it leads to - a pivot cache's
+    /// records - are then not written, nor their content types), its entry in workbook.xml
+    /// (`Preserved.DroppedWorkbookRelationships`), and the name of a slicer cache
+    /// (`<definedName name="Slicer_Region">#N/A`). A cache the file had without a user stays
+    /// as it is; so does every cache when a part that says who uses it was not kept.
+    let private withoutOrphanedCaches (input: ExportInput) (out: XlsxWriter.XlsxWorkbookOut) : XlsxWriter.XlsxWorkbookOut =
+        match input.Source with
+        | None -> out
+        | Some source ->
+            let pathsOf (suffix: string) (relationships: (string * string * string * bool) list) =
+                relationships
+                |> List.choose (fun (_, relType, target, isExternal) -> if not isExternal && relType.EndsWith suffix then Some (target.TrimStart '/') else None)
+                |> List.distinct
+            let was = source.Workbook.Sheets |> List.collect (fun sheet -> sheet.Extras.KeptRelationships)
+            let now = out.Sheets |> List.collect (fun sheet -> sheet.Extras.KeptRelationships)
+            let lost (suffix: string) = (let kept = Set.ofList (pathsOf suffix now) in pathsOf suffix was |> List.exists (fun path -> not (Set.contains path kept)))
+            if not (lost "/slicer" || lost "/timeline" || lost "/pivotTable") then out
+            else
+                let parts = Collections.Generic.Dictionary<string, byte[]>()
+                for path, data in source.Workbook.Preserved.Parts do parts.[path] <- data
+                for path, data in out.Preserved.Parts do parts.[path] <- data
+                let textOf (path: string) = match parts.TryGetValue path with | true, data -> Some (Text.Encoding.UTF8.GetString data) | false, _ -> None
+                let values (pattern: string) (text: string) = [ for found in Text.RegularExpressions.Regex.Matches(text, pattern) -> found.Groups.[1].Value ]
+                /// What the parts of that kind name by `pattern`: None when one of them cannot be read.
+                let namedBy (suffix: string) (pattern: string) (relationships: (string * string * string * bool) list) : Set<string> option =
+                    let texts = pathsOf suffix relationships |> List.map textOf
+                    if texts |> List.exists Option.isNone then None else Some (texts |> List.collect (fun text -> values pattern text.Value) |> Set.ofList)
+                let orphaned (suffix: string) (pattern: string) : Set<string> =
+                    match namedBy suffix pattern was, namedBy suffix pattern now with
+                    | Some before, Some after -> Set.difference before after
+                    | _ -> Set.empty
+                let slicerCaches = orphaned "/slicer" "<slicer\\s[^>]*?\\scache=\"([^\"]*)\""
+                let timelineCaches = orphaned "/timeline" "<timeline\\s[^>]*?\\scache=\"([^\"]*)\""
+                let pivotCacheIds = orphaned "/pivotTable" "<pivotTableDefinition\\s[^>]*?\\scacheId=\"([0-9]+)\""
+                let nameIn (pattern: string) (target: string) = textOf (target.TrimStart '/') |> Option.bind (fun text -> values pattern text |> List.tryHead)
+                let droppedFilters =
+                    out.Preserved.WorkbookRelationships
+                    |> List.choose (fun (id, relType, target, isExternal) ->
+                        if isExternal then None
+                        elif relType.EndsWith "/slicerCache" then
+                            nameIn "<slicerCacheDefinition\\s[^>]*?\\sname=\"([^\"]*)\"" target |> Option.filter slicerCaches.Contains |> Option.map (fun name -> id, name)
+                        elif relType.EndsWith "/timelineCache" then
+                            nameIn "<timelineCacheDefinition\\s[^>]*?\\sname=\"([^\"]*)\"" target |> Option.filter timelineCaches.Contains |> Option.map (fun name -> id, name)
+                        else None)
+                let droppedFilterIds = droppedFilters |> List.map fst |> Set.ofList
+                // (A slicer cache that stays names the pivot cache it filters by `pivotCacheId`, the cache's own id.)
+                let filtersLeft =
+                    out.Preserved.WorkbookRelationships
+                    |> List.choose (fun (id, relType, target, isExternal) ->
+                        if isExternal || Set.contains id droppedFilterIds || not (relType.EndsWith "/slicerCache" || relType.EndsWith "/timelineCache") then None
+                        else Some (textOf (target.TrimStart '/')))
+                let droppedPivots =
+                    if pivotCacheIds.IsEmpty || filtersLeft |> List.exists Option.isNone then []
+                    else
+                        [ for found in Text.RegularExpressions.Regex.Matches(out.Preserved.PivotCachesXml, "<pivotCache\\s[^>]*?/>") do
+                            match values "\\scacheId=\"([0-9]+)\"" found.Value, values "\\sr:id=\"([^\"]*)\"" found.Value with
+                            | [ cacheId ], [ id ] when pivotCacheIds.Contains cacheId ->
+                                match out.Preserved.WorkbookRelationships |> List.tryFind (fun (known, _, _, isExternal) -> known = id && not isExternal) with
+                                | Some (_, _, target, _) ->
+                                    match textOf (target.TrimStart '/') with
+                                    | Some definition ->
+                                        let own = values "\\spivotCacheId=\"([0-9]+)\"" definition
+                                        let filtered = filtersLeft |> List.exists (fun text -> own |> List.exists (fun cache -> text.Value.Contains ("pivotCacheId=\"" + cache + "\"")))
+                                        if not filtered then yield id
+                                    | None -> ()
+                                | None -> ()
+                            | _ -> () ]
+                let dropped = (droppedFilters |> List.map fst) @ droppedPivots
+                if dropped.IsEmpty then out
+                else
+                    let names = droppedFilters |> List.map (fun (_, name) -> name.ToUpperInvariant()) |> Set.ofList
+                    let droppedIds = Set.ofList dropped
+                    { out with
+                        DefinedNames = out.DefinedNames |> List.filter (fun name -> not (name.RefersTo.Trim() = "#N/A" && Set.contains (name.Name.ToUpperInvariant()) names))
+                        Preserved =
+                            { out.Preserved with
+                                WorkbookRelationships = out.Preserved.WorkbookRelationships |> List.filter (fun (id, _, _, _) -> not (Set.contains id droppedIds))
+                                DroppedWorkbookRelationships = out.Preserved.DroppedWorkbookRelationships @ dropped } }
+
+    /// The workbook to write: `toWorkbookOutFromSheets`, less the caches that only deleted sheets used.
+    let toWorkbookOutWith (parts: (string * byte[]) list) (input: ExportInput) : XlsxWriter.XlsxWorkbookOut =
+        toWorkbookOutFromSheets parts input |> withoutOrphanedCaches input
 
     /// The workbook to write (see `toWorkbookOutWith`): with the parts of the
     /// file the reader kept the bytes of - all of them for a file read by a

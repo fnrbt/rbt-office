@@ -1079,6 +1079,10 @@ type WorkbookPreservation = {
     ExternalReferencesXml: string
     PivotCachesXml: string
     WorkbookExtLstXml: string
+    /// Ids of relationships of the file's workbook part that are not written
+    /// any more - a slicer cache, a pivot cache that only deleted sheets used:
+    /// a writer takes the entries that name them out of workbook.xml.
+    DroppedWorkbookRelationships: string list
     /// Relationships of the package to its document properties
     /// (docProps/core.xml, app.xml, custom.xml): id, type, absolute target, external.
     RootRelationships: (string * string * string * bool) list
@@ -1134,7 +1138,7 @@ type WorkbookPreservation = {
 
 let emptyWorkbookPreservation =
     { Parts = []; Defaults = []; Overrides = []; ThemePath = None; NamedStyles = []; Persons = []; CellXfNamedStyles = [||]
-      WorkbookRelationships = []; ExternalReferencesXml = ""; PivotCachesXml = ""; WorkbookExtLstXml = ""
+      WorkbookRelationships = []; ExternalReferencesXml = ""; PivotCachesXml = ""; WorkbookExtLstXml = ""; DroppedWorkbookRelationships = []
       RootRelationships = []; CalcChain = None; PivotCacheSources = []; CalcIteration = None; Date1904 = false; ActiveTab = 0
       StylesPart = None; SharedStringsPart = None; WorkbookPart = None; CellFormats = [||]; SharedStrings = [||], [||]; DxfCount = 0; SourceParts = []; PackageTexts = []; InPlace = false }
 
@@ -5956,6 +5960,7 @@ let private buildWorkbook (scanRows: bool) (source: PartSource) (header: Workboo
           ExternalReferencesXml = header.ExternalReferencesXml
           PivotCachesXml = header.PivotCachesXml
           WorkbookExtLstXml = header.ExtLstXml
+          DroppedWorkbookRelationships = []
           RootRelationships = rootRels
           CalcChain = calcChain
           PivotCacheSources = pivotCacheSources

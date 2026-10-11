@@ -557,6 +557,37 @@ do
     let none = save (M.deleteRow 1 >> M.deleteRow 1 >> M.deleteRow 1)
     ok "sparklines: every row of them deleted: no sparklines, and no empty list of them" (not (none.Contains "sparkline") && (try (Xml.Linq.XDocument.Parse none |> ignore; true) with _ -> false)) (short (none.Substring(none.IndexOf "</sheetData>")))
 
+// ---- the file's sort follows its cells ------------------------------------------------------
+// lyric-multifamily.xlsx: a sheet sorted by column J (`<sortState ref="B6:N21"><sortCondition ref="J6:J21"/>`).
+do
+    let bytes = File.ReadAllBytes(Path.Combine(root, "real-world/lyric-multifamily.xlsx"))
+    let wb = XlsxReader.loadBytesNative bytes |> Option.get
+    let book = Bridge.Import.importWorkbook wb
+    let file0 = partsOf bytes
+    let at, path =
+        [ for at in 0 .. book.Sheets.Length - 1 do
+            match (List.item at wb.Sheets).Extras.SourcePart with
+            | Some (path, _) when (text file0.[path]).Contains "<sortState" -> yield at, path
+            | _ -> () ] |> List.head
+    let sortOf (edit: M.SpreadsheetModel -> M.SpreadsheetModel) =
+        let sheets = book.Sheets |> Array.map (fun sheet -> sheet.Model)
+        sheets.[at] <- edit (M.resolveSheet sheets.[at])
+        let input : Bridge.ExportInput =
+            { Sheets = sheets; Names = book.Sheets |> Array.map (fun sheet -> sheet.Name); Visible = book.Sheets |> Array.map (fun sheet -> sheet.Visible)
+              ActiveSheetIndex = wb.Preserved.ActiveTab; NameInfo = book.Context.NameInfo; DefinedNames = book.Context.Names; Source = Some book.Source; Macros = None }
+        let saved = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
+        let xml = text (partsOf saved).[path]
+        inOrder "sort state: the part's elements are in the schema's order" xml
+        element "sortState" xml
+    ok "sort state: the file's" (element "sortState" (text file0.[path]) = "<sortState ref=\"B6:N21\"><sortCondition ref=\"J6:J21\"/></sortState>") (element "sortState" (text file0.[path]))
+    ok "sort state: a row inserted above: one row down" (sortOf (M.insertRow 1) = "<sortState ref=\"B7:N22\"><sortCondition ref=\"J7:J22\"/></sortState>") (sortOf (M.insertRow 1))
+    ok "sort state: a column inserted before: one column on" (sortOf (M.insertColumn 0) = "<sortState ref=\"C6:O21\"><sortCondition ref=\"K6:K21\"/></sortState>") (sortOf (M.insertColumn 0))
+    ok "sort state: a row inserted inside: the range is one row longer" (sortOf (M.insertRow 10) = "<sortState ref=\"B6:N22\"><sortCondition ref=\"J6:J22\"/></sortState>") (sortOf (M.insertRow 10))
+    ok "sort state: a row deleted inside: one row shorter" (sortOf (M.deleteRow 10) = "<sortState ref=\"B6:N20\"><sortCondition ref=\"J6:J20\"/></sortState>") (sortOf (M.deleteRow 10))
+    ok "sort state: the column it was sorted by deleted: no sort state" (sortOf (M.deleteColumn 9) = "") (sortOf (M.deleteColumn 9))
+    ok "sort state: sorted anew in the editor, then a row inserted: what the file says of a sort is gone" (sortOf (M.sortByColumn 3 true >> M.insertRow 1) = "") (sortOf (M.sortByColumn 3 true >> M.insertRow 1))
+    ok "sort state: a cell typed: the file's" (sortOf (M.setCell (addr 300 2) { Value = M.CellValue.Number 1.0; Format = M.defaultFormat; Comment = None }) = element "sortState" (text file0.[path])) ""
+
 // ---- every workbook -------------------------------------------------------------
 // A link added (the rows are the file's, the rest of the part is made from
 // the sheet), a row hidden and another page orientation (the part with that

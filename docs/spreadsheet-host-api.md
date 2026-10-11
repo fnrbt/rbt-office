@@ -1119,9 +1119,14 @@ changes (named styles, the indexed palette, table styles and extensions of the s
   read the same from one cell to the next** (down a column, else along a row) are written once (`<f t="shared" ref si>` on the first
   cell, `<f t="shared" si/>` on the others) when the file wrote shared formulas: a formula is shared only where the reader's own
   expansion of the first cell's formula gives exactly the text the cell holds. The file's row heights and column widths are found by
-  where their rows and columns are now (before, a row inserted above made rows take the heights of their old numbers). Not kept
-  when rows or columns moved: sparklines and x14 rules the model does not hold (`KeptCellExtensions`), and what a manual page break
-  says besides its row (`max`, `min`).
+  where their rows and columns are now (before, a row inserted above made rows take the heights of their old numbers).
+  **What names cells follows them**: sparklines and the x14 extensions the model does not hold (`KeptCellExtensions`: their
+  `xm:sqref` and `xm:f` are moved, a sparkline whose cell or data is gone is taken out, an extension that lost a cell is dropped),
+  the rules and validations of the x14 list (they are rules of the model), `protectedRanges`, `ignoredErrors`, and - since 0.1.16 -
+  **the file's `<sortState>`**: its range and the range of every `<sortCondition>` are where their cells are now (a row inserted
+  inside the sorted range makes it one row longer; with the column it was sorted by deleted it is taken out; before, it was dropped
+  at the first row or column edit). A sheet that was sorted in the editor since is written without what the file says of a sort.
+  Not kept when rows or columns moved: what a manual page break says besides its row (`max`, `min`).
   (`SheetExtras.Patch`, `SheetPatch.Rows` / `.Whole`, `SheetExtras.SourceXml` / `.Moves`; `XlsxBridge` decides, `XlsxWriter` patches.)
 - **A formula's text result is written in its cell** (`t="str"`), as Excel does; it is never added to `xl/sharedStrings.xml` (which
   stays byte-identical unless a text was typed that the file does not have).
@@ -1143,6 +1148,17 @@ changes (named styles, the indexed palette, table styles and extensions of the s
   changed adds an entry. (Before, every cell below an inserted row got a new entry: milk-street-office's `cellXfs` went from 308
   to 614 and `xl/styles.xml` from 73 KB to 124 KB; now the styles part is the file's, byte for byte.) The calculation chain of
   such a workbook is dropped with its content type and its relationship (Excel builds a new one).
+- **A deleted sheet takes the caches only it used with it (0.1.16).** A slicer cache (a timeline cache) whose slicers were all on
+  sheets that are gone, and a pivot cache whose pivot tables were - unless a slicer cache that stays filters by it - are not written
+  any more: the part (a pivot cache's records with it), the workbook's relationship to it, its content type, its entry in
+  `xl/workbook.xml` (`<pivotCache>`, `<x14:slicerCache>` / `<x15:timelineCacheRef>`; a list of them, the `<ext>` around it and the
+  `<pivotCaches>` element go when they are left empty) and a slicer cache's defined name (`<definedName name="Slicer_Region">#N/A`).
+  What a sheet that stays still uses stays as the file has it (dashboard-ecommerce-sales.xlsx: "Dashboard" deleted - its two slicers
+  are also on "Waterfall Chart" - nothing goes; "Waterfall Chart" deleted, the caches of Segment and Year go; "KPI" deleted, pivot
+  caches 1 and 2 go with their definitions, cache 0 and its records stay). Before, every cache stayed, with its entries. A cache
+  the file itself had without a user is left as it is, and so is every cache when a part that says who uses it was not kept.
+  As before, a slicer cache that stays loses the pivot tables of a deleted sheet from its `<pivotTables>` list.
+  (`tests/office-formats/xlsx-orphans.fsx`; `XlsxBridge.Export.toWorkbookOutWith`, `Preserved.DroppedWorkbookRelationships`.)
 - **The calculation chain is dropped, never rewritten.** `xl/calcChain.xml` lists every formula cell of the workbook by sheet and
   reference, in the order Excel last calculated them. It goes - the part, its `<Override>` in the content types and its entry in the
   workbook's relationships, all three together - as soon as it no longer names the workbook's formulas: a formula added, removed or

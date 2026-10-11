@@ -2947,6 +2947,23 @@ let private movedRefText (moves: SheetMoves) (reference: string) : string option
                 | _ -> None
             | _ -> None
 
+let private refAttributePattern = System.Text.RegularExpressions.Regex("\\sref=\"([^\"]*)\"")
+
+/// A `<sortState>` (the range that was sorted, each `<sortCondition>` the column it was
+/// sorted by) after the edits: every range where its cells are now; "" when one of them is gone.
+let private movedSortState (moves: SheetMoves) (xml: string) : string =
+    if moves.IsEmpty || xml = "" then xml
+    else
+        let lost = ref false
+        let moved =
+            refAttributePattern.Replace(xml, (fun (found: System.Text.RegularExpressions.Match) ->
+                match movedRefText moves found.Groups.[1].Value with
+                | Some reference -> " ref=\"" + reference + "\""
+                | None ->
+                    lost.Value <- true
+                    found.Value))
+        if lost.Value then "" else moved
+
 /// An element whose children (`child`) name cells by `sqref`, after the
 /// edits: a child whose cells are all gone is taken out, and "" is what is
 /// left of an element without children.
@@ -3221,7 +3238,10 @@ let private worksheetXml (styles: StyleBook) sharedIndex (dynamicCm: int) sheetI
     + moved "protectedRanges" "protectedRange"
     + unmoved "scenarios"
     + autoFilterXml styles.Dxfs.Length sheet
-    + (if keepSort then unmoved "sortState" else "")
+    // (The file's sort: as it is while it holds, or - rows or columns moved, a sheet written from
+    // its cells - with its ranges where the cells are now. A sheet sorted anew comes without it.)
+    + (if keepSort then unmoved "sortState"
+       else (match moves with Some (_ :: _ as edits) -> movedSortState edits (fromFile "sortState") | _ -> ""))
     + unmoved "dataConsolidate"
     + unmoved "customSheetViews"
     + mergeCellsXmlFull sheet.MergedCells
@@ -3533,6 +3553,25 @@ let private sheetIds (workbook: XlsxWorkbookOut) : int list =
             used <- Set.add next used
             next)
 
+/// workbook.xml (or an element of it) without the entries that name relationships that are
+/// not written any more (`Preserved.DroppedWorkbookRelationships`): a `<pivotCache>`, a slicer
+/// cache or timeline cache of the extension list - and without a list, an extension or an
+/// extension list that is left empty by that.
+let private withoutDroppedCaches (ids: string list) (xml: string) : string =
+    if ids.IsEmpty || xml = "" then xml
+    else
+        let replace (pattern: string) (text: string) = System.Text.RegularExpressions.Regex.Replace(text, pattern, "")
+        let entries =
+            ids |> List.fold (fun (text: string) id ->
+                replace ("<(?:[A-Za-z0-9]+:)?(?:pivotCache|slicerCache|timelineCacheRef)\\s[^>]*?r:id=\"" + System.Text.RegularExpressions.Regex.Escape id + "\"[^>]*?/>") text) xml
+        if obj.ReferenceEquals (entries, xml) || entries = xml then xml
+        else
+            entries
+            |> replace "<((?:[A-Za-z0-9]+:)?(?:slicerCaches|timelineCacheRefs))(?:\\s[^>]*)?>\\s*</\\1>"
+            |> replace "<ext\\s[^>]*>\\s*</ext>"
+            |> replace "<pivotCaches(?:\\s[^>]*)?>\\s*</pivotCaches>"
+            |> replace "<extLst>\\s*</extLst>"
+
 let private workbookXmlFull (workbook: XlsxWorkbookOut) =
     let relIds = sheetRelationshipIds workbook |> List.toArray
     let ids = sheetIds workbook |> List.toArray
@@ -3692,13 +3731,14 @@ let private workbookXmlFull (workbook: XlsxWorkbookOut) =
                         text |> replaceTag calcPattern (fun tag -> iterate tag |> fun tag -> if hasUncachedFormula then withTagAttribute "fullCalcOnLoad" (Some "1") tag else tag)
                     elif calcPr = "" then text
                     else insertAfter [ "</definedNames>"; "</externalReferences>"; "</functionGroups>"; "</sheets>" ] calcPr text
-                Some text)
+                Some (withoutDroppedCaches kept.DroppedWorkbookRelationships text))
     match fromFile with
     | Some text -> text
     | None ->
     sprintf "%s\n<workbook xmlns=\"%s\" xmlns:r=\"%s\">%s<bookViews><workbookView activeTab=\"%d\"/></bookViews><sheets>%s</sheets>%s%s%s%s%s</workbook>"
         declaration Namespaces.spreadsheet Namespaces.relationships (if kept.Date1904 then "<workbookPr date1904=\"1\"/>" else "") (max 0 workbook.ActiveSheetIndex) sheets
-        kept.ExternalReferencesXml definedNames calcPr kept.PivotCachesXml kept.WorkbookExtLstXml
+        kept.ExternalReferencesXml definedNames calcPr
+        (withoutDroppedCaches kept.DroppedWorkbookRelationships kept.PivotCachesXml) (withoutDroppedCaches kept.DroppedWorkbookRelationships kept.WorkbookExtLstXml)
 
 let private workbookRelsXmlFull (workbook: XlsxWorkbookOut) (placements: SheetPlacement list) hasVba (themePath: string option) (hasPersons: bool) (ownMetadata: bool) =
     let sheetRels =
