@@ -1803,7 +1803,12 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
             if gapEnd > cursor then gaps <- (cursor, gapEnd) :: gaps
             cursor <- max cursor oxEnd
         if cursor < availableWidth then gaps <- (cursor, availableWidth) :: gaps
-        List.rev gaps
+        // (No text in a band beside a floating object that is narrower than an inch - see
+        // minimumWrapBand; a line with no band wide enough goes below the object.)
+        if active.Count = 0 then List.rev gaps
+        else
+            let least = min WordLayout.Floating.minimumWrapBand availableWidth - 0.01
+            gaps |> List.filter (fun (startX, endX) -> endX - startX >= least) |> List.rev
 
     let nextObstacleClearY lineY =
         let globalLineY = contentY + (lineY - settings.PaddingTop)

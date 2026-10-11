@@ -368,8 +368,37 @@ module Floating =
         let obstacleRight = min availableWidth (x + width + distanceRight)
         obstacleX, max 0.0 (obstacleRight - obstacleX)
 
+    /// Text is not put into a band beside a floating object that is narrower
+    /// than this (layout px: an inch, as Word has it): a word or two in a
+    /// sliver between a picture and the margin is not how a page is set.
+    let minimumWrapBand = 96.0
+
+    /// The side of a picture its text may stand on (wp:wrapSquare / wrapTight /
+    /// wrapThrough w:wrapText): "left", "right", "largest" (the wider of the
+    /// two), or None for both sides.
+    let private wrapSide (box: Box) : string option =
+        match box.Kind, box.Wrap with
+        | ImageBox image, (Some "square" | Some "tight" | Some "through") ->
+            match image.WrapText with
+            | Some "left" | Some "right" | Some "largest" -> image.WrapText
+            | _ -> None
+        | _ -> None
+
+    /// What a floating object keeps free of text, across and down (x from
+    /// the left edge of the text, y down the document): its box with its
+    /// distances from text (distL / distR / distT / distB) - reaching to the
+    /// edge of the text on the side its text may not stand on (wrapText).
     let obstacleForBox availableWidth (box: Box) =
         let obstacleX, obstacleWidth = obstacleWidth availableWidth box.X box.Width box.DistanceLeft box.DistanceRight
+        let obstacleX, obstacleWidth =
+            let right = obstacleX + obstacleWidth
+            let toRightEdge = obstacleX, max 0.0 (availableWidth - obstacleX)
+            let toLeftEdge = 0.0, max 0.0 right
+            match wrapSide box with
+            | Some "left" -> toRightEdge
+            | Some "right" -> toLeftEdge
+            | Some "largest" -> if obstacleX >= availableWidth - right then toRightEdge else toLeftEdge
+            | _ -> obstacleX, obstacleWidth
         let obstacleTop = box.Y - box.DistanceTop
         let obstacleHeight = box.Height + box.DistanceTop + box.DistanceBottom
         obstacleX, obstacleTop, obstacleWidth, obstacleHeight
