@@ -66,6 +66,7 @@ stages=(
     stage48-tableentry
     stage49-chrome
     stage50-date1904
+    stage51-resultformat
     numbertext
 )
 

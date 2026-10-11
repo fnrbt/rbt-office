@@ -3413,3 +3413,108 @@ let setPageBreaks (memberName: string) (rows: int list) (cols: int list) (setup:
     let cols = cols |> List.distinct |> List.sort
     if rows = setup.ManualRowBreaks && cols = setup.ManualColBreaks then setup
     else { setup with ManualRowBreaks = rows; ManualColBreaks = cols }
+
+// ---------------------------------------------------------------------------
+// The number format a formula's cell takes from what the formula reads
+// ---------------------------------------------------------------------------
+// Excel: a formula entered into a cell whose format is General shows its
+// result in the format of what it reads - `=A1+1` under a date is a date,
+// `=SUM(B2:B9)` under amounts an amount, `=TODAY()` a date. The cell gets
+// that format when the formula is entered (it is then the cell's own: it
+// does not follow the cells later), and only a cell that is General does.
+
+/// Whether a number format says something (General, an empty code and the
+/// text format say nothing a result could take over).
+let private inheritableFormat (code: string option) : string option =
+    match code with
+    | Some code when code <> "" && code <> "@" && not (code.Equals("General", StringComparison.OrdinalIgnoreCase)) -> Some code
+    | _ -> None
+
+let private isPercentCode (code: string) = code.IndexOf '%' >= 0 && code.IndexOf '"' < 0
+/// A format that shows a day (a date, or a date with a time): not a time of day alone, not a duration.
+let private isDateCode (code: string) =
+    CellText.isDateTimeNumberFormat code
+    && (let lower = code.ToLowerInvariant()
+        lower.Contains "d" || lower.Contains "y")
+
+/// The number format the result of `formula` (with or without its `=`) is
+/// shown in, by Excel's rules, or None for General. `formatAt sheet row col`
+/// is the number format of a cell (`sheet`: the sheet a reference names, None
+/// for the formula's own).
+///
+/// - A reference has the format of its cell, a range that of its first cell.
+/// - `+` and `-`: the format of the first operand that has one; a date less a
+///   date is a number of days (General), a time less a time a time.
+/// - `*` and `/`: likewise, but a percentage gives way to another format
+///   (an amount times a rate is an amount) and what is divided by a cell of
+///   the same kind of format is a ratio (General) - a date times or divided
+///   by anything is no date.
+/// - Functions that pass values on (SUM, AVERAGE, MIN, MAX, ROUND, IF,
+///   INDEX, XLOOKUP ...) have the format of the argument the values come
+///   from; date functions give a date (TODAY, DATE, EDATE, EOMONTH,
+///   WORKDAY, DATEVALUE: `m/d/yyyy`; NOW: `m/d/yyyy h:mm`; TIME, TIMEVALUE:
+///   `h:mm AM/PM`), payment functions an amount (PMT, PV, FV, NPV ...:
+///   `$#,##0.00_);[Red]($#,##0.00)`), rate functions a percentage (IRR,
+///   RATE ...: `0%`). Everything else (counts, text, comparisons, parts of
+///   a date) is General.
+let inheritedNumberFormat (formatAt: string option -> int -> int -> string option) (formula: string) : string option =
+    let text = if formula.StartsWith "=" then formula else "=" + formula
+    match Rbt.Spreadsheet.Formula.parseFormula text with
+    | Result.Error _ -> None
+    | Result.Ok ast ->
+        let rec formatOf (expr: Rbt.Spreadsheet.Formula.Expr) : string option =
+            match expr with
+            | Rbt.Spreadsheet.Formula.CellRef cell -> inheritableFormat (formatAt cell.Sheet cell.Row cell.Col)
+            | Rbt.Spreadsheet.Formula.RangeRef (first, last) -> inheritableFormat (formatAt first.Sheet (min first.Row last.Row) (min first.Col last.Col))
+            | Rbt.Spreadsheet.Formula.SpillRef cell -> inheritableFormat (formatAt cell.Sheet cell.Row cell.Col)
+            | Rbt.Spreadsheet.Formula.UnaryOp (op, operand) when op = "-" || op = "+" -> formatOf operand
+            | Rbt.Spreadsheet.Formula.UnaryOp ("%", _) -> None
+            | Rbt.Spreadsheet.Formula.BinOp (left, op, right) when op = "+" || op = "-" ->
+                (match formatOf left, formatOf right with
+                 | Some a, Some b when op = "-" && isDateCode a && isDateCode b -> None
+                 // (A number of days added to a date - whichever side the date is on - is a date.)
+                 | Some a, Some b when isDateCode b && not (CellText.isDateTimeNumberFormat a) -> Some b
+                 | Some a, _ -> Some a
+                 | None, other -> other)
+            | Rbt.Spreadsheet.Formula.BinOp (left, op, right) when op = "*" || op = "/" ->
+                let usable (code: string option) = code |> Option.filter (fun code -> not (CellText.isDateTimeNumberFormat code))
+                (match usable (formatOf left), usable (formatOf right) with
+                 | Some a, Some b when op = "/" && (a = b || (isPercentCode a && isPercentCode b)) -> None
+                 | Some a, Some b when isPercentCode a && not (isPercentCode b) -> Some b
+                 | Some a, Some b when op = "/" && isPercentCode b -> Some a
+                 | Some a, _ -> Some a
+                 // (One over an amount is no amount.)
+                 | None, Some _ when op = "/" -> None
+                 | None, other -> other)
+            | Rbt.Spreadsheet.Formula.Function (name, args) ->
+                let arg (index: int) = List.tryItem index args |> Option.bind formatOf
+                let firstOf (indexes: int list) = indexes |> List.tryPick arg
+                match name.ToUpperInvariant() with
+                | "TODAY" | "DATE" | "EDATE" | "EOMONTH" | "WORKDAY" | "WORKDAY.INTL" | "DATEVALUE" -> Some "m/d/yyyy"
+                | "NOW" -> Some "m/d/yyyy h:mm"
+                | "TIME" | "TIMEVALUE" -> Some "h:mm AM/PM"
+                | "PMT" | "PV" | "FV" | "NPV" | "XNPV" | "IPMT" | "PPMT" | "CUMIPMT" | "CUMPRINC" | "SLN" | "DB" | "DDB" | "SYD" -> Some "$#,##0.00_);[Red]($#,##0.00)"
+                | "IRR" | "XIRR" | "MIRR" | "RATE" -> Some "0%"
+                | "SUM" | "AVERAGE" | "AVERAGEA" | "MIN" | "MAX" | "MINA" | "MAXA" | "MEDIAN" | "MODE" | "MODE.SNGL" | "PRODUCT" | "SUMPRODUCT" | "LARGE" | "SMALL"
+                | "TRIMMEAN" | "GEOMEAN" | "HARMEAN" | "PERCENTILE" | "PERCENTILE.INC" | "PERCENTILE.EXC" | "QUARTILE" | "QUARTILE.INC" | "QUARTILE.EXC" ->
+                    args |> List.tryPick formatOf
+                | "ROUND" | "ROUNDUP" | "ROUNDDOWN" | "MROUND" | "CEILING" | "CEILING.MATH" | "FLOOR" | "FLOOR.MATH" | "INT" | "TRUNC" | "ABS" | "N" | "EVEN" | "ODD"
+                | "INDEX" | "OFFSET" | "SUMIFS" | "AVERAGEIFS" | "MAXIFS" | "MINIFS" | "SINGLE" | "ANCHORARRAY" | "SORT" | "UNIQUE" | "FILTER" | "TAKE" | "DROP" -> arg 0
+                | "SUMIF" | "AVERAGEIF" -> firstOf [ 2; 0 ]
+                | "SUBTOTAL" -> (match List.tryItem 0 args with
+                                 // (2, 3, 102, 103: counts.)
+                                 | Some (Rbt.Spreadsheet.Formula.Number n) when n = 2.0 || n = 3.0 || n = 102.0 || n = 103.0 -> None
+                                 | _ -> args |> List.tail |> List.tryPick formatOf)
+                | "AGGREGATE" -> (match List.tryItem 0 args with
+                                  | Some (Rbt.Spreadsheet.Formula.Number n) when n = 2.0 || n = 3.0 -> None
+                                  | _ -> (if args.Length > 2 then args |> List.skip 2 |> List.tryPick formatOf else None))
+                | "IF" -> firstOf [ 1; 2 ]
+                | "IFERROR" | "IFNA" -> firstOf [ 0; 1 ]
+                | "IFS" -> args |> List.indexed |> List.tryPick (fun (index, value) -> if index % 2 = 1 then formatOf value else None)
+                | "SWITCH" -> args |> List.indexed |> List.tryPick (fun (index, value) -> if index >= 2 && index % 2 = 0 then formatOf value else None)
+                | "CHOOSE" -> (if args.IsEmpty then None else args |> List.tail |> List.tryPick formatOf)
+                | "XLOOKUP" -> arg 2
+                | "LOOKUP" -> firstOf [ 2; 1 ]
+                | _ -> None
+            | _ -> None
+        formatOf ast

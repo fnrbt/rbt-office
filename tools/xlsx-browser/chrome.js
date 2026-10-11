@@ -1452,3 +1452,47 @@ checks['note-leaves-sheet-part'] = async () => {
     finally { close(); }
     return lines;
 };
+
+// A formula entered into a General cell shows its result in the format of what it reads, as in
+// Excel: `=A1+1` under a date is a date, a sum of amounts an amount. The format is given when the
+// formula is entered and is the cell's own from then on; a cell that has a format keeps it.
+checks['formula-result-format'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, close } = mountGrid();
+    try {
+        const at = (row, col) => { const cell = grid.GetCell(row, col); return [cell.text, cell.format.numberFormat ?? null]; };
+        grid.EnterText(0, 0, '1/15/2026');
+        const dateFormat = grid.GetCell(0, 0).format.numberFormat;
+        check('a typed date is a date cell', [typeof dateFormat, grid.GetCell(0, 0).text], ['string', '1/15/2026']);
+        grid.EnterText(1, 0, '=A1+1');
+        check('=A1+1 under it shows a date, in the format of A1', at(1, 0), ['1/16/2026', dateFormat]);
+        grid.EnterText(2, 0, '=A2-A1');
+        check('the difference of two dates is a number', at(2, 0), ['1', null]);
+        grid.EnterText(0, 1, '12.5%'); grid.EnterText(1, 1, '=B1*2');
+        check('=B1*2 on a percentage is a percentage', [at(1, 1)[0], at(1, 1)[1] === grid.GetCell(0, 1).format.numberFormat], ['25.00%', true]);
+        grid.EnterText(0, 2, '$1,200.50'); grid.EnterText(1, 2, '$300'); grid.SetCell(2, 2, '=SUM(C1:C2)');
+        check('a sum of amounts is an amount (SetCell too)', [at(2, 2)[0], at(2, 2)[1] === grid.GetCell(0, 2).format.numberFormat], ['$1,500.50', true]);
+        grid.EnterText(3, 2, '=C1*B1');
+        check('an amount times a rate is an amount', at(3, 2)[1] === grid.GetCell(0, 2).format.numberFormat, true);
+        grid.EnterText(0, 3, '=DATE(2026,3,31)'); grid.EnterText(1, 3, '=COUNT(C1:C2)');
+        check('DATE() is a date, COUNT() a number', [at(0, 3), at(1, 3)], [['3/31/2026', 'm/d/yyyy'], ['2', null]]);
+        // Only a General cell takes a format, and only when the formula is entered.
+        grid.SelectCell(4, 0); grid.SetNumberFormat('0.00'); grid.EnterText(4, 0, '=A1+1');
+        check('a cell with a format of its own keeps it', at(4, 0)[1], '0.00');
+        grid.EnterText(5, 0, '=C1'); grid.SelectCell(0, 2); grid.SetNumberFormat('0.0');
+        check('the format is the cell\'s own: it does not follow the cell it came from', at(5, 0)[1] === '0.0', false);
+        // One undo step: the formula and its format go together.
+        grid.EnterText(6, 0, '=A1+7'); grid.Undo();
+        check('undo takes the formula and its format', [grid.GetCell(6, 0).text, grid.GetCell(6, 0).format.numberFormat ?? null], ['', null]);
+        // Across sheets, and written to a file.
+        grid.AddSheet('Other'); grid.SwitchSheet(1); grid.EnterText(0, 0, '=Sheet1!A1+30');
+        check('a date of another sheet', at(0, 0), ['2/14/2026', dateFormat]);
+        const again = mountGrid();
+        try {
+            await again.grid.ImportXlsx(await grid.ExportXlsx());
+            check('saved and opened: the cells are date cells', [again.grid.GetRange('Sheet1!A2')[0][0].text, again.grid.GetRange('Other!A1')[0][0].text], ['1/16/2026', '2/14/2026']);
+        } finally { again.close(); }
+    } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
+    finally { close(); }
+    return lines;
+};

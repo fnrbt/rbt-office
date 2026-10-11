@@ -1893,6 +1893,24 @@ type Spreadsheet(container: Element) =
             true
         else
             let parsed = SpreadsheetInput.cellFromInputFor model.Date1904 (currentYear()) oldCellData text
+            // A formula entered into a General cell shows its result in the format of what it
+            // reads, as in Excel (`=A1+1` under a date is a date): see `SheetOps.inheritedNumberFormat`.
+            let parsed =
+                match parsed.Value, parsed.Format.NumberFormat with
+                | CellValue.Formula (formula, _), (None | Some "" | Some "General") ->
+                    let formatAt (sheet: string option) (row: int) (col: int) : string option =
+                        let source =
+                            match sheet with
+                            | None -> Some model
+                            | Some name ->
+                                sheetNames
+                                |> Array.tryFindIndex (fun known -> known.Equals(name, System.StringComparison.OrdinalIgnoreCase))
+                                |> Option.map (fun index -> if index = activeSheetIndex then model else (convertInPlace index; sheets.[index]))
+                        source |> Option.bind (fun sheet -> getCell { Row = row; Col = col } sheet) |> Option.bind (fun cell -> cell.Format.NumberFormat)
+                    (match (try SheetOps.inheritedNumberFormat formatAt formula with _ -> None) with
+                     | Some code -> { parsed with Format = { parsed.Format with NumberFormat = Some code } }
+                     | None -> parsed)
+                | _ -> parsed
             let outcome =
                 if validate && not model.Validations.IsEmpty then
                     refreshRuleWorkbook()

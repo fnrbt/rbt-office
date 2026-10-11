@@ -96,6 +96,24 @@ what reads the cell, bump the revision and fire `OnChange`. **Both are ONE undo 
 `EnterText` is the user's entry: it is checked against the cell's data validation (`false`: refused, nothing changed) and what follows
 from typing in or beside a table follows. `SetCell` is the host's write: not validated, and a table beside the cell does not grow over it.
 
+**A formula entered into a General cell takes the number format of what it reads (0.1.15)**, as in Excel - through `SetCell`,
+`EnterText`, `CommitEdit`, `SetCurrentCellFromFormula` and typing (not paste or fill, which bring their formats): `=A1+1` under a date
+is a date (it showed the serial before), `=B1*2` on a percentage a percentage, `=SUM(C1:C9)` over amounts an amount, `=TODAY()` a date.
+The format is set once, with the formula, in the same undo step; it is then the cell's own (`GetCell(...).format.numberFormat`) and does
+not follow the cells later. A cell that has a number format keeps it. The rules (`SheetOps.inheritedNumberFormat`):
+- a reference has the format of its cell (a range: of its first cell; another sheet's cell too); General and the text format `@` say nothing;
+- `+` `-`: the first operand that has a format; a number added to a date is a date on either side; **a date less a date is a number of
+  days** (General), a time less a time a time;
+- `*` `/`: likewise, but a percentage gives way to another format (an amount times a rate is an amount), an amount over an amount or a
+  percentage over a percentage is a ratio (General), and a date times or divided by anything is no date;
+- functions that pass values on have the format of the argument the values come from: `SUM` `AVERAGE` `MIN` `MAX` `MEDIAN` `PRODUCT`
+  `SUMPRODUCT` `LARGE` `SMALL` `PERCENTILE` `QUARTILE` (the first argument with a format), `ROUND...` `INT` `TRUNC` `ABS` `INDEX`
+  `OFFSET` `SUMIFS` `AVERAGEIFS` `MAXIFS` `MINIFS` `SORT` `UNIQUE` `FILTER` (the first argument), `SUMIF` `AVERAGEIF` (the range summed),
+  `SUBTOTAL` / `AGGREGATE` (not their counts), `IF` `IFS` `SWITCH` `CHOOSE` `IFERROR` `IFNA` (the values), `XLOOKUP` `LOOKUP` (the result range);
+- `TODAY` `DATE` `EDATE` `EOMONTH` `WORKDAY` `DATEVALUE` give `m/d/yyyy`, `NOW` `m/d/yyyy h:mm`, `TIME` `TIMEVALUE` `h:mm AM/PM`;
+  `PMT` `PV` `FV` `NPV` `XNPV` `IPMT` `PPMT` ... `$#,##0.00_);[Red]($#,##0.00)`; `IRR` `XIRR` `MIRR` `RATE` `0%`;
+- everything else is General: counts, text, comparisons, `YEAR` / `DAYS` and the like, `VLOOKUP` / `HLOOKUP` / `MATCH`, a defined name.
+
 **Every member that changes the workbook is one undo step with one revision**: after `EnterText(...)` and any such call, one `Undo()`
 takes back the call alone and gives the revision the entry left, a second one gives the revision before the entry (`IsModified()` is
 false when that was the saved one), and `Redo()` twice gives the revision the call left. (Checked for 116 calls by the `undo-steps` check
