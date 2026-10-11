@@ -1308,6 +1308,29 @@ let private paragraphPageBreakBefore (doc: Document) (para: ParagraphBlock) =
 
     styleBreak |> Option.orElse defaultBreak |> Option.defaultValue false
 
+/// The paragraphs a new page starts after because a section does: those that
+/// end a section when the section after it does not go on on the same page.
+/// How a section starts is said by its own properties - the w:type of the
+/// w:sectPr at its end (on the paragraph that ends it, or the body's for the
+/// last section): "continuous" on the page the section before it ends on,
+/// anything else (none: nextPage) on a new page.
+let sectionPageBreakParagraphs (doc: Document) : System.Collections.Generic.HashSet<BlockId> =
+    let result = System.Collections.Generic.HashSet<BlockId>()
+    let mutable pending : BlockId option = None
+    for block in doc.Blocks do
+        match block with
+        | Paragraph para
+        | Heading (_, para) when para.Metadata.SectionBreak.IsSome ->
+            match pending with
+            | Some before when para.Metadata.SectionBreak <> Some "continuous" -> result.Add before |> ignore
+            | _ -> ()
+            pending <- Some para.Id
+        | _ -> ()
+    match pending with
+    | Some before when doc.PageSetup.SectionStart <> Some "continuous" -> result.Add before |> ignore
+    | _ -> ()
+    result
+
 let buildPageMap (doc: Document) =
     let mutable physicalPageNumber = 1
     let mutable displayPageStart = 1
@@ -1332,6 +1355,7 @@ let buildPageMap (doc: Document) =
             | Image _ -> ())
 
     let restarts = pageNumberRestarts doc
+    let sectionPages = sectionPageBreakParagraphs doc
     doc.Blocks
     |> List.iter (fun block ->
         let paragraphs = blockParagraphs block
@@ -1347,7 +1371,7 @@ let buildPageMap (doc: Document) =
         let pageNumber = displayPageNumber ()
         blockAnchors <- blockAnchors @ [{ PageBlockId = blockId block; PageNumber = pageNumber }]
         paragraphs |> List.iter addParagraphAnchors
-        if paragraphs |> List.exists (fun para -> para.Metadata.PageBreakAfter || para.Metadata.SectionBreak = Some "nextPage") then
+        if paragraphs |> List.exists (fun para -> para.Metadata.PageBreakAfter || sectionPages.Contains para.Id) then
             physicalPageNumber <- physicalPageNumber + 1)
 
     {

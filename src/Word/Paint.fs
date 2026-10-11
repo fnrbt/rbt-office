@@ -3133,6 +3133,7 @@ let private collectDocumentCommandsWithLayoutsUncached (settings: LayoutSettings
     let index = buildLayoutIndex settings needsBodyLineIndex layoutCount layouts
     let commands = ResizeArray<PaintCommand>(max 16 (layoutCount * 2))
     let mutable currentY = doc.PageSetup.MarginTop
+    let sectionPageBreaks = lazy (sectionPageBreakParagraphs doc)
     let styleContext = WordStyles.styleContext doc
     // (The anchored drawings of the body are painted below and above its text: see Drawing.)
     let drawings = ResizeArray<Drawing>()
@@ -3180,7 +3181,7 @@ let private collectDocumentCommandsWithLayoutsUncached (settings: LayoutSettings
                     | false, _ ->
                         addParagraphCommandsKept settings fontFamily measureText measureRange commands layout
                     currentY <- layout.Y + layout.Height
-                    if para.Metadata.PageBreakAfter || para.Metadata.SectionBreak = Some "nextPage" then
+                    if para.Metadata.PageBreakAfter || (para.Metadata.SectionBreak.IsSome && sectionPageBreaks.Value.Contains para.Id) then
                         currentY <- WordLayout.Page.advanceToNextPage settings.PageHeight settings.PaddingTop currentY
 
      addNoteAreaCommands settings fontFamily measureText measureRange commands index.Footnotes index.Endnotes
@@ -3601,6 +3602,7 @@ let collectDocumentChunksWith (deferCollection: bool) (cache: PaintCache) (setti
         // table asks - from the block before it back to the nearest block that
         // says where it ends.
         let yAfterKnown = Array.create blocks.Length System.Double.NaN
+        let sectionPageBreaks = lazy (sectionPageBreakParagraphs doc)
         let rec yAfter (blockIndex: int) : float =
             if blockIndex < 0 then doc.PageSetup.MarginTop
             elif not (System.Double.IsNaN yAfterKnown.[blockIndex]) then yAfterKnown.[blockIndex]
@@ -3621,7 +3623,7 @@ let collectDocumentChunksWith (deferCollection: bool) (cache: PaintCache) (setti
                         | Some para when count > 0 ->
                             let layout = layouts.[start]
                             let bottom = layout.Y + layout.Height
-                            if para.Metadata.PageBreakAfter || para.Metadata.SectionBreak = Some "nextPage" then
+                            if para.Metadata.PageBreakAfter || (para.Metadata.SectionBreak.IsSome && sectionPageBreaks.Value.Contains para.Id) then
                                 WordLayout.Page.advanceToNextPage settings.PageHeight settings.PaddingTop bottom
                             else bottom
                         | _ -> yAfter (blockIndex - 1)

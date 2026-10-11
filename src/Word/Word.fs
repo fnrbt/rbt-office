@@ -1348,6 +1348,7 @@ module API =
             if not (layoutsById.ContainsKey layout.BlockId) then
                 layoutsById.[layout.BlockId] <- layout
         let mutable currentY = editor.Doc.PageSetup.MarginTop
+        let sectionPageBreaks = lazy (Doc.sectionPageBreakParagraphs editor.Doc)
         let mutable tableIndex = 0
         let rows = ResizeArray<obj>()
         let cells = ResizeArray<obj>()
@@ -1363,7 +1364,7 @@ module API =
             | Doc.Paragraph para
             | Doc.Heading (_, para) ->
                 paragraphEndY para |> Option.iter (fun y -> currentY <- y)
-                if para.Metadata.PageBreakAfter || para.Metadata.SectionBreak = Some "nextPage" then
+                if para.Metadata.PageBreakAfter || (para.Metadata.SectionBreak.IsSome && sectionPageBreaks.Value.Contains para.Id) then
                     currentY <- WordLayout.Page.advanceToNextPage settings.PageHeight settings.PaddingTop currentY
             | Doc.Table table ->
                 tableIndex <- tableIndex + 1

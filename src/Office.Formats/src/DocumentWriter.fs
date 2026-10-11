@@ -1095,9 +1095,6 @@ let private sectionReferences elementName differentFirstPage evenAndOddHeaders (
 /// section geometry or section header / footer references. It describes the
 /// section that ends with the paragraph.
 let private paragraphSectionProperties (packageSetup: PageSetupInfo) (para: obj) =
-    // The reader clears SectionBreak on an empty next-page paragraph that is
-    // followed by a continuous one, but that paragraph still ends a section and
-    // still carries its geometry; it is written back with the default type.
     let sectionBreak = optionalString (para?SectionBreak)
     let hasReferences = (optionalArray (para?HeaderReferences)).Length > 0 || (optionalArray (para?FooterReferences)).Length > 0
     if sectionBreak.IsNone && isNullOrUndefined para?SectionPageSetup && not hasReferences then None
@@ -1528,13 +1525,9 @@ let private generateParagraphWithHyperlinksAndImagesWithPageSetup (packageSetup:
             | None -> runXml
         )
     let runs =
-        // A next-page section break already starts a new page (the reader reports it
-        // as PageBreakAfter too); adding w:br there would leave a blank page in Word.
-        let sectionBreaksPage =
-            match optionalString (para?SectionBreak) with
-            | Some "nextPage" | Some "evenPage" | Some "oddPage" -> true
-            | _ -> false
-        if boolOrDefault false (para?PageBreakAfter) && not sectionBreaksPage then
+        // (A page break after the paragraph is one the paragraph has: a section that ends with it
+        // says nothing of a break - the section after it says how it starts.)
+        if boolOrDefault false (para?PageBreakAfter) then
             runs @ [element "w:r" [] [selfClosing "w:br" [("w:type", "page")]]]
         else runs
 

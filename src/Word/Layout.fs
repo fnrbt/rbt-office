@@ -5089,7 +5089,7 @@ let private layoutDocumentPassKept
                                 groupHeight <- groupHeight + nextContribution
                                 probeY <- nextLayout.Y + nextLayout.Height
                                 probedLines <- probedLines + nextLayout.Lines.Length
-                                if nextPara.Metadata.PageBreakAfter || nextPara.Metadata.SectionBreak = Some "nextPage" then
+                                if nextPara.Metadata.PageBreakAfter then
                                     groupIsMoveable <- false
                                     shouldContinue <- false
                                 else
@@ -5176,7 +5176,9 @@ let private layoutDocumentPassKept
             y <- layout.Y + layout.Height
             previousParagraphContext <- Some (para, paragraphStyle, layout.Metadata, WordLayout.Paragraph.spacingAfter paragraphStyle layout.Metadata)
             previousParagraphLayout <- Some layout
-            if para.Metadata.PageBreakAfter || para.Metadata.SectionBreak = Some "nextPage" then
+            // (A document with sections is laid out section by section - see layoutSections, which starts
+            // each on a new page or not as the section says. In this pass a page breaks after a paragraph that says so.)
+            if para.Metadata.PageBreakAfter then
                 y <- advanceToNextPage settings y
                 resetPreviousParagraph ()
             if traceTimingEnabled then traceSlow (sprintf "block[%d]:paragraph total lines=%d" index layout.Lines.Length) blockStart

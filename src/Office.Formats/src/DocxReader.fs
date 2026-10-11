@@ -784,8 +784,13 @@ module Docx =
                 match attr "sep" cols |> Option.map (fun value -> value.ToLowerInvariant()) with
                 | Some "1" | Some "true" | Some "on" -> true
                 | _ -> false
+            // (w:equalWidth: the columns are w:num of one width, whatever w:col elements are left there.)
+            let equalWidth =
+                match attr "equalWidth" cols |> Option.map (fun value -> value.ToLowerInvariant()) with
+                | Some "1" | Some "true" | Some "on" -> true
+                | _ -> false
             let colWidths =
-                Ns.descendantsNs "col" cols
+                (if equalWidth then [] else Ns.descendantsNs "col" cols)
                 |> List.choose (fun col -> twips (attr "w" col) |> Option.map (fun w -> w, twips (attr "space" col) |> Option.defaultValue 0.0))
             let count = if colWidths.Length >= 2 then colWidths.Length else num
             if count <= 1 then None
@@ -2236,14 +2241,15 @@ module Docx =
     and private contentOfChildren (renderedBreakCounter: int ref) (node: XmlNode) : DocumentContent list =
         Xml.children node |> List.collect (contentOfChild renderedBreakCounter)
 
-    /// An empty paragraph that ends a section on a new page, followed by a
-    /// paragraph that ends a continuous one, does not break the section: what
-    /// `item` is, given the block after it.
+    /// A paragraph that ends a section is read as it is written: the w:type of
+    /// its w:sectPr says how the section it ends starts, and nothing of the
+    /// section after it. (An empty paragraph ending a section that starts on a
+    /// new page, followed by one ending a continuous section, used to lose its
+    /// break here - the first section then took the columns and the header of
+    /// the second.)
     let normalizedSectionBreak (item: DocumentContent) (next: DocumentContent option) : DocumentContent =
-        match item, next with
-        | Para para, Some (Para nextPara) when para.Runs.IsEmpty && para.Properties.SectionBreak = Some "nextPage" && nextPara.Properties.SectionBreak = Some "continuous" ->
-            Para { para with Properties = { para.Properties with SectionBreak = None } }
-        | _ -> item
+        ignore next
+        item
 
     let bodyContentWithFinalSection (finalSectPr: XmlNode option) (bodyNode: XmlNode) : DocumentContent list =
         let renderedBreakCounter = ref 0
@@ -5606,10 +5612,11 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                         maxSize <- max maxSize (wordFontSizeToPoints runProps.FontSize)
                     | _ -> ()
                 maxSize
+            // (Only a page break of its own: a paragraph that ends a section is followed by a new page
+            // when the section after it starts on one, which that section's properties say.)
             let pageBreakAfter =
                 para.Runs
                 |> List.exists (fun run -> match run.Content with | PageBreak -> true | _ -> false)
-                || effectiveParaProps.SectionBreak = Some "nextPage"
             let bookmarkRunProps (run: Run) = explicitRunFields styleMap effectiveParaProps run @ [
                 "BookmarkStartId" ==> (run.BookmarkStart |> Option.map (fun bookmark -> bookmark.Id))
                 "BookmarkName" ==> (run.BookmarkStart |> Option.bind (fun bookmark -> bookmark.Name))
@@ -5898,7 +5905,6 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                 let pageBreakAfter =
                     para.Runs
                     |> List.exists (fun run -> match run.Content with | PageBreak -> true | _ -> false)
-                    || effectiveParaProps.SectionBreak = Some "nextPage"
                 let bookmarkRunProps (run: Run) = explicitRunFields styleMap effectiveParaProps run @ [
                     "BookmarkStartId" ==> (run.BookmarkStart |> Option.map (fun bookmark -> bookmark.Id))
                     "BookmarkName" ==> (run.BookmarkStart |> Option.bind (fun bookmark -> bookmark.Name))

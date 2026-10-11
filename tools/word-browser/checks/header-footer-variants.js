@@ -38,11 +38,12 @@ try {
     {
         const editor = await open(await bytesOf('/repo/tests/repros/word/landscape-section.docx'));
         const pages = Word.getPageCount(editor);
-        check('landscape-section: the header of page 3', [pages >= 3, Word.enterHeaderFooter(editor, 2, 'header'), story(editor)[0], Word.getCaretContext(editor).HeaderFooter.CanLinkToPrevious], [true, true, 'header', true]);
+        // (Two pages, as the document says of itself: "Landscape section (page 1)", "Portrait section (page 2)".)
+        check('landscape-section: the header of page 2', [pages, Word.enterHeaderFooter(editor, 1, 'header'), story(editor)[0], Word.getCaretContext(editor).HeaderFooter.CanLinkToPrevious], [2, true, 'header', true]);
         const linkedBefore = Word.getHeaderFooterLinkToPrevious(editor);
         const textBefore = Word.getText(editor);
         check('link to previous is switched', [Word.setHeaderFooterLinkToPrevious(editor, !linkedBefore), Word.getHeaderFooterLinkToPrevious(editor), story(editor)[0]], [true, !linkedBefore, 'header']);
-        check('undo: the link is as it was and the caret is still in the header (it was in the body)', [Word.undo(editor), Word.getCaretContext(editor).Story, Word.getHeaderFooterLinkToPrevious(editor), story(editor)[2], Word.getText(editor) === textBefore], [true, 'header', linkedBefore, 2, true]);
+        check('undo: the link is as it was and the caret is still in the header (it was in the body)', [Word.undo(editor), Word.getCaretContext(editor).Story, Word.getHeaderFooterLinkToPrevious(editor), story(editor)[2], Word.getText(editor) === textBefore], [true, 'header', linkedBefore, 1, true]);
         check('redo: switched again, in the header', [Word.redo(editor), Word.getCaretContext(editor).Story, Word.getHeaderFooterLinkToPrevious(editor)], [true, 'header', !linkedBefore]);
         check('undo: nothing left to undo, not modified', [Word.undo(editor), Word.canUndo(editor), Word.isModified(editor), Word.getCaretContext(editor).Story], [true, false, false, 'header']);
         // A body edit, then a header edit; undo from the body goes to the header, undo there to the body at its edit.
