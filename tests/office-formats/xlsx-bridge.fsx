@@ -381,7 +381,7 @@ let movedModel = extrasModel |> applyStructureEdit (InsertRows (0, 2)) |> applyS
 eq "edit: the picture moved with its rows and kept its size (oneCell)" (describeDrawing movedModel.Drawings.[0]) ("picture image/png 154", Some "Logo", "twoCell", (4, 1), (Some 8, Some 3), Some "oneCell")
 eq "edit: the chart moved down and right" ((movedModel.Drawings.[1].Anchor.FromRow, movedModel.Drawings.[1].Anchor.FromCol)) (extrasModel.Drawings.[1].Anchor.FromRow + 2, 6)
 eq "edit: the thread moved with its cell" (movedModel.Threads |> Map.toList |> List.map (fun (a, _) -> a.Row, a.Col)) [ 3, 1 ]
-eq "edit: the picture is drawn two rows lower" ((pictureRect movedModel).Y - (pictureRect extrasModel).Y) 50.0
+eq "edit: the picture is drawn two rows lower" ((pictureRect movedModel).Y - (pictureRect extrasModel).Y) (2.0 * extrasModel.DefaultRowHeight)   // (two rows of the height the sheet gives a row)
 let movedBack = reread (Bridge.Export.toWorkbookOut (extrasInput movedModel))
 let movedExtras = movedBack.Sheets.[0].Extras
 eq "export: picture re-anchored, same data" (movedExtras.Images |> List.map (fun image -> image.Anchor.FromRow, image.Anchor.FromCol, image.Anchor.ToRow, image.Anchor.ToCol, image.Anchor.FromColOffset, image.Data, image.Name))
@@ -1004,6 +1004,44 @@ do
     let again = (Bridge.Import.importWorkbook back).Sheets.[sheetIndex].Model
     eq "note runs: read back as they were" (Ops.commentAt again (addr 0 0) |> Option.map (fun info -> info.Text, info.Author, info.Runs)) (Ops.commentAt edited (addr 0 0) |> Option.map (fun info -> info.Text, info.Author, info.Runs))
     eq "note runs: the file's note reads back as it was" (runsAt again 48 4) (runsAt model 48 4)
+
+// ---- the size of a row / column that has none of its own is the sheet's (sheetFormatPr) ----
+do
+    let imported = Bridge.Import.importWorkbook (load "real-world/milk-street-office.xlsx")
+    let annual = imported.Sheets |> Array.find (fun sheet -> sheet.Name = "Annual")
+    let model = annual.Model
+    let near (a: float) (b: float) = abs (a - b) < 0.01
+    // (defaultRowHeight="15.75": 21 px; defaultColWidth="11": 77 px.)
+    ok "defaults: the sheet's default row height" (near model.DefaultRowHeight (15.75 * 1.333)) (string model.DefaultRowHeight)
+    ok "defaults: the sheet's default column width" (near model.DefaultColumnWidth 77.0) (string model.DefaultColumnWidth)
+    // The rows and columns the grid adds past the file's (398 rows, columns to L) are of that size.
+    let grown = { model with RowCount = model.RowCount + 100; ColCount = model.ColCount + 26 }
+    ok "defaults: a row past the file's rows has the default height" (near (getRowHeight (model.RowCount + 20) grown) (15.75 * 1.333)) (string (getRowHeight (model.RowCount + 20) grown))
+    ok "defaults: a column past the file's columns has the default width" (near (getColumnWidth (model.ColCount + 3) grown) 77.0) (string (getColumnWidth (model.ColCount + 3) grown))
+    let metrics = Rbt.Spreadsheet.Layout.metricsOf grown
+    ok "defaults: ... in the layout too"
+        (near (metrics.RowPrefix.[model.RowCount + 21] - metrics.RowPrefix.[model.RowCount + 20]) (15.75 * 1.333) && near (metrics.ColPrefix.[model.ColCount + 4] - metrics.ColPrefix.[model.ColCount + 3]) 77.0)
+        (sprintf "%f %f" (metrics.RowPrefix.[model.RowCount + 21] - metrics.RowPrefix.[model.RowCount + 20]) (metrics.ColPrefix.[model.ColCount + 4] - metrics.ColPrefix.[model.ColCount + 3]))
+    // ... a row hidden and shown again there, and one given the default height, are of it.
+    let row = model.RowCount + 20
+    let shownAgain = grown |> Ops.hideAxis true row row |> Ops.unhideAxis true row row
+    ok "defaults: hidden and shown again, the row is of the default height" (near (getRowHeight row shownAgain) (15.75 * 1.333)) (string (getRowHeight row shownAgain))
+    eq "defaults: a row set to the default height has no entry of its own" (Map.containsKey row (setRowHeight row grown.DefaultRowHeight (setRowHeight row 60.0 grown)).RowHeights) false
+    // A sheet that states nothing has the file format's defaults (15 pt, 8.43 characters); a new sheet the grid's.
+    let plain = (Bridge.Import.importWorkbook (load "real-world/chart-zoo.xlsx")).Sheets.[0].Model
+    let stated = (load "real-world/chart-zoo.xlsx").Sheets.[0].Format
+    ok "defaults: as the sheet states, or 15 pt and 8.43 characters"
+        (near plain.DefaultRowHeight ((stated.DefaultRowHeight |> Option.defaultValue 15.0) * 1.333)
+         && near plain.DefaultColumnWidth ((match stated.DefaultColWidth, stated.BaseColWidth with Some width, _ -> width | None, Some width -> width + 1.0 | None, None -> 8.43) * 7.0))
+        (sprintf "%f %f" plain.DefaultRowHeight plain.DefaultColumnWidth)
+    eq "defaults: a new sheet has the grid's" ((createEmpty 10 5).DefaultRowHeight, (createEmpty 10 5).DefaultColumnWidth) (25.0, 100.0)
+    // Written, the sheet says what it said.
+    let out = Bridge.Export.toWorkbookOut (inputOf imported (modelsOf imported |> Array.map (fun m -> if obj.ReferenceEquals(m, model) then setCell (addr (model.RowCount + 5) 1) { Value = CellValue.Number 1.0; Format = defaultFormat; Comment = None } m else m)) Map.empty)
+    let back = reread out
+    let backSheet = back.Sheets |> List.find (fun sheet -> sheet.Name = "Annual")
+    eq "defaults: an edited sheet is written with the defaults it had" (backSheet.Format.DefaultRowHeight, backSheet.Format.DefaultColWidth) (Some 15.75, Some 11.0)
+    ok "defaults: ... and the row added past its rows has no height of its own" (backSheet.Rows |> List.forall (fun r -> r.Index <> model.RowCount + 6 || r.Height.IsNone || near r.Height.Value 15.75)) "a height"
+
 
 printfn ""
 printfn "XLSX bridge tests: %d passed, %d failed" pass fail

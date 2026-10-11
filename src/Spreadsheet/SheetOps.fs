@@ -1260,7 +1260,7 @@ let maxColumnWidthPx = 1785.0
 let autoRowHeightPx = 20.0
 
 let private axisSizes (rows: bool) (model: SpreadsheetModel) = if rows then model.RowHeights else model.ColumnWidths
-let private axisDefault (rows: bool) = if rows then defaultRowHeightPx else defaultColumnWidthPx
+let private axisDefault (rows: bool) (model: SpreadsheetModel) = if rows then model.DefaultRowHeight else model.DefaultColumnWidth
 let private axisCount (rows: bool) (model: SpreadsheetModel) = if rows then model.RowCount else model.ColCount
 let private keptSizes (rows: bool) (model: SpreadsheetModel) = if rows then model.Axes.HiddenRowSizes else model.Axes.HiddenColSizes
 
@@ -1280,7 +1280,7 @@ let private withAxis (rows: bool) (sizes: Map<int, float>) (kept: Map<int, float
 let axisSize (rows: bool) (index: int) (model: SpreadsheetModel) : float =
     match Map.tryFind index (axisSizes rows model) with
     | Some size -> max 0.0 size
-    | None -> axisDefault rows
+    | None -> axisDefault rows model
 
 let isAxisHidden (rows: bool) (index: int) (model: SpreadsheetModel) : bool =
     axisSize rows index model <= 0.0
@@ -1289,7 +1289,7 @@ let isAxisHidden (rows: bool) (index: int) (model: SpreadsheetModel) : bool =
 let shownAxisSize (rows: bool) (index: int) (model: SpreadsheetModel) : float =
     let size = axisSize rows index model
     if size > 0.0 then size
-    else Map.tryFind index (keptSizes rows model) |> Option.defaultValue (axisDefault rows)
+    else Map.tryFind index (keptSizes rows model) |> Option.defaultValue (axisDefault rows model)
 
 /// The rows / columns `first..last` clipped to the sheet (None when none is on it).
 let clipAxisSpan (rows: bool) (first: int) (last: int) (model: SpreadsheetModel) : (int * int) option =
@@ -1306,7 +1306,7 @@ let rec setAxisSize (rows: bool) (first: int) (last: int) (size: float) (model: 
         | Some (first, last) ->
             let mutable sizes = axisSizes rows model
             let mutable kept = keptSizes rows model
-            let isDefault = size = axisDefault rows
+            let isDefault = size = axisDefault rows model
             for index in first .. last do
                 match Map.tryFind index sizes with
                 | Some existing when existing = size -> ()
@@ -1342,7 +1342,7 @@ let unhideAxis (rows: bool) (first: int) (last: int) (model: SpreadsheetModel) :
     for KeyValue(index, size) in axisSizes rows model do
         if index >= first && index <= last && size <= 0.0 then
             match Map.tryFind index kept with
-            | Some previous when previous > 0.0 && previous <> axisDefault rows -> sizes <- Map.add index previous sizes
+            | Some previous when previous > 0.0 && previous <> axisDefault rows model -> sizes <- Map.add index previous sizes
             | _ -> sizes <- Map.remove index sizes
             if Map.containsKey index kept then kept <- Map.remove index kept
     withAxis rows sizes kept model

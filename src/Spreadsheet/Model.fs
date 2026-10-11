@@ -1164,6 +1164,14 @@ type SpreadsheetModel = {
     /// Custom column widths (default 100.0)
     ColumnWidths: Map<int, float>
 
+    /// The height of a row and the width of a column that has none of its
+    /// own, in pixels: 25 and 100, or what the sheet of a file says every
+    /// row and column has (`sheetFormatPr`: `defaultRowHeight`,
+    /// `defaultColWidth` / `baseColWidth`). The rows and columns the grid
+    /// adds past those of the file are of this size too.
+    DefaultRowHeight: float
+    DefaultColumnWidth: float
+
     /// The sizes hidden rows / columns go back to, and the outline (groups).
     Axes: SheetAxes
 
@@ -1384,6 +1392,8 @@ let createEmpty rowCount colCount = {
     FilterHiddenRows = [||]
     RowHeights = Map.empty
     ColumnWidths = Map.empty
+    DefaultRowHeight = 25.0
+    DefaultColumnWidth = 100.0
     Axes = emptySheetAxes
     SearchQuery = None
     SearchCaseSensitive = None
@@ -3553,11 +3563,11 @@ let getRowHeight (row: int) (model: SpreadsheetModel): float =
         0.0
     else
         Map.tryFind row model.RowHeights
-        |> Option.defaultValue 25.0
+        |> Option.defaultValue model.DefaultRowHeight
 
 /// Set row height
 let setRowHeight (row: int) (height: float) (model: SpreadsheetModel): SpreadsheetModel =
-    if height = 25.0 then
+    if height = model.DefaultRowHeight then
         if Map.containsKey row model.RowHeights then { model with RowHeights = Map.remove row model.RowHeights } else model
     else
         match Map.tryFind row model.RowHeights with
@@ -3567,11 +3577,11 @@ let setRowHeight (row: int) (height: float) (model: SpreadsheetModel): Spreadshe
 /// Get column width (with default)
 let getColumnWidth (col: int) (model: SpreadsheetModel): float =
     Map.tryFind col model.ColumnWidths
-    |> Option.defaultValue 100.0
+    |> Option.defaultValue model.DefaultColumnWidth
 
 /// Set column width
 let setColumnWidth (col: int) (width: float) (model: SpreadsheetModel): SpreadsheetModel =
-    if width = 100.0 then
+    if width = model.DefaultColumnWidth then
         if Map.containsKey col model.ColumnWidths then { model with ColumnWidths = Map.remove col model.ColumnWidths } else model
     else
         match Map.tryFind col model.ColumnWidths with

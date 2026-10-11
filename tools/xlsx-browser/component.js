@@ -624,8 +624,9 @@ checks['drawings-in-grid'] = async () => {
             // Two rows inserted at the top: everything on screen moves down two rows, and so does the export.
             const boxesBefore = boxes();
             grid.InsertRow(0); grid.InsertRow(0);
-            const rowsHeight = 50;
-            check(`${short}: the drawings move down with two inserted rows`, boxes().map((b, i) => [b[0] - boxesBefore[i][0], b[1] - boxesBefore[i][1]]), boxesBefore.map(() => [0, rowsHeight]));
+            // (Two rows of the height the sheet gives a row.)
+            const rowsHeight = Math.round(grid.GetRowHeight(0) + grid.GetRowHeight(1));
+            check(`${short}: the drawings move down with two inserted rows`, boxes().map((b, i) => [b[0] - boxesBefore[i][0], Math.abs(b[1] - boxesBefore[i][1] - rowsHeight) <= 1]), boxesBefore.map(() => [0, true]));
             const saved = await grid.ExportXlsx();
             const after = await excel.load(saved.slice());
             const absolute = new Set(Array.from(model.Drawings, (d, i) => (d.Anchor.Kind === 'absolute' ? i : -1)));

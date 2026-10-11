@@ -636,6 +636,9 @@ checks['sheet-grows-beyond-used-range'] = async () => {
             const before = grid.GetCell(used.lastRow, 1).value;
             for (let i = 0; i < 5; i++) { await window.realKey('ArrowDown'); await frame(); }
             check('ArrowDown five times from the last used row: the caret is five rows below', grid.GetActiveCell().Row, used.lastRow + 5);
+            // (The sheet says defaultRowHeight="15.75" and defaultColWidth="11": 21 px and 77 px, also for the rows and columns the grid adds.)
+            const added = cellBox(host, used.lastRow + 5, 1), wide = grid.GetModel().ColCount - 1;
+            check('the rows below the used range have the height the sheet gives a row, the columns past it its width', [Math.round(added.height), Math.round(grid.GetRowHeight(used.lastRow + 5)), Math.round(grid.GetRowHeight(used.lastRow - 150)), Math.round(grid.GetColumnWidth(wide))], [21, 21, 21, 77]);
             await window.realType('below'); await window.realKey('Enter'); await frame();
             check('typing lands in the new row, the last used row is as it was', [grid.GetCell(used.lastRow + 5, 1).value, grid.GetCell(used.lastRow, 1).value], ['below', before]);
             // Far down, step by step: the grid keeps growing ahead of the caret.

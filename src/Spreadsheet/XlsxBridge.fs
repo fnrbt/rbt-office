@@ -1086,6 +1086,20 @@ module Import =
                 MergedCells = merged
                 RowHeights = rowHeights
                 ColumnWidths = columnWidths
+                // (What the sheet says every row and column has: the rows and columns past the
+                // file's are of that size too. A sheet that hides every row - a default of 0 -
+                // keeps the grid's own.)
+                DefaultRowHeight = (if defaultRowHeight > 0.0 then defaultRowHeight * 1.333 else 25.0)
+                DefaultColumnWidth =
+                    // (A <col> that runs to the last column - Excel writes one for "every column
+                    // from here on" - says what the columns past the used ones have.)
+                    (let tail =
+                        sheet.Columns
+                        |> List.tryFind (fun column -> column.MaxIndex >= 16384 && column.Index - 1 <= colCount && not column.Hidden)
+                        |> Option.bind (fun column -> column.Width)
+                     match tail with
+                     | Some width when width > 0.0 -> width * 7.0
+                     | _ -> if defaultColWidth > 0.0 then defaultColWidth * 7.0 else 100.0)
                 Axes = axes
                 Tables = sheetTables
                 FrozenRows = sheet.FrozenPane |> Option.map (fun p -> p.YSplit) |> Option.defaultValue 0
@@ -1633,7 +1647,7 @@ module Export =
                 match Map.tryFind row model.RowHeights with
                 | Some size when size <= 0.0 -> ()
                 | size ->
-                    kept <- Map.add row (defaultArg size 25.0) kept
+                    kept <- Map.add row (defaultArg size model.DefaultRowHeight) kept
                     heights <- Map.add row 0.0 heights
             { model with RowHeights = heights; Axes = { model.Axes with HiddenRowSizes = kept } }
 
@@ -1868,8 +1882,8 @@ module Export =
             // deleted, each index has the size the model gives it.)
             // (The file's sizes are by index: with rows or columns inserted or
             // deleted, by where each row and column of the file is now.)
-            ColumnWidths = movedSizes false original.ColumnWidths before.ColumnWidths model.ColumnWidths 7.0 100.0 fromModel.ColumnWidths
-            RowHeights = movedSizes true original.RowHeights before.RowHeights model.RowHeights 1.333 25.0 fromModel.RowHeights
+            ColumnWidths = movedSizes false original.ColumnWidths before.ColumnWidths model.ColumnWidths 7.0 model.DefaultColumnWidth fromModel.ColumnWidths
+            RowHeights = movedSizes true original.RowHeights before.RowHeights model.RowHeights 1.333 model.DefaultRowHeight fromModel.RowHeights
             Tables =
                 if unchanged (fun m -> m.Tables) then original.Tables
                 else
@@ -2382,7 +2396,7 @@ module Export =
                             // (A row hidden at the height every row has keeps what the file says of its height.)
                             let heightChanged =
                                 heightWas <> height
-                                && not (heightWas.IsNone && hidden && (match height with Some size -> abs (size - 25.0) < 0.01 | None -> true))
+                                && not (heightWas.IsNone && hidden && (match height with Some size -> abs (size - now.DefaultRowHeight) < 0.01 | None -> true))
                             if hiddenWas <> hidden || heightChanged || levelWas <> level || collapsedWas <> collapsed then
                                 yield ({ Row = row; HeightChanged = heightChanged; Height = height |> Option.map (fun size -> size / 1.333)
                                          Hidden = hidden; Level = level; Collapsed = collapsed } : XlsxReader.SheetRowPatch) ]

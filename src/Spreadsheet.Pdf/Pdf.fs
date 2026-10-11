@@ -704,7 +704,8 @@ let private withPrintColumnWidths maxPrintCol (model: SpreadsheetModel) : Spread
             remapPrintColumnWidthsDirect maxCol model.ColumnWidths
         | _ ->
             model.ColumnWidths |> Map.map (fun _ width -> printColumnWidthPx width)
-    { model with ColumnWidths = widths }
+    // (A column without a width of its own prints at 100 px, as the pages were measured: see `Pagination.withPrintSizes`.)
+    { model with ColumnWidths = widths; DefaultColumnWidth = 100.0 }
 
 /// Excel's print PDF renders Calibri-11 auto-derived rows at 19 px (14.25 pt)
 /// even though `cell.Height` via COM still reports 15 pt (20 px). This is a
@@ -743,7 +744,7 @@ let private withPrintRowHeights maxPrintRow (model: SpreadsheetModel) : Spreadsh
             remapPrintRowHeightsDirect maxRow model.RowHeights
         | _ ->
             model.RowHeights |> Map.map (fun _ px -> printRowHeightPx px)
-    { model with RowHeights = heights }
+    { model with RowHeights = heights; DefaultRowHeight = 25.0 }
 
 /// True when a paint item has degenerate (zero-size) geometry. With the
 /// print viewport's HeaderHeight / RowHeaderWidth both set to 0, the

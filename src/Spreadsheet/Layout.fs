@@ -159,6 +159,8 @@ type SheetMetrics = {
     ColumnWidths: Map<int, float>
     FilterHiddenRows: int array
     Filtered: bool
+    DefaultRowHeight: float
+    DefaultColumnWidth: float
 }
 
 /// The metrics computed last, for a few sheets (a workbook is drawn sheet by
@@ -168,6 +170,8 @@ let mutable private metricsCache : SheetMetrics list = []
 let private metricsMatch (model: SpreadsheetModel) (metrics: SheetMetrics) =
     metrics.RowCount = model.RowCount
     && metrics.ColCount = model.ColCount
+    && metrics.DefaultRowHeight = model.DefaultRowHeight
+    && metrics.DefaultColumnWidth = model.DefaultColumnWidth
     && obj.ReferenceEquals(metrics.RowHeights, model.RowHeights)
     && obj.ReferenceEquals(metrics.ColumnWidths, model.ColumnWidths)
     && metrics.Filtered = not (Map.isEmpty model.Filters)
@@ -195,14 +199,16 @@ let private computeMetrics (model: SpreadsheetModel) : SheetMetrics =
         for i = 0 to known - 1 do
             prefix.[i + 1] <- prefix.[i] + own.[i]
         AxisOffsets(prefix, count, defaultSize)
-    { RowPrefix = offsetsOf rowCount 25.0 model.RowHeights (if filtered then model.FilterHiddenRows else [||])
-      ColPrefix = offsetsOf colCount 100.0 model.ColumnWidths [||]
+    { RowPrefix = offsetsOf rowCount model.DefaultRowHeight model.RowHeights (if filtered then model.FilterHiddenRows else [||])
+      ColPrefix = offsetsOf colCount model.DefaultColumnWidth model.ColumnWidths [||]
       RowCount = rowCount
       ColCount = colCount
       RowHeights = model.RowHeights
       ColumnWidths = model.ColumnWidths
       FilterHiddenRows = model.FilterHiddenRows
-      Filtered = filtered }
+      Filtered = filtered
+      DefaultRowHeight = model.DefaultRowHeight
+      DefaultColumnWidth = model.DefaultColumnWidth }
 
 /// The row / column offsets of a sheet. They are computed once and reused
 /// until a row height, a column width, the filter or the size of the sheet

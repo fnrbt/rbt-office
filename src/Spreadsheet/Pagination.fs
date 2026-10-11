@@ -66,10 +66,10 @@ type Pagination = {
 }
 
 let private colWidthPx (model: SpreadsheetModel) (col: int) : float =
-    Map.tryFind col model.ColumnWidths |> Option.defaultValue 100.0
+    Map.tryFind col model.ColumnWidths |> Option.defaultValue model.DefaultColumnWidth
 
 let private rowHeightPx (model: SpreadsheetModel) (row: int) : float =
-    Map.tryFind row model.RowHeights |> Option.defaultValue 25.0
+    Map.tryFind row model.RowHeights |> Option.defaultValue model.DefaultRowHeight
 
 let private rangeSum (sizes: int -> float) (startInc: int) (endInc: int) : float =
     let mutable s = 0.0
@@ -265,6 +265,11 @@ let printRowHeightPx (px: float) : float =
 /// The sheet with its rows and columns at the sizes they print at.
 let withPrintSizes (model: SpreadsheetModel) : SpreadsheetModel =
     { model with
+        // (The pages were measured against Excel's with every row and column that has no size
+        // of its own at 25 and 100 px; the sheet's own defaults - `DefaultRowHeight`,
+        // `DefaultColumnWidth` - are for the grid until the pages are measured with them.)
+        DefaultRowHeight = 25.0
+        DefaultColumnWidth = 100.0
         ColumnWidths = (if Map.isEmpty model.ColumnWidths then model.ColumnWidths else model.ColumnWidths |> Map.map (fun _ width -> printColumnWidthPx width))
         RowHeights = (if Map.isEmpty model.RowHeights then model.RowHeights else model.RowHeights |> Map.map (fun _ px -> printRowHeightPx px)) }
 

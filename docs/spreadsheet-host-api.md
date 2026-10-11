@@ -490,6 +490,15 @@ columns and is written to / read from XLSX (`<row ht hidden outlineLevel collaps
 | `SetShowOutlineSymbols(show)` / `GetShowOutlineSymbols()` | boolean | boolean | The active **sheet's** own switch for its outline symbols (the sheet view's `showOutlineSymbols`; Excel's "Show outline symbols if an outline is applied"): read from and written to the file, one undo step, a new revision. `false` hides the strips of that sheet; its groups, hidden rows and `GetOutline()` stay. |
 | `GetOutline()` | | `{ rows: [group], columns: [group], rowLevels, columnLevels, summaryBelow, summaryRight, showSymbols }` with `group = { first, last, range: "3:7" \| "B:D", level: 1..7, collapsed }` | Outer groups come before the groups inside them; `rowLevels` / `columnLevels` are the deepest level (0 = no groups). |
 
+**The size of a row / column that has none of its own is the sheet's (0.1.15).** A new sheet gives a row 25 px and a column 100 px. A
+sheet of a file gives them what its `sheetFormatPr` says (`defaultRowHeight` in points x 1.333; `defaultColWidth`, or `baseColWidth` + 1,
+or 8.43 characters, x 7), or - for the columns - what a `<col>` that runs to column 16384 says: `GetModel().DefaultRowHeight` /
+`DefaultColumnWidth` (pixels, read-only for a host). Before, only the rows and columns the file uses had these sizes: **the rows and
+columns the grid adds past them were 25 px / 100 px** (milk-street-office.xlsx, 15.75 pt: its rows are 21 px, the ones below row 398 were
+25 px). Now `GetRowHeight` / `GetColumnWidth`, the layout, hiding and showing, `SetRowHeight` back to the default, and inserted rows
+and columns all use the sheet's size, and a saved sheet states the defaults it had. Not changed: **print** (`GetPrintPages`, the PDF)
+still takes 25 px / 100 px for a row / column without a size - its page breaks were measured against Excel's that way.
+
 In the grid: dragging a header's resize handle is now one undo step (it was none); a **double click on a resize handle** fits that column /
 row (`AutoFitColumns` / `AutoFitRows`), and when whole columns / rows are selected and the handle is one of theirs, all of them. Arrow keys,
 selection, drawing anchors, the portable painter and the PDF path treat hidden rows / columns as before (size 0).
