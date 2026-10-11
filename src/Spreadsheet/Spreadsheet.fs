@@ -5802,6 +5802,21 @@ type Spreadsheet(container: Element) =
                                 |> String.concat ";"
                             if css <> "" then setCssText span css
                             appendChild panel span
+                // The box stays inside what is in view: left of its cell when there is no room on
+                // the right of it, and further up when it would reach below the last row in view.
+                let boxWidth, boxHeight = getClientWidth panel + 2.0, getClientHeight panel + 2.0
+                let viewLeft, viewTop = scrollLeft + rowHeaderWidth, scrollTop + headerHeight
+                let viewRight, viewBottom = scrollLeft + gridClientWidth gridDiv - 2.0, scrollTop + gridClientHeight gridDiv - 2.0
+                let placedX =
+                    if x + boxWidth <= viewRight then x
+                    else
+                        let leftCol = match findMergedCell addr model with Some merged -> merged.StartCol | None -> addr.Col
+                        let cellLeft = rowHeaderWidth + metrics.ColPrefix.[min metrics.ColCount (max 0 leftCol)] + (if leftCol < model.FrozenCols then scrollLeft else 0.0)
+                        let flipped = cellLeft - 6.0 - boxWidth
+                        if flipped >= viewLeft then flipped else max viewLeft (viewRight - boxWidth)
+                let placedY = if y + boxHeight <= viewBottom then y else max viewTop (viewBottom - boxHeight)
+                if placedX <> x then setStyle panel "left" (string (int placedX) + "px")
+                if placedY <> y then setStyle panel "top" (string (int placedY) + "px")
             | _, None -> hideCommentBox ()
             | _ -> ()
         listen content "mousemove" (fun e ->

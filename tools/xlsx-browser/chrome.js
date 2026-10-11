@@ -1218,3 +1218,69 @@ checks['grid-scroll-grows'] = async () => {
     return lines;
 };
 
+// The box of a comment stays inside the grid: beside a cell at the right edge it is on the cell's
+// left, and for a cell in the last row in view it is moved up.
+checks['comment-box-in-view'] = async () => {
+    const { lines, check, note } = makeLog();
+    const { bytesOf } = await import('/component.js');
+    const { grid, host, close } = mountGrid();
+    try {
+        const { scroller } = parts(host);
+        const box = () => { const el = host.querySelector('.spreadsheet-comment-box'); return el && el.style.display !== 'none' ? el : null; };
+        const nodeOf = (row, col) => host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"]`);
+        const hover = (row, col) => {
+            const rect = nodeOf(row, col).getBoundingClientRect();
+            const x = rect.left + Math.min(rect.width / 2, 20), y = rect.top + rect.height / 2;
+            (document.elementFromPoint(x, y) ?? nodeOf(row, col)).dispatchEvent(new MouseEvent('mousemove', { bubbles: true, cancelable: true, clientX: x, clientY: y, buttons: 0 }));
+        };
+        const leave = () => host.querySelector('.spreadsheet-content').dispatchEvent(new MouseEvent('mouseleave', { bubbles: false }));
+        // The view of the scroller without its scroll bars.
+        const view = () => { const rect = scroller.getBoundingClientRect(); return { left: rect.left, top: rect.top, right: rect.left + scroller.clientWidth, bottom: rect.top + scroller.clientHeight }; };
+        const inside = (el) => { const rect = el.getBoundingClientRect(), v = view(); return [rect.left >= v.left - 1, rect.top >= v.top - 1, rect.right <= v.right + 1, rect.bottom <= v.bottom + 1]; };
+        // The cell as the last row in view.
+        const asLastRow = async (row, col) => {
+            grid.ScrollToCell(row, col); await frame();
+            const rect = nodeOf(row, col).getBoundingClientRect();
+            scroller.scrollTop += rect.bottom - view().bottom + 1; await frame();
+        };
+        await grid.ImportXlsx((await bytesOf('tests/real-world/jumeirah-hotel.xlsx')).slice());
+        const sheet = grid.GetSheetNames().findIndex((_, index) => { grid.SwitchSheet(index); return grid.GetComment(48, 4) !== null; });
+        check('the workbook has a comment on E49', sheet >= 0, true);
+        await frame();
+        await asLastRow(48, 4);
+        hover(48, 4); await frame();
+        const shown = box();
+        check('E49 as the last row in view: its box is shown', shown !== null && shown.getBoundingClientRect().height > 20, true);
+        if (shown) {
+            note(`the box: ${Math.round(shown.getBoundingClientRect().height)} px high, its cell ${Math.round(nodeOf(48, 4).getBoundingClientRect().height)} px`);
+            check('... inside the grid, on all sides', inside(shown), [true, true, true, true]);
+        }
+        leave(); await frame();
+        // A cell further up: the box is beside the cell's top, as before.
+        scroller.scrollTop += 200; await frame();
+        hover(48, 4); await frame();
+        const beside = box();
+        check('with room below: the box starts at the top of its cell', beside !== null && Math.abs(beside.getBoundingClientRect().top - nodeOf(48, 4).getBoundingClientRect().top) <= 2, true);
+        leave(); await frame();
+        // A note on the last column in view, in a new workbook: the box is on the left of the cell.
+        const { grid: other, host: otherHost, close: closeOther } = mountGrid();
+        try {
+            const scrollerOther = parts(otherHost).scroller;
+            const cells = [...otherHost.querySelectorAll('.spreadsheet-cell[data-row="3"]')].filter((node) => node.style.display !== 'none');
+            const edge = scrollerOther.getBoundingClientRect().left + scrollerOther.clientWidth;
+            const lastCol = Math.max(...cells.filter((node) => node.getBoundingClientRect().right <= edge + 1).map((node) => Number(node.getAttribute('data-col'))));
+            other.SetCommentRuns(3, lastCol, [{ text: 'A note of some length, long enough to need the width a box of a note has, and then some more words.' }], 'Ann');
+            await frame();
+            const cell = otherHost.querySelector(`.spreadsheet-cell[data-row="3"][data-col="${lastCol}"]`).getBoundingClientRect();
+            otherHost.querySelector(`.spreadsheet-cell[data-row="3"][data-col="${lastCol}"]`).dispatchEvent(new MouseEvent('mousemove', { bubbles: true, cancelable: true, clientX: cell.left + 10, clientY: cell.top + cell.height / 2, buttons: 0 }));
+            await frame();
+            const el = otherHost.querySelector('.spreadsheet-comment-box');
+            const rect = el.getBoundingClientRect();
+            check('a note on the last column in view: its box is shown, inside the grid', [el.style.display !== 'none', rect.right <= edge + 1, rect.left >= scrollerOther.getBoundingClientRect().left], [true, true, true]);
+            check('... on the left of its cell', rect.right <= cell.left + 1, true);
+        } finally { closeOther(); }
+    } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
+    finally { close(); }
+    return lines;
+};
+
