@@ -2525,11 +2525,30 @@ let private uprightCaretRect (ctx: RenderContext) (doc: Document) : (float * flo
         // A paragraph continued in another column has one layout per fragment.
         let mutable found: BlockLayout option = None
         let mutable fallback: BlockLayout option = None
-        for layout in layoutDocument ctx doc do
+        let consider (layout: BlockLayout) =
             if layout.BlockId = selection.Focus.BlockId then
                 fallback <- Some layout
                 if found.IsNone && layout.Lines |> List.exists (fun line -> line.StartOffset <= offset && offset <= line.EndOffset) then
                     found <- Some layout
+        let layouts = layoutDocument ctx doc
+        // The layouts of the caret's block, by the block's place, when the pass handed its layouts
+        // over block by block: asked with every keystroke, and a walk of all the layouts of a long
+        // document was a fifth of a keystroke's time.
+        let ofBlock =
+            if ctx.Story.IsSome then None
+            else
+                match ctx.LayoutState.LastSlices, ctx.LayoutState.LastLayouts with
+                | Some slices, Some known when obj.ReferenceEquals(known, layouts) ->
+                    match locateBlock (layoutTarget ctx doc) selection.Focus.BlockId with
+                    | ValueSome (struct (index, _)) when index < slices.SliceBlocks.Length -> Some (slices, index)
+                    | _ -> None
+                | _ -> None
+        match ofBlock with
+        | Some (slices, index) ->
+            for at in slices.SliceStarts.[index] .. slices.SliceStarts.[index + 1] - 1 do consider slices.SliceLayouts.[at]
+            // (Not among them - a note's paragraph: all the layouts.)
+            if fallback.IsNone then (for layout in layouts do consider layout)
+        | None -> for layout in layouts do consider layout
         match found |> Option.orElse fallback with
         | None -> None
         | Some layout when layout.Lines.IsEmpty ->

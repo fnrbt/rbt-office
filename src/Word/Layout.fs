@@ -6079,19 +6079,33 @@ type PageInfo = {
 /// Split the document into sections at paragraphs carrying a section break;
 /// the final section uses the body PageSetup. Each entry is
 /// (blocks, columns, geometry, breakType, isFinal).
-let private splitIntoSections (doc: Document) =
+/// (With the properties of the paragraph that ends each section - none for
+/// the final one. The blocks are walked once, with every layout pass: the
+/// final section's blocks are the rest of the document's list, not a copy.)
+let private splitIntoSectionsWithEnds (doc: Document) =
     let result = ResizeArray<Block list * SectionColumns option * SectionPageSetup option * string option * bool>()
-    let mutable current = ResizeArray<Block>()
-    for block in doc.Blocks do
-        current.Add block
-        match tryGetParagraph block with
-        | Some para when para.Metadata.SectionBreak.IsSome ->
-            result.Add(resizeArrayToList current, para.Metadata.SectionColumns, para.Metadata.SectionPageSetup, para.Metadata.SectionBreak, false)
-            current <- ResizeArray<Block>()
+    let ends = ResizeArray<BlockMetadata option>()
+    let mutable sectionStart = doc.Blocks
+    let mutable count = 0
+    let mutable rest = doc.Blocks
+    while not rest.IsEmpty do
+        let block = rest.Head
+        rest <- rest.Tail
+        count <- count + 1
+        match block with
+        | Paragraph para
+        | Heading (_, para) when para.Metadata.SectionBreak.IsSome ->
+            result.Add(List.truncate count sectionStart, para.Metadata.SectionColumns, para.Metadata.SectionPageSetup, para.Metadata.SectionBreak, false)
+            ends.Add (Some para.Metadata)
+            sectionStart <- rest
+            count <- 0
         | _ -> ()
     // The final section's start type comes from the body sectPr.
-    result.Add(resizeArrayToList current, doc.PageSetup.Columns, None, doc.PageSetup.SectionStart, true)
-    resizeArrayToList result
+    result.Add(sectionStart, doc.PageSetup.Columns, None, doc.PageSetup.SectionStart, true)
+    ends.Add None
+    resizeArrayToList result, ends.ToArray()
+
+let private splitIntoSections (doc: Document) = fst (splitIntoSectionsWithEnds doc)
 
 let private columnsOrSingle (columns: SectionColumns option) =
     match columns with
@@ -6436,7 +6450,7 @@ let private sectionsUpTo (limit: int) (sections: (Block list * SectionColumns op
 /// (a paragraph kept with the next, a balanced section), which a pass with a
 /// larger limit lays out again.
 let private layoutDocumentPagesWithMemo (memo: ParagraphLayoutMemo option) (limit: int) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (whole: Document) : BlockLayout list * PageInfo list =
-    let allSections = splitIntoSections whole
+    let allSections, endMetadata = splitIntoSectionsWithEnds whole
     let limited = limit < System.Int32.MaxValue
     let doc = if limited then { whole with Blocks = List.truncate (max 1 limit) whole.Blocks } else whole
     let sections = if limited then sectionsUpTo limit allSections else allSections
@@ -6493,20 +6507,11 @@ let private layoutDocumentPagesWithMemo (memo: ParagraphLayoutMemo option) (limi
     | _ ->
         // (What each section says of its header: from the whole document, whatever part of it is laid out.)
         let headerReferences =
-            allSections
-            |> List.map (fun (blocks, _, _, _, isFinal) ->
-                if isFinal then whole.PageSetup.HeaderReferences
-                else
-                    match List.tryLast blocks |> Option.bind tryGetParagraph with
-                    | Some para -> para.Metadata.HeaderReferences
-                    | None -> [])
-            |> List.toArray
+            endMetadata |> Array.mapi (fun index metadata ->
+                match metadata with
+                | Some m -> m.HeaderReferences
+                | None -> (if index = endMetadata.Length - 1 then whole.PageSetup.HeaderReferences else []))
         // (And of the number its pages start with, and of where its text stands on a page.)
-        let endMetadata =
-            allSections
-            |> List.map (fun (blocks, _, _, _, isFinal) ->
-                if isFinal then None else List.tryLast blocks |> Option.bind tryGetParagraph |> Option.map (fun para -> para.Metadata))
-            |> List.toArray
         let numberStarts = endMetadata |> Array.mapi (fun index metadata -> match metadata with Some m -> m.SectionPageNumberStart | None -> (if index = endMetadata.Length - 1 then whole.PageSetup.PageNumberStart else None))
         let verticalAligns = endMetadata |> Array.mapi (fun index metadata -> match metadata with Some m -> m.SectionVerticalAlign | None -> (if index = endMetadata.Length - 1 then whole.PageSetup.VerticalAlign else None))
         layoutSections memo settings measureText measureRange doc headerReferences numberStarts verticalAligns sections
