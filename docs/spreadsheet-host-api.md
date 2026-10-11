@@ -790,6 +790,13 @@ Nothing to call for the recalculation itself: every edit recalculates what it ha
 - Circular references. The formulas ON a circular reference - within a sheet, across sheets, through a defined name, a 3-D reference or the cells of a
   dynamic array - have the engine's cycle error as their value (GetCell: `{ value: "#CYCLE", valueType: "error" }`; it is not one of Excel's error values - Excel shows 0 and a warning); a formula that only reads one has that error as any formula
   reading an error has (IFERROR catches it). This is the same after every edit and whatever the order of the sheets.
+- **The grid always has room beyond what is used.** A sheet of a file had exactly as many rows as the file uses, so the arrow keys
+  stopped at the last used row and typing there overwrote it. Now, whenever fewer than 50 rows are left below the last used row or
+  the active cell (10 columns right of the active cell), the sheet grows to 100 rows (26 columns) past it, up to 1 048 576 rows and
+  16 384 columns: `GetModel().RowCount` / `ColCount` grow as the caret moves on (they never shrink; the growth is not an edit, not
+  an undo step, and does not make a sheet "changed" for a save). `SetCell` / `EnterText` on a cell beyond the grid and a paste that
+  reaches beyond it make the sheet large enough (before, `SetCell` stored a cell the grid did not show). Scrolling alone does not
+  grow the sheet: there are 50 to 100 empty rows to scroll into.
 - `GetDateSystem()` -> `1900` | `1904`. The date system of the workbook: 1904 for a workbook opened from a file whose `workbookPr` says
   `date1904` (serial 0 is 1904-01-01; Excel for Mac's old default), else 1900 (also every workbook made in the editor; there is no
   setter). `GetCell(...).value` of a date is the serial **in that system** - a host that converts serials to dates itself adds 1462

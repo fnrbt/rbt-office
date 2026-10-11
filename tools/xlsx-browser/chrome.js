@@ -592,6 +592,54 @@ checks['export-edited-sheet-keeps-part'] = async () => {
     return lines;
 };
 
+// A sheet of a file can be extended below its last used row and right of its last used column: the arrow
+// keys leave the used range, typing lands in the new cell, a cell beyond the grid can be written (SetCell)
+// and pasted into; the saved file has the new cells.
+checks['sheet-grows-beyond-used-range'] = async () => {
+    const { lines, check } = makeLog();
+    const { bytesOf } = await import('/component.js');
+    const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    for (const file of ['tests/real-world/milk-street-office.xlsx']) {
+        const { grid, host, close } = mountGrid();
+        try {
+            await grid.ImportXlsx((await bytesOf(file)).slice());
+            grid.SwitchSheet(0);
+            await frame();
+            const used = grid.GetUsedRange();
+            check('the grid has rows below the used range', grid.GetModel().RowCount >= used.lastRow + 1 + 50, true);
+            grid.SelectCell(used.lastRow, 1);
+            await frame();
+            // (A click, so that the keys go to the grid.)
+            const clickCell = async (row, col) => { grid.SelectCell(row, col); await frame(); const box = cellBox(host, row, col); await window.realMouse('click', box.left + box.width / 2, box.top + box.height / 2); await frame(); };
+            await clickCell(used.lastRow, 1);
+            const before = grid.GetCell(used.lastRow, 1).value;
+            for (let i = 0; i < 5; i++) { await window.realKey('ArrowDown'); await frame(); }
+            check('ArrowDown five times from the last used row: the caret is five rows below', grid.GetActiveCell().Row, used.lastRow + 5);
+            await window.realType('below'); await window.realKey('Enter'); await frame();
+            check('typing lands in the new row, the last used row is as it was', [grid.GetCell(used.lastRow + 5, 1).value, grid.GetCell(used.lastRow, 1).value], ['below', before]);
+            // Far down, step by step: the grid keeps growing ahead of the caret.
+            grid.SelectCell(grid.GetModel().RowCount - 1, 1); await frame();
+            const rows = grid.GetModel().RowCount;
+            check('the caret on the last row of the grid: more rows below it', rows > grid.GetActiveCell().Row + 50, true);
+            // Columns.
+            const lastCol = grid.GetModel().ColCount - 1;
+            await clickCell(3, lastCol);
+            const cols = lastCol + 1;
+            for (let i = 0; i < 3; i++) { await window.realKey('ArrowRight'); await frame(); }
+            check('ArrowRight three times from the last column of the grid: the caret is three columns right', grid.GetActiveCell().Col, cols - 1 + 3);
+            // A cell beyond the grid written by the host.
+            const far = grid.GetModel().RowCount + 500;
+            grid.SetCell(far, 2, '42');
+            check('SetCell beyond the grid: the cell is a cell of the sheet', [grid.GetCell(far, 2).value, grid.GetModel().RowCount > far], [42, true]);
+            const zip = await window.JSZip.loadAsync(await grid.ExportXlsx());
+            const sheet = await zip.files['xl/worksheets/sheet1.xml'].async('string');
+            check('saved: the new cells are in the sheet', [new RegExp(`<c r="B${used.lastRow + 6}"`).test(sheet), new RegExp(`<c r="C${far + 1}"`).test(sheet)], [true, true]);
+        } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
+        finally { close(); }
+    }
+    return lines;
+};
+
 // A recalculation of many formulas reads cells through a hash index of each sheet's cells, handed on from
 // edit to edit: what it gives is what a workbook opened afresh gives for the same entry, edit after edit,
 // and after undo and redo.

@@ -1074,7 +1074,7 @@ checks['api-view'] = async () => {
             const header = host.querySelector('.spreadsheet-col-header[data-col="2"]').getBoundingClientRect(), rowHeader = host.querySelector('.spreadsheet-row-header[data-row="4"]').getBoundingClientRect();
             check(`zoom ${zoom}: the headers too`, [near(round(header), [origin()[0] + (50 + 200) * zoom, origin()[1], 100 * zoom, 30 * zoom].map(Math.round)), near(round(rowHeader), [origin()[0], origin()[1] + (30 + 100) * zoom, 50 * zoom, 25 * zoom].map(Math.round))], [true, true]);
             check(`zoom ${zoom}: text is laid out at the zoomed size (not a scaled bitmap)`, Math.abs(parseFloat(getComputedStyle(node(4, 0)).fontSize) * zoom - node(4, 0).getBoundingClientRect().height * 11 / 25) < 0.6, true);
-            check(`zoom ${zoom}: the scroll extent is the zoomed sheet`, [Math.abs(scroller.scrollHeight - (30 + 1000 * 25) * zoom) <= 2, Math.abs(scroller.scrollWidth - (50 + 26 * 100) * zoom) <= 2], [true, true]);
+            check(`zoom ${zoom}: the scroll extent is the zoomed sheet`, [Math.abs(scroller.scrollHeight - (30 + grid.GetModel().RowCount * 25) * zoom) <= 2, Math.abs(scroller.scrollWidth - (50 + grid.GetModel().ColCount * 100) * zoom) <= 2], [true, true]);
             // Hit testing: a click in the middle of where a cell is drawn selects it.
             const target = expected(4, 2, zoom);
             click(target[0] + target[2] / 2, target[1] + target[3] / 2);

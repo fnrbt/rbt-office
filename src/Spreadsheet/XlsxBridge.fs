@@ -2260,7 +2260,8 @@ module Export =
         || (sameRef before.Cells model.Cells
             && sameRef before.RichRuns model.RichRuns
             && same (fun m -> m.RowHeights) && same (fun m -> m.ColumnWidths) && same (fun m -> m.Axes)
-            && before.RowCount = model.RowCount && before.ColCount = model.ColCount && before.StructureVersion = model.StructureVersion
+            // (How many rows and columns the grid offers is not the file's to say: see the grid's `giveRoom`.)
+            && before.StructureVersion = model.StructureVersion
             && same (fun m -> m.MergedCells) && same (fun m -> m.ConditionalFormats) && same (fun m -> m.Validations)
             && same (fun m -> m.Tables) && same (fun m -> m.Drawings) && same (fun m -> m.Threads) && same (fun m -> m.Hyperlinks)
             && same (fun m -> m.ColumnStyles) && same (fun m -> m.DataTables) && same (fun m -> m.KeptRanges) && same (fun m -> m.ArrayMarks)

@@ -882,7 +882,8 @@ checks['grid-extent-scroll-and-stacking'] = async () => {
         grid.SwitchSheet(1);
         check('a sheet switch puts the container at the top-left', [scroller.scrollTop, scroller.scrollLeft], [0, 0]);
         check('and the sheet\'s cells are on screen straight away', [cellAtPoint(host, 60, 40), cellAtPoint(host, 400, 300)], [[0, 0], [10, 3]]);
-        check('with the extent of that sheet', [content.getBoundingClientRect().height, content.getBoundingClientRect().width], [30 + 40 * 25, 50 + 8 * 100]);
+        // (The sheet was made with 40 rows and 8 columns: the grid offers more, beyond what is used and the active cell.)
+        check('with the extent of that sheet', [content.getBoundingClientRect().height, content.getBoundingClientRect().width, grid.GetModel().RowCount >= 40, grid.GetModel().ColCount >= 8], [30 + grid.GetModel().RowCount * 25, 50 + grid.GetModel().ColCount * 100, true, true]);
         grid.SwitchSheet(0);
         check('and back', [scroller.scrollTop, cellAtPoint(host, 60, 40), content.getBoundingClientRect().height], [0, [0, 0], 30 + 3000 * 25]);
 
@@ -1005,7 +1006,8 @@ checks['grid-selection-and-keyboard'] = async () => {
         press(host, 'PageDown', { shiftKey: true });
         check('Shift+PageDown selects', [grid.GetSelectionRef(), active(grid)], [`A1:A${afterOne + 1}`, [0, 0]]);
         press(host, 'a', { ctrlKey: true });
-        check('Ctrl+A selects the sheet, the active cell stays', [grid.GetSelectionRef(), active(grid)], ['A1:AD400', [0, 0]]);
+        // (Every row and column the grid offers: the 400 x 30 it was made with, and the room beyond what is used.)
+        check('Ctrl+A selects the sheet, the active cell stays', [Number(/^A1:[A-Z]+(\d+)$/.exec(grid.GetSelectionRef())?.[1]), grid.GetModel().RowCount >= 400, grid.GetModel().ColCount >= 30, active(grid)], [grid.GetModel().RowCount, true, true, [0, 0]]);
 
         // Enter / Tab walk through a selection; with one cell selected they move it (Enter edits).
         grid.SelectRange(2, 1, 3, 2);
@@ -1304,6 +1306,8 @@ checks['grid-scroll-frames'] = async () => {
         const nodes = host.querySelectorAll('.spreadsheet-cell').length, visible = [...host.querySelectorAll('.spreadsheet-cell')].filter((node) => node.style.display !== 'none').length;
         check(`cell nodes are pooled (${visible} on display, ${nodes} in all)`, [nodes < 3 * visible + 700, visible > 100], [true, true]);
         // A selection move draws no cell.
+        // (The cell is selected first: near the end of the grid that makes the grid longer, which draws the new rows.)
+        grid.SelectCell(rows - 5, 2); await next(); await next();
         let drawn = 0;
         const observer = new MutationObserver((records) => { for (const record of records) if (record.target.closest && record.target.closest('.spreadsheet-cell')) drawn++; });
         observer.observe(content, { subtree: true, childList: true, attributes: true, characterData: true });

@@ -280,8 +280,8 @@ let private sameSheetContent (a: SpreadsheetModel) (b: SpreadsheetModel) =
         && a.AutoFilter = b.AutoFilter
         && (sameRef a.FilterHiddenRows b.FilterHiddenRows || a.FilterHiddenRows = b.FilterHiddenRows)
         && (sameRef a.PageSetup b.PageSetup || a.PageSetup = b.PageSetup)
-        && a.RowCount = b.RowCount
-        && a.ColCount = b.ColCount
+        // (Rows and columns inserted or deleted; how many the grid offers beyond what is used is not content: `giveRoom`.)
+        && a.StructureVersion = b.StructureVersion
         && a.FrozenRows = b.FrozenRows
         && a.FrozenCols = b.FrozenCols
         && a.ShowGridLines = b.ShowGridLines
@@ -906,6 +906,33 @@ type Spreadsheet(container: Element) =
         | Some wb when index >= 0 && index < List.length wb.SheetOrder ->
             List.item index wb.SheetOrder
         | _ -> sprintf "sheet%d" (index + 1)
+
+    /// The cell map whose last used row `roomUsedRow` is.
+    let mutable roomCells : obj = null
+    let mutable roomUsedRow = -1
+    /// A sheet always has room beyond what is used and beyond the active cell: with fewer than
+    /// 50 rows (10 columns) left there, the grid grows to 100 rows (26 columns) past it - up to
+    /// 1 048 576 rows and 16 384 columns. (A sheet of a file has as many rows as the file uses.)
+    let giveRoom () =
+        let caretRow, caretCol =
+            match model.Selection with
+            | SingleCell (row, col) -> row, col
+            // (Whole rows / columns selected: that is not a caret at the end of the sheet.)
+            | Range (r1, c1, r2, c2) ->
+                (if min r1 r2 <= 0 && max r1 r2 >= model.RowCount - 1 then -1 else max r1 r2),
+                (if min c1 c2 <= 0 && max c1 c2 >= model.ColCount - 1 then -1 else max c1 c2)
+        if not (obj.ReferenceEquals(roomCells, model.Cells)) then
+            roomCells <- box model.Cells
+            roomUsedRow <- if Map.isEmpty model.Cells then -1 else (Map.maxKeyValue model.Cells |> fst).Row
+        let lastRow = max caretRow roomUsedRow
+        let rows = if model.RowCount - (lastRow + 1) < 50 then min 1048576 (lastRow + 1 + 100) else model.RowCount
+        let cols = if model.ColCount - (caretCol + 1) < 10 then min 16384 (caretCol + 1 + 26) else model.ColCount
+        if rows > model.RowCount || cols > model.ColCount then
+            model <- { model with RowCount = max model.RowCount rows; ColCount = max model.ColCount cols }
+    /// ... and a cell that is written to is a cell of the sheet.
+    let giveRoomFor (addr: CellAddress) =
+        if addr.Row >= 0 && addr.Col >= 0 && addr.Row < 1048576 && addr.Col < 16384 && (addr.Row >= model.RowCount || addr.Col >= model.ColCount) then
+            model <- { model with RowCount = max model.RowCount (addr.Row + 1); ColCount = max model.ColCount (addr.Col + 1) }
 
     let currentWorkbookSnapshot () =
         useDateSystem ()
@@ -1787,6 +1814,7 @@ type Spreadsheet(container: Element) =
 
     let commitInput (addr: CellAddress) (text: string) (validate: bool) (undoable: bool) : bool =
         useDateSystem ()
+        giveRoomFor addr
         // (A chart sheet has no cells: nothing typed into it could be saved.)
         if sheetLocked then false else
         let oldCellData = getCell addr model
@@ -1916,6 +1944,8 @@ type Spreadsheet(container: Element) =
             let width = rows |> Array.map Array.length |> Array.max
             // A single value is repeated over the selection, as Excel does.
             let repeat = height = 1 && width = 1 && selectionIsRange ()
+            // (What is pasted at the end of the sheet makes the sheet longer / wider.)
+            if not repeat then giveRoomFor { Row = top + height - 1; Col = left + width - 1 }
             let lastRow = if repeat then bottom else min (model.RowCount - 1) (top + height - 1)
             let lastCol = if repeat then right else min (model.ColCount - 1) (left + width - 1)
             let targets =
@@ -3690,6 +3720,7 @@ type Spreadsheet(container: Element) =
     /// reused for the ones that came in.
     and render () =
         useDateSystem ()
+        if not (isDeferredSheet model) then giveRoom ()
         match contentElement, layers with
         | Some content, Some layer ->
             if not model.ConditionalFormats.IsEmpty then refreshRuleWorkbook()
