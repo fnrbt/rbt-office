@@ -101,6 +101,24 @@ let private mimeEquals (expected: string) (mime: string) =
 module Page =
     let gap = 28.0
 
+    /// Whether a blank page goes before a section: one that starts on an even
+    /// page ("evenPage") or an odd one ("oddPage") when the page that comes
+    /// next would have a number - `number` - of the other kind. (The blank
+    /// page has that number and is the section's: it counts, and it has the
+    /// header and footer the section's rules give a page of its number; the
+    /// first page of the section's text is the one after it.)
+    let sectionStartsAfterBlankPage (startType: string option) (number: int) : bool =
+        match startType with
+        | Some "evenPage" -> number % 2 <> 0
+        | Some "oddPage" -> number % 2 = 0
+        | _ -> false
+
+    /// Whether a section's text is moved on its pages (w:vAlign other than top).
+    let sectionIsVerticallyAligned (vAlign: string option) : bool =
+        match vAlign with
+        | Some "center" | Some "both" | Some "bottom" -> true
+        | _ -> false
+
     type PrintGeometry = {
         Width: float
         Height: float

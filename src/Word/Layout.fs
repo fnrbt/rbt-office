@@ -5702,6 +5702,17 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
         y <- columnTop ()
         previousParagraph <- None
 
+    // A page break in a section with columns: the text goes on in the first column of the next
+    // page (a column break goes on in the next column). Balanced columns stand on one page.
+    let atPageTop () = col = 0 && atColumnTop ()
+    let advancePage () =
+        if n <= 1 || balancedHeight.IsSome then advanceColumn ()
+        else
+            col <- 0
+            page <- page + 1
+            y <- columnTop ()
+            previousParagraph <- None
+
     let currentState () = {
         CheckCol = col; CheckPage = page; CheckY = y; CheckCounters = counters; CheckFootnotes = footnotesByPage
         CheckPrevious = previousParagraph; CheckPreviousLayout = None; CheckObstacles = []; CheckPlacedBoxes = []
@@ -5756,7 +5767,9 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
         let block = blocks.[blockIndex]
         match tryGetParagraph block with
         | Some para0 ->
-            if (para0.Metadata.PageBreakBefore || para0.Metadata.RenderedPageBreakBefore.IsSome) && not (atColumnTop ()) then
+            if para0.Metadata.PageBreakBefore && n >= 2 && balancedHeight.IsNone then
+                if not (atPageTop ()) then advancePage ()
+            elif (para0.Metadata.PageBreakBefore || para0.Metadata.RenderedPageBreakBefore.IsSome) && not (atColumnTop ()) then
                 advanceColumn ()
             let style = forBlockInContext styleContext block
             let mutable keepChecked = false
@@ -5854,7 +5867,10 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                         advanceColumn ()
                     | None ->
                         advanceColumn ()
-            if para0.Metadata.PageBreakAfter && not (atColumnTop ()) then advanceColumn ()
+            if para0.Metadata.PageBreakAfter then
+                if para0.Metadata.ColumnBreakAfter || n <= 1 || balancedHeight.IsSome then
+                    if not (atColumnTop ()) then advanceColumn ()
+                elif not (atPageTop ()) then advancePage ()
         | None ->
             previousParagraph <- None
             let sub = { doc with Blocks = [block] }
@@ -6166,7 +6182,7 @@ let private sectionLayoutsAt (memo: ParagraphLayoutMemo option) (slot: string) (
 /// Each section is flowed from y = 0 at the top of its first page and its
 /// layouts are then moved to where that page stands (see sectionLayoutsAt).
 /// Returns the layouts plus the per-page geometry.
-let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (headerReferences: (string * string) list array) sections =
+let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (headerReferences: (string * string) list array) (numberStarts: int option array) (verticalAligns: string option array) sections =
     let results = ResizeArray<BlockLayout>()
     // Where each block's layouts start in the results (see LayoutSlices).
     let blockStarts = ResizeArray<int>()
@@ -6178,6 +6194,10 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
     let pageSettings = ResizeArray<LayoutSettings>()  // settings owning each page
     pageTops.Add 0.0
     let mutable currentPage = 0
+    // The number the current page has (pages are numbered on, a section that states a start
+    // from that on the first page that is its own - as the page fields count, see Paint).
+    let mutable pageNumber = 1
+    let numberStartOf index = if index < numberStarts.Length then numberStarts.[index] else None
     // Where the next section starts, below the top of the page it starts on.
     let mutable currentYInPage = 0.0
     let mutable started = false
@@ -6211,6 +6231,7 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
             currentPage <- 0
             recordPage 0 secSettings 0.0
             currentYInPage <- WordLayout.Page.contentTop secSettings.PaddingTop 0.0
+            pageNumber <- numberStartOf 0 |> Option.defaultValue 1
             started <- true
         else
             match breakType with
@@ -6221,7 +6242,16 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
                 let newTop = pageTops.[currentPage] + pageHeight prevSettings + pageGap
                 currentPage <- currentPage + 1
                 recordPage currentPage secSettings newTop
+                let number = numberStartOf i |> Option.defaultValue (pageNumber + 1)
+                if WordLayout.Page.sectionStartsAfterBlankPage breakType number then
+                    // A section that starts on an even (odd) page after a page of that kind: a blank
+                    // page of its own goes before its text.
+                    currentPage <- currentPage + 1
+                    recordPage currentPage secSettings (newTop + secStride)
+                    pageNumber <- number + 1
+                else pageNumber <- number
                 currentYInPage <- WordLayout.Page.contentTop secSettings.PaddingTop 0.0
+        let startedOnNewPage = (i = 0) || breakType <> Some "continuous"
         // Page tops within this section are uniform (secStride from the section top).
         let sectionBase = currentPage
         let sectionBaseTop = pageTops.[currentPage]
@@ -6252,6 +6282,51 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
         // (On screen a block stands at the document's left margin plus its layout's x: the layouts of a
         // section with a left margin of its own are moved by the difference.)
         let placed, placedBefore = sectionLayoutsAt memo slot record.PassResults sectionBaseTop (secSettings.PaddingLeft - settings.PaddingLeft)
+        // The pages count on (see pageNumber).
+        if startedOnNewPage then pageNumber <- pageNumber + ownEndPage
+        elif ownEndPage > 0 then pageNumber <- (numberStartOf i |> Option.defaultValue (pageNumber + 1)) + ownEndPage - 1
+        // w:vAlign: on a page of the section that is not full the text stands in the middle
+        // between the margins, at the bottom, or spread from top to bottom (block by block; not
+        // on the section's last page). Pages the section shares with another are left alone,
+        // and so are columns.
+        let placed, placedBefore =
+            let vAlign = if i < verticalAligns.Length then verticalAligns.[i] else None
+            if not (WordLayout.Page.sectionIsVerticallyAligned vAlign) || secColumns.Count >= 2 || placed.Length = 0 then placed, placedBefore
+            else
+                let moved = Array.copy placed
+                // (Where the layouts of a block start: a table's are moved together.)
+                let blockStarts = HashSet<int>(record.PassStarts)
+                let firstPage = if startedOnNewPage then sectionBase else sectionBase + 1
+                let lastPage = if nextContinues then endPage - 1 else endPage
+                let mutable at = 0
+                for p in sectionBase .. endPage do
+                    let pageTop = pageTopOf p
+                    let pageEnd = pageTop + secStride
+                    let first = at
+                    while at < moved.Length && moved.[at].Y < pageEnd do at <- at + 1
+                    if p >= firstPage && p <= lastPage && at > first then
+                        let mutable bottom = System.Double.NegativeInfinity
+                        for index in first .. at - 1 do
+                            bottom <- max bottom (moved.[index].Y + moved.[index].Height)
+                        let footnotes = match Map.tryFind p footnotesByPage with Some notes -> notes | None -> []
+                        let contentBottom = WordLayout.Page.contentBottom (pageHeight secSettings) secSettings.MarginBottom pageTop - footnoteReserveHeight secSettings footnotes
+                        let slack = contentBottom - bottom
+                        if slack > 0.5 then
+                            match vAlign with
+                            | Some "center" -> for index in first .. at - 1 do moved.[index] <- shiftBlockY (slack / 2.0) moved.[index]
+                            | Some "bottom" -> for index in first .. at - 1 do moved.[index] <- shiftBlockY slack moved.[index]
+                            | _ when p < endPage ->
+                                // Spread: every block after the first is moved down by its share.
+                                let groups = ResizeArray<int>()
+                                for index in first .. at - 1 do
+                                    if index = first || blockStarts.Contains index then groups.Add index
+                                if groups.Count >= 2 then
+                                    for group in 1 .. groups.Count - 1 do
+                                        let last = if group + 1 < groups.Count then groups.[group + 1] - 1 else at - 1
+                                        let shift = slack * float group / float (groups.Count - 1)
+                                        for index in groups.[group] .. last do moved.[index] <- shiftBlockY shift moved.[index]
+                            | _ -> ()
+                moved, false
         // (Blocks kept from the last pass, from the start of the document and from its end.
         // A section that was moved has none: its layouts are other objects.)
         let count = record.PassBlocks.Length
@@ -6366,7 +6441,7 @@ let private layoutDocumentPagesWithMemo (memo: ParagraphLayoutMemo option) (limi
     let doc = if limited then { whole with Blocks = List.truncate (max 1 limit) whole.Blocks } else whole
     let sections = if limited then sectionsUpTo limit allSections else allSections
     match allSections with
-    | [ (_, columns, _, _, _) ] ->
+    | [ (_, columns, _, _, _) ] when not (WordLayout.Page.sectionIsVerticallyAligned whole.PageSetup.VerticalAlign) ->
         // Single section: keep the existing path; uniform page list.
         let layouts =
             match columns with
@@ -6426,7 +6501,15 @@ let private layoutDocumentPagesWithMemo (memo: ParagraphLayoutMemo option) (limi
                     | Some para -> para.Metadata.HeaderReferences
                     | None -> [])
             |> List.toArray
-        layoutSections memo settings measureText measureRange doc headerReferences sections
+        // (And of the number its pages start with, and of where its text stands on a page.)
+        let endMetadata =
+            allSections
+            |> List.map (fun (blocks, _, _, _, isFinal) ->
+                if isFinal then None else List.tryLast blocks |> Option.bind tryGetParagraph |> Option.map (fun para -> para.Metadata))
+            |> List.toArray
+        let numberStarts = endMetadata |> Array.mapi (fun index metadata -> match metadata with Some m -> m.SectionPageNumberStart | None -> (if index = endMetadata.Length - 1 then whole.PageSetup.PageNumberStart else None))
+        let verticalAligns = endMetadata |> Array.mapi (fun index metadata -> match metadata with Some m -> m.SectionVerticalAlign | None -> (if index = endMetadata.Length - 1 then whole.PageSetup.VerticalAlign else None))
+        layoutSections memo settings measureText measureRange doc headerReferences numberStarts verticalAligns sections
 
 /// True when the document has more than one section, i.e. its pages need not
 /// all have the body PageSetup's geometry.

@@ -102,6 +102,8 @@ type PageSetupInfo = {
     FooterReferences: (string * string) list
     PageNumberStart: int option
     PageNumberFormat: string option
+    /// w:vAlign: "center", "both", "bottom" (none or "top": not written).
+    VerticalAlign: string option
 }
 
 let private defaultPageSetupInfo = {
@@ -123,6 +125,7 @@ let private defaultPageSetupInfo = {
     HeaderReferences = []
     FooterReferences = []
     PageNumberStart = None
+    VerticalAlign = None
     PageNumberFormat = None
 }
 
@@ -159,6 +162,7 @@ let private optionalPageSetup (value: obj) =
             FooterReferences = referencePairs (value?FooterReferences)
             PageNumberStart = optionalInt (value?PageNumberStart)
             PageNumberFormat = optionalString (value?PageNumberFormat)
+            VerticalAlign = optionalString (value?VerticalAlign)
         }
 
 let private sectionColumnsElement (setup: PageSetupInfo) =
@@ -175,7 +179,7 @@ let private sectionColumnsElement (setup: PageSetupInfo) =
         Some (element "w:cols" attrs columns)
 
 /// Children of w:sectPr in CT_SectPr sequence order: header/footer references,
-/// type, pgSz, pgMar, pgNumType, cols, titlePg.
+/// type, pgSz, pgMar, pgNumType, cols, vAlign, titlePg.
 let private sectionPropertiesChildren (references: string list) (sectionType: string option) (setup: PageSetupInfo option) (pageNumberStart: int option) (pageNumberFormat: string option) =
     [ yield! references
       match sectionType with
@@ -208,6 +212,9 @@ let private sectionPropertiesChildren (references: string list) (sectionType: st
       match setup |> Option.bind sectionColumnsElement with
       | Some columns -> yield columns
       | None -> ()
+      match setup |> Option.bind (fun setup -> setup.VerticalAlign) with
+      | Some value when value = "center" || value = "both" || value = "bottom" -> yield selfClosing "w:vAlign" [("w:val", value)]
+      | _ -> ()
       match setup with
       | Some setup when setup.DifferentFirstPage -> yield selfClosing "w:titlePg" []
       | _ -> () ]
@@ -1105,7 +1112,7 @@ let private paragraphSectionProperties (packageSetup: PageSetupInfo) (para: obj)
             // A sectPr without pgSz/pgMar is US Letter with default margins to Word,
             // so a section with unknown geometry takes the document's.
             |> Option.defaultValue { packageSetup with DifferentFirstPage = false; ColumnCount = 1; ColumnWidths = []; SectionStart = None }
-            |> fun setup -> { setup with HeaderReferences = []; FooterReferences = []; PageNumberStart = None; PageNumberFormat = None }
+            |> fun setup -> { setup with HeaderReferences = []; FooterReferences = []; PageNumberStart = None; PageNumberFormat = None; VerticalAlign = optionalString (para?SectionVerticalAlign) }
         let setup =
             let columns = para?SectionColumns
             if isNullOrUndefined columns then paraSetup
@@ -1528,7 +1535,7 @@ let private generateParagraphWithHyperlinksAndImagesWithPageSetup (packageSetup:
         // (A page break after the paragraph is one the paragraph has: a section that ends with it
         // says nothing of a break - the section after it says how it starts.)
         if boolOrDefault false (para?PageBreakAfter) then
-            runs @ [element "w:r" [] [selfClosing "w:br" [("w:type", "page")]]]
+            runs @ [element "w:r" [] [selfClosing "w:br" [("w:type", (if boolOrDefault false (para?ColumnBreakAfter) then "column" else "page"))]]]
         else runs
 
     // (A paragraph that states nothing of its own has no properties element.)

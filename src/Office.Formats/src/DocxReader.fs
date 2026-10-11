@@ -259,6 +259,10 @@ type ParagraphProperties = {
     SectionGeometry: SectionGeometry option
     SectionPageNumberStart: int option
     SectionPageNumberFormat: string option
+    /// w:vAlign of the section the paragraph ends ("top", "center", "both", "bottom").
+    SectionVerticalAlign: string option
+    /// A break in the paragraph is a column break (w:br w:type="column"), not a page break.
+    ColumnBreak: bool
     RenderedPageBreakBefore: int option
     HeaderReferences: HeaderFooterReference list
     FooterReferences: HeaderFooterReference list
@@ -569,6 +573,8 @@ type PageSetup = {
     FooterReferences: HeaderFooterReference list
     PageNumberStart: int option
     PageNumberFormat: string option
+    /// w:vAlign of the final section.
+    VerticalAlign: string option
 }
 
 type NumberingDefinition = {
@@ -989,6 +995,8 @@ module Docx =
                 SectionGeometry = sectPr |> Option.bind parseSectionGeometry
                 SectionPageNumberStart = sectPr |> Option.bind (fun section -> getPropVal "pgNumType" "start" section) |> Option.bind (fun value -> match System.Int32.TryParse(value) with | true, parsed -> Some parsed | false, _ -> None)
                 SectionPageNumberFormat = sectPr |> Option.bind (fun section -> getPropVal "pgNumType" "fmt" section)
+                SectionVerticalAlign = sectPr |> Option.bind (fun section -> getPropVal "vAlign" "val" section)
+                ColumnBreak = false
                 RenderedPageBreakBefore = None
                 HeaderReferences = sectPr |> Option.map (headerFooterReferences "headerReference") |> Option.defaultValue []
                 FooterReferences = sectPr |> Option.map (headerFooterReferences "footerReference") |> Option.defaultValue []
@@ -1029,6 +1037,8 @@ module Docx =
                 SectionColumns = None
                 SectionGeometry = None
                 SectionPageNumberStart = None; SectionPageNumberFormat = None
+                SectionVerticalAlign = None
+                ColumnBreak = false
                 RenderedPageBreakBefore = None
                 HeaderReferences = []
                 FooterReferences = []
@@ -1858,7 +1868,9 @@ module Docx =
             | None -> None
         let rawProps = paragraphProps pNode
         let props =
-            let withRenderedBreak = { rawProps with RenderedPageBreakBefore = renderedPageBreakBefore }
+            // (A column break goes on in the next column; in one column it is a page break.)
+            let columnBreak = Ns.descendantsNs "br" pNode |> List.exists (fun node -> attr "type" node = Some "column")
+            let withRenderedBreak = { rawProps with RenderedPageBreakBefore = renderedPageBreakBefore; ColumnBreak = columnBreak }
             if hasRenderedPageBreak && rawProps.Style = Some "Heading1" then
                 { withRenderedBreak with PageBreakBefore = Some true; PageBreakBeforeDerived = rawProps.PageBreakBefore <> Some true }
             else
@@ -2374,6 +2386,8 @@ module Styles =
             SectionGeometry = None
             SectionColumns = None
             SectionPageNumberStart = None; SectionPageNumberFormat = None
+            SectionVerticalAlign = None
+            ColumnBreak = false
             RenderedPageBreakBefore = None
             HeaderReferences = []
             FooterReferences = []
@@ -3600,6 +3614,7 @@ let private parsePageSetup evenAndOddHeaders (sectPr: XmlNode option) : PageSetu
                 Docx.getPropVal "pgNumType" "start" section
                 |> Option.bind (fun value -> match System.Int32.TryParse(value) with | true, parsed -> Some parsed | false, _ -> None)
             PageNumberFormat = Docx.getPropVal "pgNumType" "fmt" section
+            VerticalAlign = Docx.getPropVal "vAlign" "val" section
         })
 
 // Extract image as data URL from archive
@@ -5074,6 +5089,8 @@ let private paragraphLayoutProps fontSize defaultMissingSpacingToZero (borderAdv
         "ParagraphBorderBefore" ==> (borderAdvanceSource |> Option.bind (fun borders -> paragraphBorderAdvanceToLayoutPx borders.Top))
         "ParagraphBorderAfter" ==> (borderAdvanceSource |> Option.bind (fun borders -> paragraphBorderAdvanceToLayoutPx borders.Bottom))
         "RenderedPageBreakBefore" ==> props.RenderedPageBreakBefore
+        "ColumnBreakAfter" ==> props.ColumnBreak
+        "SectionVerticalAlign" ==> props.SectionVerticalAlign
         // Geometry and columns of the section this paragraph ends (its own w:sectPr).
         // The native importer has always delivered these; without them a saved
         // multi-section document lost every section's page size but the last.
@@ -5260,6 +5277,8 @@ let private mergeParagraphProperties baseProps props = {
     SectionGeometry = props.SectionGeometry
     SectionPageNumberStart = props.SectionPageNumberStart
     SectionPageNumberFormat = props.SectionPageNumberFormat
+    SectionVerticalAlign = props.SectionVerticalAlign
+    ColumnBreak = props.ColumnBreak
     RenderedPageBreakBefore = props.RenderedPageBreakBefore
     HeaderReferences = props.HeaderReferences
     FooterReferences = props.FooterReferences
@@ -6621,6 +6640,7 @@ let toEditorPageSetup (doc: WordDocument) : obj =
             "FooterReferences" ==> referenceObjects setup.FooterReferences
             "PageNumberStart" ==> setup.PageNumberStart
             "PageNumberFormat" ==> setup.PageNumberFormat
+            "VerticalAlign" ==> setup.VerticalAlign
         ]
 
 /// Footnote / endnote bodies as editor blocks (paragraphs with runs, tables),

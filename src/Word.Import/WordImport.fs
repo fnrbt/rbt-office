@@ -185,6 +185,8 @@ let private mergeParagraphProperties (baseProps: DocxReader.ParagraphProperties)
     SectionGeometry = props.SectionGeometry |> Option.orElse baseProps.SectionGeometry
     SectionPageNumberStart = props.SectionPageNumberStart |> Option.orElse baseProps.SectionPageNumberStart
     SectionPageNumberFormat = props.SectionPageNumberFormat |> Option.orElse baseProps.SectionPageNumberFormat
+    SectionVerticalAlign = props.SectionVerticalAlign |> Option.orElse baseProps.SectionVerticalAlign
+    ColumnBreak = props.ColumnBreak
     RenderedPageBreakBefore = props.RenderedPageBreakBefore |> Option.orElse baseProps.RenderedPageBreakBefore
     HeaderReferences = if props.HeaderReferences.IsEmpty then baseProps.HeaderReferences else props.HeaderReferences
     FooterReferences = if props.FooterReferences.IsEmpty then baseProps.FooterReferences else props.FooterReferences
@@ -660,6 +662,8 @@ let private paraMetadata styleMap resolver useDocumentMarkForPureEmpty defaultMi
             ParagraphBorderAfter = resolvedParaProps.ParagraphBorders |> Option.bind (fun borders -> paragraphBorderAdvanceToLayoutPx borders.Bottom)
             PageBreakBefore = props.PageBreakBefore |> Option.defaultValue false
             PageBreakAfter = para.Runs |> List.exists (fun run -> match run.Content with | DocxReader.PageBreak -> true | _ -> false)
+            ColumnBreakAfter = props.ColumnBreak && (para.Runs |> List.exists (fun run -> match run.Content with | DocxReader.PageBreak -> true | _ -> false))
+            SectionVerticalAlign = props.SectionVerticalAlign
             SectionBreak = props.SectionBreak
             SectionColumns = props.SectionColumns |> Option.map (fun c -> ({ Count = c.Count; Gap = c.Gap; Separator = c.Separator; Widths = c.Widths }: Rbt.Word.Document.SectionColumns))
             SectionPageSetup = props.SectionGeometry |> Option.map (fun g -> ({ PageWidth = g.PageWidth; PageHeight = g.PageHeight; MarginLeft = g.MarginLeft; MarginRight = g.MarginRight; MarginTop = g.MarginTop; MarginBottom = g.MarginBottom; HeaderDistance = g.HeaderDistance; FooterDistance = g.FooterDistance; DifferentFirstPage = g.DifferentFirstPage; EvenAndOddHeaders = false }: Rbt.Word.Document.SectionPageSetup))
@@ -974,6 +978,7 @@ let private pageSetup (doc: DocxReader.WordDocument) =
             FooterReferences = setup.FooterReferences |> List.map (fun ref -> ref.Kind, ref.RelationshipId)
             PageNumberStart = setup.PageNumberStart
             PageNumberFormat = setup.PageNumberFormat
+            VerticalAlign = setup.VerticalAlign
         }
 
 /// A header / footer part with its blocks in order. It used to be built from

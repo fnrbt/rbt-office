@@ -469,6 +469,8 @@ let private metadataFromEditor (item: obj) =
             ParagraphBorderAfter = paragraphBorderAfter
             PageBreakBefore = pageBreakBefore
             PageBreakAfter = pageBreakAfter
+            ColumnBreakAfter = pageBreakAfter && (item?ColumnBreakAfter |> boolOrDefault false)
+            SectionVerticalAlign = optionalString (item?SectionVerticalAlign)
             SectionBreak = sectionBreak
             SectionPageNumberStart = sectionPageNumberStart
             SectionPageNumberFormat = sectionPageNumberFormat
@@ -1281,6 +1283,7 @@ let private pageSetupFromEditor (value: obj) =
         FooterReferences = refsFromEditor (value?FooterReferences)
         PageNumberStart = optionalInt (value?PageNumberStart)
         PageNumberFormat = optionalString (value?PageNumberFormat)
+        VerticalAlign = optionalString (value?VerticalAlign)
     }
 
 /// Import EditorParagraphs from Office.Formats into Word document
@@ -2018,6 +2021,8 @@ let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) 
         "PageBreakBefore" ==> para.Metadata.PageBreakBefore
         "PageBreakBeforeDerived" ==> (para.Metadata.PageBreakBefore && ParagraphExplicit.has ParagraphExplicit.DerivedPageBreakBefore para.Metadata)
         "PageBreakAfter" ==> para.Metadata.PageBreakAfter
+        "ColumnBreakAfter" ==> (para.Metadata.PageBreakAfter && para.Metadata.ColumnBreakAfter)
+        "SectionVerticalAlign" ==> para.Metadata.SectionVerticalAlign
         "SectionBreak" ==> para.Metadata.SectionBreak
         "SectionPageNumberStart" ==> para.Metadata.SectionPageNumberStart
         "SectionPageNumberFormat" ==> para.Metadata.SectionPageNumberFormat
@@ -2327,6 +2332,7 @@ let exportPageSetupToEditor (setup: PageSetup) : obj =
         "FooterReferences" ==> refsToEditor setup.FooterReferences
         "PageNumberStart" ==> setup.PageNumberStart
         "PageNumberFormat" ==> setup.PageNumberFormat
+        "VerticalAlign" ==> setup.VerticalAlign
     ]
 
 /// A note / comment body made of plain text: what the editor has for a note

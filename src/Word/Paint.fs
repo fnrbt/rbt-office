@@ -1984,6 +1984,7 @@ let private buildSectionPageIndex (pages: PageInfo array) (sectionEnds: BlockLay
     let evenOdd = ResizeArray<bool>()
     // (How a section starts is said by its own properties: a continuous one starts on the page the one before it ends on.)
     let continuous = ResizeArray<bool>()
+    let kinds = ResizeArray<string option>()
     let numberStarts = ResizeArray<int option>()
     let numberFormats = ResizeArray<string>()
     let mutable lastId = ""
@@ -1997,6 +1998,7 @@ let private buildSectionPageIndex (pages: PageInfo array) (sectionEnds: BlockLay
             titles.Add (match layout.Metadata.SectionPageSetup with Some setup -> setup.DifferentFirstPage | None -> false)
             evenOdd.Add (match layout.Metadata.SectionPageSetup with Some setup -> setup.EvenAndOddHeaders | None -> false)
             continuous.Add (layout.Metadata.SectionBreak = Some "continuous")
+            kinds.Add layout.Metadata.SectionBreak
             numberStarts.Add layout.Metadata.SectionPageNumberStart
             numberFormats.Add (layout.Metadata.SectionPageNumberFormat |> Option.defaultValue "decimal")
     ends.Add (max 0 (pages.Length - 1))
@@ -2005,9 +2007,26 @@ let private buildSectionPageIndex (pages: PageInfo array) (sectionEnds: BlockLay
     titles.Add pageSetup.DifferentFirstPage
     evenOdd.Add pageSetup.EvenAndOddHeaders
     continuous.Add (pageSetup.SectionStart = Some "continuous")
+    kinds.Add pageSetup.SectionStart
     let starts = Array.zeroCreate<int> ends.Count
+    // (A section that starts on an even / odd page has a blank page of its own before its
+    // first page where the next page is of the other kind: by the pages' numbers, counted as
+    // the layout counts them - see Layout.layoutSections - and as the page fields show them.)
+    let mutable number = (numberStarts.[0] |> Option.defaultValue 1) + ends.[0]
+    let mutable owned = ends.[0]
     for index in 1 .. ends.Count - 1 do
-        starts.[index] <- if continuous.[index] then ends.[index - 1] else ends.[index - 1] + 1
+        if continuous.[index] then
+            starts.[index] <- ends.[index - 1]
+            if ends.[index] > owned then
+                number <- (numberStarts.[index] |> Option.defaultValue (number + 1)) + (ends.[index] - owned - 1)
+                owned <- ends.[index]
+        else
+            let first = numberStarts.[index] |> Option.defaultValue (number + 1)
+            let blank = Rbt.Word.WordLayout.Page.sectionStartsAfterBlankPage kinds.[index] first && ends.[index] > ends.[index - 1] + 1
+            starts.[index] <- ends.[index - 1] + 1 + (if blank then 1 else 0)
+            if ends.[index] > owned then
+                number <- first + (ends.[index] - owned - 1)
+                owned <- ends.[index]
     // (The last section reaches to the last page - the pages of the notes after it too.)
     if ends.Count > 1 && ends.[ends.Count - 1] < ends.[ends.Count - 2] then ends.[ends.Count - 1] <- ends.[ends.Count - 2]
     { SectionEndPages = ends.ToArray(); SectionStartPages = starts; SectionTitlePage = titles.ToArray(); SectionEvenOdd = evenOdd.ToArray()
@@ -2038,7 +2057,8 @@ let private pageFieldValues (index: SectionPageIndex) (pageTotal: int) : Running
             | _ -> number + 1
         previous <- section
         // (A continuous section starts on the page the one before it ends on: that page is the earlier one's.)
-        let first = if section > 0 then max index.SectionStartPages.[section] (index.SectionEndPages.[section - 1] + 1) else 0
+        // (A blank page before a section that starts on an odd / even page is that section's.)
+        let first = if section > 0 then index.SectionEndPages.[section - 1] + 1 else 0
         values.[pageIndex] <-
             { FieldPage = number
               FieldPageFormat = index.SectionNumberFormat.[section]

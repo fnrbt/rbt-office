@@ -140,11 +140,19 @@ type BlockMetadata = {
     ParagraphBorderAfter: float option
     PageBreakBefore: bool
     PageBreakAfter: bool
+    /// The break after the paragraph (PageBreakAfter) is a column break: the
+    /// text goes on in the next column of a section with columns, and on the
+    /// next page where there is one column.
+    ColumnBreakAfter: bool
     SectionBreak: string option
     SectionColumns: SectionColumns option
     SectionPageNumberStart: int option
     /// w:pgNumType w:fmt of the section the paragraph ends ("decimal", "lowerRoman", ...).
     SectionPageNumberFormat: string option
+    /// w:vAlign of the section the paragraph ends: how the text of a page of
+    /// it that is not full stands between the margins ("top", "center",
+    /// "both" - spread from top to bottom -, "bottom").
+    SectionVerticalAlign: string option
     RenderedPageBreakBefore: int option
     SectionPageSetup: SectionPageSetup option
     HeaderReferences: (string * string) list
@@ -237,6 +245,8 @@ let defaultMetadata = {
     ParagraphBorderAfter = None
     PageBreakBefore = false
     PageBreakAfter = false
+    ColumnBreakAfter = false
+    SectionVerticalAlign = None
     SectionBreak = None
     SectionColumns = None
     SectionPageNumberStart = None
@@ -593,6 +603,8 @@ type PageSetup = {
     PageNumberStart: int option
     /// w:pgNumType w:fmt of the final section.
     PageNumberFormat: string option
+    /// w:vAlign of the final section (see BlockMetadata.SectionVerticalAlign).
+    VerticalAlign: string option
 }
 
 type NamedStyle = {
@@ -705,6 +717,7 @@ let defaultPageSetup = {
     FooterReferences = []
     PageNumberStart = None
     PageNumberFormat = None
+    VerticalAlign = None
 }
 
 /// A paragraph that ends a section: its w:sectPr describes the section that
@@ -2445,7 +2458,8 @@ let private cellLike (span: int option) (cell: TableCell) : TableCell =
               Buffer = TextBuffer.empty
               Metadata =
                 { first.Metadata with
-                    PageBreakBefore = false; PageBreakAfter = false; RenderedPageBreakBefore = None
+                    PageBreakBefore = false; PageBreakAfter = false; ColumnBreakAfter = false; RenderedPageBreakBefore = None
+                    SectionVerticalAlign = None
                     SectionBreak = None; SectionColumns = None; SectionPageSetup = None; SectionPageNumberStart = None; SectionPageNumberFormat = None
                     HeaderReferences = []; FooterReferences = []
                     ContentControlId = None; ContentControlTag = None; ContentControlAlias = None } }
@@ -4632,23 +4646,99 @@ let insertHyperlink (target: string) (text: string) doc =
             { linked with Selection = inserted.Selection }
         | _ -> inserted
 
-let setCurrentSectionBreak sectionBreak doc =
+/// The top-level paragraph the caret is in or, for a caret in a table or a
+/// text box, none (a section ends with a paragraph of the body).
+let private caretBodyParagraphIndex (doc: Document) : int option =
     match doc.Selection with
-    | None -> doc
+    | None -> None
     | Some sel ->
-        match findBlock doc sel.Focus.BlockId with
-        | None -> doc
-        | Some block ->
-            let para = getParagraph block
-            let newMetadata = { para.Metadata with SectionBreak = sectionBreak }
-            let newPara = { para with Metadata = newMetadata }
-            let newBlock =
-                match block with
-                | Paragraph _ -> Paragraph newPara
-                | Heading (level, _) -> Heading (level, newPara)
-                | Table table -> Table table
-                | TextBox textBox -> TextBox textBox
-            replaceBlock doc para.Id newBlock
+        match locateBlock doc sel.Focus.BlockId with
+        | ValueSome (struct (index, (Paragraph _ | Heading _))) -> Some index
+        | _ -> None
+
+/// A section break at the caret. `sectionBreak` is how the section that
+/// STARTS at the break - the text after the caret's paragraph - starts:
+/// "continuous" (on the same page), "nextPage", "evenPage", "oddPage"; None
+/// takes the break away.
+///
+/// In the file a section's properties stand at its end (the w:sectPr of its
+/// last paragraph, the body's for the last section) and the w:type among them
+/// says how that section starts. So the caret's paragraph becomes the end of a
+/// section that starts as the section it is cut from did (and has that
+/// section's properties: page, columns, headers), and the type goes to the
+/// properties of the section after it - on the next paragraph that ends a
+/// section, or the document's own for the last. On a paragraph that ends a
+/// section already only the type of the section after it changes. Taking the
+/// break away leaves one section with the properties of the one after the
+/// break, which starts as the one before the break did.
+let setCurrentSectionBreak (sectionBreak: string option) (doc: Document) : Document =
+    match caretBodyParagraphIndex doc with
+    | None -> doc
+    | Some caretIndex ->
+        let blocks = List.toArray doc.Blocks
+        let paragraphAt index =
+            match blocks.[index] with
+            | Paragraph para
+            | Heading (_, para) -> Some para
+            | _ -> None
+        let withMetadata index (change: BlockMetadata -> BlockMetadata) =
+            match blocks.[index] with
+            | Paragraph para -> blocks.[index] <- Paragraph { para with Metadata = change para.Metadata }
+            | Heading (level, para) -> blocks.[index] <- Heading (level, { para with Metadata = change para.Metadata })
+            | _ -> ()
+        // The paragraph that ends the section after the caret's paragraph (none: the last section).
+        let mutable following = -1
+        let mutable probe = caretIndex + 1
+        while following < 0 && probe < blocks.Length do
+            match paragraphAt probe with
+            | Some para when para.Metadata.SectionBreak.IsSome -> following <- probe
+            | _ -> ()
+            probe <- probe + 1
+        let followingStart =
+            if following >= 0 then (paragraphAt following |> Option.bind (fun para -> para.Metadata.SectionBreak))
+            else doc.PageSetup.SectionStart
+        let setFollowingStart (start: string option) (pageSetup: PageSetup) : PageSetup =
+            if following >= 0 then
+                // (A paragraph that ends a section says a type: the section's properties are known by it.)
+                withMetadata following (fun metadata -> { metadata with SectionBreak = Some (start |> Option.defaultValue "nextPage") })
+                pageSetup
+            else { pageSetup with SectionStart = start }
+        let caret = (paragraphAt caretIndex).Value
+        match sectionBreak, caret.Metadata.SectionBreak with
+        | None, None -> doc
+        | None, Some own ->
+            // The break is taken away: the text before it joins the section after it, which starts as its own did.
+            withMetadata caretIndex (fun metadata ->
+                { metadata with
+                    SectionBreak = None; SectionColumns = None; SectionPageSetup = None; SectionPageNumberStart = None
+                    SectionPageNumberFormat = None; SectionVerticalAlign = None; HeaderReferences = []; FooterReferences = [] })
+            let pageSetup = setFollowingStart (Some own) doc.PageSetup
+            { doc with Blocks = List.ofArray blocks; PageSetup = pageSetup }
+        | Some kind, Some _ ->
+            let pageSetup = setFollowingStart (Some kind) doc.PageSetup
+            { doc with Blocks = List.ofArray blocks; PageSetup = pageSetup }
+        | Some kind, None ->
+            // The section is cut in two: the first part has its properties and starts as it did.
+            let columns, geometry, numberStart, numberFormat, vAlign, headers, footers =
+                if following >= 0 then
+                    let metadata = (paragraphAt following).Value.Metadata
+                    metadata.SectionColumns, metadata.SectionPageSetup, metadata.SectionPageNumberStart, metadata.SectionPageNumberFormat, metadata.SectionVerticalAlign, metadata.HeaderReferences, metadata.FooterReferences
+                else
+                    let setup = doc.PageSetup
+                    let geometry : SectionPageSetup =
+                        { PageWidth = setup.PageWidth; PageHeight = setup.PageHeight; MarginLeft = setup.MarginLeft; MarginRight = setup.MarginRight
+                          MarginTop = setup.MarginTop; MarginBottom = setup.MarginBottom; HeaderDistance = setup.HeaderDistance; FooterDistance = setup.FooterDistance
+                          DifferentFirstPage = setup.DifferentFirstPage; EvenAndOddHeaders = setup.EvenAndOddHeaders }
+                    setup.Columns, Some geometry, setup.PageNumberStart, setup.PageNumberFormat, setup.VerticalAlign, setup.HeaderReferences, setup.FooterReferences
+            withMetadata caretIndex (fun metadata ->
+                { metadata with
+                    SectionBreak = Some (followingStart |> Option.defaultValue "nextPage")
+                    SectionColumns = columns; SectionPageSetup = geometry; SectionPageNumberStart = numberStart
+                    SectionPageNumberFormat = numberFormat; SectionVerticalAlign = vAlign; HeaderReferences = headers; FooterReferences = footers })
+            // (A page number the section started with is the first part's: the second goes on counting.)
+            if following >= 0 then withMetadata following (fun metadata -> { metadata with SectionPageNumberStart = None })
+            let pageSetup = setFollowingStart (Some kind) { doc.PageSetup with PageNumberStart = (if following >= 0 then doc.PageSetup.PageNumberStart else None) }
+            { doc with Blocks = List.ofArray blocks; PageSetup = pageSetup }
 
 /// Set the header / footer references of the section the cursor is in: on the
 /// paragraph that ends that section, or on the page setup for the final

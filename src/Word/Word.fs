@@ -3171,10 +3171,21 @@ module API =
             |> Doc.setFontSize fontSize
         commitDocumentUpdate editor newDoc
 
+    /// A section break after the caret's paragraph (a paragraph of the body).
+    /// `kind` is how the section that starts at the break - the text after
+    /// the paragraph - starts: "continuous" (on the same page), "nextPage",
+    /// "evenPage" / "oddPage" (on the next page with an even / odd number: a
+    /// blank page goes before it where the next page is not one), or "none"
+    /// to take the break away. The text before the break keeps the page,
+    /// columns, headers and footers of the section it was in, and starts as
+    /// that section did. Saved as Word does: the w:type is in the properties
+    /// of the section after the break (see Document.setCurrentSectionBreak).
     let setSectionBreak (editor: Editor) (kind: string) =
         let sectionBreak =
             match kind with
             | "continuous" -> Some "continuous"
+            | "evenPage" -> Some "evenPage"
+            | "oddPage" -> Some "oddPage"
             | "none" -> None
             | _ -> Some "nextPage"
         let newDoc = Doc.setCurrentSectionBreak sectionBreak editor.Doc
@@ -3229,46 +3240,32 @@ module API =
         | _ -> loadDocument editor (Docx.importFromEditorPackage package)
 
     let setPageSetup (editor: Editor) (pageWidth: float) (pageHeight: float) (marginLeft: float) (marginRight: float) (marginTop: float) (marginBottom: float) (headerDistance: float) (footerDistance: float) =
-        let setup: Doc.PageSetup = {
-            PageWidth = max 120.0 pageWidth
-            PageHeight = max 120.0 pageHeight
-            MarginLeft = max 0.0 marginLeft
-            MarginRight = max 0.0 marginRight
-            MarginTop = max 0.0 marginTop
-            MarginBottom = max 0.0 marginBottom
-            HeaderDistance = max 0.0 headerDistance
-            FooterDistance = max 0.0 footerDistance
-            DifferentFirstPage = editor.Doc.PageSetup.DifferentFirstPage
-            EvenAndOddHeaders = editor.Doc.PageSetup.EvenAndOddHeaders
-            Columns = editor.Doc.PageSetup.Columns
-            SectionStart = editor.Doc.PageSetup.SectionStart
-            HeaderReferences = editor.Doc.PageSetup.HeaderReferences
-            FooterReferences = editor.Doc.PageSetup.FooterReferences
-            PageNumberStart = editor.Doc.PageSetup.PageNumberStart
-            PageNumberFormat = editor.Doc.PageSetup.PageNumberFormat
-        }
+        let setup: Doc.PageSetup =
+            { editor.Doc.PageSetup with
+                PageWidth = max 120.0 pageWidth
+                PageHeight = max 120.0 pageHeight
+                MarginLeft = max 0.0 marginLeft
+                MarginRight = max 0.0 marginRight
+                MarginTop = max 0.0 marginTop
+                MarginBottom = max 0.0 marginBottom
+                HeaderDistance = max 0.0 headerDistance
+                FooterDistance = max 0.0 footerDistance }
         let newDoc = Doc.setPageSetup setup editor.Doc
         commitDocumentUpdate editor newDoc
 
     let setPageSetupOptions (editor: Editor) (pageWidth: float) (pageHeight: float) (marginLeft: float) (marginRight: float) (marginTop: float) (marginBottom: float) (headerDistance: float) (footerDistance: float) (differentFirstPage: bool) (evenAndOddHeaders: bool) =
-        let setup: Doc.PageSetup = {
-            PageWidth = max 120.0 pageWidth
-            PageHeight = max 120.0 pageHeight
-            MarginLeft = max 0.0 marginLeft
-            MarginRight = max 0.0 marginRight
-            MarginTop = max 0.0 marginTop
-            MarginBottom = max 0.0 marginBottom
-            HeaderDistance = max 0.0 headerDistance
-            FooterDistance = max 0.0 footerDistance
-            DifferentFirstPage = differentFirstPage
-            EvenAndOddHeaders = evenAndOddHeaders
-            Columns = editor.Doc.PageSetup.Columns
-            SectionStart = editor.Doc.PageSetup.SectionStart
-            HeaderReferences = editor.Doc.PageSetup.HeaderReferences
-            FooterReferences = editor.Doc.PageSetup.FooterReferences
-            PageNumberStart = editor.Doc.PageSetup.PageNumberStart
-            PageNumberFormat = editor.Doc.PageSetup.PageNumberFormat
-        }
+        let setup: Doc.PageSetup =
+            { editor.Doc.PageSetup with
+                PageWidth = max 120.0 pageWidth
+                PageHeight = max 120.0 pageHeight
+                MarginLeft = max 0.0 marginLeft
+                MarginRight = max 0.0 marginRight
+                MarginTop = max 0.0 marginTop
+                MarginBottom = max 0.0 marginBottom
+                HeaderDistance = max 0.0 headerDistance
+                FooterDistance = max 0.0 footerDistance
+                DifferentFirstPage = differentFirstPage
+                EvenAndOddHeaders = evenAndOddHeaders }
         let newDoc = Doc.setPageSetup setup editor.Doc
         commitDocumentUpdate editor newDoc
 
