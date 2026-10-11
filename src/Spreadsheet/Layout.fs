@@ -84,13 +84,38 @@ let defaultViewport width height = {
     Measurer = None
 }
 
-let private lowerBound (values: float array) (target: float) =
-    let mutable lo = 0
-    let mutable hi = values.Length
-    while lo < hi do
-        let mid = lo + ((hi - lo) / 2)
-        if values.[mid] < target then lo <- mid + 1 else hi <- mid
-    lo
+/// The offsets of the rows (or columns) of a sheet: `offsets.[i]` is where
+/// row `i` starts - the sum of the sizes of the rows before it -, and
+/// `offsets.[count]` where the sheet ends. Only the rows up to the last one
+/// with a size of its own (or hidden by a filter) have an entry in memory;
+/// every row past it has the default size, and its offset is worked out. A
+/// sheet of 1 048 576 rows whose caret is in the last one costs what its
+/// sized rows cost.
+[<Sealed>]
+type AxisOffsets(known: float array, count: int, size: float) =
+    let last = known.Length - 1
+    let lastOffset = known.[last]
+    /// The offset of row `index` (0 .. count).
+    member _.Item with get (index: int) : float = if index <= last then known.[index] else lastOffset + float (index - last) * size
+    /// One more than the number of rows, as the array this stands for had it.
+    member _.Length = count + 1
+    member _.Count = count
+    /// The offsets that are held in memory (the first `Known.Length - 1` rows).
+    member _.Known = known
+    /// The size of every row past the known ones.
+    member _.DefaultSize = size
+    member this.GetSlice(first: int option, last: int option) : float array =
+        let first = defaultArg first 0
+        let last = defaultArg last count
+        Array.init (max 0 (last - first + 1)) (fun i -> this.[first + i])
+    /// The first index in 0 .. count whose offset is not below `target`.
+    member this.LowerBound(target: float) : int =
+        let mutable lo = 0
+        let mutable hi = count + 1
+        while lo < hi do
+            let mid = lo + ((hi - lo) / 2)
+            if this.[mid] < target then lo <- mid + 1 else hi <- mid
+        lo
 
 let private buildPrefixSizeCache count sizeAt =
     let prefix = Array.zeroCreate<float> (count + 1)
@@ -100,7 +125,7 @@ let private buildPrefixSizeCache count sizeAt =
 
 /// The index whose span holds `offset` in a prefix-sum array (see
 /// `SheetMetrics`), clamped to the first / last index.
-let indexAtOffset (prefix: float array) count offset =
+let indexAtOffset (prefix: AxisOffsets) count offset =
     let target = max 0.0 offset
     let mutable lo = 0
     let mutable hi = count
@@ -109,8 +134,8 @@ let indexAtOffset (prefix: float array) count offset =
         if prefix.[mid + 1] <= target then lo <- mid + 1 else hi <- mid
     min lo (max 0 (count - 1))
 
-let private endIndexAtOffset (prefix: float array) count offset =
-    min count (lowerBound prefix (max 0.0 offset))
+let private endIndexAtOffset (prefix: AxisOffsets) count offset =
+    min count (prefix.LowerBound (max 0.0 offset))
 
 let prefixSizeUncached sizeAt index =
     let mutable total = 0.0
@@ -124,8 +149,8 @@ let prefixSizeUncached sizeAt index =
 /// rows / columns (the far edge). Offsets are in sheet pixels, from the
 /// top-left corner of A1.
 type SheetMetrics = {
-    RowPrefix: float array
-    ColPrefix: float array
+    RowPrefix: AxisOffsets
+    ColPrefix: AxisOffsets
     RowCount: int
     ColCount: int
     /// What the metrics were computed from: the same maps (by identity) and
@@ -149,27 +174,31 @@ let private metricsMatch (model: SpreadsheetModel) (metrics: SheetMetrics) =
     && obj.ReferenceEquals(metrics.FilterHiddenRows, model.FilterHiddenRows)
 
 let private computeMetrics (model: SpreadsheetModel) : SheetMetrics =
-    // Defaults filled in first, then the rows / columns that have a size of
-    // their own: one pass over the maps instead of a lookup per index.
-    let rowSizes = Array.create (max 0 model.RowCount) 25.0
-    for KeyValue(row, height) in model.RowHeights do
-        if row >= 0 && row < rowSizes.Length then rowSizes.[row] <- max 0.0 height
+    // The rows / columns that have a size of their own, and nothing for the
+    // ones past the last of them: one pass over the maps, no entry per row
+    // of the sheet.
+    let rowCount = max 0 model.RowCount
+    let colCount = max 0 model.ColCount
     let filtered = not (Map.isEmpty model.Filters)
-    if filtered then
-        for row in model.FilterHiddenRows do
-            if row >= 0 && row < rowSizes.Length then rowSizes.[row] <- 0.0
-    let colSizes = Array.create (max 0 model.ColCount) 100.0
-    for KeyValue(col, width) in model.ColumnWidths do
-        if col >= 0 && col < colSizes.Length then colSizes.[col] <- max 0.0 width
-    let prefixOf (sizes: float array) =
-        let prefix = Array.zeroCreate<float> (sizes.Length + 1)
-        for i = 0 to sizes.Length - 1 do
-            prefix.[i + 1] <- prefix.[i] + sizes.[i]
-        prefix
-    { RowPrefix = prefixOf rowSizes
-      ColPrefix = prefixOf colSizes
-      RowCount = max 0 model.RowCount
-      ColCount = max 0 model.ColCount
+    let offsetsOf (count: int) (defaultSize: float) (sizes: Map<int, float>) (hidden: int array) =
+        let mutable known = 0
+        for KeyValue(index, _) in sizes do
+            if index >= 0 && index < count && index + 1 > known then known <- index + 1
+        for index in hidden do
+            if index >= 0 && index < count && index + 1 > known then known <- index + 1
+        let own = Array.create known defaultSize
+        for KeyValue(index, size) in sizes do
+            if index >= 0 && index < known then own.[index] <- max 0.0 size
+        for index in hidden do
+            if index >= 0 && index < known then own.[index] <- 0.0
+        let prefix = Array.zeroCreate<float> (known + 1)
+        for i = 0 to known - 1 do
+            prefix.[i + 1] <- prefix.[i] + own.[i]
+        AxisOffsets(prefix, count, defaultSize)
+    { RowPrefix = offsetsOf rowCount 25.0 model.RowHeights (if filtered then model.FilterHiddenRows else [||])
+      ColPrefix = offsetsOf colCount 100.0 model.ColumnWidths [||]
+      RowCount = rowCount
+      ColCount = colCount
       RowHeights = model.RowHeights
       ColumnWidths = model.ColumnWidths
       FilterHiddenRows = model.FilterHiddenRows
@@ -209,13 +238,13 @@ type SharedEdge =
     /// The one border of the edge (see `Model.resolveSharedBorder`).
     | EdgeBorder of BorderStyle
 
-let private visibleBefore (prefix: float array) (index: int) =
+let private visibleBefore (prefix: AxisOffsets) (index: int) =
     let mutable at = index - 1
     while at >= 0 && prefix.[at + 1] <= prefix.[at] do
         at <- at - 1
     at
 
-let private visibleAfter (prefix: float array) (count: int) (index: int) =
+let private visibleAfter (prefix: AxisOffsets) (count: int) (index: int) =
     let mutable at = index + 1
     while at < count && prefix.[at + 1] <= prefix.[at] do
         at <- at + 1

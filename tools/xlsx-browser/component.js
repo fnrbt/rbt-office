@@ -978,7 +978,7 @@ checks['grid-selection-and-keyboard'] = async () => {
         press(host, 'ArrowDown', { ctrlKey: true });
         check('again: the next cell with data', active(grid), [20, 1]);
         press(host, 'ArrowDown', { ctrlKey: true }); press(host, 'ArrowDown', { ctrlKey: true });
-        check('then the end of that run, then the last row', active(grid), [399, 1]);
+        check('then the end of that run, then the last row a sheet can have', active(grid), [1048575, 1]);
         press(host, 'ArrowUp', { ctrlKey: true });
         check('Ctrl+Up comes back to the data', active(grid), [21, 1]);
         grid.SelectCell(2, 1);
@@ -987,7 +987,7 @@ checks['grid-selection-and-keyboard'] = async () => {
         press(host, 'ArrowRight', { ctrlKey: true });
         check('Ctrl+Right from the active cell', active(grid), [2, 3]);
         press(host, 'ArrowRight', { ctrlKey: true });
-        check('with nothing further: the last column', active(grid), [2, 29]);
+        check('with nothing further: the last column a sheet can have', active(grid), [2, 16383]);
 
         // Home / End / Ctrl+Home / Ctrl+End / PageDown / PageUp.
         grid.SelectCell(4, 2);

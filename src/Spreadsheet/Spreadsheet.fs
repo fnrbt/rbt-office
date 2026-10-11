@@ -908,25 +908,23 @@ type Spreadsheet(container: Element) =
             List.item index wb.SheetOrder
         | _ -> sprintf "sheet%d" (index + 1)
 
+    /// What the grid remembers the room of the sheet on display by.
+    let sheetKeyForRoom () = sheetIdForIndex activeSheetIndex
     /// The cell map whose last used row `roomUsedRow` is.
     let mutable roomCells : obj = null
     let mutable roomUsedRow = -1
-    /// The view was scrolled to the last rows / the last columns of the sheet (`handleScroll`):
-    /// the next `giveRoom` adds rows / columns there.
-    let mutable scrolledToLastRows = false
-    let mutable scrolledToLastCols = false
+    /// The size a sheet had before the caret went past what it uses, by sheet id: the grid
+    /// gives the rows and columns back once neither the caret, a cell nor the view is there.
+    let roomBefore = System.Collections.Generic.Dictionary<string, int * int>()
     /// A sheet always has room beyond what is used and beyond the active cell: with fewer than
     /// 50 rows (10 columns) left there, the grid grows to 100 rows (26 columns) past it - up to
     /// 1 048 576 rows and 16 384 columns. (A sheet of a file has as many rows as the file uses.)
-    /// A view scrolled to the end of the sheet gets another 100 rows (26 columns) to scroll into,
-    /// as often as it is scrolled there. Nothing is done - and nothing costs - in any other frame.
+    /// As in Excel that is all there is to scroll through: scrolling to the end adds nothing,
+    /// the caret (or the selection) going further does - Ctrl+Down in an empty column goes to
+    /// row 1 048 576 -, and when it comes back the sheet is as long as it was (or as its cells,
+    /// or the rows in view, need it). Rows have no cost of their own (see
+    /// `SpreadsheetLayout.AxisOffsets`). Nothing is done in a frame that changes none of this.
     let giveRoom () =
-        if scrolledToLastRows || scrolledToLastCols then
-            let rows = if scrolledToLastRows then min 1048576 (model.RowCount + 100) else model.RowCount
-            let cols = if scrolledToLastCols then min 16384 (model.ColCount + 26) else model.ColCount
-            scrolledToLastRows <- false
-            scrolledToLastCols <- false
-            if rows > model.RowCount || cols > model.ColCount then model <- { model with RowCount = rows; ColCount = cols }
         let caretRow, caretCol =
             match model.Selection with
             | SingleCell (row, col) -> row, col
@@ -941,7 +939,26 @@ type Spreadsheet(container: Element) =
         let rows = if model.RowCount - (lastRow + 1) < 50 then min 1048576 (lastRow + 1 + 100) else model.RowCount
         let cols = if model.ColCount - (caretCol + 1) < 10 then min 16384 (caretCol + 1 + 26) else model.ColCount
         if rows > model.RowCount || cols > model.ColCount then
+            if (rows > model.RowCount && caretRow > roomUsedRow) || cols > model.ColCount then
+                let id = sheetKeyForRoom ()
+                if not (roomBefore.ContainsKey id) then roomBefore.[id] <- (model.RowCount, model.ColCount)
             model <- { model with RowCount = max model.RowCount rows; ColCount = max model.ColCount cols }
+        elif roomBefore.Count > 0 then
+            let id = sheetKeyForRoom ()
+            match roomBefore.TryGetValue id with
+            | true, (rowsBefore, colsBefore) ->
+                // What is in view stays (the scroll position is not pulled back).
+                let metrics = SpreadsheetLayout.metricsOf model
+                let viewRow = SpreadsheetLayout.indexAtOffset metrics.RowPrefix metrics.RowCount (scrollTop + containerHeight - headerHeight)
+                let viewCol = SpreadsheetLayout.indexAtOffset metrics.ColPrefix metrics.ColCount (scrollLeft + containerWidth - rowHeaderWidth)
+                let usedCol = if model.ColCount > colsBefore then (match usedBounds model with Some (_, col) -> col | None -> -1) else -1
+                let lastCol = max caretCol usedCol
+                let needRows = max (if rowsBefore - (lastRow + 1) < 50 then lastRow + 1 + 100 else rowsBefore) (viewRow + 2) |> min 1048576
+                let needCols = max (if colsBefore - (lastCol + 1) < 10 then lastCol + 1 + 26 else colsBefore) (viewCol + 2) |> min 16384
+                if needRows < model.RowCount || needCols < model.ColCount then
+                    model <- { model with RowCount = min model.RowCount needRows; ColCount = min model.ColCount needCols }
+                if model.RowCount <= rowsBefore && model.ColCount <= colsBefore then roomBefore.Remove id |> ignore
+            | _ -> ()
     /// ... and a cell that is written to is a cell of the sheet.
     let giveRoomFor (addr: CellAddress) =
         if addr.Row >= 0 && addr.Col >= 0 && addr.Row < 1048576 && addr.Col < 16384 && (addr.Row >= model.RowCount || addr.Col >= model.ColCount) then
@@ -1498,6 +1515,19 @@ type Spreadsheet(container: Element) =
 
     // Drag selection state
     let mutable isDragging = false
+    /// Where the pointer of a drag (of the selection, of the fill handle) was last seen, and
+    /// the timer that scrolls the sheet while it is held at an edge of the grid (see Mount).
+    let mutable dragPointer: obj option = None
+    let mutable dragScrollTimer: int option = None
+    let startDragScrollHook : (unit -> unit) ref = ref ignore
+    let startDragScroll () = startDragScrollHook.Value ()
+    let stopDragScroll () =
+        match dragScrollTimer with
+        | Some timer ->
+            JS.clearInterval timer
+            dragScrollTimer <- None
+        | None -> ()
+        dragPointer <- None
     let mutable dragStartCell: CellAddress option = None
 
     // Resize state
@@ -1640,6 +1670,8 @@ type Spreadsheet(container: Element) =
         match gridContainer with
         | None -> ()
         | Some grid ->
+            // (A cell far past the end - Ctrl+Down in an empty column - is a row of the sheet first.)
+            if not (isDeferredSheet model) then giveRoom ()
             syncExtent()
             let metrics = SpreadsheetLayout.metricsOf model
             if metrics.RowCount > 0 && metrics.ColCount > 0 then
@@ -1728,7 +1760,11 @@ type Spreadsheet(container: Element) =
                 | _ -> ()
         let occupied = System.Collections.Generic.HashSet<int>(filled)
         let step = if deltaRow <> 0 then sign deltaRow else sign deltaCol
-        let limit = (if deltaRow <> 0 then model.RowCount else model.ColCount) - 1
+        // (With nothing ahead: the last row / column a sheet can have - row 1 048 576, column
+        // XFD -, as in Excel; a viewer's sheet ends where it ends.)
+        let limit =
+            if readOnly then (if deltaRow <> 0 then model.RowCount else model.ColCount) - 1
+            elif deltaRow <> 0 then 1048575 else 16383
         let start = if deltaRow <> 0 then from.Row else from.Col
         let target =
             if occupied.Contains start && occupied.Contains (start + step) then
@@ -3908,7 +3944,7 @@ type Spreadsheet(container: Element) =
             // Headers: the columns and rows in view (frozen ones always).
             // (Frozen ones sit in the wrapper that is pinned on both axes.)
             let placeHeaders (nodes: System.Collections.Generic.Dictionary<int, HeaderNode>) (free: ResizeArray<HeaderNode>) (parent: Element)
-                             (create: unit -> HeaderNode) (draw: HeaderNode -> int -> unit) (frozen: int) (first: int) (last: int) (prefix: float array) =
+                             (create: unit -> HeaderNode) (draw: HeaderNode -> int -> unit) (frozen: int) (first: int) (last: int) (prefix: SpreadsheetLayout.AxisOffsets) =
                 let place (index: int) =
                     if prefix.[index + 1] > prefix.[index] then
                         let node =
@@ -5616,14 +5652,8 @@ type Spreadsheet(container: Element) =
     /// Handle scroll
     let handleScroll (e: obj) =
         let target = getCurrentTarget e
-        let movedDown, movedRight = gridScrollTop target > scrollTop, gridScrollLeft target > scrollLeft
         scrollTop <- gridScrollTop target
         scrollLeft <- gridScrollLeft target
-        // Scrolled down to the last rows (right to the last columns) of a sheet that can be edited:
-        // there are more to scroll into (two comparisons a scroll event; the sheet grows in `giveRoom`).
-        if not readOnly then
-            if movedDown && getScrollTop target + getClientHeight target >= getScrollHeight target - 2.0 then scrolledToLastRows <- true
-            if movedRight && getScrollLeft target + getClientWidth target >= getScrollWidth target - 2.0 then scrolledToLastCols <- true
         if not scrollRenderScheduled then
             scrollRenderScheduled <- true
             requestAnimationFrame (fun () ->
@@ -6093,6 +6123,70 @@ type Spreadsheet(container: Element) =
         let doc = getDocument()
 
         // Mouse move for dragging and resizing (throttled with requestAnimationFrame)
+        // A drag of the selection or of the fill handle goes where the pointer is ...
+        let dragTo (e: obj) =
+            if isFilling then
+                match fillSource, hitCellNear e with
+                | Some source, Some hitAddr ->
+                    let target = SpreadsheetInput.fillTowards source hitAddr.Row hitAddr.Col
+                    if target <> fillTarget then
+                        fillTarget <- target
+                        // Preview: the selection grows over the cells
+                        // the release will fill.
+                        let top, left, bottom, right = source
+                        let preview =
+                            match target with
+                            | Some (SpreadsheetInput.FillDown, n) -> Range (top, left, bottom + n, right)
+                            | Some (SpreadsheetInput.FillUp, n) -> Range (top - n, left, bottom, right)
+                            | Some (SpreadsheetInput.FillRight, n) -> Range (top, left, bottom, right + n)
+                            | Some (SpreadsheetInput.FillLeft, n) -> Range (top, left - n, bottom, right)
+                            | None -> if top = bottom && left = right then SingleCell (top, left) else Range (top, left, bottom, right)
+                        model <- { model with Selection = preview }
+                        render()
+                | _ -> ()
+            elif isDragging then
+                match dragStartCell, hitCellNear e with
+                | Some start, Some hitAddr ->
+                    // The cell the drag started at stays the active cell.
+                    let before = model.Selection
+                    selectFromTo start hitAddr
+                    if model.Selection <> before then
+                        revealCell hitAddr.Row hitAddr.Col
+                        render()
+                | _ -> ()
+        // ... and while the pointer is held at an edge of the grid, or past it, the sheet scrolls
+        // under it - faster the further out the pointer is - and the drag goes on to the rows and
+        // columns that come into view (the sheet grows with the selection, see `giveRoom`): a
+        // fill or a selection past what the grid shows needs no second drag.
+        let dragScrollStep () =
+            match gridContainer, dragPointer with
+            | Some grid, Some e when isFilling || isDragging ->
+                let width = gridClientWidth grid
+                let height = gridClientHeight grid
+                let x = pointerX e grid
+                let y = pointerY e grid
+                let metrics = SpreadsheetLayout.metricsOf model
+                let frozenW = metrics.ColPrefix.[max 0 (min metrics.ColCount model.FrozenCols)]
+                let frozenH = metrics.RowPrefix.[max 0 (min metrics.RowCount model.FrozenRows)]
+                let edge = 4.0
+                let speed (past: float) = min 600.0 (25.0 + max 0.0 past * 1.5)
+                let dy =
+                    if y >= height - edge then speed (y - height)
+                    elif y <= headerHeight + frozenH + edge && gridScrollTop grid > 0.0 then - speed (headerHeight + frozenH - y)
+                    else 0.0
+                let dx =
+                    if x >= width - edge then speed (x - width) * 2.0
+                    elif x <= rowHeaderWidth + frozenW + edge && gridScrollLeft grid > 0.0 then - speed (rowHeaderWidth + frozenW - x) * 2.0
+                    else 0.0
+                if dy <> 0.0 || dx <> 0.0 then
+                    if dy <> 0.0 then setGridScrollTop grid (max 0.0 (gridScrollTop grid + dy))
+                    if dx <> 0.0 then setGridScrollLeft grid (max 0.0 (gridScrollLeft grid + dx))
+                    scrollTop <- gridScrollTop grid
+                    scrollLeft <- gridScrollLeft grid
+                    dragTo e
+            | _ -> stopDragScroll ()
+        startDragScrollHook.Value <- (fun () ->
+            if dragScrollTimer.IsNone then dragScrollTimer <- Some (JS.setInterval dragScrollStep 50))
         let onDocumentMouseMove = (fun (e: obj) ->
             if pictureDrag.IsSome then
                 match pictureDrag with
@@ -6139,39 +6233,15 @@ type Spreadsheet(container: Element) =
                             resizeRenderScheduled <- false
                         )
                 | None -> ()
-            elif isFilling then
-                match fillSource, hitCellNear e with
-                | Some source, Some hitAddr ->
-                    let target = SpreadsheetInput.fillTowards source hitAddr.Row hitAddr.Col
-                    if target <> fillTarget then
-                        fillTarget <- target
-                        // Preview: the selection grows over the cells
-                        // the release will fill.
-                        let top, left, bottom, right = source
-                        let preview =
-                            match target with
-                            | Some (SpreadsheetInput.FillDown, n) -> Range (top, left, bottom + n, right)
-                            | Some (SpreadsheetInput.FillUp, n) -> Range (top - n, left, bottom, right)
-                            | Some (SpreadsheetInput.FillRight, n) -> Range (top, left, bottom, right + n)
-                            | Some (SpreadsheetInput.FillLeft, n) -> Range (top, left - n, bottom, right)
-                            | None -> if top = bottom && left = right then SingleCell (top, left) else Range (top, left, bottom, right)
-                        model <- { model with Selection = preview }
-                        render()
-                | _ -> ()
-            elif isDragging then
-                match dragStartCell, hitCellNear e with
-                | Some start, Some hitAddr ->
-                    // The cell the drag started at stays the active cell.
-                    let before = model.Selection
-                    selectFromTo start hitAddr
-                    if model.Selection <> before then
-                        revealCell hitAddr.Row hitAddr.Col
-                        render()
-                | _ -> ()
+            elif isFilling || isDragging then
+                dragPointer <- Some e
+                dragTo e
+                startDragScroll ()
         )
 
         // Mouse up for both drag selection and resize
         let onDocumentMouseUp = (fun (_: obj) ->
+            stopDragScroll ()
             if pictureDrag.IsSome then
                 // The whole drag is one undo step.
                 let drag = pictureDrag.Value
@@ -6306,6 +6376,7 @@ type Spreadsheet(container: Element) =
         notifiedSelection <- None
         validationListeners.Clear()
         isDragging <- false
+        stopDragScroll ()
         dragStartCell <- None
         isFilling <- false
         isResizingColumn <- false

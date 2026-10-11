@@ -1166,10 +1166,13 @@ checks['viewer-filter'] = async () => {
     return lines;
 };
 
-// A sheet that can be edited has more rows to scroll into whenever it is scrolled to its end (and more
-// columns at its right end); a frame in the middle of the sheet does not grow it. A fill and a paste
-// past the last row make the sheet that large.
-checks['grid-scroll-grows'] = async () => {
+// The end of the sheet, as in Excel. What can be scrolled through is the used range and room past
+// it: scrolling to the end adds nothing. The caret going further does: Ctrl+Down / Ctrl+Right with
+// nothing ahead go to row 1 048 576 / column XFD, Ctrl+Up / Ctrl+Left back to the last cell that
+// holds something, and the sheet is then as long as it was. A drag of the selection or of the fill
+// handle held at the edge of the grid scrolls the sheet under it. A fill and a paste past the last
+// row make the sheet that large.
+checks['grid-end-of-sheet'] = async () => {
     const { lines, check, note } = makeLog();
     const { grid, host, close } = mountGrid();
     try {
@@ -1182,33 +1185,113 @@ checks['grid-scroll-grows'] = async () => {
         scroller.scrollTop = 4000; await frame();
         scroller.scrollTop = 8000; await frame();
         check('scrolled about in the middle: no more rows', size(), [rows, cols]);
-        const toEnd = async () => { scroller.scrollTop = scroller.scrollHeight; await frame(); };
-        const start = performance.now();
+        const toEnd = async () => { scroller.scrollTop = scroller.scrollHeight; scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: 300, bubbles: true })); await frame(); };
         await toEnd();
-        note(`the frames of a scroll to the end that adds 100 rows: ${(performance.now() - start).toFixed(1)} ms`);
-        check('scrolled to the end: 100 more rows', size(), [rows + 100, cols]);
         const height = scroller.scrollHeight;
-        await frame();
-        check('... once: a frame at rest there adds none', [size(), scroller.scrollHeight], [[rows + 100, cols], height]);
-        await toEnd(); await toEnd();
-        check('scrolled to the end twice more: 200 more rows', size(), [rows + 300, cols]);
-        scroller.scrollTop = scroller.scrollTop - 400; await frame();
-        check('scrolled back up: none', size(), [rows + 300, cols]);
-        scroller.scrollLeft = scroller.scrollWidth; await frame();
-        check('scrolled to the right end: 26 more columns', size(), [rows + 300, cols + 26]);
+        for (let i = 0; i < 12; i++) await toEnd();
+        check('scrolled to the end, again and again: the sheet is as long as it was', [size(), scroller.scrollHeight], [[rows, cols], height]);
+        scroller.scrollLeft = scroller.scrollWidth; await frame(); scroller.scrollLeft = scroller.scrollWidth; await frame();
+        check('... and as wide', size(), [rows, cols]);
         scroller.scrollLeft = 0; scroller.scrollTop = 0; await frame();
+
+        // Ctrl+arrows (the browser's own keys, on a cell that was clicked).
+        const active = () => [grid.GetActiveCell().Row, grid.GetActiveCell().Col];
+        const clickCell = async (row, col) => { grid.SelectCell(row, col); await frame(); const box = cellBox(host, row, col); await window.realMouse('click', box.left + box.width / 2, box.top + box.height / 2); await frame(); };
+        await clickCell(2, 0);
+        await window.realKey('Control+ArrowDown'); await frame();
+        check('Ctrl+Down in a column of data: its last cell', active(), [39, 0]);
+        let start = performance.now();
+        await window.realKey('Control+ArrowDown'); await frame();
+        const down = performance.now() - start;
+        check('Ctrl+Down with nothing below: row 1 048 576', [active(), grid.GetSelectionRef(), size()[0]], [[1048575, 0], 'A1048576', 1048576]);
+        const last = cellBox(host, 1048575, 0);
+        check('... which is in view, drawn', [last !== null && last.bottom <= scroller.getBoundingClientRect().bottom + 1 && last.top >= scroller.getBoundingClientRect().top, host.querySelectorAll('.spreadsheet-cell').length < 3000], [true, true]);
+        const layout = await import('/spreadsheet/Layout.js'), metrics = layout.metricsOf(grid.GetModel());
+        check('... and no row of the sheet has an entry of its own in memory', [layout.AxisOffsets__get_Known(metrics.RowPrefix).length < 200, layout.AxisOffsets__get_Length(metrics.RowPrefix)], [true, 1048577]);
+        start = performance.now();
+        grid.EnterText(1048575, 0, 'the last row'); await frame();
+        note(`Ctrl+Down to row 1 048 576: ${down.toFixed(1)} ms; an entry there and its frame: ${(performance.now() - start).toFixed(1)} ms`);
+        grid.Undo(); await frame();
+        await window.realKey('Control+ArrowDown'); await frame();
+        check('Ctrl+Down on the last row stays there', active(), [1048575, 0]);
+        start = performance.now();
+        await window.realKey('Control+ArrowUp'); await frame();
+        check('Ctrl+Up from there: the last cell that holds something', active(), [39, 0]);
+        await frame();
+        check('... and the sheet is as long as it was', [size(), scroller.scrollHeight], [[rows, cols], height]);
+        note(`Ctrl+Up back: ${(performance.now() - start).toFixed(1)} ms`);
+        await window.realKey('Control+ArrowRight'); await frame();
+        check('Ctrl+Right with nothing to the right: column XFD', [active(), grid.GetSelectionRef(), size()[1]], [[39, 16383], 'XFD40', 16384]);
+        await window.realKey('Control+ArrowLeft'); await frame(); await frame();
+        check('Ctrl+Left back: the cell with data, the sheet as wide as it was', [active(), size()], [[39, 0], [rows, cols]]);
+        await clickCell(0, 3);
+        await window.realKey('Control+ArrowUp'); await window.realKey('Control+ArrowLeft'); await frame();
+        check('Ctrl+Up in the first row stays, Ctrl+Left goes to the cell with data', active(), [0, 0]);
+        // Shift+Ctrl+Down selects to the end; a cell written there keeps its row.
+        await clickCell(1, 2);
+        await window.realKey('Control+Shift+ArrowDown'); await frame();
+        check('Shift+Ctrl+Down in an empty column: selected to the last row', grid.GetSelectionRef(), 'C2:C1048576');
+        grid.SelectCell(0, 0); await frame(); await frame();
+        check('... and back at the top the sheet is as long as it was', size(), [rows, cols]);
+        grid.SelectCell(5000, 1); await frame();
+        grid.EnterText(5000, 1, 'far'); grid.SelectCell(0, 0); await frame(); await frame();
+        check('a cell entered far down stays a row of the sheet', [size()[0], grid.GetCell(5000, 1).value], [5101, 'far']);
+        grid.Undo(); grid.SelectCell(0, 0); await frame(); await frame();
+
+        // A drag of the selection held below the grid scrolls the sheet under the pointer.
+        const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+        const rect = scroller.getBoundingClientRect();
+        let box = cellBox(host, 3, 1);
+        await window.realMouse('move', box.left + 10, box.top + 5);
+        await window.realMouse('down');
+        await window.realMouse('move', box.left + 10, rect.bottom - 40);
+        await frame();
+        const inView = Number(/:B(\d+)$/.exec(grid.GetSelectionRef())?.[1]);
+        await window.realMouse('move', box.left + 10, rect.bottom + 60);
+        await pause(700);
+        const scrolled = scroller.scrollTop, reached = Number(/:B(\d+)$/.exec(grid.GetSelectionRef())?.[1]);
+        await window.realMouse('up');
+        check('a selection dragged below the grid: the sheet scrolls, the selection goes on', [scrolled > 200, reached > inView + 8, grid.GetSelectionRef().startsWith('B4:B')], [true, true, true]);
+        const afterUp = scroller.scrollTop;
+        await pause(200);
+        check('... until the button is released', scroller.scrollTop, afterUp);
+        // ... and held there it goes past the last row the sheet had.
+        grid.SelectCell(rows - 30, 1); await frame(); await frame();
+        box = cellBox(host, rows - 30, 1);
+        await window.realMouse('move', box.left + 10, box.top + 5);
+        await window.realMouse('down');
+        await window.realMouse('move', box.left + 10, rect.bottom + 250);
+        await pause(1500);
+        await window.realMouse('up');
+        const draggedTo = Number(/:B(\d+)$/.exec(grid.GetSelectionRef())?.[1]);
+        check('held there: the selection goes past the last row the sheet had, which grows with it', [draggedTo > rows + 20, size()[0] > draggedTo, grid.GetSelectionRef().startsWith(`B${rows - 29}:B`)], [true, true, true]);
+        // The fill handle, the same: a fill past what the grid showed in one drag.
+        grid.SelectCell(0, 0); await frame(); await frame();
+        grid.SetCell(rows - 31, 4, '1'); grid.SetCell(rows - 30, 4, '2'); grid.SelectRange(rows - 31, 4, rows - 30, 4); grid.ScrollToCell(rows - 20, 4); await frame(); await frame();
+        const handle = host.querySelector('.spreadsheet-fill-handle').getBoundingClientRect();
+        await window.realMouse('move', handle.left + handle.width / 2, handle.top + handle.height / 2);
+        await window.realMouse('down');
+        await window.realMouse('move', handle.left + handle.width / 2, rect.bottom + 250);
+        await pause(1500);
+        await window.realMouse('up'); await frame();
+        const filledTo = Number(/:E(\d+)$/.exec(grid.GetSelectionRef())?.[1]);
+        check('the fill handle dragged below the grid and held: a series past the last row the sheet had', [filledTo > rows + 20, grid.GetCell(filledTo - 1, 4).value, grid.GetCell(rows + 10, 4).value, size()[0] > filledTo], [true, filledTo - (rows - 31), 42, true]);
+        note(`the selection was dragged to row ${draggedTo}, the fill to row ${filledTo} (the sheet had ${rows} rows)`);
+        grid.Undo(); grid.SelectCell(0, 0); await frame(); await frame();
+        scroller.scrollLeft = 0; scroller.scrollTop = 0; await frame();
+
         // A fill down past the last row.
-        const last = size()[0] - 1;
-        grid.SetCell(last, 1, '7'); grid.SelectCell(last, 1); await frame();
+        const lastRow = size()[0] - 1;
+        grid.SetCell(lastRow, 1, '7'); grid.SelectCell(lastRow, 1); await frame();
         const before = size()[0];
         grid.AutoFill(before + 20, 1); await frame();
-        check('a fill past the last row: the sheet holds the cells', [size()[0] > before + 20, typeof grid.GetCell(before + 20, 1).value, grid.GetCell(last, 1).value], [true, 'number', 7]);
+        check('a fill past the last row: the sheet holds the cells', [size()[0] > before + 20, typeof grid.GetCell(before + 20, 1).value, grid.GetCell(lastRow, 1).value], [true, 'number', 7]);
         // A paste past the last row and the last column.
         const [rowsNow, colsNow] = size();
         grid.SelectCell(rowsNow - 1, colsNow - 1); await frame();
         grid.PasteText('a\tb\tc\n1\t2\t3\n4\t5\t6', ''); await frame();
         check('a paste past the last row and column: the sheet holds the cells', [size()[0] > rowsNow + 1, size()[1] > colsNow + 1, grid.GetCell(rowsNow + 1, colsNow + 1).value], [true, true, 6]);
-        // A viewer's sheet is as long as it is.
+        // A viewer's sheet is as long as it is, and its keys stay in it.
         grid.SetReadOnly(true); scroller.scrollTop = 0; await frame();
         const fixed = size();
         await toEnd(); await toEnd();

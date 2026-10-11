@@ -809,13 +809,26 @@ Nothing to call for the recalculation itself: every edit recalculates what it ha
 - **The grid always has room beyond what is used.** A sheet of a file had exactly as many rows as the file uses, so the arrow keys
   stopped at the last used row and typing there overwrote it. Now, whenever fewer than 50 rows are left below the last used row or
   the active cell (10 columns right of the active cell), the sheet grows to 100 rows (26 columns) past it, up to 1 048 576 rows and
-  16 384 columns: `GetModel().RowCount` / `ColCount` grow as the caret moves on (they never shrink; the growth is not an edit, not
-  an undo step, and does not make a sheet "changed" for a save). `SetCell` / `EnterText` on a cell beyond the grid and a paste that
-  reaches beyond it make the sheet large enough (before, `SetCell` stored a cell the grid did not show). **Scrolling to the end of
-  the sheet adds 100 rows (at the right end: 26 columns) to scroll into, each time the view arrives there** - by the wheel, the
-  scroll bar or a key - as in Excel; in a read-only grid (`SetReadOnly(true)`, a viewer) the sheet stays as long as it is. A scroll
-  frame anywhere else does nothing for this (two comparisons in the scroll handler; measured work per frame on a 70 000-row sheet,
-  120 px per frame: 3.2 ms before sheets grew, 3.4 - 4.0 ms now, within the noise of the measurement). **A fill past the last row
+  16 384 columns: `GetModel().RowCount` / `ColCount` grow as the caret moves on (the growth is not an edit, not an undo step, and
+  does not make a sheet "changed" for a save). `SetCell` / `EnterText` on a cell beyond the grid and a paste that reaches beyond it
+  make the sheet large enough (before, `SetCell` stored a cell the grid did not show).
+- **The end of the sheet is Excel's (0.1.15).** What can be scrolled through is the used range and the room past it. **Scrolling to
+  the end adds nothing** (0.1.14 added 100 rows each time the view arrived there, and a wheel held at the end added thousands). The
+  caret or the selection going further does: **Ctrl+Down / Ctrl+Right with nothing ahead go to row 1 048 576 / column XFD** (before:
+  100 rows / 26 columns a press), Shift with them selects to there, `SelectCell(1048575, 0)` and `GoTo` reach it too, and Ctrl+Up /
+  Ctrl+Left come back to the last cell that holds something. **`RowCount` / `ColCount` shrink again** once neither the caret, a cell,
+  nor the rows in view are out there: to what the sheet had before the caret left its used range, or what its cells and the view now
+  need (so a host must not keep `RowCount` as a constant; the scroll position is never pulled back by it). In a read-only grid the
+  sheet stays as long as it is and the keys stay inside it. Rows cost nothing: the layout keeps offsets for the rows up to the last
+  one with a height of its own (`SpreadsheetLayout.AxisOffsets`) and works the rest out, so a sheet whose caret is in row 1 048 576
+  takes the memory and the frame time it took before (measured: the Ctrl+Down there and its frame 50 ms, an entry there 33 ms).
+  The scroll height is then 26 million pixels at 100 % zoom: within what Chromium lays out (33.5 million); at a zoom above 125 %,
+  and in Firefox (17.9 million), the last rows cannot be scrolled to - a limit of the browser the grid does not work around yet.
+- **A drag held at the edge scrolls (0.1.15).** While the selection or the fill handle is dragged and the pointer is within 4 px of
+  an edge of the grid or past it, the sheet scrolls under it every 50 ms, faster the further out the pointer is (25 px + 1.5 px per
+  pixel of distance, at most 600 px; twice that sideways), and the selection / the fill preview follows to the cells that come into
+  view; the sheet grows with the selection. So a fill past the last row the grid shows is one drag. It stops with the button.
+  **A fill past the last row
   or column** (`AutoFill`, the fill handle, Ctrl+D / Ctrl+R) makes the sheet that large (before, the cells beyond the last row
   were not filled).
 - `GetDateSystem()` -> `1900` | `1904`. The date system of the workbook: 1904 for a workbook opened from a file whose `workbookPr` says
