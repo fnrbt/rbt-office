@@ -1016,6 +1016,18 @@ changes (named styles, the indexed palette, table styles and extensions of the s
   changed adds an entry. (Before, every cell below an inserted row got a new entry: milk-street-office's `cellXfs` went from 308
   to 614 and `xl/styles.xml` from 73 KB to 124 KB; now the styles part is the file's, byte for byte.) The calculation chain of
   such a workbook is dropped with its content type and its relationship (Excel builds a new one).
+- **Rows or columns inserted or deleted above a sheet's charts, shapes and pictures: the drawing part keeps its name (0.1.15).** While
+  the objects are the file's and only where they are changed (also a picture or an object that was moved), the part goes back under
+  its own name with the `<xdr:from>` / `<xdr:to>` of the anchors that moved rewritten - a marker that only changed its row or column
+  keeps the offsets the file wrote - and everything else as its text; its relationships part is the file's. (Before, the part was
+  written anew as `xl/drawings/sheetDrawingN.xml` with new relationship ids.) Written anew as before: objects added, deleted, resized
+  or restacked, and a part whose anchors are not the sheet's objects one for one (an anchor inside `mc:AlternateContent` at the top).
+- **The relationships of a sheet that is written from its model are the file's part** while they say what is written: the same parts
+  under the ids the file names them by - the sheet's part then names them by those ids too (`<drawing r:id="rId1"/>`, not
+  `rIdDrawing3`) - with the targets as the file wrote them (relative). An entry that is new is put behind the file's, one that is
+  gone is taken out. So after a row insert on a sheet with a drawing, a slicer and a pivot table the sheet's relationships, the
+  content types and the workbook's relationships are byte for byte the file's - **less the calculation chain**: `xl/calcChain.xml`
+  goes with its content type and its relationship, as before (its cells are no longer where it says; Excel builds a new one).
 - The shared strings' `count` is the number of cells that name a string: the file's count, less the uses in the sheet parts
   that were written again, plus the uses in what was written (before, it only grew by the number of new strings).
 - **A changed note leaves the other notes as the file wrote them**: the comments part is the file's, with a note that is what

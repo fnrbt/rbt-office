@@ -328,6 +328,19 @@ let private extrasOfModel (original: XlsxReader.SheetExtras) (before: Spreadshee
         match before with
         | Some baseline -> obj.ReferenceEquals(baseline.Threads, model.Threads) || baseline.Threads = model.Threads
         | None -> false
+    // The same pictures and objects, in the same order, of the same size: only where they are differs.
+    let anchorsOnly =
+        match before with
+        | Some baseline when not drawingsUnchanged && original.DrawingPart.IsSome && baseline.Drawings.Length = model.Drawings.Length ->
+            List.forall2 (fun (was: SheetDrawing) (now: SheetDrawing) ->
+                was.Anchor.Kind = now.Anchor.Kind && was.Anchor.Kind <> "absolute"
+                && was.Anchor.ToRow.IsSome = now.Anchor.ToRow.IsSome
+                && was.Name = now.Name && was.Description = now.Description
+                && (obj.ReferenceEquals(was.Content, now.Content) || was.Content = now.Content)
+                && { was.Anchor with FromRow = now.Anchor.FromRow; FromCol = now.Anchor.FromCol; FromOffsetX = now.Anchor.FromOffsetX; FromOffsetY = now.Anchor.FromOffsetY
+                                     ToRow = now.Anchor.ToRow; ToCol = now.Anchor.ToCol; ToOffsetX = now.Anchor.ToOffsetX; ToOffsetY = now.Anchor.ToOffsetY } = now.Anchor)
+                baseline.Drawings model.Drawings
+        | _ -> false
     let images, objects =
         if drawingsUnchanged then original.Images, original.Objects
         else
@@ -443,8 +456,10 @@ let private extrasOfModel (original: XlsxReader.SheetExtras) (before: Spreadshee
     { original with
         Images = images; Objects = objects; ThreadedComments = threads; RowAxis = rowAxis; ColumnAxis = columnAxis; ArrayFormulas = arrayFormulas
         CommentRuns = commentRuns
-        // (The file's drawing part goes back as it is only with the file's pictures and objects.)
-        DrawingPart = if drawingsUnchanged then original.DrawingPart else None }
+        // (The file's drawing part goes back as it is only with the file's pictures and objects -
+        // or, when all that changed is where they are, with their anchors moved in it.)
+        DrawingPart = if drawingsUnchanged || anchorsOnly then original.DrawingPart else None
+        DrawingAnchors = if anchorsOnly then Some (model.Drawings |> List.mapi (fun order drawing -> anchorToReader order drawing.Anchor)) else None }
 
 module Import =
 

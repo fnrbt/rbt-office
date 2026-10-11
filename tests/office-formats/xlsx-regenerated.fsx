@@ -410,6 +410,50 @@ for file, sheetName, cell, hasLegacy in [ "real-world/milk-street-office.xlsx", 
         let again = (Bridge.Import.importWorkbook (XlsxReader.loadBytesNative saved |> Option.get)).Sheets.[at].Model
         ok (label + ": read back") ((M.getCell where again |> Option.bind (fun c -> c.Comment)) |> Option.map (fun note -> note.Text, note.Author) = Some ("a first note", Some "me")) "no note"
 
+// ---- a row inserted above a sheet's drawings: the drawing part keeps its name, only its anchors move ----
+for file in [ "real-world/dashboard-sales-analysis.xlsx"; "real-world/dashboard-ecommerce-sales.xlsx"; "real-world/chart-zoo.xlsx" ] do
+    let bytes = File.ReadAllBytes(Path.Combine(root, file))
+    let wb = XlsxReader.loadBytesNative bytes |> Option.get
+    let book = Bridge.Import.importWorkbook wb
+    let file0 = partsOf bytes
+    let relsOf (path: string) = path.Substring(0, path.LastIndexOf '/') + "/_rels/" + path.Substring(path.LastIndexOf '/' + 1) + ".rels"
+    let withDrawing =
+        [ for at in 0 .. book.Sheets.Length - 1 do
+            match (List.item at wb.Sheets).Extras.SourcePart, (List.item at wb.Sheets).Extras.DrawingPart with
+            | Some (path, relType), Some drawing when relType.EndsWith "/worksheet" && not book.Sheets.[at].Model.Drawings.IsEmpty -> yield at, path, drawing
+            | _ -> () ]
+    ok (sprintf "%s has a sheet with a drawing" file) (not withDrawing.IsEmpty) "none"
+    for at, path, drawing in withDrawing |> List.truncate 2 do
+        let label = sprintf "%s %s" (Path.GetFileName file) book.Sheets.[at].Name
+        let sheets = book.Sheets |> Array.map (fun sheet -> sheet.Model)
+        sheets.[at] <- M.applyStructureEdit (M.InsertRows (0, 1)) sheets.[at]
+        let input : Bridge.ExportInput =
+            { Sheets = sheets; Names = book.Sheets |> Array.map (fun sheet -> sheet.Name); Visible = book.Sheets |> Array.map (fun sheet -> sheet.Visible)
+              ActiveSheetIndex = wb.Preserved.ActiveTab; NameInfo = book.Context.NameInfo; DefinedNames = book.Context.Names; Source = Some book.Source; Macros = None }
+        let saved = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
+        let now = partsOf saved
+        let added = now |> Map.toList |> List.map fst |> List.filter (fun known -> not (file0.ContainsKey known))
+        let gone = file0 |> Map.toList |> List.map fst |> List.filter (fun known -> not (now.ContainsKey known))
+        ok (label + ": row inserted, no part is added and only the calculation chain goes") (added.IsEmpty && gone |> List.forall (fun known -> known = "xl/calcChain.xml")) (sprintf "added %A, gone %A" added gone)
+        let markers (xml: string) = Regex.Replace(xml, "<xdr:(from|to)>[\\s\\S]*?</xdr:\\1>", "<xdr:$1/>")
+        match now.TryFind drawing with
+        | None -> ok (label + ": the drawing part keeps its name") false drawing
+        | Some data ->
+            ok (label + ": the drawing part is the file's but for where its anchors are") (markers (text data) = markers (text file0.[drawing]) && text data <> text file0.[drawing]) (sprintf "%d chars, the file's %d" (text data).Length (text file0.[drawing]).Length)
+        ok (label + ": the drawing's relationships are the file's") (now.TryFind (relsOf drawing) = file0.TryFind (relsOf drawing)) "differ"
+        ok (label + ": the sheet's relationships are the file's") (now.TryFind (relsOf path) = file0.TryFind (relsOf path)) (now.TryFind (relsOf path) |> Option.map text |> Option.defaultValue "(none)" |> short)
+        let withoutChain (xml: string) = Regex.Replace(xml, "<(Override|Relationship)\\b[^>]*calcChain[^>]*/>", "")
+        ok (label + ": the content types are the file's (less the calculation chain)") (text now.["[Content_Types].xml"] = withoutChain (text file0.["[Content_Types].xml"])) (short (text now.["[Content_Types].xml"]))
+        ok (label + ": the workbook's relationships are the file's (less the calculation chain)") (text now.["xl/_rels/workbook.xml.rels"] = withoutChain (text file0.["xl/_rels/workbook.xml.rels"])) (short (text now.["xl/_rels/workbook.xml.rels"]))
+        ok (label + ": the sheet's part names the relationships by the file's ids")
+            ([ for found in Regex.Matches(text now.[path], "r:id=\"([^\"]*)\"") -> found.Groups.[1].Value ] |> List.sort = ([ for found in Regex.Matches(text file0.[path], "r:id=\"([^\"]*)\"") -> found.Groups.[1].Value ] |> List.sort))
+            (String.concat " " [ for found in Regex.Matches(text now.[path], "r:id=\"([^\"]*)\"") -> found.Groups.[1].Value ])
+        let again = (Bridge.Import.importWorkbook (XlsxReader.loadBytesNative saved |> Option.get)).Sheets.[at].Model
+        ok (label + ": read back, every drawing is one row down")
+            (again.Drawings.Length = book.Sheets.[at].Model.Drawings.Length
+             && List.forall2 (fun (a: M.SheetDrawing) (b: M.SheetDrawing) -> a.Anchor.Kind = "absolute" || (a.Anchor.FromRow = b.Anchor.FromRow + 1 && a.Anchor.FromCol = b.Anchor.FromCol && a.Anchor.ToRow = (b.Anchor.ToRow |> Option.map ((+) 1)))) again.Drawings book.Sheets.[at].Model.Drawings)
+            (sprintf "%A" (again.Drawings |> List.map (fun d -> d.Anchor.FromRow)))
+
 // ---- a note without an author ------------------------------------------------------
 // It is no one's: the authors list has an empty entry for it (not the first author of the list).
 do

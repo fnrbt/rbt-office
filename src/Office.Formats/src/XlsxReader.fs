@@ -947,6 +947,12 @@ type SheetExtras = {
     /// The sheet's drawing part in the file. While the sheet's pictures and
     /// objects are the file's, that part goes back as it is, under its name.
     DrawingPart: string option
+    /// The sheet's pictures and objects are the file's but for where they are
+    /// (rows or columns were inserted or deleted, an object was moved): the
+    /// anchors as they are now, in the order of the part. The part then goes
+    /// back under its name with only the `<from>` / `<to>` of the anchors that
+    /// moved rewritten (`DrawingPart` stays set).
+    DrawingAnchors: SheetAnchor list option
     /// The sheet's table parts in the file: (table name, part). A table that
     /// is as the file had it goes back as that part (with what the model
     /// does not hold of it: revision ids, per-column formats and formulas,
@@ -1023,7 +1029,7 @@ type SheetExtras = {
 
 let emptySheetExtras =
     { Images = []; Objects = []; ThreadedComments = []; DrawingRelationships = []; Format = None; Columns = []; ColumnStyles = []
-      SheetId = None; KeptRelationships = []; KeptExtensions = []; KeptElements = []; DrawingPart = None; TableParts = []; PivotLocations = []; DataTables = []
+      SheetId = None; KeptRelationships = []; KeptExtensions = []; KeptElements = []; DrawingPart = None; DrawingAnchors = None; TableParts = []; PivotLocations = []; DataTables = []
       KeptCellExtensions = []; PrinterSettingsRelId = None; RowAxis = []; ColumnAxis = []; AutoFilter = None; ArrayFormulas = []
       SourcePart = None; CommentsPart = None; CommentsChanged = false; CommentRuns = []; UncachedFormulas = None; Verbatim = false; Patch = None; SourceXml = None; Moves = None }
 

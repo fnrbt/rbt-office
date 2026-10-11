@@ -1496,3 +1496,45 @@ checks['formula-result-format'] = async () => {
     finally { close(); }
     return lines;
 };
+
+// A row inserted above a sheet's charts and shapes: the drawing part keeps its name and its
+// text but for where the anchors are; its relationships, the sheet's relationships, the content
+// types and the workbook's relationships are the file's (less the calculation chain, which goes).
+checks['row-insert-keeps-drawing-part'] = async () => {
+    const { lines, check } = makeLog();
+    const { bytesOf } = await import('/component.js');
+    const { grid, close } = mountGrid();
+    try {
+        for (const [file, sheetIndex, sheetPart, drawingPart] of [['tests/real-world/dashboard-ecommerce-sales.xlsx', 2, 'xl/worksheets/sheet3.xml', 'xl/drawings/drawing2.xml'], ['tests/real-world/chart-zoo.xlsx', 0, 'xl/worksheets/sheet1.xml', 'xl/drawings/drawing1.xml']]) {
+            const short = file.split('/').pop();
+            const original = await bytesOf(file);
+            const zip0 = await window.JSZip.loadAsync(original);
+            await grid.ImportXlsx(original.slice());
+            grid.SwitchSheet(sheetIndex);
+            const before = grid.GetDrawings().map((drawing) => drawing.anchor?.fromRow ?? drawing.fromRow ?? null);
+            grid.InsertRows(0, 1);
+            const zip1 = await window.JSZip.loadAsync(await grid.ExportXlsx());
+            const text = async (zip, path) => zip.files[path] ? zip.files[path].async('string') : null;
+            const names0 = Object.keys(zip0.files).filter((name) => !name.endsWith('/')), names1 = Object.keys(zip1.files).filter((name) => !name.endsWith('/'));
+            check(`${short}: no part is added, only the calculation chain goes`, [names1.filter((name) => !names0.includes(name)), names0.filter((name) => !names1.includes(name) && name !== 'xl/calcChain.xml')], [[], []]);
+            const markers = (xml) => xml.replace(/<xdr:(from|to)>[\s\S]*?<\/xdr:\1>/g, '<xdr:$1/>');
+            const drawing0 = await text(zip0, drawingPart), drawing1 = await text(zip1, drawingPart);
+            check(`${short}: the drawing part is the file's but for where its anchors are`, [drawing1 !== null && markers(drawing1) === markers(drawing0), drawing1 !== drawing0], [true, true]);
+            const rels = (path) => path.replace(/\/([^/]+)$/, '/_rels/$1.rels');
+            const withoutChain = (xml) => xml.replace(/<(Override|Relationship)\b[^>]*calcChain[^>]*\/>/g, '');
+            check(`${short}: the relationships of the drawing and of the sheet, the content types and the workbook's relationships are the file's`,
+                [(await text(zip1, rels(drawingPart))) === (await text(zip0, rels(drawingPart))), (await text(zip1, rels(sheetPart))) === (await text(zip0, rels(sheetPart))),
+                 (await text(zip1, '[Content_Types].xml')) === withoutChain(await text(zip0, '[Content_Types].xml')), (await text(zip1, 'xl/_rels/workbook.xml.rels')) === withoutChain(await text(zip0, 'xl/_rels/workbook.xml.rels'))],
+                [true, true, true, true]);
+            const again = mountGrid();
+            try {
+                await again.grid.ImportXlsx(await grid.ExportXlsx());
+                again.grid.SwitchSheet(sheetIndex);
+                const after = again.grid.GetDrawings().map((drawing) => drawing.anchor?.fromRow ?? drawing.fromRow ?? null);
+                check(`${short}: read back, ${before.length} objects one row down`, after, before.map((row) => row === null ? null : row + 1));
+            } finally { again.close(); }
+        }
+    } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
+    finally { close(); }
+    return lines;
+};

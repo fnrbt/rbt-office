@@ -4291,6 +4291,64 @@ let private inPlaceSharedStrings (workbook: XlsxWorkbookOut) (sharedStringsXml: 
                 xml.Substring(0, root.Index) + rootTag + xml.Substring(root.Index + root.Length, close - root.Index - root.Length) + added.ToString() + xml.Substring close
         Some (indexOf, finish)
 
+let private drawingAnchorPattern = System.Text.RegularExpressions.Regex("<([A-Za-z0-9]+):(twoCellAnchor|oneCellAnchor|absoluteAnchor)(?=[\\s>])")
+
+/// A drawing part of the file with its anchors where they are now
+/// (`SheetExtras.DrawingAnchors`): the `<from>` / `<to>` of an anchor that
+/// moved are rewritten - a marker that only changed its row or column keeps
+/// the offsets the file wrote -, everything else is the part's text. None
+/// when the part's anchors are not the ones given (another count, another
+/// kind, an anchor inside `mc:AlternateContent`).
+let private movedDrawingXml (xml: string) (anchors: XlsxReader.SheetAnchor list) : string option =
+    let starts = drawingAnchorPattern.Matches xml |> Seq.cast<System.Text.RegularExpressions.Match> |> Seq.toList
+    if starts.Length <> anchors.Length then None
+    else
+        let out = StringBuilder()
+        let mutable at = 0
+        let mutable sound = true
+        let mutable first = true
+        for start, anchor in List.zip starts (anchors |> List.sortBy (fun anchor -> anchor.Order)) do
+            let prefix = start.Groups.[1].Value
+            let kind = start.Groups.[2].Value
+            let closing = sprintf "</%s:%s>" prefix kind
+            let close = xml.IndexOf (closing, start.Index, System.StringComparison.Ordinal)
+            let expected = (match anchor.Kind with "twoCell" -> "twoCellAnchor" | "oneCell" -> "oneCellAnchor" | _ -> "absoluteAnchor")
+            // (Every anchor is a child of the drawing: nothing but white space between two of them.)
+            if close < 0 || start.Index < at || kind <> expected || (not first && xml.Substring(at, start.Index - at).Trim() <> "") then sound <- false
+            elif sound then
+                first <- false
+                let mutable element = xml.Substring(start.Index, close + closing.Length - start.Index)
+                let marker (name: string) (col: int) (colOffset: float) (row: int) (rowOffset: float) =
+                    let opening = sprintf "<%s:%s>" prefix name
+                    let ending = sprintf "</%s:%s>" prefix name
+                    let from = element.IndexOf (opening, System.StringComparison.Ordinal)
+                    let until = if from < 0 then -1 else element.IndexOf (ending, from, System.StringComparison.Ordinal)
+                    if from < 0 || until < 0 then sound <- false
+                    else
+                        let body = element.Substring(from + opening.Length, until - from - opening.Length)
+                        let part (tag: string) =
+                            let found = System.Text.RegularExpressions.Regex.Match(body, sprintf "<%s:%s>\\s*(-?[0-9]+)\\s*</%s:%s>" prefix tag prefix tag)
+                            if found.Success then Some (float found.Groups.[1].Value) else None
+                        match part "col", part "colOff", part "row", part "rowOff" with
+                        | Some fileCol, Some fileColOff, Some fileRow, Some fileRowOff ->
+                            // (Offsets are held in pixels: within a pixel of the file's, the file's stands.)
+                            let colOff = if abs (colOffset - fileColOff) < 9525.0 then fileColOff else colOffset
+                            let rowOff = if abs (rowOffset - fileRowOff) < 9525.0 then fileRowOff else rowOffset
+                            if int fileCol <> col || int fileRow <> row || colOff <> fileColOff || rowOff <> fileRowOff then
+                                let made =
+                                    sprintf "<%s:col>%d</%s:col><%s:colOff>%s</%s:colOff><%s:row>%d</%s:row><%s:rowOff>%s</%s:rowOff>"
+                                        prefix col prefix prefix (emu colOff) prefix prefix row prefix prefix (emu rowOff) prefix
+                                element <- element.Substring(0, from + opening.Length) + made + element.Substring until
+                        | _ -> sound <- false
+                if anchor.Kind <> "absolute" then
+                    marker "from" anchor.FromCol anchor.FromColOffset anchor.FromRow anchor.FromRowOffset
+                    match anchor.ToCol, anchor.ToRow with
+                    | Some toCol, Some toRow when sound -> marker "to" toCol anchor.ToColOffset toRow anchor.ToRowOffset
+                    | _ -> ()
+                out.Append(xml.Substring(at, start.Index - at)).Append(element) |> ignore
+                at <- close + closing.Length
+        if not sound then None else Some (out.Append(xml.Substring at).ToString())
+
 /// The notes of a sheet whose part goes back as the file's (see
 /// `SheetPatch.Notes`): the parts they are written into.
 type private NotesInPlace = {
@@ -4336,6 +4394,25 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
     // or - when it cannot be - the sheet is written from its cells.
     // (Or its rows are the file's with those cells, in a part otherwise made
     // from the sheet: `rowPlans`. `sortKept`: the file's sort state holds.)
+    // A drawing part whose objects only moved: the file's part with its anchors moved - or, when
+    // its anchors are not what the sheet has, a part made from the sheet as for any other change.
+    let movedDrawings = System.Collections.Generic.Dictionary<string, string>()
+    let workbook =
+        if workbook.Sheets |> List.forall (fun sheet -> sheet.Extras.DrawingAnchors.IsNone) then workbook
+        else
+            { workbook with
+                Sheets =
+                    workbook.Sheets
+                    |> List.map (fun sheet ->
+                        match sheet.Extras.DrawingAnchors, sheet.Extras.DrawingPart with
+                        | Some anchors, Some path ->
+                            match partText path |> Option.bind (fun xml -> movedDrawingXml xml anchors) with
+                            | Some xml ->
+                                movedDrawings.[path] <- xml
+                                sheet
+                            | None -> { sheet with Extras = { sheet.Extras with DrawingPart = None; DrawingAnchors = None } }
+                        | Some _, None -> { sheet with Extras = { sheet.Extras with DrawingAnchors = None } }
+                        | None, _ -> sheet) }
     let patchPlans = System.Collections.Generic.Dictionary<int, SheetPatchPlan>()
     // A sheet whose notes changed and whose part can stay the file's: the notes go into the
     // comments part and the VML drawing the file has for them, or into new ones (the part then
@@ -4465,6 +4542,8 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
             contentTypesXmlFull workbook placements keptParts ownMetadata
                 [ for KeyValue(_, (commentsPath, _)) in noteParts do if commentsPath <> "" then yield commentsPath ] (notePlans.Count > 0) }
     textFiles.Add { Path = "_rels/.rels"; Content = rootRelsXmlFull workbook }
+    for KeyValue(path, xml) in movedDrawings do
+        if keptPartPaths.Contains path then textFiles.Add { Path = path; Content = xml }
     textFiles.Add { Path = "xl/workbook.xml"; Content = workbookXmlFull workbook }
     let persons = personsOf workbook
     let hasThreads = workbook.Sheets |> List.exists (fun sheet -> not sheet.Extras.ThreadedComments.IsEmpty)
@@ -4560,9 +4639,45 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
             match rowPlans.TryGetValue i with
             | true, (plan, patch) -> Some (fst (patchedSheetData styles sharedIndex dynamicCm sheet patch plan))
             | false, _ -> None
-        textFiles.Add { Path = placed.SheetPath; Content = worksheetXml styles sharedIndex dynamicCm sheetIndex (i = workbook.ActiveSheetIndex) drawingPath.IsSome inPlace.IsSome rows (sortKept.Contains i) sheet }
+        let sheetXml = worksheetXml styles sharedIndex dynamicCm sheetIndex (i = workbook.ActiveSheetIndex) drawingPath.IsSome inPlace.IsSome rows (sortKept.Contains i) sheet
         let commentsVmlPath = placed.VmlPath
-        match sheetRelsXml sheetIndex sheet tableParts placed drawingPath with
+        // The sheet's relationships: the file's part while it says what is written - the same
+        // parts, by the ids the file names them by (the sheet's part then names them by those
+        // too), with the targets as the file wrote them -, else with what is new behind it.
+        let sheetXml, relsXml =
+            let made = sheetRelsXml sheetIndex sheet tableParts placed drawingPath
+            let fileRels =
+                match sheet.Extras.SourcePart with
+                | Some (path, _) when path = placed.SheetPath -> partText (relsPathOf path)
+                | _ -> None
+            match made, fileRels with
+            | Some made, Some source ->
+                let baseDir = match placed.SheetPath.LastIndexOf '/' with -1 -> "" | cut -> placed.SheetPath.Substring(0, cut)
+                let was = relationshipEntries baseDir source
+                let now = relationshipEntries baseDir made
+                let key (relType: string) (target: string) (isExternal: bool) = relType + "\n" + target + (if isExternal then "\nexternal" else "")
+                let taken = System.Collections.Generic.HashSet<string>()
+                let renames =
+                    now
+                    |> List.choose (fun (id, relType, target, isExternal, _) ->
+                        was
+                        |> List.tryFind (fun (fileId, fileType, fileTarget, fileExternal, _) -> fileId <> "" && key fileType fileTarget fileExternal = key relType target isExternal && not (taken.Contains fileId))
+                        |> Option.map (fun (fileId, _, _, _, _) -> taken.Add fileId |> ignore; id, fileId))
+                let changed = renames |> List.filter (fun (id, fileId) -> id <> fileId)
+                // (An id the sheet made for another part must not be one the file uses.)
+                let clash = now |> List.exists (fun (id, _, _, _, _) -> not (renames |> List.exists (fun (known, _) -> known = id)) && taken.Contains id)
+                if clash then sheetXml, Some made
+                else
+                    let renamed (text: string) (attribute: string) =
+                        if changed.IsEmpty then text
+                        else
+                            // (In two steps: an id may be taken over by another entry.)
+                            let first = changed |> List.fold (fun (text: string) (id, fileId) -> text.Replace(sprintf "%s=\"%s\"" attribute id, sprintf "%s=\"\u0001%s\"" attribute fileId)) text
+                            first.Replace(attribute + "=\"\u0001", attribute + "=\"")
+                    renamed sheetXml "r:id", Some (relationshipsFromFile baseDir true (Some source) (renamed made "Id"))
+            | made, _ -> sheetXml, made
+        textFiles.Add { Path = placed.SheetPath; Content = sheetXml }
+        match relsXml with
         | Some rels -> textFiles.Add { Path = relsPathOf placed.SheetPath; Content = rels }
         | None -> ()
         match keptCommentsPart workbook sheet with
