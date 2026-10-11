@@ -2,7 +2,7 @@
 // buttons, the outline gutter, drawings over frozen panes, ...). Input goes through the
 // browser's real mouse and keyboard (window.realMouse / window.realKey, see run.mjs).
 // Each check returns a list of "ok ..." / "FAIL ..." lines.
-import { checks, makeLog, mountGrid, frame, parts } from '/component.js';
+import { checks, makeLog, mountGrid, frame, parts, container, createSpreadsheet } from '/component.js';
 import { reopened } from '/sheet-api.js';
 
 const near = (a, b, tolerance = 1.01) => Math.abs(a - b) <= tolerance;
@@ -1376,7 +1376,7 @@ checks['object-label-fits'] = async () => {
     const { bytesOf } = await import('/component.js');
     const { grid, host, close } = mountGrid();
     try {
-        let frames = 0, cut = 0;
+        let frames = 0, cut = 0, drawnObjects = 0;
         for (const file of ['tests/real-world/chart-zoo.xlsx', 'tests/real-world/dashboard-sales-analysis.xlsx']) {
             await grid.ImportXlsx((await bytesOf(file)).slice());
             for (let index = 0; index < grid.GetSheetNames().length; index++) {
@@ -1385,6 +1385,8 @@ checks['object-label-fits'] = async () => {
                 for (const node of host.querySelectorAll('.spreadsheet-object')) {
                     frames++;
                     const label = node.querySelector('.spreadsheet-object-label');
+                    // (An object that is drawn has no label: its picture is in its frame.)
+                    if (!label && node.classList.contains('spreadsheet-object-drawn') && node.querySelector('svg')) { drawnObjects++; continue; }
                     if (!label) { wrong.push(`${node.title}: no label`); continue; }
                     if (getComputedStyle(label).display === 'none') continue;
                     const outer = node.getBoundingClientRect(), inner = label.getBoundingClientRect(), style = getComputedStyle(label);
@@ -1396,8 +1398,8 @@ checks['object-label-fits'] = async () => {
                 check(`${file.split('/').pop()} / ${grid.GetSheetNames()[index]}: every label is one line inside its frame`, wrong, []);
             }
         }
-        note(`${frames} frames, ${cut} labels cut with an ellipsis`);
-        check('the workbooks have frames with labels', frames > 5, true);
+        note(`${frames} frames, ${drawnObjects} of them drawn, ${cut} labels cut with an ellipsis`);
+        check('the workbooks have frames: drawn ones, and labelled ones for what is not drawn (slicers)', [frames > 5, drawnObjects > 5, frames - drawnObjects > 0], [true, true, true]);
     } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
     finally { close(); }
     return lines;
@@ -1536,5 +1538,67 @@ checks['row-insert-keeps-drawing-part'] = async () => {
         }
     } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
     finally { close(); }
+    return lines;
+};
+
+// Charts, shapes and groups of an opened file are drawn in the grid from the file's parts: an
+// <svg> in the object's frame, with the values of the cells the series read as they are now (a
+// chart is drawn again when one of them changes), the theme's colours, title, axes and legend.
+// What is not drawn (a slicer, a chart of a kind the grid does not know) keeps the frame with its
+// label. Drawing changes nothing: the workbook is unmodified and is exported as the file.
+checks['charts-in-grid'] = async () => {
+    const { lines, check, note } = makeLog();
+    const { bytesOf } = await import('/component.js');
+    const host = container('position:absolute;left:0;top:0;width:1180px;height:880px');
+    const grid = createSpreadsheet(host);
+    grid.Mount();
+    const errors = [];
+    grid.OnError((error) => errors.push(error.source + ': ' + error.message));
+    const shoot = async (label) => { await frame(); if (window.screenshotRegion) await window.screenshotRegion(0, 0, 1180, 880); note(`screenshot: ${label}`); };
+    const drawn = () => [...host.querySelectorAll('.spreadsheet-object-drawn')];
+    try {
+        const original = await bytesOf('tests/real-world/chart-zoo.xlsx');
+        await grid.ImportXlsx(original.slice());
+        await frame();
+        const frames = drawn();
+        check('chart-zoo: its six charts are drawn, none is a labelled frame', [frames.length, frames.every((node) => node.querySelector('svg') !== null), host.querySelectorAll('.spreadsheet-object-label').length], [6, true, 0]);
+        const titles = frames.map((node) => node.querySelector('svg text')?.textContent ?? '');
+        check('each with its title', titles.slice().sort(), ['Area', 'Bar', 'Column', 'Line', 'Pie', 'Scatter']);
+        const column = frames[titles.indexOf('Column')];
+        const bars = () => { const rects = [...column.querySelectorAll('svg rect')].filter((rect) => rect.getAttribute('fill') !== '#FFFFFF' && Number(rect.getAttribute('height')) < 250); return rects.map((rect) => Number(rect.getAttribute('height'))); };
+        const before = bars();
+        check('the column chart: four bars as high as their values (10, 25, 15, 30)', [before.length, before.map((height) => Math.round(height / before[3] * 30))], [4, [10, 25, 15, 30]]);
+        check('... a frame as large as the anchor says, that takes no click', [Math.abs(column.getBoundingClientRect().width - column.querySelector('svg').getBoundingClientRect().width) < 2, getComputedStyle(column).pointerEvents], [true, 'none']);
+        check('drawing the charts changes nothing: unmodified, exported as the file', [grid.IsModified(), (await grid.ExportXlsx()).length === original.length], [false, true]);
+        await shoot('chart-zoo');
+        // A cell a series reads changes: the chart is drawn again, with its values and its scale.
+        const start = performance.now();
+        grid.EnterText(2, 1, '60'); await frame();
+        const after = bars();
+        check('B3 = 60: the second bar is the highest now', [after.length, after[1] > after[3] * 1.9, drawn()[titles.indexOf('Column')] === column], [4, true, true]);
+        note(`an entry that six charts read, with its frame: ${(performance.now() - start).toFixed(1)} ms`);
+        grid.Undo(); await frame();
+        check('undone: the bars as they were', bars().map((height) => Math.round(height)), before.map((height) => Math.round(height)));
+        // A cell no chart reads: nothing is drawn again.
+        const svgBefore = column.querySelector('svg');
+        grid.EnterText(30, 12, 'x'); await frame();
+        check('an entry no chart reads... (the cells of the sheet changed: drawn again, the same)', bars().map((height) => Math.round(height)), before.map((height) => Math.round(height)));
+        grid.Undo(); await frame();
+        // The dashboards: charts inside group shapes, shapes with text, slicers as labelled frames.
+        for (const [file, sheet] of [['tests/real-world/dashboard-ecommerce-sales.xlsx', 'Dashboard'], ['tests/real-world/dashboard-sales-analysis.xlsx', 'Dashboard']]) {
+            const bytes = await bytesOf(file);
+            await grid.ImportXlsx(bytes.slice());
+            const index = grid.GetSheetNames().indexOf(sheet);
+            grid.SwitchSheet(index); await frame();
+            const objects = grid.GetDrawings();
+            const inGroups = drawn().reduce((count, node) => count + node.querySelectorAll('svg g[clip-path]').length, 0);
+            const whole = drawn().filter((node) => node.querySelector('svg > rect, svg > text, svg > path, svg > g') !== null).length;
+            note(`${file.split('/').pop()} "${sheet}": ${objects.length} objects, ${drawn().length} drawn (${inGroups} charts inside groups), ${host.querySelectorAll('.spreadsheet-object-label').length} labelled frames`);
+            check(`${file.split('/').pop()}: objects are drawn, charts inside groups among them`, [drawn().length > 0, whole > 0, inGroups + drawn().filter((node) => node.className.includes('spreadsheet-object-chart')).length >= 3], [true, true, true]);
+            check('... and the workbook is unmodified', grid.IsModified(), false);
+            await shoot(`${file.split('/').pop()} ${sheet}`);
+        }
+    } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
+    finally { grid.Dispose(); host.remove(); }
     return lines;
 };

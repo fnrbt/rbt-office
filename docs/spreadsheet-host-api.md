@@ -674,6 +674,48 @@ On the active sheet. Every mutating member is one undo step (no recalculation), 
 - Charts and other kept objects are not movable through this API (the members throw); they keep following their cells.
 - XLSX: pictures are written into the sheet's drawing part beside the kept charts (which stay byte for byte); identical image data is one media part; deleting the last drawing object of a sheet drops its drawing part and media.
 
+## Charts and shapes of a file (0.1.15)
+
+A chart, a shape, a connector or a group of them that an opened file has on a sheet is **drawn in the grid** (before: a labelled
+frame for each). Nothing of it can be edited, and nothing of it is changed: the drawing part and the chart parts are written back as
+they were read (see "Parts the editor does not model"); drawing them does not modify the workbook.
+
+- **What a host sees.** The object's node is `div.spreadsheet-drawing.spreadsheet-object.spreadsheet-object-<kind>` (`kind`: `chart` |
+  `shape` | `other`, as `GetDrawings()` gives it) with `data-drawing-id`; when it is drawn it also has the class
+  **`spreadsheet-object-drawn`** and holds one `<svg>` of the size of the anchor (`pointer-events: none`: clicks go to the cells under
+  it, as before). An object that is not drawn keeps the frame with its label (`span.spreadsheet-object-label`).
+- **Charts** (`c:chartSpace` parts): bar and column charts (clustered, stacked, 100 % stacked; `gapWidth`, `overlap`), line charts
+  (markers), pie and doughnut charts (`holeSize`, `firstSliceAng`, several rings), area charts (standard, stacked), scatter charts,
+  and combinations of these with a **secondary value axis** at the right; the title (the series' name for a chart with one series
+  whose title was not deleted), the legend (right, left, top, bottom, top right), value and category axes with the axis' or the
+  cells' number format and an automatic scale (Excel's: zero is an end unless the values are close together far from it; room above
+  the largest value; `min` / `max` / `majorUnit` when the axis states them; reversed axes), major grid lines, the series' and
+  points' colours (`c:spPr`, `c:dPt`: `srgbClr`, `schemeClr` with `lumMod` / `lumOff` / `tint` / `shade` / `alpha` through the
+  workbook's theme; without one the theme's accents in turn, as Excel), line widths and dashes, data labels (value, percentage,
+  category, series name; position), axis titles. Charts inside **group shapes** (`xdr:grpSp`: the dashboards of the corpus) are drawn
+  at their place in the group.
+- **Values are live**: a series reads the cells its `c:f` names (`Sheet1!$B$2:$B$7`, several areas, another sheet) as they are now,
+  with the cells' number formats for labels; a chart is drawn again in the frame after a cell of a sheet it reads changed (an entry
+  that six charts read: 20 - 30 ms with its frame). Where a reference cannot be read - another workbook, a defined name, a sheet
+  that is not there or was not converted yet (`IsSheetLoaded`) - the values the file cached (`c:numCache` / `c:strCache`) are drawn.
+- **Shapes** (`xdr:sp`, `xdr:cxnSp`): fill and outline (colour, width; the shape style's `fillRef` / `lnRef` when the shape states
+  none), preset geometry - rectangle, rounded rectangle (its corner adjustment), ellipse, triangle, diamond, line / connectors; any
+  other preset as its rectangle - and the text in its paragraphs and runs (size, colour, bold, italic; alignment, vertical anchor,
+  insets), broken between words to the shape's width. **Pictures inside groups** are drawn at their place.
+- **Not drawn (the labelled frame stays, or - inside a group - a box with the object's name):** slicers and timelines, charts of
+  the newer kinds (`cx:chart`: map, treemap, sunburst, waterfall, funnel, histogram), 3-D charts, radar, stock, surface and bubble
+  charts, form controls. Not honoured in what is drawn: manual positions (`c:layout`) of the title, the legend and the plot area;
+  gradient and pattern fills (their first colour is used), shadows and other effects; trend lines and error bars; rotated shapes
+  and custom geometry (`a:custGeom`); text in columns. Text is measured as Calibri: in a browser without that font it is a little
+  wider than its place. The canvas painter (`RenderPortableCanvas`) and the PDF still draw the labelled frame.
+- An error while an object is drawn is reported to `OnError` with source `"drawing"`; the object then keeps its labelled frame.
+- For other renderers the same model and layout are in `dist/spreadsheet/Charts.js` (F#: `Rbt.Spreadsheet.Charts`, no DOM):
+  `parseTheme(xml) -> theme`, `parseChart(theme, chartPartXml) -> Chart | undefined`, `layoutChart(theme, data, chart, width, height)
+  -> Scene` (rectangles, ellipses, lines, polylines, paths, texts, pictures, groups - in the pixels of the rectangle),
+  `objectScene(parts, data, anchorXml, width, height) -> Scene | undefined` for an anchor of a drawing (`parts`: `{ Theme, Chart(relId),
+  Picture(relId) }`; `data`: `{ Cells(sheet, row0, col0, row1, col1), Display(cell), Format(code, number) }`) and `sceneSvg(scene)`.
+  (Compiled F#: functions of several arguments are curried when they are passed around; call them with all their arguments.)
+
 ## Find and replace (group 11)
 A search reads the sheet on display, or every sheet that has a tab. Replacing is an undo step; searching and stepping are not changes.
 

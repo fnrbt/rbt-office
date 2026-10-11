@@ -13,6 +13,7 @@ module SpreadsheetPaint = Rbt.Spreadsheet.Paint
 module SpreadsheetCellText = Rbt.Spreadsheet.CellText
 module SpreadsheetInput = Rbt.Spreadsheet.Input
 module SheetOps = Rbt.Spreadsheet.SheetOps
+module SpreadsheetCharts = Rbt.Spreadsheet.Charts
 module Host = Rbt.Spreadsheet.HostShapes
 
 // Additional helpers
@@ -153,6 +154,9 @@ let private canvasText (ctx: obj) (text: string) (x: float) (y: float) (fontSize
 // rotation; the caller positions the anchor so the rotated bbox aligns.
 [<Emit("$0.save(); $0.translate($3, $4); $0.rotate($5); $0.fillStyle = $6; $0.font = ($7 ? 'bold ' : '') + ($8 ? 'italic ' : '') + $2 + 'px ' + $9 + ', sans-serif'; $0.textBaseline = 'alphabetic'; $0.textAlign = 'left'; $0.fillText($1, 0, 0); $0.restore()")>]
 let private canvasTextRotated (ctx: obj) (text: string) (fontSize: float) (tx: float) (ty: float) (angle: float) (color: string) (bold: bool) (italic: bool) (fontName: string): unit = jsNative
+
+[<Emit("$0.innerHTML = $1")>]
+let private setInnerHtml (el: Element) (html: string): unit = jsNative
 
 // Pictures: one object URL and one decoded <img> per picture's data, shared
 // by the DOM renderer and the canvas painter.
@@ -861,6 +865,95 @@ type Spreadsheet(container: Element) =
         formulaSheetsConverted <- true
         for index in 0 .. sheets.Length - 1 do
             if index <> activeSheetIndex then convertInPlace index
+
+    // --- charts and shapes of the drawing --------------------------------------------
+    // A chart, a shape or a group of an opened file is drawn from the parts of the file
+    // (`SpreadsheetCharts`): the chart part its anchor names, with the values of the cells its
+    // series read as they are now. The parts themselves are never changed.
+    /// The parts of the opened file by path and its theme (made when a kept object is first drawn).
+    let mutable drawingSource : (int * System.Collections.Generic.Dictionary<string, byte[]> * SpreadsheetCharts.ThemeColors) option = None
+    /// The chart parts that were read, by path (None: not a chart that is drawn).
+    let chartModels = System.Collections.Generic.Dictionary<string, SpreadsheetCharts.Chart option>()
+    /// The frames on display that hold a drawn object: the node, its drawing, its size, and the sheets its charts read.
+    let chartFrames = ResizeArray<Element * SheetDrawing * float * float * string array>()
+    /// The cells of every sheet as the charts on display were last drawn from them.
+    let mutable chartStamp : obj array = [||]
+    let drawingPartsOf (sheet: SpreadsheetModel) : SpreadsheetCharts.DrawingParts option =
+        match xlsxSource, sheet.SourceSheet with
+        | Some source, Some origin when origin.Book = source.Id && origin.Sheet >= 0 && origin.Sheet < source.Workbook.Sheets.Length ->
+            let parts, theme =
+                match drawingSource with
+                | Some (id, parts, theme) when id = source.Id -> parts, theme
+                | _ ->
+                    let parts = System.Collections.Generic.Dictionary<string, byte[]>()
+                    for path, data in source.Workbook.Preserved.Parts do parts.[path] <- data
+                    let theme =
+                        match source.Workbook.Preserved.ThemePath with
+                        | Some path when parts.ContainsKey path -> SpreadsheetCharts.parseTheme (System.Text.Encoding.UTF8.GetString parts.[path])
+                        | _ -> SpreadsheetCharts.defaultTheme
+                    drawingSource <- Some (source.Id, parts, theme)
+                    chartModels.Clear()
+                    parts, theme
+            let relationships = (List.item origin.Sheet source.Workbook.Sheets).Extras.DrawingRelationships
+            let target (id: string) =
+                relationships |> List.tryPick (fun (known, _, target, isExternal) -> if known = id && not isExternal then Some (ZipInterop.normalizePath target) else None)
+            Some { Theme = theme
+                   Chart =
+                    (fun id ->
+                        target id
+                        |> Option.bind (fun path ->
+                            match chartModels.TryGetValue path with
+                            | true, known -> known
+                            | false, _ ->
+                                let read =
+                                    match parts.TryGetValue path with
+                                    | true, data -> SpreadsheetCharts.parseChart theme (System.Text.Encoding.UTF8.GetString data)
+                                    | false, _ -> None
+                                chartModels.[path] <- read
+                                read))
+                   Picture =
+                    (fun id ->
+                        target id
+                        |> Option.bind (fun path ->
+                            match parts.TryGetValue path with
+                            | true, data ->
+                                let extension = (match path.LastIndexOf '.' with -1 -> "" | at -> path.Substring(at + 1).ToLowerInvariant())
+                                let contentType =
+                                    match extension with
+                                    | "png" -> "image/png" | "jpg" | "jpeg" -> "image/jpeg" | "gif" -> "image/gif" | "svg" -> "image/svg+xml" | "bmp" -> "image/bmp" | "webp" -> "image/webp"
+                                    | _ -> ""
+                                if contentType = "" then None else Some (pictureUrl data contentType)
+                            | false, _ -> None)) }
+        | _ -> None
+    /// What a chart reads of the workbook; `seen` gets the sheets it read (by name, in capitals).
+    let chartDataReading (seen: System.Collections.Generic.HashSet<string>) : SpreadsheetCharts.ChartData =
+        { Cells =
+            (fun name r0 c0 r1 c1 ->
+                match sheetNames |> Array.tryFindIndex (fun known -> known.Equals(name, System.StringComparison.OrdinalIgnoreCase)) with
+                | Some index ->
+                    let sheet = if index = activeSheetIndex then model else sheets.[index]
+                    // (A sheet that was not converted yet holds what the file holds: the chart's cache says the same.)
+                    if isDeferredSheet sheet || float (r1 - r0 + 1) * float (c1 - c0 + 1) > 200000.0 then None
+                    else
+                        seen.Add (name.ToUpperInvariant()) |> ignore
+                        Some (Array.init (r1 - r0 + 1) (fun r -> Array.init (c1 - c0 + 1) (fun c -> getCell { Row = r0 + r; Col = c0 + c } sheet)))
+                | None -> None)
+          Display = (fun cell -> SpreadsheetCellText.cellDisplayTextIn model.Date1904 None 1.0e6 cell.Format cell.Value)
+          Format = (fun code value -> SpreadsheetCellText.formatNumberWithCodeIn model.Date1904 code value) }
+    /// A kept object of the sheet on display as SVG for its rectangle, with the sheets its charts
+    /// read; None for what is not drawn (the frame then says what the object is).
+    let objectSvg (xml: string) (width: float) (height: float) : (string * string array) option =
+        try
+            drawingPartsOf model
+            |> Option.bind (fun parts ->
+                let seen = System.Collections.Generic.HashSet<string>()
+                SpreadsheetCharts.objectScene parts (chartDataReading seen) xml width height
+                |> Option.map (fun scene -> SpreadsheetCharts.sceneSvg scene, Seq.toArray seen))
+        with error ->
+            // (A part that cannot be drawn is a frame that says what it is; the error is the host's to see.)
+            reportError "drawing" (box error)
+            None
+    let cellsStamp () : obj array = Array.init sheets.Length (fun index -> box (if index = activeSheetIndex then model.Cells else sheets.[index].Cells))
 
     let currentViewport (): SpreadsheetLayout.Viewport = {
         ScrollX = scrollLeft
@@ -4139,6 +4232,8 @@ type Spreadsheet(container: Element) =
             renderedDrawingsPanes <- panes
             for node in drawingNodes do detach node
             drawingNodes.Clear()
+            chartFrames.Clear()
+            chartStamp <- cellsStamp ()
             let frozenW = metrics.ColPrefix.[frozenCols]
             let frozenH = metrics.RowPrefix.[frozenRows]
             let paneElements = match layers with Some layer -> layer.Panes | None -> [| content; content; content; content |]
@@ -4150,10 +4245,23 @@ type Spreadsheet(container: Element) =
                 if rect.Width >= 1.0 && rect.Height >= 1.0 then
                     let label = SpreadsheetLayout.drawingLabel drawing
                     let takesPointer = (match drawing.Content with Picture _ -> not readOnly | KeptObject _ -> false)
+                    // A chart, a shape or a group of them is drawn from the file's parts (None: a frame that says what it is).
+                    let drawn =
+                        match drawing.Content with
+                        | KeptObject (_, xml) -> objectSvg xml rect.Width rect.Height
+                        | Picture _ -> None
                     // The drawing's node at (left, top) of its parent.
                     let build (left: float) (top: float) : Element =
                         let node =
                             match drawing.Content with
+                            | KeptObject (kind, _) when drawn.IsSome ->
+                                let svg, reads = drawn.Value
+                                let frame = createElement "div"
+                                setClassName frame ("spreadsheet-drawing spreadsheet-object spreadsheet-object-" + kind + " spreadsheet-object-drawn")
+                                setStyles frame [ "overflow", "hidden"; "box-sizing", "border-box" ]
+                                setInnerHtml frame svg
+                                chartFrames.Add ((frame, drawing, rect.Width, rect.Height, reads))
+                                frame
                             | Picture (contentType, _, data) ->
                                 let image = createElement "img"
                                 setAttribute image "src" (pictureUrl data contentType)
@@ -4235,6 +4343,26 @@ type Spreadsheet(container: Element) =
                                 appendChild part (build (rect.X - x0) (rect.Y - y0))
                                 appendChild paneElements.[pane] part
                                 drawingNodes.Add part
+        elif chartFrames.Count > 0 then
+            // The same drawings at the same places: a chart whose cells changed is drawn again.
+            let stamp = cellsStamp ()
+            if stamp.Length <> chartStamp.Length || not (Array.forall2 (fun (a: obj) (b: obj) -> obj.ReferenceEquals(a, b)) stamp chartStamp) then
+                let changed =
+                    [| for index in 0 .. stamp.Length - 1 do
+                        if index >= chartStamp.Length || not (obj.ReferenceEquals(stamp.[index], chartStamp.[index])) then
+                            if index < sheetNames.Length then yield sheetNames.[index].ToUpperInvariant() |]
+                chartStamp <- stamp
+                for at in 0 .. chartFrames.Count - 1 do
+                    let frame, drawing, width, height, reads = chartFrames.[at]
+                    if reads |> Array.exists (fun name -> Array.contains name changed) then
+                        match drawing.Content with
+                        | KeptObject (_, xml) ->
+                            (match objectSvg xml width height with
+                             | Some (svg, readsNow) ->
+                                setInnerHtml frame svg
+                                chartFrames.[at] <- (frame, drawing, width, height, readsNow)
+                             | None -> ())
+                        | Picture _ -> ()
         renderPictureFrame content
 
     /// The frame around the selected picture, with its eight handles. While
@@ -6989,6 +7117,10 @@ type Spreadsheet(container: Element) =
         let active =
             if activeIndex >= 0 && activeIndex < models.Length then activeIndex
             else imported.Sheets |> Array.tryFindIndex (fun sheet -> sheet.Visible) |> Option.defaultValue 0
+        // (The source first: the sheet's charts and shapes are drawn from its parts, and the
+        // workbook is drawn when it is installed. InstallWorkbook keeps a source its sheets name.)
+        if models.Length > 0 then
+            xlsxSource <- Some imported.Source
         this.InstallWorkbook(models, names, active, Some imported.Context)
         if models.Length > 0 then
             xlsxSource <- Some imported.Source

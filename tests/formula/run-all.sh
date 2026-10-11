@@ -67,6 +67,7 @@ stages=(
     stage49-chrome
     stage50-date1904
     stage51-resultformat
+    stage52-charts
     numbertext
 )
 

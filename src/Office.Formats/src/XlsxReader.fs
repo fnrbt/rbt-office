@@ -5295,8 +5295,27 @@ let private anchorOf (node: XmlNode) : SheetAnchor option =
 /// The pictures and other objects of a sheet's drawing part. A picture is read
 /// into the model (anchor, size, data); anything else (a chart, a shape, a
 /// group) is kept as its anchor element, to be written back as it is.
+let private drawingTextPattern = System.Text.RegularExpressions.Regex("<a:t>([^<]*)</a:t>")
+/// The spaces at the ends of the texts of a drawing (`<a:t> sold by</a:t>`: a run that begins
+/// with the space between two words) are text: the parser drops white space at the ends of a
+/// text, so they are held by a character it keeps while the part is read (`drawingSpace`) and
+/// are spaces again in what is kept of the part.
+let private drawingSpace = "\uE000"
+let private drawingSpacesHeld (xml: string) : string =
+    if xml.IndexOf ("<a:t> ", System.StringComparison.Ordinal) < 0 && xml.IndexOf (" </a:t>", System.StringComparison.Ordinal) < 0 then xml
+    else
+        drawingTextPattern.Replace(xml, (fun (found: System.Text.RegularExpressions.Match) ->
+            let text = found.Groups.[1].Value
+            let inner = text.Trim(' ')
+            if inner.Length = text.Length then found.Value
+            elif inner.Length = 0 then "<a:t>" + String.replicate text.Length drawingSpace + "</a:t>"
+            else
+                let lead = text.Length - text.TrimStart(' ').Length
+                let trail = text.Length - text.TrimEnd(' ').Length
+                "<a:t>" + String.replicate lead drawingSpace + inner + String.replicate trail drawingSpace + "</a:t>"))
+
 let private readDrawing (source: PartSource) (drawingPath: string) : SheetImage list * SheetObject list * (string * string * string * bool) list =
-    match source.Text drawingPath |> Option.map XmlDsl.parse with
+    match source.Text drawingPath |> Option.map (drawingSpacesHeld >> XmlDsl.parse) with
     | Some (XmlDsl.Element (_, rootAttrs, anchors) as root) ->
         let rels = relationshipsOf source drawingPath
         let images = ResizeArray<SheetImage>()
@@ -5337,7 +5356,7 @@ let private readDrawing (source: PartSource) (drawingPath: string) : SheetImage 
                         { Anchor = anchor
                           Kind = kind
                           Name = Ns.descendantsNs "cNvPr" node |> List.tryHead |> Option.bind (Xml.attr "name")
-                          Xml = DocxReader.selfContainedXml rootAttrs (DocxReader.Docx.xmlToString node) }
+                          Xml = (DocxReader.selfContainedXml rootAttrs (DocxReader.Docx.xmlToString node)).Replace(drawingSpace, " ") }
             | None -> ()
         ignore root
         // Relationships the kept objects refer to, with absolute targets.

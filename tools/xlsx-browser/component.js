@@ -600,7 +600,8 @@ checks['drawings-in-grid'] = async () => {
                 if (!/synthetic/.test(short)) check(`${short}: the picture decodes`, image.naturalWidth > 0, true);
             }
             const frame = nodes().find((n) => n.tagName === 'DIV');
-            if (frame) check(`${short}: a kept object's frame says what it is`, /^(Chart|Shape|Object)/.test(frame.textContent), true);
+            // (Drawn - a chart, a shape - or a frame with its label; either way its title says what it is.)
+            if (frame) check(`${short}: a kept object is drawn or its frame says what it is`, [/^(Chart|Shape|Object)/.test(frame.title), frame.querySelector('svg') !== null || /^(Chart|Shape|Object)/.test(frame.textContent)], [true, true]);
             check(`${short}: every drawing has a size on screen`, boxes().every((b) => b[2] >= 1 && b[3] >= 1), true);
             // The portable painter paints them too.
             const canvas = document.createElement('canvas');
