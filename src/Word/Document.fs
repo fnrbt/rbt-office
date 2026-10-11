@@ -2236,12 +2236,86 @@ let private backwardStep buffer offset =
     else 1
 
 /// Delete forward (Delete key)
+// ---- the mark of a comment -----------------------------------------------------
+//
+// A comment that was read stands in the text as its mark, "[Comment 5]": the
+// place of the reference to it (w:commentReference), shown so. The mark is
+// one thing: the caret is before it or after it, never in it - an arrow key
+// steps over it, a click in it goes to its nearer end, a selection has all of
+// it or nothing - text is typed before or after it, and Backspace after it
+// (Delete before it) takes all of it. (Text typed into its middle used to
+// part it in two marks of the same comment.)
+
+/// Where the marks of comments are in a paragraph's text: (start, end) of each.
+let commentMarkRanges (para: ParagraphBlock) : (int * int) list =
+    if not (para.Buffer.Runs |> List.exists (function Text run -> run.Style.CommentId.IsSome | Image _ -> false)) then []
+    else
+        let found = ResizeArray<int * int>()
+        // (The runs of one comment that stand together: a part of the mark may be formatted.)
+        let mutable current : (string * int * int) option = None
+        let close () =
+            match current with
+            | Some (id, start, fin) ->
+                if Rope.slice start (fin - start) para.Buffer.Rope = "[Comment " + id + "]" then found.Add ((start, fin))
+                current <- None
+            | None -> ()
+        for run in para.Buffer.Runs do
+            match run with
+            | Text text when text.Style.CommentId.IsSome ->
+                let id = text.Style.CommentId.Value
+                match current with
+                | Some (known, start, fin) when known = id && fin = text.Start -> current <- Some (id, start, text.Start + text.Length)
+                | _ ->
+                    close ()
+                    current <- Some (id, text.Start, text.Start + text.Length)
+            | _ -> close ()
+        close ()
+        List.ofSeq found
+
+/// `doc` with no end of its selection inside the mark of a comment. `previous`
+/// is the selection before the change that led to `doc`: a caret that came one
+/// step into a mark from one of its ends goes on to the other end; any other
+/// position in a mark becomes the nearer end.
+let snapSelectionToMarks (previous: Selection option) (doc: Document) : Document =
+    match doc.Selection with
+    | None -> doc
+    | Some sel when (match previous with Some was -> obj.ReferenceEquals(was, sel) | None -> false) -> doc
+    | Some sel ->
+        let snap (position: Position) (was: Position option) : Position =
+            match findParagraph doc position.BlockId with
+            | None -> position
+            | Some para ->
+                match commentMarkRanges para |> List.tryFind (fun (start, fin) -> position.Offset > start && position.Offset < fin) with
+                | None -> position
+                | Some (start, fin) ->
+                    let stepped =
+                        match was with
+                        | Some before when before.BlockId = position.BlockId && before.Offset = start && position.Offset = start + 1 -> Some fin
+                        | Some before when before.BlockId = position.BlockId && before.Offset = fin && position.Offset = fin - 1 -> Some start
+                        | _ -> None
+                    let offset = stepped |> Option.defaultValue (if position.Offset - start < fin - position.Offset then start else fin)
+                    { position with Offset = offset }
+        let focus = snap sel.Focus (previous |> Option.map (fun was -> was.Focus))
+        let anchor = if sel.Anchor = sel.Focus then focus else snap sel.Anchor None
+        if focus.Offset = sel.Focus.Offset && anchor.Offset = sel.Anchor.Offset then doc
+        else { doc with Selection = Some { Anchor = anchor; Focus = focus } }
+
+/// The mark of a comment that ends (`atEnd`) or starts at a collapsed caret, selected whole.
+let private markSelectedAtCaret (atEnd: bool) (doc: Document) : Document option =
+    match doc.Selection with
+    | Some sel when sel.IsCollapsed ->
+        findParagraph doc sel.Focus.BlockId
+        |> Option.bind (fun para -> commentMarkRanges para |> List.tryFind (fun (start, fin) -> (if atEnd then fin else start) = sel.Focus.Offset))
+        |> Option.map (fun (start, fin) -> { doc with Selection = Some { Anchor = { sel.Focus with Offset = start }; Focus = { sel.Focus with Offset = fin } } })
+    | _ -> None
+
 let deleteForward doc =
     match doc.Selection with
     | None -> doc
     | Some sel when not sel.IsCollapsed ->
         // Delete selection if active
         deleteSelection doc
+    | Some _ when (markSelectedAtCaret false doc).IsSome -> deleteSelection (markSelectedAtCaret false doc).Value
     | Some sel ->
         match findParagraph doc sel.Focus.BlockId with
         | None -> doc
@@ -2327,6 +2401,8 @@ let moveCursorToLineEnd doc =
 
 /// Insert text at cursor
 let insertText text doc =
+    // (Not into the mark of a comment: before it or after it.)
+    let doc = snapSelectionToMarks None doc
     match doc.Selection with
     | None -> doc
     | Some sel ->
@@ -2485,6 +2561,7 @@ let deleteBackward doc =
     | Some sel when sel.Focus.Offset = 0 ->
         // At start of block, merge with previous
         mergeWithPrevious doc sel.Focus.BlockId
+    | Some _ when (markSelectedAtCaret true doc).IsSome -> deleteSelection (markSelectedAtCaret true doc).Value
     | Some sel ->
         match findParagraph doc sel.Focus.BlockId with
         | None -> doc
@@ -4026,6 +4103,7 @@ let private adjacentInsertRevisionId doc (pos: Position) author date =
 
 /// Insert text while recording the inserted run as a revision.
 let insertTrackedText author date text doc =
+    let doc = snapSelectionToMarks None doc
     let author = if System.String.IsNullOrWhiteSpace author then None else Some author
     let date = if System.String.IsNullOrWhiteSpace date then None else Some date
     let deletionRevisionId = nextRevisionId doc
@@ -4145,6 +4223,7 @@ let trackDeleteForward author date doc =
     match doc.Selection with
     | None -> doc
     | Some sel when not sel.IsCollapsed -> trackDeleteSelection author date doc
+    | Some _ when (markSelectedAtCaret false doc).IsSome -> trackDeleteSelection author date (markSelectedAtCaret false doc).Value
     | Some sel ->
         match findParagraph doc sel.Focus.BlockId with
         | None -> doc
@@ -4164,6 +4243,7 @@ let trackDeleteBackward author date doc =
     match doc.Selection with
     | None -> doc
     | Some sel when not sel.IsCollapsed -> trackDeleteSelection author date doc
+    | Some _ when (markSelectedAtCaret true doc).IsSome -> trackDeleteSelection author date (markSelectedAtCaret true doc).Value
     | Some sel ->
         match findParagraph doc sel.Focus.BlockId with
         | None -> doc

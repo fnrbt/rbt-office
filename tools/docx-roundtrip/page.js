@@ -1045,9 +1045,8 @@ const EDIT_PASSES = {
     'bold chosen at a caret, 5 characters typed': (editor, id, end) => pendingTyped(editor, id, end, 5),
 };
 const pendingTyped = (editor, id, end, count) => {
-    let at = Math.max(1, Math.floor(end / 3));
-    // (Not inside the mark of a comment: the mark is one reference, and text typed into its middle would part it.)
-    for (const anchor of Word.getCommentAnchors(editor)) if (anchor.BlockId === id && at > anchor.StartOffset && at < anchor.EndOffset) at = anchor.EndOffset;
+    // (Where that is inside the mark of a comment the caret goes to the mark's nearer end: the mark is one thing.)
+    const at = Math.max(1, Math.floor(end / 3));
     Word.setSelection(editor, id, at, id, at);
     Word.toggleBold(editor);
     for (let index = 0; index < count; index++) Word.insertText(editor, 'Q');

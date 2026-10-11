@@ -171,6 +171,15 @@ permissions (`w:commentRangeStart`, `w:permStart` and their ends). A block
 that is deleted takes the bookmark that started in it: its end is not left
 behind in the text after it.
 
+## Comments
+
+A comment that was read stands in the text as its mark, `[Comment 5]`: the
+place of its reference. The mark is one thing. `setSelection` into it goes
+to its nearer end (so does a click), an arrow key steps over it, a selection
+has all of it or none of it, text is typed before or after it, and Backspace
+after it (Delete before it) removes it whole. A host that kept a position
+inside a mark gets the end of the mark back from `getSelection`.
+
 ## Fields
 
 Text typed into the result of a field - also with a format chosen at the

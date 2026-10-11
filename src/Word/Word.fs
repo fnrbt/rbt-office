@@ -153,6 +153,8 @@ module API =
     /// becomes one step in the same undo history as keystrokes; a change that
     /// only moves the selection is shown without being recorded.
     let private commitDocumentUpdate (editor: Editor) newDoc =
+        // (No end of the selection inside the mark of a comment: see Doc.snapSelectionToMarks.)
+        let newDoc = Doc.snapSelectionToMarks editor.Doc.Selection newDoc
         if not (obj.ReferenceEquals(newDoc, editor.Doc)) then
             Inp.applyEdit editor.Handler "Edit" newDoc
             editor.Doc <- newDoc

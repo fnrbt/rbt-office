@@ -1073,6 +1073,8 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         (nearLeft || nearRight) && (nearTop || nearBottom)
 
     let applyPointerDocumentChange newDoc =
+        // (A click or a drag into the mark of a comment: to one of its ends.)
+        let newDoc = Doc.snapSelectionToMarks handler.Document.Selection newDoc
         if not (documentsEqualForChange newDoc handler.Document) then
             dropPendingFormat handler newDoc
             handler.Document <- newDoc
@@ -1328,6 +1330,8 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             // Also when the document compares equal (undoing a no-op step
             // must still pop it).
             handler.History <- (if stepped then newHistory else storyHistory handler handler.History newHistory)
+        // (A caret moved into the mark of a comment goes on to its other end: see Doc.snapSelectionToMarks.)
+        if not useCommand then newDoc <- Doc.snapSelectionToMarks handler.Document.Selection newDoc
         if not (documentsEqualForChange newDoc handler.Document) then
             if not useCommand then
                 // Shortcuts that changed the document without building a
@@ -1662,6 +1666,8 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
 /// Show a document without touching the undo history (selection changes,
 /// re-renders).
 let updateDocument (handler: InputHandler) (doc: Doc.Document) =
+    // (No end of the selection in the mark of a comment: see Doc.snapSelectionToMarks.)
+    let doc = Doc.snapSelectionToMarks handler.Document.Selection doc
     dropPendingFormat handler doc
     handler.Document <- doc
     renderWithHover handler.RenderContext doc None

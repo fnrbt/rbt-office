@@ -1234,6 +1234,28 @@ check "typed inside a field's parts" ((getStyleAt 3 (insert 3 "Q" fieldPartsBuff
 check "typed between two fields" ((getStyleAt 6 (insert 6 "Q" fieldPartsBuffer)).FieldCode) None
 check "typed after a field" ((getStyleAt 11 (insert 11 "Q" fieldPartsBuffer)).FieldCode) None
 
+// The mark of a comment is one thing to the caret, to typing and to Backspace / Delete.
+let commentMarkDoc (offset: int) =
+    let mark = { defaultStyle with CommentId = Some "5"; CommentText = Some "a comment" }
+    let buffer =
+        { Rope = Rbt.Word.Rope.ofString "ab[Comment 5]cd"
+          Runs = [ Text { Start = 0; Length = 2; Style = defaultStyle }
+                   Text { Start = 2; Length = 4; Style = { mark with Bold = true } }
+                   Text { Start = 6; Length = 7; Style = mark }
+                   Text { Start = 13; Length = 2; Style = defaultStyle } ] }
+    { Doc.empty with
+        Blocks = [ Doc.Paragraph (para "cm1" buffer) ]
+        Selection = Some { Anchor = { BlockId = "cm1"; Offset = offset }; Focus = { BlockId = "cm1"; Offset = offset } } }
+let commentMarkText (doc: Doc.Document) = match Doc.findParagraph doc "cm1" with Some p -> toString p.Buffer | None -> ""
+let commentMarkFocus (doc: Doc.Document) = match doc.Selection with Some sel -> sel.Focus.Offset | None -> -1
+check "comment mark range" (Doc.findParagraph (commentMarkDoc 0) "cm1" |> Option.map Doc.commentMarkRanges) (Some [ 2, 13 ])
+check "comment mark: a caret in it goes to the nearer end" ([ 3; 7; 8; 12 ] |> List.map (fun at -> commentMarkFocus (Doc.snapSelectionToMarks None (commentMarkDoc at)))) [ 2; 2; 13; 13 ]
+check "comment mark: a step into it goes over it" (commentMarkFocus (Doc.snapSelectionToMarks (commentMarkDoc 2).Selection (commentMarkDoc 3)), commentMarkFocus (Doc.snapSelectionToMarks (commentMarkDoc 13).Selection (commentMarkDoc 12))) (13, 2)
+check "comment mark: typed at a place in it" (commentMarkText (Doc.insertText "X" (commentMarkDoc 5))) "abX[Comment 5]cd"
+check "comment mark: Backspace after it" (commentMarkText (Doc.deleteBackward (commentMarkDoc 13))) "abcd"
+check "comment mark: Delete before it" (commentMarkText (Doc.deleteForward (commentMarkDoc 2))) "abcd"
+check "comment mark: Backspace before it" (commentMarkText (Doc.deleteBackward (commentMarkDoc 2))) "a[Comment 5]cd"
+
 let boundaryReplaceBuffer =
     { Rope = Rbt.Word.Rope.ofString "abtargetcd"
       Runs =
