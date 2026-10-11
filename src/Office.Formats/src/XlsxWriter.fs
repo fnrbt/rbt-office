@@ -2160,15 +2160,13 @@ let private commentsXml (runs: ((int * int) * (string * XlsxReader.RunProps) lis
     let comments = cells |> List.choose (fun c -> c.Comment |> Option.map (fun comment -> c, comment))
     if List.isEmpty comments then None
     else
+        // (A note without an author is no one's: it names an empty entry of the list, not the first author.)
         let authors =
             comments
-            |> List.choose (fun (_, (_, author)) -> author)
-            |> fun xs -> if List.isEmpty xs then [ "" ] else xs
+            |> List.map (fun (_, (_, author)) -> author |> Option.defaultValue "")
             |> List.distinct
-        let authorIndex author =
-            match author with
-            | Some a -> authors |> List.tryFindIndex ((=) a) |> Option.defaultValue 0
-            | None -> 0
+        let authorIndex (author: string option) =
+            authors |> List.tryFindIndex ((=) (author |> Option.defaultValue "")) |> Option.defaultValue 0
         let authorXml = authors |> List.map (elemText "author") |> String.concat ""
         let commentXml =
             comments

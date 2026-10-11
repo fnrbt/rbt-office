@@ -3624,9 +3624,10 @@ type Spreadsheet(container: Element) =
         match thread, cellData with
         | Some thread, _ -> marker "#7b61ff" (threadText thread)
         | None, Some { Comment = Some comment } ->
+            // (A note whose text begins with its author's name - as Excel writes notes - says the name once.)
             marker "#ff0000" (match comment.Author with
-                              | Some author -> author + ":\n" + comment.Text
-                              | None -> comment.Text)
+                              | Some author when author <> "" && not (comment.Text.StartsWith (author + ":")) -> author + ":\n" + comment.Text
+                              | _ -> comment.Text)
         | _ ->
             if node.HasNote then
                 removeAttribute cell "data-comment"

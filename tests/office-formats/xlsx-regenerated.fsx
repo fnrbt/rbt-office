@@ -254,6 +254,25 @@ do
     sameFormulas "column inserted: every formula reads as the sheet has it" saved edited
     inOrder "column inserted: the part's elements are in the schema's order" now
 
+// ---- a note without an author ------------------------------------------------------
+// It is no one's: the authors list has an empty entry for it (not the first author of the list).
+do
+    let bytes = File.ReadAllBytes(Path.Combine(root, "test-documents-excel/synthetic-sparklines.xlsx"))
+    let opened = Bridge.Import.importWorkbook (XlsxReader.loadBytesNative bytes |> Option.get)
+    let edited = M.resolveSheet opened.Sheets.[0].Model |> Ops.setComment (addr 5 0) "signed" (Some "Ann") |> Ops.setComment (addr 6 0) "unsigned" None
+    let input : Bridge.ExportInput =
+        { Sheets = [| edited |]; Names = [| opened.Sheets.[0].Name |]; Visible = [| true |]
+          ActiveSheetIndex = 0; NameInfo = opened.Context.NameInfo; DefinedNames = opened.Context.Names; Source = Some opened.Source; Macros = None }
+    let saved = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
+    let comments = partsOf saved |> Map.toList |> List.pick (fun (path, data) -> if path.StartsWith "xl/comments" then Some (text data) else None)
+    let authors = [ for found in Regex.Matches(comments, "<author(?:/>|>([^<]*)</author>)") -> found.Groups.[1].Value ]
+    let authorIdOf (reference: string) = int (Regex.Match(comments, sprintf "<comment ref=\"%s\" authorId=\"([0-9]+)\"" reference).Groups.[1].Value)
+    ok "note without an author: the authors list has an empty entry, and the note names it"
+        (List.contains "" authors && List.contains "Ann" authors && List.item (authorIdOf "A7") authors = "" && List.item (authorIdOf "A6") authors = "Ann") (sprintf "%A; A6 %d, A7 %d" authors (authorIdOf "A6") (authorIdOf "A7"))
+    let again = (Bridge.Import.importWorkbook (XlsxReader.loadBytesNative saved |> Option.get)).Sheets.[0].Model |> M.resolveSheet
+    let authorAt at = M.getCell at again |> Option.bind (fun cell -> cell.Comment) |> Option.map (fun note -> note.Author |> Option.defaultValue "")
+    ok "note without an author: read back, it is not the other note's author's" (authorAt (addr 6 0) = Some "" && authorAt (addr 5 0) = Some "Ann") (sprintf "%A %A" (authorAt (addr 5 0)) (authorAt (addr 6 0)))
+
 // ---- sparklines follow their cells ----------------------------------------------
 do
     let bytes = File.ReadAllBytes(Path.Combine(root, "test-documents-excel/synthetic-sparklines.xlsx"))

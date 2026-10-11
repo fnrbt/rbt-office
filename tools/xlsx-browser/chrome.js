@@ -592,6 +592,27 @@ checks['export-edited-sheet-keeps-part'] = async () => {
     return lines;
 };
 
+// A note whose text already starts with its author's name says the name once (`data-comment`); a note
+// edited without an author keeps its author.
+checks['comment-author-once'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    try {
+        const said = (row, col) => host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"]`)?.getAttribute('data-comment');
+        grid.SetComment(1, 1, 'BIWS:\n4% tax', 'BIWS');
+        grid.SetComment(2, 1, 'a remark', 'BIWS');
+        await frame();
+        check('a text that starts with the author: the author is said once', said(1, 1), 'BIWS:\n4% tax');
+        check('a text that does not: the author, then the text', said(2, 1), 'BIWS:\na remark');
+        grid.SetComment(2, 1, 'another remark');
+        await frame();
+        check('edited without an author: the note keeps its author', [grid.GetComment(2, 1).author, said(2, 1)], ['BIWS', 'BIWS:\nanother remark']);
+    } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
+    finally { close(); }
+    return lines;
+};
+
 // A sheet of a file can be extended below its last used row and right of its last used column: the arrow
 // keys leave the used range, typing lands in the new cell, a cell beyond the grid can be written (SetCell)
 // and pasted into; the saved file has the new cells.

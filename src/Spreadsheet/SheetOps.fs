@@ -2115,15 +2115,23 @@ let private withNote (addr: CellAddress) (note: CellComment option) (marked: boo
         if note.IsNone && not marked then model
         else { model with Cells = Map.add addr { Value = CellValue.Empty; Format = { defaultFormat with HasComment = marked }; Comment = note } model.Cells }
 
+/// The author a note set on a cell has: the one given, else the one the
+/// cell's note has now (an edit of a note keeps its author).
+let private noteAuthor (addr: CellAddress) (author: string option) (model: SpreadsheetModel) : string option =
+    match author with
+    | Some _ -> author
+    | None -> Map.tryFind addr model.Cells |> Option.bind (fun cell -> cell.Comment) |> Option.bind (fun note -> note.Author)
+
 /// Put a comment on a cell. A cell without one, or with a note, gets the
-/// note; on a cell with a thread the text (and, when given, the author) of
-/// the thread's first comment changes and the replies stay.
+/// note (a note that is there keeps its author unless one is given); on a
+/// cell with a thread the text (and, when given, the author) of the
+/// thread's first comment changes and the replies stay.
 let setComment (addr: CellAddress) (text: string) (author: string option) (model: SpreadsheetModel) : SpreadsheetModel =
     match Map.tryFind addr model.Threads with
     | Some thread ->
         let edited = { thread with Text = text; Author = (match author with Some _ -> author | None -> thread.Author); PersonId = (if author.IsSome && author <> thread.Author then None else thread.PersonId) }
         if edited = thread then model else { model with Threads = Map.add addr edited model.Threads }
-    | None -> withNote addr (Some (plainNote text author)) true model
+    | None -> withNote addr (Some (plainNote text (noteAuthor addr author model))) true model
 
 /// Put a note whose text is in runs on a cell (runs without text do not
 /// count; with no formatting in any run it is a plain note). A thread on the
@@ -2134,7 +2142,7 @@ let setCommentRuns (addr: CellAddress) (runs: (string * RunOverride) list) (auth
     if Map.containsKey addr model.Threads then setComment addr text author model
     else
         let formatted = runs |> List.exists (fun (_, run) -> run <> emptyRunOverride)
-        withNote addr (Some { Text = text; Author = author; Runs = (if formatted then runs else []) }) true model
+        withNote addr (Some { Text = text; Author = noteAuthor addr author model; Runs = (if formatted then runs else []) }) true model
 
 /// Take the comment off a cell: its note and its thread. The same model when it had neither.
 let deleteComment (addr: CellAddress) (model: SpreadsheetModel) : SpreadsheetModel =

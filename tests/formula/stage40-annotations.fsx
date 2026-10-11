@@ -43,7 +43,8 @@ eq "note: on a cell that did not exist" (Ops.commentAt noted (at 1 1) |> Option.
 eq "note: the cell shows the marker" (getCell (at 1 1) noted |> Option.map (fun data -> data.Format.HasComment)) (Some true)
 eq "note: no comment elsewhere" (Ops.commentAt noted (at 0 0)) None
 let renoted = Ops.setComment (at 1 1) "checked" None noted
-eq "note: replaced" (Ops.commentAt renoted (at 1 1) |> Option.map (fun c -> c.Text, c.Author)) (Some ("checked", None))
+// (No author given: the note keeps the one it has.)
+eq "note: replaced" (Ops.commentAt renoted (at 1 1) |> Option.map (fun c -> c.Text, c.Author)) (Some ("checked", Some "Ann"))
 let onValue = Ops.setComment (at 0 0) "one" None empty
 eq "note: the value stays" (getCell (at 0 0) onValue |> Option.map (fun data -> data.Value, data.Comment |> Option.map (fun c -> c.Text))) (Some (CellValue.Number 1.0, Some "one"))
 let removed = Ops.deleteComment (at 1 1) noted
@@ -158,6 +159,16 @@ eq "describe: alternative text and name" ((Ops.describePicture 8 None (Some "our
 eq "describe: an empty text removes it" ((Ops.describePicture 8 (Some "L") (Some "") (Ops.describePicture 8 None (Some "x") twoPictures |> okOf) |> okOf).Drawings.[2] |> fun d -> d.Name, d.Description) (Some "L", None)
 eq "a two-cell anchor becomes a cell and a size when placed" ((Ops.placePicture 1 (at 1 1) 0.0 0.0 30.0 30.0 { twoPictures with Drawings = twoPictures.Drawings |> List.map (fun d -> if d.Id = 1 then { d with Anchor = { d.Anchor with Kind = "twoCell"; ToRow = Some 9; ToCol = Some 9; EditAs = Some "oneCell" } } else d) } |> okOf).Drawings.[0].Anchor |> fun a -> a.Kind, a.ToRow, a.EditAs) ("oneCell", None, None)
 eq "pictures follow rows and columns, keeping their ids" ((applyStructureEdit (InsertRows (0, 2)) (applyStructureEdit (InsertCols (0, 1)) twoPictures)).Drawings |> List.map (fun d -> d.Id, d.Anchor.FromRow, d.Anchor.FromCol)) [ 1, 4, 2; 7, 2, 1; 8, 7, 6 ]
+
+// A note edited without naming an author keeps the author it has.
+do
+    let at : CellAddress = { Row = 3; Col = 3 }
+    let authorOf (model: SpreadsheetModel) = getCell at model |> Option.bind (fun cell -> cell.Comment) |> Option.map (fun note -> note.Text, note.Author)
+    let noted = Ops.setComment at "first" (Some "Ann") (createEmpty 10 10)
+    eq "a note edited without an author keeps its author" (authorOf (Ops.setComment at "second" None noted)) (Some ("second", Some "Ann"))
+    eq "... and takes the author it is given" (authorOf (Ops.setComment at "second" (Some "Bob") noted)) (Some ("second", Some "Bob"))
+    eq "runs set without an author keep the note's author" (authorOf (Ops.setCommentRuns at [ "bold", { emptyRunOverride with Bold = Some true }; " text", emptyRunOverride ] None noted)) (Some ("bold text", Some "Ann"))
+    eq "a new note without an author has none" (authorOf (Ops.setComment at "new" None (createEmpty 10 10))) (Some ("new", None))
 
 printfn "\nAnnotation tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

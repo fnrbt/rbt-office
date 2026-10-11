@@ -2004,7 +2004,7 @@ checks['api-comments'] = async () => {
         grid.Redo();
         check('redo puts it back', grid.GetComment(1, 1)?.text, 'look here');
         grid.SetComment(1, 1, 'look again');
-        check('a note is replaced (no author given: none)', grid.GetComment(1, 1), { text: 'look again', author: null, runs: null, thread: null });
+        check('a note is replaced (no author given: it keeps its author)', grid.GetComment(1, 1), { text: 'look again', author: 'Ada', runs: null, thread: null });
         grid.Undo();
         grid.SetComment(4, 3, 'on an empty cell', null);
         check('a note on an empty cell', [grid.GetComment(4, 3).text, grid.GetCell(4, 3).value], ['on an empty cell', null]);
