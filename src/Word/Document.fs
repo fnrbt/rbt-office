@@ -3788,7 +3788,8 @@ let private rawStyle (_: ParagraphBlock) (style: TextBuffer.TextStyle) = style
 /// resolved style (see WordStyles.toggleBold and friends, which supply it).
 let toggleBoldWith effective doc = toggleOnSelection effective (fun style -> style.Bold) TextBuffer.withExplicitBold doc
 let toggleItalicWith effective doc = toggleOnSelection effective (fun style -> style.Italic) TextBuffer.withExplicitItalic doc
-let toggleUnderlineWith effective doc = toggleOnSelection effective (fun style -> style.Underline) TextBuffer.withExplicitUnderline doc
+// (A link shows an underline its text need not state: that one is switched off first.)
+let toggleUnderlineWith effective doc = toggleOnSelection effective TextBuffer.underlineShown TextBuffer.withExplicitUnderline doc
 let toggleAllCapsWith effective doc = toggleOnSelection effective (fun style -> style.AllCaps) TextBuffer.withExplicitAllCaps doc
 let toggleSmallCapsWith effective doc = toggleOnSelection effective (fun style -> style.SmallCaps) TextBuffer.withExplicitSmallCaps doc
 let toggleStrikeWith effective doc = toggleOnSelection effective (fun style -> style.Strike) TextBuffer.withExplicitStrike doc

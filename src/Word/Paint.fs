@@ -336,7 +336,8 @@ let private lineVerticalBounds defaultTop defaultBottom (lines: MeasuredLine lis
 let private styleFromTextStyle (style: TextStyle) = {
     Bold = style.Bold
     Italic = style.Italic
-    Underline = style.Underline || style.Hyperlink.IsSome || WordLayout.Text.isInsertedRevision style
+    // (A link is underlined unless its text says that it is not: the underline of a link can be switched off.)
+    Underline = TextBuffer.underlineShown style || WordLayout.Text.isInsertedRevision style
     AllCaps = style.AllCaps
     SmallCaps = style.SmallCaps
     Strike = style.Strike || WordLayout.Text.isDeletedRevision style
@@ -1075,7 +1076,7 @@ let private addParagraphCommandsWithBaselineOffset baselineOffset (settings: Lay
                 else
                     commands.Add(DrawText (displayText, paintStyle, textX, textBaseline, width))
 
-                if style.Underline || style.Strike || style.DoubleStrike then
+                if TextBuffer.underlineShown style || style.Strike || style.DoubleStrike then
                     // Skip underline/strike on segments that are entirely whitespace —
                     // tab segments (eg. the gap between a TOC entry and its page
                     // number) inherit the surrounding run's hyperlink style and would
@@ -1103,7 +1104,7 @@ let private addParagraphCommandsWithBaselineOffset baselineOffset (settings: Lay
                             // isn't sensible (eg. zero-width content).
                             let measured = measureRange displayText style 0 (lastInkIndex + 1)
                             if measured > 0.0 then measured else width
-                    if style.Underline && inkWidth > 0.0 then
+                    if TextBuffer.underlineShown style && inkWidth > 0.0 then
                         let ulColor =
                             match style.UnderlineColor with
                             | Some c when c <> "" && not (equalsIgnoreCase c "auto") -> if c.StartsWith("#") then c else "#" + c

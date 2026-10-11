@@ -186,6 +186,11 @@ let isAdditionRevision (style: TextStyle) =
 let withExplicitBold on (style: TextStyle) = { style with Bold = on; Explicit = style.Explicit ||| ExplicitFormat.Bold }
 let withExplicitItalic on (style: TextStyle) = { style with Italic = on; Explicit = style.Explicit ||| ExplicitFormat.Italic }
 let withExplicitUnderline on (style: TextStyle) = { style with Underline = on; Explicit = style.Explicit ||| ExplicitFormat.Underline }
+/// Whether text is shown underlined: when it is underlined, and when it is a
+/// link that may be followed - unless its text says that it is not underlined
+/// (an underline switched off in the editor, <w:u w:val="none"/> in a file).
+let underlineShown (style: TextStyle) =
+    style.Underline || (style.Hyperlink.IsSome && (style.Explicit &&& ExplicitFormat.Underline) = 0)
 let withExplicitAllCaps on (style: TextStyle) =
     { style with AllCaps = on; SmallCaps = false; Explicit = style.Explicit ||| ExplicitFormat.AllCaps ||| ExplicitFormat.SmallCaps }
 let withExplicitSmallCaps on (style: TextStyle) =

@@ -694,7 +694,8 @@ let private editorRunsToBuffer (runs: obj array) : TextBuffer =
                     Style = styleId
                     Bold = bold
                     Italic = italic
-                    Underline = underline || hyperlink.IsSome || inactiveHyperlink.IsSome
+                    // (A link is underlined - unless its run says of the underline what it is: <w:u w:val="none"/>.)
+                    Underline = underline || ((hyperlink.IsSome || inactiveHyperlink.IsSome) && (explicitFlags &&& ExplicitFormat.Underline) = 0)
                     DoubleStrike = doubleStrike
                     Hidden = hidden
                     Position = position

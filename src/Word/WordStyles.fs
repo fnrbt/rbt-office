@@ -792,7 +792,7 @@ let selectionFormat (doc: Document) : SelectionFormat =
                 let inherited = paragraphStyle.Text
                 if not (isMixed bold) then bold <- FormatValue.add (inheritToggle ExplicitFormat.Bold inherited.Bold own.Bold own) bold
                 if not (isMixed italic) then italic <- FormatValue.add (inheritToggle ExplicitFormat.Italic inherited.Italic own.Italic own) italic
-                if not (isMixed underline) then underline <- FormatValue.add (inheritToggle ExplicitFormat.Underline inherited.Underline own.Underline own) underline
+                if not (isMixed underline) then underline <- FormatValue.add (inheritToggle ExplicitFormat.Underline inherited.Underline own.Underline own || TextBuffer.underlineShown own) underline
                 if not (isMixed strike) then
                     strike <-
                         FormatValue.add
