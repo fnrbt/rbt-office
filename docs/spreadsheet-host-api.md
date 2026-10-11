@@ -1068,11 +1068,43 @@ changes (named styles, the indexed palette, table styles and extensions of the s
   the file's in its relationships (free `rIdN` ids, targets relative as Excel writes them), one `<Override>` (and the `vml`
   `<Default>` when the file had none) in the content types, and `<legacyDrawing r:id>` in the part where the schema has it (no
   namespace of its own); a sheet that has a VML drawing for other things (form controls) gets the box in that drawing and only the
-  comments entry. Written from the sheet as before (its rows the file's): a sheet left without any note, a comments part without a
+  comments entry. Written from the sheet as before (its rows the file's): a comments part without a
   `<commentList>`, a `<legacyDrawing>` whose part the reader did not keep.
-- **Threads, tables, drawings or hyperlinks changed** (they are in other parts, or name one by relationship), or rules /
+- **The last note of a sheet removed (0.1.16)**: the comments part and the VML drawing of the boxes go, with their two entries in the
+  sheet's relationships, the part's `<legacyDrawing>` and the comments part's `<Override>`; the part is otherwise the file's text (a
+  VML drawing that also holds form controls stays, without the boxes, and so does `<legacyDrawing>`; a file whose notes have no
+  boxes loses the comments part and its entry). Before, such a sheet was written from the sheet with the file's rows: `<cols>`
+  without `bestFit`, `<pageSetup>` without what it said of the printer.
+- **A link added, changed or removed (0.1.16)** is a change of the `<hyperlinks>` element of the part and - for a link out of the
+  workbook - of the part's relationships: the part is the file's text with that list in it (put where the schema has it when the
+  file had none, taken out with the last link), a link that is what the file says of it is the file's `<hyperlink>` element as it
+  was written (its `r:id`, `xr:uid`), a new external one gets a relationship behind the file's under an id the file does not use,
+  and the relationship of a link that is gone is taken out. Styles and shared strings change only by what the link's cell needs
+  (`SetHyperlink` types the text in the look of a link). Before, the rest of the part was made from the sheet.
+- **Threads, tables or drawings changed** (they are in other parts, or name one by relationship), or rules /
   validations of the x14 list changed: **the rows are still the file's** with the changed cells and rows in them (row attributes,
   styles, shared formulas, `spans`), and the rest of the part is made from the sheet - as for a sheet written from its model, below.
+- **How often which happens**, over the 110 test workbooks (the first worksheet of each, one edit, then a save;
+  `tests/office-formats/xlsx-patched-corpus.fsx` prints this and asserts the patched rows; "patched": the file's part with what the
+  edit is about changed in it - every other element and every row tag is the file's text; "rows kept": the rows are the file's, the
+  rest is made from the sheet; "from model": written from the sheet's cells). 24 of the workbooks have a part the writer does not
+  patch at all (made by other programs: elements with a prefix, rows or cells without `r`): they are the "rows kept" of the first lines.
+
+  | one edit | before: patched / rows kept / from model | 0.1.16 |
+  |---|---|---|
+  | a cell typed | 86 / 24 / 0 | 86 / 24 / 0 |
+  | a link added (to an address, to a cell) | 29 / 80 / 1 | **86 / 24 / 0** |
+  | every link removed (1 workbook has links there) | 0 / 1 / 0 | **1 / 0 / 0** |
+  | a note added | 86 / 2 / 22 | 86 / 2 / 22 |
+  | a note edited (6 workbooks have notes there) | 5 / 1 / 0 | 5 / 1 / 0 |
+  | one of several notes removed | 2 / 1 / 0 | 2 / 1 / 0 |
+  | the last note removed | 0 / 6 / 0 | **5 / 1 / 0** |
+  | a table added | 29 / 80 / 1 | 29 / 80 / 1 |
+  | a row inserted | 2 / 3 / 105 | 2 / 3 / 105 |
+
+  (The 29 "patched" of a link or a table before: parts that say so little beyond their rows that the part made from the sheet is
+  the same text.) Still made from the sheet around the file's rows: a table added or removed, a picture or object added, moved or
+  removed, a threaded comment. Still written from the cells: rows or columns inserted or deleted.
 - **A sheet written from its model** (rows / columns inserted or deleted; a spilled or array formula or a what-if table changed; the
   part names a renamed or deleted sheet; the part is not laid out as expected - a prefix on its elements, rows or cells without `r`,
   comments between elements) **still says what its part said beyond what a model holds**, by where the rows and
@@ -1111,6 +1143,14 @@ changes (named styles, the indexed palette, table styles and extensions of the s
   changed adds an entry. (Before, every cell below an inserted row got a new entry: milk-street-office's `cellXfs` went from 308
   to 614 and `xl/styles.xml` from 73 KB to 124 KB; now the styles part is the file's, byte for byte.) The calculation chain of
   such a workbook is dropped with its content type and its relationship (Excel builds a new one).
+- **The calculation chain is dropped, never rewritten.** `xl/calcChain.xml` lists every formula cell of the workbook by sheet and
+  reference, in the order Excel last calculated them. It goes - the part, its `<Override>` in the content types and its entry in the
+  workbook's relationships, all three together - as soon as it no longer names the workbook's formulas: a formula added, removed or
+  moved (a row or column inserted or deleted, a sheet deleted). It stays, byte for byte, while the formula cells are the file's
+  (values typed, formats, notes, links). A chain that names a cell without a formula makes Excel repair the file; a missing one
+  costs nothing - Excel builds it at the first calculation and writes it again - so keeping a correct one is not worth the risk of
+  a wrong one. (`tests/office-formats/xlsx-regenerated.fsx` "the file has a calculation chain" / "... goes with its content type and
+  its relationship", `xlsx-package.fsx` "formula added" / "sheet removed", and the browser checks of the host API: "a formula added: no calcChain part, relationship or content type".)
 - **Rows or columns inserted or deleted above a sheet's charts, shapes and pictures: the drawing part keeps its name (0.1.15).** While
   the objects are the file's and only where they are changed (also a picture or an object that was moved), the part goes back under
   its own name with the `<xdr:from>` / `<xdr:to>` of the anchors that moved rewritten - a marker that only changed its row or column

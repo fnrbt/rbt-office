@@ -782,13 +782,14 @@ type SheetPatch = {
     /// The elements of the worksheet made from the sheet as it is now:
     /// "sheetPr", "sheetViews", "sheetFormatPr", "cols", "autoFilter",
     /// "sortState" (taken out), "mergeCells", "conditionalFormatting",
-    /// "dataValidations", "printOptions", "pageMargins", "pageSetup",
-    /// "headerFooter", "rowBreaks", "colBreaks".
+    /// "dataValidations", "hyperlinks" (with the relationships of external
+    /// links), "printOptions", "pageMargins", "pageSetup", "headerFooter",
+    /// "rowBreaks", "colBreaks".
     Sections: string list
     /// The rows whose own attributes are not the file's (see `SheetRowPatch`).
     Rows: SheetRowPatch list
-    /// More changed than the part's own text says - comments, tables,
-    /// drawings, links (they are in other parts, named by relationship):
+    /// More changed than the part's own text says - threaded comments, tables,
+    /// drawings (they are in other parts, named by relationship):
     /// everything of the worksheet but its rows is then made from the sheet
     /// as it is now (with what the file's part says beyond what a sheet
     /// holds, see `SheetExtras.SourceXml`); the rows are the file's with

@@ -1455,6 +1455,60 @@ checks['note-leaves-sheet-part'] = async () => {
     return lines;
 };
 
+// A link is a change of the list of links in the sheet's part and - an external one - of the
+// part's relationships; the last note taken off a sheet takes its comments part and the drawing
+// of the boxes with it. The part is otherwise the file's text: its columns (`bestFit`), its page
+// setup (what it says of the printer), its views, its extension list.
+checks['link-and-last-note-leave-sheet-part'] = async () => {
+    const { lines, check } = makeLog();
+    const { bytesOf } = await import('/component.js');
+    const textOf = async (zip, path) => zip.files[path] ? zip.files[path].async('string') : null;
+    const element = (name, xml) => (new RegExp(`<${name}(?=[\\s>/])[^>]*/>|<${name}(?=[\\s>])[^>]*>[\\s\\S]*?</${name}>`).exec(xml) ?? [''])[0];
+    const { grid, close } = mountGrid();
+    try {
+        const original = await bytesOf('tests/real-world/milk-street-office.xlsx');
+        const zip0 = await window.JSZip.loadAsync(original);
+        const sheet0 = await textOf(zip0, 'xl/worksheets/sheet1.xml'), rels0 = await textOf(zip0, 'xl/worksheets/_rels/sheet1.xml.rels');
+        await grid.ImportXlsx(original.slice());
+        grid.SetHyperlink('B402', 'https://example.com/a?b=1&c=2', 'a link', 'a tip');
+        const zip1 = await window.JSZip.loadAsync(await grid.ExportXlsx());
+        const sheet1 = await textOf(zip1, 'xl/worksheets/sheet1.xml'), rels1 = await textOf(zip1, 'xl/worksheets/_rels/sheet1.xml.rels');
+        const kept = ['sheetPr', 'sheetViews', 'sheetFormatPr', 'cols', 'mergeCells', 'dataValidations', 'pageMargins', 'pageSetup', 'rowBreaks', 'ignoredErrors', 'legacyDrawing', 'extLst'];
+        check('milk-street, a link in B402: every other element of the part is the file\'s text', kept.filter((name) => element(name, sheet1) !== element(name, sheet0)), []);
+        check('... the file\'s part says what a part made from the sheet would not', [/bestFit="1"/.test(element('cols', sheet0)) || /horizontalDpi/.test(element('pageSetup', sheet0)), sheet0.slice(0, sheet0.indexOf('<sheetData')).replace(element('dimension', sheet0), '') === sheet1.slice(0, sheet1.indexOf('<sheetData')).replace(element('dimension', sheet1), '')], [true, true]);
+        const added = (rels1.match(/<Relationship [^>]*\/>/g) ?? []).filter((entry) => !rels0.includes(entry));
+        check('... its relationships are the file\'s with the link\'s address behind them', [rels1.startsWith(rels0.slice(0, rels0.lastIndexOf('</Relationships>'))), added.length, /Target="https:\/\/example\.com\/a\?b=1&amp;c=2" TargetMode="External"/.test(added[0] ?? '')], [true, 1, true]);
+        const id = /Id="([^"]*)"/.exec(added[0] ?? '')?.[1];
+        check('... and the part names it', new RegExp(`<hyperlink ref="B402" r:id="${id}" tooltip="a tip" display="a link"/>`).test(element('hyperlinks', sheet1)), true);
+        // (The link's text is typed into the cell, in the look of a link: a string and a format are added.)
+        check('... styles and strings aside, every other part of the file is in the package as it was',
+            (await Promise.all(Object.keys(zip0.files).filter((path) => !['xl/worksheets/sheet1.xml', 'xl/worksheets/_rels/sheet1.xml.rels', 'xl/styles.xml', 'xl/sharedStrings.xml', 'docProps/app.xml'].includes(path)).map(async (path) => (await textOf(zip1, path)) === (await textOf(zip0, path)) ? null : path))).filter(Boolean), []);
+        const again = mountGrid();
+        try {
+            await again.grid.ImportXlsx(await grid.ExportXlsx());
+            check('... it reads back', again.grid.GetHyperlink(401, 1)?.target, 'https://example.com/a?b=1&c=2');
+        } finally { again.close(); }
+        grid.Undo();
+        check('undone: the opened bytes', (await grid.ExportXlsx()).length === original.length && !grid.IsModified(), true);
+        // Every note of the sheet deleted.
+        const notes = grid.GetComments().filter((note) => !note.thread);
+        for (const note of notes) grid.DeleteComment(note.row, note.col);
+        const zip2 = await window.JSZip.loadAsync(await grid.ExportXlsx());
+        const sheet2 = await textOf(zip2, 'xl/worksheets/sheet1.xml'), rels2 = await textOf(zip2, 'xl/worksheets/_rels/sheet1.xml.rels');
+        check(`its ${notes.length} notes deleted: the part is the file\'s without its <legacyDrawing>`, [notes.length > 0, sheet2 === sheet0.replace(element('legacyDrawing', sheet0), '')], [true, true]);
+        check('... the comments part and the drawing of the boxes are gone, with their relationships and the content type',
+            [zip2.files['xl/comments1.xml'] === undefined, zip2.files['xl/drawings/vmlDrawing1.vml'] === undefined, /comments|vmlDrawing/.test(rels2), /comments1\.xml/.test(await textOf(zip2, '[Content_Types].xml')), /comments1\.xml/.test(await textOf(zip0, '[Content_Types].xml'))],
+            [true, true, false, false, true]);
+        const last = mountGrid();
+        try {
+            await last.grid.ImportXlsx(await grid.ExportXlsx());
+            check('... it reads back without a note, the cells as they were', [last.grid.GetComments().length, last.grid.GetCell(11, 4).value === grid.GetCell(11, 4).value], [0, true]);
+        } finally { last.close(); }
+    } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
+    finally { close(); }
+    return lines;
+};
+
 // A formula entered into a General cell shows its result in the format of what it reads, as in
 // Excel: `=A1+1` under a date is a date, a sum of amounts an amount. The format is given when the
 // formula is entered and is the cell's own from then on; a cell that has a format keeps it.

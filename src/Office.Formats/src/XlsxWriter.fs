@@ -2578,7 +2578,11 @@ let private worksheetChildOrder =
 /// The sections of a sheet a patch can write anew.
 let private patchableSections =
     [ "sheetPr"; "sheetViews"; "sheetFormatPr"; "cols"; "autoFilter"; "sortState"; "mergeCells"; "conditionalFormatting"; "dataValidations"
-      "printOptions"; "pageMargins"; "pageSetup"; "headerFooter"; "rowBreaks"; "colBreaks" ]
+      "hyperlinks"; "printOptions"; "pageMargins"; "pageSetup"; "headerFooter"; "rowBreaks"; "colBreaks" ]
+
+let private hyperlinkElementPattern = System.Text.RegularExpressions.Regex("<hyperlink(?=[\\s/>])[^>]*?/>|<hyperlink(?=[\\s>])[^>]*>[\\s\\S]*?</hyperlink>")
+let private anyIdAttributePattern = System.Text.RegularExpressions.Regex("[\\s:]id=\"")
+let private relationshipIdAttributePattern = System.Text.RegularExpressions.Regex("\\sr:id=\"")
 
 /// The worksheet element of a part: where its start tag begins and ends,
 /// where its end tag begins, and its children in order. None for a part
@@ -2630,6 +2634,12 @@ let private sheetPatchPlan (dxfCount: int) (sheet: XlsxSheetOut) (patch: XlsxRea
                 || (ordinalIndexOf source "x14:conditionalFormatting" 0 < 0 && snd (conditionalFormattingParts dxfCount 1 sheet.ConditionalFormats) = ""))
             && (not (List.contains "dataValidations" patch.Sections)
                 || (ordinalIndexOf source "x14:dataValidation" 0 < 0 && dataValidationsExtXml sheet.DataValidations = ""))
+            // (The links of the file name their relationships as `r:id`, or the list is made with the rest of the part.)
+            && (not (List.contains "hyperlinks" patch.Sections)
+                || (top |> List.forall (fun (name, span) ->
+                        name <> "hyperlinks"
+                        || (let text = source.Substring(span.Start, span.End - span.Start)
+                            anyIdAttributePattern.Matches(text).Count = relationshipIdAttributePattern.Matches(text).Count))))
         match top |> List.filter (fun (name, _) -> name = "sheetData") with
         | [ (_, data) ] ->
             let dataStart = data.TagEnd
@@ -4349,6 +4359,61 @@ let private movedDrawingXml (xml: string) (anchors: XlsxReader.SheetAnchor list)
                 at <- close + closing.Length
         if not sound then None else Some (out.Append(xml.Substring at).ToString())
 
+/// The `<hyperlinks>` of a sheet whose part stays the file's, for the links the sheet has
+/// now: a link that is what the file says of it - its cells, where it leads, its tip and
+/// its text - is the file's element as it is written (its relationship stays); another one
+/// is a new element, an external one with a relationship under an id from `freeId`.
+/// `fileLinks`: the file's `<hyperlinks>` element ("" when it has none); `entries`: the
+/// sheet's relationships as the file has them; `namespaceText`: what declares the `r`
+/// prefix on a new element when the worksheet does not. Gives the element ("" for no
+/// link), the relationships to add (id, target) and the entries of the file to take out
+/// (the relationships of links that are gone).
+let private hyperlinksInPlace (fileLinks: string) (entries: (string * string * string * bool * string) list) (links: XlsxHyperlink list)
+                              (freeId: unit -> string) (namespaceText: string) : string * (string * string) list * string list =
+    let linkRels = entries |> List.filter (fun (_, relType, _, isExternal, _) -> isExternal && relType.EndsWith "/hyperlink")
+    let known =
+        [ for found in hyperlinkElementPattern.Matches fileLinks ->
+            let text = found.Value
+            let tag = text.Substring(0, text.IndexOf '>' + 1)
+            let value (name: string) = tagAttribute tag name |> Option.map plumbingDecoded
+            let id = value "r:id"
+            let url = id |> Option.bind (fun id -> linkRels |> List.tryPick (fun (known, _, target, _, _) -> if known = id then Some target else None))
+            // (As the reader takes it.)
+            let target, isInternal =
+                match url, value "location" with
+                | Some url, Some place when place <> "" -> url + "#" + place, false
+                | Some url, _ -> url, false
+                | None, Some place -> place, true
+                | None, None -> defaultArg id "", false
+            text, id, ({ Range = defaultArg (value "ref") ""; Target = target; IsInternal = isInternal; Tooltip = value "tooltip"; Display = value "display" } : XlsxHyperlink) ]
+    let taken = System.Collections.Generic.HashSet<int>()
+    let keptIds = System.Collections.Generic.HashSet<string>()
+    let added = ResizeArray<string * string>()
+    let body = StringBuilder()
+    for link in links do
+        let same = known |> List.indexed |> List.tryFind (fun (at, (_, _, fileLink)) -> not (taken.Contains at) && fileLink = link)
+        match same with
+        | Some (at, (text, id, _)) ->
+            taken.Add at |> ignore
+            (match id with Some id -> keptIds.Add id |> ignore | None -> ())
+            body.Append(text) |> ignore
+        | None ->
+            let extra =
+                (match link.Tooltip with Some tip -> " " + attr "tooltip" tip | None -> "")
+                + (match link.Display with Some text -> " " + attr "display" text | None -> "")
+            if link.IsInternal then body.Append(sprintf "<hyperlink %s %s%s/>" (attr "ref" link.Range) (attr "location" link.Target) extra) |> ignore
+            else
+                let id = freeId ()
+                added.Add ((id, link.Target))
+                body.Append(sprintf "<hyperlink%s %s r:id=\"%s\"%s/>" namespaceText (attr "ref" link.Range) id extra) |> ignore
+    let gone = linkRels |> List.choose (fun (id, _, _, _, tag) -> if keptIds.Contains id then None else Some tag)
+    let element =
+        if body.Length = 0 then ""
+        else
+            let start = if fileLinks.StartsWith "<hyperlinks" && not (fileLinks.StartsWith "<hyperlinks/") then fileLinks.Substring(0, fileLinks.IndexOf '>' + 1) else "<hyperlinks>"
+            start + body.ToString() + "</hyperlinks>"
+    element, List.ofSeq added, gone
+
 /// The notes of a sheet whose part goes back as the file's (see
 /// `SheetPatch.Notes`): the parts they are written into.
 type private NotesInPlace = {
@@ -4359,9 +4424,14 @@ type private NotesInPlace = {
     VmlPath: string option
     /// The drawing with the boxes of the notes (None: the file's has them).
     VmlXml: string option
+    /// Parts of the file that go, with their relationships - the sheet's last note was
+    /// removed: its comments part, and the VML drawing when it held nothing but the boxes
+    /// of the notes (the sheet's part then loses its `<legacyDrawing>`).
+    Gone: string list
 }
 
 let private legacyDrawingTag = System.Text.RegularExpressions.Regex("<legacyDrawing[\\s/>]")
+let private legacyDrawingIdPattern = System.Text.RegularExpressions.Regex("<legacyDrawing\\s[^>]*?r:id=\"([^\"]*)\"")
 let private relationshipIdPattern = System.Text.RegularExpressions.Regex("\\sId=\"([^\"]*)\"")
 
 let private workbookFiles (workbook: XlsxWorkbookOut) =
@@ -4422,7 +4492,38 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
     let notePlans = System.Collections.Generic.Dictionary<int, NotesInPlace>()
     let notesInPlace (number: int) (sheet: XlsxSheetOut) (source: string) : NotesInPlace option =
         let commentCells = sheet.Cells |> List.choose (fun c -> if c.Comment.IsSome then Some (c.Row, c.Col) else None)
-        if commentCells.IsEmpty then None
+        if commentCells.IsEmpty then
+            // No note is left: the comments part goes; the VML drawing goes with it when it held
+            // nothing but their boxes, else it stays without them. (By what the file's part and
+            // its relationships say: the sheet itself no longer knows of either.)
+            match sheet.Extras.SourcePart with
+            | Some (sheetPath, _) ->
+                let baseDir = match sheetPath.LastIndexOf '/' with -1 -> "" | cut -> sheetPath.Substring(0, cut)
+                let entries = partText (relsPathOf sheetPath) |> Option.map (relationshipEntries baseDir) |> Option.defaultValue []
+                let comments = entries |> List.filter (fun (_, relType, _, isExternal, _) -> not isExternal && relType.EndsWith "/comments")
+                let legacy = legacyDrawingIdPattern.Matches source
+                match comments with
+                | [ (_, _, commentsPath, _, _) ] when legacy.Count = 1 && (partText commentsPath).IsSome ->
+                    let id = legacy.[0].Groups.[1].Value
+                    let drawing =
+                        entries |> List.tryPick (fun (known, _, target, isExternal, _) ->
+                            if known <> id || isExternal then None else partText target |> Option.map (fun vml -> target, vml))
+                    match drawing with
+                    | Some (vmlPath, vml) ->
+                        let shapes = vmlShapePattern.Matches vml |> Seq.cast<System.Text.RegularExpressions.Match> |> Seq.toList
+                        let notesOnly = shapes |> List.forall (fun shape -> shape.Value.IndexOf ("ObjectType=\"Note\"", System.StringComparison.Ordinal) >= 0)
+                        if notesOnly then Some { CommentsPath = Some commentsPath; CommentsXml = ""; VmlPath = Some vmlPath; VmlXml = None; Gone = [ commentsPath; vmlPath ] }
+                        else
+                            match vmlWithCommentBoxes vml [] with
+                            | Some without -> Some { CommentsPath = Some commentsPath; CommentsXml = ""; VmlPath = Some vmlPath; VmlXml = Some without; Gone = [ commentsPath ] }
+                            | None -> None
+                    | None -> None
+                // (A file whose notes have no boxes - not written by Excel: only the comments part goes.
+                // `VmlPath` names no part: none is made, none goes.)
+                | [ (_, _, commentsPath, _, _) ] when legacy.Count = 0 && (partText commentsPath).IsSome && not (legacyDrawingTag.IsMatch source) ->
+                    Some { CommentsPath = Some commentsPath; CommentsXml = ""; VmlPath = Some ""; VmlXml = None; Gone = [ commentsPath ] }
+                | _ -> None
+            | None -> None
         else
             let relsText = sheet.Extras.SourcePart |> Option.bind (fun (path, _) -> partText (relsPathOf path))
             let comments =
@@ -4449,7 +4550,7 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
                             partText path |> Option.map (fun vml -> Some path, vmlWithCommentBoxes vml commentCells))
             match comments, boxes with
             | Some (commentsPath, commentsXml), Some (vmlPath, vmlXml) ->
-                Some { CommentsPath = commentsPath; CommentsXml = commentsXml; VmlPath = vmlPath; VmlXml = vmlXml }
+                Some { CommentsPath = commentsPath; CommentsXml = commentsXml; VmlPath = vmlPath; VmlXml = vmlXml; Gone = [] }
             | _ -> None
     let rowPlans = System.Collections.Generic.Dictionary<int, SheetPatchPlan * XlsxReader.SheetPatch>()
     let sortKept = System.Collections.Generic.HashSet<int>()
@@ -4494,7 +4595,15 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
     let textFiles = ResizeArray<PackageFile>()
     // The theme stays only if its part was kept.
     let themePath = workbook.Preserved.ThemePath |> Option.filter (fun path -> workbook.Preserved.Parts |> List.exists (fun (kept, _) -> kept = path))
-    let keptParts = reachableKeptParts workbook themePath
+    // (Less the parts that go with a sheet's last note: its part stays the file's, without them.)
+    let goneParts = System.Collections.Generic.HashSet<string>()
+    for KeyValue(_, notes) in notePlans do
+        for path in notes.Gone do
+            goneParts.Add path |> ignore
+            goneParts.Add (relsPathOf path) |> ignore
+    let keptParts =
+        let reached = reachableKeptParts workbook themePath
+        if goneParts.Count = 0 then reached else reached |> List.filter (fun (path, _) -> not (goneParts.Contains path))
     // Dynamic array formulas name a record of the cell metadata: the opened
     // workbook's metadata part with that record added to it, or a new part.
     let hasDynamicArrays =
@@ -4568,55 +4677,75 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
       // (A sheet written as it was read is one of the kept parts; only whether it is the one on display may differ.)
       if placed.Verbatim.IsSome && patchPlans.ContainsKey i then
         // The file's part with the cells and sections that changed.
+        // Its relationships are the file's, with what the edit adds behind them - under ids the
+        // file does not use, the targets relative to the sheet's folder as Excel writes them -
+        // and without what it ends (the relationship of a link that is gone).
+        let relsPath = relsPathOf placed.SheetPath
+        let relsWas =
+            partText relsPath
+            |> Option.defaultValue (sprintf "%s\n<Relationships xmlns=\"%s\"></Relationships>" declaration Namespaces.relationshipsPackage)
+        let mutable relsNow = relsWas
+        let ids = System.Collections.Generic.HashSet<string>([ for found in relationshipIdPattern.Matches relsWas -> found.Groups.[1].Value ])
+        let freeId () =
+            let mutable number = 1
+            while not (ids.Add (sprintf "rId%d" number)) do number <- number + 1
+            sprintf "rId%d" number
+        let targetOf (path: string) =
+            if placed.SheetPath.StartsWith "xl/worksheets/" && placed.SheetPath.IndexOf ('/', 14) < 0 && path.StartsWith "xl/" then "../" + path.Substring 3
+            else "/" + path
+        let entries = StringBuilder()
+        let source = patchPlans.[i].Source
+        let rootTag = source.Substring(0, patchPlans.[i].RootEnd)
+        let namespaceText = if rootTag.Contains "xmlns:r=\"" then "" else sprintf " xmlns:r=\"%s\"" Namespaces.relationships
         // (Its notes, when they changed: in the comments part and the VML drawing; the part itself
         // says nothing of them but that it has a drawing of that kind.)
-        let added =
+        let legacy =
             match notePlans.TryGetValue i with
             | true, notes ->
                 let newComments, newVml = noteParts.[i]
-                textFiles.Add { Path = (match notes.CommentsPath with Some path -> path | None -> newComments); Content = notes.CommentsXml }
+                let gone (path: string option) = match path with Some path -> List.contains path notes.Gone | None -> false
+                if not (gone notes.CommentsPath) then
+                    textFiles.Add { Path = (match notes.CommentsPath with Some path -> path | None -> newComments); Content = notes.CommentsXml }
                 match notes.VmlXml with
-                | Some xml -> textFiles.Add { Path = (match notes.VmlPath with Some path -> path | None -> newVml); Content = xml }
-                | None -> ()
-                if newComments = "" && newVml = "" then []
+                | Some xml when not (gone notes.VmlPath) -> textFiles.Add { Path = (match notes.VmlPath with Some path -> path | None -> newVml); Content = xml }
+                | _ -> ()
+                if not notes.Gone.IsEmpty then
+                    let baseDir = match placed.SheetPath.LastIndexOf '/' with -1 -> "" | cut -> placed.SheetPath.Substring(0, cut)
+                    for _, _, target, isExternal, tag in relationshipEntries baseDir relsWas do
+                        if not isExternal && List.contains target notes.Gone then relsNow <- withoutFirst tag relsNow
+                if newComments <> "" then
+                    entries.Append(sprintf "<Relationship Id=\"%s\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments\" Target=\"%s\"/>" (freeId ()) (targetOf newComments)) |> ignore
+                if gone notes.VmlPath then [ "legacyDrawing", "" ]
+                elif newVml = "" then []
                 else
-                    // The file's relationships with the new parts behind them, under ids it does not use.
-                    let relsPath = relsPathOf placed.SheetPath
-                    let relsText =
-                        partText relsPath
-                        |> Option.defaultValue (sprintf "%s\n<Relationships xmlns=\"%s\"></Relationships>" declaration Namespaces.relationshipsPackage)
-                    let ids = System.Collections.Generic.HashSet<string>([ for found in relationshipIdPattern.Matches relsText -> found.Groups.[1].Value ])
-                    let freeId () =
-                        let mutable number = 1
-                        while not (ids.Add (sprintf "rId%d" number)) do number <- number + 1
-                        sprintf "rId%d" number
-                    // (Relative to the sheet's folder, as Excel writes them.)
-                    let targetOf (path: string) =
-                        if placed.SheetPath.StartsWith "xl/worksheets/" && placed.SheetPath.IndexOf ('/', 14) < 0 && path.StartsWith "xl/" then "../" + path.Substring 3
-                        else "/" + path
-                    let entries = StringBuilder()
-                    let mutable legacy = []
-                    if newComments <> "" then
-                        entries.Append(sprintf "<Relationship Id=\"%s\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments\" Target=\"%s\"/>" (freeId ()) (targetOf newComments)) |> ignore
-                    if newVml <> "" then
-                        let id = freeId ()
-                        entries.Append(sprintf "<Relationship Id=\"%s\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing\" Target=\"%s\"/>" id (targetOf newVml)) |> ignore
-                        let source = patchPlans.[i].Source
-                        let rootTag = source.Substring(0, patchPlans.[i].RootEnd)
-                        legacy <-
-                            [ "legacyDrawing",
-                              (if rootTag.Contains "xmlns:r=\"" then sprintf "<legacyDrawing r:id=\"%s\"/>" id
-                               else sprintf "<legacyDrawing xmlns:r=\"%s\" r:id=\"%s\"/>" Namespaces.relationships id) ]
-                    let close = relsText.LastIndexOf ("</Relationships>", System.StringComparison.Ordinal)
-                    let closed =
-                        if close >= 0 then relsText.Substring(0, close) + entries.ToString() + relsText.Substring close
-                        // (`<Relationships/>`: a list without an entry.)
-                        else
-                            let empty = relsText.LastIndexOf ("/>", System.StringComparison.Ordinal)
-                            relsText.Substring(0, max 0 empty) + ">" + entries.ToString() + "</Relationships>"
-                    textFiles.Add { Path = relsPath; Content = closed }
-                    legacy
+                    let id = freeId ()
+                    entries.Append(sprintf "<Relationship Id=\"%s\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing\" Target=\"%s\"/>" id (targetOf newVml)) |> ignore
+                    [ "legacyDrawing", sprintf "<legacyDrawing%s r:id=\"%s\"/>" namespaceText id ]
             | false, _ -> []
+        // Its links, when they changed: the list in the part, an external one's address in the relationships.
+        let links =
+            if not (List.contains "hyperlinks" sheet.Extras.Patch.Value.Sections) then []
+            else
+                let fileLinks =
+                    patchPlans.[i].Top
+                    |> List.tryPick (fun (name, span) -> if name = "hyperlinks" then Some (source.Substring(span.Start, span.End - span.Start)) else None)
+                    |> Option.defaultValue ""
+                let baseDir = match placed.SheetPath.LastIndexOf '/' with -1 -> "" | cut -> placed.SheetPath.Substring(0, cut)
+                let element, added, gone = hyperlinksInPlace fileLinks (relationshipEntries baseDir relsWas) sheet.Hyperlinks freeId namespaceText
+                for id, target in added do
+                    entries.Append(sprintf "<Relationship Id=\"%s\" Type=\"%s\" Target=\"%s\" TargetMode=\"External\"/>" id RelationshipTypes.hyperlink (escaped target)) |> ignore
+                for tag in gone do relsNow <- withoutFirst tag relsNow
+                [ "hyperlinks", element ]
+        if entries.Length > 0 || not (obj.ReferenceEquals (relsNow, relsWas)) then
+            let close = relsNow.LastIndexOf ("</Relationships>", System.StringComparison.Ordinal)
+            let closed =
+                if close >= 0 then relsNow.Substring(0, close) + entries.ToString() + relsNow.Substring close
+                // (`<Relationships/>`: a list without an entry.)
+                else
+                    let empty = relsNow.LastIndexOf ("/>", System.StringComparison.Ordinal)
+                    relsNow.Substring(0, max 0 empty) + ">" + entries.ToString() + "</Relationships>"
+            textFiles.Add { Path = relsPath; Content = closed }
+        let added = legacy @ links
         let xml = patchedSheetXml styles sharedIndex dynamicCm (i + 1) sheet sheet.Extras.Patch.Value patchPlans.[i] added
         textFiles.Add { Path = placed.SheetPath; Content = withTabSelected (i = workbook.ActiveSheetIndex) xml }
       elif placed.Verbatim.IsSome then

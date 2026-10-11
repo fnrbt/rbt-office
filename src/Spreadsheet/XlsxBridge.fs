@@ -2432,8 +2432,7 @@ module Export =
             Some { Cells = List.ofSeq cells
                    Rows = rows
                    Notes = notes
-                   Whole =
-                    not (same (fun m -> m.Tables)) || not (same (fun m -> m.Drawings)) || not (same (fun m -> m.Threads)) || not (same (fun m -> m.Hyperlinks))
+                   Whole = not (same (fun m -> m.Tables)) || not (same (fun m -> m.Drawings)) || not (same (fun m -> m.Threads))
                    Sections =
                     [ if before.TabColor <> model.TabColor || before.Axes.SummaryBelow <> model.Axes.SummaryBelow || before.Axes.SummaryRight <> model.Axes.SummaryRight
                          || before.PageSetup.FitToPage <> model.PageSetup.FitToPage then yield "sheetPr"
@@ -2449,6 +2448,8 @@ module Export =
                       if not (same (fun m -> m.MergedCells)) then yield "mergeCells"
                       if not (same (fun m -> m.ConditionalFormats)) then yield "conditionalFormatting"
                       if not (same (fun m -> m.Validations)) then yield "dataValidations"
+                      // (The list of links is in the part; where an external one leads, in its relationships.)
+                      if not (same (fun m -> m.Hyperlinks)) then yield "hyperlinks"
                       if not setupSame then
                           if not (setup (fun p -> p.Options)) then yield "printOptions"
                           if not (setup (fun p -> p.Margins)) then yield "pageMargins"

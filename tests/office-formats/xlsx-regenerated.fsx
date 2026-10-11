@@ -187,6 +187,40 @@ do
     keptOutsideRows "link added" now
     sameFormulas "link added: every formula reads as it did" saved edited
     ok "link added: read back" ((reread saved).Hyperlinks |> List.exists (fun link -> link.Target = "https://example.com/a?b=1&c=2" && link.Range = range)) (sprintf "%A" (reread saved).Hyperlinks)
+    // The list of links is in the part, an external link's address in the part's relationships:
+    // everything else of the part is the file's text - the columns with their `bestFit`, the page
+    // setup with what it says of the printer, the extension list - and so are the other parts.
+    for name in untouchedElements do
+        ok (sprintf "link added: <%s> is the file's text" name) (element name now = element name was) (short (element name now))
+    ok "link added: the file's part has what a part made from the sheet would not" ((element "cols" was).Contains "bestFit" || (element "pageSetup" was).Contains "horizontalDpi") (short (element "cols" was))
+    let relsPath = sheetPath.Substring(0, sheetPath.LastIndexOf '/') + "/_rels/" + sheetPath.Substring(sheetPath.LastIndexOf '/' + 1) + ".rels"
+    let entries (xml: string) = [ for found in Regex.Matches(xml, "<Relationship [^>]*/>") -> found.Value ]
+    let parts = partsOf saved
+    let relsWas, relsNow = entries (text before.[relsPath]), entries (text parts.[relsPath])
+    ok "link added: the relationships are the file's with the link's behind them"
+        (relsNow.Length = relsWas.Length + 1 && List.truncate relsWas.Length relsNow = relsWas
+         && (List.last relsNow).Contains "Target=\"https://example.com/a?b=1&amp;c=2\"" && (List.last relsNow).Contains "TargetMode=\"External\"" && (List.last relsNow).Contains "/hyperlink\"")
+        (String.concat " " (relsNow |> List.skip (min relsNow.Length relsWas.Length)))
+    let linkId = Regex.Match(List.last relsNow, "Id=\"([^\"]*)\"").Groups.[1].Value
+    ok "link added: the part names that relationship, under an id the file does not use"
+        ((element "hyperlinks" now).Contains (sprintf "r:id=\"%s\"" linkId) && not (relsWas |> List.exists (fun entry -> entry.Contains (sprintf "Id=\"%s\"" linkId)))) (element "hyperlinks" now)
+    ok "link added: every other part is the file's"
+        (before |> Map.forall (fun known data -> known = sheetPath || known = relsPath || known = "docProps/app.xml" || parts.TryFind known = Some data))
+        (before |> Map.toList |> List.filter (fun (known, data) -> parts.TryFind known <> Some data) |> List.map fst |> String.concat " ")
+    // The link taken out again: the part and its relationships are the file's.
+    let both, _ = exportWith (Ops.setHyperlink [ range ] "https://example.com/a?b=1&c=2" false (Some "a link") None >> fun model -> fst (Ops.removeHyperlinks [ range ] model))
+    ok "link added and removed: the relationships are the file's" (entries (text (partsOf both).[relsPath]) = relsWas) (String.concat " " (entries (text (partsOf both).[relsPath])))
+    ok "link added and removed: no list of links is left in the part" (element "hyperlinks" (sheetOf both) = element "hyperlinks" was) (element "hyperlinks" (sheetOf both))
+    // A second link beside it, and the first one led elsewhere: the first one's relationship goes, each has its own.
+    let two, _ =
+        exportWith (Ops.setHyperlink [ range ] "https://example.com/first" false None None
+                    >> Ops.setHyperlink [ { From = addr 402 1; To = addr 402 1 } ] "https://example.com/second" false None (Some "a tip")
+                    >> Ops.setHyperlink [ { From = addr 403 1; To = addr 403 1 } ] "Monthly!B2" true None None)
+    let twoNow = sheetOf two
+    let twoRels = entries (text (partsOf two).[relsPath]) |> List.filter (fun entry -> entry.Contains "/hyperlink\"")
+    ok "three links: two relationships, one per external link" (twoRels.Length = 2 && twoRels |> List.exists (fun entry -> entry.Contains "/first") && twoRels |> List.exists (fun entry -> entry.Contains "/second")) (String.concat " " twoRels)
+    ok "three links: the internal one has a location and no relationship" (Regex.IsMatch(element "hyperlinks" twoNow, "<hyperlink ref=\"B404\" location=\"Monthly!B2\"\\s*/>")) (element "hyperlinks" twoNow)
+    ok "three links: read back" ((reread two).Hyperlinks |> List.map (fun link -> link.Target, link.IsInternal, link.Tooltip) |> List.sort = [ "Monthly!B2", true, None; "https://example.com/first", false, None; "https://example.com/second", false, Some "a tip" ]) (sprintf "%A" (reread two).Hyperlinks)
     let noted, edited = exportWith (Ops.setComment (addr 401 2) "a note" (Some "me"))
     let now = sheetOf noted
     ok "note added: the rows keep their attributes" (rowTags now |> List.filter (fun tag -> not (tag.Contains "r=\"402\"")) = rowTags was) "row tags differ"
@@ -409,6 +443,32 @@ for file, sheetName, cell, hasLegacy in [ "real-world/milk-street-office.xlsx", 
             (file0 |> Map.toList |> List.filter (fun (known, data) -> now.TryFind known <> Some data) |> List.map fst |> String.concat " ")
         let again = (Bridge.Import.importWorkbook (XlsxReader.loadBytesNative saved |> Option.get)).Sheets.[at].Model
         ok (label + ": read back") ((M.getCell where again |> Option.bind (fun c -> c.Comment)) |> Option.map (fun note -> note.Text, note.Author) = Some ("a first note", Some "me")) "no note"
+
+// ---- the last note of a sheet removed ---------------------------------------------------
+// The comments part and the drawing of the notes' boxes go, with their relationships, their
+// content type and the part's `<legacyDrawing>`; the part is otherwise the file's text.
+do
+    let notes = Ops.allComments model0 |> List.filter (fun note -> note.Thread.IsNone)
+    ok "the sheet has notes" (not notes.IsEmpty && element "legacyDrawing" was <> "") (sprintf "%d notes" notes.Length)
+    let saved, _ = exportWith (fun model -> notes |> List.fold (fun sheet note -> Ops.deleteComment note.Cell sheet) model)
+    let now = sheetOf saved
+    let parts = partsOf saved
+    let relsPath = sheetPath.Substring(0, sheetPath.LastIndexOf '/') + "/_rels/" + sheetPath.Substring(sheetPath.LastIndexOf '/' + 1) + ".rels"
+    let entries (xml: string) = [ for found in Regex.Matches(xml, "<Relationship [^>]*/>") -> found.Value ]
+    let ofNotes (entry: string) = entry.Contains "/comments\"" || entry.Contains "/vmlDrawing\""
+    ok "last note removed: the part is the file's without its legacyDrawing" (now = was.Replace(element "legacyDrawing" was, "")) (sprintf "%d chars, the file's %d" now.Length was.Length)
+    ok "last note removed: the relationships are the file's without those of the notes"
+        (entries (text parts.[relsPath]) = (entries (text before.[relsPath]) |> List.filter (ofNotes >> not)) && entries (text before.[relsPath]) |> List.exists ofNotes)
+        (String.concat " " (entries (text parts.[relsPath])))
+    let gone = before |> Map.toList |> List.map fst |> List.filter (fun known -> not (parts.ContainsKey known))
+    ok "last note removed: the comments part and the drawing of the boxes are gone, nothing else"
+        (gone.Length = 2 && gone |> List.exists (fun known -> known.StartsWith "xl/comments") && gone |> List.exists (fun known -> known.EndsWith ".vml")) (String.concat " " gone)
+    ok "last note removed: the content types no longer name the comments part"
+        (gone |> List.forall (fun known -> not ((text parts.["[Content_Types].xml"]).Contains ("\"/" + known + "\""))) && (text before.["[Content_Types].xml"]).Contains "comments") (short (text parts.["[Content_Types].xml"]))
+    ok "last note removed: every other part is the file's"
+        (parts |> Map.forall (fun known data -> known = sheetPath || known = relsPath || known = "[Content_Types].xml" || known = "docProps/app.xml" || before.TryFind known = Some data))
+        (parts |> Map.toList |> List.filter (fun (known, data) -> before.TryFind known <> Some data) |> List.map fst |> String.concat " ")
+    ok "last note removed: read back without a note" ((Ops.allComments (reread saved)).IsEmpty) (sprintf "%d notes" (Ops.allComments (reread saved)).Length)
 
 // ---- a row inserted above a sheet's drawings: the drawing part keeps its name, only its anchors move ----
 for file in [ "real-world/dashboard-sales-analysis.xlsx"; "real-world/dashboard-ecommerce-sales.xlsx"; "real-world/chart-zoo.xlsx" ] do
