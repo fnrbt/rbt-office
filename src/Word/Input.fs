@@ -146,6 +146,17 @@ type StorySession = {
     BoxFolded: ResizeArray<struct (Doc.Block list * Doc.Block list)>
 }
 
+/// Character formatting chosen with nothing selected (Ctrl+B at a caret, a
+/// font size picked in the toolbar): what is typed next at that caret has it.
+/// It is not in the document - nothing has changed there until text is typed.
+type PendingFormat = {
+    /// The document it was chosen in. It holds for that text and that caret:
+    /// an edit or a caret that moves drops it.
+    PendingDocument: Doc.Document
+    /// The style the typed text gets.
+    PendingStyle: TextBuffer.TextStyle
+}
+
 /// Input handler state
 type InputHandler = {
     Canvas: HTMLCanvasElement
@@ -194,6 +205,11 @@ type InputHandler = {
     /// Called before a key that goes by the whole document (Ctrl+A, Ctrl+End):
     /// the editor reads a document that is still being read to its end.
     mutable EnsureWhole: unit -> unit
+    /// See PendingFormat (formatAtCaret sets it).
+    mutable Pending: PendingFormat option
+    /// Called when the pending format changed: what the selection's format
+    /// is said to be has changed though the document has not (set by the editor).
+    mutable OnPendingFormat: unit -> unit
 }
 
 [<Emit("$0.focus({ preventScroll: true })")>]
@@ -468,6 +484,82 @@ let exitStory (handler: InputHandler) : bool =
         showDocument handler whole
         true
 
+/// The pending format of the caret, if it has one: chosen in this text with the caret where it is.
+let pendingFormat (handler: InputHandler) : PendingFormat option =
+    match handler.Pending with
+    | Some pending when obj.ReferenceEquals(pending.PendingDocument.Blocks, handler.Document.Blocks) && pending.PendingDocument.Selection = handler.Document.Selection -> Some pending
+    | _ -> None
+
+let private styleOfCharacterAt (doc: Doc.Document) (position: Doc.Position) : TextBuffer.TextStyle option =
+    Doc.findParagraph doc position.BlockId
+    |> Option.bind (fun para ->
+        para.Buffer.Runs
+        |> List.tryPick (function
+            | TextBuffer.Text run when run.Start <= position.Offset && position.Offset < run.Start + run.Length -> Some run.Style
+            | _ -> None))
+
+/// The document with one character typed at the caret - with the pending
+/// format, if there is one - and selected: what a format command does to it
+/// is what it does to the text typed next, and its format is the caret's.
+/// None when nothing can be typed at the selection (no caret).
+let pendingProbe (handler: InputHandler) : (Doc.Document * Doc.Position) option =
+    let doc = handler.Document
+    match doc.Selection with
+    | Some selection when selection.IsCollapsed ->
+        let at = selection.Focus
+        let inserted = Doc.insertText "x" doc
+        match inserted.Selection with
+        | Some after when after.Focus.BlockId = at.BlockId && after.Focus.Offset = at.Offset + 1 ->
+            let styled =
+                match pendingFormat handler, Doc.findParagraph inserted at.BlockId with
+                | Some pending, Some para ->
+                    Doc.replaceParagraph inserted para.Id { para with Buffer = TextBuffer.applyStyle at.Offset 1 (fun _ -> pending.PendingStyle) para.Buffer }
+                | _ -> inserted
+            Some (Doc.setSelection at { at with Offset = at.Offset + 1 } styled, at)
+        | _ -> None
+    | _ -> None
+
+/// A character format command given with nothing selected: it is kept for
+/// the text typed next at the caret (see PendingFormat). `command` is the
+/// command as it is applied to a selection. False when there is no caret
+/// (text is selected, or nothing is): the command is then the selection's.
+let formatAtCaret (handler: InputHandler) (command: Doc.Document -> Doc.Document) : bool =
+    match pendingProbe handler with
+    | Some (probe, at) ->
+        match styleOfCharacterAt probe at, styleOfCharacterAt (command probe) at with
+        | Some before, Some style when before <> style ->
+            handler.Pending <- Some { PendingDocument = handler.Document; PendingStyle = style }
+            handler.OnPendingFormat ()
+        | _ -> ()
+        true
+    | None -> false
+
+/// `after`: `before` with text typed at its caret. The text has the pending
+/// format of that caret, if there is one. (What says that the text is a
+/// tracked insertion stays as the insertion made it.)
+let withPendingFormat (handler: InputHandler) (before: Doc.Document) (after: Doc.Document) : Doc.Document =
+    match handler.Pending with
+    | Some pending when obj.ReferenceEquals(pending.PendingDocument.Blocks, before.Blocks) && pending.PendingDocument.Selection = before.Selection ->
+        match before.Selection, after.Selection with
+        | Some was, Some now when was.IsCollapsed && now.IsCollapsed && now.Focus.BlockId = was.Focus.BlockId && now.Focus.Offset > was.Focus.Offset ->
+            match Doc.findParagraph after now.Focus.BlockId with
+            | Some para ->
+                let styleOf (typed: TextBuffer.TextStyle) =
+                    { pending.PendingStyle with
+                        RevisionId = typed.RevisionId; RevisionType = typed.RevisionType; RevisionAuthor = typed.RevisionAuthor
+                        RevisionDate = typed.RevisionDate; DeletedInsertion = typed.DeletedInsertion; MoveName = typed.MoveName }
+                let buffer = TextBuffer.applyStyle was.Focus.Offset (now.Focus.Offset - was.Focus.Offset) styleOf para.Buffer
+                { Doc.replaceParagraph after para.Id { para with Buffer = buffer } with Selection = after.Selection }
+            | None -> after
+        | _ -> after
+    | _ -> after
+
+/// A pending format does not outlive a change of the document or of the selection.
+let private dropPendingFormat (handler: InputHandler) (doc: Doc.Document) =
+    match handler.Pending with
+    | Some pending when not (obj.ReferenceEquals(pending.PendingDocument.Blocks, doc.Blocks) && pending.PendingDocument.Selection = doc.Selection) -> handler.Pending <- None
+    | _ -> ()
+
 /// Edit the text of a text box of the body in place (as a header is: see
 /// `enterStory`): typing, selecting, formatting and undo work in it; Escape,
 /// or a click outside the box, goes back to the body. `selection`: where the
@@ -528,6 +620,8 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         OnHistoryPlace = fun _ _ -> false
         OnDoubleClick = fun _ _ -> false
         EnsureWhole = ignore
+        Pending = None
+        OnPendingFormat = ignore
     }
 
     // ---- caret movement over the layout that is on screen -------------------
@@ -812,7 +906,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         | Some para -> Doc.setSelection { position with Offset = 0 } { position with Offset = TextBuffer.length para.Buffer } doc
 
     let insertTextForMode text doc =
-        if handler.TrackChanges then Doc.insertTrackedText handler.TrackChangesAuthor handler.TrackChangesDate text doc else Doc.insertText text doc
+        withPendingFormat handler doc (if handler.TrackChanges then Doc.insertTrackedText handler.TrackChangesAuthor handler.TrackChangesDate text doc else Doc.insertText text doc)
 
     let splitBlockForMode doc =
         if handler.TrackChanges then Doc.trackSplitBlock handler.TrackChangesAuthor handler.TrackChangesDate doc else Doc.splitBlock doc
@@ -843,6 +937,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
 
     let applyPointerDocumentChange newDoc =
         if not (documentsEqualForChange newDoc handler.Document) then
+            dropPendingFormat handler newDoc
             handler.Document <- newDoc
             renderWithHover handler.RenderContext newDoc handler.HoveredImage
             handler.SyncInputProxy newDoc
@@ -909,7 +1004,8 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             e.preventDefault()
         | key when commandKey && keyEquals 'b' key ->
             let beforeDoc = handler.Document
-            let afterDoc = WordStyles.toggleBold handler.Document
+            // (With nothing selected: for what is typed next.)
+            let afterDoc = if formatAtCaret handler WordStyles.toggleBold then handler.Document else WordStyles.toggleBold handler.Document
             if not (documentsEqualForChange afterDoc beforeDoc) then
                 let cmd = FormatTextCommand(beforeDoc, afterDoc, "bold") :> ICommand
                 let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
@@ -919,7 +1015,8 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             e.preventDefault()
         | key when commandKey && keyEquals 'i' key ->
             let beforeDoc = handler.Document
-            let afterDoc = WordStyles.toggleItalic handler.Document
+            // (With nothing selected: for what is typed next.)
+            let afterDoc = if formatAtCaret handler WordStyles.toggleItalic then handler.Document else WordStyles.toggleItalic handler.Document
             if not (documentsEqualForChange afterDoc beforeDoc) then
                 let cmd = FormatTextCommand(beforeDoc, afterDoc, "italic") :> ICommand
                 let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
@@ -929,7 +1026,8 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             e.preventDefault()
         | key when commandKey && keyEquals 'u' key ->
             let beforeDoc = handler.Document
-            let afterDoc = WordStyles.toggleUnderline handler.Document
+            // (With nothing selected: for what is typed next.)
+            let afterDoc = if formatAtCaret handler WordStyles.toggleUnderline then handler.Document else WordStyles.toggleUnderline handler.Document
             if not (documentsEqualForChange afterDoc beforeDoc) then
                 let cmd = FormatTextCommand(beforeDoc, afterDoc, "underline") :> ICommand
                 let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
@@ -1141,6 +1239,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                 // command (heading level, Tab indent, leaving a list) are
                 // undo steps too.
                 recordChange handler "Edit" handler.Document newDoc
+            dropPendingFormat handler newDoc
             handler.Document <- newDoc
             renderWithHover handler.RenderContext newDoc handler.HoveredImage
             handler.SyncInputProxy newDoc
@@ -1196,7 +1295,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
     let compositionPreview (text: string) =
         if text = "" then handler.Document
         else
-            let inserted = Doc.insertText text handler.Document
+            let inserted = withPendingFormat handler handler.Document (Doc.insertText text handler.Document)
             match inserted.Selection with
             | Some selection when selection.IsCollapsed && selection.Focus.Offset >= text.Length ->
                 match Doc.findParagraph inserted selection.Focus.BlockId with
@@ -1216,6 +1315,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         let beforeDoc = handler.Document
         if not (documentsEqualForChange afterDoc beforeDoc) then
             recordChange handler description beforeDoc afterDoc
+            dropPendingFormat handler afterDoc
             handler.Document <- afterDoc
             renderWithHover handler.RenderContext afterDoc handler.HoveredImage
             syncInputProxy afterDoc
@@ -1467,6 +1567,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
 /// Show a document without touching the undo history (selection changes,
 /// re-renders).
 let updateDocument (handler: InputHandler) (doc: Doc.Document) =
+    dropPendingFormat handler doc
     handler.Document <- doc
     renderWithHover handler.RenderContext doc None
     handler.SyncInputProxy doc
@@ -1546,6 +1647,10 @@ let create _ _ _ = ()
 let updateDocument _ _ = ()
 let repaint _ = ()
 let applyEdit _ _ _ = ()
+let pendingFormat _ = None
+let pendingProbe _ = None
+let formatAtCaret _ _ = false
+let withPendingFormat _ _ after = after
 let applyEditAtStoryPlace _ _ _ _ _ = ()
 let enterTextBox _ _ _ = false
 let loadDocument _ _ = ()

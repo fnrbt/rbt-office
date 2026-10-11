@@ -157,6 +157,13 @@ module API =
             Inp.applyEdit editor.Handler "Edit" newDoc
             editor.Doc <- newDoc
 
+    /// A character format command (bold, a font, a size, a colour ...): the
+    /// selected text is changed; with nothing selected it is kept for the text
+    /// typed next at the caret, getSelectionFormat says it, and it is dropped
+    /// when the caret moves (Inp.PendingFormat). `command`: as on a selection.
+    let private commitCharacterFormat (editor: Editor) (command: Doc.Document -> Doc.Document) =
+        if not (Inp.formatAtCaret editor.Handler command) then commitDocumentUpdate editor (command editor.Doc)
+
     /// Show a newly loaded document (import, setContent). It replaces the
     /// previous document wholesale, so the undo history is cleared rather
     /// than letting Ctrl+Z swap the old document back in.
@@ -288,6 +295,33 @@ module API =
                 // A listener may unsubscribe (or subscribe) while being called.
                 for listener in editor.Listeners.ToArray() do
                     if editor.Listeners.Contains listener then listener change
+
+    /// Tell the onChange listeners that the format of the caret changed (a
+    /// format chosen with nothing selected, for what is typed next): the
+    /// selection is where it was and the document what it was, and
+    /// getSelectionFormat says something else. FormatChanged is true (and
+    /// SelectionChanged, for a host that reads the format when that is).
+    let private notifyPendingFormat (editor: Editor) =
+        if editor.Listeners.Count > 0 then
+            let change =
+                createObj [
+                    "DocumentChanged" ==> false
+                    "SelectionChanged" ==> true
+                    "FormatChanged" ==> true
+                    "CanUndo" ==> Inp.canUndo editor.Handler
+                    "CanRedo" ==> Inp.canRedo editor.Handler
+                    "Revision" ==> editor.Revision
+                    "Modified" ==> (editor.Revision <> editor.SavedRevision)
+                    "LayoutChanged" ==> false
+                    "LayoutComplete" ==> Ren.layoutIsComplete editor.Handler.RenderContext
+                    "LoadChanged" ==> false
+                    "LoadComplete" ==> (editor.Loading.IsNone && editor.LoadFailure.IsNone)
+                    "LoadFailed" ==> editor.LoadFailure.IsSome
+                    "LoadError" ==> Option.toObj editor.LoadFailure
+                    "FontsPending" ==> fontsPending editor
+                ]
+            for listener in editor.Listeners.ToArray() do
+                if editor.Listeners.Contains listener then listener change
 
     /// Tell the onChange listeners that more of a long document is laid out
     /// (more pages, a larger document size), or all of it.
@@ -550,12 +584,16 @@ module API =
         // (Kept for the document it was read off - content and selection: a host
         // with several listeners asks more than once after a change.)
         let format =
-            match lastSelectionFormat with
-            | Some (doc, format) when obj.ReferenceEquals(doc, editor.Doc) -> format
-            | _ ->
-                let format = WordStyles.selectionFormat editor.Doc
-                lastSelectionFormat <- Some (editor.Doc, format)
-                format
+            // (A caret with a format chosen for what is typed next: the format that text will have.)
+            match (if (Inp.pendingFormat editor.Handler).IsSome then Inp.pendingProbe editor.Handler else None) with
+            | Some (probe, _) -> WordStyles.selectionFormat probe
+            | None ->
+                match lastSelectionFormat with
+                | Some (doc, format) when obj.ReferenceEquals(doc, editor.Doc) -> format
+                | _ ->
+                    let format = WordStyles.selectionFormat editor.Doc
+                    lastSelectionFormat <- Some (editor.Doc, format)
+                    format
         let boolean = formatValueToJs (fun (value: bool) -> box value)
         let number = formatValueToJs (fun (value: float) -> box value)
         let text = formatValueToJs optionalStringToJs
@@ -648,6 +686,7 @@ module API =
             Fonts = Viewer.FontTracker()
         }
         handler.EnsureWhole <- fun () -> ensureLoaded editor
+        handler.OnPendingFormat <- fun () -> notifyPendingFormat editor
 
         editor
 
@@ -2010,7 +2049,8 @@ module API =
         let newDoc =
             if editor.Handler.TrackChanges then Doc.insertTrackedText editor.Handler.TrackChangesAuthor editor.Handler.TrackChangesDate text editor.Doc
             else Doc.insertText text editor.Doc
-        commitDocumentUpdate editor newDoc
+        // (With the format chosen at the caret for what is typed next, if one was.)
+        commitDocumentUpdate editor (Inp.withPendingFormat editor.Handler editor.Doc newDoc)
 
     let insertFieldAt (editor: Editor) (fieldCode: string) (result: string) =
         let newDoc = Doc.insertField fieldCode result editor.Doc
@@ -2114,28 +2154,23 @@ module API =
     
     /// Toggle bold on selection
     let toggleBold (editor: Editor) =
-        let newDoc = WordStyles.toggleBold editor.Doc
-        commitDocumentUpdate editor newDoc
+        commitCharacterFormat editor WordStyles.toggleBold
     
     /// Toggle italic on selection
     let toggleItalic (editor: Editor) =
-        let newDoc = WordStyles.toggleItalic editor.Doc
-        commitDocumentUpdate editor newDoc
+        commitCharacterFormat editor WordStyles.toggleItalic
     
     /// Toggle underline on selection
     let toggleUnderline (editor: Editor) =
-        let newDoc = WordStyles.toggleUnderline editor.Doc
-        commitDocumentUpdate editor newDoc
+        commitCharacterFormat editor WordStyles.toggleUnderline
 
     /// Toggle all caps on selection
     let toggleAllCaps (editor: Editor) =
-        let newDoc = WordStyles.toggleAllCaps editor.Doc
-        commitDocumentUpdate editor newDoc
+        commitCharacterFormat editor WordStyles.toggleAllCaps
 
     /// Toggle small caps on selection
     let toggleSmallCaps (editor: Editor) =
-        let newDoc = WordStyles.toggleSmallCaps editor.Doc
-        commitDocumentUpdate editor newDoc
+        commitCharacterFormat editor WordStyles.toggleSmallCaps
 
     /// Set numbered-list marker format on current block
     let setNumberFormat (editor: Editor) (format: string) =
@@ -2144,8 +2179,7 @@ module API =
 
     /// Toggle strikethrough on selection
     let toggleStrike (editor: Editor) =
-        let newDoc = WordStyles.toggleStrike editor.Doc
-        commitDocumentUpdate editor newDoc
+        commitCharacterFormat editor WordStyles.toggleStrike
 
     /// Clear direct character formatting on selection
     let clearFormatting (editor: Editor) =
@@ -2154,18 +2188,15 @@ module API =
 
     /// Set vertical alignment on selection
     let setVertAlignFor (editor: Editor) (align: string) =
-        let newDoc = Doc.setVertAlign (if isNull (box align) || align = "" || align = "baseline" then None else Some align) editor.Doc
-        commitDocumentUpdate editor newDoc
+        commitCharacterFormat editor (Doc.setVertAlign (if isNull (box align) || align = "" || align = "baseline" then None else Some align))
 
     /// Set text color on selection
     let setColorFor (editor: Editor) (color: string) =
-        let newDoc = Doc.setColor (if isNull (box color) || color = "" then None else Some color) editor.Doc
-        commitDocumentUpdate editor newDoc
+        commitCharacterFormat editor (Doc.setColor (if isNull (box color) || color = "" then None else Some color))
 
     /// Set highlight color on selection
     let setHighlightFor (editor: Editor) (color: string) =
-        let newDoc = Doc.setHighlight (if isNull (box color) || color = "" || color = "none" then None else Some color) editor.Doc
-        commitDocumentUpdate editor newDoc
+        commitCharacterFormat editor (Doc.setHighlight (if isNull (box color) || color = "" || color = "none" then None else Some color))
 
     /// Set hyperlink on selection
     let setHyperlinkFor (editor: Editor) (target: string) =
@@ -2297,13 +2328,11 @@ module API =
     
     /// Set font size on selection
     let setFontSizeFor (editor: Editor) (size: float) =
-        let newDoc = Doc.setFontSize size editor.Doc
-        commitDocumentUpdate editor newDoc
+        commitCharacterFormat editor (Doc.setFontSize size)
     
     /// Set font family on selection
     let setFontFamilyFor (editor: Editor) (family: string) =
-        let newDoc = Doc.setFontFamily family editor.Doc
-        commitDocumentUpdate editor newDoc
+        commitCharacterFormat editor (Doc.setFontFamily family)
 
     /// Set the font size of the selection in points (11, 12, 14 ...: the unit
     /// documents state sizes in and a size box shows). setFontSize takes
