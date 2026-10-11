@@ -1284,22 +1284,41 @@ checks['grid-scroll-frames'] = async () => {
         // behind pass before frames are timed.)
         if (window.collectGarbage) await window.collectGarbage();
         await next(); await next();
-        // A mouse wheel's worth per frame, then a screenful per frame.
+        // A mouse wheel's worth per frame, then a screenful per frame. What is measured is the work
+        // of a frame - the time inside the grid's animation-frame callbacks plus the layout they leave
+        // to do - not the time between frames: that also counts waiting for the display and for the
+        // processor, and under load made this check fail more often than not.
         const run = async (step, frames) => {
             scroller.scrollTop = 0; await next(); await next();
+            const raf = window.requestAnimationFrame;
+            let spent = 0;
+            window.requestAnimationFrame = (callback) => raf.call(window, (time) => { const start = performance.now(); try { callback(time); } finally { spent += performance.now() - start; } });
             const times = [];
-            let last = await next();
-            for (let i = 0; i < frames; i++) { scroller.scrollTop = (i + 1) * step; const now = await next(); times.push(now - last); last = now; }
+            try {
+                for (let i = 0; i < frames; i++) {
+                    spent = 0;
+                    scroller.scrollTop = (i + 1) * step;
+                    // (The scroll event comes with the next frame; the grid draws in a callback of that frame.)
+                    await new Promise((resolve) => raf.call(window, () => raf.call(window, resolve)));
+                    const start = performance.now(); content.getBoundingClientRect(); scroller.scrollHeight;
+                    times.push(spent + performance.now() - start);
+                }
+            } finally { window.requestAnimationFrame = raf; }
             return times;
         };
-        const wheel = await run(120, 90), pages = await run(scroller.clientHeight - 30, 60);
-        const stats = (times) => `mean ${(times.reduce((a, b) => a + b, 0) / times.length).toFixed(1)} ms, max ${Math.max(...times).toFixed(1)} ms`;
-        note(`120 px per frame: ${stats(wheel)}; a screenful per frame: ${stats(pages)}`);
-        // (Two long frames are allowed: a collection of a heap holding this sheet's 600 000 cells
-        // takes some 200 ms, whenever the browser decides on one. The released 0.1.5 has them too.)
-        check('no frame over 33 ms at 120 px per frame (but for garbage collections)', wheel.map((t) => Math.round(t)).filter((t) => t > 33).slice(2), []);
-        // (Every cell on screen is new in each of these frames; one long frame - a garbage collection - is allowed.)
-        check('a screenful per frame stays within two refresh intervals', pages.filter((t) => t > 34).length <= 1, true);
+        const wheel = await run(120, 120), pages = await run(scroller.clientHeight - 30, 90);
+        const median = (times) => [...times].sort((a, b) => a - b)[Math.floor(times.length / 2)];
+        const stats = (times) => `median ${median(times).toFixed(1)} ms, mean ${(times.reduce((a, b) => a + b, 0) / times.length).toFixed(1)} ms, max ${Math.max(...times).toFixed(1)} ms, ${times.filter((t) => t > 33).length} over 33 ms`;
+        note(`work per frame at 120 px per frame: ${stats(wheel)}; a screenful per frame: ${stats(pages)}`);
+        // Half of the frames within half a refresh interval, and no more than one in ten over two intervals
+        // (a collection of a heap holding this sheet's 600 000 cells takes some 200 ms whenever the browser
+        // decides on one, and the machine may be busy): a grid that draws slower fails the first, one that
+        // stalls every few frames the second.
+        check('120 px per frame: the median frame takes under 8 ms of work', median(wheel) < 8, true);
+        check('120 px per frame: no more than one frame in ten over 33 ms', wheel.filter((t) => t > 33).length <= wheel.length / 10, true);
+        // (Every cell on screen is new in each of these frames.)
+        check('a screenful per frame: the median frame takes under 16 ms of work', median(pages) < 16, true);
+        check('a screenful per frame: no more than one frame in ten over 33 ms', pages.filter((t) => t > 33).length <= pages.length / 10, true);
         scroller.scrollTop = scroller.scrollHeight; await next(); await next();
         check('the last row is reached', cellAtPoint(host, 300, scroller.clientHeight - 30)?.[0] >= rows - 3, true);
         // Nodes are reused rather than made for every cell that scrolls by.

@@ -795,8 +795,13 @@ Nothing to call for the recalculation itself: every edit recalculates what it ha
   the active cell (10 columns right of the active cell), the sheet grows to 100 rows (26 columns) past it, up to 1 048 576 rows and
   16 384 columns: `GetModel().RowCount` / `ColCount` grow as the caret moves on (they never shrink; the growth is not an edit, not
   an undo step, and does not make a sheet "changed" for a save). `SetCell` / `EnterText` on a cell beyond the grid and a paste that
-  reaches beyond it make the sheet large enough (before, `SetCell` stored a cell the grid did not show). Scrolling alone does not
-  grow the sheet: there are 50 to 100 empty rows to scroll into.
+  reaches beyond it make the sheet large enough (before, `SetCell` stored a cell the grid did not show). **Scrolling to the end of
+  the sheet adds 100 rows (at the right end: 26 columns) to scroll into, each time the view arrives there** - by the wheel, the
+  scroll bar or a key - as in Excel; in a read-only grid (`SetReadOnly(true)`, a viewer) the sheet stays as long as it is. A scroll
+  frame anywhere else does nothing for this (two comparisons in the scroll handler; measured work per frame on a 70 000-row sheet,
+  120 px per frame: 3.2 ms before sheets grew, 3.4 - 4.0 ms now, within the noise of the measurement). **A fill past the last row
+  or column** (`AutoFill`, the fill handle, Ctrl+D / Ctrl+R) makes the sheet that large (before, the cells beyond the last row
+  were not filled).
 - `GetDateSystem()` -> `1900` | `1904`. The date system of the workbook: 1904 for a workbook opened from a file whose `workbookPr` says
   `date1904` (serial 0 is 1904-01-01; Excel for Mac's old default), else 1900 (also every workbook made in the editor; there is no
   setter). `GetCell(...).value` of a date is the serial **in that system** - a host that converts serials to dates itself adds 1462

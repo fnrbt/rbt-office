@@ -22,6 +22,12 @@ let private getScrollLeft (el: Element): float = jsNative
 [<Emit("$0.clientWidth")>]
 let private getClientWidth (el: Element): float = jsNative
 
+[<Emit("$0.scrollHeight")>]
+let private getScrollHeight (el: Element): float = jsNative
+
+[<Emit("$0.scrollWidth")>]
+let private getScrollWidth (el: Element): float = jsNative
+
 [<Emit("$0.clientX")>]
 let private getClientX (e: obj): float = jsNative
 
@@ -905,10 +911,22 @@ type Spreadsheet(container: Element) =
     /// The cell map whose last used row `roomUsedRow` is.
     let mutable roomCells : obj = null
     let mutable roomUsedRow = -1
+    /// The view was scrolled to the last rows / the last columns of the sheet (`handleScroll`):
+    /// the next `giveRoom` adds rows / columns there.
+    let mutable scrolledToLastRows = false
+    let mutable scrolledToLastCols = false
     /// A sheet always has room beyond what is used and beyond the active cell: with fewer than
     /// 50 rows (10 columns) left there, the grid grows to 100 rows (26 columns) past it - up to
     /// 1 048 576 rows and 16 384 columns. (A sheet of a file has as many rows as the file uses.)
+    /// A view scrolled to the end of the sheet gets another 100 rows (26 columns) to scroll into,
+    /// as often as it is scrolled there. Nothing is done - and nothing costs - in any other frame.
     let giveRoom () =
+        if scrolledToLastRows || scrolledToLastCols then
+            let rows = if scrolledToLastRows then min 1048576 (model.RowCount + 100) else model.RowCount
+            let cols = if scrolledToLastCols then min 16384 (model.ColCount + 26) else model.ColCount
+            scrolledToLastRows <- false
+            scrolledToLastCols <- false
+            if rows > model.RowCount || cols > model.ColCount then model <- { model with RowCount = rows; ColCount = cols }
         let caretRow, caretCol =
             match model.Selection with
             | SingleCell (row, col) -> row, col
@@ -1882,6 +1900,12 @@ type Spreadsheet(container: Element) =
     let fillFrom (source: int * int * int * int) (direction: SpreadsheetInput.FillDirection) (count: int) (series: bool) =
         if count > 0 && not readOnly then
             let targets = SpreadsheetInput.fillTargets source direction count
+            // (A fill past the last row or column of the sheet makes the sheet that large.)
+            (let _, _, bottom, right = source
+             match direction with
+             | SpreadsheetInput.FillDown -> giveRoomFor { Row = bottom + count; Col = right }
+             | SpreadsheetInput.FillRight -> giveRoomFor { Row = bottom; Col = right + count }
+             | _ -> ())
             let oldCells = targets |> List.map (fun addr -> addr, getCell addr model)
             model <- SpreadsheetInput.fillCells source direction count series model
             recalculateFormulas()
@@ -5574,8 +5598,14 @@ type Spreadsheet(container: Element) =
     /// Handle scroll
     let handleScroll (e: obj) =
         let target = getCurrentTarget e
+        let movedDown, movedRight = gridScrollTop target > scrollTop, gridScrollLeft target > scrollLeft
         scrollTop <- gridScrollTop target
         scrollLeft <- gridScrollLeft target
+        // Scrolled down to the last rows (right to the last columns) of a sheet that can be edited:
+        // there are more to scroll into (two comparisons a scroll event; the sheet grows in `giveRoom`).
+        if not readOnly then
+            if movedDown && getScrollTop target + getClientHeight target >= getScrollHeight target - 2.0 then scrolledToLastRows <- true
+            if movedRight && getScrollLeft target + getClientWidth target >= getScrollWidth target - 2.0 then scrolledToLastCols <- true
         if not scrollRenderScheduled then
             scrollRenderScheduled <- true
             requestAnimationFrame (fun () ->

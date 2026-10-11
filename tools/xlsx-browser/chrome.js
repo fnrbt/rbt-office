@@ -1165,3 +1165,56 @@ checks['viewer-filter'] = async () => {
     finally { close(); }
     return lines;
 };
+
+// A sheet that can be edited has more rows to scroll into whenever it is scrolled to its end (and more
+// columns at its right end); a frame in the middle of the sheet does not grow it. A fill and a paste
+// past the last row make the sheet that large.
+checks['grid-scroll-grows'] = async () => {
+    const { lines, check, note } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        const { scroller } = parts(host);
+        const size = () => [grid.GetModel().RowCount, grid.GetModel().ColCount];
+        const [rows, cols] = size();
+        for (let row = 0; row < 40; row++) grid.SetCell(row, 0, String(row + 1));
+        await frame();
+        check('entries near the top leave the sheet as large as it is', size(), [rows, cols]);
+        scroller.scrollTop = 4000; await frame();
+        scroller.scrollTop = 8000; await frame();
+        check('scrolled about in the middle: no more rows', size(), [rows, cols]);
+        const toEnd = async () => { scroller.scrollTop = scroller.scrollHeight; await frame(); };
+        const start = performance.now();
+        await toEnd();
+        note(`the frames of a scroll to the end that adds 100 rows: ${(performance.now() - start).toFixed(1)} ms`);
+        check('scrolled to the end: 100 more rows', size(), [rows + 100, cols]);
+        const height = scroller.scrollHeight;
+        await frame();
+        check('... once: a frame at rest there adds none', [size(), scroller.scrollHeight], [[rows + 100, cols], height]);
+        await toEnd(); await toEnd();
+        check('scrolled to the end twice more: 200 more rows', size(), [rows + 300, cols]);
+        scroller.scrollTop = scroller.scrollTop - 400; await frame();
+        check('scrolled back up: none', size(), [rows + 300, cols]);
+        scroller.scrollLeft = scroller.scrollWidth; await frame();
+        check('scrolled to the right end: 26 more columns', size(), [rows + 300, cols + 26]);
+        scroller.scrollLeft = 0; scroller.scrollTop = 0; await frame();
+        // A fill down past the last row.
+        const last = size()[0] - 1;
+        grid.SetCell(last, 1, '7'); grid.SelectCell(last, 1); await frame();
+        const before = size()[0];
+        grid.AutoFill(before + 20, 1); await frame();
+        check('a fill past the last row: the sheet holds the cells', [size()[0] > before + 20, typeof grid.GetCell(before + 20, 1).value, grid.GetCell(last, 1).value], [true, 'number', 7]);
+        // A paste past the last row and the last column.
+        const [rowsNow, colsNow] = size();
+        grid.SelectCell(rowsNow - 1, colsNow - 1); await frame();
+        grid.PasteText('a\tb\tc\n1\t2\t3\n4\t5\t6', ''); await frame();
+        check('a paste past the last row and column: the sheet holds the cells', [size()[0] > rowsNow + 1, size()[1] > colsNow + 1, grid.GetCell(rowsNow + 1, colsNow + 1).value], [true, true, 6]);
+        // A viewer's sheet is as long as it is.
+        grid.SetReadOnly(true); scroller.scrollTop = 0; await frame();
+        const fixed = size();
+        await toEnd(); await toEnd();
+        check('read-only: scrolling to the end adds nothing', size(), fixed);
+    } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
+    finally { close(); }
+    return lines;
+};
+
