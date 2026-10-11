@@ -368,12 +368,13 @@ module API =
 
     /// Tell the onChange listeners that more of a long document is laid out
     /// (more pages, a larger document size), or all of it.
-    let private notifyProgress (editor: Editor) (layoutChanged: bool) (loadChanged: bool) =
+    let private notifyProgressAt (editor: Editor) (layoutChanged: bool) (loadChanged: bool) (scrollTop: float option) =
         if editor.Listeners.Count > 0 then
             let change =
                 createObj [
                     "DocumentChanged" ==> false
                     "SelectionChanged" ==> false
+                    "ScrollTop" ==> (match scrollTop with Some top -> box top | None -> null)
                     "CanUndo" ==> Inp.canUndo editor.Handler
                     "CanRedo" ==> Inp.canRedo editor.Handler
                     "Revision" ==> editor.Revision
@@ -389,7 +390,28 @@ module API =
             for listener in editor.Listeners.ToArray() do
                 if editor.Listeners.Contains listener then listener change
 
+    let private notifyProgress (editor: Editor) (layoutChanged: bool) (loadChanged: bool) =
+        notifyProgressAt editor layoutChanged loadChanged None
+
     let private notifyLayoutProgress (editor: Editor) = notifyProgress editor true false
+
+    [<Emit("Promise.resolve().then($0)")>]
+    let private afterThisCall (_callback: unit -> unit) : unit = jsNative
+
+    /// The editor moved its viewport to stay on the text it shows: the layout
+    /// above the view changed height (blocks above it that were shown as they
+    /// were laid out before a change of most of the document are laid out
+    /// now, see isLayoutComplete). The listeners are told once the call that
+    /// did it has returned: { LayoutChanged: true, ScrollTop } - the scroll
+    /// position (CSS pixels, as in setViewport) the host gives its content.
+    let private notifyScrollAdjusted (editor: Editor) =
+        afterThisCall (fun () ->
+            let ctx = editor.Handler.RenderContext
+            if ctx.Progress.ScrollAdjusted then
+                ctx.Progress.ScrollAdjusted <- false
+                match ctx.Viewport with
+                | Some vp -> notifyProgressAt editor true false (Some vp.ScrollTop)
+                | None -> ())
 
     /// Lay out the rest of a long document in idle slices (nothing to do, and
     /// nothing scheduled, when the whole document is laid out).
@@ -404,6 +426,10 @@ module API =
                     // (The page count is known now: the fields of a header being edited show it.)
                     storyFieldsRefresh.Value editor
                     Inp.repaint editor.Handler
+                elif ctx.Progress.Adopted then
+                    // (The layout of the document took the place of one with stale blocks above the view.)
+                    Inp.repaint editor.Handler
+                ctx.Progress.Adopted <- false
                 if tell then notifyLayoutProgress editor)
 
     /// Whether the whole document is laid out. A document loaded through a
@@ -414,6 +440,13 @@ module API =
     /// LayoutComplete }). Commands that need the whole layout (getPageCount,
     /// the layout queries, find and go to, renderPage of a later page, a
     /// selection further down) lay the rest out at once.
+    ///
+    /// It is false too after a change of most of a long document at once
+    /// (everything made bold, a font for all of it, replace all, their undo
+    /// and redo): the change returns with what is in view laid out and the
+    /// rest follows in slices - from the top of the document when the view
+    /// is near it, and with the blocks above the view kept as they were laid
+    /// out when it is far down (see onChange: ScrollTop).
     let isLayoutComplete (editor: Editor) : bool =
         Ren.layoutIsComplete editor.Handler.RenderContext
 
@@ -556,6 +589,19 @@ module API =
     /// long document is laid out, LoadChanged when it says that more of it
     /// was read, and nothing else changed). Returns a function that removes
     /// the subscription.
+    ///
+    /// A notice with ScrollTop (a number; { LayoutChanged: true, ScrollTop })
+    /// says that the editor moved its viewport and asks the host to scroll
+    /// its content there (CSS pixels, as scrollTop in setViewport;
+    /// getViewport gives the same). It comes when most of a long document
+    /// was changed at once with the view far down it: the change returns
+    /// with the blocks above the view as they were laid out before it
+    /// (getRenderStats().StaleBlocks of them; isLayoutComplete is false, the
+    /// pages above the view and the page count are those from before the
+    /// change), they are laid out in slices, and when their heights are
+    /// known the text in view stays where it is on screen at another scroll
+    /// position. A host that does not scroll there shows other text the
+    /// next time it calls setViewport with its own position.
     let onChange (editor: Editor) (callback: obj -> unit) : unit -> unit =
         editor.Listeners.Add callback
         editor.NotifiedCanUndo <- Inp.canUndo editor.Handler
@@ -730,6 +776,7 @@ module API =
             Fonts = Viewer.FontTracker()
         }
         handler.EnsureWhole <- fun () -> ensureLoaded editor
+        handler.RenderContext.Progress.OnScrollAdjusted <- fun () -> notifyScrollAdjusted editor
         handler.OnPendingFormat <- fun () -> notifyPendingFormat editor
 
         editor

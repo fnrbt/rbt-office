@@ -332,11 +332,61 @@ module Run =
         | Text tr -> Text { tr with Start = tr.Start + offset }
         | Image ir -> Image { ir with Start = ir.Start + offset }
 
+/// Whether two styles are equal: what `left = right` says, field by field.
+/// (The record's own equality gathers the forty fields of both sides before
+/// it compares the first - most of the time of a format given to a whole long
+/// document; here the fields that differ most often come first. A test goes
+/// through the record's fields and fails for one that is not compared here.)
+let sameTextStyle (left: TextStyle) (right: TextStyle) : bool =
+    obj.ReferenceEquals(left, right)
+    || (left.Bold = right.Bold
+        && left.Italic = right.Italic
+        && left.Underline = right.Underline
+        && left.AllCaps = right.AllCaps
+        && left.SmallCaps = right.SmallCaps
+        && left.Strike = right.Strike
+        && left.DoubleStrike = right.DoubleStrike
+        && left.Hidden = right.Hidden
+        && left.Position = right.Position
+        && left.FontSize = right.FontSize
+        && left.CharacterSpacing = right.CharacterSpacing
+        && left.RenderedPageBreakBefore = right.RenderedPageBreakBefore
+        && left.Explicit = right.Explicit
+        && left.Style = right.Style
+        && left.UnderlineStyle = right.UnderlineStyle
+        && left.UnderlineColor = right.UnderlineColor
+        && left.EmphasisMark = right.EmphasisMark
+        && left.FontFamily = right.FontFamily
+        && left.Color = right.Color
+        && left.Highlight = right.Highlight
+        && left.Hyperlink = right.Hyperlink
+        && left.InactiveHyperlink = right.InactiveHyperlink
+        && left.CommentId = right.CommentId
+        && left.CommentText = right.CommentText
+        && left.CommentAuthor = right.CommentAuthor
+        && left.CommentDate = right.CommentDate
+        && left.NoteId = right.NoteId
+        && left.NoteType = right.NoteType
+        && left.NoteText = right.NoteText
+        && left.BookmarkStartId = right.BookmarkStartId
+        && left.BookmarkName = right.BookmarkName
+        && left.BookmarkEndId = right.BookmarkEndId
+        && left.FieldCode = right.FieldCode
+        && left.FieldResult = right.FieldResult
+        && left.EquationXml = right.EquationXml
+        && left.RevisionId = right.RevisionId
+        && left.RevisionType = right.RevisionType
+        && left.RevisionAuthor = right.RevisionAuthor
+        && left.RevisionDate = right.RevisionDate
+        && left.DeletedInsertion = right.DeletedInsertion
+        && left.MoveName = right.MoveName
+        && left.VertAlign = right.VertAlign)
+
 let private mergedRunList (runs: ResizeArray<Run>) =
     let mutable result = []
     for i = runs.Count - 1 downto 0 do
         match runs.[i], result with
-        | Text current, Text next :: rest when current.Start + current.Length = next.Start && current.Style = next.Style ->
+        | Text current, Text next :: rest when current.Start + current.Length = next.Start && sameTextStyle current.Style next.Style ->
             result <- Text { current with Length = current.Length + next.Length } :: rest
         | run, _ ->
             result <- run :: result
@@ -1195,11 +1245,11 @@ let applyStyle start len styleTransform buffer =
                 buffer
             elif runStart >= start && runEnd <= rangeEnd then
                 let transformedStyle = styleTransform tr.Style
-                if transformedStyle = tr.Style then buffer
+                if sameTextStyle transformedStyle tr.Style then buffer
                 else { buffer with Runs = [ Text { tr with Style = transformedStyle } ] }
             else
                 let transformedStyle = styleTransform tr.Style
-                if transformedStyle = tr.Style then
+                if sameTextStyle transformedStyle tr.Style then
                     buffer
                 else
                     let runs = ResizeArray<Run>(3)
@@ -1227,7 +1277,7 @@ let applyStyle start len styleTransform buffer =
                         hasPendingText <- false
                 let addText start length style =
                     if length > 0 then
-                        if hasPendingText && pendingStart + pendingLength = start && pendingStyle = style then
+                        if hasPendingText && pendingStart + pendingLength = start && sameTextStyle pendingStyle style then
                             pendingLength <- pendingLength + length
                         else
                             flushPendingText ()
@@ -1239,7 +1289,7 @@ let applyStyle start len styleTransform buffer =
                     match run with
                     | Text tr ->
                         let transformedStyle = styleTransform tr.Style
-                        changed <- changed || transformedStyle <> tr.Style
+                        changed <- changed || not (sameTextStyle transformedStyle tr.Style)
                         addText tr.Start tr.Length transformedStyle
                     | Image _ ->
                         flushPendingText ()
@@ -1317,7 +1367,7 @@ let applyStyle start len styleTransform buffer =
                             else prefixCount <- prefixCount + 1
                         else
                             let transformedStyle = styleTransform tr.Style
-                            if transformedStyle = tr.Style then
+                            if sameTextStyle transformedStyle tr.Style then
                                 if changed then newRuns.Add run
                                 else prefixCount <- prefixCount + 1
                             else

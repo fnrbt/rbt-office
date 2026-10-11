@@ -67,16 +67,49 @@ try {
     check('undo returns before the document is laid out again', [Word.isLayoutComplete(editor), Word.getRenderStats(editor).LaidOutLimit < 400], [false, true]);
     check('getPageCount lays the rest out at once', [Word.getPageCount(editor), Word.isLayoutComplete(editor)], [plainPages, true]);
 
-    // Half way down the document: what is above the view is laid out first, the rest put off.
-    const frames = Word.getPageFrames(editor);
-    const middle = frames[Math.floor(frames.length / 2)].Top ?? frames[Math.floor(frames.length / 2)].Y;
+    // Half way down the document: the blocks above the view stay as they were laid out (not one
+    // of them is laid out again before the change returns), the document is laid out from the
+    // block at the top of the view; the layout from the start follows in slices, and when it has
+    // come as far as the view the view is moved to stay on the text it shows (the host is told
+    // where to scroll: a notice with ScrollTop).
+    const plainLines = Word.getLayoutLines(editor);
+    const firstLines = plainLines.filter((line, i) => line.BlockId.length > 0 && line.StartOffset === 0 && (i === 0 || plainLines[i - 1].BlockId !== line.BlockId));
+    const topLine = firstLines[Math.floor(firstLines.length / 2)];
+    const upperLine = firstLines.filter((line) => line.Y < topLine.Y - 3000).pop();
+    const middle = topLine.Y - 2;
     Word.setViewport(editor, viewport(middle));
+    const blockAtTop = () => { const hit = Word.hitTestViewport(editor, 300, 10); return hit ? hit.BlockId : null; };
+    check('half way down: the block at the top of the view', blockAtTop(), topLine.BlockId);
+    const scrolls = [];
+    const offScroll = Word.onChange(editor, (change) => { if (typeof change.ScrollTop === 'number') { scrolls.push(change.ScrollTop); Word.setViewport(editor, viewport(change.ScrollTop)); } });
+    t = performance.now();
     Word.redo(editor);
+    const midTook = performance.now() - t;
     const midStats = Word.getRenderStats(editor);
-    note(`in view half way down: ${midStats.LaidOutLimit} of ${midStats.Blocks} blocks laid out when the change returns`);
+    note(`in view half way down: returned in ${midTook.toFixed(1)} ms; ${midStats.StaleBlocks} blocks above the view kept as they were, ${midStats.LaidOutBlocks} laid out, the limit at ${midStats.LaidOutLimit} of ${midStats.Blocks}`);
     check('in view half way down: laid out as far as is in view, not to the end', [Word.isLayoutComplete(editor), midStats.LaidOutLimit > 1000, midStats.LaidOutLimit < 2600], [false, true, true]);
+    check('the blocks above the view are not laid out again before the change returns', [midStats.StaleBlocks > 1000, midStats.LaidOutBlocks < 200], [true, true]);
+    check('the view is on the block it was on', [blockAtTop(), Word.getSelectionFormat(editor).Bold], [topLine.BlockId, true]);
+    // Undo and redo while the blocks above are stale: the same.
+    t = performance.now();
+    Word.undo(editor);
+    const staleUndo = Word.getRenderStats(editor);
+    Word.redo(editor);
+    const staleRedo = Word.getRenderStats(editor);
+    note(`undo and redo meanwhile: ${(performance.now() - t).toFixed(1)} ms for both`);
+    check('undo and redo meanwhile keep the blocks above the view stale', [staleUndo.StaleBlocks > 1000, staleUndo.LaidOutBlocks < 200, staleRedo.StaleBlocks > 1000, staleRedo.LaidOutBlocks < 200, Word.isLayoutComplete(editor), blockAtTop()], [true, true, true, true, false, topLine.BlockId]);
+    // Scrolled up into the stale blocks: they are laid out as far as the view reaches, the view stays on its block.
+    Word.setViewport(editor, viewport(upperLine.Y - 2));
+    const upStats = Word.getRenderStats(editor);
+    check('scrolled up into the stale blocks: fewer are stale, the view is on the block it was scrolled to', [upStats.StaleBlocks > 0 && upStats.StaleBlocks < staleRedo.StaleBlocks, blockAtTop(), Word.isLayoutComplete(editor)], [true, upperLine.BlockId, false]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
     await Word.whenLayoutComplete(editor);
-    check('and to the end in slices', [Word.isLayoutComplete(editor), Word.getPageCount(editor)], [true, boldPages]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    offScroll();
+    const endStats = Word.getRenderStats(editor);
+    check('and to the end in slices', [Word.isLayoutComplete(editor), endStats.StaleBlocks, Word.getPageCount(editor)], [true, 0, boldPages]);
+    check('the host was told where to scroll; the view is on the block it was on', [scrolls.length >= 1, scrolls[scrolls.length - 1] > upperLine.Y - 2, Word.getViewport(editor).scrollTop === scrolls[scrolls.length - 1], blockAtTop()], [true, true, true, upperLine.BlockId]);
+    check('the layout at the end is that of the document laid out at once', JSON.stringify(linesOf(editor)) === JSON.stringify(linesOf(whole)), true);
 
     // A change of a few paragraphs is laid out at once, as ever.
     const lines = Word.getLayoutLines(editor);

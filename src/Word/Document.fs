@@ -3713,51 +3713,61 @@ let selectAll doc =
                 Focus = { BlockId = lastPara.Id; Offset = lastLen }
             } }
 
-/// Apply formatting to selection; the formatter also gets the paragraph.
-let private applyFormattingToSelectionInParagraph (formatFn: ParagraphBlock -> int -> int -> TextBuffer.TextBuffer -> TextBuffer.TextBuffer) doc =
+/// The paragraphs of a selection that is not collapsed, to be mapped: the
+/// function given back applies `formatFn paragraph start length buffer` to
+/// the selected part of each, until `finished ()` says the rest can stay as
+/// it is. (The range is worked out once for all the passes over it.)
+let private selectionFormatter (doc: Document) : ((unit -> bool) -> (ParagraphBlock -> int -> int -> TextBuffer.TextBuffer -> TextBuffer.TextBuffer) -> Document) option =
     match doc.Selection with
-    | None -> doc
-    | Some sel when sel.IsCollapsed -> doc  // No selection
+    | None -> None
+    | Some sel when sel.IsCollapsed -> None  // No selection
     | Some sel ->
         let (startPos, endPos, blockIds) = getNormalizedRange sel doc
         let blockCount = List.length blockIds
 
         if blockCount = 0 then
-            doc
+            None
         else
             let selectedBlockIndexes = Dictionary<BlockId, int>(blockCount)
             blockIds |> List.iteri (fun index blockId -> selectedBlockIndexes.[blockId] <- index)
 
-            let formatParagraph (para: ParagraphBlock) =
-                match selectedBlockIndexes.TryGetValue para.Id with
-                | false, _ -> para
-                | true, i ->
-                    let bufferLen = TextBuffer.length para.Buffer
+            Some (fun finished formatFn ->
+                let formatParagraph (para: ParagraphBlock) =
+                    match selectedBlockIndexes.TryGetValue para.Id with
+                    | false, _ -> para
+                    | true, i ->
+                        let bufferLen = TextBuffer.length para.Buffer
 
-                    // Determine range to format within this block
-                    let (formatStart, formatLen) =
-                        if blockCount = 1 then
-                            // Single block selection
-                            (startPos.Offset, endPos.Offset - startPos.Offset)
-                        elif i = 0 then
-                            // First block: from startOffset to end
-                            (startPos.Offset, bufferLen - startPos.Offset)
-                        elif i = blockCount - 1 then
-                            // Last block: from 0 to endOffset
-                            (0, endPos.Offset)
+                        // Determine range to format within this block
+                        let (formatStart, formatLen) =
+                            if blockCount = 1 then
+                                // Single block selection
+                                (startPos.Offset, endPos.Offset - startPos.Offset)
+                            elif i = 0 then
+                                // First block: from startOffset to end
+                                (startPos.Offset, bufferLen - startPos.Offset)
+                            elif i = blockCount - 1 then
+                                // Last block: from 0 to endOffset
+                                (0, endPos.Offset)
+                            else
+                                // Middle block: format entire block
+                                (0, bufferLen)
+
+                        // Apply formatting
+                        if formatLen > 0 then
+                            let newBuffer = formatFn para formatStart formatLen para.Buffer
+                            if sameReference newBuffer para.Buffer then para
+                            else { para with Buffer = newBuffer }
                         else
-                            // Middle block: format entire block
-                            (0, bufferLen)
+                            para
 
-                    // Apply formatting
-                    if formatLen > 0 then
-                        let newBuffer = formatFn para formatStart formatLen para.Buffer
-                        if sameReference newBuffer para.Buffer then para
-                        else { para with Buffer = newBuffer }
-                    else
-                        para
+                mapEditableParagraphsUntil finished formatParagraph doc)
 
-            mapEditableParagraphs formatParagraph doc
+/// Apply formatting to selection; the formatter also gets the paragraph.
+let private applyFormattingToSelectionInParagraph (formatFn: ParagraphBlock -> int -> int -> TextBuffer.TextBuffer -> TextBuffer.TextBuffer) doc =
+    match selectionFormatter doc with
+    | Some format -> format (fun () -> false) formatFn
+    | None -> doc
 
 /// Apply formatting to selection
 let applyFormattingToSelection formatFn doc =
@@ -3773,14 +3783,18 @@ let applyFormattingToSelection formatFn doc =
 /// paragraph style counts as bold, and toggling it yields explicit non-bold.
 /// `apply` must record the value as explicit (TextBuffer.withExplicit*).
 let private toggleOnSelection (effective: ParagraphBlock -> TextBuffer.TextStyle -> TextBuffer.TextStyle) (isSet: TextBuffer.TextStyle -> bool) (apply: bool -> TextBuffer.TextStyle -> TextBuffer.TextStyle) doc =
-    let mutable allSet = true
-    applyFormattingToSelectionInParagraph (fun para start len buffer ->
-        if allSet && not (TextBuffer.rangeSatisfies start len (fun style -> isSet (effective para style)) buffer) then
-            allSet <- false
-        buffer) doc
-    |> ignore
-    let turnOn = not allSet
-    applyFormattingToSelection (fun start len buffer -> TextBuffer.applyStyle start len (apply turnOn) buffer) doc
+    match selectionFormatter doc with
+    | None -> doc
+    | Some format ->
+        // (The first run that has not got it decides: the paragraphs after it are not looked at.)
+        let mutable allSet = true
+        format (fun () -> not allSet) (fun para start len buffer ->
+            if allSet && not (TextBuffer.rangeSatisfies start len (fun style -> isSet (effective para style)) buffer) then
+                allSet <- false
+            buffer)
+        |> ignore
+        let turnOn = not allSet
+        format (fun () -> false) (fun _ start len buffer -> TextBuffer.applyStyle start len (apply turnOn) buffer)
 
 let private rawStyle (_: ParagraphBlock) (style: TextBuffer.TextStyle) = style
 

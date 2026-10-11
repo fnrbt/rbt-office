@@ -113,6 +113,45 @@ type LayoutProgress = {
     /// it is laid out again from its start as a newly loaded one is - what is
     /// in view first, the rest in slices (see `deferMassRelayout`).
     mutable MassChange: bool
+    /// What the view is held by while the layout above it changes: a block
+    /// (its place among the blocks), which of its layouts, and the y that
+    /// layout had. Once the block is laid out again the viewport is moved by
+    /// as much as the layout moved (see `captureAnchor`, `applyAnchor`).
+    mutable Anchor: (int * int * float) option
+    /// The viewport was moved to stay on the text it shows (its ScrollTop is
+    /// not the one the host set last): the host is told, see OnScrollAdjusted.
+    mutable ScrollAdjusted: bool
+    /// Called when the viewport was moved (the host scrolls its content to it).
+    mutable OnScrollAdjusted: unit -> unit
+    /// The layout of the document itself took the place of the one that was
+    /// shown meanwhile (see StaleLayout): what is on the canvas is painted again.
+    mutable Adopted: bool
+}
+
+/// Most of a long document changed at once while the view is far down it
+/// (everything made bold on page 300 of 600). Laying it out again from its
+/// start as far as the view takes as long as half the document takes; the
+/// blocks above the view are not seen. So the layout that is shown is of
+/// another list of blocks: the first `Keep` blocks as they were before the
+/// change (`StaleBlocks` - their layouts stand, not one is made again), and
+/// the document's own blocks from there on, laid out from the place the pass
+/// had before block `Keep`. Meanwhile the document itself is laid out from
+/// its start in slices, in a layout state of its own (`Ahead`); when that
+/// reaches what the view shows it takes the place of the context's layout
+/// state, and the viewport is moved by as much as the first block in view
+/// moved, so that the text in view stays where it is on screen. Until then
+/// the layout is not complete, and the pages above the view are those the
+/// document had before the change.
+type StaleLayout = {
+    mutable StaleBlocks: Block list
+    mutable Keep: int
+    /// The blocks of the document the view is of.
+    mutable Target: Block list
+    /// The blocks that are laid out for a list of the document's blocks (kept: the same list for the same document).
+    mutable HybridFor: Block list
+    mutable HybridKeep: int
+    mutable Hybrid: Block list
+    Ahead: IncrementalLayoutState
 }
 
 /// A header or footer that is edited in place. The document the editor
@@ -176,7 +215,10 @@ type RenderContext = {
     /// whenever they change): table plans are kept per scope, see
     /// `Layout.withTablePlanScope`.
     mutable PlanScope: obj
-    LayoutState: IncrementalLayoutState
+    mutable LayoutState: IncrementalLayoutState
+    /// The blocks above the view are shown as they were laid out before a
+    /// change of most of the document (see StaleLayout).
+    mutable Stale: StaleLayout option
     /// The paint commands of the last frame, block by block (see `Paint.PaintCache`).
     PaintCache: PaintCache
     /// Which blocks of the last frame's document hold comments (parallel arrays).
@@ -263,13 +305,14 @@ let createContext (canvas: HTMLCanvasElement) = {
     CollectedOnPaint = 0
     PlanScope = obj ()
     LayoutState = Rbt.Word.Layout.createIncrementalLayoutState ()
+    Stale = None
     PaintCache = createPaintCache ()
     CommentBlocks = [||]
     CommentFlags = [||]
     LastPaint = None
     Viewport = None
     PageFrame = None
-    Progress = { MassChange = false; Scheduled = false; Epoch = 0; Chunk = 48; Notified = 0.0; Waiters = ResizeArray(); LoadPending = false
+    Progress = { Anchor = None; ScrollAdjusted = false; OnScrollAdjusted = ignore; Adopted = false; MassChange = false; Scheduled = false; Epoch = 0; Chunk = 48; Notified = 0.0; Waiters = ResizeArray(); LoadPending = false
                  Slices = 0; LongestSliceMs = 0.0; LongestSlice = 0; LongestSlicePasses = 0; LongestSliceLayoutMs = 0.0; LongestSliceFrom = 0; SlicePasses = 0 }
     Story = None
     StoryPainted = false
@@ -413,6 +456,11 @@ let private nowMs () : float = jsNative
 
 /// Whether the layout the context has (or makes next) is of all the blocks the document has.
 let private layoutIsWhole (ctx: RenderContext) =
+    ctx.Stale.IsNone && Rbt.Word.Layout.incrementalLayoutIsWhole ctx.LayoutState
+
+/// Whether the layout state on display has all the blocks it is given (while
+/// blocks above the view are stale that is not the layout of the document).
+let private stateIsWhole (ctx: RenderContext) =
     Rbt.Word.Layout.incrementalLayoutIsWhole ctx.LayoutState
 
 /// Whether the layout the context has (or makes next) is of the whole
@@ -437,12 +485,138 @@ let private resolveLayoutWaiters (ctx: RenderContext) =
         ctx.Progress.Waiters.Clear()
         for waiter in waiters do waiter ()
 
+/// The layout that holds the view where it is: the block at the top of the
+/// view, the layout of it that is there, and that layout's y.
+let private captureAnchor (ctx: RenderContext) =
+    match ctx.Viewport, ctx.LayoutState.LastSlices with
+    | Some vp, Some slices when slices.SliceLayouts.Length > 0 && ctx.Progress.Anchor.IsNone ->
+        let top = (vp.ScrollTop - vp.OriginY) / vp.Scale
+        let layouts = slices.SliceLayouts
+        // The last layout that starts at or above the top of the view (the next one when that ends above it).
+        let mutable lo = 0
+        let mutable hi = layouts.Length
+        while lo < hi do
+            let mid = lo + (hi - lo) / 2
+            if layouts.[mid].Y <= top then lo <- mid + 1 else hi <- mid
+        let mutable at = max 0 (lo - 1)
+        if layouts.[at].Y + layouts.[at].Height <= top && at + 1 < layouts.Length then at <- at + 1
+        let starts = slices.SliceStarts
+        let mutable first = 0
+        let mutable last = slices.SliceBlocks.Length - 1
+        while first < last do
+            let mid = first + (last - first + 1) / 2
+            if starts.[mid] <= at then first <- mid else last <- mid - 1
+        if first >= 0 && first < slices.SliceBlocks.Length then
+            ctx.Progress.Anchor <- Some (first, at - starts.[first], layouts.[at].Y)
+    | _ -> ()
+
+/// The view is moved by as much as the layout that holds it moved (once that
+/// block is laid out again).
+let private applyAnchor (ctx: RenderContext) =
+    match ctx.Progress.Anchor with
+    | None -> ()
+    | Some (block, ordinal, y) ->
+        match ctx.Viewport, ctx.LayoutState.LastSlices with
+        | Some vp, Some slices when block < slices.SliceBlocks.Length ->
+            ctx.Progress.Anchor <- None
+            let first = slices.SliceStarts.[block]
+            let last = slices.SliceStarts.[block + 1]
+            if last > first then
+                let delta = slices.SliceLayouts.[min (first + ordinal) (last - 1)].Y - y
+                if abs delta >= 0.5 then
+                    ctx.Viewport <- Some { vp with ScrollTop = max 0.0 (vp.ScrollTop + delta * vp.Scale) }
+                    ctx.Progress.ScrollAdjusted <- true
+                    ctx.Progress.OnScrollAdjusted ()
+        | Some _, Some _ -> ()
+        | _ -> ctx.Progress.Anchor <- None
+
+/// The layout of the document itself, as far as it is, takes the place of
+/// the layout with stale blocks above the view (see StaleLayout).
+let private adoptAhead (ctx: RenderContext) =
+    match ctx.Stale with
+    | Some stale ->
+        captureAnchor ctx
+        stale.Ahead.LayoutSerial <- (max stale.Ahead.LayoutSerial ctx.LayoutState.LayoutSerial) + 1
+        ctx.LayoutState <- stale.Ahead
+        ctx.Stale <- None
+        ctx.KnownPageFrames <- None
+        ctx.Progress.Adopted <- true
+    | None -> ()
+
+/// The blocks that are laid out for the document's blocks while the blocks
+/// above the view are stale: the first Keep stale ones, the document's own
+/// after them. A change of the document meanwhile: one above the view lowers
+/// Keep to where it is; another change of most of the document (an undo)
+/// makes what is shown the stale layout, and the layout of the document
+/// itself starts again.
+let private hybridBlocks (stale: StaleLayout) (blocks: Block list) : Block list =
+    if not (obj.ReferenceEquals(stale.Target, blocks)) then
+        let mutable before = stale.Target
+        let mutable after = blocks
+        let mutable prefix = 0
+        while prefix < stale.Keep && not before.IsEmpty && not after.IsEmpty && obj.ReferenceEquals(before.Head, after.Head) do
+            before <- before.Tail
+            after <- after.Tail
+            prefix <- prefix + 1
+        if prefix < stale.Keep then
+            let mutable probed = 0
+            let mutable differing = 0
+            while probed < 16 && not before.IsEmpty && not after.IsEmpty do
+                if not (obj.ReferenceEquals(before.Head, after.Head)) then differing <- differing + 1
+                before <- before.Tail
+                after <- after.Tail
+                probed <- probed + 1
+            if probed = 16 && differing = 16 && not stale.Hybrid.IsEmpty then
+                stale.StaleBlocks <- stale.Hybrid
+                // (From its start again, a few blocks at first: none of them is laid out as it is now.)
+                stale.Ahead.BlockLimit <- 6
+            else stale.Keep <- prefix
+        stale.Target <- blocks
+    if obj.ReferenceEquals(stale.HybridFor, blocks) && stale.HybridKeep = stale.Keep && not stale.Hybrid.IsEmpty then stale.Hybrid
+    else
+        let head = ResizeArray<Block>()
+        let mutable old = stale.StaleBlocks
+        let mutable rest = blocks
+        while head.Count < stale.Keep && not old.IsEmpty && not rest.IsEmpty do
+            head.Add old.Head
+            old <- old.Tail
+            rest <- rest.Tail
+        stale.Keep <- head.Count
+        let mutable result = rest
+        for index in head.Count - 1 .. -1 .. 0 do
+            result <- head.[index] :: result
+        stale.HybridFor <- blocks
+        stale.HybridKeep <- stale.Keep
+        stale.Hybrid <- result
+        result
+
+/// The document the context's layout state lays out for a document on
+/// display: the document, or - while the blocks above the view are stale -
+/// the one with those blocks as they were (see StaleLayout).
+let private layoutTarget (ctx: RenderContext) (doc: Document) : Document =
+    match ctx.Stale with
+    | Some _ when ctx.Story.IsSome ->
+        // (A header or footer edited in place is found by its page: the layout of the document itself.)
+        adoptAhead ctx
+        doc
+    | Some stale ->
+        let blocks = hybridBlocks stale doc.Blocks
+        if stale.Keep = 0 then
+            // (Nothing stale is left above the view: the layout is the document's.)
+            ctx.Stale <- None
+            doc
+        elif obj.ReferenceEquals(blocks, doc.Blocks) then doc
+        else { doc with Blocks = blocks }
+    | None -> doc
+
 /// Layouts plus the per-page geometry of the same (incremental) layout pass:
 /// of the blocks the layout state's limit covers.
 let layoutDocumentWithPages (ctx: RenderContext) (doc: Document) =
+    let target = layoutTarget ctx doc
     let result =
         Rbt.Word.Layout.withTablePlanScope ctx.PlanScope (fun () ->
-            Rbt.Word.Layout.layoutDocumentPagesIncremental ctx.LayoutState (layoutSettings ctx doc) (measureWithContext ctx) (measureRangeWithContext ctx) doc)
+            Rbt.Word.Layout.layoutDocumentPagesIncremental ctx.LayoutState (layoutSettings ctx doc) (measureWithContext ctx) (measureRangeWithContext ctx) target)
+    applyAnchor ctx
     resolveLayoutWaiters ctx
     result
 
@@ -520,6 +694,8 @@ let layoutDocument (ctx: RenderContext) (doc: Document) =
 
 /// From here on the whole document is laid out (by the next layout asked for).
 let completeLayout (ctx: RenderContext) =
+    // (Stale blocks above the view: the layout of the document itself, as far as it is, is taken on.)
+    adoptAhead ctx
     ctx.LayoutState.BlockLimit <- System.Int32.MaxValue
 
 /// The layout of the whole document, with its pages.
@@ -546,6 +722,8 @@ let beginProgressiveLayout (ctx: RenderContext) =
     ctx.Progress.LongestSlicePasses <- 0
     ctx.Progress.LongestSliceLayoutMs <- 0.0
     ctx.Progress.LongestSliceFrom <- 0
+    ctx.Stale <- None
+    ctx.Progress.Anchor <- None
     match ctx.Viewport with
     | Some _ ->
         // (A few blocks: the render raises the limit until what is in view is laid out. Forty
@@ -571,21 +749,50 @@ let private laidOutBottom (ctx: RenderContext) (layouts: BlockLayout list) =
 
 /// Lay out as much of the document as reaches down to `bottom` (layout y).
 let private coverDown (ctx: RenderContext) (doc: Document) (bottom: float) =
-    let mutable more = not (layoutIsWhole ctx)
+    let mutable more = not (stateIsWhole ctx)
     while more do
         let layouts, _ = layoutDocumentWithPages ctx doc
-        if layoutIsWhole ctx || laidOutBottom ctx layouts >= bottom then more <- false
+        if stateIsWhole ctx || laidOutBottom ctx layouts >= bottom then more <- false
         else
             // (In steps of a third: a pass over a few more blocks costs little, the blocks themselves cost their measuring.)
             let limit = ctx.LayoutState.BlockLimit
+            // (Of what is laid out anew: the stale blocks above the view cost nothing.)
+            let fresh = match ctx.Stale with Some stale -> max 0 (limit - stale.Keep) | None -> limit
             // (A few at first: the blocks of the first screens may be pages long each.)
-            ctx.LayoutState.BlockLimit <- (if limit > 1000000 then System.Int32.MaxValue else limit + max 4 (limit / 3))
+            ctx.LayoutState.BlockLimit <- (if limit > 1000000 then System.Int32.MaxValue else limit + max 4 (fresh / 3))
 
 /// What a viewport shows, and a screen below it, is laid out.
 let private coverViewport (ctx: RenderContext) (doc: Document) (vp: Viewport) =
     if not (layoutIsWhole ctx) then
         let top = (vp.ScrollTop - vp.OriginY) / vp.Scale
         let height = vp.Height / vp.Scale
+        // The view reaches into the stale blocks above it: the layout of the document itself
+        // takes over when it has come as far as the view, else fewer blocks are kept stale.
+        match ctx.Stale, ctx.LayoutState.LastSlices with
+        | Some stale, Some slices when stale.Keep > 0 && stale.Keep < slices.SliceBlocks.Length && slices.SliceStarts.[stale.Keep] < slices.SliceLayouts.Length
+                                       && top < slices.SliceLayouts.[slices.SliceStarts.[stale.Keep]].Y ->
+            let blockAt (y: float) =
+                let layouts = slices.SliceLayouts
+                let mutable lo = 0
+                let mutable hi = layouts.Length
+                while lo < hi do
+                    let mid = lo + (hi - lo) / 2
+                    if layouts.[mid].Y <= y then lo <- mid + 1 else hi <- mid
+                let at = max 0 (lo - 1)
+                let starts = slices.SliceStarts
+                let mutable first = 0
+                let mutable last = slices.SliceBlocks.Length - 1
+                while first < last do
+                    let mid = first + (last - first + 1) / 2
+                    if starts.[mid] <= at then first <- mid else last <- mid - 1
+                first
+            let ahead = stale.Ahead
+            if ahead.LastDocument.IsSome && (ahead.LastWasWhole || ahead.LastLimit > blockAt (top + 2.0 * height) + 8) then adoptAhead ctx
+            else
+                captureAnchor ctx
+                stale.Keep <- max 0 (blockAt (top - height))
+                ctx.LayoutState.BlockLimit <- stale.Keep + 6
+        | _ -> ()
         coverDown ctx doc (top + 2.0 * height)
 
 /// The blocks the selection is in are laid out, and some after them (the
@@ -614,6 +821,9 @@ let private coverSelection (ctx: RenderContext) (doc: Document) =
 /// Blocks a change must touch at once for the document to be laid out again as a newly loaded one is.
 let private massChangeBlocks = 400
 
+/// Blocks there must be above the view for them to be kept as they were laid out (see StaleLayout).
+let private staleKeepBlocks = 200
+
 /// A change of most of a long document at once - everything selected and made
 /// bold, a font or a size given to all of it - has every paragraph measured
 /// and broken into lines again: a second and more for six hundred pages,
@@ -622,11 +832,14 @@ let private massChangeBlocks = 400
 /// is in view (the render sees to that), and the rest in slices - the layout
 /// is not complete meanwhile (`layoutIsComplete`), and what needs all of it
 /// lays the rest out at once. (What is in view half way down a long document
-/// has the half above it laid out first: pages are counted from the start.)
+/// far down a long document keeps the blocks above it as they were laid out
+/// until the layout from the start has come as far - see StaleLayout.)
 let private deferMassRelayout (ctx: RenderContext) (doc: Document) =
     if layoutIsWhole ctx && ctx.Progress.MassChange then ctx.Progress.MassChange <- false
-    match ctx.Viewport, ctx.Story, ctx.LayoutState.LastDocument with
-    | Some _, None, Some last when ctx.LayoutState.LastWasWhole && layoutIsWhole ctx && not ctx.Progress.LoadPending && not (obj.ReferenceEquals(last.Blocks, doc.Blocks)) ->
+    match ctx.Viewport, ctx.Story, ctx.Stale, ctx.LayoutState.LastDocument with
+    | Some _, None, None, Some last when not ctx.Progress.LoadPending && not (obj.ReferenceEquals(last.Blocks, doc.Blocks)) ->
+        // (A layout of the start of the document only: what is laid out of it can be kept stale above the view.)
+        let whole = ctx.LayoutState.LastWasWhole && layoutIsWhole ctx
         // The first block that is another object, and whether the ones after it are too (an
         // edit of one paragraph leaves its neighbours the objects they were).
         let mutable before = last.Blocks
@@ -649,32 +862,50 @@ let private deferMassRelayout (ctx: RenderContext) (doc: Document) =
             let struct (_, suffix) = Rbt.Word.Layout.commonBlockEnds (List.toArray before) (List.toArray after)
             let changed = List.length after - suffix
             if changed >= massChangeBlocks then
-                // As far as was in view before the change, in one pass (a pass has a cost of its own
-                // that grows with what is laid out: raising the limit step by step to a view half way
-                // down six hundred pages took longer than laying all of them out at once). The render
-                // takes it further when the text got shorter.
-                let inView =
+                // The block at the top of the view and the first one below it and a screen more, as
+                // they were laid out before the change.
+                let blockOfLayout (slices: Rbt.Word.Layout.LayoutSlices) (at: int) =
+                    let starts = slices.SliceStarts
+                    let mutable first = 0
+                    let mutable last = slices.SliceBlocks.Length - 1
+                    while first < last do
+                        let mid = first + (last - first + 1) / 2
+                        if starts.[mid] <= at then first <- mid else last <- mid - 1
+                    first
+                let firstLayoutBelow (slices: Rbt.Word.Layout.LayoutSlices) (y: float) =
+                    let layouts = slices.SliceLayouts
+                    let mutable lo = 0
+                    let mutable hi = layouts.Length
+                    while lo < hi do
+                        let mid = lo + (hi - lo) / 2
+                        if layouts.[mid].Y <= y then lo <- mid + 1 else hi <- mid
+                    lo
+                let atTop, inView =
                     match ctx.Viewport, ctx.LayoutState.LastSlices with
                     | Some vp, Some slices when slices.SliceLayouts.Length > 0 ->
-                        let bottom = (vp.ScrollTop - vp.OriginY) / vp.Scale + 2.0 * vp.Height / vp.Scale
-                        // The first layout below that, and the block it belongs to.
-                        let layouts = slices.SliceLayouts
-                        let mutable lo = 0
-                        let mutable hi = layouts.Length
-                        while lo < hi do
-                            let mid = lo + (hi - lo) / 2
-                            if layouts.[mid].Y <= bottom then lo <- mid + 1 else hi <- mid
-                        let starts = slices.SliceStarts
-                        let mutable first = 0
-                        let mutable last = starts.Length - 1
-                        while first < last do
-                            let mid = first + (last - first + 1) / 2
-                            if starts.[mid] <= lo then first <- mid else last <- mid - 1
-                        first + 8
-                    | _ -> 0
-                ctx.LayoutState.BlockLimit <- max (prefix + 6) inView
-                ctx.Progress.Chunk <- 8
-                ctx.Progress.MassChange <- true
+                        let top = (vp.ScrollTop - vp.OriginY) / vp.Scale
+                        let bottom = top + 2.0 * vp.Height / vp.Scale
+                        blockOfLayout slices (max 0 (firstLayoutBelow slices top - 1)), blockOfLayout slices (firstLayoutBelow slices bottom) + 8
+                    | _ -> 0, 0
+                if atTop - prefix >= staleKeepBlocks then
+                    // Far down the document: the blocks above the view stay as they were laid out, the
+                    // document is laid out from the block at the top of the view, and from its start
+                    // in slices (see StaleLayout).
+                    captureAnchor ctx
+                    let ahead = Rbt.Word.Layout.createIncrementalLayoutState ()
+                    ahead.BlockLimit <- 6
+                    ctx.Stale <- Some { StaleBlocks = last.Blocks; Keep = atTop; Target = doc.Blocks; HybridFor = []; HybridKeep = -1; Hybrid = []; Ahead = ahead }
+                    ctx.LayoutState.BlockLimit <- max (atTop + 6) inView
+                    ctx.Progress.Chunk <- 8
+                    ctx.Progress.MassChange <- true
+                elif whole then
+                    // As far as was in view before the change, in one pass (a pass has a cost of its own
+                    // that grows with what is laid out: raising the limit step by step to a view half way
+                    // down six hundred pages took longer than laying all of them out at once). The render
+                    // takes it further when the text got shorter.
+                    ctx.LayoutState.BlockLimit <- max (prefix + 6) inView
+                    ctx.Progress.Chunk <- 8
+                    ctx.Progress.MassChange <- true
     | _ -> ()
 
 /// One slice of the layout of the rest of the document: blocks are added for
@@ -689,11 +920,27 @@ let advanceLayout (ctx: RenderContext) (doc: Document) (budget: float) : bool =
     let mutable more = not (layoutIsWhole ctx)
     while more do
         let passStart = nowMs ()
-        let limit = ctx.LayoutState.BlockLimit
+        // (Stale blocks above the view: the layout that is advanced is that of the document itself,
+        // of the blocks the document has now.)
+        if ctx.Stale.IsSome && ctx.Story.IsSome then adoptAhead ctx
+        match ctx.Stale with
+        | Some stale -> hybridBlocks stale doc.Blocks |> ignore
+        | None -> ()
+        let state = match ctx.Stale with Some stale -> stale.Ahead | None -> ctx.LayoutState
+        let limit = state.BlockLimit
         // (Never a sliver of what is laid out already: a pass has a cost of its own that grows with the document.)
         let chunk = max progress.Chunk (limit / 512)
-        ctx.LayoutState.BlockLimit <- limit + chunk
-        layoutDocumentWithPages ctx doc |> ignore
+        state.BlockLimit <- limit + chunk
+        match ctx.Stale with
+        | Some stale ->
+            Rbt.Word.Layout.withTablePlanScope ctx.PlanScope (fun () ->
+                Rbt.Word.Layout.layoutDocumentPagesIncremental stale.Ahead (layoutSettings ctx doc) (measureWithContext ctx) (measureRangeWithContext ctx) doc) |> ignore
+            // It has come as far as the layout on display: that is the layout from here on.
+            if Rbt.Word.Layout.incrementalLayoutIsWhole stale.Ahead
+               || (ctx.LayoutState.BlockLimit < System.Int32.MaxValue && stale.Ahead.BlockLimit >= ctx.LayoutState.BlockLimit) then
+                adoptAhead ctx
+                layoutDocumentWithPages ctx doc |> ignore
+        | None -> layoutDocumentWithPages ctx doc |> ignore
         progress.SlicePasses <- progress.SlicePasses + 1
         let took = max 0.25 (nowMs () - passStart)
         progress.Chunk <- max 8 (min (chunk * 2) (int (float chunk * target / took)))
@@ -739,11 +986,11 @@ let rec scheduleLayout (ctx: RenderContext) (currentDocument: unit -> Document) 
                     // A page that is not shown gets its tasks rarely: longer slices then.
                     let budget = if pageIsHidden () then 250.0 else 24.0
                     let sliceStart = nowMs ()
-                    let from = ctx.LayoutState.BlockLimit
+                    let from = (match ctx.Stale with Some stale -> stale.Ahead.BlockLimit | None -> ctx.LayoutState.BlockLimit)
                     progress.SlicePasses <- 0
                     let complete = advanceLayout ctx (currentDocument ()) budget
                     let now = nowMs ()
-                    let tell = complete || now - progress.Notified > 150.0
+                    let tell = complete || progress.Adopted || now - progress.Notified > 150.0
                     if tell then progress.Notified <- now
                     afterSlice complete tell
                     let took = nowMs () - sliceStart
@@ -773,6 +1020,8 @@ let cachedLayouts (ctx: RenderContext) (doc: Document) =
 
 let clearLayoutCache (ctx: RenderContext) =
     clearMeasuredWidths ()
+    ctx.Stale <- None
+    ctx.Progress.Anchor <- None
     ctx.PlanScope <- obj ()
     Rbt.Word.Layout.clearIncrementalLayoutState ctx.LayoutState
     clearPaintCache ctx.PaintCache
@@ -820,6 +1069,7 @@ let setTextMeasurersForFamilies (ctx: RenderContext) (measureText: TextMeasurer 
     ctx.TextMeasurer <- measureText
     ctx.TextRangeMeasurer <- measureRange
     ctx.TextMeasurerVersion <- ctx.TextMeasurerVersion + 1
+    adoptAhead ctx
     let normalize (name: string) = name.Trim().ToLowerInvariant()
     let names = System.Collections.Generic.HashSet<string>()
     for family in families do
@@ -1663,8 +1913,14 @@ let private frameFor (ctx: RenderContext) (doc: Document) hoveredImage =
     // and what the selection is in are laid out before they are shown.
     if not (ctx.LayoutState.LastWasWhole && layoutIsWhole ctx) then
         coverSelection ctx doc
+        // (The view may be moved to stay on its text when the layout above it changes: then what it shows now is laid out.)
+        if ctx.Progress.Anchor.IsSome then layoutDocumentWithPages ctx doc |> ignore
         match ctx.Viewport with
-        | Some vp -> coverViewport ctx doc vp
+        | Some vp ->
+            coverViewport ctx doc vp
+            match ctx.Viewport with
+            | Some moved when moved.ScrollTop <> vp.ScrollTop -> coverViewport ctx doc moved
+            | _ -> ()
         | None -> ()
         layoutDocumentWithPages ctx doc |> ignore
     match ctx.LastPaint with
@@ -2005,6 +2261,9 @@ let setViewport (ctx: RenderContext) (viewport: Viewport option) =
         setTransform ctx.Ctx 1.0 0.0 0.0 1.0 0.0 0.0
         ctx.LastPaint <- None
     | _ -> ()
+    // (The host says where the view is: it is not moved to stay on a block any more.)
+    ctx.Progress.Anchor <- None
+    ctx.Progress.ScrollAdjusted <- false
     ctx.Viewport <- viewport
 
 /// Size of the document in layout pixels: the widest page and the bottom of
@@ -2121,6 +2380,8 @@ let renderStats (ctx: RenderContext) (doc: Document) : obj =
         "LayoutComplete", box (layoutIsComplete ctx)
         "LayoutPasses", box ctx.LayoutState.LayoutSerial
         "LaidOutLimit", box (if layoutIsWhole ctx then List.length doc.Blocks else min ctx.LayoutState.BlockLimit (List.length doc.Blocks))
+        // Blocks above the view that are shown as they were laid out before a change of most of the document (0: none).
+        "StaleBlocks", box (match ctx.Stale with Some stale -> stale.Keep | None -> 0)
         // The slices a long document was laid out in since it was loaded: how many, and the longest -
         // what it took with the repaint and the listeners that followed it, which it was (1: the
         // first), its passes, the layout's part of its time, the blocks that were laid out before it.
@@ -2204,7 +2465,7 @@ let hitTest (ctx: RenderContext) (doc: Document) (mouseX: float) (mouseY: float)
     | None ->
     // Same layout the last render produced (reused while the document is
     // unchanged) rather than a fresh full layout per mouse event.
-    Rbt.Word.Layout.hitTestIncrementalWithRange ctx.LayoutState (layoutSettings ctx doc) (measureWithContext ctx) (measureRangeWithContext ctx) doc mouseX mouseY
+    Rbt.Word.Layout.hitTestIncrementalWithRange ctx.LayoutState (layoutSettings ctx doc) (measureWithContext ctx) (measureRangeWithContext ctx) (layoutTarget ctx doc) mouseX mouseY
 
 /// How the caret is turned (degrees clockwise, about its middle): 0 but in
 /// the text of a turned text box that is edited in place.
@@ -2270,7 +2531,7 @@ let hitTestForImage (ctx: RenderContext) (doc: Document) (mouseX: float) (mouseY
             let mouseX, mouseY = storyPoint ctx mouseX mouseY
             hitTestForImageLayouts (layoutSettings ctx doc).PaddingLeft layouts mouseX mouseY
         | None ->
-        Rbt.Word.Layout.hitTestForImageIncremental ctx.LayoutState (layoutSettings ctx doc) (measureWithContext ctx) (measureRangeWithContext ctx) doc mouseX mouseY
+        Rbt.Word.Layout.hitTestForImageIncremental ctx.LayoutState (layoutSettings ctx doc) (measureWithContext ctx) (measureRangeWithContext ctx) (layoutTarget ctx doc) mouseX mouseY
     // (Text wraps along the outline of a "tight" picture: a point of its box outside the outline is on that text.)
     match found with
     | Some (blockId, offset, width, height, imageX, imageY) ->

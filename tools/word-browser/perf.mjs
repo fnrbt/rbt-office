@@ -42,6 +42,8 @@ const oneShot = flag('--one-shot');
 // --progressive: the document is opened front first (officeFormats.word.openProgressive): shown when its first blocks are read.
 const progressive = flag('--progressive');
 const pathsOf = opt('--callers');
+// --under FUNCTION (with --profile format): the self times listed are those of what runs under that function.
+const under = opt('--under');
 const port = Number(process.env.PORT ?? 16125);
 const jszipDir = [process.env.JSZIP_DIR, path.join(repo, 'node_modules/jszip'), path.resolve(repo, '../rbt-office/node_modules/jszip')].find((p) => p && fs.existsSync(p));
 if (!jszipDir) { console.error('jszip not found; set JSZIP_DIR'); process.exit(2); }
@@ -233,6 +235,7 @@ try {
         // The whole document made bold, the step undone, redone and undone again: one step each
         // (step: 'select' | 'bold' | 'undo' | 'redo' | 'collapse'), so that a profile is of one of them.
         formatAll(step) {
+            const passesBefore = Word.getRenderStats(editor).LayoutPasses;
             const t = performance.now();
             if (step === 'select') { window.perfCaret = Word.getSelection(editor); Word.selectAll(editor); }
             else if (step === 'bold') Word.toggleBold(editor);
@@ -240,10 +243,11 @@ try {
             else if (step === 'redo') Word.redo(editor);
             else if (step === 'collapse') { const c = window.perfCaret; Word.setSelection(editor, c.FocusBlockId, c.FocusOffset, c.FocusBlockId, c.FocusOffset); }
             // (With what a host reads after every change.)
+            const command = performance.now() - t;
             Word.getSelectionFormat(editor); Word.getDocumentSize(editor);
             const took = performance.now() - t;
             const stats = Word.getRenderStats(editor);
-            return { took, laidOut: stats.LaidOutBlocks, collected: stats.CollectedBlocks, blocks: stats.Blocks, pages: Word.getDocumentSize(editor).PageCount, complete: Word.isLayoutComplete ? Word.isLayoutComplete(editor) : true };
+            return { took, command, passes: stats.LayoutPasses - passesBefore, stale: stats.StaleBlocks ?? 0, laidOut: stats.LaidOutBlocks, collected: stats.CollectedBlocks, blocks: stats.Blocks, pages: Word.getDocumentSize(editor).PageCount, complete: Word.isLayoutComplete ? Word.isLayoutComplete(editor) : true };
         },
         // What the host reads after every change, and vertical caret moves.
         queries(count) {
@@ -453,10 +457,17 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
                     for (const id of cpu.samples) selfById.set(id, (selfById.get(id) ?? 0) + interval);
                     const keyOf = (frame) => `${frame.functionName || '(anonymous)'}  ${frame.url.split('/').slice(-2).join('/')}:${frame.lineNumber + 1}`;
                     const total = new Map(), self = new Map();
+                    // (--under FUNCTION: the self times are of what runs under that function only.)
+                    let underDepth = under ? 0 : 1;
                     const walk = (node, open) => {
                         const key = keyOf(node.callFrame);
+                        const entered = under && node.callFrame.functionName === under;
+                        if (entered) underDepth++;
+                        try { return walkNode(node, open, key); } finally { if (entered) underDepth--; }
+                    };
+                    const walkNode = (node, open, key) => {
                         let sum = selfById.get(node.id) ?? 0;
-                        self.set(key, (self.get(key) ?? 0) + sum);
+                        if (underDepth > 0) self.set(key, (self.get(key) ?? 0) + sum);
                         const inside = open.has(key);
                         if (!inside) open.add(key);
                         for (const child of node.children ?? []) sum += walk(byId.get(child), open);
@@ -471,7 +482,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
                 }
             }
             const [, bold, undo, redo, undoAgain] = results;
-            console.log(`  the whole document made bold: ${ms(bold.took)} (${bold.laidOut} of ${bold.blocks} blocks laid out, ${bold.pages} pages${bold.complete ? '' : ', the layout not complete'}); undo ${ms(undo.took)} (${undo.laidOut} laid out, ${undo.pages} pages); redo ${ms(redo.took)}; undo again ${ms(undoAgain.took)}`);
+            console.log(`  the whole document made bold: ${ms(bold.took)} (the command ${ms(bold.command)}, the host's queries after it ${ms(bold.took - bold.command)}; ${bold.laidOut} of ${bold.blocks} blocks laid out in the last of ${bold.passes} passes, ${bold.stale} above the view kept as they were, ${bold.pages} pages${bold.complete ? '' : ', the layout not complete'}); undo ${ms(undo.took)} (${undo.laidOut} laid out, ${undo.pages} pages); redo ${ms(redo.took)}; undo again ${ms(undoAgain.took)}`);
         }
         const viewed = await tab.evaluate(() => window.perf.viewer(40));
         console.log(`  the viewer: package read ${(viewed.read / 1000).toFixed(2)} s, load and page frames ${(viewed.laidOut / 1000).toFixed(2)} s (${viewed.pages} pages), the first renderPage ${ms(viewed.first)}, the next 40: ${line(viewed.later)}`

@@ -2141,6 +2141,37 @@ do
     check "typed inside the marked run: the mark stays at its start" (inside.Runs |> List.choose (function Text run -> Some (run.Start, run.Style.RenderedPageBreakBefore) | Image _ -> None) |> List.head) (0, true)
     check "withoutAnnotations: the formatting alone" ((withoutAnnotations { defaultStyle with Bold = true; RenderedPageBreakBefore = true; BookmarkName = Some "b"; FieldCode = Some "PAGE" }) = { defaultStyle with Bold = true }) true
 
+// sameTextStyle compares the fields one by one: every field of the record is
+// one of them (a style that differs in one field alone is another style), and
+// equal styles that are not the same object are the same.
+do
+    let fields = Microsoft.FSharp.Reflection.FSharpType.GetRecordFields typeof<TextStyle>
+    let values = Microsoft.FSharp.Reflection.FSharpValue.GetRecordFields defaultStyle
+    let other (value: obj) (fieldType: System.Type) : obj =
+        if fieldType = typeof<bool> then box (not (unbox<bool> value))
+        elif fieldType = typeof<float> then box (unbox<float> value + 1.5)
+        elif fieldType = typeof<int> then box (unbox<int> value + 1)
+        elif fieldType = typeof<string option> then box (Some "other")
+        elif fieldType = typeof<RevisionMark option> then box (Some { Id = Some "1"; Author = None; Date = None })
+        else failwithf "a field of a type the test does not know: %s" fieldType.Name
+    let missed =
+        [ for index in 0 .. fields.Length - 1 do
+            let changed = Array.copy values
+            changed.[index] <- other values.[index] fields.[index].PropertyType
+            let style = Microsoft.FSharp.Reflection.FSharpValue.MakeRecord(typeof<TextStyle>, changed) :?> TextStyle
+            if sameTextStyle defaultStyle style || sameTextStyle style defaultStyle || style = defaultStyle then yield fields.[index].Name ]
+    check "sameTextStyle: every field is compared" missed []
+    let full = { defaultStyle with Bold = true; FontFamily = Some "Arial"; Hyperlink = Some "h"; DeletedInsertion = Some { Id = Some "3"; Author = Some "a"; Date = None }; FontSize = 13.5 }
+    let copy = { full with Bold = true }
+    check "sameTextStyle: equal styles, two objects" (obj.ReferenceEquals(full, copy), sameTextStyle full copy, sameTextStyle full full) (false, true, true)
+    // (What the format of a whole paragraph is decided and applied with.)
+    let twoRuns = { empty with Rope = (ofString "abcdef").Rope; Runs = [ Text { Start = 0; Length = 3; Style = { defaultStyle with Color = Some "#FF0000" } }; Text { Start = 3; Length = 3; Style = { defaultStyle with Color = Some "#00FF00" } } ] }
+    let bold = applyStyle 0 6 (withExplicitBold true) twoRuns
+    check "applyStyle: runs that differ in colour alone stay two runs" (bold.Runs |> List.choose (function Text run -> Some (run.Start, run.Length, run.Style.Bold, run.Style.Color) | Image _ -> None)) [ (0, 3, true, Some "#FF0000"); (3, 3, true, Some "#00FF00") ]
+    let sameColour = applyStyle 0 6 (fun style -> { style with Color = Some "#0000FF" }) twoRuns
+    check "applyStyle: runs made alike are one run" (sameColour.Runs |> List.choose (function Text run -> Some (run.Start, run.Length) | Image _ -> None)) [ (0, 6) ]
+    check "applyStyle: nothing to change, the same buffer" (obj.ReferenceEquals(applyStyle 0 6 (fun style -> style) twoRuns, twoRuns)) true
+
 // removed: command-history retention/budget tests targeted the deleted cache machinery (RetainedSourceTextCharCount, trimHistory)
 printfn ""
 printfn "Word textbuffer tests: %d passed, %d failed" pass fail
