@@ -874,8 +874,18 @@ type Spreadsheet(container: Element) =
     let mutable drawingSource : (int * System.Collections.Generic.Dictionary<string, byte[]> * SpreadsheetCharts.ThemeColors) option = None
     /// The chart parts that were read, by path (None: not a chart that is drawn).
     let chartModels = System.Collections.Generic.Dictionary<string, SpreadsheetCharts.Chart option>()
-    /// The frames on display that hold a drawn object: the node, its drawing, its size, and the sheets its charts read.
-    let chartFrames = ResizeArray<Element * SheetDrawing * float * float * string array>()
+    /// The frames on display that hold a drawn object: the node, its drawing, its size, and the blocks of
+    /// cells its charts read - sheet (in capitals), first row / column, last row / column, the cells as they
+    /// were when it was drawn (null: the sheet was not there, or not converted yet).
+    let chartFrames = ResizeArray<Element * SheetDrawing * float * float * (string * int * int * int * int * CellData option [] []) array>()
+    /// How many times a drawn object was laid out again because cells it reads changed (`GetChartRedraws`).
+    let mutable chartRedraws = 0
+    /// How many times an object was laid out at all (`GetChartLayouts`).
+    let mutable chartLayouts = 0
+    /// What was drawn for an object, by the sheet of the file it is on and its id: its anchor, its size,
+    /// the SVG and the blocks of cells read. A sheet that is shown again has its objects as they were
+    /// drawn, while the cells they read are as they were.
+    let drawnObjects = System.Collections.Generic.Dictionary<string, string * float * float * string * (string * int * int * int * int * CellData option [] []) array>()
     /// The cells of every sheet as the charts on display were last drawn from them.
     let mutable chartStamp : obj array = [||]
     let drawingPartsOf (sheet: SpreadsheetModel) : SpreadsheetCharts.DrawingParts option =
@@ -893,6 +903,7 @@ type Spreadsheet(container: Element) =
                         | _ -> SpreadsheetCharts.defaultTheme
                     drawingSource <- Some (source.Id, parts, theme)
                     chartModels.Clear()
+                    drawnObjects.Clear()
                     parts, theme
             let relationships = (List.item origin.Sheet source.Workbook.Sheets).Extras.DrawingRelationships
             let target (id: string) =
@@ -925,34 +936,74 @@ type Spreadsheet(container: Element) =
                                 if contentType = "" then None else Some (pictureUrl data contentType)
                             | false, _ -> None)) }
         | _ -> None
-    /// What a chart reads of the workbook; `seen` gets the sheets it read (by name, in capitals).
-    let chartDataReading (seen: System.Collections.Generic.HashSet<string>) : SpreadsheetCharts.ChartData =
+    /// A block of cells of a sheet (by name) as a chart reads it; None when the sheet is not there.
+    let chartBlock (name: string) (r0: int) (c0: int) (r1: int) (c1: int) : CellData option [] [] option =
+        match sheetNames |> Array.tryFindIndex (fun known -> known.Equals(name, System.StringComparison.OrdinalIgnoreCase)) with
+        | Some index ->
+            let sheet = if index = activeSheetIndex then model else sheets.[index]
+            // (A sheet that was not converted yet holds what the file holds: the chart's cache says the same.)
+            if isDeferredSheet sheet || float (r1 - r0 + 1) * float (c1 - c0 + 1) > 200000.0 then None
+            else Some (Array.init (r1 - r0 + 1) (fun r -> Array.init (c1 - c0 + 1) (fun c -> getCell { Row = r0 + r; Col = c0 + c } sheet)))
+        | None -> None
+    /// What a chart reads of the workbook; `seen` gets the blocks it read, with their cells.
+    let chartDataReading (seen: ResizeArray<string * int * int * int * int * CellData option [] []>) : SpreadsheetCharts.ChartData =
         { Cells =
             (fun name r0 c0 r1 c1 ->
-                match sheetNames |> Array.tryFindIndex (fun known -> known.Equals(name, System.StringComparison.OrdinalIgnoreCase)) with
-                | Some index ->
-                    let sheet = if index = activeSheetIndex then model else sheets.[index]
-                    // (A sheet that was not converted yet holds what the file holds: the chart's cache says the same.)
-                    if isDeferredSheet sheet || float (r1 - r0 + 1) * float (c1 - c0 + 1) > 200000.0 then None
-                    else
-                        seen.Add (name.ToUpperInvariant()) |> ignore
-                        Some (Array.init (r1 - r0 + 1) (fun r -> Array.init (c1 - c0 + 1) (fun c -> getCell { Row = r0 + r; Col = c0 + c } sheet)))
-                | None -> None)
+                let block = chartBlock name r0 c0 r1 c1
+                seen.Add ((name.ToUpperInvariant(), r0, c0, r1, c1, (match block with Some cells -> cells | None -> null)))
+                block)
           Display = (fun cell -> SpreadsheetCellText.cellDisplayTextIn model.Date1904 None 1.0e6 cell.Format cell.Value)
           Format = (fun code value -> SpreadsheetCellText.formatNumberWithCodeIn model.Date1904 code value) }
-    /// A kept object of the sheet on display as SVG for its rectangle, with the sheets its charts
-    /// read; None for what is not drawn (the frame then says what the object is).
-    let objectSvg (xml: string) (width: float) (height: float) : (string * string array) option =
+    /// Whether a block a chart read holds the cells it held then.
+    let chartBlockStands (name: string, r0: int, c0: int, r1: int, c1: int, cells: CellData option [] []) : bool =
+        match chartBlock name r0 c0 r1 c1 with
+        | None -> isNull cells
+        | Some now ->
+            not (isNull cells) && now.Length = cells.Length
+            && Array.forall2 (fun (a: CellData option []) (b: CellData option []) ->
+                    a.Length = b.Length
+                    && Array.forall2 (fun (x: CellData option) (y: CellData option) ->
+                            match x, y with
+                            | None, None -> true
+                            | Some left, Some right -> obj.ReferenceEquals(left, right) || left = right
+                            | _ -> false) a b) now cells
+    /// A kept object of the sheet on display as SVG for its rectangle, with the blocks of cells its
+    /// charts read; None for what is not drawn (the frame then says what the object is).
+    let objectSvg (xml: string) (width: float) (height: float) : (string * (string * int * int * int * int * CellData option [] []) array) option =
         try
             drawingPartsOf model
             |> Option.bind (fun parts ->
-                let seen = System.Collections.Generic.HashSet<string>()
+                let seen = ResizeArray<string * int * int * int * int * CellData option [] []>()
+                chartLayouts <- chartLayouts + 1
                 SpreadsheetCharts.objectScene parts (chartDataReading seen) xml width height
-                |> Option.map (fun scene -> SpreadsheetCharts.sceneSvg scene, Seq.toArray seen))
+                |> Option.map (fun scene -> SpreadsheetCharts.sceneSvg scene, seen.ToArray()))
         with error ->
             // (A part that cannot be drawn is a frame that says what it is; the error is the host's to see.)
             reportError "drawing" (box error)
             None
+    /// `objectSvg` for a drawing of the sheet on display: what was drawn for it before, when its
+    /// anchor, its size and the cells it reads are what they were then.
+    let drawingSvg (drawing: SheetDrawing) (xml: string) (width: float) (height: float) : (string * (string * int * int * int * int * CellData option [] []) array) option =
+        let key =
+            match xlsxSource, model.SourceSheet with
+            | Some source, Some origin when origin.Book = source.Id -> string origin.Sheet + ":" + string drawing.Id
+            | _ -> ""
+        // (An object that is not drawn is kept as such - no SVG: a slicer is not looked at again either.)
+        let kept =
+            match (if key = "" then (false, Unchecked.defaultof<_>) else drawnObjects.TryGetValue key) with
+            | true, (knownXml, knownWidth, knownHeight, svg, reads)
+                when knownWidth = width && knownHeight = height && (obj.ReferenceEquals(knownXml, xml) || knownXml = xml) && Array.forall chartBlockStands reads ->
+                Some (if isNull svg then None else Some (svg, reads))
+            | _ -> None
+        match kept with
+        | Some known -> known
+        | None ->
+            let drawn = objectSvg xml width height
+            if key <> "" then
+                match drawn with
+                | Some (svg, reads) -> drawnObjects.[key] <- (xml, width, height, svg, reads)
+                | None -> drawnObjects.[key] <- (xml, width, height, null, [||])
+            drawn
     let cellsStamp () : obj array = Array.init sheets.Length (fun index -> box (if index = activeSheetIndex then model.Cells else sheets.[index].Cells))
 
     let currentViewport (): SpreadsheetLayout.Viewport = {
@@ -4248,7 +4299,7 @@ type Spreadsheet(container: Element) =
                     // A chart, a shape or a group of them is drawn from the file's parts (None: a frame that says what it is).
                     let drawn =
                         match drawing.Content with
-                        | KeptObject (_, xml) -> objectSvg xml rect.Width rect.Height
+                        | KeptObject (_, xml) -> drawingSvg drawing xml rect.Width rect.Height
                         | Picture _ -> None
                     // The drawing's node at (left, top) of its parent.
                     let build (left: float) (top: float) : Element =
@@ -4354,11 +4405,14 @@ type Spreadsheet(container: Element) =
                 chartStamp <- stamp
                 for at in 0 .. chartFrames.Count - 1 do
                     let frame, drawing, width, height, reads = chartFrames.[at]
-                    if reads |> Array.exists (fun name -> Array.contains name changed) then
+                    // (A sheet it reads changed: laid out again when the cells it reads did - an edit
+                    // elsewhere on the sheet, or one that left them as they were, is none of its business.)
+                    if reads |> Array.exists (fun ((name, _, _, _, _, _) as read) -> Array.contains name changed && not (chartBlockStands read)) then
                         match drawing.Content with
                         | KeptObject (_, xml) ->
-                            (match objectSvg xml width height with
+                            (match drawingSvg drawing xml width height with
                              | Some (svg, readsNow) ->
+                                chartRedraws <- chartRedraws + 1
                                 setInnerHtml frame svg
                                 chartFrames.[at] <- (frame, drawing, width, height, readsNow)
                              | None -> ())
@@ -7290,6 +7344,16 @@ type Spreadsheet(container: Element) =
             | SpreadsheetPaint.FillRect (_, "#f6f8fa") -> true
             | _ -> false)
         |> List.length
+
+    /// How many times a chart (or a group with charts) on display was laid out again because
+    /// cells it reads changed, since the component was made. An edit that changes none of the
+    /// cells a chart reads leaves it as it is drawn.
+    member _.GetChartRedraws() : int = chartRedraws
+
+    /// How many times a chart, shape or group of an opened file was laid out for the grid at
+    /// all: once when its sheet is first shown, again when its size or the cells it reads
+    /// change. Showing a sheet again, scrolling and edits elsewhere lay nothing out.
+    member _.GetChartLayouts() : int = chartLayouts
 
     /// The active sheet's pictures and other drawing objects, back to front:
     /// { id, kind: "picture" | "chart" | "shape" | "other", name, description,

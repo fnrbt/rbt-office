@@ -4,7 +4,7 @@
 // reading the written file again, and frame times while scrolling a sheet.
 //
 // Usage:
-//   node tools/xlsx-browser/perf.mjs --dist $DIST [--profile load|export|reread|scroll|edits|first|repeat|more] [--first-runs N] [--only-first] [--more] [--sheet NAME] [--frames N] [--steps 120,0] [--no-scroll] [--no-jump] [--edits] [file.xlsx ...]
+//   node tools/xlsx-browser/perf.mjs --dist $DIST [--profile load|export|reread|scroll|edits|first|repeat|host|more] [--first-runs N] [--only-first] [--host] [--more] [--sheet NAME] [--frames N] [--steps 120,0] [--no-scroll] [--no-jump] [--edits] [file.xlsx ...]
 // (--edits also times edits of a large block: a format on 10 000 cells, a paste of 1 000 x 20
 // cells, a typed entry and their undo, on the first sheet and on the sheet with the most cells.)
 // (--no-jump leaves out the jumps to the far end: 0.1.4 took minutes for one frame there.)
@@ -15,6 +15,9 @@
 // --first-cell "Sheet!B7" (or "Sheet!B7=0.07,0.05": the two numbers typed) is the cell the first edit types into (default D8 of the first sheet; the stats of the
 // recalculation are printed with it); --find-input lists the constant cells that the most formulas depend on
 // ("model inputs": what a host's user edits), to pick one.
+// PROFILE_LINES="eval$,run" adds the samples of those functions by line of the generated JS;
+// JS_FLAGS are V8's ("--no-turbo-inlining" shows the time of functions the optimiser would fold into their callers).
+// --host types the same edit as a host application does: see hostEdit.
 // Environment: PLAYWRIGHT, JSZIP_DIR, PORT (default 16101).
 import http from 'node:http';
 import fs from 'node:fs';
@@ -38,6 +41,7 @@ const firstCell = opt('--first-cell');
 const findInput = (() => { const i = args.indexOf('--find-input'); if (i < 0) return false; args.splice(i, 1); return true; })();
 const edits = (() => { const i = args.indexOf('--edits'); if (i < 0) return false; args.splice(i, 1); return true; })();
 const more = (() => { const i = args.indexOf('--more'); if (i < 0) return false; args.splice(i, 1); return true; })();
+const hostLike = (() => { const i = args.indexOf('--host'); if (i < 0) return false; args.splice(i, 1); return true; })();
 const onlyFirst = (() => { const i = args.indexOf('--only-first'); if (i < 0) return false; args.splice(i, 1); return true; })();
 const port = Number(process.env.PORT ?? 16101);
 const jszipDir = [process.env.JSZIP_DIR, path.join(repo, 'node_modules/jszip'), path.resolve(repo, '../rbt-office/node_modules/jszip')].find((p) => p && fs.existsSync(p));
@@ -114,6 +118,55 @@ try {
             const all = [];
             for (let i = 0; i < times; i++) { const t0 = performance.now(); grid.EnterText(row, col, i % 2 ? again : value); all.push(performance.now() - t0); }
             return all.sort((a, b) => a - b)[Math.floor(all.length / 2)];
+        },
+        // The same edit as a host application makes it (--host): the entry typed into the cell's
+        // edit box and committed with Enter, with subscribers that read what a toolbar, a formula
+        // bar and a status bar show after every change (redbat's editor does: selection, format,
+        // status, the active cell, view options, filters, outline, undo state). Per edit:
+        // [the keystroke's handler, that and the frame after it, the time inside the subscribers].
+        async hostEdit(times) {
+            const { row, col, value, again } = window.perf.lastEdit;
+            let inSubscribers = 0, calls = 0;
+            if (!window.perf.hostSubscribed) {
+                window.perf.hostSubscribed = true;
+                let structureKey = '';
+                const refresh = () => {
+                    const t0 = performance.now();
+                    calls++;
+                    grid.GetSelectionRef(); const active = grid.GetActiveCell();
+                    grid.IsModified(); grid.CanUndo(); grid.CanRedo(); grid.GetActiveSheetIndex();
+                    grid.GetSelectionFormat(); grid.GetStatus();
+                    const cell = grid.GetCell(active.Row, active.Col);
+                    if (cell.spill) grid.GetGhostFormula();
+                    grid.GetSheetKind(); grid.GetViewOptions();
+                    if (!grid.IsEditing()) grid.GetCurrentCellFormula();
+                    const key = grid.GetActiveSheetIndex() + ':' + grid.GetRevision();
+                    if (key !== structureKey) { structureKey = key; grid.GetFilters(); grid.GetOutline(); grid.GetShowOutline(); }
+                    inSubscribers += performance.now() - t0;
+                };
+                grid.OnChange((change) => { if (change.StructureChanged || change.WorkbookChanged) { grid.GetSheetInfos(); grid.GetDefinedNames(); } refresh(); });
+                grid.OnSelectionChange(() => refresh());
+                grid.OnEditStateChange(() => { const t0 = performance.now(); grid.GetCurrentCellFormula(); inSubscribers += performance.now() - t0; });
+                window.perf.hostCounters = () => { const out = [inSubscribers, calls]; inSubscribers = 0; calls = 0; return out; };
+            }
+            const frame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+            const all = [];
+            for (let i = 0; i < times; i++) {
+                grid.SelectCell(row, col);
+                await frame(); await frame();
+                window.perf.hostCounters();
+                const t0 = performance.now();
+                grid.StartEdit(i % 2 ? again : value);
+                const box = document.activeElement;
+                box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+                const call = performance.now() - t0;
+                await frame();
+                const total = performance.now() - t0;
+                const [inside, count] = window.perf.hostCounters();
+                all.push([call, total, inside, count]);
+            }
+            const median = (k) => all.map((t) => t[k]).sort((a, b) => a - b)[Math.floor(all.length / 2)];
+            return { call: median(0), total: median(1), subscribers: median(2), refreshes: median(3), moved: grid.GetActiveCell().Row !== row };
         },
         // The constant number cells of every sheet that the most formulas depend on.
         async findInputs() {
@@ -204,6 +257,17 @@ try {
             out.clearUndo = await timed(() => grid.Undo());
             return out;
         },
+        // A sheet put on display for the first time (its cells converted, its charts and shapes drawn):
+        // [the call, the call and the frame after it, objects that are drawn / that are labelled frames].
+        async show(index) {
+            const other = grid.GetSheetNames().findIndex((_, i) => i !== index);
+            if (grid.GetActiveSheetIndex() === index && other >= 0) { grid.SwitchSheet(other); await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))); }
+            const t0 = performance.now();
+            grid.SwitchSheet(index);
+            const call = performance.now() - t0;
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+            return [call, performance.now() - t0, host.querySelectorAll('.spreadsheet-object-drawn').length, host.querySelectorAll('.spreadsheet-object-label').length];
+        },
         // Scroll the sheet a screenful at a time, one step per frame; the time of a
         // frame is from one requestAnimationFrame callback to the next.
         async scroll(index, frames, jump, stepSize) {
@@ -254,7 +318,7 @@ const server = http.createServer((req, res) => {
 });
 await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve));
 const playwright = await import(process.env.PLAYWRIGHT ? pathToFileURL(process.env.PLAYWRIGHT).href : 'playwright');
-const browser = await (playwright.chromium ?? playwright.default.chromium).launch();
+const browser = await (playwright.chromium ?? playwright.default.chromium).launch(process.env.JS_FLAGS ? { args: ['--js-flags=' + process.env.JS_FLAGS] } : {});
 const ms = (t) => (t >= 1000 ? (t / 1000).toFixed(2) + ' s' : t.toFixed(0) + ' ms');
 try {
     for (const file of files) {
@@ -295,6 +359,17 @@ try {
                 console.log(`  -- time under, ${name} --`);
                 for (const [key, time] of [...total.entries()].sort((a, b) => b[1] - a[1]).slice(0, 45)) console.log(`  ${time.toFixed(0).padStart(7)} ms  ${key}`);
             }
+            if (process.env.PROFILE_LINES) {
+                // Samples by source line (of the generated JS), for the functions named in PROFILE_LINES ("eval$,run").
+                const wanted = new Set(process.env.PROFILE_LINES.split(','));
+                const lines = new Map();
+                for (const node of cpu.nodes) {
+                    if (!wanted.has(node.callFrame.functionName)) continue;
+                    for (const tick of node.positionTicks ?? []) { const key = `${node.callFrame.functionName} ${node.callFrame.url.split('/').slice(-1)[0]}:${tick.line}`; lines.set(key, (lines.get(key) ?? 0) + tick.ticks * interval); }
+                }
+                console.log(`  -- self time by line, ${name} --`);
+                for (const [key, time] of [...lines.entries()].sort((a, b) => b[1] - a[1]).slice(0, 60)) console.log(`  ${time.toFixed(0).padStart(7)} ms  ${key}`);
+            }
             console.log(`  -- self time, ${name} --`);
             for (const [key, time] of [...self.entries()].sort((a, b) => b[1] - a[1]).slice(0, 40)) console.log(`  ${time.toFixed(0).padStart(7)} ms  ${key}`);
             return result;
@@ -325,6 +400,10 @@ try {
             console.log(`  the first edit right after opening (a typed number${firstCell ? ' in ' + firstCell : ''}): median ${ms(sortedFirsts[Math.floor(sortedFirsts.length / 2)])} of ${firsts.map((t) => t.toFixed(0)).join(', ')} ms [${f.kind}]; the same cell again ${ms(f.second)}`);
             const repeated = await phase('repeat', () => tab.evaluate(() => window.perf.repeatEdit(7)));
             console.log(`  that cell typed into seven more times: median ${ms(repeated)}`);
+            if (hostLike) {
+                const h = await phase('host', () => tab.evaluate(() => window.perf.hostEdit(7)));
+                console.log(`  the same edit as a host makes it (typed into the edit box, Enter, subscribers that read toolbar, bar and status), seven times: median ${ms(h.call)} for the keystroke, ${ms(h.total)} with the frame after it; ${ms(h.subscribers)} of it in the subscribers (${h.refreshes} refreshes)${h.moved ? '' : '  [the selection did not move: the entry was not committed]'}`);
+            }
             for (const sheet of (onlyFirst ? [] : sheetName ? sheets.filter((s) => s.name === sheetName) : [sheets[0], sheets.slice().sort((a, b) => b.cells - a.cells)[0]].filter((s, i, all) => all.indexOf(s) === i))) {
                 const e = await phase('edits', () => tab.evaluate((index) => window.perf.edits(index), sheet.index));
                 const both = ([call, total, kind]) => `${ms(call)} (${ms(total)} with the frame)${kind ? ' [' + kind + ']' : ''}`;
@@ -344,6 +423,12 @@ try {
             for (const [key, [time, kind]] of Object.entries(m)) console.log(`    ${key.padEnd(18)} ${ms(time).padStart(8)}  [${kind}]`);
         }
         const target = sheetName ? sheets.find((s) => s.name === sheetName) : sheets.slice().sort((a, b) => b.rows - a.rows)[0];
+        if (target && sheetName) {
+            // (The sheet named with --sheet: what it costs to put it on display, a second time too.)
+            const shown = [];
+            for (let run = 0; run < 3; run++) shown.push(await tab.evaluate((index) => window.perf.show(index), target.index));
+            console.log(`  "${target.name}" put on display: ${ms(shown[0][0])} (${ms(shown[0][1])} with the frame); again ${ms(Math.min(shown[1][0], shown[2][0]))} (${ms(Math.min(shown[1][1], shown[2][1]))})  [${shown[0][2]} objects drawn, ${shown[0][3]} labelled frames]`);
+        }
         if (target && !noScroll) {
           for (const stepSize of steps) {
             const s = await phase('scroll', () => tab.evaluate(([index, n, jump, stepSize]) => window.perf.scroll(index, n, jump, stepSize), [target.index, frames, !noJump && stepSize === 0, stepSize]));

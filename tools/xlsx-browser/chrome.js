@@ -1579,11 +1579,23 @@ checks['charts-in-grid'] = async () => {
         note(`an entry that six charts read, with its frame: ${(performance.now() - start).toFixed(1)} ms`);
         grid.Undo(); await frame();
         check('undone: the bars as they were', bars().map((height) => Math.round(height)), before.map((height) => Math.round(height)));
-        // A cell no chart reads: nothing is drawn again.
-        const svgBefore = column.querySelector('svg');
+        // A cell no chart reads: nothing is laid out again - every chart keeps the node it has.
+        const svgsBefore = drawn().map((node) => node.querySelector('svg'));
+        // (A build before GetChartRedraws counts none: the nodes say what was drawn again.)
+        const redraws = () => (grid.GetChartRedraws ? grid.GetChartRedraws() : 0);
+        const redrawsBefore = redraws();
         grid.EnterText(30, 12, 'x'); await frame();
-        check('an entry no chart reads... (the cells of the sheet changed: drawn again, the same)', bars().map((height) => Math.round(height)), before.map((height) => Math.round(height)));
+        check('an entry no chart reads: no chart is laid out again', [drawn().map((node, index) => node.querySelector('svg') === svgsBefore[index]), redraws() - redrawsBefore, bars().map((height) => Math.round(height))], [[true, true, true, true, true, true], 0, before.map((height) => Math.round(height))]);
         grid.Undo(); await frame();
+        // A cell a series reads typed again with the value it has: the cells the charts read are as they were.
+        grid.EnterText(2, 1, String(grid.GetCell(2, 1).value)); await frame();
+        check('... nor by an entry that leaves a cell they read as it was', [drawn().map((node, index) => node.querySelector('svg') === svgsBefore[index]).every(Boolean), redraws() - redrawsBefore], [true, 0]);
+        // A cell they read changes: the charts that read it are laid out again, and only those.
+        grid.EnterText(2, 1, '61'); await frame();
+        const redrawn = drawn().map((node, index) => node.querySelector('svg') !== svgsBefore[index]);
+        check('an entry a series reads: the charts that read the cell are laid out again', [redrawn[titles.indexOf('Column')], redraws() - redrawsBefore, redrawn.filter(Boolean).length], [true, redrawn.filter(Boolean).length, redraws() - redrawsBefore]);
+        note(`charts laid out again by an entry in B3: ${redrawn.filter(Boolean).length} of ${redrawn.length}`);
+        grid.Undo(); await frame(); grid.Undo(); await frame();
         // The dashboards: charts inside group shapes, shapes with text, slicers as labelled frames.
         for (const [file, sheet] of [['tests/real-world/dashboard-ecommerce-sales.xlsx', 'Dashboard'], ['tests/real-world/dashboard-sales-analysis.xlsx', 'Dashboard']]) {
             const bytes = await bytesOf(file);
@@ -1597,6 +1609,22 @@ checks['charts-in-grid'] = async () => {
             check(`${file.split('/').pop()}: objects are drawn, charts inside groups among them`, [drawn().length > 0, whole > 0, inGroups + drawn().filter((node) => node.className.includes('spreadsheet-object-chart')).length >= 3], [true, true, true]);
             check('... and the workbook is unmodified', grid.IsModified(), false);
             await shoot(`${file.split('/').pop()} ${sheet}`);
+            // Another sheet and back: the objects are as they were drawn - nothing is laid out again.
+            if (grid.GetChartLayouts) {
+                // (Every sheet is shown once first: one that was not converted yet gives a chart that reads it its cells.)
+                for (const info of grid.GetSheetInfos()) if (info.visibility === 'visible') { grid.SwitchSheet(info.index); await frame(); }
+                grid.SwitchSheet(index); await frame();
+                const layouts = grid.GetChartLayouts(), svgs = drawn().map((node) => node.innerHTML);
+                const other = grid.GetSheetNames().findIndex((name, at) => at !== index && grid.GetSheetInfos()[at].visibility === 'visible');
+                grid.SwitchSheet(other); await frame();
+                const away = grid.GetChartLayouts();
+                grid.SwitchSheet(index); await frame();
+                check('shown again after another sheet: the same drawings, none laid out again', [grid.GetChartLayouts() - away, away - layouts, drawn().length === svgs.length && drawn().every((node, at) => node.innerHTML === svgs[at])], [0, 0, true]);
+                // Scrolling and an entry no object reads lay nothing out either.
+                host.querySelector('.spreadsheet-container').scrollTop = 400; await frame();
+                host.querySelector('.spreadsheet-container').scrollTop = 0; await frame();
+                check('... nor by scrolling', grid.GetChartLayouts() - away, 0);
+            } else check('GetChartLayouts is there', false, true);
         }
     } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
     finally { grid.Dispose(); host.remove(); }

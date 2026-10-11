@@ -235,5 +235,28 @@ for file in [ "real-world/dashboard-ecommerce-sales.xlsx"; "real-world/dashboard
     ok (sprintf "%s: its charts are drawn, also those in groups" (Path.GetFileName file)) (drawnCharts >= 5) (sprintf "%d groups, %d charts" groups drawnCharts)
     printfn "  (%s: %d groups drawn, %d charts)" (Path.GetFileName file) groups drawnCharts
 
+// ---- a part of the newer kinds is told by its first tag -----------------------------------
+// dashboard-sales-analysis.xlsx has a map chart of 8 MB (`cx:chartSpace`): reading all of it to
+// find that it is not drawn took a tenth of a second of the workbook's opening.
+do
+    let _, _, parts, theme = openBook "real-world/dashboard-sales-analysis.xlsx"
+    let chartEx = text parts.["xl/charts/chartEx1.xml"]
+    let best =
+        [ for _ in 1 .. 3 ->
+            let watch = Diagnostics.Stopwatch.StartNew()
+            let read = Charts.parseChart theme chartEx
+            if read.IsSome then failwith "a chartEx part read as a chart"
+            watch.Elapsed.TotalMilliseconds ]
+        |> List.min
+    ok "a chartEx part of 8 MB is not read to say what it is" (chartEx.Length > 8000000 && best < 10.0) (sprintf "%d characters, %.1f ms" chartEx.Length best)
+    eq "told by its first tag" (Charts.isChartEx chartEx, Charts.isChartEx (text parts.["xl/charts/chart1.xml"])) (true, false)
+    eq "... whatever its prefix"
+        [ Charts.isChartEx "<?xml version=\"1.0\"?>\n<cx:chartSpace xmlns:a=\"x\" xmlns:cx=\"http://schemas.microsoft.com/office/drawing/2014/chartex\"><cx:chart/></cx:chartSpace>"
+          Charts.isChartEx "<chartSpace xmlns=\"http://schemas.microsoft.com/office/drawing/2014/chartex\"/>"
+          Charts.isChartEx "<q:chartSpace xmlns:q='http://schemas.microsoft.com/office/drawing/2014/chartex'/>"
+          Charts.isChartEx "<c:chartSpace xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\" xmlns:cx=\"http://schemas.microsoft.com/office/drawing/2014/chartex\"/>"
+          Charts.isChartEx ""; Charts.isChartEx "no xml" ]
+        [ true; true; true; false; false; false ]
+
 printfn "Stage 52 chart tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

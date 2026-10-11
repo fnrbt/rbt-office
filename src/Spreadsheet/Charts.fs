@@ -551,7 +551,28 @@ let private axisOf (theme: ThemeColors) (node: XmlDsl.XmlNode) : Axis option =
 
 /// The chart of a chart part, or None for a part this module does not draw
 /// (no plot of a kind it knows, a 3-D chart, a part that is not a chart).
+/// Whether a chart part is one of the newer kinds (`cx:chartSpace`: waterfall, funnel, treemap,
+/// sunburst, histogram, box and whisker, map), told by its first tag - such a part can hold
+/// megabytes of data (a map chart's geography), and is not read to find that out.
+let isChartEx (xml: string) : bool =
+    let head = if xml.Length > 4096 then xml.Substring(0, 4096) else xml
+    let mutable at = head.IndexOf '<'
+    while at >= 0 && at + 1 < head.Length && (head.[at + 1] = '?' || head.[at + 1] = '!') do
+        at <- head.IndexOf('<', at + 1)
+    if at < 0 then false
+    else
+        let close = head.IndexOf('>', at)
+        let tag = if close < 0 then head.Substring at else head.Substring(at, close - at)
+        let name = (tag.Substring 1).Split([| ' '; '\t'; '\r'; '\n'; '/' |]).[0]
+        let space = "http://schemas.microsoft.com/office/drawing/2014/chartex"
+        match name.IndexOf ':' with
+        | -1 -> tag.Contains ("xmlns=\"" + space + "\"") || tag.Contains ("xmlns='" + space + "'")
+        | colon ->
+            let prefix = name.Substring(0, colon)
+            tag.Contains ("xmlns:" + prefix + "=\"" + space + "\"") || tag.Contains ("xmlns:" + prefix + "='" + space + "'")
+
 let parseChart (theme: ThemeColors) (xml: string) : Chart option =
+    if isChartEx xml then None else
     try
         let root = XmlDsl.parse (spacesKept xml)
         let space = if nameOf root = "chartSpace" then Some root else descendants "chartSpace" root |> List.tryHead

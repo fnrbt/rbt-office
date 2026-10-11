@@ -695,8 +695,8 @@ they were read (see "Parts the editor does not model"); drawing them does not mo
   category, series name; position), axis titles. Charts inside **group shapes** (`xdr:grpSp`: the dashboards of the corpus) are drawn
   at their place in the group.
 - **Values are live**: a series reads the cells its `c:f` names (`Sheet1!$B$2:$B$7`, several areas, another sheet) as they are now,
-  with the cells' number formats for labels; a chart is drawn again in the frame after a cell of a sheet it reads changed (an entry
-  that six charts read: 20 - 30 ms with its frame). Where a reference cannot be read - another workbook, a defined name, a sheet
+  with the cells' number formats for labels; a chart is drawn again in the frame after a cell it reads changed (an entry
+  that six charts read: 20 - 30 ms with its frame) - and only then: see "Recalculation after an edit: 0.1.16". Where a reference cannot be read - another workbook, a defined name, a sheet
   that is not there or was not converted yet (`IsSheetLoaded`) - the values the file cached (`c:numCache` / `c:strCache`) are drawn.
 - **Shapes** (`xdr:sp`, `xdr:cxnSp`): fill and outline (colour, width; the shape style's `fillRef` / `lnRef` when the shape states
   none), preset geometry - rectangle, rounded rectangle (its corner adjustment), ellipse, triangle, diamond, line / connectors; any
@@ -945,6 +945,45 @@ Nothing to call for the recalculation itself: every edit recalculates what it ha
   113 ms after** (medians of seven, several runs each); the first edit after opening 351 - 375 ms before, 299 - 367 ms after (not
   changed by this). The rest of an edit is the evaluation of the formulas themselves (`eval` / `evalFunction` / `readCell`: about
   60 %) and the pass over what was reached (`run`: about 25 %): 80 ms is not reached yet.
+
+### Recalculation after an edit: 0.1.16
+No API and no value changes; what an edit costs.
+- **The common functions do not go through the catalogue.** `evalFunction` is every function there is in one JavaScript function of
+  15 000 lines: the browser never optimises it, and every call of it sets up forty helpers before it looks for the name. `IF`, `AND`,
+  `OR`, `NOT`, `IFERROR`, `YEAR`, `MONTH`, `DAY`, `EOMONTH` and `EDATE` with plain arguments (no range or name handed to `AND` / `OR`,
+  nothing that has to be turned into a reference first) are answered by a small function of their own (`evalCommonFunction`), with the
+  catalogue's outcome - checked call by call against it for every kind of argument (`tests/formula/stage53-common.fsx`, 17 000
+  calls). `YEAR` / `MONTH` / `DAY` of a whole serial are worked out in whole numbers, as `EOMONTH` is. What a call is, is worked out
+  once for its argument list.
+- **Two numbers under an operator** (`+ - * / = <> < > <= >=`) are calculated without the general case's list of operands and result
+  wrappers; an expression of one or two operators is not unrolled into a list first.
+- **The steps of a pass that run once per formula are functions of their own** (reaching a cell's readers, putting it in order,
+  evaluating and storing it): the pass itself (`Recalc.run`) is too long for the browser's optimising compiler, and everything inside
+  it ran unoptimised. Lists of readers are walked by index, values are compared without the generic walk.
+- **The cell map in hand is found without a lookup**: while a recalculation runs, the map last read is held with its hash index
+  (`Model.holdCellMirror`); a cell is read by row and column without an address object being made.
+- Measured in one session (`tools/xlsx-browser/perf.mjs --edits --host --only-first --first-cell "Annual!E12"`, milk-street-office.xlsx,
+  12 034 formulas evaluated per edit, medians of seven, two runs each, the 0.1.15 code and this one in turn): the repeated edit
+  **102 - 109 ms before, 59 - 67 ms after**; the first edit after opening 361 - 386 ms before, 290 - 301 ms after.
+- **What the component does beyond the recalculation after an edit is a few milliseconds.** `--host` types the entry as a host application does - into the
+  cell's edit box, committed with Enter - with `OnChange` / `OnSelectionChange` / `OnEditStateChange` subscribers that read what a
+  toolbar, a formula bar and a status bar show (`GetSelectionFormat`, `GetStatus`, `GetCell`, `GetViewOptions`, `GetFilters`,
+  `GetOutline`, ...; the calls redbat's editor makes): 103 - 107 ms before, **60 - 64 ms after** for the keystroke with the frame
+  that follows it - what `EnterText` alone takes (59 - 67 ms). Of it the subscribers' calls are 0 - 1 ms and the frame after the
+  keystroke 2 - 3 ms; in a CPU profile of the edit 98 % is under the recalculation and 2 % under `render` (two of them: the commit,
+  the selection moving down). No chart is laid out (see below) and nothing is left for idle time. A host that sees more than this
+  for the same edit spends it in its own handlers, or measures the first edit after opening (which builds the graph).
+- **A chart is laid out again only when the cells it reads changed** (before: when any cell of a sheet it reads changed, and at
+  every display of its sheet). Each drawn object keeps the blocks of cells it read; after an edit they are compared with what the
+  sheets hold now. Showing a sheet again, scrolling, an edit elsewhere on the sheet, and an entry that leaves a cell as it was lay
+  nothing out. `GetChartLayouts(): number` counts the layouts of objects since the component was made, `GetChartRedraws(): number`
+  those caused by changed cells (both for tests and diagnostics).
+- **Opening a workbook with a map chart**: a `cx:chartSpace` part (dashboard-sales-analysis.xlsx: 8 MB) was parsed whole to find that
+  it is not drawn - 85 - 120 ms of `ImportXlsx` when the first sheet has such a frame. It is told by its first tag now
+  (`Charts.isChartEx`). ImportXlsx of that workbook, same session: 0.1.15 (no charts drawn) 594 - 628 ms, the code before this
+  721 - 845 ms, now 624 - 660 ms. A dashboard sheet put on display for the first time costs 10 - 15 ms more than in 0.1.15 (24 - 34
+  ms against 10 - 15 ms: its 5 - 10 objects with 4 - 9 charts are laid out, once); shown again 12 - 25 ms against 9 - 17 ms (the SVG
+  is put back, not laid out). Scrolling the dashboards is at the frame rate in all three (16.7 ms per frame, none over 33 ms).
 
 ## XLSX: what is written how
 
