@@ -878,6 +878,12 @@ type Spreadsheet(container: Element) =
     /// cells its charts read - sheet (in capitals), first row / column, last row / column, the cells as they
     /// were when it was drawn (null: the sheet was not there, or not converted yet).
     let chartFrames = ResizeArray<Element * SheetDrawing * float * float * (string * int * int * int * int * CellData option [] []) array>()
+    /// "normal", or "pageBreak": the page break preview - the pages the sheet prints on are outlined over its cells.
+    let mutable viewMode = "normal"
+    /// The outlines of the pages on display in the page break preview.
+    let pageNodes = ResizeArray<Element>()
+    /// The pages of the sheet on display as last worked out, and what they were worked out from.
+    let mutable pagesKnown : (obj array * float * float * Rbt.Spreadsheet.Pdf.Pagination.Pagination) option = None
     /// How many times a drawn object was laid out again because cells it reads changed (`GetChartRedraws`).
     let mutable chartRedraws = 0
     /// How many times an object was laid out at all (`GetChartLayouts`).
@@ -4145,6 +4151,7 @@ type Spreadsheet(container: Element) =
             renderOutline layer metrics frozenRows frozenCols firstRow lastRow firstCol lastCol
             renderDrawings content metrics
             renderOverlays layer metrics frozenRows frozenCols
+            renderPages layer metrics
             notifyChanges ()
         | _ ->
             // Not mounted: nothing to draw, but the revision still follows the content.
@@ -4418,6 +4425,70 @@ type Spreadsheet(container: Element) =
                              | None -> ())
                         | Picture _ -> ()
         renderPictureFrame content
+
+    /// The page break preview (`viewMode`): every page the sheet prints on (`paginatePrinted`,
+    /// what the PDF export lays out and `GetPrintPages` reports) that is in view is a frame over
+    /// its cells with its number in the middle. The edge of a frame is solid where the print
+    /// area begins or ends and at a manual break, dashed at a break the paper makes. The frames
+    /// take no click: the grid under them is edited as in the normal view.
+    and renderPages (layer: GridLayers) (metrics: SpreadsheetLayout.SheetMetrics) =
+        for node in pageNodes do detach node
+        pageNodes.Clear()
+        if viewMode = "pageBreak" && not sheetLocked && not (isDeferredSheet model) then
+            // (Worked out again when what the pages depend on changed: cells, sizes, merges, the page setup.)
+            let key : obj array = [| box model.Cells; box model.PageSetup; box model.RowHeights; box model.ColumnWidths; box model.MergedCells; box model.Drawings |]
+            let pagination =
+                match pagesKnown with
+                | Some (known, rowDefault, colDefault, pages)
+                    when rowDefault = model.DefaultRowHeight && colDefault = model.DefaultColumnWidth
+                         && known.Length = key.Length && Array.forall2 (fun (a: obj) (b: obj) -> obj.ReferenceEquals(a, b)) known key -> pages
+                | _ ->
+                    let pages = Rbt.Spreadsheet.Pdf.Pagination.paginatePrinted model
+                    pagesKnown <- Some (key, model.DefaultRowHeight, model.DefaultColumnWidth, pages)
+                    pages
+            let setup = model.PageSetup
+            let offset = if setup.UseFirstPageNumber then setup.FirstPageNumber - 1 else 0
+            let rowPrefix = metrics.RowPrefix
+            let colPrefix = metrics.ColPrefix
+            let areas = List.toArray pagination.PrintAreas
+            let viewTop, viewBottom = scrollTop - 100.0, scrollTop + containerHeight + 100.0
+            let viewLeft, viewRight = scrollLeft - 100.0, scrollLeft + containerWidth + 100.0
+            pagination.Pages
+            |> List.iteri (fun at page ->
+                let firstRow, lastRow = max 0 page.RowStart, min (metrics.RowCount - 1) page.RowEnd
+                let firstCol, lastCol = max 0 page.ColStart, min (metrics.ColCount - 1) page.ColEnd
+                if lastRow >= firstRow && lastCol >= firstCol then
+                    let x, y = colPrefix.[firstCol], rowPrefix.[firstRow]
+                    let width, height = colPrefix.[lastCol + 1] - x, rowPrefix.[lastRow + 1] - y
+                    if width > 0.0 && height > 0.0 && y + height >= viewTop && y <= viewBottom && x + width >= viewLeft && x <= viewRight then
+                        let area = if page.Area >= 0 && page.Area < areas.Length then Some areas.[page.Area] else None
+                        let manualTop = List.contains page.RowStart setup.ManualRowBreaks
+                        let manualLeft = List.contains page.ColStart setup.ManualColBreaks
+                        let atAreaTop = (match area with Some range -> page.RowStart <= range.From.Row | None -> true)
+                        let atAreaLeft = (match area with Some range -> page.ColStart <= range.From.Col | None -> true)
+                        let atAreaBottom = (match area with Some range -> page.RowEnd >= range.To.Row | None -> true)
+                        let atAreaRight = (match area with Some range -> page.ColEnd >= range.To.Col | None -> true)
+                        let line (solid: bool) = if solid then "2px solid #1a73e8" else "2px dashed #1a73e8"
+                        let frame = createElement "div"
+                        setClassName frame "spreadsheet-page"
+                        setAttribute frame "data-page" (string (at + 1 + offset))
+                        setAttribute frame "data-range" (SheetOps.rangeText { From = { Row = page.RowStart; Col = page.ColStart }; To = { Row = page.RowEnd; Col = page.ColEnd } })
+                        setAttribute frame "data-first-row" (string page.RowStart)
+                        setAttribute frame "data-first-col" (string page.ColStart)
+                        setAttribute frame "data-break-top" (if atAreaTop then "area" elif manualTop then "manual" else "automatic")
+                        setAttribute frame "data-break-left" (if atAreaLeft then "area" elif manualLeft then "manual" else "automatic")
+                        setCssText frame
+                            (sprintf "position:absolute;left:%.1fpx;top:%.1fpx;width:%.1fpx;height:%.1fpx;box-sizing:border-box;pointer-events:none;z-index:3;display:flex;align-items:center;justify-content:center;overflow:hidden;border-top:%s;border-left:%s;border-bottom:%s;border-right:%s"
+                                (rowHeaderWidth + x) (headerHeight + y) width height
+                                (line (atAreaTop || manualTop)) (line (atAreaLeft || manualLeft))
+                                (if atAreaBottom then line true else "0") (if atAreaRight then line true else "0"))
+                        let label = createElement "span"
+                        setClassName label "spreadsheet-page-label"
+                        setTextContent label ("Page " + string (at + 1 + offset))
+                        setCssText label (sprintf "font:bold %dpx Arial, sans-serif;color:rgba(60,64,67,0.28);white-space:nowrap;user-select:none" (if width < 160.0 || height < 60.0 then 14 else 32))
+                        appendChild frame label
+                        appendChild layer.Panes.[0] frame
+                        pageNodes.Add frame)
 
     /// The frame around the selected picture, with its eight handles. While
     /// the picture is dragged, the frame and the picture are where the drag
@@ -9592,7 +9663,43 @@ type Spreadsheet(container: Element) =
             "showHeaders" ==> model.ShowHeaders
             "showFormulas" ==> model.ShowFormulas
             "showZeros" ==> model.ShowZeros
+            "viewMode" ==> viewMode
             "frozen" ==> createObj [ "rows" ==> model.FrozenRows; "cols" ==> model.FrozenCols ] ]
+
+    /// The view of the grid: "normal", or "pageBreak" - the page break preview, in which every
+    /// page the sheet prints on (GetPrintPages) is outlined over its cells with its number
+    /// (`div.spreadsheet-page[data-page][data-range]`; an edge is solid at a manual break and
+    /// where the print area ends, dashed at a break the paper makes). The grid is edited as
+    /// before; the frames follow the cells, the sizes and the page setup. The mode is the
+    /// component's, for every sheet, and is not saved. Throws for another mode.
+    member _.SetViewMode(mode: obj) : unit =
+        let wanted = Host.stringArg "SetViewMode" "the mode" mode
+        if wanted <> "normal" && wanted <> "pageBreak" then Host.hostFail "SetViewMode" (sprintf "\"%s\" is no view mode (\"normal\", \"pageBreak\")" wanted)
+        if wanted <> viewMode then
+            viewMode <- wanted
+            render()
+
+    /// "normal" or "pageBreak" (see SetViewMode).
+    member _.GetViewMode() : string = viewMode
+
+    /// Move a manual page break, as dragging its line does: `kind` "row" or "column", the break
+    /// before row / column `from` (0-based) is from now on before `target`. One undo step.
+    /// False when there is no manual break at `from`, or it stays where it is; throws for a
+    /// place a break cannot be at. A break moved onto another one is one break.
+    member _.MovePageBreak(kind: obj, from: obj, target: obj, ?sheetIndex: obj) : bool =
+        let memberName = "MovePageBreak"
+        if model.EditingCell.IsSome then finishEditing true |> ignore
+        let kind = Host.stringArg memberName "kind" kind
+        if kind <> "row" && kind <> "column" then Host.hostFail memberName (sprintf "\"%s\" is no kind of break (\"row\", \"column\")" kind)
+        let from = Host.intArg memberName "from" from
+        let target = Host.intArg memberName "target" target
+        let changed =
+            changePageSetup memberName (defaultArg sheetIndex null) "Move page break" (fun setup ->
+                let moved (breaks: int list) = if List.contains from breaks then target :: (breaks |> List.filter (fun known -> known <> from)) else breaks
+                if kind = "row" then SheetOps.setPageBreaks memberName (moved setup.ManualRowBreaks) setup.ManualColBreaks setup
+                else SheetOps.setPageBreaks memberName setup.ManualRowBreaks (moved setup.ManualColBreaks) setup)
+        if changed then render()
+        changed
 
     // ===== Defined names =====
 

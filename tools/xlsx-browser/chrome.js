@@ -3,7 +3,7 @@
 // browser's real mouse and keyboard (window.realMouse / window.realKey, see run.mjs).
 // Each check returns a list of "ok ..." / "FAIL ..." lines.
 import { checks, makeLog, mountGrid, frame, parts, container, createSpreadsheet } from '/component.js';
-import { reopened } from '/sheet-api.js';
+import { reopened, thrown } from '/sheet-api.js';
 
 const near = (a, b, tolerance = 1.01) => Math.abs(a - b) <= tolerance;
 const centreOf = (rect) => [rect.left + rect.width / 2, rect.top + rect.height / 2];
@@ -1452,6 +1452,69 @@ checks['note-leaves-sheet-part'] = async () => {
         } finally { again.close(); }
     } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
     finally { close(); }
+    return lines;
+};
+
+// The page break preview: SetViewMode('pageBreak') outlines every page the sheet prints on over
+// its cells (the pages of GetPrintPages), numbered; an edge is solid at a manual break and at the
+// ends of the print area, dashed where the paper ends a page. Breaks are added, moved
+// (MovePageBreak, one undo step) and removed through the API, and saved as rowBreaks / colBreaks.
+checks['page-break-preview'] = async () => {
+    const { lines, check } = makeLog();
+    const host = container('position:absolute;left:0;top:0;width:1100px;height:800px');
+    const grid = createSpreadsheet(host);
+    grid.Mount();
+    const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const pages = () => [...host.querySelectorAll('.spreadsheet-page')];
+    const cellBox = (row, col) => host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"]`)?.getBoundingClientRect();
+    try {
+        for (let row = 0; row < 120; row++) for (let col = 0; col < 4; col++) grid.SetCell(row, col, String(row * 10 + col));
+        await frame();
+        check('the normal view: no page is outlined', [grid.GetViewMode(), pages().length, grid.GetViewOptions().viewMode], ['normal', 0, 'normal']);
+        const revision = grid.GetRevision();
+        grid.SetViewMode('pageBreak'); await frame();
+        const printed = grid.GetPrintPages().pages;
+        check('the preview: more than one page, the first ones in view are outlined', [grid.GetViewMode(), printed.length > 1, pages().length >= 1, pages().length <= printed.length], ['pageBreak', true, true, true]);
+        const first = pages()[0];
+        check('a page says its number and its cells, as GetPrintPages has them', [first.dataset.page, first.dataset.range, first.querySelector('.spreadsheet-page-label').textContent], ['1', printed[0].range, 'Page 1']);
+        const box = first.getBoundingClientRect(), topLeft = cellBox(printed[0].firstRow, printed[0].firstCol), right = cellBox(printed[0].firstRow, printed[0].lastCol);
+        check('its frame begins at its first cell and is as wide as its columns', [Math.abs(box.left - topLeft.left) < 1.5, Math.abs(box.top - topLeft.top) < 1.5, Math.abs(box.right - right.right) < 1.5], [true, true, true]);
+        check('the print area\'s edge is solid, and the frame takes no click', [first.dataset.breakTop, getComputedStyle(first).borderTopStyle, getComputedStyle(first).pointerEvents], ['area', 'solid', 'none']);
+        check('switching the view is no change of the workbook', [grid.GetRevision(), grid.IsModified()], [revision, true]);
+        // The second page begins where the paper ends the first: a dashed edge.
+        host.querySelector('.spreadsheet-container').scrollTop = Math.max(0, cellBox(0, 0) ? 20 * (printed[1].firstRow - 5) : 0); await frame();
+        const second = pages().find((node) => node.dataset.page === '2');
+        check('the second page begins at an automatic break: dashed', [second?.dataset.firstRow, second?.dataset.breakTop, second ? getComputedStyle(second).borderTopStyle : null], [String(printed[1].firstRow), 'automatic', 'dashed']);
+        // A manual break: the pages follow, its edge is solid.
+        check('a break before row 11', grid.AddPageBreak(10), true); await frame();
+        host.querySelector('.spreadsheet-container').scrollTop = 0; await frame();
+        const after = grid.GetPrintPages().pages;
+        const manual = pages().find((node) => node.dataset.firstRow === '10');
+        check('... the first page ends before it, the next begins at it with a solid edge', [after[0].lastRow, after[1].firstRow, manual?.dataset.page, manual?.dataset.breakTop, manual ? getComputedStyle(manual).borderTopStyle : null], [9, 10, '2', 'manual', 'solid']);
+        // Dragged to row 21: one undo step.
+        check('moved to before row 21', [grid.MovePageBreak('row', 10, 20), grid.GetPageBreaks().rows], [true, [20]]); await frame();
+        check('... the frames follow', [pages().some((node) => node.dataset.firstRow === '10'), pages().find((node) => node.dataset.firstRow === '20')?.dataset.breakTop], [false, 'manual']);
+        check('a break that is not there does not move; a place no break can be at throws', [grid.MovePageBreak('row', 10, 30), thrown(() => grid.MovePageBreak('row', 20, 0)) !== null, thrown(() => grid.MovePageBreak('diagonal', 20, 5)) !== null], [false, true, true]);
+        grid.Undo(); await frame();
+        check('undone: the break is before row 11 again', [grid.GetPageBreaks().rows, pages().find((node) => node.dataset.firstRow === '10')?.dataset.breakTop], [[10], 'manual']);
+        grid.Redo(); await frame();
+        // A column break, and what is saved.
+        grid.AddPageBreak(null, 2); await frame();
+        check('a break before column C: pages side by side', [grid.GetPageBreaks().columns, pages().some((node) => node.dataset.firstCol === '2' && node.dataset.breakLeft === 'manual')], [[2], true]);
+        const zip = await window.JSZip.loadAsync(await grid.ExportXlsx());
+        const sheet = await zip.files['xl/worksheets/sheet1.xml'].async('string');
+        check('saved as rowBreaks and colBreaks', [/<rowBreaks count="1" manualBreakCount="1"><brk id="20" [^>]*man="1"\/><\/rowBreaks>/.test(sheet), /<colBreaks count="1" manualBreakCount="1"><brk id="2" [^>]*man="1"\/><\/colBreaks>/.test(sheet)], [true, true]);
+        // Editing goes on as before; a row made taller moves the breaks the paper makes.
+        const lastOfFirst = grid.GetPrintPages().pages[0].lastRow;
+        grid.EnterText(3, 1, 'typed in the preview');
+        check('a cell is typed into as in the normal view', grid.GetCell(3, 1).value, 'typed in the preview');
+        grid.RemovePageBreak(20); grid.SetRowHeight(2, 400); await frame();
+        check('a taller row: the first page ends earlier, and its frame with it', [grid.GetPrintPages().pages[0].lastRow < Math.max(lastOfFirst, 30), pages()[0].dataset.range, pages()[0].dataset.range === grid.GetPrintPages().pages[0].range], [true, grid.GetPrintPages().pages[0].range, true]);
+        check('another mode throws', thrown(() => grid.SetViewMode('layout')) !== null, true);
+        grid.SetViewMode('normal'); await frame();
+        check('back in the normal view: no frame is left', [grid.GetViewMode(), pages().length], ['normal', 0]);
+    } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
+    finally { grid.Dispose(); host.remove(); }
     return lines;
 };
 
