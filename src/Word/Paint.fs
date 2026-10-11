@@ -394,6 +394,24 @@ let private lineBaselineWithOffset baselineOffset (fallbackFontSize: float) (lin
 let private lineBaseline fallbackFontSize line =
     lineBaselineWithOffset 0.0 fallbackFontSize line
 
+/// The baseline of a line of a paragraph. A line of an exact height
+/// (w:lineRule="exact") that is lower than its text keeps the text's descent
+/// above its bottom, as Word does - what does not fit is cut off at the top:
+/// the baseline is a fifth of the text's size above the line's bottom. (It
+/// stood the text's size below the line's top, which for 55 pt text in a line
+/// of 54 pt is below the line: the text was drawn into what follows, or cut
+/// off by its text box.)
+let private paragraphLineBaseline baselineOffset (fallbackFontSize: float) (metadata: BlockMetadata) (line: MeasuredLine) =
+    let baseline = lineBaselineWithOffset baselineOffset fallbackFontSize line
+    if metadata.LineSpacingRule <> Some "exact" then baseline
+    else
+        let mutable size = 0.0
+        for segment in line.Segments do
+            match segment with
+            | TextSegment (_, style, _, _, _) -> size <- max size (WordLayout.Text.printFontSize style)
+            | _ -> ()
+        if size > 0.0 && size * 1.2 > line.Height then min baseline (line.Y + line.Height - size * 0.2 + baselineOffset) else baseline
+
 let private tabLeaderText (measureText: TextMeasurer) (style: TextStyle) (width: float) (leader: string option) =
     if optionTrimmedEqualsIgnoreCase "dot" leader && width > 0.0 then
         let dotAdvance = measureText "." style
@@ -1029,7 +1047,7 @@ let private addParagraphCommandsWithBaselineOffset baselineOffset (settings: Lay
 
     if layout.Prefix <> "" && not layout.Lines.IsEmpty then
         let firstLine = layout.Lines.Head
-        let baseline = lineBaselineWithOffset baselineOffset settings.FontSize firstLine
+        let baseline = paragraphLineBaseline baselineOffset settings.FontSize layout.Metadata firstLine
         let firstLineIndent = WordLayout.Paragraph.firstLineIndent layout.Metadata
         let prefixX = settings.PaddingLeft + layout.Indent + min 0.0 firstLineIndent
         let prefixText = WordLayout.Numbering.displayMarkerText layout.Prefix
@@ -1048,7 +1066,7 @@ let private addParagraphCommandsWithBaselineOffset baselineOffset (settings: Lay
         commands.Add(DrawText (prefixText, prefixStyle, prefixX, baseline, prefixDrawWidth))
 
     for line in layout.Lines do
-        let baseline = lineBaselineWithOffset baselineOffset settings.FontSize line
+        let baseline = paragraphLineBaseline baselineOffset settings.FontSize layout.Metadata line
         let lineAlignmentOffset = alignmentOffset layout line
 
         for segment in line.Segments do

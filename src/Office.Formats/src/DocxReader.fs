@@ -3399,13 +3399,20 @@ module Shapes =
             DistanceBottom = anchorDistance "distB"
             DistanceLeft = anchorDistance "distL"
             DistanceRight = anchorDistance "distR"
+            // (A DrawingML shape that states no fill and refers to none of the theme's - no fill in its
+            // properties, no wps:style - has none; likewise its line. Such a text box used to be read as
+            // one that says nothing, which is white with a grey outline: the editor's own.)
             NoFill =
                 (spPr |> Option.exists (fun props -> (childNamed "noFill" props).IsSome))
+                || (not isVml && spPr.IsSome
+                    && (spPr |> Option.exists (fun props -> [ "solidFill"; "gradFill"; "pattFill"; "blipFill"; "grpFill" ] |> List.forall (fun name -> (childNamed name props).IsNone)))
+                    && (Ns.descendantsNs "fillRef" shapeNode).IsEmpty)
                 || vmlBool (Xml.attr "filled" shapeNode) = Some false
                 // (The fill of WordArt is the colour of its letters.)
                 || (txbxContent.IsNone && textPath.IsSome)
             NoLine =
                 (line |> Option.exists (fun ln -> (childNamed "noFill" ln).IsSome))
+                || (not isVml && spPr.IsSome && line.IsNone && (Ns.descendantsNs "lnRef" shapeNode).IsEmpty)
                 || vmlBool (Xml.attr "stroked" shapeNode) = Some false
                 || (txbxContent.IsNone && textPath.IsSome)
             LineDash = line |> Option.bind (childNamed "prstDash") |> Option.bind (Xml.attr "val")
