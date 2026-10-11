@@ -86,6 +86,21 @@ Rows of `Cell` for a range of the active sheet, or of another sheet when qualifi
 The `Format` of the selection with the string `"mixed"` in place of every property in which the selected cells differ. `borders` is `{ top, bottom, left, right, diagonal }`, each `Border`, `null` or `"mixed"` (no diagonalUp/Down). Empty cells count with their column style / the default format. Cheap: blocks up to 20 000 cells are read cell by cell (1 ms for 1 000 cells); larger selections cost one pass over the existing cells (84 ms for a sheet of 846 000 cells); the result is cached until the cells or the selection change (the same object is returned: do not mutate it). Safe to call from an `OnSelectionChange` listener.
 
 
+## Writing cells
+
+### `SetCell(row: number, col: number, value: string): void`, `EnterText(row: number, col: number, text: string): boolean`
+
+Both read `value` the way typed input is read (numbers, dates, percentages, formulas, `'text`; empty text clears the cell), recalculate
+what reads the cell, bump the revision and fire `OnChange`. **Both are ONE undo step** (since 0.1.15; before, `SetCell` added none, so an
+`Undo()` after it took back the entry before it, left the written value, and the workbook could not get back to its saved revision).
+`EnterText` is the user's entry: it is checked against the cell's data validation (`false`: refused, nothing changed) and what follows
+from typing in or beside a table follows. `SetCell` is the host's write: not validated, and a table beside the cell does not grow over it.
+
+**Every member that changes the workbook is one undo step with one revision**: after `EnterText(...)` and any such call, one `Undo()`
+takes back the call alone and gives the revision the entry left, a second one gives the revision before the entry (`IsModified()` is
+false when that was the saved one), and `Redo()` twice gives the revision the call left. (Checked for 116 calls by the `undo-steps` check
+of `tools/xlsx-browser`.) What is view state is said so at the member (zoom, a viewer's filter, `SetShowOutline`, the validation circles).
+
 ## Formatting
 
 All of these act on the selection (unless they take a range), are ONE undo step, bump the revision and fire `OnChange`; a call that changes nothing adds no step. They do not recalculate (except the Clear members that remove values). A selection of up to 20 000 cells gives every cell the format (empty ones too); a larger one (whole rows / columns of a big sheet) changes only the cells that exist. All formats survive `ExportXlsx` → `ImportXlsx` (a re-imported cell without a font of its own reports the workbook's default font, e.g. `fontFamily: "Calibri", fontSize: 11`, instead of `null`).

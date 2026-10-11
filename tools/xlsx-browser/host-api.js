@@ -249,7 +249,7 @@ checks['row-column-counts'] = async () => {
         check('InsertRow(2, 3): three rows, one change', [await column(0, 7), changes.length, grid.GetModel().RowCount - rows0], [['1', '2', '', '', '', '3', '4'], 1, 3]);
         check('formulas follow, rewritten once', [formula(15, 0), await valueAt(grid, 15, 0), formula(0, 5)], ['=SUM(A1:A13)', '55', '=B13+A12']);
         grid.Undo();
-        check('one undo step', [await column(0, 4), formula(12, 0), grid.GetModel().RowCount - rows0, grid.CanUndo()], [['1', '2', '3', '4'], '=SUM(A1:A10)', 0, false]);
+        check('one undo step', [await column(0, 4), formula(12, 0), grid.GetModel().RowCount - rows0, grid.CanUndo()], [['1', '2', '3', '4'], '=SUM(A1:A10)', 0, true]);   // (the cells the check set with SetCell are steps too)
         grid.Redo(); grid.Undo();
         changes.length = 0;
         grid.DeleteRow(1, 4);
@@ -339,11 +339,12 @@ checks['revision'] = async () => {
         check('a save that finishes after more typing leaves the workbook modified', [grid.IsModified(), bytes.length > 0], [true, true]);
         grid.Undo();
         check('and undoing that typing gives the saved state', grid.IsModified(), false);
-        // A change without an undo step cannot be walked back to a known revision.
+        // A host's write is an undo step like any other: undone, the workbook is the saved one again.
         grid.SetCell(8, 8, 'host write');
         const hostRevision = grid.GetRevision();
+        check('a host write is a new revision', [grid.IsModified(), hostRevision !== written], [true, true]);
         grid.Undo();
-        check('undo after a host write is a new revision, not a saved one', [grid.IsModified(), grid.GetRevision() !== hostRevision, grid.GetRevision() !== written], [true, true, true]);
+        check('undo after a host write: the saved revision', [grid.IsModified(), grid.GetRevision(), grid.GetCell(8, 8).text], [false, written, '']);
         // Opening a workbook: saved.
         await grid.ImportXlsx(await bytesOf('tests/real-world/milk-street-office.xlsx'));
         check('an opened workbook is unmodified', grid.IsModified(), false);
@@ -811,5 +812,181 @@ checks['fixture-picture'] = async () => {
         check('the exported file holds the same picture', await media(await grid.ExportXlsx()), await media(original));
     } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
     close();
+    return lines;
+};
+
+// Every call that changes the workbook is one undo step: after a typed entry and the call, one
+// Undo() takes back the call alone (what the workbook holds and its revision are those after the
+// entry), a second one the entry (the saved revision: unmodified), and two Redo() give the
+// revision the call left.
+const PIXEL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+const UNDO_STEPS = [
+    ['SetCell', (g) => g.SetCell(8, 8, 'host write')],
+    ['SetCell (a formula)', (g) => g.SetCell(8, 8, '=SUM(B2:B5)')],
+    ['SetCell (over a value)', (g) => g.SetCell(1, 1, '99')],
+    ['SetCell (clearing)', (g) => g.SetCell(1, 1, '')],
+    ['EnterText', (g) => g.EnterText(8, 8, 'typed')],
+    ['SetCurrentCellFromFormula', (g) => { g.SelectCell(8, 8); g.SetCurrentCellFromFormula('=B2*2'); }],
+    ['FillDown', (g) => { g.SelectRange(4, 1, 7, 1); g.FillDown(); }],
+    ['FillRight', (g) => { g.SelectRange(1, 2, 1, 5); g.FillRight(); }],
+    ['AutoFill', (g) => { g.SelectRange(1, 1, 4, 1); g.AutoFill(8, 1); }],
+    ['ApplyFormat', (g) => { g.SelectRange(1, 0, 2, 2); g.ApplyFormat('bold'); }],
+    ['ApplyFormatPatch', (g) => { g.SelectRange(1, 0, 2, 2); g.ApplyFormatPatch({ italic: true, fontSize: 14 }); }],
+    ['SetFontFamily', (g) => { g.SelectRange(1, 0, 2, 2); g.SetFontFamily('Georgia'); }],
+    ['SetFontSize', (g) => { g.SelectRange(1, 0, 2, 2); g.SetFontSize(15); }],
+    ['SetStrikethrough', (g) => { g.SelectRange(1, 0, 2, 2); g.SetStrikethrough(true); }],
+    ['SetHorizontalAlign', (g) => { g.SelectRange(1, 0, 2, 2); g.SetHorizontalAlign('center'); }],
+    ['SetVerticalAlign', (g) => { g.SelectRange(1, 0, 2, 2); g.SetVerticalAlign('top'); }],
+    ['SetWrapText', (g) => { g.SelectRange(1, 0, 2, 2); g.SetWrapText(true); }],
+    ['SetIndent', (g) => { g.SelectRange(1, 0, 2, 2); g.SetIndent(2); }],
+    ['IncreaseIndent', (g) => { g.SelectRange(1, 0, 2, 2); g.IncreaseIndent(); }],
+    ['SetTextRotation', (g) => { g.SelectRange(1, 0, 2, 2); g.SetTextRotation(45); }],
+    ['SetShrinkToFit', (g) => { g.SelectRange(1, 0, 2, 2); g.SetShrinkToFit(true); }],
+    ['SetNumberFormat', (g) => { g.SelectRange(1, 1, 4, 1); g.SetNumberFormat('0.00'); }],
+    ['IncreaseDecimals', (g) => { g.SelectRange(1, 1, 4, 1); g.IncreaseDecimals(); }],
+    ['ApplyFormatTo', (g) => g.ApplyFormatTo('B2:C3', { bold: true, fill: '#ffee00' })],
+    ['ClearFormats', (g) => { g.ApplyFormatTo('B2:C3', { bold: true }); }, (g) => g.ClearFormats('B2:C3')],
+    ['ClearContents', (g) => g.ClearContents('B2:C3')],
+    ['ClearAll', (g) => g.ClearAll('B2:C3')],
+    ['ApplyTextColor', (g) => { g.SelectRange(1, 0, 2, 2); g.ApplyTextColor('#ff0000'); }],
+    ['ApplyBgColor', (g) => { g.SelectRange(1, 0, 2, 2); g.ApplyBgColor('#00ff00'); }],
+    ['ApplyNumberFormat', (g) => { g.SelectRange(1, 1, 2, 1); g.ApplyNumberFormat('#,##0.00'); }],
+    ['ApplyBorder', (g) => { g.SelectRange(1, 0, 2, 2); g.ApplyBorder('all', 'thin', '#000000'); }],
+    ['MergeCells', (g) => g.MergeCells(7, 0, 8, 2)],
+    ['UnmergeCells', (g) => g.MergeCells(7, 0, 8, 2), (g) => g.UnmergeCells(7, 0)],
+    ['SetHyperlink', (g) => g.SetHyperlink('A2', 'https://example.com/')],
+    ['RemoveHyperlink', (g) => g.SetHyperlink('A2', 'https://example.com/'), (g) => g.RemoveHyperlink('A2')],
+    ['SetComment', (g) => g.SetComment(2, 2, 'a note', 'Tester')],
+    ['SetComment (changing one)', (g) => g.SetComment(2, 2, 'a note', 'Tester'), (g) => g.SetComment(2, 2, 'another note', 'Tester')],
+    ['SetCommentRuns', (g) => g.SetCommentRuns(2, 2, [{ text: 'bold', bold: true }, { text: ' and plain' }], 'Tester')],
+    ['DeleteComment', (g) => g.SetComment(2, 2, 'a note', 'Tester'), (g) => g.DeleteComment(2, 2)],
+    ['RemoveComment', (g) => g.SetComment(2, 2, 'a note', 'Tester'), (g) => g.RemoveComment(2, 2)],
+    ['AddCommentReply', (g) => g.SetComment(2, 2, 'a note', 'Tester'), (g) => g.AddCommentReply(2, 2, 'a reply', 'Bob')],
+    ['ResolveComment', (g) => { g.SetComment(2, 2, 'a note', 'Tester'); g.AddCommentReply(2, 2, 'a reply', 'Bob'); }, (g) => g.ResolveComment(2, 2, true)],
+    ['DefineTable', (g) => g.DefineTable('A1:C5', 'Sales', true, 'TableStyleMedium2')],
+    ['ResizeTable', (g) => g.DefineTable('A1:C4', 'Sales', true), (g) => g.ResizeTable('Sales', 'A1:C5')],
+    ['RenameTable', (g) => g.DefineTable('A1:C5', 'Sales', true), (g) => g.RenameTable('Sales', 'Deals')],
+    ['DeleteTable', (g) => g.DefineTable('A1:C5', 'Sales', true), (g) => g.DeleteTable('Sales', true)],
+    ['SetTableTotalRow', (g) => g.DefineTable('A1:C5', 'Sales', true), (g) => g.SetTableTotalRow('Sales', true)],
+    ['SetTableStyle', (g) => g.DefineTable('A1:C5', 'Sales', true), (g) => g.SetTableStyle('Sales', 'TableStyleLight9')],
+    ['InsertRow', (g) => g.InsertRow(2, 2)],
+    ['DeleteRow', (g) => g.DeleteRow(2, 1)],
+    ['InsertColumn', (g) => g.InsertColumn(1, 1)],
+    ['DeleteColumn', (g) => g.DeleteColumn(1, 1)],
+    ['InsertRows', (g) => g.InsertRows(2, 2)],
+    ['DeleteRows', (g) => g.DeleteRows(2, 1)],
+    ['InsertColumns', (g) => g.InsertColumns(1, 2)],
+    ['DeleteColumns', (g) => g.DeleteColumns(1, 1)],
+    ['ReplaceMatch', (g) => { g.Find('north', {}); g.FindNext(); g.ReplaceMatch('NORD'); }],
+    ['Replace', (g) => { g.SelectCell(1, 0); g.Replace('north', 'NORD', false); }],
+    ['ReplaceAll', (g) => g.ReplaceAll('o', '0', {})],
+    ['ReplaceAll (the old call)', (g) => g.ReplaceAll('o', '0', false)],
+    ['AddConditionalFormat', (g) => g.AddConditionalFormat('B2:B5', { type: 'dataBar', color: '#63C384' })],
+    ['UpdateConditionalFormat', (g) => g.AddConditionalFormat('B2:B5', { type: 'dataBar', color: '#63C384' }), (g) => g.UpdateConditionalFormat(g.GetConditionalFormats()[0].id, { range: 'B2:B4' })],
+    ['RemoveConditionalFormat', (g) => g.AddConditionalFormat('B2:B5', { type: 'dataBar', color: '#63C384' }), (g) => g.RemoveConditionalFormat(g.GetConditionalFormats()[0].id)],
+    ['ReorderConditionalFormats', (g) => { g.AddConditionalFormat('B2:B5', { type: 'dataBar', color: '#63C384' }); g.AddConditionalFormat('C2:C5', { type: 'iconSet', iconSet: '3Stars' }); },
+        (g) => g.ReorderConditionalFormats(g.GetConditionalFormats().map((format) => format.id).reverse())],
+    ['ClearConditionalFormats', (g) => g.AddConditionalFormat('B2:B5', { type: 'dataBar', color: '#63C384' }), (g) => g.ClearConditionalFormats('B2:B5')],
+    ['RemoveConditionalFormats', (g) => g.AddConditionalFormat('B2:B5', { type: 'dataBar', color: '#63C384' }), (g) => g.RemoveConditionalFormats(2, 1)],
+    ['SetValidation', (g) => g.SetValidation('B2:B5', { type: 'list', source: 'a,b,c' })],
+    ['ClearValidation', (g) => g.SetValidation('B2:B5', { type: 'list', source: 'a,b,c' }), (g) => g.ClearValidation('B2:B5')],
+    ['FreezeAt', (g) => g.FreezeAt(1, 1)],
+    ['Unfreeze', (g) => g.FreezeAt(1, 1), (g) => g.Unfreeze()],
+    ['SetColumnWidth', (g) => g.SetColumnWidth(0, 180)],
+    ['SetRowHeight', (g) => g.SetRowHeight(1, 44)],
+    ['AutoFitColumns', (g) => g.SetColumnWidth(0, 300), (g) => g.AutoFitColumns('A:A')],
+    ['AutoFitRows', (g) => g.SetRowHeight(1, 80), (g) => g.AutoFitRows('2:2')],
+    ['HideRows', (g) => g.HideRows(2, 2)],
+    ['UnhideRows', (g) => g.HideRows(2, 2), (g) => g.UnhideRows(2, 2)],
+    ['HideColumns', (g) => g.HideColumns(1, 1)],
+    ['UnhideColumns', (g) => g.HideColumns(1, 1), (g) => g.UnhideColumns(1, 1)],
+    ['GroupRows', (g) => g.GroupRows('3:4')],
+    ['UngroupRows', (g) => g.GroupRows('3:4'), (g) => g.UngroupRows('3:4')],
+    ['GroupColumns', (g) => g.GroupColumns('B:C')],
+    ['UngroupColumns', (g) => g.GroupColumns('B:C'), (g) => g.UngroupColumns('B:C')],
+    ['SetOutlineSummary', (g) => g.SetOutlineSummary(false, false)],
+    ['SetShowGridLines', (g) => g.SetShowGridLines(false)],
+    ['SetShowHeaders', (g) => g.SetShowHeaders(false)],
+    ['SetShowFormulas', (g) => g.SetShowFormulas(true)],
+    ['SetShowZeros', (g) => g.SetShowZeros(false)],
+    ['SetDefinedName', (g) => g.SetDefinedName('Fresh', '=Sheet1!$A$1')],
+    ['DeleteDefinedName', (g) => g.SetDefinedName('Fresh', '=Sheet1!$A$1'), (g) => g.DeleteDefinedName('Fresh')],
+    ['SetIterativeCalculation', (g) => g.SetIterativeCalculation(true, 50, 0.0001)],
+    ['ImportCSV', (g) => g.ImportCSV('p,q\n1,2', 7, 0)],
+    ['SortCurrentColumnAsc', (g) => { g.SelectCell(2, 1); g.SortCurrentColumnAsc(); }],
+    ['SortCurrentColumnDesc', (g) => { g.SelectCell(2, 0); g.SortCurrentColumnDesc(); }],
+    ['SortRange', (g) => g.SortRange('A1:C5', [{ column: 1, descending: true }], { hasHeader: true })],
+    ['PasteText', (g) => { g.SelectCell(7, 0); g.PasteText('x\ty\n1\t2', ''); }],
+    ['SetAutoFilter', (g) => g.SetAutoFilter('A1:C5')],
+    ['ClearAutoFilter', (g) => g.SetAutoFilter('A1:C5'), (g) => g.ClearAutoFilter()],
+    ['SetFilter', (g) => g.SetAutoFilter('A1:C5'), (g) => g.SetFilter(1, { values: ['10'] })],
+    ['ClearFilter', (g) => { g.SetAutoFilter('A1:C5'); g.SetFilter(1, { values: ['10'] }); }, (g) => g.ClearFilter()],
+    ['SetPageSetup', (g) => g.SetPageSetup({ printArea: 'A1:C5', orientation: 'landscape' })],
+    ['SetPageBreaks', (g) => g.SetPageBreaks({ rows: [3], columns: [2] })],
+    ['AddPageBreak', (g) => g.AddPageBreak(3)],
+    ['RemovePageBreak', (g) => g.AddPageBreak(3), (g) => g.RemovePageBreak(3)],
+    ['ClearPageBreaks', (g) => g.AddPageBreak(3), (g) => g.ClearPageBreaks()],
+    ['InsertPicture', (g) => g.InsertPicture(PIXEL, 'E2')],
+    ['MovePicture', (g) => g.InsertPicture(PIXEL, 'E2'), (g) => g.MovePicture(g.GetPictures()[0].id, 'F7')],
+    ['ResizePicture', (g) => g.InsertPicture(PIXEL, 'E2'), (g) => g.ResizePicture(g.GetPictures()[0].id, { width: 40, height: 30 })],
+    ['SetPictureAltText', (g) => g.InsertPicture(PIXEL, 'E2'), (g) => g.SetPictureAltText(g.GetPictures()[0].id, 'a dot', 'Dot')],
+    ['DeletePicture', (g) => g.InsertPicture(PIXEL, 'E2'), (g) => g.DeletePicture(g.GetPictures()[0].id)],
+    ['AddSheet', (g) => g.AddSheet('Other')],
+    ['RenameSheet', (g) => g.RenameSheet(0, 'First')],
+    ['DuplicateSheet', (g) => g.DuplicateSheet(0)],
+    ['DeleteSheet', (g) => { g.AddSheet('Other'); g.SwitchSheet(0); }, (g) => g.DeleteSheet(1)],
+    ['MoveSheet', (g) => { g.AddSheet('Other'); g.SwitchSheet(0); }, (g) => g.MoveSheet(1, 0)],
+    ['SetSheetVisibility', (g) => { g.AddSheet('Other'); g.SwitchSheet(0); }, (g) => g.SetSheetVisibility(1, 'hidden')],
+    ['SetSheetTabColor', (g) => g.SetSheetTabColor(0, '#ff8800')],
+];
+const workbookState = (grid) => {
+    const quiet = (read) => { try { return read(); } catch (e) { return 'threw ' + String(e && e.message); } };
+    const model = grid.GetModel();
+    return JSON.stringify({
+        sheets: grid.GetSheetInfos(), index: grid.GetActiveSheetIndex(),
+        cells: grid.GetRange('A1:L14').map((row) => row.map((cell) => [cell.formula ?? null, cell.value ?? null, cell.text ?? null, cell.format ?? null])),
+        comments: quiet(() => grid.GetComments()), links: quiet(() => grid.GetHyperlinks()), rules: quiet(() => grid.GetConditionalFormats()),
+        validations: quiet(() => grid.GetValidations()), tables: quiet(() => grid.GetTables()), names: quiet(() => grid.GetDefinedNames()),
+        view: quiet(() => grid.GetViewOptions()), hiddenRows: grid.GetHiddenRows(), hiddenCols: grid.GetHiddenColumns(), outline: quiet(() => grid.GetOutline()),
+        setup: quiet(() => grid.GetPageSetup()), breaks: quiet(() => grid.GetPageBreaks()), filters: quiet(() => grid.GetFilters()),
+        pictures: quiet(() => grid.GetPictures()),
+        widths: [0, 1, 2, 3].map((col) => grid.GetColumnWidth(col)), heights: [0, 1, 2, 3].map((row) => grid.GetRowHeight(row)),
+        merges: Array.from(model.MergedCells ?? []), iterative: quiet(() => grid.GetIterativeCalculation()),
+    });
+};
+checks['undo-steps'] = async () => {
+    const { lines, check } = makeLog();
+    const only = new URLSearchParams(location.search).get('step');
+    for (const [name, first, second] of UNDO_STEPS) {
+        if (only && only !== name) continue;
+        const { grid, close } = mountGrid();
+        try {
+            const table = [['Region', 'Units', 'Price'], ['north', '10', '2.5'], ['south', '30', '1.5'], ['east', '20', '4'], ['west', '5', '3']];
+            table.forEach((row, r) => row.forEach((text, c) => grid.EnterText(r, c, text)));
+            grid.EnterText(0, 4, '=SUM(B2:B5)');
+            if (second) first(grid);
+            grid.SelectCell(0, 0);
+            grid.MarkSaved();
+            const saved = grid.GetRevision(), s0 = workbookState(grid);
+            grid.EnterText(10, 10, 'typed');
+            const r1 = grid.GetRevision(), s1 = workbookState(grid);
+            (second ?? first)(grid);
+            const r2 = grid.GetRevision(), s2 = workbookState(grid);
+            const problems = [];
+            if (s2 === s1) problems.push('the call changed nothing the check sees');
+            if (r2 === r1 || r2 === saved) problems.push(`no new revision (${saved}, ${r1}, ${r2})`);
+            grid.Undo();
+            if (workbookState(grid) !== s1) problems.push('one Undo does not give the workbook as it was before the call' + (workbookState(grid) === s2 ? ' (nothing was undone)' : workbookState(grid) === s0 ? ' (the entry before it was undone too)' : ''));
+            if (grid.GetRevision() !== r1) problems.push(`one Undo: revision ${grid.GetRevision()}, not the ${r1} before the call`);
+            grid.Undo();
+            if (workbookState(grid) !== s0) problems.push('two Undo do not give the saved workbook');
+            if (grid.GetRevision() !== saved || grid.IsModified()) problems.push(`two Undo: revision ${grid.GetRevision()} (saved ${saved}), modified ${grid.IsModified()}`);
+            grid.Redo(); grid.Redo();
+            if (workbookState(grid) !== s2) problems.push('two Redo do not give the workbook the call left');
+            if (grid.GetRevision() !== r2) problems.push(`two Redo: revision ${grid.GetRevision()}, not ${r2}`);
+            check(`${name}: one undo step`, problems, []);
+        } catch (e) { lines.push(`FAIL ${name} threw ` + String(e && e.stack || e).split('\n').slice(0, 2).join(' | ')); }
+        close();
+    }
     return lines;
 };

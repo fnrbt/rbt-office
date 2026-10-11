@@ -1817,14 +1817,16 @@ type Spreadsheet(container: Element) =
             sb.Append("</tr>") |> ignore
         sb.Append("</table>").ToString()
 
-    /// Commit typed text to a cell: parse it the way Excel reads input, check
-    /// it against the cell's validation, store it and recalculate, as one
-    /// undoable step. False when a validation rule refused the entry.
+    /// Commit text to a cell: parse it the way Excel reads input, check it
+    /// against the cell's validation (`validate`), store it and recalculate,
+    /// as one undoable step. `typed`: the entry is the user's, and what
+    /// follows from typing in or beside a table follows (a host's SetCell is
+    /// not). False when a validation rule refused the entry.
     /// Set once the workbook's table steps exist (`changeTables`): enters a cell as a
     /// change of the tables; false when the entry concerns none.
     let tableEntryHook : (CellAddress * CellData option -> bool) ref = ref (fun _ -> false)
 
-    let commitInput (addr: CellAddress) (text: string) (validate: bool) (undoable: bool) : bool =
+    let commitInput (addr: CellAddress) (text: string) (validate: bool) (typed: bool) : bool =
         giveRoomFor addr
         // (A chart sheet has no cells: nothing typed into it could be saved.)
         if sheetLocked then false else
@@ -1833,7 +1835,7 @@ type Spreadsheet(container: Element) =
         // table, a formula in one of its columns) is a change of the workbook's tables: one
         // step with what follows from it (see `SheetOps.tableEntry`).
         let asTableEntry (entry: CellData option) =
-            undoable && SheetOps.entryConcernsTable addr model && tableEntryHook.Value (addr, entry)
+            typed && SheetOps.entryConcernsTable addr model && tableEntryHook.Value (addr, entry)
         // A cell a dynamic array had spilled into is that array's cell again
         // after the undo of an entry typed over it, not a cell in its way.
         let spilledFrom = Map.tryFind addr model.Spill
@@ -1848,10 +1850,9 @@ type Spreadsheet(container: Element) =
             | Some old ->
                 model <- clearCell addr model
                 recalculateFormulas()
-                if undoable then
-                    model <- pushCommand { Undo = (fun m -> setCell addr old m)
-                                           Redo = (fun m -> clearCell addr m)
-                                           Description = sprintf "Clear cell %s" (formatCellRef addr.Row addr.Col) } model
+                model <- pushCommand { Undo = (fun m -> setCell addr old m)
+                                       Redo = (fun m -> clearCell addr m)
+                                       Description = sprintf "Clear cell %s" (formatCellRef addr.Row addr.Col) } model
             | None -> ()
             true
         else
@@ -1886,12 +1887,11 @@ type Spreadsheet(container: Element) =
                     | _ -> parsed
                 if not (asTableEntry (Some cellData)) then
                     recalculateSingleCellEdit addr cellData
-                    if undoable then
-                        model <- pushCommand { Undo = (fun m -> (match oldCellData with
-                                                                 | Some old -> setCell addr old m
-                                                                 | None -> clearCell addr m) |> asItWas)
-                                               Redo = (fun m -> setCell addr cellData m)
-                                               Description = sprintf "Edit cell %s" (formatCellRef addr.Row addr.Col) } model
+                    model <- pushCommand { Undo = (fun m -> (match oldCellData with
+                                                             | Some old -> setCell addr old m
+                                                             | None -> clearCell addr m) |> asItWas)
+                                           Redo = (fun m -> setCell addr cellData m)
+                                           Description = sprintf "Edit cell %s" (formatCellRef addr.Row addr.Col) } model
                 true
 
     /// Continue the block `source` in `direction` by `count` rows/columns as
@@ -3993,7 +3993,7 @@ type Spreadsheet(container: Element) =
                 revision <- fresh ()
                 undoneSteps.Clear()
                 // An undoable step is the one on top of the active sheet's
-                // history; any other change (a host's SetCell, an undo out of
+                // history; any other change (a change without a step, an undo out of
                 // order) cannot be walked back to a known revision.
                 match (if step = 0 then List.tryHead model.History.Past else None) with
                 | Some pushed when not (appliedSteps |> Seq.exists (fun (known, _, _) -> obj.ReferenceEquals(known, pushed))) ->
@@ -7772,7 +7772,8 @@ type Spreadsheet(container: Element) =
 
     /// Set a cell from text, read the way typed input is (numbers, dates,
     /// percentages, formulas, `'text`…). A programmatic write: it is not
-    /// checked against data validation and adds no undo step.
+    /// checked against data validation and a table beside the cell does not
+    /// grow over it. One undo step, like every other change of the workbook.
     member _.SetCell(row: int, col: int, value: string) =
         commitInput { Row = row; Col = col } value false false |> ignore
         render()

@@ -693,11 +693,11 @@ checks['api-validation'] = async () => {
         check('an entry inside the rule is accepted', [grid.EnterText(0, 0, '5'), grid.GetCell(0, 0).value, notices.length], [true, 5, 0]);
         check('one outside is refused and the notice raised', [grid.EnterText(0, 0, '50'), grid.GetCell(0, 0).value, notices.splice(0), grid.GetValidationNotice()?.style], [false, 5, ['stop|Range|From 1 to 10'], 'stop']);
         check('SetCell is not validated', [grid.SetCell(1, 0, '99'), grid.GetCell(1, 0).value], [undefined, 99]);
-        grid.Undo();
+        grid.Undo(); grid.Undo();   // (the SetCell, then the entry)
         check('undo of the entry, then of the validation', [grid.GetCell(0, 0).value, brief()], [null, [`${first}:whole@A1:A10`]]);
         grid.SetCell(1, 0, '');
         const steps = changes.length;
-        // (SetCell is not an undo step: the step on top is the validation.)
+        // (SetCell of nothing into an empty cell is no step: the step on top is the validation.)
         grid.Undo();
         check('undo takes the validation away', [brief(), grid.GetValidationAt(0, 0), grid.CanRedo()], [[], null, true]);
         grid.Redo();
@@ -1250,7 +1250,7 @@ checks['api-sheets'] = async () => {
         grid.SetCell(4, 0, '5');
         check('an edit still recalculates through the renamed sheet', (grid.SwitchSheet(0), grid.SetCell(0, 0, '11'), grid.SwitchSheet(1), [at('A1')[1], at('A3')[1]]), [16, 16]);
         grid.SwitchSheet(0); grid.SetCell(0, 0, '1'); grid.SwitchSheet(1);
-        grid.Undo();
+        grid.Undo(); grid.Undo();   // (the SetCell on this sheet, then the rename)
         check('undo: the name, the formulas and the revision are back', [grid.GetSheetNames(), at('A1'), grid.GetDefinedNames()[0].refersTo], [['Sheet1', 'Summary'], ['=SUM(Sheet1!A1:A3)', 6], 'Sheet1!$A$1:$A$3']);
         grid.Redo();
         check('redo', [grid.GetSheetNames(), at('A2')[0]], [['My Data', 'Summary'], "='My Data'!$A$2*10"]);
@@ -1326,7 +1326,7 @@ checks['api-sheets'] = async () => {
         check('its formulas that named the sheet name the copy; its names are copied', [grid.GetCell(6, 0).formula, grid.GetDefinedNames().filter((n) => n.name === 'Local').map((n) => [n.scope, n.refersTo])], ["='Data (2)'!A1+1", [[1, 'Data!$A$1'], [2, "'Data (2)'!$A$1"]]]);
         grid.SetCell(0, 0, '100');
         check('the copy is a sheet of its own', [grid.GetCell(6, 0).value, grid.GetRange('Data!A7')[0][0].value, grid.GetRange('Summary!A1')[0][0].value], [101, 2, 6]);
-        grid.Undo();
+        grid.Undo(); grid.Undo();   // (the SetCell, then the copy)
         check('undo removes the copy and its names', [infos(), grid.GetDefinedNames().filter((n) => n.name === 'Local').length], [['0:Third:veryHidden', '1:Data:visible:#FF8800*', '2:Summary:hidden:#00AA55'], 1]);
         grid.Redo();
         check('redo brings it back', [infos()[2], grid.GetCell(6, 0).formula, grid.DuplicateSheet(1), infos()[2]], ['2:Data (2):visible:#FF8800*', "='Data (2)'!A1+1", 2, '2:Data (3):visible:#FF8800*']);
@@ -2673,7 +2673,7 @@ checks['api-tables'] = async () => {
         grid.SetCell(1, 1, '15');
         check('an edit of the data recalculates the references on both sheets', [value('G2'), value('G3'), (grid.SetCell(1, 3, '150'), value('Other!A1')), value('G6')], [65, 40, 650, 650]);
         grid.SetCell(1, 1, '10'); grid.SetCell(1, 3, '100'); changes.splice(0);
-        grid.Undo();
+        for (let step = 0; step < 5; step++) grid.Undo();   // (the four SetCell, then the table)
         check('undo: no table, the header cells as they were, the references errors again', [grid.GetTables(), value('C1'), value('D1'), value('G2') === 60], [[], null, 'Amount', false]);
         grid.Redo();
         check('redo', [tables(), value('C1'), value('G2')], [['Sales@0!A1:D4 [Region|Amount|Column3|Amount2] TableStyleMedium2 filter'], 'Column3', 60]);
