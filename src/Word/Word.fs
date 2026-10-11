@@ -677,8 +677,9 @@ module API =
                 "FirstLineIndent" ==> number format.FirstLineIndent
                 "LineSpacing" ==> formatValueToJs (fun (spacing: float option) -> match spacing with Some value -> box value | None -> null) format.ParagraphLineSpacing
                 "LineSpacingRule" ==> text format.ParagraphLineSpacingRule
-                "SpaceBefore" ==> formatValueToJs (fun (pixels: float) -> box (System.Math.Round (pixels * 72.0 / 96.0 * 100.0) / 100.0)) format.ParagraphSpacingBefore
-                "SpaceAfter" ==> formatValueToJs (fun (pixels: float) -> box (System.Math.Round (pixels * 72.0 / 96.0 * 100.0) / 100.0)) format.ParagraphSpacingAfter
+                // (Points, as the model holds them and a file states them: a file's 12 pt used to be said to be 9.)
+                "SpaceBefore" ==> formatValueToJs (fun (points: float) -> box (System.Math.Round (points * 100.0) / 100.0)) format.ParagraphSpacingBefore
+                "SpaceAfter" ==> formatValueToJs (fun (points: float) -> box (System.Math.Round (points * 100.0) / 100.0)) format.ParagraphSpacingAfter
             ]
             "HasSelection" ==> editor.Doc.Selection.IsSome
             "IsCollapsed" ==> (match editor.Doc.Selection with Some selection -> selection.IsCollapsed | None -> true)
@@ -2451,10 +2452,12 @@ module API =
     /// Space before / after the selected paragraphs, in points; a negative
     /// value goes back to the style's.
     let setSpacingBefore (editor: Editor) (points: float) =
-        commitDocumentUpdate editor (Doc.setSpacingBefore (if points >= 0.0 then Some (points * 96.0 / 72.0) else None) editor.Doc)
+        // (The model holds paragraph spacing in points, as a file states it - the layout makes pixels of
+        // it. It was given pixels here, which were laid out and saved as points: 10 pt became 13.35 pt.)
+        commitDocumentUpdate editor (Doc.setSpacingBefore (if points >= 0.0 then Some points else None) editor.Doc)
 
     let setSpacingAfter (editor: Editor) (points: float) =
-        commitDocumentUpdate editor (Doc.setSpacingAfter (if points >= 0.0 then Some (points * 96.0 / 72.0) else None) editor.Doc)
+        commitDocumentUpdate editor (Doc.setSpacingAfter (if points >= 0.0 then Some points else None) editor.Doc)
 
     /// Insert a page break at the caret (Ctrl+Enter in Word).
     /// False - and nothing is done - where a page cannot break: in a text

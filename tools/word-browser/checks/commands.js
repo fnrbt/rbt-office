@@ -63,7 +63,8 @@ try {
     const lineBefore = Word.getLayoutLines(editor).filter((line) => line.BlockId === ids()[2])[0].Y;
     Word.setLineSpacing(editor, 2); Word.setSpacingBefore(editor, 18); Word.setSpacingAfter(editor, 6);
     const pkgPara = (index) => (Word.exportDocumentPackage(editor).Paragraphs ?? [])[index];
-    check('line spacing and space before / after are on the paragraph', [pkgPara(1).LineSpacing, pkgPara(1).SpacingBefore, pkgPara(1).SpacingAfter], [2, 24, 8]);
+    // (Points, as a package holds paragraph spacing - twips / 20 - and as they were given. It used to be 24 and 8: the points made pixels.)
+    check('line spacing and space before / after are on the paragraph', [pkgPara(1).LineSpacing, pkgPara(1).SpacingBefore, pkgPara(1).SpacingAfter], [2, 18, 6]);
     check('and move what follows', Word.getLayoutLines(editor).filter((line) => line.BlockId === ids()[2])[0].Y > lineBefore + 20, true);
 
     // ---- page break ----
