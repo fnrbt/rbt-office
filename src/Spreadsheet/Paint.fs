@@ -630,7 +630,7 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                 viewport.Measurer
                 |> Option.map (fun m ->
                     fun (s: string) -> m s fontPt format.FontName format.Bold format.Italic)
-            let displayText = cellDisplayText measure cell.Rect.Width format value
+            let displayText = cellDisplayTextIn model.Date1904 measure cell.Rect.Width format value
             // A data bar or an icon set that shows no values.
             let displayText =
                 match format.DataBar, format.IconSet with

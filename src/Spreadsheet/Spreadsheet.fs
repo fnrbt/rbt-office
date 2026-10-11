@@ -623,11 +623,6 @@ type Spreadsheet(container: Element) =
     /// The outline of the active cell's dynamic array, one node per pane (made when first needed).
     let spillOutlines : Element array = Array.zeroCreate 4
     let mutable workbook: Workbook option = None  // Optional workbook for table references
-    /// The workbook is in the 1904 date system (the file it was opened from says so).
-    let mutable workbookDate1904 = false
-    /// This grid's workbook is the one at work: dates are made of serials in its date system
-    /// (`Model.date1904`; several grids on a page may hold workbooks in different systems).
-    let useDateSystem () = if Rbt.Spreadsheet.Model.date1904 <> workbookDate1904 then Rbt.Spreadsheet.Model.date1904 <- workbookDate1904
     /// The XLSX file the current workbook was imported from, for ExportXlsx:
     /// what the editor does not model is carried over from it.
     let mutable xlsxSource: Rbt.Spreadsheet.XlsxBridge.XlsxSource option = None
@@ -935,7 +930,6 @@ type Spreadsheet(container: Element) =
             model <- { model with RowCount = max model.RowCount (addr.Row + 1); ColCount = max model.ColCount (addr.Col + 1) }
 
     let currentWorkbookSnapshot () =
-        useDateSystem ()
         let sheetEntries =
             [ for i in 0 .. sheets.Length - 1 do
                 let sheetId = sheetIdForIndex i
@@ -1759,7 +1753,7 @@ type Spreadsheet(container: Element) =
 
     let cellText (data: CellData option) : string =
         match data with
-        | Some data -> SpreadsheetCellText.cellDisplayText None 1.0e6 data.Format data.Value
+        | Some data -> SpreadsheetCellText.cellDisplayTextIn model.Date1904 None 1.0e6 data.Format data.Value
         | None -> ""
 
     /// The selection as tab-separated text (what the cells show).
@@ -1813,7 +1807,6 @@ type Spreadsheet(container: Element) =
     let tableEntryHook : (CellAddress * CellData option -> bool) ref = ref (fun _ -> false)
 
     let commitInput (addr: CellAddress) (text: string) (validate: bool) (undoable: bool) : bool =
-        useDateSystem ()
         giveRoomFor addr
         // (A chart sheet has no cells: nothing typed into it could be saved.)
         if sheetLocked then false else
@@ -1844,7 +1837,7 @@ type Spreadsheet(container: Element) =
             | None -> ()
             true
         else
-            let parsed = SpreadsheetInput.cellFromInput (currentYear()) oldCellData text
+            let parsed = SpreadsheetInput.cellFromInputFor model.Date1904 (currentYear()) oldCellData text
             let outcome =
                 if validate && not model.Validations.IsEmpty then
                     refreshRuleWorkbook()
@@ -1967,7 +1960,7 @@ type Spreadsheet(container: Element) =
                         | Some cell when cell.Value <> CellValue.Empty -> model <- setCell addr { cell with Value = CellValue.Empty } model
                         | _ -> ()
                     else
-                        model <- setCell addr (SpreadsheetInput.cellFromInput year existing text) model
+                        model <- setCell addr (SpreadsheetInput.cellFromInputFor model.Date1904 year existing text) model
             recalculateFormulas()
             let newCells = targets |> List.map (fun (addr, _) -> addr, getCell addr model)
             selectFromTo { Row = top; Col = left } { Row = lastRow; Col = lastCol }
@@ -2755,7 +2748,7 @@ type Spreadsheet(container: Element) =
                 match seed with
                 | Some text -> text
                 // (A cell an array spilled into holds nothing of its own: the entry starts empty, as in Excel.)
-                | None -> if Map.containsKey addr model.Spill then "" else SpreadsheetInput.editText (getCell addr model)
+                | None -> if Map.containsKey addr model.Spill then "" else SpreadsheetInput.editTextFor model.Date1904 (getCell addr model)
             editCaretAtEnd <- seed.IsSome
             validationNotice <- None
             (match noticeTimer with Some id -> clearTimeoutId id | None -> ())
@@ -3441,14 +3434,14 @@ type Spreadsheet(container: Element) =
             | Some data ->
                 match unwrapFormulaValue data.Value with
                 | CellValue.Number _ ->
-                    let text = SpreadsheetCellText.cellDisplayText None 1.0e6 data.Format data.Value
+                    let text = SpreadsheetCellText.cellDisplayTextIn model.Date1904 None 1.0e6 data.Format data.Value
                     // (Shrunk or turned text is not measured against the cell's width.)
                     if data.Format.ShrinkToFit || data.Format.TextRotation <> 0 then text
                     elif float text.Length * fontPx * 0.7 <= w - 10.0 || measureText text <= w - 9.0 then text
                     else
                         let hash = max 1.0 (measureText "#")
                         System.String('#', max 1 (int ((w - 10.0) / hash)))
-                | _ -> SpreadsheetCellText.cellDisplayText None 1.0e6 data.Format data.Value
+                | _ -> SpreadsheetCellText.cellDisplayTextIn model.Date1904 None 1.0e6 data.Format data.Value
             | None -> ""
         // A data bar or an icon set that shows no values.
         let displayText = if hideValue then "" else displayText
@@ -3720,7 +3713,6 @@ type Spreadsheet(container: Element) =
     /// did not change are left alone; nodes of cells that left the view are
     /// reused for the ones that came in.
     and render () =
-        useDateSystem ()
         if not (isDeferredSheet model) then giveRoom ()
         match contentElement, layers with
         | Some content, Some layer ->
@@ -4658,7 +4650,7 @@ type Spreadsheet(container: Element) =
             setCssText dropdown
                 ("position:absolute;left:" + string (System.Math.Round x) + "px;top:" + string (System.Math.Round y) + "px;min-width:" + string (System.Math.Round (max 60.0 width))
                  + "px;max-height:220px;overflow-y:auto;background:white;border:1px solid #8a8a8a;box-shadow:0 3px 8px rgba(0,0,0,0.25);font-family:Arial, sans-serif;font-size:12px;z-index:1000")
-            let current = SpreadsheetCellText.cellDisplayText None 1.0e6 defaultFormat (getCellValue addr model)
+            let current = SpreadsheetCellText.cellDisplayTextIn model.Date1904 None 1.0e6 defaultFormat (getCellValue addr model)
             for value in values do
                 let item = createElement "div"
                 setClassName item "validation-list-item"
@@ -6489,7 +6481,7 @@ type Spreadsheet(container: Element) =
             | None -> sheets.Length
         let id = Rbt.Spreadsheet.Workbook.freshSheetId usedSheetIds.Contains wb
         usedSheetIds.Add id |> ignore
-        let sheet : Rbt.Spreadsheet.Workbook.Sheet = { Id = id; Name = name; Model = createEmpty 1000 26; Visible = true }
+        let sheet : Rbt.Spreadsheet.Workbook.Sheet = { Id = id; Name = name; Model = { createEmpty 1000 26 with Date1904 = model.Date1904 }; Visible = true }
         let activeBefore = wb.ActiveSheet
         // (Once undone, redo puts back the sheet as the undo took it away.)
         let removed : Rbt.Spreadsheet.Workbook.SheetRemoval option ref = ref None
@@ -6715,9 +6707,6 @@ type Spreadsheet(container: Element) =
     member _.InstallWorkbook(newSheets: SpreadsheetModel array, names: string array, activeIndex: int, context: Workbook option) =
         if newSheets.Length = 0 then () else
         importedPackage <- None
-        // (A workbook that is not a file's is in the 1900 date system; InstallImportedWorkbook says otherwise.)
-        workbookDate1904 <- false
-        useDateSystem ()
         invalidateCalcEngine()
         invalidCircles.Clear()
         // The file the previous workbook came from stays the source as long as
@@ -6851,10 +6840,6 @@ type Spreadsheet(container: Element) =
         this.InstallWorkbook(models, names, active, Some imported.Context)
         if models.Length > 0 then
             xlsxSource <- Some imported.Source
-            if workbookDate1904 <> imported.Date1904 then
-                workbookDate1904 <- imported.Date1904
-                useDateSystem ()
-                render ()
         // (What kind of sheet is on display is the file's to say.)
         let wasLocked = sheetLocked
         refreshSheetLock ()
@@ -7187,7 +7172,7 @@ type Spreadsheet(container: Element) =
             let measure =
                 viewport.Measurer
                 |> Option.map (fun m -> fun (s: string) -> m s fontPt format.FontName format.Bold format.Italic)
-            let displayText = SpreadsheetCellText.cellDisplayText measure rect.Width format value
+            let displayText = SpreadsheetCellText.cellDisplayTextIn model.Date1904 measure rect.Width format value
             let valueRepr =
                 match value with
                 | CellValue.Empty -> ""
@@ -7339,7 +7324,6 @@ type Spreadsheet(container: Element) =
     ///          (for its formula cell and for the cells it filled; see GetSpillRange) }.
     /// Throws when row / col are not whole numbers inside the sheet.
     member _.GetCell(row: obj, col: obj) : obj =
-        useDateSystem ()
         let addr = { Row = Host.rowArg "GetCell" model row; Col = Host.colArg "GetCell" model col }
         Host.cellToObj model addr (cellText (getCell addr model))
 
@@ -8590,7 +8574,7 @@ type Spreadsheet(container: Element) =
             let changed =
                 match getCell addr model with
                 | Some data when inRange && not (Map.containsKey addr model.Spill) ->
-                    SheetOps.replaceInCell search.Finder search.Request.Options replacement (currentYear()) data
+                    SheetOps.replaceInCellIn model.Date1904 search.Finder search.Request.Options replacement (currentYear()) data
                 | _ -> None
             let replaced =
                 match changed with
@@ -8906,7 +8890,7 @@ type Spreadsheet(container: Element) =
     member _.SetValidation(range: obj, rule: obj) : int =
         let name = "SetValidation"
         let ranges = SheetOps.parseRanges name (Host.stringArg name "the range" (requiredArg name "the range" range))
-        let validation = SheetOps.validationOfDescription name (Host.validationOfObj name (requiredArg name "the rule" rule))
+        let validation = SheetOps.validationOfDescriptionIn model.Date1904 name (Host.validationOfObj name (requiredArg name "the rule" rule))
         let id = (max lastValidationId (nextValidationId model - 1)) + 1
         lastValidationId <- id
         if changeValidations "Data validation" (setValidationRangesWithId id ranges validation) then render()
@@ -9351,8 +9335,7 @@ type Spreadsheet(container: Element) =
     /// the cells are the file's; number formats, the date functions and typed
     /// dates work in this system, and a save keeps it.
     member _.GetDateSystem() : int =
-        useDateSystem ()
-        if workbookDate1904 then 1904 else 1900
+        if model.Date1904 then 1904 else 1900
 
     /// How the workbook calculates circular references: { enabled,
     /// maxIterations, maxChange } - Excel's "Enable iterative calculation"
@@ -9534,7 +9517,7 @@ type Spreadsheet(container: Element) =
     /// into - the value it shows is not its own (see GetGhostFormula).
     member _.GetCurrentCellFormula(): string =
         let active = activeCellAddress()
-        if Map.containsKey active model.Spill then "" else SpreadsheetInput.editText (getCell active model)
+        if Map.containsKey active model.Spill then "" else SpreadsheetInput.editTextFor model.Date1904 (getCell active model)
 
     /// For a cell a dynamic array spilled into: the formula of the array's
     /// anchor cell, which Excel's formula bar shows greyed for such a cell
@@ -9542,7 +9525,7 @@ type Spreadsheet(container: Element) =
     member _.GetGhostFormula(): string =
         let active = activeCellAddress()
         match Map.tryFind active model.Spill with
-        | Some anchor -> SpreadsheetInput.editText (getCell anchor model)
+        | Some anchor -> SpreadsheetInput.editTextFor model.Date1904 (getCell anchor model)
         | None -> null
 
     /// Set the value of the active cell from a formula bar. The text is read
@@ -9683,7 +9666,7 @@ type Spreadsheet(container: Element) =
     /// AutoFilter's range and for criteria that are not understood.
     member _.SetFilter(column: obj, criteria: obj) : unit =
         let col = Host.columnArg "SetFilter" "column" model (requiredArg "SetFilter" "column" column)
-        let wanted = SheetOps.filterOfDescription "SetFilter" (Host.filterOfObj "SetFilter" (requiredArg "SetFilter" "criteria" criteria))
+        let wanted = SheetOps.filterOfDescriptionIn model.Date1904 "SetFilter" (Host.filterOfObj "SetFilter" (requiredArg "SetFilter" "criteria" criteria))
         match model.AutoFilter with
         | Some filter when not filter.Implicit && (col < filter.Range.From.Col || col > filter.Range.To.Col) ->
             Host.hostFail "SetFilter" (sprintf "column %s is outside the filter range %s" (columnToLetter col) (SheetOps.rangeText filter.Range))

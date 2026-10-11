@@ -1220,6 +1220,14 @@ type SpreadsheetModel = {
     /// regardless of any CF overlay).
     CfBoldCells: Set<CellAddress>
 
+    /// The sheet's workbook is in the 1904 date system (a file's
+    /// `workbookPr date1904`): serial 0 is 1904-01-01. The serials are kept
+    /// as the file has them; number formats, the date functions and typed
+    /// dates read this. Every sheet of a workbook says the same
+    /// (`Workbook.date1904` / `Workbook.withDate1904`), and a sheet looked
+    /// at alone still knows it. There is no system "at work" beside this.
+    Date1904: bool
+
     /// Whether the sheet shows the light grey screen gridlines. From the
     /// sheetView `showGridLines` attribute (default true). Many polished
     /// workbooks turn this off (`showGridLines="0"`) and rely on explicit
@@ -1389,6 +1397,7 @@ let createEmpty rowCount colCount = {
     PageSetup = defaultPageSetup
     Tables = []
     CfBoldCells = Set.empty
+    Date1904 = false
     ShowGridLines = true
     ShowHeaders = true
     ShowFormulas = false
@@ -1771,20 +1780,17 @@ let roundHalfAway (x: float) : float =
 /// not shift across DST changes under Fable, where other DateTimes are local.
 let excelEpoch = DateTime(1899, 12, 30, 0, 0, 0, DateTimeKind.Utc)
 
-/// The date system of the workbook at work: true for the 1904 system, where
-/// serial 0 is 1904-01-01 (a file's `workbookPr date1904`), false for the
-/// 1900 system. Serials are kept as the workbook has them; what turns a
-/// serial into a date or a date into a serial - number formats, the date
-/// functions, typed dates - reads this. It is the system of the workbook
-/// that was last imported (`XlsxBridge.Import`) or last at work in a grid
-/// (a grid sets it before it draws, recalculates or takes an entry).
-let mutable date1904 = false
+/// The days from a serial of a workbook to the 1900 system's: 1462 for a
+/// workbook in the 1904 date system, where serial 0 is 1904-01-01 (a file's
+/// `workbookPr date1904`), 0 otherwise. Serials are kept as the workbook has
+/// them; what turns a serial into a date or a date into a serial - number
+/// formats, the date functions, typed dates - is told the workbook's system
+/// (`Workbook.Date1904`). There is no system "at work": two workbooks on one
+/// page each have their own.
+let dateSystemDays (date1904: bool) : float = if date1904 then 1462.0 else 0.0
 
-/// The days from a serial of the workbook at work to the 1900 system's.
-let dateSystemDays () : float = if date1904 then 1462.0 else 0.0
-
-/// Format a number according to format code
-let formatNumber (format: string option) (value: float): string =
+/// Format a number according to format code, in a workbook's date system
+let formatNumberIn (date1904: bool) (format: string option) (value: float): string =
     match format with
     | Some "currency" ->
         // Currency format: $1,234.56
@@ -1794,7 +1800,7 @@ let formatNumber (format: string option) (value: float): string =
         sprintf "%s%%" (NumberText.numberToString "N2" (value * 100.0))
     | Some "date" ->
         try
-            let date = excelEpoch.AddDays(value + dateSystemDays ())
+            let date = excelEpoch.AddDays(value + dateSystemDays date1904)
             sprintf "%02d/%02d/%04d" date.Month date.Day date.Year
         with
         | _ -> NumberText.numberToString "F2" value
@@ -1822,6 +1828,9 @@ let rec displayValue (value: CellValue): string =
 /// leading "="; imported cells store the bare expression.
 let formulaText (text: string) : string =
     if text.StartsWith "=" then text else "=" + text
+
+/// Format a number according to format code (the 1900 date system)
+let formatNumber (format: string option) (value: float): string = formatNumberIn false format value
 
 /// Display value with the legacy named formats applied. Real Excel format
 /// codes need CellText.cellDisplayText, which compiles after this module.
@@ -2078,8 +2087,9 @@ type FormulaHooks = {
     Evaluate: string -> int -> int -> SpreadsheetModel -> CellAddress -> CellValue
     /// Re-point references after a sheet was renamed or deleted, or a table renamed.
     Sheets: SheetRewrite -> string -> string
-    /// The text a cell shows for a value under a format (CellText).
-    Display: CellFormat -> CellValue -> string
+    /// The text a cell shows for a value under a format (CellText), in the
+    /// 1904 date system or not.
+    Display: bool -> CellFormat -> CellValue -> string
 }
 
 let mutable private formulaHooks : FormulaHooks option = None
@@ -2156,13 +2166,20 @@ let evaluateFormulaAt (formula: string) (rows: int) (cols: int) (model: Spreadsh
 
 /// The text a cell shows, with its number format applied: what a filter's
 /// list of values is made of and matched against.
-let filterDisplayText (cell: CellData option) : string =
+/// (`date1904`: the date system of the cell's workbook.)
+let filterDisplayTextIn (date1904: bool) (cell: CellData option) : string =
     match cell with
     | None -> ""
     | Some data ->
         match currentFormulaHooks () with
-        | Some hooks -> hooks.Display data.Format data.Value
-        | None -> displayValueWithFormat (unwrapFormulaValue data.Value) data.Format
+        | Some hooks -> hooks.Display date1904 data.Format data.Value
+        | None ->
+            match unwrapFormulaValue data.Value with
+            | Number n -> formatNumberIn date1904 data.Format.NumberFormat n
+            | other -> displayValue other
+
+/// `filterDisplayTextIn` in the 1900 date system.
+let filterDisplayText (cell: CellData option) : string = filterDisplayTextIn false cell
 
 type private WildToken =
     | WildChar of char
@@ -2236,7 +2253,7 @@ let private filterBlank (cell: CellData option) : bool =
         | _ -> false
 
 /// The test one comparison of a custom filter makes of a cell.
-let private filterConditionTest (op: CompareOperator) (operand: string) : CellData option -> bool =
+let private filterConditionTest (date1904: bool) (op: CompareOperator) (operand: string) : CellData option -> bool =
     let number = tryParseNumber operand
     fun cell ->
         let value = match cell with Some data -> unwrapFormulaValue data.Value | None -> Empty
@@ -2247,7 +2264,7 @@ let private filterConditionTest (op: CompareOperator) (operand: string) : CellDa
                 else
                     match number, value with
                     | Some n, Number x when x = n -> true
-                    | _ -> not (filterBlank cell) && wildcardMatch operand (filterDisplayText cell)
+                    | _ -> not (filterBlank cell) && wildcardMatch operand (filterDisplayTextIn date1904 cell)
             if op = OpEqual then equal else not equal
         | _ ->
             let holds (order: int) =
@@ -2279,12 +2296,12 @@ let private filterCriteriaTest (model: SpreadsheetModel) (col: int) (firstRow: i
         fun cell ->
             if filterBlank cell then blanks
             else
-                wanted.Contains ((filterDisplayText cell).ToUpperInvariant())
+                wanted.Contains ((filterDisplayTextIn model.Date1904 cell).ToUpperInvariant())
                 || (match cell with
                     | Some data -> wanted.Contains ((displayValue data.Value).ToUpperInvariant())
                     | None -> false)
     | FilterCustom (conditions, matchAll) ->
-        let tests = conditions |> List.map (fun (op, operand) -> filterConditionTest op operand)
+        let tests = conditions |> List.map (fun (op, operand) -> filterConditionTest model.Date1904 op operand)
         if tests.IsEmpty then (fun _ -> true)
         elif matchAll then (fun cell -> tests |> List.forall (fun test -> test cell))
         else (fun cell -> tests |> List.exists (fun test -> test cell))
@@ -2465,7 +2482,7 @@ let filterColumnValues (col: int) (model: SpreadsheetModel) : string list * bool
             let cell = Map.tryFind { Row = row; Col = col } model.Cells
             if filterBlank cell then blanks <- true
             else
-                let text = filterDisplayText cell
+                let text = filterDisplayTextIn model.Date1904 cell
                 if seen.Add (text.ToUpperInvariant()) then
                     found.Add ((match cell with Some data -> unwrapFormulaValue data.Value | None -> Empty), text)
         let rank (value: CellValue) = match value with Number _ -> 0 | String _ -> 1 | Boolean _ -> 2 | _ -> 3
@@ -4370,7 +4387,7 @@ let exportCSV (model: SpreadsheetModel): string =
                     let addr = { Row = row; Col = col }
                     match getCell addr model with
                     | Some cellData ->
-                        let valueText = displayValueWithFormat cellData.Value cellData.Format
+                        let valueText = (match cellData.Value with Number n -> formatNumberIn model.Date1904 cellData.Format.NumberFormat n | other -> displayValue other)
                         // Escape commas and quotes
                         if valueText.Contains(",") || valueText.Contains("\"") || valueText.Contains("\n") || valueText.Contains("\r") then
                             sprintf "\"%s\"" (valueText.Replace("\"", "\"\""))

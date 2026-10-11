@@ -529,7 +529,7 @@ let private isDateOrTimeFormat (code: string) =
 /// Does this number format show its value as a date or a time?
 let isDateTimeNumberFormat (code: string) : bool = isDateOrTimeFormat code
 
-let private excelSerialToDate (serial: float) : System.DateTime =
+let private excelSerialToDate (date1904: bool) (serial: float) : System.DateTime =
     // Excel's 1900 calendar: serial 1 is 1900-01-01 but Excel also treats
     // 1900 as a leap year (it isn't). For serials >= 60 we subtract one to
     // line up with the real Gregorian calendar.
@@ -830,10 +830,10 @@ let private formatElapsedTime (code: string) (serial: float) : string =
 /// format code. Returns None when the serial is outside DateTime's
 /// representable range; caller should render `#####` overflow in that
 /// case (Excel's behavior for serials it can't convert).
-let private formatExcelDateOpt (code: string) (serial: float) : string option =
+let private formatExcelDateOpt (date1904: bool) (code: string) (serial: float) : string option =
     if hasElapsedBracket code then Some (formatElapsedTime code serial) else
     let dt =
-        try Some (excelSerialToDate serial)
+        try Some (excelSerialToDate date1904 serial)
         with _ -> None
     let inv = System.Globalization.CultureInfo.InvariantCulture
     match dt with
@@ -1501,22 +1501,26 @@ let private fitOrOverflow
         else System.String('#', hashChars)
 
 /// Text for a number under an Excel format code, with no cell-width fitting.
-/// This is what TEXT() returns.
-let formatNumberWithCode (code: string) (n: float) : string =
+/// This is what TEXT() returns. `date1904`: the workbook's date system.
+let formatNumberWithCodeIn (date1904: bool) (code: string) (n: float) : string =
     let inv = System.Globalization.CultureInfo.InvariantCulture
     if System.String.IsNullOrWhiteSpace code
        || code.Equals("general", System.StringComparison.OrdinalIgnoreCase) then
         generalString inv n
     elif isDateOrTimeFormat code || hasElapsedBracket code then
-        formatExcelDateOpt code n |> Option.defaultWith (fun () -> generalString inv n)
+        formatExcelDateOpt date1904 code n |> Option.defaultWith (fun () -> generalString inv n)
     else
         fst (formatExcelNumber code n)
 
-/// Per-cell display text logic. Public so the VBA-style API surface
+/// `formatNumberWithCodeIn` in the 1900 date system.
+let formatNumberWithCode (code: string) (n: float) : string = formatNumberWithCodeIn false code n
+
+/// Per-cell display text logic, in a workbook's date system (`date1904`). Public so the VBA-style API surface
 /// (Spreadsheet GetVbaLayoutCells) can return the same text Excel's
 /// `cell.Text` would produce — including `#####` overflow, format-applied
 /// numbers / dates, error markers.
-let cellDisplayText
+let cellDisplayTextIn
+    (date1904: bool)
     (measure: (string -> float) option)
     (cellWidth: float) (format: CellFormat) (value: CellValue): string =
     let fontPt = format.FontSize |> Option.map float |> Option.defaultValue 11.0
@@ -1534,14 +1538,14 @@ let cellDisplayText
             // commands. Keep these on the original Model.formatNumber path.
             // Matched before the date test, which would read "date" and
             // "currency" as Excel date tokens.
-            fitOrOverflow measure cellWidth format.FontName fontPt (formatNumber format.NumberFormat n)
+            fitOrOverflow measure cellWidth format.FontName fontPt (formatNumberIn date1904 format.NumberFormat n)
         | Some code when isDateOrTimeFormat code || hasElapsedBracket code ->
             // Out-of-range serials (e.g. testdateoverflow's 1E+20) can't be
             // formatted as a date; Excel renders ##### overflow for those
             // rather than falling through to scientific notation. Treat
             // the None branch as "doesn't fit" by passing an oversized
             // text that fitOrOverflow will hash-render.
-            match formatExcelDateOpt code n with
+            match formatExcelDateOpt date1904 code n with
             | Some s -> fitOrOverflow measure cellWidth format.FontName fontPt s
             | None -> fitOrOverflow measure cellWidth format.FontName fontPt (System.String('M', 1000))
         | Some code when System.String.IsNullOrWhiteSpace code ||
@@ -1558,3 +1562,9 @@ let cellDisplayText
     | Boolean b -> if b then "TRUE" else "FALSE"
     | Error e -> sprintf "#%s" e
     | Formula _ -> ""
+
+/// `cellDisplayTextIn` in the 1900 date system.
+let cellDisplayText
+    (measure: (string -> float) option)
+    (cellWidth: float) (format: CellFormat) (value: CellValue): string =
+    cellDisplayTextIn false measure cellWidth format value

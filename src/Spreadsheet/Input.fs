@@ -190,13 +190,17 @@ let private daysFromCivil (year: int) (month: int) (day: int) : int =
     let dayOfEra = yearOfEra * 365 + yearOfEra / 4 - yearOfEra / 100 + dayOfYear
     era * 146097 + dayOfEra - 719468
 
-/// The Excel serial of a date (days since 1899-12-30, the engine's epoch).
-let dateSerial (year: int) (month: int) (day: int) : float =
-    float (daysFromCivil year month day - daysFromCivil 1899 12 30) - dateSystemDays ()
+/// The serial of a date in a workbook's date system (days since 1899-12-30,
+/// or since 1904-01-01 in the 1904 system).
+let dateSerialIn (date1904: bool) (year: int) (month: int) (day: int) : float =
+    float (daysFromCivil year month day - daysFromCivil 1899 12 30) - dateSystemDays date1904
 
-let private trySerial (year: int) (month: int) (day: int) : float option =
+/// The Excel serial of a date in the 1900 date system.
+let dateSerial (year: int) (month: int) (day: int) : float = dateSerialIn false year month day
+
+let private trySerial (date1904: bool) (year: int) (month: int) (day: int) : float option =
     if year < (if date1904 then 1904 else 1900) || year > 9999 || month < 1 || month > 12 || day < 1 || day > daysInMonth year month then None
-    else Some (dateSerial year month day)
+    else Some (dateSerialIn date1904 year month day)
 
 /// A year as typed: four digits as they are, two digits by Excel's window
 /// (00-29 → 2000s, 30-99 → 1900s).
@@ -210,7 +214,7 @@ let private smallInt (text: string) : int option =
     if allDigits text && text.Length <= 2 then Some (int text) else None
 
 /// A date: (serial, number format).
-let private tryDate (currentYear: int) (input: string) : (float * string) option =
+let private tryDate (date1904: bool) (currentYear: int) (input: string) : (float * string) option =
     let text = input.Trim()
     if text.Length < 3 || text.Length > 40 then None
     else
@@ -231,11 +235,11 @@ let private tryDate (currentYear: int) (input: string) : (float * string) option
                         if first.Length = 4 then
                             // ISO: year first.
                             match smallInt second, smallInt third with
-                            | Some month, Some day -> trySerial (int first) month day |> Option.map (fun serial -> serial, "yyyy-mm-dd")
+                            | Some month, Some day -> trySerial date1904 (int first) month day |> Option.map (fun serial -> serial, "yyyy-mm-dd")
                             | _ -> None
                         else
                             match smallInt first, smallInt second, yearOf third with
-                            | Some month, Some day, Some year -> trySerial year month day |> Option.map (fun serial -> serial, "m/d/yyyy")
+                            | Some month, Some day, Some year -> trySerial date1904 year month day |> Option.map (fun serial -> serial, "m/d/yyyy")
                             | _ -> None
                     | [| first; second |] when allDigits first && allDigits second ->
                         (match smallInt first with
@@ -243,14 +247,14 @@ let private tryDate (currentYear: int) (input: string) : (float * string) option
                          | Some month ->
                             if second.Length = 4 then
                                 // 3/2024: the first of the month.
-                                trySerial (int second) month 1 |> Option.map (fun serial -> serial, "mmm-yy")
+                                trySerial date1904 (int second) month 1 |> Option.map (fun serial -> serial, "mmm-yy")
                             else
                                 match smallInt second with
                                 | Some day when month >= 1 && month <= 12 && day >= 1 && day <= daysInMonth currentYear month ->
-                                    trySerial currentYear month day |> Option.map (fun serial -> serial, "d-mmm")
+                                    trySerial date1904 currentYear month day |> Option.map (fun serial -> serial, "d-mmm")
                                 // 3/45 is March 1945, as in Excel.
                                 | Some year when month >= 1 && month <= 12 && year > 31 ->
-                                    trySerial (1900 + year) month 1 |> Option.map (fun serial -> serial, "mmm-yy")
+                                    trySerial date1904 (1900 + year) month 1 |> Option.map (fun serial -> serial, "mmm-yy")
                                 | _ -> None)
                     | _ -> None
         else
@@ -262,23 +266,23 @@ let private tryDate (currentYear: int) (input: string) : (float * string) option
             | 2 ->
                 (match day 0, month 1, month 0, day 1 with
                  // 4-Mar
-                 | Some d, Some m, _, _ -> trySerial currentYear m d |> Option.map (fun serial -> serial, "d-mmm")
+                 | Some d, Some m, _, _ -> trySerial date1904 currentYear m d |> Option.map (fun serial -> serial, "d-mmm")
                  // Mar 4 — or Mar 2024 / Mar-45 when the number cannot be a day.
                  | _, _, Some m, Some d when d >= 1 && d <= daysInMonth currentYear m ->
-                    trySerial currentYear m d |> Option.map (fun serial -> serial, "d-mmm")
+                    trySerial date1904 currentYear m d |> Option.map (fun serial -> serial, "d-mmm")
                  | _, _, Some m, _ ->
                     (match year 1 with
-                     | Some y -> trySerial y m 1 |> Option.map (fun serial -> serial, "mmm-yy")
+                     | Some y -> trySerial date1904 y m 1 |> Option.map (fun serial -> serial, "mmm-yy")
                      | None -> None)
                  | _ -> None)
             | 3 ->
                 (match day 0, month 1, year 2 with
                  // 4-Mar-2024, 4 March 24
-                 | Some d, Some m, Some y -> trySerial y m d |> Option.map (fun serial -> serial, "d-mmm-yy")
+                 | Some d, Some m, Some y -> trySerial date1904 y m d |> Option.map (fun serial -> serial, "d-mmm-yy")
                  | _ ->
                     // March 4, 2024
                     match month 0, day 1, year 2 with
-                    | Some m, Some d, Some y -> trySerial y m d |> Option.map (fun serial -> serial, "d-mmm-yy")
+                    | Some m, Some d, Some y -> trySerial date1904 y m d |> Option.map (fun serial -> serial, "d-mmm-yy")
                     | _ -> None)
             | _ -> None
 
@@ -332,13 +336,13 @@ let private tryTime (input: string) : (float * string) option =
                 Some (fraction, format)
 
 /// A date, a time, or a date followed by a time.
-let private tryDateTime (currentYear: int) (input: string) : ParsedInput option =
+let private tryDateTime (date1904: bool) (currentYear: int) (input: string) : ParsedInput option =
     let text = input.Trim()
     let colon = text.IndexOf ':'
     let upper = text.ToUpperInvariant()
     let endsWithMeridiem = upper.EndsWith " AM" || upper.EndsWith " PM"
     if colon < 0 && not endsWithMeridiem then
-        tryDate currentYear text |> Option.map (fun (serial, format) -> { Value = Number serial; NumberFormat = Some format })
+        tryDate date1904 currentYear text |> Option.map (fun (serial, format) -> { Value = Number serial; NumberFormat = Some format })
     else
         // The time starts at the last space before the first colon (or
         // before the AM/PM marker); what precedes it, if anything, is a date.
@@ -350,7 +354,7 @@ let private tryDateTime (currentYear: int) (input: string) : ParsedInput option 
             match tryTime text with
             | Some (fraction, format) -> Some { Value = Number fraction; NumberFormat = Some format }
             | None ->
-                match tryDate currentYear (text.Substring(0, split)), tryTime (text.Substring(split + 1)) with
+                match tryDate date1904 currentYear (text.Substring(0, split)), tryTime (text.Substring(split + 1)) with
                 | Some (serial, _), Some (fraction, timeFormat) when fraction < 1.0 ->
                     Some { Value = Number (serial + fraction); NumberFormat = Some ("m/d/yyyy " + timeFormat) }
                 | _ -> None
@@ -358,8 +362,9 @@ let private tryDateTime (currentYear: int) (input: string) : ParsedInput option 
 let private errorLiterals = [ "#DIV/0!"; "#VALUE!"; "#REF!"; "#NAME?"; "#NUM!"; "#N/A"; "#NULL!"; "#SPILL!"; "#CALC!" ]
 
 /// Parse what was typed into a cell. `currentYear` completes a date typed
-/// without a year (`4-Mar`).
-let parseInputIn (currentYear: int) (text: string) : ParsedInput =
+/// without a year (`4-Mar`); `date1904` is the workbook's date system, in
+/// which a typed date becomes a serial.
+let parseInputFor (date1904: bool) (currentYear: int) (text: string) : ParsedInput =
     if isNull text then plain Empty
     else
         let trimmed = text.Trim()
@@ -379,9 +384,12 @@ let parseInputIn (currentYear: int) (text: string) : ParsedInput =
                     match tryFraction trimmed with
                     | Some parsed -> parsed
                     | None ->
-                        match tryDateTime currentYear trimmed with
+                        match tryDateTime date1904 currentYear trimmed with
                         | Some parsed -> parsed
                         | None -> plain (String text)
+
+/// `parseInputFor` in the 1900 date system.
+let parseInputIn (currentYear: int) (text: string) : ParsedInput = parseInputFor false currentYear text
 
 /// Parse what was typed into a cell, as of today.
 let parseInput (text: string) : ParsedInput =
@@ -391,8 +399,8 @@ let parseInput (text: string) : ParsedInput =
 /// `existing`: the parsed value, the existing formatting and comment, and —
 /// when the cell has no number format of its own — the format the entry
 /// implies (typing 12% into a General cell makes it a percentage cell).
-let cellFromInput (currentYear: int) (existing: CellData option) (text: string) : CellData =
-    let parsed = parseInputIn currentYear text
+let cellFromInputFor (date1904: bool) (currentYear: int) (existing: CellData option) (text: string) : CellData =
+    let parsed = parseInputFor date1904 currentYear text
     let format = existing |> Option.map (fun cell -> cell.Format) |> Option.defaultValue defaultFormat
     let isGeneral =
         match format.NumberFormat with
@@ -404,6 +412,10 @@ let cellFromInput (currentYear: int) (existing: CellData option) (text: string) 
         | _ -> format
     { Value = parsed.Value; Format = format; Comment = existing |> Option.bind (fun cell -> cell.Comment) }
 
+/// `cellFromInputFor` in the 1900 date system.
+let cellFromInput (currentYear: int) (existing: CellData option) (text: string) : CellData =
+    cellFromInputFor false currentYear existing text
+
 let private isDateTimeCode (code: string) = CellText.isDateTimeNumberFormat code
 
 let private numberText (value: float) : string =
@@ -414,7 +426,8 @@ let private numberText (value: float) : string =
 /// cell. A formula shows its text, a date its date rather than the serial, a
 /// percentage its percent figure, and text that would otherwise be read as
 /// something else gets the apostrophe.
-let editText (cell: CellData option) : string =
+/// (`date1904`: the workbook's date system.)
+let editTextFor (date1904: bool) (cell: CellData option) : string =
     match cell with
     | None -> ""
     | Some data ->
@@ -428,9 +441,9 @@ let editText (cell: CellData option) : string =
              | Some code when isDateTimeCode code && n >= 0.0 ->
                 let whole = Math.Floor n
                 let fraction = n - whole
-                if whole = 0.0 && fraction > 0.0 then CellText.formatNumberWithCode "h:mm:ss" n
-                elif fraction < 1e-9 then CellText.formatNumberWithCode "m/d/yyyy" n
-                else CellText.formatNumberWithCode "m/d/yyyy h:mm:ss" n
+                if whole = 0.0 && fraction > 0.0 then CellText.formatNumberWithCodeIn date1904 "h:mm:ss" n
+                elif fraction < 1e-9 then CellText.formatNumberWithCodeIn date1904 "m/d/yyyy" n
+                else CellText.formatNumberWithCodeIn date1904 "m/d/yyyy h:mm:ss" n
              | Some code when code.IndexOf '%' >= 0 && code.IndexOf '"' < 0 ->
                 numberText (Math.Round(n * 100.0, 10)) + "%"
              | _ -> numberText n)
@@ -440,6 +453,9 @@ let editText (cell: CellData option) : string =
             match (parseInputIn 2000 text).Value with
             | String same when same = text -> text
             | _ -> "'" + text
+
+/// `editTextFor` in the 1900 date system.
+let editText (cell: CellData option) : string = editTextFor false cell
 
 // ---------------------------------------------------------------------------
 // Autofill: continuing a block of cells along a row or column, the way

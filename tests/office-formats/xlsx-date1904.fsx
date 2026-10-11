@@ -38,7 +38,7 @@ for name in [ "pandas-times_1904.xlsx"; "poi-47504.xlsx"; "poi-47804.xlsx"; "poi
     let before = partsOf bytes
     let book = XlsxReader.loadBytesNative bytes |> Option.get
     let opened = Bridge.Import.importWorkbook book
-    ok (name + ": the file is in the 1904 system, and the import says so") (says1904 before && book.Date1904 && opened.Date1904 && M.date1904) (sprintf "%b %b %b" book.Date1904 opened.Date1904 M.date1904)
+    ok (name + ": the file is in the 1904 system, and the import says so") (says1904 before && book.Date1904 && opened.Date1904 && Rbt.Spreadsheet.Workbook.date1904 opened.Context && opened.Sheets |> Array.forall (fun sheet -> sheet.Model.Date1904 && (M.resolveSheet sheet.Model).Date1904)) (sprintf "%b %b %A" book.Date1904 opened.Date1904 (opened.Sheets |> Array.map (fun sheet -> sheet.Model.Date1904)))
     // The serials are the file's: every number of the first sheet is the <v> of its cell.
     let sheetPath = book.Sheets.[0].Extras.SourcePart |> Option.get |> fst
     let sheetXml = text before.[sheetPath]
@@ -66,7 +66,7 @@ for name in [ "pandas-times_1904.xlsx"; "poi-47504.xlsx"; "poi-47804.xlsx"; "poi
         (sheetParts |> List.forall (fun path -> Map.tryFind path same = Some before.[path])) (sheetParts |> List.filter (fun path -> Map.tryFind path same <> Some before.[path]) |> String.concat ", ")
     // A date typed into a cell: the sheet's part with that cell in it, the serial in the workbook's system.
     let at : M.CellAddress = { Row = 500; Col = 3 }
-    let typed = Rbt.Spreadsheet.Input.parseInputIn 2024 "2018-12-28"
+    let typed = Rbt.Spreadsheet.Input.parseInputFor model.Date1904 2024 "2018-12-28"
     let edited = export (fun model -> M.setCell at { Value = typed.Value; Format = { M.defaultFormat with NumberFormat = typed.NumberFormat }; Comment = None } (M.resolveSheet model))
     let now = text edited.[sheetPath]
     ok (name + ": a typed date is the 1904 serial") (typed.Value = M.CellValue.Number 42000.0 && Text.RegularExpressions.Regex.IsMatch(now, "<c r=\"D501\"[^>]*><v>42000</v></c>")) (sprintf "%A" typed.Value)
@@ -76,15 +76,25 @@ for name in [ "pandas-times_1904.xlsx"; "poi-47504.xlsx"; "poi-47804.xlsx"; "poi
     // Read again: still 1904, the same serials, and the typed date reads as that date.
     let again = XlsxReader.loadBytesNative (XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut { Sheets = [||]; Names = [||]; Visible = [||]; ActiveSheetIndex = 0; NameInfo = Map.empty; DefinedNames = Map.empty; Source = None; Macros = None })) 
     ok (name + ": a workbook that is not a file's is in the 1900 system") (again |> Option.forall (fun book -> not book.Date1904)) ""
-    M.date1904 <- false
-    let reopened = Bridge.Import.importWorkbook (XlsxReader.loadBytesNative (File.ReadAllBytes(Path.Combine(root, "test-documents-excel", name))) |> Option.get)
-    ok (name + ": opening it sets the system again") (reopened.Date1904 && M.date1904) ""
-    ok (name + ": the typed serial shown as a date") (Rbt.Spreadsheet.CellText.formatNumberWithCode "yyyy-mm-dd" 42000.0 = "2018-12-28") (Rbt.Spreadsheet.CellText.formatNumberWithCode "yyyy-mm-dd" 42000.0)
+    // A workbook in the 1900 system opened in between leaves this one as it is: the system is the workbook's own.
+    let between = Bridge.Import.importWorkbook (XlsxReader.loadBytesNative (File.ReadAllBytes(Path.Combine(root, "real-world/milk-street-office.xlsx"))) |> Option.get)
+    let shown (m: M.SpreadsheetModel) = Rbt.Spreadsheet.CellText.cellDisplayTextIn m.Date1904 None 1.0e6 { M.defaultFormat with NumberFormat = Some "yyyy-mm-dd" } (M.CellValue.Number 42000.0)
+    ok (name + ": the typed serial shown as a date, a 1900 workbook opened in between") (shown model = "2018-12-28" && shown (M.resolveSheet between.Sheets.[0].Model) = "2014-12-27") (shown model + " " + shown (M.resolveSheet between.Sheets.[0].Model))
+    // The lazily opened workbook says the same of every sheet, converted or not.
+    let lazily = Bridge.Import.importWorkbookLazy (fun index -> index = 0) (XlsxReader.loadBytesNative bytes |> Option.get)
+    ok (name + ": opened lazily: every sheet says 1904") (lazily.Sheets |> Array.forall (fun sheet -> sheet.Model.Date1904 && (M.resolveSheet sheet.Model).Date1904)) ""
 
-// A workbook in the 1900 system after one in the 1904 system: the import sets the system.
+// A workbook in the 1900 system after one in the 1904 system.
 do
     let opened = Bridge.Import.importWorkbook (XlsxReader.loadBytesNative (File.ReadAllBytes(Path.Combine(root, "real-world/milk-street-office.xlsx"))) |> Option.get)
-    ok "a 1900 workbook opened afterwards: the system is 1900 again" (not opened.Date1904 && not M.date1904) ""
+    ok "a 1900 workbook opened afterwards is in the 1900 system" (not opened.Date1904 && opened.Sheets |> Array.forall (fun sheet -> not sheet.Model.Date1904)) ""
+
+// A workbook made without a file, its sheets in the 1904 system: the save says date1904, and it reads back so.
+do
+    let sheet = { M.createEmpty 10 5 with Date1904 = true } |> M.setCell { Row = 0; Col = 0 } { Value = M.CellValue.Number 42000.0; Format = { M.defaultFormat with NumberFormat = Some "yyyy-mm-dd" }; Comment = None }
+    let bytes = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut { Sheets = [| sheet |]; Names = [| "Sheet1" |]; Visible = [| true |]; ActiveSheetIndex = 0; NameInfo = Map.empty; DefinedNames = Map.empty; Source = None; Macros = None })
+    let back = Bridge.Import.importWorkbook (XlsxReader.loadBytesNative bytes |> Option.get)
+    ok "a new workbook in the 1904 system: saved and read again" (says1904 (partsOf bytes) && back.Date1904 && back.Sheets.[0].Model.Date1904 && M.getCellValue { Row = 0; Col = 0 } (M.resolveSheet back.Sheets.[0].Model) = M.CellValue.Number 42000.0) ""
 
 printfn "\nXLSX 1904 date system tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

@@ -160,7 +160,7 @@ type ImportedWorkbook = {
     Sheets: ImportedSheet array
     Context: Wb.Workbook
     /// The file is in the 1904 date system: its serials are kept as they are,
-    /// and `Model.date1904` (set by the import) makes dates of them.
+    /// and every sheet's model says so (`SpreadsheetModel.Date1904`).
     Date1904: bool
     /// For `Export.toWorkbookOut`.
     Source: XlsxSource
@@ -1075,6 +1075,8 @@ module Import =
              |> Set.ofSeq)
         let model =
             { createEmpty modelRows modelCols with
+                // (Dates are made of the sheet's serials in its workbook's date system.)
+                Date1904 = wb.Date1904
                 Hyperlinks = hyperlinks
                 ColumnStyles = columnStyles
                 DataTables = dataTables
@@ -1176,8 +1178,6 @@ module Import =
     /// Convert a loaded workbook: every sheet, plus the workbook context.
     /// Throws when the workbook has no sheets.
     let importWorkbookWith (options: ImportOptions) (wb: XlsxReader.Workbook) : ImportedWorkbook =
-        // (Dates are made of the workbook's serials in its own date system from here on.)
-        Rbt.Spreadsheet.Model.date1904 <- wb.Date1904
         let readerSheets = List.toArray wb.Sheets
         if readerSheets.Length = 0 then failwith "XLSX workbook has no worksheets"
         let names = readerSheets |> Array.map (fun sheet -> sheet.Name)
@@ -1251,8 +1251,6 @@ module Import =
     /// library rather than by Excel) is converted whole, as `importWorkbook`
     /// does: its values come from a calculation over every sheet.
     let importWorkbookLazy (convertNow: int -> bool) (wb: XlsxReader.Workbook) : ImportedWorkbook =
-        // (Dates are made of the workbook's serials in its own date system from here on.)
-        Rbt.Spreadsheet.Model.date1904 <- wb.Date1904
         let options = defaultImportOptions
         let readerSheets = List.toArray wb.Sheets
         if readerSheets.Length = 0 then failwith "XLSX workbook has no worksheets"
@@ -1296,6 +1294,7 @@ module Import =
                             read
                     standIns.[index] <-
                         { createEmpty options.MinRows options.MinCols with
+                            Date1904 = wb.Date1904
                             Tables = sheetTables
                             // (What can change without the sheet being converted.)
                             TabColor = sheet.View.TabColor
@@ -2831,7 +2830,10 @@ module Export =
                                         else XlsxReader.withPivotLocation range text
                                     path, Text.Encoding.UTF8.GetBytes rewritten
                                 | None -> path, data) }
-            | None -> XlsxReader.emptyWorkbookPreservation }
+            | None ->
+                // (A workbook that is not a file's is in the date system its sheets say.)
+                if input.Sheets |> Array.exists (fun sheet -> sheet.Date1904) then { XlsxReader.emptyWorkbookPreservation with Date1904 = true }
+                else XlsxReader.emptyWorkbookPreservation }
 
     /// The workbook to write (see `toWorkbookOutWith`): with the parts of the
     /// file the reader kept the bytes of - all of them for a file read by a

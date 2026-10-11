@@ -93,6 +93,17 @@ let createWorkbook (): Workbook =
         Iteration = None
     }
 
+/// The workbook is in the 1904 date system: its sheets say so
+/// (`SpreadsheetModel.Date1904`; every sheet of a workbook says the same).
+let date1904 (workbook: Workbook) : bool =
+    workbook.Sheets |> Map.exists (fun _ sheet -> sheet.Model.Date1904)
+
+/// The workbook in the 1904 date system (true) or the 1900 one: every sheet
+/// is told. The serials of the cells stay as they are.
+let withDate1904 (flag: bool) (workbook: Workbook) : Workbook =
+    if workbook.Sheets |> Map.forall (fun _ sheet -> sheet.Model.Date1904 = flag) then workbook
+    else { workbook with Sheets = workbook.Sheets |> Map.map (fun _ sheet -> if sheet.Model.Date1904 = flag then sheet else { sheet with Model = { sheet.Model with Date1904 = flag } }) }
+
 /// Look up a defined name's refers-to text, scoped to the current sheet: a
 /// sheet-local name shadows a workbook-global one of the same name.
 /// Case-insensitive.
@@ -216,7 +227,8 @@ let addSheet (name: string) (workbook: Workbook): Workbook =
     let sheet = {
         Id = sheetId
         Name = name
-        Model = createEmpty 1000 26
+        // (A sheet added to a workbook is in the workbook's date system.)
+        Model = { createEmpty 1000 26 with Date1904 = date1904 workbook }
         Visible = true
     }
     {

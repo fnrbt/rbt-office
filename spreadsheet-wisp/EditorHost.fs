@@ -243,20 +243,20 @@ let extendFocus (st: EditorState) row col =
 let cellEditText (model: M.SpreadsheetModel) row col =
     // What, typed back unchanged, gives the same cell: the formula's text, a
     // date as a date, forced text with its apostrophe.
-    Rbt.Spreadsheet.Input.editText (M.getCell { Row = row; Col = col } model)
+    Rbt.Spreadsheet.Input.editTextFor model.Date1904 (M.getCell { Row = row; Col = col } model)
 
 /// Typed text → cell value, read the way Excel reads input (shared with the
 /// web editor: `Rbt.Spreadsheet.Input`). This host stores formulas without
 /// the leading `=`.
-let parseCellInput (text: string) : M.CellValue =
-    match (Rbt.Spreadsheet.Input.parseInput text).Value with
+let parseCellInput (date1904: bool) (text: string) : M.CellValue =
+    match (Rbt.Spreadsheet.Input.parseInputFor date1904 System.DateTime.UtcNow.Year text).Value with
     | M.Formula (formula, cached) when formula.StartsWith "=" -> M.Formula (formula.Substring 1, cached)
     | value -> value
 
 /// The cell's format after an entry: an entry written as a percentage, a
 /// currency amount, a date… gives a General cell the matching number format.
-let private formatAfterInput (text: string) (format: M.CellFormat) : M.CellFormat =
-    match (Rbt.Spreadsheet.Input.parseInput text).NumberFormat, format.NumberFormat with
+let private formatAfterInput (date1904: bool) (text: string) (format: M.CellFormat) : M.CellFormat =
+    match (Rbt.Spreadsheet.Input.parseInputFor date1904 System.DateTime.UtcNow.Year text).NumberFormat, format.NumberFormat with
     | Some code, (None | Some "" | Some "General") -> { format with NumberFormat = Some code }
     | _ -> format
 
@@ -288,8 +288,8 @@ let private recalcEditedCell (st: EditorState) (addr: M.CellAddress) (cellData: 
             invalidateCalc st
             Formula.recalcAndSpill None None edited
 
-let private writeCell (st: EditorState) row col text model =
-    let value = parseCellInput text
+let private writeCell (st: EditorState) row col text (model: M.SpreadsheetModel) =
+    let value = parseCellInput model.Date1904 text
     let addr : M.CellAddress = { Row = row; Col = col }
     match M.validateEdit addr value model with
     | Result.Error _ -> model
@@ -297,15 +297,15 @@ let private writeCell (st: EditorState) row col text model =
         let edited =
             match value, M.getCell addr model with
             | M.Empty, _ -> M.clearCell addr model
-            | v, Some existing -> M.setCell addr { existing with Value = v; Format = formatAfterInput text existing.Format } model
-            | v, None -> M.setCell addr { Value = v; Format = formatAfterInput text M.defaultFormat; Comment = None } model
+            | v, Some existing -> M.setCell addr { existing with Value = v; Format = formatAfterInput model.Date1904 text existing.Format } model
+            | v, None -> M.setCell addr { Value = v; Format = formatAfterInput model.Date1904 text M.defaultFormat; Comment = None } model
         if Object.ReferenceEquals(model, edited) then model
         else
             let cellData =
                 match value, M.getCell addr model with
                 | M.Empty, _ -> ({ Value = M.Empty; Format = M.defaultFormat; Comment = None } : M.CellData)
-                | v, Some existing -> { existing with Value = v; Format = formatAfterInput text existing.Format }
-                | v, None -> { Value = v; Format = formatAfterInput text M.defaultFormat; Comment = None }
+                | v, Some existing -> { existing with Value = v; Format = formatAfterInput model.Date1904 text existing.Format }
+                | v, None -> { Value = v; Format = formatAfterInput model.Date1904 text M.defaultFormat; Comment = None }
             let recomputed = recalcEditedCell st addr cellData edited model
             let target = sprintf "Range(\"%s%d\")" (M.columnToLetter col) (row + 1)
             let afterEvent = Rbt.Spreadsheet.Vba.fireEvent "Worksheet_Change" target recomputed

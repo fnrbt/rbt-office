@@ -789,6 +789,56 @@ checks['date-system-1904'] = async () => {
     return lines;
 };
 
+// Two workbooks side by side, one in each date system: whatever one grid is asked, the other's
+// dates stay its own - there is no date system "at work" that the grid that acted last sets.
+checks['date-system-side-by-side'] = async () => {
+    const { lines, check } = makeLog();
+    const { bytesOf } = await import('/component.js');
+    const { grid, close } = mountGrid();
+    const { grid: other, close: closeOther } = mountGrid();
+    try {
+        await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/pandas-times_1904.xlsx')).slice());
+        check('the date systems', [grid.GetDateSystem(), other.GetDateSystem()], [1904, 1900]);
+        // C21:C23 of the 1904 workbook and A1:A3 of the 1900 one hold the same three days.
+        const days = ['2018-12-28', '2019-01-15', '2019-02-01'];
+        days.forEach((day, i) => { grid.SetCell(20 + i, 2, day); other.SetCell(i, 0, day); });
+        grid.SetCell(19, 2, 'Day'); other.SetCell(3, 0, 'x');
+        check('the serials are each workbook\'s', [grid.GetCell(20, 2).value, other.GetCell(0, 0).value], [42000, 43462]);
+        const shown = grid.GetCell(20, 2).text;
+        check('both show the day', [/2018/.test(shown), other.GetCell(0, 0).text], [true, shown]);
+        // Every question below is put to one grid right after the other was the last to act.
+        const afterOther = (ask) => { other.GetCell(0, 0); return ask(); };
+        const afterGrid = (ask) => { grid.GetCell(20, 2); return ask(); };
+        check('1904: GetRange reads the dates', afterOther(() => grid.GetRange('C21:C23').map((row) => row[0].text)), [shown, grid.GetCell(21, 2).text, grid.GetCell(22, 2).text]);
+        check('1900: GetRange reads the dates', afterGrid(() => other.GetRange('A1:A3').map((row) => row[0].text)), [shown, other.GetCell(1, 0).text, other.GetCell(2, 0).text]);
+        check('1904: Find finds the day by its year', afterOther(() => grid.Find('2018', {}).map((match) => match.address)), ['C21']);
+        check('1900: Find finds the day by its year', afterGrid(() => other.Find('2018', {}).map((match) => match.address)), ['A1']);
+        check('1904: Find in formulas reads the date as typed', afterOther(() => grid.Find('12/28/2018', { lookIn: 'formulas' }).map((match) => match.address)), ['C21']);
+        check('1900: Find in formulas reads the date as typed', afterGrid(() => other.Find('12/28/2018', { lookIn: 'formulas' }).map((match) => match.address)), ['A1']);
+        grid.SetAutoFilter('C20:C23');
+        check('1904: a filter\'s list of values', afterOther(() => grid.GetFilterValues(2).values), afterGrid(() => grid.GetFilterValues(2).values));
+        check('... are the days', afterOther(() => grid.GetFilterValues(2).values.map((text) => /20(18|19)/.test(text))), [true, true, true]);
+        afterOther(() => grid.SetFilter(2, { conditions: [{ operator: 'greaterOrEqual', value: '2019-01-15' }] }));
+        check('1904: a filter by a date hides the earlier day only', grid.GetFilters().hiddenRows, [20]);
+        grid.ClearAutoFilter();
+        // A formula entered in one grid while the other was the last to act; TEXT, DATE and the calendar functions.
+        afterOther(() => grid.SetCell(24, 2, '=TEXT(C21,"yyyy-mm-dd")&"|"&YEAR(C22)&"|"&DATE(2018,12,28)&"|"&WEEKDAY(C21)'));
+        afterGrid(() => other.SetCell(5, 0, '=TEXT(A1,"yyyy-mm-dd")&"|"&YEAR(A2)&"|"&DATE(2018,12,28)&"|"&WEEKDAY(A1)'));
+        check('formulas of both', [afterOther(() => grid.GetCell(24, 2).value), afterGrid(() => other.GetCell(5, 0).value)], ['2018-12-28|2019|42000|6', '2018-12-28|2019|43462|6']);
+        // A recalculation of one workbook, the other having acted last.
+        afterOther(() => grid.SetCell(21, 2, '2020-03-01'));
+        afterGrid(() => other.SetCell(1, 0, '2020-03-01'));
+        check('recalculated: both', [afterOther(() => grid.GetCell(24, 2).value), afterGrid(() => other.GetCell(5, 0).value)], ['2018-12-28|2020|42000|6', '2018-12-28|2020|43462|6']);
+        // A sheet added to the 1904 workbook is in its system.
+        afterOther(() => grid.AddSheet('More'));
+        grid.SwitchSheet(grid.GetSheetNames().indexOf('More'));
+        afterOther(() => grid.SetCell(0, 0, '2018-12-28'));
+        check('a sheet added to the 1904 workbook: a typed date', [grid.GetDateSystem(), grid.GetCell(0, 0).value, grid.GetCell(0, 0).text], [1904, 42000, shown]);
+    } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
+    finally { close(); closeOther(); }
+    return lines;
+};
+
 // Spill ranges for hosts: GetCell(...).spill, GetSpillRange, and the outline around the active cell's array.
 checks['chrome-spill'] = async () => {
     const { lines, check } = makeLog();

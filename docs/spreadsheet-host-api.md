@@ -802,10 +802,17 @@ Nothing to call for the recalculation itself: every edit recalculates what it ha
   setter). `GetCell(...).value` of a date is the serial **in that system** - a host that converts serials to dates itself adds 1462
   days for a 1904 workbook (before, date-formatted numbers of such a file were given as 1900 serials). Number formats, `TEXT`, the
   date functions (`DATE`, `YEAR`, `WEEKDAY`, `EDATE`, `NETWORKDAYS`, `DATEVALUE`, `TODAY` ...), typed dates, date filters and the
-  XLSX save all work in the workbook's system. The system is a setting of the engine while a workbook is at work
-  (`Model.date1904`): a grid sets it when it draws, recalculates, takes an entry or is asked `GetDateSystem()`, and
-  `XlsxBridge.Import` sets it for the workbook it reads; with two grids on a page that hold workbooks in different systems, read
-  cell texts of a grid (`GetCell(...).text`) after that grid drew or after calling its `GetDateSystem()`.
+  XLSX save all work in the workbook's system. The system is **the workbook's own**: every sheet model of it says so
+  (`SpreadsheetModel.Date1904`, set by `XlsxBridge.Import`; `Workbook.date1904` / `Workbook.withDate1904` for a whole workbook), and
+  evaluation, display, typed entries, filters and searches read it from the sheet they work on. There is no engine-wide setting any
+  more (`Model.date1904` is gone): two grids on a page - or two workbooks in one .NET process - in different systems do not see each
+  other's, in whatever order they are asked. A sheet added to a workbook is in its system; a workbook made without a file whose
+  sheets say 1904 is saved with `date1904`.
+  For .NET hosts: the functions that turn a serial into a date or back take the system as their first argument -
+  `CellText.cellDisplayTextIn` / `formatNumberWithCodeIn`, `Input.parseInputFor` / `cellFromInputFor` / `editTextFor` /
+  `dateSerialIn`, `SheetOps.searchTextIn` / `replaceInCellIn` / `validationOfDescriptionIn` / `filterOfDescriptionIn`,
+  `Model.formatNumberIn` / `filterDisplayTextIn` (pass `model.Date1904`). The names without `In` / `For` remain and mean the 1900
+  system. Formula evaluation needs nothing: it reads `Date1904` of the sheet model it evaluates.
 - `GetIterativeCalculation()` -> `{ enabled: boolean, maxIterations: number, maxChange: number }`. Excel's "Enable iterative calculation" (File > Options >
   Formulas), a setting of the workbook that is read from and written to the file (`<calcPr iterate iterateCount iterateDelta>`). When off: `{ enabled: false,
   maxIterations: 100, maxChange: 0.001 }`. When on, the formulas of a circular reference are not errors: they are calculated again and again, from the

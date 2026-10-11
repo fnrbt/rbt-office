@@ -272,20 +272,20 @@ let private pageRowJump (state: SpreadsheetEditorState) (fromRow: int) (directio
 let cellEditText (model: SpreadsheetModel) row col =
     // What, typed back unchanged, gives the same cell: the formula's text, a
     // date as a date, forced text with its apostrophe.
-    Rbt.Spreadsheet.Input.editText (getCell { Row = row; Col = col } model)
+    Rbt.Spreadsheet.Input.editTextFor model.Date1904 (getCell { Row = row; Col = col } model)
 
 /// Typed text → cell value, read the way Excel reads input (shared with the
 /// web editor: `Rbt.Spreadsheet.Input`). This host stores formulas without
 /// the leading `=`.
-let private parseCellInput (text: string) : CellValue =
-    match (Rbt.Spreadsheet.Input.parseInput text).Value with
+let private parseCellInput (date1904: bool) (text: string) : CellValue =
+    match (Rbt.Spreadsheet.Input.parseInputFor date1904 System.DateTime.UtcNow.Year text).Value with
     | Formula (formula, cached) when formula.StartsWith "=" -> Formula (formula.Substring 1, cached)
     | value -> value
 
 /// The cell's format after an entry: an entry written as a percentage, a
 /// currency amount, a date… gives a General cell the matching number format.
-let private formatAfterInput (text: string) (format: CellFormat) : CellFormat =
-    match (Rbt.Spreadsheet.Input.parseInput text).NumberFormat, format.NumberFormat with
+let private formatAfterInput (date1904: bool) (text: string) (format: CellFormat) : CellFormat =
+    match (Rbt.Spreadsheet.Input.parseInputFor date1904 System.DateTime.UtcNow.Year text).NumberFormat, format.NumberFormat with
     | Some code, (None | Some "" | Some "General") -> { format with NumberFormat = Some code }
     | _ -> format
 
@@ -319,7 +319,7 @@ let private recalcEditedCell (state: SpreadsheetEditorState) (addr: CellAddress)
             Rbt.Spreadsheet.Formula.recalcAndSpill None None edited
 
 let private writeCell (state: SpreadsheetEditorState) (row: int) (col: int) (text: string) (model: SpreadsheetModel) =
-    let value = parseCellInput text
+    let value = parseCellInput model.Date1904 text
     let addr = { Row = row; Col = col }
     // Reject edits that violate the cell's data-validation rule (keep old value).
     match validateEdit addr value model with
@@ -328,8 +328,8 @@ let private writeCell (state: SpreadsheetEditorState) (row: int) (col: int) (tex
         let edited =
             match value, getCell addr model with
             | Empty, _ -> clearCell addr model
-            | v, Some existing -> setCell addr { existing with Value = v; Format = formatAfterInput text existing.Format } model
-            | v, None -> setCell addr { Value = v; Format = formatAfterInput text defaultFormat; Comment = None } model
+            | v, Some existing -> setCell addr { existing with Value = v; Format = formatAfterInput model.Date1904 text existing.Format } model
+            | v, None -> setCell addr { Value = v; Format = formatAfterInput model.Date1904 text defaultFormat; Comment = None } model
         if System.Object.ReferenceEquals(model, edited) then model
         else
             // Recompute formulas and (re)materialize dynamic-array spills so the edit
@@ -338,8 +338,8 @@ let private writeCell (state: SpreadsheetEditorState) (row: int) (col: int) (tex
             let cellData =
                 match value, getCell addr model with
                 | Empty, _ -> { Value = Empty; Format = defaultFormat; Comment = None }
-                | v, Some existing -> { existing with Value = v; Format = formatAfterInput text existing.Format }
-                | v, None -> { Value = v; Format = formatAfterInput text defaultFormat; Comment = None }
+                | v, Some existing -> { existing with Value = v; Format = formatAfterInput model.Date1904 text existing.Format }
+                | v, None -> { Value = v; Format = formatAfterInput model.Date1904 text defaultFormat; Comment = None }
             let recomputed = recalcEditedCell state addr cellData edited model
             // Fire the workbook's Worksheet_Change handler (if any), passing the edited
             // cell as Target. A no-op unless the macro module defines the sub; its

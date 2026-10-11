@@ -2323,14 +2323,14 @@ let private utcDate year month day = DateTime(year, month, day, 0, 0, 0, DateTim
 /// (A serial far outside the calendar - a formula fed something that is not a
 /// date - is held at the calendar's ends: .NET's DateTime throws there, which
 /// took a whole recalculation down with one cell.)
-let private serialToDate (s: float) : DateTime =
-    let s = s + dateSystemDays ()
+let private serialToDateIn (date1904: bool) (s: float) : DateTime =
+    let s = s + dateSystemDays date1904
     let held = if System.Double.IsNaN s then 0.0 else max -657000.0 (min 2958465.0 s)
     excelEpoch.AddDays(held)
 /// Reads the date's own calendar fields, so a local-kind value (a parsed
 /// string, DateTime.Today) maps to the serial for the date it displays.
-let private dateToSerial (d: DateTime) : float =
-    (DateTime(d.Year, d.Month, d.Day, d.Hour, d.Minute, d.Second, d.Millisecond, DateTimeKind.Utc) - excelEpoch).TotalDays - dateSystemDays ()
+let private dateToSerialIn (date1904: bool) (d: DateTime) : float =
+    (DateTime(d.Year, d.Month, d.Day, d.Hour, d.Minute, d.Second, d.Millisecond, DateTimeKind.Utc) - excelEpoch).TotalDays - dateSystemDays date1904
 
 /// Shared RNG for the volatile RAND / RANDBETWEEN functions.
 let private rng = Random()
@@ -4140,6 +4140,10 @@ type EvalContext = {
 /// names. Convenient for callers that just have a bare model.
 let contextOf (model: SpreadsheetModel) : EvalContext =
     { Model = model; Workbook = None; Sheet = None; CurrentCell = None }
+
+/// The date system of the workbook an evaluation is of: what the sheet
+/// being evaluated says (every sheet of a workbook says the same).
+let private date1904Of (ctx: EvalContext) : bool = ctx.Model.Date1904
 
 /// Last row that holds anything on a sheet (0 for an empty sheet). Cells are
 /// keyed row-major, so this is the map's last key.
@@ -6497,6 +6501,9 @@ and private gridCell (model: SpreadsheetModel) row col : CellValue =
     getCellValue { Row = row; Col = col } model |> unwrapValue
 
 and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue =
+    let date1904 = date1904Of ctx
+    let serialToDate (s: float) = serialToDateIn date1904 s
+    let dateToSerial (d: DateTime) = dateToSerialIn date1904 d
     let model = ctx.Model
     let workbook = ctx.Workbook
     let fnName = name.ToUpperInvariant()
@@ -12079,7 +12086,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
         | Result.Error e, _ -> err e
         | _, Result.Error e -> err e
         | Ok n, Ok fmt ->
-            try CellValue.String (CellText.formatNumberWithCode fmt n)
+            try CellValue.String (CellText.formatNumberWithCodeIn date1904 fmt n)
             with _ -> CellValue.String (numberToText n)
     // ----- lookup -----------------------------------------------------------
     | "CHOOSE" ->
@@ -12330,6 +12337,9 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
 /// calendars, regression and normal-distribution statistics, matrix scalars,
 /// database functions, base conversion and bit operations.
 and evalExtendedFunction (fnName: string) (args: Expr list) (ctx: EvalContext) : CellValue =
+    let date1904 = date1904Of ctx
+    let serialToDate (s: float) = serialToDateIn date1904 s
+    let dateToSerial (d: DateTime) = dateToSerialIn date1904 d
     let argsArray = List.toArray args
     let nargs = argsArray.Length
     let supplied i = i < nargs && argsArray.[i] <> MissingArg
@@ -12454,7 +12464,7 @@ and evalExtendedFunction (fnName: string) (args: Expr list) (ctx: EvalContext) :
             if day1 = 31 then day1 <- 30
         float ((d2.Year - d1.Year) * 360 + (d2.Month - d1.Month) * 30 + (day2 - day1))
     /// Monday = 0 … Sunday = 6 for a date serial.
-    let mondayIndex (serial: int) = ((serial + int (dateSystemDays ()) + 5) % 7 + 7) % 7
+    let mondayIndex (serial: int) = ((serial + int (dateSystemDays date1904) + 5) % 7 + 7) % 7
     /// Weekend mask (Monday..Sunday) from a WORKDAY.INTL / NETWORKDAYS.INTL weekend argument.
     let weekendMask i : Result<bool[], string> =
         if not (supplied i) then Ok [| false; false; false; false; false; true; true |]
@@ -13927,5 +13937,5 @@ let formulaHooksInstalled : bool =
           Move = moveFormulaText
           Evaluate = fun formula rows cols model cell -> evaluateFormulaShifted None None formula rows cols model cell
           Sheets = rewriteFormulaTextForSheets
-          Display = fun format value -> Rbt.Spreadsheet.CellText.cellDisplayText None 1.0e6 format value }
+          Display = fun date1904 format value -> Rbt.Spreadsheet.CellText.cellDisplayTextIn date1904 None 1.0e6 format value }
     true

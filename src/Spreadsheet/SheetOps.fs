@@ -1055,7 +1055,7 @@ let describeValidation (validation: DataValidation) : ValidationDescription =
 
 /// "2024-03-31" (optionally with " 14:30[:15]" or "T14:30[:15]") as a date
 /// serial, "14:30[:15]" as a fraction of a day; None for anything else.
-let private dateOrTimeSerial (text: string) : float option =
+let private dateOrTimeSerial (date1904: bool) (text: string) : float option =
     let text = text.Trim()
     let number (part: string) =
         if part.Length > 0 && part |> Seq.forall isAsciiDigit then Some (int part) else None
@@ -1067,7 +1067,7 @@ let private dateOrTimeSerial (text: string) : float option =
     let date (part: string) : float option =
         match part.Split('-') |> Array.map number with
         | [| Some y; Some m; Some d |] when part.Length = 10 && y >= 1900 && m >= 1 && m <= 12 && d >= 1 && d <= 31 ->
-            Some (Rbt.Spreadsheet.Input.dateSerial y m d)
+            Some (Rbt.Spreadsheet.Input.dateSerialIn date1904 y m d)
         | _ -> None
     match text.Split([| 'T'; ' ' |]) with
     | [| one |] -> (match date one with Some serial -> Some serial | None -> time one)
@@ -1078,7 +1078,7 @@ let private dateOrTimeSerial (text: string) : float option =
 /// (naming `memberName`) for an unknown type or operator, a missing operand,
 /// formula, list or source, a list value with a comma in it, and an unknown
 /// error style.
-let validationOfDescription (memberName: string) (description: ValidationDescription) : DataValidation =
+let validationOfDescriptionIn (date1904: bool) (memberName: string) (description: ValidationDescription) : DataValidation =
     let fail (message: string) = failwith (sprintf "%s: %s" memberName message)
     let present (text: string option) = match text with Some text when text.Trim() <> "" -> true | _ -> false
     let style =
@@ -1091,7 +1091,7 @@ let validationOfDescription (memberName: string) (description: ValidationDescrip
         match text with
         | Some text when text.Trim() <> "" ->
             let body = formulaBody (text.Trim())
-            (match (if kind = "date" || kind = "time" then dateOrTimeSerial body else None) with
+            (match (if kind = "date" || kind = "time" then dateOrTimeSerial date1904 body else None) with
              | Some serial -> numberOperand serial
              | None -> body)
         | _ -> fail (sprintf "a \"%s\" rule needs %s" kind what)
@@ -1140,6 +1140,10 @@ let validationOfDescription (memberName: string) (description: ValidationDescrip
       ShowInput = description.ShowInput
       ShowDropdown = description.Dropdown
       Anchor = None }
+
+/// `validationOfDescriptionIn` in the 1900 date system.
+let validationOfDescription (memberName: string) (description: ValidationDescription) : DataValidation =
+    validationOfDescriptionIn false memberName description
 
 /// The validation with an id.
 let tryFindValidation (id: int) (model: SpreadsheetModel) : ValidationRange option =
@@ -1377,7 +1381,7 @@ let private cellPadX = 10.0
 let private cellPadY = 6.0
 
 let private shownText (model: SpreadsheetModel) (data: CellData) : string =
-    Rbt.Spreadsheet.CellText.cellDisplayText None 1.0e6 data.Format (viewedValue model data.Value)
+    Rbt.Spreadsheet.CellText.cellDisplayTextIn model.Date1904 None 1.0e6 data.Format (viewedValue model data.Value)
 
 let private isTurned (format: CellFormat) = format.TextRotation = 90 || format.TextRotation = 180
 
@@ -2005,7 +2009,7 @@ let describeFilter (criteria: FilterCriteria) : FilterDescription =
 /// conditions, a count below 1 (or a percentage above 100), a colour that is
 /// not "#RRGGBB" (or ""), and an unknown dynamic filter. A date written
 /// "2024-03-31" (or a time "14:30") in a condition becomes its serial number.
-let filterOfDescription (memberName: string) (description: FilterDescription) : FilterCriteria =
+let filterOfDescriptionIn (date1904: bool) (memberName: string) (description: FilterDescription) : FilterCriteria =
     let fail message = failwith (sprintf "%s: %s" memberName message)
     match description.Kind with
     | "values" ->
@@ -2020,7 +2024,7 @@ let filterOfDescription (memberName: string) (description: FilterDescription) : 
                 description.Conditions
                 |> List.map (fun condition ->
                     let value =
-                        match dateOrTimeSerial condition.Value with
+                        match dateOrTimeSerial date1904 condition.Value with
                         | Some serial when condition.Value.Contains "-" || condition.Value.Contains ":" -> numberOperand serial
                         | _ -> condition.Value
                     match condition.Operator with
@@ -2054,6 +2058,10 @@ let filterOfDescription (memberName: string) (description: FilterDescription) : 
          | "aboveAverage" | "belowAverage" -> FilterDynamic description.Dynamic
          | other -> fail (sprintf "unknown dynamic filter \"%s\" (\"aboveAverage\" or \"belowAverage\")" other))
     | other -> fail (sprintf "unknown filter kind \"%s\"" other)
+
+/// `filterOfDescriptionIn` in the 1900 date system.
+let filterOfDescription (memberName: string) (description: FilterDescription) : FilterCriteria =
+    filterOfDescriptionIn false memberName description
 
 /// Check a range for an AutoFilter: clipped to the sheet, and - a whole
 /// column or row being no place for a header - at least one cell.
@@ -2490,12 +2498,16 @@ let finderOf (memberName: string) (text: string) (options: FindOptions) : Finder
 
 /// The text of a cell a search reads: what it shows, or (in formulas) what
 /// was entered - the formula with its `=`, a date as a date, text as it is.
-let searchText (options: FindOptions) (data: CellData) : string =
+/// (`date1904`: the date system of the cell's workbook.)
+let searchTextIn (date1904: bool) (options: FindOptions) (data: CellData) : string =
     if options.InFormulas then
         match data.Value with
         | String text -> text
-        | _ -> Rbt.Spreadsheet.Input.editText (Some data)
-    else Rbt.Spreadsheet.CellText.cellDisplayText None 1.0e6 data.Format data.Value
+        | _ -> Rbt.Spreadsheet.Input.editTextFor date1904 (Some data)
+    else Rbt.Spreadsheet.CellText.cellDisplayTextIn date1904 None 1.0e6 data.Format data.Value
+
+/// `searchTextIn` in the 1900 date system.
+let searchText (options: FindOptions) (data: CellData) : string = searchTextIn false options data
 
 /// The cells of a sheet (of `range` when given) that match, row by row,
 /// each with the text that matched.
@@ -2511,7 +2523,7 @@ let findInSheet (finder: Finder) (options: FindOptions) (range: CellRange option
         | Empty -> ()
         | _ ->
             if inside addr then
-                let text = searchText options data
+                let text = searchTextIn model.Date1904 options data
                 if text <> "" && finder.IsMatch text then found.Add((addr, text))
     List.ofSeq found
 
@@ -2520,18 +2532,22 @@ let findInSheet (finder: Finder) (options: FindOptions) (range: CellRange option
 /// take the replacement. Searching what cells show, a formula cell is left
 /// alone (its value is not its own to change) and the replacement is made
 /// in the text shown; searching formulas it is made in the formula text.
-let replaceInCell (finder: Finder) (options: FindOptions) (replacement: string) (currentYear: int) (data: CellData) : CellData option =
+let replaceInCellIn (date1904: bool) (finder: Finder) (options: FindOptions) (replacement: string) (currentYear: int) (data: CellData) : CellData option =
     match data.Value with
     | Empty -> None
     | Formula _ when not options.InFormulas -> None
     | _ ->
-        let text = searchText options data
+        let text = searchTextIn date1904 options data
         if text = "" || not (finder.IsMatch text) then None
         else
             let replaced = finder.Replace text replacement
             if replaced = text then None
             elif replaced = "" then Some { data with Value = Empty }
-            else Some (Rbt.Spreadsheet.Input.cellFromInput currentYear (Some data) replaced)
+            else Some (Rbt.Spreadsheet.Input.cellFromInputFor date1904 currentYear (Some data) replaced)
+
+/// `replaceInCellIn` in the 1900 date system.
+let replaceInCell (finder: Finder) (options: FindOptions) (replacement: string) (currentYear: int) (data: CellData) : CellData option =
+    replaceInCellIn false finder options replacement currentYear data
 
 /// Every cell of a sheet (of `range` when given) a replace-all changes:
 /// (address, the cell before, the cell after). The cells a dynamic array
@@ -2541,7 +2557,7 @@ let replaceInSheet (finder: Finder) (options: FindOptions) (replacement: string)
     |> List.choose (fun (addr, _) ->
         match Map.tryFind addr model.Cells with
         | Some _ when Map.containsKey addr model.Spill -> None
-        | Some data -> replaceInCell finder options replacement currentYear data |> Option.map (fun changed -> addr, data, changed)
+        | Some data -> replaceInCellIn model.Date1904 finder options replacement currentYear data |> Option.map (fun changed -> addr, data, changed)
         | None -> None)
 
 /// The match a step from a place leads to. `matches` are in search order,
