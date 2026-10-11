@@ -1830,7 +1830,9 @@ module Export =
                         | None -> false
                     match untouched, originals.TryGetValue position with
                     | true, (true, kept) -> kept
-                    | false, (true, kept) when (match previous with Some previous -> sameRef previous.Format data.Format || previous.Format = data.Format | None -> false) ->
+                    | false, (true, kept) when (match previous with
+                                                | Some previous -> sameRef previous.Format data.Format || previous.Format = data.Format || { previous.Format with HasComment = data.Format.HasComment } = data.Format
+                                                | None -> false) ->
                         // Only the value (or the comment) changed: the cell keeps
                         // the format the file gave it, its named cell style included.
                         { cellOut cache model addr data with Format = kept.Format }
@@ -2342,14 +2344,22 @@ module Export =
         if not rest then None
         else
             let cells = ResizeArray<int * int * bool>()
-            // (A note is in the sheet's comments part, not in its cells.)
+            // (A note is in the sheet's comments part, not in its cells: a cell that differs
+            // only by its note - and the mark that it has one - is the file's cell.)
             let mutable notes = false
+            let noteOnly (previous: CellData) (data: CellData) =
+                (previous.Comment <> data.Comment || previous.Format.HasComment <> data.Format.HasComment)
+                && previous.Value = data.Value
+                && (sameRef previous.Format data.Format || { previous.Format with HasComment = data.Format.HasComment } = data.Format)
+            let onlyNote (data: CellData) =
+                data.Value = CellValue.Empty && { data.Format with HasComment = false } = defaultFormat
             if not (sameRef before.Cells model.Cells && sameRef before.RichRuns model.RichRuns) then
                 let sameRuns = sameRef before.RichRuns model.RichRuns
                 let runsSame (addr: CellAddress) = sameRuns || Map.tryFind addr before.RichRuns = Map.tryFind addr model.RichRuns
                 for KeyValue(addr, data) in model.Cells do
                     match Map.tryFind addr before.Cells with
                     | Some previous when (sameRef previous data || previous = data || onlyBecameError previous data) && runsSame addr -> ()
+                    | Some previous when noteOnly previous data && runsSame addr -> notes <- true
                     | Some previous ->
                         if previous.Comment <> data.Comment then notes <- true
                         let valueOnly =
@@ -2360,11 +2370,12 @@ module Export =
                         cells.Add ((addr.Row, addr.Col, valueOnly))
                     | None ->
                         if data.Comment.IsSome then notes <- true
-                        cells.Add ((addr.Row, addr.Col, false))
+                        // (A cell that holds nothing but a note has no element in the sheet's part.)
+                        if not (onlyNote data) then cells.Add ((addr.Row, addr.Col, false))
                 for KeyValue(addr, previous) in before.Cells do
                     if not (Map.containsKey addr model.Cells) then
                         if previous.Comment.IsSome then notes <- true
-                        cells.Add ((addr.Row, addr.Col, false))
+                        if not (onlyNote previous) then cells.Add ((addr.Row, addr.Col, false))
             // The rows as a file states them: those an AutoFilter hides are hidden rows.
             let was = filterRowsAsHidden before
             let now = filterRowsAsHidden model
@@ -2405,8 +2416,9 @@ module Export =
             let setupSame = same (fun m -> m.PageSetup)
             Some { Cells = List.ofSeq cells
                    Rows = rows
+                   Notes = notes
                    Whole =
-                    notes || not (same (fun m -> m.Tables)) || not (same (fun m -> m.Drawings)) || not (same (fun m -> m.Threads)) || not (same (fun m -> m.Hyperlinks))
+                    not (same (fun m -> m.Tables)) || not (same (fun m -> m.Drawings)) || not (same (fun m -> m.Threads)) || not (same (fun m -> m.Hyperlinks))
                    Sections =
                     [ if before.TabColor <> model.TabColor || before.Axes.SummaryBelow <> model.Axes.SummaryBelow || before.Axes.SummaryRight <> model.Axes.SummaryRight
                          || before.PageSetup.FitToPage <> model.PageSetup.FitToPage then yield "sheetPr"

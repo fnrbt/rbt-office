@@ -1402,3 +1402,53 @@ checks['object-label-fits'] = async () => {
     finally { close(); }
     return lines;
 };
+
+// A note is a change of the sheet's comments part and of the box in its VML drawing: the sheet's
+// own part goes back as the file's, byte for byte (a sheet that had no note gets a
+// <legacyDrawing>), the cell keeps the cellXfs entry it had and the styles are the file's; a note
+// of the file that is edited keeps shapeId, xr:uid and what its runs say beyond what a sheet holds.
+checks['note-leaves-sheet-part'] = async () => {
+    const { lines, check } = makeLog();
+    const { bytesOf } = await import('/component.js');
+    const textOf = async (zip, path) => zip.files[path] ? zip.files[path].async('string') : null;
+    const { grid, close } = mountGrid();
+    try {
+        const original = await bytesOf('tests/real-world/milk-street-office.xlsx');
+        const zip0 = await window.JSZip.loadAsync(original);
+        await grid.ImportXlsx(original.slice());
+        grid.SetComment(2, 1, 'a note', 'me');
+        grid.SetComment(112, 4, 'another text', 'BIWS');
+        const zip1 = await window.JSZip.loadAsync(await grid.ExportXlsx());
+        check('milk-street, a note added in B3 and the note of E113 edited: sheet, styles, relationships and content types are the file\'s',
+            await Promise.all(['xl/worksheets/sheet1.xml', 'xl/styles.xml', 'xl/worksheets/_rels/sheet1.xml.rels', '[Content_Types].xml', 'xl/_rels/workbook.xml.rels', 'xl/worksheets/sheet2.xml'].map(async (path) => (await textOf(zip1, path)) === (await textOf(zip0, path)))),
+            [true, true, true, true, true, true]);
+        const comments = await textOf(zip1, 'xl/comments1.xml');
+        const edited = /<comment ref="E113"[^>]*>[\s\S]*?<\/comment>/.exec(comments)?.[0] ?? '';
+        check('the edited note keeps shapeId, xr:uid and its run\'s <color indexed> and <family>',
+            [/shapeId="0"/.test(edited), /xr:uid="\{00000000-0006-0000-0000-000001000000\}"/.test(edited), edited.includes('<r><rPr><sz val="9"/><color indexed="81"/><rFont val="Tahoma"/><family val="2"/></rPr><t xml:space="preserve">another text</t></r>')], [true, true, true]);
+        check('the new note is in the part, by its author', [/<comment ref="B3" authorId="1">/.test(comments), comments.includes('<author>BIWS</author><author>me</author>')], [true, true]);
+        check('... with a box in the file\'s drawing', ((await textOf(zip1, 'xl/drawings/vmlDrawing1.vml')).match(/ObjectType="Note"/g) ?? []).length, ((await textOf(zip0, 'xl/drawings/vmlDrawing1.vml')).match(/ObjectType="Note"/g) ?? []).length + 1);
+        // Undone, the workbook is the file again.
+        grid.Undo(); grid.Undo();
+        check('undone: the opened bytes', (await grid.ExportXlsx()).length === original.length && !grid.IsModified(), true);
+        // A sheet without a note (it has a VML drawing for other things): G5 keeps s="31".
+        const dashboard = await bytesOf('tests/real-world/dashboard-ecommerce-sales.xlsx');
+        const dash0 = await window.JSZip.loadAsync(dashboard);
+        await grid.ImportXlsx(dashboard.slice());
+        grid.SwitchSheet(2);
+        grid.SetComment(4, 6, 'a first note', 'me');
+        const dash1 = await window.JSZip.loadAsync(await grid.ExportXlsx());
+        check('dashboard-ecommerce, a first note in G5 of the third sheet: the sheet part and the styles are the file\'s',
+            [(await textOf(dash1, 'xl/worksheets/sheet3.xml')).replace(/ tabSelected="[01]"/g, '') === (await textOf(dash0, 'xl/worksheets/sheet3.xml')).replace(/ tabSelected="[01]"/g, ''), /<c r="G5" s="31"\/>/.test(await textOf(dash1, 'xl/worksheets/sheet3.xml')), (await textOf(dash1, 'xl/styles.xml')) === (await textOf(dash0, 'xl/styles.xml'))], [true, true, true]);
+        const rels = await textOf(dash1, 'xl/worksheets/_rels/sheet3.xml.rels'), rels0 = await textOf(dash0, 'xl/worksheets/_rels/sheet3.xml.rels');
+        check('... its relationships the file\'s with the comments part behind them', [rels.startsWith(rels0.slice(0, rels0.lastIndexOf('</Relationships>'))), (rels.match(/<Relationship /g) ?? []).length - (rels0.match(/<Relationship /g) ?? []).length, /relationships\/comments" Target="\.\.\/comments\d+\.xml"/.test(rels)], [true, 1, true]);
+        const again = mountGrid();
+        try {
+            await again.grid.ImportXlsx(await grid.ExportXlsx());
+            again.grid.SwitchSheet(2);
+            check('... and it reads back', again.grid.GetComment(4, 6)?.text, 'a first note');
+        } finally { again.close(); }
+    } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
+    finally { close(); }
+    return lines;
+};

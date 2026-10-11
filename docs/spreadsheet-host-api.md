@@ -946,7 +946,18 @@ changes (named styles, the indexed palette, table styles and extensions of the s
   **A changed cell that holds a shared formula** (`<f t="shared" ref>`) no longer makes the sheet be written anew: the next cell of
   its group that stays as it is holds the formula from then on (`ref` from there to the end of the group), the others still share it
   (a group over a block of several rows and columns is the exception: the sheet is written from its cells).
-- **Comments, threads, tables, drawings or hyperlinks changed** (they are in other parts, or name one by relationship), or rules /
+- **A note added, edited or removed changes the comments part and the box in the VML drawing - not the sheet's part (0.1.15).** The
+  part goes back as the file's, byte for byte (with the cells that changed besides, as above); a cell that only got or lost a note is
+  not written again and **keeps the `cellXfs` entry it had** (before, `HasComment` made it "another format": a duplicate entry was
+  added and the cell pointed at it - milk-street B3 `s="3"` -> `s="308"`, the dashboard's G5 `s="31"` -> `s="45"`), so
+  `xl/styles.xml`, the sheet's relationships, `[Content_Types].xml` and the workbook's relationships are the file's too. A sheet that
+  had **no note** gets what it needs and nothing else: a comments part and a VML drawing under names no part has, two entries behind
+  the file's in its relationships (free `rIdN` ids, targets relative as Excel writes them), one `<Override>` (and the `vml`
+  `<Default>` when the file had none) in the content types, and `<legacyDrawing r:id>` in the part where the schema has it (no
+  namespace of its own); a sheet that has a VML drawing for other things (form controls) gets the box in that drawing and only the
+  comments entry. Written from the sheet as before (its rows the file's): a sheet left without any note, a comments part without a
+  `<commentList>`, a `<legacyDrawing>` whose part the reader did not keep.
+- **Threads, tables, drawings or hyperlinks changed** (they are in other parts, or name one by relationship), or rules /
   validations of the x14 list changed: **the rows are still the file's** with the changed cells and rows in them (row attributes,
   styles, shared formulas, `spans`), and the rest of the part is made from the sheet - as for a sheet written from its model, below.
 - **A sheet written from its model** (rows / columns inserted or deleted; a spilled or array formula or a what-if table changed; the
@@ -991,10 +1002,13 @@ changes (named styles, the indexed palette, table styles and extensions of the s
   that were written again, plus the uses in what was written (before, it only grew by the number of new strings).
 - **A changed note leaves the other notes as the file wrote them**: the comments part is the file's, with a note that is what
   it was (the same text by the same author, in its cell or - rows having moved - in the cell it is in now) as the file's
-  `<comment>` element (`shapeId`, `xr:uid`, its runs' `<color indexed>` and `<family>`), a new or changed note written from the
-  sheet, new authors behind the file's. The VML drawing of the comment boxes is the file's too while the sheet has a note: the
-  boxes of notes that are gone are taken out, a box is added for a new note (also for a note whose cell moved). The sheet's
-  own part is still written from the sheet when a note is added (its rows are the file's).
+  `<comment>` element (`shapeId`, `xr:uid`, its runs' `<color indexed>` and `<family>`), new authors behind the file's. **An edited
+  note of the file keeps its element's attributes** (`shapeId`, `xr:uid`; `authorId` is the author it has now) **and what its runs
+  say beyond what a sheet holds**: a run whose format is the one the file's run at its place has is written with that run's
+  `<rPr>` as it was (`<color indexed="81"/>`, `<family>`, `<charset>`), and a text given without runs (`SetComment`) goes into one
+  run with the properties of the file's last run (the note's own text, after the author's name in bold). A new note is written
+  from the sheet. The VML drawing of the comment boxes is the file's too while the sheet has a note: the boxes of notes that are
+  gone are taken out, a box is added for a new note (also for a note whose cell moved).
 - A manual page break the file has is written as the file wrote it (`min` / `max`: how far it reaches); a new one reaches as far
   as the file's breaks all do, else over every column (`max="16383"`, a row break) or every row (`max="1048575"`, a column
   break - before, `16383` too).

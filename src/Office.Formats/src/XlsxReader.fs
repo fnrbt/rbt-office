@@ -794,6 +794,11 @@ type SheetPatch = {
     /// holds, see `SheetExtras.SourceXml`); the rows are the file's with
     /// `Cells` and `Rows` changed in them.
     Whole: bool
+    /// Notes were added, changed or removed. A note is in the sheet's
+    /// comments part and its box in the VML drawing: the sheet's own part
+    /// stays the file's (a cell that only got or lost a note is not among
+    /// `Cells`), with a `<legacyDrawing>` added when the sheet had none.
+    Notes: bool
 }
 
 /// A row of a sheet whose attributes are to be those of the sheet as it is

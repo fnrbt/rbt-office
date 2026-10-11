@@ -2200,6 +2200,8 @@ let private commentBodyXml (runsOf: Map<int * int, (string * XlsxReader.RunProps
 
 let private commentElementPattern = System.Text.RegularExpressions.Regex("<comment(?=[\\s>])[^>]*>[\\s\\S]*?</comment>")
 let private commentAuthorPattern = System.Text.RegularExpressions.Regex("<author(?:\\s[^>]*)?(?:/>|>([\\s\\S]*?)</author>)")
+let private commentRunPattern = System.Text.RegularExpressions.Regex("<r>[\\s\\S]*?</r>")
+let private commentRunPropsPattern = System.Text.RegularExpressions.Regex("<rPr>[\\s\\S]*?</rPr>")
 let private commentTextPattern = System.Text.RegularExpressions.Regex("<t(?:\\s[^>]*)?(?:/>|>([\\s\\S]*?)</t>)")
 
 /// The file's comments part with the notes of the sheet as they are now: a
@@ -2241,6 +2243,8 @@ let private patchedCommentsXml (fileXml: string) (runs: ((int * int) * (string *
             |> Seq.toArray
         let used = Array.create known.Length false
         let runsOf = if runs.IsEmpty then Map.empty else Map.ofList runs
+        // (The file's notes as the reader has them, in the order of the part - read when a note changed.)
+        let fileNotes = lazy (let read = (try XlsxReader.CellComments.parseComments fileXml with _ -> []) in if read.Length = known.Length then List.toArray read else [||])
         let authorId (author: string) =
             match authors.IndexOf author with
             | -1 -> authors.Add author; authors.Count - 1
@@ -2272,7 +2276,40 @@ let private patchedCommentsXml (fileXml: string) (runs: ((int * int) * (string *
                         let cut = xml.IndexOf '>'
                         xml.Substring(0, cut).Replace(" ref=\"" + knownRef + "\"", " ref=\"" + reference + "\"") + xml.Substring cut
                 | false, _ ->
-                    sprintf "<comment ref=\"%s\" authorId=\"%d\"><text>%s</text></comment>" reference (authorId author) (commentBodyXml runsOf cell text))
+                    // A changed note in a cell the file has a note in keeps what the file's element
+                    // says of it (`shapeId`, `xr:uid`), and its runs what the file's runs say beyond
+                    // what a sheet holds (`<color indexed>`, `<family>`, `<charset>`): a run with the
+                    // format the file's run at its place has is written with that run's properties,
+                    // and a text without runs with those of the file's last run (the note's own
+                    // text, after the author's name in bold).
+                    match known |> Array.tryFindIndex (fun (knownRef, _, _, _) -> knownRef = reference) with
+                    | Some index when not used.[index] ->
+                        used.[index] <- true
+                        let _, _, _, xml = known.[index]
+                        let tag = xml.Substring(0, xml.IndexOf '>' + 1)
+                        let fileRuns = [ for run in commentRunPattern.Matches xml -> (let props = commentRunPropsPattern.Match run.Value in if props.Success then props.Value else "") ]
+                        let readRuns = if index < fileNotes.Value.Length then fileNotes.Value.[index].Runs |> List.map snd else []
+                        let runXml (props: string) (runText: string) = sprintf "<r>%s<t xml:space=\"preserve\">%s</t></r>" props (escapedCellText runText)
+                        let body =
+                            match Map.tryFind (cell.Row, cell.Col) runsOf with
+                            | Some textRuns when not textRuns.IsEmpty && (textRuns |> List.map fst |> String.concat "") = text ->
+                                if fileRuns.Length <> readRuns.Length then commentBodyXml runsOf cell text
+                                else
+                                    textRuns
+                                    |> List.mapi (fun at (runText, props) ->
+                                        if at < readRuns.Length && readRuns.[at] = props then runXml fileRuns.[at] runText
+                                        else commentBodyXml (Map.ofList [ (cell.Row, cell.Col), [ runText, props ] ]) cell runText)
+                                    |> String.concat ""
+                            | _ ->
+                                match List.tryLast fileRuns with
+                                | Some props when props <> "" -> runXml props text
+                                | _ -> commentBodyXml runsOf cell text
+                        let by = sprintf " authorId=\"%d\"" (authorId author)
+                        let tag =
+                            if attributeOf tag "authorId" |> Option.isSome then System.Text.RegularExpressions.Regex.Replace(tag, "\\sauthorId=\"[^\"]*\"", by)
+                            else tag.Substring(0, tag.Length - 1) + by + ">"
+                        tag + "<text>" + body + "</text></comment>"
+                    | _ -> sprintf "<comment ref=\"%s\" authorId=\"%d\"><text>%s</text></comment>" reference (authorId author) (commentBodyXml runsOf cell text))
             |> String.concat ""
         let added = [ for index in fileAuthors .. authors.Count - 1 -> elemText "author" authors.[index] ] |> String.concat ""
         Some (fileXml.Substring(0, authorsEnd) + added + fileXml.Substring(authorsEnd, listStart + 13 - authorsEnd) + elements + fileXml.Substring listEnd)
@@ -2978,13 +3015,19 @@ let private sheetFormatFromSource (was: string) (sheet: XlsxSheetOut) : string =
 
 /// The part of the file with the changed cells, rows and sections of `sheet`.
 let private patchedSheetXml (styles: StyleBook) (sharedIndex: string -> XlsxRichRun list -> int) (dynamicCm: int) (sheetIndex: int)
-                            (sheet: XlsxSheetOut) (patch: XlsxReader.SheetPatch) (plan: SheetPatchPlan) : string =
+                            (sheet: XlsxSheetOut) (patch: XlsxReader.SheetPatch) (plan: SheetPatchPlan) (added: (string * string) list) : string =
     let source = plan.Source
     let data, (minRow, minCol, maxRow, maxCol) = patchedSheetData styles sharedIndex dynamicCm sheet patch plan
+    // (`added`: elements the part did not have, put where the schema has them - the
+    // `<legacyDrawing>` of a sheet that got its first note.)
+    let patch = if added.IsEmpty then patch else { patch with Sections = patch.Sections @ (added |> List.map fst) }
     // The sections made anew.
     let sourceElement (name: string) =
         plan.Top |> List.tryPick (fun (known, span) -> if known = name then Some (source.Substring(span.Start, span.End - span.Start)) else None)
     let sectionXml (name: string) =
+        match added |> List.tryPick (fun (known, xml) -> if known = name then Some xml else None) with
+        | Some xml -> xml
+        | None ->
         match name with
         | "sheetPr" -> sheetPrFromSource (sourceElement "sheetPr" |> Option.defaultValue "") sheet
         | "sheetViews" -> sheetViewsFromSource (sourceElement "sheetViews") [] sheet
@@ -3675,7 +3718,7 @@ let private workbookRelsXmlFull (workbook: XlsxWorkbookOut) (placements: SheetPl
     sprintf "%s\n<Relationships xmlns=\"%s\">%s</Relationships>" declaration Namespaces.relationshipsPackage (String.concat "" baseRels)
     |> relationshipsFromFile "xl" true (packageText workbook "xl/_rels/workbook.xml.rels")
 
-let private contentTypesXmlFull (workbook: XlsxWorkbookOut) (placements: SheetPlacement list) (keptParts: (string * byte[]) list) (ownMetadata: bool) =
+let private contentTypesXmlFull (workbook: XlsxWorkbookOut) (placements: SheetPlacement list) (keptParts: (string * byte[]) list) (ownMetadata: bool) (noteParts: string list) (noteBoxes: bool) =
     let hasVba = workbook.VbaProjectSource |> Option.exists hasText
     let workbookType =
         if hasVba then "application/vnd.ms-excel.sheet.macroEnabled.main+xml"
@@ -3749,11 +3792,14 @@ let private contentTypesXmlFull (workbook: XlsxWorkbookOut) (placements: SheetPl
     + sprintf "<Override PartName=\"/xl/workbook.xml\" ContentType=\"%s\"/>" workbookType
     + "<Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/>"
     + "<Override PartName=\"/xl/sharedStrings.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml\"/>"
-    + sheetOverrides + tableOverrides + comments + extraOverrides
+    + sheetOverrides + tableOverrides + comments
+    // (The comments parts added to sheets that are otherwise the file's parts.)
+    + (noteParts |> List.map (fun path -> sprintf "<Override PartName=\"/%s\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml\"/>" path) |> String.concat "")
+    + extraOverrides
     + "</Types>"
     |> contentTypesFromFile
         // (The default for VML drawings is for the boxes of comments and the kept drawings of that kind.)
-        (if (keptParts |> List.exists (fun (path, _) -> path.EndsWith ".vml")) || (written |> List.exists (fun (sheet, _) -> sheet.Cells |> List.exists (fun c -> c.Comment.IsSome))) then [] else [ "vml" ])
+        (if noteBoxes || (keptParts |> List.exists (fun (path, _) -> path.EndsWith ".vml")) || (written |> List.exists (fun (sheet, _) -> sheet.Cells |> List.exists (fun c -> c.Comment.IsSome))) then [] else [ "vml" ])
         (packageText workbook "[Content_Types].xml")
 
 /// The package relationships: the workbook, and the document properties kept from the opened file.
@@ -4245,6 +4291,21 @@ let private inPlaceSharedStrings (workbook: XlsxWorkbookOut) (sharedStringsXml: 
                 xml.Substring(0, root.Index) + rootTag + xml.Substring(root.Index + root.Length, close - root.Index - root.Length) + added.ToString() + xml.Substring close
         Some (indexOf, finish)
 
+/// The notes of a sheet whose part goes back as the file's (see
+/// `SheetPatch.Notes`): the parts they are written into.
+type private NotesInPlace = {
+    /// The file's comments part (None: the sheet had none, a part is added).
+    CommentsPath: string option
+    CommentsXml: string
+    /// The file's VML drawing (None: the sheet had none, a part is added).
+    VmlPath: string option
+    /// The drawing with the boxes of the notes (None: the file's has them).
+    VmlXml: string option
+}
+
+let private legacyDrawingTag = System.Text.RegularExpressions.Regex("<legacyDrawing[\\s/>]")
+let private relationshipIdPattern = System.Text.RegularExpressions.Regex("\\sId=\"([^\"]*)\"")
+
 let private workbookFiles (workbook: XlsxWorkbookOut) =
     // Styles and shared strings: the file's, added to (so that a sheet written
     // as it was read still means what it meant), or made from the cells.
@@ -4276,6 +4337,43 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
     // (Or its rows are the file's with those cells, in a part otherwise made
     // from the sheet: `rowPlans`. `sortKept`: the file's sort state holds.)
     let patchPlans = System.Collections.Generic.Dictionary<int, SheetPatchPlan>()
+    // A sheet whose notes changed and whose part can stay the file's: the notes go into the
+    // comments part and the VML drawing the file has for them, or into new ones (the part then
+    // gets a `<legacyDrawing>` and its relationships two entries). None when that cannot be
+    // done here (no note left, a comments part without a list, a part that names a drawing
+    // the reader did not keep): the part is then written from the sheet, its rows the file's.
+    let notePlans = System.Collections.Generic.Dictionary<int, NotesInPlace>()
+    let notesInPlace (number: int) (sheet: XlsxSheetOut) (source: string) : NotesInPlace option =
+        let commentCells = sheet.Cells |> List.choose (fun c -> if c.Comment.IsSome then Some (c.Row, c.Col) else None)
+        if commentCells.IsEmpty then None
+        else
+            let relsText = sheet.Extras.SourcePart |> Option.bind (fun (path, _) -> partText (relsPathOf path))
+            let comments =
+                match keptCommentsPart workbook sheet with
+                | Some path ->
+                    partText path
+                    |> Option.bind (fun fileXml -> patchedCommentsXml fileXml sheet.Extras.CommentRuns sheet.Cells)
+                    |> Option.map (fun xml -> Some path, xml)
+                | None ->
+                    if relsText |> Option.exists (fun text -> text.Contains "/relationships/comments\"") then None
+                    else commentsXml sheet.Extras.CommentRuns sheet.Cells |> Option.map (fun xml -> None, xml)
+            let boxes =
+                match keptLegacyDrawing sheet with
+                | "" ->
+                    if legacyDrawingTag.IsMatch source then None
+                    else vmlCommentsXml number sheet.Cells |> Option.map (fun xml -> None, Some xml)
+                | keptElement ->
+                    let ids = DocxReader.relationshipIdsInXml keptElement
+                    sheet.Extras.KeptRelationships
+                    |> List.tryPick (fun (id, _, target, isExternal) ->
+                        if isExternal || not (List.contains id ids) then None
+                        else
+                            let path = ZipInterop.normalizePath target
+                            partText path |> Option.map (fun vml -> Some path, vmlWithCommentBoxes vml commentCells))
+            match comments, boxes with
+            | Some (commentsPath, commentsXml), Some (vmlPath, vmlXml) ->
+                Some { CommentsPath = commentsPath; CommentsXml = commentsXml; VmlPath = vmlPath; VmlXml = vmlXml }
+            | _ -> None
     let rowPlans = System.Collections.Generic.Dictionary<int, SheetPatchPlan * XlsxReader.SheetPatch>()
     let sortKept = System.Collections.Generic.HashSet<int>()
     let workbook =
@@ -4296,7 +4394,11 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
                             // (Written from the sheet, it keeps what its part says beyond that.)
                             let fromSheet = { sheet.Extras with Verbatim = false; Patch = None; SourceXml = sourceText; Moves = (match sheet.Extras.Moves with Some moves -> Some moves | None -> Some []) }
                             match plan with
-                            | Some plan when sheet.Extras.Verbatim && plan.SectionsSound && not patch.Whole ->
+                            | Some plan when sheet.Extras.Verbatim && plan.SectionsSound && not patch.Whole
+                                             && (not patch.Notes
+                                                 || (match notesInPlace (index + 1) sheet plan.Source with
+                                                     | Some notes -> notePlans.[index] <- notes; true
+                                                     | None -> false)) ->
                                 patchPlans.[index] <- plan
                                 sheet
                             | Some plan when inPlace.IsSome ->
@@ -4341,7 +4443,27 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
                 1
     let keptPartPaths = keptParts |> List.map fst |> Set.ofList
     let placements = sheetPlacements workbook keptPartPaths
-    textFiles.Add { Path = "[Content_Types].xml"; Content = contentTypesXmlFull workbook placements keptParts ownMetadata }
+    // The parts added for the notes of sheets that had none (see `notePlans`), under names no part has.
+    let noteParts = System.Collections.Generic.Dictionary<int, string * string>()
+    if notePlans.Count > 0 then
+        let taken = System.Collections.Generic.HashSet<string>(keptPartPaths)
+        for path, _ in workbook.Preserved.Parts do taken.Add path |> ignore
+        for placed in placements do
+            for path in [ placed.SheetPath; placed.CommentsPath; placed.VmlPath; placed.ThreadsPath; placed.DrawingPath ] do taken.Add path |> ignore
+        let free (name: int -> string) =
+            let mutable at = 1
+            while taken.Contains (name at) do at <- at + 1
+            taken.Add (name at) |> ignore
+            name at
+        for KeyValue(index, notes) in notePlans do
+            noteParts.[index] <-
+                ((if notes.CommentsPath.IsNone then free (sprintf "xl/comments%d.xml") else ""),
+                 (if notes.VmlPath.IsNone then free (sprintf "xl/drawings/vmlDrawing%d.vml") else ""))
+    textFiles.Add
+        { Path = "[Content_Types].xml"
+          Content =
+            contentTypesXmlFull workbook placements keptParts ownMetadata
+                [ for KeyValue(_, (commentsPath, _)) in noteParts do if commentsPath <> "" then yield commentsPath ] (notePlans.Count > 0) }
     textFiles.Add { Path = "_rels/.rels"; Content = rootRelsXmlFull workbook }
     textFiles.Add { Path = "xl/workbook.xml"; Content = workbookXmlFull workbook }
     let persons = personsOf workbook
@@ -4367,7 +4489,56 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
       // (A sheet written as it was read is one of the kept parts; only whether it is the one on display may differ.)
       if placed.Verbatim.IsSome && patchPlans.ContainsKey i then
         // The file's part with the cells and sections that changed.
-        let xml = patchedSheetXml styles sharedIndex dynamicCm (i + 1) sheet sheet.Extras.Patch.Value patchPlans.[i]
+        // (Its notes, when they changed: in the comments part and the VML drawing; the part itself
+        // says nothing of them but that it has a drawing of that kind.)
+        let added =
+            match notePlans.TryGetValue i with
+            | true, notes ->
+                let newComments, newVml = noteParts.[i]
+                textFiles.Add { Path = (match notes.CommentsPath with Some path -> path | None -> newComments); Content = notes.CommentsXml }
+                match notes.VmlXml with
+                | Some xml -> textFiles.Add { Path = (match notes.VmlPath with Some path -> path | None -> newVml); Content = xml }
+                | None -> ()
+                if newComments = "" && newVml = "" then []
+                else
+                    // The file's relationships with the new parts behind them, under ids it does not use.
+                    let relsPath = relsPathOf placed.SheetPath
+                    let relsText =
+                        partText relsPath
+                        |> Option.defaultValue (sprintf "%s\n<Relationships xmlns=\"%s\"></Relationships>" declaration Namespaces.relationshipsPackage)
+                    let ids = System.Collections.Generic.HashSet<string>([ for found in relationshipIdPattern.Matches relsText -> found.Groups.[1].Value ])
+                    let freeId () =
+                        let mutable number = 1
+                        while not (ids.Add (sprintf "rId%d" number)) do number <- number + 1
+                        sprintf "rId%d" number
+                    // (Relative to the sheet's folder, as Excel writes them.)
+                    let targetOf (path: string) =
+                        if placed.SheetPath.StartsWith "xl/worksheets/" && placed.SheetPath.IndexOf ('/', 14) < 0 && path.StartsWith "xl/" then "../" + path.Substring 3
+                        else "/" + path
+                    let entries = StringBuilder()
+                    let mutable legacy = []
+                    if newComments <> "" then
+                        entries.Append(sprintf "<Relationship Id=\"%s\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments\" Target=\"%s\"/>" (freeId ()) (targetOf newComments)) |> ignore
+                    if newVml <> "" then
+                        let id = freeId ()
+                        entries.Append(sprintf "<Relationship Id=\"%s\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing\" Target=\"%s\"/>" id (targetOf newVml)) |> ignore
+                        let source = patchPlans.[i].Source
+                        let rootTag = source.Substring(0, patchPlans.[i].RootEnd)
+                        legacy <-
+                            [ "legacyDrawing",
+                              (if rootTag.Contains "xmlns:r=\"" then sprintf "<legacyDrawing r:id=\"%s\"/>" id
+                               else sprintf "<legacyDrawing xmlns:r=\"%s\" r:id=\"%s\"/>" Namespaces.relationships id) ]
+                    let close = relsText.LastIndexOf ("</Relationships>", System.StringComparison.Ordinal)
+                    let closed =
+                        if close >= 0 then relsText.Substring(0, close) + entries.ToString() + relsText.Substring close
+                        // (`<Relationships/>`: a list without an entry.)
+                        else
+                            let empty = relsText.LastIndexOf ("/>", System.StringComparison.Ordinal)
+                            relsText.Substring(0, max 0 empty) + ">" + entries.ToString() + "</Relationships>"
+                    textFiles.Add { Path = relsPath; Content = closed }
+                    legacy
+            | false, _ -> []
+        let xml = patchedSheetXml styles sharedIndex dynamicCm (i + 1) sheet sheet.Extras.Patch.Value patchPlans.[i] added
         textFiles.Add { Path = placed.SheetPath; Content = withTabSelected (i = workbook.ActiveSheetIndex) xml }
       elif placed.Verbatim.IsSome then
         match keptParts |> List.tryFind (fun (path, _) -> path = placed.SheetPath) with

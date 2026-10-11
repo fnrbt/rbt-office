@@ -6,7 +6,8 @@
 //
 // Without a row or column inserted or deleted the rows stay the file's: a
 // changed row height, a hidden or grouped row, a filter, another page setup
-// are put into the part as it is; a link or a note makes the rest of the
+// are put into the part as it is, and so is a note (it is in the comments
+// part: the sheet's own stays the file's); a link makes the rest of the
 // part be written from the sheet, its rows still the file's (their styles,
 // the shared formulas). With rows or columns inserted or deleted the sheet
 // is written from its cells, and still says what its part said beyond what
@@ -316,6 +317,98 @@ do
         (sprintf "%d shared, the file has %d" (count "t=\"shared\"" now) (count "t=\"shared\"" was))
     sameFormulas "column inserted: every formula reads as the sheet has it" saved edited
     inOrder "column inserted: the part's elements are in the schema's order" now
+
+// ---- a note is a change of the comments part and of its box, not of the sheet's part ------
+do
+    let same (path: string) (saved: byte[]) (file: Map<string, byte[]>) = (partsOf saved).TryFind path = file.TryFind path
+    let relsPath = sheetPath.Replace("worksheets/", "worksheets/_rels/") + ".rels"
+    // A note added in a cell the sheet has (B3, s="3").
+    let noted, _ = exportWith (Ops.setComment (addr 2 1) "a note" (Some "me"))
+    ok "note added: the sheet's part is the file's, byte for byte" (same sheetPath noted before) (sprintf "%d chars, the file's %d" (sheetOf noted).Length was.Length)
+    ok "note added: the cell keeps the format the file gave it" (Regex.Match(sheetOf noted, "<c r=\"B3\"[^>]*>").Value = Regex.Match(was, "<c r=\"B3\"[^>]*>").Value) (Regex.Match(sheetOf noted, "<c r=\"B3\"[^>]*>").Value)
+    ok "note added: the styles are the file's" (same "xl/styles.xml" noted before) "styles differ"
+    ok "note added: the sheet's relationships, the content types and the workbook's relationships are the file's"
+        (same relsPath noted before && same "[Content_Types].xml" noted before && same "xl/_rels/workbook.xml.rels" noted before) "differ"
+    ok "note added: read back" ((M.getCell (addr 2 1) (reread noted) |> Option.bind (fun cell -> cell.Comment)) |> Option.map (fun note -> note.Text) = Some "a note") "no note"
+    // The file's note edited: its element's own attributes stay, and its run what a sheet does not hold of it.
+    let commentsOf (saved: byte[]) = text (partsOf saved).["xl/comments1.xml"]
+    let noteOf (reference: string) (xml: string) = Regex.Match(xml, sprintf "<comment ref=\"%s\"[^>]*>[\\s\\S]*?</comment>" reference).Value
+    let changed, _ = exportWith (Ops.setComment (addr 112 4) "another text" (Some "BIWS"))
+    let note = noteOf "E113" (commentsOf changed)
+    ok "note edited: the sheet's part is the file's, byte for byte" (same sheetPath changed before) "differs"
+    ok "note edited: shapeId and xr:uid stay" (note.Contains "shapeId=\"0\"" && note.Contains "xr:uid=\"{00000000-0006-0000-0000-000001000000}\"" && note.Contains "authorId=\"0\"") (short note)
+    ok "note edited: the text is in a run with the file's run properties"
+        (note.Contains "<r><rPr><sz val=\"9\"/><color indexed=\"81\"/><rFont val=\"Tahoma\"/><family val=\"2\"/></rPr><t xml:space=\"preserve\">another text</t></r>") (short note)
+    ok "note edited: the part is the file's but for that note" ((commentsOf changed).Replace(note, "") = (text before.["xl/comments1.xml"]).Replace(noteOf "E113" (text before.["xl/comments1.xml"]), "")) "differs"
+    ok "note edited: read back" ((M.getCell (addr 112 4) (reread changed) |> Option.bind (fun cell -> cell.Comment)) |> Option.map (fun note -> note.Text) = Some "another text") "not the text"
+    // Its runs kept, one of them reworded: each run with the format it had is the file's run.
+    let reworded, _ =
+        exportWith (fun model ->
+            let info = (Ops.commentAt model (addr 112 4)).Value
+            Ops.setCommentRuns (addr 112 4) (info.Runs |> List.mapi (fun at (runText, props) -> if at = 1 then "\nreworded", props else runText, props)) info.Author model)
+    let note = noteOf "E113" (commentsOf reworded)
+    ok "note reworded in its runs: the runs keep <color indexed> and <family>"
+        (note.Contains "<r><rPr><b/><sz val=\"9\"/><color indexed=\"81\"/><rFont val=\"Tahoma\"/><family val=\"2\"/></rPr><t xml:space=\"preserve\">BIWS:</t></r>" && note.Contains "<family val=\"2\"/></rPr><t xml:space=\"preserve\">\nreworded</t></r>" && Regex.Matches(note, "<color indexed=\"81\"/>").Count = 2)
+        (short note)
+    // A note and a cell changed together: the cell is in the part, the rest of it the file's.
+    let both, _ = exportWith (Ops.setComment (addr 2 1) "a note" (Some "me") >> M.setCell (addr 401 2) { Value = M.CellValue.Number 5.0; Format = M.defaultFormat; Comment = None })
+    ok "a note and a cell: the part is the file's with the cell in it" ((sheetOf both).Contains "<c r=\"C402\"" && withoutRow 402 (Regex.Replace(sheetOf both, "<row r=\"402\"[\\s\\S]*?</row>", "")) = Regex.Replace(was, "<dimension[^>]*>", Regex.Match(sheetOf both, "<dimension[^>]*>").Value)) "differs"
+
+// ... also in a sheet that had no note: the part gets a <legacyDrawing>, its relationships two entries.
+for file, sheetName, cell, hasLegacy in [ "real-world/milk-street-office.xlsx", "Monthly", "G5", false; "real-world/dashboard-ecommerce-sales.xlsx", "", "G5", true; "real-world/dashboard-sales-analysis.xlsx", "", "B3", false ] do
+    let bytes = File.ReadAllBytes(Path.Combine(root, file))
+    let wb = XlsxReader.loadBytesNative bytes |> Option.get
+    let book = Bridge.Import.importWorkbook wb
+    let file0 = partsOf bytes
+    // (The sheet named, or the first one that has the cell and - or not - a VML drawing of its own.)
+    let candidates =
+        [ for at in 0 .. book.Sheets.Length - 1 do
+            match (List.item at wb.Sheets).Extras.SourcePart with
+            | Some (path, relType) when relType.EndsWith "/worksheet" && file0.ContainsKey path ->
+                let xml = text file0.[path]
+                if (sheetName = "" || book.Sheets.[at].Name = sheetName) && xml.Contains (sprintf "<c r=\"%s\"" cell) && Regex.IsMatch(xml, "<legacyDrawing[\\s/]") = hasLegacy
+                   && not (file0 |> Map.exists (fun known data -> known = path.Replace("worksheets/", "worksheets/_rels/") + ".rels" && (text data).Contains "/comments\"")) then yield at, path ]
+    match candidates with
+    | [] -> ok (sprintf "%s: a sheet without notes that has %s" file cell) false "none"
+    | (at, path) :: _ ->
+        let label = sprintf "%s %s!%s" (Path.GetFileName file) book.Sheets.[at].Name cell
+        let found = Regex.Match(cell, "([A-Z]+)([0-9]+)")
+        let where = addr (int found.Groups.[2].Value - 1) (int found.Groups.[1].Value.[0] - int 'A')
+        let sheets = book.Sheets |> Array.map (fun sheet -> sheet.Model)
+        sheets.[at] <- Ops.setComment where "a first note" (Some "me") sheets.[at]
+        let input : Bridge.ExportInput =
+            { Sheets = sheets; Names = book.Sheets |> Array.map (fun sheet -> sheet.Name); Visible = book.Sheets |> Array.map (fun sheet -> sheet.Visible)
+              ActiveSheetIndex = wb.Preserved.ActiveTab; NameInfo = book.Context.NameInfo; DefinedNames = book.Context.Names; Source = Some book.Source; Macros = None }
+        let saved = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
+        let now = partsOf saved
+        let xmlWas, xmlNow = text file0.[path], text now.[path]
+        let legacy = Regex.Match(xmlNow, "<legacyDrawing [^>]*/>").Value
+        if hasLegacy then ok (label + ": the sheet's part is the file's, byte for byte (it has a VML drawing)") (xmlNow = xmlWas) (sprintf "%d chars, the file's %d" xmlNow.Length xmlWas.Length)
+        else
+            ok (label + ": the sheet's part is the file's with a <legacyDrawing> in it") (legacy <> "" && xmlNow.Replace(legacy, "") = xmlWas) (sprintf "%s; %d chars, the file's %d" legacy xmlNow.Length xmlWas.Length)
+            ok (label + ": ... where the schema has it, without a namespace of its own") (not (legacy.Contains "xmlns") && (let after = xmlNow.Substring(xmlNow.IndexOf legacy + legacy.Length) in Regex.IsMatch(after, "^<(legacyDrawingHF|drawingHF|picture|oleObjects|controls|webPublishItems|tableParts|extLst|/worksheet)"))) (short (xmlNow.Substring(xmlNow.IndexOf legacy)))
+        ok (label + ": the cell keeps the format the file gave it") (Regex.Match(xmlNow, sprintf "<c r=\"%s\"[^>]*>" cell).Value = Regex.Match(xmlWas, sprintf "<c r=\"%s\"[^>]*>" cell).Value) (Regex.Match(xmlNow, sprintf "<c r=\"%s\"[^>]*>" cell).Value)
+        ok (label + ": styles, shared strings, the workbook and its relationships are the file's")
+            ([ "xl/styles.xml"; "xl/sharedStrings.xml"; "xl/workbook.xml"; "xl/_rels/workbook.xml.rels" ] |> List.forall (fun part -> now.TryFind part = file0.TryFind part)) "differ"
+        let relsPath = path.Replace("worksheets/", "worksheets/_rels/") + ".rels"
+        let relsWas = file0.TryFind relsPath |> Option.map text |> Option.defaultValue ""
+        let relsNow = now.TryFind relsPath |> Option.map text |> Option.defaultValue ""
+        let entries (xml: string) = [ for found in Regex.Matches(xml, "<Relationship [^>]*/>") -> found.Value ]
+        let added = entries relsNow |> List.filter (fun entry -> not (List.contains entry (entries relsWas)))
+        ok (label + ": the sheet's relationships are the file's with the comments part" + (if hasLegacy then "" else " and its drawing") + " behind them")
+            ((relsWas = "" || relsNow.StartsWith (relsWas.Substring(0, relsWas.LastIndexOf "</Relationships>"))) && added.Length = (if hasLegacy then 1 else 2)
+             && added |> List.forall (fun entry -> entry.Contains "Target=\"../") && (entries relsNow |> List.map (fun entry -> Regex.Match(entry, "Id=\"([^\"]*)\"").Value) |> List.distinct).Length = (entries relsNow).Length)
+            (String.concat " " added)
+        let typesWas, typesNow = text file0.["[Content_Types].xml"], text now.["[Content_Types].xml"]
+        let typeEntries (xml: string) = [ for found in Regex.Matches(xml, "<(Default|Override) [^>]*/>") -> found.Value ]
+        let addedTypes = typeEntries typesNow |> List.filter (fun entry -> not (List.contains entry (typeEntries typesWas)))
+        ok (label + ": the content types are the file's with the comments part (and VML, when the file had none)")
+            (typeEntries typesWas |> List.forall (fun entry -> List.contains entry (typeEntries typesNow)) && addedTypes |> List.exists (fun entry -> entry.Contains "comments+xml") && addedTypes.Length <= 2) (String.concat " " addedTypes)
+        ok (label + ": every other part of the file is in the package as it was")
+            (file0 |> Map.forall (fun known data -> known = path || known = relsPath || known = "[Content_Types].xml" || known.EndsWith ".vml" || known = "docProps/app.xml" || now.TryFind known = Some data))
+            (file0 |> Map.toList |> List.filter (fun (known, data) -> now.TryFind known <> Some data) |> List.map fst |> String.concat " ")
+        let again = (Bridge.Import.importWorkbook (XlsxReader.loadBytesNative saved |> Option.get)).Sheets.[at].Model
+        ok (label + ": read back") ((M.getCell where again |> Option.bind (fun c -> c.Comment)) |> Option.map (fun note -> note.Text, note.Author) = Some ("a first note", Some "me")) "no note"
 
 // ---- a note without an author ------------------------------------------------------
 // It is no one's: the authors list has an empty entry for it (not the first author of the list).
