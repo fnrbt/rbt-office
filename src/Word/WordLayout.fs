@@ -945,6 +945,16 @@ module Paragraph =
             | Numbered -> -48.0)
 
 module Numbering =
+    /// The level of the paragraph's list the file defines (none: a list made in the editor).
+    let levelDefinition (metadata: BlockMetadata) (level: int) : ListLevelDefinition option =
+        if metadata.ListLevels.IsEmpty then None
+        else metadata.ListLevels |> List.tryFind (fun definition -> definition.Level = level)
+
+    let private ownLevel (metadata: BlockMetadata) : ListLevelDefinition option =
+        // (The level the paragraph was read at, or was moved to: its format is the definition's.)
+        levelDefinition metadata metadata.ListLevel
+        |> Option.filter (fun definition -> metadata.ListNumberFormat.IsNone || metadata.ListNumberFormat = Some definition.NumberFormat)
+
     let private markerFontFamily (metadata: BlockMetadata) marker =
         match metadata.ListStyle, metadata.ListLevelText with
         | Bullet, Some text when text.Contains("\uF0B7") -> Some "Symbol"
@@ -952,10 +962,24 @@ module Numbering =
         | Bullet, Some text when text = "o" -> Some "Courier New"
         | _ -> None
 
+    /// The style the number or bullet is set in: the paragraph's, with what
+    /// the list level says of its number (face, bold, italic, colour, size).
     let markerTextStyle (metadata: BlockMetadata) marker (paragraphTextStyle: TextStyle) =
+        let styled =
+            match ownLevel metadata with
+            | None -> paragraphTextStyle
+            | Some definition ->
+                let style = paragraphTextStyle
+                let style = match definition.MarkBold with Some bold -> { style with Bold = bold } | None -> style
+                let style = match definition.MarkItalic with Some italic -> { style with Italic = italic } | None -> style
+                let style = match definition.MarkColor with Some color -> { style with Color = Some color } | None -> style
+                let style = match definition.MarkSize with Some size when size > 0.0 -> { style with FontSize = size } | _ -> style
+                match definition.MarkFont with
+                | Some family when family.Trim() <> "" -> { style with FontFamily = Some family }
+                | _ -> style
         match markerFontFamily metadata marker with
-        | Some family -> { paragraphTextStyle with FontFamily = Some family }
-        | None -> paragraphTextStyle
+        | Some family -> { styled with FontFamily = Some family }
+        | None -> styled
 
     let displayMarkerText (marker: string) =
         marker
@@ -994,23 +1018,47 @@ module Numbering =
         elif optionEqualsIgnoreCase "upperletter" format then alphaNumber true value
         elif optionEqualsIgnoreCase "lowerroman" format then romanNumeral value |> fun text -> text.ToLowerInvariant()
         elif optionEqualsIgnoreCase "upperroman" format then romanNumeral value
+        elif optionEqualsIgnoreCase "decimalzero" format then (if value < 10 then "0" + string value else string value)
+        elif optionEqualsIgnoreCase "none" format then ""
         else string value
 
     let counterKey (metadata: BlockMetadata) =
         (metadata.ListId |> Option.defaultValue "", metadata.ListLevel)
 
+    /// What follows the number: a tab (shown as a space) unless the level says a space or nothing.
+    let private markerSuffix (metadata: BlockMetadata) =
+        match ownLevel metadata |> Option.bind (fun definition -> definition.Suffix) with
+        | Some "nothing" -> ""
+        | _ -> " "
+
     let formatMarker (metadata: BlockMetadata) (counters: Map<string * int, int>) =
         match metadata.ListLevelText with
         | Some template when template.Contains("%") ->
+            // (w:isLgl: the numbers of all the levels are decimal in this level's text.)
+            let legal = ownLevel metadata |> Option.exists (fun definition -> definition.Legal)
             let mutable text = template
             for level in 1 .. 9 do
-                let key = (metadata.ListId |> Option.defaultValue "", level)
-                let value = counters |> Map.tryFind key |> Option.defaultValue 1
-                let replacement =
-                    if level = metadata.ListLevel then formatNumber metadata.ListNumberFormat value
-                    else string value
-                text <- text.Replace("%" + string level, replacement)
-            text + " "
+                if text.Contains("%" + string level) then
+                    let key = (metadata.ListId |> Option.defaultValue "", level)
+                    let definition = levelDefinition metadata level
+                    let value =
+                        match counters |> Map.tryFind key with
+                        | Some value -> value
+                        // (A level above that has no paragraph yet counts from its start.)
+                        | None -> definition |> Option.bind (fun definition -> definition.Start) |> Option.defaultValue 1
+                    let replacement =
+                        if legal then string value
+                        elif level = metadata.ListLevel then formatNumber metadata.ListNumberFormat value
+                        else
+                            // (The number of another level is written as that level writes it.)
+                            match definition with
+                            | Some definition -> formatNumber (Some definition.NumberFormat) value
+                            | None -> string value
+                    text <- text.Replace("%" + string level, replacement)
+            text + markerSuffix metadata
+        | Some template when metadata.ListStyle = Numbered && not metadata.ListLevels.IsEmpty ->
+            // (A level whose text has no number: the text as it is - "Chapter", or nothing.)
+            if template = "" then "" else template + markerSuffix metadata
         | _ -> sprintf "%s. " (formatNumber metadata.ListNumberFormat (counters |> Map.tryFind (counterKey metadata) |> Option.defaultValue 1))
 
     let markerAndCounters (metadata: BlockMetadata) (counters: Map<string * int, int>) =
@@ -1026,8 +1074,20 @@ module Numbering =
                 | None -> metadata.ListStart |> Option.defaultValue 1
             let mutable updated = counters |> Map.add key next
             for childLevel in level + 1 .. 9 do
-                updated <- updated |> Map.remove (metadata.ListId |> Option.defaultValue "", childLevel)
+                // (A level starts again after any level above it, unless it says after which - w:lvlRestart; 0: never.)
+                let restarts =
+                    match levelDefinition metadata childLevel |> Option.bind (fun definition -> definition.Restart) with
+                    | Some 0 -> false
+                    | Some after -> level <= after
+                    | None -> true
+                if restarts then updated <- updated |> Map.remove (metadata.ListId |> Option.defaultValue "", childLevel)
             Some (formatMarker metadata updated), updated
+
+    /// How the number stands at its position ("left", "center", "right").
+    let markerJustification (metadata: BlockMetadata) : string =
+        match metadata.ListStyle with
+        | NoList -> "left"
+        | _ -> ownLevel metadata |> Option.bind (fun definition -> definition.Justification) |> Option.defaultValue "left"
 
     let markerWidth measureText marker textStyle =
         if marker = "" then 0.0

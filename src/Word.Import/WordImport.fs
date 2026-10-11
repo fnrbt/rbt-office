@@ -298,10 +298,40 @@ let private paragraphBorderAdvanceToLayoutPx (value: DocxReader.ParagraphBorder 
 type private NumberingResolver = {
     ById: Map<string * int, DocxReader.NumberingDefinition>
     ByStyle: Map<string, DocxReader.NumberingDefinition>
+    /// All the levels of each list (one list object per list: every paragraph of it has the same).
+    Levels: Map<string, ListLevelDefinition list>
 }
 
 let private numberingResolver (definitions: DocxReader.NumberingDefinition list) =
     {
+        Levels =
+            definitions
+            |> List.groupBy (fun def -> def.NumId)
+            |> List.map (fun (numId, levels) ->
+                numId,
+                levels
+                |> List.sortBy (fun def -> def.Level)
+                |> List.map (fun def ->
+                    ({ Level = def.Level + 1
+                       NumberFormat = def.NumberFormat
+                       LevelText = def.LevelText
+                       Start = def.Start
+                       IndentLeft = twipsToCanvasPixels def.IndentLeft
+                       FirstLineIndent =
+                           (match twipsToCanvasPixels def.FirstLineIndent, twipsToCanvasPixels def.HangingIndent with
+                            | Some firstLine, _ -> Some firstLine
+                            | None, Some hanging -> Some -hanging
+                            | None, None -> None)
+                       Suffix = def.Suffix
+                       Justification = def.Justification
+                       Legal = def.Legal
+                       Restart = def.Restart
+                       MarkFont = def.MarkFont
+                       MarkBold = def.MarkBold
+                       MarkItalic = def.MarkItalic
+                       MarkColor = (match def.MarkColor with Some "auto" | None -> None | value -> color value)
+                       MarkSize = def.MarkSize |> Option.map (fun size -> TC.fontSizeToPoints (Some size)) }: ListLevelDefinition)))
+            |> Map.ofList
         ById = definitions |> List.map (fun def -> (def.NumId, def.Level), def) |> Map.ofList
         ByStyle =
             definitions
@@ -687,6 +717,7 @@ let private paraMetadata styleMap resolver useDocumentMarkForPureEmpty defaultMi
             HasMarkProperties = props.ParagraphRunProperties.IsSome
             ExplicitMarkFontSize = props.ParagraphRunProperties |> Option.bind (fun mark -> mark.FontSize |> Option.map (fun _ -> TC.fontSizeToPoints mark.FontSize))
             ListLevelIndents = numberingDef |> Option.map (fun _ -> numberingIndentLeft, numberingFirstLineIndent)
+            ListLevels = numberingDef |> Option.bind (fun def -> resolver.Levels |> Map.tryFind def.NumId) |> Option.defaultValue []
             MarkRevision =
                 para.MarkRevision
                 |> Option.map (fun (revisionType, mark) ->

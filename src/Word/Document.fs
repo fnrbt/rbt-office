@@ -102,6 +102,35 @@ type TabStop = {
     Leader: string option
 }
 
+/// One level of a list as the file's numbering part defines it (a w:lvl of
+/// the list's abstract numbering, with the list's overrides).
+type ListLevelDefinition = {
+    /// 1-9, as BlockMetadata.ListLevel.
+    Level: int
+    /// w:numFmt: "decimal", "lowerLetter", "upperRoman", "bullet", "none", ...
+    NumberFormat: string
+    /// w:lvlText: the number's text, with %1 ... %9 for the numbers of the levels.
+    LevelText: string option
+    Start: int option
+    /// The level's indents (layout pixels; a negative first line is hanging).
+    IndentLeft: float option
+    FirstLineIndent: float option
+    /// w:suff: what follows the number - "tab" (none stated), "space", "nothing".
+    Suffix: string option
+    /// w:lvlJc: how the number stands at its position - "left" (none stated), "center", "right".
+    Justification: string option
+    /// w:isLgl: the numbers of all the levels in this level's text are decimal.
+    Legal: bool
+    /// w:lvlRestart: the level after which this one starts again (0: never); none: after any level above it.
+    Restart: int option
+    /// The look of the number (the level's run properties), where it states one.
+    MarkFont: string option
+    MarkBold: bool option
+    MarkItalic: bool option
+    MarkColor: string option
+    MarkSize: float option
+}
+
 type BlockMetadata = {
     Style: string option
     ContentControlId: string option
@@ -169,6 +198,11 @@ type BlockMetadata = {
     /// paragraph's list level, when its list came from a file: where an indent
     /// the paragraph does not state comes from.
     ListLevelIndents: (float option * float option) option
+    /// All the levels of the paragraph's list, when the list came from a file
+    /// (the same list object for every paragraph of the list): what the
+    /// paragraph has at another level (see withListLevel), and how the numbers
+    /// of the other levels are written in its own.
+    ListLevels: ListLevelDefinition list
     /// The paragraph mark itself is a tracked change (w:ins / w:del in the
     /// mark's run properties): inserted = the paragraph was split here, deleted
     /// = it is to be joined with the next one.
@@ -259,6 +293,7 @@ let defaultMetadata = {
     HasMarkProperties = false
     ExplicitMarkFontSize = None
     ListLevelIndents = None
+    ListLevels = []
     MarkRevision = None
 }
 
@@ -4419,12 +4454,40 @@ let setNumberFormat format doc =
             ListNumberFormat = Some normalizedFormat
             ListLevelText = None }) doc
 
+/// A paragraph of a list at another level of it (1-9). A list that came from
+/// a file has its levels (BlockMetadata.ListLevels): the paragraph gets the
+/// level's number format, text and start, and the level's indents where it
+/// states none of its own - what it would have had if the file had said that
+/// level. A list made in the editor has the editor's own levels.
+let withListLevel (level: int) (metadata: BlockMetadata) : BlockMetadata =
+    let level = max 1 (min 9 level)
+    match metadata.ListLevels |> List.tryFind (fun definition -> definition.Level = level) with
+    | None -> { metadata with ListLevel = level }
+    | Some definition ->
+        let previous = metadata.ListLevelIndents
+        // (An indent the paragraph has from the level it leaves is the new level's; its own stays.)
+        let indent (flag: int) (current: float option) (fromOld: float option) (fromNew: float option) =
+            if ParagraphExplicit.has flag metadata then current
+            else
+                match fromNew with
+                | Some _ -> fromNew
+                | None -> (if current = fromOld then None else current)
+        { metadata with
+            ListLevel = level
+            ListStyle = (if definition.NumberFormat = "bullet" then Bullet else Numbered)
+            ListNumberFormat = Some definition.NumberFormat
+            ListLevelText = definition.LevelText
+            ListStart = definition.Start
+            ListLevelIndents = Some (definition.IndentLeft, definition.FirstLineIndent)
+            IndentLeft = indent ParagraphExplicit.IndentLeft metadata.IndentLeft (previous |> Option.bind fst) definition.IndentLeft
+            FirstLineIndent = indent ParagraphExplicit.FirstLineIndent metadata.FirstLineIndent (previous |> Option.bind snd) definition.FirstLineIndent }
+
 /// Increase list indentation (Tab) of the selected paragraphs
 let increaseIndent doc =
     mapSelectedMetadata (fun metadata ->
         // Only increase if in a list and not at max level
         if metadata.ListStyle <> NoList && metadata.ListLevel < 9 then
-            { metadata with ListLevel = metadata.ListLevel + 1 }
+            withListLevel (metadata.ListLevel + 1) metadata
         else
             metadata) doc
 
@@ -4438,9 +4501,14 @@ let decreaseIndent doc =
                 // Exit list when reaching level 0
                 { metadata with ListStyle = NoList; ListLevel = 0 }
             else
-                { metadata with ListLevel = newLevel }
+                withListLevel newLevel metadata
         else
             metadata) doc
+
+/// Put the selected paragraphs that are in a list at a level of it (1-9).
+let setListLevel (level: int) doc =
+    mapSelectedMetadata (fun metadata ->
+        if metadata.ListStyle <> NoList then withListLevel level metadata else metadata) doc
 
 let private setAlignment alignment doc =
     mapSelectedMetadata (fun metadata -> { metadata with Alignment = alignment; ExplicitAlignment = true }) doc

@@ -371,6 +371,36 @@ let private refsToEditor refs =
     |> List.map (fun (kind, relationshipId) -> createObj [ "Kind" ==> kind; "RelationshipId" ==> relationshipId ])
     |> List.toArray
 
+/// The levels of a paragraph's list as the reader hands them over: an array
+/// that every paragraph of the list refers to. They are made once per array
+/// (kept on it), so the paragraphs of a list share one list of levels.
+let private listLevelsFromEditor (levels: obj) : ListLevelDefinition list =
+    if isNullOrUndefined levels then []
+    else
+        let known = levels?__levels
+        if not (isNullOrUndefined known) then unbox<ListLevelDefinition list> known
+        else
+            let made : ListLevelDefinition list =
+                [ for index in 0 .. jsArrayLength levels - 1 ->
+                    let level = jsArrayGet levels index
+                    { Level = level?Level |> intOrDefault (index + 1)
+                      NumberFormat = level?NumberFormat |> stringOrDefault "decimal"
+                      LevelText = (if isNullOrUndefined (level?LevelText) then None else Some (unbox<string> level?LevelText))
+                      Start = optionalInt (level?Start)
+                      IndentLeft = optionalFloat (level?IndentLeft)
+                      FirstLineIndent = optionalFloat (level?FirstLineIndent)
+                      Suffix = optionalString (level?Suffix)
+                      Justification = optionalString (level?Justification)
+                      Legal = boolOrDefault false (level?Legal)
+                      Restart = optionalInt (level?Restart)
+                      MarkFont = optionalString (level?MarkFont)
+                      MarkBold = optionalBool (level?MarkBold)
+                      MarkItalic = optionalBool (level?MarkItalic)
+                      MarkColor = optionalString (level?MarkColor)
+                      MarkSize = optionalFloat (level?MarkSize) } ]
+            levels?__levels <- made
+            made
+
 let private metadataFromEditor (item: obj) =
     let alignment = item?Alignment |> stringOrDefault "left" |> alignmentFromString
     let style = optionalString (item?Style)
@@ -516,6 +546,7 @@ let private metadataFromEditor (item: obj) =
             ListLevelIndents =
                 if boolOrDefault false (item?HasListLevelIndents) then Some (optionalFloat (item?ListLevelIndentLeft), optionalFloat (item?ListLevelFirstLineIndent))
                 else None
+            ListLevels = (if listStyle = NoList then [] else listLevelsFromEditor (item?ListLevels))
     }
 
 /// Convert EditorRun array to TextBuffer

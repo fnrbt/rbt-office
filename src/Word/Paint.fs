@@ -1057,6 +1057,13 @@ let private addParagraphCommandsWithBaselineOffset baselineOffset (settings: Lay
                 layout.PrefixStyle
                 |> Option.map styleFromTextStyle
                 |> Option.defaultValue (defaultPaintStyle settings.FontSize fontFamily)
+        // (w:lvlJc: a number that is right-aligned ends where a left-aligned one starts - roman
+        // numbers in a column; a centred one has its middle there.)
+        let prefixX =
+            match WordLayout.Numbering.markerJustification layout.Metadata, layout.PrefixStyle with
+            | ("right" | "end"), Some style -> prefixX - measureText (prefixText.TrimEnd()) style
+            | "center", Some style -> prefixX - measureText (prefixText.TrimEnd()) style / 2.0
+            | _ -> prefixX
         let prefixDrawWidth =
             if prefixText <> layout.Prefix then 0.0
             else

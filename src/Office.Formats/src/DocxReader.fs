@@ -588,6 +588,20 @@ type NumberingDefinition = {
     HangingIndent: string option
     FirstLineIndent: string option
     RightTabPosition: string option
+    /// w:suff: what follows the number ("tab" when not stated, "space", "nothing").
+    Suffix: string option
+    /// w:lvlJc: how the number stands at its position ("left" when not stated, "center", "right").
+    Justification: string option
+    /// w:isLgl: the numbers of all levels in this level's text are decimal.
+    Legal: bool
+    /// w:lvlRestart: the level (1-9) after which this one starts again; 0: never.
+    Restart: int option
+    /// The run properties of the number (the level's w:rPr): face, bold, italic, colour (w:val), size (half points).
+    MarkFont: string option
+    MarkBold: bool option
+    MarkItalic: bool option
+    MarkColor: string option
+    MarkSize: string option
 }
 
 /// A relationship kept from the opened package. An internal Target is the
@@ -2606,7 +2620,56 @@ module Numbering =
         HangingIndent: string option
         FirstLineIndent: string option
         RightTabPosition: string option
+        Suffix: string option
+        Justification: string option
+        Legal: bool
+        Restart: int option
+        MarkFont: string option
+        MarkBold: bool option
+        MarkItalic: bool option
+        MarkColor: string option
+        MarkSize: string option
     }
+
+    /// A w:lvl (of an abstract numbering, or of a w:lvlOverride).
+    let private parseLevel (level: XmlNode) : LevelDefinition =
+        let intOf (name: string) =
+            Ns.childNs name level
+            |> Option.bind (Docx.attr "val")
+            |> Option.bind (fun value ->
+                match System.Int32.TryParse value with
+                | true, parsed -> Some parsed
+                | false, _ -> None)
+        let pPr = Ns.childNs "pPr" level
+        let ind = pPr |> Option.bind (Ns.childNs "ind")
+        let tabPosition =
+            pPr
+            |> Option.bind (Ns.childNs "tabs")
+            |> Option.bind (fun tabs ->
+                Xml.children tabs
+                |> List.tryPick (fun tab ->
+                    if Xml.name tab |> Option.exists (fun name -> Ns.stripNs name = "tab") then Docx.attr "pos" tab else None))
+        let rPr = Ns.childNs "rPr" level
+        let mark = rPr |> Option.map (fun _ -> Docx.runProps level)
+        {
+            ParagraphStyle = Ns.childNs "pStyle" level |> Option.bind (Docx.attr "val")
+            NumberFormat = Ns.childNs "numFmt" level |> Option.bind (Docx.attr "val") |> Option.defaultValue "decimal"
+            LevelText = Ns.childNs "lvlText" level |> Option.bind (Docx.attr "val")
+            Start = intOf "start"
+            IndentLeft = ind |> Option.bind (fun node -> Docx.attr "left" node |> Option.orElse (Docx.attr "start" node))
+            HangingIndent = ind |> Option.bind (Docx.attr "hanging")
+            FirstLineIndent = ind |> Option.bind (Docx.attr "firstLine")
+            RightTabPosition = tabPosition
+            Suffix = Ns.childNs "suff" level |> Option.bind (Docx.attr "val")
+            Justification = Ns.childNs "lvlJc" level |> Option.bind (Docx.attr "val")
+            Legal = Docx.onOff "isLgl" level |> Option.defaultValue false
+            Restart = intOf "lvlRestart"
+            MarkFont = mark |> Option.bind (fun props -> props.FontFamily)
+            MarkBold = mark |> Option.bind (fun props -> props.Bold)
+            MarkItalic = mark |> Option.bind (fun props -> props.Italic)
+            MarkColor = mark |> Option.bind (fun props -> props.Color)
+            MarkSize = mark |> Option.bind (fun props -> props.FontSize)
+        }
 
     let parseNumbering (xml: string) : NumberingDefinition list =
         let doc = XmlDsl.parse xml
@@ -2620,42 +2683,7 @@ module Numbering =
                         Ns.descendantsNs "lvl" abstractNum
                         |> List.choose (fun level ->
                             Docx.attr "ilvl" level
-                            |> Option.bind (fun ilvl ->
-                                let parseLevel (level: XmlNode) =
-                                    let numberFormat =
-                                        Ns.childNs "numFmt" level
-                                        |> Option.bind (Docx.attr "val")
-                                        |> Option.defaultValue "decimal"
-                                    let levelText =
-                                        Ns.childNs "lvlText" level
-                                        |> Option.bind (Docx.attr "val")
-                                    let start =
-                                        Ns.childNs "start" level
-                                        |> Option.bind (Docx.attr "val")
-                                        |> Option.bind (fun value ->
-                                            match System.Int32.TryParse value with
-                                            | true, parsed -> Some parsed
-                                            | false, _ -> None)
-                                    let pPr = Ns.childNs "pPr" level
-                                    let ind = pPr |> Option.bind (Ns.childNs "ind")
-                                    let tabPosition =
-                                        pPr
-                                        |> Option.bind (Ns.childNs "tabs")
-                                        |> Option.bind (fun tabs ->
-                                            Xml.children tabs
-                                            |> List.tryPick (fun tab ->
-                                                if Xml.name tab |> Option.exists (fun name -> Ns.stripNs name = "tab") then Docx.attr "pos" tab else None))
-                                    {
-                                        ParagraphStyle = Ns.childNs "pStyle" level |> Option.bind (Docx.attr "val")
-                                        NumberFormat = numberFormat
-                                        LevelText = levelText
-                                        Start = start
-                                        IndentLeft = ind |> Option.bind (Docx.attr "left")
-                                        HangingIndent = ind |> Option.bind (Docx.attr "hanging")
-                                        FirstLineIndent = ind |> Option.bind (Docx.attr "firstLine")
-                                        RightTabPosition = tabPosition
-                                    }
-                                Some (int ilvl, parseLevel level)))
+                            |> Option.map (fun ilvl -> int ilvl, parseLevel level))
                     (abstractId, levels)))
             |> Map.ofList
 
@@ -2685,32 +2713,7 @@ module Numbering =
                         Docx.attr "ilvl" overrideNode
                         |> Option.bind (fun ilvl ->
                             Ns.childNs "lvl" overrideNode
-                            |> Option.map (fun level ->
-                                let numberFormat =
-                                    Ns.childNs "numFmt" level
-                                    |> Option.bind (Docx.attr "val")
-                                    |> Option.defaultValue "decimal"
-                                let levelText = Ns.childNs "lvlText" level |> Option.bind (Docx.attr "val")
-                                let start = Ns.childNs "start" level |> Option.bind (Docx.attr "val") |> Option.bind (fun value -> match System.Int32.TryParse value with | true, parsed -> Some parsed | false, _ -> None)
-                                let pPr = Ns.childNs "pPr" level
-                                let ind = pPr |> Option.bind (Ns.childNs "ind")
-                                let tabPosition =
-                                    pPr
-                                    |> Option.bind (Ns.childNs "tabs")
-                                    |> Option.bind (fun tabs ->
-                                        Xml.children tabs
-                                        |> List.tryPick (fun tab ->
-                                            if Xml.name tab |> Option.exists (fun name -> Ns.stripNs name = "tab") then Docx.attr "pos" tab else None))
-                                int ilvl, {
-                                    ParagraphStyle = Ns.childNs "pStyle" level |> Option.bind (Docx.attr "val")
-                                    NumberFormat = numberFormat
-                                    LevelText = levelText
-                                    Start = start
-                                    IndentLeft = ind |> Option.bind (Docx.attr "left")
-                                    HangingIndent = ind |> Option.bind (Docx.attr "hanging")
-                                    FirstLineIndent = ind |> Option.bind (Docx.attr "firstLine")
-                                    RightTabPosition = tabPosition
-                                })))
+                            |> Option.map (fun level -> int ilvl, parseLevel level)))
                     |> Map.ofList
 
                 abstractFormatMap
@@ -2730,6 +2733,15 @@ module Numbering =
                     HangingIndent = def.HangingIndent
                     FirstLineIndent = def.FirstLineIndent
                     RightTabPosition = def.RightTabPosition
+                    Suffix = def.Suffix
+                    Justification = def.Justification
+                    Legal = def.Legal
+                    Restart = def.Restart
+                    MarkFont = def.MarkFont
+                    MarkBold = def.MarkBold
+                    MarkItalic = def.MarkItalic
+                    MarkColor = def.MarkColor
+                    MarkSize = def.MarkSize
                 })
             | _ -> [])
 
@@ -6479,6 +6491,40 @@ let private numberingApplier (numberingDefinitions: NumberingDefinition list) : 
         numberingDefinitions
         |> List.choose (fun def -> def.ParagraphStyle |> Option.map (fun styleId -> (styleId, def)))
         |> Map.ofList
+    // All the levels of each list (one array per list, the same object for every paragraph of
+    // it): an editor that moves a paragraph to another level has that level's number, text,
+    // indents and the look of its number without reading the file again.
+    let levelsOfList =
+        numberingDefinitions
+        |> List.groupBy (fun def -> def.NumId)
+        |> List.map (fun (numId, levels) ->
+            numId,
+            box (levels
+                 |> List.sortBy (fun def -> def.Level)
+                 |> List.map (fun def ->
+                     objFromFields [
+                         "Level" ==> def.Level + 1
+                         "NumberFormat" ==> def.NumberFormat
+                         "LevelText" ==> def.LevelText
+                         "Start" ==> def.Start
+                         "IndentLeft" ==> wordTwipsToPoints def.IndentLeft
+                         "FirstLineIndent" ==>
+                             (match wordTwipsToPoints def.FirstLineIndent, wordTwipsToPoints def.HangingIndent with
+                              | Some firstLine, _ -> Some firstLine
+                              | None, Some hanging -> Some -hanging
+                              | None, None -> None)
+                         "Suffix" ==> def.Suffix
+                         "Justification" ==> def.Justification
+                         "Legal" ==> def.Legal
+                         "Restart" ==> def.Restart
+                         "MarkFont" ==> def.MarkFont
+                         "MarkBold" ==> def.MarkBold
+                         "MarkItalic" ==> def.MarkItalic
+                         "MarkColor" ==> (def.MarkColor |> Option.filter (fun value -> value <> "auto") |> wordColorToCss)
+                         "MarkSize" ==> (def.MarkSize |> Option.map (fun size -> wordFontSizeToPoints (Some size)))
+                     ])
+                 |> List.toArray))
+        |> Map.ofList
 
     let applyToParagraph (item: obj) =
         let listId = optionalStringValue (getProp item "ListId")
@@ -6506,6 +6552,9 @@ let private numberingApplier (numberingDefinitions: NumberingDefinition list) : 
         | None -> ()
         match listDefinition with
         | Some def ->
+            match Map.tryFind def.NumId levelsOfList with
+            | Some levels -> setProp item "ListLevels" levels
+            | None -> ()
             // The level's own indents: where an indent the paragraph does not state
             // comes from, and what the writer puts back into the numbering definition.
             setProp item "HasListLevelIndents" true

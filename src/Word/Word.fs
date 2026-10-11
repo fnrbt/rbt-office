@@ -2056,6 +2056,8 @@ module API =
                     "BlockHeight" ==> layout.Height
                     "AvailableWidth" ==> layout.AvailableWidth
                     "Indent" ==> layout.Indent
+                    // The number or bullet of a list item, on its first line ("" otherwise): as it is shown, with what follows it.
+                    "ListMarker" ==> (if lineIndex = 0 then layout.Prefix else "")
                     "InTable" ==> isInTable
                     "Table" ==> (context |> Option.bind _.TableIndex |> jsOpt)
                     "Row" ==> (context |> Option.bind _.RowIndex |> jsOpt)
@@ -3149,12 +3151,22 @@ module API =
         let newDoc = Doc.toggleNumberedList editor.Doc
         commitDocumentUpdate editor newDoc
 
+    /// The selected list items one level down (what Tab does at the start of
+    /// a list item). In a list that came from a file the items get the number
+    /// format, the text, the start and the indents the file's numbering gives
+    /// that level - at once, as they are after the file is read again.
     let increaseIndent (editor: Editor) =
         let newDoc = Doc.increaseIndent editor.Doc
         commitDocumentUpdate editor newDoc
 
+    /// The selected list items one level up (Shift+Tab); from the first level out of the list.
     let decreaseIndent (editor: Editor) =
         let newDoc = Doc.decreaseIndent editor.Doc
+        commitDocumentUpdate editor newDoc
+
+    /// The selected list items at a level of their list (1-9; see increaseIndent).
+    let setListLevel (editor: Editor) (level: int) =
+        let newDoc = Doc.setListLevel level editor.Doc
         commitDocumentUpdate editor newDoc
 
     let applyParagraphStyle (editor: Editor) (alignment: string) (indentLeft: float) (indentRight: float) (spacingBefore: float) (spacingAfter: float) (lineSpacing: float) (fontSize: float) (firstLineIndent: float option) (backgroundColor: string) =
@@ -3757,6 +3769,7 @@ module API =
             "toggleNumberedList" ==> toggleNumberedList
             "increaseIndent" ==> increaseIndent
             "decreaseIndent" ==> decreaseIndent
+            "setListLevel" ==> setListLevel
             "insertImage" ==> insertImage
             "resizeCurrentImage" ==> resizeCurrentImage
             "insertTableRowAfter" ==> insertTableRowAfter
