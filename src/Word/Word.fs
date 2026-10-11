@@ -1148,6 +1148,36 @@ module API =
             ])
         |> List.toArray
 
+    /// The block ids the document has more than once - among its paragraphs
+    /// (those of table cells, of tables in cells, of text boxes, headers and
+    /// footers too), its tables and its text boxes. None, in a document that
+    /// is as it should be: a position is a block id and an offset.
+    let getDuplicateBlockIds (editor: Editor) : string array =
+        ensureLoaded editor
+        let doc = Inp.wholeDocument editor.Handler editor.Doc
+        let seen = HashSet<string>()
+        let twice = ResizeArray<string>()
+        let note (id: string) = if not (seen.Add id) && not (twice.Contains id) then twice.Add id
+        let rec ofTable (table: Doc.TableBlock) =
+            note table.Id
+            for row in table.Rows do
+                for cell in row.Cells do
+                    for para in cell.Content do note para.Id
+                    for nested in cell.NestedTables do ofTable nested
+        let ofBlocks (blocks: Doc.Block list) =
+            for block in blocks do
+                match block with
+                | Doc.Paragraph para
+                | Doc.Heading (_, para) -> note para.Id
+                | Doc.Table table -> ofTable table
+                | Doc.TextBox textBox ->
+                    note textBox.Id
+                    for para in textBox.Content do note para.Id
+        ofBlocks doc.Blocks
+        for part in doc.HeaderParts do ofBlocks part.Blocks
+        for part in doc.FooterParts do ofBlocks part.Blocks
+        twice.ToArray()
+
     let getSelection (editor: Editor) =
         match editor.Doc.Selection with
         | None -> null
@@ -3593,6 +3623,7 @@ module API =
             "getRevisionInfos" ==> getRevisionInfos
             "selectCommentAnchor" ==> selectCommentAnchor
             "getSelection" ==> getSelection
+            "getDuplicateBlockIds" ==> getDuplicateBlockIds
             "setSelection" ==> setSelection
             "getShapeRects" ==> getShapeRects
             "clearSelection" ==> clearSelection
