@@ -6639,8 +6639,41 @@ let clearIncrementalLayoutState (state: IncrementalLayoutState) =
 /// the other paragraphs, the layouts before the first paragraph in such a
 /// face and after the last one whose place did not move. Returns how many
 /// paragraphs were set in the faces.
-let invalidateFacesInIncrementalLayout (state: IncrementalLayoutState) (uses: TextBuffer.TextStyle -> bool) : int =
+///
+/// `kept` are blocks of the state whose layouts stand whatever they were
+/// measured with (the blocks above the view that are shown as they were laid
+/// out before a change, see the renderer's StaleLayout): nothing of theirs is
+/// forgotten.
+let invalidateFacesInIncrementalLayoutBelow (state: IncrementalLayoutState) (uses: TextBuffer.TextStyle -> bool) (kept: Block seq) : int =
     let memo = state.Memo
+    let keptBlocks = System.Collections.Generic.HashSet<string>()
+    let keptParagraphs = System.Collections.Generic.HashSet<string>()
+    let rec keepTable (table: TableBlock) =
+        for row in table.Rows do
+            for cell in row.Cells do
+                for para in cell.Content do keptParagraphs.Add para.Id |> ignore
+                for nested in cell.NestedTables do keepTable nested
+    for block in kept do
+        match block with
+        | Paragraph para
+        | Heading (_, para) ->
+            keptBlocks.Add para.Id |> ignore
+            keptParagraphs.Add para.Id |> ignore
+        | Table table ->
+            keptBlocks.Add table.Id |> ignore
+            keepTable table
+        | TextBox textBox ->
+            keptBlocks.Add textBox.Id |> ignore
+            for para in textBox.Content do keptParagraphs.Add para.Id |> ignore
+    let idOf (block: Block) =
+        match block with
+        | Paragraph para
+        | Heading (_, para) -> para.Id
+        | Table table -> table.Id
+        | TextBox textBox -> textBox.Id
+    let paragraphOfKey (key: string) =
+        let separator = key.IndexOf '\u0001'
+        if separator < 0 then key else key.Substring(0, separator)
     let lineUses (line: MeasuredLine) =
         line.Segments
         |> List.exists (function
@@ -6662,7 +6695,7 @@ let invalidateFacesInIncrementalLayout (state: IncrementalLayoutState) (uses: Te
             || (match entry.MemoPlacement with Some (_, layout) -> layoutUses layout | None -> false)
             || (match entry.MemoPlacementOlder with Some (_, layout) -> layoutUses layout | None -> false)
             || (match entry.MemoObstaclePlacement with Some (_, _, _, layout, _, _) -> layoutUses layout | None -> false)
-        if inFaces then
+        if inFaces && not (keptParagraphs.Count > 0 && keptParagraphs.Contains (paragraphOfKey key)) then
             let separator = key.IndexOf '\u0001'
             affected.Add (if separator < 0 then key else key.Substring(0, separator)) |> ignore
     // (Every slot of a paragraph that has one in the faces: the whole and the rest of one that breaks over a page.)
@@ -6706,7 +6739,7 @@ let invalidateFacesInIncrementalLayout (state: IncrementalLayoutState) (uses: Te
                     if layoutUses record.PassResults.[at] then found <- true
                     at <- at + 1
                 found
-            if byContent || byResult () then
+            if not (keptBlocks.Count > 0 && keptBlocks.Contains (idOf block)) && (byContent || byResult ()) then
                 record.PassBlocks.[index] <- another block
                 changed <- changed + 1
     // What is cheap to make again and was made of text in any face: the note areas.
@@ -6718,6 +6751,9 @@ let invalidateFacesInIncrementalLayout (state: IncrementalLayoutState) (uses: Te
     state.LastLayouts <- None
     state.LastPages <- None
     affected.Count + changed
+
+let invalidateFacesInIncrementalLayout (state: IncrementalLayoutState) (uses: TextBuffer.TextStyle -> bool) : int =
+    invalidateFacesInIncrementalLayoutBelow state uses Seq.empty
 
 /// True when two documents lay out (and paint, the selection overlay apart)
 /// alike without looking further: they are the same document or differ only

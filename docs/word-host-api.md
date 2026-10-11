@@ -91,6 +91,18 @@ A host that does not do this shows other text - the view jumps by what the
 blocks above it grew or shrank - the next time it calls `setViewport` with
 its own scroll position.
 
+Text that is measured otherwise meanwhile leaves this as it is (0.1.17): a
+face that arrives for the text that was just made bold
+(`setTextMeasurersForFaces`, with or without the faces named), other
+measurers (`setTextMeasurers`), a zoom or another width (`setViewport`). The
+blocks above the view stay as they were laid out, the document never ends
+above the view, what is in view is laid out again at once, and the layout
+from the start begins again where it has to; the `ScrollTop` notice comes
+when it has reached the view. (In 0.1.16 a face that arrived before the
+layout from the start had reached the view made the document as short as
+that layout was - three pages of six hundred - and no `ScrollTop` notice
+followed.)
+
 ## Sections
 
 A section's properties stand at its end in the file; the editor shows and

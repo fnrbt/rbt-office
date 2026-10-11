@@ -1042,6 +1042,38 @@ let clearLayoutCache (ctx: RenderContext) =
     ctx.LastPaint <- None
     ctx.PageFrame <- None
 
+/// The first `Keep` blocks of a layout with stale blocks above the view (see StaleLayout).
+let private staleHead (stale: StaleLayout) : Block list =
+    (if stale.Hybrid.IsEmpty then stale.StaleBlocks else stale.Hybrid) |> List.truncate stale.Keep
+
+/// What was measured is measured otherwise from now on (other measurers,
+/// another face) while the blocks above the view are shown as they were laid
+/// out before a change (see StaleLayout): those blocks stay as they are - the
+/// document's height and its pages above the view with them, and the view on
+/// its text - and everything else `uses` names is laid out again: what is in
+/// view at once, the document itself from its start in slices, as before.
+/// (Taking the layout of the document itself on here, as far as it had come -
+/// three pages of six hundred - made the document that short and threw the
+/// view to its top.) Returns how many paragraphs and blocks are laid out
+/// again, or None when no blocks are stale.
+let private invalidateBelowStale (ctx: RenderContext) (uses: (TextBuffer.TextStyle -> bool) option) : int option =
+    match ctx.Stale with
+    | Some stale when ctx.Story.IsNone && stale.Keep > 0 ->
+        let count =
+            match uses with
+            | Some uses ->
+                let shown = Rbt.Word.Layout.invalidateFacesInIncrementalLayoutBelow ctx.LayoutState uses (staleHead stale)
+                shown + Rbt.Word.Layout.invalidateFacesInIncrementalLayout stale.Ahead uses
+            | None ->
+                Rbt.Word.Layout.invalidateFacesInIncrementalLayoutBelow ctx.LayoutState (fun _ -> true) (staleHead stale) |> ignore
+                // (The layout of the document itself: from its start again.)
+                Rbt.Word.Layout.clearIncrementalLayoutState stale.Ahead
+                stale.Ahead.BlockLimit <- 6
+                ctx.Progress.Chunk <- 8
+                1
+        Some count
+    | _ -> None
+
 /// Install the text path painter of the context's own canvas and the factory
 /// that makes one for any other canvas (both None: text is painted with
 /// canvas text). What was painted with the previous painter is stale from
@@ -1071,7 +1103,14 @@ let setTextMeasurers (ctx: RenderContext) (measureText: TextMeasurer option) (me
     ctx.TextMeasurer <- measureText
     ctx.TextRangeMeasurer <- measureRange
     ctx.TextMeasurerVersion <- ctx.TextMeasurerVersion + 1
-    clearLayoutCache ctx
+    match invalidateBelowStale ctx None with
+    | Some _ ->
+        clearMeasuredWidths ()
+        ctx.PlanScope <- obj ()
+        clearPaintCache ctx.PaintCache
+        ctx.LastPaint <- None
+        ctx.PageFrame <- None
+    | None -> clearLayoutCache ctx
 
 /// As `setTextMeasurers`, for measurers that differ from the ones installed
 /// only in how they measure text that names one of `families` (the host got
@@ -1083,14 +1122,21 @@ let setTextMeasurersForFamilies (ctx: RenderContext) (measureText: TextMeasurer 
     ctx.TextMeasurer <- measureText
     ctx.TextRangeMeasurer <- measureRange
     ctx.TextMeasurerVersion <- ctx.TextMeasurerVersion + 1
-    adoptAhead ctx
     let normalize (name: string) = name.Trim().ToLowerInvariant()
     let names = System.Collections.Generic.HashSet<string>()
     for family in families do
         if not (isNull family) then names.Add (normalize family) |> ignore
     let uses (style: TextBuffer.TextStyle) =
         names.Contains (normalize (style.FontFamily |> Option.filter (fun name -> name.Trim() <> "") |> Option.defaultValue ctx.FontFamily))
-    let count = if names.Count = 0 then 0 else Rbt.Word.Layout.invalidateFacesInIncrementalLayout ctx.LayoutState uses
+    let count =
+        if names.Count = 0 then 0
+        else
+            // (Blocks above the view that are shown as they were laid out before a change stay so.)
+            match invalidateBelowStale ctx (Some uses) with
+            | Some count -> count
+            | None ->
+                adoptAhead ctx
+                Rbt.Word.Layout.invalidateFacesInIncrementalLayout ctx.LayoutState uses
     if count > 0 then
         // (The tables that are laid out again are planned again; what is painted is collected again.)
         clearMeasuredWidths ()
