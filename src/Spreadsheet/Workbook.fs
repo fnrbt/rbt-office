@@ -307,10 +307,26 @@ let weakRefOf (target: obj) : obj = failwith "JS only"
 let weakRefIs (reference: obj) (target: obj) : bool = failwith "JS only"
 let mutable private sheetNamesOf : obj = null
 let private sheetNamesFound = System.Collections.Generic.Dictionary<string, SheetId option>()
+let mutable private sheetNamesHeld = false
+
+/// `work` with the names of `workbook`'s sheets held: the questions asked
+/// while it runs are all about sheets of these names (a recalculation puts
+/// a new model into a sheet with every result, and names none anew), so
+/// what a name resolved to is kept throughout.
+let withSheetNamesHeld (workbook: Workbook) (work: unit -> 'T) : 'T =
+    if sheetNamesHeld then work ()
+    else
+        sheetNamesOf <- null
+        sheetNamesFound.Clear()
+        sheetNamesHeld <- true
+        try work ()
+        finally
+            sheetNamesHeld <- false
+            sheetNamesFound.Clear()
 
 /// Resolve sheet name to sheet ID
 let resolveSheetName (name: string) (workbook: Workbook): SheetId option =
-    if not (weakRefIs sheetNamesOf (box workbook.Sheets)) then
+    if not sheetNamesHeld && not (weakRefIs sheetNamesOf (box workbook.Sheets)) then
         sheetNamesOf <- weakRefOf (box workbook.Sheets)
         sheetNamesFound.Clear()
     match sheetNamesFound.TryGetValue name with
@@ -326,9 +342,22 @@ type private SheetNameMemo() =
     static val mutable private sheets : System.WeakReference
     [<System.ThreadStatic; DefaultValue>]
     static val mutable private found : System.Collections.Generic.Dictionary<string, SheetId option>
+    [<System.ThreadStatic; DefaultValue>]
+    static val mutable private held : bool
+    static member Held (work: unit -> 'T) : 'T =
+        if SheetNameMemo.held then work ()
+        else
+            if isNull SheetNameMemo.found then SheetNameMemo.found <- System.Collections.Generic.Dictionary<string, SheetId option>()
+            SheetNameMemo.sheets <- null
+            SheetNameMemo.found.Clear()
+            SheetNameMemo.held <- true
+            try work ()
+            finally
+                SheetNameMemo.held <- false
+                SheetNameMemo.found.Clear()
     static member Resolve (name: string, workbook: Workbook) : SheetId option =
         if isNull SheetNameMemo.found then SheetNameMemo.found <- System.Collections.Generic.Dictionary<string, SheetId option>()
-        if isNull SheetNameMemo.sheets || not (obj.ReferenceEquals(SheetNameMemo.sheets.Target, workbook.Sheets)) then
+        if not SheetNameMemo.held && (isNull SheetNameMemo.sheets || not (obj.ReferenceEquals(SheetNameMemo.sheets.Target, workbook.Sheets))) then
             SheetNameMemo.sheets <- System.WeakReference(box workbook.Sheets)
             SheetNameMemo.found.Clear()
         match SheetNameMemo.found.TryGetValue name with
@@ -340,6 +369,12 @@ type private SheetNameMemo() =
 
 /// Resolve sheet name to sheet ID
 let resolveSheetName (name: string) (workbook: Workbook): SheetId option = SheetNameMemo.Resolve (name, workbook)
+
+/// `work` with the names of `workbook`'s sheets held: the questions asked
+/// while it runs are all about sheets of these names (a recalculation puts
+/// a new model into a sheet with every result, and names none anew), so
+/// what a name resolved to is kept throughout.
+let withSheetNamesHeld (workbook: Workbook) (work: unit -> 'T) : 'T = (ignore workbook; SheetNameMemo.Held work)
 #endif
 
 /// Define a table (structured reference)

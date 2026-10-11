@@ -3915,7 +3915,36 @@ let private isArrayExprCore (openRanges: bool) (dynamicReferences: bool) (e: Exp
         | _ -> ()
     found
 
-let isArrayExpr (e: Expr) : bool = isArrayExprCore true true e
+// What depends on a formula's parsed form alone is worked out once and kept
+// with the form (weakly: it goes when the form goes) - a formula is evaluated
+// many times, its form stays.
+#if FABLE_COMPILER
+[<Emit("new WeakMap()")>]
+let private newFormTable () : obj = failwith "JS only"
+[<Emit("$0.get($1)")>]
+let private formTableGet (table: obj) (key: obj) : obj = failwith "JS only"
+[<Emit("$0.set($1, $2)")>]
+let private formTableSet (table: obj) (key: obj) (value: obj) : unit = failwith "JS only"
+#else
+let private newFormTable () = System.Runtime.CompilerServices.ConditionalWeakTable<obj, obj>()
+let private formTableGet (table: System.Runtime.CompilerServices.ConditionalWeakTable<obj, obj>) (key: obj) : obj =
+    match table.TryGetValue key with
+    | true, value -> value
+    | false, _ -> null
+let private formTableSet (table: System.Runtime.CompilerServices.ConditionalWeakTable<obj, obj>) (key: obj) (value: obj) : unit =
+    table.GetValue (key, (fun _ -> value)) |> ignore
+#endif
+let private isArrayExprTable = newFormTable ()
+let private argsNeedPreparingTable = newFormTable ()
+let private argsArrayTable = newFormTable ()
+
+let isArrayExpr (e: Expr) : bool =
+    let known = formTableGet isArrayExprTable (box e)
+    if isNull known then
+        let found = isArrayExprCore true true e
+        formTableSet isArrayExprTable (box e) (box found)
+        found
+    else unbox<bool> known
 
 let arithmeticArrayNonBlankCount model workbook e =
     let rangeShape expr =
@@ -4256,6 +4285,19 @@ let rec eval (expr: Expr) (ctx: EvalContext) : CellValue =
 /// them? Functions recognise ranges by their syntax (`RangeRef`), so an
 /// argument that only *evaluates* to a range has to be turned into one.
 and argsNeedPreparing (name: string) (args: Expr list) : bool =
+    if args.IsEmpty then false
+    else
+        // (The arguments are those of one call: the answer is kept with them, for the function they were asked for.)
+        let known = formTableGet argsNeedPreparingTable (box args)
+        let kept = if isNull known then ValueNone else (let asked, found = unbox<string * bool> known in if obj.ReferenceEquals(asked, name) || asked = name then ValueSome found else ValueNone)
+        match kept with
+        | ValueSome found -> found
+        | ValueNone ->
+            let found = argsNeedPreparingNow name args
+            formTableSet argsNeedPreparingTable (box args) (box (name, found))
+            found
+
+and argsNeedPreparingNow (name: string) (args: Expr list) : bool =
     let mutable found = false
     let mutable remaining = args
     while not found && not remaining.IsEmpty do
@@ -6464,7 +6506,16 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
         | "COUNT" | "COUNTA" | "COUNTBLANK"
         | "STDEV" | "STDEV.S" | "STDEVP" | "STDEV.P"
         | "VAR" | "VAR.S" | "VARP" | "VAR.P" -> Array.empty
-        | _ -> List.toArray args
+        | _ ->
+            // (The arguments by position, made once for the call's list of them; it is only read.)
+            if args.IsEmpty then Array.empty
+            else
+                let known = formTableGet argsArrayTable (box args)
+                if isNull known then
+                    let made = List.toArray args
+                    formTableSet argsArrayTable (box args) (box made)
+                    made
+                else unbox<Expr array> known
     let nargs = argsArray.Length
     let argExpr i = argsArray.[i]
     let argRaw i = eval (argExpr i) ctx

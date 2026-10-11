@@ -783,6 +783,10 @@ Nothing to call for the recalculation itself: every edit recalculates what it ha
   - "rows or columns changed on a sheet that is not converted" (does not happen through the component: it converts the sheets first)
   - "no calculated state to start from" / "incremental recalculation is switched off"
 - `SetIncrementalRecalculation(enabled: boolean)` (existing): off = every edit is a full recalculation.
+- A recalculation of many formulas (1024 or more to evaluate) reads cells through a hash index kept beside each sheet's cell map in
+  the browser (made once, handed on from edit to edit), keeps what a sheet name resolves to for the whole pass, and works out what
+  depends only on a formula's parsed form (does a call's argument list need preparing, is an argument an array) once per formula
+  instead of at every evaluation. milk-street-office.xlsx, `Annual!E12` typed again (12 034 formulas evaluated): 145 -> 116 ms.
 - Circular references. The formulas ON a circular reference - within a sheet, across sheets, through a defined name, a 3-D reference or the cells of a
   dynamic array - have the engine's cycle error as their value (GetCell: `{ value: "#CYCLE", valueType: "error" }`; it is not one of Excel's error values - Excel shows 0 and a warning); a formula that only reads one has that error as any formula
   reading an error has (IFERROR catches it). This is the same after every edit and whatever the order of the sheets.

@@ -592,6 +592,48 @@ checks['export-edited-sheet-keeps-part'] = async () => {
     return lines;
 };
 
+// A recalculation of many formulas reads cells through a hash index of each sheet's cells, handed on from
+// edit to edit: what it gives is what a workbook opened afresh gives for the same entry, edit after edit,
+// and after undo and redo.
+checks['recalc-many-formulas-same-values'] = async () => {
+    const { lines, check } = makeLog();
+    const { bytesOf } = await import('/component.js');
+    const original = await bytesOf('tests/real-world/milk-street-office.xlsx');
+    const values = (g) => { const out = []; for (let sheet = 0; sheet < 2; sheet++) { g.SwitchSheet(sheet); const used = g.GetUsedRange(); for (let r = used.firstRow; r <= used.lastRow; r++) for (let c = used.firstCol; c <= used.lastCol; c++) { const v = g.GetCell(r, c).value; if (v !== null && v !== undefined && v !== '') out.push(`${sheet}!${r},${c}=${typeof v === 'number' ? v.toPrecision(12) : v}`); } } g.SwitchSheet(0); return out; };
+    const differing = (a, b) => { const out = []; for (let i = 0; i < Math.max(a.length, b.length) && out.length < 3; i++) if (a[i] !== b[i]) out.push(`${a[i]} / ${b[i]}`); return out; };
+    const fresh = async (text) => { const { grid, close } = mountGrid(); try { await grid.ImportXlsx(original.slice()); grid.SwitchSheet(0); grid.EnterText(11, 4, text); return { values: values(grid), stats: grid.GetRecalcStats() }; } finally { close(); } };
+    const { grid, close } = mountGrid();
+    try {
+        await grid.ImportXlsx(original.slice());
+        grid.SwitchSheet(0);
+        const was = grid.GetCell(11, 4).value;
+        const first = await fresh('0.07'), second = await fresh('0.05');
+        check('the entry reaches most of the workbook\'s formulas', first.stats.EvaluatedFormulas > 10000, true);
+        check('the two entries give different workbooks', differing(first.values, second.values).length > 0, true);
+        grid.EnterText(11, 4, '0.07');
+        check('first entry: as in a workbook opened afresh', differing(values(grid), first.values), []);
+        grid.EnterText(11, 4, '0.05');
+        check('second entry: as in a workbook opened afresh', differing(values(grid), second.values), []);
+        grid.EnterText(11, 4, '0.07');
+        check('third entry (the first again): the same values', differing(values(grid), first.values), []);
+        grid.Undo();
+        check('undo: the values of the second entry', differing(values(grid), second.values), []);
+        grid.Redo();
+        check('redo: the values of the first entry', differing(values(grid), first.values), []);
+        // An edit of a cell few formulas read, then the many again.
+        grid.EnterText(0, 13, '5');
+        grid.EnterText(11, 4, '0.05');
+        grid.EnterText(0, 13, '');
+        check('after other edits: the values of the second entry', differing(values(grid), second.values), []);
+        grid.EnterText(11, 4, String(was));
+        const back = values(grid);
+        const { grid: opened, close: closeOpened } = mountGrid();
+        try { await opened.ImportXlsx(original.slice()); opened.SwitchSheet(0); opened.EnterText(11, 4, String(was)); check('the file\'s own value typed again: as in a workbook opened afresh', differing(back, values(opened)), []); } finally { closeOpened(); }
+    } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
+    finally { close(); }
+    return lines;
+};
+
 // A sheet with a pivot table copied, deleted, renamed (DuplicateSheet, DeleteSheet, RenameSheet, ExportXlsx): the
 // copy has a pivot table of its own; the slicers no longer list a deleted sheet's pivot tables, and a chart
 // drawn from one names none; a renamed sheet is named in the charts of its pivot table.

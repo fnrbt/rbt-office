@@ -1482,9 +1482,79 @@ let parseCellRef (ref: string): (int * int) option =
 let formatCellRef (row: int) (col: int): string =
     sprintf "%s%d" (columnToLetter col) (row + 1)
 
+// A cell map is a tree: a cell is found in a dozen comparisons, and a
+// recalculation reads cells by the hundred thousand. In the browser a cell
+// map can have a hash index beside it (its "mirror", held weakly by the map:
+// it goes when the map goes) through which `getCell` finds a cell in one
+// step. A recalculation makes it for the sheets it reads (`ensureCellMirror`)
+// and hands it on from each map to the one made from it by a changed cell
+// (`carryCellMirror`: the earlier map is then without, and read as a tree
+// again); a map without a mirror is read as before.
+#if FABLE_COMPILER
+[<Fable.Core.Emit("new WeakMap()")>]
+let private newCellMirrors () : obj = failwith "JS only"
+[<Fable.Core.Emit("$0.get($1)")>]
+let private cellMirrorGet (table: obj) (cells: obj) : obj = failwith "JS only"
+[<Fable.Core.Emit("$0.set($1, $2)")>]
+let private cellMirrorSet (table: obj) (cells: obj) (mirror: obj) : unit = failwith "JS only"
+[<Fable.Core.Emit("$0.delete($1)")>]
+let private cellMirrorDelete (table: obj) (cells: obj) : unit = failwith "JS only"
+[<Fable.Core.Emit("new Map()")>]
+let private newCellMirror () : obj = failwith "JS only"
+[<Fable.Core.Emit("$0.get($1)")>]
+let private mirroredCell (mirror: obj) (key: float) : CellData option = failwith "JS only"
+[<Fable.Core.Emit("$0.set($1, $2)")>]
+let private mirrorCell (mirror: obj) (key: float) (cell: CellData) : unit = failwith "JS only"
+[<Fable.Core.Emit("$0.delete($1)")>]
+let private unmirrorCell (mirror: obj) (key: float) : unit = failwith "JS only"
+let private cellMirrors = newCellMirrors ()
+#endif
+
+/// Give a cell map its hash index, unless it has one or holds more than `limit` cells.
+let ensureCellMirror (limit: int) (cells: Map<CellAddress, CellData>) : unit =
+#if FABLE_COMPILER
+    if not (Map.isEmpty cells) && isNull (cellMirrorGet cellMirrors (box cells)) then
+        let mirror = newCellMirror ()
+        let mutable count = 0
+        for KeyValue(addr, cell) in cells do
+            if count <= limit then
+                count <- count + 1
+                mirrorCell mirror (float addr.Row * 16384.0 + float addr.Col) cell
+        if count <= limit then cellMirrorSet cellMirrors (box cells) mirror
+#else
+    ignore limit
+    ignore cells
+#endif
+
+/// `after` is `before` with the cell at `addr` set to `cell` (None: taken
+/// out): the hash index of `before`, when it has one, is `after`'s from now on.
+let carryCellMirror (before: Map<CellAddress, CellData>) (addr: CellAddress) (cell: CellData option) (after: Map<CellAddress, CellData>) : unit =
+#if FABLE_COMPILER
+    if not (obj.ReferenceEquals(before, after)) then
+        let mirror = cellMirrorGet cellMirrors (box before)
+        if not (isNull mirror) then
+            cellMirrorDelete cellMirrors (box before)
+            let key = float addr.Row * 16384.0 + float addr.Col
+            match cell with
+            | Some cell -> mirrorCell mirror key cell
+            | None -> unmirrorCell mirror key
+            cellMirrorSet cellMirrors (box after) mirror
+#else
+    ignore before
+    ignore addr
+    ignore cell
+    ignore after
+#endif
+
 /// Get cell data at address
 let getCell (addr: CellAddress) (model: SpreadsheetModel): CellData option =
+#if FABLE_COMPILER
+    let mirror = cellMirrorGet cellMirrors (box model.Cells)
+    if isNull mirror then Map.tryFind addr model.Cells
+    else mirroredCell mirror (float addr.Row * 16384.0 + float addr.Col)
+#else
     Map.tryFind addr model.Cells
+#endif
 
 /// Called after the cells of a sheet changed. The rows an AutoFilter hides
 /// stay as they are (see `SpreadsheetModel.FilterHiddenRows`); only the set
@@ -1551,6 +1621,7 @@ let setCell (addr: CellAddress) (data: CellData) (model: SpreadsheetModel): Spre
                 | Some ghost when ghost.Value = data.Value -> model.Spill
                 | _ -> Map.remove addr model.Spill
         let cells = Map.add addr data model.Cells
+        carryCellMirror model.Cells addr (Some data) cells
         followFormulaIndex model.Cells cells addr (Some data)
         { model with Cells = cells; Spill = spill } |> invalidateFilterProjection
 

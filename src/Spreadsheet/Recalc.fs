@@ -1691,6 +1691,12 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                 else
                     nextEval <- ResizeArray<Node>()
                     nextSpill <- ResizeArray<Node>()
+                    // Many formulas to evaluate: the cells they read are found by a hash index of
+                    // each sheet's cells (not worth making for a few formulas, or over a sheet far
+                    // larger than what is evaluated).
+                    if order.Count >= 1024 then
+                        for state in engine.Sheets.Values do
+                            ensureCellMirror (max 65536 (order.Count * 64)) (cellsOf state)
                     let mutable index = 0
                     /// A formula has to be evaluated (again): later in this round when it is still to come, else in the next.
                     let evalLater (reader: Node) =
@@ -1900,7 +1906,7 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                             let state = node.Sheet
                             let model = modelOf state
                             let addr = { Row = node.Row; Col = node.Col }
-                            match Map.tryFind addr model.Cells with
+                            match getCell addr model with
                             | Some cell ->
                                 let result =
                                     if isCyclic node then CellValue.Error Err.cycle
@@ -1912,7 +1918,11 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                                 let previous = match cell.Value with CellValue.Formula (_, cached) -> cached | other -> other
                                 if previous <> result then
                                     valueChanged ()
-                                    let updated = { model with Cells = Map.add addr { cell with Value = CellValue.Formula (node.Formula, result) } model.Cells }
+                                    let calculated = { cell with Value = CellValue.Formula (node.Formula, result) }
+                                    let cells = Map.add addr calculated model.Cells
+                                    // (What reads the cell next finds it without walking the map: see `getCell`.)
+                                    carryCellMirror model.Cells addr (Some calculated) cells
+                                    let updated = { model with Cells = cells }
                                     models.[state.Id] <- updated
                                     touched.Add state.Id |> ignore
                                     workbook <- updateSheetModel state.Id updated workbook
@@ -1988,7 +1998,7 @@ let findCycles (engine: Engine) : unit =
 
 /// See `run`.
 let recalculate (engine: Engine) (edited: Workbook) (hint: (SheetId * CellAddress) list option) : Workbook option =
-    run 0 engine edited hint
+    Rbt.Spreadsheet.Workbook.withSheetNamesHeld edited (fun () -> run 0 engine edited hint)
 
 /// The full recalculation of a workbook: every formula of every sheet (of the
 /// sheets that are converted; the stand-in of a sheet nothing asked for has no
@@ -2001,7 +2011,7 @@ let recalculateAll (workbook: Workbook) : Workbook * Engine =
     let hasWork = engine.Formulas > 0 || (workbook.Sheets |> Map.exists (fun _ sheet -> not (Map.isEmpty (loadedSpill sheet.Model))))
     if not hasWork then workbook, engine
     else
-        match run 1 engine workbook None with
+        match Rbt.Spreadsheet.Workbook.withSheetNamesHeld workbook (fun () -> run 1 engine workbook None) with
         | Some recalculated -> recalculated, engine
         | None -> workbook, engine
 
