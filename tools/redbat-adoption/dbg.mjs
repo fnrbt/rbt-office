@@ -1,0 +1,16 @@
+import { launch, newPage, open, T } from "./lib.mjs";
+import { g, sel, ready, menu, select } from "./ui-lib.mjs";
+const { browser, context } = await launch();
+const page = await newPage(context, { verbose: false });
+page.on("console", (m) => { if (m.type() === "error" || m.type() === "warning") console.log("C:", m.text().slice(0, 300)); });
+await open(page, "sheet-editor", `${T}/real-world/milk-street-office.xlsx`);
+await ready(page);
+await select(page, 101, 18, 104, 18);
+await menu(page, "data", "conditional-formats");
+await sel(page, "sheet-cf-add").click();
+await sel(page, "sheet-cf-value1").fill("5");
+await page.click('[data-testid="sheet-cf-fills"] [data-color="#C6EFCE"]');
+await page.keyboard.press("Enter");
+await page.waitForTimeout(500);
+console.log(await g(page, () => [...document.querySelectorAll(".rb-office-dialog")].map((d) => d.getAttribute("data-testid")).join()), "err:", await sel(page, "sheet-dialog-error").innerText().catch(() => "-"), "active:", await g(page, () => document.activeElement.outerHTML.slice(0, 120)), "rules", await g(page, () => window.__grids[0].GetConditionalFormats().length));
+await browser.close();

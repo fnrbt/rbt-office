@@ -1,0 +1,11 @@
+import { launch, newPage, open, T, SHOTS } from "./lib.mjs";
+const { browser, context } = await launch();
+const page = await newPage(context);
+await open(page, "sheet-editor", `${T}/real-world/milk-street-office.xlsx`);
+await page.waitForSelector('[data-testid="sheet-toolbar"]', { timeout: 300000 });
+await page.waitForTimeout(600);
+await page.evaluate(() => window.__grids[0].SelectRange(20, 4, 23, 4));
+await page.waitForTimeout(200);
+await page.screenshot({ path: `${SHOTS}/smoke-sheet.png` });
+console.log(await page.evaluate(() => { const t = document.querySelector('[data-testid="sheet-toolbar"]'); return { h: t.offsetHeight, status: document.querySelector('[data-testid="sheet-status"]').textContent }; }));
+await browser.close();

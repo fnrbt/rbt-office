@@ -1,0 +1,11 @@
+import { launch, newPage, open, T, SHOTS } from "./lib.mjs";
+import { g, ready, frames } from "./ui-lib.mjs";
+const { browser, context } = await launch();
+const page = await newPage(context);
+await open(page, "sheet-editor", `${T}/real-world/milk-street-office.xlsx`);
+await ready(page);
+await g(page, () => { const gr = window.__grids[0]; gr.SetAutoFilter("B20:H40"); gr.GroupRows("22:30"); gr.GroupRows("24:26"); gr.GroupColumns("D:F"); });
+await frames(page); await page.waitForTimeout(300);
+console.log(JSON.stringify(await g(page, () => { const q = (s) => [...document.querySelectorAll(s)].map((e) => { const r = e.getBoundingClientRect(); return [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height), getComputedStyle(e).display]; }); return { engine: q(".spreadsheet-filter-button"), old: q(".col-filter-btn").slice(0, 3), host: q('[data-testid^="sheet-filter-button-"]'), corner: q(".spreadsheet-corner"), rects: window.__grids[0].GetFilterButtonRects(), outline: window.__grids[0].GetOutline() }; })).slice(0, 3000));
+await page.screenshot({ path: `${SHOTS}/probe-filter.png` });
+await browser.close();

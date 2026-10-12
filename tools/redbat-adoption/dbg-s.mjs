@@ -1,0 +1,13 @@
+import { launch, newPage, open, T, S } from "./lib.mjs";
+import { g, sel, ready, frames, selection, cellPoint } from "./ui-lib.mjs";
+const { browser, context } = await launch({ viewport: { width: 1400, height: 820 } });
+const page = await newPage(context);
+await open(page, "sheet-editor", `${T}/real-world/milk-street-office.xlsx`); await ready(page);
+const hs = page.locator('[data-testid="sheet-grid"] .spreadsheet-col-header');
+console.log("headers", await hs.count());
+const h = await hs.nth(3).boundingBox(); await page.mouse.click(h.x + h.width / 2, h.y + h.height / 2); await frames(page); await page.waitForTimeout(200);
+console.log(await selection(page), JSON.stringify(await g(page, () => window.__grids.at(-1).GetStatus())), "|", (await sel(page, "sheet-status").innerText()).replace(/\n/g, " | "));
+const p = await cellPoint(page, 6, 2); const q = await cellPoint(page, 12, 4);
+await page.mouse.move(p.x, p.y); await page.mouse.down(); await page.mouse.move(q.x, q.y, { steps: 4 }); await page.mouse.up(); await frames(page); await page.waitForTimeout(200);
+console.log(await selection(page), JSON.stringify(await g(page, () => window.__grids.at(-1).GetStatus())), "|", (await sel(page, "sheet-status").innerText()).replace(/\n/g, " | "));
+await browser.close();

@@ -1,0 +1,16 @@
+import { launch, newPage, open, T, SHOTS } from "./lib.mjs";
+import { g, sel, ready, frames, menu } from "./ui-lib.mjs";
+const { browser, context } = await launch();
+const page = await newPage(context);
+await open(page, "sheet-editor", `${T}/real-world/milk-street-office.xlsx`);
+await ready(page);
+await menu(page, "insert", "insert-table");
+await sel(page, "sheet-tables-dialog").waitFor();
+const state = () => g(page, () => [...document.querySelectorAll('[data-testid="sheet-table-style-families"] button')].map((b) => b.textContent.trim() + ":" + b.getAttribute("aria-checked") + ":" + b.className + ":" + getComputedStyle(b).backgroundColor));
+console.log(await state());
+await sel(page, "sheet-table-family-Light").click();
+console.log(await state());
+await sel(page, "sheet-table-family-Dark").click();
+await page.mouse.move(10, 10);
+console.log(await state());
+await browser.close();
