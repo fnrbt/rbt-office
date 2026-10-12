@@ -3026,8 +3026,30 @@ module API =
     /// while one is edited, back to the body. True when the click was taken.
     let private onDoubleClick (editor: Editor) (x: float) (y: float) : bool =
         let ctx = editor.Handler.RenderContext
+        // The text box of a header or footer under the pointer (while a header, a footer or
+        // such a box is edited, or the pointer is on a header or footer).
+        let boxHere () = Ren.furnitureShapeAt ctx editor.Doc x y
+        let caretHere () =
+            match Ren.hitTest ctx editor.Doc x y with
+            | Some (blockId, offset) -> Inp.updateDocument editor.Handler (Doc.setCursor blockId offset editor.Doc)
+            | None -> ()
+        let inFurnitureBox =
+            match editor.Handler.Story with
+            | Some session when session.Box.IsSome && session.PartIndex >= 0 -> Some session
+            | _ -> None
+        match inFurnitureBox with
+        // (In the box that is being edited a double click selects a word, as anywhere; a first
+        // click elsewhere left the box already - see Input's mousedown.)
+        | Some _ -> false
+        | None ->
         match Ren.pageRegionAt ctx editor.Doc x y, headerFooterStory editor with
-        | Some (_, "body"), Some _ -> Inp.exitStory editor.Handler
+        | Some (_, "body"), Some _ ->
+            // (A text box of the header that reaches into the body's area: its text is edited.)
+            match boxHere () with
+            | Some (boxId, _, pageIndex) ->
+                if Inp.enterTextBoxOnPage editor.Handler boxId None (Some pageIndex) then caretHere ()
+                true
+            | None -> Inp.exitStory editor.Handler
         | Some (pageIndex, region), story when region = "header" || region = "footer" ->
             let here =
                 match story with
@@ -3036,9 +3058,11 @@ module API =
             // (In the story that is being edited a double click selects a word, as anywhere.)
             if here then false
             elif enterHeaderFooter editor pageIndex region then
-                match Ren.hitTest ctx editor.Doc x y with
-                | Some (blockId, offset) -> Inp.updateDocument editor.Handler (Doc.setCursor blockId offset editor.Doc)
+                // A text box of the header under the pointer: its text is edited, the caret where the click was.
+                match boxHere () with
+                | Some (boxId, _, boxPage) -> Inp.enterTextBoxOnPage editor.Handler boxId None (Some boxPage) |> ignore
                 | None -> ()
+                caretHere ()
                 true
             else false
         | _ -> false
@@ -3106,8 +3130,9 @@ module API =
             commitDocumentUpdate editor newDoc
             true
 
-    /// The shape of the body with that id where it is painted: the box, its left edge from
-    /// the left edge of its page, its top down the document, its size, and its page.
+    /// The shape with that id - of the body, or of a header or footer on the first page that
+    /// shows it - where it is painted: the box, its left edge from the left edge of its page,
+    /// its top down the document, its size, and its page.
     let private bodyShapeRect (editor: Editor) (id: string) =
         ensureLoaded editor
         // (Not while the text of a box, a header or a footer is edited: the document on display is that text.)
@@ -3121,14 +3146,20 @@ module API =
                     Ren.pageFrames ctx editor.Doc
                     |> List.tryFindBack (fun frame -> frame.Top <= y + 0.001)
                 textBox, x, y, width, height, page)
+            |> Option.orElseWith (fun () ->
+                Ren.furnitureShapeRects ctx editor.Doc
+                |> List.tryFind (fun (textBox, _, _, _, _, _, _) -> textBox.Id = id)
+                |> Option.map (fun (textBox, x, y, width, height, _, pageIndex) ->
+                    textBox, x, y, width, height, List.tryItem pageIndex (Ren.pageFrames ctx editor.Doc)))
 
-    /// Move a shape (a text box) of the body by `dx` to the right and `dy`
+    /// Move a shape (a text box) of the body, or of a header or footer (where
+    /// the first page that shows it paints it), by `dx` to the right and `dy`
     /// down, in layout pixels (`id`: as getShapeRects gives it). The shape
     /// keeps the frame its place is measured from - the page, the margin, the
     /// column, its paragraph - and its offset from it changes; a direction in
     /// which it was aligned (centred on the page, at the right margin) is by
     /// its offset from the page from then on. One undo step. False - and
-    /// nothing changes - when the body has no shape of that id, the shape
+    /// nothing changes - when the document has no shape of that id, the shape
     /// stands in a line of text (wp:inline), both distances are 0, or the
     /// text of a box, a header or a footer is being edited (exitTextBox /
     /// exitHeaderFooter first). Saved in the element the shape was read
@@ -3156,7 +3187,7 @@ module API =
             | _ -> false
         | _ -> false
 
-    /// Make a shape of the body `width` wide and `height` high (layout
+    /// Make a shape of the body, a header or a footer `width` wide and `height` high (layout
     /// pixels, at least 1 each); its top left corner stays where it is (move
     /// it with moveShape to resize by another corner). A shape that was as
     /// high as its text keeps the height given. One undo step. False when the
@@ -3173,8 +3204,8 @@ module API =
                 true
             | _ -> false
 
-    /// Take a shape of the body out of the document, its text with it. One
-    /// undo step. False when the body has no shape of that id, or the text
+    /// Take a shape of the body, a header or a footer out of the document, its text with it. One
+    /// undo step. False when the document has no shape of that id, or the text
     /// of a box, a header or a footer is being edited.
     let deleteShape (editor: Editor) (id: string) : bool =
         if editor.Handler.Story.IsSome then false
@@ -3186,7 +3217,7 @@ module API =
                 true
             | None -> false
 
-    /// The eight handles of a shape of the body, for a host that shows it
+    /// The eight handles of a shape of the body, a header or a footer, for a host that shows it
     /// selected and lets it be dragged: Name ("nw", "n", "ne", "e", "se",
     /// "s", "sw", "w"), X, Y, Width, Height (a square around the corner or the
     /// middle of the edge, eight pixels on screen whatever the zoom; layout

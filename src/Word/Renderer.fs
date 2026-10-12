@@ -2501,6 +2501,37 @@ let furnitureShapeRects (ctx: RenderContext) (doc: Document) : (TextBoxBlock * f
             pageIndex <- pageIndex + 1
         List.ofSeq found
 
+/// The text boxes of the header and of the footer a page shows, where that
+/// page paints them: the box, its left edge, top, width and height as
+/// `shapeRects` gives them, and whether it is the header's.
+let pageShapeRects (ctx: RenderContext) (doc: Document) (pageIndex: int) : (TextBoxBlock * float * float * float * float * bool) list =
+    let doc = bodyDocument ctx doc
+    let hasBoxes (parts: HeaderFooterPart list) =
+        parts |> List.exists (fun part -> part.Blocks |> List.exists (function TextBox _ -> true | _ -> false))
+    if pageIndex < 0 || not (hasBoxes doc.HeaderParts || hasBoxes doc.FooterParts) then []
+    else
+        let layouts, layoutPages = layoutDocumentWithPages ctx doc
+        let pages = pageFramesForLayouts ctx (layoutSettings ctx doc) doc layouts layoutPages
+        [ for isHeader in [ true; false ] do
+            for (textBox, x, y, width, height) in pageFurnitureShapeRects ctx doc layouts pages pageIndex isHeader do
+                yield textBox, x, y, width, height, isHeader ]
+
+/// The text box of a header or footer that a point (layout coordinates) is
+/// in, on the page the point is on: its id, whether it is the header's, and
+/// the page. (Not a watermark, whose text is drawn as large as its box; a
+/// box behind the text is found - the text over it is the body's, and the
+/// point is looked up for a header that is edited or about to be.)
+let furnitureShapeAt (ctx: RenderContext) (doc: Document) (x: float) (y: float) : (BlockId * bool * int) option =
+    match pageRegionAt ctx doc x y with
+    | None -> None
+    | Some (pageIndex, _) ->
+        pageShapeRects ctx doc pageIndex
+        |> List.filter (fun (textBox, left, top, width, height, _) ->
+            let x, y = if abs textBox.Rotation >= 0.01 then turnedPoint -textBox.Rotation (left + width / 2.0) (top + height / 2.0) x y else x, y
+            not textBox.FitText && x >= left && x <= left + width && y >= top && y <= top + height)
+        |> List.tryLast
+        |> Option.map (fun (textBox, _, _, _, _, isHeader) -> textBox.Id, isHeader, pageIndex)
+
 /// The text box in front of the text that a point (layout coordinates) is in
 /// - the one painted last of those that hold it. A box behind the text, and
 /// one whose text is drawn as large as the box (a watermark), is not found by
@@ -2664,6 +2695,8 @@ let pageCount _ _ = 1
 let pageFrames _ _ = []
 let shapeRects _ _ = []
 let furnitureShapeRects _ _ = []
+let pageShapeRects _ _ _ = []
+let furnitureShapeAt _ _ _ _ = None
 let shapeAt _ _ _ _ = None
 let renderWithHover _ _ _ = ()
 let setViewport _ _ = ()

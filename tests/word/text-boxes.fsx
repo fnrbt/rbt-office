@@ -214,6 +214,18 @@ do
     let removed = deleteTextBox "b2" withCaretInBox
     check "a shape taken out: its text with it, the caret in the block it was anchored in" (removed |> Option.map (fun doc -> boxesOf doc |> List.map fst, textsOf doc |> List.length, doc.Selection |> Option.map (fun sel -> sel.Focus.BlockId, sel.Focus.Offset))) (Some ([ "b1"; "b3" ], 4, Some ("p2", 0)))
     check "no shape of that id" ((moveTextBox "none" None None body).IsNone, (resizeTextBox "none" 1.0 1.0 body).IsNone, (deleteTextBox "none" body).IsNone) (true, true, true)
+    // A shape of a header: moved, resized and taken out in its part; the body and the footer are the objects they were.
+    let headerBox : Block = TextBox { defaultTextBox with Id = "h1"; Content = [ para "h1-1" "in the header" ]; Width = 100.0; Height = 50.0; X = Some 10.0; Y = Some 5.0; Wrap = Some "none" }
+    let withHeader =
+        { body with
+            HeaderParts = [ { Kind = "default"; RelationshipId = None; Blocks = [ Paragraph (para "hp" "header"); headerBox ] } ]
+            FooterParts = [ { Kind = "default"; RelationshipId = None; Blocks = [ Paragraph (para "fp" "footer") ] } ] }
+    let headerBoxOf (doc: Document) = doc.HeaderParts.Head.Blocks |> List.tryPick (function TextBox b when b.Id = "h1" -> Some (b.X, b.Y, b.Width, b.Height) | _ -> None)
+    let movedHeader = moveTextBox "h1" (Some (None, 22.0)) (Some (None, 12.0)) withHeader
+    check "a header's shape moved: in its part" (movedHeader |> Option.map (fun doc -> headerBoxOf doc, obj.ReferenceEquals(doc.Blocks, withHeader.Blocks), obj.ReferenceEquals(doc.FooterParts.Head, withHeader.FooterParts.Head))) (Some (Some (Some 22.0, Some 12.0, 100.0, 50.0), true, true))
+    check "a header's shape resized" (resizeTextBox "h1" 120.0 60.0 withHeader |> Option.bind headerBoxOf) (Some (Some 10.0, Some 5.0, 120.0, 60.0))
+    check "a header's shape taken out" (deleteTextBox "h1" withHeader |> Option.map (fun doc -> headerBoxOf doc, doc.HeaderParts.Head.Blocks.Length, obj.ReferenceEquals(doc.Blocks, withHeader.Blocks))) (Some (None, 1, true))
+    check "to the place it has: the document it was" (moveTextBox "h1" None None withHeader |> Option.map (fun doc -> obj.ReferenceEquals(doc, withHeader))) (Some true)
     // Everything selected and deleted: the body's paragraphs and what is anchored in them.
     let all = body |> selectAll |> deleteSelection
     check "everything selected and deleted: nothing is left" (boxesOf all, textsOf all) ([], [ "" ])

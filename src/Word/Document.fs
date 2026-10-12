@@ -2985,14 +2985,17 @@ let newEmptyParagraph () : ParagraphBlock =
 /// A text box anchored in the block the caret is in, a little below and
 /// right of where that block starts, in front of the text. (It stood on the
 /// first page whatever block the caret was in.)
-/// A shape (text box) of the body with another place and size: `change` makes it of the shape
-/// it is. None: the body has no shape of that id.
+/// A shape (text box) of the body, of a header or of a footer with another place and size:
+/// `change` makes it of the shape it is. None: the document has no shape of that id.
 let private withTextBox (id: BlockId) (change: TextBoxBlock -> TextBoxBlock) (doc: Document) : Document option =
-    if not (doc.Blocks |> List.exists (function TextBox box -> box.Id = id | _ -> false)) then None
-    else
-        let mutable any = false
-        let blocks =
-            doc.Blocks
+    let mutable found = false
+    let mutable any = false
+    // (The list it was when the shape is not in it.)
+    let mapBlocks (blocks: Block list) : Block list =
+        if not (blocks |> List.exists (function TextBox box -> box.Id = id | _ -> false)) then blocks
+        else
+            found <- true
+            blocks
             |> List.map (fun block ->
                 match block with
                 | TextBox box when box.Id = id ->
@@ -3002,8 +3005,22 @@ let private withTextBox (id: BlockId) (change: TextBoxBlock -> TextBoxBlock) (do
                         any <- true
                         TextBox changed
                 | _ -> block)
-        // (Nothing of it changes: the document it was.)
-        Some (if any then { doc with Blocks = blocks } else doc)
+    let mapParts (parts: HeaderFooterPart list) : HeaderFooterPart list =
+        parts
+        |> List.map (fun part ->
+            if found then part
+            else
+                let blocks = mapBlocks part.Blocks
+                if obj.ReferenceEquals(blocks, part.Blocks) then part else { part with Blocks = blocks })
+    let blocks = mapBlocks doc.Blocks
+    // (Nothing of it changes: the document it was.)
+    if found then Some (if any then { doc with Blocks = blocks } else doc)
+    else
+        let headers = mapParts doc.HeaderParts
+        let footers = mapParts doc.FooterParts
+        if not found then None
+        elif any then Some { doc with HeaderParts = headers; FooterParts = footers }
+        else Some doc
 
 /// A shape of the body where `place` says: for each direction the frame its offset is from
 /// (None: the one it has) and the offset, in layout pixels. A direction that is given is by
@@ -3030,7 +3047,14 @@ let resizeTextBox (id: BlockId) (width: float) (height: float) (doc: Document) :
 /// the shape's text, goes to the block the shape was anchored in.
 let deleteTextBox (id: BlockId) (doc: Document) : Document option =
     match doc.Blocks |> List.tryPick (function TextBox box when box.Id = id -> Some box | _ -> None) with
-    | None -> None
+    | None ->
+        // A shape of a header or a footer: out of its part.
+        let holds (part: HeaderFooterPart) = part.Blocks |> List.exists (function TextBox box -> box.Id = id | _ -> false)
+        let without (parts: HeaderFooterPart list) =
+            parts |> List.map (fun part -> if holds part then { part with Blocks = part.Blocks |> List.filter (function TextBox box -> box.Id <> id | _ -> true) } else part)
+        if List.exists holds doc.HeaderParts then Some { doc with HeaderParts = without doc.HeaderParts }
+        elif List.exists holds doc.FooterParts then Some { doc with FooterParts = without doc.FooterParts }
+        else None
     | Some box ->
         let blocks = doc.Blocks |> List.filter (function TextBox other -> other.Id <> id | _ -> true)
         let inBox (position: Position) = box.Content |> List.exists (fun para -> para.Id = position.BlockId)

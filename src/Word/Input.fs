@@ -622,7 +622,11 @@ let private dropPendingFormat (handler: InputHandler) (doc: Doc.Document) =
 /// or a click outside the box, goes back to the body. `selection`: where the
 /// caret goes (None: the start of the box's text). False when the document
 /// has no such box, or its text is not laid out as text (a watermark).
-let enterTextBox (handler: InputHandler) (boxId: Doc.BlockId) (selection: Doc.Selection option) : bool =
+///
+/// A text box of a header or footer is edited where `page` paints it when
+/// that page shows it (the page the pointer is on), else on the first page
+/// that does.
+let enterTextBoxOnPage (handler: InputHandler) (boxId: Doc.BlockId) (selection: Doc.Selection option) (page: int option) : bool =
     // (Another story - a header, another box - is left first.)
     if handler.Story.IsSome then exitStory handler |> ignore
     let doc = handler.Document
@@ -653,8 +657,15 @@ let enterTextBox (handler: InputHandler) (boxId: Doc.BlockId) (selection: Doc.Se
                 part.Blocks |> List.tryPick (function Doc.TextBox box when box.Id = boxId -> Some (isHeader, index, box) | _ -> None))
         match inParts true doc.HeaderParts |> Option.orElseWith (fun () -> inParts false doc.FooterParts) with
         | Some (isHeader, partIndex, box) when not box.FitText ->
-            match furnitureShapeRects handler.RenderContext doc |> List.tryFind (fun (textBox, _, _, _, _, _, _) -> textBox.Id = boxId) with
-            | Some (_, _, _, _, _, _, pageIndex) ->
+            let onPage =
+                match page with
+                | Some pageIndex when pageShapeRects handler.RenderContext doc pageIndex |> List.exists (fun (textBox, _, _, _, _, _) -> textBox.Id = boxId) -> Some pageIndex
+                | _ ->
+                    furnitureShapeRects handler.RenderContext doc
+                    |> List.tryFind (fun (textBox, _, _, _, _, _, _) -> textBox.Id = boxId)
+                    |> Option.map (fun (_, _, _, _, _, _, pageIndex) -> pageIndex)
+            match onPage with
+            | Some pageIndex ->
                 let entry = (if box.Content.IsEmpty then [ Doc.newEmptyParagraph () ] else box.Content) |> List.map Doc.Paragraph
                 let session : StorySession =
                     { IsHeader = isHeader; PageIndex = pageIndex; Kind = "textbox"; Section = 0; PartIndex = partIndex; Label = "Text box"
@@ -677,6 +688,9 @@ let pageBreakAllowed (handler: InputHandler) : bool =
             && not (selection.Focus.BlockId.StartsWith Layout.footnoteBlockIdPrefix)
             && not (selection.Focus.BlockId.StartsWith Layout.endnoteBlockIdPrefix)
         | None -> false)
+
+let enterTextBox (handler: InputHandler) (boxId: Doc.BlockId) (selection: Doc.Selection option) : bool =
+    enterTextBoxOnPage handler boxId selection None
 
 let canUndo (handler: InputHandler) = not handler.History.Undos.IsEmpty
 let canRedo (handler: InputHandler) = not handler.History.Redos.IsEmpty
@@ -1572,13 +1586,32 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         // A click in a text box edits its text; one outside the box that is edited goes back to the body.
         let boxAt = shapeAt handler.RenderContext handler.Document x y
         (match handler.Story with
+         // The text box of a header or footer is edited: a click in it on another page that shows
+         // it, or in another box of a header or footer, edits that; one elsewhere in a header or
+         // footer goes back to that header, one on the body to the body.
+         | Some session when session.Box.IsSome && session.PartIndex >= 0 ->
+            match furnitureShapeAt handler.RenderContext handler.Document x y with
+            | Some (boxId, _, pageIndex) when Some boxId = session.Box && pageIndex = session.PageIndex -> ()
+            | Some (boxId, _, pageIndex) -> enterTextBoxOnPage handler boxId None (Some pageIndex) |> ignore
+            | None ->
+                let region = pageRegionAt handler.RenderContext handler.Document x y
+                exitStory handler |> ignore
+                match region, boxAt with
+                | Some (pageIndex, place), _ when place = "header" || place = "footer" -> handler.OnHistoryPlace pageIndex (place = "header") |> ignore
+                | _, Some boxId -> enterTextBox handler boxId None |> ignore
+                | _ -> ()
          | Some session when session.Box.IsSome ->
             if boxAt <> session.Box then
                 exitStory handler |> ignore
                 match boxAt with
                 | Some boxId -> enterTextBox handler boxId None |> ignore
                 | None -> ()
-         | Some _ -> ()
+         | Some _ ->
+            // A header or footer is edited: a click in one of its text boxes (or of another
+            // header's or footer's) edits the box's text, on the page the click is on.
+            match furnitureShapeAt handler.RenderContext handler.Document x y with
+            | Some (boxId, _, pageIndex) -> enterTextBoxOnPage handler boxId None (Some pageIndex) |> ignore
+            | None -> ()
          | None ->
             match boxAt with
             | Some boxId -> enterTextBox handler boxId None |> ignore
@@ -1831,6 +1864,7 @@ let formatAtCaret _ _ = false
 let withPendingFormat _ _ after = after
 let applyEditAtStoryPlace _ _ _ _ _ = ()
 let enterTextBox _ _ _ = false
+let enterTextBoxOnPage _ _ _ _ = false
 let pageBreakAllowed _ = false
 let loadDocument _ _ = ()
 let extendDocuments _ _ = ()
