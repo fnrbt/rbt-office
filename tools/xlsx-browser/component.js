@@ -590,6 +590,7 @@ checks['drawings-in-grid'] = async () => {
             const drawings = Array.from(model.Drawings);
             check(`${short}: every picture and kept object is in the model`, drawings.length, fileAnchors.length);
             const pictures = fileAnchors.filter((a) => a[0] === 'picture').length;
+            await everyObjectSeen(host);
             const nodes = () => [...host.querySelectorAll('.spreadsheet-drawing')];
             const boxes = () => nodes().map((node) => { const r = node.getBoundingClientRect(), c = host.querySelector('.spreadsheet-content').getBoundingClientRect(); return [Math.round(r.left - c.left), Math.round(r.top - c.top), Math.round(r.width), Math.round(r.height)]; });
             check(`${short}: the grid shows them (pictures as images, the rest as labelled frames)`, [nodes().filter((n) => n.tagName === 'IMG').length, nodes().filter((n) => n.tagName === 'DIV').length], [pictures, fileAnchors.length - pictures]);
@@ -820,6 +821,18 @@ checks['edit-without-dependents'] = async () => {
 // ---- the grid itself: scrolling, selection, keyboard, clipboard, formatting, read-only ----
 
 export const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+// Charts and shapes of a file are laid out when they come into view: the sheet in `host` scrolled
+// to each object that is not laid out yet, and back to its top.
+export const everyObjectSeen = async (host) => {
+    const scroller = host.querySelector('.spreadsheet-container');
+    await frame();
+    for (let pass = 0; pass < 60 && host.querySelectorAll('.spreadsheet-object-pending').length > 0; pass++) {
+        const pending = host.querySelector('.spreadsheet-object-pending').getBoundingClientRect(), view = scroller.getBoundingClientRect();
+        scroller.scrollTop += pending.top - view.top - 100; scroller.scrollLeft += pending.left - view.left - 100;
+        await frame(); await frame();
+    }
+    scroller.scrollTop = 0; scroller.scrollLeft = 0; await frame();
+};
 export const parts = (host) => ({ scroller: host.querySelector('.spreadsheet-container'), content: host.querySelector('.spreadsheet-content') });
 export const press = (host, key, options = {}) => parts(host).content.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...options }));
 // The cell node at a point of the host (CSS pixels from its top-left corner), as [row, col], or what else is there.

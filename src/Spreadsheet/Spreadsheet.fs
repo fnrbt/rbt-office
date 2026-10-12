@@ -989,7 +989,8 @@ type Spreadsheet(container: Element) =
             None
     /// `objectSvg` for a drawing of the sheet on display: what was drawn for it before, when its
     /// anchor, its size and the cells it reads are what they were then.
-    let drawingSvg (drawing: SheetDrawing) (xml: string) (width: float) (height: float) : (string * (string * int * int * int * int * CellData option [] []) array) option =
+    /// (`layOut` false: only what is known - None when the object would have to be laid out.)
+    let drawingSvgWhen (layOut: bool) (drawing: SheetDrawing) (xml: string) (width: float) (height: float) : (string * (string * int * int * int * int * CellData option [] []) array) option option =
         let key =
             match xlsxSource, model.SourceSheet with
             | Some source, Some origin when origin.Book = source.Id -> string origin.Sheet + ":" + string drawing.Id
@@ -1002,14 +1003,22 @@ type Spreadsheet(container: Element) =
                 Some (if isNull svg then None else Some (svg, reads))
             | _ -> None
         match kept with
-        | Some known -> known
+        | Some known -> Some known
+        // (An object of no file part is not drawn: there is nothing to lay out later.)
+        | None when key = "" -> Some None
         | None ->
-            let drawn = objectSvg xml width height
-            if key <> "" then
-                match drawn with
-                | Some (svg, reads) -> drawnObjects.[key] <- (xml, width, height, svg, reads)
-                | None -> drawnObjects.[key] <- (xml, width, height, null, [||])
-            drawn
+            if not layOut then None
+            else
+                let drawn = objectSvg xml width height
+                if key <> "" then
+                    match drawn with
+                    | Some (svg, reads) -> drawnObjects.[key] <- (xml, width, height, svg, reads)
+                    | None -> drawnObjects.[key] <- (xml, width, height, null, [||])
+                Some drawn
+    let drawingSvg (drawing: SheetDrawing) (xml: string) (width: float) (height: float) = drawingSvgWhen true drawing xml width height |> Option.bind id
+    /// The objects of the sheet on display that are not laid out yet (by id), and whether their layout is under way.
+    let pendingObjects = System.Collections.Generic.HashSet<int>()
+    let mutable objectsScheduled = false
     let cellsStamp () : obj array = Array.init sheets.Length (fun index -> box (if index = activeSheetIndex then model.Cells else sheets.[index].Cells))
 
     let currentViewport (): SpreadsheetLayout.Viewport = {
@@ -4291,6 +4300,7 @@ type Spreadsheet(container: Element) =
             for node in drawingNodes do detach node
             drawingNodes.Clear()
             chartFrames.Clear()
+            pendingObjects.Clear()
             chartStamp <- cellsStamp ()
             let frozenW = metrics.ColPrefix.[frozenCols]
             let frozenH = metrics.RowPrefix.[frozenRows]
@@ -4304,10 +4314,14 @@ type Spreadsheet(container: Element) =
                     let label = SpreadsheetLayout.drawingLabel drawing
                     let takesPointer = (match drawing.Content with Picture _ -> not readOnly | KeptObject _ -> false)
                     // A chart, a shape or a group of them is drawn from the file's parts (None: a frame that says what it is).
-                    let drawn =
+                    // (Laid out after the grid is on screen, the objects in view first: until then its place is empty.)
+                    let known =
                         match drawing.Content with
-                        | KeptObject (_, xml) -> drawingSvg drawing xml rect.Width rect.Height
-                        | Picture _ -> None
+                        | KeptObject (_, xml) -> drawingSvgWhen false drawing xml rect.Width rect.Height
+                        | Picture _ -> Some None
+                    let pending = known.IsNone
+                    if pending then pendingObjects.Add drawing.Id |> ignore
+                    let drawn = known |> Option.bind id
                     // The drawing's node at (left, top) of its parent.
                     let build (left: float) (top: float) : Element =
                         let node =
@@ -4327,6 +4341,10 @@ type Spreadsheet(container: Element) =
                                 setAttribute image "draggable" "false"
                                 setClassName image "spreadsheet-drawing spreadsheet-picture"
                                 image
+                            | KeptObject (kind, _) when pending ->
+                                let frame = createElement "div"
+                                setClassName frame ("spreadsheet-drawing spreadsheet-object spreadsheet-object-" + kind + " spreadsheet-object-pending")
+                                frame
                             | KeptObject (kind, _) ->
                                 let frame = createElement "div"
                                 setClassName frame ("spreadsheet-drawing spreadsheet-object spreadsheet-object-" + kind)
@@ -4424,6 +4442,32 @@ type Spreadsheet(container: Element) =
                                 chartFrames.[at] <- (frame, drawing, width, height, readsNow)
                              | None -> ())
                         | Picture _ -> ()
+        // The objects that are not laid out yet: those in view, once the grid is on screen - a
+        // few at a time, so that a sheet full of charts does not hold up its own display.
+        if pendingObjects.Count > 0 && not objectsScheduled then
+            let inView (drawing: SheetDrawing) =
+                let rect = SpreadsheetLayout.drawingRect model drawing
+                rect.Y + rect.Height >= scrollTop - 300.0 && rect.Y <= scrollTop + containerHeight + 300.0
+                && rect.X + rect.Width >= scrollLeft - 300.0 && rect.X <= scrollLeft + containerWidth + 300.0
+            if model.Drawings |> List.exists (fun drawing -> pendingObjects.Contains drawing.Id && inView drawing) then
+                objectsScheduled <- true
+                setTimeoutMs (fun () ->
+                    objectsScheduled <- false
+                    if contentElement.IsSome && layers.IsSome then
+                        let started = nowMs ()
+                        let mutable laidOut = 0
+                        for drawing in model.Drawings do
+                            if pendingObjects.Contains drawing.Id && inView drawing && (laidOut = 0 || nowMs () - started < 12.0) then
+                                match drawing.Content with
+                                | KeptObject (_, xml) ->
+                                    let rect = SpreadsheetLayout.drawingRect model drawing
+                                    drawingSvg drawing xml rect.Width rect.Height |> ignore
+                                    laidOut <- laidOut + 1
+                                | Picture _ -> ()
+                        // (Drawn from what is known now; what is left in view follows in the next slice.)
+                        if laidOut > 0 then
+                            renderedDrawings <- null
+                            render ()) 0 |> ignore
         renderPictureFrame content
 
     /// The page break preview (`viewMode`): every page the sheet prints on (`paginatePrinted`,

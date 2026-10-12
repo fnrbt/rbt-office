@@ -2,7 +2,7 @@
 // buttons, the outline gutter, drawings over frozen panes, ...). Input goes through the
 // browser's real mouse and keyboard (window.realMouse / window.realKey, see run.mjs).
 // Each check returns a list of "ok ..." / "FAIL ..." lines.
-import { checks, makeLog, mountGrid, frame, parts, container, createSpreadsheet } from '/component.js';
+import { checks, makeLog, mountGrid, frame, parts, container, createSpreadsheet, everyObjectSeen as seenAll } from '/component.js';
 import { reopened, thrown } from '/sheet-api.js';
 
 const near = (a, b, tolerance = 1.01) => Math.abs(a - b) <= tolerance;
@@ -1381,6 +1381,7 @@ checks['object-label-fits'] = async () => {
             await grid.ImportXlsx((await bytesOf(file)).slice());
             for (let index = 0; index < grid.GetSheetNames().length; index++) {
                 grid.SwitchSheet(index); await frame();
+                await seenAll(host);
                 const wrong = [];
                 for (const node of host.querySelectorAll('.spreadsheet-object')) {
                     frames++;
@@ -1673,10 +1674,17 @@ checks['charts-in-grid'] = async () => {
     grid.OnError((error) => errors.push(error.source + ': ' + error.message));
     const shoot = async (label) => { await frame(); if (window.screenshotRegion) await window.screenshotRegion(0, 0, 1180, 880); note(`screenshot: ${label}`); };
     const drawn = () => [...host.querySelectorAll('.spreadsheet-object-drawn')];
+    const everyObjectSeen = () => seenAll(host);
     try {
         const original = await bytesOf('tests/real-world/chart-zoo.xlsx');
         await grid.ImportXlsx(original.slice());
+        // The charts are laid out once the grid is on screen: opening the workbook lays out none.
+        check('opened: the grid is there, no chart is laid out yet', [host.querySelectorAll('.spreadsheet-cell').length > 0, grid.GetChartLayouts ? grid.GetChartLayouts() : -1, host.querySelectorAll('.spreadsheet-object-pending').length], [true, 0, 6]);
         await frame();
+        const inViewFirst = drawn().length;
+        check('a frame later those in view are, the others when they come into view', [inViewFirst >= 1, inViewFirst + host.querySelectorAll('.spreadsheet-object-pending').length, grid.GetChartLayouts()], [true, 6, inViewFirst]);
+        await everyObjectSeen();
+        check('scrolled over all of them: every chart is laid out, once', [host.querySelectorAll('.spreadsheet-object-pending').length, grid.GetChartLayouts()], [0, 6]);
         const frames = drawn();
         check('chart-zoo: its six charts are drawn, none is a labelled frame', [frames.length, frames.every((node) => node.querySelector('svg') !== null), host.querySelectorAll('.spreadsheet-object-label').length], [6, true, 0]);
         const titles = frames.map((node) => node.querySelector('svg text')?.textContent ?? '');
@@ -1719,6 +1727,7 @@ checks['charts-in-grid'] = async () => {
             await grid.ImportXlsx(bytes.slice());
             const index = grid.GetSheetNames().indexOf(sheet);
             grid.SwitchSheet(index); await frame();
+            await everyObjectSeen();
             const objects = grid.GetDrawings();
             const inGroups = drawn().reduce((count, node) => count + node.querySelectorAll('svg g[clip-path]').length, 0);
             const whole = drawn().filter((node) => node.querySelector('svg > rect, svg > text, svg > path, svg > g') !== null).length;
@@ -1731,6 +1740,7 @@ checks['charts-in-grid'] = async () => {
                 // (Every sheet is shown once first: one that was not converted yet gives a chart that reads it its cells.)
                 for (const info of grid.GetSheetInfos()) if (info.visibility === 'visible') { grid.SwitchSheet(info.index); await frame(); }
                 grid.SwitchSheet(index); await frame();
+                await everyObjectSeen();
                 const layouts = grid.GetChartLayouts(), svgs = drawn().map((node) => node.innerHTML);
                 const other = grid.GetSheetNames().findIndex((name, at) => at !== index && grid.GetSheetInfos()[at].visibility === 'visible');
                 grid.SwitchSheet(other); await frame();

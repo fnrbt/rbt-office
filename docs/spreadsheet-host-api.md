@@ -986,6 +986,16 @@ No API and no value changes; what an edit costs.
   sheets hold now. Showing a sheet again, scrolling, an edit elsewhere on the sheet, and an entry that leaves a cell as it was lay
   nothing out. `GetChartLayouts(): number` counts the layouts of objects since the component was made, `GetChartRedraws(): number`
   those caused by changed cells (both for tests and diagnostics).
+- **Charts and shapes are laid out after the grid is on screen, those in view first (a host must adapt).** `ImportXlsx`,
+  `SwitchSheet` and scrolling lay out no object any more: an object that has not been laid out is an empty
+  `div.spreadsheet-object.spreadsheet-object-pending` at its place (same `data-drawing-id` and `title`), and a task right after the
+  render lays out the pending objects in view (300 px around it; about 12 ms of them per task, then the next task) and puts them in
+  - `.spreadsheet-object-drawn` with its `<svg>`, or the labelled frame for what is not drawn. Objects further down are laid out
+  when they are scrolled into view; what was laid out once is kept (see above). **A host or a test that looks for `<svg>` or
+  `.spreadsheet-object-label` right after `await ImportXlsx(...)` finds none yet**: wait a frame (two `requestAnimationFrame`s) for
+  the objects in view, and scroll to the others. Printing and `GetDrawings()` do not depend on it. chart-zoo.xlsx (six charts on the
+  first sheet): `ImportXlsx` 100 - 103 ms before, 81 - 85 ms now; `GetChartLayouts()` is 0 when `ImportXlsx` returns, 1 a frame
+  later (one chart is in view of a 1180 x 880 grid) and 6 once all were scrolled to.
 - **Opening a workbook with a map chart**: a `cx:chartSpace` part (dashboard-sales-analysis.xlsx: 8 MB) was parsed whole to find that
   it is not drawn - 85 - 120 ms of `ImportXlsx` when the first sheet has such a frame. It is told by its first tag now
   (`Charts.isChartEx`). ImportXlsx of that workbook, same session: 0.1.15 (no charts drawn) 594 - 628 ms, the code before this
