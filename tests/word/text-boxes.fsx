@@ -226,6 +226,17 @@ do
     check "a header's shape resized" (resizeTextBox "h1" 120.0 60.0 withHeader |> Option.bind headerBoxOf) (Some (Some 10.0, Some 5.0, 120.0, 60.0))
     check "a header's shape taken out" (deleteTextBox "h1" withHeader |> Option.map (fun doc -> headerBoxOf doc, doc.HeaderParts.Head.Blocks.Length, obj.ReferenceEquals(doc.Blocks, withHeader.Blocks))) (Some (None, 1, true))
     check "to the place it has: the document it was" (moveTextBox "h1" None None withHeader |> Option.map (fun doc -> obj.ReferenceEquals(doc, withHeader))) (Some true)
+    // A shape resized by a handle: the side (or corner) across stays where it is - also when the shape is turned.
+    let rounded (x: float, y: float, w: float, h: float) = (System.Math.Round(x, 2), System.Math.Round(y, 2), System.Math.Round(w, 2), System.Math.Round(h, 2))
+    check "the east handle: wider, where it was" (resizedShapeRect 0.0 10.0 20.0 100.0 50.0 "e" 15.0 7.0 |> rounded) (10.0, 20.0, 115.0, 50.0)
+    check "the north-west handle: left and top go, right and bottom stay" (resizedShapeRect 0.0 10.0 20.0 100.0 50.0 "nw" -10.0 -6.0 |> rounded) (0.0, 14.0, 110.0, 56.0)
+    check "the south handle" (resizedShapeRect 0.0 10.0 20.0 100.0 50.0 "s" 9.0 12.0 |> rounded) (10.0, 20.0, 100.0, 62.0)
+    check "not narrower than four pixels: the right edge still stays" (resizedShapeRect 0.0 10.0 20.0 100.0 50.0 "w" 500.0 0.0 |> rounded) (106.0, 20.0, 4.0, 50.0)
+    // (Turned a quarter clockwise the shape's east side points down the page: dragged ten pixels down it is ten wider, and
+    // its west side - at the top, 50 above the centre (60, 45) - is where it was: the centre is five further down.)
+    check "turned a quarter: the east handle dragged down the page" (resizedShapeRect 90.0 10.0 20.0 100.0 50.0 "e" 0.0 10.0 |> rounded) (5.0, 25.0, 110.0, 50.0)
+    check "turned a quarter: a drag across the handle's direction changes nothing" (resizedShapeRect 90.0 10.0 20.0 100.0 50.0 "e" 10.0 0.0 |> rounded) (10.0, 20.0, 100.0, 50.0)
+    check "place and size in one change" (placeTextBox "b1" (Some (Some "page", 30.0)) None (Some (120.0, 60.0)) body |> Option.map (fun doc -> (boxOf "b1" doc).X, (boxOf "b1" doc).Width, (boxOf "b1" doc).Height)) (Some (Some 30.0, 120.0, 60.0))
     // Everything selected and deleted: the body's paragraphs and what is anchored in them.
     let all = body |> selectAll |> deleteSelection
     check "everything selected and deleted: nothing is left" (boxesOf all, textsOf all) ([], [ "" ])

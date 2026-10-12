@@ -368,6 +368,31 @@ module API =
             for listener in editor.Listeners.ToArray() do
                 if editor.Listeners.Contains listener then listener change
 
+    /// Tell the onChange listeners that another shape, or none, is selected
+    /// (getSelectedShape says which): ShapeSelectionChanged is true, and
+    /// SelectionChanged for a host that reads its state when that is.
+    let private notifyShapeSelection (editor: Editor) =
+        if editor.Listeners.Count > 0 then
+            let change =
+                createObj [
+                    "DocumentChanged" ==> false
+                    "SelectionChanged" ==> true
+                    "ShapeSelectionChanged" ==> true
+                    "CanUndo" ==> Inp.canUndo editor.Handler
+                    "CanRedo" ==> Inp.canRedo editor.Handler
+                    "Revision" ==> editor.Revision
+                    "Modified" ==> (editor.Revision <> editor.SavedRevision)
+                    "LayoutChanged" ==> false
+                    "LayoutComplete" ==> Ren.layoutIsComplete editor.Handler.RenderContext
+                    "LoadChanged" ==> false
+                    "LoadComplete" ==> (editor.Loading.IsNone && editor.LoadFailure.IsNone)
+                    "LoadFailed" ==> editor.LoadFailure.IsSome
+                    "LoadError" ==> Option.toObj editor.LoadFailure
+                    "FontsPending" ==> fontsPending editor
+                ]
+            for listener in editor.Listeners.ToArray() do
+                if editor.Listeners.Contains listener then listener change
+
     /// Tell the onChange listeners that more of a long document is laid out
     /// (more pages, a larger document size), or all of it.
     let private notifyProgressAt (editor: Editor) (layoutChanged: bool) (loadChanged: bool) (scrollTop: float option) =
@@ -780,6 +805,7 @@ module API =
         handler.EnsureWhole <- fun () -> ensureLoaded editor
         handler.RenderContext.Progress.OnScrollAdjusted <- fun () -> notifyScrollAdjusted editor
         handler.OnPendingFormat <- fun () -> notifyPendingFormat editor
+        handler.OnShapeSelection <- fun () -> notifyShapeSelection editor
 
         editor
 
@@ -3217,6 +3243,67 @@ module API =
                 true
             | None -> false
 
+    /// Select a shape (a text box) of the body, a header or a footer (`id`:
+    /// as getShapeRects gives it; null or "": none). The editor paints its
+    /// frame and its eight handles (turned as the shape is) and handles the
+    /// pointer and the keys for it: a drag of a handle resizes it - the side
+    /// across stays where it is -, a drag of its frame moves it (of any point
+    /// of it where a click does not reach its text: a shape behind the text,
+    /// a watermark), each drag one undo step; Delete or Backspace takes it
+    /// out, the arrow keys move it by a pixel (with Shift by ten), Escape
+    /// lets go of it. The keys are the shape's while no text of a box, a
+    /// header or a footer is edited. A click into a box's text selects that
+    /// box (and edits its text: Escape then goes back to the body with the
+    /// box still selected); a click elsewhere lets go of it. The listeners
+    /// are told ({ ShapeSelectionChanged: true }). The text of another box,
+    /// a header or a footer that is edited is left first. False when there
+    /// is no such shape.
+    let selectShape (editor: Editor) (id: string) : bool =
+        ensureLoaded editor
+        let handler = editor.Handler
+        if isNull (box id) || id = "" then
+            Inp.selectShape handler None
+            true
+        else
+            (match handler.Story with
+             | Some session when session.Box <> Some id -> Inp.exitStory handler |> ignore
+             | _ -> ())
+            match Ren.shapeRectOf handler.RenderContext editor.Doc id with
+            | Some _ ->
+                Inp.selectShape handler (Some id)
+                true
+            | None -> false
+
+    /// The Id of the shape that is selected (selectShape, or a click into a
+    /// box), or null: none, or the document has it no more.
+    let getSelectedShape (editor: Editor) : string =
+        match editor.Handler.SelectedShape with
+        | Some id when (Ren.shapeRectOf editor.Handler.RenderContext editor.Doc id).IsSome -> id
+        | _ -> null
+
+    /// Resize a shape by one of its handles (`handle`: "nw", "n", "ne", "e",
+    /// "se", "s", "sw", "w" - as getShapeHandles names them) dragged by `dx`
+    /// to the right and `dy` down (layout pixels): the side or the corner
+    /// across from the handle stays where it is - for a turned shape too,
+    /// where the drag is taken in the shape's own directions. One undo step,
+    /// also for a handle of the left or the top edge (which was a moveShape
+    /// and a resizeShape: two). At least four pixels wide and high. False
+    /// when there is no such shape or handle, nothing changes, or the text
+    /// of a box, a header or a footer is being edited.
+    let resizeShapeBy (editor: Editor) (id: string) (handle: string) (dx: float) (dy: float) : bool =
+        if editor.Handler.Story.IsSome || System.Double.IsNaN dx || System.Double.IsNaN dy || isNull (box handle) then false
+        elif not (Ren.shapeHandleSpots |> List.exists (fun (name, _, _, _) -> name = handle)) then false
+        else
+            ensureLoaded editor
+            match Ren.shapeRectOf editor.Handler.RenderContext editor.Doc id with
+            | Some (shape, x, y, width, height, pageTop) ->
+                match Inp.shapeResizedDocument editor.Doc shape x y width height pageTop handle dx dy with
+                | Some newDoc when not (obj.ReferenceEquals(newDoc, editor.Doc)) ->
+                    commitDocumentUpdate editor newDoc
+                    true
+                | _ -> false
+            | None -> false
+
     /// The eight handles of a shape of the body, a header or a footer, for a host that shows it
     /// selected and lets it be dragged: Name ("nw", "n", "ne", "e", "se",
     /// "s", "sw", "w"), X, Y, Width, Height (a square around the corner or the
@@ -4031,6 +4118,9 @@ module API =
             "exportDocumentPackage" ==> exportDocumentPackage
             "insertTextBox" ==> insertTextBox
             "moveShape" ==> moveShape
+            "selectShape" ==> selectShape
+            "getSelectedShape" ==> getSelectedShape
+            "resizeShapeBy" ==> resizeShapeBy
             "resizeShape" ==> resizeShape
             "deleteShape" ==> deleteShape
             "getShapeHandles" ==> getShapeHandles

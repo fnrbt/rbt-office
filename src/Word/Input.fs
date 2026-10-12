@@ -100,6 +100,25 @@ type DragImageState = {
     InitialY: float
 }
 
+/// A shape that is being dragged with the pointer: all of it, or one of its handles.
+type ShapeDragState = {
+    ShapeId: string
+    /// "move", or the name of the handle ("nw", "n", "ne", "e", "se", "s", "sw", "w").
+    Part: string
+    StartX: float
+    StartY: float
+    /// The shape when the drag began, and where it was painted then: its
+    /// left edge, top, width and height, and the top of its page.
+    Shape: Doc.TextBoxBlock
+    RectX: float
+    RectY: float
+    RectWidth: float
+    RectHeight: float
+    PageTop: float
+    /// The pointer went far enough for a drag (a click moves nothing).
+    mutable Moved: bool
+}
+
 /// Text an IME (or a dead key) is composing. It is shown underlined at the
 /// caret but is not in the document until the composition ends.
 type CompositionState = {
@@ -213,6 +232,14 @@ type InputHandler = {
     /// Put plain text in at the caret, or over the selection, as Ctrl+V does
     /// (its lines are paragraphs; one undo step). Set when the handler is made.
     mutable PasteText: string -> unit
+    /// The shape that is selected (see selectShape): its frame and handles
+    /// are painted, the pointer drags it by its frame and resizes it by its
+    /// handles, Delete takes it out, the arrow keys move it, Escape lets go of it.
+    mutable SelectedShape: Doc.BlockId option
+    /// The drag of the selected shape that is under way.
+    mutable ShapeDrag: ShapeDragState option
+    /// Called when another shape, or none, is selected (set by the editor).
+    mutable OnShapeSelection: unit -> unit
 }
 
 [<Emit("$0.focus({ preventScroll: true })")>]
@@ -692,6 +719,54 @@ let pageBreakAllowed (handler: InputHandler) : bool =
 let enterTextBox (handler: InputHandler) (boxId: Doc.BlockId) (selection: Doc.Selection option) : bool =
     enterTextBoxOnPage handler boxId selection None
 
+/// Which shape is selected, without painting: the renderer paints its frame
+/// and handles with the next frame it builds. True when it is another one.
+let private setSelectedShape (handler: InputHandler) (id: Doc.BlockId option) : bool =
+    if handler.SelectedShape = id then false
+    else
+        handler.SelectedShape <- id
+        handler.ShapeDrag <- None
+        handler.RenderContext.SelectedShape <- id
+        handler.RenderContext.LastPaint <- None
+        true
+
+/// Select a shape (a text box) of the body, a header or a footer - None: no
+/// shape. Its frame and its eight handles are painted; see
+/// InputHandler.SelectedShape for what the pointer and the keys then do.
+let selectShape (handler: InputHandler) (id: Doc.BlockId option) : unit =
+    if setSelectedShape handler id then
+        renderWithHover handler.RenderContext handler.Document handler.HoveredImage
+        handler.OnShapeSelection ()
+
+/// The document with a shape `dx` further right and `dy` further down and -
+/// with `size` (width, height) - of another size, in one change. The shape
+/// keeps the frame its place is measured from and its offset from it changes;
+/// in a direction it was aligned in (or had no offset of its own) it is by
+/// its offset from its page from then on: `rectX` and `rectY - pageTop` are
+/// where it is painted on its page. None: the document has no such shape.
+let shapePlacedDocument (doc: Doc.Document) (shape: Doc.TextBoxBlock) (rectX: float) (rectY: float) (pageTop: float) (dx: float) (dy: float) (size: (float * float) option) : Doc.Document option =
+    let horizontal =
+        if shape.Inline || abs dx <= 0.0001 then None
+        else
+            match shape.PositionHAlign, shape.X with
+            | None, Some offset -> Some (None, offset + dx)
+            | _ -> Some (Some "page", rectX + dx)
+    let vertical =
+        if shape.Inline || abs dy <= 0.0001 then None
+        else
+            match shape.PositionVAlign, shape.Y with
+            | None, Some offset -> Some (None, offset + dy)
+            | _ -> Some (Some "page", rectY - pageTop + dy)
+    Doc.placeTextBox shape.Id horizontal vertical size doc
+
+/// The document with a shape resized by one of its handles (see
+/// Doc.resizedShapeRect): the handle dragged by (dx, dy), the side across
+/// from it where it was. One change - the shape's place and its size.
+let shapeResizedDocument (doc: Doc.Document) (shape: Doc.TextBoxBlock) (rectX: float) (rectY: float) (width: float) (height: float) (pageTop: float) (handle: string) (dx: float) (dy: float) : Doc.Document option =
+    let left, top, newWidth, newHeight = Doc.resizedShapeRect shape.Rotation rectX rectY width height handle dx dy
+    let size = if abs (newWidth - width) > 0.0001 || abs (newHeight - height) > 0.0001 then Some (newWidth, newHeight) else None
+    shapePlacedDocument doc shape rectX rectY pageTop (left - rectX) (top - rectY) size
+
 let canUndo (handler: InputHandler) = not handler.History.Undos.IsEmpty
 let canRedo (handler: InputHandler) = not handler.History.Redos.IsEmpty
 
@@ -727,6 +802,9 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         Pending = None
         OnPendingFormat = ignore
         PasteText = ignore
+        SelectedShape = None
+        ShapeDrag = None
+        OnShapeSelection = ignore
     }
 
     // ---- caret movement over the layout that is on screen -------------------
@@ -1125,6 +1203,17 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
     // Make canvas focusable
     canvas.tabIndex <- 0
 
+    /// The shape the keys act on - Delete, the arrows: the one that is
+    /// selected, while no text of a box, a header or a footer is edited (the
+    /// keys are that text's then) - with where it is painted: its left edge,
+    /// its top, the top of its page.
+    let selectedShapeForKeys () : (Doc.TextBoxBlock * float * float * float) option =
+        match handler.SelectedShape, handler.Story with
+        | Some id, None ->
+            shapeRectOf handler.RenderContext handler.Document id
+            |> Option.map (fun (shape, x, y, _, _, pageTop) -> shape, x, y, pageTop)
+        | _ -> None
+
     // Handle keyboard input. The listener serves the canvas and the input
     // proxy (which normally has the focus).
     let onKeyDown (e: Event) =
@@ -1177,6 +1266,48 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             // Out of the header or footer, back to the body.
             exitStory handler |> ignore
             newDoc <- handler.Document
+            e.preventDefault()
+        | "Escape" when handler.SelectedShape.IsSome ->
+            // (The shape that is selected is let go of.)
+            selectShape handler None
+            e.preventDefault()
+        | "Delete"
+        | "Backspace" when (selectedShapeForKeys ()).IsSome ->
+            // The shape that is selected is taken out, its text with it.
+            match selectedShapeForKeys () with
+            | Some (shape, _, _, _) ->
+                let beforeDoc = handler.Document
+                match Doc.deleteTextBox shape.Id beforeDoc with
+                | Some afterDoc ->
+                    let cmd = DeleteTextCommand(beforeDoc, afterDoc, "Delete shape") :> ICommand
+                    let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
+                    newDoc <- doc'
+                    newHistory <- hist'
+                    useCommand <- true
+                    if setSelectedShape handler None then handler.OnShapeSelection ()
+                | None -> ()
+            | None -> ()
+            e.preventDefault()
+        | "ArrowLeft"
+        | "ArrowRight"
+        | "ArrowUp"
+        | "ArrowDown" when not commandKey && not ke.altKey && (selectedShapeForKeys ()).IsSome ->
+            // The shape that is selected moves by a pixel (with Shift: ten).
+            match selectedShapeForKeys () with
+            | Some (shape, rectX, rectY, pageTop) ->
+                let step = if shift then 10.0 else 1.0
+                let dx = (match ke.key with "ArrowLeft" -> -step | "ArrowRight" -> step | _ -> 0.0)
+                let dy = (match ke.key with "ArrowUp" -> -step | "ArrowDown" -> step | _ -> 0.0)
+                let beforeDoc = handler.Document
+                match shapePlacedDocument beforeDoc shape rectX rectY pageTop dx dy None with
+                | Some afterDoc when not (documentsEqualForChange afterDoc beforeDoc) ->
+                    let cmd = DeleteTextCommand(beforeDoc, afterDoc, "Move shape") :> ICommand
+                    let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
+                    newDoc <- doc'
+                    newHistory <- hist'
+                    useCommand <- true
+                | _ -> ()
+            | None -> ()
             e.preventDefault()
         | key when commandKey && keyEquals 'a' key ->
             newDoc <- Doc.selectAll handler.Document
@@ -1579,6 +1710,36 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         let x, y = pointerPosition me
 
         // A double click on a page's header or footer edits it in place; one on the body goes back.
+        // The shape that is selected is taken by a handle (resized) or by its frame (moved); one
+        // whose text a click does not reach (behind the text, a watermark) by any point of it.
+        let grabbed =
+            match handler.SelectedShape with
+            | Some id when int me.detail < 2 ->
+                match shapePartAt handler.RenderContext handler.Document id x y with
+                | "" -> None
+                | "inside" ->
+                    let editingIt = (match handler.Story with Some session -> session.Box = Some id | None -> false)
+                    let reached =
+                        editingIt
+                        || shapeAt handler.RenderContext handler.Document x y = Some id
+                        || (handler.Story.IsSome && (match furnitureShapeAt handler.RenderContext handler.Document x y with Some (boxId, _, _) -> boxId = id | None -> false))
+                    if reached then None else Some (id, "move")
+                | "border" -> Some (id, "move")
+                | handle -> Some (id, handle)
+            | _ -> None
+        match grabbed with
+        | Some (id, part) ->
+            // (Its text, or the header that is edited, is left first: the shape is the document's.)
+            if handler.Story.IsSome then exitStory handler |> ignore
+            match shapeRectOf handler.RenderContext handler.Document id with
+            | Some (shape, rectX, rectY, width, height, pageTop) ->
+                handler.ShapeDrag <- Some { ShapeId = id; Part = part; StartX = x; StartY = y; Shape = shape; RectX = rectX; RectY = rectY; RectWidth = width; RectHeight = height; PageTop = pageTop; Moved = false }
+                handler.PointerStartDocument <- Some handler.Document
+                handler.IsMouseDown <- true
+            | None -> ()
+            e.preventDefault()
+            canvas.focus()
+        | None ->
         if int me.detail = 2 && handler.OnDoubleClick x y then
             e.preventDefault()
             canvas.focus()
@@ -1616,6 +1777,12 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             match boxAt with
             | Some boxId -> enterTextBox handler boxId None |> ignore
             | None -> ())
+        // The box whose text the click went into is the shape that is selected; a click anywhere
+        // else lets go of the one that was.
+        let shapeNow = (match handler.Story with Some session -> session.Box | None -> None)
+        if setSelectedShape handler shapeNow then
+            renderWithHover handler.RenderContext handler.Document handler.HoveredImage
+            handler.OnShapeSelection ()
         // Check if clicking on an image first
         match hitTestForImage handler.RenderContext handler.Document x y with
         | Some (blockId, offset, width, height, imageX, imageY) ->
@@ -1666,7 +1833,23 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         let me = e :?> MouseEvent
         let x, y = pointerPosition me
 
-        if handler.IsMouseDown then
+        if handler.IsMouseDown && handler.ShapeDrag.IsSome then
+            // The selected shape follows the pointer: from the document the drag began with, so
+            // that the whole drag is one change (and one undo step, see the mouse up).
+            match handler.ShapeDrag, handler.PointerStartDocument with
+            | Some drag, Some startDoc ->
+                let dx, dy = x - drag.StartX, y - drag.StartY
+                let threshold = 3.0 / viewportScale handler.RenderContext
+                if drag.Moved || abs dx > threshold || abs dy > threshold then
+                    drag.Moved <- true
+                    let moved =
+                        if drag.Part = "move" then shapePlacedDocument startDoc drag.Shape drag.RectX drag.RectY drag.PageTop dx dy None
+                        else shapeResizedDocument startDoc drag.Shape drag.RectX drag.RectY drag.RectWidth drag.RectHeight drag.PageTop drag.Part dx dy
+                    match moved with
+                    | Some newDoc -> applyPointerDocumentChange newDoc
+                    | None -> ()
+            | _ -> ()
+        elif handler.IsMouseDown then
             match handler.ResizingImage with
             | Some resizeState ->
                 // Resize image based on mouse delta
@@ -1691,6 +1874,18 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                         applyPointerDocumentChange newDoc
                     | _ -> ()
         else
+            // Over a handle or the frame of the shape that is selected: the cursor says what a drag does.
+            let overShape =
+                match handler.SelectedShape with
+                | Some id ->
+                    match shapePartAt handler.RenderContext handler.Document id x y with
+                    | "" | "inside" -> None
+                    | "border" -> Some "move"
+                    | handle -> shapeHandleSpots |> List.tryPick (fun (name, _, _, cursor) -> if name = handle then Some cursor else None)
+                | None -> None
+            match overShape with
+            | Some cursor -> setCursor canvas cursor
+            | None ->
             // Update hover state and cursor
             match hitTestForImage handler.RenderContext handler.Document x y with
             | Some (blockId, offset, width, height, imageX, imageY) ->
@@ -1711,7 +1906,16 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
     // ends the gesture; otherwise IsMouseDown stays set and the next mouse
     // move over the canvas keeps selecting or resizing with no button held.
     let onMouseUp (e: Event) =
-        if handler.IsMouseDown || handler.ResizingImage.IsSome || handler.DraggingImage.IsSome then
+        if handler.ShapeDrag.IsSome then
+            // The whole drag of a shape is one undo step (a click on it: none).
+            match handler.ShapeDrag, handler.PointerStartDocument with
+            | Some drag, Some startDoc when drag.Moved ->
+                recordChange handler (if drag.Part = "move" then "Move shape" else "Resize shape") startDoc handler.Document
+            | _ -> ()
+            handler.ShapeDrag <- None
+            handler.PointerStartDocument <- None
+            handler.IsMouseDown <- false
+        elif handler.IsMouseDown || handler.ResizingImage.IsSome || handler.DraggingImage.IsSome then
             let me = e :?> MouseEvent
             let x, y = pointerPosition me
 
@@ -1820,6 +2024,7 @@ let loadDocument (handler: InputHandler) (doc: Doc.Document) =
     handler.ResizingImage <- None
     handler.DraggingImage <- None
     handler.SelectionAnchor <- None
+    setSelectedShape handler None |> ignore
     updateDocument handler doc
 
 /// A step of the history whose documents were made before more of the
@@ -1865,6 +2070,9 @@ let withPendingFormat _ _ after = after
 let applyEditAtStoryPlace _ _ _ _ _ = ()
 let enterTextBox _ _ _ = false
 let enterTextBoxOnPage _ _ _ _ = false
+let selectShape _ _ = ()
+let shapePlacedDocument _ _ _ _ _ _ _ _ = None
+let shapeResizedDocument _ _ _ _ _ _ _ _ _ _ = None
 let pageBreakAllowed _ = false
 let loadDocument _ _ = ()
 let extendDocuments _ _ = ()

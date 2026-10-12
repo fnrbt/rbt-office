@@ -51,6 +51,7 @@ and returns the function that ends the subscription. A notice has:
 | `CanUndo`, `CanRedo`, `Revision`, `Modified` | see `getRevision`, `markSaved`, `isModified` |
 | `LayoutChanged`, `LayoutComplete` | more of a long document is laid out (more pages, a larger document), or all of it |
 | `ScrollTop` | a number only in a notice that asks the host to scroll: see below |
+| `ShapeSelectionChanged` | true only in a notice that another shape, or none, is selected (`getSelectedShape`) |
 | `LoadChanged`, `LoadComplete`, `LoadFailed`, `LoadError` | a document that is still being read (`openProgressive`) |
 | `FontsPending` | the document needs faces the host has not got (`setFontAvailability`) |
 
@@ -166,18 +167,43 @@ a hit test and `enterTextBox` - removes that**: the editor does it, and a
 host that still calls `enterTextBox` from its own handler moves the caret
 to the start of the box's text after the editor put it under the pointer.
 
-A host that lets shapes be dragged: `getShapeHandles(editor, id)` gives the
+**The selected shape (0.1.17).** The editor keeps a selected shape itself
+and handles the pointer and the keys for it; a host need not draw anything.
+`selectShape(editor, id)` selects a shape of the body, a header or a footer
+(`null`: none), `getSelectedShape(editor)` says which, and a notice
+`{ ShapeSelectionChanged: true }` tells of every change. A click into a
+box's text selects that box. The editor paints the frame and the eight
+handles of the selected shape on its own canvas, turned as the shape is.
+With the pointer: a drag of a handle resizes the shape - the side or corner
+across from the handle stays where it is, for a turned shape too -, a drag
+of its frame moves it (of any point of a shape whose text a click does not
+reach: behind the text, a watermark); the cursor says which. Each drag is
+one undo step. With the keys, while no text is edited: Delete or Backspace
+takes the shape out, the arrow keys move it by a pixel (Shift: ten), Escape
+lets go of it. Escape in a box's text goes back to the body with the box
+still selected. A click elsewhere lets go of it.
+
+**A host that drew the frame and the handles itself and drove
+`moveShape` / `resizeShape` from its own pointer handlers removes all of
+that** - the overlay, the hit test against `getShapeHandles`, the drag, its
+own Delete / arrow / Escape handling for a selected shape - or it moves the
+shape twice. What stays the host's: showing its own controls for the shape
+that `getSelectedShape` names (after a `ShapeSelectionChanged` notice), and
+calling `selectShape` for a shape picked elsewhere (a list of shapes).
+`resizeShapeBy(editor, id, handle, dx, dy)` is what a drag of a handle does
+- one undo step also for a handle of the left or the top edge, which took a
+`moveShape` and a `resizeShape` (two steps).
+
+A host that still lets shapes be dragged itself: `getShapeHandles(editor, id)` gives the
 eight handles of a shape of the body (`Name`: `"nw"`, `"n"`, `"ne"`, `"e"`,
 `"se"`, `"s"`, `"sw"`, `"w"`; a square of eight pixels on screen around its
 corner or the middle of its edge, in the pixels of `getShapeRects`; the CSS
 `Cursor`), `hitTestShapeHandle(editor, id, x, y)` says what of the shape is
 at a point - a handle's name, `"move"` inside it, `""` outside -, and
 `moveShape(editor, id, dx, dy)`, `resizeShape(editor, id, width, height)`
-and `deleteShape(editor, id)` do it, each one undo step. The editor does not
-paint the handles or keep a selected shape: the host draws them over the
-canvas (convert with `documentToViewport`) and calls these while the pointer
-is dragged. A handle of the left or the top edge is a `moveShape` and a
-`resizeShape`. A shape that was aligned in the direction it is moved in
+and `deleteShape(editor, id)` do it, each one undo step (convert with
+`documentToViewport` to draw over the canvas). A handle of the left or the
+top edge is one `resizeShapeBy`. A shape that was aligned in the direction it is moved in
 (centred, at the right margin) is by its offset from the page from then on.
 They take the shapes of the body and (0.1.17) those of the headers and
 footers (`Story: "header"` / `"footer"`: where the first page that shows the
@@ -501,6 +527,9 @@ clipboard itself, or pastes from a menu, calls it.
 | `insertTextBox(editor, text: string): boolean` | Insert a text box with `text`, anchored in the paragraph (or the table) the caret is in: 240 x 96 px, 24 px right of and below the start of that paragraph, in front of the text (no wrap). |
 | `moveShape(editor, id: string, dx: number, dy: number): boolean` | Move a shape (a text box) of the body, or of a header or footer, by `dx` to the right and `dy` down, in layout pixels (`id`: as getShapeRects gives it). |
 | `resizeShape(editor, id: string, width: number, height: number): boolean` | Make a shape of the body, a header or a footer `width` wide and `height` high (layout pixels, at least 1 each); its top left corner stays where it is (move it with moveShape to resize by another corner). |
+| `selectShape(editor, id: string \| null): boolean` | (0.1.17) Select a shape of the body, a header or a footer (`null` or `""`: none): the editor paints its frame and handles and handles the pointer and the keys for it (see Text boxes). The text of another box, a header or a footer that is edited is left first. False when there is no such shape. |
+| `getSelectedShape(editor): string \| null` | (0.1.17) The Id of the shape that is selected - by `selectShape` or a click into a box - or null. |
+| `resizeShapeBy(editor, id: string, handle: string, dx: number, dy: number): boolean` | (0.1.17) Resize a shape by one of its handles ("nw", "n", "ne", "e", "se", "s", "sw", "w") dragged by `dx`, `dy` layout pixels: the side or corner across stays where it is, for a turned shape too (the drag in the shape's own directions). One undo step. At least four pixels wide and high. |
 | `deleteShape(editor, id: string): boolean` | Take a shape of the body, a header or a footer out of the document, its text with it. |
 | `getShapeHandles(editor, id: string): object[]` | The eight handles of a shape of the body, a header or a footer, for a host that shows it selected and lets it be dragged: Name ("nw", "n", "ne", "e", "se", "s", "sw", "w"), X, Y, Width, Height and Cursor. |
 | `hitTestShapeHandle(editor, id: string, x: number, y: number): string` | What of a shape of the body is at a point (layout pixels, as getShapeHandles): the Name of the handle there, "move" inside the shape where no handle is, "" outside it. |

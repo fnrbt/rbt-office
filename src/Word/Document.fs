@@ -3043,6 +3043,37 @@ let moveTextBox (id: BlockId) (horizontal: (string option * float) option) (vert
 let resizeTextBox (id: BlockId) (width: float) (height: float) (doc: Document) : Document option =
     doc |> withTextBox id (fun box -> { box with Width = max 1.0 width; Height = max 1.0 height; AutoFit = box.AutoFit && abs (height - box.Height) < 0.01 })
 
+/// A shape at another place and - with `size` (width, height) - of another size, in one
+/// change: what a drag of a handle of its left or top edge does.
+let placeTextBox (id: BlockId) (horizontal: (string option * float) option) (vertical: (string option * float) option) (size: (float * float) option) (doc: Document) : Document option =
+    match moveTextBox id horizontal vertical doc with
+    | Some moved ->
+        match size with
+        | Some (width, height) -> resizeTextBox id width height moved
+        | None -> Some moved
+    | None -> None
+
+/// The rectangle (left, top, width, height) of a shape after one of its handles - "nw", "n",
+/// "ne", "e", "se", "s", "sw", "w" - was dragged by (dx, dy): the side (or corner) across from
+/// the handle stays where it is, also for a shape that is turned by `rotation` degrees
+/// clockwise about its centre (the rectangle is the one before the turn, and the drag is
+/// taken in the shape's own directions). At least four pixels wide and high.
+let resizedShapeRect (rotation: float) (x: float) (y: float) (width: float) (height: float) (handle: string) (dx: float) (dy: float) : float * float * float * float =
+    let angle = rotation * System.Math.PI / 180.0
+    let cos, sin = System.Math.Cos angle, System.Math.Sin angle
+    let localX, localY = dx * cos + dy * sin, dy * cos - dx * sin
+    let least = 4.0
+    let west, east = handle.Contains "w", handle.Contains "e"
+    let north, south = handle.Contains "n", handle.Contains "s"
+    let newWidth = if east then max least (width + localX) elif west then max least (width - localX) else width
+    let newHeight = if south then max least (height + localY) elif north then max least (height - localY) else height
+    // (How far the centre goes, in the shape's own directions.)
+    let shiftX = if east then (newWidth - width) / 2.0 elif west then (width - newWidth) / 2.0 else 0.0
+    let shiftY = if south then (newHeight - height) / 2.0 elif north then (height - newHeight) / 2.0 else 0.0
+    let centerX = x + width / 2.0 + shiftX * cos - shiftY * sin
+    let centerY = y + height / 2.0 + shiftX * sin + shiftY * cos
+    centerX - newWidth / 2.0, centerY - newHeight / 2.0, newWidth, newHeight
+
 /// The body without the shape of that id (its text goes with it). The caret, when it was in
 /// the shape's text, goes to the block the shape was anchored in.
 let deleteTextBox (id: BlockId) (doc: Document) : Document option =

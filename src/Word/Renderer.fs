@@ -249,6 +249,9 @@ type RenderContext = {
     mutable StoryTurn: (float * float * float) option
     /// The page frames of a layout pass (by its serial): a host asks for them with every change.
     mutable KnownPageFrames: (int * PageInfo list) option
+    /// The shape that is selected (see Input.selectShape): its frame and its
+    /// eight handles are painted over the page.
+    mutable SelectedShape: BlockId option
 }
 
 type CommentAnchor = {
@@ -320,6 +323,7 @@ let createContext (canvas: HTMLCanvasElement) = {
     StoryLayouts = None
     StoryTurn = None
     KnownPageFrames = None
+    SelectedShape = None
 }
 
 let private cssFontFamily (family: string) =
@@ -1867,11 +1871,82 @@ let private overlayBandOf (ctx: RenderContext) : (float * float) option =
         Some (top - height, top + 2.0 * height)
     | None -> None
 
+/// The handles of a shape: the name, where on the shape's rectangle (a part
+/// of its width and of its height), and the CSS cursor.
+let shapeHandleSpots : (string * float * float * string) list =
+    [ "nw", 0.0, 0.0, "nwse-resize"; "n", 0.5, 0.0, "ns-resize"; "ne", 1.0, 0.0, "nesw-resize"; "e", 1.0, 0.5, "ew-resize"
+      "se", 1.0, 1.0, "nwse-resize"; "s", 0.5, 1.0, "ns-resize"; "sw", 0.0, 1.0, "nesw-resize"; "w", 0.0, 0.5, "ew-resize" ]
+
+/// A shape (text box) where it is painted, for the layouts and pages of a
+/// pass: the box, its left edge, top, width and height (before its turn),
+/// and the top of its page. A shape of the body; else one of a header or
+/// footer on the page whose box is being edited, or the first page that shows it.
+let private shapeRectIn (ctx: RenderContext) (settings: LayoutSettings) (doc: Document) (layouts: BlockLayout list) (pages: PageInfo list) (id: BlockId) : (TextBoxBlock * float * float * float * float * float) option =
+    let isIt (textBox: TextBoxBlock, _: float, _: float, _: float, _: float) = textBox.Id = id
+    let inBody = doc.Blocks |> List.exists (function TextBox box -> box.Id = id | _ -> false)
+    if inBody then
+        bodyShapeRects settings (measureWithContext ctx) (measureRangeWithContext ctx) doc layouts pages
+        |> List.tryFind isIt
+        |> Option.map (fun (textBox, x, y, width, height) ->
+            let top = pages |> List.tryFindBack (fun page -> page.Top <= y + 0.001) |> Option.map (fun page -> page.Top) |> Option.defaultValue 0.0
+            textBox, x, y, width, height, top)
+    else
+        let inParts (parts: HeaderFooterPart list) =
+            parts |> List.exists (fun part -> part.Blocks |> List.exists (function TextBox box -> box.Id = id | _ -> false))
+        if not (inParts doc.HeaderParts || inParts doc.FooterParts) then None
+        else
+            let frames = List.toArray pages
+            let onPage (pageIndex: int) =
+                if pageIndex < 0 || pageIndex >= frames.Length then None
+                else
+                    [ true; false ]
+                    |> List.tryPick (fun isHeader -> pageFurnitureShapeRects ctx doc layouts pages pageIndex isHeader |> List.tryFind isIt)
+                    |> Option.map (fun (textBox, x, y, width, height) -> textBox, x, y, width, height, frames.[pageIndex].Top)
+            let edited =
+                match ctx.Story with
+                | Some story when story.Box = Some id -> onPage story.PageIndex
+                | _ -> None
+            match edited with
+            | Some found -> Some found
+            | None ->
+                let mutable found = None
+                let mutable pageIndex = 0
+                while found.IsNone && pageIndex < frames.Length do
+                    found <- onPage pageIndex
+                    pageIndex <- pageIndex + 1
+                found
+
+/// The frame and the eight handles of the shape that is selected (turned as
+/// the shape is): the handles are eight pixels on screen whatever the zoom.
+let private selectedShapeCommands (ctx: RenderContext) (settings: LayoutSettings) (doc: Document) (layouts: BlockLayout list) (pages: PageInfo list) : PaintCommand list =
+    match ctx.SelectedShape with
+    | None -> []
+    | Some id ->
+        match shapeRectIn ctx settings doc layouts pages id with
+        | None -> []
+        | Some (textBox, x, y, width, height, _) ->
+            let scale = match ctx.Viewport with Some vp -> max 0.01 vp.Scale | None -> 1.0
+            let size = 8.0 / scale
+            let line = 1.0 / scale
+            let frame = [ StrokeRect ("#5b9bd5", line, x, y, width, height) ]
+            let handles =
+                shapeHandleSpots
+                |> List.collect (fun (_, fx, fy, _) ->
+                    let left, top = x + width * fx - size / 2.0, y + height * fy - size / 2.0
+                    [ FillRect ("#ffffff", left, top, size, size)
+                      StrokeRect ("#5b9bd5", line, left, top, size, size) ])
+            let commands = frame @ handles
+            if abs textBox.Rotation >= 0.01 then
+                let centerX, centerY = x + width / 2.0, y + height / 2.0
+                let reach = sqrt (width * width + height * height) / 2.0 + size + 2.0
+                [ DrawGroup (None, textBox.Rotation, centerX, centerY, 1.0, (centerX - reach, centerY - reach, reach * 2.0, reach * 2.0), commands) ]
+            else commands
+
 /// The overlay that follows the selection and the pointer, and the band of
 /// the document it was made for (None: all of it). A block's layout is found
 /// by the block's place when the layout pass handed its layouts over block
 /// by block; a selection over several blocks is highlighted in the band only.
-let private selectionOverlay (ctx: RenderContext) (settings: LayoutSettings) (doc: Document) (layouts: BlockLayout list) (tryFindLayout: (string -> BlockLayout option) option) hoveredImage : PaintCommand list * (float * float) option =
+let private selectionOverlay (ctx: RenderContext) (settings: LayoutSettings) (doc: Document) (layouts: BlockLayout list) (pages: PageInfo list) (tryFindLayout: (string -> BlockLayout option) option) hoveredImage : PaintCommand list * (float * float) option =
     let slices = slicesFor ctx layouts
     let tryFind =
         match slices, tryFindLayout with
@@ -1891,7 +1966,7 @@ let private selectionOverlay (ctx: RenderContext) (settings: LayoutSettings) (do
         match tryFind with
         | Some tryFind -> hoverCommandsLookup settings tryFind hoveredImage
         | None -> hoverCommands settings layouts hoveredImage
-    List.concat [ selection; markupMarkerCommands settings doc layouts; hover ], band
+    List.concat [ selection; markupMarkerCommands settings doc layouts; hover; selectedShapeCommands ctx settings doc layouts pages ], band
 
 let private buildFrame (ctx: RenderContext) (doc: Document) hoveredImage =
     ctx.FrameBuilds <- ctx.FrameBuilds + 1
@@ -1918,7 +1993,7 @@ let private buildFrame (ctx: RenderContext) (doc: Document) hoveredImage =
                 // The whole document's commands at once, as one chunk.
                 let _, commands, _ = collectDocumentCommandsWithLayoutsAndPages settings ctx.FontFamily (measureWithContext ctx) (measureRangeWithContext ctx) doc layouts pages
                 [| chunkOfCommands (List.toArray commands) |])
-    let overlay, overlayBand = selectionOverlay ctx settings doc layouts None hoveredImage
+    let overlay, overlayBand = selectionOverlay ctx settings doc layouts pages None hoveredImage
     {
         Document = doc
         Layouts = layouts
@@ -1991,7 +2066,7 @@ let private frameFor (ctx: RenderContext) (doc: Document) hoveredImage =
         else
             // The layout state follows the document on display (hit tests, the caret rectangle).
             layoutDocumentWithPages ctx doc |> ignore
-            let overlay, overlayBand = selectionOverlay ctx (layoutSettings ctx doc) doc previous.Layouts (Some (fun id -> frameLayoutLookup previous id)) hoveredImage
+            let overlay, overlayBand = selectionOverlay ctx (layoutSettings ctx doc) doc previous.Layouts previous.Pages (Some (fun id -> frameLayoutLookup previous id)) hoveredImage
             { previous with Document = doc; Hovered = hoveredImage; OverlayCommands = overlay; OverlayBand = overlayBand }
     | _ -> buildFrame ctx doc hoveredImage
 
@@ -2181,7 +2256,7 @@ let private renderThroughViewport (ctx: RenderContext) (doc: Document) hoveredIm
                 let viewBottom = viewTop + vp.Height / vp.Scale
                 if viewTop >= top && viewBottom <= bottom then frame
                 else
-                    let overlay, overlayBand = selectionOverlay ctx (layoutSettings ctx doc) doc frame.Layouts None hoveredImage
+                    let overlay, overlayBand = selectionOverlay ctx (layoutSettings ctx doc) doc frame.Layouts frame.Pages None hoveredImage
                     { frame with OverlayCommands = overlay; OverlayBand = overlayBand }
             | None -> frame
         if frame.Viewport = Some vp && not resized then frame
@@ -2532,6 +2607,33 @@ let furnitureShapeAt (ctx: RenderContext) (doc: Document) (x: float) (y: float) 
         |> List.tryLast
         |> Option.map (fun (textBox, _, _, _, _, isHeader) -> textBox.Id, isHeader, pageIndex)
 
+/// A shape (text box) of the body, a header or a footer where it is painted:
+/// the box, its left edge, top, width and height (before its turn), and the
+/// top of its page. (A header's or footer's: on the first page that shows it,
+/// or - while its text is edited - on the page it is edited on.)
+let shapeRectOf (ctx: RenderContext) (doc: Document) (id: BlockId) : (TextBoxBlock * float * float * float * float * float) option =
+    let doc = bodyDocument ctx doc
+    let layouts, layoutPages = layoutDocumentWithPages ctx doc
+    let settings = layoutSettings ctx doc
+    shapeRectIn ctx settings doc layouts (pageFramesForLayouts ctx settings doc layouts layoutPages) id
+
+/// What of a shape is at a point (layout coordinates; for a turned shape the
+/// point is turned back first): the name of the handle there ("nw" ... "w"),
+/// "border" on its frame (five pixels on screen to either side), "inside",
+/// or "" outside it (and when there is no such shape).
+let shapePartAt (ctx: RenderContext) (doc: Document) (id: BlockId) (pointX: float) (pointY: float) : string =
+    match shapeRectOf ctx doc id with
+    | None -> ""
+    | Some (textBox, x, y, width, height, _) ->
+        let pointX, pointY =
+            if abs textBox.Rotation >= 0.01 then turnedPoint -textBox.Rotation (x + width / 2.0) (y + height / 2.0) pointX pointY else pointX, pointY
+        let reach = 5.0 / max 0.01 (viewportScale ctx)
+        match shapeHandleSpots |> List.tryFind (fun (_, fx, fy, _) -> abs (pointX - (x + width * fx)) <= reach && abs (pointY - (y + height * fy)) <= reach) with
+        | Some (name, _, _, _) -> name
+        | None ->
+            let within (margin: float) = pointX >= x + margin && pointX <= x + width - margin && pointY >= y + margin && pointY <= y + height - margin
+            if not (within -reach) then "" elif within reach then "inside" else "border"
+
 /// The text box in front of the text that a point (layout coordinates) is in
 /// - the one painted last of those that hold it. A box behind the text, and
 /// one whose text is drawn as large as the box (a watermark), is not found by
@@ -2696,6 +2798,8 @@ let pageFrames _ _ = []
 let shapeRects _ _ = []
 let furnitureShapeRects _ _ = []
 let pageShapeRects _ _ _ = []
+let shapeRectOf _ _ _ = None
+let shapePartAt _ _ _ _ _ = ""
 let furnitureShapeAt _ _ _ _ = None
 let shapeAt _ _ _ _ = None
 let renderWithHover _ _ _ = ()
