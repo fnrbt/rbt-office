@@ -666,6 +666,18 @@ let enterTextBox (handler: InputHandler) (boxId: Doc.BlockId) (selection: Doc.Se
             | None -> false
         | _ -> false
 
+/// Whether a page (or a column) can break at the caret: in the body's own
+/// text - not in a text box, a header or a footer (the story that is edited
+/// is not the body), in a footnote or an endnote, or with nothing selected.
+let pageBreakAllowed (handler: InputHandler) : bool =
+    handler.Story.IsNone
+    && (match handler.Document.Selection with
+        | Some selection ->
+            (Doc.textBoxOfParagraph handler.Document selection.Focus.BlockId).IsNone
+            && not (selection.Focus.BlockId.StartsWith Layout.footnoteBlockIdPrefix)
+            && not (selection.Focus.BlockId.StartsWith Layout.endnoteBlockIdPrefix)
+        | None -> false)
+
 let canUndo (handler: InputHandler) = not handler.History.Undos.IsEmpty
 let canRedo (handler: InputHandler) = not handler.History.Redos.IsEmpty
 
@@ -1057,6 +1069,20 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
     let deleteForwardForMode doc =
         if handler.TrackChanges then Doc.trackDeleteForward handler.TrackChangesAuthor handler.TrackChangesDate doc else Doc.deleteForward doc
 
+    /// Ctrl+Backspace / Ctrl+Delete: the word before / after the caret, as far
+    /// as Ctrl+Left / Ctrl+Right goes from it (at the edge of a paragraph: the
+    /// paragraph mark, the paragraphs are joined); a selection is deleted as
+    /// by Backspace / Delete.
+    let deleteWordForMode (forward: bool) (doc: Doc.Document) =
+        match doc.Selection with
+        | Some selection when selection.IsCollapsed ->
+            let ranged = moveByWord doc forward true
+            match ranged.Selection with
+            | Some word when not word.IsCollapsed -> deleteSelectionForMode ranged
+            | _ -> doc
+        | Some _ -> if forward then deleteForwardForMode doc else deleteBackwardForMode doc
+        | None -> doc
+
     /// Layout coordinates of a pointer event: through the viewport transform
     /// when the renderer has one, one to one with canvas pixels otherwise.
     let pointerPosition (me: MouseEvent) =
@@ -1211,7 +1237,8 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             ) |> ignore
         | "Backspace" ->
             let beforeDoc = handler.Document
-            let afterDoc = deleteBackwardForMode handler.Document
+            // (Ctrl+Backspace, Option+Backspace on a Mac: the word before the caret.)
+            let afterDoc = if ke.ctrlKey || ke.altKey then deleteWordForMode false handler.Document else deleteBackwardForMode handler.Document
             if not (documentsEqualForChange afterDoc beforeDoc) then
                 let cmd = DeleteTextCommand(beforeDoc, afterDoc, "Delete backward") :> ICommand
                 let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
@@ -1221,7 +1248,8 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             e.preventDefault()
         | "Delete" ->
             let beforeDoc = handler.Document
-            let afterDoc = deleteForwardForMode handler.Document
+            // (Ctrl+Delete: the word after the caret.)
+            let afterDoc = if ke.ctrlKey || ke.altKey then deleteWordForMode true handler.Document else deleteForwardForMode handler.Document
             if not (documentsEqualForChange afterDoc beforeDoc) then
                 let cmd = DeleteTextCommand(beforeDoc, afterDoc, "Delete forward") :> ICommand
                 let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
@@ -1271,16 +1299,56 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             e.preventDefault()
         | "Tab" ->
             // In a table Tab and Shift+Tab go from cell to cell (Tab in the
-            // last cell adds a row), as in Word; elsewhere they indent.
+            // last cell adds a row), as in Word; in a list they move the item
+            // a level down or up; elsewhere Tab is a tab character (in a
+            // table: Ctrl+Tab).
+            let typeTab () =
+                let beforeDoc = handler.Document
+                let afterDoc = insertTextForMode "\t" handler.Document
+                if not (documentsEqualForChange afterDoc beforeDoc) then
+                    let cmd = DeleteTextCommand(beforeDoc, afterDoc, "Insert tab") :> ICommand
+                    let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
+                    newDoc <- doc'
+                    newHistory <- hist'
+                    useCommand <- true
+            let context = Doc.caretContext handler.Document
+            if ke.ctrlKey && not ke.shiftKey && context.InTable then typeTab ()
+            else
             match Doc.moveToAdjacentTableCell (not ke.shiftKey) handler.Document with
             | Some moved -> newDoc <- moved
             | None ->
                 if ke.shiftKey then
                     // Shift+Tab: Decrease indent (in the first cell of a table: nothing)
-                    if not (Doc.caretContext handler.Document).InTable then newDoc <- Doc.decreaseIndent handler.Document
-                else
+                    if not context.InTable then newDoc <- Doc.decreaseIndent handler.Document
+                elif context.InList then
                     // Tab: Increase indent
                     newDoc <- Doc.increaseIndent handler.Document
+                elif not context.InTable then typeTab ()
+            e.preventDefault()
+        | "Enter" when commandKey ->
+            // Ctrl+Enter: a page break at the caret; Ctrl+Shift+Enter: a column
+            // break. (Where a page cannot break - a text box, a header, a
+            // note - nothing, as insertPageBreak.)
+            if pageBreakAllowed handler then
+                let beforeDoc = handler.Document
+                let afterDoc = if shift then Doc.insertColumnBreak beforeDoc else Doc.insertPageBreak beforeDoc
+                if not (documentsEqualForChange afterDoc beforeDoc) then
+                    let cmd = SplitBlockCommand(beforeDoc, afterDoc) :> ICommand
+                    let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
+                    newDoc <- doc'
+                    newHistory <- hist'
+                    useCommand <- true
+            e.preventDefault()
+        | "Enter" when shift ->
+            // Shift+Enter: a line break in the paragraph (<w:br/>).
+            let beforeDoc = handler.Document
+            let afterDoc = insertTextForMode "\n" handler.Document
+            if not (documentsEqualForChange afterDoc beforeDoc) then
+                let cmd = DeleteTextCommand(beforeDoc, afterDoc, "Insert line break") :> ICommand
+                let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
+                newDoc <- doc'
+                newHistory <- hist'
+                useCommand <- true
             e.preventDefault()
         | "Enter" ->
             // Check if we're on an empty list item - if so, exit list
@@ -1464,6 +1532,15 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             | "deleteContentForward" ->
                 e.preventDefault()
                 commitInput "Delete" (deleteForwardForMode handler.Document)
+            | "deleteWordBackward" ->
+                e.preventDefault()
+                commitInput "Delete" (deleteWordForMode false handler.Document)
+            | "deleteWordForward" ->
+                e.preventDefault()
+                commitInput "Delete" (deleteWordForMode true handler.Document)
+            | "insertLineBreak" ->
+                e.preventDefault()
+                commitInput "Typing" (insertTextForMode "\n" handler.Document)
             | _ -> ())
 
     proxy.addEventListener("input", fun (_: Event) ->
@@ -1754,6 +1831,7 @@ let formatAtCaret _ _ = false
 let withPendingFormat _ _ after = after
 let applyEditAtStoryPlace _ _ _ _ _ = ()
 let enterTextBox _ _ _ = false
+let pageBreakAllowed _ = false
 let loadDocument _ _ = ()
 let extendDocuments _ _ = ()
 let undo _ = false

@@ -230,6 +230,35 @@ of a table of contents - one field over many paragraphs - is changed in its
 own XML, and an entry that is written from the model leaves the other
 entries the text they were.
 
+## Keys
+
+The editor handles these keys itself, on its canvas and its input element
+(a host that also binds one of them does the thing twice):
+
+| Key | |
+| --- | --- |
+| Enter | a new paragraph (in an empty list item: out of the list) |
+| Shift+Enter | a line break in the paragraph (`insertLineBreak`) |
+| Ctrl+Enter | a page break (`insertPageBreak`); nothing where a page cannot break - a text box, a header, a footer, a note |
+| Ctrl+Shift+Enter | a column break (`insertColumnBreak`): the next column, the next page in a section of one column |
+| Backspace, Delete | a character, or the selection |
+| Ctrl+Backspace, Ctrl+Delete | the word before / after the caret, as far as Ctrl+Left / Ctrl+Right moves (Alt on a Mac) |
+| Tab, Shift+Tab | in a table: the next / the previous cell (Tab in the last one adds a row); in a list: the item a level down / up; elsewhere Tab is a tab character and Shift+Tab nothing |
+| Ctrl+Tab | a tab character in a table cell |
+| Arrows, Home, End, PageUp, PageDown | the caret; with Shift the selection; Ctrl+Left / Right by words, Ctrl+Up / Down by paragraphs, Ctrl+Home / End the ends of the document |
+| Ctrl+A, Ctrl+C, Ctrl+X, Ctrl+V | everything, copy, cut, paste (plain text) |
+| Ctrl+Z, Ctrl+Y, Ctrl+Shift+Z | undo, redo |
+| Ctrl+B, Ctrl+I, Ctrl+U | bold, italic, underline |
+| Ctrl+1, Ctrl+2, Ctrl+3 | heading 1 - 3 |
+| Escape | out of a header, a footer or a text box that is edited |
+
+(On a Mac the Command key is Ctrl here.) Until 0.1.16 Ctrl+Enter and
+Shift+Enter were Enter, Ctrl+Backspace and Ctrl+Delete took one character,
+and Tab outside a list and a table did nothing. **A host that handles
+Ctrl+Enter itself and calls `insertPageBreak` removes that handler** (two
+breaks otherwise), unless it stops the event before it reaches the editor's
+canvas and input element.
+
 ## Pasting
 
 `pasteText(editor, text)` does what Ctrl+V does with the clipboard's plain
@@ -407,7 +436,9 @@ clipboard itself, or pastes from a menu, calls it.
 | `insertPageNumberField(editor)` | Insert a page number field (PAGE) at the caret: every page shows its own number where the field stands in a header or footer - as its section counts and writes it (a section's first page number and number format, w:pgNumType). |
 | `insertPageCountField(editor)` | Insert a page count field (NUMPAGES) at the caret: the number of pages of the document (what getPageCount says). |
 | `insertSectionPageCountField(editor)` | Insert a field with the number of pages of the caret's section (SECTIONPAGES). |
-| `insertPageBreak(editor): boolean` | Insert a page break at the caret (Ctrl+Enter in Word). |
+| `insertPageBreak(editor): boolean` | Insert a page break at the caret (what Ctrl+Enter does). False - and nothing is done - in a text box, a header, a footer or a note. |
+| `insertColumnBreak(editor): boolean` | (0.1.17) Insert a column break at the caret (Ctrl+Shift+Enter): what follows starts the next column of its section, the next page where the section has one column. Saved as `<w:br w:type="column"/>`. False where `insertPageBreak` is, and in a table cell. |
+| `insertLineBreak(editor): void` | (0.1.17) Insert a line break at the caret (Shift+Enter): the paragraph goes on in the next line (`<w:br/>`). |
 | `setSectionBreak(editor, kind: string)` | A section break after the caret's paragraph (a paragraph of the body). |
 | `setSectionVerticalAlignment(editor, align: string): bool` | How the text of a page that is not full stands between the top and the bottom margin in the section the caret is in (w:vAlign): "top", "center", "bottom" or "both" (the paragraphs spread from the top to the bottom). |
 | `getSectionVerticalAlignment(editor): string` | The vertical alignment of the section the caret is in: "top", "center", "bottom" or "both" (see setSectionVerticalAlignment). |

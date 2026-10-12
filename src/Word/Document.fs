@@ -4764,6 +4764,26 @@ let insertPageBreak doc =
         | None -> split
     | _ -> split
 
+/// Insert a column break at the caret: the paragraph is split there and what
+/// follows starts the next column of its section - in a section of one column
+/// the next page, as in Word. (The break stands at the end of the first half:
+/// PageBreakAfter with ColumnBreakAfter, saved as <w:br w:type="column"/>.)
+/// Only in a paragraph of the body's own (not in a table cell or a text box).
+let insertColumnBreak doc =
+    match doc.Selection with
+    | Some before ->
+        match findBlock doc before.Focus.BlockId with
+        | Some (Paragraph _)
+        | Some (Heading _) ->
+            let split = splitBlock doc
+            if obj.ReferenceEquals(split, doc) then doc
+            else
+                match findParagraph split before.Focus.BlockId with
+                | Some first -> { replaceParagraph split first.Id { first with Metadata = { first.Metadata with PageBreakAfter = true; ColumnBreakAfter = true } } with Selection = split.Selection }
+                | None -> split
+        | _ -> doc
+    | None -> doc
+
 /// The extent of the hyperlink at an offset of a paragraph: (target, start,
 /// end) of the run of text that has the same target.
 let hyperlinkAt (para: ParagraphBlock) (offset: int) : (string * int * int) option =

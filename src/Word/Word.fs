@@ -2571,21 +2571,31 @@ module API =
     /// box, a header or a footer (the story that is edited is not the body),
     /// in a footnote, or with nothing selected.
     let insertPageBreak (editor: Editor) : bool =
-        let inBody =
-            editor.Handler.Story.IsNone
-            && (match editor.Doc.Selection with
-                | Some selection ->
-                    (Doc.textBoxOfParagraph editor.Doc selection.Focus.BlockId).IsNone
-                    && not (selection.Focus.BlockId.StartsWith Layout.footnoteBlockIdPrefix)
-                    && not (selection.Focus.BlockId.StartsWith Layout.endnoteBlockIdPrefix)
-                | None -> false)
-        if not inBody then false
+        if not (Inp.pageBreakAllowed editor.Handler) then false
         else
             let newDoc = Doc.insertPageBreak editor.Doc
             if obj.ReferenceEquals(newDoc, editor.Doc) then false
             else
                 commitDocumentUpdate editor newDoc
                 true
+
+    /// Insert a column break at the caret (Ctrl+Shift+Enter): what follows
+    /// starts the next column of its section - the next page where the
+    /// section has one column. Saved as <w:br w:type="column"/>. False where
+    /// insertPageBreak is, and in a table cell.
+    let insertColumnBreak (editor: Editor) : bool =
+        if not (Inp.pageBreakAllowed editor.Handler) then false
+        else
+            let newDoc = Doc.insertColumnBreak editor.Doc
+            if obj.ReferenceEquals(newDoc, editor.Doc) then false
+            else
+                commitDocumentUpdate editor newDoc
+                true
+
+    /// Insert a line break at the caret (Shift+Enter): the paragraph goes on
+    /// in the next line (<w:br/>). Over a selection: in its place.
+    let insertLineBreak (editor: Editor) : unit =
+        insertTextAt editor "\n"
 
     /// Insert a hyperlink to `target`: the selected text becomes the link;
     /// with a caret, `text` (or the target, when it is empty) is inserted as
@@ -3920,6 +3930,8 @@ module API =
             "setSpacingAfter" ==> setSpacingAfter
             "applyParagraphStyle" ==> applyParagraphStyle
             "insertPageBreak" ==> insertPageBreak
+            "insertColumnBreak" ==> insertColumnBreak
+            "insertLineBreak" ==> insertLineBreak
             "insertHyperlink" ==> insertHyperlink
             "getHyperlink" ==> getHyperlink
             "setHyperlinkTarget" ==> setHyperlinkTarget
