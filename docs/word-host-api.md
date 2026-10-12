@@ -214,9 +214,19 @@ stands in a line of text (`moveShape`).
 A shape that was read and is only moved or resized is saved as the element
 it was read from with the offsets (`wp:positionH` / `wp:positionV`) and the
 extent (`wp:extent`, the shape's own `a:ext`) changed in it - its geometry
-and whatever else the model does not hold stay the text they were; its VML
-fallback, which says the old place, is left out. A group or a drawing
-canvas, or a shape changed in more, is written from the model.
+and whatever else the model does not hold stay the text they were. Its VML
+fallback says the place and the size in its own way and is changed with
+them (0.1.17: `margin-left` / `margin-top` / `width` / `height` of its
+style, from the frame the anchor names; until 0.1.16 the fallback was left
+out) - one that cannot be placed so (a line, a group) is left out. A group
+or a drawing canvas, or a shape changed in more, is written from the model.
+
+A save keeps the parts the file had and adds none for what was not changed
+(0.1.17): a picture the file's relationships name and nothing in the part
+uses - left behind by the tool that wrote the file - stays with its
+relationship (only a picture that a change made unused goes), and a
+document that was read without a styles part gets none, nor a relationships
+part for its body, while no style is made or named.
 
 What is done in the body does not reach into a box that is not entered: the
 caret does not move into it, and typing, pasting or deleting over a

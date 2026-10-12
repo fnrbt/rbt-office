@@ -46,9 +46,14 @@ try {
             [/<wp:positionH relativeFrom="margin"><wp:posOffset>2190750<\/wp:posOffset><\/wp:positionH><wp:positionV relativeFrom="paragraph"><wp:posOffset>190500<\/wp:posOffset><\/wp:positionV>/.test(element),
              element.includes('<a:lin ang="5400000" scaled="0"/>'), element.includes('<wp:docPr id="2" name="Gradient box"/>'), element.includes('<wp:extent cx="952500" cy="476250"/>'), element.includes('behindDoc="1"')],
             [true, true, true, true, true]);
-        check('the other shapes are the text they were (their VML fallback too); the moved one has none',
+        check('the other shapes are the text they were (their VML fallback too); the moved one keeps its fallback',
             [sameShape(elementOf(moved.xml, 'Oval'), elementOf(original, 'Oval')), elementOf(moved.xml, 'Triangle') === elementOf(original, 'Triangle'), count(moved.xml, '<mc:Fallback>'), count(original, '<mc:Fallback>'), count(moved.xml, '</mc:AlternateContent>')],
-            [true, true, 2, 3, 3]);
+            [true, true, 3, 3, 3]);
+        // (230 px from the margin and 20 px below the paragraph are 172.5 pt and 15 pt; the size was not changed.)
+        const fallbackStyle = (text) => (/<mc:Fallback><w:pict><v:shape [^>]*style="([^"]*)"/.exec(text) ?? [])[1];
+        check('its VML fallback says the new place in its own way, and is otherwise the text it was',
+            [fallbackStyle(element), sameShape(element.slice(element.indexOf('<mc:Fallback>')).replace(/ style="[^"]*"/, ''), elementOf(original, 'Gradient box').slice(elementOf(original, 'Gradient box').indexOf('<mc:Fallback>')).replace(/ style="[^"]*"/, ''))],
+            ['position:absolute;margin-left:172.5pt;margin-top:15pt;width:50pt;height:30pt;mso-position-horizontal-relative:margin;mso-position-vertical-relative:text', true]);
         check('read again: the shapes are where the editor has them', moved.shapes, Word.getShapeRects(editor).map(place));
         check('one undo: where it was, and saved as the text that was read', [Word.undo(editor), place(shape(editor, 100)), (await saved(editor)).xml === original], [true, place(box), true]);
         // ---- resized -----------------------------------------------------
@@ -60,6 +65,7 @@ try {
             [triangleXml.includes('<wp:extent cx="1143000" cy="571500"/>'), triangleXml.includes('<a:ext cx="1143000" cy="571500"/>'), /<a:path (?:w="100" h="100"|h="100" w="100")><a:moveTo><a:pt x="50" y="0"\/>/.test(triangleXml),
              /<wp:positionH relativeFrom="column"><wp:posOffset>95250<\/wp:posOffset>/.test(triangleXml), elementOf(resized.xml, 'Oval') === elementOf(original, 'Oval')],
             [true, true, true, true, true]);
+        check('its VML fallback has the new size (90 x 45 pt), its place as it was', (/<mc:Fallback><w:pict><v:shape [^>]*style="([^"]*)"/.exec(triangleXml) ?? [])[1], 'position:absolute;margin-left:10pt;margin-top:10pt;width:90pt;height:45pt');
         check('read again: the shapes are where the editor has them', resized.shapes, Word.getShapeRects(editor).map(place));
         check('one undo: the size it had', [Word.undo(editor), place(shape(editor, 80))], [true, place(triangle)]);
         // ---- handles -----------------------------------------------------
@@ -97,6 +103,34 @@ try {
             [element.includes(`<wp:positionH relativeFrom="page"><wp:posOffset>${Math.round((oval.X + 10) * 9525)}</wp:posOffset></wp:positionH>`), element.includes('<wp:positionV relativeFrom="page"><wp:posOffset>952500</wp:posOffset></wp:positionV>'), element.includes('<a:xfrm rot="900000">'), result.shapes],
             [true, true, true, Word.getShapeRects(editor).map(place)]);
         Word.dispose(editor);
+    }
+    {
+        // The parts of the package: a shape moved in a document whose relationships name two pictures that nothing in
+        // it uses (docx4j-drawingml-wps: left behind by the tool that made it) - they are the file's own and stay, with
+        // their relationships; and in a document of one part (autoshapes-gallery: no styles, no relationships of the
+        // body) - no part is added for what was not changed.
+        const partsOf = async (data) => { const zip = await window.JSZip.loadAsync(data); return { names: Object.keys(zip.files).filter((name) => !zip.files[name].dir).sort(), text: async (name) => (zip.file(name) ? zip.file(name).async('string') : null) }; };
+        const movedIn = async (path) => {
+            const source = await bytesOf(path);
+            const editor = await open(source);
+            const first = Word.getShapeRects(editor).find((rect) => rect.Story === 'body');
+            const done = Word.moveShape(editor, first.Id, 8, 6);
+            const out = new Uint8Array(await (await OF.word.writeFromEditorPackage(Word.exportDocumentPackage(editor))).arrayBuffer());
+            const again = await open(out);
+            const shapes = [Word.getShapeRects(again).length, Word.getShapeRects(editor).length];
+            Word.dispose(again); Word.dispose(editor);
+            return { done, shapes, before: await partsOf(source), after: await partsOf(out) };
+        };
+        const wps = await movedIn('/repo/tests/test-documents-wild/docx4j-drawingml-wps.docx');
+        const relationships = (text) => (text.match(/<Relationship [^>]*>/g) ?? []).map((tag) => (/Id="([^"]*)"/.exec(tag) ?? [])[1] + ' ' + (/Target="([^"]*)"/.exec(tag) ?? [])[1]).sort();
+        check('a shape moved in docx4j-drawingml-wps: the package has the parts it had, the two pictures nothing uses too',
+            [wps.done, wps.shapes[0] === wps.shapes[1], wps.after.names, wps.after.names.filter((name) => name.startsWith('word/media/'))],
+            [true, true, wps.before.names, ['word/media/image1.png', 'word/media/image2.svg']]);
+        check('and the relationships it had', relationships(await wps.after.text('word/_rels/document.xml.rels')), relationships(await wps.before.text('word/_rels/document.xml.rels')));
+        const gallery = await movedIn('/repo/tests/repros/word-shapes/autoshapes-gallery.docx');
+        check('a shape moved in autoshapes-gallery (a document of one part): no styles part and no relationships part are added',
+            [gallery.done, gallery.shapes[0] === gallery.shapes[1], gallery.after.names, await gallery.after.text('[Content_Types].xml') === await gallery.before.text('[Content_Types].xml')],
+            [true, true, gallery.before.names, true]);
     }
 } catch (e) { fail(e); }
 finish();

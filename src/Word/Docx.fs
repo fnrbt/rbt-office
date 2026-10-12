@@ -2184,8 +2184,8 @@ let private textBoxIsAsImported (textBox: TextBoxBlock) : bool =
 
 /// A shape that was read and is what it was but for where it stands and how large it is
 /// (moveShape, resizeShape): the shape it was. Its element is written back with the anchor's
-/// offsets and extent changed in it (the writer's patchShapeAnchor) - whatever else the
-/// element holds that the model does not is still there.
+/// offsets and extent changed in it (the writer's patchShapeAnchor), and in its VML fallback
+/// (patchVmlFallback) - whatever else the element holds that the model does not is still there.
 let private textBoxMovedFrom (textBox: TextBoxBlock) : TextBoxBlock option =
     if textBox.SourceXml.IsNone || isNull importedTextBoxes then None
     else

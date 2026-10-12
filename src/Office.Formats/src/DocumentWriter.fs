@@ -2263,12 +2263,95 @@ let private shapePositionVPattern = System.Text.RegularExpressions.Regex("<wp:po
 let private shapeExtentPattern = System.Text.RegularExpressions.Regex("<wp:extent cx=\"\\d+\" cy=\"\\d+\"\\s*/>")
 let private shapeOwnExtentPattern = System.Text.RegularExpressions.Regex("<a:ext cx=\"\\d+\" cy=\"\\d+\"\\s*/>")
 
+let private vmlShapeStylePattern = System.Text.RegularExpressions.Regex("<v:(shape|rect|oval|roundrect)\\b[^>]*?\\sstyle=\"([^\"]*)\"")
+
+/// The VML fallback of a shape (what stands between </mc:Choice> and
+/// </mc:AlternateContent>) with the place and the size the shape has now, said in VML's way:
+/// margin-left / margin-top / width / height of the style of its shape element, in points,
+/// from the frame the anchor names (mso-position-horizontal-relative /
+/// mso-position-vertical-relative); an alignment in a direction that was moved in
+/// (mso-position-horizontal: center) and a size or place in percent go. Everything else of
+/// the fallback - its text, fill, line, path - stays the text it was. None: a fallback this
+/// does not know how to place (a line, a group, a shape in a line of text, no style): it is
+/// left out then, as it says the old place.
+let private patchVmlFallback (fallback: string) (item: obj) (moveH: bool) (moveV: bool) (resize: bool) : string option =
+    let m = vmlShapeStylePattern.Match fallback
+    if not m.Success || fallback.IndexOf "<v:group" >= 0 then None
+    else
+        // (Where the style's value stands in the fallback: the match ends with it and its quote.)
+        let styleValue = m.Groups.[2].Value
+        let styleStart = m.Index + m.Length - 1 - styleValue.Length
+        let mutable declarations =
+            styleValue.Split(';')
+            |> Array.toList
+            |> List.choose (fun declaration ->
+                let colon = declaration.IndexOf ':'
+                if colon <= 0 then None else Some (declaration.Substring(0, colon).Trim(), declaration.Substring(colon + 1).Trim()))
+        let has (name: string) = declarations |> List.exists (fun (key, _) -> key = name)
+        let remove (name: string) = declarations <- declarations |> List.filter (fun (key, _) -> key <> name)
+        let set (name: string) (value: string) =
+            if has name then declarations <- declarations |> List.map (fun (key, was) -> if key = name then key, value else key, was)
+            else declarations <- declarations @ [ name, value ]
+        let points (pixels: float) = string (System.Math.Round(pixels * 75.0) / 100.0) + "pt"
+        if (moveH || moveV) && not (declarations |> List.exists (fun (key, value) -> key = "position" && value = "absolute")) then None
+        else
+            let mutable ok = true
+            if moveH then
+                match optionalFloat (item?X) with
+                | Some x ->
+                    set "margin-left" (points x)
+                    remove "mso-position-horizontal"
+                    remove "mso-left-percent"
+                    match optionalString (item?PositionHRelativeFrom) with
+                    | Some "page" -> set "mso-position-horizontal-relative" "page"
+                    | Some "margin" -> set "mso-position-horizontal-relative" "margin"
+                    | Some "column" -> set "mso-position-horizontal-relative" "text"
+                    | Some "character" -> set "mso-position-horizontal-relative" "char"
+                    | Some "leftMargin" -> set "mso-position-horizontal-relative" "left-margin-area"
+                    | Some "rightMargin" -> set "mso-position-horizontal-relative" "right-margin-area"
+                    | Some "insideMargin" -> set "mso-position-horizontal-relative" "inner-margin-area"
+                    | Some "outsideMargin" -> set "mso-position-horizontal-relative" "outer-margin-area"
+                    | Some _ -> ok <- false
+                    | None -> ()
+                | None -> ok <- false
+            if moveV then
+                match optionalFloat (item?Y) with
+                | Some y ->
+                    set "margin-top" (points y)
+                    remove "mso-position-vertical"
+                    remove "mso-top-percent"
+                    match optionalString (item?PositionVRelativeFrom) with
+                    | Some "page" -> set "mso-position-vertical-relative" "page"
+                    | Some "margin" -> set "mso-position-vertical-relative" "margin"
+                    | Some "paragraph" -> set "mso-position-vertical-relative" "text"
+                    | Some "line" -> set "mso-position-vertical-relative" "line"
+                    | Some "topMargin" -> set "mso-position-vertical-relative" "top-margin-area"
+                    | Some "bottomMargin" -> set "mso-position-vertical-relative" "bottom-margin-area"
+                    | Some "insideMargin" -> set "mso-position-vertical-relative" "inner-margin-area"
+                    | Some "outsideMargin" -> set "mso-position-vertical-relative" "outer-margin-area"
+                    | Some _ -> ok <- false
+                    | None -> ()
+                | None -> ok <- false
+            if resize then
+                match optionalFloat (item?Width), optionalFloat (item?Height) with
+                | Some width, Some height ->
+                    set "width" (points width)
+                    set "height" (points height)
+                    remove "mso-width-percent"
+                    remove "mso-height-percent"
+                | _ -> ok <- false
+            if not ok then None
+            else
+                let text = declarations |> List.map (fun (key, value) -> key + ":" + value) |> String.concat ";"
+                Some (fallback.Substring(0, styleStart) + text + fallback.Substring(styleStart + styleValue.Length))
+
 /// The element a shape was read from with the shape's place and size as they are now (a shape
 /// that was moved or resized and is otherwise what was read: Docx.textBoxMovedFrom): the
 /// offsets of wp:positionH / wp:positionV, wp:extent and the extent of the shape's own
-/// a:xfrm. Everything else of the element stays the text it was. Its VML fallback, which
-/// says the old place in its own way, is left out (the DrawingML is what a reader that knows
-/// it takes; Word writes the fallback anew). None: not in this element - a shape in a line
+/// a:xfrm. Everything else of the element stays the text it was. Its VML fallback says the
+/// place and the size in its own way: they are changed in it too (patchVmlFallback), and a
+/// fallback that cannot be is left out (the DrawingML is what a reader that knows it takes;
+/// Word writes the fallback anew). None: not in this element - a shape in a line
 /// of text that is moved, a group, a canvas, an anchor without the offsets.
 let private patchShapeAnchor (xml: string) (item: obj) : string option =
     let moved = item?SourceMoved
@@ -2312,9 +2395,15 @@ let private patchShapeAnchor (xml: string) (item: obj) : string option =
         if not ok then None
         elif choiceEnd < 0 then Some text
         else
-            // (Without the fallback: from the end of the choice to the end of the alternate content.)
+            // (The fallback - from the end of the choice to the end of the alternate content - at
+            // the shape's place too, or left out.)
             let close = xml.LastIndexOf("</mc:AlternateContent>", System.StringComparison.Ordinal)
-            if close < choiceEnd then None else Some (text + "</mc:Choice>" + xml.Substring close)
+            if close < choiceEnd then None
+            else
+                let after = choiceEnd + "</mc:Choice>".Length
+                match patchVmlFallback (xml.Substring(after, close - after)) item moveH moveV resize with
+                | Some fallback -> Some (text + "</mc:Choice>" + fallback + xml.Substring close)
+                | None -> Some (text + "</mc:Choice>" + xml.Substring close)
 
 let rec private generateTextBoxRun (packageSetup: PageSetupInfo) (hyperlinks: Map<string, string>) (images: ImageScope) (item: obj) : string =
     // A shape that is what was read goes back as the element it was read from
@@ -6497,12 +6586,20 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
                     let unused (relationship: string) =
                         let id = System.Text.RegularExpressions.Regex.Match(relationship, "\\sId=\"([^\"]*)\"")
                         let usedIn (text: string) = text.IndexOf("\"" + id.Groups.[1].Value + "\"", System.StringComparison.Ordinal) >= 0
-                        let picture = relationship.IndexOf "/relationships/image\"" >= 0 && relationship.IndexOf "TargetMode=\"External\"" < 0
                         // (A link's relationship the part had and did not use when it was read: the file's own.)
                         let inherited =
                             match Map.tryFind partPath sourceOfPath with
                             | Some (source, ids) -> id.Success && Set.contains id.Groups.[1].Value ids && not (usedIn source)
                             | None -> false
+                        // (And a picture's: one the file's relationships named and the part it was read as did not
+                        // use - a picture a tool left behind - is the file's own too. Only what a change made
+                        // unused goes.)
+                        let leftBehind =
+                            id.Success
+                            && (match Map.tryFind partPath sourceOfPath, Map.tryFind file.Path preserved.OriginalText with
+                                | Some (source, _), Some original -> not (usedIn source) && original.IndexOf("Id=\"" + id.Groups.[1].Value + "\"", System.StringComparison.Ordinal) >= 0
+                                | _ -> false)
+                        let picture = relationship.IndexOf "/relationships/image\"" >= 0 && relationship.IndexOf "TargetMode=\"External\"" < 0 && not leftBehind
                         let link = relationship.IndexOf "/relationships/hyperlink\"" >= 0 && not inherited
                         (picture || link) && id.Success && not (usedIn part)
                     let pieces = System.Text.RegularExpressions.Regex.Matches(file.Content, "<Relationship\\s[^>]*/>")
@@ -6520,6 +6617,39 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
             not (path.StartsWith "word/media/")
             || (let name = path.Substring(path.LastIndexOf '/' + 1)
                 relationshipTexts |> List.exists (fun text -> text.IndexOf("media/" + name + "\"", System.StringComparison.Ordinal) >= 0)))
+
+    // A document that was read without a styles part gets none while nothing needs one: no
+    // style was made or changed, and no part names one. Nor the relationship and the content
+    // type of one; and the body's relationships part, which the file did not have, is not
+    // written when nothing is left in it. (A shape moved in a document of one part was saved
+    // with a styles part of the writer's defaults and a relationships part to name it.)
+    let files =
+        let stylesChanged = not (isNullOrUndefined package?ChangedStyles) && (optionalArray (package?ChangedStyles)).Length > 0
+        let wasRead = Map.containsKey "[Content_Types].xml" preserved.OriginalText
+        let namesStyle (file: PackageFile) =
+            file.Path.StartsWith "word/" && file.Path.EndsWith ".xml" && file.Path <> "word/styles.xml"
+            && (file.Content.IndexOf "<w:pStyle " >= 0 || file.Content.IndexOf "<w:rStyle " >= 0 || file.Content.IndexOf "<w:tblStyle " >= 0)
+        if regenerateAll || not wasRead || preserved.StylesXml.IsSome || stylesChanged || not (keptFor "styles").IsEmpty || List.exists namesStyle files then files
+        else
+            let without (pattern: System.Text.RegularExpressions.Regex) (unwanted: string -> bool) (content: string) =
+                let pieces = pattern.Matches content
+                let mutable text = content
+                for i in pieces.Count - 1 .. -1 .. 0 do
+                    let piece = pieces.[i]
+                    if unwanted piece.Value then text <- text.Substring(0, piece.Index) + text.Substring(piece.Index + piece.Length)
+                text
+            files
+            |> List.filter (fun file -> file.Path <> "word/styles.xml")
+            |> List.map (fun file ->
+                if file.Path = "word/_rels/document.xml.rels" then
+                    { file with Content = file.Content |> without relationshipTagPattern (fun tag -> match attributeOfTag tag "Type" with Some relType -> relType.EndsWith "/styles" | None -> false) }
+                elif file.Path = "[Content_Types].xml" then
+                    { file with Content = file.Content |> without contentTypeTagPattern (fun tag -> attributeOfTag tag "PartName" = Some "/word/styles.xml") }
+                else file)
+            |> List.filter (fun file ->
+                not (file.Path = "word/_rels/document.xml.rels"
+                     && not (Map.containsKey file.Path preserved.OriginalText)
+                     && not (relationshipTagPattern.IsMatch file.Content)))
 
     // The relationship parts and [Content_Types].xml that say what they said when they were read go back as that text.
     let files =
