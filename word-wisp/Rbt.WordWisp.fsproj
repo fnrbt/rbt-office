@@ -1,23 +1,23 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <!-- wisp-word: the native Word app on Wisp. Reuses Rbt.Word + the Wisp OfficeShell;
-       no ../widgets. -->
+       no Rbt.Widgets. -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="../../editor/KeyMap.fs" />
+    <Compile Include="../office-wisp/KeyMap.fs" />
     <Compile Include="WordRender.fs" />
     <Compile Include="EditorHost.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="../../wisp/Wisp.fsproj" />
+    <PackageReference Include="Rbt.Wisp" Version="$(RbtWispPackageVersion)" />
     <ProjectReference Include="../office-wisp/Rbt.OfficeWisp.fsproj" />
     <ProjectReference Include="../src/Word/Rbt.Word.fsproj" />
     <ProjectReference Include="../src/Word.Import/Rbt.WordImport.fsproj" />
     <ProjectReference Include="../src/Office.Formats/Rbt.OfficeFormat.fsproj" />
     <ProjectReference Include="../src/OfficeUi/Rbt.OfficeUi.fsproj" />
-    <ProjectReference Include="../../rbt-renderer/Rbt.Renderer.fsproj" />
+    <PackageReference Include="Rbt.Renderer" Version="$(RbtRendererPackageVersion)" />
   </ItemGroup>
 </Project>

@@ -1,9 +1,9 @@
-// When the sibling libraries are compiled from NuGet packages (Forge builds),
-// Fable emits them under fable_modules/<PackageId>.<version>/ instead of the
-// rbt-text/, rbt-vb/ and rbt-pdf/ directories a sibling-checkout build
-// produces. Consumers import a few of those modules by path
-// (e.g. shaper-text/rbt-text/unicode/src/Rbt.Unicode/Ucd.js), so recreate the
-// checkout layout as re-exporting modules. A no-op for sibling-checkout builds.
+// The libraries of the other Rbt repositories are compiled from their NuGet
+// packages, so Fable emits them under fable_modules/<PackageId>.<version>/.
+// Consumers import a few of those modules by the path a build from the
+// neighbouring checkouts used to give them
+// (e.g. shaper-text/rbt-text/unicode/src/Rbt.Unicode/Ucd.js), so recreate
+// that layout as re-exporting modules.
 import fs from "node:fs";
 import path from "node:path";
 

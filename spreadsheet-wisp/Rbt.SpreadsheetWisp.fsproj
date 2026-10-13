@@ -6,17 +6,17 @@
     <TargetFramework>net10.0</TargetFramework>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="../../editor/KeyMap.fs" />
+    <Compile Include="../office-wisp/KeyMap.fs" />
     <Compile Include="GridRender.fs" />
     <Compile Include="EditorHost.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="../../wisp/Wisp.fsproj" />
+    <PackageReference Include="Rbt.Wisp" Version="$(RbtWispPackageVersion)" />
     <ProjectReference Include="../office-wisp/Rbt.OfficeWisp.fsproj" />
     <ProjectReference Include="../src/Spreadsheet/Rbt.Spreadsheet.fsproj" />
     <ProjectReference Include="../src/Office.Formats/Rbt.OfficeFormat.fsproj" />
     <ProjectReference Include="../src/OfficeUi/Rbt.OfficeUi.fsproj" />
-    <ProjectReference Include="../../rbt-renderer/Rbt.Renderer.fsproj" />
+    <PackageReference Include="Rbt.Renderer" Version="$(RbtRendererPackageVersion)" />
   </ItemGroup>
 </Project>

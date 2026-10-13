@@ -33,8 +33,7 @@
   <ItemGroup>
     <ProjectReference Include="../FableUI/Rbt.FableUI.fsproj" />
     <ProjectReference Include="../OfficeUi/Rbt.OfficeUi.fsproj" />
-    <ProjectReference Condition="'$(UseSiblingPackages)' != 'true'" Include="../../../rbt-vb/Rbt.Vb.fsproj" />
-    <PackageReference Condition="'$(UseSiblingPackages)' == 'true'" Include="Rbt.Vb" Version="$(RbtVbPackageVersion)" />
+    <PackageReference Include="Rbt.Vb" Version="$(RbtVbPackageVersion)" />
   </ItemGroup>
 
   <ItemGroup>

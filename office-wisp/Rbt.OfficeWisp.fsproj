@@ -9,8 +9,8 @@
     <Compile Include="OfficeShell.fs" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="../../wisp/Wisp.fsproj" />
+    <PackageReference Include="Rbt.Wisp" Version="$(RbtWispPackageVersion)" />
     <ProjectReference Include="../src/OfficeUi/Rbt.OfficeUi.fsproj" />
-    <ProjectReference Include="../../rbt-renderer/Rbt.Renderer.fsproj" />
+    <PackageReference Include="Rbt.Renderer" Version="$(RbtRendererPackageVersion)" />
   </ItemGroup>
 </Project>

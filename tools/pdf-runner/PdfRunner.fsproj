@@ -14,7 +14,7 @@
     <ProjectReference Include="../../src/Word.Import/Rbt.WordImport.fsproj" />
     <ProjectReference Include="../../src/Word.Pdf/Rbt.Word.Pdf.fsproj" />
     <ProjectReference Include="../../word-native/Rbt.WordWidgets.fsproj" />
-    <ProjectReference Include="../../../rbt-widgets/Rbt.Widgets.fsproj" />
-    <ProjectReference Include="../../../rbt-renderer/Rbt.Renderer.fsproj" />
+    <PackageReference Include="Rbt.Widgets" Version="$(RbtWidgetsPackageVersion)" />
+    <PackageReference Include="Rbt.Renderer" Version="$(RbtRendererPackageVersion)" />
   </ItemGroup>
 </Project>

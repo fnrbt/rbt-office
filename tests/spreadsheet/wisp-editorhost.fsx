@@ -4,9 +4,9 @@
 #r "../../src/Spreadsheet/bin/Debug/netstandard2.0/Rbt.Vb.dll"
 #r "../../src/Office.Formats/bin/Debug/netstandard2.0/Rbt.OfficeFormat.dll"
 #r "../../office-wisp/bin/Debug/net10.0/Rbt.OfficeWisp.dll"
-#r "../../../wisp/bin/Debug/net10.0/Wisp.dll"
-#r "../../../rbt-renderer/bin/Debug/net10.0/Renderer.dll"
-#r "../../../wisp/bin/Debug/net10.0/Platform.dll"
+#r "../../spreadsheet-wisp/bin/Debug/net10.0/Rbt.Wisp.dll"
+#r "../../spreadsheet-wisp/bin/Debug/net10.0/Rbt.Renderer.dll"
+#r "../../spreadsheet-wisp/bin/Debug/net10.0/Platform.dll"
 
 #load "../../spreadsheet-wisp/GridRender.fs"
 #load "../../spreadsheet-wisp/EditorHost.fs"

@@ -8,9 +8,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../Word/Rbt.Word.fsproj" />
-    <ProjectReference Condition="'$(UseSiblingPackages)' != 'true'" Include="../../../rbt-text/engine/Rbt.Text.Engine.fsproj" />
-    <PackageReference Condition="'$(UseSiblingPackages)' == 'true'" Include="Rbt.Text.Engine" Version="$(RbtTextPackageVersion)" />
-    <ProjectReference Condition="'$(UseSiblingPackages)' != 'true'" Include="../../../rbt-text/opentype/Rbt.OpenType.Core.fsproj" />
-    <PackageReference Condition="'$(UseSiblingPackages)' == 'true'" Include="Rbt.OpenType.Core" Version="$(RbtTextPackageVersion)" />
+    <PackageReference Include="Rbt.Text.Engine" Version="$(RbtTextPackageVersion)" />
+    <PackageReference Include="Rbt.OpenType.Core" Version="$(RbtTextPackageVersion)" />
   </ItemGroup>
 </Project>

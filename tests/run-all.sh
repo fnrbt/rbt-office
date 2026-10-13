@@ -9,7 +9,7 @@ cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 
 # Built one by one rather than through Office.slnx: the solution also pulls in
-# sibling-repo hosts (widgets, wisp) that these suites do not exercise.
+# native hosts (widgets, wisp) that these suites do not exercise.
 PROJECTS=(
     src/Office.Formats/Rbt.OfficeFormat.fsproj
     src/Word/Rbt.Word.fsproj
@@ -53,8 +53,7 @@ for s in textbuffer layout incremental-layout faces-relayout font-set pdf import
     run_suite "word-$s" "tests/word/$s.fsx"
 done
 
-# The native painter (word-native) is built against the sibling checkouts
-# rbt-widgets and rbt-renderer, so it is not one of the projects above: its
+# The native painter (word-native) is not one of the projects above: its
 # suite runs where word-native was built (dotnet build word-native/Rbt.WordWidgets.fsproj).
 if [ -f word-native/bin/Debug/net10.0/Rbt.WordWidgets.dll ]; then
     run_suite "word-native-painter" "tests/word/native-painter.fsx"

@@ -24,8 +24,7 @@
 // one line each - so the native font, Noto Sans where the document says
 // Calibri, gives the positions the browser has.)
 //
-// Needs word-native built (it is not one of the projects run-all builds: it
-// refers to the sibling checkouts rbt-widgets and rbt-renderer):
+// Needs word-native built (it is not one of the projects run-all builds):
 //   dotnet build word-native/Rbt.WordWidgets.fsproj
 //   dotnet fsi tests/word/native-painter.fsx
 // run-all runs it when word-native's build output is there.
@@ -82,7 +81,7 @@ let shape = expected.GetProperty "shape"
 let shapeX, shapeY, shapeW, shapeH = number shape "x", number shape "y", number shape "width", number shape "height"
 
 // ---- through the native path -----------------------------------------------
-let fontPath = Path.GetFullPath(Path.Combine(__SOURCE_DIRECTORY__, "../../../rbt-renderer/NotoSans-Regular.ttf"))
+let fontPath = Path.GetFullPath(Path.Combine(__SOURCE_DIRECTORY__, "../../word-native/bin/Debug/net10.0/NotoSans-Regular.ttf"))
 if File.Exists fontPath then Rbt.Widgets.Composit.Ui.Layout.initFont fontPath
 
 let doc =

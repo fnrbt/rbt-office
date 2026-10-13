@@ -5,7 +5,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="../../../rbt-widgets/x11-viewer/PngEncode.fs" />
+    <Compile Include="../native-runner/PngEncode.fs" />
     <Compile Include="../excel-native-runner/ChartRender.fs" />
     <Compile Include="../excel-native-runner/Program.fs" />
     <Compile Include="Program.fs" />
@@ -16,7 +16,7 @@
     <ProjectReference Include="../../src/Spreadsheet/Rbt.Spreadsheet.fsproj" />
     <ProjectReference Include="../../src/Spreadsheet.Pdf/Rbt.Spreadsheet.Pdf.fsproj" />
     <ProjectReference Include="../../spreadsheet-native/Rbt.SpreadsheetWidgets.fsproj" />
-    <ProjectReference Include="../../../rbt-widgets/Rbt.Widgets.fsproj" />
-    <ProjectReference Include="../../../rbt-renderer/Rbt.Renderer.fsproj" />
+    <PackageReference Include="Rbt.Widgets" Version="$(RbtWidgetsPackageVersion)" />
+    <PackageReference Include="Rbt.Renderer" Version="$(RbtRendererPackageVersion)" />
   </ItemGroup>
 </Project>
