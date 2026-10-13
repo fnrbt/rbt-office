@@ -58,9 +58,9 @@ redbat (`cardillion-mega` remote): `master` already contains the 0.1.16 adoption
 ## Procedures
 
 ### Layout a new machine needs
-- Sibling checkouts next to this repo for local builds: `../rbt-vb`, `../rbt-text`, `../rbt-pdf`, `../rbt-renderer` (Forge builds use published packages instead; versions pinned in `Directory.Build.props`).
+- Nothing refers to a neighbouring checkout. Every library of another Rbt repository comes from the Forge package registry at the version pinned in `Directory.Build.props`: `Rbt.Vb`, `Rbt.Text.*`, `Rbt.Pdf` for everything, `Rbt.Renderer`, `Rbt.Widgets` and `Rbt.Wisp` for the native hosts and their runners. A NuGet source for the registry with a reader token is the one thing a machine needs. To try a change in one of those libraries here, publish it (below) and bump the pin.
 - `pnpm install` in each fresh checkout or worktree.
-- A Playwright with a matching Chromium. On the old machine the repo's own had none, so the harnesses were run with `PLAYWRIGHT=<path to another project's node_modules/playwright/index.mjs>`; install browsers (`npx playwright install chromium`) or point `PLAYWRIGHT` likewise.
+- A Playwright with a matching Chromium. On the old machine the repo's own had none, so the harnesses were run with `PLAYWRIGHT=<path to another project's node_modules/playwright/index.mjs>`; install browsers (`npx playwright install chromium`) or point `PLAYWRIGHT` likewise. On Ubuntu 26.04 the install needs `PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=ubuntu24.04-x64`, and Chromium needs `libatk1.0-0t64 libatk-bridge2.0-0t64 libatspi2.0-0t64 libxcomposite1 libxdamage1`.
 
 ### Gates (run on the merged tree before every release, whatever an agent reported)
 ```
@@ -77,7 +77,7 @@ Browser harnesses, run per branch before merging: `tools/word-browser/{run,perf}
 1. Bump `version` in `package.json` (must equal the tag), commit `Release X.Y.Z`.
 2. Fast-forward `master` to `review-fixes`, `git tag vX.Y.Z master`, push `master` and the tag. The `v*` tag publishes `@rbt/office` through the repo's Forge action (`.forge/actions.lua`, `.forge/publish-npm`).
 3. Wait for the publish to succeed before pinning anything to it (it has taken up to ~40 minutes and two attempts). `tools/redbat-adoption/forge-status.mjs <repo> <full sha> refs/tags/vX.Y.Z publish-npm` polls `GET /api/forge/repos/<repo>/actions/status?commit=&ref=&action=` on a redbat instance with a dev login; `status: missing` means no action was queued.
-4. If a sibling (`rbt-vb`, `rbt-text`, `rbt-pdf`) changed: tag and publish it first, then bump its version in `Directory.Build.props`. A stale pin only shows up in the Forge build. Restore with `RestoreNoHttpCache=true` after publishing a sibling.
+4. If another Rbt library changed: tag and publish it first, then bump its version in `Directory.Build.props`; a stale pin fails the restore. Restore with `RestoreNoHttpCache=true` after publishing one. The chain, in publish order: `rbt-text` → `rbt-renderer` (`Rbt.Renderer`, `Rbt.Renderer.Core`) and `rbt-pdf`; `rbt-event-loop` (`Rbt.EventLoop`) and `rbt-renderer` → `rbt-widgets` (`Rbt.Widgets.Platform`, `Rbt.Widgets`) → `rbt-wisp` (`Rbt.Wisp`) → here. A repository publishes on a `vX.Y.Z` tag only if it has a `refs/tags/v*` action policy allowing `package` (Forge, the repository's settings), and an action may declare one publish entry per registry: a repository with two packages has one action for each.
 
 ### Redbat adoption
 1. In a redbat worktree branched from `master`: set `"@rbt/office": "X.Y.Z"` in `mega/frontend/package.json`.
