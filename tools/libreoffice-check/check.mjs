@@ -20,7 +20,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 
 const args = process.argv.slice(2);
 const verbose = args.includes('--verbose');
@@ -35,27 +35,50 @@ const work = fs.mkdtempSync(path.join(os.tmpdir(), 'libreoffice-check-'));
 // One soffice run converts a batch; a file it cannot open leaves no output.
 // A document LibreOffice hangs on takes its batch with it, so what a batch
 // left unconverted is tried again alone, each with its own time limit.
+// soffice is a script that starts soffice.bin: it runs in a process group of
+// its own and the whole group is killed at the time limit, or a hung
+// soffice.bin stays behind converting for ever. A hung conversion writes text
+// without end (gigabytes a minute), so the run is also killed when what it
+// has written passes any size a document's text has.
+const outputLimit = 256 * 1024 * 1024;
+const written = out => fs.readdirSync(out).reduce((sum, f) => sum + fs.statSync(path.join(out, f)).size, 0);
 let runs = 0;
 function soffice1(ext, out, paths, timeout) {
     const [filter] = filters[ext];
     const profile = 'file://' + path.join(work, 'profile-' + runs++);
-    const run = spawnSync(soffice, ['--headless', '--norestore', `-env:UserInstallation=${profile}`,
-        '--convert-to', filter, '--outdir', out, ...paths], { encoding: 'utf8', timeout, killSignal: 'SIGKILL' });
-    if (run.error && run.error.code !== 'ETIMEDOUT') { console.error(`${soffice}: ${run.error.message}`); process.exit(2); }
-    return !run.error;
+    return new Promise(resolve => {
+        const child = spawn(soffice, ['--headless', '--norestore', `-env:UserInstallation=${profile}`,
+            '--convert-to', filter, '--outdir', out, ...paths], { stdio: 'ignore', detached: true });
+        let inTime = true;
+        const killGroup = () => { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ } };
+        const before = written(out);
+        const stop = () => { inTime = false; killGroup(); };
+        const timer = setTimeout(stop, timeout);
+        const guard = setInterval(() => { if (written(out) - before > outputLimit) stop(); }, 500);
+        child.on('error', error => { console.error(`${soffice}: ${error.message}`); process.exit(2); });
+        child.on('close', () => {
+            clearTimeout(timer); clearInterval(guard); killGroup();
+            // A killed run leaves its lock and its unfinished output behind;
+            // the lock would turn the next run for that file away.
+            if (!inTime) for (const f of fs.readdirSync(out))
+                if (f.startsWith('.~lock.') || /^lu.*\.tmp$/.test(f)) fs.rmSync(path.join(out, f), { force: true });
+            resolve(inTime);
+        });
+    });
 }
 
 const timedOut = new Set();
-function convert(ext, files) {
+async function convert(ext, files) {
     const outExt = filters[ext][1];
     const out = path.join(work, ext);
     fs.mkdirSync(out, { recursive: true });
     const produced = f => path.join(out, f.slice(0, -ext.length) + outExt);
     for (let i = 0; i < files.length; i += 40) {
         const batch = files.slice(i, i + 40);
-        soffice1(ext, out, batch.map(f => path.join(dir, f)), 240000);
+        if (!await soffice1(ext, out, batch.map(f => path.join(dir, f)), 240000))
+            for (const f of batch) fs.rmSync(produced(f), { force: true });
         for (const f of batch.filter(f => !fs.existsSync(produced(f))))
-            if (!soffice1(ext, out, [path.join(dir, f)], 90000)) timedOut.add(f);
+            if (!await soffice1(ext, out, [path.join(dir, f)], 90000)) { timedOut.add(f); fs.rmSync(produced(f), { force: true }); }
     }
     const read = new Map();
     for (const f of files) if (fs.existsSync(produced(f))) read.set(f, fs.readFileSync(produced(f), 'utf8'));
@@ -77,7 +100,7 @@ let failed = 0, passed = 0, listed = 0, skipped = 0;
 for (const ext of Object.keys(filters)) {
     const files = fs.readdirSync(dir).filter(f => f.endsWith('.' + ext)).sort();
     if (files.length === 0) continue;
-    const read = convert(ext, files);
+    const read = await convert(ext, files);
     const originals = files.filter(f => f.endsWith(`.original.${ext}`));
     for (const original of originals) {
         const name = original.slice(0, -`.original.${ext}`.length);

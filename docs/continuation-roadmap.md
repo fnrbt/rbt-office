@@ -6,17 +6,17 @@ Written 2026-10-12, when work was halted to move to another machine. Picks up th
 
 | Branch | What it is | State |
 |---|---|---|
-| `master`, tag `v0.1.17` | Last release, published as `@rbt/office` 0.1.17: 0.1.16 + spreadsheet pass eight + Word pass nineteen + the registry-only build | released |
+| `master`, tag `v0.1.18` | Last release, published as `@rbt/office` 0.1.18 (the `v0.1.17` tag published nothing: the registry answered its upload with 404, and Forge does not run a failed action again for the same tag and commit): 0.1.16 + spreadsheet pass eight + Word pass nineteen + the registry-only build | released |
 | `review-fixes` | The integration branch: what the next release is gated and cut from. Equal to `master` right after a release | nothing unreleased |
 | `fix/sheet19` | Spreadsheet pass nine, branched from `review-fixes` as it was at 0.1.16 + pass eight | 1 `WIP (ungated)` chart commit that **does not compile**, 1 handoff commit with the uncompiled drafts. Read `tools/handoff-sheet19/HANDOFF.md` on the branch |
 
-`origin/fix/word19` is the pass as it was handed off (its `tools/handoff-word19/HANDOFF.md` has the host notes); the pass itself is in 0.1.17, rebased, without the handoff folder. The `tools/handoff-*` folders are temporary: delete them (or drop those commits) before merging a branch into `review-fixes`.
+`origin/fix/word19` is the pass as it was handed off (its `tools/handoff-word19/HANDOFF.md` has the host notes); the pass itself is in 0.1.18, rebased, without the handoff folder. The `tools/handoff-*` folders are temporary: delete them (or drop those commits) before merging a branch into `review-fixes`.
 
 redbat (`cardillion-mega` remote): `master` already contains the 0.1.16 adoption (1094/1094 harness assertions). The local `office-viewers` branch on the old machine equals it; on a new machine just branch from `master`.
 
 ## Next steps, in order
 
-1. **Adopt 0.1.17 in redbat.** Host changes to make:
+1. **Adopt 0.1.18 in redbat.** Host changes to make:
    - Word: remove the host's own Ctrl+Enter handler, its double-click handling for header text boxes, and its shape overlay / handle hit-test / drag / Delete / Escape handling — the engine now does all of these (details in the Word handoff, "What the host should remove or adapt"). Keep honouring `ScrollTop` notices. Tab outside lists and tables now types a tab.
    - Spreadsheet: charts are not present when `ImportXlsx` / `SwitchSheet` returns (`div.spreadsheet-object-pending`, filled a frame later); add a page-break-preview toggle (`SetViewMode("pageBreak")`, `GetViewMode`, `MovePageBreak`); `GoTo` reaches beyond the grid, so the name box's fallback to `SelectCell` can go.
 2. **Resume `fix/sheet19`** from its handoff: rebase on `review-fixes`, splice the draft layout into `Charts.fs`, get it compiling, rewrite the two `stage52-charts` assertions that say radar and 3-D charts are not read. Then the rest of its list.
@@ -49,8 +49,8 @@ redbat (`cardillion-mega` remote): `master` already contains the 0.1.16 adoption
 - Never exercised: bold typed into a multi-run field result.
 
 ### Cross-cutting
-- **LibreOffice is the one outside reader so far; nothing has been opened in Word or Excel.** `tools/libreoffice-check/check.mjs DIR` opens the documents `roundtrip.mjs --out DIR` keeps and compares the text LibreOffice reads from each save with the original's. On 0.1.17: 263 saves read as their originals, none failed. It is not part of the round trip yet (run it after one; write `--out` outside `/tmp`, the 381 documents are 75 MB), it compares text only, and the spreadsheet harness keeps no workbooks for it.
-- What it found in the 13 saves written from the model alone (`.model.docx`, listed, not counted as failures): a space lost between runs (`atdeploymenttime`, `gravida,pellentesque`, `next.When` in docx4j-getting-started, resume-template, file-sample); a drop cap read as a separate word (the calibre demo and its four copies); the content of bound content controls replaced by their placeholder or value (`docx4j-binding-simple`, `-hyperlink-binding`, `-invoice-2013`); `mc:AlternateContent` written as its fallback (`reader-structure`). LibreOffice hangs on `test-complex-tables.docx` itself and does not open `docx4j-unmarshall-template.docx`, the originals.
+- **LibreOffice is the one outside reader so far; nothing has been opened in Word or Excel.** `tools/libreoffice-check/check.mjs DIR` opens the documents `roundtrip.mjs --out DIR` keeps and compares the text LibreOffice reads from each save with the original's. On 0.1.18: 263 saves read as their originals, none failed. It is not part of the round trip yet (run it after one; write `--out` outside `/tmp`, the 381 documents are 75 MB), it compares text only, and the spreadsheet harness keeps no workbooks for it.
+- What it found in the 13 saves written from the model alone (`.model.docx`, listed, not counted as failures): a space lost between runs (`atdeploymenttime`, `gravida,pellentesque`, `next.When` in docx4j-getting-started, resume-template, file-sample); a drop cap read as a separate word (the calibre demo and its four copies); the content of bound content controls replaced by their placeholder or value (`docx4j-binding-simple`, `-hyperlink-binding`, `-invoice-2013`); `mc:AlternateContent` written as its fallback (`reader-structure`). LibreOffice hangs on `test-complex-tables.docx` itself, writing text without end (3 GB in 25 s; the check kills the run by its process group and by what it has written), and does not open `docx4j-unmarshall-template.docx`, the originals.
 - Native hosts are built, and the Word painter has a headless pixel test, but no native host has been run interactively. Firefox is untested.
 
 ## Procedures
