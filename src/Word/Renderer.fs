@@ -2634,6 +2634,15 @@ let shapePartAt (ctx: RenderContext) (doc: Document) (id: BlockId) (pointX: floa
             let within (margin: float) = pointX >= x + margin && pointX <= x + width - margin && pointY >= y + margin && pointY <= y + height - margin
             if not (within -reach) then "" elif within reach then "inside" else "border"
 
+/// Where a shape is in the order shapes are painted in (wp:anchor relativeHeight): the larger, the more in front.
+let private paintOrderOf (textBox: TextBoxBlock) =
+    match textBox.RelativeHeight with
+    | Some text ->
+        match System.Double.TryParse text with
+        | true, number -> number
+        | false, _ -> 0.0
+    | None -> 0.0
+
 /// The text box in front of the text that a point (layout coordinates) is in
 /// - the one painted last of those that hold it. A box behind the text, and
 /// one whose text is drawn as large as the box (a watermark), is not found by
@@ -2644,15 +2653,22 @@ let shapeAt (ctx: RenderContext) (doc: Document) (x: float) (y: float) : BlockId
         // (A turned box: the point as it is in the box before the turn.)
         let x, y = if abs textBox.Rotation >= 0.01 then turnedPoint -textBox.Rotation (left + width / 2.0) (top + height / 2.0) x y else x, y
         not (textBox.BehindDoc = Some true) && not textBox.FitText && x >= left && x <= left + width && y >= top && y <= top + height)
-    |> List.sortBy (fun (textBox, _, _, _, _) ->
-        match textBox.RelativeHeight with
-        | Some text ->
-            match System.Double.TryParse text with
-            | true, number -> number
-            | false, _ -> 0.0
-        | None -> 0.0)
+    |> List.sortBy (fun (textBox, _, _, _, _) -> paintOrderOf textBox)
     |> List.tryLast
     |> Option.map (fun (textBox, _, _, _, _) -> textBox.Id)
+
+/// The shape of the body whose frame is at a point (layout coordinates):
+/// five pixels on screen to either side of its edge (shapePartAt "border",
+/// or a handle's place), the one in front first. Any shape: one behind the
+/// text, and one whose text a click inside does not reach, too.
+let shapeEdgeAt (ctx: RenderContext) (doc: Document) (x: float) (y: float) : BlockId option =
+    shapeRects ctx doc
+    |> List.sortBy (fun (textBox, _, _, _, _) -> paintOrderOf textBox)
+    |> List.rev
+    |> List.tryPick (fun (textBox, _, _, _, _) ->
+        match shapePartAt ctx doc textBox.Id x y with
+        | "" | "inside" -> None
+        | _ -> Some textBox.Id)
 
 /// Number of pages the document lays out to, including footnote/endnote areas.
 /// Pages are stacked with pageGap between them, but need not be the same size
@@ -2802,6 +2818,7 @@ let shapeRectOf _ _ _ = None
 let shapePartAt _ _ _ _ _ = ""
 let furnitureShapeAt _ _ _ _ = None
 let shapeAt _ _ _ _ = None
+let shapeEdgeAt _ _ _ _ = None
 let renderWithHover _ _ _ = ()
 let setViewport _ _ = ()
 let documentSize _ _ = 0.0, 0.0, 0

@@ -1203,7 +1203,8 @@ module API =
 
     /// The shapes (text boxes) where they are painted: Id, X (from the left
     /// edge of the shape's page), Y (down the document), Width, Height - layout
-    /// pixels, as getLayoutLines -, BehindText, RelativeHeight, Wrap,
+    /// pixels, as getLayoutLines; the rectangle before the shape's turn -,
+    /// Rotation (degrees clockwise about its middle), BehindText, RelativeHeight, Wrap,
     /// AnchorBlockId and Text; Story says where the shape is: "body", or
     /// "header" / "footer" for a text box of a header or footer - listed once,
     /// on the first page (PageIndex; -1 for a shape of the body) that shows
@@ -1219,6 +1220,7 @@ module API =
                 "Y" ==> y
                 "Width" ==> width
                 "Height" ==> height
+                "Rotation" ==> textBox.Rotation
                 "BehindText" ==> (textBox.BehindDoc = Some true)
                 "RelativeHeight" ==> textBox.RelativeHeight
                 "Wrap" ==> WordLayout.Floating.textBoxWrap textBox
@@ -3307,8 +3309,9 @@ module API =
     /// The eight handles of a shape of the body, a header or a footer, for a host that shows it
     /// selected and lets it be dragged: Name ("nw", "n", "ne", "e", "se",
     /// "s", "sw", "w"), X, Y, Width, Height (a square around the corner or the
-    /// middle of the edge, eight pixels on screen whatever the zoom; layout
-    /// pixels as getShapeRects, X from the left edge of the shape's page) and
+    /// middle of the edge - of a turned shape where the turn puts it -, eight
+    /// pixels on screen whatever the zoom; layout pixels as getShapeRects, X
+    /// from the left edge of the shape's page) and
     /// Cursor (the CSS cursor of that handle). Empty when there is no such
     /// shape. A host draws them, finds the one under the pointer with
     /// hitTestShapeHandle, and calls resizeShape (and moveShape for a handle
@@ -3316,15 +3319,19 @@ module API =
     let getShapeHandles (editor: Editor) (id: string) : obj array =
         match bodyShapeRect editor id with
         | None -> [||]
-        | Some (_, x, y, width, height, _) ->
+        | Some (textBox, x, y, width, height, _) ->
             let size = 8.0 / max 0.01 (Ren.viewportScale editor.Handler.RenderContext)
+            // (A turned shape's handles are where the turn puts them, as they are painted.)
+            let place px py =
+                if abs textBox.Rotation >= 0.01 then Ren.turnedPoint textBox.Rotation (x + width / 2.0) (y + height / 2.0) px py else px, py
             [| "nw", 0.0, 0.0, "nwse-resize"; "n", 0.5, 0.0, "ns-resize"; "ne", 1.0, 0.0, "nesw-resize"; "e", 1.0, 0.5, "ew-resize"
                "se", 1.0, 1.0, "nwse-resize"; "s", 0.5, 1.0, "ns-resize"; "sw", 0.0, 1.0, "nesw-resize"; "w", 0.0, 0.5, "ew-resize" |]
             |> Array.map (fun (name, fx, fy, cursor) ->
+                let centerX, centerY = place (x + width * fx) (y + height * fy)
                 createObj [
                     "Name" ==> name
-                    "X" ==> x + width * fx - size / 2.0
-                    "Y" ==> y + height * fy - size / 2.0
+                    "X" ==> centerX - size / 2.0
+                    "Y" ==> centerY - size / 2.0
                     "Width" ==> size
                     "Height" ==> size
                     "Cursor" ==> cursor ])
@@ -3338,9 +3345,12 @@ module API =
             |> Array.tryFind (fun handle ->
                 let left, top, size = unbox<float> handle?X, unbox<float> handle?Y, unbox<float> handle?Width
                 x >= left && x <= left + size && y >= top && y <= top + size)
+        let inside (textBox: Doc.TextBoxBlock) left top width height =
+            let x, y = if abs textBox.Rotation >= 0.01 then Ren.turnedPoint -textBox.Rotation (left + width / 2.0) (top + height / 2.0) x y else x, y
+            x >= left && x <= left + width && y >= top && y <= top + height
         match handle, bodyShapeRect editor id with
         | Some found, _ -> unbox<string> found?Name
-        | None, Some (_, left, top, width, height, _) when x >= left && x <= left + width && y >= top && y <= top + height -> "move"
+        | None, Some (textBox, left, top, width, height, _) when inside textBox left top width height -> "move"
         | _ -> ""
 
     /// Edit the text of a text box of the body in place (`id`: as

@@ -1727,10 +1727,22 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                 | "border" -> Some (id, "move")
                 | handle -> Some (id, handle)
             | _ -> None
+        // Another shape of the body is taken by its frame: selected, and moved if the pointer is
+        // dragged - a shape behind the text and one without text are reached so. (Not while a
+        // header or a footer is edited: the body's shapes are out of reach then.)
+        let grabbed =
+            match grabbed, handler.Story with
+            | Some _, _ -> grabbed
+            | None, story when int me.detail < 2 && (match story with None -> true | Some session -> session.Box.IsSome && session.PartIndex < 0) ->
+                shapeEdgeAt handler.RenderContext handler.Document x y |> Option.map (fun id -> id, "move")
+            | None, _ -> None
         match grabbed with
         | Some (id, part) ->
             // (Its text, or the header that is edited, is left first: the shape is the document's.)
             if handler.Story.IsSome then exitStory handler |> ignore
+            if setSelectedShape handler (Some id) then
+                renderWithHover handler.RenderContext handler.Document handler.HoveredImage
+                handler.OnShapeSelection ()
             match shapeRectOf handler.RenderContext handler.Document id with
             | Some (shape, rectX, rectY, width, height, pageTop) ->
                 handler.ShapeDrag <- Some { ShapeId = id; Part = part; StartX = x; StartY = y; Shape = shape; RectX = rectX; RectY = rectY; RectWidth = width; RectHeight = height; PageTop = pageTop; Moved = false }
@@ -1911,6 +1923,8 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             match handler.ShapeDrag, handler.PointerStartDocument with
             | Some drag, Some startDoc when drag.Moved ->
                 recordChange handler (if drag.Part = "move" then "Move shape" else "Resize shape") startDoc handler.Document
+                // (The listeners heard of the drag as it went; now there is a step to undo.)
+                handler.OnChange handler.Document
             | _ -> ()
             handler.ShapeDrag <- None
             handler.PointerStartDocument <- None
