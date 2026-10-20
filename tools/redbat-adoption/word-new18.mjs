@@ -41,10 +41,10 @@ if (want("shapes")) {
   // (The oval is turned: getShapeHandles gives its handles unturned, the engine paints and hits them turned.
   // Sizes are checked on the rectangle behind the text, which is not.)
   const rect = all.find((s) => s.W === 100 && s.H === 50);
-  const inRect = await onScreen(page, rect.X + rect.W - 8, rect.Y + rect.H - 8);
-  await page.mouse.click(inRect.x, inRect.y); await frame(page); await page.waitForTimeout(60);
+  const onEdge = await onScreen(page, rect.X + rect.W / 4, rect.Y);
+  await page.mouse.click(onEdge.x, onEdge.y); await frame(page); await page.waitForTimeout(60);
   const clicked = await selected(page);
-  check("a click inside the shape behind the text, where no text is, selects it", clicked === rect.Id && (await ctx(page)).Story === "body", [clicked, await ctx(page)]);
+  check("a click on the frame of the shape behind the text selects it (0.1.19)", clicked === rect.Id && (await ctx(page)).Story === "body", [clicked, await ctx(page)]);
   if (clicked !== rect.Id) await ev(page, (id) => window.__word.selectShape(window.__editors[0], id), rect.Id);
   await page.screenshot({ path: `${E}/n18-shape-3-rect.png` });
   const top0 = await scrollTop(page);
