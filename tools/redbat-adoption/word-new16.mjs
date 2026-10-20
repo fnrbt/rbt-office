@@ -14,7 +14,9 @@ const quarter = (b) => (b.width > b.height ? { x: b.x + b.width / 4, y: b.y + b.
 const center = (b) => ({ x: b.x + b.width / 2, y: b.y + b.height / 2 });
 const ctx = (page) => ev(page, () => { const c = window.__word.getCaretContext(window.__editors[0]); return { Story: c.Story, TextBoxId: c.TextBoxId ?? null, hf: c.HeaderFooter ? c.HeaderFooter.Kind : null }; });
 const drag = async (page, from, dx, dy) => { await page.mouse.move(from.x, from.y); await page.mouse.down(); await page.mouse.move(from.x + dx / 2, from.y + dy / 2, { steps: 4 }); await page.mouse.move(from.x + dx, from.y + dy, { steps: 4 }); await frame(page); const ghost = await box(page, "word-shape-frame"); await page.mouse.up(); await frame(page); await page.waitForTimeout(80); return ghost; };
-const only = process.argv[2]?.split(","); const want = (k) => !only || only.includes(k);
+// (From 0.1.18 the engine selects, moves and resizes shapes and enters a header's text box itself; the host's
+// frame these sections drive is gone: word-new18.mjs checks the engine's in the host. Run them by name against an older host.)
+const only = process.argv[2]?.split(",") ?? ["scroll", "scroll-cold", "pagebreak"]; const want = (k) => only.includes(k);
 
 // ---------------- shapes of a file: pick by the frame, move, resize, delete, undo ----------------
 if (want("shapes")) {
