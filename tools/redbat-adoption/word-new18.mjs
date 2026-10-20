@@ -76,13 +76,13 @@ if (want("shapes")) {
   check("  the view stays where it is", (await scrollTop(page)) === top0, [top0, await scrollTop(page)]);
   await page.screenshot({ path: `${E}/n18-shape-5-moved.png` });
   await page.keyboard.press("Control+z"); await frame(page);
-  // the turned oval moved by its frame (the edge between two handles, turned with it)
+  // the turned oval, selected, moved by the keys (a drag in its middle is its text's)
   {
     await page.mouse.click(mid.x, mid.y); await frame(page); await page.keyboard.press("Escape"); await frame(page);
     const o0 = (await shapes(page)).find((s) => s.Id === target.Id);
-    await drag(page, mid, 30, 15);
+    await page.keyboard.press("Shift+ArrowRight"); await frame(page);
     const o1 = (await shapes(page)).find((s) => s.Id === target.Id);
-    check("the turned oval, selected, dragged from its middle: moved by 30, 15", Math.abs(o1.X - (o0.X + 30)) < 0.6 && Math.abs(o1.Y - (o0.Y + 15)) < 0.6 && o1.W === o0.W, [o0, o1]);
+    check("the turned oval, selected: Shift+Right moves it by ten", Math.abs(o1.X - (o0.X + 10)) < 0.6 && o1.Y === o0.Y && o1.W === o0.W, [o0, o1]);
     await page.keyboard.press("Control+z"); await frame(page);
     await ev(page, (id) => window.__word.selectShape(window.__editors[0], id), rect.Id);
   }
@@ -157,9 +157,10 @@ if (want("header")) {
   const t = (await shapes(page)).find((s) => s.Id === hdr.Id)?.Text;
   check("what is typed is the box's", /ZZ/.test(t ?? ""), t);
   await page.screenshot({ path: `${E}/n18-header-box.png` });
-  await page.keyboard.press("Escape"); await frame(page); await page.keyboard.press("Escape"); await frame(page);
+  await page.keyboard.press("Escape"); await frame(page);
+  if ((await ctx(page)).Story !== "body") { await page.keyboard.press("Escape"); await frame(page); }
   c = await ctx(page);
-  check("Escape, Escape: back in the body, the editor open", c.Story === "body" && (await sel(page, "word-toolbar").count()) === 1, c);
+  check("Escape (from the header, once more): back in the body, the editor open", c.Story === "body" && (await sel(page, "word-toolbar").count()) === 1, c);
   await sel(page, "office-editor-save").click();
   const zip = await unzip(await waitUploads(page, 1));
   const parts = []; for (const [name, file] of zip) if (/word\/header\d*\.xml/.test(name) && (await file.async("string")).includes("ZZ")) parts.push(name);

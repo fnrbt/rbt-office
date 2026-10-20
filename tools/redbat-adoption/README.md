@@ -1,6 +1,6 @@
 # Redbat adoption harness
 
-The scripts used to check a new `@rbt/office` release inside the host application redbat: regression suites, save-fidelity tables, performance runs and repro scripts for package bugs found there. Last full run: 0.1.16, 1094/1094.
+The scripts used to check a new `@rbt/office` release inside the host application redbat: regression suites, save-fidelity tables, performance runs and repro scripts for package bugs found there. Last full run: 0.1.19, 1104/1104 (the four `word-new18` failures of the first run were the suite's own and a host fix, both corrected).
 
 This is a snapshot of a working directory, not a polished tool. Paths are hard-coded:
 

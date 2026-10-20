@@ -6,21 +6,18 @@ Written 2026-10-12, when work was halted to move to another machine. Picks up th
 
 | Branch | What it is | State |
 |---|---|---|
-| `master`, tag `v0.1.18` | Last release, published as `@rbt/office` 0.1.18 (the `v0.1.17` tag published nothing: the registry answered its upload with 404, and Forge does not run a failed action again for the same tag and commit): 0.1.16 + spreadsheet pass eight + Word pass nineteen + the registry-only build | released |
+| `master`, tag `v0.1.19` | Last release, published as `@rbt/office` 0.1.19: 0.1.18 + what adopting it in redbat found - a click on the frame of any shape selects it (one behind the text could not be selected once the host's own frame was gone), the listeners hear of the undo step a shape drag makes, a turned shape's handles from getShapeHandles, GoTo's growth of the grid let go of again. (`v0.1.17` published nothing: the registry answered its upload with 404, and Forge does not run a failed action again for the same tag and commit.) | released |
 | `review-fixes` | The integration branch: what the next release is gated and cut from. Equal to `master` right after a release | nothing unreleased |
 | `fix/sheet19` | Spreadsheet pass nine, branched from `review-fixes` as it was at 0.1.16 + pass eight | 1 `WIP (ungated)` chart commit that **does not compile**, 1 handoff commit with the uncompiled drafts. Read `tools/handoff-sheet19/HANDOFF.md` on the branch |
 
 `origin/fix/word19` is the pass as it was handed off (its `tools/handoff-word19/HANDOFF.md` has the host notes); the pass itself is in 0.1.18, rebased, without the handoff folder. The `tools/handoff-*` folders are temporary: delete them (or drop those commits) before merging a branch into `review-fixes`.
 
-redbat (`cardillion-mega` remote): `master` already contains the 0.1.16 adoption (1094/1094 harness assertions). The local `office-viewers` branch on the old machine equals it; on a new machine just branch from `master`.
+redbat (`cardillion-mega` remote): `master` has the 0.1.19 adoption (harness 1104/1104 with `word-new18`, `sheet-new18`; the host no longer draws its own Word shape frame, nor handles header text box double clicks or Ctrl+Enter; the name box goes where GoTo goes; View has a page break preview). On a new machine branch from `master`.
 
 ## Next steps, in order
 
-1. **Adopt 0.1.18 in redbat.** Host changes to make:
-   - Word: remove the host's own Ctrl+Enter handler, its double-click handling for header text boxes, and its shape overlay / handle hit-test / drag / Delete / Escape handling — the engine now does all of these (details in the Word handoff, "What the host should remove or adapt"). Keep honouring `ScrollTop` notices. Tab outside lists and tables now types a tab.
-   - Spreadsheet: charts are not present when `ImportXlsx` / `SwitchSheet` returns (`div.spreadsheet-object-pending`, filled a frame later); add a page-break-preview toggle (`SetViewMode("pageBreak")`, `GetViewMode`, `MovePageBreak`); `GoTo` reaches beyond the grid, so the name box's fallback to `SelectCell` can go.
-2. **Resume `fix/sheet19`** from its handoff: rebase on `review-fixes`, splice the draft layout into `Charts.fs`, get it compiling, rewrite the two `stage52-charts` assertions that say radar and 3-D charts are not read. Then the rest of its list.
-3. Continue with the backlog.
+1. **Resume `fix/sheet19`** from its handoff: rebase on `review-fixes`, splice the draft layout into `Charts.fs`, get it compiling, rewrite the two `stage52-charts` assertions that say radar and 3-D charts are not read. Then the rest of its list.
+2. Continue with the backlog.
 
 ## Backlog
 
@@ -44,7 +41,8 @@ redbat (`cardillion-mega` remote): `master` already contains the 0.1.16 adoption
 - Save: headers, footers and notes written from the model balance range marks but do not carry the ones the model lacks; comment/permission ranges that start mid-paragraph widen to the paragraph; line and group VML fallbacks are still dropped on a move.
 - Tables: a row or column insert writes many paragraphs from the model (547 / 1552 across the round-trip pass).
 - View anchor: `setAllowLinkedImages` still drops the staged layout; a measurer change far down a fully laid out document lays everything out at once with no anchor.
-- Shape selection gaps: keys act on a shape only while no story is edited; the cursor over a handle ignores rotation.
+- Shape selection gaps: keys act on a shape only while no story is edited; the cursor over a handle ignores rotation; a text box entered by enterTextBox or a double click (a header's) is not selected - the host selects one it inserted itself.
+- A header's text box with more text than its height (resume-template, typing at its end) does not show the overflow; unchecked against Word.
 - The `■` third-level bullet in `test-lists.docx` is the fallback face's glyph, not an engine fault; mapping U+25A0 to U+25AA is an option, unverified against Word.
 - Never exercised: bold typed into a multi-run field result.
 
