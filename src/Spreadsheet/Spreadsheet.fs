@@ -1118,9 +1118,13 @@ type Spreadsheet(container: Element) =
                     model <- { model with RowCount = min model.RowCount needRows; ColCount = min model.ColCount needCols }
                 if model.RowCount <= rowsBefore && model.ColCount <= colsBefore then roomBefore.Remove id |> ignore
             | _ -> ()
-    /// ... and a cell that is written to is a cell of the sheet.
+    /// ... and a cell that is written to, or gone to (GoTo), is a cell of the sheet. The size it
+    /// had is remembered as for the caret: once nothing is out there any more (the entry undone,
+    /// the caret back), the grid is as small again.
     let giveRoomFor (addr: CellAddress) =
         if addr.Row >= 0 && addr.Col >= 0 && addr.Row < 1048576 && addr.Col < 16384 && (addr.Row >= model.RowCount || addr.Col >= model.ColCount) then
+            let id = sheetKeyForRoom ()
+            if not (roomBefore.ContainsKey id) then roomBefore.[id] <- (model.RowCount, model.ColCount)
             model <- { model with RowCount = max model.RowCount (addr.Row + 1); ColCount = max model.ColCount (addr.Col + 1) }
 
     let currentWorkbookSnapshot () =

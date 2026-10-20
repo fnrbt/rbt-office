@@ -966,6 +966,11 @@ checks['api-names'] = async () => {
         check('a range beyond the grid', [grid.GoTo('A600:B700'), selection(), grid.GetModel().RowCount >= 700], [{ sheetIndex: 0, range: 'A600:B700' }, [0, 'A600:B700'], true]);
         check('the last row of a sheet', [grid.GoTo('A1048576'), selection(), grid.GetActiveCell().Row], [{ sheetIndex: 0, range: 'A1048576' }, [0, 'A1048576'], 1048575]);
         check('the last column of a sheet', [grid.GoTo('XFD1'), selection(), grid.GetActiveCell().Col], [{ sheetIndex: 0, range: 'XFD1' }, [0, 'XFD1'], 16383]);
+        // Gone to and come back from (the caret's growth is let go of so too), also when a cell was written out there and undone.
+        grid.GoTo('A1'); await frame(); await frame();
+        check('back at A1 the grid is as small as it was', [grid.GetModel().RowCount, grid.GetModel().ColCount], [rowsBefore, colsBefore]);
+        grid.GoTo('AB600'); grid.SetCell(599, 27, 'out there'); grid.Undo(); grid.GoTo('A1'); await frame(); await frame();
+        check('a cell written beyond the grid and undone: as small again', [grid.GetModel().RowCount, grid.GetModel().ColCount], [rowsBefore, colsBefore]);
         check('a cell beyond the grid on another sheet', [grid.GoTo("'Other sheet'!AD900"), selection()], [{ sheetIndex: 1, range: 'AD900' }, [1, 'AD900']]);
         grid.SwitchSheet(0);
         grid.SetDefinedName('FarAway', '=' + "'" + grid.GetSheetNames()[0].replace(/'/g, "''") + "'" + '!$AC$5000:$AD$5001');
