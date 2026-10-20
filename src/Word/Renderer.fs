@@ -2660,15 +2660,21 @@ let shapeAt (ctx: RenderContext) (doc: Document) (x: float) (y: float) : BlockId
 /// The shape of the body whose frame is at a point (layout coordinates):
 /// five pixels on screen to either side of its edge (shapePartAt "border",
 /// or a handle's place), the one in front first. Any shape: one behind the
-/// text, and one whose text a click inside does not reach, too.
+/// text, and one without text, too. (Of a box in front of the text that has
+/// text, the outer side only: within it a click goes to its text.)
 let shapeEdgeAt (ctx: RenderContext) (doc: Document) (x: float) (y: float) : BlockId option =
+    let hasText (textBox: TextBoxBlock) = textBox.Content |> List.exists (fun para -> TextBuffer.length para.Buffer > 0)
     shapeRects ctx doc
     |> List.sortBy (fun (textBox, _, _, _, _) -> paintOrderOf textBox)
     |> List.rev
-    |> List.tryPick (fun (textBox, _, _, _, _) ->
+    |> List.tryPick (fun (textBox, left, top, width, height) ->
         match shapePartAt ctx doc textBox.Id x y with
         | "" | "inside" -> None
-        | _ -> Some textBox.Id)
+        | _ ->
+            let px, py = if abs textBox.Rotation >= 0.01 then turnedPoint -textBox.Rotation (left + width / 2.0) (top + height / 2.0) x y else x, y
+            let within = px >= left && px <= left + width && py >= top && py <= top + height
+            let textReached = not (textBox.BehindDoc = Some true) && not textBox.FitText && hasText textBox
+            if within && textReached then None else Some textBox.Id)
 
 /// Number of pages the document lays out to, including footnote/endnote areas.
 /// Pages are stacked with pageGap between them, but need not be the same size
