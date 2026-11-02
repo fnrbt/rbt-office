@@ -1624,7 +1624,13 @@ let private paragraphPropertiesText (_value: obj) : string = jsNative
 /// it uses): the runs, and the properties as they were read where they are what they were.
 type private ParagraphSplicer =
     abstract Splice: para: obj -> pieces: (obj * string * (string -> string)) list -> (string list * string option) option
-let mutable private paragraphSplicer : ParagraphSplicer = { new ParagraphSplicer with member _.Splice _ _ = None }
+    /// The properties as they were read (`source`) with what differs between the model's properties then
+    /// (`was`) and now (`now`) changed in them; None where that cannot be done in them.
+    abstract MergeProperties: source: string -> was: string -> now: string -> string option
+let mutable private paragraphSplicer : ParagraphSplicer =
+    { new ParagraphSplicer with
+        member _.Splice _ _ = None
+        member _.MergeProperties _ _ _ = None }
 
 let private generateParagraphWithHyperlinksAndImagesWithPageSetup (packageSetup: PageSetupInfo) (hyperlinks: Map<string, string>) (images: ImageScope) (para: obj) : string =
   match (if isNullOrUndefined (para?SourcePara) || not paragraphsInContext then None else paragraphSource.Of (para?SourcePara)) with
@@ -1747,6 +1753,13 @@ let private generateParagraphWithHyperlinksAndImagesWithPageSetup (packageSetup:
         match splice with
         | Some (_, Some original) when paragraphPropertiesText para = paragraphPropertiesText para?SpliceOriginal -> original
         | Some (_, None) when paragraphPropertiesText para = paragraphPropertiesText para?SpliceOriginal -> "<w:pPr/>"
+        // (Changed: what changed, in the properties as they were read - those the model does not hold stay.)
+        | Some (_, Some original) ->
+            let was = generateParaPropsWithPageSetup packageSetup para?SpliceOriginal
+            match paragraphSplicer.MergeProperties original was pPr with
+            | Some "" -> "<w:pPr/>"
+            | Some merged -> merged
+            | None -> pPr
         | _ -> pPr
     let runs =
         // (A page break after the paragraph is one the paragraph has: a section that ends with it
@@ -2661,13 +2674,30 @@ let private generateBlocks (generateItem: obj -> string) (generateTextBoxRun: ob
             let index = previous.LastIndexOf paragraphEnd
             parts.[parts.Count - 1] <- previous.Substring(0, index) + generateTextBoxRun item + previous.Substring index
         else
-            parts.Add (generateItem item)
+            let xml = generateItem item
+            // Blocks of one content control (the same w:sdtPr one after another) are in one w:sdt.
+            let previous = if parts.Count > 0 then parts.[parts.Count - 1] else ""
+            let opening = if xml.StartsWith "<w:sdt>" then xml.Substring(0, xml.IndexOf "<w:sdtContent>" + "<w:sdtContent>".Length) else ""
+            let closing = "</w:sdtContent></w:sdt>"
+            if opening <> "" && opening.Contains "<w:id " && previous.StartsWith opening && previous.EndsWith closing && xml.EndsWith closing then
+                parts.[parts.Count - 1] <- previous.Substring(0, previous.Length - closing.Length) + xml.Substring(opening.Length)
+            else
+                parts.Add xml
     String.concat "" parts
 
+/// The value of `<w:name w:val="..."/>` in an element's XML.
+let private childVal (name: string) (xml: string) =
+    let m = System.Text.RegularExpressions.Regex.Match(xml, "<w:" + name + "\\s[^>]*w:val=\"([^\"]*)\"")
+    if m.Success then Some (m.Groups.[1].Value.Replace("&quot;", "\"").Replace("&lt;", "<").Replace("&gt;", ">").Replace("&apos;", "'").Replace("&amp;", "&")) else None
+
 let private wrapContentControl (item: obj) (content: string) =
-    match optionalString (item?ContentControlId), optionalString (item?ContentControlTag), optionalString (item?ContentControlAlias) with
-    | None, None, None -> content
-    | id, tag, alias ->
+    let id, tag, alias = optionalString (item?ContentControlId), optionalString (item?ContentControlTag), optionalString (item?ContentControlAlias)
+    match id, tag, alias, optionalString (item?ContentControlXml) with
+    | None, None, None, _ -> content
+    // The control as the file has it (binding, placeholder, kind) while it is still the one the file had.
+    | _, _, _, Some xml when childVal "id" xml = id && childVal "tag" xml = tag && childVal "alias" xml = alias ->
+        "<w:sdt>" + xml + "<w:sdtContent>" + content + "</w:sdtContent></w:sdt>"
+    | id, tag, alias, _ ->
         let props = [
             match id with
             | Some value when value <> "" -> yield selfClosing "w:id" [("w:val", value)]
@@ -3903,7 +3933,9 @@ paragraphSplicer <-
                 spliceSourceOf spliceSourceText (intOrDefault -1 (para?SpliceFrom?Start)) (intOrDefault -1 (para?SpliceFrom?End))
                 |> Option.map (fun source ->
                     let flag (value: obj) = isNullOrUndefined value || unbox<bool> value
-                    splicedRuns source para?SpliceOriginal (flag para?SpliceLeading) (flag para?SpliceTrailing) pieces, source.Properties) }
+                    splicedRuns source para?SpliceOriginal (flag para?SpliceLeading) (flag para?SpliceTrailing) pieces, source.Properties)
+        member _.MergeProperties source was now =
+            withPropertiesMerged "w:pPr" paragraphPropertyOrder source (propertyChanges (propertyElementsOf was) (propertyElementsOf now)) }
 
 let private sourceRunsOf (xml: string) (para: SourceParagraph) (text: string) : SourceRunInfo array option =
     let runs = ResizeArray<SourceRunInfo>()

@@ -407,6 +407,7 @@ let private metadataFromEditor (item: obj) =
     let contentControlId = optionalString (item?ContentControlId)
     let contentControlTag = optionalString (item?ContentControlTag)
     let contentControlAlias = optionalString (item?ContentControlAlias)
+    let contentControlXml = optionalString (item?ContentControlXml)
     let listStyle = item?ListStyle |> stringOrDefault "none" |> listStyleFromString
     let listLevel = item?ListLevel |> intOrDefault 0
     let listId = optionalString (item?ListId)
@@ -469,6 +470,7 @@ let private metadataFromEditor (item: obj) =
             ContentControlId = contentControlId
             ContentControlTag = contentControlTag
             ContentControlAlias = contentControlAlias
+            ContentControlXml = contentControlXml
             Alignment = alignment
             ExplicitAlignment = (optionalString (item?ExplicitAlignment)).IsSome
             ListStyle = listStyle
@@ -2022,6 +2024,7 @@ let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) 
         "ContentControlId" ==> para.Metadata.ContentControlId
         "ContentControlTag" ==> para.Metadata.ContentControlTag
         "ContentControlAlias" ==> para.Metadata.ContentControlAlias
+        "ContentControlXml" ==> para.Metadata.ContentControlXml
         "Alignment" ==> alignmentToString para.Metadata.Alignment
         "HasExplicit" ==> true
         "ExplicitAlignment" ==> (explicitAlignment |> Option.map alignmentToString)

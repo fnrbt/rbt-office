@@ -232,6 +232,9 @@ type ParagraphProperties = {
     ContentControlId: string option
     ContentControlTag: string option
     ContentControlAlias: string option
+    /// The w:sdtPr of the block-level content control the paragraph is in,
+    /// self-contained (completeOpaqueObjects): its binding, placeholder, kind.
+    ContentControlXml: string option
     Alignment: string option  // left, center, right, justify
     IndentLeft: string option
     IndentRight: string option
@@ -987,6 +990,7 @@ module Docx =
                 ContentControlId = None
                 ContentControlTag = None
                 ContentControlAlias = None
+                ContentControlXml = None
                 Alignment = getPropVal "jc" "val" props |> Option.orElse frameAlignment
                 IndentLeft = getPropVal "ind" "left" props
                 IndentRight = getPropVal "ind" "right" props
@@ -1030,6 +1034,7 @@ module Docx =
                 ContentControlId = None
                 ContentControlTag = None
                 ContentControlAlias = None
+                ContentControlXml = None
                 Alignment = None
                 IndentLeft = None
                 IndentRight = None
@@ -2323,10 +2328,11 @@ module Docx =
         let id = props |> Option.bind (Ns.childNs "id") |> Option.bind (attr "val")
         let tag = props |> Option.bind (Ns.childNs "tag") |> Option.bind (attr "val")
         let alias = props |> Option.bind (Ns.childNs "alias") |> Option.bind (attr "val")
-        id, tag, alias
-    let private applyContentControl (id, tag, alias) = function
-        | Para para ->
-            Para { para with Properties = { para.Properties with ContentControlId = id; ContentControlTag = tag; ContentControlAlias = alias } }
+        id, tag, alias, props |> Option.map xmlToString
+    let private applyContentControl (id, tag, alias, xml) = function
+        // (In a control in a control, the paragraph is the inner one's.)
+        | Para para when para.Properties.ContentControlXml.IsNone ->
+            Para { para with Properties = { para.Properties with ContentControlId = id; ContentControlTag = tag; ContentControlAlias = alias; ContentControlXml = xml } }
         | item -> item
 
     /// The blocks one child element of the body (of a note, a header, a
@@ -2455,6 +2461,7 @@ module Styles =
             ContentControlId = None
             ContentControlTag = None
             ContentControlAlias = None
+            ContentControlXml = None
             Alignment = Ns.childNs "jc" pPr |> Option.bind (Docx.attr "val")
             IndentLeft = Ns.childNs "ind" pPr |> Option.bind (Docx.attr "left")
             IndentRight = Ns.childNs "ind" pPr |> Option.bind (Docx.attr "right")
@@ -2935,6 +2942,10 @@ let completeOpaqueObjects (root: XmlNode) (blocks: DocumentContent list) : Docum
     match root with
     | XmlDsl.Element(_, attrs, _, _) ->
         blocks
+        |> mapBlockParagraphs (fun para ->
+            match para.Properties.ContentControlXml with
+            | Some control -> { para with Properties = { para.Properties with ContentControlXml = Some (selfContainedXml attrs control) } }
+            | None -> para)
         |> mapBlockRuns (fun run ->
             match run.Content with
             | Image ({ Opaque = Some opaque } as image) ->
@@ -5175,6 +5186,7 @@ let private paragraphLayoutProps fontSize defaultMissingSpacingToZero (borderAdv
         "ContentControlId" ==> props.ContentControlId
         "ContentControlTag" ==> props.ContentControlTag
         "ContentControlAlias" ==> props.ContentControlAlias
+        "ContentControlXml" ==> props.ContentControlXml
         "IndentLeft" ==> wordTwipsToPoints props.IndentLeft
         "IndentRight" ==> wordTwipsToPoints props.IndentRight
         "FirstLineIndent" ==> firstLineIndent
@@ -5344,6 +5356,7 @@ let private mergeParagraphProperties baseProps props = {
     ContentControlId = props.ContentControlId |> Option.orElse baseProps.ContentControlId
     ContentControlTag = props.ContentControlTag |> Option.orElse baseProps.ContentControlTag
     ContentControlAlias = props.ContentControlAlias |> Option.orElse baseProps.ContentControlAlias
+    ContentControlXml = props.ContentControlXml |> Option.orElse baseProps.ContentControlXml
     Alignment = props.Alignment |> Option.orElse baseProps.Alignment
     IndentLeft = props.IndentLeft |> Option.orElse baseProps.IndentLeft
     IndentRight = props.IndentRight |> Option.orElse baseProps.IndentRight

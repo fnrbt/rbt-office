@@ -136,6 +136,9 @@ type BlockMetadata = {
     ContentControlId: string option
     ContentControlTag: string option
     ContentControlAlias: string option
+    /// The w:sdtPr the file has for the control (its binding, placeholder, kind):
+    /// written again while the control's id, tag and alias are what it says.
+    ContentControlXml: string option
     ListStyle: ListStyle
     ListLevel: int  // 0 = not in list, 1-9 = nesting level
     ListId: string option
@@ -251,6 +254,7 @@ let defaultMetadata = {
     ContentControlId = None
     ContentControlTag = None
     ContentControlAlias = None
+    ContentControlXml = None
     ListStyle = NoList
     ListLevel = 0
     ListId = None
@@ -2606,7 +2610,7 @@ let private cellLike (span: int option) (cell: TableCell) : TableCell =
                     SectionVerticalAlign = None
                     SectionBreak = None; SectionColumns = None; SectionPageSetup = None; SectionPageNumberStart = None; SectionPageNumberFormat = None
                     HeaderReferences = []; FooterReferences = []
-                    ContentControlId = None; ContentControlTag = None; ContentControlAlias = None } }
+                    ContentControlId = None; ContentControlTag = None; ContentControlAlias = None; ContentControlXml = None } }
         | [] -> { Id = nextBlockId (); Buffer = TextBuffer.empty; Metadata = defaultMetadata }
     { cell with
         Content = [ paragraph ]

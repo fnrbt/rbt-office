@@ -150,6 +150,7 @@ let private mergeParagraphProperties (baseProps: DocxReader.ParagraphProperties)
     ContentControlId = props.ContentControlId |> Option.orElse baseProps.ContentControlId
     ContentControlTag = props.ContentControlTag |> Option.orElse baseProps.ContentControlTag
     ContentControlAlias = props.ContentControlAlias |> Option.orElse baseProps.ContentControlAlias
+    ContentControlXml = props.ContentControlXml |> Option.orElse baseProps.ContentControlXml
     Alignment = props.Alignment |> Option.orElse baseProps.Alignment
     IndentLeft = props.IndentLeft |> Option.orElse baseProps.IndentLeft
     IndentRight = props.IndentRight |> Option.orElse baseProps.IndentRight
@@ -657,6 +658,7 @@ let private paraMetadata styleMap resolver useDocumentMarkForPureEmpty defaultMi
             ContentControlId = props.ContentControlId
             ContentControlTag = props.ContentControlTag
             ContentControlAlias = props.ContentControlAlias
+            ContentControlXml = props.ContentControlXml
             Alignment = alignment editorPara.Alignment
             ExplicitAlignment = props.Alignment.IsSome
             // What the paragraph states counts first, then the level of the numbering the paragraph
