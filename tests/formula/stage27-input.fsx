@@ -149,6 +149,10 @@ eq "edit-forced-date" (roundTrip "'4-Mar")       ("'4-Mar", true)
 eq "edit-bool"      (roundTrip "true")           ("TRUE", true)
 eq "edit-error"     (roundTrip "#N/A")           ("#N/A", true)
 eq "edit-empty"     (editText None)              ""
+// A file's newer functions and LET names carry prefixes the formula bar does not show (the export puts them back).
+eq "edit-xlfn"      (editText (Some (cellFromInput 2024 None "=_xlfn.XLOOKUP(1,A1:A2,B1:B2)")))  "=XLOOKUP(1,A1:A2,B1:B2)"
+eq "edit-xlws-xlpm" (editText (Some (cellFromInput 2024 None "=_xlfn.LET(_xlpm.x,_xlfn._xlws.SORT(A1:A3),_xlpm.x)")))  "=LET(x,SORT(A1:A3),x)"
+eq "edit-xl-quoted" (editText (Some (cellFromInput 2024 None "=\"_xlfn.\"&'_xlpm.s'!A1")))  "=\"_xlfn.\"&'_xlpm.s'!A1"
 
 // --- autofill ---------------------------------------------------------------
 let cell v = { Value = v; Format = defaultFormat; Comment = None }

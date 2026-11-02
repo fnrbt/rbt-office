@@ -637,6 +637,32 @@ ok "objects are written in front of or behind pictures by their order"
     && zOrderOf swappedBack |> List.exists (fun sheet -> sheet |> List.exists (fun (kind, _) -> kind <> "picture") && sheet |> List.exists (fun (kind, _) -> kind = "picture")))
    (sprintf "%A" (zOrderOf swappedBack))
 
+// ---- functions newer than Excel 2007 are written under their prefixes (Excel refuses a bare one it knows) ----
+for formula, want in
+    [ "SUM(A1:A3)", "SUM(A1:A3)"
+      "XLOOKUP(2,A1:A4,B1:B4)", "_xlfn.XLOOKUP(2,A1:A4,B1:B4)"
+      "_xlfn.XLOOKUP(2,A1:A4,B1:B4)", "_xlfn.XLOOKUP(2,A1:A4,B1:B4)"
+      "SORT(FILTER(A2:A7,A2:A7>3))", "_xlfn._xlws.SORT(_xlfn._xlws.FILTER(A2:A7,A2:A7>3))"
+      "maxifs(B1:B6,A1:A6,\"X\")", "_xlfn.maxifs(B1:B6,A1:A6,\"X\")"
+      "IF(A1=\"XLOOKUP(\",1,2)", "IF(A1=\"XLOOKUP(\",1,2)"
+      "'IFS(x'!A1+STDEV.S(A1:A3)", "'IFS(x'!A1+_xlfn.STDEV.S(A1:A3)"
+      "LET(x,5,y,x*2,x+y)", "_xlfn.LET(_xlpm.x,5,_xlpm.y,_xlpm.x*2,_xlpm.x+_xlpm.y)"
+      "MAP(A2:A5,LAMBDA(x,x*x))", "_xlfn.MAP(A2:A5,_xlfn.LAMBDA(_xlpm.x,_xlpm.x*_xlpm.x))"
+      "LET(f,LAMBDA(x,x*x),f(7))", "_xlfn.LET(_xlpm.f,_xlfn.LAMBDA(_xlpm.x,_xlpm.x*_xlpm.x),_xlpm.f(7))"
+      "Table1[IFS]+CONCAT(A1,B1)", "Table1[IFS]+_xlfn.CONCAT(A1,B1)" ] do
+    let got = XlsxWriter.fileFormula formula
+    ok ("file formula: " + formula) (got = want) got
+
+let modernSheet = { syntheticSheet with Name = "Modern"; Tables = []; DataValidations = []; Hyperlinks = []; PrintArea = None; PrintTitleRows = None; PrintTitleCols = None
+                                        CellSource = XlsxWriter.sheetCells [ { Row = 0; Col = 0; Value = XlsxWriter.XlsxFormula ("XLOOKUP(1,B1:B2,C1:C2)", None); Format = XlsxWriter.defaultXlsxCellFormat; Comment = None } ] }
+let modernBytes = { synthetic with Sheets = [ modernSheet ]; DefinedNames = [ { Name = "Pick"; RefersTo = "TEXTJOIN(\",\",TRUE,Modern!$B$1:$B$2)"; LocalSheetIndex = None; Comment = None; Hidden = false } ]; VbaProjectSource = None } |> XlsxWriter.writeWorkbookPackageBytes
+let modernPart (name: string) =
+    use archive = new System.IO.Compression.ZipArchive(new MemoryStream(modernBytes))
+    use reader = new StreamReader(archive.GetEntry(name).Open())
+    reader.ReadToEnd()
+ok "written: a cell's XLOOKUP is _xlfn.XLOOKUP" ((modernPart "xl/worksheets/sheet1.xml").Contains "<f>_xlfn.XLOOKUP(1,B1:B2,C1:C2)</f>") (modernPart "xl/worksheets/sheet1.xml")
+ok "written: a name's TEXTJOIN is _xlfn.TEXTJOIN" ((modernPart "xl/workbook.xml").Contains ">_xlfn.TEXTJOIN(") (modernPart "xl/workbook.xml")
+
 printfn ""
 printfn "OfficeFormat XLSX writer tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

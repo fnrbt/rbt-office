@@ -73,8 +73,9 @@ let exportWith (edit: M.SpreadsheetModel -> M.SpreadsheetModel) =
 let sheetOf (saved: byte[]) = text (partsOf saved).[sheetPath]
 let reread (saved: byte[]) = (Bridge.Import.importWorkbook (XlsxReader.loadBytesNative saved |> Option.get)).Sheets.[index].Model
 /// The formulas of a sheet, by cell.
+/// The formulas of a sheet as they read (the file's `_xlfn.` prefixes, which an edit's rewrite drops and the export puts back, aside).
 let formulas (model: M.SpreadsheetModel) =
-    model.Cells |> Map.toList |> List.choose (fun (at, cell) -> match cell.Value with M.CellValue.Formula (formula, _) -> Some (at, formula) | _ -> None)
+    model.Cells |> Map.toList |> List.choose (fun (at, cell) -> match cell.Value with M.CellValue.Formula (formula, _) -> Some (at, Rbt.Spreadsheet.Input.shownFormula formula) | _ -> None)
 let sameFormulas (label: string) (saved: byte[]) (edited: M.SpreadsheetModel) =
     let now, wanted = formulas (reread saved), formulas edited
     let wrong = List.zip now wanted |> List.filter (fun (a, b) -> a <> b)

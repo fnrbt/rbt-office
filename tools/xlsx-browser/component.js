@@ -29,6 +29,10 @@ export const packageProblems = async (bytes) => {
         for (const m of xml.matchAll(/<col\b[^>]*>/g)) if (Number(attribute(m[0], 'max')) > 16384) problems.push(`${path}: a column past the last: ${m[0]}`);
         for (const m of xml.matchAll(/<c\b[^>]*\bt="e"[^>]*>(?:<f\b[^>]*\/>|<f\b[^>]*>[^<]*<\/f>)?<v>([^<]*)<\/v>/g)) if (!errors.has(m[1].replace(/&amp;/g, '&'))) problems.push(`${path}: the error ${m[1]} is not one of the file format`);
         for (const m of xml.matchAll(/<f\b[^>]*\bt="shared"[^>]*>([^<]+)<\/f>/g)) if (m[1].includes('!')) problems.push(`${path}: a shared formula reads another sheet: ${m[1]}`);
+        for (const m of xml.matchAll(/<f\b[^>]*>([^<]+)<\/f>/g)) {
+            const bare = /(?:^|[^A-Za-z0-9_.\\])(XLOOKUP|XMATCH|FILTER|SORT|SORTBY|UNIQUE|SEQUENCE|LET|LAMBDA|IFS|MAXIFS|MINIFS|CONCAT|TEXTJOIN|SWITCH|IFNA|STDEV\.S|VAR\.S)\(/i.exec(m[1].replace(/&quot;/g, '"').replace(/"[^"]*"|'[^']*'/g, '""'));
+            if (bare) problems.push(`${path}: ${bare[1]} without its _xlfn. prefix: ${m[1]}`);
+        }
     }
     for (const path of paths.filter((p) => /^xl\/tables\/[^/]+\.xml$/.test(p))) {
         const xml = await zip.files[path].async('string');
@@ -52,7 +56,8 @@ export const packageProblems = async (bytes) => {
                 const id = attribute(m[0], 'Id');
                 if (ids.has(id)) problems.push(`${path}: relationship id ${id} twice`);
                 ids.add(id);
-                if (attribute(m[0], 'TargetMode') === 'External') continue;
+                // External, or a place in the workbook (a drawing's link to `#Sheet1!A1`): no part.
+                if (attribute(m[0], 'TargetMode') === 'External' || (attribute(m[0], 'Target') ?? '').startsWith('#')) continue;
                 const target = resolve(ownerDirectory, attribute(m[0], 'Target') ?? '');
                 reached.add(target);
                 if (!has.has(target)) problems.push(`${path}: target ${target} is missing`);
@@ -68,12 +73,18 @@ export const packageProblems = async (bytes) => {
 // Every workbook a check exports is checked for integrity; run.mjs reports the problems with the check.
 window.exportProblems = [];
 window.exportsChecked = 0;
+// A problem the opened file had already (pivot parts nothing leads to in a synthetic fixture) is not the save's.
 export const createSpreadsheet = (element) => {
-    const grid = createRawSpreadsheet(element), exportXlsx = grid.ExportXlsx.bind(grid);
+    const grid = createRawSpreadsheet(element), exportXlsx = grid.ExportXlsx.bind(grid), importXlsx = grid.ImportXlsx.bind(grid);
+    let inherited = new Set();
+    grid.ImportXlsx = async (bytes, ...rest) => {
+        try { inherited = new Set(await packageProblems(bytes)); } catch { inherited = new Set(); }
+        return importXlsx(bytes, ...rest);
+    };
     grid.ExportXlsx = async () => {
         const bytes = await exportXlsx();
         window.exportsChecked++;
-        for (const problem of await packageProblems(bytes)) window.exportProblems.push(problem);
+        for (const problem of await packageProblems(bytes)) if (!inherited.has(problem)) window.exportProblems.push(problem);
         return bytes;
     };
     return grid;

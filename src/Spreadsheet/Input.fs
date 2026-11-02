@@ -427,13 +427,45 @@ let private numberText (value: float) : string =
 /// percentage its percent figure, and text that would otherwise be read as
 /// something else gets the apostrophe.
 /// (`date1904`: the workbook's date system.)
+/// A formula as Excel's formula bar shows it: without the prefixes the file
+/// format puts on newer functions and on LET/LAMBDA names (`_xlfn.`, `_xlws.`,
+/// `_xlpm.`; the export puts them back). Text in quotes is left as it is.
+let shownFormula (text: string) : string =
+    if text.IndexOf("_xl", StringComparison.OrdinalIgnoreCase) < 0 then text
+    else
+        let sb = System.Text.StringBuilder(text.Length)
+        let mutable i = 0
+        let mutable quote = ' '
+        while i < text.Length do
+            let c = text.[i]
+            if quote <> ' ' then
+                sb.Append c |> ignore
+                if c = quote then quote <- ' '
+                i <- i + 1
+            elif c = '"' || c = '\'' then
+                quote <- c
+                sb.Append c |> ignore
+                i <- i + 1
+            else
+                let starts (prefix: string) =
+                    i + prefix.Length <= text.Length
+                    && text.Substring(i, prefix.Length).ToLowerInvariant() = prefix
+                    && (i = 0 || not (Char.IsLetterOrDigit text.[i - 1] || text.[i - 1] = '_' || text.[i - 1] = '.'))
+                let prefix = [ "_xlfn._xlws."; "_xlfn."; "_xlws."; "_xlpm." ] |> List.tryFind starts
+                match prefix with
+                | Some p -> i <- i + p.Length
+                | None ->
+                    sb.Append c |> ignore
+                    i <- i + 1
+        sb.ToString()
+
 let editTextFor (date1904: bool) (cell: CellData option) : string =
     match cell with
     | None -> ""
     | Some data ->
         match data.Value with
         | Empty -> ""
-        | Formula (text, _) -> formulaText text
+        | Formula (text, _) -> shownFormula (formulaText text)
         | Boolean flag -> if flag then "TRUE" else "FALSE"
         | Error code -> if code.StartsWith "#" then code else "#" + code
         | Number n ->

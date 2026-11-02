@@ -933,7 +933,7 @@ let spilledModel =
 let spilledBytes = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (printInput [| spilledModel; plainSheet |] None))
 let spilledXml = textOf spilledBytes "xl/worksheets/sheet1.xml"
 ok "spill: the formula is written as an array formula over the cells it fills, a plain formula as before"
-    (spilledXml.Contains "<f t=\"array\" ref=\"C1:D3\">SEQUENCE(A1,2)</f>" && spilledXml.Contains "<f>A1*2</f>") spilledXml
+    (spilledXml.Contains "<f t=\"array\" ref=\"C1:D3\">_xlfn.SEQUENCE(A1,2)</f>" && spilledXml.Contains "<f>A1*2</f>") spilledXml
 let spilledBack = (Bridge.Import.importWorkbook (XlsxReader.loadBytesNative spilledBytes |> Option.get)).Sheets.[0].Model
 eq "spill: opened again, the cells belong to the formula" (spilledBack.Spill, spilledModel.Spill.Count) (spilledModel.Spill, 5)
 let respilled = spilledBack |> setCell (addr 0 0) { Value = CellValue.Number 2.0; Format = defaultFormat; Comment = None } |> Rbt.Spreadsheet.Formula.recalcAndSpill None None
