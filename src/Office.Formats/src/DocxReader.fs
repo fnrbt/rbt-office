@@ -379,6 +379,8 @@ and TableRow = {
     WidthBefore: string option
     WidthAfter: string option
     BordersOverride: CellBorders option
+    /// The w:tr in its part (offsets into the part's text).
+    Source: XmlDsl.Span
 }
 and TableCell = {
     Paragraphs: Paragraph list
@@ -386,6 +388,8 @@ and TableCell = {
     // For each nested table, how many cell paragraphs precede it in document order.
     NestedTableAnchors: int list
     Properties: TableCellProperties option
+    /// The w:tc in its part (offsets into the part's text).
+    Source: XmlDsl.Span
 }
 
 type DocumentContent =
@@ -2187,6 +2191,7 @@ module Docx =
             NestedTables = List.rev nestedTables
             NestedTableAnchors = List.rev nestedAnchors
             Properties = tableCellProps tcNode
+            Source = (match tcNode with XmlDsl.Element (_, _, _, span) -> span | _ -> XmlDsl.Span.none)
         }
 
     and tableRow (trNode: XmlNode) : TableRow =
@@ -2249,6 +2254,7 @@ module Docx =
             WidthBefore = widthOpt "wBefore"
             WidthAfter = widthOpt "wAfter"
             BordersOverride = bordersOverride
+            Source = (match trNode with XmlDsl.Element (_, _, _, span) -> span | _ -> XmlDsl.Span.none)
         }
 
     and table (tblNode: XmlNode) : Table =
@@ -2337,7 +2343,9 @@ module Docx =
         let id = props |> Option.bind (Ns.childNs "id") |> Option.bind (attr "val")
         let tag = props |> Option.bind (Ns.childNs "tag") |> Option.bind (attr "val")
         let alias = props |> Option.bind (Ns.childNs "alias") |> Option.bind (attr "val")
-        id, tag, alias, props |> Option.map xmlToString
+        // (What the control says of itself: its properties and the formatting of its end mark, w:sdtEndPr.)
+        let endProps = Ns.childNs "sdtEndPr" sdtNode |> Option.map xmlToString |> Option.defaultValue ""
+        id, tag, alias, props |> Option.map (fun props -> xmlToString props + endProps)
     let private applyContentControl (id, tag, alias, xml) = function
         // (In a control in a control, the paragraph is the inner one's.)
         | Para para when para.Properties.ContentControlXml.IsNone ->
@@ -6019,6 +6027,7 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                 "Type" ==> itemType
                 "HeadingLevel" ==> headingLevel
                 "Runs" ==> editorRuns
+                "SourceAt" ==> (if XmlDsl.Span.isKnown para.Source then Some para.Source.Start else None)
                 "Style" ==> effectiveParaProps.Style
                 // Direct keepNext / keepLines are the paragraph's own; StyleKeepX is what
                 // its style says without them (the editor infers style definitions from it).
@@ -6297,6 +6306,7 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
 
                 objFromFields ([
                     "Runs" ==> editorRuns
+                    "SourceAt" ==> (if XmlDsl.Span.isKnown para.Source then Some para.Source.Start else None)
                     "Style" ==> effectiveParaProps.Style
                     // Direct keepNext / keepLines are the paragraph's own; StyleKeepX is what
                     // its style says without them (the editor infers style definitions from it).
@@ -6476,6 +6486,7 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                     "PaddingRight" ==> (cell.Properties |> Option.bind (fun props -> props.PaddingRight) |> Option.bind (fun value -> match System.Int32.TryParse(value) with | true, parsed -> Some parsed | false, _ -> None))
                     "PaddingBottom" ==> (cell.Properties |> Option.bind (fun props -> props.PaddingBottom) |> Option.bind (fun value -> match System.Int32.TryParse(value) with | true, parsed -> Some parsed | false, _ -> None))
                     "PaddingLeft" ==> (cell.Properties |> Option.bind (fun props -> props.PaddingLeft) |> Option.bind (fun value -> match System.Int32.TryParse(value) with | true, parsed -> Some parsed | false, _ -> None))
+                    "SourceAt" ==> (if XmlDsl.Span.isKnown cell.Source then Some cell.Source.Start else None)
                 ]
 
             let convertRow rowIndex (row: TableRow) : obj =
@@ -6501,6 +6512,7 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                     "PaddingRight" ==> intOption row.PaddingRight
                     "PaddingBottom" ==> intOption row.PaddingBottom
                     "PaddingLeft" ==> intOption row.PaddingLeft
+                    "SourceAt" ==> (if XmlDsl.Span.isKnown row.Source then Some row.Source.Start else None)
                 ]
 
             let rows =

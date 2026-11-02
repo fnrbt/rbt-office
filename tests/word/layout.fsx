@@ -264,7 +264,7 @@ let tableCell content merge : Doc.TableCell =
       PaddingTop = None
       PaddingRight = None
       PaddingBottom = None
-      PaddingLeft = None }
+      PaddingLeft = None; Origin = None }
 
 let tableRow cells : Doc.TableRow =
     { Cells = cells
@@ -281,7 +281,7 @@ let tableRow cells : Doc.TableRow =
       GridAfter = 0
       WidthBefore = None
       WidthAfter = None
-      BordersOverride = None }
+      BordersOverride = None; Origin = None }
 
 let verticalMergeRows =
     Rbt.Word.WordLayout.Table.distributeVerticalMergeContent

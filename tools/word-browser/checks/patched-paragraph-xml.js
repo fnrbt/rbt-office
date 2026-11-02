@@ -147,11 +147,15 @@ try {
     const cellsOf = (row) => row.split('</w:tc>').slice(0, -1).map((cell) => cell.slice(cell.indexOf('<w:tc>')) + '</w:tc>');
     const tableHead = table.slice(0, table.indexOf('<w:tr'));
     check('the fixture\'s table', [rowsOf(table).length, cellsOf(firstRow).length, tableHead.includes('<w:tblCaption')], [2, 2, true]);
-    // A row inserted: the rows that were read are the text they were, the new row between them.
+    // A row inserted: the rows that were read are the text they were, the new row between them - made of the row it
+    // was put in after (its start tag without the row's own ids, its properties but that it is not a header row, its
+    // cells' properties), with an empty paragraph in each cell.
     await stage('a row inserted', (editor, select) => { select('gamma'); Word.insertTableRowAfter(editor); }, 'table', [
         ['the table\'s properties and grid as they were read', tableHead],
         ['the first row as it was read', firstRow], ['the second row as it was read', secondRow],
-        ['the new row between them', new RegExp(regexOf(firstRow) + '<w:tr>.*?</w:tr>' + regexOf(secondRow))],
+        ['the new row between them', new RegExp(regexOf(firstRow) + '<w:tr[ >].*?</w:tr>' + regexOf(secondRow))],
+        ['the new row: the first row\'s start tag without its ids, its properties without the header', '<w:tr w:rsidR="00BB0005"><w:trPr><w:cantSplit/></w:trPr>'],
+        ['its first cell: the first row\'s first cell\'s properties', '</w:trPr><w:tc><w:tcPr><w:tcW w:w="2400" w:type="dxa"/><w:noWrap/><w:hideMark/></w:tcPr><w:p>'],
     ], 2);
     // A row deleted: the other row and the table's properties are the text they were.
     await stage('a row deleted', (editor, select) => { select('gamma'); Word.deleteTableRow(editor); }, 'table', [

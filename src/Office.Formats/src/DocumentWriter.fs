@@ -2051,26 +2051,42 @@ let private rowPropertyOrder =
 let private tablePropertyOrder =
     [ "tblStyle"; "tblpPr"; "tblOverlap"; "bidiVisual"; "tblStyleRowBandSize"; "tblStyleColBandSize"; "tblW"; "jc"; "tblCellSpacing"; "tblInd"; "tblBorders"; "shd"; "tblLayout"; "tblCellMar"; "tblLook"; "tblCaption"; "tblDescription"; "tblPrChange" ]
 
-/// A table of the body as it was read, for a table that is written from the model (its
-/// SourceTable): the text of its properties and grid, and of each row - whole, its start tag,
-/// its w:tblPrEx and w:trPr - and of each of the row's cells: whole, and its w:tcPr ("" where
-/// there is none). And how the properties that were read are changed (see withPropertiesMerged).
-type private SourceCellText = { CellXml: string; CellProps: string }
-type private SourceRowText = { RowXml: string; RowStartTag: string; RowExceptions: string; RowProps: string; RowCells: SourceCellText array }
-/// What stands among the rows of a table as it was read, in order: a row (its index among the rows) or an
-/// element the model does not hold, each with the wrappers around it (a content control around rows - a
-/// repeating section -, custom XML), outermost first.
-type private TableSlot =
-    | TableSlotRow of index: int * wrappers: int list
-    | TableSlotKept of xml: string * wrappers: int list
+/// A table of the body as it was read, for a table that is written from the model (its SourceTable): the
+/// text of its properties and grid, and of each of its rows and cells by where its element starts in the
+/// part (the origin the model has of it: SourceRow, SourceCell). And how the properties that were read are
+/// changed (see withPropertiesMerged).
+///
+/// What stands among the children of a table (its rows) or a row (its cells) as it was read, in order: a
+/// row or cell (where it starts), or an element the model does not hold (a bookmark, a permission mark,
+/// unknown elements), each with the wrappers around it - a content control (around rows: a repeating
+/// section), custom XML -, outermost first, by where the wrapper starts.
+type private SourceChild =
+    | ChildAt of at: int * wrappers: int list
+    | ChildKept of xml: string * wrappers: int list
+type private SourceChildren = {
+    /// Wrapper (by where it starts) -> its start (with what says what it is) and its end, each with the text
+    /// before it (white space) as it was read.
+    Wrappers: System.Collections.Generic.Dictionary<int, string * string>
+    Children: SourceChild list
+    /// Row or cell (by where it starts) -> the text before it (white space) as it was read.
+    Leads: System.Collections.Generic.Dictionary<int, string>
+    /// The text after the last child, before the end tag.
+    Tail: string
+}
+/// CellChildren: its paragraphs and tables (by where each starts) among what stands around them.
+type private SourceCellText = { CellXml: string; CellStartTag: string; CellProps: string; CellHead: string; CellChildren: SourceChildren }
+/// RowHead / TableHead: the text from the start tag to the end of the properties (and grid), as it was read.
+type private SourceRowText = { RowXml: string; RowStartTag: string; RowExceptions: string; RowProps: string; RowHead: string; RowChildren: SourceChildren }
 type private SourceTableText = {
+    /// What the table is in, as it was read (a content control, custom XML; the white space before it): to the table's start, and after the table.
+    WrapStart: string
+    WrapEnd: string
+    TableHead: string
     TableProps: string
     TableGrid: string
-    TableRows: SourceRowText array
-    /// Wrapper (by where it starts in the table's text) -> its start (with what says what it is) and its end.
-    TableWrappers: System.Collections.Generic.Dictionary<int, string * string>
-    /// Empty for a table of nothing but rows.
-    TableSlots: TableSlot list
+    TableRows: System.Collections.Generic.Dictionary<int, SourceRowText>
+    TableCells: System.Collections.Generic.Dictionary<int, SourceCellText>
+    TableChildren: SourceChildren
 }
 type private TableSource =
     abstract Of: obj -> SourceTableText option
@@ -2080,81 +2096,103 @@ let mutable private tableSource : TableSource =
     { new TableSource with
         member _.Of _ = None
         member _.Merge (_, _, _, _, _) = None }
-/// The table, and the row, being written of a table that was read; and whether the paragraphs of
-/// what is being written may be made of the XML they were read from: those of a cell that is
-/// written with the properties its table, row and cell were read with - what a paragraph's XML
-/// leaves to its table's style it takes from there.
+/// The table being written of a table that was read; and whether the paragraphs of what is being written
+/// may be made of the XML they were read from: those of a cell that is written with the properties its
+/// table, row and cell were read with - what a paragraph's XML leaves to its table's style it takes from there.
 let mutable private currentSourceTable : SourceTableText option = None
-let mutable private currentSourceRow : SourceRowText option = None
 
-/// The rows of a table that was read, written among what stood among them (see TableSlot): each row in the
-/// wrappers its source row was in (a row that is new in those of the row before it), and the elements the
-/// model does not hold where they stood.
-let private tableRowsInSource (known: SourceTableText) (rows: (int option * string) array) : string =
+/// The rows of a table, or the cells of a row, that was read, written among what stood among them (see
+/// SourceChild): each of an element that was read in the wrappers that element was in, one made like an
+/// element (Copy) or new in those of the one before it, and the elements the model does not hold where
+/// they stood. `written`: each child's element (when it is of one that was read and not a copy) and its XML.
+let private childrenInSource (known: SourceChildren) (written: (int option * string) array) : string =
     let out = System.Text.StringBuilder()
     let chainOf = System.Collections.Generic.Dictionary<int, int list>()
-    for slot in known.TableSlots do (match slot with TableSlotRow (index, chain) -> chainOf.[index] <- chain | _ -> ())
+    for child in known.Children do (match child with ChildAt (at, chain) -> chainOf.[at] <- chain | _ -> ())
     let mutable openChain : int list = []
     let moveTo (chain: int list) =
         let rec common (a: int list) (b: int list) = match a, b with x :: xs, y :: ys when x = y -> 1 + common xs ys | _ -> 0
         let keep = common openChain chain
-        for wrapper in List.rev (List.skip keep openChain) do out.Append(snd known.TableWrappers.[wrapper]) |> ignore
-        for wrapper in List.skip keep chain do out.Append(fst known.TableWrappers.[wrapper]) |> ignore
+        for wrapper in List.rev (List.skip keep openChain) do out.Append(snd known.Wrappers.[wrapper]) |> ignore
+        for wrapper in List.skip keep chain do out.Append(fst known.Wrappers.[wrapper]) |> ignore
         openChain <- chain
-    let mutable slots = known.TableSlots
-    let emitBefore (index: int option) =
+    let mutable rest = known.Children
+    let lead (at: int) = match known.Leads.TryGetValue at with | true, text -> text | _ -> ""
+    let emitBefore (at: int option) =
         let mutable going = true
-        while going && not slots.IsEmpty do
-            match slots.Head with
-            | TableSlotRow (at, _) when Some at = index -> going <- false
-            | TableSlotRow _ -> slots <- slots.Tail
-            | TableSlotKept (xml, chain) ->
+        while going && not rest.IsEmpty do
+            match rest.Head with
+            | ChildAt (other, _) when Some other = at -> going <- false
+            | ChildAt _ -> rest <- rest.Tail
+            | ChildKept (xml, chain) ->
                 moveTo chain
                 out.Append(xml) |> ignore
-                slots <- slots.Tail
-    for index, xml in rows do
-        match index |> Option.filter (fun i -> chainOf.ContainsKey i) with
-        | Some i ->
-            if slots |> List.exists (function TableSlotRow (at, _) -> at = i | _ -> false) then emitBefore (Some i)
-            moveTo chainOf.[i]
+                rest <- rest.Tail
+    for at, xml in written do
+        match at |> Option.filter (fun at -> chainOf.ContainsKey at) with
+        | Some at ->
+            if rest |> List.exists (function ChildAt (other, _) -> other = at | _ -> false) then emitBefore (Some at)
+            moveTo chainOf.[at]
+            out.Append(lead at) |> ignore
         | None -> ()
         out.Append(xml) |> ignore
     emitBefore None
     moveTo []
-    out.ToString()
+    out.Append(known.Tail).ToString()
+
+/// The start tag of an element that a copy is made of: without the ids that are the element's alone.
+let private copiedStartTag (tag: string) : string =
+    System.Text.RegularExpressions.Regex.Replace(tag, "\\s+w14:(?:paraId|textId)=\"[^\"]*\"", "")
+
+/// The element a row or cell of a table that was read is of (its SourceRow / SourceCell): where it
+/// starts, whether it is a copy of it, whether it is the element still.
+let private sourceOfPart (part: obj) : (int * bool * bool) option =
+    if isNullOrUndefined part then None
+    else
+        let at = intOrDefault -1 (part?At)
+        if at < 0 then None else Some (at, boolOrDefault false (part?Copy), boolOrDefault false (part?Same))
 
 let rec private generateTableCell (hyperlinks: Map<string, string>) (images: ImageScope) (cell: obj) : string =
     let source =
-        match currentSourceRow with
-        | Some row when not (isNullOrUndefined (cell?SourceCell)) ->
-            let index = intOrDefault -1 (cell?SourceCell?Cell)
-            if index >= 0 && index < row.RowCells.Length then Some row.RowCells.[index] else None
+        match currentSourceTable, sourceOfPart (cell?SourceCell) with
+        | Some table, Some (at, copy, same) ->
+            (match table.TableCells.TryGetValue at with
+             | true, known -> Some (known, copy, same)
+             | _ -> None)
         | _ -> None
     match source with
-    | Some known when boolOrDefault false (cell?SourceCell?Same) -> known.CellXml
+    | Some (known, false, true) -> known.CellXml
     | _ ->
-        // Its properties: the ones it was read with - changed where the model's changed - or the model's.
+        // Its properties: the ones it was read with (or the one it is a copy of) - changed where the model's changed - or the model's.
         let tcPrChildren = tableCellProperties cell
         let properties =
             match source with
-            | Some known ->
+            | Some (known, copy, _) ->
                 let before = cell?SourceCell?Before
-                if isNullOrUndefined before then Some known.CellProps
-                else tableSource.Merge ("w:tcPr", cellPropertyOrder, known.CellProps, tableCellProperties before, tcPrChildren)
+                if isNullOrUndefined before then Some (if copy then copiedStartTag known.CellStartTag + known.CellProps else known.CellHead)
+                else
+                    tableSource.Merge ("w:tcPr", cellPropertyOrder, known.CellProps, tableCellProperties before, tcPrChildren)
+                    |> Option.map (fun props -> (if copy then copiedStartTag known.CellStartTag else known.CellStartTag) + props)
             | None -> None
         let outerContext = paragraphsInContext
         let outerTable = currentSourceTable
-        let outerRow = currentSourceRow
         paragraphsInContext <- outerContext && properties.IsSome
-        let paragraphs =
-            optionalArray (cell?Paragraphs)
-            |> Array.map (generateParagraphWithHyperlinksAndImages hyperlinks images)
+        // (Each paragraph with the w:p it is of, when that is one of the cell's and it is the first of it.)
+        let paragraphItems = optionalArray (cell?Paragraphs)
+        let paragraphs = paragraphItems |> Array.map (generateParagraphWithHyperlinksAndImages hyperlinks images)
+        let paragraphAt =
+            let used = System.Collections.Generic.HashSet<int>()
+            paragraphItems
+            |> Array.map (fun item ->
+                match source, optionalInt (item?SourceAt) with
+                | Some (known, false, _), Some at when not (boolOrDefault false (item?SourceCopy)) && known.CellChildren.Leads.ContainsKey at && used.Add at -> Some at
+                | _ -> None)
         let nestedTables = optionalArray (cell?NestedTables)
         // NestedTableAnchors.[i] = how many of the cell's paragraphs precede nested
         // table i. The writer used to read only Paragraphs, so a nested table and
         // everything in it was deleted on save.
         let anchors = optionalArray (cell?NestedTableAnchors) |> Array.map (fun value -> jsNumber value |> roundToInt)
-        let content = ResizeArray<string>()
+        let content = ResizeArray<int option * string>()
         let mutable lastIsTable = false
         let emitTablesAt index =
             nestedTables
@@ -2165,101 +2203,103 @@ let rec private generateTableCell (hyperlinks: Map<string, string>) (images: Ima
                     let inContext = paragraphsInContext
                     paragraphsInContext <- false
                     currentSourceTable <- None
-                    currentSourceRow <- None
-                    content.Add (generateTable hyperlinks images nested)
+                    content.Add ((None, generateTable hyperlinks images nested))
                     paragraphsInContext <- inContext
                     currentSourceTable <- outerTable
-                    currentSourceRow <- outerRow
                     lastIsTable <- true)
         for index in 0 .. paragraphs.Length - 1 do
             emitTablesAt index
-            content.Add paragraphs.[index]
+            content.Add ((paragraphAt.[index], paragraphs.[index]))
             lastIsTable <- false
         emitTablesAt paragraphs.Length
         // A cell must contain, and end with, a paragraph.
-        if content.Count = 0 || lastIsTable then content.Add (element "w:p" [] [])
-
-
+        if content.Count = 0 || lastIsTable then content.Add ((None, element "w:p" [] []))
         paragraphsInContext <- outerContext
-        let propertiesXml =
-            match properties with
-            | Some text -> text
-            | None -> if tcPrChildren.IsEmpty then "" else element "w:tcPr" [] tcPrChildren
-        element "w:tc" [] (propertiesXml :: List.ofSeq content)
+        match properties, source with
+        // (A cell that was read: its paragraphs and tables among what stood around them - content controls, marks.)
+        | Some head, Some (known, false, _) -> head + childrenInSource known.CellChildren (content.ToArray()) + "</w:tc>"
+        | Some head, _ -> head + (content |> Seq.map snd |> String.concat "") + "</w:tc>"
+        | None, _ ->
+            let propertiesXml = if tcPrChildren.IsEmpty then "" else element "w:tcPr" [] tcPrChildren
+            element "w:tc" [] (propertiesXml :: (content |> Seq.map snd |> List.ofSeq))
 
 and private generateTableRow (hyperlinks: Map<string, string>) (images: ImageScope) (row: obj) : string =
     let source =
-        match currentSourceTable with
-        | Some table when not (isNullOrUndefined (row?SourceRow)) ->
-            let index = intOrDefault -1 (row?SourceRow?Row)
-            if index >= 0 && index < table.TableRows.Length && table.TableRows.[index].RowCells.Length = intOrDefault -1 (row?SourceRow?CellCount) then Some table.TableRows.[index] else None
+        match currentSourceTable, sourceOfPart (row?SourceRow) with
+        | Some table, Some (at, copy, same) ->
+            (match table.TableRows.TryGetValue at with
+             | true, known -> Some (known, copy, same)
+             | _ -> None)
         | _ -> None
     match source with
-    | Some known when boolOrDefault false (row?SourceRow?Same) -> known.RowXml
+    | Some (known, false, true) -> known.RowXml
     | _ ->
         let rowExceptions, rowPropChildren = tableRowProperties row
-        // Its start tag and properties: the ones it was read with - changed where the model's changed - or the model's.
+        // Its start tag and properties: the ones it was read with (or the one it is a copy of) - changed where the model's changed - or the model's.
         let head =
             match source with
-            | Some known ->
+            | Some (known, copy, _) ->
+                let startTag = if copy then copiedStartTag known.RowStartTag else known.RowStartTag
                 let before = row?SourceRow?Before
-                if isNullOrUndefined before then Some (known.RowStartTag + known.RowExceptions + known.RowProps)
+                if isNullOrUndefined before then Some (if copy then startTag + known.RowExceptions + known.RowProps else known.RowHead)
                 else
                     let (exceptionsBefore, propsBefore) = tableRowProperties before
                     tableSource.Merge ("w:trPr", rowPropertyOrder, known.RowProps, propsBefore, rowPropChildren)
-                    |> Option.map (fun props -> known.RowStartTag + (if exceptionsBefore = rowExceptions then known.RowExceptions else rowExceptions) + props)
+                    |> Option.map (fun props -> startTag + (if exceptionsBefore = rowExceptions then known.RowExceptions else rowExceptions) + props)
             | None -> None
         let outerContext = paragraphsInContext
-        let outerRow = currentSourceRow
         paragraphsInContext <- outerContext && head.IsSome
-        currentSourceRow <- (if head.IsSome then source else None)
         let cells =
             optionalArray (row?Cells)
-            |> Array.map (generateTableCell hyperlinks images)
-            |> String.concat ""
+            |> Array.map (fun cell ->
+                let at = sourceOfPart (cell?SourceCell) |> Option.bind (fun (at, copy, _) -> if copy then None else Some at)
+                at, generateTableCell hyperlinks images cell)
         paragraphsInContext <- outerContext
-        currentSourceRow <- outerRow
+        // (The cells of a row that was read among what stood among them; a copy of a row has its cells alone.)
+        let cellsXml =
+            match source with
+            | Some (known, false, _) -> childrenInSource known.RowChildren cells
+            | _ -> cells |> Array.map snd |> String.concat ""
         match head with
-        | Some text -> text + cells + "</w:tr>"
+        | Some text -> text + cellsXml + "</w:tr>"
         | None ->
             let rowProps = if rowPropChildren.IsEmpty then "" else element "w:trPr" [] rowPropChildren
-            element "w:tr" [] [rowExceptions; rowProps; cells]
+            element "w:tr" [] [rowExceptions; rowProps; cellsXml]
 
 and private generateTable (hyperlinks: Map<string, string>) (images: ImageScope) (table: obj) : string =
     let tblPrChildren = tablePropertyElements table
     // A table that was read: its properties are the ones it was read with - changed where the
     // model's changed - and its rows and cells may be (see generateTableRow).
-    let source =
-        if isNullOrUndefined (table?SourceTable) then None
-        else tableSource.Of (table?SourceTable) |> Option.filter (fun known -> known.TableRows.Length = intOrDefault -1 (table?SourceTable?RowCount))
+    let source = if isNullOrUndefined (table?SourceTable) then None else tableSource.Of (table?SourceTable)
     let properties =
         match source with
         | Some known ->
             let before = table?SourceTable?Before
             // (The grid that was read, unless the table has another by now - a column put in or taken out.)
             let grid = if sourceGridIs known.TableGrid table then known.TableGrid else generateTableGrid table
-            if isNullOrUndefined before then Some (known.TableProps + grid)
+            if isNullOrUndefined before then Some (if grid = known.TableGrid then known.TableHead else "<w:tbl>" + known.TableProps + grid)
             else
                 tableSource.Merge ("w:tblPr", tablePropertyOrder, known.TableProps, tablePropertyElements before, tblPrChildren)
-                |> Option.map (fun props -> props + generateTableGrid table)
+                |> Option.map (fun props -> "<w:tbl>" + props + generateTableGrid table)
         | None -> None
     let outerContext = paragraphsInContext
     let outerTable = currentSourceTable
-    let outerRow = currentSourceRow
     paragraphsInContext <- properties.IsSome
     currentSourceTable <- (if properties.IsSome then source else None)
-    currentSourceRow <- None
     let rows =
-        let written = optionalArray (table?Rows) |> Array.map (fun row -> (if isNullOrUndefined (row?SourceRow) then None else Some (intOrDefault -1 (row?SourceRow?Row))), generateTableRow hyperlinks images row)
+        let written =
+            optionalArray (table?Rows)
+            |> Array.map (fun row ->
+                let at = sourceOfPart (row?SourceRow) |> Option.map (fun (at, _, _) -> at)
+                at, generateTableRow hyperlinks images row)
         match currentSourceTable with
-        | Some known when not known.TableSlots.IsEmpty -> tableRowsInSource known written
+        | Some known -> childrenInSource known.TableChildren written
         | _ -> written |> Array.map snd |> String.concat ""
     paragraphsInContext <- outerContext
     currentSourceTable <- outerTable
-    currentSourceRow <- outerRow
-    match properties with
-    | Some text -> "<w:tbl>" + text + rows + "</w:tbl>"
-    | None ->
+    match properties, source with
+    | Some text, Some known -> known.WrapStart + text + rows + "</w:tbl>" + known.WrapEnd
+    | _ ->
         element "w:tbl" [] [
             element "w:tblPr" [] tblPrChildren
             generateTableGrid table
@@ -4753,8 +4793,7 @@ paragraphOrigin <-
     { new ParagraphOrigin with
         member _.Of (spec: obj) = sourceParagraphXml (intOrDefault -1 (spec?Block)) (intOrDefault -1 (spec?Para)) }
 
-// The table a block came from, taken apart (see TableSource): only a table whose element is the
-// block's alone and holds nothing but its properties, its grid and plain rows of plain cells.
+// The table a block came from, taken apart (see TableSource): a table whose element is the block's alone.
 tableSource <-
     { new TableSource with
         member _.Of (spec: obj) =
@@ -4762,75 +4801,112 @@ tableSource <-
             let chunk = if block >= 0 && block < sourceItemChunks.Length then sourceItemChunks.[block] else -1
             if chunk < 0 || chunk >= sourceChunkStarts.Length || (sourceItemChunks |> Array.filter (fun other -> other = chunk)).Length <> 1 then None
             else
-                let text = sourceBodyXml.Substring(sourceChunkStarts.[chunk], sourceChunkEnds.[chunk] - sourceChunkStarts.[chunk])
-                let at = text.IndexOf "<w:tbl>"
-                if at < 0 || text.Substring(0, at).Trim() <> "" then None
+                let xml = sourceBodyXml
+                let elementStart = if chunk < sourceChunkElementStarts.Length then sourceChunkElementStarts.[chunk] else -1
+                let local (node: XmlDsl.XmlNode) = match node with XmlDsl.Element (name, _, _, _) -> XmlDsl.Ns.stripNs name | _ -> ""
+                let spanOf (node: XmlDsl.XmlNode) = match node with XmlDsl.Element (_, _, _, sp) -> sp | _ -> XmlDsl.Span.none
+                let kidsOf (node: XmlDsl.XmlNode) = match node with XmlDsl.Element (_, _, kids, _) -> kids | _ -> []
+                // The table, in the element of the block: the element itself, or the one element in a content
+                // control or custom XML around it (with what says what that is).
+                let rec tableIn (node: XmlDsl.XmlNode) =
+                    let elements = kidsOf node |> List.filter (fun kid -> local kid <> "")
+                    match local node with
+                    | "tbl" -> Some node
+                    | "sdt" ->
+                        (match elements |> List.filter (fun kid -> local kid = "sdtContent") with
+                         | [ content ] -> (match kidsOf content |> List.filter (fun kid -> local kid <> "") with [ one ] -> tableIn one | _ -> None)
+                         | _ -> None)
+                    | "customXml" -> (match elements |> List.filter (fun kid -> local kid <> "customXmlPr") with [ one ] -> tableIn one | _ -> None)
+                    | _ -> None
+                if elementStart < sourceChunkStarts.[chunk] || elementStart >= sourceChunkEnds.[chunk] || xml.Substring(sourceChunkStarts.[chunk], elementStart - sourceChunkStarts.[chunk]).Trim() <> "" then None
                 else
-                    let table = text.Substring at
-                    let partOf (element: string) (children: (string * int * int) list) (name: string) =
-                        children |> List.tryFind (fun (child, _, _) -> child = name) |> Option.map (fun (_, start, fin) -> element.Substring(start, fin - start)) |> Option.defaultValue ""
-                    let rowOf (row: string) =
-                        match childElementsOf row with
-                        | Some (parts, contentEnd) when contentEnd >= 0 && parts |> List.forall (fun (name, _, _) -> name = "w:tblPrEx" || name = "w:trPr" || name = "w:tc") ->
-                            let cells =
-                                parts
-                                |> List.filter (fun (name, _, _) -> name = "w:tc")
-                                |> List.map (fun (_, cellStart, cellEnd) ->
-                                    let cell = row.Substring(cellStart, cellEnd - cellStart)
-                                    match childElementsOf cell with
-                                    | Some (inner, _) -> Some { CellXml = cell; CellProps = partOf cell inner "w:tcPr" }
-                                    | None -> None)
-                            if cells |> List.exists Option.isNone then None
-                            else
-                                Some { RowXml = row
-                                       RowStartTag = row.Substring(0, tagEndIndex row 0 + 1)
-                                       RowExceptions = partOf row parts "w:tblPrEx"
-                                       RowProps = partOf row parts "w:trPr"
-                                       RowCells = cells |> List.choose id |> List.toArray }
-                        | _ -> None
-                    // The table's children, by the scanner (each with its place): its properties and grid, its rows -
-                    // in the wrappers they are in -, and what else stands among them.
-                    match XmlDsl.tryScan table (System.Collections.Generic.HashSet<string>()) with
+                    // The table's children, by the scanner (each with its place in the part): its properties and grid,
+                    // its rows - in the wrappers they are in -, the cells of each the same way, and what else stands among them.
+                    match XmlDsl.tryScanAt xml elementStart sourceChunkEnds.[chunk] (System.Collections.Generic.HashSet<string>()) |> Option.bind tableIn with
                     | Some (XmlDsl.Element (_, _, children, span)) when XmlDsl.Span.isKnown span ->
-                        let slice (start: int) (finish: int) = table.Substring(start, finish - start)
-                        let local (node: XmlDsl.XmlNode) = match node with XmlDsl.Element (name, _, _, _) -> XmlDsl.Ns.stripNs name | _ -> ""
-                        let spanOf (node: XmlDsl.XmlNode) = match node with XmlDsl.Element (_, _, _, sp) -> sp | _ -> XmlDsl.Span.none
-                        let rec holdsRow (node: XmlDsl.XmlNode) = match node with XmlDsl.Element (_, _, kids, _) -> local node = "tr" || List.exists holdsRow kids | _ -> false
-                        let rows = ResizeArray<SourceRowText option>()
-                        let slots = ResizeArray<TableSlot>()
-                        let wrappers = System.Collections.Generic.Dictionary<int, string * string>()
-                        let mutable props = ""
-                        let mutable grid = ""
-                        let mutable plain = true
-                        let rec visit (chain: int list) (node: XmlDsl.XmlNode) =
+                        let slice (start: int) (finish: int) = xml.Substring(start, finish - start)
+                        let rows = System.Collections.Generic.Dictionary<int, SourceRowText>()
+                        let cells = System.Collections.Generic.Dictionary<int, SourceCellText>()
+                        let mutable sound = true
+                        // The children of a table or a row: those named `item` (handed to `take`), in the wrappers they are in.
+                        // The children of a table or a row after its properties (which end at `from`, as do the
+                        // container's contents before its end tag at `until`): those named `item` (handed to `take`), in
+                        // the wrappers they are in, each with the text before it.
+                        let childrenOf (isItem: string -> bool) (from: int) (until: int) (take: XmlDsl.XmlNode -> unit) (nodes: XmlDsl.XmlNode list) : SourceChildren =
+                            let wrappers = System.Collections.Generic.Dictionary<int, string * string>()
+                            let leads = System.Collections.Generic.Dictionary<int, string>()
+                            let found = ResizeArray<SourceChild>()
+                            let rec holds (node: XmlDsl.XmlNode) = isItem (local node) || List.exists holds (kidsOf node)
+                            // The nodes of one element's contents from `start` on: where the last ends.
+                            let rec visitAll (chain: int list) (start: int) (nodes: XmlDsl.XmlNode list) : int =
+                                let mutable at = start
+                                for node in nodes do
+                                    let sp = spanOf node
+                                    if local node = "" then ()
+                                    elif not (XmlDsl.Span.isKnown sp) then sound <- false
+                                    elif sp.End <= from then ()
+                                    else
+                                        let before = slice at sp.Start
+                                        if isItem (local node) then
+                                            found.Add (ChildAt (sp.Start, chain))
+                                            leads.[sp.Start] <- before
+                                            take node
+                                        elif holds node && sp.StartTagEnd < sp.End then
+                                            let kids = kidsOf node
+                                            let content, headEnd, contentEnd =
+                                                match kids |> List.tryFind (fun kid -> local kid = "sdtContent") with
+                                                | Some (XmlDsl.Element (_, _, inner, contentSpan)) when local node = "sdt" && contentSpan.StartTagEnd < contentSpan.End ->
+                                                    inner, contentSpan.StartTagEnd, contentSpan.EndTagStart
+                                                | _ ->
+                                                    let leading = kids |> List.takeWhile (fun kid -> (local kid).EndsWith "Pr")
+                                                    let headEnd = leading |> List.fold (fun at kid -> let kidSpan = spanOf kid in if XmlDsl.Span.isKnown kidSpan then kidSpan.End else at) sp.StartTagEnd
+                                                    List.skip leading.Length kids, headEnd, sp.EndTagStart
+                                            let last = visitAll (chain @ [ sp.Start ]) headEnd content
+                                            wrappers.[sp.Start] <- (before + slice sp.Start headEnd, slice last contentEnd + slice contentEnd sp.End)
+                                        else
+                                            found.Add (ChildKept (before + slice sp.Start sp.End, chain))
+                                        at <- sp.End
+                                at
+                            let last = visitAll [] from nodes
+                            { Wrappers = wrappers; Children = List.ofSeq found; Leads = leads; Tail = slice last until }
+                        let partOf (nodes: XmlDsl.XmlNode list) (name: string) =
+                            nodes |> List.tryFind (fun kid -> local kid = name) |> Option.map (fun kid -> let sp = spanOf kid in slice sp.Start sp.End) |> Option.defaultValue ""
+                        // Where the leading children named `names` of an element end (its start tag's end when it has none).
+                        let headEndOf (sp: XmlDsl.Span) (nodes: XmlDsl.XmlNode list) (names: string list) =
+                            nodes
+                            |> List.filter (fun kid -> local kid <> "")
+                            |> List.takeWhile (fun kid -> List.contains (local kid) names)
+                            |> List.fold (fun at kid -> let kidSpan = spanOf kid in if XmlDsl.Span.isKnown kidSpan then kidSpan.End else at) sp.StartTagEnd
+                        let takeCell (node: XmlDsl.XmlNode) =
                             let sp = spanOf node
-                            match local node with
-                            | "" -> ()
-                            | "tblPr" when chain.IsEmpty -> props <- slice sp.Start sp.End
-                            | "tblGrid" when chain.IsEmpty -> grid <- slice sp.Start sp.End
-                            | "tr" ->
-                                slots.Add (TableSlotRow (rows.Count, chain))
-                                rows.Add (rowOf (slice sp.Start sp.End))
-                            | _ when holdsRow node && sp.StartTagEnd < sp.End ->
-                                plain <- false
-                                let kids = match node with XmlDsl.Element (_, _, kids, _) -> kids | _ -> []
-                                let content, head, tail =
-                                    match kids |> List.tryFind (fun kid -> local kid = "sdtContent") with
-                                    | Some (XmlDsl.Element (_, _, inner, contentSpan)) when local node = "sdt" && contentSpan.StartTagEnd < contentSpan.End ->
-                                        inner, slice sp.Start contentSpan.StartTagEnd, slice contentSpan.EndTagStart sp.End
-                                    | _ ->
-                                        let leading = kids |> List.takeWhile (fun kid -> (local kid).EndsWith "Pr")
-                                        let headEnd = leading |> List.fold (fun at kid -> let kidSpan = spanOf kid in if XmlDsl.Span.isKnown kidSpan then kidSpan.End else at) sp.StartTagEnd
-                                        List.skip leading.Length kids, slice sp.Start headEnd, slice sp.EndTagStart sp.End
-                                wrappers.[sp.Start] <- (head, tail)
-                                List.iter (visit (chain @ [ sp.Start ])) content
-                            | _ ->
-                                plain <- false
-                                slots.Add (TableSlotKept (slice sp.Start sp.End, chain))
-                        List.iter (visit []) children
-                        if rows |> Seq.exists Option.isNone then None
-                        else Some { TableProps = props; TableGrid = grid; TableRows = rows |> Seq.choose id |> Seq.toArray
-                                    TableWrappers = wrappers; TableSlots = (if plain then [] else List.ofSeq slots) }
+                            if sp.StartTagEnd >= sp.End then sound <- false
+                            else
+                                let headEnd = headEndOf sp (kidsOf node) [ "tcPr" ]
+                                cells.[sp.Start] <- { CellXml = slice sp.Start sp.End
+                                                      CellStartTag = slice sp.Start sp.StartTagEnd
+                                                      CellProps = partOf (kidsOf node) "tcPr"
+                                                      CellHead = slice sp.Start headEnd
+                                                      CellChildren = childrenOf (fun name -> name = "p" || name = "tbl") headEnd sp.EndTagStart ignore (kidsOf node) }
+                        let takeRow (node: XmlDsl.XmlNode) =
+                            let sp = spanOf node
+                            if sp.StartTagEnd >= sp.End then sound <- false
+                            else
+                                let kids = kidsOf node
+                                let headEnd = headEndOf sp kids [ "tblPrEx"; "trPr" ]
+                                let inner = childrenOf (fun name -> name = "tc") headEnd sp.EndTagStart takeCell kids
+                                rows.[sp.Start] <- { RowXml = slice sp.Start sp.End
+                                                     RowStartTag = slice sp.Start sp.StartTagEnd
+                                                     RowExceptions = partOf kids "tblPrEx"
+                                                     RowProps = partOf kids "trPr"
+                                                     RowHead = slice sp.Start headEnd
+                                                     RowChildren = inner }
+                        let props = partOf children "tblPr"
+                        let grid = partOf children "tblGrid"
+                        let headEnd = headEndOf span children [ "tblPr"; "tblGrid" ]
+                        let tableChildren = childrenOf (fun name -> name = "tr") headEnd span.EndTagStart takeRow children
+                        if not sound || xml.Substring(span.Start, span.StartTagEnd - span.Start) <> "<w:tbl>" then None
+                        else Some { WrapStart = slice sourceChunkStarts.[chunk] span.Start; WrapEnd = slice span.End sourceChunkEnds.[chunk]
+                                    TableHead = slice span.Start headEnd; TableProps = props; TableGrid = grid; TableRows = rows; TableCells = cells; TableChildren = tableChildren }
                     | _ -> None
         member _.Merge (container: string, order: string list, source: string, was: string list, now: string list) =
             withPropertiesMerged container order source (propertyChanges was now) }

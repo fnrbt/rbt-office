@@ -1090,6 +1090,9 @@ const KEY_PASSES = {
     'joined to the one before (Backspace)': { key: 'Backspace', place: (editor, id) => { Word.setSelection(editor, id, 0, id, 0); } },
 };
 window.editPassKinds = () => Object.keys(EDIT_PASSES);
+// The documents the edit passes saved, by the pass (taken, and so cleared, by takePassSaves).
+window.passSaves = {};
+window.takePassSaves = () => { const saves = window.passSaves; window.passSaves = {}; return saves; };
 window.keyPassKinds = () => Object.entries(KEY_PASSES).map(([kind, pass]) => [kind, pass.key]);
 // The paragraphs of the body's text an edit pass may take: [id, length of its text].
 const passParagraphs = (editor) => {
@@ -1115,6 +1118,8 @@ const passResult = async (handle, before, label, result, piecesPerEdit) => {
     const text = Word.getText(editor);
     const layout = layoutOf(editor);
     const out = await writePackage(Word.exportDocumentPackage(editor), label);
+    // (Kept for --out: each pass's document.)
+    window.passSaves[kindOfPass(label)] = toBase64(out);
     const report = OF.word.getLastSaveReport();
     const reopened = await open(out);
     const second = openEditor(reopened.pkg);

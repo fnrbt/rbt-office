@@ -3695,11 +3695,12 @@ module API =
           PaddingTop = None
           PaddingRight = None
           PaddingBottom = None
-          PaddingLeft = None }
+          PaddingLeft = None
+          Origin = None }
 
     let private twoCellTable id left right : Doc.TableBlock =
         { Id = id
-          Rows = [{ Cells = [tableCell (id + "-left") left; tableCell (id + "-right") right]; IsHeader = false; Height = None; HeightRule = None; CanSplit = None; CellSpacing = None; PaddingTop = None; PaddingRight = None; PaddingBottom = None; PaddingLeft = None; GridBefore = 0; GridAfter = 0; WidthBefore = None; WidthAfter = None; BordersOverride = None }]
+          Rows = [{ Cells = [tableCell (id + "-left") left; tableCell (id + "-right") right]; IsHeader = false; Height = None; HeightRule = None; CanSplit = None; CellSpacing = None; PaddingTop = None; PaddingRight = None; PaddingBottom = None; PaddingLeft = None; GridBefore = 0; GridAfter = 0; WidthBefore = None; WidthAfter = None; BordersOverride = None; Origin = None }]
           PreferredWidth = Some { Kind = Doc.PercentWidth; Value = Some 100.0 }
           Alignment = None
           LayoutMode = Some Doc.FixedTableLayout

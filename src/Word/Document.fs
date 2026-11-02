@@ -131,6 +131,14 @@ type ListLevelDefinition = {
     MarkSize: float option
 }
 
+/// Where a paragraph, row or cell of a document that was read stands in its part: the start of its w:p,
+/// w:tr or w:tc in the part's text. The save writes it from that element - what the model does not hold of it is
+/// kept - and one that is new from the model alone. ReadAt: the element that was read. LikeAt: one made
+/// like it (a row or a column put in next to it, the second half of a paragraph split), written as that element with the model's content.
+type SourceOrigin =
+    | ReadAt of int
+    | LikeAt of int
+
 type BlockMetadata = {
     Style: string option
     ContentControlId: string option
@@ -139,6 +147,8 @@ type BlockMetadata = {
     /// The w:sdtPr the file has for the control (its binding, placeholder, kind):
     /// written again while the control's id, tag and alias are what it says.
     ContentControlXml: string option
+    /// The w:p the paragraph is of (see SourceOrigin).
+    Origin: SourceOrigin option
     ListStyle: ListStyle
     ListLevel: int  // 0 = not in list, 1-9 = nesting level
     ListId: string option
@@ -249,12 +259,17 @@ module ParagraphExplicit =
     let has (flag: int) (metadata: BlockMetadata) = metadata.Explicit &&& flag <> 0
 
 /// Default block metadata
+/// The origin of a paragraph, row or cell made like one with `origin`.
+let likeOrigin (origin: SourceOrigin option) : SourceOrigin option =
+    origin |> Option.map (function ReadAt at | LikeAt at -> LikeAt at)
+
 let defaultMetadata = {
     Style = None
     ContentControlId = None
     ContentControlTag = None
     ContentControlAlias = None
     ContentControlXml = None
+    Origin = None
     ListStyle = NoList
     ListLevel = 0
     ListId = None
@@ -453,6 +468,7 @@ and TableRow = {
     WidthBefore: float option
     WidthAfter: float option
     BordersOverride: TableBorders option
+    Origin: SourceOrigin option
 }
 
 and TableCell = {
@@ -476,6 +492,7 @@ and TableCell = {
     PaddingRight: float option
     PaddingBottom: float option
     PaddingLeft: float option
+    Origin: SourceOrigin option
 }
 
 and Shading = {
@@ -1648,6 +1665,7 @@ let private emptyTableCell () =
         PaddingRight = None
         PaddingBottom = None
         PaddingLeft = None
+        Origin = None
     }
 
 let private tryFindTableCellByParagraph doc paragraphId =
@@ -1863,7 +1881,7 @@ let splitBlock doc =
                 let beforeBuffer = TextBuffer.sliceBuffer 0 offset para.Buffer
                 let afterBuffer = TextBuffer.sliceBuffer offset (TextBuffer.length para.Buffer - offset) para.Buffer
                 let newBlockId = nextBlockId()
-                let newPara = { Id = newBlockId; Buffer = afterBuffer; Metadata = para.Metadata }
+                let newPara = { Id = newBlockId; Buffer = afterBuffer; Metadata = { para.Metadata with Origin = likeOrigin para.Metadata.Origin } }
                 let updatedPara = { para with Buffer = beforeBuffer }
                 let split =
                     editContainerOf doc para.Id (fun content anchors ->
@@ -1887,7 +1905,7 @@ let splitBlock doc =
 
             // Create new block for the second part (carry over metadata)
             let newBlockId = nextBlockId()
-            let newPara = { Id = newBlockId; Buffer = afterBuffer; Metadata = para.Metadata }
+            let newPara = { Id = newBlockId; Buffer = afterBuffer; Metadata = { para.Metadata with Origin = likeOrigin para.Metadata.Origin } }
             let newBlock =
                 match block with
                 | Paragraph _ -> Paragraph newPara
@@ -2610,14 +2628,16 @@ let private cellLike (span: int option) (cell: TableCell) : TableCell =
                     SectionVerticalAlign = None
                     SectionBreak = None; SectionColumns = None; SectionPageSetup = None; SectionPageNumberStart = None; SectionPageNumberFormat = None
                     HeaderReferences = []; FooterReferences = []
-                    ContentControlId = None; ContentControlTag = None; ContentControlAlias = None; ContentControlXml = None } }
+                    ContentControlId = None; ContentControlTag = None; ContentControlAlias = None; ContentControlXml = None
+                    Origin = likeOrigin first.Metadata.Origin } }
         | [] -> { Id = nextBlockId (); Buffer = TextBuffer.empty; Metadata = defaultMetadata }
     { cell with
         Content = [ paragraph ]
         NestedTables = []
         NestedTableAnchors = []
         VerticalMerge = None
-        ColSpan = (match span with Some columns -> columns | None -> cell.ColSpan) }
+        ColSpan = (match span with Some columns -> columns | None -> cell.ColSpan)
+        Origin = likeOrigin cell.Origin }
 
 /// The grid column a cell of a row starts in.
 let private gridColumnOfCell (row: TableRow) (cellIndex: int) : int =
@@ -2641,7 +2661,7 @@ let private gridWithoutColumn (at: int) (grid: TableWidth list) : TableWidth lis
 /// break, spacing, what stands before and after it in the grid), cell by
 /// cell the same cells. It is not a header row.
 let private rowLike (row: TableRow) : TableRow =
-    { row with Cells = row.Cells |> List.map (cellLike None); IsHeader = false }
+    { row with Cells = row.Cells |> List.map (cellLike None); IsHeader = false; Origin = likeOrigin row.Origin }
 
 /// Insert a table row below the row containing the selection.
 let insertTableRowAfterSelection doc =
@@ -2920,7 +2940,7 @@ let insertTable rows columns doc =
         |> Option.map (fun style -> style.Id)
     let table = {
         Id = nextBlockId ()
-        Rows = [ for _ in 1 .. rowCount -> { Cells = [ for _ in 1 .. columnCount -> emptyTableCell () ]; IsHeader = false; Height = None; HeightRule = None; CanSplit = None; CellSpacing = None; PaddingTop = None; PaddingRight = None; PaddingBottom = None; PaddingLeft = None; GridBefore = 0; GridAfter = 0; WidthBefore = None; WidthAfter = None; BordersOverride = None } ]
+        Rows = [ for _ in 1 .. rowCount -> { Cells = [ for _ in 1 .. columnCount -> emptyTableCell () ]; IsHeader = false; Height = None; HeightRule = None; CanSplit = None; CellSpacing = None; PaddingTop = None; PaddingRight = None; PaddingBottom = None; PaddingLeft = None; GridBefore = 0; GridAfter = 0; WidthBefore = None; WidthAfter = None; BordersOverride = None; Origin = None } ]
         PreferredWidth = None
         Alignment = None
         LayoutMode = None

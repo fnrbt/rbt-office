@@ -792,7 +792,9 @@ let private mkPara resolver images styleMap comments notes useDocumentMarkForPur
     {
         Id = Guid.NewGuid().ToString("N")
         Buffer = editorRunsToBufferWithImages decorate decorateImage images editorPara.Runs
-        Metadata = paraMetadata styleMap resolver useDocumentMarkForPureEmpty defaultMissingSpacingToZero para editorPara
+        Metadata =
+            { paraMetadata styleMap resolver useDocumentMarkForPureEmpty defaultMissingSpacingToZero para editorPara with
+                Origin = if XmlDsl.Span.isKnown para.Source then Some (ReadAt para.Source.Start) else None }
     }
 
 let rec private tableCell resolver images styleMap tableStyleMap comments notes (paragraphProperties: DocxReader.ParagraphProperties option) (cell: DocxReader.TableCell) =
@@ -840,6 +842,7 @@ let rec private tableCell resolver images styleMap tableStyleMap comments notes 
         PaddingRight = props |> Option.bind (fun p -> twipsToCanvasPixels p.PaddingRight)
         PaddingBottom = props |> Option.bind (fun p -> twipsToCanvasPixels p.PaddingBottom)
         PaddingLeft = props |> Option.bind (fun p -> twipsToCanvasPixels p.PaddingLeft)
+        Origin = if XmlDsl.Span.isKnown cell.Source then Some (ReadAt cell.Source.Start) else None
     }
 
 and private tableBlock resolver images styleMap tableStyleMap comments notes (table: DocxReader.Table) =
@@ -886,6 +889,7 @@ and private tableBlock resolver images styleMap tableStyleMap comments notes (ta
             WidthBefore = twipsToCanvasPixels row.WidthBefore
             WidthAfter = twipsToCanvasPixels row.WidthAfter
             BordersOverride = tableBorders row.BordersOverride
+            Origin = if XmlDsl.Span.isKnown row.Source then Some (ReadAt row.Source.Start) else None
         })
     {
         Id = Guid.NewGuid().ToString("N")

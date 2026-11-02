@@ -45,6 +45,16 @@ let private optionalInt (value: obj) =
     if isNullOrUndefined value then None
     else Some (unbox<int> value)
 
+/// A paragraph's, row's or cell's origin (SourceOrigin) in the editor's form: SourceAt, and SourceCopy for one made like it.
+let private originFromEditor (item: obj) : SourceOrigin option =
+    match optionalInt (item?SourceAt) with
+    | Some at when at >= 0 -> Some (if (match optionalBool (item?SourceCopy) with Some true -> true | _ -> false) then LikeAt at else ReadAt at)
+    | _ -> None
+let private originAt (origin: SourceOrigin option) : int option =
+    origin |> Option.map (function ReadAt at | LikeAt at -> at)
+let private originIsCopy (origin: SourceOrigin option) : bool =
+    match origin with Some (LikeAt _) -> true | _ -> false
+
 let private optionalIntAsFloat (value: obj) =
     if isNullOrUndefined value then None
     else Some (float (unbox<int> value))
@@ -471,6 +481,7 @@ let private metadataFromEditor (item: obj) =
             ContentControlTag = contentControlTag
             ContentControlAlias = contentControlAlias
             ContentControlXml = contentControlXml
+            Origin = originFromEditor item
             Alignment = alignment
             ExplicitAlignment = (optionalString (item?ExplicitAlignment)).IsSome
             ListStyle = listStyle
@@ -1183,6 +1194,7 @@ let rec private blockFromEditor (item: obj) =
                             PaddingRight = optionalDxaAsCanvasPixels (cell?PaddingRight)
                             PaddingBottom = optionalDxaAsCanvasPixels (cell?PaddingBottom)
                             PaddingLeft = optionalDxaAsCanvasPixels (cell?PaddingLeft)
+                            Origin = originFromEditor cell
                         })
                     |> Array.toList
                 let canSplit = if isNullOrUndefined (row?CanSplit) then None else Some (unbox<bool> row?CanSplit)
@@ -1200,7 +1212,8 @@ let rec private blockFromEditor (item: obj) =
                   GridAfter = optionalInt (row?GridAfter) |> Option.defaultValue 0 |> max 0
                   WidthBefore = optionalDxaAsCanvasPixels (row?WidthBefore)
                   WidthAfter = optionalDxaAsCanvasPixels (row?WidthAfter)
-                  BordersOverride = None })
+                  BordersOverride = None
+                  Origin = originFromEditor row })
             |> Array.toList
 
         let gridColumns =
@@ -2025,6 +2038,8 @@ let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) 
         "ContentControlTag" ==> para.Metadata.ContentControlTag
         "ContentControlAlias" ==> para.Metadata.ContentControlAlias
         "ContentControlXml" ==> para.Metadata.ContentControlXml
+        "SourceAt" ==> originAt para.Metadata.Origin
+        "SourceCopy" ==> originIsCopy para.Metadata.Origin
         "Alignment" ==> alignmentToString para.Metadata.Alignment
         "HasExplicit" ==> true
         "ExplicitAlignment" ==> (explicitAlignment |> Option.map alignmentToString)
@@ -2315,6 +2330,8 @@ let rec private blockToEditor (context: WordStyles.DocumentStyleContext option) 
                                 "PaddingRight" ==> canvasPixelsToDxa cell.PaddingRight
                                 "PaddingBottom" ==> canvasPixelsToDxa cell.PaddingBottom
                                 "PaddingLeft" ==> canvasPixelsToDxa cell.PaddingLeft
+                                "SourceAt" ==> originAt cell.Origin
+                                "SourceCopy" ==> originIsCopy cell.Origin
                             ])
                         |> List.toArray
 
@@ -2329,6 +2346,8 @@ let rec private blockToEditor (context: WordStyles.DocumentStyleContext option) 
                         "PaddingRight" ==> canvasPixelsToDxa row.PaddingRight
                         "PaddingBottom" ==> canvasPixelsToDxa row.PaddingBottom
                         "PaddingLeft" ==> canvasPixelsToDxa row.PaddingLeft
+                        "SourceAt" ==> originAt row.Origin
+                        "SourceCopy" ==> originIsCopy row.Origin
                     ])
                 |> List.toArray
 
@@ -3028,54 +3047,46 @@ let rec private storyItems (item: obj) : obj list =
 [<Emit("JSON.stringify(Object.assign({}, $0, { Cells: undefined, Rows: undefined, Paragraphs: undefined, NestedTables: undefined, NestedTableAnchors: undefined, SourceRow: undefined, SourceCell: undefined, SourceTable: undefined, SourceIndex: undefined, SourceUnchanged: undefined, SourceWhy: undefined }))")>]
 let private jsonOfOwnProperties (_value: obj) : string = jsNative
 
-/// A table that is written from the model, when it is a table that was read: which of its rows
-/// and cells are rows and cells that were read (by the paragraphs in them), and whether each is
-/// still what it was - for the writer to put back the XML of those that are, and to change the
-/// properties of the others in the XML they were read from (SourceTable, SourceRow, SourceCell).
-let private markDerivedTable (index: int) (original: TableBlock) (originalItem: obj) (current: TableBlock) (item: obj) : unit =
-    let wasRows = gatherVerticalMergeContent original.Rows |> List.toArray
-    let nowRows = gatherVerticalMergeContent current.Rows |> List.toArray
-    let wasItems = originalItem?Rows |> unbox<obj array>
-    let nowItems = item?Rows |> unbox<obj array>
-    if wasRows.Length = wasItems.Length && nowRows.Length = nowItems.Length then
-        // The cell each paragraph that was read was in - where its id is one paragraph's alone.
-        let place = Dictionary<string, int * int>()
-        let twice = HashSet<string>()
-        wasRows |> Array.iteri (fun r row ->
-            row.Cells |> List.iteri (fun c cell ->
-                for para in cell.Content do
-                    if place.ContainsKey para.Id then twice.Add para.Id |> ignore else place.[para.Id] <- (r, c)))
-        for id in twice do place.Remove id |> ignore
-        let usedRows = HashSet<int>()
-        item?SourceTable <- createObj [
-            "Block" ==> index
-            "RowCount" ==> wasRows.Length
-            "Before" ==> (if jsonOfOwnProperties item = jsonOfOwnProperties originalItem then null else originalItem) ]
-        nowRows |> Array.iteri (fun i row ->
-            let cells = List.toArray row.Cells
-            let cellItems = nowItems.[i]?Cells |> unbox<obj array>
-            if cells.Length = cellItems.Length then
-                let placed = cells |> Array.map (fun cell -> cell.Content |> List.tryPick (fun para -> match place.TryGetValue para.Id with | true, found -> Some found | _ -> None))
-                match placed |> Array.tryPick id with
-                | Some (r, _) when not (usedRows.Contains r) ->
-                    usedRows.Add r |> ignore
-                    let wasRow = wasItems.[r]
-                    let wasCells = wasRow?Cells |> unbox<obj array>
-                    nowItems.[i]?SourceRow <- createObj [
-                        "Row" ==> r
-                        "CellCount" ==> wasCells.Length
-                        "Same" ==> (jsonOf nowItems.[i] = jsonOf wasRow)
-                        "Before" ==> (if jsonOfOwnProperties nowItems.[i] = jsonOfOwnProperties wasRow then null else wasRow) ]
-                    let usedCells = HashSet<int>()
-                    placed |> Array.iteri (fun j found ->
-                        match found with
-                        | Some (cellRow, c) when cellRow = r && c < wasCells.Length && usedCells.Add c ->
-                            cellItems.[j]?SourceCell <- createObj [
-                                "Cell" ==> c
-                                "Same" ==> (jsonOf cellItems.[j] = jsonOf wasCells.[c])
-                                "Before" ==> (if jsonOfOwnProperties cellItems.[j] = jsonOfOwnProperties wasCells.[c] then null else wasCells.[c]) ]
-                        | _ -> ())
-                | _ -> ())
+/// A table that is written from the model, when it is a table that was read: for each of its rows and cells
+/// that has an origin (SourceOrigin, SourceAt in the editor's form), the element it is of, whether it is
+/// that element still or one made like it, and how it differs from it - for the writer to put back the XML
+/// of those that are what they were and to write the others of the XML they are of (SourceTable,
+/// SourceRow, SourceCell). A second row or cell of one element is one made like it.
+let private markDerivedTable (index: int) (originalItem: obj) (item: obj) : unit =
+    let sourceAt (part: obj) = match optionalInt (part?SourceAt) with Some at when at >= 0 -> Some at | _ -> None
+    let items (part: obj) (name: string) : obj array = if isNullOrUndefined (part?(name)) then [||] else part?(name) |> unbox<obj array>
+    let wasRows = Dictionary<int, obj>()
+    let wasCells = Dictionary<int, obj>()
+    for row in items originalItem "Rows" do
+        sourceAt row |> Option.iter (fun at -> wasRows.[at] <- row)
+        for cell in items row "Cells" do sourceAt cell |> Option.iter (fun at -> wasCells.[at] <- cell)
+    item?SourceTable <- createObj [
+        "Block" ==> index
+        "Before" ==> (if jsonOfOwnProperties item = jsonOfOwnProperties originalItem then null else originalItem) ]
+    let usedRows = HashSet<int>()
+    let usedCells = HashSet<int>()
+    for row in items item "Rows" do
+        match sourceAt row with
+        | Some at when wasRows.ContainsKey at ->
+            let wasRow = wasRows.[at]
+            let copy = boolOrDefault false (row?SourceCopy) || not (usedRows.Add at)
+            row?SourceRow <- createObj [
+                "At" ==> at
+                "Copy" ==> copy
+                "Same" ==> (not copy && jsonOf row = jsonOf wasRow)
+                "Before" ==> (if jsonOfOwnProperties row = jsonOfOwnProperties wasRow then null else wasRow) ]
+        | _ -> ()
+        for cell in items row "Cells" do
+            match sourceAt cell with
+            | Some at when wasCells.ContainsKey at ->
+                let wasCell = wasCells.[at]
+                let copy = boolOrDefault false (cell?SourceCopy) || not (usedCells.Add at)
+                cell?SourceCell <- createObj [
+                    "At" ==> at
+                    "Copy" ==> copy
+                    "Same" ==> (not copy && jsonOf cell = jsonOf wasCell)
+                    "Before" ==> (if jsonOfOwnProperties cell = jsonOfOwnProperties wasCell then null else wasCell) ]
+            | _ -> ()
 
 /// A block that is written from the model: its paragraphs that are paragraphs that were read
 /// say so (SourcePara), for the writer to make each of the XML it was read from.
@@ -3199,7 +3210,7 @@ let private exportBodyWithSource context (imported: Document option) (doc: Docum
                             item?SourceWhy <- why
                             // (The rows and cells first: they are compared as they are exported.)
                             match block, originalBlock with
-                            | Table table, Table originalTable -> markDerivedTable index originalTable (blockToEditor context originalBlock) table item
+                            | Table _, Table _ -> markDerivedTable index (blockToEditor context originalBlock) item
                             | _ -> ()
                             markDerivedParagraphs context (derivationsNow ()) block item
                 | _ -> markDerivedParagraphs context (derivationsNow ()) block item

@@ -93,8 +93,8 @@
 // they were read from, and, for the save from the model alone, which elements
 // and attributes it has more or fewer of than the originals.
 // --out keeps the documents: <name>.original.docx, .pass1.docx / .pass2.docx
-// (the editor's first and second save) and .model.docx (from the model
-// alone), so the .NET reader and layout can be pointed at them:
+// (the editor's first and second save), .model.docx (from the model
+// alone) and .<edit pass>.docx (what each edit pass saved), so the .NET reader and layout can be pointed at them:
 //   dotnet fsi tests/word/roundtrip-layout.fsx DIR     (laid out as the originals)
 //   dotnet fsi tools/docx-roundtrip/native-check.fsx DIR   (pass 1 and 2 hold the same text)
 //
@@ -349,6 +349,12 @@ async function main() {
                 const base = path.basename(name).replace(/\.docx$/, '');
                 result.saved.forEach((b64, i) => fs.writeFileSync(path.join(outDir, `${base}.${['pass1', 'pass2', 'model'][i]}.docx`), Buffer.from(b64, 'base64')));
                 if (fixtures.get(name).length && !(expectations.get(name) ?? []).some((e) => e.mutate)) fs.writeFileSync(path.join(outDir, `${base}.original.docx`), fixtures.get(name));
+            }
+            // The document each edit pass saved: <name>.<pass>.docx.
+            const passSaves = await tab.evaluate('window.takePassSaves()');
+            if (outDir) {
+                const base = path.basename(name).replace(/\.docx$/, '');
+                for (const [kind, b64] of Object.entries(passSaves)) fs.writeFileSync(path.join(outDir, `${base}.${kind.replace(/[^A-Za-z0-9]+/g, '-').replace(/-$/, '')}.docx`), Buffer.from(b64, 'base64'));
             }
         }
     } finally {

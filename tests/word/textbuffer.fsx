@@ -197,7 +197,7 @@ let tableCell id text : Doc.TableCell =
       PaddingTop = None
       PaddingRight = None
       PaddingBottom = None
-      PaddingLeft = None }
+      PaddingLeft = None; Origin = None }
 let singleCellTable tableId cell : Doc.TableBlock =
     { Id = tableId
       Rows =
@@ -215,7 +215,7 @@ let singleCellTable tableId cell : Doc.TableBlock =
            GridAfter = 0
            WidthBefore = None
            WidthAfter = None
-           BordersOverride = None }]
+           BordersOverride = None; Origin = None }]
       PreferredWidth = None
       Alignment = None
       LayoutMode = None
@@ -247,7 +247,7 @@ let singleColumnTableRow cell : Doc.TableRow =
       GridAfter = 0
       WidthBefore = None
       WidthAfter = None
-      BordersOverride = None }
+      BordersOverride = None; Origin = None }
 let singleColumnTableDoc prefix docIndex rowCount text selection =
     let tableId = sprintf "%s-table-%02d" prefix docIndex
     let rows =

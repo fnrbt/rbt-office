@@ -51,10 +51,10 @@ let box id (color: string) (height: string) (behind: bool) (anchor: string) : Bl
 // between and above them and one behind the text; a picture in a table cell.
 let cell (paragraph: ParagraphBlock) : TableCell =
     { Content = [ paragraph ]; NestedTables = []; NestedTableAnchors = []; ColSpan = 1; BackgroundColor = None; Shading = None; Width = None; PreferredWidth = None
-      BorderColor = None; BorderWidth = None; Borders = None; VerticalAlignment = None; VerticalMerge = None; PaddingTop = None; PaddingRight = None; PaddingBottom = None; PaddingLeft = None }
+      BorderColor = None; BorderWidth = None; Borders = None; VerticalAlignment = None; VerticalMerge = None; PaddingTop = None; PaddingRight = None; PaddingBottom = None; PaddingLeft = None; Origin = None }
 let table : TableBlock =
     { Id = "t"; Rows = [ { Cells = [ cell (withPicture "cell" "cell text" [ "img:cell", false, Some "40" ]) ]; IsHeader = false; Height = None; HeightRule = None; CanSplit = None; CellSpacing = None
-                           PaddingTop = None; PaddingRight = None; PaddingBottom = None; PaddingLeft = None; GridBefore = 0; GridAfter = 0; WidthBefore = None; WidthAfter = None; BordersOverride = None } ]
+                           PaddingTop = None; PaddingRight = None; PaddingBottom = None; PaddingLeft = None; GridBefore = 0; GridAfter = 0; WidthBefore = None; WidthAfter = None; BordersOverride = None; Origin = None } ]
       PreferredWidth = None; Alignment = None; LayoutMode = None; GridColumns = []; Borders = None; BackgroundColor = None; Shading = None; CellSpacing = None
       PaddingTop = None; PaddingRight = None; PaddingBottom = None; PaddingLeft = None; Floating = false; FloatingXml = None; StyleId = None; Look = None }
 let headerPart : HeaderFooterPart =
