@@ -7,8 +7,8 @@ Written 2026-10-12, when work was halted to move to another machine. Picks up th
 | Branch | What it is | State |
 |---|---|---|
 | `master`, tag `v0.1.19` | Last release, published as `@rbt/office` 0.1.19: 0.1.18 + what adopting it in redbat found - a click on the frame of any shape selects it (one behind the text could not be selected once the host's own frame was gone), the listeners hear of the undo step a shape drag makes, a turned shape's handles from getShapeHandles, GoTo's growth of the grid let go of again. (`v0.1.17` published nothing: the registry answered its upload with 404, and Forge does not run a failed action again for the same tag and commit.) | released |
-| `review-fixes` | The integration branch: what the next release is gated and cut from. Equal to `master` right after a release | nothing unreleased |
-| `fix/sheet19` | Spreadsheet pass nine, branched from `review-fixes` as it was at 0.1.16 + pass eight | 1 `WIP (ungated)` chart commit that **does not compile**, 1 handoff commit with the uncompiled drafts. Read `tools/handoff-sheet19/HANDOFF.md` on the branch |
+| `review-fixes` | The integration branch: what the next release is gated and cut from. Equal to `master` right after a release | Unreleased: item 1 of spreadsheet pass nine (chart layout, radar / bubble / stock, shape geometry, linked text) |
+| `fix/sheet19` | Spreadsheet pass nine as it was handed off | Its item 1 is in `review-fixes`, rebased, without the handoff folder. Items 2-7 are not started: `tools/handoff-sheet19/HANDOFF.md` on `origin/fix/sheet19` keeps their findings, and `bigsheet.mjs`, `render.fsx` and `shoot.mjs` beside it |
 
 `origin/fix/word19` is the pass as it was handed off (its `tools/handoff-word19/HANDOFF.md` has the host notes); the pass itself is in 0.1.18, rebased, without the handoff folder. The `tools/handoff-*` folders are temporary: delete them (or drop those commits) before merging a branch into `review-fixes`.
 
@@ -16,7 +16,7 @@ redbat (`cardillion-mega` remote): `master` has the 0.1.19 adoption (harness 110
 
 ## Next steps, in order
 
-1. **Resume `fix/sheet19`** from its handoff: rebase on `review-fixes`, splice the draft layout into `Charts.fs`, get it compiling, rewrite the two `stage52-charts` assertions that say radar and 3-D charts are not read. Then the rest of its list.
+1. **Finish `fix/sheet19`'s list** (its handoff, on `origin/fix/sheet19`): item 2 charts in print, PDF and canvas, item 4 print default sizes, item 5 large-sheet typing and the stack overflows, then 3, 6, 7.
 2. Continue with the backlog.
 
 ## Backlog
@@ -24,11 +24,12 @@ redbat (`cardillion-mega` remote): `master` has the 0.1.19 adoption (harness 110
 ### Spreadsheet — bugs in 0.1.16 as released
 - **`DeleteRows`, `InsertColumns` and `SetFilter` throw "Maximum call stack size exceeded" on an 846,000-cell sheet.** Not investigated beyond the observation; sort on that sheet is unmeasured.
 - Typing a number into a table cell on that sheet takes ~190–250 ms: `commitInput → asTableEntry → changeTables → runBookStep → recalculateEverything` (no hint) → `Recalc.diffCells` enumerates both whole cell maps. Insert row there: ~1 s. Full table of 27 operations in the sheet handoff.
-- Dashboard charts ignore manual `c:layout` (legend lands on a neighbouring shape, a fifth bar is lost), `c:dispUnits`, bold in the text-width estimate; KPI shapes with `textlink` draw the cached text, not the cell.
+- "Products sold by Quantity" in the e-commerce dashboard still wraps under its doughnut: the box is narrower in its scaled group. Whether Excel wraps it too is unchecked.
 
 ### Spreadsheet — features
 - Charts in print/PDF and the canvas painter (plan in the handoff: a `Scene → PaintItem list` adapter; `VecGroup` drops text in both painters today); native and wisp painters do not handle `VecPath`.
-- Radar, bubble, stock (parsed in the WIP, drawn only in the draft); chartEx waterfall/funnel/others; slicers and timelines.
+- chartEx waterfall/funnel/maps and others; slicers and timelines. Radar, bubble, stock and 3-D-as-flat are drawn; bubble and stock have been looked at on synthetic charts only, no workbook in the corpus has them.
+- Shapes: custom geometry, preset polygons, rotation and flips are checked on synthetic shapes only (the corpus has `rect` and `roundRect`, no `rot` or flips). A group's own rotation is ignored. Unwritten: `normAutofit`, `spcBef/spcAft/lnSpc`, `vert`.
 - Print and PDF use 25 / 100 px for unsized rows and columns instead of the sheet's defaults (`Pagination.withPrintSizes`, `Pdf.fs` `buildPrintGeometry`, `withPrintColumnWidths`, `withPrintRowHeights`); the page-break preview must agree with print. Preview: grey outside the print area, frames over frozen panes.
 - Custom table styles; built-in table style palettes.
 - Source patching: row insert (2 of 110 corpus workbooks patched in place, 105 written from the model), table add (29 / 80 / 1), note add (22 from the model); 24 workbooks never patch.
@@ -47,7 +48,7 @@ redbat (`cardillion-mega` remote): `master` has the 0.1.19 adoption (harness 110
 - Never exercised: bold typed into a multi-run field result.
 
 ### Cross-cutting
-- **LibreOffice is the one outside reader so far; nothing has been opened in Word or Excel.** `tools/libreoffice-check/check.mjs DIR` opens the documents `roundtrip.mjs --out DIR` keeps and compares the text LibreOffice reads from each save with the original's. On 0.1.18: 263 saves read as their originals, none failed. It is not part of the round trip yet (run it after one; write `--out` outside `/tmp`, the 381 documents are 75 MB), it compares text only, and the spreadsheet harness keeps no workbooks for it.
+- **LibreOffice is the one outside reader of the round-trip saves.** Real Word and Excel exist for this: the Windows VM `wordvm` (`DESKTOP-OP2QS0N`, `docs/word-parity.md`, `docs/excel-parity.md`, `tools/word-parity`, `tools/excel-parity`) gave the earlier parity references. The tools were last changed in June 2026 and the VM is not reachable from the new machine: `wordvm` resolves to nothing here. Nothing since (the saves, the chart layout) has been compared with it. `tools/libreoffice-check/check.mjs DIR` opens the documents `roundtrip.mjs --out DIR` keeps and compares the text LibreOffice reads from each save with the original's. On 0.1.18: 263 saves read as their originals, none failed. It is not part of the round trip yet (run it after one; write `--out` outside `/tmp`, the 381 documents are 75 MB), it compares text only, and the spreadsheet harness keeps no workbooks for it.
 - What it found in the 13 saves written from the model alone (`.model.docx`, listed, not counted as failures): a space lost between runs (`atdeploymenttime`, `gravida,pellentesque`, `next.When` in docx4j-getting-started, resume-template, file-sample); a drop cap read as a separate word (the calibre demo and its four copies); the content of bound content controls replaced by their placeholder or value (`docx4j-binding-simple`, `-hyperlink-binding`, `-invoice-2013`); `mc:AlternateContent` written as its fallback (`reader-structure`). LibreOffice hangs on `test-complex-tables.docx` itself, writing text without end (3 GB in 25 s; the check kills the run by its process group and by what it has written), and does not open `docx4j-unmarshall-template.docx`, the originals.
 - Native hosts are built, and the Word painter has a headless pixel test, but no native host has been run interactively. Firefox is untested.
 

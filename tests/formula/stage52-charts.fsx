@@ -115,7 +115,7 @@ let pieScene = Charts.layoutChart zooTheme zooData pie 480.0 288.0
 eq "pie: a pie plot" (pie.Plots |> List.map (fun plot -> plot.Kind)) [ Charts.PiePlot ]
 ok "pie: four wedges in four colours, from the centre" (let wedges = paths pieScene in wedges.Length = 4 && (wedges |> List.map snd |> List.distinct).Length = 4 && wedges |> List.forall (fun (d, _) -> d.Contains "A" && d.EndsWith "Z")) (sprintf "%A" (paths pieScene |> List.map snd))
 ok "pie: a legend, when the chart has one, names the categories" (pie.Legend.IsNone || [ "Q1"; "Q2"; "Q3"; "Q4" ] |> List.forall (fun label -> List.contains label (texts pieScene))) (sprintf "%A" (texts pieScene))
-let pieWithLegend = Charts.layoutChart zooTheme zooData { pie with Legend = Some { Position = "r"; Style = { Size = None; Color = None; Bold = None; Italic = None } } } 480.0 288.0
+let pieWithLegend = Charts.layoutChart zooTheme zooData { pie with Legend = Some { Position = "r"; Style = { Size = None; Color = None; Bold = None; Italic = None }; Layout = None; Overlay = false; Deleted = Set.empty } } 480.0 288.0
 ok "pie: with a legend at the right, its entries are the categories" ([ "Q1"; "Q2"; "Q3"; "Q4" ] |> List.forall (fun label -> List.contains label (texts pieWithLegend))) (sprintf "%A" (texts pieWithLegend))
 
 // The area chart and the scatter chart.
@@ -162,8 +162,9 @@ let doughnut = parsed (chartXml ("<c:doughnutChart><c:varyColors val=\"1\"/>" + 
 let doughnutScene = Charts.layoutChart Charts.defaultTheme noData doughnut 300.0 300.0
 ok "doughnut: three rings segments with a hole (two arcs each), labelled 25%, 25%, 50%" (let wedges = paths doughnutScene in wedges.Length = 3 && wedges |> List.forall (fun (d, _) -> (d.Split('A').Length - 1) = 2) && [ "25%"; "50%" ] |> List.forall (fun label -> List.contains label (texts doughnutScene))) (sprintf "%A %A" (paths doughnutScene |> List.map fst) (texts doughnutScene))
 // What is not drawn says so.
-eq "a radar chart is not read (the caller shows a placeholder)" (Charts.parseChart Charts.defaultTheme (chartXml "<c:radarChart><c:radarStyle val=\"marker\"/></c:radarChart>" "")) None
-eq "a 3-D chart beside a known one neither" (Charts.parseChart Charts.defaultTheme (chartXml (barPlot "clustered" (ser 0 "FF0000" [ 1.0 ] "") + "<c:bar3DChart/>") axesXml) |> Option.isSome) false
+let plotKindsOf xml = Charts.parseChart Charts.defaultTheme xml |> Option.map (fun chart -> chart.Plots |> List.map (fun plot -> plot.Kind))
+eq "a radar chart is read" (plotKindsOf (chartXml ("<c:radarChart><c:radarStyle val=\"marker\"/>" + ser 0 "FF0000" [ 1.0 ] "" + "</c:radarChart>") "")) (Some [ Charts.RadarPlot ])
+eq "a 3-D bar chart is read as a flat one, beside a known one too" (plotKindsOf (chartXml (barPlot "clustered" (ser 0 "FF0000" [ 1.0 ] "") + "<c:bar3DChart><c:barDir val=\"col\"/>" + ser 1 "00FF00" [ 2.0 ] "" + "</c:bar3DChart>") axesXml)) (Some [ Charts.BarPlot; Charts.BarPlot ])
 eq "what is not a chart" (Charts.parseChart Charts.defaultTheme "<x/>", Charts.parseChart Charts.defaultTheme "not xml") (None, None)
 
 // ---- the theme ---------------------------------------------------------------------
@@ -292,6 +293,39 @@ do
           Charts.isChartEx "<c:chartSpace xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\" xmlns:cx=\"http://schemas.microsoft.com/office/drawing/2014/chartex\"/>"
           Charts.isChartEx ""; Charts.isChartEx "no xml" ]
         [ true; true; true; false; false; false ]
+
+// Manual layouts: a legend's and a plot's boxes are the chart's, not worked out.
+let boxLayout (target: string) (x: float) (y: float) (w: float) (h: float) =
+    sprintf "<c:layout><c:manualLayout>%s<c:xMode val=\"edge\"/><c:yMode val=\"edge\"/><c:x val=\"%g\"/><c:y val=\"%g\"/><c:w val=\"%g\"/><c:h val=\"%g\"/></c:manualLayout></c:layout>" target x y w h
+let inPlotArea (layout: string) (xml: string) = xml.Replace("<c:plotArea>", "<c:plotArea>" + layout)
+let manualBars = Charts.layoutChart Charts.defaultTheme noData (parsed (inPlotArea (boxLayout "<c:layoutTarget val=\"inner\"/>" 0.5 0.0 0.5 0.5) (chartXml (barPlot "clustered" (ser 0 "FF0000" [ 1.0; 2.0; 3.0; 4.0; 5.0 ] "")) axesXml))) 400.0 300.0
+ok "an inner plot layout: every bar inside its box, none lost" (let bars = rects manualBars |> List.filter (fun (_, _, w, _, fill) -> fill = "#FF0000" && w > 12.0) in bars.Length = 5 && bars |> List.forall (fun (x, y, _, h, _) -> x >= 199.0 && y + h <= 151.0)) (sprintf "%A" (rects manualBars))
+
+// The kinds that were not drawn.
+let radarScene = Charts.layoutChart Charts.defaultTheme noData (parsed (chartXml ("<c:radarChart><c:radarStyle val=\"marker\"/>" + ser 0 "FF0000" [ 1.0; 2.0; 3.0 ] "" + "</c:radarChart>") "")) 300.0 300.0
+ok "a radar chart is drawn: a closed line of the series' colour" ((Charts.sceneSvg radarScene).ToUpperInvariant().Contains "#FF0000") (Charts.sceneSvg radarScene)
+let threeD = parsed (chartXml ("<c:bar3DChart><c:barDir val=\"col\"/><c:grouping val=\"clustered\"/>" + ser 0 "FF0000" [ 1.0; 2.0 ] "" + "</c:bar3DChart>") axesXml)
+eq "a 3-D bar chart is drawn flat: its bars" (barsOf (Charts.layoutChart Charts.defaultTheme noData threeD 400.0 300.0) "#FF0000" |> List.length) 2
+
+// Shapes.
+let shapeParts : Charts.DrawingParts = { Theme = Charts.defaultTheme; Chart = (fun _ -> None); Picture = (fun _ -> None) }
+let shapeOf (attrs: string) (xfrm: string) (geometry: string) (body: string) =
+    sprintf "<xdr:twoCellAnchor xmlns:xdr=\"x\" xmlns:a=\"a\"><xdr:sp %s><xdr:spPr><a:xfrm %s><a:off x=\"0\" y=\"0\"/><a:ext cx=\"952500\" cy=\"476250\"/></a:xfrm>%s<a:solidFill><a:srgbClr val=\"FF0000\"/></a:solidFill></xdr:spPr>%s</xdr:sp></xdr:twoCellAnchor>" attrs xfrm geometry body
+let shapeSvg (data: Charts.ChartData) xml = Charts.objectScene shapeParts data xml 100.0 50.0 |> Option.map Charts.sceneSvg |> Option.defaultValue "(no scene)"
+let prst (name: string) = sprintf "<a:prstGeom prst=\"%s\"><a:avLst/></a:prstGeom>" name
+let has (svg: string) (part: string) = svg.Contains part
+ok "a preset arrow is its outline, not a rectangle" (let svg = shapeSvg noData (shapeOf "" "" (prst "rightArrow") "") in not (has svg "<rect") && (has svg "<polyline" || has svg "<polygon" || has svg "<path")) (shapeSvg noData (shapeOf "" "" (prst "rightArrow") ""))
+let custom = "<a:custGeom><a:pathLst><a:path w=\"100\" h=\"100\"><a:moveTo><a:pt x=\"0\" y=\"0\"/></a:moveTo><a:lnTo><a:pt x=\"100\" y=\"50\"/></a:lnTo><a:close/></a:path></a:pathLst></a:custGeom>"
+ok "a custom geometry: its path, scaled to the shape" (has (shapeSvg noData (shapeOf "" "" custom "")) "M0 0L100 25Z") (shapeSvg noData (shapeOf "" "" custom ""))
+ok "a turned shape turns about its centre" (has (shapeSvg noData (shapeOf "" "rot=\"5400000\"" (prst "rect") "")) "matrix(") (shapeSvg noData (shapeOf "" "rot=\"5400000\"" (prst "rect") ""))
+let boxed (paragraph: string) = sprintf "<xdr:txBody><a:bodyPr/><a:p>%s</a:p></xdr:txBody>" paragraph
+ok "a flipped shape's outline is mirrored, its text not" (let svg = shapeSvg noData (shapeOf "" "flipH=\"1\"" (prst "rightArrow") (boxed "<a:r><a:t>hi</a:t></a:r>")) in has svg "matrix(-1" && svg.IndexOf ">hi<" > svg.IndexOf "</g>") (shapeSvg noData (shapeOf "" "flipH=\"1\"" (prst "rightArrow") (boxed "<a:r><a:t>hi</a:t></a:r>")))
+ok "a line break makes two lines" (let svg = shapeSvg noData (shapeOf "" "" (prst "rect") (boxed "<a:r><a:t>one</a:t></a:r><a:br/><a:r><a:t>two</a:t></a:r>")) in has svg "one" && has svg "two" && not (has svg "onetwo")) ""
+let linkData : Charts.ChartData = { noData with Cells = (fun sheet row col _ _ -> if sheet = "KPI" && row = 16 && col = 1 then Some [| [| Some { Value = CellValue.Number 42.0; Format = defaultFormat; Comment = None } |] |] else None); Display = (fun _ -> "live 42") }
+let linked = shapeOf "textlink=\"KPI!$B$17\"" "" (prst "rect") (boxed "<a:fld id=\"{1}\" type=\"TxLink\"><a:t>stale</a:t></a:fld>")
+ok "a shape linked to a cell shows the cell" (let svg = shapeSvg linkData linked in has svg "live 42" && not (has svg "stale")) (shapeSvg linkData linked)
+ok "... and the text of the file when the cell cannot be read" (has (shapeSvg noData linked) "stale") (shapeSvg noData linked)
+ok "... which a plain field of no link keeps" (has (shapeSvg linkData (shapeOf "" "" (prst "rect") (boxed "<a:fld id=\"{1}\" type=\"TxLink\"><a:t>stale</a:t></a:fld>"))) "stale") ""
 
 printfn "Stage 52 chart tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
