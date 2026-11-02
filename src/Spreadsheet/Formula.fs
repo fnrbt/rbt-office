@@ -3827,7 +3827,7 @@ let private functionSignatureSpecs : (string * string) list =
        "NORM.DIST", "|S"; "NORM.INV", "|S"; "NORM.S.DIST", "|S"; "NORM.S.INV", "|S"; "NORMDIST", "|S"; "NORMINV", "|S"
        "NORMSDIST", "|S"; "NORMSINV", "|S"; "NOT", "|S"; "NOW", "|S"; "NPER", "|S"; "NPV", "S|R"
        "NUMBERVALUE", "|S"; "OCT2DEC", "|S"; "ODD", "|S"; "OR", "|R"; "PEARSON", "|R"; "PERCENTILE", "RS"
-       "PERCENTILE.INC", "RS"; "PERCENTRANK", "RSS"; "PERCENTRANK.INC", "RSS"; "PI", "|S"; "PMT", "|S"; "POWER", "|S"
+       "PERCENTILE.INC", "RS"; "PERCENTRANK", "RSS"; "PERCENTRANK.INC", "RSS"; "PI", "|S"; "PMT", "|S"; "IPMT", "|S"; "PPMT", "|S"; "CUMIPMT", "|S"; "CUMPRINC", "|S"; "XNPV", "SRR"; "XIRR", "RRS"; "MIRR", "RSS"; "POWER", "|S"
        "PRODUCT", "|R"; "PROPER", "|S"; "PV", "|S"; "QUARTILE", "RS"; "QUARTILE.INC", "RS"; "QUOTIENT", "|S"
        "RADIANS", "|S"; "RAND", "|S"; "RANDBETWEEN", "|S"; "RANK", "SRS"; "RANK.AVG", "SRS"; "RANK.EQ", "SRS"
        "RATE", "|S"; "REPLACE", "|S"; "REPT", "|S"; "RIGHT", "|S"; "ROUND", "|S"; "ROUNDDOWN", "|S"
@@ -4065,6 +4065,71 @@ let private polishRoot (f: float -> float) (start: float) : float =
 /// (1 + rate) ^ periods for the time-value-of-money functions. For a whole
 /// number of periods Excel compounds period by period (repeated
 /// multiplication), which differs from pow() in the last digit.
+/// The payment of a loan (PMT): rate, periods, present value, future value, type (1: in advance).
+let private loanPayment (r: float) (np: float) (pv: float) (fv: float) (ty: float) : float =
+    if r = 0.0 then -(pv + fv) / np
+    else (let p = (1.0 + r) ** np in -(pv * p + fv) * r / ((1.0 + r * ty) * (p - 1.0)))
+
+/// The future value (FV) of `periods` payments on a present value.
+let private loanFuture (r: float) (periods: float) (pmt: float) (pv: float) (ty: float) : float =
+    if r = 0.0 then -(pv + pmt * periods)
+    else (let p = (1.0 + r) ** periods in -(pv * p + pmt * (1.0 + r * ty) * ((p - 1.0) / r)))
+
+/// The interest part of the payment of period `per` (IPMT).
+let private loanInterest (r: float) (per: float) (pmt: float) (pv: float) (ty: float) : float =
+    let interest =
+        if per = 1.0 then (if ty <> 0.0 then 0.0 else -pv)
+        elif ty <> 0.0 then loanFuture r (per - 2.0) pmt pv 1.0 - pmt
+        else loanFuture r (per - 1.0) pmt pv 0.0
+    interest * r
+
+/// The present value of cash flows on dates (XNPV): each discounted by its days after the first / 365.
+let private datedPresentValue (r: float) (values: float[]) (dates: float[]) : float =
+    let mutable total = 0.0
+    for i in 0 .. values.Length - 1 do
+        total <- total + values.[i] / ((1.0 + r) ** ((Math.Truncate dates.[i] - Math.Truncate dates.[0]) / 365.0))
+    total
+
+/// A root of `f` (a rate: above -1): Newton's method from `guess`, as Excel's IRR goes; where that does not
+/// converge, a sign change looked for over the rates and halved down to the root.
+let private rootOf (f: float -> float) (guess: float) : float option =
+    let ok (r: float) = not (Double.IsNaN r || Double.IsInfinity r) && r > -1.0
+    let mutable r = guess
+    let mutable result = None
+    let mutable i = 0
+    while result.IsNone && i < 100 do
+        let value = f r
+        let h = max 1e-7 (abs r * 1e-7)
+        let d = (f (r + h) - value) / h
+        if value = 0.0 then result <- Some r
+        elif abs d < 1e-300 || not (ok (r - value / d)) then i <- 100
+        else
+            let next = r - value / d
+            if abs (next - r) < 1e-12 * max 1.0 (abs r) then result <- Some (polishRoot f next)
+            r <- next
+        i <- i + 1
+    match result with
+    | Some found when ok found -> Some found
+    | _ ->
+        // Bracketing: rates from just above -1 to 10, the first sign change, then bisection.
+        let grid = [| -0.99; -0.9; -0.75; -0.5; -0.3; -0.2; -0.1; -0.05; 0.0; 0.02; 0.05; 0.1; 0.15; 0.2; 0.3; 0.5; 0.75; 1.0; 1.5; 2.0; 3.0; 5.0; 10.0 |]
+        let values = grid |> Array.map f
+        let finite (v: float) = not (Double.IsNaN v || Double.IsInfinity v)
+        match Seq.init (grid.Length - 1) id |> Seq.tryFind (fun k -> finite values.[k] && finite values.[k + 1] && values.[k] * values.[k + 1] <= 0.0) with
+        | None -> None
+        | Some k ->
+            let mutable lo = grid.[k]
+            let mutable hi = grid.[k + 1]
+            let mutable flo = values.[k]
+            for _ in 1 .. 200 do
+                let mid = (lo + hi) / 2.0
+                let fm = f mid
+                if flo * fm <= 0.0 then hi <- mid
+                else
+                    lo <- mid
+                    flo <- fm
+            Some ((lo + hi) / 2.0)
+
 let private compound (rate: float) (periods: float) : float =
     if periods >= 0.0 && periods <= 1200.0 && periods = Math.Floor periods then
         let mutable factor = 1.0
@@ -11987,6 +12052,69 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                     if abs d < 1e-14 then i <- 80 else r <- r - f / d
                 i <- i + 1
             match result with Some r -> CellValue.Number r | None -> err Err.num
+    // (IPMT, PPMT, CUMIPMT and CUMPRINC as LibreOffice computes them - Excel's results: the balance
+    // after a period is the future value of the loan so far.)
+    | "IPMT" | "PPMT" ->
+        if nargs < 4 then err Err.value else
+        match argNum 0, argNum 1, argNum 2, argNum 3 with
+        | Result.Error e, _, _, _ | _, Result.Error e, _, _ | _, _, Result.Error e, _ | _, _, _, Result.Error e -> err e
+        | Ok r, Ok per, Ok np, Ok pv ->
+            let fv = if nargs >= 5 then (match argNum 4 with Ok v -> v | _ -> 0.0) else 0.0
+            let ty = if nargs >= 6 then (match argNum 5 with Ok v -> v | _ -> 0.0) else 0.0
+            if per < 1.0 || per >= np + 1.0 || np <= 0.0 then err Err.num
+            else
+                let pmt = loanPayment r np pv fv ty
+                let ipmt = loanInterest r per pmt pv ty
+                CellValue.Number (if name = "IPMT" then ipmt else pmt - ipmt)
+    | "CUMIPMT" | "CUMPRINC" ->
+        if nargs < 6 then err Err.value else
+        match argNum 0, argNum 1, argNum 2, argNum 3, argNum 4, argNum 5 with
+        | Ok r, Ok np, Ok pv, Ok first, Ok last, Ok ty ->
+            let first, last, ty = Math.Truncate first, Math.Truncate last, Math.Truncate ty
+            if r <= 0.0 || np <= 0.0 || pv <= 0.0 || first < 1.0 || last < first || last > np || (ty <> 0.0 && ty <> 1.0) then err Err.num
+            else
+                let pmt = loanPayment r np pv 0.0 ty
+                let mutable total = 0.0
+                for per in first .. last do
+                    let ipmt = loanInterest r per pmt pv ty
+                    total <- total + (if name = "CUMIPMT" then ipmt else pmt - ipmt)
+                CellValue.Number total
+        | results ->
+            let (a, b, c, d, e, f) = results
+            match [ a; b; c; d; e; f ] |> List.tryPick (function Result.Error code -> Some code | _ -> None) with
+            | Some code -> err code
+            | None -> err Err.value
+    | "XNPV" ->
+        if nargs < 3 then err Err.value else
+        match argNum 0, numbersArrayOfArgs [ argExpr 1 ] ctx, numbersArrayOfArgs [ argExpr 2 ] ctx with
+        | Result.Error e, _, _ | _, Result.Error e, _ | _, _, Result.Error e -> err e
+        | Ok r, Ok values, Ok dates ->
+            if values.Length <> dates.Length || values.Length = 0 then err Err.num
+            elif r <= -1.0 then err Err.num
+            else CellValue.Number (datedPresentValue r values dates)
+    | "XIRR" ->
+        if nargs < 2 then err Err.value else
+        match numbersArrayOfArgs [ argExpr 0 ] ctx, numbersArrayOfArgs [ argExpr 1 ] ctx with
+        | Result.Error e, _ | _, Result.Error e -> err e
+        | Ok values, Ok dates ->
+            let guess = if nargs >= 3 then (match argNum 2 with Ok v -> v | _ -> 0.1) else 0.1
+            if values.Length <> dates.Length || values.Length < 2 || not (Array.exists (fun v -> v > 0.0) values) || not (Array.exists (fun v -> v < 0.0) values) then err Err.num
+            else
+                match rootOf (fun r -> datedPresentValue r values dates) guess with
+                | Some r -> CellValue.Number r
+                | None -> err Err.num
+    | "MIRR" ->
+        if nargs < 3 then err Err.value else
+        match numbersArrayOfArgs [ argExpr 0 ] ctx, argNum 1, argNum 2 with
+        | Result.Error e, _, _ | _, Result.Error e, _ | _, _, Result.Error e -> err e
+        | Ok values, Ok financeRate, Ok reinvestRate ->
+            let n = float values.Length
+            let presentOf (rate: float) (keep: float -> bool) =
+                values |> Array.mapi (fun i v -> if keep v then v / ((1.0 + rate) ** float (i + 1)) else 0.0) |> Array.sum
+            let positive = presentOf reinvestRate (fun v -> v > 0.0)
+            let negative = presentOf financeRate (fun v -> v < 0.0)
+            if negative = 0.0 || positive = 0.0 || n < 2.0 then err Err.div0
+            else CellValue.Number ((-positive * ((1.0 + reinvestRate) ** n) / (negative * (1.0 + financeRate))) ** (1.0 / (n - 1.0)) - 1.0)
     | "NPV" ->
         if nargs < 2 then err Err.value else
         match argNum 0 with
@@ -12012,17 +12140,9 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                     for i = 0 to cashFlows.Length - 1 do
                         total <- total + cashFlows.[i] / ((1.0 + r) ** float i)
                     total
-                let mutable r = guess
-                let mutable result = None
-                let mutable i = 0
-                while result.IsNone && i < 80 do
-                    let f = npv r
-                    if abs f < 1e-8 then result <- Some (polishRoot npv r)
-                    else
-                        let d = (npv (r + 1e-6) - f) / 1e-6
-                        if abs d < 1e-14 then i <- 80 else r <- r - f / d
-                    i <- i + 1
-                match result with Some r when not (Double.IsNaN r || Double.IsInfinity r) -> CellValue.Number r | _ -> err Err.num
+                match rootOf npv guess with
+                | Some r -> CellValue.Number r
+                | None -> err Err.num
             | Ok _ -> err Err.num
     | "SLN" ->
         match argNum 0, argNum 1, argNum 2 with
@@ -13436,6 +13556,21 @@ and evalExtendedArrayFunction (name: string) (args: Expr list) (ctx: EvalContext
 /// Parse + evaluate a formula string in one shot. Defined names resolve at
 /// the workbook's active sheet — the right scope for an interactive
 /// edit-buffer preview, which is what this entry point serves.
+/// The value of a cell's formula: `eval`, with what Excel does at the end of a formula whose last
+/// operation is an addition or a subtraction - a result that is no more than the error of the binary
+/// fractions of its operands (within 2^-48 of the larger) is 0. (Since Excel 97; not inside a
+/// function or a deeper operation. `=1-0.9-0.1` is 0, `=1*(1-0.9-0.1)` is not.)
+let evalCell (expr: Expr) (ctx: EvalContext) : CellValue =
+    let value = eval expr ctx
+    match expr, value with
+    | BinOp (left, ("+" | "-" as op), right), CellValue.Number x when x <> 0.0 && abs x < 1e-3 ->
+        match unwrapValue (eval left ctx), unwrapValue (eval right ctx) with
+        | CellValue.Number a, CellValue.Number b ->
+            let b = if op = "-" then -b else b
+            if (a > 0.0) <> (b > 0.0) && abs x <= max (abs a) (abs b) * 3.552713678800501e-15 then CellValue.Number 0.0 else value
+        | _ -> value
+    | _ -> value
+
 let evaluateFormula (formula: string) (model: SpreadsheetModel)
                     (workbook: Rbt.Spreadsheet.Workbook.Workbook option) : CellValue =
     match parseFormulaShared formula with
@@ -13445,7 +13580,7 @@ let evaluateFormula (formula: string) (model: SpreadsheetModel)
               Workbook = workbook
               Sheet = workbook |> Option.map (fun w -> w.ActiveSheet)
               CurrentCell = None }
-        eval expr ctx
+        evalCell expr ctx
     | Result.Error _ -> CellValue.Error Err.syntax
 
 // ---------------------------------------------------------------------------
@@ -13668,7 +13803,7 @@ and private recalculateFormulasKeepingBlocked (blockedAnchors: Set<CellAddress>)
                 | None ->
                     let updated = { model with Cells = updatedCells }
                     let ctx = { Model = updated; Workbook = workbook; Sheet = currentSheet; CurrentCell = Some addr }
-                    let result = eval fc.Expr ctx
+                    let result = evalCell fc.Expr ctx
                     applyFormulaResult addr fc result
             | false, _ -> ()
         // OFFSET / INDIRECT pick their precedents while evaluating, so the
@@ -13711,7 +13846,7 @@ and private recalculateFormulasKeepingBlocked (blockedAnchors: Set<CellAddress>)
                         | true, fc when fc.ParseError.IsNone ->
                             let updated = { model with Cells = updatedCells }
                             let ctx = { Model = updated; Workbook = workbook; Sheet = currentSheet; CurrentCell = Some addr }
-                            let nextValue = CellValue.Formula (fc.Formula, eval fc.Expr ctx)
+                            let nextValue = CellValue.Formula (fc.Formula, evalCell fc.Expr ctx)
                             let current = Map.tryFind addr updatedCells |> Option.map (fun cell -> cell.Value)
                             if current <> Some nextValue then
                                 updatedCells <- Map.add addr { fc.Cell with Value = nextValue } updatedCells
@@ -14130,7 +14265,7 @@ let evaluateFormulaShifted (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
         if exprSpillsStatically expr then
             let arr = evalArray expr ctx
             if arr.Length > 0 && arr.[0].Length > 0 then unwrapValue arr.[0].[0] else CellValue.Error Err.value
-        else unwrapValue (eval expr ctx)
+        else unwrapValue (evalCell expr ctx)
 
 /// Every value a formula gives, row by row, evaluated as `evaluateFormulaShifted`
 /// evaluates it: the cells of a reference (a range, OFFSET, INDEX:INDEX, a

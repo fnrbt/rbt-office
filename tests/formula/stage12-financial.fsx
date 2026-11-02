@@ -61,6 +61,42 @@ let residual = [ -632835.0; 0.0; 0.0; -33539.42392; 3222649.874 ] |> List.mapi (
 near "irr-converged-residual" residual 0.0 1e-8
 near "irr-five-flows" rate 0.4963271306250475 1e-13
 
+// The loan and dated cash-flow functions, by the examples of Microsoft's pages for them.
+approxT "ipmt"      "=IPMT(0.1/12,1,36,8000)"                     -66.66666667 1e-6
+approxT "ipmt-year" "=IPMT(0.1,3,3,8000)"                         -292.4471299 1e-6
+approxT "ppmt"      "=PPMT(0.1/12,1,24,2000)"                     -75.62318601 1e-6
+approxT "ppmt-fv"   "=PPMT(0.08,10,10,200000)"                    -27598.05346 1e-4
+approxT "cumipmt"   "=CUMIPMT(0.09/12,30*12,125000,13,24,0)"      -11135.23213 1e-4
+approxT "cumipmt-1" "=CUMIPMT(0.09/12,30*12,125000,1,1,0)"        -937.5 1e-6
+approxT "cumprinc"  "=CUMPRINC(0.09/12,30*12,125000,13,24,0)"     -934.1071234 1e-5
+approxT "cumprinc-1" "=CUMPRINC(0.09/12,30*12,125000,1,1,0)"      -68.27827118 1e-6
+approxT "ipmt+ppmt is the payment" "=IPMT(0.05/12,7,60,25000)+PPMT(0.05/12,7,60,25000)-PMT(0.05/12,60,25000)" 0.0 1e-9
+let dated =
+    { model with
+        Cells =
+            [ for i, (v, d) in List.indexed [ -10000., 39448.; 2750., 39508.; 4250., 39751.; 3250., 39859.; 2750., 39904. ] do
+                yield { Row = i; Col = 1 }, cell (CellValue.Number v)
+                yield { Row = i; Col = 2 }, cell (CellValue.Number d) ]
+            |> List.fold (fun cells (at, c) -> Map.add at c cells) model.Cells }
+let evIn m f = evaluateFormula f m None
+let near2 label m f expected tol =
+    match evIn m f with
+    | CellValue.Number g when abs (g - expected) < tol -> pass <- pass + 1
+    | got -> fail <- fail + 1; printfn "FAIL %-20s %-34s expected ~%.9f got %A" label f expected got
+near2 "xnpv" dated "=XNPV(0.09,B1:B5,C1:C5)" 2086.647602 1e-5
+near2 "xirr" dated "=XIRR(B1:B5,C1:C5)" 0.373362535 1e-8
+near2 "xirr-guess" dated "=XIRR(B1:B5,C1:C5,0.5)" 0.373362535 1e-8
+let mirrModel =
+    { model with Cells = [ -120000.; 39000.; 30000.; 21000.; 37000.; 46000. ] |> List.mapi (fun i v -> { Row = i; Col = 3 }, cell (CellValue.Number v)) |> List.fold (fun cells (at, c) -> Map.add at c cells) model.Cells }
+near2 "mirr" mirrModel "=MIRR(D1:D6,0.1,0.12)" 0.126094 1e-6
+near2 "mirr-three" mirrModel "=MIRR(D1:D4,0.1,0.12)" -0.048044655 1e-8
+// IRR where Newton's method from 0.1 does not find the root: the rate is still found (Lyric-PF-DCF!F227).
+let lyric =
+    { model with Cells = [ -1.0e7; 4.0e5; 4.2e5; 4.3e5; 4.4e5; 1.04e7 ] |> List.mapi (fun i v -> { Row = i; Col = 4 }, cell (CellValue.Number v)) |> List.fold (fun cells (at, c) -> Map.add at c cells) model.Cells }
+match evIn lyric "=IRR(E1:E6)", evIn lyric "=NPV(IRR(E1:E6),E2:E6)+E1" with
+| CellValue.Number r, CellValue.Number residual when abs residual < 1e-4 && r > 0.0 && r < 1.0 -> pass <- pass + 1
+| got -> fail <- fail + 1; printfn "FAIL irr-converges %A" got
+
 printfn ""
 printfn "Stage 12 financial tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

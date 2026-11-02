@@ -107,5 +107,10 @@ check "minus-plus-text"    "=-+A3"           (e "VALUE!")
 check "plus-minus-number"  "=+-A1"           (n -10.0)
 
 printfn ""
+// A formula whose last operation is an addition or a subtraction that comes out within the error of
+// binary fractions of nothing is 0, as in Excel; inside a deeper operation it is not (Microsoft's example).
+check "near-zero sum is 0"         "=1-0.9-0.1"      (n 0.0)
+check "near-zero, not top-level"   "=1*(1-0.9-0.1)"  (n (1.0 * (1.0 - 0.9 - 0.1)))
+check "a small sum is kept"        "=0.3-0.2"        (n (0.3 - 0.2))
 printfn "Stage 1 formula tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
