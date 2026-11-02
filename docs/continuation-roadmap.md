@@ -12,7 +12,7 @@ Written 2026-10-12, when work was halted to move to another machine; next steps 
 
 `origin/fix/word19` is the pass as it was handed off (its `tools/handoff-word19/HANDOFF.md` has the host notes); the pass itself is in 0.1.18, rebased, without the handoff folder. The `tools/handoff-*` folders are temporary: delete them (or drop those commits) before merging a branch into `review-fixes`.
 
-redbat (`cardillion-mega` remote): `master` has the 0.1.22 adoption (harness 1104/1104 with `word-new18`, `sheet-new18`; the host no longer draws its own Word shape frame, nor handles header text box double clicks or Ctrl+Enter; the name box goes where GoTo goes; View has a page break preview). On a new machine branch from `master`.
+redbat (`cardillion-mega` remote): `master` has the 0.1.23 adoption (`88f84cf4c`, harness 1104/1104 on a clean build; build the harness with `tools/redbat-adoption/harness-keep`, the scratch copies went stale). Before it, the 0.1.22 adoption (harness 1104/1104 with `word-new18`, `sheet-new18`; the host no longer draws its own Word shape frame, nor handles header text box double clicks or Ctrl+Enter; the name box goes where GoTo goes; View has a page break preview). On a new machine branch from `master`.
 
 ## Next steps, in order
 
