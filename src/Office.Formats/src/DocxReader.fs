@@ -175,6 +175,9 @@ type Run = {
     /// Name of the move range (w:moveFromRangeStart / w:moveToRangeStart) a
     /// moveFrom / moveTo run lies in.
     MoveName: string option
+    /// The w:r the run was read from, in its part's text (docs/save-architecture.md);
+    /// Span.none for a run that is not one (a bookmark, a picture outside a run).
+    Source: XmlDsl.Span
 }
 
 type ListInfo = {
@@ -278,6 +281,8 @@ type Paragraph = {
     /// The paragraph mark is a tracked change (w:ins / w:del in w:pPr/w:rPr):
     /// ("insert" | "delete", id / author / date).
     MarkRevision: (string * RevisionMark) option
+    /// The w:p the paragraph was read from, in its part's text; Span.none for one made.
+    Source: XmlDsl.Span
 }
 
 type BorderStyle = {
@@ -1479,7 +1484,7 @@ module Docx =
                   RevisionId = None
                   RevisionType = None
                   RevisionAuthor = None
-                  RevisionDate = None; InsertedRevision = None; MoveName = None }
+                  RevisionDate = None; InsertedRevision = None; MoveName = None; Source = XmlDsl.Span.none }
             let whole () = [ fieldOf (runs |> List.tryHead |> Option.map runProps |> Option.defaultValue (runProps fldNode)) None ]
             let computed =
                 let upper = code.Trim().ToUpperInvariant()
@@ -1593,6 +1598,7 @@ module Docx =
                 RevisionDate = first |> Option.bind (fun run -> run.RevisionDate)
                 InsertedRevision = first |> Option.bind (fun run -> run.InsertedRevision)
                 MoveName = first |> Option.bind (fun run -> run.MoveName)
+                Source = (match first with Some run -> run.Source | None -> XmlDsl.Span.none)
             }
         let whole () = [ fieldOf (if field.ResultRuns.Count > 0 then Some field.ResultRuns.[0] else None) None ]
         let computed =
@@ -1763,7 +1769,8 @@ module Docx =
               RevisionId = revId
               RevisionType = None
               RevisionAuthor = None
-              RevisionDate = None; InsertedRevision = None; MoveName = None }
+              RevisionDate = None; InsertedRevision = None; MoveName = None
+              Source = (match rNode with XmlDsl.Element (_, _, _, span) -> span | _ -> XmlDsl.Span.none) }
 
         let childTokens =
             Xml.children rNode
@@ -1895,7 +1902,7 @@ module Docx =
                     RevisionId = None
                     RevisionType = None
                     RevisionAuthor = None
-                    RevisionDate = None; InsertedRevision = None; MoveName = None
+                    RevisionDate = None; InsertedRevision = None; MoveName = None; Source = XmlDsl.Span.none
                 }
             // (Runs that are formatted alike are one run, as they were before each was read on its own.)
             let texts =
@@ -1970,14 +1977,14 @@ module Docx =
                 | Some name when Ns.stripNs name = "fldSimple" ->
                     simpleFieldRuns child |> List.map RunToken
                 | Some name when Ns.stripNs name = "oMath" || Ns.stripNs name = "oMathPara" ->
-                    [RunToken { Content = EquationXml (xmlToString child); Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None }]
+                    [RunToken { Content = EquationXml (xmlToString child); Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None; Source = XmlDsl.Span.none }]
                 | Some name when Ns.stripNs name = "bookmarkStart" ->
                     attr "id" child
-                    |> Option.map (fun id -> RunToken { Content = BookmarkStart { Id = id; Name = attr "name" child }; Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None })
+                    |> Option.map (fun id -> RunToken { Content = BookmarkStart { Id = id; Name = attr "name" child }; Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None; Source = XmlDsl.Span.none })
                     |> Option.toList
                 | Some name when Ns.stripNs name = "bookmarkEnd" ->
                     attr "id" child
-                    |> Option.map (fun id -> RunToken { Content = BookmarkEnd id; Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None })
+                    |> Option.map (fun id -> RunToken { Content = BookmarkEnd id; Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None; Source = XmlDsl.Span.none })
                     |> Option.toList
                 // Transparent inline wrappers: their runs are ordinary paragraph content.
                 | Some name when (match Ns.stripNs name with "smartTag" | "customXml" | "dir" | "bdo" -> true | _ -> false) ->
@@ -1985,7 +1992,7 @@ module Docx =
                 | Some name when Ns.stripNs name = "AlternateContent" ->
                     if isGraphicAlternateContent child then
                         // A drawing in two forms: kept whole rather than reduced to its fallback.
-                        [RunToken { Content = Image (opaqueObject true child); Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None }]
+                        [RunToken { Content = Image (opaqueObject true child); Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None; Source = XmlDsl.Span.none }]
                     else
                         // Take the fallback (plain WordprocessingML/VML) when there is one, else the first choice.
                         match Ns.childNs "Fallback" child |> Option.orElseWith (fun () -> Ns.childNs "Choice" child) with
@@ -2031,7 +2038,7 @@ module Docx =
                             |> Option.map (fun v -> v = "1" || v = "true")
                             |> Option.defaultValue false
                         let glyph = if isChecked then "☒" else "☐"   // ☒ / ☐
-                        [RunToken { Content = Text glyph; Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None }]
+                        [RunToken { Content = Text glyph; Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None; Source = XmlDsl.Span.none }]
                     | None ->
                         Ns.childNs "sdtContent" child
                         |> Option.map tokensFromNode
@@ -2051,7 +2058,8 @@ module Docx =
                     wElem elementName markProps
                     |> Option.map (fun node -> revisionType, { Id = attr "id" node; Author = attr "author" node; Date = attr "date" node })))
 
-        { Runs = runs; Properties = props; MarkRevision = markRevision }
+        { Runs = runs; Properties = props; MarkRevision = markRevision
+          Source = (match pNode with XmlDsl.Element (_, _, _, span) -> span | _ -> XmlDsl.Span.none) }
 
     let paragraph (pNode: XmlNode) : Paragraph =
         paragraphWithRenderedBreakCounter None pNode
@@ -4572,19 +4580,19 @@ let openProgressiveFromSource (keepContent: bool) (source: PartSource) : Progres
                 openBodyCursor xml
                 |> Option.bind (fun cursor -> finalSectionPropertiesAt cursor |> Option.map (fun final -> cursor, final))
         let names = System.Collections.Generic.HashSet<string>()
-        /// One element of the main part as a node.
-        let parseElement (cursor: BodyCursor) (text: string) : XmlNode =
-            match XmlDsl.tryScan text names with
+        /// One element of the main part as a node, the text from `start` to `fin` (its spans are places in the part).
+        let parseElement (cursor: BodyCursor) (start: int) (fin: int) : XmlNode =
+            match XmlDsl.tryScanAt xml start fin names with
             | Some node -> node
             | None ->
                 // (What the scanner does not read: by the platform's parser, in the root's namespaces.)
-                match XmlDsl.parse (cursor.RootTag + text + "</" + cursor.RootName + ">") with
+                match XmlDsl.parse (cursor.RootTag + xml.Substring(start, fin - start) + "</" + cursor.RootName + ">") with
                 | XmlDsl.Element (_, _, children, _) -> children |> List.tryFind (fun child -> (Xml.name child).IsSome) |> Option.defaultValue XmlDsl.Empty
                 | _ -> XmlDsl.Empty
         let finalSetup =
             cursorAndFinal
             |> Option.bind (fun (cursor, (start, fin)) ->
-                try Some (cursor, start, parsePageSetup main.EvenAndOddHeaders (Some (parseElement cursor (xml.Substring(start, fin - start)))))
+                try Some (cursor, start, parsePageSetup main.EvenAndOddHeaders (Some (parseElement cursor start fin)))
                 with _ -> None)
         match finalSetup with
         | None -> parseFromSource source |> Option.map wholeReader
@@ -4630,7 +4638,7 @@ let openProgressiveFromSource (keepContent: bool) (source: PartSource) : Progres
                             (try
                                 let fin = elementEndAt xml at
                                 if fin < 0 then finalPageSetup
-                                else parsePageSetup main.EvenAndOddHeaders (Some (parseElement cursor (xml.Substring(at, fin - at))))
+                                else parsePageSetup main.EvenAndOddHeaders (Some (parseElement cursor at fin))
                              with _ -> finalPageSetup)
                 openSectionSetup
             let mutable made = 0
@@ -4735,7 +4743,7 @@ let openProgressiveFromSource (keepContent: bool) (source: PartSource) : Progres
                           let givesBlocks = localName = "p" || localName = "tbl" || localName = "sdt" || localName = "customXml"
                           if givesBlocks || keepContent then
                               let text = xml.Substring(start, fin - start)
-                              let node = parseElement cursor text
+                              let node = parseElement cursor start fin
                               if keepContent then
                                   List.iter2 (fun revisionType (found: ResizeArray<Revision>) ->
                                       if indexOfText text revisionType 0 >= 0 then
@@ -4783,7 +4791,7 @@ let openProgressiveFromSource (keepContent: bool) (source: PartSource) : Progres
                     let pageSetup =
                         if firstSectionProperties >= 0 && firstSectionProperties <> finalStart then
                             let fin = elementEndAt xml firstSectionProperties
-                            parsePageSetup main.EvenAndOddHeaders (Some (parseElement cursor (xml.Substring(firstSectionProperties, fin - firstSectionProperties))))
+                            parsePageSetup main.EvenAndOddHeaders (Some (parseElement cursor firstSectionProperties fin))
                         else finalPageSetup
                     let doc =
                         assembleDocument main stories (List.ofSeq allContent) (List.ofSeq allShapes) pageSetup

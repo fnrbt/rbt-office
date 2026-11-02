@@ -805,7 +805,7 @@ let rec private tableCell resolver images styleMap tableStyleMap comments notes 
                     properties
             { para with Properties = properties }
         | None -> para
-    let emptyPara : DocxReader.Paragraph = { Runs = []; Properties = DocxReader.Docx.paragraphProps XmlDsl.Empty; MarkRevision = None }
+    let emptyPara : DocxReader.Paragraph = { Runs = []; Properties = DocxReader.Docx.paragraphProps XmlDsl.Empty; MarkRevision = None; Source = XmlDsl.Span.none }
     let defaultMissingSpacingToZero =
         paragraphProperties |> Option.exists tableStyleParagraphResetsMissingSpacing
     let content =

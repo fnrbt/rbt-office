@@ -321,9 +321,9 @@ let private normaliseLineEnds (raw: string) =
 /// The scanner works on the part's text as it is - line ends are normalised
 /// in the values it reads (XML 1.0, 2.11), not in the text - so the span of
 /// every element is its place in the part.
-let private scanDocument (s: string) (names: System.Collections.Generic.HashSet<string>) : XmlNode =
-    let n = s.Length
-    let mutable pos = 0
+let private scanRange (s: string) (from: int) (until: int) (names: System.Collections.Generic.HashSet<string>) : XmlNode =
+    let n = until
+    let mutable pos = from
     // (A byte order mark or a zero-width space before the declaration is not text.)
     while pos < n && (s.[pos] = char 0xFEFF || s.[pos] = char 0x200B) do pos <- pos + 1
     let isSpace (c: char) = c = ' ' || c = '\n' || c = '\t' || c = '\r'
@@ -372,7 +372,7 @@ let private scanDocument (s: string) (names: System.Collections.Generic.HashSet<
                         let trimmed = trimXml text
                         if trimmed.Length > 0 then addChild (Text trimmed)
     while pos < n do
-        let lt = s.IndexOf('<', pos)
+        let lt = (let at = s.IndexOf('<', pos) in if at >= n then -1 else at)
         if lt < 0 then
             addText pos n
             pos <- n
@@ -382,7 +382,7 @@ let private scanDocument (s: string) (names: System.Collections.Generic.HashSet<
             let c = s.[lt + 1]
             if c = '/' then
                 let gt = s.IndexOf('>', lt + 2)
-                if gt < 0 || openNames.Count = 0 then scanGiveUp ()
+                if gt < 0 || gt >= n || openNames.Count = 0 then scanGiveUp ()
                 let mutable nameEnd = gt
                 while nameEnd > lt + 2 && isSpace s.[nameEnd - 1] do nameEnd <- nameEnd - 1
                 let top = openNames.Count - 1
@@ -402,16 +402,16 @@ let private scanDocument (s: string) (names: System.Collections.Generic.HashSet<
                 pos <- gt + 1
             elif c = '?' then
                 let close = indexOfOrdinal s "?>" (lt + 2)
-                if close < 0 then scanGiveUp ()
+                if close < 0 || close >= n then scanGiveUp ()
                 pos <- close + 2
             elif c = '!' then
                 if startsAt s lt "<!--" then
                     let close = indexOfOrdinal s "-->" (lt + 4)
-                    if close < 0 then scanGiveUp ()
+                    if close < 0 || close >= n then scanGiveUp ()
                     pos <- close + 3
                 elif startsAt s lt "<![CDATA[" then
                     let close = indexOfOrdinal s "]]>" (lt + 9)
-                    if close < 0 || openNames.Count = 0 then scanGiveUp ()
+                    if close < 0 || close >= n || openNames.Count = 0 then scanGiveUp ()
                     if close > lt + 9 then addChild (Text (normaliseLineEnds (s.Substring(lt + 9, close - lt - 9))))
                     pos <- close + 3
                 else scanGiveUp ()
@@ -451,7 +451,7 @@ let private scanDocument (s: string) (names: System.Collections.Generic.HashSet<
                         let quote = s.[i]
                         if quote <> '"' && quote <> '\'' then scanGiveUp ()
                         let close = s.IndexOf(quote, i + 1)
-                        if close < 0 then scanGiveUp ()
+                        if close < 0 || close >= n then scanGiveUp ()
                         let raw = s.Substring(i + 1, close - i - 1)
                         if raw.IndexOf '<' >= 0 then scanGiveUp ()
                         // Literal tabs and line ends of an attribute value are spaces (XML 1.0, 3.3.3).
@@ -476,9 +476,18 @@ let private scanDocument (s: string) (names: System.Collections.Generic.HashSet<
     if openNames.Count > 0 || not rootSeen then scanGiveUp ()
     root
 
+let private scanDocument (s: string) (names: System.Collections.Generic.HashSet<string>) : XmlNode =
+    scanRange s 0 s.Length names
+
 /// `parse` by the scanner above: Some node, with the element names of the
 /// part (as written, prefix included) added to `names`; None when the part
 /// holds something the scanner does not read - `parse` then says what.
+/// `tryScan` of one element of a part, the text from `start` to `finish`, with the spans of its
+/// elements in the part's text.
+let tryScanAt (xmlString: string) (start: int) (finish: int) (names: System.Collections.Generic.HashSet<string>) : XmlNode option =
+    try Some (scanRange xmlString start finish names)
+    with _ -> None
+
 let tryScan (xmlString: string) (names: System.Collections.Generic.HashSet<string>) : XmlNode option =
     try Some (scanDocument xmlString names)
     with _ ->
