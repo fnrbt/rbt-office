@@ -5,7 +5,8 @@
 // {mutate} is JS run on the exported package before writing (simulates an edit;
 // the document is then written from the model alone), {kept} a regex over a part
 // of the editor's save of the unedited document, {editKeeps} / {editLacks}
-// regexes over document.xml after one character was typed into the first paragraph.
+// regexes over document.xml after one character was typed into the first paragraph,
+// {boldKeeps} after the first word of that paragraph was made bold as well.
 
 import { readFileSync } from 'node:fs';
 
@@ -267,6 +268,34 @@ const docs = [
         expect: [
             { readText: 'sdt in cell' }, { readText: 'sdt cell' }, { readText: 'sdt row a' }, { readText: 'sdt row b' },
             { readText: 'smart custom dir bdo fallback' },
+        ],
+    },
+    {
+        // Content controls inside a paragraph, a text control bound to custom XML and a check box, and one
+        // around two paragraphs. A paragraph that is changed in a way its XML cannot be patched for (bold
+        // over a part of it) is spliced from its source: the controls stay, with their bindings
+        // (docs/save-architecture.md).
+        name: 'synthetic/inline-controls',
+        root: 'xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" mc:Ignorable="w14"',
+        body: `<w:p><w:r><w:t xml:space="preserve">Name: </w:t></w:r><w:sdt><w:sdtPr><w:alias w:val="Customer"/><w:tag w:val="name"/><w:id w:val="101"/>` +
+            `<w:dataBinding w:xpath="/root[1]/name[1]" w:storeItemID="{8A1F3C55-0D2B-4E77-9C1E-5B2A6F0D3E11}"/><w:text/></w:sdtPr><w:sdtContent><w:r><w:rPr><w:b/></w:rPr><w:t>Ann</w:t></w:r><w:r><w:t xml:space="preserve"> Lee</w:t></w:r></w:sdtContent></w:sdt>` +
+            `<w:r><w:t xml:space="preserve"> agrees </w:t></w:r><w:sdt><w:sdtPr><w:id w:val="102"/><w14:checkbox><w14:checked w14:val="1"/><w14:checkedState w14:val="2612" w14:font="MS Gothic"/><w14:uncheckedState w14:val="2610" w14:font="MS Gothic"/></w14:checkbox></w:sdtPr>` +
+            `<w:sdtContent><w:r><w:rPr><w:rFonts w:ascii="MS Gothic" w:eastAsia="MS Gothic" w:hAnsi="MS Gothic"/></w:rPr><w:t>\u2612</w:t></w:r></w:sdtContent></w:sdt><w:r><w:t xml:space="preserve"> today.</w:t></w:r></w:p>` + p('second paragraph') +
+            // A block-level control over two paragraphs, bound too.
+            `<w:sdt><w:sdtPr><w:alias w:val="Notes"/><w:id w:val="103"/><w:dataBinding w:xpath="/root[1]/notes[1]" w:storeItemID="{8A1F3C55-0D2B-4E77-9C1E-5B2A6F0D3E11}"/></w:sdtPr><w:sdtContent>${p('first note')}${p('second note')}</w:sdtContent></w:sdt>`,
+        rels: `<Relationship Id="rId44" Type="${REL}/customXml" Target="../customXml/item1.xml"/>`,
+        extra: {
+            'customXml/item1.xml': '<root><name>Ann Lee</name><notes>first note</notes></root>',
+            'customXml/itemProps1.xml': '<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n<ds:datastoreItem xmlns:ds="http://schemas.openxmlformats.org/officeDocument/2006/customXml" ds:itemID="{8A1F3C55-0D2B-4E77-9C1E-5B2A6F0D3E11}"><ds:schemaRefs/></ds:datastoreItem>',
+            'customXml/_rels/item1.xml.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXmlProps" Target="itemProps1.xml"/></Relationships>',
+        },
+        types: '<Override PartName="/customXml/itemProps1.xml" ContentType="application/vnd.openxmlformats-officedocument.customXmlProperties+xml"/>',
+        expect: [
+            { readText: 'Name: Ann Lee agrees \u2612 today.' },
+            // Typing into the paragraph keeps both controls, and so does bold over its first word.
+            { editKeeps: '<w:dataBinding [^>]*w:xpath="/root\\[1\\]/name\\[1\\]"' }, { editKeeps: '<w14:checked w14:val="1"/>' },
+            { boldKeeps: '<w:sdt><w:sdtPr><w:alias w:val="Customer"/><w:tag w:val="name"/><w:id w:val="101"/><w:dataBinding [^>]*/><w:text/></w:sdtPr><w:sdtContent><w:r><w:rPr><w:b/></w:rPr><w:t>Ann</w:t></w:r><w:r><w:t xml:space="preserve"> Lee</w:t></w:r></w:sdtContent></w:sdt>' },
+            { boldKeeps: '<w14:checkbox><w14:checked w14:val="1"/>' }, { boldKeeps: '<w:alias w:val="Notes"/><w:id w:val="103"/><w:dataBinding ' },
         ],
     },
     {

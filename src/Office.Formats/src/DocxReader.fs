@@ -2037,8 +2037,16 @@ module Docx =
                             |> Option.bind (attrByLocalName "val")   // w14:val
                             |> Option.map (fun v -> v = "1" || v = "true")
                             |> Option.defaultValue false
-                        let glyph = if isChecked then "☒" else "☐"   // ☒ / ☐
-                        [RunToken { Content = Text glyph; Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None; Source = XmlDsl.Span.none }]
+                        let glyph = if isChecked then "☒" else "☐"
+                        // (The glyph is the text of the control's run: a save writes that run as it was.)
+                        let checkboxRunSource =
+                            Ns.childNs "sdtContent" child
+                            |> Option.bind (fun content -> Ns.descendantsNs "r" content |> List.tryHead)
+                            |> Option.map (function XmlDsl.Element (_, _, _, span) -> span | _ -> XmlDsl.Span.none)
+                            |> Option.defaultValue XmlDsl.Span.none   // ☒ / ☐
+                        // (Formatted as the control's run is.)
+                        let checkboxRun = Ns.childNs "sdtContent" child |> Option.bind (fun content -> Ns.descendantsNs "r" content |> List.tryHead)
+                        [RunToken { Content = Text glyph; Properties = runProps (checkboxRun |> Option.defaultValue child); BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None; Source = checkboxRunSource }]
                     | None ->
                         Ns.childNs "sdtContent" child
                         |> Option.map tokensFromNode
@@ -5785,6 +5793,7 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                             "InsertedRevisionAuthor" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Author))
                             "InsertedRevisionDate" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Date))
                             "RevisionMoveName" ==> run.MoveName
+                            "SourceRun" ==> (if XmlDsl.Span.isKnown run.Source then Some run.Source.Start else None)
                         ] @ bookmarkRunProps run))
                     | Image img ->
                         // Image run - resolve relationship ID to data URL
@@ -5936,6 +5945,7 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                                 "InsertedRevisionAuthor" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Author))
                                 "InsertedRevisionDate" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Date))
                                 "RevisionMoveName" ==> run.MoveName
+                                "SourceRun" ==> (if XmlDsl.Span.isKnown run.Source then Some run.Source.Start else None)
                             ] @ bookmarkRunProps run))
                         | EquationXml xml ->
                             Some (objFromFields [
@@ -6073,6 +6083,7 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                                 "InsertedRevisionAuthor" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Author))
                                 "InsertedRevisionDate" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Date))
                                 "RevisionMoveName" ==> run.MoveName
+                                "SourceRun" ==> (if XmlDsl.Span.isKnown run.Source then Some run.Source.Start else None)
                             ] @ bookmarkRunProps run))
                         | Image img ->
                             let imageSrc = editorImageSource images img
@@ -6222,6 +6233,7 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                                 "InsertedRevisionAuthor" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Author))
                                 "InsertedRevisionDate" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Date))
                                 "RevisionMoveName" ==> run.MoveName
+                                "SourceRun" ==> (if XmlDsl.Span.isKnown run.Source then Some run.Source.Start else None)
                             ] @ bookmarkRunProps run))
                         | EquationXml xml ->
                             Some (objFromFields [

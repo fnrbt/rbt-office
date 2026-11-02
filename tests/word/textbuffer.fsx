@@ -2188,6 +2188,7 @@ do
         elif fieldType = typeof<float> then box (unbox<float> value + 1.5)
         elif fieldType = typeof<int> then box (unbox<int> value + 1)
         elif fieldType = typeof<string option> then box (Some "other")
+        elif fieldType = typeof<int option> then box (Some 7)
         elif fieldType = typeof<RevisionMark option> then box (Some { Id = Some "1"; Author = None; Date = None })
         else failwithf "a field of a type the test does not know: %s" fieldType.Name
     let missed =

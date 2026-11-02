@@ -70,6 +70,11 @@ type TextStyle = {
     /// Name of the tracked move (w:moveFromRangeStart / w:moveToRangeStart) a run
     /// of RevisionType "moveFrom" / "moveTo" belongs to; it pairs the two ends.
     MoveName: string option
+    /// Where the w:r this text was read from starts in its part's text
+    /// (docs/save-architecture.md): a save writes the text from that run - its
+    /// bytes when the text and the formatting are what they were. Text typed
+    /// into the run is of it; text made elsewhere is of none.
+    SourceRun: int option
     VertAlign: string option
     /// Bit set of ExplicitFormat flags: the on/off properties and the font size
     /// that were set directly on this run. A flagged property overrides the
@@ -152,6 +157,7 @@ let defaultStyle = {
     RevisionDate = None
     DeletedInsertion = None
     MoveName = None
+    SourceRun = None
     VertAlign = None
     Explicit = 0
 }
@@ -380,6 +386,7 @@ let sameTextStyle (left: TextStyle) (right: TextStyle) : bool =
         && left.RevisionDate = right.RevisionDate
         && left.DeletedInsertion = right.DeletedInsertion
         && left.MoveName = right.MoveName
+        && left.SourceRun = right.SourceRun
         && left.VertAlign = right.VertAlign)
 
 let private mergedRunList (runs: ResizeArray<Run>) =
@@ -1963,6 +1970,7 @@ let clearFormatting start len buffer =
                 RevisionDate = style.RevisionDate
                 DeletedInsertion = style.DeletedInsertion
                 MoveName = style.MoveName
+                SourceRun = style.SourceRun
         }) buffer
 
 /// Get style at position

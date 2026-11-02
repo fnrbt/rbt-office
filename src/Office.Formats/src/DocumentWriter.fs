@@ -1408,6 +1408,8 @@ let mutable private paragraphsInContext = true
 /// in blocks that were written from the model.
 let mutable private reportGenerated = 0
 let mutable private reportDerived = 0
+/// Paragraphs written from their source with the model's changes (docs/save-architecture.md): of reportGenerated.
+let mutable private reportSpliced = 0
 
 // ---- the marks of ranges the model does not hold ---------------------------------
 //
@@ -1595,6 +1597,30 @@ let private modelRunProperties (runObj: obj) : string list =
     if boolOrDefault false (runObj?IsImage) || not (isNullOrUndefined runObj?OpaqueXml) || boolOrDefault false (runObj?NoProps) then []
     else orderedRunProps (runExtrasFromObject runObj) (editorRunOfObject runObj)
 
+
+// ---------------------------------------------------------------------------
+// Splicing a paragraph (docs/save-architecture.md): a paragraph that is written
+// from the model and was read from the part is written from its source - what
+// of it the model does not hold stays where it stood: the content controls,
+// smart tags and custom XML around its runs, the elements between them the
+// model has no field for, its properties when they are what they were, and
+// every run that is as it was read, as its bytes.
+// ---------------------------------------------------------------------------
+
+/// The text of the part being written, as it was read (set by the body writer).
+let mutable private spliceSourceText : string = ""
+
+[<Fable.Core.Emit("JSON.stringify($0)")>]
+let private jsonText (_value: obj) : string = jsNative
+[<Fable.Core.Emit("JSON.stringify(Object.assign({}, $0, { Runs: undefined, SpliceFrom: undefined, SpliceOriginal: undefined, CarrySource: undefined, CarrySave: undefined, SourcePara: undefined, SourceIndex: undefined, SourceUnchanged: undefined, SourceWhy: undefined, SourceTextChanges: undefined }))")>]
+let private paragraphPropertiesText (_value: obj) : string = jsNative
+
+/// A paragraph written from its source (see splicedRuns, defined with the merging of properties
+/// it uses): the runs, and the properties as they were read where they are what they were.
+type private ParagraphSplicer =
+    abstract Splice: para: obj -> pieces: (obj * string * (string -> string)) list -> (string list * string option) option
+let mutable private paragraphSplicer : ParagraphSplicer = { new ParagraphSplicer with member _.Splice _ _ = None }
+
 let private generateParagraphWithHyperlinksAndImagesWithPageSetup (packageSetup: PageSetupInfo) (hyperlinks: Map<string, string>) (images: ImageScope) (para: obj) : string =
   match (if isNullOrUndefined (para?SourcePara) || not paragraphsInContext then None else paragraphSource.Of (para?SourcePara)) with
   | Some xml ->
@@ -1676,15 +1702,31 @@ let private generateParagraphWithHyperlinksAndImagesWithPageSetup (packageSetup:
                 else
                     let run = editorRunOfObject runObj
                     generateReferenceRun runObj run
-            let runXml = revisionWrappedRun runObj runXml
-            match runHyperlinkTarget runObj with
-            | Some target when target.StartsWith "#" && target.Length > 1 -> element "w:hyperlink" [("w:anchor", target.Substring 1); ("w:history", "1")] [runXml]
-            | Some target ->
-                match Map.tryFind target hyperlinks with
-                | Some relId -> element "w:hyperlink" [("r:id", relId); ("w:history", "1")] [runXml]
+            // (What goes around the run: its tracked change, its link.)
+            let wrap (inner: string) =
+                let runXml = revisionWrappedRun runObj inner
+                match runHyperlinkTarget runObj with
+                | Some target when target.StartsWith "#" && target.Length > 1 -> element "w:hyperlink" [("w:anchor", target.Substring 1); ("w:history", "1")] [runXml]
+                | Some target ->
+                    match Map.tryFind target hyperlinks with
+                    | Some relId -> element "w:hyperlink" [("r:id", relId); ("w:history", "1")] [runXml]
+                    | None -> runXml
                 | None -> runXml
-            | None -> runXml
+            runObj, runXml, wrap
         )
+    // A paragraph read from the part is written from its source (see splicedRuns).
+    let splice = paragraphSplicer.Splice para runs
+    if splice.IsSome then reportSpliced <- reportSpliced + 1
+    let runs =
+        match splice with
+        | Some (spliced, _) -> spliced
+        | None -> runs |> List.map (fun (_, inner, wrap) -> wrap inner)
+    // (Its properties as they were read, when they are what they were.)
+    let pPr =
+        match splice with
+        | Some (_, Some original) when paragraphPropertiesText para = paragraphPropertiesText para?SpliceOriginal -> original
+        | Some (_, None) when paragraphPropertiesText para = paragraphPropertiesText para?SpliceOriginal -> "<w:pPr/>"
+        | _ -> pPr
     let runs =
         // (A page break after the paragraph is one the paragraph has: a section that ends with it
         // says nothing of a break - the section after it says how it starts.)
@@ -3672,6 +3714,170 @@ type private SourceRunInfo = {
 
 /// The runs of a paragraph's own text (not those of drawings and text boxes in it), in their order.
 /// The paragraph's segments are aligned with `text`. None: the XML is not understood.
+
+/// What stands in a paragraph's XML, in order: a run (where it starts) or an element the model
+/// does not hold, each with the wrappers around it (outermost first).
+type private SpliceSlot =
+    | SlotRun of start: int * wrappers: int list
+    | SlotKept of xml: string * wrappers: int list
+
+type private SpliceSource = {
+    /// Wrapper (by where it starts) -> the text that opens it and the text that closes it.
+    Wrappers: System.Collections.Generic.Dictionary<int, string * string>
+    /// Run start -> its bytes and its wrappers.
+    Runs: System.Collections.Generic.Dictionary<int, string * int list>
+    /// Run start -> its start tag, its w:rPr ("" for none) and what follows that in it.
+    RunParts: System.Collections.Generic.Dictionary<int, string * string * string>
+    Slots: SpliceSlot list
+    /// The w:pPr as it was read.
+    Properties: string option
+}
+
+/// The elements whose content the model writes itself (the runs in them are the model's):
+/// links, tracked changes, simple fields. The marks of ranges are carried (carriedMarksOf);
+/// equations and paragraph-level objects are runs of the model.
+let private modelledWrapper (local: string) =
+    match local with
+    | "hyperlink" | "ins" | "del" | "moveFrom" | "moveTo" | "fldSimple" -> true
+    | _ -> false
+let private modelledLeaf (local: string) =
+    match local with
+    | "pPr" | "bookmarkStart" | "bookmarkEnd" | "commentRangeStart" | "commentRangeEnd" | "permStart" | "permEnd"
+    | "moveFromRangeStart" | "moveFromRangeEnd" | "moveToRangeStart" | "moveToRangeEnd"
+    | "oMath" | "oMathPara" | "AlternateContent" -> true
+    | _ -> false
+
+let private spliceSourceOf (text: string) (start: int) (finish: int) : SpliceSource option =
+    match XmlDsl.tryScanAt text start finish (System.Collections.Generic.HashSet<string>()) with
+    | Some (XmlDsl.Element (_, _, children, span)) when XmlDsl.Span.isKnown span ->
+        let wrappers = System.Collections.Generic.Dictionary<int, string * string>()
+        let runs = System.Collections.Generic.Dictionary<int, string * int list>()
+        let runParts = System.Collections.Generic.Dictionary<int, string * string * string>()
+        let slots = ResizeArray<SpliceSlot>()
+        let mutable properties = None
+        let slice (from: int) (until: int) = text.Substring(from, until - from)
+        let rec holdsRun (node: XmlDsl.XmlNode) =
+            match node with
+            | XmlDsl.Element (name, _, kids, _) -> XmlDsl.Ns.stripNs name = "r" || List.exists holdsRun kids
+            | _ -> false
+        let rec visit (chain: int list) (node: XmlDsl.XmlNode) =
+            match node with
+            | XmlDsl.Element (name, _, kids, span) when XmlDsl.Span.isKnown span ->
+                let local = XmlDsl.Ns.stripNs name
+                if local = "r" then
+                    runs.[span.Start] <- (slice span.Start span.End, chain)
+                    if span.StartTagEnd < span.End then
+                        let props = kids |> List.tryPick (fun kid -> match kid with XmlDsl.Element (n, _, _, kidSpan) when XmlDsl.Ns.stripNs n = "rPr" && XmlDsl.Span.isKnown kidSpan -> Some kidSpan | _ -> None)
+                        let contentFrom = match props with Some propsSpan -> propsSpan.End | None -> span.StartTagEnd
+                        runParts.[span.Start] <-
+                            (slice span.Start span.StartTagEnd,
+                             (match props with Some propsSpan -> slice propsSpan.Start propsSpan.End | None -> ""),
+                             slice contentFrom span.EndTagStart)
+                    slots.Add (SlotRun (span.Start, chain))
+                elif local = "pPr" && chain.IsEmpty then properties <- Some (slice span.Start span.End)
+                elif modelledWrapper local then List.iter (visit chain) kids
+                elif modelledLeaf local then ()
+                elif holdsRun node && span.StartTagEnd < span.End then
+                    // A wrapper the model does not hold: its start (with what says what it is - w:sdtPr,
+                    // w:smartTagPr ...) and its end go around its runs.
+                    let content, head, tail =
+                        match kids |> List.tryFind (fun kid -> match kid with XmlDsl.Element (n, _, _, _) -> XmlDsl.Ns.stripNs n = "sdtContent" | _ -> false) with
+                        | Some (XmlDsl.Element (_, _, inner, contentSpan)) when local = "sdt" && contentSpan.StartTagEnd < contentSpan.End ->
+                            inner, slice span.Start contentSpan.StartTagEnd, slice contentSpan.EndTagStart span.End
+                        | _ ->
+                            let leading = kids |> List.takeWhile (fun kid -> match kid with XmlDsl.Element (n, _, _, _) -> (XmlDsl.Ns.stripNs n).EndsWith "Pr" | _ -> true)
+                            let headEnd =
+                                leading |> List.fold (fun at kid -> match kid with XmlDsl.Element (_, _, _, kidSpan) when XmlDsl.Span.isKnown kidSpan -> kidSpan.End | _ -> at) span.StartTagEnd
+                            List.skip leading.Length kids, slice span.Start headEnd, slice span.EndTagStart span.End
+                    wrappers.[span.Start] <- (head, tail)
+                    List.iter (visit (chain @ [ span.Start ])) content
+                else slots.Add (SlotKept (slice span.Start span.End, chain))
+            | _ -> ()
+        List.iter (visit []) children
+        Some { Wrappers = wrappers; Runs = runs; RunParts = runParts; Slots = List.ofSeq slots; Properties = properties }
+    | _ -> None
+
+/// The runs of a paragraph written from its source (see above): `pieces` are the model's runs
+/// with their XML (the run itself, and the link or tracked change around it).
+let private splicedRuns (source: SpliceSource) (original: obj) (pieces: (obj * string * (string -> string)) list) : string list =
+    let out = ResizeArray<string>()
+    // The runs read, by source: the run objects the model had for each.
+    let originalRuns = System.Collections.Generic.Dictionary<int, ResizeArray<obj>>()
+    for run in (if isNullOrUndefined original then [||] else original?Runs |> unbox<obj array>) do
+        match optionalInt (run?SourceRun) with
+        | Some at -> (match originalRuns.TryGetValue at with | true, list -> list.Add run | _ -> originalRuns.[at] <- ResizeArray [ run ])
+        | None -> ()
+    let currentCount = System.Collections.Generic.Dictionary<int, int>()
+    for runObj, _, _ in pieces do
+        match optionalInt (runObj?SourceRun) with
+        | Some at -> currentCount.[at] <- (match currentCount.TryGetValue at with | true, n -> n + 1 | _ -> 1)
+        | None -> ()
+    let mutable openChain : int list = []
+    let moveTo (chain: int list) =
+        let rec common (a: int list) (b: int list) = match a, b with x :: xs, y :: ys when x = y -> 1 + common xs ys | _ -> 0
+        let keep = common openChain chain
+        for wrapper in List.rev (List.skip keep openChain) do out.Add (snd source.Wrappers.[wrapper])
+        for wrapper in List.skip keep chain do out.Add (fst source.Wrappers.[wrapper])
+        openChain <- chain
+    let mutable slots = source.Slots
+    let emitSlotsBefore (run: int option) =
+        // The elements up to the run (all that are left, for none).
+        let mutable going = true
+        while going && not slots.IsEmpty do
+            match slots.Head with
+            | SlotRun (start, _) when Some start = run -> going <- false
+            | SlotRun _ -> slots <- slots.Tail
+            | SlotKept (xml, chain) ->
+                moveTo chain
+                out.Add xml
+                slots <- slots.Tail
+    for runObj, inner, wrap in pieces do
+        match optionalInt (runObj?SourceRun) |> Option.filter (fun at -> source.Runs.ContainsKey at) with
+        | Some at ->
+            if slots |> List.exists (function SlotRun (start, _) -> start = at | _ -> false) then emitSlotsBefore (Some at)
+            let bytes, chain = source.Runs.[at]
+            moveTo chain
+            // The model's run then, when it was one run of the source and is one now.
+            let was =
+                if not (isNullOrUndefined (runObj?FieldCode)) || currentCount.[at] <> 1 then None
+                else match originalRuns.TryGetValue at with | true, list when list.Count = 1 -> Some list.[0] | _ -> None
+            match was with
+            // As it was read in every respect: its bytes.
+            | Some run when jsonText run = jsonText runObj -> out.Add (wrap bytes)
+            // Changed in its formatting, its text, or both: the run as it was read with the properties
+            // that changed changed in its w:rPr, and the model's text where the text changed.
+            | Some run when not (boolOrDefault false (runObj?IsImage)) && isNullOrUndefined runObj?OpaqueXml && source.RunParts.ContainsKey at ->
+                let startTag, props, content = source.RunParts.[at]
+                let changes = propertyChanges (modelRunProperties run) (modelRunProperties runObj)
+                match withPropertiesMerged "w:rPr" runPropertyOrder props changes with
+                | Some merged ->
+                    let content =
+                        if stringOrDefault "" (run?Text) = stringOrDefault "" (runObj?Text) then Some content
+                        else
+                            // (What the model writes in the run after its properties.)
+                            match childElementsOf inner with
+                            | Some (children, _) ->
+                                Some (children |> List.filter (fun (name, _, _) -> name <> "w:rPr") |> List.map (fun (_, start, fin) -> inner.Substring(start, fin - start)) |> String.concat "")
+                            | None -> None
+                    match content with
+                    | Some content -> out.Add (wrap (startTag + merged + content + "</w:r>"))
+                    | None -> out.Add (wrap inner)
+                | None -> out.Add (wrap inner)
+            | _ -> out.Add (wrap inner)
+        | None -> out.Add (wrap inner)
+    emitSlotsBefore None
+    moveTo []
+    List.ofSeq out
+
+
+paragraphSplicer <-
+    { new ParagraphSplicer with
+        member _.Splice para pieces =
+            if isNullOrUndefined (para?SpliceFrom) || isNullOrUndefined (para?SpliceOriginal) || spliceSourceText = "" then None
+            else
+                spliceSourceOf spliceSourceText (intOrDefault -1 (para?SpliceFrom?Start)) (intOrDefault -1 (para?SpliceFrom?End))
+                |> Option.map (fun source -> splicedRuns source para?SpliceOriginal pieces, source.Properties) }
+
 let private sourceRunsOf (xml: string) (para: SourceParagraph) (text: string) : SourceRunInfo array option =
     let runs = ResizeArray<SourceRunInfo>()
     let segmentAt = System.Collections.Generic.Dictionary<int, SourceTextSegment>()
@@ -4134,6 +4340,7 @@ let lastSaveReport () : obj =
         "Reasons" ==> reportReasons.ToArray()
         "DerivedParagraphs" ==> reportDerived
         "GeneratedParagraphs" ==> reportGenerated
+        "SplicedParagraphs" ==> reportSpliced
         "PatchedParagraphs" ==> reportPatched
         "ModelParagraphsInTables" ==> reportInline
         "ModelBlocks" ==> reportModelBlocks
@@ -4449,7 +4656,7 @@ tableSource <-
 /// one paragraph (the marks and their paragraphs are the second of the
 /// pair); in a paragraph of the body itself that fails the whole element is
 /// (None), as when the XML does not hold the paragraphs the editor had.
-let private patchSourceChunk (xml: string) (items: obj array) : (string * (int * obj) list * int) option =
+let private patchSourceChunk (xml: string) (offset: int) (items: obj array) : (string * (int * obj) list * int) option =
     match scanSourceParagraphs xml with
     | None -> None
     | Some paragraphs ->
@@ -4486,15 +4693,19 @@ let private patchSourceChunk (xml: string) (items: obj array) : (string * (int *
                                         // (A field that begins in the paragraph and ends in another: the paragraph is not on its own.)
                                         let fieldOpen = countOccurrences own 0 own.Length "w:fldCharType=\"begin\"" <> countOccurrences own 0 own.Length "w:fldCharType=\"end\""
                                         let why = if patchWhy <> "" then patchWhy elif boolOrDefault false (change?Regenerate) then "changed in more than its text and formatting" else "the change cannot be made in its XML"
-                                        if not inTable || holdsShape || fieldOpen || isNullOrUndefined (change?After) then
+                                        // (A paragraph whose source is known is spliced: see splicedRuns. In a table it is
+                                        // written from the model in the table's XML anyway.)
+                                        let spliced = not (isNullOrUndefined (change?After)) && not (isNullOrUndefined (change?After?SpliceOriginal))
+                                        if (not inTable && not spliced) || holdsShape || fieldOpen || isNullOrUndefined (change?After) then
                                             noteReason (sprintf "paragraph %d of the block: %s%s" index why (if not inTable then "" elif holdsShape then "; a shape is anchored in it: the table is written" elif fieldOpen then "; a field begins or ends in it: the table is written" else ""))
                                             ok <- false
                                         else
-                                            noteReason (sprintf "paragraph %d of a table: %s" index why)
+                                            noteReason (if spliced then sprintf "paragraph %d: %s; spliced from its source" index why else sprintf "paragraph %d of a table: %s" index why)
                                             nextInlineNumber <- nextInlineNumber + 1
                                             // (The marks of ranges its XML holds go with it: see carriedMarksOf.)
                                             change?After?CarrySource <- own
                                             change?After?CarrySave <- saveNumber
+                                            if spliced then change?After?SpliceFrom <- createObj [ "Start" ==> offset + para.Start; "End" ==> offset + para.End ]
                                             inlined.Add ((nextInlineNumber, change?After))
                                             replacements.Add ((para.Start, para.End, inlineMark nextInlineNumber))
                         // The others are the paragraphs the editor had there: the first text of each is in its text.
@@ -4635,7 +4846,7 @@ let private planBody (xml: string) (itemChunks: int array) (storyCounts: int arr
                     let text = xml.Substring(textStart.[chunk], body.Ends.[chunk] - textStart.[chunk])
                     joinTookMarksOf.Clear()
                     joinTakesMarks <- true
-                    patchedText.[chunk] <- patchSourceChunk text (Array.sub items firstAt.[chunk] originalCount.[chunk])
+                    patchedText.[chunk] <- patchSourceChunk text textStart.[chunk] (Array.sub items firstAt.[chunk] originalCount.[chunk])
                     joinTakesMarks <- false
                     if patchedText.[chunk].IsNone then keep.[chunk] <- false
                     else
@@ -4955,6 +5166,8 @@ let private generateDocumentXmlFromPlan (plan: BodyPlan) (images: ImageScope) (h
     let written = ResizeArray<string>()
     // (Which of the parts were written from the model: see balancedRanges.)
     let fromModel = System.Collections.Generic.HashSet<int>()
+    // (Paragraphs written from the model splice the part's text: see splicedRuns.)
+    spliceSourceText <- plan.Original
     for segment in plan.Segments do
         match segment with
         | SourceText text when text.IndexOf inlineMarkCharacter < 0 -> parts.Add text
@@ -6285,6 +6498,7 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
     reportReasons.Clear()
     reportGenerated <- 0
     reportDerived <- 0
+    reportSpliced <- 0
     saveNumber <- saveNumber + 1
     liveCommentIds <- Set.empty
     forgetSourceBody ()

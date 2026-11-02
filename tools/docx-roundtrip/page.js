@@ -787,6 +787,21 @@ window.editKeptFinish = async (original, expect) => {
             if (e.editKeeps && !new RegExp(e.editKeeps).test(is)) problems.push(`edit: word/document.xml lost /${e.editKeeps}/`);
             if (e.editLacks && new RegExp(e.editLacks).test(is)) problems.push(`edit: word/document.xml still has /${e.editLacks}/`);
         }
+        // {boldKeeps}: the first word of the first paragraph made bold as well - a change a paragraph's XML is not
+        // patched for when it holds what the patch does not know (a content control): it is spliced from its source.
+        const boldKeeps = (expect ?? []).filter((e) => e.boldKeeps);
+        if (boldKeeps.length) {
+            const first = Word.getLayoutLines(editor).find((line) => !line.FrameIsSelected && (line.Text ?? '').length > 0);
+            if (!first) problems.push('bold: no paragraph to make bold');
+            else {
+                const words = /^\S+/.exec(first.Text)?.[0].length ?? 1;
+                Word.setSelection(editor, first.BlockId, 0, first.BlockId, words);
+                Word.toggleBold(editor);
+                const boldBytes = await writePackage(Word.exportDocumentPackage(editor), 'bold');
+                const bold = (await parts(boldBytes))['word/document.xml'] ?? '';
+                for (const e of boldKeeps) if (!new RegExp(e.boldKeeps).test(bold)) problems.push(`bold: word/document.xml lost /${e.boldKeeps}/`);
+            }
+        }
         // The root element stays as it was read (a namespace is added to it only when what was written needs one).
         const rootTag = (xml) => /<w:document\b[^>]*>/.exec(xml ?? '')?.[0];
         if (was !== undefined && /<\/w:sectPr>\s*<\/w:body>/.test(was) && rootTag(was) !== rootTag(is) && !/<m:/.test(is.slice(is.indexOf('<w:body'))))
@@ -1127,12 +1142,13 @@ const passResult = async (handle, before, label, result, piecesPerEdit) => {
     for (const piece of is) left.set(piece, (left.get(piece) ?? 0) + 1);
     let changed = 0;
     for (const piece of was) { const count = left.get(piece) ?? 0; if (count > 0) left.set(piece, count - 1); else changed++; }
-    // (The paragraphs the model wrote, of the body: a block written whole, a paragraph of a table written alone.)
-    result.model = report.GeneratedParagraphs;
+    // (The paragraphs the model wrote, of the body: a block written whole, a paragraph of a table written alone.
+    // A paragraph spliced from its source - docs/save-architecture.md - is one kept in the XML it was read from.)
+    result.model = report.GeneratedParagraphs - (report.SplicedParagraphs ?? 0);
     result.kept = Math.max(0, result.edited - result.model);
     result.others = Math.max(0, changed - result.edited * piecesPerEdit);
     // (A block the model wrote takes the paragraphs in it along: a table whose rows are in content controls.)
-    result.dragged = report.GeneratedParagraphs > 0;
+    result.dragged = result.model > 0;
     // Where nothing was written from the model the saved document is laid out as the editor's. (Not where rows
     // or columns of a table came or went: read again, the rows after them are formatted as their table's style
     // formats rows in their new place - banding, a first row - while the editor shows them as they were.)

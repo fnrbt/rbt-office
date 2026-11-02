@@ -497,7 +497,8 @@ let private withSourceRunProps (paraProps: DocxReader.ParagraphProperties) (run:
         RevisionAuthor = run.RevisionAuthor
         RevisionDate = run.RevisionDate
         DeletedInsertion = run.InsertedRevision |> Option.map (fun mark -> ({ Id = mark.Id; Author = mark.Author; Date = mark.Date }: Rbt.Word.TextBuffer.RevisionMark))
-        MoveName = run.MoveName }
+        MoveName = run.MoveName
+        SourceRun = if XmlDsl.Span.isKnown run.Source then Some run.Source.Start else None }
 
 let private editorRunsToBufferWithImages (decorate: int -> Rbt.Word.TextBuffer.TextStyle -> Rbt.Word.TextBuffer.TextStyle) (decorateImageRun: int -> Rbt.Word.TextBuffer.ImageRun -> Rbt.Word.TextBuffer.ImageRun) (images: Map<string, string>) (runs: EP.EditorRun list) =
     let decorateImage index (run: Rbt.Word.TextBuffer.Run) =

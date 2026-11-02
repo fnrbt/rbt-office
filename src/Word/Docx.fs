@@ -769,6 +769,7 @@ let private editorRunsToBuffer (runs: obj array) : TextBuffer =
                         if isNullOrUndefined run?InsertedRevisionId && isNullOrUndefined run?InsertedRevisionAuthor && isNullOrUndefined run?InsertedRevisionDate then None
                         else Some { Id = optionalString (run?InsertedRevisionId); Author = optionalString (run?InsertedRevisionAuthor); Date = optionalString (run?InsertedRevisionDate) }
                     MoveName = optionalString (run?RevisionMoveName)
+                    SourceRun = optionalInt (run?SourceRun)
                     VertAlign = vertAlign
                     Explicit = explicitFlags
                 }
@@ -1966,6 +1967,7 @@ let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) 
                     "InsertedRevisionDate" ==> (tr.Style.DeletedInsertion |> Option.bind (fun mark -> mark.Date))
                     "IsDeletedInsertion" ==> tr.Style.DeletedInsertion.IsSome
                     "RevisionMoveName" ==> tr.Style.MoveName
+                    "SourceRun" ==> tr.Style.SourceRun
                     "VertAlign" ==> tr.Style.VertAlign
                     "IsImage" ==> false
                 ])
@@ -2757,6 +2759,8 @@ let private bufferOfCharacters (text: string) (runs: TextBuffer.Run array) : Tex
 ///           model.
 let private paragraphEdit (context: WordStyles.DocumentStyleContext option) (exportBefore: ParagraphBlock -> obj) (export: ParagraphBlock -> obj) (index: int) (a: ParagraphBlock) (b: ParagraphBlock) : obj =
     let afterItem = export b
+    // (The paragraph as it was read: what the writer splices it from, see DocumentWriter.splicedRuns.)
+    afterItem?SpliceOriginal <- exportBefore a
     // (Why: for the writer's account of the save.)
     let regenerate (why: string) = createObj [ "Paragraph" ==> index; "Regenerate" ==> true; "After" ==> afterItem; "Why" ==> why ]
     let ma = a.Metadata
