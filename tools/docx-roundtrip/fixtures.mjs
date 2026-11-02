@@ -500,7 +500,7 @@ const docs = [
             { part: 'word/document.xml', has: 'chart: </w:t></w:r><w:r><w:drawing[^>]*><wp:inline [^>]*wp14:anchorId="12345678"[^>]*><wp:extent cx="2743200" cy="1828800"/>.*?<c:chart r:id="rId30"/>' },
             { part: 'word/document.xml', has: '<dgm:relIds r:cs="rId34" r:dm="rId31" r:lo="rId32" r:qs="rId33"/>' },
             { part: 'word/document.xml', has: '<w:object [^>]*>.*?<v:imagedata [^>]*r:id="rId35"[^>]*/>.*?<o:OLEObject [^>]*ProgID="Excel.Sheet.12"[^>]*r:id="rId36"' },
-            { part: 'word/document.xml', has: '<mc:Choice Requires="cx1"><w:drawing>.*?<cx:chart [^>]*r:id="rId37"/>.*?<mc:Fallback>.*?r:embed="rId38"' },
+            { part: 'word/document.xml', has: '<mc:Choice Requires="cx1"><w:drawing>.*?<cx:chart [^>]*r:id="rId37"[^>]*/>.*?<mc:Fallback>.*?r:embed="rId38"' },
             { part: 'word/document.xml', has: '<mc:Choice Requires="wpg">.*?<wpg:wgp>.*?</wpg:wgp>.*?<mc:Fallback><w:pict><v:group ' },
             { part: 'word/document.xml', lacks: '>Chart<' }, { part: 'word/document.xml', lacks: 'wps:txbx' },
             { part: 'word/_rels/document.xml.rels', has: '<Relationship Id="rId30" Type="[^"]*/chart" Target="/word/charts/chart1.xml"/>' },
