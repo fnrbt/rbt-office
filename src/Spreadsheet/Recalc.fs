@@ -1306,7 +1306,7 @@ let private evaluateNode (node: Node) (model: SpreadsheetModel) (workbook: Workb
             if not (isNull (box forced)) then forced
             else
                 match node.Expr with
-                | Some expr -> eval expr { Model = model; Workbook = Some workbook; Sheet = Some node.Sheet.Id; CurrentCell = Some { Row = node.Row; Col = node.Col } }
+                | Some expr -> evalCell expr { Model = model; Workbook = Some workbook; Sheet = Some node.Sheet.Id; CurrentCell = Some { Row = node.Row; Col = node.Col } }
                 | None -> CellValue.Error Err.syntax
         let previous = match cell.Value with CellValue.Formula (_, cached) -> cached | other -> other
         let changed = not (sameValue previous result)
@@ -2036,7 +2036,7 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                                         | Some cell ->
                                             let result =
                                                 match node.Expr with
-                                                | Some expr -> eval expr { Model = model; Workbook = Some workbook; Sheet = Some state.Id; CurrentCell = Some addr }
+                                                | Some expr -> evalCell expr { Model = model; Workbook = Some workbook; Sheet = Some state.Id; CurrentCell = Some addr }
                                                 | None -> CellValue.Error Err.syntax
                                             let previous = match cell.Value with CellValue.Formula (_, cached) -> cached | other -> other
                                             if previous <> result then

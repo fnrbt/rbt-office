@@ -464,7 +464,7 @@ let recalculateCell (cell: SheetCell) (workbook: Workbook) (engine: CalcEngine):
                   Workbook = Some workbook
                   Sheet = Some cell.Sheet
                   CurrentCell = Some cell.Cell }
-            Some (eval expr ctx)
+            Some (evalCell expr ctx)
         | _ -> None
     | None -> None
 
