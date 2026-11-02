@@ -1401,7 +1401,12 @@ let generateParaProps (para: obj) : string =
 /// paragraphOfSource further down, which this stands for).
 type private ParagraphSource =
     abstract Of: obj -> string option
-let mutable private paragraphSource : ParagraphSource = { new ParagraphSource with member _.Of _ = None }
+    /// Where the paragraph a SourcePara names is in the part (start, end).
+    abstract SpanOf: obj -> (int * int) option
+let mutable private paragraphSource : ParagraphSource =
+    { new ParagraphSource with
+        member _.Of _ = None
+        member _.SpanOf _ = None }
 /// Whether the paragraphs being written may be made of the XML they were read from (see generateTable).
 let mutable private paragraphsInContext = true
 /// How many paragraphs the last save wrote from the model, and how many of the XML they were read from
@@ -1628,6 +1633,22 @@ let private generateParagraphWithHyperlinksAndImagesWithPageSetup (packageSetup:
     xml
   | None ->
     reportGenerated <- reportGenerated + 1
+    // A paragraph made of one that was read (a part of it, or it with others joined) is spliced from that one's
+    // XML (see splicedRuns): a part takes the elements of the source that stand among its own runs, and those
+    // before or after them where it holds the start or the end of the paragraph.
+    if isNullOrUndefined (para?SpliceFrom) && not (isNullOrUndefined (para?SourcePara)) && paragraphsInContext then
+        let spec = para?SourcePara
+        let original = if isNullOrUndefined (spec?After) then null else spec?After?SpliceOriginal
+        match paragraphSource.SpanOf spec with
+        | Some (start, finish) when not (isNullOrUndefined original) ->
+            para?SpliceFrom <- createObj [ "Start" ==> start; "End" ==> finish ]
+            para?SpliceOriginal <- original
+            let cut = optionalArray (spec?Cut) |> Array.map (fun value -> intOrDefault -1 value)
+            if cut.Length = 2 then
+                para?SpliceLeading <- (cut.[0] = 0)
+                para?SpliceTrailing <- (cut.[1] >= (stringOrDefault "" (spec?OldText)).Length)
+            if optionalArray (spec?Join) |> Array.isEmpty |> not then para?SpliceTrailing <- false
+        | _ -> ()
     let pPr = generateParaPropsWithPageSetup packageSetup para
     // The mark of a comment or a note is one element: where the editor holds it as two runs
     // (a part of the mark was formatted) it is still one reference, written with the first.
@@ -3799,7 +3820,7 @@ let private spliceSourceOf (text: string) (start: int) (finish: int) : SpliceSou
 
 /// The runs of a paragraph written from its source (see above): `pieces` are the model's runs
 /// with their XML (the run itself, and the link or tracked change around it).
-let private splicedRuns (source: SpliceSource) (original: obj) (pieces: (obj * string * (string -> string)) list) : string list =
+let private splicedRuns (source: SpliceSource) (original: obj) (leading: bool) (trailing: bool) (pieces: (obj * string * (string -> string)) list) : string list =
     let out = ResizeArray<string>()
     // The runs read, by source: the run objects the model had for each.
     let originalRuns = System.Collections.Generic.Dictionary<int, ResizeArray<obj>>()
@@ -3820,6 +3841,8 @@ let private splicedRuns (source: SpliceSource) (original: obj) (pieces: (obj * s
         for wrapper in List.skip keep chain do out.Add (fst source.Wrappers.[wrapper])
         openChain <- chain
     let mutable slots = source.Slots
+    // (Before the first of its runs a part of a paragraph has the elements only where it holds the paragraph's start.)
+    let mutable started = leading
     let emitSlotsBefore (run: int option) =
         // The elements up to the run (all that are left, for none).
         let mutable going = true
@@ -3828,13 +3851,15 @@ let private splicedRuns (source: SpliceSource) (original: obj) (pieces: (obj * s
             | SlotRun (start, _) when Some start = run -> going <- false
             | SlotRun _ -> slots <- slots.Tail
             | SlotKept (xml, chain) ->
-                moveTo chain
-                out.Add xml
+                if started && (run.IsSome || trailing) then
+                    moveTo chain
+                    out.Add xml
                 slots <- slots.Tail
     for runObj, inner, wrap in pieces do
         match optionalInt (runObj?SourceRun) |> Option.filter (fun at -> source.Runs.ContainsKey at) with
         | Some at ->
             if slots |> List.exists (function SlotRun (start, _) -> start = at | _ -> false) then emitSlotsBefore (Some at)
+            started <- true
             let bytes, chain = source.Runs.[at]
             moveTo chain
             // The model's run then, when it was one run of the source and is one now.
@@ -3876,7 +3901,9 @@ paragraphSplicer <-
             if isNullOrUndefined (para?SpliceFrom) || isNullOrUndefined (para?SpliceOriginal) || spliceSourceText = "" then None
             else
                 spliceSourceOf spliceSourceText (intOrDefault -1 (para?SpliceFrom?Start)) (intOrDefault -1 (para?SpliceFrom?End))
-                |> Option.map (fun source -> splicedRuns source para?SpliceOriginal pieces, source.Properties) }
+                |> Option.map (fun source ->
+                    let flag (value: obj) = isNullOrUndefined value || unbox<bool> value
+                    splicedRuns source para?SpliceOriginal (flag para?SpliceLeading) (flag para?SpliceTrailing) pieces, source.Properties) }
 
 let private sourceRunsOf (xml: string) (para: SourceParagraph) (text: string) : SourceRunInfo array option =
     let runs = ResizeArray<SourceRunInfo>()
@@ -4374,7 +4401,7 @@ let mutable private sourceChunkElementStarts : int array = [||]
 let mutable private sourceChunkEnds : int array = [||]
 let mutable private sourceItemChunks : int array = [||]
 let mutable private sourceStoryCounts : int array = [||]
-let private sourceChunkParagraphs = System.Collections.Generic.Dictionary<int, string array>()
+let private sourceChunkParagraphs = System.Collections.Generic.Dictionary<int, (string * int * int) array>()
 let private forgetSourceBody () =
     sourceBodyXml <- ""
     sourceChunkStarts <- [||]
@@ -4383,7 +4410,8 @@ let private forgetSourceBody () =
     sourceItemChunks <- [||]
     sourceStoryCounts <- [||]
     sourceChunkParagraphs.Clear()
-let private sourceParagraphXml (block: int) (para: int) : string option =
+/// The XML of a paragraph that was read and where it is in the part (start, end).
+let private sourceParagraphAt (block: int) (para: int) : (string * int * int) option =
     if block < 0 || para < 0 || block >= sourceItemChunks.Length || block >= sourceStoryCounts.Length || para >= sourceStoryCounts.[block] then None
     else
         let chunk = sourceItemChunks.[block]
@@ -4396,7 +4424,10 @@ let private sourceParagraphXml (block: int) (para: int) : string option =
                     let text = sourceBodyXml.Substring(sourceChunkStarts.[chunk], sourceChunkEnds.[chunk] - sourceChunkStarts.[chunk])
                     let found =
                         match scanSourceParagraphs text with
-                        | Some paragraphs -> paragraphs |> List.map (fun paragraph -> text.Substring(paragraph.Start, paragraph.End - paragraph.Start)) |> List.toArray
+                        | Some paragraphs ->
+                            paragraphs
+                            |> List.map (fun paragraph -> text.Substring(paragraph.Start, paragraph.End - paragraph.Start), sourceChunkStarts.[chunk] + paragraph.Start, sourceChunkStarts.[chunk] + paragraph.End)
+                            |> List.toArray
                         | None -> [||]
                     sourceChunkParagraphs.[chunk] <- found
                     found
@@ -4408,6 +4439,9 @@ let private sourceParagraphXml (block: int) (para: int) : string option =
                     if index < block then before <- before + sourceStoryCounts.[index]
                     total <- total + sourceStoryCounts.[index]
             if total <> paragraphs.Length then None else Some paragraphs.[before + para]
+
+let private sourceParagraphXml (block: int) (para: int) : string option =
+    sourceParagraphAt block para |> Option.map (fun (xml, _, _) -> xml)
 
 /// Paragraphs joined in the XML they were read from take along what stood between them: the
 /// bookmarks and the ranges of permissions between two blocks of the body (a bookmark Word
@@ -4597,7 +4631,11 @@ paragraphSource <-
             |> Option.filter (fun own -> not (paragraphIsBound own))
             |> Option.bind (fun own ->
                 if boolOrDefault false (spec?Verbatim) then Some own
-                else patchSourceParagraph own (stringOrDefault "" (spec?OldText)) spec) }
+                else patchSourceParagraph own (stringOrDefault "" (spec?OldText)) spec)
+        member _.SpanOf (spec: obj) =
+            sourceParagraphAt (intOrDefault -1 (spec?Block)) (intOrDefault -1 (spec?Para))
+            |> Option.filter (fun (own, _, _) -> not (paragraphIsBound own))
+            |> Option.map (fun (_, start, finish) -> start, finish) }
 
 paragraphOrigin <-
     { new ParagraphOrigin with

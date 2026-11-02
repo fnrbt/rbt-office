@@ -2988,6 +2988,10 @@ let private derivedEdit (context: WordStyles.DocumentStyleContext option) (expor
         elif obj.ReferenceEquals(before, para) || jsonOf (exportBefore before) = jsonOf (export para) then
             createObj [ "Paragraph" ==> index; "Text" ==> null; "Before" ==> null; "After" ==> export para; "NewText" ==> TextBuffer.toString para.Buffer ]
         else paragraphEdit context exportBefore export index before para
+    // (The paragraph as it was read - all of it, not the part this one is: a run of the source that this one
+    // has a part of is not the run that was read, and is written with its own text. See DocumentWriter.splicedRuns.)
+    if not (isNullOrUndefined edit?After) then
+        edit?After?SpliceOriginal <- exportBefore derivation.Original
     if derivation.From > 0 || derivation.Until < TextBuffer.length derivation.Original.Buffer then
         edit?Cut <- [| derivation.From; derivation.Until |]
     if not derivation.Joined.IsEmpty then
