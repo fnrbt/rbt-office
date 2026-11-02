@@ -7,8 +7,11 @@
 // of the editor's save of the unedited document, {editKeeps} / {editLacks}
 // regexes over document.xml after one character was typed into the first paragraph.
 
+import { readFileSync } from 'node:fs';
+
 const W = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"';
 const REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+const opaque = (name) => readFileSync(new URL('./opaque/' + name, import.meta.url));
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
 const PNG2 = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
 
@@ -26,7 +29,9 @@ const numbering = `<w:numbering ${W}>
 
 const li = (text, numId, ilvl = 0) => p(text, `<w:numPr><w:ilvl w:val="${ilvl}"/><w:numId w:val="${numId}"/></w:numPr>`);
 const cell = (content, tcPr = '') => `<w:tc><w:tcPr><w:tcW w:w="2400" w:type="dxa"/>${tcPr}</w:tcPr>${content}</w:tc>`;
-const drawing = (rid, cx, cy) => `<w:r><w:drawing><wp:inline><wp:extent cx="${cx}" cy="${cy}"/><wp:docPr id="1" name="pic"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="1" name="pic"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${rid}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"/></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>`;
+// (Each picture its own docPr id, as Word wants.)
+let pictureId = 1000;
+const drawing = (rid, cx, cy) => `<w:r><w:drawing><wp:inline><wp:extent cx="${cx}" cy="${cy}"/><wp:docPr id="${pictureId++}" name="pic"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="1" name="pic"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${rid}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"/></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>`;
 
 const WPS = 'http://schemas.microsoft.com/office/word/2010/wordprocessingShape';
 // A wps shape in mc:AlternateContent with the VML fallback Word writes next to it.
@@ -65,14 +70,19 @@ function preservedParts(name, expect) {
         body: p('styled paragraph', '<w:pStyle w:val="Kept"/>') + p('plain paragraph'),
         rels: `<Relationship Id="rId40" Type="${REL}/settings" Target="settings.xml"/><Relationship Id="rId41" Type="${REL}/theme" Target="theme/theme1.xml"/>` +
             `<Relationship Id="rId42" Type="${REL}/fontTable" Target="fontTable.xml"/><Relationship Id="rId43" Type="${REL}/webSettings" Target="webSettings.xml"/>` +
-            `<Relationship Id="rId44" Type="${REL}/customXml" Target="../customXml/item1.xml"/>`,
+            `<Relationship Id="rId44" Type="${REL}/customXml" Target="../customXml/item1.xml"/><Relationship Id="rId45" Type="${REL}/footnotes" Target="footnotes.xml"/>`,
         rootRels: `<Relationship Id="rId2" Type="${PKG}/metadata/core-properties" Target="docProps/core.xml"/><Relationship Id="rId3" Type="${REL}/extended-properties" Target="docProps/app.xml"/>` +
             `<Relationship Id="rId4" Type="${REL}/custom-properties" Target="docProps/custom.xml"/>`,
         extra: {
             'word/settings.xml': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<w:settings ${W}><w:zoom w:percent="120"/><w:attachedTemplate r:id="rId1"/><w:trackRevisions/><w:defaultTabStop w:val="708"/><w:footnotePr><w:footnote w:id="-1"/></w:footnotePr>` +
                 `<w:compat><w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="15"/></w:compat><w:rsids><w:rsidRoot w:val="00A1B2C3"/></w:rsids><w:themeFontLang w:val="en-US"/></w:settings>`,
             'word/_rels/settings.xml.rels': `<Relationships xmlns="${PKG}"><Relationship Id="rId1" Type="${REL}/attachedTemplate" Target="file:///C:/Templates/Normal.dotm" TargetMode="External"/></Relationships>`,
-            'word/theme/theme1.xml': '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Kept theme"><a:themeElements><a:clrScheme name="Kept"><a:dk1><a:sysClr val="windowText" lastClr="000000"/></a:dk1></a:clrScheme><a:fontScheme name="Kept"><a:majorFont><a:latin typeface="Georgia"/></a:majorFont><a:minorFont><a:latin typeface="Verdana"/></a:minorFont></a:fontScheme></a:themeElements></a:theme>',
+            'word/theme/theme1.xml': '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Kept theme"><a:themeElements><a:clrScheme name="Kept"><a:dk1><a:sysClr val="windowText" lastClr="000000"/></a:dk1><a:lt1><a:sysClr val="window" lastClr="FFFFFF"/></a:lt1>' +
+                ['dk2:44546A', 'lt2:E7E6E6', 'accent1:4472C4', 'accent2:ED7D31', 'accent3:A5A5A5', 'accent4:FFC000', 'accent5:5B9BD5', 'accent6:70AD47', 'hlink:0563C1', 'folHlink:954F72'].map((pair) => { const [tag, rgb] = pair.split(':'); return `<a:${tag}><a:srgbClr val="${rgb}"/></a:${tag}>`; }).join('') +
+                '</a:clrScheme><a:fontScheme name="Kept"><a:majorFont><a:latin typeface="Georgia"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont><a:minorFont><a:latin typeface="Verdana"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont></a:fontScheme>' +
+                `<a:fmtScheme name="Kept"><a:fillStyleLst>${'<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>'.repeat(3)}</a:fillStyleLst><a:lnStyleLst>${'<a:ln w="6350"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln>'.repeat(3)}</a:lnStyleLst>` +
+                `<a:effectStyleLst>${'<a:effectStyle><a:effectLst/></a:effectStyle>'.repeat(3)}</a:effectStyleLst><a:bgFillStyleLst>${'<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>'.repeat(3)}</a:bgFillStyleLst></a:fmtScheme></a:themeElements></a:theme>`,
+            'word/footnotes.xml': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<w:footnotes ${W}><w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote><w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote></w:footnotes>`,
             'word/fontTable.xml': `<w:fonts ${W}><w:font w:name="Verdana"><w:panose1 w:val="020B0604030504040204"/></w:font></w:fonts>`,
             'word/webSettings.xml': `<w:webSettings ${W}><w:optimizeForBrowser/></w:webSettings>`,
             'customXml/item1.xml': '<root xmlns="urn:example:data"><value>42</value></root>',
@@ -89,6 +99,7 @@ function preservedParts(name, expect) {
                 `<w:style w:type="table" w:styleId="TableGrid"><w:name w:val="Table Grid"/><w:tblPr><w:tblBorders><w:top w:val="single" w:sz="4" w:space="0" w:color="auto"/></w:tblBorders></w:tblPr><w:tblStylePr w:type="firstRow"><w:rPr><w:b/></w:rPr></w:tblStylePr></w:style></w:styles>`,
         },
         types: '<Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/>' +
+            '<Override PartName="/word/footnotes.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml"/>' +
             '<Override PartName="/word/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>' +
             '<Override PartName="/word/fontTable.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.fontTable+xml"/>' +
             '<Override PartName="/word/webSettings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.webSettings+xml"/>' +
@@ -247,11 +258,12 @@ const docs = [
     },
     {
         name: 'synthetic/reader-structure',
+        root: 'xmlns:x99="urn:example:a-namespace-no-reader-knows"',
         body:
             `<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr><w:tblGrid><w:gridCol w:w="2400"/><w:gridCol w:w="2400"/></w:tblGrid>` +
             `<w:tr><w:tc><w:tcPr><w:tcW w:w="2400" w:type="dxa"/></w:tcPr><w:sdt><w:sdtPr><w:tag w:val="t"/></w:sdtPr><w:sdtContent>${p('sdt in cell')}</w:sdtContent></w:sdt></w:tc><w:sdt><w:sdtContent>${cell(p('sdt cell'))}</w:sdtContent></w:sdt></w:tr>` +
             `<w:sdt><w:sdtContent><w:tr>${cell(p('sdt row a'))}${cell(p('sdt row b'))}</w:tr></w:sdtContent></w:sdt></w:tbl>` +
-            `<w:p><w:smartTag w:uri="u" w:element="e"><w:r><w:t>smart</w:t></w:r></w:smartTag><w:customXml w:element="x"><w:r><w:t xml:space="preserve"> custom</w:t></w:r></w:customXml><w:dir w:val="rtl"><w:r><w:t xml:space="preserve"> dir</w:t></w:r></w:dir><w:bdo w:val="ltr"><w:r><w:t xml:space="preserve"> bdo</w:t></w:r></w:bdo><mc:AlternateContent><mc:Choice Requires="wps"><w:r><w:t xml:space="preserve"> choice</w:t></w:r></mc:Choice><mc:Fallback><w:r><w:t xml:space="preserve"> fallback</w:t></w:r></mc:Fallback></mc:AlternateContent></w:p>`,
+            `<w:p><w:smartTag w:uri="u" w:element="e"><w:r><w:t>smart</w:t></w:r></w:smartTag><w:customXml w:element="x"><w:r><w:t xml:space="preserve"> custom</w:t></w:r></w:customXml><w:dir w:val="rtl"><w:r><w:t xml:space="preserve"> dir</w:t></w:r></w:dir><w:bdo w:val="ltr"><w:r><w:t xml:space="preserve"> bdo</w:t></w:r></w:bdo><mc:AlternateContent><mc:Choice Requires="x99"><w:r><w:t xml:space="preserve"> choice</w:t></w:r></mc:Choice><mc:Fallback><w:r><w:t xml:space="preserve"> fallback</w:t></w:r></mc:Fallback></mc:AlternateContent></w:p>`,
         expect: [
             { readText: 'sdt in cell' }, { readText: 'sdt cell' }, { readText: 'sdt row a' }, { readText: 'sdt row b' },
             { readText: 'smart custom dir bdo fallback' },
@@ -440,7 +452,7 @@ const docs = [
             `<w:p><w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="1828800" cy="914400"/><wp:docPr id="2" name="Diagram 2"/><wp:cNvGraphicFramePr/>` +
             `<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/diagram"><dgm:relIds r:dm="rId31" r:lo="rId32" r:qs="rId33" r:cs="rId34"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>` +
             `<w:p><w:r><w:object w:dxaOrig="1440" w:dyaOrig="720"><v:shape id="_x0000_i1025" style="width:72pt;height:36pt" o:ole=""><v:imagedata r:id="rId35" o:title=""/></v:shape><o:OLEObject Type="Embed" ProgID="Excel.Sheet.12" ShapeID="_x0000_i1025" DrawAspect="Content" ObjectID="_1" r:id="rId36"/></w:object></w:r></w:p>` +
-            `<w:p><w:r><mc:AlternateContent><mc:Choice Requires="cx1"><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="914400" cy="914400"/><wp:docPr id="3" name="Chart 3"/><a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/drawing/2014/chartex"><cx1:chart r:id="rId37"/></a:graphicData></a:graphic></wp:inline></w:drawing></mc:Choice>` +
+            `<w:p><w:r><mc:AlternateContent><mc:Choice Requires="cx1"><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="914400" cy="914400"/><wp:docPr id="3" name="Chart 3"/><a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/drawing/2014/chartex"><cx:chart xmlns:cx="http://schemas.microsoft.com/office/drawing/2014/chartex" r:id="rId37"/></a:graphicData></a:graphic></wp:inline></w:drawing></mc:Choice>` +
             `<mc:Fallback>${drawing('rId38', 914400, 914400).replace('<w:r>', '').replace('</w:r>', '')}</mc:Fallback></mc:AlternateContent></w:r></w:p>` +
             `<w:p><w:r><mc:AlternateContent><mc:Choice Requires="wpg"><w:drawing><wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="2" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="column"><wp:posOffset>0</wp:posOffset></wp:positionH><wp:positionV relativeFrom="paragraph"><wp:posOffset>0</wp:posOffset></wp:positionV><wp:extent cx="914400" cy="457200"/><wp:wrapNone/><wp:docPr id="4" name="Group 4"/>` +
             `<a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup"><wpg:wgp><wpg:cNvGrpSpPr/><wpg:grpSpPr/><wps:wsp><wps:cNvSpPr/><wps:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></wps:spPr><wps:bodyPr/></wps:wsp><wps:wsp><wps:cNvSpPr/><wps:spPr><a:prstGeom prst="ellipse"><a:avLst/></a:prstGeom></wps:spPr><wps:bodyPr/></wps:wsp></wpg:wgp></a:graphicData></a:graphic></wp:anchor></w:drawing></mc:Choice>` +
@@ -454,15 +466,23 @@ const docs = [
             `<Relationship Id="rId37" Type="http://schemas.microsoft.com/office/2014/relationships/chartEx" Target="charts/chartEx1.xml"/><Relationship Id="rId38" Type="${REL}/image" Target="media/fallback.png"/>` +
             `<Relationship Id="rId9" Type="${REL}/header" Target="header1.xml"/>`,
         extra: {
-            'word/charts/chart1.xml': '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><c:chart><c:plotArea><c:barChart><c:barDir val="col"/></c:barChart></c:plotArea></c:chart><c:externalData r:id="rId1"><c:autoUpdate val="0"/></c:externalData></c:chartSpace>',
+            // The chart, its workbook and the SmartArt parts are Word's own (Word 16 made them), the chartEx Excel's with
+            // its data written in: Word refuses a file whose parts it cannot read. The OLE object's bytes stay made up.
+            'word/charts/chart1.xml': opaque('chart1.xml'),
             'word/charts/_rels/chart1.xml.rels': `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${REL}/package" Target="../embeddings/Workbook1.xlsx"/></Relationships>`,
-            'word/embeddings/Workbook1.xlsx': Buffer.from([80, 75, 3, 4, 0, 1, 2, 3, 250, 251, 252, 253, 254, 255]),
+            'word/embeddings/Workbook1.xlsx': opaque('Workbook1.xlsx'),
             'word/embeddings/Sheet1.xlsx': Buffer.from([80, 75, 5, 6, 9, 8, 7]),
-            'word/charts/chartEx1.xml': '<cx:chartSpace xmlns:cx="http://schemas.microsoft.com/office/drawing/2014/chartex"><cx:chart/></cx:chartSpace>',
-            'word/diagrams/data1.xml': '<dgm:dataModel xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram"><dgm:ptLst/></dgm:dataModel>',
-            'word/diagrams/layout1.xml': '<dgm:layoutDef xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram"/>',
-            'word/diagrams/quickstyle1.xml': '<dgm:styleDef xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram"/>',
-            'word/diagrams/colors1.xml': '<dgm:colorsDef xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram"/>',
+            'word/charts/chartEx1.xml': opaque('chartEx1.xml'),
+            // (Word refuses a chartEx without its style and colours.)
+            'word/charts/_rels/chartEx1.xml.rels': `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${REL}/package" Target="../embeddings/Workbook2.xlsx"/>` +
+                '<Relationship Id="rId2" Type="http://schemas.microsoft.com/office/2011/relationships/chartStyle" Target="style1.xml"/><Relationship Id="rId3" Type="http://schemas.microsoft.com/office/2011/relationships/chartColorStyle" Target="colors1.xml"/></Relationships>',
+            'word/embeddings/Workbook2.xlsx': opaque('Workbook1.xlsx'),
+            'word/charts/style1.xml': opaque('style1.xml'),
+            'word/charts/colors1.xml': opaque('colors1.chart.xml'),
+            'word/diagrams/data1.xml': opaque('data1.xml'),
+            'word/diagrams/layout1.xml': opaque('layout1.xml'),
+            'word/diagrams/quickstyle1.xml': opaque('quickstyle1.xml'),
+            'word/diagrams/colors1.xml': opaque('colors1.xml'),
             'word/media/ole1.png': PNG, 'word/media/fallback.png': PNG2,
             // A WordArt watermark: VML in the header, with nothing the reader models.
             'word/header1.xml': `<w:hdr ${W} xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office"><w:p><w:r><w:pict><v:shape id="PowerPlusWaterMarkObject1" o:spid="_x0000_s2049" type="#_x0000_t136" style="position:absolute;margin-left:0;margin-top:0;width:412.4pt;height:247.45pt;rotation:315;z-index:-251658752" fillcolor="silver" stroked="f"><v:textpath style="font-family:&quot;Calibri&quot;;font-size:1pt" string="DRAFT"/></v:shape></w:pict></w:r><w:r><w:t>header text</w:t></w:r></w:p></w:hdr>`,
@@ -470,6 +490,7 @@ const docs = [
         types: '<Default Extension="png" ContentType="image/png"/><Default Extension="xlsx" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"/>' +
             '<Override PartName="/word/charts/chart1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/>' +
             '<Override PartName="/word/charts/chartEx1.xml" ContentType="application/vnd.ms-office.chartex+xml"/>' +
+            '<Override PartName="/word/charts/style1.xml" ContentType="application/vnd.ms-office.chartstyle+xml"/><Override PartName="/word/charts/colors1.xml" ContentType="application/vnd.ms-office.chartcolorstyle+xml"/>' +
             '<Override PartName="/word/diagrams/data1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.diagramData+xml"/>' +
             '<Override PartName="/word/diagrams/layout1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.diagramLayout+xml"/>' +
             '<Override PartName="/word/diagrams/quickstyle1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.diagramStyle+xml"/>' +
@@ -479,7 +500,7 @@ const docs = [
             { part: 'word/document.xml', has: 'chart: </w:t></w:r><w:r><w:drawing[^>]*><wp:inline [^>]*wp14:anchorId="12345678"[^>]*><wp:extent cx="2743200" cy="1828800"/>.*?<c:chart r:id="rId30"/>' },
             { part: 'word/document.xml', has: '<dgm:relIds r:cs="rId34" r:dm="rId31" r:lo="rId32" r:qs="rId33"/>' },
             { part: 'word/document.xml', has: '<w:object [^>]*>.*?<v:imagedata [^>]*r:id="rId35"[^>]*/>.*?<o:OLEObject [^>]*ProgID="Excel.Sheet.12"[^>]*r:id="rId36"' },
-            { part: 'word/document.xml', has: '<mc:Choice Requires="cx1"><w:drawing>.*?<cx1:chart r:id="rId37"/>.*?<mc:Fallback>.*?r:embed="rId38"' },
+            { part: 'word/document.xml', has: '<mc:Choice Requires="cx1"><w:drawing>.*?<cx:chart [^>]*r:id="rId37"/>.*?<mc:Fallback>.*?r:embed="rId38"' },
             { part: 'word/document.xml', has: '<mc:Choice Requires="wpg">.*?<wpg:wgp>.*?</wpg:wgp>.*?<mc:Fallback><w:pict><v:group ' },
             { part: 'word/document.xml', lacks: '>Chart<' }, { part: 'word/document.xml', lacks: 'wps:txbx' },
             { part: 'word/_rels/document.xml.rels', has: '<Relationship Id="rId30" Type="[^"]*/chart" Target="/word/charts/chart1.xml"/>' },
