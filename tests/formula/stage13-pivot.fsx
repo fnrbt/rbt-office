@@ -177,6 +177,34 @@ let fc2 = fromCache cacheHeaders cacheRecords [ 0 ] [ 1 ] 2 Sum
 check "fromCache crosstab hdr" fc2.[0] [| S "Row Labels"; S "A"; S "B"; S "Grand Total" |]
 check "fromCache crosstab east" fc2.[1] [| S "East"; N 150.; N 200.; N 350. |]
 
+
+// ---- GETPIVOTDATA reads a pivot table as it stands on its sheet (Model.PivotLayout) ----
+let at r c = { Row = r; Col = c }
+let pivotSheet =
+    // A compact pivot at A3:B7: Region rows (East, West) under "Row Labels", a grand total, Sum of Sales.
+    let cells = [ at 2 0, S "Row Labels"; at 2 1, S "Sum of Sales"; at 3 0, S "East"; at 3 1, N 300.0; at 4 0, S "West"; at 4 1, N 400.0; at 5 0, S "Grand Total"; at 5 1, N 700.0
+                  // A tabular one at D3:F6: Country and State in their own columns, no grand total.
+                  at 2 3, S "Country"; at 2 4, S "State"; at 2 5, S "Sum of Sales"; at 3 3, S "AU"; at 3 4, S "NSW"; at 3 5, N 10.0; at 4 3, S "AU"; at 4 4, S "VIC"; at 4 5, N 20.0; at 5 3, S "NZ"; at 5 4, S "AKL"; at 5 5, N 30.0 ]
+    let compact : PivotLayout =
+        { Top = 2; Left = 0; Bottom = 5; Right = 1; FirstHeaderRow = 1; FirstDataRow = 1; FirstDataCol = 1
+          RowFields = [ "Region" ]; ColumnFields = []; DataFields = [ "Sum of Sales" ]
+          RowLines = [ { Kind = "data"; Repeat = 0; Items = [ 0 ] }; { Kind = "data"; Repeat = 0; Items = [ 1 ] }; { Kind = "grand"; Repeat = 0; Items = [] } ]
+          ColumnLines = [ { Kind = "data"; Repeat = 0; Items = [] } ] }
+    let tabular : PivotLayout =
+        { Top = 2; Left = 3; Bottom = 5; Right = 5; FirstHeaderRow = 1; FirstDataRow = 1; FirstDataCol = 2
+          RowFields = [ "Country"; "State" ]; ColumnFields = []; DataFields = [ "Sum of Sales" ]
+          RowLines = [ { Kind = "data"; Repeat = 0; Items = [ 0; 0 ] }; { Kind = "data"; Repeat = 1; Items = [ 1 ] }; { Kind = "data"; Repeat = 0; Items = [ 1; 2 ] } ]
+          ColumnLines = [ { Kind = "data"; Repeat = 0; Items = [] } ] }
+    { createEmpty 50 10 with Cells = cells |> List.map (fun (a, v) -> a, cell v) |> Map.ofList; Pivots = [ compact; tabular ] }
+let gp f = evaluateFormula f pivotSheet None
+check "GETPIVOTDATA: an item" (gp "=GETPIVOTDATA(\"Sales\",A3,\"Region\",\"West\")") (N 400.0)
+check "GETPIVOTDATA: the data field by its own name" (gp "=GETPIVOTDATA(\"Sum of Sales\",B5,\"Region\",\"east\")") (N 300.0)
+check "GETPIVOTDATA: no item is the grand total" (gp "=GETPIVOTDATA(\"Sales\",A3)") (N 700.0)
+check "GETPIVOTDATA: tabular, two fields" (gp "=GETPIVOTDATA(\"Sales\",D3,\"State\",\"VIC\",\"Country\",\"AU\")") (N 20.0)
+check "GETPIVOTDATA: tabular, a line that begins both fields" (gp "=GETPIVOTDATA(\"Sales\",D3,\"Country\",\"NZ\",\"State\",\"AKL\")") (N 30.0)
+check "GETPIVOTDATA: a field the pivot does not have" (gp "=GETPIVOTDATA(\"Sales\",A3,\"City\",\"Paris\")") (CellValue.Error "REF!")
+check "GETPIVOTDATA: a cell outside every pivot" (gp "=GETPIVOTDATA(\"Sales\",H20)") (CellValue.Error "REF!")
+
 printfn ""
 printfn "Stage 13 pivot tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

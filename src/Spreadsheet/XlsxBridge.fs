@@ -80,6 +80,20 @@ let parseRangeClipped (maxRow: int) (maxCol: int) (range: string) : (int * int *
         else Some (sr, sc, min er maxRow, min ec maxCol))
 
 /// The ranges of an sqref ("A1:A9 C3"), clipped.
+
+/// A pivot table of the reader as the model holds it (see Model.PivotLayout).
+let pivotLayout (pivot: XlsxReader.PivotTable) : PivotLayout option =
+    parseRangeClipped 1048575 16383 pivot.Ref
+    |> Option.map (fun (top, left, bottom, right) ->
+        let nameOf (index: int) = if index < 0 then "" else (List.tryItem index pivot.CacheFieldNames |> Option.defaultValue "")
+        let line (l: XlsxReader.PivotLine) : PivotLine = { Kind = l.Kind; Repeat = l.Repeat; Items = l.Items }
+        { Top = top; Left = left; Bottom = bottom; Right = right
+          FirstHeaderRow = pivot.FirstHeaderRow; FirstDataRow = pivot.FirstDataRow; FirstDataCol = pivot.FirstDataCol
+          RowFields = pivot.RowFieldIndexes |> List.map nameOf
+          ColumnFields = pivot.ColumnFieldIndexes |> List.map nameOf
+          DataFields = pivot.DataFields |> List.map (fun field -> field.Name)
+          RowLines = pivot.RowLines |> List.map line
+          ColumnLines = pivot.ColumnLines |> List.map line })
 let private parseSqref (maxRow: int) (maxCol: int) (sqref: string) =
     sqref.Split([| ' ' |], StringSplitOptions.RemoveEmptyEntries)
     |> Array.choose (parseRangeClipped maxRow maxCol)
@@ -1133,7 +1147,8 @@ module Import =
                 Drawings = drawingsOfExtras sheet.Extras
                 Threads = threads
                 Spill = spill
-                ArrayMarks = arrayMarks }
+                ArrayMarks = arrayMarks
+                Pivots = sheet.PivotTables |> List.choose pivotLayout }
             |> withAutoFilter wb sheet
         { Model = model
           TableColumns = tableColumns

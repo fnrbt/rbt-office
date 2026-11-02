@@ -2066,7 +2066,9 @@ let containsVolatile (expr: Expr) : bool =
                || equalsOrdinalIgnoreCase name "NOW"
                || equalsOrdinalIgnoreCase name "TODAY"
                || equalsOrdinalIgnoreCase name "OFFSET"
-               || equalsOrdinalIgnoreCase name "INDIRECT" then
+               || equalsOrdinalIgnoreCase name "INDIRECT"
+               // (GETPIVOTDATA reads any cell of the pivot table it names: it is calculated with every change.)
+               || equalsOrdinalIgnoreCase name "GETPIVOTDATA" then
                 found <- true
             else
                 for arg in args do
@@ -3827,7 +3829,7 @@ let private functionSignatureSpecs : (string * string) list =
        "NORM.DIST", "|S"; "NORM.INV", "|S"; "NORM.S.DIST", "|S"; "NORM.S.INV", "|S"; "NORMDIST", "|S"; "NORMINV", "|S"
        "NORMSDIST", "|S"; "NORMSINV", "|S"; "NOT", "|S"; "NOW", "|S"; "NPER", "|S"; "NPV", "S|R"
        "NUMBERVALUE", "|S"; "OCT2DEC", "|S"; "ODD", "|S"; "OR", "|R"; "PEARSON", "|R"; "PERCENTILE", "RS"
-       "PERCENTILE.INC", "RS"; "PERCENTRANK", "RSS"; "PERCENTRANK.INC", "RSS"; "PI", "|S"; "PMT", "|S"; "IPMT", "|S"; "PPMT", "|S"; "CUMIPMT", "|S"; "CUMPRINC", "|S"; "XNPV", "SRR"; "XIRR", "RRS"; "MIRR", "RSS"; "POWER", "|S"
+       "PERCENTILE.INC", "RS"; "PERCENTRANK", "RSS"; "PERCENTRANK.INC", "RSS"; "PI", "|S"; "PMT", "|S"; "IPMT", "|S"; "GETPIVOTDATA", "SR|S"; "PPMT", "|S"; "CUMIPMT", "|S"; "CUMPRINC", "|S"; "XNPV", "SRR"; "XIRR", "RRS"; "MIRR", "RSS"; "POWER", "|S"
        "PRODUCT", "|R"; "PROPER", "|S"; "PV", "|S"; "QUARTILE", "RS"; "QUARTILE.INC", "RS"; "QUOTIENT", "|S"
        "RADIANS", "|S"; "RAND", "|S"; "RANDBETWEEN", "|S"; "RANK", "SRS"; "RANK.AVG", "SRS"; "RANK.EQ", "SRS"
        "RATE", "|S"; "REPLACE", "|S"; "REPT", "|S"; "RIGHT", "|S"; "ROUND", "|S"; "ROUNDDOWN", "|S"
@@ -12052,6 +12054,96 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                     if abs d < 1e-14 then i <- 80 else r <- r - f / d
                 i <- i + 1
             match result with Some r -> CellValue.Number r | None -> err Err.num
+    // GETPIVOTDATA reads the pivot table as it stands on its sheet (Model.PivotLayout): the row
+    // whose items are those named, in the column of the data field (and of the column items named).
+    | "GETPIVOTDATA" ->
+        let pivotCell =
+            match if nargs >= 2 then Some (argExpr 1) else None with
+            | Some (CellRef r) -> Some (r.Sheet, r.Row, r.Col)
+            | Some (RangeRef (a, _)) -> Some (a.Sheet, a.Row, a.Col)
+            | _ -> None
+        match argText 0, pivotCell with
+        | Result.Error e, _ -> err e
+        | _, None -> err Err.ref
+        | Ok dataName, Some (sheet, row, col) ->
+            // (A measure of a data model is named "[Measures].[name]": the data field is "name".)
+            let dataName =
+                let t = dataName.Trim()
+                if t.StartsWith("[Measures].[", StringComparison.OrdinalIgnoreCase) && t.EndsWith "]" then t.Substring(12, t.Length - 13) else t
+            match resolveModel sheet model workbook |> Option.bind (fun m -> m.Pivots |> List.tryFind (fun p -> row >= p.Top && row <= p.Bottom && col >= p.Left && col <= p.Right) |> Option.map (fun p -> m, p)) with
+            | None -> err Err.ref
+            | Some _ when nargs % 2 = 1 -> err Err.ref
+            | Some (sheetModel, pivot) ->
+                let same (a: string) (b: string) = String.Equals(a.Trim(), b.Trim(), StringComparison.OrdinalIgnoreCase)
+                let valueAt r c = getCellValue { Row = r; Col = c } sheetModel |> unwrapValue
+                let sameItem (label: CellValue) (item: CellValue) =
+                    match label, unwrapValue item with
+                    | CellValue.Number a, CellValue.Number b -> a = b
+                    | CellValue.String a, CellValue.String b -> same a b || same (a.Replace(" Total", "")) b
+                    | CellValue.Number a, CellValue.String b -> same (string a) b
+                    | CellValue.String a, CellValue.Number b -> same a (string b)
+                    | CellValue.Boolean a, CellValue.Boolean b -> a = b
+                    | _ -> false
+                let dataIndex =
+                    pivot.DataFields |> List.tryFindIndex (fun name ->
+                        same name dataName || same name ("Sum of " + dataName) || (name.EndsWith(" of " + dataName.Trim(), StringComparison.OrdinalIgnoreCase)))
+                // The items named, by field.
+                let pairs = [ for i in 2 .. 2 .. nargs - 1 -> (match argText i with Ok field -> field | _ -> ""), argRaw (i + 1) ]
+                let lineRows = pivot.RowLines |> List.mapi (fun k line -> pivot.Top + pivot.FirstDataRow + k, line)
+                let lineCols = pivot.ColumnLines |> List.mapi (fun k line -> pivot.Left + pivot.FirstDataCol + k, line)
+                // The items of each row (column): those it repeats from the one before, and its own, read off its label.
+                let paths (lines: (int * PivotLine) list) (labelAt: int -> int -> CellValue) (fields: string list) =
+                    let mutable before : CellValue list = []
+                    [ for at, line in lines ->
+                        if line.Kind = "grand" then at, line, None
+                        else
+                            // Its items are those of the fields from Repeat on, one each (several where the line
+                            // begins more than one field - the tabular form: each in its own label column).
+                            let items = if line.Items.IsEmpty then [ 0 ] else line.Items
+                            let own =
+                                items |> List.mapi (fun offset item ->
+                                    let level = line.Repeat + offset
+                                    if level < fields.Length && fields.[level] = "" then
+                                        // (The data fields as a field: its item is the index of a data field.)
+                                        CellValue.Number (float item)
+                                    else labelAt at level)
+                            let path = (List.truncate line.Repeat before) @ own
+                            if line.Kind = "data" then before <- path
+                            at, line, Some path ]
+                let rowLabelColumn level = pivot.Left + (if pivot.FirstDataCol > 1 then min level (pivot.FirstDataCol - 1) else 0)
+                let rowPaths = paths lineRows (fun r level -> valueAt r (rowLabelColumn level)) pivot.RowFields
+                let colPaths = paths lineCols (fun c level -> valueAt (pivot.Top + pivot.FirstHeaderRow + level) c) pivot.ColumnFields
+                // What each axis must be: the item of each field named, the data field where the data fields are a field of it.
+                let wants (fields: string list) =
+                    fields
+                    |> List.mapi (fun level field -> level, field)
+                    |> List.choose (fun (level, field) ->
+                        if field = "" then dataIndex |> Option.map (fun index -> level, CellValue.Number (float index))
+                        else pairs |> List.tryFind (fun (name, _) -> same name field) |> Option.map (fun (_, item) -> level, item))
+                let known = pairs |> List.forall (fun (name, _) -> List.exists (same name) pivot.RowFields || List.exists (same name) pivot.ColumnFields)
+                let pick (lines: (int * PivotLine * CellValue list option) list) (want: (int * CellValue) list) =
+                    if want.IsEmpty then
+                        match lines |> List.tryFind (fun (_, line, _) -> line.Kind = "grand") with
+                        | Some (at, _, _) -> Some at
+                        // (No grand total: one line alone is the whole.)
+                        | None -> (match lines with [ (at, _, _) ] -> Some at | _ -> None)
+                    else
+                        let depth = (want |> List.map fst |> List.max) + 1
+                        lines
+                        |> List.tryFind (fun (_, line, path) ->
+                            match path with
+                            | Some path when path.Length = depth && line.Kind <> "grand" ->
+                                want |> List.forall (fun (level, item) -> sameItem path.[level] item)
+                            | _ -> false)
+                        |> Option.map (fun (at, _, _) -> at)
+                if dataIndex.IsNone || not known then err Err.ref
+                else
+                    match pick rowPaths (wants pivot.RowFields), pick colPaths (wants pivot.ColumnFields) with
+                    | Some r, Some c ->
+                        match valueAt r c with
+                        | CellValue.Empty -> err Err.ref
+                        | value -> value
+                    | _ -> err Err.ref
     // (IPMT, PPMT, CUMIPMT and CUMPRINC as LibreOffice computes them - Excel's results: the balance
     // after a period is the future value of the loan so far.)
     | "IPMT" | "PPMT" ->

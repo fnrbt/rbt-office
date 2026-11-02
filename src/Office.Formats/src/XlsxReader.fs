@@ -395,6 +395,15 @@ type PivotTableField = {
     Index: int
 }
 
+/// A row or column of a pivot table as it is laid out (`rowItems` / `colItems`): its type ("data",
+/// "default" for a subtotal, "grand" ...), how many of the leading fields it repeats from the one
+/// before (`r`), and the item of each field after those (`x`: an index into the field's items).
+type PivotLine = {
+    Kind: string
+    Repeat: int
+    Items: int list
+}
+
 type PivotTable = {
     Name: string
     DataSource: string  // Reference to source range
@@ -403,6 +412,18 @@ type PivotTable = {
     ColumnFields: PivotTableField list
     DataFields: PivotTableField list
     FilterFields: PivotTableField list
+    /// How it is laid out on the sheet (what GETPIVOTDATA reads): `location` and its offsets,
+    /// the fields of its rows and columns (indexes into the cache's fields; -2 is the data
+    /// fields), its rows and columns, and the names of the cache's fields.
+    Ref: string
+    FirstHeaderRow: int
+    FirstDataRow: int
+    FirstDataCol: int
+    RowFieldIndexes: int list
+    ColumnFieldIndexes: int list
+    RowLines: PivotLine list
+    ColumnLines: PivotLine list
+    CacheFieldNames: string list
 }
 
 /// sheetFormatPr defaults captured at parse time so renderers can fall back
@@ -4961,6 +4982,19 @@ module PivotTables =
             }
         }
 
+    let private lines (node: XmlNode option) : PivotLine list =
+        node
+        |> Option.map (fun items ->
+            Xml.children items
+            |> List.choose (fun i ->
+                match Xml.name i with
+                | Some name when Ns.stripNs name = "i" ->
+                    Some { Kind = Xml.attr "t" i |> Option.defaultValue "data"
+                           Repeat = Xml.attr "r" i |> Option.bind tryParseInt |> Option.defaultValue 0
+                           Items = Xml.children i |> List.choose (fun x -> match Xml.name x with Some n when Ns.stripNs n = "x" -> Some (Xml.attr "v" x |> Option.bind tryParseInt |> Option.defaultValue 0) | _ -> None) }
+                | _ -> None))
+        |> Option.defaultValue []
+
     let parsePivotTable (ptNode: XmlNode) : PivotTable option =
         Xml.attr "name" ptNode
         |> Option.map (fun name ->
@@ -4985,6 +5019,12 @@ module PivotTables =
                 |> Option.defaultValue []
                 |> List.choose parseField
 
+            let locationNode = Ns.childNs "location" ptNode
+            let locationInt attr = locationNode |> Option.bind (Xml.attr attr) |> Option.bind tryParseInt |> Option.defaultValue 0
+            let fieldIndexes listName =
+                Ns.childNs listName ptNode
+                |> Option.map (fun fields -> Xml.children fields |> List.choose (fun field -> Xml.attr "x" field |> Option.bind tryParseInt))
+                |> Option.defaultValue []
             {
                 Name = name
                 DataSource = dataSource
@@ -4993,6 +5033,15 @@ module PivotTables =
                 ColumnFields = colFields
                 DataFields = dataFields
                 FilterFields = []
+                Ref = locationNode |> Option.bind (Xml.attr "ref") |> Option.defaultValue ""
+                FirstHeaderRow = locationInt "firstHeaderRow"
+                FirstDataRow = locationInt "firstDataRow"
+                FirstDataCol = locationInt "firstDataCol"
+                RowFieldIndexes = fieldIndexes "rowFields"
+                ColumnFieldIndexes = fieldIndexes "colFields"
+                RowLines = lines (Ns.childNs "rowItems" ptNode)
+                ColumnLines = lines (Ns.childNs "colItems" ptNode)
+                CacheFieldNames = []
             })
 
     let parsePivotTables (xml: string) : PivotTable list =
@@ -5779,8 +5828,24 @@ let private buildWorkbook (scanRows: bool) (source: PartSource) (header: Workboo
                     |> Option.filter source.Exists
                 let comments = partsOfType "/comments" |> List.collect CellComments.parseComments
                 let pivots =
-                    partsOfType "/pivotTable"
-                    |> List.collect (fun pivotXml -> try PivotTables.parsePivotTables pivotXml with _ -> [])
+                    sheetRels
+                    |> List.filter (fun r -> r.Type.EndsWith "/pivotTable" && isInternal r)
+                    |> List.collect (fun r ->
+                        let path = relTargetPath sheetPath r
+                        match source.Text path with
+                        | None -> []
+                        | Some pivotXml ->
+                            // (The names of its fields are the cache's.)
+                            let fieldNames =
+                                try
+                                    relationshipsOf source path
+                                    |> List.tryFind (fun cache -> cache.Type.EndsWith "/pivotCacheDefinition" && isInternal cache)
+                                    |> Option.bind (fun cache -> source.Text (relTargetPath path cache))
+                                    |> Option.map (fun cacheXml ->
+                                        [ for m in System.Text.RegularExpressions.Regex.Matches(cacheXml, "<(?:[A-Za-z_][\\w.\\-]*:)?cacheField\\b[^>]*\\bname=\"([^\"]*)\"") -> m.Groups.[1].Value.Replace("&lt;", "<").Replace("&gt;", ">").Replace("&quot;", "\"").Replace("&apos;", "'").Replace("&amp;", "&") ])
+                                    |> Option.defaultValue []
+                                with _ -> []
+                            try PivotTables.parsePivotTables pivotXml |> List.map (fun pivot -> { pivot with CacheFieldNames = fieldNames }) with _ -> [])
                 // Pictures, charts and other objects: the sheet's drawing part.
                 let images, objects, drawingRels =
                     sheetRels

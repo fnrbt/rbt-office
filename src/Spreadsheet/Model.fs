@@ -1128,6 +1128,29 @@ type StructureMove = {
     Version: int
 }
 
+/// A row or column of a pivot table as laid out: its kind ("data", "default" - a subtotal -,
+/// "grand" ...), how many leading fields it repeats from the one before, and its items after those.
+type PivotLine = { Kind: string; Repeat: int; Items: int list }
+
+/// A pivot table as it stands on its sheet, as much of it as GETPIVOTDATA reads: where it is
+/// (rows and columns, 0-based), where its header and its data begin in it, the names of the
+/// fields of its rows and columns ("" for the data fields), the names of its data fields, and
+/// its rows and columns (`rowItems`, `colItems`). The values are the sheet's cells.
+type PivotLayout = {
+    Top: int
+    Left: int
+    Bottom: int
+    Right: int
+    FirstHeaderRow: int
+    FirstDataRow: int
+    FirstDataCol: int
+    RowFields: string list
+    ColumnFields: string list
+    DataFields: string list
+    RowLines: PivotLine list
+    ColumnLines: PivotLine list
+}
+
 type SpreadsheetModel = {
     /// Sparse cell storage - only non-empty cells
     Cells: Map<CellAddress, CellData>
@@ -1294,6 +1317,9 @@ type SpreadsheetModel = {
     /// it. Persisted/round-tripped separately from cell data.
     Macros: string
 
+    /// The pivot tables on the sheet, as laid out (what GETPIVOTDATA reads).
+    Pivots: PivotLayout list
+
     /// Pictures and other drawing objects, back to front. They move with
     /// their anchor cells when rows or columns are inserted or deleted.
     Drawings: SheetDrawing list
@@ -1431,6 +1457,7 @@ let createEmpty rowCount colCount = {
     ArrayMarks = Map.empty
     Validations = []
     Macros = ""
+    Pivots = []
     Drawings = []
     Threads = Map.empty
     Hyperlinks = []
