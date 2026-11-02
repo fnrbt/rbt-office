@@ -1537,13 +1537,16 @@ module Docx =
 
     type private RunToken =
         | RunToken of Run
-        | FieldBeginToken of RunProperties
+        /// The properties of the run that begins the field, and that run (its source).
+        | FieldBeginToken of RunProperties * XmlDsl.Span
         | FieldSeparateToken
         | FieldEndToken
         | FieldInstructionToken of string
 
     type private ComplexFieldState = {
         Properties: RunProperties
+        /// The w:r of the field's begin mark: the source of the field's run (see collapseComplexFieldTokens).
+        BeginSource: XmlDsl.Span
         CodeParts: ResizeArray<string>
         ResultRuns: ResizeArray<Run>
         mutable CollectingResult: bool
@@ -1653,8 +1656,8 @@ module Docx =
                 let newOutput, newStack = appendRun output stack run
                 output <- newOutput
                 stack <- newStack
-            | FieldBeginToken props ->
-                stack <- { Properties = props; CodeParts = ResizeArray<string>(); ResultRuns = ResizeArray<Run>(); CollectingResult = false } :: stack
+            | FieldBeginToken (props, beginSource) ->
+                stack <- { Properties = props; BeginSource = beginSource; CodeParts = ResizeArray<string>(); ResultRuns = ResizeArray<Run>(); CollectingResult = false } :: stack
             | FieldInstructionToken code ->
                 match stack with
                 | current :: rest when not current.CollectingResult ->
@@ -1668,7 +1671,13 @@ module Docx =
                 match stack with
                 | current :: rest ->
                     stack <- rest
-                    for fieldRun in completeFieldRuns current do
+                    // (A field that is one run is of the run that begins it: a save writes it - begin mark to
+                    // end mark, its form field's data, its code - from there. DocumentWriter.splicedRuns.)
+                    let fieldRuns =
+                        match completeFieldRuns current with
+                        | [ one ] when XmlDsl.Span.isKnown current.BeginSource -> [ { one with Source = current.BeginSource } ]
+                        | several -> several
+                    for fieldRun in fieldRuns do
                         let newOutput, newStack = appendRun output stack fieldRun
                         output <- newOutput
                         stack <- newStack
@@ -1829,7 +1838,7 @@ module Docx =
                     | "endnoteReference" -> attr "id" child |> Option.map (fun id -> makeRun (NoteRef { Id = id; NoteType = "endnote" }) |> RunToken)
                     | "fldChar" ->
                         match attr "fldCharType" child with
-                        | Some "begin" -> Some (FieldBeginToken props)
+                        | Some "begin" -> Some (FieldBeginToken (props, (match rNode with XmlDsl.Element (_, _, _, span) -> span | _ -> XmlDsl.Span.none)))
                         | Some "separate" -> Some FieldSeparateToken
                         | Some "end" -> Some FieldEndToken
                         | _ -> None
@@ -1868,7 +1877,7 @@ module Docx =
 
     let private hyperlinkToken = function
         | RunToken run -> RunToken { run with Properties = hyperlinkRunProps run.Properties }
-        | FieldBeginToken props -> FieldBeginToken (hyperlinkRunProps props)
+        | FieldBeginToken (props, source) -> FieldBeginToken (hyperlinkRunProps props, source)
         | token -> token
 
     let private tokensFromHyperlink (hlNode: XmlNode) : RunToken list =

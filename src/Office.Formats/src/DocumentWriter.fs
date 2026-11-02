@@ -3821,9 +3821,12 @@ type private SourceRunInfo = {
 /// does not hold, each with the wrappers around it (outermost first).
 type private SpliceSlot =
     | SlotRun of start: int * wrappers: int list
-    | SlotKept of xml: string * wrappers: int list
+    | SlotKept of start: int * xml: string * wrappers: int list
 
 type private SpliceSource = {
+    /// A field's begin run (where it starts) -> where its end run ends: a field the model holds as one run
+    /// is written from there, begin mark to end mark (its code, a form field's data), while it is as read.
+    Fields: System.Collections.Generic.Dictionary<int, int>
     /// Wrapper (by where it starts) -> the text that opens it and the text that closes it.
     Wrappers: System.Collections.Generic.Dictionary<int, string * string>
     /// Run start -> its bytes and its wrappers.
@@ -3893,10 +3896,28 @@ let private spliceSourceOf (text: string) (start: int) (finish: int) : SpliceSou
                             List.skip leading.Length kids, slice span.Start headEnd, slice span.EndTagStart span.End
                     wrappers.[span.Start] <- (head, tail)
                     List.iter (visit (chain @ [ span.Start ])) content
-                else slots.Add (SlotKept (slice span.Start span.End, chain))
+                else slots.Add (SlotKept (span.Start, slice span.Start span.End, chain))
             | _ -> ()
         List.iter (visit []) children
-        Some { Wrappers = wrappers; Runs = runs; RunParts = runParts; Slots = List.ofSeq slots; Properties = properties }
+        // The fields: each begin mark with the end mark that closes it, through the runs in order.
+        let fields = System.Collections.Generic.Dictionary<int, int>()
+        let fieldMarks (bytes: string) =
+            [ for m in System.Text.RegularExpressions.Regex.Matches(bytes, "w:fldCharType=\"(begin|end)\"") -> m.Groups.[1].Value ]
+        let mutable opened : int list = []
+        for slot in slots do
+            match slot with
+            | SlotRun (start, _) ->
+                let bytes, _ = runs.[start]
+                for mark in fieldMarks bytes do
+                    if mark = "begin" then opened <- start :: opened
+                    else
+                        match opened with
+                        | opener :: rest ->
+                            fields.[opener] <- start + bytes.Length
+                            opened <- rest
+                        | [] -> ()
+            | _ -> ()
+        Some { Wrappers = wrappers; Runs = runs; RunParts = runParts; Slots = List.ofSeq slots; Properties = properties; Fields = fields }
     | _ -> None
 
 /// The runs of a paragraph written from its source (see above): `pieces` are the model's runs
@@ -3931,7 +3952,7 @@ let private splicedRuns (source: SpliceSource) (original: obj) (leading: bool) (
             match slots.Head with
             | SlotRun (start, _) when Some start = run -> going <- false
             | SlotRun _ -> slots <- slots.Tail
-            | SlotKept (xml, chain) ->
+            | SlotKept (_, xml, chain) ->
                 if started && (run.IsSome || trailing) then
                     moveTo chain
                     out.Add xml
@@ -3945,9 +3966,17 @@ let private splicedRuns (source: SpliceSource) (original: obj) (leading: bool) (
             moveTo chain
             // The model's run then, when it was one run of the source and is one now.
             let was =
-                if not (isNullOrUndefined (runObj?FieldCode)) || currentCount.[at] <> 1 then None
+                if currentCount.[at] <> 1 then None
                 else match originalRuns.TryGetValue at with | true, list when list.Count = 1 -> Some list.[0] | _ -> None
             match was with
+            // A field as it was read: its runs, begin mark to end mark, as they are in the source (the bookmarks
+            // in it are the model's, written around it); what stood among them is in them.
+            | Some run when source.Fields.ContainsKey at && jsonText run = jsonText runObj ->
+                let finish = source.Fields.[at]
+                let bytes = System.Text.RegularExpressions.Regex.Replace(spliceSourceText.Substring(at, finish - at), "<w:bookmark(?:Start|End)\\b[^>]*/>", "")
+                out.Add (wrap bytes)
+                slots <- slots |> List.filter (function SlotRun (start, _) | SlotKept (start, _, _) -> start < at || start >= finish)
+            | Some _ when not (isNullOrUndefined (runObj?FieldCode)) -> out.Add (wrap inner)
             // As it was read in every respect: its bytes.
             | Some run when jsonText run = jsonText runObj -> out.Add (wrap bytes)
             // Changed in its formatting, its text, or both: the run as it was read with the properties
