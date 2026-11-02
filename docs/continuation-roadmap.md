@@ -6,7 +6,7 @@ Written 2026-10-12, when work was halted to move to another machine; next steps 
 
 | Branch | What it is | State |
 |---|---|---|
-| `master`, tag `v0.1.23` | Last release, published as `@rbt/office` 0.1.23: 0.1.22 + functions newer than Excel 2007 saved under their `_xlfn.`/`_xlpm.` prefixes (**0.1.22 and earlier write a file Excel refuses when a formula typed or rewritten by an insert uses LET, LAMBDA, SORT, FILTER ...**; the model holds formulas without the prefixes), the synthetic workbooks and Word documents Word and Excel refused made whole. (`v0.1.17` published nothing) |
+| `master`, tag `v0.1.24` | Last release, published as `@rbt/office` 0.1.24: 0.1.23 + the one save path's first part (docs/save-architecture.md: spans on the XML, source of paragraphs and runs, paragraphs the patch cannot change spliced from their source - content controls and unknown elements kept, unchanged runs as their bytes), IPMT, PPMT, CUMIPMT, CUMPRINC, XNPV, XIRR, MIRR, IRR that converges, Excel's 0 for a cancelling sum. (`v0.1.17` published nothing) |
 | `review-fixes` | The integration branch: what the next release is gated and cut from. Equal to `master` right after a release | nothing unreleased |
 | `refactor/one-save` | The one save path (`docs/save-architecture.md`), from `master` | step 1 of 7 |
 | `fix/sheet19` | Spreadsheet pass nine as it was handed off | Its item 1 is in `review-fixes`, rebased, without the handoff folder. Items 2-7 are not started: `tools/handoff-sheet19/HANDOFF.md` on `origin/fix/sheet19` keeps their findings, and `bigsheet.mjs`, `render.fsx` and `shoot.mjs` beside it |
