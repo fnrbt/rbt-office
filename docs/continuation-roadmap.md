@@ -1,6 +1,6 @@
 # Continuation roadmap
 
-Written 2026-10-12, when work was halted to move to another machine. Picks up the fix / release / adopt loop on rbt-office (Word + Spreadsheet) and its adoption in redbat. Everything needed is on the remotes; nothing below depends on the old machine's temp directories.
+Written 2026-10-12, when work was halted to move to another machine; next steps revised 2026-11-02. Picks up the fix / release / adopt loop on rbt-office (Word + Spreadsheet) and its adoption in redbat. Everything needed is on the remotes; nothing below depends on the old machine's temp directories.
 
 ## Branches (all on `origin` of rbt-office)
 
@@ -16,8 +16,12 @@ redbat (`cardillion-mega` remote): `master` has the 0.1.21 adoption (harness 110
 
 ## Next steps, in order
 
-1. **Finish `fix/sheet19`'s list** (its handoff, on `origin/fix/sheet19`): then items 3, 6, 7.
-2. Continue with the backlog.
+1. **Saves that Word and Excel take as they should.** Fix what saves written from the model lose (the spaces between runs, drop caps, bound content controls: see Cross-cutting); make `opaque-objects`, `preserved-parts`, `reader-structure` valid documents. Keep the workbooks of the spreadsheet harness and open them in Excel as `tools/word-parity/open-all.vbs` does for Word. Compare formatting too, not only text length and pages.
+2. **Real Word and Excel as a routine check.** A single-sheet Excel export so that the big dashboards can be compared; a scripted comparison of rendering, pages and positions over a fixed set of documents and workbooks, run before a release; fix what it finds (scatter axis limits first). Make the six font-dependent `tools/word-browser` checks independent of the machine's fonts.
+3. **Hosts never run:** run the native hosts interactively, and Firefox, and list what breaks.
+4. **Missing features, by what real files use:** Word flips, `allowOverlap`, text in group shapes and drawing canvases; spreadsheet chartEx (waterfall, funnel, maps), slicers, custom table styles (items 3 and 6 of the `fix/sheet19` handoff).
+5. **Long sheets and source patching:** row and column inserts on long sheets (~1 s at 846,000 cells), sort there unmeasured; more edits patched into the source instead of written from the model (item 7).
+6. Continue with the backlog.
 
 ## Backlog
 
