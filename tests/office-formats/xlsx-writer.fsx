@@ -653,6 +653,16 @@ for formula, want in
     let got = XlsxWriter.fileFormula formula
     ok ("file formula: " + formula) (got = want) got
 
+// ... and read back as Excel shows them; a prefixed name the table does not know keeps its prefix.
+for file, model in
+    [ "_xlfn.XLOOKUP(2,A1:A4,B1:B4)", "XLOOKUP(2,A1:A4,B1:B4)"
+      "_xlfn._xlws.SORT(_xlfn._xlws.FILTER(A2:A7,A2:A7>3))", "SORT(FILTER(A2:A7,A2:A7>3))"
+      "_xlfn.LET(_xlpm.x,5,_xlpm.x+1)", "LET(x,5,x+1)"
+      "_xlfn.SOMEDAYFUNCTION(1)", "_xlfn.SOMEDAYFUNCTION(1)"
+      "IF(A1=\"_xlfn.XLOOKUP(\",1,2)", "IF(A1=\"_xlfn.XLOOKUP(\",1,2)" ] do
+    let got = XlsxWriter.modelFormula file
+    ok ("model formula: " + file) (got = model && XlsxWriter.fileFormula got = file) got
+
 let modernSheet = { syntheticSheet with Name = "Modern"; Tables = []; DataValidations = []; Hyperlinks = []; PrintArea = None; PrintTitleRows = None; PrintTitleCols = None
                                         CellSource = XlsxWriter.sheetCells [ { Row = 0; Col = 0; Value = XlsxWriter.XlsxFormula ("XLOOKUP(1,B1:B2,C1:C2)", None); Format = XlsxWriter.defaultXlsxCellFormat; Comment = None } ] }
 let modernBytes = { synthetic with Sheets = [ modernSheet ]; DefinedNames = [ { Name = "Pick"; RefersTo = "TEXTJOIN(\",\",TRUE,Modern!$B$1:$B$2)"; LocalSheetIndex = None; Comment = None; Hidden = false } ]; VbaProjectSource = None } |> XlsxWriter.writeWorkbookPackageBytes

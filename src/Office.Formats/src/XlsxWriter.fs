@@ -1255,6 +1255,47 @@ let fileFormula (formula: string) : string =
                 at <- start
         sb.Append(formula.Substring at).ToString()
 
+/// A formula as the model holds it and Excel shows it: the file format's
+/// prefixes taken off where `fileFormula` puts them back (`_xlfn.XLOOKUP` is
+/// `XLOOKUP`, `_xlpm.x` is `x`). A prefixed name the table does not know keeps
+/// its prefix, so it is written as it was read.
+let modelFormula (formula: string) : string =
+    if formula.IndexOf("_xl", System.StringComparison.OrdinalIgnoreCase) < 0 then formula
+    else
+        let n = formula.Length
+        let sb = StringBuilder(n)
+        let mutable i = 0
+        while i < n do
+            let c = formula.[i]
+            if c = '"' || c = '\'' then
+                let quote = c
+                let start = i
+                i <- i + 1
+                while i < n && not (formula.[i] = quote && not (i + 1 < n && formula.[i + 1] = quote)) do
+                    i <- if formula.[i] = quote then i + 2 else i + 1
+                i <- min n (i + 1)
+                sb.Append(formula.Substring(start, i - start)) |> ignore
+            elif isNameStart c && (i = 0 || not (isNameChar formula.[i - 1])) then
+                let start = i
+                while i < n && isNameChar formula.[i] do i <- i + 1
+                let word = formula.Substring(start, i - start)
+                let upper = word.ToUpperInvariant()
+                let call = i < n && formula.[i] = '('
+                let strip (prefix: string) =
+                    if upper.StartsWith (prefix.ToUpperInvariant()) then
+                        let bare = upper.Substring prefix.Length
+                        if prefix = "_xlpm." then Some (word.Substring prefix.Length)
+                        elif call && futureFunctions.ContainsKey bare && futureFunctions.[bare] = prefix then Some (word.Substring prefix.Length)
+                        else None
+                    else None
+                match [ "_xlfn._xlws."; "_xlfn."; "_xlpm." ] |> List.tryPick strip with
+                | Some bare -> sb.Append bare |> ignore
+                | None -> sb.Append word |> ignore
+            else
+                sb.Append c |> ignore
+                i <- i + 1
+        sb.ToString()
+
 /// Text for an element or attribute, escaped only when it has something to escape.
 let private escapedFast (value: string) =
     let mutable plain = true

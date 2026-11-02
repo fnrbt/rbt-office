@@ -538,9 +538,10 @@ module Import =
     /// Empty value, for the workbook-level pass to compute.
     let private cellValue (wb: XlsxReader.Workbook) (cell: XlsxReader.Cell) : CellValue =
         match cell.Formula, cell.Value with
-        | Some formula, XlsxReader.Formula _ when not (String.IsNullOrWhiteSpace formula) -> CellValue.Formula (formula, CellValue.Empty)
-        | Some formula, value when not (String.IsNullOrWhiteSpace formula) -> CellValue.Formula (formula, storedValue wb value)
-        | None, XlsxReader.Formula formula when not (String.IsNullOrWhiteSpace formula) -> CellValue.Formula (formula, CellValue.Empty)
+        // (The model holds a formula as Excel shows it; the export puts the file's prefixes back.)
+        | Some formula, XlsxReader.Formula _ when not (String.IsNullOrWhiteSpace formula) -> CellValue.Formula (XlsxWriter.modelFormula formula, CellValue.Empty)
+        | Some formula, value when not (String.IsNullOrWhiteSpace formula) -> CellValue.Formula (XlsxWriter.modelFormula formula, storedValue wb value)
+        | None, XlsxReader.Formula formula when not (String.IsNullOrWhiteSpace formula) -> CellValue.Formula (XlsxWriter.modelFormula formula, CellValue.Empty)
         | _, value ->
             match storedValue wb value with
             | CellValue.String "" -> CellValue.Empty
@@ -1259,10 +1260,10 @@ module Import =
         // the reader finds the cells with a formula without reading the others.)
         for cell in sheet.FormulaCells do
             match cell.Formula with
-            | Some formula -> if not (String.IsNullOrWhiteSpace formula) then add cell formula
+            | Some formula -> if not (String.IsNullOrWhiteSpace formula) then add cell (XlsxWriter.modelFormula formula)
             | None ->
                 match cell.Value with
-                | XlsxReader.Formula formula when not (String.IsNullOrWhiteSpace formula) -> add cell formula
+                | XlsxReader.Formula formula when not (String.IsNullOrWhiteSpace formula) -> add cell (XlsxWriter.modelFormula formula)
                 | _ -> ()
         formulas.ToArray()
     let private readerCellIsUncached (cell: XlsxReader.Cell) =
