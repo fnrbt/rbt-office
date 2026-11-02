@@ -371,7 +371,7 @@ let private extrasOfModel (original: XlsxReader.SheetExtras) (before: Spreadshee
     let axesUnchanged =
         match before with
         | Some baseline ->
-            (obj.ReferenceEquals(baseline.Axes, model.Axes) || baseline.Axes = model.Axes)
+            sameAxes baseline.Axes model.Axes
             && obj.ReferenceEquals(baseline.RowHeights, model.RowHeights) && obj.ReferenceEquals(baseline.ColumnWidths, model.ColumnWidths)
         | None -> false
     let axisOf (sizes: Map<int, float>) (kept: Map<int, float>) (levels: Map<int, int>) (collapsed: Set<int>) (pixelsPerUnit: float) =
@@ -2441,7 +2441,7 @@ module Export =
                          || before.ShowZeros <> model.ShowZeros || before.Zoom <> model.Zoom || before.Axes.ShowSymbols <> model.Axes.ShowSymbols then yield "sheetViews"
                       if levelsOf before.Axes.RowLevels <> levelsOf model.Axes.RowLevels || levelsOf before.Axes.ColLevels <> levelsOf model.Axes.ColLevels then yield "sheetFormatPr"
                       if not (same (fun m -> m.ColumnWidths)) || not (same (fun m -> m.ColumnStyles))
-                         || before.Axes.HiddenColSizes <> model.Axes.HiddenColSizes || before.Axes.ColLevels <> model.Axes.ColLevels
+                         || not (sameMap before.Axes.HiddenColSizes model.Axes.HiddenColSizes) || not (sameMap before.Axes.ColLevels model.Axes.ColLevels)
                          || before.Axes.CollapsedCols <> model.Axes.CollapsedCols then yield "cols"
                       if not (same (fun m -> m.AutoFilter)) || not (same (fun m -> m.Filters)) then yield "autoFilter"
                       if not (same (fun m -> m.SortState)) then yield "sortState"

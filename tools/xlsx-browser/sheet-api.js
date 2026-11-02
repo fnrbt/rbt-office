@@ -3506,3 +3506,66 @@ checks['api-recalc-order'] = async () => {
     incremental.close(); full.close();
     return lines;
 };
+
+// A map with an entry for each row of a long sheet: comparing two with `=` in JavaScript went one
+// call deeper per entry, and deleting a row, inserting a column or filtering threw (846 000 cells,
+// 76 931 row heights in dashboard-sales-analysis.xlsx).
+checks['long-sheet-structure'] = async () => {
+    const { grid, close } = mountGrid();
+    const { lines, check } = makeLog();
+    try {
+        const rows = 60000;
+        grid.SetCell(0, 0, 'head');
+        grid.SetCell(rows - 1, 0, 'last');
+        grid.SetRowHeight(`1:${rows}`, 22);
+        grid.DeleteRows(60, 1);
+        check('a row deleted', grid.GetCell(rows - 2, 0).text, 'last');
+        grid.Undo();
+        check('... and undone', grid.GetCell(rows - 1, 0).text, 'last');
+        grid.InsertRows(30, 1);
+        check('a row inserted', grid.GetCell(rows, 0).text, 'last');
+        grid.Undo();
+        grid.InsertColumns(0, 1);
+        check('a column inserted', grid.GetCell(rows - 1, 1).text, 'last');
+        grid.Undo();
+        grid.HideRows?.(`10:${rows - 10}`);
+        grid.InsertRows(5, 1);
+        check('a row inserted over rows hidden by the thousand', grid.GetCell(rows, 0).text, 'last');
+        grid.Undo();
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.message || e)); }
+    close();
+    return lines;
+};
+
+// The walk that steps over what two cell maps share: a cell typed into a table of a long sheet
+// compares a few cells, not all of them, and every change is still found.
+checks['cell-map-walk'] = async () => {
+    const { grid, close } = mountGrid();
+    const { lines, check, note } = makeLog();
+    try {
+        const rows = 4000;
+        const values = Array.from({ length: rows }, (_, row) => row + 1);
+        grid.SetCell(0, 0, 'Amount');
+        grid.SelectCell(1, 0);
+        grid.PasteText(values.join('\n'), '');
+        grid.DefineTable(`A1:A${rows + 1}`, 'Amounts');
+        grid.SetCell(0, 2, `=SUM(A2:A${rows + 1})`);
+        const total = () => values.reduce((sum, value) => sum + value, 0);
+        check('the total at first', grid.GetCell(0, 2).value, total());
+        let seed = 12345, wrong = 0, most = 0;
+        const random = (limit) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % limit; };
+        for (let step = 0; step < 300; step++) {
+            const kind = random(4), row = random(rows);
+            if (kind === 0) { values[row] = random(1000); grid.EnterText(row + 1, 0, String(values[row])); most = Math.max(most, grid.GetRecalcStats().ComparedCells); }
+            else if (kind === 1) { const count = 1 + random(20); grid.SelectCell(row + 1, 0); const block = Array.from({ length: count }, () => random(1000)); block.forEach((value, at) => { if (row + at < rows) values[row + at] = value; }); grid.PasteText(block.slice(0, rows - row).join('\n'), ''); }
+            else if (kind === 2) { const was = values[row]; values[row] = 0; grid.EnterText(row + 1, 0, '0'); grid.Undo(); values[row] = was; }
+            else { const was = values[row]; values[row] = random(1000); grid.EnterText(row + 1, 0, String(values[row])); grid.Undo(); values[row] = was; grid.Redo(); grid.Undo(); }
+            if (grid.GetCell(0, 2).value !== total()) wrong++;
+        }
+        check('300 edits, pastes and undos: the total was right after each', wrong, 0);
+        check('a cell typed compared few cells', most > 0 && most < 200, true);
+        note(`at most ${most} of ${rows + 2} cells compared for a typed cell`);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};

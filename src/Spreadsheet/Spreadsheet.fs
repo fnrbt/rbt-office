@@ -281,7 +281,7 @@ let private sameSheetContent (a: SpreadsheetModel) (b: SpreadsheetModel) =
         && sameRef a.RichRuns b.RichRuns
         && sameRef a.RowHeights b.RowHeights
         && sameRef a.ColumnWidths b.ColumnWidths
-        && (sameRef a.Axes b.Axes || a.Axes = b.Axes)
+        && sameAxes a.Axes b.Axes
         && sameRef a.Validations b.Validations
         && (sameRef a.MergedCells b.MergedCells || a.MergedCells = b.MergedCells)
         && sameRef a.ConditionalFormats b.ConditionalFormats
@@ -7277,6 +7277,7 @@ type Spreadsheet(container: Element) =
             "ReachedFormulas" ==> lastRecalcStats.ReachedFormulas
             "EvaluatedFormulas" ==> lastRecalcStats.EvaluatedFormulas
             "Evaluations" ==> lastRecalcStats.Evaluations
+            "ComparedCells" ==> SpreadsheetRecalc.comparedCells
             "Formulas" ==> (match recalcEngine with Some engine -> SpreadsheetRecalc.formulaCount engine | None -> -1)
         ]
 

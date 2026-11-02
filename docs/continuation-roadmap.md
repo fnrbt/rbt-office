@@ -7,7 +7,7 @@ Written 2026-10-12, when work was halted to move to another machine. Picks up th
 | Branch | What it is | State |
 |---|---|---|
 | `master`, tag `v0.1.19` | Last release, published as `@rbt/office` 0.1.19: 0.1.18 + what adopting it in redbat found - a click on the frame of any shape selects it (one behind the text could not be selected once the host's own frame was gone), the listeners hear of the undo step a shape drag makes, a turned shape's handles from getShapeHandles, GoTo's growth of the grid let go of again. (`v0.1.17` published nothing: the registry answered its upload with 404, and Forge does not run a failed action again for the same tag and commit.) | released |
-| `review-fixes` | The integration branch: what the next release is gated and cut from. Equal to `master` right after a release | Unreleased: item 1 of spreadsheet pass nine (chart layout, radar / bubble / stock, shape geometry, linked text) |
+| `review-fixes` | The integration branch: what the next release is gated and cut from. Equal to `master` right after a release | Unreleased: items 1 and 5 of spreadsheet pass nine (chart layout, radar / bubble / stock, shape geometry, linked text; the stack overflows on long sheets, typing on them) |
 | `fix/sheet19` | Spreadsheet pass nine as it was handed off | Its item 1 is in `review-fixes`, rebased, without the handoff folder. Items 2-7 are not started: `tools/handoff-sheet19/HANDOFF.md` on `origin/fix/sheet19` keeps their findings, and `bigsheet.mjs`, `render.fsx` and `shoot.mjs` beside it |
 
 `origin/fix/word19` is the pass as it was handed off (its `tools/handoff-word19/HANDOFF.md` has the host notes); the pass itself is in 0.1.18, rebased, without the handoff folder. The `tools/handoff-*` folders are temporary: delete them (or drop those commits) before merging a branch into `review-fixes`.
@@ -16,14 +16,13 @@ redbat (`cardillion-mega` remote): `master` has the 0.1.19 adoption (harness 110
 
 ## Next steps, in order
 
-1. **Finish `fix/sheet19`'s list** (its handoff, on `origin/fix/sheet19`): item 2 charts in print, PDF and canvas, item 4 print default sizes, item 5 large-sheet typing and the stack overflows, then 3, 6, 7.
+1. **Finish `fix/sheet19`'s list** (its handoff, on `origin/fix/sheet19`): item 2 charts in print, PDF and canvas, item 4 print default sizes, then 3, 6, 7.
 2. Continue with the backlog.
 
 ## Backlog
 
 ### Spreadsheet — bugs in 0.1.16 as released
-- **`DeleteRows`, `InsertColumns` and `SetFilter` throw "Maximum call stack size exceeded" on an 846,000-cell sheet.** Not investigated beyond the observation; sort on that sheet is unmeasured.
-- Typing a number into a table cell on that sheet takes ~190–250 ms: `commitInput → asTableEntry → changeTables → runBookStep → recalculateEverything` (no hint) → `Recalc.diffCells` enumerates both whole cell maps. Insert row there: ~1 s. Full table of 27 operations in the sheet handoff.
+- On the 846,000-cell sheet: insert or delete a row or insert a column takes ~0.9-1 s. Sort there is unmeasured (`bigsheet.mjs` used a wrong key name).
 - "Products sold by Quantity" in the e-commerce dashboard still wraps under its doughnut: the box is narrower in its scaled group. Whether Excel wraps it too is unchecked.
 
 ### Spreadsheet — features
@@ -86,4 +85,4 @@ Browser harnesses, run per branch before merging: `tools/word-browser/{run,perf}
 - At most two build-heavy jobs at once on a 2026 workstation; a third swaps it to death.
 - One topic per commit, each commit gated on its own; a test seen failing on the old code before the fix.
 - Agents: one heavy process each, no sub-agents, never kill processes by name (others share the names), never build through a copy of the tree or symlinked siblings, clean tree and nothing running at the end.
-- Fable traps met so far: `Math.Round` ignores `MidpointRounding`; `Double.ToString` custom formats and `Regex` `Group.Index` unsupported; `String.CompareOrdinal` with offsets broken; `StringBuilder.Append(char, count)` / `Insert` missing; mutable function bindings fail; functions are re-curried across the JS boundary; optional arguments arrive `undefined`; generic record comparison is slow; very long generated JS functions are never optimised by V8 (moving hot paths out of `evalFunction` and `Recalc.run` gave 40%).
+- Fable traps met so far: `=` on a `Map` recurses per entry and overflows at tens of thousands (`Model.sameMap`); `Recalc.diffCells` reads the fields of fable-library's `Map` tree, so check it on a Fable upgrade; `Math.Round` ignores `MidpointRounding`; `Double.ToString` custom formats and `Regex` `Group.Index` unsupported; `String.CompareOrdinal` with offsets broken; `StringBuilder.Append(char, count)` / `Insert` missing; mutable function bindings fail; functions are re-curried across the JS boundary; optional arguments arrive `undefined`; generic record comparison is slow; very long generated JS functions are never optimised by V8 (moving hot paths out of `evalFunction` and `Recalc.run` gave 40%).

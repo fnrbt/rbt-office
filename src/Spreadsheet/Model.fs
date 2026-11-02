@@ -1102,6 +1102,20 @@ let emptySheetAxes : SheetAxes =
     { HiddenRowSizes = Map.empty; HiddenColSizes = Map.empty; RowLevels = Map.empty; ColLevels = Map.empty
       CollapsedRows = Set.empty; CollapsedCols = Set.empty; SummaryBelow = true; SummaryRight = true; ShowSymbols = true }
 
+/// Whether two maps hold the same entries. `=` on a map is one call deep per
+/// entry in JavaScript: a map of a row per row of a long sheet overflows the stack.
+let sameMap (a: Map<'k, 'v>) (b: Map<'k, 'v>) =
+    obj.ReferenceEquals(a, b)
+    || (a.Count = b.Count && Seq.forall2 (fun (KeyValue (keyA, valueA)) (KeyValue (keyB, valueB)) -> keyA = keyB && valueA = valueB) a b)
+
+/// Whether two sheets' axes are the same (`sameMap`: their maps can have an entry for every row).
+let sameAxes (a: SheetAxes) (b: SheetAxes) =
+    obj.ReferenceEquals(a, b)
+    || (sameMap a.HiddenRowSizes b.HiddenRowSizes && sameMap a.HiddenColSizes b.HiddenColSizes
+        && sameMap a.RowLevels b.RowLevels && sameMap a.ColLevels b.ColLevels
+        && a.CollapsedRows = b.CollapsedRows && a.CollapsedCols = b.CollapsedCols
+        && a.SummaryBelow = b.SummaryBelow && a.SummaryRight = b.SummaryRight && a.ShowSymbols = b.ShowSymbols)
+
 /// A row / column insertion or deletion as a recalculation needs to know it:
 /// rows (or columns) from `At` on moved by `Count` (down / right when
 /// `Insert`, else up / left over the `Count` that were deleted). `Version`

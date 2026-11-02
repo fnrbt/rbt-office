@@ -630,50 +630,121 @@ type private CellChange = {
     After: CellData voption
 }
 
+/// How many cells the last walks of two cell maps looked at (`GetRecalcStats`).
+let mutable comparedCells = 0
+
+#if FABLE_COMPILER
+[<Fable.Core.Emit("$0.tree")>]
+let private treeOfMap (map: obj) : obj = Fable.Core.Util.jsNative
+[<Fable.Core.Emit("$0.k")>]
+let private nodeKey (node: obj) : CellAddress = Fable.Core.Util.jsNative
+[<Fable.Core.Emit("$0.v")>]
+let private nodeValue (node: obj) : CellData = Fable.Core.Util.jsNative
+[<Fable.Core.Emit("$0.left")>]
+let private nodeLeft (node: obj) : obj = Fable.Core.Util.jsNative
+[<Fable.Core.Emit("$0.right")>]
+let private nodeRight (node: obj) : obj = Fable.Core.Util.jsNative
+/// A leaf of a map's tree has no height of its own.
+[<Fable.Core.Emit("($0.h === undefined ? 1 : $0.h)")>]
+let private nodeHeight (node: obj) : int = Fable.Core.Util.jsNative
+[<Fable.Core.Emit("($0 == null)")>]
+let private noNode (node: obj) : bool = Fable.Core.Util.jsNative
+
+/// A map's tree walked in order, a subtree staying one entry until it is opened.
+type private TreeWalk (tree: obj) =
+    let nodes = ResizeArray<obj>()
+    let closed = ResizeArray<bool>()
+    let push (node: obj) =
+        if not (noNode node) then
+            nodes.Add node
+            closed.Add (nodeHeight node > 1)
+    do push tree
+    member _.IsEmpty = nodes.Count = 0
+    member _.Top = nodes.[nodes.Count - 1]
+    member _.TopClosed = closed.[closed.Count - 1]
+    member _.Drop () =
+        nodes.RemoveAt (nodes.Count - 1)
+        closed.RemoveAt (closed.Count - 1)
+    /// The closed subtree on top in its three parts.
+    member this.Open () =
+        let node = this.Top
+        this.Drop ()
+        push (nodeRight node)
+        nodes.Add node
+        closed.Add false
+        push (nodeLeft node)
+#endif
+
 /// The cells of a sheet that differ between two cell maps, by walking both in
 /// order. A spilled cell (one in `spill`) that differs in more than its value -
 /// it was given a format - goes to `restyled`: its formula lays it out again.
+/// In JavaScript the walk steps over what the two maps' trees share, so that
+/// an edit of a cell of a long sheet costs what the edit touched. (It reads the
+/// fields of fable-library's `Map`: only the browser checks run it.)
 let private diffCells (state: SheetState) (before: Map<CellAddress, CellData>) (after: Map<CellAddress, CellData>) (spill: Map<CellAddress, CellAddress>)
                       (changes: ResizeArray<CellChange>) (restyled: ResizeArray<struct (SheetState * CellAddress)>) =
+    let hasSpill = not (Map.isEmpty spill)
+    let order (a: CellAddress) (b: CellAddress) =
+        if a.Row <> b.Row then (if a.Row < b.Row then -1 else 1)
+        elif a.Col <> b.Col then (if a.Col < b.Col then -1 else 1)
+        else 0
+    let both (key: CellAddress) (was: CellData) (now: CellData) =
+        if not (obj.ReferenceEquals(was, now)) then
+            if not (obj.ReferenceEquals(was.Value, now.Value)) && was.Value <> now.Value then
+                changes.Add { State = state; Row = key.Row; Col = key.Col; Before = ValueSome was; After = ValueSome now }
+            elif hasSpill && Map.containsKey key spill then
+                restyled.Add (struct (state, key))
+    let removed (key: CellAddress) (was: CellData) =
+        if was.Value <> CellValue.Empty then
+            changes.Add { State = state; Row = key.Row; Col = key.Col; Before = ValueSome was; After = ValueNone }
+        elif hasSpill && Map.containsKey key spill then
+            restyled.Add (struct (state, key))
+    let added (key: CellAddress) (now: CellData) =
+        if now.Value <> CellValue.Empty then
+            changes.Add { State = state; Row = key.Row; Col = key.Col; Before = ValueNone; After = ValueSome now }
+        elif hasSpill && Map.containsKey key spill then
+            restyled.Add (struct (state, key))
+#if FABLE_COMPILER
+    let left = TreeWalk (treeOfMap (box before))
+    let right = TreeWalk (treeOfMap (box after))
+    while not left.IsEmpty || not right.IsEmpty do
+        if not left.IsEmpty && not right.IsEmpty && obj.ReferenceEquals(left.Top, right.Top) && left.TopClosed = right.TopClosed then
+            left.Drop ()
+            right.Drop ()
+        elif not left.IsEmpty && left.TopClosed && (right.IsEmpty || not right.TopClosed || nodeHeight left.Top >= nodeHeight right.Top) then left.Open ()
+        elif not right.IsEmpty && right.TopClosed then right.Open ()
+        else
+            comparedCells <- comparedCells + 1
+            let side = if left.IsEmpty then 1 elif right.IsEmpty then -1 else order (nodeKey left.Top) (nodeKey right.Top)
+            if side = 0 then
+                both (nodeKey left.Top) (nodeValue left.Top) (nodeValue right.Top)
+                left.Drop ()
+                right.Drop ()
+            elif side < 0 then
+                removed (nodeKey left.Top) (nodeValue left.Top)
+                left.Drop ()
+            else
+                added (nodeKey right.Top) (nodeValue right.Top)
+                right.Drop ()
+#else
     use left = (before :> seq<KeyValuePair<CellAddress, CellData>>).GetEnumerator()
     use right = (after :> seq<KeyValuePair<CellAddress, CellData>>).GetEnumerator()
-    let hasSpill = not (Map.isEmpty spill)
     let mutable hasLeft = left.MoveNext()
     let mutable hasRight = right.MoveNext()
     while hasLeft || hasRight do
-        let order =
-            if not hasLeft then 1
-            elif not hasRight then -1
-            else
-                let a = left.Current.Key
-                let b = right.Current.Key
-                if a.Row <> b.Row then (if a.Row < b.Row then -1 else 1)
-                elif a.Col <> b.Col then (if a.Col < b.Col then -1 else 1)
-                else 0
-        if order = 0 then
-            let was = left.Current.Value
-            let now = right.Current.Value
-            if not (obj.ReferenceEquals(was, now)) then
-                if not (obj.ReferenceEquals(was.Value, now.Value)) && was.Value <> now.Value then
-                    changes.Add { State = state; Row = left.Current.Key.Row; Col = left.Current.Key.Col; Before = ValueSome was; After = ValueSome now }
-                elif hasSpill && Map.containsKey left.Current.Key spill then
-                    restyled.Add (struct (state, left.Current.Key))
+        comparedCells <- comparedCells + 1
+        let side = if not hasLeft then 1 elif not hasRight then -1 else order left.Current.Key right.Current.Key
+        if side = 0 then
+            both left.Current.Key left.Current.Value right.Current.Value
             hasLeft <- left.MoveNext()
             hasRight <- right.MoveNext()
-        elif order < 0 then
-            let was = left.Current.Value
-            if was.Value <> CellValue.Empty then
-                changes.Add { State = state; Row = left.Current.Key.Row; Col = left.Current.Key.Col; Before = ValueSome was; After = ValueNone }
-            elif hasSpill && Map.containsKey left.Current.Key spill then
-                restyled.Add (struct (state, left.Current.Key))
+        elif side < 0 then
+            removed left.Current.Key left.Current.Value
             hasLeft <- left.MoveNext()
         else
-            let now = right.Current.Value
-            if now.Value <> CellValue.Empty then
-                changes.Add { State = state; Row = right.Current.Key.Row; Col = right.Current.Key.Col; Before = ValueNone; After = ValueSome now }
-            elif hasSpill && Map.containsKey right.Current.Key spill then
-                restyled.Add (struct (state, right.Current.Key))
+            added right.Current.Key right.Current.Value
             hasRight <- right.MoveNext()
+#endif
 
 /// The cells whose entry differs between two spill maps: each with the formula
 /// cells it belonged / belongs to.
@@ -740,6 +811,7 @@ let private sameSurroundings (engine: Engine) (edited: Workbook) =
 let private collectChanges (engine: Engine) (edited: Workbook) (hint: (SheetId * CellAddress) list option)
                            (restyled: ResizeArray<struct (SheetState * CellAddress)>) (structural: HashSet<SheetId>) : ResizeArray<CellChange> =
     let changes = ResizeArray<CellChange>()
+    comparedCells <- 0
     match hint with
     | Some cells ->
         for sheetId, addr in cells do
@@ -950,7 +1022,7 @@ let private surroundingsOf (engine: Engine) (edited: Workbook) : Surroundings =
             if not (obj.ReferenceEquals(before, after)) then
                 if not (obj.ReferenceEquals(before.Tables, after.Tables) || before.Tables = after.Tables) then tables <- true
                 if not (sameFilterState before after) then visibility <- true
-                if not (obj.ReferenceEquals(before.RowHeights, after.RowHeights)) && before.RowHeights <> after.RowHeights then visibility <- true
+                if not (sameMap before.RowHeights after.RowHeights) then visibility <- true
                 if before.StructureVersion <> after.StructureVersion then
                     if not (isLoaded after) || not (isLoaded before) then problem <- "rows or columns changed on a sheet that is not converted"
                     structural.Add sheetId |> ignore
