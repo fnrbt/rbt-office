@@ -91,6 +91,19 @@ The spreadsheet's per-cell spans (`XlsxWriter` patch plan) become the same mecha
 
 ## Order of work
 
+Progress on `refactor/one-save`:
+- Step 1 done: `XmlNode.Element` carries its `Span`; one scanner, the part's text unchanged (`xml-source.fsx`).
+- Step 2 done: the reader's paragraphs and runs carry their source spans, read whole or front first
+  (`docx-source-spans.fsx`).
+- Step 3 done for runs: `TextStyle.SourceRun`, kept through typing and formatting; paste is plain text.
+- Step 4 under way: a paragraph the patch cannot change in its XML, and one made of a paragraph that was read
+  (split, joined), is spliced from its source (`DocumentWriter.splicedRuns`): wrappers the model does not hold
+  (`w:sdt`, `w:smartTag`, `w:customXml`, unknown), unknown elements between runs, unchanged runs as their bytes,
+  changed runs as their `w:r` with the changed properties merged into the `w:rPr`. Full round trip passes;
+  paragraphs written from the model: bold at a caret 35 -> 20, splits 319 -> 257, joins 239 -> 210.
+  Next: tables (a row or column insert writes the whole table from the model: 547 / 1552 paragraphs), the
+  remaining splits and joins, then the save written entirely from the model for a document that was read.
+
 1. Range parser in `XmlDsl` with the identity test (slice of every node = its source; speed no worse than the
    scanner); an `XmlNode` view of it so the reader can switch parser without other changes.
 2. The reader on the range parser everywhere (the three parsers go); paragraphs and runs record their source
