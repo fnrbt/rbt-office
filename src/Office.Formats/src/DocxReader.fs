@@ -4370,6 +4370,8 @@ let private openBodyCursor (xml: string) : BodyCursor option =
             let rootTag = xml.Substring(rootAt, rootEnd + 1 - rootAt)
             match XmlDsl.tryScan (rootTag.Substring(0, rootTag.Length - 1) + "/>") (System.Collections.Generic.HashSet<string>()) with
             | None -> None
+            // (A root's `xml:space` holds for the text of the whole part: not for elements read one by one.)
+            | Some root when (Xml.attr "xml:space" root).IsSome -> None
             | Some root ->
                 // The first child of the root that is a body.
                 let mutable pos = rootEnd + 1

@@ -630,6 +630,26 @@ ok "active-hyperlink-target-rule"
     && not ([ "javascript:alert(1)"; " javascript:x"; "file:///c:/x"; "data:text/html,x"; "vbscript:x"; "x.html"; "#" ] |> List.exists DocxReader.isActiveHyperlinkTarget))
    "rule"
 
+// `xml:space` said once on the root holds for the text of its descendants (Word keeps these spaces);
+// whitespace between other elements stays nothing, and an element can say otherwise.
+do
+    let xml = "<w:document xmlns:w=\"urn:w\" xml:space=\"preserve\"><w:body>\n <w:p>\n <w:r><w:t> </w:t></w:r><w:r><w:t xml:space=\"default\"> no\u00A0</w:t></w:r><w:r><w:t> a </w:t></w:r></w:p></w:body></w:document>"
+    let rec texts node =
+        match node with
+        | XmlDsl.Element ("w:t", _, children) -> [ children |> List.choose (function XmlDsl.Text value -> Some value | _ -> None) |> String.concat "" ]
+        | XmlDsl.Element (_, _, children) -> children |> List.collect texts
+        | _ -> []
+    let rec strays node =
+        match node with
+        | XmlDsl.Element ("w:t", _, _) -> 0
+        | XmlDsl.Element (_, _, children) -> (children |> List.sumBy strays)
+        | XmlDsl.Text _ -> 1
+        | _ -> 0
+    let scanned = XmlDsl.tryScan xml (System.Collections.Generic.HashSet<string>())
+    ok "xml:space on the root: the text of runs keeps its spaces, by the parser" (texts (XmlDsl.parse xml) = [ " "; "no\u00A0"; " a " ]) (sprintf "%A" (texts (XmlDsl.parse xml)))
+    ok "... and by the scanner" (scanned |> Option.map texts = Some [ " "; "no\u00A0"; " a " ]) (sprintf "%A" scanned)
+    ok "... whitespace between elements stays nothing" (scanned |> Option.map strays = Some 0) ""
+
 printfn ""
 printfn "OfficeFormat DocxReader tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

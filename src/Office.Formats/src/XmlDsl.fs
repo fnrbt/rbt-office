@@ -79,6 +79,25 @@ module Xml =
     let (=>>) nodes f = List.choose f nodes
     let (?>) node name = child name node
 
+/// Text without its XML whitespace: a no-break or an en space is a character of the text.
+let private trimXml (text: string) = text.Trim (' ', '\t', '\r', '\n')
+
+/// `xml:space` holds for an element's descendants too: a part can say "preserve" once, on its root
+/// (Word keeps the spaces of `resume-template`'s runs by that). What is inherited counts only in the
+/// elements that hold text: the whitespace between other elements of such a part is not text.
+let private holdsText (name: string) =
+    match name.Substring (name.IndexOf ':' + 1) with
+    | "t" | "delText" | "instrText" | "delInstrText" -> true
+    | _ -> false
+let private keepsSpace (name: string) (own: string option) (inherited: bool) =
+    match own with
+    | Some value -> value = "preserve"
+    | None -> inherited && holdsText name
+let private spaceInherited (own: string option) (inherited: bool) =
+    match own with
+    | Some value -> value = "preserve"
+    | None -> inherited
+
 // Parse XML from string (uses browser DOMParser in Fable)
 #if FABLE_COMPILER
 [<Emit("new DOMParser().parseFromString($0, 'text/xml')")>]
@@ -93,9 +112,9 @@ let private domParseError (doc: obj) : string = jsNative
 [<Emit("($0.doctype != null)")>]
 let private domHasDoctype (doc: obj) : bool = jsNative
 
-/// A DOM node as an XmlNode. `preserve`: the parent element has
-/// xml:space="preserve" (in Word XML: whitespace is text).
-let rec private convertNode (node: obj) (preserve: bool) : XmlNode =
+/// A DOM node as an XmlNode. `preserve`: its text keeps its whitespace in
+/// the parent element; `inherited`: the `xml:space` of the parent's ancestors.
+let rec private convertNode (node: obj) (preserve: bool) (inherited: bool) : XmlNode =
     let nodeType: int = node?nodeType
 
     match nodeType with
@@ -104,20 +123,22 @@ let rec private convertNode (node: obj) (preserve: bool) : XmlNode =
         let attrList: obj = node?attributes
         let length: int = attrList?length
         let mutable attrs : Map<string, string> = Map.empty
-        let mutable preserveChildren = false
+        let mutable space : string option = None
         for i in 0 .. length - 1 do
             let attr: obj = attrList?(i)
             let name: string = attr?name
             let value: string = attr?value
-            if name = "xml:space" then preserveChildren <- (value = "preserve")
+            if name = "xml:space" then space <- Some value
             attrs <- Map.add name value attrs
+        let preserveChildren = keepsSpace nodeName space inherited
+        let inheritedByChildren = spaceInherited space inherited
 
         // (From the last child to the first: the list is built front to back.)
         let childNodes: obj = node?childNodes
         let childCount: int = childNodes?length
         let mutable children : XmlNode list = []
         for i = childCount - 1 downto 0 do
-            match convertNode (childNodes?(i)) preserveChildren with
+            match convertNode (childNodes?(i)) preserveChildren inheritedByChildren with
             | Empty -> ()
             | child -> children <- child :: children
 
@@ -130,7 +151,7 @@ let rec private convertNode (node: obj) (preserve: bool) : XmlNode =
             if textContent.Length > 0 then Text textContent else Empty
         else
             // Otherwise trim whitespace as usual
-            let trimmed = textContent.Trim()
+            let trimmed = trimXml textContent
             if trimmed.Length > 0 then Text trimmed else Empty
 
     | 4 -> // CDATA_SECTION_NODE — literal text, kept verbatim like the .NET path
@@ -149,13 +170,13 @@ let parse (xmlString: string) : XmlNode =
     if domHasDoctype doc then
         failwith "Malformed XML: DTD is not allowed"
     let root: obj = doc?documentElement
-    if isNull root then Empty else convertNode root false
+    if isNull root then Empty else convertNode root false false
 #else
 let private xName (element: XElement) (name: XName) =
     let prefix = element.GetPrefixOfNamespace(name.Namespace)
     if System.String.IsNullOrEmpty(prefix) then name.LocalName else prefix + ":" + name.LocalName
 
-let rec private convertXNode (parentAttrs: Map<string, string> option) (node: XNode) : XmlNode =
+let rec private convertXNode (preserve: bool) (inherited: bool) (node: XNode) : XmlNode =
     match node with
     | :? XElement as element ->
         let attrs =
@@ -163,28 +184,24 @@ let rec private convertXNode (parentAttrs: Map<string, string> option) (node: XN
             |> Seq.map (fun attr -> xName element attr.Name, attr.Value)
             |> Map.ofSeq
 
+        let name = xName element element.Name
+        let space = Map.tryFind "xml:space" attrs
         let children =
             element.Nodes()
-            |> Seq.map (convertXNode (Some attrs))
+            |> Seq.map (convertXNode (keepsSpace name space inherited) (spaceInherited space inherited))
             |> Seq.filter ((<>) Empty)
             |> Seq.toList
 
-        Element(xName element element.Name, attrs, children)
+        Element(name, attrs, children)
 
     | :? XCData as cdata ->
         if cdata.Value.Length > 0 then Text cdata.Value else Empty
 
     | :? XText as text ->
-        let shouldPreserve =
-            parentAttrs
-            |> Option.bind (Map.tryFind "xml:space")
-            |> Option.map ((=) "preserve")
-            |> Option.defaultValue false
-
-        if shouldPreserve then
+        if preserve then
             if text.Value.Length > 0 then Text text.Value else Empty
         else
-            let trimmed = text.Value.Trim()
+            let trimmed = trimXml text.Value
             if trimmed.Length > 0 then Text trimmed else Empty
 
     | _ -> Empty
@@ -201,7 +218,7 @@ let parse (xmlString: string) : XmlNode =
     let doc = XDocument.Load(reader, LoadOptions.PreserveWhitespace)
     match doc.Root with
     | null -> Empty
-    | root -> convertXNode None root
+    | root -> convertXNode false false root
 #endif
 
 // ---------------------------------------------------------------------------
@@ -293,6 +310,7 @@ let private scanDocument (source: string) (names: System.Collections.Generic.Has
     let openNames = ResizeArray<string>()
     let openAttrs = ResizeArray<Map<string, string>>()
     let openPreserve = ResizeArray<bool>()
+    let openInherited = ResizeArray<bool>()
     let openChildren = ResizeArray<XmlNode list>()
     let mutable root = Empty
     let mutable rootSeen = false
@@ -318,7 +336,7 @@ let private scanDocument (source: string) (names: System.Collections.Generic.Has
             let text = decodeReferences raw
             if openPreserve.[openPreserve.Count - 1] then addChild (Text text)
             else
-                let trimmed = text.Trim()
+                let trimmed = trimXml text
                 if trimmed.Length > 0 then addChild (Text trimmed)
     while pos < n do
         let lt = s.IndexOf('<', pos)
@@ -342,6 +360,7 @@ let private scanDocument (source: string) (names: System.Collections.Generic.Has
                 openNames.RemoveAt top
                 openAttrs.RemoveAt top
                 openPreserve.RemoveAt top
+                openInherited.RemoveAt top
                 openChildren.RemoveAt top
                 closeElement name attrs children
                 pos <- gt + 1
@@ -369,7 +388,7 @@ let private scanDocument (source: string) (names: System.Collections.Generic.Has
                 let name = s.Substring(lt + 1, i - lt - 1)
                 names.Add name |> ignore
                 let mutable attrs : Map<string, string> = Map.empty
-                let mutable preserve = false
+                let mutable space : string option = None
                 let mutable selfClosing = false
                 let mutable inTag = true
                 while inTag do
@@ -403,14 +422,16 @@ let private scanDocument (source: string) (names: System.Collections.Generic.Has
                         let raw = if raw.IndexOf '\n' >= 0 || raw.IndexOf '\t' >= 0 then raw.Replace("\n", " ").Replace("\t", " ") else raw
                         let value = decodeReferences raw
                         if attrs.ContainsKey attrName then scanGiveUp ()
-                        if attrName = "xml:space" then preserve <- (value = "preserve")
+                        if attrName = "xml:space" then space <- Some value
                         attrs <- Map.add attrName value attrs
                         i <- close + 1
                 if selfClosing then closeElement name attrs []
                 else
                     openNames.Add name
                     openAttrs.Add attrs
-                    openPreserve.Add preserve
+                    let inherited = openInherited.Count > 0 && openInherited.[openInherited.Count - 1]
+                    openPreserve.Add (keepsSpace name space inherited)
+                    openInherited.Add (spaceInherited space inherited)
                     openChildren.Add []
                 pos <- i
     if openNames.Count > 0 || not rootSeen then scanGiveUp ()
