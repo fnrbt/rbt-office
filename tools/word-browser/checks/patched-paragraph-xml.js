@@ -123,8 +123,8 @@ try {
     ], [1, 0, 0]);
     // A paragraph made an item of a list the file does not have: the list is the writer's, and so is the paragraph.
     await stage('a paragraph made a bullet list item', (editor) => { Word.toggleBulletList(editor); }, 'after', [
-        ['written from the model, with the list', /<w:p><w:pPr><w:numPr><w:ilvl w:val="0"\/><w:numId w:val="\d+"\/><\/w:numPr>/],
-    ], [0, 0, 1]);
+        ['written with the list', /<w:pPr><w:numPr><w:ilvl w:val="0"\/><w:numId w:val="\d+"\/><\/w:numPr>/],
+    ], [0, 1, 0]);
     // Text typed and a word formatted before one save.
     await stage('text typed and a word made bold', (editor, select, id) => { Word.setSelection(editor, id, 5, id, 5); Word.insertText(editor, ' more'); select('gamma', text.replace('alpha', 'alpha more')); Word.toggleBold(editor); }, 'body', [
         ['the text typed into its run', '<w:t xml:space="preserve">alpha more beta </w:t></w:r>'],

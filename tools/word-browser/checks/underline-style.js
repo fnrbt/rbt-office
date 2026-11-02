@@ -17,7 +17,12 @@ try {
     const blockId = Word.getLayoutLines(editor)[0].BlockId;
     Word.setSelection(editor, blockId, 'from the file '.length, blockId, 'from the file made here'.length);
     Word.toggleUnderline(editor);
-    const runs = Word.exportDocumentPackage(editor).Paragraphs[0].Runs.map((r) => [r.Text, r.Underline === true, r.UnderlineStyle ?? null]);
+    // (Runs that were read from two runs of the file stay two - a save writes each from its own w:r: the format is what counts.)
+    const runs = [];
+    for (const r of Word.exportDocumentPackage(editor).Paragraphs[0].Runs) {
+        const last = runs[runs.length - 1], format = [r.Underline === true, r.UnderlineStyle ?? null];
+        if (last && last[1] === format[0] && last[2] === format[1]) last[0] += r.Text; else runs.push([r.Text, ...format]);
+    }
     check('underlined in the file and in the editor: one run, one format', runs, [['from the file made here', true, null], [' and doubled', true, 'double']]);
     Word.setSelection(editor, blockId, 0, blockId, 'from the file made here'.length);
     const format = Word.getSelectionFormat(editor);

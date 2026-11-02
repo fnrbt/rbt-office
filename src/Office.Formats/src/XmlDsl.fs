@@ -28,6 +28,12 @@ type XmlNode =
     | Text of string
     | Empty
 
+/// The tree without the places of its elements (to compare trees read by different parsers).
+let rec withoutSpans (node: XmlNode) : XmlNode =
+    match node with
+    | Element (name, attrs, children, _) -> Element (name, attrs, List.map withoutSpans children, Span.none)
+    | other -> other
+
 // Active patterns for XML matching
 let (|ElementNamed|_|) name = function
     | Element(n, attrs, children, _) when n = name -> Some(attrs, children)

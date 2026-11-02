@@ -1,7 +1,8 @@
 // The XML scanner of the DOCX reader (XmlDsl.tryScan, used for a document's
 // main part) against the browser's own parser (XmlDsl.parse, DOMParser):
 // every XML part of the test documents scans to the same nodes, and what the
-// scanner does not read is handed back. (tests/word/xml-scan.fsx is the same
+// scanner does not read is handed back. (The trees are compared without the places of their
+// elements: the scanner knows them, the browser's parser does not.) (tests/word/xml-scan.fsx is the same
 // check against .NET's parser.)
 import { check, note, finish, fail, bytesOf } from './common.js';
 try {
@@ -25,7 +26,7 @@ try {
     ];
     for (const [name, xml] of cases) {
         const scanned = scan(xml);
-        check(name, scanned != null && equals(scanned, Xml.parse(xml)), true);
+        check(name, scanned != null && equals(Xml.withoutSpans(scanned), Xml.withoutSpans(Xml.parse(xml))), true);
     }
     for (const [name, xml] of [['a DTD', '<!DOCTYPE a [<!ENTITY e "x">]><a>&e;</a>'], ['an unknown entity', '<a>&nbsp;</a>'], ['tags that do not match', '<a><b></a></b>'], ['two roots', '<a/><b/>'], ['an attribute twice', '<a x="1" x="2"/>'], ['nothing', '']])
         check(`left to the parser: ${name}`, scan(xml) == null, true);
@@ -43,7 +44,7 @@ try {
             const scanned = scan(xml);
             if (scanned == null) continue;
             scannedParts++;
-            if (!equals(scanned, parsed)) different.push(file + ' ' + name);
+            if (!equals(Xml.withoutSpans(scanned), Xml.withoutSpans(parsed))) different.push(file + ' ' + name);
         }
     }
     check('the test documents were found', listing.length > 50 && parts > 500, true);

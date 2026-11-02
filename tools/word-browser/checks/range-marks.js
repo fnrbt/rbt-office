@@ -85,20 +85,20 @@ window.finish = async () => {
         check('saved unedited: the body and the header are the text that was read', [saved.unedited.xml === original, saved.unedited.header.includes('<w:bookmarkStart w:id="1" w:name="in_header"/>')], [true, true]);
         {
             const s = saved.between;
-            check('a paragraph between the start and the end of a bookmark that stand between blocks, written from the model: the start is before it, the end after it',
-                [s.report.ModelBlocks, /<w:bookmarkStart w:id="20" w:name="between_blocks"\/><w:p>(?:(?!<\/w:p>).)*LINK(?:(?!<\/w:p>).)*<\/w:p><w:bookmarkEnd w:id="20"\/>/.test(s.xml), ranges(s.xml)], [1, true, []]);
+            check('a paragraph between the start and the end of a bookmark that stand between blocks, spliced from its source (docs/save-architecture.md): the start is before it, the end after it',
+                [s.report.ModelBlocks, /<w:bookmarkStart w:id="20" w:name="between_blocks"\/><w:p>(?:(?!<\/w:p>).)*LINK(?:(?!<\/w:p>).)*<\/w:p><w:bookmarkEnd w:id="20"\/>/.test(s.xml), ranges(s.xml)], [0, true, []]);
         }
         {
             const s = saved.empty;
-            check('a paragraph without runs that holds a bookmark, written from the model: the bookmark is in it',
-                [s.report.ModelBlocks, /<w:p><w:pPr><w:jc w:val="center"\/><\/w:pPr><w:bookmarkStart w:id="21" w:name="in_empty"\/><w:bookmarkEnd w:id="21"\/>(?:(?!<\/w:p>).)*LINK/.test(s.xml), ranges(s.xml)], [1, true, []]);
+            check('a paragraph without runs that holds a bookmark, spliced from its source (docs/save-architecture.md): the bookmark is in it',
+                [s.report.ModelBlocks, /<w:p><w:pPr><w:jc w:val="center"\/><\/w:pPr><w:bookmarkStart w:id="21" w:name="in_empty"\/><w:bookmarkEnd w:id="21"\/>(?:(?!<\/w:p>).)*LINK/.test(s.xml), ranges(s.xml)], [0, true, []]);
         }
         {
             const s = saved.ranges;
             const para = (s.xml.match(/<w:p>(?:(?!<\/w:p>).)*commentReference(?:(?!<\/w:p>).)*<\/w:p>/) ?? [''])[0];
-            check('a paragraph with the end of a bookmark before its first run, the range of a permission and the range of a comment, written from the model: all of them are in it, once',
+            check('a paragraph with the end of a bookmark before its first run, the range of a permission and the range of a comment, spliced from its source (docs/save-architecture.md): all of them are in it, once',
                 [s.report.ModelBlocks, /^<w:p><w:bookmarkEnd w:id="22"\/><w:permStart w:id="30" w:edGrp="everyone"\/>/.test(para), /<w:commentRangeStart w:id="5"\/>/.test(para), /<w:commentRangeEnd w:id="5"\/>(?:(?!<w:r>).)*<w:permEnd w:id="30"\/><\/w:p>$|<w:permEnd w:id="30"\/><w:commentRangeEnd w:id="5"\/><\/w:p>$|<w:commentRangeEnd w:id="5"\/><w:permEnd w:id="30"\/><\/w:p>$/.test(para),
-                 para.indexOf('commentRangeStart') < para.indexOf('commented'), ranges(s.xml)], [1, true, true, true, true, []]);
+                 para.indexOf('commentRangeStart') < para.indexOf('commented'), ranges(s.xml)], [0, true, true, true, true, []]);
         }
         {
             const s = saved.cell;

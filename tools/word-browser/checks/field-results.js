@@ -82,8 +82,8 @@ try {
         Word.insertHyperlink(editor, 'https://example.com/entry', 'LINK');
         const result = await saved(editor);
         const pieces = paragraphs(result.xml), was = paragraphs(original);
-        check('an entry in the middle of a table of contents written from the model: the entries the field begins and ends in are the text they were',
-            [result.report.ModelBlocks, pieces[2] === was[2], pieces[4] === was[4], pieces[3].includes('LINK'), count(result.xml, 'w:fldCharType="begin"'), count(result.xml, 'w:fldCharType="end"')], [1, true, true, true, 3, 3]);
+        check('an entry in the middle of a table of contents spliced from its source (docs/save-architecture.md): the entries the field begins and ends in are the text they were',
+            [result.report.ModelBlocks, pieces[2] === was[2], pieces[4] === was[4], pieces[3].includes('LINK'), count(result.xml, 'w:fldCharType="begin"'), count(result.xml, 'w:fldCharType="end"')], [0, true, true, true, 3, 3]);
         check('the entry in the middle: read again, the text of the editor that saved it', result.same[0], true);
         Word.dispose(editor);
     }
