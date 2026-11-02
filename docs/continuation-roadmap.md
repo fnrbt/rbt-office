@@ -6,7 +6,7 @@ Written 2026-10-12, when work was halted to move to another machine. Picks up th
 
 | Branch | What it is | State |
 |---|---|---|
-| `master`, tag `v0.1.20` | Last release, published as `@rbt/office` 0.1.20: charts (manual layouts, display units, gradients, log axes, radar, bubble, stock, 3-D as flat), shapes (custom geometry, preset outlines, rotation, flips, line breaks, linked cells), long sheets (no stack overflow on delete row / insert column / filter; typing 250 ms to 3 ms). (`v0.1.17` published nothing) |
+| `master`, tag `v0.1.21` | Last release, published as `@rbt/office` 0.1.21: 0.1.20 + print as Excel prints (charts and shapes in the PDF, cut at page breaks, default sizes, drawings in the print range), area charts on the ticks, default columns 64 px. (`v0.1.17` published nothing) |
 | `review-fixes` | The integration branch: what the next release is gated and cut from. Equal to `master` right after a release | nothing unreleased |
 | `fix/sheet19` | Spreadsheet pass nine as it was handed off | Its item 1 is in `review-fixes`, rebased, without the handoff folder. Items 2-7 are not started: `tools/handoff-sheet19/HANDOFF.md` on `origin/fix/sheet19` keeps their findings, and `bigsheet.mjs`, `render.fsx` and `shoot.mjs` beside it |
 
