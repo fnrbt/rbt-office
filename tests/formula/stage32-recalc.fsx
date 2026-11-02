@@ -275,7 +275,9 @@ let randomEdits (label: string) (seed: int) (steps: int) (wb: Wb.Workbook) =
         printfn "  %s: the full recalculation does not settle (%s) - left out" label (difference settled current).Value
         0, 0
     else
-        let sheets = current.SheetOrder |> List.filter (fun id -> not (Map.isEmpty (resolveSheet current.Sheets.[id].Model).Cells)) |> List.toArray
+        // (Not the sheets of pivot tables: their cells are the pivots' - Excel does not let them be edited -, and
+        // GETPIVOTDATA reads them without depending on them.)
+        let sheets = current.SheetOrder |> List.filter (fun id -> let m = resolveSheet current.Sheets.[id].Model in not (Map.isEmpty m.Cells) && m.Pivots.IsEmpty) |> List.toArray
         let mutable incremental = 0
         let mutable declinedSteps = 0
         let mutable evaluated = 0

@@ -2066,9 +2066,7 @@ let containsVolatile (expr: Expr) : bool =
                || equalsOrdinalIgnoreCase name "NOW"
                || equalsOrdinalIgnoreCase name "TODAY"
                || equalsOrdinalIgnoreCase name "OFFSET"
-               || equalsOrdinalIgnoreCase name "INDIRECT"
-               // (GETPIVOTDATA reads any cell of the pivot table it names: it is calculated with every change.)
-               || equalsOrdinalIgnoreCase name "GETPIVOTDATA" then
+               || equalsOrdinalIgnoreCase name "INDIRECT" then
                 found <- true
             else
                 for arg in args do

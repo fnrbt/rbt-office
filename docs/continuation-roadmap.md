@@ -39,6 +39,7 @@ redbat (`cardillion-mega` remote): `master` has the 0.1.24 adoption (`53b1b5d49`
 - "Products sold by Quantity" in the e-commerce dashboard still wraps under its doughnut: the box is narrower in its scaled group. Whether Excel wraps it too is unchecked.
 
 ### Spreadsheet — features
+- Pivot tables in the model (`Model.PivotLayout`, for GETPIVOTDATA) do not move when rows or columns are inserted or deleted before them, and GETPIVOTDATA does not depend on the pivot's cells: an edit of a pivot's own cells (Excel does not allow one) leaves it as it was until a full recalculation. Make the layouts move with structure edits; refresh a pivot from its cache.
 - Charts and shapes print through `Paint.drawingOverlays` (`tools/spreadsheet-pdf-runner`). Each page holds what reaches it, cut at the page's edge, as Excel does (chart-zoo compared). Excel's scatter axis stops at 6 where ours stops at 5.5. The portable canvas still draws frames; native and wisp painters do not handle `VecPath`.
 - chartEx waterfall/funnel/maps and others; slicers and timelines. Radar, bubble, stock and 3-D-as-flat are drawn; bubble and stock have been looked at on synthetic charts only, no workbook in the corpus has them.
 - Shapes: custom geometry, preset polygons, rotation and flips are checked on synthetic shapes only (the corpus has `rect` and `roundRect`, no `rot` or flips). A group's own rotation is ignored. Unwritten: `normAutofit`, `spcBef/spcAft/lnSpc`, `vert`.
