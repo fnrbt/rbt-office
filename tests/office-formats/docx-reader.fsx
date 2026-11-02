@@ -99,16 +99,16 @@ let xmlStringNode count =
             XmlDsl.Element(
                 "m:r",
                 Map.ofList [ "m:id", string i; "m:val", "a&b<c>d\"e'f" ],
-                [ XmlDsl.Element("m:t", Map.empty, [ XmlDsl.Text("value & < > \" ' " + string i) ]) ])
+                [ XmlDsl.Element("m:t", Map.empty, [ XmlDsl.Text("value & < > \" ' " + string i) ], XmlDsl.Span.none) ], XmlDsl.Span.none)
         children <- child :: children
-    XmlDsl.Element("m:oMath", Map.ofList [ "xmlns:m", "urn:test" ], children)
+    XmlDsl.Element("m:oMath", Map.ofList [ "xmlns:m", "urn:test" ], children, XmlDsl.Span.none)
 
 let escapedXml =
     DocxReader.Docx.xmlToString
         (XmlDsl.Element(
             "m:r",
             Map.ofList [ "z", "2"; "a", "1&\"" ],
-            [ XmlDsl.Text "A&B<"; XmlDsl.Element("m:t", Map.empty, []) ]))
+            [ XmlDsl.Text "A&B<"; XmlDsl.Element("m:t", Map.empty, [], XmlDsl.Span.none) ], XmlDsl.Span.none))
 ok "xml-to-string-escapes"
    (escapedXml = "<m:r a=\"1&amp;&quot;\" z=\"2\">A&amp;B&lt;<m:t/></m:r>")
    escapedXml
@@ -636,13 +636,13 @@ do
     let xml = "<w:document xmlns:w=\"urn:w\" xml:space=\"preserve\"><w:body>\n <w:p>\n <w:r><w:t> </w:t></w:r><w:r><w:t xml:space=\"default\"> no\u00A0</w:t></w:r><w:r><w:t> a </w:t></w:r></w:p></w:body></w:document>"
     let rec texts node =
         match node with
-        | XmlDsl.Element ("w:t", _, children) -> [ children |> List.choose (function XmlDsl.Text value -> Some value | _ -> None) |> String.concat "" ]
-        | XmlDsl.Element (_, _, children) -> children |> List.collect texts
+        | XmlDsl.Element ("w:t", _, children, _) -> [ children |> List.choose (function XmlDsl.Text value -> Some value | _ -> None) |> String.concat "" ]
+        | XmlDsl.Element (_, _, children, _) -> children |> List.collect texts
         | _ -> []
     let rec strays node =
         match node with
-        | XmlDsl.Element ("w:t", _, _) -> 0
-        | XmlDsl.Element (_, _, children) -> (children |> List.sumBy strays)
+        | XmlDsl.Element ("w:t", _, _, _) -> 0
+        | XmlDsl.Element (_, _, children, _) -> (children |> List.sumBy strays)
         | XmlDsl.Text _ -> 1
         | _ -> 0
     let scanned = XmlDsl.tryScan xml (System.Collections.Generic.HashSet<string>())

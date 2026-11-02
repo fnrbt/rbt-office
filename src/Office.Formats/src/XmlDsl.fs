@@ -7,20 +7,35 @@ open Browser.Types
 open System.Xml.Linq
 #endif
 
+/// Where an element is in the text of its part (docs/save-architecture.md): offsets of the `<` of
+/// its start tag, after that tag's `>`, of the `<` of its end tag and after its `>`. A self-closed
+/// element has StartTagEnd = EndTagStart = End. An element that was not read from a part (built, or
+/// read by the platform's parser) has Start = -1.
+type Span = {
+    Start: int
+    StartTagEnd: int
+    EndTagStart: int
+    End: int
+}
+
+module Span =
+    let none = { Start = -1; StartTagEnd = -1; EndTagStart = -1; End = -1 }
+    let isKnown (span: Span) = span.Start >= 0
+
 // XML DSL for succinct navigation and querying
 type XmlNode =
-    | Element of name: string * attrs: Map<string, string> * children: XmlNode list
+    | Element of name: string * attrs: Map<string, string> * children: XmlNode list * span: Span
     | Text of string
     | Empty
 
 // Active patterns for XML matching
 let (|ElementNamed|_|) name = function
-    | Element(n, attrs, children) when n = name -> Some(attrs, children)
+    | Element(n, attrs, children, _) when n = name -> Some(attrs, children)
     | _ -> None
 
 let (|HasAttr|_|) attrName node =
     match node with
-    | Element(_, attrs, _) -> Map.tryFind attrName attrs
+    | Element(_, attrs, _, _) -> Map.tryFind attrName attrs
     | _ -> None
 
 let (|TextValue|_|) = function
@@ -43,27 +58,27 @@ let xml = XmlBuilder()
 // Core XML operations with point-free style
 module Xml =
     let rec children = function
-        | Element(_, _, kids) -> kids
+        | Element(_, _, kids, _) -> kids
         | _ -> []
 
     let child name node =
-        children node |> List.tryFind (function Element(n, _, _) when n = name -> true | _ -> false)
+        children node |> List.tryFind (function Element(n, _, _, _) when n = name -> true | _ -> false)
 
     let descendants name node =
         let rec descend acc = function
-            | Element(n, a, kids) as elem ->
+            | Element(n, a, kids, _) as elem ->
                 let acc' = if n = name then elem :: acc else acc
                 List.fold descend acc' kids
             | _ -> acc
         descend [] node |> List.rev
 
     let attr name = function
-        | Element(_, attrs, _) -> Map.tryFind name attrs
+        | Element(_, attrs, _, _) -> Map.tryFind name attrs
         | _ -> None
 
     let text = function
         | Text t -> Some t
-        | Element(_, _, kids) ->
+        | Element(_, _, kids, _) ->
             kids
             |> List.choose (function Text t -> Some t | _ -> None)
             |> String.concat ""
@@ -71,7 +86,7 @@ module Xml =
         | _ -> None
 
     let name = function
-        | Element(n, _, _) -> Some n
+        | Element(n, _, _, _) -> Some n
         | _ -> None
 
     // Combinator-style queries
@@ -142,7 +157,7 @@ let rec private convertNode (node: obj) (preserve: bool) (inherited: bool) : Xml
             | Empty -> ()
             | child -> children <- child :: children
 
-        Element(nodeName, attrs, children)
+        Element(nodeName, attrs, children, Span.none)
 
     | 3 -> // TEXT_NODE
         let textContent: string = node?textContent
@@ -192,7 +207,7 @@ let rec private convertXNode (preserve: bool) (inherited: bool) (node: XNode) : 
             |> Seq.filter ((<>) Empty)
             |> Seq.toList
 
-        Element(name, attrs, children)
+        Element(name, attrs, children, Span.none)
 
     | :? XCData as cdata ->
         if cdata.Value.Length > 0 then Text cdata.Value else Empty
@@ -300,15 +315,24 @@ let private decodeReferences (raw: string) : string =
                 i <- semi + 1
         sb.ToString()
 
-let private scanDocument (source: string) (names: System.Collections.Generic.HashSet<string>) : XmlNode =
-    // Line ends are normalised before anything else (XML 1.0, 2.11).
-    let s = if source.IndexOf '\r' >= 0 then source.Replace("\r\n", "\n").Replace("\r", "\n") else source
+let private normaliseLineEnds (raw: string) =
+    if raw.IndexOf '\r' >= 0 then raw.Replace("\r\n", "\n").Replace("\r", "\n") else raw
+
+/// The scanner works on the part's text as it is - line ends are normalised
+/// in the values it reads (XML 1.0, 2.11), not in the text - so the span of
+/// every element is its place in the part.
+let private scanDocument (s: string) (names: System.Collections.Generic.HashSet<string>) : XmlNode =
     let n = s.Length
     let mutable pos = 0
-    let isSpace (c: char) = c = ' ' || c = '\n' || c = '\t'
-    // The open elements, innermost last: name, attributes, whether text keeps its whitespace, children (last first).
+    // (A byte order mark or a zero-width space before the declaration is not text.)
+    while pos < n && (s.[pos] = char 0xFEFF || s.[pos] = char 0x200B) do pos <- pos + 1
+    let isSpace (c: char) = c = ' ' || c = '\n' || c = '\t' || c = '\r'
+    // The open elements, innermost last: name, attributes, start, end of start tag, whether text
+    // keeps its whitespace, whether descendants inherit that, children (last first).
     let openNames = ResizeArray<string>()
     let openAttrs = ResizeArray<Map<string, string>>()
+    let openStarts = ResizeArray<int>()
+    let openTagEnds = ResizeArray<int>()
     let openPreserve = ResizeArray<bool>()
     let openInherited = ResizeArray<bool>()
     let openChildren = ResizeArray<XmlNode list>()
@@ -317,34 +341,43 @@ let private scanDocument (source: string) (names: System.Collections.Generic.Has
     let addChild (node: XmlNode) =
         let top = openChildren.Count - 1
         openChildren.[top] <- node :: openChildren.[top]
-    let closeElement (name: string) (attrs: Map<string, string>) (reversed: XmlNode list) =
+    let closeElement (name: string) (attrs: Map<string, string>) (reversed: XmlNode list) (span: Span) =
         let mutable children = []
         let mutable rest = reversed
         while not rest.IsEmpty do
             children <- rest.Head :: children
             rest <- rest.Tail
-        let node = Element (name, attrs, children)
+        let node = Element (name, attrs, children, span)
         if openNames.Count = 0 then
             root <- node
             rootSeen <- true
         else addChild node
-    let addText (raw: string) =
-        if openNames.Count = 0 then
-            // Outside the root element only whitespace may stand.
-            if raw.Trim().Length > 0 then scanGiveUp ()
-        elif raw.Length > 0 then
-            let text = decodeReferences raw
-            if openPreserve.[openPreserve.Count - 1] then addChild (Text text)
+    let addText (start: int) (finish: int) =
+        if finish > start then
+            if openNames.Count = 0 then
+                // Outside the root element only whitespace may stand.
+                if s.Substring(start, finish - start).Trim().Length > 0 then scanGiveUp ()
             else
-                let trimmed = trimXml text
-                if trimmed.Length > 0 then addChild (Text trimmed)
+                let preserve = openPreserve.[openPreserve.Count - 1]
+                // (Whitespace between elements of a part that does not keep it is not text: not even decoded.)
+                let mutable blank = true
+                let mutable i = start
+                while blank && i < finish do
+                    if not (isSpace s.[i]) then blank <- false
+                    i <- i + 1
+                if preserve || not blank then
+                    let text = decodeReferences (normaliseLineEnds (s.Substring(start, finish - start)))
+                    if preserve then addChild (Text text)
+                    else
+                        let trimmed = trimXml text
+                        if trimmed.Length > 0 then addChild (Text trimmed)
     while pos < n do
         let lt = s.IndexOf('<', pos)
         if lt < 0 then
-            addText (s.Substring pos)
+            addText pos n
             pos <- n
         else
-            if lt > pos then addText (s.Substring(pos, lt - pos))
+            addText pos lt
             if lt + 1 >= n then scanGiveUp ()
             let c = s.[lt + 1]
             if c = '/' then
@@ -357,12 +390,15 @@ let private scanDocument (source: string) (names: System.Collections.Generic.Has
                 if nameEnd - (lt + 2) <> name.Length || not (startsAt s (lt + 2) name) then scanGiveUp ()
                 let attrs = openAttrs.[top]
                 let children = openChildren.[top]
+                let span = { Start = openStarts.[top]; StartTagEnd = openTagEnds.[top]; EndTagStart = lt; End = gt + 1 }
                 openNames.RemoveAt top
                 openAttrs.RemoveAt top
+                openStarts.RemoveAt top
+                openTagEnds.RemoveAt top
                 openPreserve.RemoveAt top
                 openInherited.RemoveAt top
                 openChildren.RemoveAt top
-                closeElement name attrs children
+                closeElement name attrs children span
                 pos <- gt + 1
             elif c = '?' then
                 let close = indexOfOrdinal s "?>" (lt + 2)
@@ -376,7 +412,7 @@ let private scanDocument (source: string) (names: System.Collections.Generic.Has
                 elif startsAt s lt "<![CDATA[" then
                     let close = indexOfOrdinal s "]]>" (lt + 9)
                     if close < 0 || openNames.Count = 0 then scanGiveUp ()
-                    if close > lt + 9 then addChild (Text (s.Substring(lt + 9, close - lt - 9)))
+                    if close > lt + 9 then addChild (Text (normaliseLineEnds (s.Substring(lt + 9, close - lt - 9))))
                     pos <- close + 3
                 else scanGiveUp ()
             else
@@ -419,16 +455,19 @@ let private scanDocument (source: string) (names: System.Collections.Generic.Has
                         let raw = s.Substring(i + 1, close - i - 1)
                         if raw.IndexOf '<' >= 0 then scanGiveUp ()
                         // Literal tabs and line ends of an attribute value are spaces (XML 1.0, 3.3.3).
+                        let raw = normaliseLineEnds raw
                         let raw = if raw.IndexOf '\n' >= 0 || raw.IndexOf '\t' >= 0 then raw.Replace("\n", " ").Replace("\t", " ") else raw
                         let value = decodeReferences raw
                         if attrs.ContainsKey attrName then scanGiveUp ()
                         if attrName = "xml:space" then space <- Some value
                         attrs <- Map.add attrName value attrs
                         i <- close + 1
-                if selfClosing then closeElement name attrs []
+                if selfClosing then closeElement name attrs [] { Start = lt; StartTagEnd = i; EndTagStart = i; End = i }
                 else
                     openNames.Add name
                     openAttrs.Add attrs
+                    openStarts.Add lt
+                    openTagEnds.Add i
                     let inherited = openInherited.Count > 0 && openInherited.[openInherited.Count - 1]
                     openPreserve.Add (keepsSpace name space inherited)
                     openInherited.Add (spaceInherited space inherited)
@@ -441,7 +480,6 @@ let private scanDocument (source: string) (names: System.Collections.Generic.Has
 /// part (as written, prefix included) added to `names`; None when the part
 /// holds something the scanner does not read - `parse` then says what.
 let tryScan (xmlString: string) (names: System.Collections.Generic.HashSet<string>) : XmlNode option =
-    let xmlString = xmlString.TrimStart(char 0xFEFF, char 0x200B)
     try Some (scanDocument xmlString names)
     with _ ->
         names.Clear()
@@ -466,7 +504,7 @@ module Ns =
         Xml.children node
         |> List.tryFind (fun n ->
             match n with
-            | Element (name, _, _) -> hasLocalName localName name
+            | Element (name, _, _, _) -> hasLocalName localName name
             | _ -> false)
 
     /// The elements under (and including) a node that have a local name, in
@@ -475,7 +513,7 @@ module Ns =
         let found = ResizeArray<XmlNode>()
         let rec visit (current: XmlNode) =
             match current with
-            | Element (name, _, kids) ->
+            | Element (name, _, kids, _) ->
                 if hasLocalName localName name then found.Add current
                 for kid in kids do
                     visit kid
@@ -498,7 +536,7 @@ module Ns =
                 let node = parse xmlString
                 let rec visit (current: XmlNode) =
                     match current with
-                    | Element (name, _, kids) ->
+                    | Element (name, _, kids, _) ->
                         names.Add name |> ignore
                         for kid in kids do visit kid
                     | _ -> ()

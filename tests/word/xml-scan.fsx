@@ -23,10 +23,16 @@ let ok label cond detail =
 let scan (xml: string) = XmlDsl.tryScan xml (HashSet<string>())
 
 // ---- hand-written cases ----
+/// (The scanner gives each element its place in the text - its span - and the parser does not: trees are compared without.)
+let rec withoutSpans (node: XmlDsl.XmlNode) =
+    match node with
+    | XmlDsl.Element (name, attrs, children, _) -> XmlDsl.Element (name, attrs, List.map withoutSpans children, XmlDsl.Span.none)
+    | other -> other
+
 let same label (xml: string) =
     let expected = XmlDsl.parse xml
     match scan xml with
-    | Some node -> ok label (node = expected) (sprintf "scanned %A, parsed %A" node expected)
+    | Some node -> ok label (withoutSpans node = withoutSpans expected) (sprintf "scanned %A, parsed %A" node expected)
     | None -> ok label false "the scanner gave up"
 
 same "elements and attributes" "<a x=\"1\" y='2'><b/><c z=\"q\">text</c></a>"
@@ -86,7 +92,7 @@ for path in documents do
                     match scan xml with
                     | Some node ->
                         scanned <- scanned + 1
-                        ok (Path.GetFileName path + " " + entry.FullName) (node = expected) "the scanner and the parser differ"
+                        ok (Path.GetFileName path + " " + entry.FullName) (withoutSpans node = withoutSpans expected) "the scanner and the parser differ"
                     | None -> ()
     with :? InvalidDataException -> ()   // (not a zip: a fixture of the reader's own tests)
 ok "the test documents were found" (documents.Length > 50 && parts > 500) (sprintf "%d documents, %d parts" documents.Length parts)

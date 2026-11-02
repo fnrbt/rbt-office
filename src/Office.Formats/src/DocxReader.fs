@@ -745,7 +745,7 @@ module Docx =
         | XmlDsl.Text text ->
             appendEscapedXml builder text
         | XmlDsl.Empty -> ()
-        | XmlDsl.Element(name, attrs, children) ->
+        | XmlDsl.Element(name, attrs, children, _) ->
             builder.Append('<').Append(name) |> ignore
             for KeyValue(key, value) in attrs do
                 builder.Append(' ').Append(key).Append("=\"") |> ignore
@@ -771,7 +771,7 @@ module Docx =
 
     let private attrByLocalName localName node =
         match node with
-        | XmlDsl.Element(_, attrs, _) ->
+        | XmlDsl.Element(_, attrs, _, _) ->
             attrs
             |> Map.toList
             |> List.tryPick (fun (name, value) ->
@@ -1341,7 +1341,7 @@ module Docx =
             if not fromChoice.IsEmpty then fromChoice
             else Ns.childNs "Fallback" node |> Option.map modelledShapeRoots |> Option.defaultValue []
         | Some "anchor" | Some "inline" -> if isModelledShape node then [node] else []
-        | Some "shape" | Some "rect" | Some "roundrect" | Some "oval" when (match node with XmlDsl.Element(name, _, _) -> name.StartsWith "v:" | _ -> false) ->
+        | Some "shape" | Some "rect" | Some "roundrect" | Some "oval" when (match node with XmlDsl.Element(name, _, _, _) -> name.StartsWith "v:" | _ -> false) ->
             if isModelledShape node then [node] else []
         | Some _ -> Xml.children node |> List.collect modelledShapeRoots
         | None -> []
@@ -2917,7 +2917,7 @@ let selfContainedXml (rootAttributes: Map<string, string>) (xml: string) : strin
 /// Make the XML of every opaque object in `blocks` self-contained (see selfContainedXml).
 let completeOpaqueObjects (root: XmlNode) (blocks: DocumentContent list) : DocumentContent list =
     match root with
-    | XmlDsl.Element(_, attrs, _) ->
+    | XmlDsl.Element(_, attrs, _, _) ->
         blocks
         |> mapBlockRuns (fun run ->
             match run.Content with
@@ -2935,7 +2935,7 @@ let private moveNamesOfPart (root: XmlNode) : Map<string * string, string> =
     let mutable toName : string option = None
     let rec walk (node: XmlNode) =
         match node with
-        | XmlDsl.Element (name, _, children) ->
+        | XmlDsl.Element (name, _, children, _) ->
             match Ns.stripNs name with
             | "moveFromRangeStart" -> fromName <- Docx.attr "name" node
             | "moveFromRangeEnd" -> fromName <- None
@@ -3423,10 +3423,10 @@ module Shapes =
             parsePreset shapeNode
             |> Option.orElseWith (fun () ->
                 match shapeNode with
-                | XmlDsl.Element ("v:oval", _, _) -> Some "ellipse"
-                | XmlDsl.Element ("v:roundrect", _, _) -> Some "roundRect"
+                | XmlDsl.Element ("v:oval", _, _, _) -> Some "ellipse"
+                | XmlDsl.Element ("v:roundrect", _, _, _) -> Some "roundRect"
                 | _ -> None)
-        let isVml = match shapeNode with XmlDsl.Element (name, _, _) -> name.StartsWith "v:" | _ -> false
+        let isVml = match shapeNode with XmlDsl.Element (name, _, _, _) -> name.StartsWith "v:" | _ -> false
         // A VML shape says in its style where it stands: aligned or by its margins, relative to what, behind the text.
         let vmlAlign (name: string) = if isVml then styleText name vmlStyle |> Option.filter (fun value -> value <> "absolute" && value <> "") else None
         let vmlRelative (name: string) =
@@ -4579,7 +4579,7 @@ let openProgressiveFromSource (keepContent: bool) (source: PartSource) : Progres
             | None ->
                 // (What the scanner does not read: by the platform's parser, in the root's namespaces.)
                 match XmlDsl.parse (cursor.RootTag + text + "</" + cursor.RootName + ">") with
-                | XmlDsl.Element (_, _, children) -> children |> List.tryFind (fun child -> (Xml.name child).IsSome) |> Option.defaultValue XmlDsl.Empty
+                | XmlDsl.Element (_, _, children, _) -> children |> List.tryFind (fun child -> (Xml.name child).IsSome) |> Option.defaultValue XmlDsl.Empty
                 | _ -> XmlDsl.Empty
         let finalSetup =
             cursorAndFinal

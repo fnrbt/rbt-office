@@ -48,7 +48,7 @@ let relationshipId (node: XmlNode) : string option =
     | Some v -> Some v
     | None ->
         match node with
-        | Element(_, attrs, _) ->
+        | Element(_, attrs, _, _) ->
             attrs
             |> Map.tryPick (fun name value ->
                 if name.EndsWith ":id" && not (name.StartsWith "xmlns:") then Some value else None)

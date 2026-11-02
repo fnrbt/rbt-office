@@ -42,12 +42,12 @@ let private localName (name: string) =
 
 let private kids (node: XmlDsl.XmlNode) : XmlDsl.XmlNode list =
     match node with
-    | XmlDsl.Element (_, _, children) -> children
+    | XmlDsl.Element (_, _, children, _) -> children
     | _ -> []
 
 let private nameOf (node: XmlDsl.XmlNode) : string =
     match node with
-    | XmlDsl.Element (name, _, _) -> localName name
+    | XmlDsl.Element (name, _, _, _) -> localName name
     | _ -> ""
 
 let private childrenNamed (name: string) (node: XmlDsl.XmlNode) : XmlDsl.XmlNode list =
@@ -58,7 +58,7 @@ let private child (name: string) (node: XmlDsl.XmlNode) : XmlDsl.XmlNode option 
 
 let private attr (name: string) (node: XmlDsl.XmlNode) : string option =
     match node with
-    | XmlDsl.Element (_, attrs, _) -> Map.tryFind name attrs
+    | XmlDsl.Element (_, attrs, _, _) -> Map.tryFind name attrs
     | _ -> None
 
 /// The `val` of a child element (`<c:barDir val="col"/>`).
@@ -74,7 +74,7 @@ let rec private descendants (name: string) (node: XmlDsl.XmlNode) : XmlDsl.XmlNo
 let rec private innerText (node: XmlDsl.XmlNode) : string =
     match node with
     | XmlDsl.Text text -> text
-    | XmlDsl.Element (_, _, children) -> children |> List.map innerText |> String.concat ""
+    | XmlDsl.Element (_, _, children, _) -> children |> List.map innerText |> String.concat ""
     | _ -> ""
 
 let private number (text: string) : float option =

@@ -1249,7 +1249,7 @@ let dynamicArrayCellMetadata (metadataXml: string) : Set<int> =
     let doc = XmlDsl.parse metadataXml
     let named (local: string) (node: XmlNode) =
         match node with
-        | XmlDsl.Element (name, _, _) -> Ns.stripNs name = local
+        | XmlDsl.Element (name, _, _, _) -> Ns.stripNs name = local
         | _ -> false
     let kids (local: string) (node: XmlNode) = Xml.children node |> List.filter (named local)
     let types =
@@ -1323,7 +1323,7 @@ module Xlsx =
         let sb = StringBuilder()
         let rec walk current =
             match current with
-            | XmlDsl.Element(name, _, children) ->
+            | XmlDsl.Element(name, _, children, _) ->
                 if Ns.stripNs name = localName then
                     let own = StringBuilder()
                     for child in children do
@@ -4604,7 +4604,7 @@ module ConditionalFormats =
 
     let private directChildren (local: string) (node: XmlNode) =
         Xml.children node
-        |> List.filter (fun child -> match child with XmlDsl.Element (name, _, _) -> Ns.stripNs name = local | _ -> false)
+        |> List.filter (fun child -> match child with XmlDsl.Element (name, _, _, _) -> Ns.stripNs name = local | _ -> false)
 
     /// The x14 rules of a sheet (`<x14:conditionalFormatting>` blocks of its
     /// extension list): (sqref, rule node) in document order.
@@ -5168,7 +5168,7 @@ let private keptSheetElements (sheetXml: string) : (string * string) list =
             let rootAt = sheetXml.IndexOf "<worksheet"
             let rootEnd = sheetXml.IndexOf ('>', rootAt)
             match XmlDsl.parse (sheetXml.Substring(rootAt, rootEnd - rootAt).TrimEnd('/') + "/>") with
-            | XmlDsl.Element (_, rootAttributes, _) -> found |> List.map (fun (name, xml) -> name, DocxReader.selfContainedXml rootAttributes xml)
+            | XmlDsl.Element (_, rootAttributes, _, _) -> found |> List.map (fun (name, xml) -> name, DocxReader.selfContainedXml rootAttributes xml)
             | _ -> []
         with _ -> []
 
@@ -5189,7 +5189,7 @@ let private readWorkbookHeader (source: PartSource) (workbookPath: string) : Wor
             |> List.filter (fun r -> isKeptWorkbookRelType r.Type)
             |> List.map (fun r -> r.Id, r.Type, (if isInternal r then "/" + relTargetPath workbookPath r else r.Target), not (isInternal r))
         let keptIds = keptRels |> List.map (fun (id, _, _, _) -> id) |> Set.ofList
-        let rootAttributes = match wb with | XmlDsl.Element (_, attrs, _) -> attrs | _ -> Map.empty
+        let rootAttributes = match wb with | XmlDsl.Element (_, attrs, _, _) -> attrs | _ -> Map.empty
         let fragment (node: XmlNode) = DocxReader.selfContainedXml rootAttributes (DocxReader.Docx.xmlToString node)
         // An element is kept when every relationship it names is a kept one.
         let refersOnlyToKept (xml: string) =
@@ -5321,7 +5321,7 @@ let private drawingSpacesHeld (xml: string) : string =
 
 let private readDrawing (source: PartSource) (drawingPath: string) : SheetImage list * SheetObject list * (string * string * string * bool) list =
     match source.Text drawingPath |> Option.map (drawingSpacesHeld >> XmlDsl.parse) with
-    | Some (XmlDsl.Element (_, rootAttrs, anchors) as root) ->
+    | Some (XmlDsl.Element (_, rootAttrs, anchors, _) as root) ->
         let rels = relationshipsOf source drawingPath
         let images = ResizeArray<SheetImage>()
         let objects = ResizeArray<SheetObject>()
@@ -5426,7 +5426,7 @@ let private readNamedStyles (stylesXml: string) : NamedCellStyle list * int arra
         |> Map.ofArray
     let styleXfs = entries "cellStyleXfs"
     // A fragment may use a prefix the styles part declares on its root (x14ac, xr, ...).
-    let rootAttributes = match doc with | XmlDsl.Element (_, attrs, _) -> attrs | _ -> Map.empty
+    let rootAttributes = match doc with | XmlDsl.Element (_, attrs, _, _) -> attrs | _ -> Map.empty
     let fragment (node: XmlNode) = DocxReader.selfContainedXml rootAttributes (DocxReader.Docx.xmlToString node)
     let itemXml (items: XmlNode array) (index: int option) =
         index |> Option.bind (fun i -> if i >= 0 && i < items.Length then Some (fragment items.[i]) else None)
@@ -5439,7 +5439,7 @@ let private readNamedStyles (stylesXml: string) : NamedCellStyle list * int arra
             let attributes (node: XmlNode) (skip: string list) =
                 match node with
                 // Prefixed attributes (xr:uid) are editor bookkeeping and need their namespace; left out.
-                | XmlDsl.Element (_, attrs, _) -> attrs |> Map.toList |> List.filter (fun (key, _) -> not (List.contains key skip) && not (key.Contains ":"))
+                | XmlDsl.Element (_, attrs, _, _) -> attrs |> Map.toList |> List.filter (fun (key, _) -> not (List.contains key skip) && not (key.Contains ":"))
                 | _ -> []
             let intAttr key = Xml.attr key xf |> Option.bind tryParseInt
             let numFmtId = intAttr "numFmtId" |> Option.defaultValue 0
@@ -5510,7 +5510,7 @@ let private keptSheetExtensions (sheetXml: string) : string list =
                 try
                     let rootTag = sheetXml.Substring(rootAt, rootEnd - rootAt).TrimEnd('/')
                     match XmlDsl.parse (rootTag + ">" + fragment + "</worksheet>") with
-                    | XmlDsl.Element (_, rootAttributes, [ extLst ]) as parsed ->
+                    | XmlDsl.Element (_, rootAttributes, [ extLst ], _) as parsed ->
                         // The x14 conditional formats are read as rules (and written from
                         // them); they are only kept as they are when one is not understood.
                         let rulesRead = ConditionalFormats.x14Understood parsed

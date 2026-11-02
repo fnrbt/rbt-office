@@ -5780,7 +5780,7 @@ let private rootStartTag (name: string) (attrs: Map<string, string>) =
 /// catalog styles are taken as changed.
 let private mergeStyles (originalXml: string) (changed: Set<string> option) (styles: StyleInfo list) : string =
     match XmlDsl.parse originalXml with
-    | XmlDsl.Element (rootName, rootAttrs, children) ->
+    | XmlDsl.Element (rootName, rootAttrs, children, _) ->
         let isChanged (style: StyleInfo) =
             match changed with
             | Some keys -> Set.contains (style.StyleType + ":" + style.StyleId) keys
@@ -6109,7 +6109,7 @@ let private settingsBeforeEvenAndOdd =
 /// stays: the part used to be dropped, or replaced by one holding this flag only.
 let private patchSettings (originalXml: string) (pageSetup: PageSetupInfo option) : string =
     match XmlDsl.parse originalXml with
-    | XmlDsl.Element (rootName, rootAttrs, children) ->
+    | XmlDsl.Element (rootName, rootAttrs, children, _) ->
         let localName node = XmlDsl.Xml.name node |> Option.map XmlDsl.Ns.stripNs
         let others = children |> List.filter (fun child -> localName child <> Some "evenAndOddHeaders")
         let evenAndOdd = pageSetup |> Option.exists (fun setup -> setup.EvenAndOddHeaders)
