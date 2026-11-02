@@ -1103,6 +1103,15 @@ let styledCellDoc =
     Doc.setSelectedTableCellStyle (Some "#fff000") (Some 80.0) (Some "#222222") (Some 1.0) (Some "center") (Some 2.0) (Some 3.0) (Some 4.0) (Some 5.0) selectedCellDoc
 let tableMarginsDoc = Doc.setCurrentTableCellMargins (Some 2.0) (Some 3.0) (Some 4.0) (Some 5.0) styledCellDoc
 let tableSpacingDoc = Doc.setCurrentTableCellMarginsAndSpacing (Some 2.0) (Some 3.0) (Some 4.0) (Some 5.0) (Some 6.0) tableMarginsDoc
+// Shading a cell alone: its colour changes, its width, borders, alignment and margins stay.
+do
+    let shaded = Doc.setSelectedTableCellShading (Some "#ffeeaa") None styledCellDoc
+    let cellOf (doc: Doc.Document) = match doc.Blocks with [ Doc.Table t ] -> t.Rows.Head.Cells.Head | _ -> failwith "one table"
+    let was, now = cellOf styledCellDoc, cellOf shaded
+    check "shading a cell keeps what else it has"
+        (now.BackgroundColor, now.Width, now.BorderColor, now.BorderWidth, now.VerticalAlignment, now.PaddingTop, now.PaddingRight, now.PaddingBottom, now.PaddingLeft)
+        (Some "#ffeeaa", was.Width, was.BorderColor, was.BorderWidth, was.VerticalAlignment, was.PaddingTop, was.PaddingRight, was.PaddingBottom, was.PaddingLeft)
+    check "... and they were set" (was.VerticalAlignment, was.PaddingTop) (Some "center", Some 2.0)
 let customPageSetup =
     { Doc.defaultPageSetup with PageWidth = 700.0; MarginLeft = 72.0 }
 let pageSetupDoc = Doc.setPageSetup customPageSetup Doc.empty

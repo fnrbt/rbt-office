@@ -3659,6 +3659,19 @@ let setSelectedTableCellStyleWithShading backgroundColor shading width borderCol
                                                 PaddingBottom = paddingBottom
                                                 PaddingLeft = paddingLeft }) }) })
 
+/// The shading of the cell at the caret alone: its other properties (width, borders, alignment, margins) stay.
+let setSelectedTableCellShading backgroundColor shading doc =
+    match currentTableCell doc with
+    | None -> doc
+    | Some (tableId, rowIndex, colIndex) ->
+        updateTable doc tableId (fun table ->
+            { table with
+                Rows =
+                    table.Rows
+                    |> List.mapi (fun r row ->
+                        if r <> rowIndex then row
+                        else { row with Cells = row.Cells |> List.mapi (fun c cell -> if c <> colIndex then cell else { cell with BackgroundColor = backgroundColor; Shading = shading }) }) })
+
 let setSelectedTableCellStyle backgroundColor width borderColor borderWidth verticalAlignment paddingTop paddingRight paddingBottom paddingLeft doc =
     setSelectedTableCellStyleWithShading backgroundColor None width borderColor borderWidth verticalAlignment paddingTop paddingRight paddingBottom paddingLeft doc
 

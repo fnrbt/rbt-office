@@ -1080,7 +1080,8 @@ const TABLE_PASSES = {
     'a table row inserted': (editor, id) => { Word.setSelection(editor, id, 0, id, 0); Word.insertTableRowAfter(editor); },
     'a table row deleted': (editor, id) => { Word.setSelection(editor, id, 0, id, 0); Word.deleteTableRow(editor); },
     'a table column inserted': (editor, id) => { Word.setSelection(editor, id, 0, id, 0); Word.insertTableColumnAfter(editor); },
-    'a table cell shaded': (editor, id) => { Word.setSelection(editor, id, 0, id, 0); Word.setSelectedTableCellStyleWithShading(editor, '#FFEEAA', '', '', 0, '', 0, '', -1, -1, -1, -1); },
+    // (Its shading alone: what else the cell has - margins, alignment, borders - stays.)
+    'a table cell shaded': (editor, id) => { Word.setSelection(editor, id, 0, id, 0); Word.setSelectedTableCellShading(editor, '#FFEEAA', '', ''); },
 };
 Object.assign(EDIT_PASSES, TABLE_PASSES);
 // The passes in which a paragraph is split or joined with real keys (roundtrip.mjs presses them): where the caret goes first.

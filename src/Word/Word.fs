@@ -3417,6 +3417,18 @@ module API =
         let newDoc = Doc.setSelectedTableCellStyleWithShading fillColor shading optionalCellWidth (optionalText borderColor) optionalWidth (optionalText verticalAlignment) (optionalPadding paddingTop) (optionalPadding paddingRight) (optionalPadding paddingBottom) (optionalPadding paddingLeft) editor.Doc
         commitDocumentUpdate editor newDoc
 
+    /// The shading of the cell at the caret alone (a background colour, or a pattern with its colours):
+    /// what else the cell has stays.
+    let setSelectedTableCellShading (editor: Editor) (backgroundColor: string) (shadingPattern: string) (shadingForegroundColor: string) =
+        let pattern = if isNull (box shadingPattern) then "" else shadingPattern.Trim()
+        let background = optionalText backgroundColor
+        let shading: Doc.Shading option =
+            match pattern with
+            | "" | "clear" | "none" -> None
+            | p -> Some { Pattern = Some p; ForegroundColor = optionalText shadingForegroundColor; BackgroundColor = background }
+        let fill = if pattern = "none" || shading.IsSome then None else background
+        commitDocumentUpdate editor (Doc.setSelectedTableCellShading fill shading editor.Doc)
+
     let setCurrentTableCellMargins (editor: Editor) (paddingTop: float) (paddingRight: float) (paddingBottom: float) (paddingLeft: float) =
         let optionalPadding value = if value >= 0.0 then Some value else None
         let newDoc = Doc.setCurrentTableCellMargins (optionalPadding paddingTop) (optionalPadding paddingRight) (optionalPadding paddingBottom) (optionalPadding paddingLeft) editor.Doc
@@ -4093,6 +4105,7 @@ module API =
             "insertTable" ==> insertTable
             "setSelectedTableCellStyle" ==> setSelectedTableCellStyle
             "setSelectedTableCellStyleWithShading" ==> setSelectedTableCellStyleWithShading
+            "setSelectedTableCellShading" ==> setSelectedTableCellShading
             "setCurrentTableCellMargins" ==> setCurrentTableCellMargins
             "setCurrentTableCellMarginsAndSpacing" ==> setCurrentTableCellMarginsAndSpacing
             "setSectionBreak" ==> setSectionBreak
