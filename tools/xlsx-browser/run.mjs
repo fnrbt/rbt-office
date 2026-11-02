@@ -40,7 +40,11 @@ const verbose = (() => { const i = args.indexOf('--verbose'); if (i < 0) return 
 const port = Number(process.env.PORT ?? 16023);
 // Each check gets this long (the page is closed when one takes longer).
 const checkTimeout = Number(process.env.CHECK_TIMEOUT ?? 240000);
-const only = opt('--only');
+// --keep DIR: saves of every workbook of the tests into DIR instead of the checks: as it was opened
+// (.save.xlsx), a cell typed (.edit.xlsx), a row and a column inserted (.insert.xlsx), beside a copy of
+// the original (.original.xlsx): for tools/excel-parity/open-all.vbs.
+const keepDir = opt('--keep');
+const only = keepDir ? 'keep-saves' : opt('--only');
 const jszipDir = [process.env.JSZIP_DIR, path.join(repo, 'node_modules/jszip'), path.resolve(repo, '../rbt-office/node_modules/jszip')].find((p) => p && fs.existsSync(p));
 if (!jszipDir) { console.error('jszip not found; set JSZIP_DIR'); process.exit(2); }
 const JSZip = createRequire(import.meta.url)(path.join(jszipDir, 'dist/jszip.min.js'));
@@ -142,6 +146,14 @@ try {
         const componentTab = await browser.newPage({ viewport: { width: 1200, height: 900 } });
         const pageErrors = [];
         componentTab.on('pageerror', (e) => pageErrors.push(e.message));
+        if (keepDir) {
+            const walk = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => entry.isDirectory() ? walk(path.join(dir, entry.name)) : [path.join(dir, entry.name)]);
+            const list = walk(path.join(repo, 'tests')).filter((file) => /\.xlsx$/.test(file) && fs.statSync(file).size < 6000000 && (!process.env.KEEP_MATCH || new RegExp(process.env.KEEP_MATCH).test(file))).map((file) => path.relative(repo, file));
+            fs.mkdirSync(keepDir, { recursive: true });
+            for (const file of list) fs.copyFileSync(path.join(repo, file), path.join(keepDir, path.basename(file, '.xlsx') + '.original.xlsx'));
+            await componentTab.exposeFunction('keepSave', (name, base64) => fs.writeFileSync(path.join(keepDir, name), Buffer.from(base64, 'base64')));
+            await componentTab.addInitScript((names) => { window.keepList = names; }, list);
+        }
         await componentTab.goto(`http://127.0.0.1:${port}/component`);
         await componentTab.waitForFunction('window.componentReady !== undefined || window.loadError !== undefined', null, { timeout: 120000 });
         const componentLoadError = await componentTab.evaluate('window.loadError');

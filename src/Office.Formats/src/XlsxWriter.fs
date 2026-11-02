@@ -1085,12 +1085,21 @@ let private sharedStringsXmlPreserved (items: SharedStringKey list) =
     for item in items do appendSharedStringItem sb item
     sb.Append("</sst>").ToString()
 
+/// The values of `t="e"` that Excel reads.
+let private isFileError (text: string) =
+    match text with
+    | "#NULL!" | "#DIV/0!" | "#VALUE!" | "#REF!" | "#NAME?" | "#NUM!" | "#N/A" | "#GETTING_DATA"
+    | "#SPILL!" | "#CALC!" | "#FIELD!" | "#BLOCKED!" | "#CONNECT!" | "#UNKNOWN!" | "#BUSY!" -> true
+    | _ -> false
+
 let private cachedValueXml (sharedIndex: string -> XlsxRichRun list -> int) value =
     let rec loop v =
         match v with
         | XlsxBlank -> "", ""
         | XlsxNumber n -> "", "<v>" + invariant n + "</v>"
         | XlsxBoolean b -> " t=\"b\"", (if b then "<v>1</v>" else "<v>0</v>")
+        // (What only the engine says - a cycle - is no error of the file format: Excel refuses the file.)
+        | XlsxError e when not (isFileError e) -> "", ""
         | XlsxError e -> " t=\"e\"", "<v>" + escaped e + "</v>"
         | XlsxText (text, runs) -> " t=\"s\"", "<v>" + string (sharedIndex text runs) + "</v>"
         | XlsxFormula (_, cached) ->
@@ -1223,8 +1232,10 @@ let private colsXml (styles: StyleBook) (sheet: XlsxSheetOut) =
     // The width a hidden column keeps, its outline level and collapsed mark.
     let axis = sheet.Extras.ColumnAxis |> List.map (fun (col, kept, level, collapsed) -> col, (kept, level, collapsed)) |> Map.ofList
     let columns =
+        // (Column 16384 is the last: one moved past it by an insertion is gone, as in Excel.)
         Set.unionMany [ widths |> Map.toSeq |> Seq.map fst |> Set.ofSeq; styleIds |> Map.toSeq |> Seq.map fst |> Set.ofSeq
                         axis |> Map.toSeq |> Seq.filter (fun (_, (_, level, collapsed)) -> level > 0 || collapsed) |> Seq.map fst |> Set.ofSeq ]
+        |> Set.filter (fun col -> col < 16384)
         |> Set.toList
     if List.isEmpty columns then ""
     else
@@ -1399,7 +1410,9 @@ let private rowsXml (styles: StyleBook) (sharedIndex: string -> XlsxRichRun list
         for index in 0 .. cells.Length - 1 do
             let cell = cells.[index]
             match cell.Value with
+            // (A shared formula cannot read another sheet: Excel refuses the file.)
             | XlsxFormula (formula, _) when formula <> ""
+                                            && not (formula.Contains "!")
                                             && (arrayFormulas.IsEmpty || not (Map.containsKey (cellRef cell.Row cell.Col) arrayFormulas))
                                             && (dataTables.IsEmpty || not (Map.containsKey (cellRef cell.Row cell.Col) dataTables)) ->
                 formulaAt.[key cell.Row cell.Col] <- index
@@ -3274,6 +3287,46 @@ let private worksheetXml (styles: StyleBook) sharedIndex (dynamicCm: int) sheetI
     + sheetExtLstXml conditionalFormatsExt (dataValidationsExtXml sheet.DataValidations) (sheet.Extras.KeptCellExtensions @ sheet.Extras.KeptExtensions)
     + "</worksheet>"
 
+let private queryTablePattern = System.Text.RegularExpressions.Regex("Target=\"([^\"]*queryTable[^\"]*)\"")
+let private queryFieldsPattern = System.Text.RegularExpressions.Regex("<queryTableFields(?=[\\s>])[^>]*>[\\s\\S]*?</queryTableFields>")
+let private queryFieldPattern = System.Text.RegularExpressions.Regex("<queryTableField(?=[\\s>/])[^>]*?/>|<queryTableField(?=[\\s>])[\\s\\S]*?</queryTableField>")
+let private queryRefreshPattern = System.Text.RegularExpressions.Regex("<queryTableRefresh(?=[\\s>])[^>]*>")
+
+/// The XML of a query table part for its table as written: a field per column of the table, in
+/// their order, as Excel asks (it refuses the file otherwise); a column the query does not fill
+/// is not data bound. None when the part already says that, or is not a part the writer can follow.
+let queryTableXmlFromSource (source: string) (tableXmlText: string) : string option =
+    let fields = queryFieldsPattern.Match source
+    let refresh = queryRefreshPattern.Match source
+    let columns = tableColumnsPattern.Match tableXmlText
+    if not fields.Success || not refresh.Success || not columns.Success then None
+    else
+        let startOf (xml: string) = fst (splitStartTag xml)
+        let known =
+            queryFieldPattern.Matches fields.Value |> Seq.cast<System.Text.RegularExpressions.Match> |> Seq.map (fun found -> found.Value) |> Seq.toList
+        let matched =
+            tableColumnPattern.Matches columns.Groups.[1].Value
+            |> Seq.cast<System.Text.RegularExpressions.Match>
+            |> Seq.map (fun found -> startOf found.Value)
+            |> Seq.toList
+            |> List.map (fun column ->
+                let id = tagAttribute column "id" |> Option.defaultValue "0"
+                match known |> List.tryFind (fun field -> tagAttribute (startOf field) "tableColumnId" = Some id) with
+                | Some field -> field
+                | None -> sprintf "<queryTableField id=\"%s\" dataBound=\"0\" tableColumnId=\"%s\"/>" (tagAttribute column "queryTableFieldId" |> Option.defaultValue id) id)
+        if matched = known then None
+        else
+            let top =
+                matched
+                |> List.fold (fun most field -> match tagAttribute (startOf field) "id" |> Option.map System.Int32.TryParse with Some (true, id) -> max most id | _ -> most) 0
+            let nextId =
+                match tagAttribute refresh.Value "nextId" |> Option.map System.Int32.TryParse with
+                | Some (true, id) -> max id (top + 1)
+                | _ -> top + 1
+            let newFields = sprintf "<queryTableFields count=\"%d\">%s</queryTableFields>" matched.Length (String.concat "" matched)
+            let newRefresh = withTagAttribute "nextId" (Some (string nextId)) refresh.Value
+            Some (source.Replace(fields.Value, newFields).Replace(refresh.Value, newRefresh))
+
 /// The XML of a table part of the file for the table as it is now: its
 /// name, range, header and totals rows, filter, columns and style are the
 /// model's; everything else (the id, revision ids, dxf ids, each kept
@@ -3332,7 +3385,7 @@ let tableXmlFromSource (source: string) (table: XlsxTableOut) : string option =
                 | None ->
                     nextId <- nextId + 1
                     // (A column of a query table names itself: Excel asks for the attribute there.)
-                    if isQueryTable then sprintf "<tableColumn id=\"%d\" uniqueName=\"%d\" name=\"\"/>" nextId nextId
+                    if isQueryTable then sprintf "<tableColumn id=\"%d\" uniqueName=\"%d\" name=\"\" queryTableFieldId=\"%d\"/>" nextId nextId nextId
                     else sprintf "<tableColumn id=\"%d\" name=\"\"/>" nextId
             let startTag, rest = splitStartTag xml
             let startTag = withTagAttribute "name" (Some (escapedValue names.[i])) startTag
@@ -4926,7 +4979,16 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
                 if not asFile then
                     let source = keptParts |> List.tryPick (fun (kept, data) -> if kept = path then Some (System.Text.Encoding.UTF8.GetString data) else None)
                     match source |> Option.bind (fun xml -> tableXmlFromSource xml table) with
-                    | Some xml -> textFiles.Add { Path = path; Content = xml }
+                    | Some xml ->
+                        textFiles.Add { Path = path; Content = xml }
+                        // (The fields of its query go with the table's columns.)
+                        let kept (wanted: string) = workbook.Preserved.Parts |> List.tryPick (fun (known, data) -> if known = wanted then Some (System.Text.Encoding.UTF8.GetString data) else None)
+                        for query in queryTablePattern.Matches (kept (relsPathOf path) |> Option.defaultValue "") |> Seq.cast<System.Text.RegularExpressions.Match> do
+                            let target = query.Groups.[1].Value
+                            let queryPath = if target.StartsWith "../" then "xl/" + target.Substring 3 else target.TrimStart '/'
+                            match kept queryPath |> Option.bind (fun text -> queryTableXmlFromSource text xml) with
+                            | Some updated -> textFiles.Add { Path = queryPath; Content = updated }
+                            | None -> ()
                     | None ->
                         // (Not a part the writer can follow: a table of its own making under the part's name and id.)
                         let id = source |> Option.map (fun xml -> tableIdPattern.Match xml) |> Option.filter (fun found -> found.Success) |> Option.map (fun found -> int found.Groups.[1].Value) |> Option.defaultValue 1

@@ -3578,6 +3578,27 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
             elif Map.isEmpty filters then { edited with Filters = filters; FilterHiddenRows = [||]; AutoFilter = (if filter.Implicit then None else edited.AutoFilter) }
             else reapplyFilter { edited with Filters = filters }
         | None -> edited
+    |> fun edited ->
+        // A column inserted into a table has a header, as in Excel: the table needs one of its own for each.
+        if onRows || not isInsert then edited
+        else
+            edited.Tables
+            |> List.fold (fun (current: SpreadsheetModel) table ->
+                let first, last = table.StartCol - 1, table.EndCol - 1
+                let added = [ for col in at .. at + count - 1 do if table.HeaderRowCount > 0 && col > first && col <= last then yield col ]
+                if added.IsEmpty then current
+                else
+                    let row = table.StartRow - 1
+                    let headerOf col = getCell { Row = row; Col = col } current |> Option.map (fun cell -> displayValue cell.Value) |> Option.defaultValue ""
+                    let taken = System.Collections.Generic.HashSet<string>([ for col in first .. last -> (headerOf col).ToLowerInvariant () ])
+                    let format = getCell { Row = row; Col = at - 1 } current |> Option.map (fun cell -> cell.Format) |> Option.defaultValue defaultFormat
+                    added
+                    |> List.fold (fun sheet col ->
+                        let mutable number = 1
+                        while taken.Contains (sprintf "column%d" number) do number <- number + 1
+                        let name = sprintf "Column%d" number
+                        taken.Add (name.ToLowerInvariant ()) |> ignore
+                        setCell { Row = row; Col = col } { Value = CellValue.String name; Format = format; Comment = None } sheet) current) edited
 
 /// Insert or delete rows/columns on a stand-alone sheet. Unqualified
 /// references in its formulas follow the edit; a workbook host should call

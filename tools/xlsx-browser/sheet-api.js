@@ -3569,3 +3569,52 @@ checks['cell-map-walk'] = async () => {
     close();
     return lines;
 };
+
+// Saves real Excel refused after a row and a column were inserted: a column moved past the last, a shared
+// formula reading another sheet, an error only the engine knows, a query table's fields. (ExportXlsx goes
+// through packageProblems, which knows these; run.mjs reports them with this check.)
+checks['excel-refused-saves'] = async () => {
+    const { lines, check } = makeLog();
+    for (const file of ['test-documents-excel/poi-49156', 'real-world/milk-street-office', 'test-documents-excel/poi-47804', 'test-documents-excel/pandas-test_decimal']) {
+        const { grid, close } = mountGrid();
+        try {
+            await grid.ImportXlsx(await bytesOf(`tests/${file}.xlsx`));
+            grid.InsertRows(1, 1);
+            grid.InsertColumns(1, 1);
+            check(file + ': saved', (await grid.ExportXlsx()).length > 0, true);
+        } catch (e) { lines.push(`FAIL ${file} threw ${String(e && e.message || e)}`); }
+        close();
+    }
+    return lines;
+};
+
+// (run.mjs --keep DIR) Saves of the workbooks of the tests, for Excel to open.
+checks['keep-saves'] = async () => {
+    const { lines, note } = makeLog();
+    const keep = async (name, grid) => {
+        const bytes = await grid.ExportXlsx();
+        let binary = '';
+        for (let at = 0; at < bytes.length; at += 32768) binary += String.fromCharCode(...bytes.subarray(at, at + 32768));
+        await window.keepSave(name, btoa(binary));
+    };
+    let done = 0;
+    for (const file of window.keepList ?? []) {
+        const base = file.split('/').pop().replace(/\.xlsx$/, '');
+        const { grid, close } = mountGrid();
+        try {
+            await grid.ImportXlsx(await bytesOf(file));
+            await keep(base + '.save.xlsx', grid);
+            const model = grid.GetModel();
+            grid.EnterText(model.RowCount + 2, 0, 'typed by the check');
+            await keep(base + '.edit.xlsx', grid);
+            grid.Undo();
+            grid.InsertRows(1, 1);
+            grid.InsertColumns(1, 1);
+            await keep(base + '.insert.xlsx', grid);
+            done++;
+        } catch (e) { lines.push('ok   (could not keep ' + base + ': ' + String(e && e.message || e) + ')'); }
+        close();
+    }
+    note(`${done} of ${(window.keepList ?? []).length} workbooks kept`);
+    return lines;
+};

@@ -351,7 +351,7 @@ do
     let queryPart = part.Replace("<table xmlns", "<table tableType=\"queryTable\" xmlns").Replace("<tableColumn id=\"1\" name", "<tableColumn id=\"1\" uniqueName=\"1\" name")
     let queried = XlsxWriter.tableXmlFromSource queryPart table |> Option.defaultValue ""
     ok "table part: the test's part is a query table" (queryPart.Contains "tableType=\"queryTable\"" && queryPart <> part) queryPart
-    ok "table part: a new column of a query table gets a uniqueName" (queried.Contains "<tableColumn id=\"10\" uniqueName=\"10\" name=\"Tax\"/>") queried
+    ok "table part: a new column of a query table gets a uniqueName" (queried.Contains "<tableColumn id=\"10\" uniqueName=\"10\" name=\"Tax\" queryTableFieldId=\"10\"/>") queried
     ok "table part: and no other table's does" (not (xml.Contains "uniqueName")) xml
 
 // ---- a format changed by the user is made from the file's -----------------------

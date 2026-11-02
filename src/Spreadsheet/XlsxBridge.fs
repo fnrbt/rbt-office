@@ -1537,7 +1537,18 @@ module Export =
           EndRow = t.EndRow
           EndCol = t.EndCol
           Columns =
-            (if t.HeaderRowCount > 0 then [ for c in t.StartCol - 1 .. t.EndCol - 1 -> textAt (t.StartRow - 1) c model ]
+            (if t.HeaderRowCount > 0 then
+                // (Excel refuses a table with two columns of one name: a header left empty must not take one in use.)
+                let headers = [ for c in t.StartCol - 1 .. t.EndCol - 1 -> textAt (t.StartRow - 1) c model ]
+                let taken = System.Collections.Generic.HashSet<string>()
+                headers
+                |> List.mapi (fun index name ->
+                    if taken.Add (name.ToLowerInvariant ()) then name
+                    else
+                        let mutable number = index + 1
+                        while headers |> List.exists (fun other -> other.ToLowerInvariant () = (sprintf "column%d" number)) || taken.Contains (sprintf "column%d" number) do number <- number + 1
+                        taken.Add (sprintf "column%d" number) |> ignore
+                        sprintf "Column%d" number)
              else [ for index in 1 .. t.EndCol - t.StartCol + 1 -> sprintf "Column%d" index ])
           HeaderRowCount = t.HeaderRowCount
           TotalsRowCount = if t.HasTotals then 1 else 0

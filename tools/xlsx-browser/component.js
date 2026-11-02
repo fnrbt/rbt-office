@@ -22,6 +22,26 @@ export const packageProblems = async (bytes) => {
         for (const segment of (target.startsWith('/') || base === '' ? target : base + '/' + target).split('/')) { if (segment === '..') out.pop(); else if (segment !== '' && segment !== '.') out.push(segment); }
         return out.join('/');
     };
+    // What real Excel refuses a whole file for (each found by opening saves in Excel).
+    const errors = new Set(['#NULL!', '#DIV/0!', '#VALUE!', '#REF!', '#NAME?', '#NUM!', '#N/A', '#GETTING_DATA', '#SPILL!', '#CALC!', '#FIELD!', '#BLOCKED!', '#CONNECT!', '#UNKNOWN!', '#BUSY!']);
+    for (const path of paths.filter((p) => /^xl\/worksheets\/[^/]+\.xml$/.test(p))) {
+        const xml = await zip.files[path].async('string');
+        for (const m of xml.matchAll(/<col\b[^>]*>/g)) if (Number(attribute(m[0], 'max')) > 16384) problems.push(`${path}: a column past the last: ${m[0]}`);
+        for (const m of xml.matchAll(/<c\b[^>]*\bt="e"[^>]*>(?:<f\b[^>]*\/>|<f\b[^>]*>[^<]*<\/f>)?<v>([^<]*)<\/v>/g)) if (!errors.has(m[1].replace(/&amp;/g, '&'))) problems.push(`${path}: the error ${m[1]} is not one of the file format`);
+        for (const m of xml.matchAll(/<f\b[^>]*\bt="shared"[^>]*>([^<]+)<\/f>/g)) if (m[1].includes('!')) problems.push(`${path}: a shared formula reads another sheet: ${m[1]}`);
+    }
+    for (const path of paths.filter((p) => /^xl\/tables\/[^/]+\.xml$/.test(p))) {
+        const xml = await zip.files[path].async('string');
+        const columns = [...xml.matchAll(/<tableColumn\b[^>]*>/g)].map((m) => m[0]);
+        const names = columns.map((tag) => (attribute(tag, 'name') ?? '').toLowerCase());
+        if (new Set(names).size !== names.length) problems.push(`${path}: two columns of one name`);
+        const relations = paths.includes(path.replace('tables/', 'tables/_rels/') + '.rels') ? await zip.files[path.replace('tables/', 'tables/_rels/') + '.rels'].async('string') : '';
+        const query = /Target="\.\.\/(queryTables\/[^"]+)"/.exec(relations);
+        if (query) {
+            const fields = [...(await zip.files['xl/' + query[1]].async('string')).matchAll(/<queryTableField\b[^>]*>/g)].map((m) => attribute(m[0], 'tableColumnId'));
+            if (fields.join() !== columns.map((tag) => attribute(tag, 'id')).join()) problems.push(`${path}: the fields of its query are not its columns`);
+        }
+    }
     for (const path of paths) {
         if (path.endsWith('.rels')) {
             const directory = path.slice(0, Math.max(0, path.lastIndexOf('/'))), ownerDirectory = directory.replace(/\/?_rels$/, '');

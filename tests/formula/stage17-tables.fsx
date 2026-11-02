@@ -157,6 +157,19 @@ let importedStyleModel =
                      AutoFilter = Some (1,3); HasTotals=false } ] }
 check "style no-op when HeaderFill None" (fmtAt (applyTableStyles importedStyleModel) 0 0).BgColor None
 
+// A column inserted into a table has a header of its own: Excel refuses a table with two columns of one name.
+let headed =
+    { createEmpty 10 6 with
+        Tables = [ { Name = "T"; StartRow = 1; StartCol = 1; EndRow = 3; EndCol = 3; HeaderRowCount = 1; Style = None; AutoFilter = None; HasTotals = false } ] }
+    |> setCell { Row = 0; Col = 0 } { Value = String "Column1"; Format = defaultFormat; Comment = None }
+    |> setCell { Row = 0; Col = 1 } { Value = String "Amount"; Format = defaultFormat; Comment = None }
+    |> setCell { Row = 0; Col = 2 } { Value = String "Column2"; Format = defaultFormat; Comment = None }
+let widened = applyStructureEditWith (fun _ -> true) (InsertCols (1, 2)) headed
+let headerAt col = getCell { Row = 0; Col = col } widened |> Option.map (fun cell -> displayValue cell.Value)
+check "insert in a table: the table grows" widened.Tables.Head.EndCol 5
+check "insert in a table: headers of their own" ([ 0 .. 4 ] |> List.map headerAt) [ Some "Column1"; Some "Column3"; Some "Column4"; Some "Amount"; Some "Column2" ]
+check "insert before a table: no header" (getCell { Row = 0; Col = 0 } (applyStructureEditWith (fun _ -> true) (InsertCols (0, 1)) headed)) None
+
 printfn ""
 printfn "Stage 17 table tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
