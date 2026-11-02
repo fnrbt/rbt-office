@@ -88,21 +88,32 @@ let private breakSet (breaks: int list) =
         result <- Set.add (breakIndex - 1) result
     result
 
-/// Bounding box of every non-empty cell. Empty model collapses to A1 so
-/// downstream code has a non-degenerate range to work with.
+/// Bounding box of every non-empty cell and every drawing (a chart prints too).
+/// Empty model collapses to A1 so downstream code has a non-degenerate range
+/// to work with.
 let private usedRange (model: SpreadsheetModel) : CellRange =
-    if Map.isEmpty model.Cells then
+    if Map.isEmpty model.Cells && model.Drawings.IsEmpty then
         { From = { Row = 0; Col = 0 }; To = { Row = 0; Col = 0 } }
     else
         let mutable r1 = System.Int32.MaxValue
         let mutable c1 = System.Int32.MaxValue
         let mutable r2 = System.Int32.MinValue
         let mutable c2 = System.Int32.MinValue
-        for KeyValue(addr, _) in model.Cells do
-            if addr.Row < r1 then r1 <- addr.Row
-            if addr.Row > r2 then r2 <- addr.Row
-            if addr.Col < c1 then c1 <- addr.Col
-            if addr.Col > c2 then c2 <- addr.Col
+        let cover (row: int) (col: int) =
+            if row < r1 then r1 <- row
+            if row > r2 then r2 <- row
+            if col < c1 then c1 <- col
+            if col > c2 then c2 <- col
+        for KeyValue(addr, _) in model.Cells do cover addr.Row addr.Col
+        for drawing in model.Drawings do
+            let anchor = drawing.Anchor
+            cover anchor.FromRow anchor.FromCol
+            // (A drawing that ends on the edge of a cell does not reach into it.)
+            let lastOf (first: int) (last: int option) (offset: float) =
+                match last with
+                | Some index -> max first (if offset > 0.0 then index else index - 1)
+                | None -> first
+            cover (lastOf anchor.FromRow anchor.ToRow anchor.ToOffsetY) (lastOf anchor.FromCol anchor.ToCol anchor.ToOffsetX)
         { From = { Row = r1; Col = c1 }; To = { Row = r2; Col = c2 } }
 
 /// Split one axis of a print range into per-page slices. Walks the axis
@@ -265,11 +276,8 @@ let printRowHeightPx (px: float) : float =
 /// The sheet with its rows and columns at the sizes they print at.
 let withPrintSizes (model: SpreadsheetModel) : SpreadsheetModel =
     { model with
-        // (The pages were measured against Excel's with every row and column that has no size
-        // of its own at 25 and 100 px; the sheet's own defaults - `DefaultRowHeight`,
-        // `DefaultColumnWidth` - are for the grid until the pages are measured with them.)
-        DefaultRowHeight = 25.0
-        DefaultColumnWidth = 100.0
+        DefaultRowHeight = printRowHeightPx model.DefaultRowHeight
+        DefaultColumnWidth = printColumnWidthPx model.DefaultColumnWidth
         ColumnWidths = (if Map.isEmpty model.ColumnWidths then model.ColumnWidths else model.ColumnWidths |> Map.map (fun _ width -> printColumnWidthPx width))
         RowHeights = (if Map.isEmpty model.RowHeights then model.RowHeights else model.RowHeights |> Map.map (fun _ px -> printRowHeightPx px)) }
 

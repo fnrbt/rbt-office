@@ -1027,12 +1027,12 @@ do
     let shownAgain = grown |> Ops.hideAxis true row row |> Ops.unhideAxis true row row
     ok "defaults: hidden and shown again, the row is of the default height" (near (getRowHeight row shownAgain) (15.75 * 1.333)) (string (getRowHeight row shownAgain))
     eq "defaults: a row set to the default height has no entry of its own" (Map.containsKey row (setRowHeight row grown.DefaultRowHeight (setRowHeight row 60.0 grown)).RowHeights) false
-    // A sheet that states nothing has the file format's defaults (15 pt, 8.43 characters); a new sheet the grid's.
+    // A sheet that states nothing has the file format's defaults (15 pt, 64 px, as Excel reports them); a new sheet the grid's.
     let plain = (Bridge.Import.importWorkbook (load "real-world/chart-zoo.xlsx")).Sheets.[0].Model
     let stated = (load "real-world/chart-zoo.xlsx").Sheets.[0].Format
-    ok "defaults: as the sheet states, or 15 pt and 8.43 characters"
+    ok "defaults: as the sheet states, or 15 pt and 64 px (Excel's default)"
         (near plain.DefaultRowHeight ((stated.DefaultRowHeight |> Option.defaultValue 15.0) * 1.333)
-         && near plain.DefaultColumnWidth ((match stated.DefaultColWidth, stated.BaseColWidth with Some width, _ -> width | None, Some width -> width + 1.0 | None, None -> 8.43) * 7.0))
+         && near plain.DefaultColumnWidth ((match stated.DefaultColWidth with Some width -> width * 7.0 | None -> 64.0)))
         (sprintf "%f %f" plain.DefaultRowHeight plain.DefaultColumnWidth)
     eq "defaults: a new sheet has the grid's" ((createEmpty 10 5).DefaultRowHeight, (createEmpty 10 5).DefaultColumnWidth) (25.0, 100.0)
     // Written, the sheet says what it said.

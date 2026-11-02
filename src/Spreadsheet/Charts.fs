@@ -425,6 +425,9 @@ type Axis = {
     Id: string
     /// "cat" | "val" | "date" | "ser"
     Kind: string
+    /// A value axis crossing on the categories (`crossBetween` midCat): the points are at the ends of the
+    /// plot, on the ticks, not in the middle of bands.
+    OnTicks: bool
     /// "b" | "l" | "t" | "r"
     Position: string
     Deleted: bool
@@ -693,6 +696,7 @@ let private axisOf (theme: ThemeColors) (node: XmlDsl.XmlNode) : Axis option =
           Line = child "spPr" node |> Option.bind (strokeOf theme)
           LabelsShown = valOf "tickLblPos" node <> Some "none"
           CrossesId = valOf "crossAx" node
+          OnTicks = valOf "crossBetween" node = Some "midCat"
           LogBase = scaling |> Option.bind (valOf "logBase") |> Option.bind number |> Option.filter (fun value -> value > 1.0)
           DisplayUnit =
             (match child "dispUnits" node with
@@ -1189,6 +1193,9 @@ let private calibriWidth (size: float) (bold: bool) (text: string) : float =
 
 /// The width a text is given in a chart's layout, in pixels: Calibri's, and a little more -
 /// where Calibri is not installed the browser's font is wider.
+/// The width of a run in Calibri at `size` pixels, as lines of shapes are broken by it.
+let runWidth (size: float) (bold: bool) (text: string) : float = calibriWidth size bold text
+
 let private textWidth (size: float) (text: string) : float =
     calibriWidth size false text * 1.08
 
@@ -1845,6 +1852,9 @@ let layoutChart (theme: ThemeColors) (data: ChartData) (chart: Chart) (width: fl
             if horizontal then (if categoryReversed then plotTop + float index * band else plotBottom - float (index + 1) * band)
             else (if categoryReversed then plotRight - float (index + 1) * band else plotLeft + float index * band)
         // ---- grid lines ----
+        let onTicks = not horizontal && count > 1 && chart.Plots |> List.forall (fun plot -> plot.Kind <> BarPlot) && valueAxes |> List.exists (fun axis -> axis.OnTicks)
+        /// Where the points of a category are.
+        let pointAt (index: int) : float = if onTicks then bandStart 0 + plotWidth * float index / float (count - 1) else bandStart index + band / 2.0
         let gridOf (axis: Axis option) = axis |> Option.bind (fun axis -> strokeColor axis.Gridlines)
         (match gridOf primaryValueAxis with
          | Some (color, strokeWidth, dash) ->
@@ -1948,7 +1958,7 @@ let layoutChart (theme: ThemeColors) (data: ChartData) (chart: Chart) (width: fl
                             let basis = if stacked then sums.[index] else floorOf item.Secondary
                             let total = if stacked then basis + value else value
                             if stacked then sums.[index] <- total
-                            let x = bandStart index + band / 2.0
+                            let x = pointAt index
                             let y = valueAt item.Secondary total
                             points.Add ((x, y, index, raw))
                             reached.[index].Add y
@@ -1989,7 +1999,7 @@ let layoutChart (theme: ThemeColors) (data: ChartData) (chart: Chart) (width: fl
                  | Some (color, strokeWidth, dash) ->
                     for index in 0 .. count - 1 do
                         if reached.[index].Count > 1 then
-                            let x = bandStart index + band / 2.0
+                            let x = pointAt index
                             add (PLine (x, Seq.min reached.[index], x, Seq.max reached.[index], color, strokeWidth, dash))
                  | None -> ())
                 (match plot.UpDownBars, members with
@@ -2010,7 +2020,7 @@ let layoutChart (theme: ThemeColors) (data: ChartData) (chart: Chart) (width: fl
                         for index in 0 .. count - 1 do
                             match (if index < last.Values.Length then last.Values.[index] else None) with
                             | Some closing ->
-                                let x, y = bandStart index + band / 2.0, valueAt last.Secondary closing
+                                let x, y = pointAt index, valueAt last.Secondary closing
                                 add (PLine (x, y, x + min 6.0 (band / 3.0), y, "#595959", 1.5, None))
                             | None -> ()
                  | _ -> ())
@@ -2095,7 +2105,7 @@ let layoutChart (theme: ThemeColors) (data: ChartData) (chart: Chart) (width: fl
             else
                 let every = max 1 (int (Math.Ceiling ((widestLabel + 6.0) / band)))
                 categories |> Array.iteri (fun index text ->
-                    if index % every = 0 then add (PText (bandStart index + band / 2.0, plotBottom + baseSize * 0.85, text, categorySize, categoryColor, "middle", false, false, 0.0)))
+                    if index % every = 0 then add (PText (pointAt index, plotBottom + baseSize * 0.85, text, categorySize, categoryColor, "middle", false, false, 0.0)))
         for label in pendingLabels do add label
     { Width = width; Height = height; Items = List.ofSeq items }
 

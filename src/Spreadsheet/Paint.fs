@@ -81,6 +81,8 @@ type PaintItem =
     /// x' = a·x + c·y + e, y' = b·x + d·y + f. Used to place/scale a chart
     /// scene into its anchor rect.
     | VecGroup of (float * float * float * float * float * float) * PaintItem list
+    /// Items cut off at a rectangle: a chart across a page break, on each of its pages.
+    | Clipped of Rect * PaintItem list
     /// A picture stretched over a rectangle. A renderer that cannot decode
     /// images draws the frame `drawingFrameItems` describes instead.
     | DrawImage of Rect * PaintImage
@@ -1092,6 +1094,140 @@ let drawingFrameItems (rect: Rect) (label: string) : PaintItem list =
 /// The sheet's drawing objects, back to front, at sheet coordinates (the same
 /// space as the cell items: headers included, scroll not applied). Pictures
 /// are `DrawImage`; charts and other kept objects a labelled frame.
+/// A scene (`Charts.objectScene`) as paint items, for the renderers that are not SVG: PDF. Everything is
+/// flattened to the scene's own coordinates, because text inside a `VecGroup` is not painted. A text
+/// keeps a quarter turn; other turns of text, clips, dashes and gradients (the first stop) are not kept.
+let scenePaintItems (scene: Rbt.Spreadsheet.Charts.Scene) : PaintItem list =
+    let items = ResizeArray<PaintItem>()
+    let rgb (color: string) (at: int) = System.Convert.ToInt32 (color.Substring (at, 2), 16)
+    /// A colour as an opaque one on white paper.
+    let paper (color: string) (opacity: float) =
+        if opacity >= 1.0 || color.Length <> 7 then color
+        else
+            let blend (at: int) = int (System.Math.Round (255.0 + (float (rgb color at) - 255.0) * opacity))
+            sprintf "#%02X%02X%02X" (blend 1) (blend 3) (blend 5)
+    let solid (fill: string option) (opacity: float) =
+        match fill with
+        | Some "none" | None -> None
+        | Some color when color.StartsWith "gradient(" ->
+            // gradient(angle;offset color opacity;...)
+            let stops = color.Substring(9).TrimEnd(')').Split(';')
+            if stops.Length > 1 then (match stops.[1].Split(' ') with [| _; first; _ |] -> Some (paper first opacity) | _ -> None) else None
+        | Some color -> Some (paper color opacity)
+    let outline (stroke: string option) (width: float) = stroke |> Option.filter (fun color -> color <> "none" && width > 0.0) |> Option.map (fun color -> color, width)
+    // (A path with neither would stay the renderer's current path, and be painted with the next.)
+    let addPath segments fill stroke = if Option.isSome fill || Option.isSome stroke then items.Add (VecPath (segments, fill, stroke))
+    let rec walk (a, b, c, d, e, f) (item: Rbt.Spreadsheet.Charts.Primitive) =
+        let at x y = a * x + c * y + e, b * x + d * y + f
+        let move x y = VMove (at x y)
+        let line x y = VLine (at x y)
+        let curve x1 y1 x2 y2 x y =
+            let p1x, p1y = at x1 y1
+            let p2x, p2y = at x2 y2
+            let px, py = at x y
+            VCubic (p1x, p1y, p2x, p2y, px, py)
+        let text (x: float) (y: float) (value: string) (size: float) (color: string) (anchor: string) (bold: bool) (italic: bool) (rotation: int) =
+            let px, py = at x y
+            let wide = 2000.0
+            let left = (match anchor with "middle" -> px - wide / 2.0 | "end" -> px - wide | _ -> px)
+            items.Add (DrawText {
+                Text = value
+                // (A turned text starts at the bottom left of its rectangle: a rectangle as long as it, about its middle.)
+                Rect = (if rotation = 0 then { X = left; Y = py - size; Width = wide; Height = size * 2.0 }
+                        else
+                            let long = Rbt.Spreadsheet.Charts.runWidth size bold value
+                            { X = px - size / 2.0 - 4.0; Y = py - long / 2.0; Width = size * 1.2; Height = long + 2.0 })
+                Color = color
+                FontSize = size * 0.75
+                FontName = Some "Calibri"
+                Bold = bold
+                Italic = italic
+                Underline = false
+                UnderlineDouble = false
+                Strikethrough = false
+                Align = (match anchor with "middle" -> AlignCenter | "end" -> AlignRight | _ -> AlignLeft)
+                VerticalAlign = VAlignMiddle
+                LineIndex = 0
+                LineCount = 1
+                BaselineShift = 0.0
+                Rotation = rotation
+                Clip = None })
+        match item with
+        | Rbt.Spreadsheet.Charts.PRect (x, y, width, height, fill, opacity, stroke, strokeWidth, radius) ->
+            let r = min radius (min width height / 2.0)
+            let k = r * 0.4477
+            let segments =
+                if r <= 0.0 then [ move x y; line (x + width) y; line (x + width) (y + height); line x (y + height); VClose ]
+                else
+                    [ move (x + r) y; line (x + width - r) y; curve (x + width - k) y (x + width) (y + k) (x + width) (y + r)
+                      line (x + width) (y + height - r); curve (x + width) (y + height - k) (x + width - k) (y + height) (x + width - r) (y + height)
+                      line (x + r) (y + height); curve (x + k) (y + height) x (y + height - k) x (y + height - r)
+                      line x (y + r); curve x (y + k) (x + k) y (x + r) y; VClose ]
+            addPath segments (solid fill opacity) (outline stroke strokeWidth)
+        | Rbt.Spreadsheet.Charts.PEllipse (cx, cy, rx, ry, fill, opacity, stroke, strokeWidth) ->
+            let kx, ky = rx * 0.5523, ry * 0.5523
+            let segments =
+                [ move (cx + rx) cy; curve (cx + rx) (cy + ky) (cx + kx) (cy + ry) cx (cy + ry)
+                  curve (cx - kx) (cy + ry) (cx - rx) (cy + ky) (cx - rx) cy
+                  curve (cx - rx) (cy - ky) (cx - kx) (cy - ry) cx (cy - ry)
+                  curve (cx + kx) (cy - ry) (cx + rx) (cy - ky) (cx + rx) cy; VClose ]
+            addPath segments (solid fill opacity) (outline stroke strokeWidth)
+        | Rbt.Spreadsheet.Charts.PLine (x1, y1, x2, y2, stroke, strokeWidth, _) ->
+            addPath [ move x1 y1; line x2 y2 ] None (outline (Some stroke) strokeWidth)
+        | Rbt.Spreadsheet.Charts.PPolyline (points, fill, opacity, stroke, strokeWidth, _) ->
+            match points with
+            | [] -> ()
+            | (x, y) :: rest ->
+                let color = solid fill opacity
+                let segments = move x y :: (rest |> List.map (fun (px, py) -> line px py))
+                addPath (if color.IsSome then segments @ [ VClose ] else segments) color (outline stroke strokeWidth)
+        | Rbt.Spreadsheet.Charts.PPath (path, fill, opacity, stroke, strokeWidth) ->
+            let segments =
+                Rbt.Spreadsheet.Charts.pathSegments path
+                |> List.map (function
+                    | Rbt.Spreadsheet.Charts.MoveTo (x, y) -> move x y
+                    | Rbt.Spreadsheet.Charts.LineTo (x, y) -> line x y
+                    | Rbt.Spreadsheet.Charts.CubicTo (x1, y1, x2, y2, x, y) -> curve x1 y1 x2 y2 x y
+                    | Rbt.Spreadsheet.Charts.ClosePath -> VClose)
+            addPath segments (solid fill opacity) (outline stroke strokeWidth)
+        | Rbt.Spreadsheet.Charts.PText (x, y, value, size, color, anchor, bold, italic, rotate) ->
+            text x y value size color anchor bold italic (if rotate = -90.0 || rotate = 270.0 then 90 elif rotate = 90.0 then 180 else 0)
+        | Rbt.Spreadsheet.Charts.PTextRuns (x, y, anchor, runs) ->
+            let width = runs |> List.sumBy (fun (value, size, _, bold, _) -> Rbt.Spreadsheet.Charts.runWidth size bold value)
+            let mutable left = (match anchor with "middle" -> x - width / 2.0 | "end" -> x - width | _ -> x)
+            for value, size, color, bold, italic in runs do
+                text left y value size color "start" bold italic 0
+                left <- left + Rbt.Spreadsheet.Charts.runWidth size bold value
+        | Rbt.Spreadsheet.Charts.PImage (x, y, width, height, href) ->
+            let px, py = at x y
+            let comma = href.IndexOf ','
+            if href.StartsWith "data:" && comma > 0 then
+                let contentType = href.Substring(5, comma - 5).Split(';').[0]
+                items.Add (DrawImage ({ X = px; Y = py; Width = width * a; Height = height * d },
+                                      { ContentType = contentType; Data = System.Convert.FromBase64String (href.Substring (comma + 1)); Label = "" }))
+        | Rbt.Spreadsheet.Charts.PGroup (x, y, _, _, children) ->
+            let shift = (a, b, c, d, a * x + c * y + e, b * x + d * y + f)
+            children |> List.iter (walk shift)
+        | Rbt.Spreadsheet.Charts.PTransform (a2, b2, c2, d2, e2, f2, children) ->
+            let composed = (a * a2 + c * b2, b * a2 + d * b2, a * c2 + c * d2, b * c2 + d * d2, a * e2 + c * f2 + e, b * e2 + d * f2 + f)
+            children |> List.iter (walk composed)
+    scene.Items |> List.iter (walk (1.0, 0.0, 0.0, 1.0, 0.0, 0.0))
+    List.ofSeq items
+
+/// The charts and shapes of a sheet as the overlays of a PDF: anchored to their first cell, each drawn
+/// by `sceneOf` (its anchor's XML, its width and height) in the size it has on the sheet.
+let drawingOverlays (sceneOf: string -> float -> float -> Rbt.Spreadsheet.Charts.Scene option) (model: SpreadsheetModel) : (int * int * float * float * float * float * PaintItem list) list =
+    [ for drawing in model.Drawings do
+        match drawing.Content with
+        | KeptObject (_, xml) ->
+            let rect = drawingRect model drawing
+            let items =
+                match sceneOf xml rect.Width rect.Height with
+                | Some scene -> scenePaintItems scene
+                | None -> drawingFrameItems { X = 0.0; Y = 0.0; Width = rect.Width; Height = rect.Height } (drawingLabel drawing)
+            yield (drawing.Anchor.FromRow, drawing.Anchor.FromCol, drawing.Anchor.FromOffsetX, drawing.Anchor.FromOffsetY, rect.Width, rect.Height, items)
+        | _ -> () ]
+
 let buildDrawingPaintItems (model: SpreadsheetModel) (viewport: Viewport) : PaintItem list =
     if model.Drawings.IsEmpty then []
     else
@@ -1153,6 +1289,7 @@ let private translatePaintItem viewport zone item =
         let o = tx { X = 0.0; Y = 0.0; Width = 0.0; Height = 0.0 }
         VecGroup ((a, b, c, d, e + o.X, f + o.Y), children)
     | DrawImage (rect, image) -> DrawImage (tx rect, image)
+    | Clipped _ -> item
 
 let buildViewportPaintItems (model: SpreadsheetModel) (viewport: Viewport): ViewportPaintItem list =
     let model = model |> applyFilterRowHeights

@@ -1231,6 +1231,7 @@ type Spreadsheet(container: Element) =
                     | SpreadsheetPaint.VClose -> canvasClosePath ctx
                 (match fill with Some c -> canvasFillPath ctx c | None -> ())
                 (match stroke with Some (c, w) -> canvasStrokePath ctx c w | None -> ())
+            | SpreadsheetPaint.Clipped (_, children) -> children |> List.iter drawVec
             | SpreadsheetPaint.VecGroup ((a, b, c, d, e, f), children) ->
                 canvasSave ctx
                 canvasTransform ctx a b c d e f
@@ -1261,7 +1262,7 @@ type Spreadsheet(container: Element) =
                 if abs (y1 - y2) < 0.01 then canvasLine ctx x1 (snap y1) x2 (snap y1) color w
                 elif abs (x1 - x2) < 0.01 then canvasLine ctx (snap x1) y1 (snap x1) y2 color w
                 else canvasLine ctx x1 y1 x2 y2 color w
-            | SpreadsheetPaint.VecPath _ | SpreadsheetPaint.VecGroup _ -> drawVec painted.Item
+            | SpreadsheetPaint.VecPath _ | SpreadsheetPaint.VecGroup _ | SpreadsheetPaint.Clipped _ -> drawVec painted.Item
             | SpreadsheetPaint.DrawImage (rect, image) ->
                 // A picture that is not decoded yet shows its frame; the canvas
                 // is painted again by the caller once it has loaded.

@@ -538,6 +538,9 @@ let rec private appendPaintItem (commands: System.Collections.Generic.List<Cmd>)
                                               Paint = Solid (parseHexColor c)
                                               DashArray = []; DashOffset = px 0.0; MiterLimit = 4.0 }))
         | None -> ()
+    | Clipped (_, children) ->
+        for child in children do
+            appendPaintItem commands child
     | VecGroup ((a, b, c, d, e, f), children) ->
         let xform = { M11 = a; M12 = b; M21 = c; M22 = d; DX = e; DY = f }
         let childCommands = System.Collections.Generic.List<Cmd>()

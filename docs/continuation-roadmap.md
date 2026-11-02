@@ -16,7 +16,7 @@ redbat (`cardillion-mega` remote): `master` has the 0.1.19 adoption (harness 110
 
 ## Next steps, in order
 
-1. **Finish `fix/sheet19`'s list** (its handoff, on `origin/fix/sheet19`): item 2 charts in print, PDF and canvas, item 4 print default sizes, then 3, 6, 7.
+1. **Finish `fix/sheet19`'s list** (its handoff, on `origin/fix/sheet19`): then items 3, 6, 7.
 2. Continue with the backlog.
 
 ## Backlog
@@ -26,10 +26,10 @@ redbat (`cardillion-mega` remote): `master` has the 0.1.19 adoption (harness 110
 - "Products sold by Quantity" in the e-commerce dashboard still wraps under its doughnut: the box is narrower in its scaled group. Whether Excel wraps it too is unchecked.
 
 ### Spreadsheet — features
-- Charts in print/PDF and the canvas painter (plan in the handoff: a `Scene → PaintItem list` adapter; `VecGroup` drops text in both painters today); native and wisp painters do not handle `VecPath`.
+- Charts and shapes print through `Paint.drawingOverlays` (`tools/spreadsheet-pdf-runner`). Each page holds what reaches it, cut at the page's edge, as Excel does (chart-zoo compared). Excel's scatter axis stops at 6 where ours stops at 5.5. The portable canvas still draws frames; native and wisp painters do not handle `VecPath`.
 - chartEx waterfall/funnel/maps and others; slicers and timelines. Radar, bubble, stock and 3-D-as-flat are drawn; bubble and stock have been looked at on synthetic charts only, no workbook in the corpus has them.
 - Shapes: custom geometry, preset polygons, rotation and flips are checked on synthetic shapes only (the corpus has `rect` and `roundRect`, no `rot` or flips). A group's own rotation is ignored. Unwritten: `normAutofit`, `spcBef/spcAft/lnSpc`, `vert`.
-- Print and PDF use 25 / 100 px for unsized rows and columns instead of the sheet's defaults (`Pagination.withPrintSizes`, `Pdf.fs` `buildPrintGeometry`, `withPrintColumnWidths`, `withPrintRowHeights`); the page-break preview must agree with print. Preview: grey outside the print area, frames over frozen panes.
+- Print and PDF use the sheet's default row and column sizes. Excel agrees on pages and scale for the lyric-multifamily sheets. Preview: grey outside the print area, frames over frozen panes.
 - Custom table styles; built-in table style palettes.
 - Source patching: row insert (2 of 110 corpus workbooks patched in place, 105 written from the model), table add (29 / 80 / 1), note add (22 from the model); 24 workbooks never patch.
 - The last rows are unreachable above ~125% zoom in Chromium, and in Firefox.
@@ -48,7 +48,7 @@ redbat (`cardillion-mega` remote): `master` has the 0.1.19 adoption (harness 110
 
 ### Cross-cutting
 - `tools/word-browser` depends on the machine's fonts: viewport, caret-movement, progressive-layout, progressive-read, drawing-order and mass-format have thresholds tuned on DejaVu and fail with `fonts-liberation` installed (Google Chrome's package pulls it in). Until they are made font-independent, run them with a `FONTCONFIG_FILE` that rejects `*/liberation/*`.
-- **LibreOffice is the one outside reader of the round-trip saves.** Real Word and Excel exist for this: the Windows VM `wordvm` (`DESKTOP-OP2QS0N`, `docs/word-parity.md`, `docs/excel-parity.md`, `tools/word-parity`, `tools/excel-parity`) gave the earlier parity references. The tools were last changed in June 2026 and the VM is not reachable from the new machine: `wordvm` resolves to nothing here. Nothing since (the saves, the chart layout) has been compared with it. `tools/libreoffice-check/check.mjs DIR` opens the documents `roundtrip.mjs --out DIR` keeps and compares the text LibreOffice reads from each save with the original's. On 0.1.18: 263 saves read as their originals, none failed. It is not part of the round trip yet (run it after one; write `--out` outside `/tmp`, the 381 documents are 75 MB), it compares text only, and the spreadsheet harness keeps no workbooks for it.
+- **LibreOffice is the one outside reader of the round-trip saves.** Real Word and Excel exist for this: the Windows VM, now `winvm` in the SSH config (`WORD_VM=winvm WORD_VM_HOST=winvm WORD_VM_DIR=C:/Users/olivia/RedBatExcelParity`; Excel 16.0.19127; `excel-print-pdf.sh` exports every sheet, so the big dashboards time out; it was formerly `wordvm`, `docs/word-parity.md`, `docs/excel-parity.md`, `tools/word-parity`, `tools/excel-parity`) gave the earlier parity references. Excel's PDF of chart-zoo has been compared with ours; the saves have not been opened in Word or Excel yet. `tools/libreoffice-check/check.mjs DIR` opens the documents `roundtrip.mjs --out DIR` keeps and compares the text LibreOffice reads from each save with the original's. On 0.1.18: 263 saves read as their originals, none failed. It is not part of the round trip yet (run it after one; write `--out` outside `/tmp`, the 381 documents are 75 MB), it compares text only, and the spreadsheet harness keeps no workbooks for it.
 - What it found in the 13 saves written from the model alone (`.model.docx`, listed, not counted as failures): a space lost between runs (`atdeploymenttime`, `gravida,pellentesque`, `next.When` in docx4j-getting-started, resume-template, file-sample); a drop cap read as a separate word (the calibre demo and its four copies); the content of bound content controls replaced by their placeholder or value (`docx4j-binding-simple`, `-hyperlink-binding`, `-invoice-2013`); `mc:AlternateContent` written as its fallback (`reader-structure`). LibreOffice hangs on `test-complex-tables.docx` itself, writing text without end (3 GB in 25 s; the check kills the run by its process group and by what it has written), and does not open `docx4j-unmarshall-template.docx`, the originals.
 - Native hosts are built, and the Word painter has a headless pixel test, but no native host has been run interactively. Firefox is untested.
 

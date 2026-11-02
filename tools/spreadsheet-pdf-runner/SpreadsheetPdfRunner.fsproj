@@ -12,6 +12,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Update="FSharp.Core" Version="10.1.401" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="../../src/Office.Formats/Rbt.OfficeFormat.fsproj" />
     <ProjectReference Include="../../src/Spreadsheet/Rbt.Spreadsheet.fsproj" />
     <ProjectReference Include="../../src/Spreadsheet.Pdf/Rbt.Spreadsheet.Pdf.fsproj" />

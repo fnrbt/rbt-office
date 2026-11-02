@@ -920,9 +920,9 @@ module Import =
             match sheet.Format.DefaultColWidth with
             | Some width -> width
             | None ->
-                match sheet.Format.BaseColWidth with
-                | Some width -> width + 1.0
-                | None -> 8.43
+                // (`baseColWidth` characters and 5 px of padding, up to a multiple of 8 px: 8 is 64 px, Excel's default.)
+                let characters = sheet.Format.BaseColWidth |> Option.defaultValue 8.0
+                System.Math.Ceiling ((characters * 7.0 + 5.0) / 8.0) * 8.0 / 7.0
         let mutable columnWidths = Map.empty<int, float>
         if colCount > 0 then
             let widths = Array.create colCount defaultColWidth

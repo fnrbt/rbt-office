@@ -497,6 +497,13 @@ let rec private translateItem (options: RenderOptions) (faceByName: Map<string, 
         | _ -> []
     match item with
     | (VecPath _ | VecGroup _) -> vec (1.0, 0.0, 0.0, 1.0, 0.0, 0.0) item
+    | Clipped (rect, children) ->
+        [ PdfDraw.SaveState
+          PdfDraw.Rect (xPt rect.X, yPdf (rect.Y + rect.Height), sz rect.Width, sz rect.Height)
+          PdfDraw.ClipPath
+          PdfDraw.EndPath ]
+        @ (children |> List.collect (translateItem options faceByName faceResource faceRemap placement))
+        @ [ PdfDraw.RestoreState ]
     // A picture (PNG or JPEG) is embedded and stretched over its rectangle; a
     // labelled frame stands for one in a format the PDF cannot hold.
     | DrawImage (rect, image) ->
@@ -626,8 +633,8 @@ let private buildAxisGeometry defaultSize (sizes: Map<int, float>) maxIndex =
     { Size = size; Sum = sum }
 
 let private buildPrintGeometry (model: SpreadsheetModel) maxRow maxCol =
-    { Col = buildAxisGeometry 100.0 model.ColumnWidths maxCol
-      Row = buildAxisGeometry 25.0 model.RowHeights maxRow }
+    { Col = buildAxisGeometry model.DefaultColumnWidth model.ColumnWidths maxCol
+      Row = buildAxisGeometry model.DefaultRowHeight model.RowHeights maxRow }
 
 /// Excel's live grid uses the floored screen MDW for explicit `<col width>`
 /// values, but its PDF print path lays those explicit widths out with the
@@ -651,7 +658,7 @@ let private printRowHeightPx px = Pagination.printRowHeightPx px
 
 let private printDimensionBounds
     (model: SpreadsheetModel)
-    (overlays: (int * int * float * float * PaintItem list) list) =
+    (overlays: (int * int * float * float * float * float * PaintItem list) list) =
     let mutable maxCol = 0
     let mutable maxRow = 0
     match printAreasOf model.PageSetup with
@@ -669,7 +676,7 @@ let private printDimensionBounds
     match model.PageSetup.RepeatRows with
     | Some (a, b) -> maxRow <- max maxRow (max a b)
     | None -> ()
-    for row, col, _, _, _ in overlays do
+    for row, col, _, _, _, _, _ in overlays do
         maxRow <- max maxRow row
         maxCol <- max maxCol col
     Some maxCol, Some maxRow
@@ -704,8 +711,7 @@ let private withPrintColumnWidths maxPrintCol (model: SpreadsheetModel) : Spread
             remapPrintColumnWidthsDirect maxCol model.ColumnWidths
         | _ ->
             model.ColumnWidths |> Map.map (fun _ width -> printColumnWidthPx width)
-    // (A column without a width of its own prints at 100 px, as the pages were measured: see `Pagination.withPrintSizes`.)
-    { model with ColumnWidths = widths; DefaultColumnWidth = 100.0 }
+    { model with ColumnWidths = widths; DefaultColumnWidth = printColumnWidthPx model.DefaultColumnWidth }
 
 /// Excel's print PDF renders Calibri-11 auto-derived rows at 19 px (14.25 pt)
 /// even though `cell.Height` via COM still reports 15 pt (20 px). This is a
@@ -733,7 +739,6 @@ let private withPrintColumnWidths maxPrintCol (model: SpreadsheetModel) : Spread
 /// the test corpus trips that; if one does, we'll need to thread per-row
 /// "auto vs explicit" flags through the model and key the remap off that.
 let private withPrintRowHeights maxPrintRow (model: SpreadsheetModel) : SpreadsheetModel =
-    if Map.isEmpty model.RowHeights then model else
     // Calibri 12 print pitch is similarly off — editor 21 px → print
     // ~20.64 px (= 15.48 pt). pandas-test1 rows positioned 1 px per row
     // below Excel because we used 21 px uniform while Excel's quantized
@@ -744,7 +749,7 @@ let private withPrintRowHeights maxPrintRow (model: SpreadsheetModel) : Spreadsh
             remapPrintRowHeightsDirect maxRow model.RowHeights
         | _ ->
             model.RowHeights |> Map.map (fun _ px -> printRowHeightPx px)
-    { model with RowHeights = heights; DefaultRowHeight = 25.0 }
+    { model with RowHeights = heights; DefaultRowHeight = printRowHeightPx model.DefaultRowHeight }
 
 /// True when a paint item has degenerate (zero-size) geometry. With the
 /// print viewport's HeaderHeight / RowHeaderWidth both set to 0, the
@@ -758,7 +763,7 @@ let private isDegenerate (item: PaintItem) : bool =
         // A real gridline has length in exactly one axis; only drop the
         // genuinely zero-length point.
         abs (x2 - x1) < 0.5 && abs (y2 - y1) < 0.5
-    | VecPath _ | VecGroup _ -> false
+    | VecPath _ | VecGroup _ | Clipped _ -> false
     | DrawImage (r, _) -> r.Width < 0.5 || r.Height < 0.5
 
 /// The screen path emits a white fill for every cell even when the workbook
@@ -844,7 +849,7 @@ let private shouldDropCommentMarkerForPrint
 
 /// Shift every coordinate of a paint item by (dx, dy) CSS px. Used to map
 /// items from their absolute viewport position into page-local space.
-let private shiftItem (dx: float) (dy: float) (item: PaintItem) : PaintItem =
+let rec private shiftItem (dx: float) (dy: float) (item: PaintItem) : PaintItem =
     let shiftRect (r: Rect) = { r with X = r.X + dx; Y = r.Y + dy }
     let shiftSeg seg =
         let mv x y = x + dx, y + dy
@@ -870,6 +875,7 @@ let private shiftItem (dx: float) (dy: float) (item: PaintItem) : PaintItem =
     | VecGroup ((a, b, c, d, e, f), children) ->
         VecGroup ((a, b, c, d, e + dx, f + dy), children)
     | DrawImage (r, image) -> DrawImage (shiftRect r, image)
+    | Clipped (r, children) -> Clipped (shiftRect r, children |> List.map (shiftItem dx dy))
 
 /// Iterate the paint items for a contiguous (rowStart..rowEnd × colStart..colEnd)
 /// slice of the model, shifted so the slice's top-left lands at page-local
@@ -1282,7 +1288,7 @@ let private appendSectionOps
 /// with the grid. Positions use the print model's own widths, keeping them
 /// consistent with the cell content around them.
 let toBytesWith (options: RenderOptions) (model: SpreadsheetModel)
-                (overlays: (int * int * float * float * PaintItem list) list) : byte[] =
+                (overlays: (int * int * float * float * float * float * PaintItem list) list) : byte[] =
     let maxPrintCol, maxPrintRow = printDimensionBounds model overlays
     let model =
         model
@@ -1355,7 +1361,7 @@ let toBytesWith (options: RenderOptions) (model: SpreadsheetModel)
         match pagination.RepeatCols with
         | Some (_, b) -> maxCol <- max maxCol b
         | None -> ()
-        for _, fc, _, _, _ in overlays do
+        for _, fc, _, _, _, _, _ in overlays do
             maxCol <- max maxCol fc
         maxCol
     let maxRowIndex =
@@ -1365,7 +1371,7 @@ let toBytesWith (options: RenderOptions) (model: SpreadsheetModel)
         match pagination.RepeatRows with
         | Some (_, b) -> maxRow <- max maxRow b
         | None -> ()
-        for fr, _, _, _, _ in overlays do
+        for fr, _, _, _, _, _, _ in overlays do
             maxRow <- max maxRow fr
         maxRow
     let geometry = buildPrintGeometry model maxRowIndex maxColIndex
@@ -1394,24 +1400,28 @@ let toBytesWith (options: RenderOptions) (model: SpreadsheetModel)
         if List.isEmpty overlays || pages.Length = 0 then
             [||]
         else
-            // An overlay anchored beyond the data's print range (charts usually
-            // sit beside/below it) still belongs to the page whose vertical
-            // slice spans its anchor row; if none does, the first page.
-            let pageOf (fr: int) =
-                let mutable found = -1
-                let mutable i = 0
-                while found < 0 && i < pages.Length do
-                    let s = pages.[i]
-                    if fr >= s.RowStart && fr <= s.RowEnd then
-                        found <- i
-                    i <- i + 1
-                if found >= 0 then found else 0
+            // A drawing belongs to every page it reaches on (cut off at the page's edge); one beside a
+            // print area to none; without any page that reaches it, to the first (a model without its drawings).
+            let spanOf (sum: int -> int -> float) (first: int) (last: int) = sum 0 (first - 1), sum 0 last
             let byPage = Array.init pages.Length (fun _ -> ResizeArray<_>())
-            for fr, fc, fox, foy, locItems in overlays do
-                let pageIndex = pageOf fr
-                if pageIndex >= 0 && pageIndex < pages.Length then
-                    byPage.[pageIndex].Add(fr, fc, fox, foy, locItems)
+            for overlay in overlays do
+                let fr, fc, fox, foy, width, height, _ = overlay
+                let left = geometry.Col.Sum 0 (fc - 1) + fox
+                let top = geometry.Row.Sum 0 (fr - 1) + foy
+                let mutable placed = false
+                pages |> Array.iteri (fun index slice ->
+                    let colStart, colEnd = spanOf geometry.Col.Sum slice.ColStart slice.ColEnd
+                    let rowStart, rowEnd = spanOf geometry.Row.Sum slice.RowStart slice.RowEnd
+                    if left < colEnd && left + max width 1.0 > colStart && top < rowEnd && top + max height 1.0 > rowStart then
+                        byPage.[index].Add overlay
+                        placed <- true)
+                if not placed && List.isEmpty (printAreasOf model.PageSetup) then byPage.[0].Add overlay
             byPage
+
+    // (What the overlays draw is not painted again as the frames of the cell slices.)
+    let paintedModel =
+        if List.isEmpty overlays then model
+        else { model with Drawings = model.Drawings |> List.filter (fun drawing -> match drawing.Content with KeptObject _ -> false | _ -> true) }
 
     let appendBand (emit: PaintItem -> unit)
                    (rowStart: int) (rowEnd: int)
@@ -1424,7 +1434,7 @@ let toBytesWith (options: RenderOptions) (model: SpreadsheetModel)
                 if not addedGrid then
                     iterGridLineItems geometry model rowStart rowEnd colStart colEnd offsetX offsetY emit
                     addedGrid <- true
-            iterSliceItems geometry model measurePdf canDrawText rowStart rowEnd colStart colEnd offsetX offsetY (fun item ->
+            iterSliceItems geometry paintedModel measurePdf canDrawText rowStart rowEnd colStart colEnd offsetX offsetY (fun item ->
                 if not sawContent then
                     sawContent <- true
                     match item with
@@ -1439,7 +1449,7 @@ let toBytesWith (options: RenderOptions) (model: SpreadsheetModel)
             if not sawContent then
                 addGrid ()
         else
-            iterSliceItems geometry model measurePdf canDrawText rowStart rowEnd colStart colEnd offsetX offsetY emit
+            iterSliceItems geometry paintedModel measurePdf canDrawText rowStart rowEnd colStart colEnd offsetX offsetY emit
 
     let emitPageItems (i: int) (emit: PaintItem -> unit) =
         if i < pages.Length then
@@ -1484,12 +1494,16 @@ let toBytesWith (options: RenderOptions) (model: SpreadsheetModel)
                 let baseY = headingsRowPx + repeatRowsHeightPx
                 let colStartPx = geometry.Col.Sum 0 (slice.ColStart - 1)
                 let rowStartPx = geometry.Row.Sum 0 (slice.RowStart - 1)
-                for fr, fc, fox, foy, locItems in overlaysByPage.[i] do
+                let clip =
+                    { X = baseX; Y = baseY
+                      Width = geometry.Col.Sum slice.ColStart slice.ColEnd
+                      Height = geometry.Row.Sum slice.RowStart slice.RowEnd }
+                for fr, fc, fox, foy, _, _, locItems in overlaysByPage.[i] do
                     let gx = geometry.Col.Sum 0 (fc - 1) + fox
                     let gy = geometry.Row.Sum 0 (fr - 1) + foy
                     let tx = baseX + (gx - colStartPx)
                     let ty = baseY + (gy - rowStartPx)
-                    emit (VecGroup ((1.0, 0.0, 0.0, 1.0, tx, ty), locItems))
+                    emit (Clipped (clip, locItems |> List.map (shiftItem tx ty)))
 
     // Collect used GIDs across every page's items, plus header / footer
     // sections (so their glyphs land in the subset too).
@@ -1540,7 +1554,7 @@ let toBytesWith (options: RenderOptions) (model: SpreadsheetModel)
     let rec recordPaintItemGids item =
         match item with
         | DrawText t -> recordPaintTextGids t
-        | VecGroup (_, children) ->
+        | VecGroup (_, children) | Clipped (_, children) ->
             for child in children do
                 recordPaintItemGids child
         | _ -> ()

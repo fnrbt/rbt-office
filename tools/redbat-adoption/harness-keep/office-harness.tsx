@@ -8,7 +8,6 @@ import '@fontsource/inter/latin-600.css'
 import '@fontsource/inter/latin-700.css'
 import './app.css'
 import './rb.css'
-import './rb-chat.css'
 import './rb-mega.css'
 import { ThemeProvider } from '~/lib/theme'
 

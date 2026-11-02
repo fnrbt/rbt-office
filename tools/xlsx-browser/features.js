@@ -308,9 +308,9 @@ checks['print-pages'] = async () => {
     const expected = [
         ['tests/real-world/milk-street-office.xlsx', 'Annual', 6, 38, 'A1:L63'],
         ['tests/real-world/milk-street-office.xlsx', 'Monthly', 40, 33, 'A1:R58'],
-        ['tests/real-world/lyric-multifamily.xlsx', 'Lyric-PF-DCF', 14, 32, 'A1:Q57'],
+        ['tests/real-world/lyric-multifamily.xlsx', 'Lyric-PF-DCF', 7, 32, 'A1:R57'],
         ['tests/real-world/lyric-multifamily.xlsx', 'Comp-Sales', 1, 40, 'A1:O24'],
-        ['tests/real-world/lyric-multifamily.xlsx', 'Apt-Comps', 2, 41, 'A1:P20'],
+        ['tests/real-world/lyric-multifamily.xlsx', 'Apt-Comps', 1, 41, 'A1:Q20'],
         ['tests/real-world/lyric-multifamily.xlsx', 'Replacement-Cost', 1, 54, 'A1:I39'],
         ['tests/real-world/dcf-stock-analysis.xlsx', 'Main', 2, 100, 'B2:J39'],
         ['tests/real-world/dcf-stock-analysis.xlsx', 'Financial Model', 10, 100, 'A1:I53'],

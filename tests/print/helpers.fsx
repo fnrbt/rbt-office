@@ -232,5 +232,27 @@ do
     ok "landscape: the PDF's pages are the wider way round" (size pdf = (792.0, 612.0) && pdfPageCount pdf = landscape.Pages.Length) (sprintf "%A, %d pages (%d)" (size pdf) (pdfPageCount pdf) landscape.Pages.Length)
 ok "pages: sheets were paginated" (sheetsPaged >= 12 && pagesCounted > sheetsPaged) (sprintf "%d sheets, %d pages" sheetsPaged pagesCounted)
 
+// Charts and shapes in print: a scene as paint items, flattened, with its text.
+let printScene : Rbt.Spreadsheet.Charts.Scene =
+    { Width = 200.0; Height = 100.0
+      Items =
+        [ Rbt.Spreadsheet.Charts.PRect (0.0, 0.0, 200.0, 100.0, Some "#FFFFFF", 1.0, None, 0.0, 0.0)
+          Rbt.Spreadsheet.Charts.PRect (5.0, 5.0, 10.0, 10.0, None, 1.0, None, 0.0, 0.0)
+          Rbt.Spreadsheet.Charts.PGroup (10.0, 20.0, 50.0, 50.0,
+            [ Rbt.Spreadsheet.Charts.PText (1.0, 2.0, "inside", 12.0, "#000000", "start", false, false, 0.0)
+              Rbt.Spreadsheet.Charts.PRect (0.0, 0.0, 4.0, 4.0, Some "gradient(90;0 #112233 1;1 #445566 1)", 1.0, None, 0.0, 0.0) ]) ] }
+let printItems = Paint.scenePaintItems printScene
+let printTexts = printItems |> List.choose (function Paint.DrawText text -> Some text | _ -> None)
+ok "print scene: a text in a group is a top-level text at its place" (printTexts |> List.map (fun text -> text.Text, text.Rect.X) = [ "inside", 11.0 ]) (sprintf "%A" printTexts)
+ok "print scene: no path with neither fill nor outline (it would be painted with the next one)" (printItems |> List.forall (function Paint.VecPath (_, None, None) -> false | _ -> true)) ""
+ok "print scene: a gradient is its first colour" (printItems |> List.exists (function Paint.VecPath (_, Some "#112233", _) -> true | _ -> false)) (sprintf "%A" printItems)
+
+// Print sizes: rows and columns without a size of their own print at the sheet's defaults, and drawings count.
+let sizedSheet =
+    let cell = { Value = CellValue.Number 1.0; Format = defaultFormat; Comment = None }
+    { (createEmpty 200 20 |> setCell { Row = 0; Col = 0 } cell |> setCell { Row = 59; Col = 0 } cell) with RowHeights = Map.empty; DefaultRowHeight = 40.0 }
+ok "print sizes: a tall default row makes more pages than the short one"
+    ((Pagination.paginatePrinted sizedSheet).Pages.Length > (Pagination.paginatePrinted { sizedSheet with DefaultRowHeight = 15.0 }).Pages.Length) ""
+
 printfn "Print-helper tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

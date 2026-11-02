@@ -3,6 +3,7 @@ module SpreadsheetPdfRunner
 open System
 open System.IO
 module Xlsx = XlsxReader
+module Charts = Rbt.Spreadsheet.Charts
 
 let private usage () =
     eprintfn "Usage: dotnet run --project tools/spreadsheet-pdf-runner -- <input.xlsx> <output.pdf> [sheetIndex]"
@@ -97,6 +98,39 @@ let private pdfOptions (sheetName: string) (fileName: string) : Rbt.Spreadsheet.
         FileName = fileName
     }
 
+/// The charts and shapes of a sheet of a workbook as overlays of its PDF, by the layout of the grid.
+let private drawingOverlays (workbook: Xlsx.Workbook) (sheetIndex: int) =
+    let text (data: byte[]) = System.Text.Encoding.UTF8.GetString data
+    let parts = workbook.Preserved.Parts |> Map.ofList
+    let theme =
+        workbook.Preserved.ThemePath
+        |> Option.bind (fun path -> Map.tryFind path parts)
+        |> Option.map (text >> Charts.parseTheme)
+        |> Option.defaultValue Charts.defaultTheme
+    // (The workbook as the grid opens it: `toModel` keeps no drawings.)
+    let book = Rbt.Spreadsheet.XlsxBridge.Import.importWorkbook workbook
+    let models = book.Sheets |> Array.toList |> List.map (fun sheet -> sheet.Name, lazy (Rbt.Spreadsheet.Model.resolveSheet sheet.Model))
+    let data : Charts.ChartData =
+        { Cells = (fun name r0 c0 r1 c1 ->
+            models
+            |> List.tryFind (fun (known, _) -> String.Equals (known, name, StringComparison.OrdinalIgnoreCase))
+            |> Option.map (fun (_, sheet) ->
+                let cells = sheet.Value
+                Array.init (r1 - r0 + 1) (fun r -> Array.init (c1 - c0 + 1) (fun c -> Rbt.Spreadsheet.Model.getCell { Row = r0 + r; Col = c0 + c } cells))))
+          Display = (fun cell -> Rbt.Spreadsheet.CellText.cellDisplayText None 1000.0 cell.Format cell.Value)
+          Format = (fun code value -> Rbt.Spreadsheet.CellText.formatNumberWithCodeIn false code value) }
+    let target (id: string) =
+        workbook.Sheets.[sheetIndex].Extras.DrawingRelationships
+        |> List.tryPick (fun (known, _, target, isExternal) -> if known = id && not isExternal then Some (ZipInterop.normalizePath target) else None)
+    let partOf (id: string) = target id |> Option.bind (fun path -> Map.tryFind path parts |> Option.map (fun bytes -> path, bytes))
+    let drawing : Charts.DrawingParts =
+        { Theme = theme
+          Chart = (fun id -> partOf id |> Option.bind (fun (_, bytes) -> Charts.parseChart theme (text bytes)))
+          Picture = (fun id -> partOf id |> Option.map (fun (name, bytes) -> "data:image/" + Path.GetExtension(name).TrimStart('.') + ";base64," + Convert.ToBase64String bytes)) }
+    let drawn = (snd models.[sheetIndex]).Value
+    // (Anchored to cells: as wide as those cells print.)
+    drawn.Drawings, Rbt.Spreadsheet.Paint.drawingOverlays (Charts.objectScene drawing data) (Rbt.Spreadsheet.Pdf.Pagination.withPrintSizes drawn)
+
 let private renderPdf (inputPath: string) (outputPath: string) (sheetIndex: int) =
     let bytes = File.ReadAllBytes inputPath
     let workbook =
@@ -113,20 +147,9 @@ let private renderPdf (inputPath: string) (outputPath: string) (sheetIndex: int)
     // on Windows; match that so our footer reads "synthetic-print" rather
     // than "synthetic-print.xlsx".
     let opts = pdfOptions sheet.Name (Path.GetFileNameWithoutExtension inputPath)
-    // Anchored chart overlays: parse the sheet's charts, render each to local
-    // (0,0) paint items sized to its anchor span (same default col/row px the
-    // PDF positioner uses), and hand them to the PDF render as overlays.
-    let overlays =
-        ChartRender.parseAllCharts inputPath
-        |> List.map (fun pl ->
-            let colW c = Map.tryFind c model.ColumnWidths |> Option.defaultValue 100.0
-            let rowH r = Map.tryFind r model.RowHeights |> Option.defaultValue 25.0
-            let mutable w = pl.ToColOffPx - pl.FromColOffPx
-            for c in pl.FromCol .. pl.ToCol - 1 do w <- w + colW c
-            let mutable h = pl.ToRowOffPx - pl.FromRowOffPx
-            for r in pl.FromRow .. pl.ToRow - 1 do h <- h + rowH r
-            let items = ChartRender.buildChart pl.Spec w h
-            (pl.FromRow, pl.FromCol, pl.FromColOffPx, pl.FromRowOffPx, items))
+    // Charts and shapes as the grid draws them, anchored to their cells.
+    let drawings, overlays = drawingOverlays workbook sheetIndex
+    let model = { model with Drawings = drawings }
     let pdfBytes = Rbt.Spreadsheet.Pdf.Render.toBytesWith opts model overlays
     Directory.CreateDirectory(Path.GetDirectoryName outputPath) |> ignore
     File.WriteAllBytes(outputPath, pdfBytes)
