@@ -224,7 +224,13 @@ async function main() {
     const boldNotes = [];
     const passTotals = new Map(); // kind of edit -> { edited, kept, model, others, notes }
     const notePass = (kind, name, pass) => {
-        const totals = passTotals.get(kind) ?? { edited: 0, kept: 0, model: 0, others: 0, notes: [], reasons: new Map() };
+        const totals = passTotals.get(kind) ?? { edited: 0, kept: 0, model: 0, others: 0, notes: [], reasons: new Map(), lost: new Map() };
+        // (What saves lost - page.js - by kind of element, with the documents.)
+        for (const loss of pass.lost ?? []) {
+            const key = loss.replace(/ \d+->\d+$/, '');
+            const entry = totals.lost.get(key) ?? { count: 0, documents: new Set() };
+            entry.count++; entry.documents.add(path.basename(name)); totals.lost.set(key, entry);
+        }
         totals.edited += pass.edited; totals.kept += pass.kept; totals.model += pass.model; totals.others += pass.others;
         if (pass.model || pass.others) {
             totals.notes.push(`${name}: ${pass.edited} edited, ${pass.model} paragraphs from the model, ${pass.others} others changed`);
@@ -374,6 +380,8 @@ async function main() {
         console.log(`\nEdit pass - every tenth paragraph, ${kind}: ${totals.edited} edits; ${totals.kept} kept in their own XML, ${totals.model} paragraphs written from the model; ${totals.others} other paragraphs changed.`);
         for (const line of totals.notes) console.log('  ' + line);
         if (showReasons) for (const [reason, entry] of [...totals.reasons].sort((a, b) => b[1].count - a[1].count)) console.log(`  why ${String(entry.count).padStart(5)}  ${reason}  [${[...entry.documents].slice(0, 4).join(', ')}${entry.documents.size > 4 ? ', ...' : ''}]`);
+        if (totals.lost.size) console.log(`  lost (kinds of element or attribute fewer than in the original, text and formatting aside): ${totals.lost.size}`);
+        for (const [key, entry] of [...totals.lost].sort((a, b) => b[1].count - a[1].count).slice(0, showReasons ? 40 : 8)) console.log(`  lost ${String(entry.count).padStart(4)}  ${key}  [${[...entry.documents].slice(0, 4).join(', ')}${entry.documents.size > 4 ? ', ...' : ''}]`);
         if (totals.kept < totals.edited * (passConfinedShare[kind] ?? 0.95)) { console.log(`  FAIL: fewer than ${(passConfinedShare[kind] ?? 0.95) * 100}% kept in their own XML`); failed++; }
     }
     console.log(failed === 0 ? '\nDOCX ROUND TRIP: ALL PASSED' : `\nDOCX ROUND TRIP: ${failed} fixture(s) FAILED`);

@@ -1142,6 +1142,13 @@ const passResult = async (handle, before, label, result, piecesPerEdit) => {
     for (const piece of is) left.set(piece, (left.get(piece) ?? 0) + 1);
     let changed = 0;
     for (const piece of was) { const count = left.get(piece) ?? 0; if (count > 0) left.set(piece, count - 1); else changed++; }
+    // What the save lost (docs/save-architecture.md): the kinds of element and attribute of the body fewer in the
+    // saved document than in the original - other than those of text and its formatting, which an edit changes.
+    {
+        const formatting = /^<w:(r|t|rPr|pPr|p|b|bCs|i|iCs|u|sz|szCs|color|rFonts|highlight|caps|smallCaps|vertAlign|jc|spacing|ind|tab|tabs|br|lang|kern|w|position|noProof|rStyle|pStyle|strike|dstrike|shd|numPr|ilvl|numId|lastRenderedPageBreak|proofErr|rtl|cs|bdr|webHidden|vanish|specVanish|em|effect|fitText|eastAsianLayout|snapToGrid|contextualSpacing|keepNext|keepLines|widowControl|outlineLvl|sectPr|delText|ins|del|instrText|fldChar|fldSimple|hyperlink|bookmarkStart|bookmarkEnd|softHyphen|noBreakHyphen|sym|cr|ptab|fldData)( |>)/;
+        const census = xmlCensusDiff(before['word/document.xml'], saved['word/document.xml']);
+        result.lost = Object.entries(census).filter(([key, [was, now]]) => now < was && !formatting.test(key)).map(([key, [was, now]]) => `${key} ${was}->${now}`);
+    }
     // (The paragraphs the model wrote, of the body: a block written whole, a paragraph of a table written alone.
     // A paragraph spliced from its source - docs/save-architecture.md - is one kept in the XML it was read from.)
     result.model = report.GeneratedParagraphs - (report.SplicedParagraphs ?? 0);
