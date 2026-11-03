@@ -248,6 +248,15 @@ type InputHandler = {
     /// Put plain text in at the caret, or over the selection, as Ctrl+V does
     /// (its lines are paragraphs; one undo step). Set when the handler is made.
     mutable PasteText: string -> unit
+    /// Paste what the clipboard has, its text and its HTML (either may be
+    /// empty), as Ctrl+V does: what the last Copy kept, with its formatting,
+    /// while the text is its text; else the HTML with its formatting; else the
+    /// text. One undo step. Set when the handler is made.
+    mutable PasteClipboard: string -> string -> unit
+    /// Copy (true: Cut) the selection, as Ctrl+C / Ctrl+X do: kept for Paste;
+    /// its text and its HTML for the system clipboard, None with nothing
+    /// selected. Set when the handler is made.
+    mutable CopyToClipboard: bool -> (string * string) option
     /// The shape that is selected (see selectShape): its frame and handles
     /// are painted, the pointer drags it by its frame and resizes it by its
     /// handles, Delete takes it out, the arrow keys move it, Escape lets go of it.
@@ -277,6 +286,50 @@ let private proxyValue (_element: HTMLElement) : string = jsNative
 
 [<Emit("$0.value = $1")>]
 let private setProxyValue (_element: HTMLElement) (_value: string) : unit = jsNative
+
+[<Emit("$0.select()")>]
+let private selectProxyText (_element: HTMLElement) : unit = jsNative
+
+[<Emit("setTimeout($0, 0)")>]
+let private soon (_action: unit -> unit) : unit = jsNative
+
+// ---- the clipboard -----------------------------------------------------------
+// Copy and Cut put the selection's text and its HTML on the system clipboard
+// and keep what they copied as a clip (Doc.copySelection); Paste puts the
+// clip back with its formatting while the clipboard's text is still the
+// clip's, else the clipboard's HTML (from Word, a browser, a mail), else its
+// text. The keys work through the browser's own copy, cut and paste events
+// on the input proxy: no permission is asked, and the HTML reaches us.
+
+/// What the last Copy or Cut of an editor on the page kept.
+let mutable private lastClip : Doc.Clip option = None
+
+[<Emit("(function (h) { try { return new DOMParser().parseFromString(h, 'text/html').body; } catch (e) { return null; } })($0)")>]
+let private parseHtmlBody (_html: string) : obj = jsNative
+
+[<Emit("Array.from($0 || [])")>]
+let private arrayOf (_list: obj) : obj array = jsNative
+
+let rec private htmlNodeOf (node: obj) : Doc.HtmlNode option =
+    match unbox<int> node?nodeType with
+    | 3 -> Some (Doc.HtmlText (unbox<string> node?nodeValue))
+    | 1 ->
+        let tag = (unbox<string> node?tagName).ToLowerInvariant()
+        let attributes =
+            arrayOf node?attributes
+            |> Array.map (fun attribute -> (unbox<string> attribute?name).ToLowerInvariant(), unbox<string> attribute?value)
+            |> List.ofArray
+        let children = arrayOf node?childNodes |> Array.choose htmlNodeOf |> List.ofArray
+        Some (Doc.HtmlElement (tag, attributes, children))
+    | _ -> None
+
+/// The clipboard's HTML as a clip (see Doc.clipOfHtml); None for no HTML, or HTML without text.
+let htmlClip (html: string) : Doc.Clip option =
+    if System.String.IsNullOrWhiteSpace html then None
+    else
+        let body = parseHtmlBody html
+        if isNull body then None
+        else arrayOf body?childNodes |> Array.choose htmlNodeOf |> List.ofArray |> Doc.clipOfHtml
 
 // ---- a header or footer edited in place --------------------------------------
 
@@ -853,6 +906,8 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         Pending = None
         OnPendingFormat = ignore
         PasteText = ignore
+        PasteClipboard = fun _ _ -> ()
+        CopyToClipboard = fun _ -> None
         SelectedShape = None
         ShapeDrag = None
         OnShapeSelection = ignore
@@ -1207,6 +1262,47 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                 handler.OnChange doc''
     handler.PasteText <- pasteText
 
+    /// An edit of the clipboard (a paste, a cut) as one undo step, shown.
+    let commitClipboardEdit (description: string) (afterDoc: Doc.Document) =
+        let beforeDoc = handler.Document
+        if not (documentsEqualForChange afterDoc beforeDoc) then
+            let cmd = DeleteTextCommand(beforeDoc, afterDoc, description) :> ICommand
+            let doc', history = Cmd.execute cmd beforeDoc handler.History
+            dropPendingFormat handler doc'
+            handler.Document <- doc'
+            handler.History <- storyHistory handler handler.History history
+            renderWithHover handler.RenderContext doc' handler.HoveredImage
+            handler.SyncInputProxy doc'
+            handler.OnChange doc'
+
+    /// Copy (cut: and Cut): the selection kept as the clip to paste, and its
+    /// text and HTML for the system clipboard. None with nothing selected.
+    let copyToClipboard (cut: bool) : (string * string) option =
+        match Doc.copySelection handler.Document with
+        | None -> None
+        | Some clip ->
+            lastClip <- Some clip
+            if cut then commitClipboardEdit "Cut" (deleteSelectionForMode handler.Document)
+            Some (clip.Text, Doc.clipToHtml clip)
+
+    /// Paste the clipboard's `text` and `html` (either may be empty): the
+    /// clip Copy kept while the text is still its text, with its formatting;
+    /// else the HTML's text with its formatting; else the text (pasteText).
+    /// With changes tracked: the text.
+    let pasteClipboard (text: string) (html: string) =
+        let text = if isNull text then "" else text
+        let normalize (value: string) = value.Replace("\r\n", "\n").Replace("\r", "\n")
+        let clip =
+            if handler.TrackChanges then None
+            else
+                match lastClip with
+                | Some clip when text <> "" && normalize text = normalize clip.Text -> Some clip
+                | _ -> htmlClip html
+        match clip with
+        | Some clip -> commitClipboardEdit "Paste" (Doc.pasteClip clip handler.Document)
+        | None -> pasteText text
+    handler.PasteClipboard <- pasteClipboard
+    handler.CopyToClipboard <- copyToClipboard
 
     let deleteBackwardForMode doc =
         if handler.TrackChanges then Doc.trackDeleteBackward handler.TrackChangesAuthor handler.TrackChangesDate doc else Doc.deleteBackward doc
@@ -1408,32 +1504,31 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         | "3" when commandKey ->
             newDoc <- Doc.setHeadingLevel 3 handler.Document
             e.preventDefault()
-        | key when commandKey && keyEquals 'c' key ->
-            // Copy (Ctrl+C)
-            let text = Doc.getSelectionText handler.Document
-            if text <> "" then
-                Clipboard.copyText text |> ignore
-            e.preventDefault()
-        | key when commandKey && keyEquals 'x' key ->
-            // Cut (Ctrl+X)
-            let text = Doc.getSelectionText handler.Document
-            if text <> "" then
-                Clipboard.copyText text |> ignore
-                // Delete selection
-                let beforeDoc = handler.Document
-                let afterDoc = deleteSelectionForMode handler.Document
-                if not (documentsEqualForChange afterDoc beforeDoc) then
-                    let cmd = DeleteTextCommand(beforeDoc, afterDoc, "Cut") :> ICommand
-                    let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
-                    newDoc <- doc'
-                    newHistory <- hist'
-                    useCommand <- true
-            e.preventDefault()
-        | key when commandKey && keyEquals 'v' key ->
-            // Paste (Ctrl+V)
-            e.preventDefault()
-            Clipboard.pasteText().``then``(fun text -> pasteText text
-            ) |> ignore
+        | key when commandKey && not ke.altKey && (keyEquals 'c' key || keyEquals 'x' key || keyEquals 'v' key) ->
+            // Copy, Cut, Paste. On the input proxy the browser's own copy / cut /
+            // paste event follows the key (see the listeners below): the key is
+            // left to it. For a browser that copies only what is selected, the
+            // selection's text is put in the proxy, selected, until then.
+            let fromProxy = match handler.InputProxy with Some element -> obj.ReferenceEquals(e.target, element) | None -> false
+            if fromProxy then
+                match handler.InputProxy with
+                | Some element when not (keyEquals 'v' key) ->
+                    let text = Doc.getSelectionText handler.Document
+                    if text <> "" then
+                        setProxyValue element text
+                        selectProxyText element
+                        soon (fun () -> if proxyValue element = text then setProxyValue element "")
+                | _ -> ()
+            else
+                // (The key reached the canvas itself: through the asynchronous clipboard.)
+                e.preventDefault()
+                if keyEquals 'v' key then
+                    Clipboard.pasteText().``then``(fun text -> pasteClipboard text "") |> ignore
+                else
+                    let copied = copyToClipboard (keyEquals 'x' key)
+                    // (A cut has changed the document already.)
+                    newDoc <- handler.Document
+                    copied |> Option.iter (fun (text, _) -> Clipboard.copyText text |> ignore)
         | "Backspace" ->
             let beforeDoc = handler.Document
             // (Ctrl+Backspace, Option+Backspace on a Mac: the word before the caret.)
@@ -1759,6 +1854,27 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                 e.preventDefault()
                 commitInput "Typing" (insertTextForMode "\n" handler.Document)
             | _ -> ())
+
+    // The browser's copy / cut / paste on the proxy (Ctrl+C / X / V, the
+    // browser's menu): the clipboard is the editor's selection, not the proxy's text.
+    let onCopy (cut: bool) (e: Event) =
+        let data = e?clipboardData
+        if not (isNull data) && handler.Composition.IsNone then
+            match copyToClipboard cut with
+            | Some (text, html) ->
+                data?setData("text/plain", text) |> ignore
+                data?setData("text/html", html) |> ignore
+                e.preventDefault()
+            | None -> ()
+            setProxyValue proxy ""
+    proxy.addEventListener("copy", onCopy false)
+    proxy.addEventListener("cut", onCopy true)
+    proxy.addEventListener("paste", fun (e: Event) ->
+        let data = e?clipboardData
+        if not (isNull data) && handler.Composition.IsNone then
+            e.preventDefault()
+            let read (kind: string) = match unbox<string> (data?getData(kind)) with null -> "" | value -> value
+            pasteClipboard (read "text/plain") (read "text/html"))
 
     proxy.addEventListener("input", fun (_: Event) ->
         // Whatever still reached the proxy (a paste from the context menu, an

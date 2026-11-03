@@ -91,5 +91,64 @@ try {
         Word.dispose(editor);
     }
 
+    // ---- copy, cut and paste with formatting ----
+    {
+        const editor = Word.initialize('c');
+        Word.setParagraphs(editor, ['Hello bold world', 'Second', '']);
+        const ids = [...new Set(Word.getLayoutLines(editor).map((line) => line.BlockId))];
+        const proxy = Word.getInputElement(editor);
+        canvas.focus();
+        const text = () => Word.getText(editor);
+        const boldIn = (block, from, to) => { Word.setSelection(editor, block, from, block, to); return Word.getSelectionFormat(editor).Bold; };
+        const blockOf = (start) => Word.getLayoutLines(editor).find((line) => (line.Text ?? '').startsWith(start)).BlockId;
+        const clipboardEvent = (type, data) => { const event = new ClipboardEvent(type, { clipboardData: data, bubbles: true, cancelable: true }); proxy.dispatchEvent(event); return event.defaultPrevented; };
+        const paste = (plain, html) => { const data = new DataTransfer(); if (plain) data.setData('text/plain', plain); if (html) data.setData('text/html', html); return clipboardEvent('paste', data); };
+        Word.setSelection(editor, ids[0], 6, ids[0], 10);
+        Word.toggleBold(editor);
+        // Ctrl+C: left to the browser, whose copy event follows; meanwhile the proxy has the selection's text, selected.
+        const prevented = key(proxy, 'c', { ctrlKey: true });
+        check('Ctrl+C is left to the browser, the selection is in the proxy, selected', [prevented, proxy.value, proxy.selectionStart, proxy.selectionEnd], [false, 'bold', 0, 4]);
+        const copied = new DataTransfer();
+        check('the copy event is taken', clipboardEvent('copy', copied), true);
+        check('copied: text and HTML; the proxy is empty again', [copied.getData('text/plain'), copied.getData('text/html'), proxy.value], ['bold', '<p><span style="font-weight:bold">bold</span></p>', '']);
+        Word.setSelection(editor, ids[1], 6, ids[1], 6);
+        check('Ctrl+V is left to the browser', key(proxy, 'v', { ctrlKey: true }), false);
+        check('the paste event is taken', paste('bold', copied.getData('text/html')), true);
+        check('pasted with its formatting', [text(), boldIn(ids[1], 6, 10), boldIn(ids[1], 0, 6)], ['Hello bold world\nSecondbold\n', true, false]);
+        check('one undo step', [Word.undo(editor), text()], [true, 'Hello bold world\nSecond\n']);
+        // Other text on the clipboard than was copied: that text (the HTML there is not ours).
+        Word.setSelection(editor, ids[1], 0, ids[1], 0);
+        paste('plain ', '');
+        check('other text: as text', [text(), boldIn(ids[1], 0, 6)], ['Hello bold world\nplain Second\n', false]);
+        Word.undo(editor);
+        // HTML of another program: its paragraphs, list and formatting.
+        key(proxy, 'End', { ctrlKey: true });   // (the empty paragraph at the end)
+        paste('x Big\nitem\nend', '<html><body><!--StartFragment--><p>x <b>Big</b></p><ul><li>item</li></ul><p>end</p><!--EndFragment--></body></html>');
+        check('HTML from elsewhere: its paragraphs', text(), 'Hello bold world\nSecond\nx Big\nitem\nend');
+        check('... its bold text', boldIn(blockOf('x Big'), 2, 5), true);
+        Word.setSelection(editor, blockOf('item'), 1, blockOf('item'), 1);
+        check('... its list', Word.getSelectionFormat(editor).Paragraph.ListKind, 'bullet');
+        check('... one undo step', [Word.undo(editor), text()], [true, 'Hello bold world\nSecond\n']);
+        // Cut.
+        Word.setSelection(editor, ids[0], 0, ids[0], 6);
+        const cut = new DataTransfer();
+        clipboardEvent('cut', cut);
+        check('cut: copied and taken out', [cut.getData('text/plain'), text()], ['Hello ', 'bold world\nSecond\n']);
+        check('... one undo step', [Word.undo(editor), text()], [true, 'Hello bold world\nSecond\n']);
+        // With nothing selected a copy event is the browser's.
+        Word.setSelection(editor, ids[0], 2, ids[0], 2);
+        check('nothing selected: the copy event is left alone', clipboardEvent('copy', new DataTransfer()), false);
+        // The host's menu: copySelection / cutSelection / pasteClipboard.
+        Word.setSelection(editor, ids[0], 6, ids[0], 10);
+        const fromApi = Word.copySelection(editor);
+        check('copySelection', [fromApi.Text, fromApi.Html], ['bold', '<p><span style="font-weight:bold">bold</span></p>']);
+        Word.setSelection(editor, ids[0], 0, ids[0], 0);
+        Word.pasteClipboard(editor, 'bold', null);
+        check('pasteClipboard: the copy, with its formatting', [text().split('\n')[0], boldIn(ids[0], 0, 4)], ['boldHello bold world', true]);
+        Word.setSelection(editor, ids[0], 0, ids[0], 4);
+        check('cutSelection', [Word.cutSelection(editor).Text, text().split('\n')[0]], ['bold', 'Hello bold world']);
+        check('copySelection with nothing selected', Word.copySelection(editor), null);
+        Word.dispose(editor);
+    }
 } catch (e) { fail(e); }
 finish();
