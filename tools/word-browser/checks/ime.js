@@ -70,8 +70,8 @@ try {
   proxy.value = 'pasted';
   proxy.dispatchEvent(new InputEvent('input', { inputType: 'insertFromPaste', bubbles: true }));
   check('input fallback takes the proxy text', [Word.getText(editor), proxy.value], ['abc你好épasted', '']);
-  // undo steps: a b c | 你好 | é | 😀 | delete | pasted  = 8
-  check('each input is one undo step', undoStepsToEmpty(), 8);
+  // undo steps: abc (keys typed one after the other are one) | 你好 | é | 😀 | delete | pasted  = 6
+  check('each input is one undo step', undoStepsToEmpty(), 6);
   check('all undone', Word.getText(editor), '');
   // --- ordinary keys after all that
   for (const ch of 'ok') key(proxy, ch);

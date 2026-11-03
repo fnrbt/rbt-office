@@ -298,7 +298,7 @@ The editor handles these keys itself, on its canvas and its input element
 | Ctrl+Tab | a tab character in a table cell |
 | Arrows, Home, End, PageUp, PageDown | the caret; with Shift the selection; Ctrl+Left / Right by words, Ctrl+Up / Down by paragraphs, Ctrl+Home / End the ends of the document |
 | Ctrl+A, Ctrl+C, Ctrl+X, Ctrl+V | everything, copy, cut, paste (plain text) |
-| Ctrl+Z, Ctrl+Y, Ctrl+Shift+Z | undo, redo |
+| Ctrl+Z, Ctrl+Y, Ctrl+Shift+Z | undo, redo (keys typed one after the other are one step, as in Word - so are Backspaces, and Deletes; a caret move, another key or a format chosen starts the next) |
 | Ctrl+B, Ctrl+I, Ctrl+U | bold, italic, underline |
 | Ctrl+1, Ctrl+2, Ctrl+3 | heading 1 - 3 |
 | Escape | out of a header, a footer or a text box that is edited |

@@ -176,6 +176,22 @@ type PendingFormat = {
     PendingStyle: TextBuffer.TextStyle
 }
 
+/// Keys typed one after the other make one undo step, as in Word: a run of
+/// typed characters, of Backspaces, of Deletes. The run goes on while each
+/// keystroke starts from the document the one before it left (no caret move,
+/// no other edit in between) and the run's step is still the last one of the
+/// history.
+type TypingRun = {
+    /// "type", "backspace" or "delete".
+    Kind: string
+    /// The document before the run's first keystroke: what its step undoes to.
+    Start: Doc.Document
+    /// The document after its last keystroke.
+    After: Doc.Document
+    /// The run's step in the history (the top of the undo list while the run goes on).
+    Step: ICommand
+}
+
 /// Input handler state
 type InputHandler = {
     Canvas: HTMLCanvasElement
@@ -240,6 +256,8 @@ type InputHandler = {
     mutable ShapeDrag: ShapeDragState option
     /// Called when another shape, or none, is selected (set by the editor).
     mutable OnShapeSelection: unit -> unit
+    /// The run of typing the last undo step is, while it can go on (see TypingRun).
+    mutable Typing: TypingRun option
 }
 
 [<Emit("$0.focus({ preventScroll: true })")>]
@@ -461,9 +479,38 @@ let private hideStory (handler: InputHandler) =
 /// changes are not recorded.
 let private recordChange (handler: InputHandler) (description: string) (beforeDoc: Doc.Document) (afterDoc: Doc.Document) =
     if not (sameContent beforeDoc afterDoc) then
+        handler.Typing <- None
         let cmd = DeleteTextCommand(beforeDoc, afterDoc, description) :> ICommand
         let _, history = Cmd.execute cmd beforeDoc handler.History
         handler.History <- storyHistory handler handler.History history
+
+/// The history with a keystroke of a run of typing (`kind`: see TypingRun)
+/// that made `afterDoc` of `beforeDoc`: the run's step undoes it too when the
+/// keystroke goes on from where the run's last one left the document,
+/// otherwise the keystroke starts a run of its own, a new step.
+let private typingHistory (handler: InputHandler) (kind: string) (description: string) (beforeDoc: Doc.Document) (afterDoc: Doc.Document) : CommandHistory =
+    let continued =
+        match handler.Typing, handler.History.Undos with
+        | Some run, top :: rest when run.Kind = kind && obj.ReferenceEquals(top, run.Step) && obj.ReferenceEquals(beforeDoc, run.After) -> Some (run, rest)
+        | _ -> None
+    let start, below =
+        match continued with
+        | Some (run, rest) -> run.Start, { handler.History with Undos = rest }
+        | None -> beforeDoc, handler.History
+    let cmd = DeleteTextCommand(start, afterDoc, description) :> ICommand
+    let _, history = Cmd.execute cmd start below
+    let history = storyHistory handler below history
+    handler.Typing <- Some { Kind = kind; Start = start; After = afterDoc; Step = List.head history.Undos }
+    history
+
+/// A keystroke of a run of typing made `afterDoc` of the handler's document:
+/// recorded (see typingHistory) and shown.
+let private commitTyping (handler: InputHandler) (kind: string) (description: string) (afterDoc: Doc.Document) : bool =
+    let beforeDoc = handler.Document
+    if sameContent beforeDoc afterDoc then false
+    else
+        handler.History <- typingHistory handler kind description beforeDoc afterDoc
+        true
 
 let private showDocument (handler: InputHandler) (doc: Doc.Document) =
     handler.Document <- doc
@@ -476,6 +523,8 @@ let private showDocument (handler: InputHandler) (doc: Doc.Document) =
 /// to work on - the story's when the step was made in a header or footer
 /// (which is then the story on display), the whole document otherwise.
 let private historyStep (handler: InputHandler) (step: Doc.Document -> CommandHistory -> Doc.Document * CommandHistory) : Doc.Document * CommandHistory =
+    // (What is typed after an undo or a redo is a step of its own.)
+    handler.Typing <- None
     handler.HistoryStory <- None
     handler.HistoryPlace <- None
     let whole, history = step (wholeDocument handler handler.Document) handler.History
@@ -598,6 +647,8 @@ let formatAtCaret (handler: InputHandler) (command: Doc.Document -> Doc.Document
     | Some (probe, at) ->
         match styleOfCharacterAt probe at, styleOfCharacterAt (command probe) at with
         | Some before, Some style when before <> style ->
+            // (What is typed in the format chosen is a step of its own.)
+            handler.Typing <- None
             handler.Pending <- Some { PendingDocument = handler.Document; PendingStyle = style }
             handler.OnPendingFormat ()
         | _ -> ()
@@ -805,6 +856,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         SelectedShape = None
         ShapeDrag = None
         OnShapeSelection = ignore
+        Typing = None
     }
 
     // ---- caret movement over the layout that is on screen -------------------
@@ -1155,6 +1207,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                 handler.OnChange doc''
     handler.PasteText <- pasteText
 
+
     let deleteBackwardForMode doc =
         if handler.TrackChanges then Doc.trackDeleteBackward handler.TrackChangesAuthor handler.TrackChangesDate doc else Doc.deleteBackward doc
 
@@ -1223,7 +1276,8 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         let mutable newDoc = handler.Document
         let mutable newHistory = handler.History
         let mutable useCommand = false
-        // An undo / redo step: the history it hands back holds no new command.
+        // An undo / redo step, or a keystroke of a run of typing: the history
+        // in newHistory is the one to keep as it is (storyHistory is not applied).
         let mutable stepped = false
         // Up / Down / PageUp / PageDown keep their column from one to the next.
         let goalBefore = handler.GoalX
@@ -1383,23 +1437,36 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         | "Backspace" ->
             let beforeDoc = handler.Document
             // (Ctrl+Backspace, Option+Backspace on a Mac: the word before the caret.)
-            let afterDoc = if ke.ctrlKey || ke.altKey then deleteWordForMode false handler.Document else deleteBackwardForMode handler.Document
+            let byWord = ke.ctrlKey || ke.altKey
+            let afterDoc = if byWord then deleteWordForMode false handler.Document else deleteBackwardForMode handler.Document
             if not (documentsEqualForChange afterDoc beforeDoc) then
-                let cmd = DeleteTextCommand(beforeDoc, afterDoc, "Delete backward") :> ICommand
-                let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
-                newDoc <- doc'
-                newHistory <- hist'
+                if byWord then
+                    let cmd = DeleteTextCommand(beforeDoc, afterDoc, "Delete backward") :> ICommand
+                    let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
+                    newDoc <- doc'
+                    newHistory <- hist'
+                else
+                    // (Backspaces one after the other are one undo step.)
+                    newDoc <- afterDoc
+                    newHistory <- typingHistory handler "backspace" "Delete backward" beforeDoc afterDoc
+                    stepped <- true
                 useCommand <- true
             e.preventDefault()
         | "Delete" ->
             let beforeDoc = handler.Document
             // (Ctrl+Delete: the word after the caret.)
-            let afterDoc = if ke.ctrlKey || ke.altKey then deleteWordForMode true handler.Document else deleteForwardForMode handler.Document
+            let byWord = ke.ctrlKey || ke.altKey
+            let afterDoc = if byWord then deleteWordForMode true handler.Document else deleteForwardForMode handler.Document
             if not (documentsEqualForChange afterDoc beforeDoc) then
-                let cmd = DeleteTextCommand(beforeDoc, afterDoc, "Delete forward") :> ICommand
-                let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
-                newDoc <- doc'
-                newHistory <- hist'
+                if byWord then
+                    let cmd = DeleteTextCommand(beforeDoc, afterDoc, "Delete forward") :> ICommand
+                    let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
+                    newDoc <- doc'
+                    newHistory <- hist'
+                else
+                    newDoc <- afterDoc
+                    newHistory <- typingHistory handler "delete" "Delete forward" beforeDoc afterDoc
+                    stepped <- true
                 useCommand <- true
             e.preventDefault()
         | "ArrowLeft" ->
@@ -1528,10 +1595,10 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             let beforeDoc = handler.Document
             let afterDoc = insertTextForMode key handler.Document
             if not (documentsEqualForChange afterDoc beforeDoc) then
-                let cmd = DeleteTextCommand(beforeDoc, afterDoc, sprintf "Insert '%s'" key) :> ICommand
-                let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
-                newDoc <- doc'
-                newHistory <- hist'
+                // (Characters typed one after the other are one undo step, as in Word.)
+                newDoc <- afterDoc
+                newHistory <- typingHistory handler "type" "Typing" beforeDoc afterDoc
+                stepped <- true
                 useCommand <- true
             e.preventDefault()
         | _ -> ()
@@ -1622,11 +1689,14 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         renderWithHover handler.RenderContext preview handler.HoveredImage
         syncInputProxy preview
 
-    /// Text that arrived through the proxy becomes one undo step.
-    let commitInput description (afterDoc: Doc.Document) =
+    /// Text that arrived through the proxy becomes one undo step; with a
+    /// `typing` kind (see TypingRun) it goes on the run of typing before it.
+    let commitInputAs (typing: string option) description (afterDoc: Doc.Document) =
         let beforeDoc = handler.Document
         if not (documentsEqualForChange afterDoc beforeDoc) then
-            recordChange handler description beforeDoc afterDoc
+            match typing with
+            | Some kind -> commitTyping handler kind description afterDoc |> ignore
+            | None -> recordChange handler description beforeDoc afterDoc
             dropPendingFormat handler afterDoc
             handler.Document <- afterDoc
             renderWithHover handler.RenderContext afterDoc handler.HoveredImage
@@ -1636,6 +1706,8 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             // Take a composition preview off the canvas again.
             renderWithHover handler.RenderContext beforeDoc handler.HoveredImage
             syncInputProxy beforeDoc
+
+    let commitInput description afterDoc = commitInputAs None description afterDoc
 
     proxy.addEventListener("keydown", onKeyDown)
 
@@ -1670,13 +1742,13 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                 | null | "" -> ()
                 | data ->
                     e.preventDefault()
-                    commitInput "Typing" (insertTextForMode data handler.Document)
+                    commitInputAs (Some "type") "Typing" (insertTextForMode data handler.Document)
             | "deleteContentBackward" ->
                 e.preventDefault()
-                commitInput "Delete" (deleteBackwardForMode handler.Document)
+                commitInputAs (Some "backspace") "Delete backward" (deleteBackwardForMode handler.Document)
             | "deleteContentForward" ->
                 e.preventDefault()
-                commitInput "Delete" (deleteForwardForMode handler.Document)
+                commitInputAs (Some "delete") "Delete forward" (deleteForwardForMode handler.Document)
             | "deleteWordBackward" ->
                 e.preventDefault()
                 commitInput "Delete" (deleteWordForMode false handler.Document)
