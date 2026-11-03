@@ -1,5 +1,6 @@
 import fs from "fs";
-const C = await import("/home/dave/Dev/redbat-office-viewers/node_modules/.pnpm/@rbt+client@0.1.0/node_modules/@rbt/client/dist/index.js");
+// (@rbt/client of an installed redbat checkout: RBT_CLIENT=<path to its dist/index.js>.)
+const C = await import(process.env.RBT_CLIENT ?? "/home/dave/Dev/redbat-office-viewers/node_modules/.pnpm/@rbt+client@0.1.0/node_modules/@rbt/client/dist/index.js");
 const BASE = "http://10.34.110.90:18082";
 const dev = fs.readFileSync("/home/dave/instances/mega-source/run/keys/dev-cookie", "utf8").trim();
 let cookies = "";
