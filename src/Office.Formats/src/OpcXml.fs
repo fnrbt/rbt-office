@@ -205,3 +205,10 @@ let relationshipIdsOfPart (xml: string) : Set<string> =
     match root xml with
     | Some part -> referencesIn [ part.Node ] |> Set.ofList
     | None -> Set.empty
+
+/// The kind of a relationship by its type: the last segment of the type (".../relationships/worksheet" ->
+/// "worksheet").
+let relationshipKind (relType: string) : string = PartPath.fileName relType
+
+/// Whether a relationship target names a place in the part itself ("#Sheet1!A1"), not a part.
+let isAnchorTarget (target: string) : bool = target.StartsWith "#"
