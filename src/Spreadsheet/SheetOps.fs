@@ -2668,11 +2668,11 @@ let tableStyleFills (styleName: string) : string * string =
     else "#" + accents.[slot - 1], CF.blendColors ("#" + accents.[slot - 1]) "#FFFFFF" 0.8
 
 /// The style record of a built-in table style ("TableStyleMedium2") with
-/// banded rows, as Excel applies one.
+/// banded rows, as Excel applies one: Excel's definition of the style in the
+/// colours of the Office theme (no elements for a name Excel does not have).
 let tableStyleNamed (name: string) : TableStyle =
-    let header, stripe = tableStyleFills name
     { Name = name; ShowFirstColumn = false; ShowLastColumn = false; ShowRowStripes = true; ShowColumnStripes = false
-      HeaderFill = Some header; StripeFill = Some stripe }
+      Elements = TableStyles.builtIn TableStyles.officeTheme name |> Option.defaultValue [] }
 
 let defaultTableStyleName = "TableStyleMedium2"
 

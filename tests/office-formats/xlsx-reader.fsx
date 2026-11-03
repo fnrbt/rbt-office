@@ -166,6 +166,8 @@ let mkWorkbook sheet : XlsxReader.Workbook =
         Relationships = []
         NamedRanges = []
         ThemeAccents = [||]
+        ThemeColors = [||]
+        TableStyles = []
         Date1904 = false
         Preserved = XlsxReader.emptyWorkbookPreservation
     }

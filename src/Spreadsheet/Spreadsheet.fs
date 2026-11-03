@@ -894,6 +894,24 @@ type Spreadsheet(container: Element) =
     let drawnObjects = System.Collections.Generic.Dictionary<string, string * float * float * string * (string * int * int * int * int * CellData option [] []) array>()
     /// The cells of every sheet as the charts on display were last drawn from them.
     let mutable chartStamp : obj array = [||]
+    /// The looks the styles of the tables give their cells, as last worked out, for the tables (the list of
+    /// the sheet, by reference) they were worked out for: a cell's look is asked for by it and by the cells
+    /// that share its edges.
+    let tableLooks = System.Collections.Generic.Dictionary<float, TableCellLook option>()
+    let mutable tableLooksOf : Rbt.Spreadsheet.Model.Table list = []
+    let tableLookAt (tables: Rbt.Spreadsheet.Model.Table list) (row: int) (col: int) : TableCellLook option =
+        if tables.IsEmpty || row < 0 || col < 0 then None
+        else
+            if not (obj.ReferenceEquals(tableLooksOf, tables)) || tableLooks.Count > 200000 then
+                tableLooks.Clear()
+                tableLooksOf <- tables
+            let key = float row * 16384.0 + float col
+            match tableLooks.TryGetValue key with
+            | true, look -> look
+            | _ ->
+                let look = tables |> List.tryPick (fun own -> tableCellLook own row col)
+                tableLooks.[key] <- look
+                look
     let drawingPartsOf (sheet: SpreadsheetModel) : SpreadsheetCharts.DrawingParts option =
         match xlsxSource, sheet.SourceSheet with
         | Some source, Some origin when origin.Book = source.Id && origin.Sheet >= 0 && origin.Sheet < source.Workbook.Sheets.Length ->
@@ -3395,16 +3413,23 @@ type Spreadsheet(container: Element) =
                           style, table.HasTotals && row = table.EndRow)
                 else None)
         // What the table's style gives the cell (header, total row, bands, first / last column).
-        let tableLook =
-            if model.Tables.IsEmpty then None
-            else model.Tables |> List.tryPick (fun own -> tableCellLook own row col)
+        let tableLook = tableLookAt model.Tables row col
         match tableLook with
         | Some look ->
             match look.Fill with Some fill -> add "background-color" fill | None -> ()
             match look.Text with Some color -> add "color" color | None -> ()
             if look.Bold then add "font-weight" "bold"
-            match look.Lines with Some color -> gridColor <- color | None -> ()
+            if look.Italic then add "font-style" "italic"
         | None -> ()
+        // A cell's format with its table's look under it, for the edges it shares with its neighbours.
+        let tableData (r: int) (c: int) (data: CellData option) : CellData option =
+            if model.Tables.IsEmpty then data
+            else
+                match tableLookAt model.Tables r c with
+                | Some look ->
+                    let own = data |> Option.defaultValue { Value = CellValue.Empty; Format = defaultFormat; Comment = None }
+                    Some { own with Format = formatWithTableLook look own.Format }
+                | None -> data
         match (if tableLook.IsSome then None else tableInfo) with
         | Some (true, _, _, _) ->
             add "background" "linear-gradient(180deg, #4472C4 0%, #2E5AA8 100%)"
@@ -3421,7 +3446,7 @@ type Spreadsheet(container: Element) =
         // The cell's own format (over the table's).
         match cellData with
         | Some data ->
-            let format = data.Format
+            let format = match tableLook with Some look -> formatWithTableLook look data.Format | None -> data.Format
             if format.Bold then add "font-weight" "bold"
             if format.Italic then add "font-style" "italic"
             if format.Underline || format.UnderlineDouble || format.Strikethrough then
@@ -3539,9 +3564,10 @@ type Spreadsheet(container: Element) =
         // left, and the one above that (for the corner between them).
         let above = SpreadsheetLayout.rowShownBefore model row
         let before = SpreadsheetLayout.columnShownBefore model col
-        let aboveData = cellAt above col
-        let leftData = cellAt row before
-        let cornerData = cellAt above before
+        let aboveData = cellAt above col |> tableData above col
+        let leftData = cellAt row before |> tableData row before
+        let cornerData = cellAt above before |> tableData above before
+        let ownData = tableData row col cellData
         let plainSheet = model.MergedCells.IsEmpty
         // (Without merged cells an edge follows from the two cells' formats: no further look-ups.)
         let edgeBetween (first: CellData option) (second: CellData option) (horizontal: bool) (hasFirst: bool) =
@@ -3555,10 +3581,10 @@ type Spreadsheet(container: Element) =
             | Some line -> SpreadsheetLayout.EdgeBorder line
             | None -> SpreadsheetLayout.EdgeGrid (model.ShowGridLines && not (hasFirst && filled first) && not (filled second))
         let topRuns =
-            if plainSheet then [ 0.0, w, edgeBetween aboveData cellData true (above >= 0) ]
+            if plainSheet then [ 0.0, w, edgeBetween aboveData ownData true (above >= 0) ]
             else runsAlong col endCol columnStart (fun c -> SpreadsheetLayout.edgeAbove model row c)
         let leftRuns =
-            if plainSheet then [ 0.0, h, edgeBetween leftData cellData false (before >= 0) ]
+            if plainSheet then [ 0.0, h, edgeBetween leftData ownData false (before >= 0) ]
             else runsAlong row endRow rowStart (fun r -> SpreadsheetLayout.edgeLeft model r col)
         // The two edges that end at the cell's top-left corner without being its own:
         // the one coming down from above and the one coming in from the left.
@@ -3770,17 +3796,18 @@ type Spreadsheet(container: Element) =
                 else "transform:translate(-50%,-50%) rotate(" + string (-(Host.rotationDegrees rotation)) + "deg)"
             setCssText turned ("position:absolute;left:50%;top:50%;white-space:nowrap;line-height:normal;text-decoration:inherit;pointer-events:none;" + transform)
             appendChild cell turned
-        // The lines of the table's style above and below the cell (under a header, above a total row).
+        // The lines of the table's style above and below the cell, on a sheet with merged cells (where
+        // the edges are not worked out from the cells' formats with their table's look: `tableData`).
         match tableLook with
-        | Some look ->
-            let line (side: string) (edge: (string * bool) option) =
+        | Some look when not plainSheet ->
+            let line (side: string) (edge: TableStyles.TableLine option) =
                 match edge with
-                | Some (color, isDouble) ->
-                    edgeChildren.Add (1, "position:absolute;pointer-events:none;left:0;right:0;" + side + ":0;height:0;border-" + side + ":" + (if isDouble then "3px double " else "1px solid ") + color)
+                | Some edge ->
+                    edgeChildren.Add (1, "position:absolute;pointer-events:none;left:0;right:0;" + side + ":0;height:0;border-" + side + ":" + borderCss { Style = edge.Style; Color = Some edge.Color })
                 | None -> ()
             line "top" look.Top
             line "bottom" look.Bottom
-        | None -> ()
+        | _ -> ()
         // The weaker edge first: where two meet, the stronger is on top.
         if edgeChildren.Count > 0 then
             for _, style in edgeChildren |> Seq.sortBy fst do

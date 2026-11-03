@@ -69,6 +69,7 @@ stages=(
     stage51-resultformat
     stage52-charts
     stage53-common
+    stage54-tablestyles
     numbertext
 )
 

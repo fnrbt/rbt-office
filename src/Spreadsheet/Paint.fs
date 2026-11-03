@@ -170,7 +170,7 @@ let private buildTableStyleLookup (model: SpreadsheetModel) (visible: VisibleRan
     for table in model.Tables do
         match table.Style with
         | Some style
-            when style.HeaderFill.IsSome
+            when not style.Elements.IsEmpty
               && table.EndRow - 1 >= visible.StartRow
               && table.StartRow - 1 < visible.EndRowExclusive
               && table.EndCol - 1 >= visible.StartCol

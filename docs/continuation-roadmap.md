@@ -29,7 +29,7 @@ redbat (`cardillion-mega` remote): `master` has the 0.1.26 adoption (`e322ec0ad`
    - **Real `.xlsm` / `.docm`:** fix `tools/vba/validate-real-xlsm.sh` (old project names, `wordvm`) for `winvm`; check that macros Excel wrote survive our save and still run in Excel, and that a project we write opens and runs there.
    - **Word:** the object model only answers layout queries; a writable `Range` (`Text`, `InsertAfter`, `Font`, `Paragraphs.Add`) and `.docm` loading, then the same side-by-side check against Word. Meanwhile run `Range.Information` / `ComputeStatistics` over the round-trip set, comparing line and page positions, not only page counts.
 5. **Hosts never run:** run the native hosts interactively, and Firefox, and list what breaks.
-6. **Missing features, by what real files use:** Word flips, `allowOverlap`, text in group shapes and drawing canvases; spreadsheet chartEx (waterfall, funnel, maps), slicers, custom table styles (items 3 and 6 of the `fix/sheet19` handoff).
+6. **Missing features, by what real files use:** Word flips, `allowOverlap`, text in group shapes and drawing canvases; spreadsheet chartEx (waterfall, funnel, maps), slicers (item 3 of the `fix/sheet19` handoff; table styles are on `sheet/table-styles-chartex`).
 7. **Long sheets and source patching:** row and column inserts on long sheets (~1 s at 846,000 cells), sort there unmeasured; more edits patched into the source instead of written from the model (item 7).
 8. Continue with the backlog.
 
@@ -45,7 +45,7 @@ redbat (`cardillion-mega` remote): `master` has the 0.1.26 adoption (`e322ec0ad`
 - chartEx waterfall/funnel/maps and others; slicers and timelines. Radar, bubble, stock and 3-D-as-flat are drawn; bubble and stock have been looked at on synthetic charts only, no workbook in the corpus has them.
 - Shapes: custom geometry, preset polygons, rotation and flips are checked on synthetic shapes only (the corpus has `rect` and `roundRect`, no `rot` or flips). A group's own rotation is ignored. Unwritten: `normAutofit`, `spcBef/spcAft/lnSpc`, `vert`.
 - Print and PDF use the sheet's default row and column sizes. Excel agrees on pages and scale for the lyric-multifamily sheets. Preview: grey outside the print area, frames over frozen panes.
-- Custom table styles; built-in table style palettes.
+- Table styles (branch `sheet/table-styles-chartex`): the built-in styles are Excel's own definitions (ECMA-376 `presetTableStyles.xml`, `src/Spreadsheet/TableStyles.fs`), custom ones come from `<tableStyles>` of styles.xml; `synthetic-table-styles.xlsx` has one of each family and a custom style with every element. Unchecked against Excel (the VM was unreachable). Left: a tint is worked out in floating-point HLS (`Xlsx.applyColorTint`), Excel's integer HLS gives one less in a channel here and there (`#DAE3F3` where Excel shows `#D9E1F2`), in cells as in tables; black text counts as the default font's, so a cell set to black in a white-text header shows white; a style chosen through the host API is in the Office theme's colours, not the workbook's; on a sheet with merged cells the browser grid draws only the lines above and below a table's cells.
 - Source patching: row insert (2 of 110 corpus workbooks patched in place, 105 written from the model), table add (29 / 80 / 1), note add (22 from the model); 24 workbooks never patch.
 - The last rows are unreachable above ~125% zoom in Chromium, and in Firefox.
 - A formula's result-format inheritance follows my reading of Excel's rules, not a check against Excel.

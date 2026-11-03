@@ -766,13 +766,11 @@ type TableStyle = {
     ShowLastColumn: bool
     ShowRowStripes: bool
     ShowColumnStripes: bool
-    /// Pre-resolved header fill / banded-row fill (hex). Set for tables whose
-    /// styling is applied at render time from `model.Tables` (e.g. tables made
-    /// by `createTable`); left None for imported tables whose runner bakes the
-    /// theme-accent styling straight into each cell's format. `applyTableStyles`
-    /// only acts when `HeaderFill` is set, so it never double-styles the corpus.
-    HeaderFill: string option
-    StripeFill: string option
+    /// The style's elements, their colours resolved (`TableStyles`): a built-in style's in the
+    /// workbook's theme, a custom style's from styles.xml. The table is drawn in them at render
+    /// time. Empty for a style that is not known, and for tables a runner bakes the styling of
+    /// into each cell's format itself: `applyTableStyles` and the painter then draw nothing.
+    Elements: TableStyles.TableStyleElement list
 }
 
 /// One table region on a sheet (i.e., `xl/tables/tableN.xml`). Coordinates
@@ -2956,7 +2954,7 @@ let createTable (name: string) (r0: int) (c0: int) (r1: int) (c1: int)
           EndCol = c1 + 1
           HeaderRowCount = 1
           Style = Some { Name = "TableStyleMedium2"; ShowFirstColumn = false; ShowLastColumn = false; ShowRowStripes = true; ShowColumnStripes = false
-                         HeaderFill = Some "#4472C4"; StripeFill = Some "#D9E1F2" }
+                         Elements = TableStyles.builtIn TableStyles.officeTheme "TableStyleMedium2" |> Option.defaultValue [] }
           AutoFilter = Some (c0 + 1, c1 + 1)
           HasTotals = withTotals }
     { m with Tables = m.Tables @ [ table ] }
@@ -2978,144 +2976,52 @@ let tableColumnUniqueValues (table: Table) (col: int) (model: SpreadsheetModel):
     |> List.distinct
     |> List.sort
 
-/// What the style of a table gives one of its cells.
-type TableCellLook = {
-    Fill: string option
-    Text: string option
-    Bold: bool
-    /// Lines above / below the cell: (colour, double).
-    Top: (string * bool) option
-    Bottom: (string * bool) option
-    /// Colour of the cell's grid lines inside the table.
-    Lines: string option
-}
+/// What the style of a table gives one of its cells (`TableStyles.cellLook`).
+type TableCellLook = TableStyles.TableCellLook
 
-/// The look a built-in table style (TableStyleLight1-21, TableStyleMedium1-28,
-/// TableStyleDark1-11) gives the 0-indexed cell of a table: header row, total
-/// row, banded rows and columns, first / last column emphasis. The colour of
-/// the style is the table's `Style.HeaderFill` (the theme accent the style's
-/// number stands for; black for the first of each seven). None for a cell
-/// outside the table and for a table without a (resolved) style.
+/// The look the style of a table (its `Style.Elements`, Excel's definition of a built-in style
+/// or the workbook's custom one) gives the 0-indexed cell of the table: the elements that cover
+/// it - whole table, header and total rows, banded rows and columns, first / last column and the
+/// corner cells, as the table turns them on - laid over each other in Excel's order. None for a
+/// cell outside the table and for a table without a (known) style.
 let tableCellLook (table: Table) (row: int) (col: int) : TableCellLook option =
-    let r0, c0, r1, c1 = table.StartRow - 1, table.StartCol - 1, table.EndRow - 1, table.EndCol - 1
-    if row < r0 || row > r1 || col < c0 || col > c1 then None
-    else
-        match table.Style with
-        | Some style when style.HeaderFill.IsSome ->
-            let accent = style.HeaderFill.Value
-            let channel (hex: string) (at: int) = System.Convert.ToInt32(hex.Substring(at, 2), 16)
-            let mix (first: string) (second: string) (share: float) =
-                let a, b = first.TrimStart('#'), second.TrimStart('#')
-                if a.Length <> 6 || b.Length <> 6 then first
-                else
-                    let part (at: int) =
-                        let value = int (System.Math.Floor (float (channel a at) * (1.0 - share) + float (channel b at) * share + 0.5))
-                        let digits = "0123456789ABCDEF"
-                        string digits.[(max 0 (min 255 value)) / 16] + string digits.[(max 0 (min 255 value)) % 16]
-                    "#" + part 0 + part 2 + part 4
-            let white, black = "#FFFFFF", "#000000"
-            let isBlack = accent.ToUpperInvariant() = black
-            let tint (share: float) = mix accent white share
-            let shade (share: float) = if isBlack then mix "#808080" black share else mix accent black share
-            let name = style.Name
-            let family = if name.Contains "Light" then "Light" elif name.Contains "Dark" then "Dark" else "Medium"
-            let mutable number = 0
-            for ch in name do
-                if ch >= '0' && ch <= '9' && number < 1000 then number <- number * 10 + (int ch - int '0')
-            let group = (max 1 number - 1) / 7
-            let isHeader = row < r0 + table.HeaderRowCount
-            let isTotal = table.HasTotals && row = r1
-            let dataIndex = row - r0 - table.HeaderRowCount
-            let lastData = if table.HasTotals then r1 - 1 else r1
-            let band1 = not isHeader && not isTotal && ((style.ShowRowStripes && dataIndex % 2 = 0) || (style.ShowColumnStripes && (col - c0) % 2 = 0))
-            let band2 = not isHeader && not isTotal && style.ShowRowStripes && dataIndex % 2 = 1
-            let emphasis = not isHeader && not isTotal && ((style.ShowFirstColumn && col = c0) || (style.ShowLastColumn && col = c1))
-            let plain = { Fill = None; Text = None; Bold = false; Top = None; Bottom = None; Lines = None }
-            let stripe = defaultArg style.StripeFill (tint 0.8)
-            let look =
-                match family, group with
-                | "Light", 0 ->
-                    // No fills but the bands; lines above the table, under the header and under the last row.
-                    if isHeader then { plain with Bold = true; Top = Some (accent, false); Bottom = Some (accent, false) }
-                    elif isTotal then { plain with Bold = true; Top = Some (accent, false); Bottom = Some (accent, false) }
-                    else
-                        { plain with
-                            Fill = (if band1 then Some stripe else None)
-                            Bold = emphasis
-                            Top = (if dataIndex = 0 && table.HeaderRowCount = 0 then Some (accent, false) else None)
-                            Bottom = (if row = lastData && not table.HasTotals then Some (accent, false) else None) }
-                | "Light", 1 ->
-                    // A filled header; a line between the rows.
-                    if isHeader then { plain with Fill = Some accent; Text = Some white; Bold = true; Lines = Some accent }
-                    elif isTotal then { plain with Bold = true; Top = Some (accent, true); Lines = Some accent }
-                    else { plain with Bold = emphasis; Top = (if band1 || not style.ShowRowStripes then Some (accent, false) else None); Lines = Some accent }
-                | "Light", _ ->
-                    // A grid of lines; the header is set off by a line.
-                    if isHeader then { plain with Bold = true; Bottom = Some (accent, false); Lines = Some accent }
-                    elif isTotal then { plain with Bold = true; Top = Some (accent, true); Lines = Some accent }
-                    else { plain with Fill = (if band1 then Some (tint 0.8) else None); Bold = emphasis; Lines = Some accent }
-                | "Medium", 0 ->
-                    if isHeader then { plain with Fill = Some accent; Text = Some white; Bold = true }
-                    elif isTotal then { plain with Bold = true; Top = Some (accent, true) }
-                    else { plain with Fill = (if band1 then Some stripe else None); Bold = emphasis }
-                | "Medium", 1 ->
-                    // Every cell filled, white lines between them.
-                    if isHeader then { plain with Fill = Some accent; Text = Some white; Bold = true; Lines = Some white }
-                    elif isTotal then { plain with Fill = Some accent; Text = Some white; Bold = true; Lines = Some white }
-                    elif emphasis then { plain with Fill = Some accent; Text = Some white; Bold = true; Lines = Some white }
-                    else { plain with Fill = Some (if band1 then tint 0.6 else tint 0.8); Lines = Some white }
-                | "Medium", 2 ->
-                    // Grey bands under a coloured header, lines above and below the table.
-                    if isHeader then { plain with Fill = Some accent; Text = Some white; Bold = true; Top = Some (black, false) }
-                    elif isTotal then { plain with Bold = true; Top = Some (black, true); Bottom = Some (black, false) }
-                    elif emphasis then { plain with Fill = Some accent; Text = Some white; Bold = true }
-                    else { plain with Fill = (if band1 then Some "#D9D9D9" else None); Bottom = (if row = lastData && not table.HasTotals then Some (black, false) else None) }
-                | "Medium", _ ->
-                    // Light fills throughout, lines of the colour.
-                    if isHeader then { plain with Fill = Some (tint 0.6); Bold = true; Lines = Some (tint 0.2) }
-                    elif isTotal then { plain with Fill = Some (tint 0.6); Bold = true; Top = Some (accent, false); Lines = Some (tint 0.2) }
-                    else { plain with Fill = Some (if band1 then tint 0.6 else tint 0.8); Bold = emphasis; Lines = Some (tint 0.2) }
-                | "Dark", 0 ->
-                    // Dark fills, white text.
-                    if isHeader then { plain with Fill = Some black; Text = Some white; Bold = true }
-                    elif isTotal then { plain with Fill = Some (shade 0.5); Text = Some white; Bold = true; Top = Some (white, false) }
-                    elif emphasis then { plain with Fill = Some (shade 0.5); Text = Some white; Bold = true }
-                    else { plain with Fill = Some (if band1 then shade 0.25 else (if isBlack then "#808080" else accent)); Text = Some white }
-                | _ ->
-                    if isHeader then { plain with Fill = Some (if isBlack then black else shade 0.25); Text = Some white; Bold = true }
-                    elif isTotal then { plain with Bold = true; Top = Some (black, true) }
-                    else { plain with Fill = Some (if band1 then tint 0.6 else tint 0.8); Bold = emphasis }
-            ignore band2
-            Some look
-        | _ -> None
+    match table.Style with
+    | Some style when not style.Elements.IsEmpty ->
+        TableStyles.cellLook style.Elements (table.StartRow - 1, table.StartCol - 1, table.EndRow - 1, table.EndCol - 1)
+            table.HeaderRowCount (if table.HasTotals then 1 else 0)
+            (style.ShowFirstColumn, style.ShowLastColumn, style.ShowRowStripes, style.ShowColumnStripes) row col
+    | _ -> None
 
-/// A cell format with the look of its table laid under it: the cell's own
-/// colours win, bold adds up, borders are the table's where the cell has none.
+/// A cell format with the look of its table laid under it: the cell's own fill, lines and
+/// colour win (black text is the default font's, which the style's colour replaces, as Excel's
+/// white header text over a cell of the Normal style), bold and italic add up.
 let formatWithTableLook (look: TableCellLook) (format: CellFormat) : CellFormat =
-    let line (edge: (string * bool) option) : BorderStyle option =
-        edge |> Option.map (fun (color, isDouble) -> { Style = (if isDouble then "double" else "thin"); Color = Some color })
-    let inner : BorderStyle option = look.Lines |> Option.map (fun color -> { Style = "thin"; Color = Some color })
+    let line (edge: TableStyles.TableLine option) : BorderStyle option =
+        edge |> Option.map (fun line -> { Style = line.Style; Color = Some line.Color })
+    let ownText =
+        match format.TextColor with
+        | Some color when look.Text.IsSome && (color = "#000000" || color = "#000") -> None
+        | other -> other
     { format with
         BgColor = format.BgColor |> Option.orElse look.Fill
-        TextColor = format.TextColor |> Option.orElse look.Text
+        TextColor = ownText |> Option.orElse look.Text
         Bold = format.Bold || look.Bold
-        BorderTop = format.BorderTop |> Option.orElse (line look.Top) |> Option.orElse inner
-        BorderBottom = format.BorderBottom |> Option.orElse (line look.Bottom) |> Option.orElse inner
-        BorderLeft = format.BorderLeft |> Option.orElse inner
-        BorderRight = format.BorderRight |> Option.orElse inner }
+        Italic = format.Italic || look.Italic
+        BorderTop = format.BorderTop |> Option.orElse (line look.Top)
+        BorderBottom = format.BorderBottom |> Option.orElse (line look.Bottom)
+        BorderLeft = format.BorderLeft |> Option.orElse (line look.Left)
+        BorderRight = format.BorderRight |> Option.orElse (line look.Right) }
 
-/// Render-time: bake table styling (header accent fill + white bold text +
-/// filter buttons, and banded data rows) into cell formats from `model.Tables`.
-/// Acts ONLY on tables whose `Style.HeaderFill` is set — i.e. tables created in
-/// the app (`createTable`); imported tables leave it None because the importer
-/// already bakes theme-accent styling into each cell, so this never
-/// double-styles or disturbs the parity corpus. Uses orElse/|| merges so a
-/// cell's own explicit colors still win. Empty cells in the region are created
-/// styled so the band/header spans the full width.
+/// Bake table styling (the look of each cell, `tableCellLook`, and the filter
+/// buttons of the header) into cell formats from `model.Tables`. Acts only on
+/// tables whose style has elements: a runner that bakes the styling itself
+/// leaves them empty. Uses orElse/|| merges so a cell's own explicit colors
+/// still win. Empty cells in the region are created styled so the band/header
+/// spans the full width.
 let applyTableStyles (model: SpreadsheetModel): SpreadsheetModel =
     let styleTable (m: SpreadsheetModel) (t: Table) : SpreadsheetModel =
         match t.Style with
-        | Some s when s.HeaderFill.IsSome ->
+        | Some s when not s.Elements.IsEmpty ->
             let r0, c0, r1, c1 = t.StartRow - 1, t.StartCol - 1, t.EndRow - 1, t.EndCol - 1
             let mutable acc = m
             for r in r0 .. r1 do

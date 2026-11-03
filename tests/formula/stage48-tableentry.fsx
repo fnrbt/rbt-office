@@ -125,23 +125,26 @@ let tableWith (styleName: string) (change: TableStyle -> TableStyle) (totals: bo
       Style = Some (change (Ops.tableStyleNamed styleName)); AutoFilter = None; HasTotals = totals }
 let look styleName change totals row col = (tableCellLook (tableWith styleName change totals) row col).Value
 let fillOf (l: TableCellLook) = l.Fill
-eq "Medium2: header, bands, plain rows" ([ 0; 1; 2; 3 ] |> List.map (fun row -> let l = look "TableStyleMedium2" id false row 1 in l.Fill, l.Text, l.Bold))
-    [ Some "#4472C4", Some "#FFFFFF", true; Some "#DAE3F3", None, false; None, None, false; Some "#DAE3F3", None, false ]
-eq "Medium2: the total row is bold under a double line" (let l = look "TableStyleMedium2" id true 5 1 in l.Fill, l.Bold, l.Top) (None, true, Some ("#4472C4", true))
+let edge (line: Rbt.Spreadsheet.TableStyles.TableLine option) = line |> Option.map (fun line -> line.Color, line.Style)
+eq "Medium2: header, bands, plain rows" ([ 0; 1; 2; 3 ] |> List.map (fun row -> let l = look "TableStyleMedium2" id false row 1 in l.Fill, l.Bold))
+    [ Some "#4472C4", true; Some "#DAE3F3", false; None, false; Some "#DAE3F3", false ]
+eq "Medium2: the header's text is white" (look "TableStyleMedium2" id false 0 1).Text (Some "#FFFFFF")
+eq "Medium2: the total row is bold under a double line" (let l = look "TableStyleMedium2" id true 5 1 in l.Fill, l.Bold, edge l.Top) (None, true, Some ("#4472C4", "double"))
 eq "outside the table, and a table without a style" (tableCellLook (tableWith "TableStyleMedium2" id false) 5 1, tableCellLook { tableWith "TableStyleMedium2" id false with Style = None } 1 1) (None, None)
 eq "no banded rows" (look "TableStyleMedium2" (fun s -> { s with ShowRowStripes = false }) false 1 1 |> fillOf) None
 eq "banded columns" ([ 0; 1; 2 ] |> List.map (fun col -> look "TableStyleMedium2" (fun s -> { s with ShowRowStripes = false; ShowColumnStripes = true }) false 2 col |> fillOf)) [ Some "#DAE3F3"; None; Some "#DAE3F3" ]
 eq "first and last column" ([ 0; 1; 3 ] |> List.map (fun col -> (look "TableStyleMedium2" (fun s -> { s with ShowFirstColumn = true; ShowLastColumn = true }) false 2 col).Bold)) [ true; false; true ]
-eq "Light1: no header fill, lines above and below it, grey bands" (let h = look "TableStyleLight1" id false 0 0 in h.Fill, h.Bold, h.Top, h.Bottom, (look "TableStyleLight1" id false 1 0).Fill, (look "TableStyleLight1" id false 4 0).Bottom)
-    (None, true, Some ("#000000", false), Some ("#000000", false), Some "#D9D9D9", Some ("#000000", false))
-eq "Light9: a filled header, lines between the rows" (let h = look "TableStyleLight9" id false 0 0 in h.Fill, h.Text, (look "TableStyleLight9" id false 1 0).Fill, (look "TableStyleLight9" id false 1 0).Lines) (Some "#4472C4", Some "#FFFFFF", None, Some "#4472C4")
-eq "Light16: a grid in the colour" ((look "TableStyleLight16" id false 2 1).Lines, (look "TableStyleLight16" id false 0 1).Bottom) (Some "#4472C4", Some ("#4472C4", false))
+eq "Light1: no header fill, lines above and below it, grey bands" (let h = look "TableStyleLight1" id false 0 0 in h.Fill, h.Bold, edge h.Top, edge h.Bottom, (look "TableStyleLight1" id false 1 0).Fill, edge (look "TableStyleLight1" id false 4 0).Bottom)
+    (None, true, Some ("#000000", "thin"), Some ("#000000", "thin"), Some "#D9D9D9", Some ("#000000", "thin"))
+eq "Light9: a filled header, a line above each band" (let h = look "TableStyleLight9" id false 0 0 in h.Fill, h.Text, (look "TableStyleLight9" id false 1 0).Fill, edge (look "TableStyleLight9" id false 2 1).Top) (Some "#4472C4", Some "#FFFFFF", None, Some ("#4472C4", "thin"))
+eq "Light16: a grid in the colour, a medium line under the header" (edge (look "TableStyleLight16" id false 2 1).Left, edge (look "TableStyleLight16" id false 2 1).Top, edge (look "TableStyleLight16" id false 0 1).Bottom) (Some ("#4472C4", "thin"), Some ("#4472C4", "thin"), Some ("#4472C4", "medium"))
 eq "Medium9: every cell filled, the total row and the first column in the colour" ((look "TableStyleMedium9" id true 1 1).Fill, (look "TableStyleMedium9" id true 2 1).Fill, (look "TableStyleMedium9" id true 5 1).Fill, (look "TableStyleMedium9" (fun s -> { s with ShowFirstColumn = true }) true 2 0).Fill)
     (Some "#B4C7E7", Some "#DAE3F3", Some "#4472C4", Some "#4472C4")
 eq "Medium16: grey bands" ((look "TableStyleMedium16" id false 1 1).Fill, (look "TableStyleMedium16" id false 2 1).Fill) (Some "#D9D9D9", None)
-eq "Dark2: dark fills and white text" (let d = look "TableStyleDark2" id false 1 1 in (look "TableStyleDark2" id false 0 1).Fill, d.Fill, d.Text, (look "TableStyleDark2" id false 2 1).Fill) (Some "#000000", Some "#335693", Some "#FFFFFF", Some "#4472C4")
-eq "the style's colour is the theme's accent" ((look "TableStyleMedium3" id false 0 0).Fill, (tableCellLook { tableWith "TableStyleMedium3" id false with Style = Some { Ops.tableStyleNamed "TableStyleMedium3" with HeaderFill = Some "#C0504D" } } 0 0).Value.Fill) (Some "#ED7D31", Some "#C0504D")
+eq "Dark2: dark fills and white text" (let d = look "TableStyleDark2" id false 1 1 in (look "TableStyleDark2" id false 0 1).Fill, d.Fill, d.Text, (look "TableStyleDark2" id false 2 1).Fill) (Some "#000000", Some "#2F5597", Some "#FFFFFF", Some "#4472C4")
+eq "the style's colour is the theme's accent" ((look "TableStyleMedium3" id false 0 0).Fill) (Some "#ED7D31")
 eq "a cell's own colours win" (let f = formatWithTableLook (look "TableStyleMedium2" id false 0 0) { defaultFormat with BgColor = Some "#FFFF00" } in f.BgColor, f.TextColor, f.Bold) (Some "#FFFF00", Some "#FFFFFF", true)
+eq "... but black text is the default font's: the style's colour replaces it" ((formatWithTableLook (look "TableStyleMedium2" id false 0 0) { defaultFormat with TextColor = Some "#000000" }).TextColor, (formatWithTableLook (look "TableStyleMedium2" id false 0 0) { defaultFormat with TextColor = Some "#FF0000" }).TextColor) (Some "#FFFFFF", Some "#FF0000")
 
 // ---- the painter ------------------------------------------------------------------------------------
 let paintedModel (styleName: string) =
@@ -152,7 +155,7 @@ let fillCount color items = items |> List.sumBy (function Paint.FillRect (_, c) 
 let boldTexts items = items |> List.choose (function Paint.DrawText t when t.Bold -> Some t.Text | _ -> None) |> List.sort
 eq "painter, Medium2: header fills, band fills, bold header" (fillCount "#4472C4" (itemsOf "TableStyleMedium2"), fillCount "#DAE3F3" (itemsOf "TableStyleMedium2"), boldTexts (itemsOf "TableStyleMedium2")) (4, 8, [ "Amount"; "Qty"; "Region"; "Total" ])
 eq "painter, Light1: no header fill, grey bands" (fillCount "#000000" (itemsOf "TableStyleLight1"), fillCount "#D9D9D9" (itemsOf "TableStyleLight1")) (0, 8)
-eq "painter, Dark2: every cell of the table filled" (fillCount "#000000" (itemsOf "TableStyleDark2") + fillCount "#335693" (itemsOf "TableStyleDark2") + fillCount "#4472C4" (itemsOf "TableStyleDark2")) 16
+eq "painter, Dark2: every cell of the table filled" (fillCount "#000000" (itemsOf "TableStyleDark2") + fillCount "#2F5597" (itemsOf "TableStyleDark2") + fillCount "#4472C4" (itemsOf "TableStyleDark2")) 16
 
 printfn ""
 printfn "Stage 48 table entry tests: %d passed, %d failed" pass fail
