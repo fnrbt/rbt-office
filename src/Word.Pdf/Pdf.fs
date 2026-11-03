@@ -956,6 +956,7 @@ let collectPaintCommandsWithLayouts defaultFontFamily (measureText: WordCanvasLa
         InTableCell = false
         TableContinuationHeaderHeight = 0.0
         LongTrailingSpaceFitSafety = 0.25
+        DefaultTabStop = doc.PageSetup.DefaultTabStop
     }
     let layoutStart = timingStart ()
     let layouts, paintCommands, pages = WordPaint.collectDocumentCommandsWithLayouts settings defaultFontFamily measureText measureRange doc cachedLayouts

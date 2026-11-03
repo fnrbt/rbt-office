@@ -1019,6 +1019,7 @@ let private pageSetup (doc: DocxReader.WordDocument) =
             FooterDistance = setup.FooterDistance |> Option.defaultValue defaultPageSetup.FooterDistance
             DifferentFirstPage = setup.DifferentFirstPage |> Option.defaultValue defaultPageSetup.DifferentFirstPage
             EvenAndOddHeaders = setup.EvenAndOddHeaders |> Option.defaultValue defaultPageSetup.EvenAndOddHeaders
+            DefaultTabStop = setup.DefaultTabStop |> Option.defaultValue defaultPageSetup.DefaultTabStop
             Columns = setup.Columns |> Option.map (fun c -> ({ Count = c.Count; Gap = c.Gap; Separator = c.Separator; Widths = c.Widths }: Rbt.Word.Document.SectionColumns))
             SectionStart = setup.SectionStart
             HeaderReferences = setup.HeaderReferences |> List.map (fun ref -> ref.Kind, ref.RelationshipId)

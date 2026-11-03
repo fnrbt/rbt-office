@@ -27,7 +27,7 @@ let settings : LayoutSettings =
       MarginBottom = 0.0
       InTableCell = false
       TableContinuationHeaderHeight = 0.0
-      LongTrailingSpaceFitSafety = 0.25 }
+      LongTrailingSpaceFitSafety = 0.25; DefaultTabStop = 48.0 }
 
 let measureText (text: string) (_style: TextStyle) =
     float text.Length * 7.0

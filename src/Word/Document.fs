@@ -666,6 +666,9 @@ type PageSetup = {
     FooterDistance: float
     DifferentFirstPage: bool
     EvenAndOddHeaders: bool
+    /// The distance of the default tab stops, in pixels (w:defaultTabStop of
+    /// the settings part; Word's 720 twips, half an inch, when it says none).
+    DefaultTabStop: float
     Columns: SectionColumns option
     SectionStart: string option
     /// Header / footer references (kind, relationship id) of the final section,
@@ -785,6 +788,7 @@ let defaultPageSetup = {
     FooterDistance = 48.0
     DifferentFirstPage = false
     EvenAndOddHeaders = false
+    DefaultTabStop = 48.0
     Columns = None
     SectionStart = None
     HeaderReferences = []

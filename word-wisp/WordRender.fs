@@ -98,7 +98,8 @@ let layoutSettings (width: float) (doc: Document) : WordLayout.LayoutSettings =
       MarginBottom = max (doc.PageSetup.MarginBottom * scale) footerReserve
       InTableCell = false
       TableContinuationHeaderHeight = 0.0
-      LongTrailingSpaceFitSafety = 0.25 }
+      LongTrailingSpaceFitSafety = 0.25
+      DefaultTabStop = doc.PageSetup.DefaultTabStop * scale }
 
 let rec toRendererCommand = function
     | WordPaint.DrawText(text, style, x, baseline, _) ->

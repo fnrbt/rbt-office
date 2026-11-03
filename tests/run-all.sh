@@ -49,7 +49,7 @@ for f in tests/office-formats/*.fsx; do
 done
 
 echo "=== word ==="
-for s in textbuffer editing layout incremental-layout faces-relayout font-set pdf import-smoke commands nested-table-split xml-scan header-footer table-merge-split table-columns anchored-objects drawing-order text-boxes roundtrip-layout table-break-borders sections table-insert wrap-band list-levels drop-caps; do
+for s in textbuffer editing layout incremental-layout faces-relayout font-set pdf import-smoke commands nested-table-split xml-scan header-footer table-merge-split table-columns anchored-objects drawing-order text-boxes roundtrip-layout table-break-borders sections table-insert wrap-band list-levels drop-caps default-tab-stop; do
     run_suite "word-$s" "tests/word/$s.fsx"
 done
 

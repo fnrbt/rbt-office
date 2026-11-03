@@ -1324,6 +1324,7 @@ let private pageSetupFromEditor (value: obj) =
         FooterDistance = optionalFloat (value?FooterDistance) |> Option.defaultValue defaultPageSetup.FooterDistance
         DifferentFirstPage = optionalBool (value?DifferentFirstPage) |> Option.defaultValue defaultPageSetup.DifferentFirstPage
         EvenAndOddHeaders = optionalBool (value?EvenAndOddHeaders) |> Option.defaultValue defaultPageSetup.EvenAndOddHeaders
+        DefaultTabStop = optionalFloat (value?DefaultTabStop) |> Option.filter (fun width -> width > 0.0) |> Option.defaultValue defaultPageSetup.DefaultTabStop
         Columns =
             match optionalFloat (value?ColumnCount) with
             | Some count when count >= 2.0 ->
@@ -2461,6 +2462,7 @@ let exportPageSetupToEditor (setup: PageSetup) : obj =
         "FooterDistance" ==> setup.FooterDistance
         "DifferentFirstPage" ==> setup.DifferentFirstPage
         "EvenAndOddHeaders" ==> setup.EvenAndOddHeaders
+        "DefaultTabStop" ==> setup.DefaultTabStop
         "ColumnCount" ==> (setup.Columns |> Option.map (fun columns -> columns.Count) |> Option.defaultValue 1)
         "ColumnSpace" ==> (setup.Columns |> Option.map (fun columns -> columns.Gap) |> Option.defaultValue 0.0)
         "ColumnSeparator" ==> (setup.Columns |> Option.map (fun columns -> columns.Separator) |> Option.defaultValue false)

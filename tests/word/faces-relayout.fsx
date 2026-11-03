@@ -33,7 +33,7 @@ let settingsOf (doc: Doc.Document) : Layout.LayoutSettings =
       MarginBottom = doc.PageSetup.MarginBottom
       InTableCell = false
       TableContinuationHeaderHeight = 0.0
-      LongTrailingSpaceFitSafety = 3.5 }
+      LongTrailingSpaceFitSafety = 3.5; DefaultTabStop = 48.0 }
 
 let defaultFamily = "Calibri"
 let familyOf (style: TB.TextStyle) =
