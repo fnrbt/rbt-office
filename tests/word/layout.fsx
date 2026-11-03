@@ -95,6 +95,13 @@ let hangingTab = indentLines { Doc.defaultMetadata with IndentLeft = Some 48.0; 
 check "hanging indent: a tab on the first line goes to the indent" (hangingTab.[0] |> List.last) (48.0, "term")
 let customStop = indentLines { Doc.defaultMetadata with IndentLeft = Some 48.0; TabStops = [ { Position = 96.0; Alignment = "left"; Leader = None } ] } "a\tb"
 check "a custom tab stop is measured from the margin, not the indent" (customStop.[0] |> List.last) (96.0, "b")
+// Justified: every line but the last reaches the right indent, the first-line-indented and hanging ones too.
+let lineReach (segments: (float * string) list) = segments |> List.map (fun (x, t) -> x + 7.0 * float (t.TrimEnd().Length)) |> List.max
+let justifiedWords = elevenWords + " llll mmmm nnnn oooo pppp qqqq"
+for label, metadata in [ "first-line", { Doc.defaultMetadata with FirstLineIndent = Some 28.0 }; "hanging", { Doc.defaultMetadata with IndentLeft = Some 48.0; FirstLineIndent = Some -48.0 } ] do
+    let justified = indentLines { metadata with Alignment = Doc.Justify; ExplicitAlignment = true } justifiedWords
+    check (sprintf "justified, %s indent: the lines but the last reach the right edge" label)
+        (justified |> List.take (justified.Length - 1) |> List.map (fun line -> System.Math.Round(lineReach line, 1))) (List.replicate (justified.Length - 1) 210.0)
 let defaultStop = indentLines { Doc.defaultMetadata with IndentLeft = Some 20.0 } "a\tb"
 check "default tab stops are every half inch from the margin" (defaultStop.[0] |> List.last) (48.0, "b")
 

@@ -1223,61 +1223,75 @@ let private repositionRtl (line: MeasuredLine) : MeasuredLine =
         { line with Segments = resizeArrayToList newSegs }
 
 /// Distribute the slack between a line's visible right edge and `rightEdge`
-/// across its inter-word gaps, returning the line with stretched segment x.
-/// `rightEdge` is in the same (post-indent) coordinate frame as the line's
-/// segment x. A "gap" is a non-final segment whose token ends in a regular
-/// space; tabs, nbsp, and images are not stretched. Caller excludes the
-/// paragraph's last line (Word never justifies it).
-let private justifyLineToEdge (rightEdge: float) (line: MeasuredLine) : MeasuredLine =
-    let segs = line.Segments
-    let endsInStretchSpace = function
-        | TextSegment (t, _, _, _, _) when t.Length > 0 -> t.[t.Length - 1] = ' '
-        | _ -> false
-    // A tab advances to a fixed stop and an image is atomic — neither stretches,
-    // and a line containing one is left ragged (Word stretches only the spaces,
-    // which this simple model doesn't isolate around the fixed element).
-    let mutable hasTabOrImage = false
-    let mutable gapCount = 0
-    let mutable baseX = System.Double.PositiveInfinity
-    let rec scan previous remaining =
-        match remaining with
-        | [] ->
-            previous |> Option.iter (fun segment ->
-                baseX <- min baseX (segmentX segment))
-        | segment :: rest ->
-            baseX <- min baseX (segmentX segment)
-            match previous with
-            | Some prior when endsInStretchSpace prior -> gapCount <- gapCount + 1
-            | _ -> ()
-            match segment with
-            | ImageSegment _ -> hasTabOrImage <- true
-            | MathSegment _ -> hasTabOrImage <- true
-            | TextSegment (t, _, _, _, _) when t.Contains("\t") -> hasTabOrImage <- true
-            | TextSegment _ -> ()
-            scan (Some segment) rest
-    scan None segs
-    let baseX = if System.Double.IsPositiveInfinity baseX then 0.0 else baseX
-    let extra = rightEdge - (baseX + line.Width)
-    if hasTabOrImage || gapCount = 0 || extra <= 0.5 then line
+/// over the spaces between its words, as Word justifies a line: the words
+/// move right, the spaces between them widen. A line is broken into
+/// segments of runs of one style, so a segment is first cut into its words
+/// (each with the spaces after it), measured as the line breaker measured
+/// them. Only the spaces after the line's last tab, picture or equation
+/// stretch: what comes before it stands where its tab stop put it. The
+/// spaces at the line's end do not stretch. `rightEdge` and `origin` (the
+/// paragraph's indent, from which line.Width reaches) are in the frame of the
+/// segments' x. Caller excludes the paragraph's last line (Word never
+/// justifies it).
+let private justifyLineToEdge (measureRange: TextRangeMeasurer) (origin: float) (rightEdge: float) (line: MeasuredLine) : MeasuredLine =
+    let extra = rightEdge - (origin + line.Width)
+    if extra <= 0.5 then line
     else
-        let perGap = extra / float gapCount
-        let mutable shift = 0.0
-        let newSegs = ResizeArray<Segment>()
-        let rec build remaining =
-            match remaining with
-            | [] -> ()
-            | segment :: rest ->
+        // The line's segments, each text segment cut after every run of spaces in it.
+        let pieces = ResizeArray<Segment>()
+        for segment in line.Segments do
+            match segment with
+            | TextSegment (text, style, x, width, startOffset) when text.Length > 1 && text.IndexOf('\t') < 0 ->
+                let displayText = WordLayout.Text.displayText style text
+                if displayText.Length <> text.Length then pieces.Add segment
+                else
+                    let displayStyle = WordLayout.Text.displayStyle style
+                    let mutable pieceStart = 0
+                    let mutable index = 0
+                    while index < text.Length do
+                        if text.[index] = ' ' && (index + 1 >= text.Length || text.[index + 1] <> ' ') && index + 1 < text.Length then
+                            let pieceX = if pieceStart = 0 then x else x + measureRange displayText displayStyle 0 pieceStart
+                            let pieceEnd = index + 1
+                            let pieceWidth = measureRange displayText displayStyle pieceStart (pieceEnd - pieceStart)
+                            pieces.Add(TextSegment (text.Substring(pieceStart, pieceEnd - pieceStart), style, pieceX, pieceWidth, startOffset + pieceStart))
+                            pieceStart <- pieceEnd
+                        index <- index + 1
+                    if pieceStart = 0 then pieces.Add segment
+                    else
+                        let pieceX = x + measureRange displayText displayStyle 0 pieceStart
+                        pieces.Add(TextSegment (text.Substring pieceStart, style, pieceX, max 0.0 (x + width - pieceX), startOffset + pieceStart))
+            | _ -> pieces.Add segment
+        let isFixed = function
+            | ImageSegment _ | MathSegment _ -> true
+            | TextSegment (text, _, _, _, _) -> text.IndexOf('\t') >= 0
+        let endsInSpace = function
+            | TextSegment (text, _, _, _, _) when text.Length > 0 -> text.[text.Length - 1] = ' '
+            | _ -> false
+        let mutable lastFixed = -1
+        for index in 0 .. pieces.Count - 1 do
+            if isFixed pieces.[index] then lastFixed <- index
+        // A gap: a piece after the last fixed one, ending in a space, with something after it.
+        let mutable lastVisible = pieces.Count - 1
+        while lastVisible >= 0 && (match pieces.[lastVisible] with TextSegment (text, _, _, _, _) -> text.Trim() = "" | _ -> false) do
+            lastVisible <- lastVisible - 1
+        let isGap index = index > lastFixed && index < lastVisible && endsInSpace pieces.[index]
+        let mutable gapCount = 0
+        for index in 0 .. pieces.Count - 1 do
+            if isGap index then gapCount <- gapCount + 1
+        if gapCount = 0 then line
+        else
+            let perGap = extra / float gapCount
+            let mutable shift = 0.0
+            let newSegs = ResizeArray<Segment>(pieces.Count)
+            for index in 0 .. pieces.Count - 1 do
                 newSegs.Add(
-                    match segment with
+                    match pieces.[index] with
                     | TextSegment (t, st, x, w, off) -> TextSegment (t, st, x + shift, w, off)
                     | ImageSegment (src, x, yOff, w, h, off, fl, wr, rh, cl, ct, cr, cb) ->
                         ImageSegment (src, x + shift, yOff, w, h, off, fl, wr, rh, cl, ct, cr, cb)
                     | MathSegment (p, st, x, w, asc, desc, off, len) -> MathSegment (p, st, x + shift, w, asc, desc, off, len))
-                if (match rest with [] -> false | _ -> true) && endsInStretchSpace segment then
-                    shift <- shift + perGap
-                build rest
-        build segs
-        { line with Segments = resizeArrayToList newSegs }
+                if isGap index then shift <- shift + perGap
+            { line with Segments = resizeArrayToList newSegs }
 
 let emptyLine y height : MeasuredLine = {
     Segments = []
@@ -2846,7 +2860,7 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
             let rec justifyNonLast acc = function
                 | [] -> List.rev acc
                 | [last] -> List.rev (last :: acc)
-                | line :: rest -> justifyNonLast (justifyLineToEdge rightContentEdge line :: acc) rest
+                | line :: rest -> justifyNonLast (justifyLineToEdge measureRange (xOffset + indent) rightContentEdge line :: acc) rest
             justifyNonLast [] adjustedLines
 
     // RTL paragraphs: reposition each line's tokens right-to-left (guarded by
