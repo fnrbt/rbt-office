@@ -886,10 +886,12 @@ const docs = [
                 `<w:footnote w:type="continuationSeparator" w:id="0"><w:p w14:paraId="1A000002"><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>` +
                 `<w:footnote w:id="1"><w:p w14:paraId="1A000003" w:rsidR="00CC0001"><w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:footnoteRef/></w:r><w:proofErr w:type="spellStart"/><w:r w:rsidR="00CC0002"><w:t xml:space="preserve"> Kept nnote</w:t></w:r><w:proofErr w:type="spellEnd"/>` +
                 `<w:bookmarkStart w:id="20" w:name="inNote"/><w:r><w:rPr><w:noProof/></w:rPr><w:t xml:space="preserve"> text</w:t></w:r><w:bookmarkEnd w:id="20"/></w:p></w:footnote>` +
-                `<w:footnote w:id="2"><w:p w14:paraId="1A000004"><w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:footnoteRef/></w:r><w:r><w:t xml:space="preserve"> The second note</w:t></w:r></w:p></w:footnote></w:footnotes>`,
+                `<w:footnote w:id="2"><w:p w14:paraId="1A000004"><w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:footnoteRef/></w:r><w:r><w:t xml:space="preserve"> The second note</w:t></w:r></w:p>` +
+                `<w:p w14:paraId="1A000005" w:rsidR="00CC0003"><w:r w:rsidR="00CC0004"><w:t>Its second paragraph</w:t></w:r><w:proofErr w:type="spellStart"/><w:r><w:t xml:space="preserve"> ends</w:t></w:r><w:proofErr w:type="spellEnd"/></w:p></w:footnote></w:footnotes>`,
             'word/comments.xml': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n<w:comments ${W} xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" mc:Ignorable="w14">` +
                 `<w:comment w:id="3" w:author="Ann" w:date="2020-01-01T00:00:00Z" w:initials="A"><w:p w14:paraId="2B000001" w14:textId="77777777"><w:pPr><w:pStyle w:val="Normal"/></w:pPr><w:r><w:rPr><w:rStyle w:val="Normal"/></w:rPr><w:annotationRef/></w:r><w:proofErr w:type="gramStart"/><w:r><w:t>A kept comment</w:t></w:r><w:proofErr w:type="gramEnd"/></w:p></w:comment>` +
-                `<w:comment w:id="4" w:author="Bo" w:date="2020-01-02T00:00:00Z" w:initials="B"><w:p w14:paraId="2B000002"><w:r><w:annotationRef/></w:r><w:r><w:t>The other comment</w:t></w:r></w:p></w:comment></w:comments>`,
+                `<w:comment w:id="4" w:author="Bo" w:date="2020-01-02T00:00:00Z" w:initials="B"><w:p w14:paraId="2B000002"><w:r><w:annotationRef/></w:r><w:r><w:t>The other comment</w:t></w:r></w:p>` +
+                `<w:p w14:paraId="2B000003" w14:textId="77777778"><w:r w:rsidR="00DD0001"><w:t>And its second paragraph</w:t></w:r></w:p></w:comment></w:comments>`,
         },
     },
 ];
