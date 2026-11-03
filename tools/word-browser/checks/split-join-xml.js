@@ -69,7 +69,8 @@ window.finish = async () => {
         check('split: the text is two paragraphs', saved.split.text.startsWith('alpha beta\n gamma delta'), true);
         check('split: the first half is the paragraph with the text before the caret - its ids, its properties, the run split', xml.includes(head('01')) ? true : xml.slice(xml.indexOf('<w:body>'), xml.indexOf('<w:tbl>')), true);
         check('split: the second half is the rest of the paragraph - without the paragraph\'s id, with everything after the caret', xml.includes(tail) ? true : xml.slice(xml.indexOf('<w:body>'), xml.indexOf('<w:tbl>')), true);
-        check('split: nothing is written from the model', [report.GeneratedParagraphs, report.PatchedParagraphs, report.DerivedParagraphs], [0, 1, 1]);
+        // (Both halves are their source with their part of it: docs/save-architecture.md.)
+        check('split: nothing is written from the model', [report.GeneratedParagraphs, report.PatchedParagraphs + report.DerivedParagraphs], [0, 2]);
         check('split: the table is the text it was', xml.includes(tableOf(original)), true);
         check('split: read again, the editor\'s text and layout', same, [true, true]);
 

@@ -1570,7 +1570,7 @@ let mutable private spliceSourceText : string = ""
 
 [<Fable.Core.Emit("JSON.stringify($0)")>]
 let private jsonText (_value: obj) : string = jsNative
-[<Fable.Core.Emit("JSON.stringify(Object.assign({}, $0, { Runs: undefined, SpliceFrom: undefined, SpliceOriginal: undefined, CarrySource: undefined, CarrySave: undefined, SourcePara: undefined, SourceIndex: undefined, SourceUnchanged: undefined, SourceWhy: undefined, SourceTextChanges: undefined }))")>]
+[<Fable.Core.Emit("JSON.stringify(Object.assign({}, $0, { Runs: undefined, SpliceFrom: undefined, SpliceOriginal: undefined, SpliceLeading: undefined, SpliceTrailing: undefined, SpliceJoined: undefined, CarrySource: undefined, CarrySave: undefined, SourcePara: undefined, SourceIndex: undefined, SourceUnchanged: undefined, SourceWhy: undefined, SourceTextChanges: undefined }))")>]
 let private paragraphPropertiesText (_value: obj) : string = jsNative
 
 /// A paragraph written from its source (see splicedRuns, defined with the merging of properties
@@ -1587,6 +1587,26 @@ let mutable private paragraphSplicer : ParagraphSplicer =
     { new ParagraphSplicer with
         member _.Splice _ _ _ _ = None
         member _.MergeProperties _ _ _ = None }
+
+/// Which of what stands before the first run of its source and after the last a paragraph made of a part of
+/// one that was read has (SpliceLeading, SpliceTrailing): a half of a split has what stands on its side of
+/// the cut; a paragraph others were joined to has nothing of its own after its runs.
+/// `spec`: what says the cut and the joins (the paragraph's SourcePara, or the edit of it).
+let private setSpliceCut (spec: obj) (para: obj) =
+    if not (isNullOrUndefined spec) then
+        let cut = optionalArray (spec?Cut) |> Array.map (fun value -> intOrDefault -1 value)
+        if cut.Length = 2 then
+            // (The length of the paragraph that was read: its text, or that of the runs it had.)
+            let length =
+                match optionalString (spec?OldText) with
+                | Some text -> text.Length
+                | None -> optionalArray (para?SpliceOriginal?Runs) |> Array.sumBy (fun run -> (stringOrDefault "" (run?Text)).Length)
+            para?SpliceLeading <- (cut.[0] = 0)
+            para?SpliceTrailing <- (cut.[1] >= length)
+        if optionalArray (spec?Join) |> Array.isEmpty |> not then
+            para?SpliceTrailing <- false
+            // (The paragraphs joined to it as they were read: their runs are found in their own XML.)
+            para?SpliceJoined <- optionalArray (spec?Join) |> Array.map (fun join -> join?Original) |> Array.filter (isNullOrUndefined >> not)
 
 let private generateParagraphWithHyperlinksAndImagesWithPageSetup (packageSetup: PageSetupInfo) (hyperlinks: Map<string, string>) (images: ImageScope) (para: obj) : string =
   match (if isNullOrUndefined (para?SourcePara) || not paragraphsInContext then None else paragraphSource.Of para) with
@@ -1605,11 +1625,7 @@ let private generateParagraphWithHyperlinksAndImagesWithPageSetup (packageSetup:
         | Some (start, finish) when not (isNullOrUndefined original) ->
             para?SpliceFrom <- createObj [ "Start" ==> start; "End" ==> finish ]
             para?SpliceOriginal <- original
-            let cut = optionalArray (spec?Cut) |> Array.map (fun value -> intOrDefault -1 value)
-            if cut.Length = 2 then
-                para?SpliceLeading <- (cut.[0] = 0)
-                para?SpliceTrailing <- (cut.[1] >= (stringOrDefault "" (spec?OldText)).Length)
-            if optionalArray (spec?Join) |> Array.isEmpty |> not then para?SpliceTrailing <- false
+            setSpliceCut spec para
         | _ -> ()
     let pPr = generateParaPropsWithPageSetup packageSetup para
     // The mark of a comment or a note is one element: where the editor holds it as two runs
@@ -3046,11 +3062,11 @@ let private spliceSourceOf (text: string) (start: int) (finish: int) (bookmarks:
 [<Fable.Core.Emit("JSON.stringify(Object.assign({}, $0, { Text: undefined }))")>]
 let private jsonWithoutText (_run: obj) : string = jsNative
 
-let private splicedRuns (source: SpliceSource) (original: obj) (leading: bool) (trailing: bool) (pieces: (obj * string * (string -> string)) list) (runXml: obj -> string) (wrapOf: obj -> string -> string) : string =
+let private splicedRuns (source: SpliceSource) (original: obj) (joined: obj array) (leading: bool) (trailing: bool) (pieces: (obj * string * (string -> string)) list) (runXml: obj -> string) (wrapOf: obj -> string -> string) : string =
     let text = source.Layout.Text
     // The runs read, by source: the run objects the model had for each.
     let originalRuns = System.Collections.Generic.Dictionary<int, ResizeArray<obj>>()
-    for run in (if isNullOrUndefined original then [||] else original?Runs |> unbox<obj array>) do
+    for run in Array.append (if isNullOrUndefined original then [||] else original?Runs |> unbox<obj array>) (joined |> Array.collect (fun para -> optionalArray (para?Runs))) do
         match optionalInt (run?SourceRun) with
         | Some at -> (match originalRuns.TryGetValue at with | true, list -> list.Add run | _ -> originalRuns.[at] <- ResizeArray [ run ])
         | None -> ()
@@ -3167,7 +3183,9 @@ let private splicedRuns (source: SpliceSource) (original: obj) (leading: bool) (
                  // (Whether the run is one of several the model held it as, and is not all of them now.)
                  let ofSeveral = not sameText && (match originalRuns.TryGetValue at with | true, list -> list.Count > 1 | _ -> false)
                  ignore alone
+                 // (A run of a paragraph joined to this one is not an item of its layout: it is written in the model's wrapping.)
                  let wrappedAsBefore =
+                     XmlPatch.isItemOf source.Layout at &&
                      match originalRuns.TryGetValue at with
                      | true, list when list.Count > 0 -> list |> Seq.forall (fun model -> wrapping model = now)
                      | _ -> false
@@ -3270,7 +3288,15 @@ paragraphSplicer <-
                 spliceSourceOf spliceSourceText (intOrDefault -1 (para?SpliceFrom?Start)) (intOrDefault -1 (para?SpliceFrom?End)) bookmarks
                 |> Option.map (fun source ->
                     let flag (value: obj) = isNullOrUndefined value || unbox<bool> value
-                    [ splicedRuns source para?SpliceOriginal (flag para?SpliceLeading) (flag para?SpliceTrailing) pieces runXml wrapOf ], source.Properties,
+                    // The runs of the paragraphs joined to it, in the elements they were read from.
+                    let joined = optionalArray (para?SpliceJoined)
+                    for other in joined do
+                        match paragraphSource.SpanOf other |> Option.bind (fun (start, finish) -> XmlDsl.tryScanAt spliceSourceText start finish (System.Collections.Generic.HashSet<string>())) with
+                        | Some node ->
+                            for run in XmlPatch.descendantsWhere (fun inner -> XmlPatch.name inner = "w:r") node do
+                                source.Runs.[(XmlPatch.span run).Start] <- run
+                        | None -> ()
+                    [ splicedRuns source para?SpliceOriginal joined (flag para?SpliceLeading) (flag para?SpliceTrailing) pieces runXml wrapOf ], source.Properties,
                     (if boolOrDefault false (para?SourceCopy) then source.CopyHead else source.Head))
         member _.MergeProperties source was now =
             mergedProperties "w:pPr" source (propertyElementsOf was) (propertyElementsOf now) }
@@ -3492,6 +3518,7 @@ let private patchSourceChunk (start: int) (finish: int) (items: obj array) : (in
                             after?CarrySource <- XmlPatch.bytesOf sourceBodyXml node
                             after?CarrySave <- saveNumber
                             after?SpliceFrom <- createObj [ "Start" ==> span.Start; "End" ==> span.End ]
+                            setSpliceCut change after
                             inlined.Add ((span.Start, span.End, after))
                     | _ ->
                         noteReason (sprintf "paragraph %d of the block: its element as it was read is not known" index)

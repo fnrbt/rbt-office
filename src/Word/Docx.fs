@@ -3020,7 +3020,8 @@ let private derivedEdit (context: WordStyles.DocumentStyleContext option) (expor
         edit?Cut <- [| derivation.From; derivation.Until |]
     if not derivation.Joined.IsEmpty then
         edit?Join <- (derivation.Joined
-                      |> List.map (fun (block, index, other, _) -> createObj [ "Block" ==> block; "Para" ==> index; "Text" ==> TextBuffer.toString other.Buffer ])
+                      // (Each as it was read: the writer finds its runs in the XML they were read from.)
+                      |> List.map (fun (block, index, other, _) -> createObj [ "Block" ==> block; "Para" ==> index; "Text" ==> TextBuffer.toString other.Buffer; "Original" ==> exportBefore other ])
                       |> List.toArray)
     edit
 
