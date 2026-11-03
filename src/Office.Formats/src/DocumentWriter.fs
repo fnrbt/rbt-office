@@ -3349,7 +3349,11 @@ let private splicedRuns (source: SpliceSource) (original: obj) (joined: obj arra
                              else XmlPatch.diff before after |> List.filter (fun edit -> let child = XmlPatch.childOf edit in child <> "" && child <> "w:rPr")
                          // (Content of its own - not the run's as it was - where the run's text changed in a way edits do not
                          // say, or the run is one of several the model held it as: its part of the content is the model's.)
-                         if ofSeveral || content |> List.exists (function XmlPatch.SetChildren _ -> true | _ -> false) then
+                         // (Or where what the run holds is not of the same kinds in the same order: text typed before a tab -
+                         // an edit puts a child in at its schema place, and the order of a run's content is its text.)
+                         let contentNames (element: XmlPatch.SourceElement) = XmlPatch.elements element.Node |> List.map XmlPatch.name |> List.filter (fun name -> name <> "w:rPr")
+                         let reordered = not sameText && contentNames before <> contentNames after
+                         if ofSeveral || reordered || content |> List.exists (function XmlPatch.SetChildren _ -> true | _ -> false) then
                              let runSpan = match run with XmlDsl.Element (_, _, _, sp) -> sp | _ -> XmlDsl.Span.none
                              let modelContent = XmlPatch.childrenBytes after (fun name -> name <> "rPr")
                              if runSpan.StartTagEnd < runSpan.End then
