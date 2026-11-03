@@ -151,14 +151,15 @@ try {
     check('the fixture\'s table', [rowsOf(table).length, cellsOf(firstRow).length, tableHead.includes('<w:tblCaption')], [2, 2, true]);
     // A row inserted: the rows that were read are the text they were, the new row between them - made of the row it
     // was put in after (its start tag without the row's own ids, its properties but that it is not a header row, its
-    // cells' properties), with an empty paragraph in each cell.
+    // cells' properties), with an empty paragraph in each cell made like that cell's first (its start tag without its
+    // ids, its properties): none written from the model.
     await stage('a row inserted', (editor, select) => { select('gamma'); Word.insertTableRowAfter(editor); }, 'table', [
         ['the table\'s properties and grid as they were read', tableHead],
         ['the first row as it was read', firstRow], ['the second row as it was read', secondRow],
         ['the new row between them', new RegExp(regexOf(firstRow) + '<w:tr[ >].*?</w:tr>' + regexOf(secondRow))],
         ['the new row: the first row\'s start tag without its ids, its properties without the header', '<w:tr w:rsidR="00BB0005"><w:trPr><w:cantSplit/></w:trPr>'],
-        ['its first cell: the first row\'s first cell\'s properties', '</w:trPr><w:tc><w:tcPr><w:tcW w:w="2400" w:type="dxa"/><w:noWrap/><w:hideMark/></w:tcPr><w:p>'],
-    ], 2);
+        ['its first cell: the first row\'s first cell\'s properties, an empty paragraph like its first', '</w:trPr><w:tc><w:tcPr><w:tcW w:w="2400" w:type="dxa"/><w:noWrap/><w:hideMark/></w:tcPr><w:p w:rsidR="00BB0001" w:rsidRDefault="00BB0003"><w:pPr><w:suppressAutoHyphens/><w:spacing w:beforeAutospacing="1" w:after="120"/><w:rPr><w:lang w:val="de-DE"/></w:rPr></w:pPr></w:p></w:tc>'],
+    ], 0);
     // A row deleted: the other row and the table's properties are the text they were.
     await stage('a row deleted', (editor, select) => { select('gamma'); Word.deleteTableRow(editor); }, 'table', [
         ['the table is its properties and the other row, as they were read', tableHead + secondRow + '</w:tbl>'],
@@ -168,7 +169,7 @@ try {
         ['the table\'s properties as they were read', table.slice(0, table.indexOf('<w:tblGrid>'))],
         ['the first row: its start tag, its properties, its cells with a new one between', new RegExp(regexOf(firstRow.slice(0, firstRow.indexOf('<w:tc>')) + cellsOf(firstRow)[0]) + '<w:tc>.*?</w:tc>' + regexOf(cellsOf(firstRow)[1] + '</w:tr>'))],
         ['the second row likewise', new RegExp(regexOf(secondRow.slice(0, secondRow.indexOf('<w:tc>')) + cellsOf(secondRow)[0]) + '<w:tc>.*?</w:tc>' + regexOf(cellsOf(secondRow)[1] + '</w:tr>'))],
-    ], 2);
+    ], 0);
     // A cell shaded: the shading in the cell's properties, which keep what the model does not hold; the rest as it was read.
     await stage('a cell shaded', (editor, select) => { select('gamma'); Word.setSelectedTableCellStyleWithShading(editor, '#FFEEAA', '', '', 0, '', 0, '', -1, -1, -1, -1); }, 'table', [
         ['the shading where the schema puts it, beside what was there', /<w:tr w:rsidR="00BB0005" w14:paraId="4A4B4C01"><w:trPr><w:cantSplit\/><w:tblHeader\/><\/w:trPr><w:tc><w:tcPr><w:tcW w:w="2400" w:type="dxa"\/><w:shd [^>]*w:fill="FFEEAA"[^>]*\/><w:noWrap\/><w:hideMark\/><\/w:tcPr><w:p w:rsidR="00BB0001"/],

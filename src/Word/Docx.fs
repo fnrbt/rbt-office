@@ -3117,7 +3117,9 @@ let private markDerivedTable (index: int) (originalItem: obj) (item: obj) : unit
                     "At" ==> at
                     "Copy" ==> copy
                     "Same" ==> (not copy && jsonOf cell = jsonOf wasCell)
-                    "Before" ==> (if jsonOfOwnProperties cell = jsonOfOwnProperties wasCell then null else wasCell) ]
+                    "Before" ==> (if jsonOfOwnProperties cell = jsonOfOwnProperties wasCell then null else wasCell)
+                    // (The cell as it was read: what a cell made like it is made like - its first paragraph.)
+                    "Was" ==> wasCell ]
             | _ -> ()
 
 /// A block that is written from the model: its paragraphs that are paragraphs that were read

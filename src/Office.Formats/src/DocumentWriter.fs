@@ -2079,6 +2079,33 @@ let private tablePropertyElements (table: obj) : string list =
     ]
 
 
+/// What says how a paragraph of the editor's package looks, but for where it comes from: one made like another
+/// (SourceCopy) has, made like it, what that one has.
+[<Fable.Core.Emit("JSON.stringify(Object.assign({}, $0, { Runs: undefined, SourceCopy: undefined, SpliceFrom: undefined, SpliceOriginal: undefined, SpliceLeading: undefined, SpliceTrailing: undefined, SpliceJoined: undefined, SpliceBreakKept: undefined, CarrySource: undefined, CarrySave: undefined, SourcePara: undefined, SourceIndex: undefined, SourceUnchanged: undefined, SourceWhy: undefined, SourceTextChanges: undefined }))")>]
+let private likePropertiesText (_value: obj) : string = jsNative
+
+/// Whether a paragraph of the editor's package holds nothing: no text, no picture, object, field, note, comment or bookmark.
+let private paragraphIsEmpty (para: obj) : bool =
+    optionalArray (para?Runs)
+    |> Array.forall (fun run ->
+        stringOrDefault "" (run?Text) = "" && not (boolOrDefault false (run?IsImage)) && isNullOrUndefined (run?OpaqueXml)
+        && [ "FieldCode"; "FieldResult"; "NoteId"; "CommentId"; "BookmarkStartId"; "BookmarkEndId"; "BookmarkId" ] |> List.forall (fun key -> isNullOrUndefined (run?(key))))
+
+/// An empty paragraph made like one that was read (`paragraphXml`: the first of a cell next to which a row or a
+/// column was put in): its element without its ids (w14:paraId, w14:textId) and without what it holds but its
+/// properties - those of the paragraph and of its mark, as they were read.
+let private emptyParagraphLike (paragraphXml: string) : string option =
+    match XmlPatch.read paragraphXml with
+    | Some paragraph when XmlPatch.name paragraph.Node = "w:p" ->
+        let span = XmlPatch.span paragraph.Node
+        let startTag = XmlPatch.startTag paragraph.Text paragraph.Node [ XmlPatch.RemoveAttribute "w14:paraId"; XmlPatch.RemoveAttribute "w14:textId" ]
+        // (<w:p/>: the start tag is the element.)
+        if span.StartTagEnd >= span.End then Some startTag
+        else
+            let properties = XmlPatch.elements paragraph.Node |> List.tryFind (fun kid -> XmlPatch.localName kid = "pPr") |> Option.map (XmlPatch.bytesOf paragraph.Text) |> Option.defaultValue ""
+            Some (startTag + properties + "</" + XmlPatch.name paragraph.Node + ">")
+    | _ -> None
+
 /// A table of the body as it was read, for a table that is written from the model (its SourceTable): the
 /// text of its properties and grid, and of each of its rows and cells by where its element starts in the
 /// part (the origin the model has of it: SourceRow, SourceCell); the layout of each (XmlPatch.layout: its
@@ -2099,14 +2126,19 @@ type private SourceTableText = {
     TableRows: System.Collections.Generic.Dictionary<int, SourceRowText>
     TableCells: System.Collections.Generic.Dictionary<int, SourceCellText>
     TableChildren: XmlPatch.Layout
+    /// The table's element in the part's tree (w:tbl).
+    TableNode: XmlDsl.XmlNode
 }
 type private TableSource =
     abstract Of: obj -> SourceTableText option
+    /// The table of a w:tbl of the part being written (nothing around it: WrapStart and WrapEnd are "").
+    abstract At: XmlDsl.XmlNode -> SourceTableText option
     /// container, the properties that were read, what the model wrote before and writes now -> the properties, or None (see mergedProperties).
     abstract Merge: string * string * string list * string list -> string option
 let mutable private tableSource : TableSource =
     { new TableSource with
         member _.Of _ = None
+        member _.At _ = None
         member _.Merge (_, _, _, _) = None }
 /// The table being written of a table that was read; and whether the paragraphs of what is being written
 /// may be made of the XML they were read from: those of a cell that is written with the properties its
@@ -2148,7 +2180,26 @@ let rec private generateTableCell (hyperlinks: Map<string, string>) (images: Ima
         paragraphsInContext <- outerContext && properties.IsSome
         // (Each paragraph with the w:p it is of, when that is one of the cell's and it is the first of it.)
         let paragraphItems = optionalArray (cell?Paragraphs)
-        let paragraphs = paragraphItems |> Array.map (generateParagraphWithHyperlinksAndImages hyperlinks images)
+        // (A cell made like one that was read - a row or a column put in - that holds one empty paragraph made like
+        // that cell's first, as the model has it: that paragraph's element, empty - see emptyParagraphLike.)
+        let likeParagraph (para: obj) : string option =
+            match source with
+            | Some (_, true, _) when paragraphItems.Length = 1 && Array.isEmpty (optionalArray (cell?NestedTables)) && paragraphIsEmpty para ->
+                let was = cell?SourceCell?Was
+                let first = if isNullOrUndefined was then None else optionalArray (was?Paragraphs) |> Array.tryHead
+                match first, optionalInt (para?SourceAt) with
+                | Some first, Some at when boolOrDefault false (para?SourceCopy) && optionalInt (first?SourceAt) = Some at && likePropertiesText para = likePropertiesText first ->
+                    paragraphOrigin.Of para |> Option.bind emptyParagraphLike
+                | _ -> None
+            | _ -> None
+        let paragraphs =
+            paragraphItems
+            |> Array.map (fun para ->
+                match (if paragraphsInContext then likeParagraph para else None) with
+                | Some xml ->
+                    reportDerived <- reportDerived + 1
+                    xml
+                | None -> generateParagraphWithHyperlinksAndImages hyperlinks images para)
         let paragraphAt =
             let used = System.Collections.Generic.HashSet<int>()
             paragraphItems
@@ -3697,6 +3748,77 @@ paragraphOrigin <-
     { new ParagraphOrigin with
         member _.Of (para: obj) = sourceParagraphOf para |> Option.map (XmlPatch.bytesOf sourceBodyXml) }
 
+/// The w:tbl of an element of a body: the table itself, or the one element of a content control or custom XML that is.
+let rec private tableElementIn (node: XmlDsl.XmlNode) : XmlDsl.XmlNode option =
+    let kidsOf (node: XmlDsl.XmlNode) = XmlPatch.elements node
+    match XmlPatch.localName node with
+    | "tbl" -> Some node
+    | "sdt" ->
+        (match kidsOf node |> List.filter (fun kid -> XmlPatch.localName kid = "sdtContent") with
+         | [ content ] -> (match kidsOf content with [ one ] -> tableElementIn one | _ -> None)
+         | _ -> None)
+    | "customXml" -> (match kidsOf node |> List.filter (fun kid -> XmlPatch.localName kid <> "customXmlPr") with [ one ] -> tableElementIn one | _ -> None)
+    | _ -> None
+
+/// A w:tbl of `xml` taken apart (see TableSource), with what stands around it in its block (`wrapStart`, `wrapEnd`).
+let private sourceTableOf (xml: string) (tableNode: XmlDsl.XmlNode) (wrapStart: string) (wrapEnd: string) : SourceTableText option =
+    let local (node: XmlDsl.XmlNode) = match node with XmlDsl.Element (name, _, _, _) -> XmlDsl.Ns.stripNs name | _ -> ""
+    let spanOf (node: XmlDsl.XmlNode) = match node with XmlDsl.Element (_, _, _, sp) -> sp | _ -> XmlDsl.Span.none
+    let kidsOf (node: XmlDsl.XmlNode) = match node with XmlDsl.Element (_, _, kids, _) -> kids |> List.filter (fun kid -> local kid <> "") | _ -> []
+    let slice = XmlPatch.slice xml
+    match tableNode with
+    | XmlDsl.Element (name, _, children, span) when XmlDsl.Span.isKnown span && name = "w:tbl" ->
+        let rows = System.Collections.Generic.Dictionary<int, SourceRowText>()
+        let cells = System.Collections.Generic.Dictionary<int, SourceCellText>()
+        let mutable sound = true
+        let partOf (nodes: XmlDsl.XmlNode list) (name: string) =
+            nodes |> List.tryFind (fun kid -> local kid = name) |> Option.map (XmlPatch.bytesOf xml) |> Option.defaultValue ""
+        // Where the leading children named `names` of an element end (its start tag's end when it has none).
+        let headEndOf (sp: XmlDsl.Span) (nodes: XmlDsl.XmlNode list) (names: string list) =
+            kidsOf (XmlDsl.Element ("", Map.empty, nodes, XmlDsl.Span.none))
+            |> List.takeWhile (fun kid -> List.contains (local kid) names)
+            |> List.fold (fun at kid -> let kidSpan = spanOf kid in if XmlDsl.Span.isKnown kidSpan then kidSpan.End else at) sp.StartTagEnd
+        let laid (isItem: string -> bool) (take: XmlDsl.XmlNode -> unit) (node: XmlDsl.XmlNode) (from: int) =
+            match XmlPatch.layout (XmlPatch.localName >> isItem) (fun _ -> false) (fun _ -> false) take xml node from with
+            | Some found -> found
+            | None ->
+                sound <- false
+                { XmlPatch.Layout.Text = xml; Wrappers = System.Collections.Generic.Dictionary(); Children = []; Leads = System.Collections.Generic.Dictionary(); KeptEnds = System.Collections.Generic.Dictionary(); Tail = (0, 0) }
+        let copyTag (node: XmlDsl.XmlNode) = XmlPatch.startTag xml node [ XmlPatch.RemoveAttribute "w14:paraId"; XmlPatch.RemoveAttribute "w14:textId" ]
+        let takeCell (node: XmlDsl.XmlNode) =
+            let sp = spanOf node
+            if sp.StartTagEnd >= sp.End then sound <- false
+            else
+                let kids = match node with XmlDsl.Element (_, _, kids, _) -> kids | _ -> []
+                let headEnd = headEndOf sp kids [ "tcPr" ]
+                cells.[sp.Start] <- { CellXml = XmlPatch.bytesOf xml node
+                                      CellStartTag = slice sp.Start sp.StartTagEnd
+                                      CopyStartTag = copyTag node
+                                      CellProps = partOf kids "tcPr"
+                                      CellHead = slice sp.Start headEnd
+                                      CellChildren = laid (fun name -> name = "p" || name = "tbl") ignore node headEnd }
+        let takeRow (node: XmlDsl.XmlNode) =
+            let sp = spanOf node
+            if sp.StartTagEnd >= sp.End then sound <- false
+            else
+                let kids = match node with XmlDsl.Element (_, _, kids, _) -> kids | _ -> []
+                let headEnd = headEndOf sp kids [ "tblPrEx"; "trPr" ]
+                let inner = laid (fun name -> name = "tc") takeCell node headEnd
+                rows.[sp.Start] <- { RowXml = XmlPatch.bytesOf xml node
+                                     RowStartTag = slice sp.Start sp.StartTagEnd
+                                     CopyStartTag = copyTag node
+                                     RowExceptions = partOf kids "tblPrEx"
+                                     RowProps = partOf kids "trPr"
+                                     RowHead = slice sp.Start headEnd
+                                     RowChildren = inner }
+        let headEnd = headEndOf span children [ "tblPr"; "tblGrid" ]
+        let tableChildren = laid (fun name -> name = "tr") takeRow tableNode headEnd
+        if not sound then None
+        else Some { WrapStart = wrapStart; WrapEnd = wrapEnd
+                    TableHead = slice span.Start headEnd; TableStartTag = slice span.Start span.StartTagEnd; TableProps = partOf children "tblPr"; TableGrid = partOf children "tblGrid"
+                    TableRows = rows; TableCells = cells; TableChildren = tableChildren; TableNode = tableNode }
+    | _ -> None
+
 // The table a block came from, taken apart (see TableSource): a table whose element is the block's alone,
 // or the one element in a content control or custom XML that is.
 tableSource <-
@@ -3708,77 +3830,212 @@ tableSource <-
             else
                 let xml = sourceBodyXml
                 let elementStart = sourceChunkElementStarts.[chunk]
-                let local (node: XmlDsl.XmlNode) = match node with XmlDsl.Element (name, _, _, _) -> XmlDsl.Ns.stripNs name | _ -> ""
-                let spanOf (node: XmlDsl.XmlNode) = match node with XmlDsl.Element (_, _, _, sp) -> sp | _ -> XmlDsl.Span.none
-                let kidsOf (node: XmlDsl.XmlNode) = match node with XmlDsl.Element (_, _, kids, _) -> kids |> List.filter (fun kid -> local kid <> "") | _ -> []
-                let slice = XmlPatch.slice xml
-                let rec tableIn (node: XmlDsl.XmlNode) =
-                    match local node with
-                    | "tbl" -> Some node
-                    | "sdt" ->
-                        (match kidsOf node |> List.filter (fun kid -> local kid = "sdtContent") with
-                         | [ content ] -> (match kidsOf content with [ one ] -> tableIn one | _ -> None)
-                         | _ -> None)
-                    | "customXml" -> (match kidsOf node |> List.filter (fun kid -> local kid <> "customXmlPr") with [ one ] -> tableIn one | _ -> None)
-                    | _ -> None
                 // (What stands before the block's element - white space alone here: marks there are the plan's.)
-                let lead = if elementStart >= sourceChunkStarts.[chunk] then slice sourceChunkStarts.[chunk] elementStart else "x"
+                let lead = if elementStart >= sourceChunkStarts.[chunk] then XmlPatch.slice xml sourceChunkStarts.[chunk] elementStart else "x"
                 if lead.Trim() <> "" || elementStart >= sourceChunkEnds.[chunk] then None
                 else
-                    match XmlDsl.tryScanAt xml elementStart sourceChunkEnds.[chunk] (System.Collections.Generic.HashSet<string>()) |> Option.bind tableIn with
-                    | Some (XmlDsl.Element (name, _, children, span) as tableNode) when XmlDsl.Span.isKnown span && name = "w:tbl" ->
-                        let rows = System.Collections.Generic.Dictionary<int, SourceRowText>()
-                        let cells = System.Collections.Generic.Dictionary<int, SourceCellText>()
-                        let mutable sound = true
-                        let partOf (nodes: XmlDsl.XmlNode list) (name: string) =
-                            nodes |> List.tryFind (fun kid -> local kid = name) |> Option.map (XmlPatch.bytesOf xml) |> Option.defaultValue ""
-                        // Where the leading children named `names` of an element end (its start tag's end when it has none).
-                        let headEndOf (sp: XmlDsl.Span) (nodes: XmlDsl.XmlNode list) (names: string list) =
-                            kidsOf (XmlDsl.Element ("", Map.empty, nodes, XmlDsl.Span.none))
-                            |> List.takeWhile (fun kid -> List.contains (local kid) names)
-                            |> List.fold (fun at kid -> let kidSpan = spanOf kid in if XmlDsl.Span.isKnown kidSpan then kidSpan.End else at) sp.StartTagEnd
-                        let laid (isItem: string -> bool) (take: XmlDsl.XmlNode -> unit) (node: XmlDsl.XmlNode) (from: int) =
-                            match XmlPatch.layout (XmlPatch.localName >> isItem) (fun _ -> false) (fun _ -> false) take xml node from with
-                            | Some found -> found
-                            | None ->
-                                sound <- false
-                                { XmlPatch.Layout.Text = xml; Wrappers = System.Collections.Generic.Dictionary(); Children = []; Leads = System.Collections.Generic.Dictionary(); KeptEnds = System.Collections.Generic.Dictionary(); Tail = (0, 0) }
-                        let copyTag (node: XmlDsl.XmlNode) = XmlPatch.startTag xml node [ XmlPatch.RemoveAttribute "w14:paraId"; XmlPatch.RemoveAttribute "w14:textId" ]
-                        let takeCell (node: XmlDsl.XmlNode) =
-                            let sp = spanOf node
-                            if sp.StartTagEnd >= sp.End then sound <- false
-                            else
-                                let kids = match node with XmlDsl.Element (_, _, kids, _) -> kids | _ -> []
-                                let headEnd = headEndOf sp kids [ "tcPr" ]
-                                cells.[sp.Start] <- { CellXml = XmlPatch.bytesOf xml node
-                                                      CellStartTag = slice sp.Start sp.StartTagEnd
-                                                      CopyStartTag = copyTag node
-                                                      CellProps = partOf kids "tcPr"
-                                                      CellHead = slice sp.Start headEnd
-                                                      CellChildren = laid (fun name -> name = "p" || name = "tbl") ignore node headEnd }
-                        let takeRow (node: XmlDsl.XmlNode) =
-                            let sp = spanOf node
-                            if sp.StartTagEnd >= sp.End then sound <- false
-                            else
-                                let kids = match node with XmlDsl.Element (_, _, kids, _) -> kids | _ -> []
-                                let headEnd = headEndOf sp kids [ "tblPrEx"; "trPr" ]
-                                let inner = laid (fun name -> name = "tc") takeCell node headEnd
-                                rows.[sp.Start] <- { RowXml = XmlPatch.bytesOf xml node
-                                                     RowStartTag = slice sp.Start sp.StartTagEnd
-                                                     CopyStartTag = copyTag node
-                                                     RowExceptions = partOf kids "tblPrEx"
-                                                     RowProps = partOf kids "trPr"
-                                                     RowHead = slice sp.Start headEnd
-                                                     RowChildren = inner }
-                        let headEnd = headEndOf span children [ "tblPr"; "tblGrid" ]
-                        let tableChildren = laid (fun name -> name = "tr") takeRow tableNode headEnd
-                        if not sound then None
-                        else Some { WrapStart = slice sourceChunkStarts.[chunk] span.Start; WrapEnd = slice span.End sourceChunkEnds.[chunk]
-                                    TableHead = slice span.Start headEnd; TableStartTag = slice span.Start span.StartTagEnd; TableProps = partOf children "tblPr"; TableGrid = partOf children "tblGrid"
-                                    TableRows = rows; TableCells = cells; TableChildren = tableChildren }
+                    match XmlDsl.tryScanAt xml elementStart sourceChunkEnds.[chunk] (System.Collections.Generic.HashSet<string>()) |> Option.bind tableElementIn with
+                    | Some tableNode when XmlDsl.Span.isKnown (XmlPatch.span tableNode) ->
+                        let span = XmlPatch.span tableNode
+                        sourceTableOf xml tableNode (XmlPatch.slice xml sourceChunkStarts.[chunk] span.Start) (XmlPatch.slice xml span.End sourceChunkEnds.[chunk])
                     | _ -> None
+        member _.At (tableNode: XmlDsl.XmlNode) = sourceTableOf sourceBodyXml tableNode "" ""
         member _.Merge (container: string, source: string, was: string list, now: string list) =
             mergedProperties container source was now }
+
+// ---- a table whose rows or columns came or went --------------------------------
+//
+// A table that was read and changed in more than its paragraphs - a row or a column put in or taken out, a
+// cell's properties - is its element as it was read with those changes made in it (XmlPatch): a row or a cell
+// that is gone is taken out, the marks of ranges in it (bookmarks, comment and permission ranges) standing
+// where it stood; one that is new is put in next to the one before it (made like the one it was made like:
+// see generateTableRow, generateTableCell); one that changed is written from its source; the grid has the
+// columns put in or taken out; every other row and cell is the bytes it was read as.
+
+/// The marks of ranges (bookmarks, comment and permission ranges) in an element that is taken out: they stay
+/// where it stood. (Not the range of a comment the document has no more.)
+let private marksOutOf (xml: string) (node: XmlDsl.XmlNode) : string =
+    rangeMarksIn carriedRangeKinds node
+    |> List.filter (fun mark -> mark.Kind <> "commentRange" || Set.contains mark.Id liveCommentIds)
+    |> List.map (fun mark -> XmlPatch.bytesOf xml mark.Node)
+    |> String.concat ""
+
+/// The edit that takes an element out: the marks of ranges in it in its place, or nothing.
+let private takenOut (xml: string) (node: XmlDsl.XmlNode) : XmlPatch.ElementEdit =
+    match marksOutOf xml node with
+    | "" -> XmlPatch.Removed
+    | marks -> XmlPatch.Replaced marks
+
+/// The items of a layout (where each starts) and the wrappers each is in.
+let private layoutItems (laid: XmlPatch.Layout) : (int * int list) list =
+    laid.Children |> List.choose (function XmlPatch.LaidItem (at, wrappers) -> Some (at, wrappers) | XmlPatch.LaidKept _ -> None)
+
+/// The rows of a table of the model that are rows of the table as it was read (not copies): where each starts.
+let private sourceRowsOf (known: SourceTableText) (table: obj) : int list =
+    optionalArray (table?Rows)
+    |> Array.toList
+    |> List.choose (fun row -> match sourceOfPart (row?SourceRow) with Some (at, false, _) when known.TableRows.ContainsKey at -> Some at | _ -> None)
+
+/// Whether a table of the model can be written as its element as read with its changes made in it: some of its
+/// rows are rows that were read, in the order they were read in.
+let private tableIsPatchable (known: SourceTableText) (table: obj) : bool =
+    let rows = sourceRowsOf known table
+    not rows.IsEmpty && (rows |> List.pairwise |> List.forall (fun (a, b) -> a < b))
+
+/// What is taken out of a layout (of rows, of cells) where the items `kept` stay: each item that does not stay, or the
+/// outermost of its wrappers that holds none that stays (a content control around rows: a repeating section's item) -
+/// where each starts. (`known`: the wrappers that may be taken out - a content control, custom XML.)
+let private takenOutOf (laid: XmlPatch.Layout) (known: int -> bool) (kept: int -> bool) : int list =
+    let items = layoutItems laid
+    items
+    |> List.filter (fun (at, _) -> not (kept at))
+    |> List.map (fun (at, wrappers) ->
+        wrappers
+        |> List.tryFind (fun wrapper -> known wrapper && items |> List.forall (fun (other, around) -> not (List.contains wrapper around) || not (kept other)))
+        |> Option.defaultValue at)
+    |> List.distinct
+
+/// The table written as its element as it was read with the model's changes made in it (see tableIsPatchable).
+let private patchedTableXml (hyperlinks: Map<string, string>) (images: ImageScope) (known: SourceTableText) (table: obj) : string =
+    let xml = sourceBodyXml
+    let tableNode = known.TableNode
+    // (The rows and cells of the table and the content controls and custom XML around them, by where each starts.)
+    let nodes = System.Collections.Generic.Dictionary<int, XmlDsl.XmlNode>()
+    for node in XmlPatch.descendantsWhere (fun node -> List.contains (XmlPatch.localName node) [ "tr"; "tc"; "sdt"; "customXml" ]) tableNode do
+        nodes.[(XmlPatch.span node).Start] <- node
+    let targets = System.Collections.Generic.Dictionary<int, XmlDsl.XmlNode * ResizeArray<XmlPatch.ElementEdit>>()
+    let edit (node: XmlDsl.XmlNode) (change: XmlPatch.ElementEdit) =
+        let at = (XmlPatch.span node).Start
+        match targets.TryGetValue at with
+        | true, (_, edits) -> edits.Add change
+        | _ -> targets.[at] <- (node, ResizeArray [ change ])
+    // (A child of an element by its local name, with the name it has there.)
+    let childNamed (node: XmlDsl.XmlNode) (local: string) = XmlPatch.elements node |> List.tryFind (fun kid -> XmlPatch.localName kid = local)
+    let qualified (node: XmlDsl.XmlNode) (local: string) = childNamed node local |> Option.map XmlPatch.name |> Option.defaultValue ("w:" + local)
+    // A properties element that is now `now` where it was `was` (as read): set, taken out, or left.
+    let setProperties (node: XmlDsl.XmlNode) (local: string) (was: string) (now: string) : XmlPatch.ElementEdit list =
+        if now = was then []
+        elif now = "" then [ XmlPatch.RemoveChild (qualified node local) ]
+        else [ XmlPatch.SetChild (qualified node local, now) ]
+    let outerContext = paragraphsInContext
+    let outerTable = currentSourceTable
+    paragraphsInContext <- true
+    currentSourceTable <- Some known
+    // The table's properties: those it was read with, changed where the model's changed.
+    let before = table?SourceTable?Before
+    if not (isNullOrUndefined before) then
+        let now = tablePropertyElements table
+        match tableSource.Merge ("w:tblPr", known.TableProps, tablePropertyElements before, now) with
+        | Some props ->
+            for change in setProperties tableNode "tblPr" known.TableProps (if props = "" then "<w:tblPr/>" else props) do edit tableNode change
+        | None -> edit tableNode (XmlPatch.SetChild (qualified tableNode "tblPr", element "w:tblPr" [] now))
+    // The grid: a column put in like its neighbour, one taken out; otherwise the model's widths.
+    if not (sourceGridIs known.TableGrid table) then
+        let now = optionalArray (table?GridColumns) |> Array.choose (fun value -> optionalFloat value) |> Array.map roundToInt
+        match childNamed tableNode "tblGrid" with
+        | None -> edit tableNode (XmlPatch.SetChild ("w:tblGrid", generateTableGrid table))
+        | Some grid ->
+            let columns = XmlPatch.elements grid |> List.filter (fun node -> XmlPatch.localName node = "gridCol") |> List.toArray
+            let widths = columns |> Array.map (fun column -> XmlPatch.attribute column "w:w" |> Option.bind (fun value -> match System.Double.TryParse value with | true, width -> Some (roundToInt width) | _ -> None))
+            let near (a: int) (b: int) = abs (a - b) <= 1
+            let read = widths |> Array.choose id
+            // (The place k at which `longer` has a column `shorter` has not.)
+            let extraAt (longer: int array) (shorter: int array) =
+                [ 0 .. shorter.Length ]
+                |> List.tryFind (fun k -> [ 0 .. shorter.Length - 1 ] |> List.forall (fun i -> near shorter.[i] longer.[if i < k then i else i + 1]))
+            let width (column: XmlDsl.XmlNode) (value: int) =
+                XmlPatch.apply XmlPatch.Word.order { Text = xml; Node = column } [ XmlPatch.SetAttribute ("w:w", string value) ]
+            let whole () = edit grid (XmlPatch.Replaced (generateTableGrid table))
+            if read.Length <> widths.Length || columns.Length = 0 || now.Length = 0 then whole ()
+            elif now.Length = read.Length + 1 then
+                match extraAt now read with
+                | Some k when k > 0 -> edit columns.[k - 1] (XmlPatch.InsertAfter (if near read.[k - 1] now.[k] then XmlPatch.bytesOf xml columns.[k - 1] else width columns.[k - 1] now.[k]))
+                | Some _ -> edit columns.[0] (XmlPatch.InsertBefore (if near read.[0] now.[0] then XmlPatch.bytesOf xml columns.[0] else width columns.[0] now.[0]))
+                | None -> whole ()
+            elif now.Length = read.Length - 1 then
+                match extraAt read now with
+                | Some k -> edit columns.[k] XmlPatch.Removed
+                | None -> whole ()
+            elif now.Length = read.Length then
+                for i in 0 .. read.Length - 1 do
+                    if not (near read.[i] now.[i]) then edit columns.[i] (XmlPatch.SetAttribute ("w:w", string now.[i]))
+            else whole ()
+    // The items of a row or of the table in the model's order - each one that was read (where it starts) or a new
+    // one (its XML, and where the one it was made like starts) -: the new ones put in among those that were read.
+    // A run of new ones goes before the item that follows it where each was made like that one (a row put in
+    // above it), else after the item before it (in the wrappers of that one), else before the first.
+    let placeNew (entries: Choice<int, string * int option> list) =
+        let rec walk (previous: int option) (entries: Choice<int, string * int option> list) =
+            match entries with
+            | [] -> ()
+            | Choice1Of2 at :: rest -> walk (Some at) rest
+            | Choice2Of2 _ :: _ ->
+                let run = entries |> List.takeWhile (function Choice2Of2 _ -> true | Choice1Of2 _ -> false) |> List.choose (function Choice2Of2 entry -> Some entry | _ -> None)
+                let rest = entries |> List.skip run.Length
+                let next = match rest with Choice1Of2 at :: _ -> Some at | _ -> None
+                let text = run |> List.map fst |> String.concat ""
+                match previous, next with
+                | _, Some at when previous.IsNone || run |> List.forall (fun (_, like) -> like = Some at) -> edit nodes.[at] (XmlPatch.InsertBefore text)
+                | Some at, _ -> edit nodes.[at] (XmlPatch.InsertAfter text)
+                | None, None -> ()
+                walk previous rest
+        walk None entries
+    // The rows.
+    let keptRows = Set.ofList (sourceRowsOf known table)
+    for at in takenOutOf known.TableChildren nodes.ContainsKey keptRows.Contains do
+        match nodes.TryGetValue at with
+        | true, node -> edit node (takenOut xml node)
+        | _ -> ()
+    let likeOf (part: obj) = sourceOfPart part |> Option.map (fun (at, _, _) -> at)
+    [ for row in optionalArray (table?Rows) do
+        match sourceOfPart (row?SourceRow) with
+        | Some (at, false, same) when keptRows.Contains at && nodes.ContainsKey at ->
+            let rowNode = nodes.[at]
+            if not same then
+                let knownRow = known.TableRows.[at]
+                // Its properties, changed where the model's changed.
+                let head =
+                    let rowBefore = row?SourceRow?Before
+                    if isNullOrUndefined rowBefore then Some []
+                    else
+                        let exceptions, props = tableRowProperties row
+                        let exceptionsBefore, propsBefore = tableRowProperties rowBefore
+                        tableSource.Merge ("w:trPr", knownRow.RowProps, propsBefore, props)
+                        |> Option.map (fun merged ->
+                            setProperties rowNode "trPr" knownRow.RowProps merged
+                            @ (if exceptionsBefore = exceptions then [] else setProperties rowNode "tblPrEx" knownRow.RowExceptions exceptions))
+                // Its cells: those that were read in the order they were read in, each where it stood.
+                let cells = optionalArray (row?Cells)
+                let keptCells =
+                    cells |> Array.toList |> List.choose (fun cell ->
+                        match sourceOfPart (cell?SourceCell) with
+                        | Some (cellAt, false, _) when XmlPatch.isItemOf knownRow.RowChildren cellAt && nodes.ContainsKey cellAt -> Some cellAt
+                        | _ -> None)
+                let cellsInPlace = not keptCells.IsEmpty && (keptCells |> List.pairwise |> List.forall (fun (a, b) -> a < b))
+                match head with
+                | Some headEdits when cellsInPlace ->
+                    for change in headEdits do edit rowNode change
+                    for cellAt in takenOutOf knownRow.RowChildren nodes.ContainsKey (fun cellAt -> List.contains cellAt keptCells) do
+                        match nodes.TryGetValue cellAt with
+                        | true, node -> edit node (takenOut xml node)
+                        | _ -> ()
+                    placeNew
+                        [ for cell in cells do
+                            match sourceOfPart (cell?SourceCell) with
+                            | Some (cellAt, false, cellSame) when List.contains cellAt keptCells ->
+                                if not cellSame then edit nodes.[cellAt] (XmlPatch.Replaced (generateTableCell hyperlinks images cell))
+                                yield Choice1Of2 cellAt
+                            | _ -> yield Choice2Of2 (generateTableCell hyperlinks images cell, likeOf (cell?SourceCell)) ]
+                | _ -> edit rowNode (XmlPatch.Replaced (generateTableRow hyperlinks images row))
+            yield Choice1Of2 at
+        | _ ->
+            // A row that is new.
+            yield Choice2Of2 (generateTableRow hyperlinks images row, likeOf (row?SourceRow)) ]
+    |> placeNew
+    paragraphsInContext <- outerContext
+    currentSourceTable <- outerTable
+    let edits = XmlPatch.editsAt tableNode [ for KeyValue (_, (node, changes)) in targets -> node, List.ofSeq changes ]
+    XmlPatch.apply XmlPatch.Word.order { Text = xml; Node = tableNode } edits
 
 /// The paragraphs of the items of an element of the body (from `start` to `finish` in the part) that were
 /// changed, to be written from their source (see splicedRuns) in the place of their elements (their
@@ -3835,6 +4092,9 @@ type private BodySegment =
     /// their source: in the place of each element (where it starts and ends), its paragraph.
     | SourceText of start: int * finish: int * paragraphs: (int * int * obj) list
     | ModelBlocks of obj array
+    /// The part's text from `start` to `finish` (a block that is a table, and what stands before it) as it was read
+    /// but for the table, which is its element as it was read with the model's changes made in it (patchedTableXml).
+    | PatchedTable of start: int * finish: int * table: SourceTableText * item: obj
     /// The marks of ranges that stood between two blocks, before a block that is written from
     /// the model (or is not there any more): they stay where they stood.
     | CarriedMarks of RangeMark list
@@ -3990,8 +4250,10 @@ let private planBody (container: BlockContainer) (xml: string) (itemChunks: int 
             let neutral (chunk: int) =
                 let depths = fieldMarks.[chunk] |> List.scan (fun depth mark -> match mark with "begin" -> depth + 1 | "end" -> depth - 1 | _ -> depth) 0
                 List.forall (fun depth -> depth >= 0) depths && List.last depths = 0
+            let inGroup = System.Collections.Generic.HashSet<int>()
             let closeGroup () =
                 if group.Count > 1 then
+                    for chunk in group do inGroup.Add chunk |> ignore
                     let together =
                         group |> Seq.forall (fun chunk -> keep.[chunk] || (firstAt.[chunk] >= 0 && neutral chunk))
                         && (Seq.pairwise group |> Seq.forall (fun (a, b) -> firstAt.[b] = lastAt.[a] + 1))
@@ -4008,6 +4270,19 @@ let private planBody (container: BlockContainer) (xml: string) (itemChunks: int 
                     depth <- max 0 (depth + begins - finishes)
                     if depth = 0 then closeGroup ()
             closeGroup ()
+            // A table whose rows or columns came or went (or that changed in more than its paragraphs), that is
+            // its element's alone and not one of several held together by a field: its element as it was read with
+            // the changes made in it (patchedTableXml), what stands before it as it was read.
+            let patchedTables = Array.create<SourceTableText option> chunkCount None
+            for chunk in 0 .. chunkCount - 1 do
+                if originalCount.[chunk] = 1 && found.[chunk] = 1 && not keep.[chunk] && not (inGroup.Contains chunk) && firstAt.[chunk] >= 0 then
+                    let item = items.[firstAt.[chunk]]
+                    let next = firstAt.[chunk] + 1
+                    if stringOrDefault "" (item?Type) = "Table" && not (isNullOrUndefined (item?SourceTable)) && not (isNullOrUndefined (item?SourceWhy))
+                       && not (next < items.Length && isTextBox items.[next]) && body.Starts.[chunk] >= textStart.[chunk] then
+                        match tableElementIn body.Nodes.[chunk] |> Option.bind tableSource.At with
+                        | Some known when tableIsPatchable known item -> patchedTables.[chunk] <- Some known
+                        | _ -> ()
             // In the order the items have now.
             let segments = ResizeArray<BodySegment>()
             let pending = ResizeArray<obj>()
@@ -4033,7 +4308,7 @@ let private planBody (container: BlockContainer) (xml: string) (itemChunks: int 
             let carriedBefore = System.Collections.Generic.Dictionary<int, ResizeArray<RangeMark>>()
             let carriedAtEnd = ResizeArray<RangeMark>()
             for chunk in 0 .. chunkCount - 1 do
-                if originalCount.[chunk] > 0 && not keep.[chunk] && not (joinedChunks.Contains chunk) && body.Starts.[chunk] > textStart.[chunk] then
+                if originalCount.[chunk] > 0 && not keep.[chunk] && patchedTables.[chunk].IsNone && not (joinedChunks.Contains chunk) && body.Starts.[chunk] > textStart.[chunk] then
                     let marks =
                         body.Nodes
                         |> Array.filter (fun node -> (XmlPatch.span node).Start >= textStart.[chunk] && (XmlPatch.span node).End <= body.Starts.[chunk])
@@ -4069,6 +4344,14 @@ let private planBody (container: BlockContainer) (xml: string) (itemChunks: int 
                     anySource <- true
                     reportSourceBlocks <- reportSourceBlocks + originalCount.[chunk]
                     position <- position + originalCount.[chunk]
+                elif chunk >= 0 && patchedTables.[chunk].IsSome then
+                    flush ()
+                    segments.Add (PatchedTable (textStart.[chunk], body.Ends.[chunk], patchedTables.[chunk].Value, items.[position]))
+                    // (What of it is written from the model - a row, a cell - takes its pictures and links from it.)
+                    regenerated.Add items.[position]
+                    anySource <- true
+                    reportSourceBlocks <- reportSourceBlocks + 1
+                    position <- position + 1
                 else
                     pending.Add items.[position]
                     regenerated.Add items.[position]
@@ -4289,6 +4572,13 @@ let private planContentParts (plan: BodyPlan) (setup: PageSetupInfo) (images: Im
                 pieces.Add (FromModel paragraph)
                 at <- paraEnd
             pieces.Add (FromSource (at, finish))
+        | PatchedTable (start, finish, table, item) ->
+            let span = XmlPatch.span table.TableNode
+            pieces.Add (FromSource (start, span.Start))
+            let text = patchedTableXml hyperlinks images table item
+            written.Add text
+            pieces.Add (FromModel text)
+            pieces.Add (FromSource (span.End, finish))
         | ModelBlocks items ->
             let text = items |> generateBlocks (generateDocumentItemWithImagesAndPageSetup setup hyperlinks images) (generateTextBoxRun setup hyperlinks images)
             written.Add text

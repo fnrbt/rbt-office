@@ -159,6 +159,18 @@ by `ValueText` (with `ModelText`, `PartPath`, `OpcXml`).
 - Tables: a table is its properties and grid, its rows in their wrappers (a content control around rows, around
   cells, around the table), a row its cells, a cell its paragraphs; a copy of a row or cell is its origin's
   element without its own ids. Row and column insert, cell shading, split: nothing lost (census).
+  A table of a body (a header's, a note's) that changed in more than its paragraphs - a row or a column put in or
+  taken out, a cell's properties - and whose rows that are left are rows that were read, in their order, is its
+  element as read with the change made in it (`patchedTableXml`, a `PatchedTable` segment of the plan: what stands
+  before it is the part's text): a row or a cell taken out is `Removed`, or `Replaced` by the marks of ranges in it
+  (bookmarks, comment and permission ranges), with the content control around it when that holds nothing that is
+  left; a new one is put in (`InsertAfter` the one before it, `InsertBefore` the one after it when it was made like
+  that one) as a copy of the one it was made like (start tag without w14 ids, w:trPr / w:tcPr merged with the
+  model's change - a w:gridSpan or w:vMerge it does not have -, in each cell an empty paragraph that is the start
+  tag and w:pPr of the neighbour cell's first: `emptyParagraphLike`); a row or cell that changed is written from
+  its source as above, in its place; w:gridCol put in like its neighbour or taken out; w:tblPr merged. Every other
+  row and cell is its bytes (`tools/word-browser/checks/table-structure-xml.js`). A table whose rows were
+  reordered, or that has none of the rows it was read with, is written from the model as above.
 - Paragraphs: one path. A paragraph that changed is its source paragraph (its start tag, its properties merged,
   `mergedProperties` on XmlPatch) with its runs: a run as it was read is its bytes; a run whose formatting or text
   changed is its source `w:r` with the model's change made in it (`diff` of the model's run before and after:
