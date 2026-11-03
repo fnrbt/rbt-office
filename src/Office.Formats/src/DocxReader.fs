@@ -5756,6 +5756,7 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                                 "Color" ==> (wordColorToCss effectiveRunProps.Color |> Option.orElse (Some commentMarkDisplayColor))
                                 "VertAlign" ==> effectiveRunProps.VertAlign
                                 "CommentId" ==> Some id
+                                "SourceRun" ==> (if XmlDsl.Span.isKnown run.Source then Some run.Source.Start else None)
                             ] @ referenceMarkFormat styleMap theme effectiveParaProps run))
                         | NoteRef note ->
                             // Render the reference as its superscript mark number
@@ -5768,6 +5769,7 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                                 "NoteId" ==> Some note.Id
                                 "NoteType" ==> Some note.NoteType
                                 "NoteText" ==> (noteBodies |> Map.tryFind (note.NoteType, note.Id))
+                                "SourceRun" ==> (if XmlDsl.Span.isKnown run.Source then Some run.Source.Start else None)
                             ] @ referenceMarkFormat styleMap theme effectiveParaProps run))
                         | BookmarkStart bookmark ->
                             Some (objFromFields [
@@ -6047,6 +6049,7 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                                 "Color" ==> (wordColorToCss effectiveRunProps.Color |> Option.orElse (Some commentMarkDisplayColor))
                                 "VertAlign" ==> effectiveRunProps.VertAlign
                                 "CommentId" ==> Some id
+                                "SourceRun" ==> (if XmlDsl.Span.isKnown run.Source then Some run.Source.Start else None)
                             ] @ referenceMarkFormat styleMap theme effectiveParaProps run))
                         | NoteRef note ->
                             // Render the reference as its superscript mark number
@@ -6059,6 +6062,7 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                                 "NoteId" ==> Some note.Id
                                 "NoteType" ==> Some note.NoteType
                                 "NoteText" ==> (noteBodies |> Map.tryFind (note.NoteType, note.Id))
+                                "SourceRun" ==> (if XmlDsl.Span.isKnown run.Source then Some run.Source.Start else None)
                             ] @ referenceMarkFormat styleMap theme effectiveParaProps run))
                         | BookmarkStart bookmark ->
                             Some (objFromFields [

@@ -3093,7 +3093,10 @@ let private spliceSourceOf (text: string) (start: int) (finish: int) (bookmarks:
         let inShape (node: XmlDsl.XmlNode) =
             let span = XmlPatch.span node
             shapeRuns |> List.exists (fun outer -> span.Start >= outer.Start && span.End <= outer.End)
-        let isItem (node: XmlDsl.XmlNode) = XmlPatch.localName node = "r" && not (outerFieldRuns.Contains (XmlPatch.span node).Start) && not (inShape node)
+        // (Nor is a run that holds nothing but its properties: the model has no run of it.)
+        let holdsContent (node: XmlDsl.XmlNode) = XmlPatch.elements node |> List.exists (fun kid -> XmlPatch.localName kid <> "rPr")
+        let isItem (node: XmlDsl.XmlNode) =
+            XmlPatch.localName node = "r" && holdsContent node && not (outerFieldRuns.Contains (XmlPatch.span node).Start) && not (inShape node)
         XmlPatch.layout isItem modelledWrapper skip take text paragraph from
         |> Option.map (fun laid ->
             // The fields: each begin mark with the end mark that closes it, through the runs in order.
