@@ -51,7 +51,7 @@ redbat (`cardillion-mega` remote): `master` has the 0.1.25 adoption (`ccf43e0f9`
 
 ### Word
 - Not started in pass nineteen: flips (`flipH`/`flipV` are not read at all; file/line pointers in the handoff), `allowOverlap` in layout, text in group shapes and drawing canvases.
-- Layout: a list number wider than its hanging indent overlaps the text; `w:lnNumType`; exact line heights stored as a multiple of the largest text size.
+- Layout: `w:lnNumType`; exact line heights stored as a multiple of the largest text size; `w:defaultTabStop` is not read (default stops are every 720 twips; files from Europe often say 708).
 - Save: headers, footers and notes written from the model balance range marks but do not carry the ones the model lacks; comment/permission ranges that start mid-paragraph widen to the paragraph; line and group VML fallbacks are still dropped on a move.
 - Tables: a row or column insert writes many paragraphs from the model (547 / 1552 across the round-trip pass).
 - View anchor: `setAllowLinkedImages` still drops the staged layout; a measurer change far down a fully laid out document lays everything out at once with no anchor.

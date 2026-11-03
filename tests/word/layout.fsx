@@ -71,6 +71,33 @@ let indentedReusePara = { reusePara with Metadata = { reusePara.Metadata with In
 let indentedReuseLayout, _ = layoutParagraphAtWithRange settings measureText (rangeMeasurerFromTextMeasurer measureText) 500.0 0.0 0.0 indentedReusePara Map.empty
 check "layout indent shifts segment" (match indentedReuseLayout.Lines.[0].Segments with TextSegment (_, _, x, _, _) :: _ -> x | _ -> -1.0) 12.0
 
+// First-line indents and tab stops, as Word sets them. Every line is as wide
+// as the paragraph between its indents; only the first starts further in (or
+// out, hanging). Tab stops - custom and default - are measured from the
+// margin, not from the paragraph's indent; a hanging indent is a tab stop of
+// the first line.
+let indentLines (metadata: Doc.BlockMetadata) text =
+    let para : Doc.ParagraphBlock = { Id = "indent"; Buffer = ofString text; Metadata = metadata }
+    let layout, _ = layoutParagraphAtWithRange settings measureText (rangeMeasurerFromTextMeasurer measureText) 210.0 0.0 0.0 para Map.empty
+    layout.Lines |> List.map (fun line -> line.Segments |> List.map (function TextSegment (t, _, x, _, _) -> x, t | _ -> -1.0, ""))
+let lineText (segments: (float * string) list) = segments |> List.map snd |> String.concat ""
+let lineStart (segments: (float * string) list) = fst segments.Head
+// 11 words of 4 letters, 7 px a letter: five words and their spaces (35 px a word) fill 175 px.
+let elevenWords = "aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj kkkk"
+let firstLineIndented = indentLines { Doc.defaultMetadata with FirstLineIndent = Some 28.0 } elevenWords
+check "first-line indent: the first line starts at it" (lineStart firstLineIndented.[0]) 28.0
+check "first-line indent: the lines after it are as wide as the paragraph (6 words, not 5)"
+    (firstLineIndented |> List.map lineText) [ "aaaa bbbb cccc dddd eeee "; "ffff gggg hhhh iiii jjjj kkkk" ]
+let hangingLines = indentLines { Doc.defaultMetadata with IndentLeft = Some 48.0; FirstLineIndent = Some -48.0 } elevenWords
+check "hanging indent: the first line starts at the margin and has its width (6 words)"
+    (hangingLines |> List.map (fun line -> lineStart line, lineText line)) [ 0.0, "aaaa bbbb cccc dddd eeee ffff "; 48.0, "gggg hhhh iiii jjjj "; 48.0, "kkkk" ]
+let hangingTab = indentLines { Doc.defaultMetadata with IndentLeft = Some 48.0; FirstLineIndent = Some -48.0 } "1.\tterm"
+check "hanging indent: a tab on the first line goes to the indent" (hangingTab.[0] |> List.last) (48.0, "term")
+let customStop = indentLines { Doc.defaultMetadata with IndentLeft = Some 48.0; TabStops = [ { Position = 96.0; Alignment = "left"; Leader = None } ] } "a\tb"
+check "a custom tab stop is measured from the margin, not the indent" (customStop.[0] |> List.last) (96.0, "b")
+let defaultStop = indentLines { Doc.defaultMetadata with IndentLeft = Some 20.0 } "a\tb"
+check "default tab stops are every half inch from the margin" (defaultStop.[0] |> List.last) (48.0, "b")
+
 let effectiveMerged =
     Styles.effectiveBuffer Styles.normal
         { Rope = Rbt.Word.Rope.ofString "abcd"
