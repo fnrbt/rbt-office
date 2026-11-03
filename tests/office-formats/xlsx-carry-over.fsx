@@ -353,6 +353,14 @@ do
     ok "table part: the test's part is a query table" (queryPart.Contains "tableType=\"queryTable\"" && queryPart <> part) queryPart
     ok "table part: a new column of a query table gets a uniqueName" (queried.Contains "<tableColumn id=\"10\" uniqueName=\"10\" name=\"Tax\" queryTableFieldId=\"10\"/>") queried
     ok "table part: and no other table's does" (not (xml.Contains "uniqueName")) xml
+    // Its query's fields follow the table's columns (Excel refuses the file otherwise).
+    let query =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<queryTable xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" name=\"q\" connectionId=\"1\">"
+        + "<queryTableRefresh nextId=\"6\"><queryTableFields count=\"2\"><queryTableField id=\"1\" name=\"Item\" tableColumnId=\"1\"/><queryTableField id=\"2\" name=\"Qty\" tableColumnId=\"2\"/></queryTableFields></queryTableRefresh></queryTable>"
+    let fields = XlsxWriter.queryTableXmlFromSource query queried |> Option.defaultValue ""
+    ok "query table: a field per column, in their order; the next id past them"
+        (fields.Contains "<queryTableRefresh nextId=\"11\"><queryTableFields count=\"5\"><queryTableField id=\"1\" name=\"Item\" tableColumnId=\"1\"/><queryTableField id=\"2\" name=\"Qty\" tableColumnId=\"2\"/><queryTableField id=\"10\" dataBound=\"0\" tableColumnId=\"10\"/>"
+         && fields.StartsWith "<?xml") fields
 
 // ---- a format changed by the user is made from the file's -----------------------
 // The cell's new cellXfs entry is the file's entry with what the change touched

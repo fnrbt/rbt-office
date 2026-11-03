@@ -174,6 +174,42 @@ check "content types: by part name, by extension"
      [ lookup "word/document.xml"; lookup "word/media/a.PNG"; lookup "word/x.bin" ])
     [ Some "doc"; Some "image/png"; None ]
 check "part paths" [ PartPath.ofRelationships "word/_rels/document.xml.rels"; PartPath.ofRelationships "_rels/.rels"; PartPath.ofRelationships "word/document.xml" ] [ Some "word/document.xml"; Some ""; None ]
+check "part paths: relative, within, numbered"
+    [ PartPath.relative "xl/worksheets" "xl/comments1.xml"; PartPath.relative "xl/worksheets" "xl/worksheets/sheet2.xml"; string (PartPath.isIn "xl" "xl/media/a.png"); string (PartPath.isIn "xl" "docProps/app.xml"); string (PartPath.number "table" "xl/tables/table12.xml") ]
+    [ "../comments1.xml"; "sheet2.xml"; "True"; "False"; "Some(12)" ]
+check "relationship kinds" (OpcXml.relationshipKind "http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet") "worksheet"
+
+// ---- elements by where they start; an element replaced ----
+let sheetText = "<worksheet><sheetData>\n<row r=\"1\"><c r=\"A1\"><v>1</v></c><c r=\"B1\"><v>2</v></c></row>\n<row r=\"2\"/></sheetData></worksheet>"
+let sheet = (readPart sheetText).Value
+let rowsOf (part: SourceElement) = descendants "row" part.Node
+let cellB1 = (descendants "c" sheet.Node).[1]
+check "EditAt: the child that starts there, its edits; Replaced: the element is other XML"
+    (applyPart Spreadsheet.order sheet
+        [ EditChild ("sheetData", [ EditAt ((span (rowsOf sheet).[0]).Start, [ SetAttribute ("ht", "20"); EditAt ((span cellB1).Start, [ InsertBefore "<c r=\"B0\"/>"; Replaced "<c r=\"B1\"><v>3</v></c>" ]) ])
+                                    EditAt ((span (rowsOf sheet).[1]).Start, [ Append "<c r=\"A2\"/>" ]) ], None) ])
+    "<worksheet><sheetData>\n<row r=\"1\" ht=\"20\"><c r=\"A1\"><v>1</v></c><c r=\"B0\"/><c r=\"B1\"><v>3</v></c></row>\n<row r=\"2\"><c r=\"A2\"/></row></sheetData></worksheet>"
+
+// ---- a large part read in outline ----
+let outline = (readPartExcept (fun name -> name = "row") sheetText).Value
+check "readPartExcept: the shallow elements without their children, their spans and attributes exact"
+    [ for row in rowsOf outline -> elements row |> List.length, bytesOf outline.Text row, attribute row "r" ]
+    [ 0, "<row r=\"1\"><c r=\"A1\"><v>1</v></c><c r=\"B1\"><v>2</v></c></row>", Some "1"; 0, "<row r=\"2\"/>", Some "2" ]
+check "readPartExcept: an element of the shallow name in one of them is passed over with it"
+    (readPartExcept (fun name -> name = "g") "<a><g k=\"&amp;\"><g/><g><b/></g></g><c x=\"1\"/></a>" |> Option.map (fun part -> [ for kid in elements part.Node -> name kid, attribute kid "k", elements kid |> List.length ]))
+    (Some [ "g", Some "&", 0; "c", None, 0 ])
+check "readPartExcept: not well formed" (readPartExcept (fun name -> name = "row") "<a><row></a>") None
+let deepened = withWhole outline [ (span (rowsOf outline).[0]).Start ]
+check "withWhole: the elements read whole where they are" [ for row in rowsOf deepened -> elements row |> List.length ] [ 2; 0 ]
+check "withWhole: edits of what they hold" (applyPart Spreadsheet.order deepened [ EditChild ("sheetData", [ EditAt ((span (rowsOf deepened).[0]).Start, [ EditNth ("c", 0, [ SetAttribute ("s", "1") ]) ]) ], None) ])
+    "<worksheet><sheetData>\n<row r=\"1\"><c r=\"A1\" s=\"1\"><v>1</v></c><c r=\"B1\"><v>2</v></c></row>\n<row r=\"2\"/></sheetData></worksheet>"
+check "whole: an element read whole" (whole outline (rowsOf outline).[0] |> Option.map (fun row -> elements row.Node |> List.length)) (Some 2)
+check "attributeBytes: as written, in order"
+    (attributeBytes "<row  r=\"1\" s='2'/>" (readPart "<row  r=\"1\" s='2'/>").Value.Node)
+    [ "r", "  r=\"1\""; "s", " s='2'" ]
+check "Spreadsheet.order: a list put in at its place"
+    (apply Spreadsheet.order (el "<styleSheet><fonts/><cellXfs/></styleSheet>") [ SetChild ("numFmts", "<numFmts/>"); SetChild ("dxfs", "<dxfs/>") ])
+    "<styleSheet><numFmts/><fonts/><cellXfs/><dxfs/></styleSheet>"
 
 printfn "xml-patch: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

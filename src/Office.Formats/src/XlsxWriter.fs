@@ -1092,16 +1092,20 @@ let private isFileError (text: string) =
     | "#SPILL!" | "#CALC!" | "#FIELD!" | "#BLOCKED!" | "#CONNECT!" | "#UNKNOWN!" | "#BUSY!" -> true
     | _ -> false
 
+/// ` t="..."` of a cell of that type ("" for a number).
+let private typeAttr (cellType: string) = if cellType = "" then "" else " t=\"" + cellType + "\""
+
+/// The type of a cell that holds the value (`t`: "" for a number) and its `<v>`.
 let private cachedValueXml (sharedIndex: string -> XlsxRichRun list -> int) value =
     let rec loop v =
         match v with
         | XlsxBlank -> "", ""
         | XlsxNumber n -> "", "<v>" + invariant n + "</v>"
-        | XlsxBoolean b -> " t=\"b\"", (if b then "<v>1</v>" else "<v>0</v>")
+        | XlsxBoolean b -> "b", (if b then "<v>1</v>" else "<v>0</v>")
         // (What only the engine says - a cycle - is no error of the file format: Excel refuses the file.)
         | XlsxError e when not (isFileError e) -> "", ""
-        | XlsxError e -> " t=\"e\"", "<v>" + escaped e + "</v>"
-        | XlsxText (text, runs) -> " t=\"s\"", "<v>" + string (sharedIndex text runs) + "</v>"
+        | XlsxError e -> "e", "<v>" + escaped e + "</v>"
+        | XlsxText (text, runs) -> "s", "<v>" + string (sharedIndex text runs) + "</v>"
         | XlsxFormula (_, cached) ->
             cached |> Option.map loop |> Option.defaultValue ("", "")
     loop value
@@ -1110,7 +1114,7 @@ let private cachedValueXml (sharedIndex: string -> XlsxRichRun list -> int) valu
 /// (`t="str"`), as Excel does - the shared strings are for texts typed into cells.
 let private formulaResultXml (sharedIndex: string -> XlsxRichRun list -> int) value =
     match value with
-    | XlsxText (text, _) -> " t=\"str\"", "<v>" + escapedCellText text + "</v>"
+    | XlsxText (text, _) -> "str", "<v>" + escapedCellText text + "</v>"
     | other -> cachedValueXml sharedIndex other
 
 /// `<f t="dataTable" .../>` of a what-if data table.
@@ -1138,163 +1142,11 @@ let private columnLetters (col: int) =
         columnLetterCache.[col] <- letters
         letters
 
-/// Functions newer than Excel 2007 are stored under a prefix (`_xlfn.XLOOKUP`,
-/// `_xlfn._xlws.FILTER`), and the names a LET or LAMBDA binds under `_xlpm.`.
-/// A file that names one of them bare is refused by an Excel that knows it.
-let private futureFunctions =
-    let plain =
-        [ "ACOT"; "ACOTH"; "AGGREGATE"; "ARABIC"; "BASE"; "BETA.DIST"; "BETA.INV"; "BINOM.DIST"; "BINOM.DIST.RANGE"; "BINOM.INV"
-          "BITAND"; "BITLSHIFT"; "BITOR"; "BITRSHIFT"; "BITXOR"; "CEILING.MATH"; "CEILING.PRECISE"; "CHISQ.DIST"; "CHISQ.DIST.RT"
-          "CHISQ.INV"; "CHISQ.INV.RT"; "CHISQ.TEST"; "COMBINA"; "CONCAT"; "CONFIDENCE.NORM"; "CONFIDENCE.T"; "COT"; "COTH"
-          "COVARIANCE.P"; "COVARIANCE.S"; "CSC"; "CSCH"; "DAYS"; "DECIMAL"; "ECMA.CEILING"; "ENCODEURL"; "ERF.PRECISE"; "ERFC.PRECISE"
-          "EXPON.DIST"; "F.DIST"; "F.DIST.RT"; "F.INV"; "F.INV.RT"; "F.TEST"; "FILTERXML"; "FLOOR.MATH"; "FLOOR.PRECISE"
-          "FORECAST.ETS"; "FORECAST.ETS.CONFINT"; "FORECAST.ETS.SEASONALITY"; "FORECAST.ETS.STAT"; "FORECAST.LINEAR"; "FORMULATEXT"
-          "GAMMA"; "GAMMA.DIST"; "GAMMA.INV"; "GAMMALN.PRECISE"; "GAUSS"; "HYPGEOM.DIST"; "IFNA"; "IFS"; "IMCOSH"; "IMCOT"; "IMCSC"
-          "IMCSCH"; "IMSEC"; "IMSECH"; "IMSINH"; "IMTAN"; "ISFORMULA"; "ISO.CEILING"; "ISOWEEKNUM"; "LOGNORM.DIST"; "LOGNORM.INV"
-          "MAXIFS"; "MINIFS"; "MODE.MULT"; "MODE.SNGL"; "MUNIT"; "NEGBINOM.DIST"; "NETWORKDAYS.INTL"; "NORM.DIST"; "NORM.INV"
-          "NORM.S.DIST"; "NORM.S.INV"; "NUMBERVALUE"; "PDURATION"; "PERCENTILE.EXC"; "PERCENTILE.INC"; "PERCENTRANK.EXC"
-          "PERCENTRANK.INC"; "PERMUTATIONA"; "PHI"; "POISSON.DIST"; "QUARTILE.EXC"; "QUARTILE.INC"; "RANK.AVG"; "RANK.EQ"; "RRI"
-          "SEC"; "SECH"; "SHEET"; "SHEETS"; "SKEW.P"; "STDEV.P"; "STDEV.S"; "SWITCH"; "T.DIST"; "T.DIST.2T"; "T.DIST.RT"; "T.INV"
-          "T.INV.2T"; "T.TEST"; "TEXTJOIN"; "UNICHAR"; "UNICODE"; "VAR.P"; "VAR.S"; "WEBSERVICE"; "WEIBULL.DIST"; "WORKDAY.INTL"
-          "XOR"; "Z.TEST"
-          // Dynamic arrays and after.
-          "ANCHORARRAY"; "SINGLE"; "SEQUENCE"; "SORTBY"; "UNIQUE"; "RANDARRAY"; "XLOOKUP"; "XMATCH"; "LET"; "LAMBDA"; "MAP"; "REDUCE"
-          "SCAN"; "MAKEARRAY"; "BYROW"; "BYCOL"; "ISOMITTED"; "CHOOSECOLS"; "CHOOSEROWS"; "DROP"; "TAKE"; "EXPAND"; "HSTACK"; "VSTACK"
-          "TOCOL"; "TOROW"; "WRAPCOLS"; "WRAPROWS"; "TEXTBEFORE"; "TEXTAFTER"; "TEXTSPLIT"; "VALUETOTEXT"; "ARRAYTOTEXT"
-          "STOCKHISTORY"; "FIELDVALUE"; "IMAGE"; "GROUPBY"; "PIVOTBY"; "PERCENTOF"; "REGEXTEST"; "REGEXEXTRACT"; "REGEXREPLACE"
-          "TRIMRANGE"; "DETECTLANGUAGE"; "TRANSLATE" ]
-    let table = System.Collections.Generic.Dictionary<string, string>()
-    for name in plain do table.[name] <- "_xlfn."
-    for name in [ "FILTER"; "SORT" ] do table.[name] <- "_xlfn._xlws."
-    table
+/// A formula as the file format stores it: prefixes added where they are missing (see `FormulaNames`).
+let fileFormula (formula: string) : string = FormulaNames.fileFormula formula
 
-let private isNameStart (c: char) = System.Char.IsLetter c || c = '_' || c = '\\'
-let private isNameChar (c: char) = System.Char.IsLetterOrDigit c || c = '_' || c = '.' || c = '\\'
-
-/// A formula as the file format stores it: prefixes added where they are missing.
-let fileFormula (formula: string) : string =
-    // Fast path: no `(` after a name of the table, nothing to do.
-    let n = formula.Length
-    let names = System.Collections.Generic.List<int * int * bool>()   // start, length, followed by '('
-    let mutable i = 0
-    while i < n do
-        let c = formula.[i]
-        if c = '"' then
-            i <- i + 1
-            while i < n && not (formula.[i] = '"' && not (i + 1 < n && formula.[i + 1] = '"')) do
-                i <- if formula.[i] = '"' then i + 2 else i + 1
-            i <- i + 1
-        elif c = '\'' then
-            i <- i + 1
-            while i < n && not (formula.[i] = '\'' && not (i + 1 < n && formula.[i + 1] = '\'')) do
-                i <- if formula.[i] = '\'' then i + 2 else i + 1
-            i <- i + 1
-        elif c = '[' then
-            // A structured reference's column names are not formula names.
-            let mutable depth = 0
-            let mutable stop = false
-            while i < n && not stop do
-                if formula.[i] = '[' then depth <- depth + 1
-                elif formula.[i] = ']' then
-                    depth <- depth - 1
-                    if depth = 0 then stop <- true
-                i <- i + 1
-        elif isNameStart c && (i = 0 || not (isNameChar formula.[i - 1]) && formula.[i - 1] <> '!' && formula.[i - 1] <> '$') then
-            let start = i
-            while i < n && isNameChar formula.[i] do i <- i + 1
-            names.Add((start, i - start, i < n && formula.[i] = '('))
-        else i <- i + 1
-    let upper (start, length, _) = formula.Substring(start, length).ToUpperInvariant()
-    let needs = names |> Seq.exists (fun ((_, _, call) as name) -> call && futureFunctions.ContainsKey (upper name))
-    if not needs then formula
-    else
-        // The names a LET or LAMBDA binds: LAMBDA's arguments but the last, LET's odd ones.
-        let parameters = System.Collections.Generic.HashSet<string>()
-        for ((start, length, call) as name) in names do
-            let fn = upper name
-            if call && (fn = "LET" || fn = "LAMBDA") then
-                let mutable j = start + length + 1
-                let mutable depth = 0
-                let mutable argument = 0
-                let mutable argStart = j
-                let args = System.Collections.Generic.List<string>()
-                let mutable stop = false
-                while j < n && not stop do
-                    match formula.[j] with
-                    | '"' ->
-                        j <- j + 1
-                        while j < n && formula.[j] <> '"' do j <- j + 1
-                    | '(' | '{' -> depth <- depth + 1
-                    | ')' | '}' when depth > 0 -> depth <- depth - 1
-                    | ')' ->
-                        args.Add(formula.Substring(argStart, j - argStart).Trim())
-                        stop <- true
-                    | ',' when depth = 0 ->
-                        args.Add(formula.Substring(argStart, j - argStart).Trim())
-                        argument <- argument + 1
-                        argStart <- j + 1
-                    | _ -> ()
-                    j <- j + 1
-                let bound =
-                    if fn = "LAMBDA" then args |> Seq.take (max 0 (args.Count - 1))
-                    else args |> Seq.indexed |> Seq.filter (fun (k, _) -> k % 2 = 0 && k < args.Count - 1) |> Seq.map snd
-                for name in bound do
-                    let name = if name.StartsWith("_xlpm.", System.StringComparison.OrdinalIgnoreCase) then name.Substring 6 else name
-                    if name <> "" then parameters.Add(name.ToUpperInvariant()) |> ignore
-        let sb = StringBuilder(n + 16)
-        let mutable at = 0
-        for ((start, length, call) as name) in names do
-            let word = upper name
-            let prefix =
-                if word.StartsWith "_XL" then ""
-                elif call && futureFunctions.ContainsKey word then futureFunctions.[word]
-                elif parameters.Contains word then "_xlpm."
-                else ""
-            if prefix <> "" then
-                sb.Append(formula.Substring(at, start - at)).Append(prefix) |> ignore
-                at <- start
-        sb.Append(formula.Substring at).ToString()
-
-/// A formula as the model holds it and Excel shows it: the file format's
-/// prefixes taken off where `fileFormula` puts them back (`_xlfn.XLOOKUP` is
-/// `XLOOKUP`, `_xlpm.x` is `x`). A prefixed name the table does not know keeps
-/// its prefix, so it is written as it was read.
-let modelFormula (formula: string) : string =
-    if formula.IndexOf("_xl", System.StringComparison.OrdinalIgnoreCase) < 0 then formula
-    else
-        let n = formula.Length
-        let sb = StringBuilder(n)
-        let mutable i = 0
-        while i < n do
-            let c = formula.[i]
-            if c = '"' || c = '\'' then
-                let quote = c
-                let start = i
-                i <- i + 1
-                while i < n && not (formula.[i] = quote && not (i + 1 < n && formula.[i + 1] = quote)) do
-                    i <- if formula.[i] = quote then i + 2 else i + 1
-                i <- min n (i + 1)
-                sb.Append(formula.Substring(start, i - start)) |> ignore
-            elif isNameStart c && (i = 0 || not (isNameChar formula.[i - 1])) then
-                let start = i
-                while i < n && isNameChar formula.[i] do i <- i + 1
-                let word = formula.Substring(start, i - start)
-                let upper = word.ToUpperInvariant()
-                let call = i < n && formula.[i] = '('
-                let strip (prefix: string) =
-                    if upper.StartsWith (prefix.ToUpperInvariant()) then
-                        let bare = upper.Substring prefix.Length
-                        if prefix = "_xlpm." then Some (word.Substring prefix.Length)
-                        elif call && futureFunctions.ContainsKey bare && futureFunctions.[bare] = prefix then Some (word.Substring prefix.Length)
-                        else None
-                    else None
-                match [ "_xlfn._xlws."; "_xlfn."; "_xlpm." ] |> List.tryPick strip with
-                | Some bare -> sb.Append bare |> ignore
-                | None -> sb.Append word |> ignore
-            else
-                sb.Append c |> ignore
-                i <- i + 1
-        sb.ToString()
+/// A formula as the model holds it and Excel shows it (see `FormulaNames`).
+let modelFormula (formula: string) : string = FormulaNames.modelFormula formula
 
 /// Text for an element or attribute, escaped only when it has something to escape.
 let private escapedFast (value: string) =
@@ -1318,8 +1170,8 @@ let private appendCellXml (sb: StringBuilder) (styles: StyleBook) (sharedIndex: 
     match dataTable, cell.Value with
     // The first cell of a what-if data table: the table, and the result the cell holds.
     | Some table, value ->
-        let tAttr, cachedXml = cachedValueXml sharedIndex value
-        openCell tAttr
+        let cellType, cachedXml = cachedValueXml sharedIndex value
+        openCell (typeAttr cellType)
         sb.Append('>').Append(dataTableXml table).Append(cachedXml).Append("</c>") |> ignore
     | None, XlsxBlank ->
         if styleId <> 0 then
@@ -1332,7 +1184,8 @@ let private appendCellXml (sb: StringBuilder) (styles: StyleBook) (sharedIndex: 
         openCell " t=\"s\""
         sb.Append("><v>").Append(string (sharedIndex text runs)).Append("</v></c>") |> ignore
     | None, XlsxFormula (formula, cached) ->
-        let tAttr, cachedXml = cached |> Option.map (formulaResultXml sharedIndex) |> Option.defaultValue ("", "")
+        let cellType, cachedXml = cached |> Option.map (formulaResultXml sharedIndex) |> Option.defaultValue ("", "")
+        let tAttr = typeAttr cellType
         // An array formula says which cells its results fill; a dynamic one
         // names its cell metadata (`cm`).
         match (if arrayFormulas.IsEmpty then None else Map.tryFind (letters + rowText) arrayFormulas) with
@@ -1344,8 +1197,8 @@ let private appendCellXml (sb: StringBuilder) (styles: StyleBook) (sharedIndex: 
             sb.Append("><f>") |> ignore
         sb.Append(escapedFast (fileFormula formula)).Append("</f>").Append(cachedXml).Append("</c>") |> ignore
     | None, other ->
-        let tAttr, valueXml = cachedValueXml sharedIndex other
-        openCell tAttr
+        let cellType, valueXml = cachedValueXml sharedIndex other
+        openCell (typeAttr cellType)
         sb.Append('>').Append(valueXml).Append("</c>") |> ignore
 
 let private sheetDimension (sheet: XlsxSheetOut) =
@@ -1466,10 +1319,6 @@ let private sheetViewsXml (sheet: XlsxSheetOut) active =
         else ""
     sprintf "<sheetViews><sheetView %s>%s</sheetView></sheetViews>" (String.concat " " attrs) pane
 
-/// The first cell of a range reference ("B5:F10" -> "B5"), without "$".
-let private firstCellOfRange (range: string) =
-    (match range.IndexOf ':' with -1 -> range | index -> range.Substring(0, index)).Replace("$", "").ToUpperInvariant()
-
 /// What the rows of a sheet written from its cells keep of the part the
 /// sheet was read from (`SheetExtras.SourceXml`).
 type private RowCarry = {
@@ -1485,22 +1334,25 @@ type private RowCarry = {
     /// The file writes a formula that reads the same from cell to cell once
     /// (`<f t="shared">`): so do the rows.
     Share: bool
+    /// How many of the file's cells name a shared string (None: not known).
+    SharedStrings: int option
 }
 
 /// A cell with a formula whose `<f>` element is given (a shared formula).
 let private appendFormulaCellXml (sb: StringBuilder) (styles: StyleBook) (sharedIndex: string -> XlsxRichRun list -> int) (rowText: string) (cell: XlsxCellOut) (formulaXml: string) =
     let styleId = styles.StyleIdOf cell.Format
-    let tAttr, cachedXml =
+    let cellType, cachedXml =
         match cell.Value with
         | XlsxFormula (_, Some cached) -> formulaResultXml sharedIndex cached
         | _ -> "", ""
+    let tAttr = typeAttr cellType
     sb.Append("<c r=\"").Append(columnLetters cell.Col).Append(rowText).Append('"') |> ignore
     if styleId <> 0 then sb.Append(" s=\"").Append(string styleId).Append('"') |> ignore
     sb.Append(tAttr).Append('>').Append(formulaXml).Append(cachedXml).Append("</c>") |> ignore
 
 let private rowsXml (styles: StyleBook) (sharedIndex: string -> XlsxRichRun list -> int) (dynamicCm: int) (carry: RowCarry option) (sheet: XlsxSheetOut) : string =
     // A data table is written on the first cell of its range.
-    let dataTables = sheet.Extras.DataTables |> List.map (fun table -> firstCellOfRange table.Ref, table) |> Map.ofList
+    let dataTables = sheet.Extras.DataTables |> List.map (fun table -> CellRef.firstCell table.Ref, table) |> Map.ofList
     let arrayFormulas =
         sheet.Extras.ArrayFormulas
         |> List.map (fun (cell, range, dynamic) -> cell, (range, (if dynamic && dynamicCm > 0 then " cm=\"" + string dynamicCm + "\"" else "")))
@@ -1860,22 +1712,62 @@ let private conditionalFormattingParts (dxfCount: int) (sheetIndex: int) (format
         |> String.concat ""
     main, String.concat "" extBlocks
 
+// ---- XML that was read, changed through its span tree (XmlPatch) ----
+
+let private order = XmlPatch.Spreadsheet.order
+
+/// A worksheet part read in outline - its rows without their cells (`XmlPatch.readPartExcept`). None for a
+/// part that is not a worksheet.
+let private readWorksheet (text: string) : XmlPatch.SourceElement option =
+    XmlPatch.readPartExcept (fun name -> name = "row") text
+    |> Option.filter (fun part -> XmlPatch.localName part.Node = "worksheet" && (let span = XmlPatch.span part.Node in span.StartTagEnd < span.End))
+
+/// A worksheet part read with its cells, but for their values (`<v>`, `<is>`).
+let private readWorksheetCells (text: string) : XmlPatch.SourceElement option =
+    XmlPatch.readPartExcept (fun name -> name = "v" || name = "is") text
+    |> Option.filter (fun part -> XmlPatch.localName part.Node = "worksheet")
+
+/// The first child of an element of that name (as written).
+let private childNamed (name: string) (node: XmlDsl.XmlNode) : XmlDsl.XmlNode option =
+    XmlPatch.elements node |> List.tryFind (fun kid -> XmlPatch.name kid = name)
+
+/// The children of an element of that name (as written).
+let private childrenNamed (name: string) (node: XmlDsl.XmlNode) : XmlDsl.XmlNode list =
+    XmlPatch.elements node |> List.filter (fun kid -> XmlPatch.name kid = name)
+
+/// The child of an element read of that name, as an element of its own.
+let private sourceChild (name: string) (source: XmlPatch.SourceElement) : XmlPatch.SourceElement option =
+    childNamed name source.Node |> Option.map (XmlPatch.at source)
+
+/// An attribute's edit: the value set, or (None) the attribute taken out.
+let private attributeEdit (name: string) (value: string option) : XmlPatch.ElementEdit =
+    match value with
+    | Some value -> XmlPatch.SetAttribute (name, value)
+    | None -> XmlPatch.RemoveAttribute name
+
+let private isSelfClosed (node: XmlDsl.XmlNode) = let span = XmlPatch.span node in span.StartTagEnd = span.End
+
+/// Whether an attribute says yes ("1", "true").
+let private isOn (value: string option) = match value with Some "1" | Some "true" -> true | _ -> false
+
 /// The sheet's extension list: the x14 conditional formats and validations
 /// written from the rules, and the extensions kept from the file. x14 rules
 /// join a kept x14 list (one whose rules were not all understood).
 let private sheetExtLstXml (cfBlocks: string) (validationsExt: string) (kept: string list) =
-    let isCfExt (xml: string) = xml.Contains "conditionalFormattings>"
-    let keptCf, others = kept |> List.partition isCfExt
+    // (The list of conditional formats of an extension.)
+    let cfList (xml: string) =
+        XmlPatch.read xml |> Option.bind (fun ext -> XmlPatch.elements ext.Node |> List.tryFind (fun node -> XmlPatch.localName node = "conditionalFormattings") |> Option.map (fun list -> ext, list))
+    let keptCf, others = kept |> List.partition (fun xml -> (cfList xml).IsSome)
     let cfExt =
         match keptCf, cfBlocks with
         | [], "" -> []
         | [], blocks ->
             [ sprintf "<ext uri=\"{78C0D931-6437-407d-A8EE-F0AAD7539E65}\" xmlns:x14=\"%s\"><x14:conditionalFormattings>%s</x14:conditionalFormattings></ext>" x14Namespace blocks ]
         | first :: rest, blocks ->
-            let close = first.LastIndexOf "</"
-            let listClose = if close < 0 then -1 else first.LastIndexOf ("</", close - 1)
-            if blocks = "" || listClose < 0 || not (first.Contains "xmlns:x14=") then keptCf
-            else (first.Substring(0, listClose) + blocks + first.Substring listClose) :: rest
+            match cfList first with
+            | Some (ext, list) when blocks <> "" && (XmlPatch.attribute ext.Node "xmlns:x14").IsSome ->
+                XmlPatch.apply order ext [ XmlPatch.EditChild (XmlPatch.name list, [ XmlPatch.Append blocks ], None) ] :: rest
+            | _ -> keptCf
     match cfExt @ (if validationsExt = "" then [] else [ validationsExt ]) @ others with
     | [] -> ""
     | extensions -> "<extLst>" + String.concat "" extensions + "</extLst>"
@@ -1974,32 +1866,31 @@ let private pagePartsXml (sheet: XlsxSheetOut) =
 /// and a new one reaches as far as the file's breaks all do. Without that a
 /// row break reaches over every column (`max="16383"`) and a column break
 /// over every row (`max="1048575"`).
-let private breaksXml (name: string) (was: string) (breaks: int list) =
+let private breaksXml (name: string) (was: XmlPatch.SourceElement option) (breaks: int list) =
     if List.isEmpty breaks then ""
     else
-        let tagAttribute (tag: string) (attribute: string) =
-            let found = System.Text.RegularExpressions.Regex.Match(tag, "\\s" + attribute + "=\"([^\"]*)\"")
-            if found.Success then Some found.Groups.[1].Value else None
         let known =
-            System.Text.RegularExpressions.Regex.Matches(was, "<brk(?=[\\s/>])[^>]*>") |> Seq.cast<System.Text.RegularExpressions.Match>
-            |> Seq.choose (fun found ->
-                match tagAttribute found.Value "id" |> Option.map System.Int32.TryParse with
-                | Some (true, id) when tagAttribute found.Value "man" = Some "1" || tagAttribute found.Value "man" = Some "true" ->
-                    Some (id, (if found.Value.EndsWith "/>" then found.Value else found.Value.Substring(0, found.Value.Length - 1) + "/>"))
-                | _ -> None)
-            |> Seq.toList
+            match was with
+            | Some was ->
+                XmlPatch.elements was.Node
+                |> List.filter (fun brk -> XmlPatch.name brk = "brk")
+                |> List.choose (fun brk ->
+                    match XmlPatch.attribute brk "id" |> Option.map System.Int32.TryParse, XmlPatch.attribute brk "man" with
+                    | Some (true, id), (Some "1" | Some "true") -> Some (id, brk, XmlPatch.bytesOf was.Text brk)
+                    | _ -> None)
+            | None -> []
         let common (attribute: string) =
-            match known |> List.map (fun (_, tag) -> tagAttribute tag attribute) |> List.distinct with
+            match known |> List.map (fun (_, brk, _) -> XmlPatch.attribute brk attribute) |> List.distinct with
             | [ Some value ] -> Some value
             | _ -> None
         let reach =
-            (match common "min" with Some value -> sprintf " min=\"%s\"" value | None -> "")
-            + sprintf " max=\"%s\"" (common "max" |> Option.defaultValue (if name = "colBreaks" then "1048575" else "16383"))
+            (match common "min" with Some value -> " " + attr "min" value | None -> "")
+            + " " + attr "max" (common "max" |> Option.defaultValue (if name = "colBreaks" then "1048575" else "16383"))
         let body =
             breaks
             |> List.map (fun id ->
-                match known |> List.tryFind (fun (known, _) -> known = id) with
-                | Some (_, tag) -> tag
+                match known |> List.tryFind (fun (known, _, _) -> known = id) with
+                | Some (_, _, xml) -> xml
                 | None -> sprintf "<brk id=\"%d\"%s man=\"1\"/>" id reach)
             |> String.concat ""
         sprintf "<%s count=\"%d\" manualBreakCount=\"%d\">%s</%s>" name breaks.Length breaks.Length body name
@@ -2047,10 +1938,7 @@ type private SheetPlacement = {
 }
 
 /// `xl/worksheets/sheet1.xml` -> `xl/worksheets/_rels/sheet1.xml.rels`.
-let private relsPathOf (path: string) =
-    match path.LastIndexOf '/' with
-    | -1 -> "_rels/" + path + ".rels"
-    | cut -> path.Substring(0, cut) + "/_rels/" + path.Substring(cut + 1) + ".rels"
+let private relsPathOf (path: string) = PartPath.relationshipsOf path
 
 /// The parts of every sheet, in sheet order: the usual names by the sheet's
 /// number, unless a kept part (or the part of a sheet written as it was
@@ -2067,7 +1955,7 @@ let private sheetPlacements (workbook: XlsxWorkbookOut) (keptPaths: Set<string>)
         List.zip workbook.Sheets verbatim
         |> List.map (fun (sheet, verbatim) ->
             match verbatim, sheet.Extras.SourcePart with
-            | None, Some (path, relType) when relType.EndsWith "/worksheet" && path.EndsWith ".xml" && taken.Add path -> Some path
+            | None, Some (path, relType) when OpcXml.relationshipKind relType = "worksheet" && PartPath.extension path = "xml" && taken.Add path -> Some path
             | _ -> None)
     let free (name: int -> string) (number: int) =
         let mutable at = number
@@ -2091,32 +1979,11 @@ let private sheetPlacements (workbook: XlsxWorkbookOut) (keptPaths: Set<string>)
               ThreadsPath = free (sprintf "xl/threadedComments/threadedComment%d.xml") number
               DrawingPath = free (sprintf "xl/drawings/sheetDrawing%d.xml") number })
 
-let private tabSelectedPattern = System.Text.RegularExpressions.Regex("\\s+tabSelected=\"([^\"]*)\"")
-
-/// The XML of a sheet part with its first view saying whether the sheet is
-/// the one on display (`tabSelected`): two sheets that say so are a group to
-/// Excel. The text itself when it already says the right thing.
-let private withTabSelected (active: bool) (xml: string) : string =
-    let rec viewAt (from: int) =
-        let at = xml.IndexOf ("<sheetView", from, System.StringComparison.Ordinal)
-        if at < 0 || at + 10 >= xml.Length then -1
-        elif xml.[at + 10] = 's' then viewAt (at + 10)
-        else at
-    let at = viewAt 0
-    let tagEnd = if at < 0 then -1 else xml.IndexOf ('>', at)
-    if tagEnd < 0 then xml
-    else
-        let tag = xml.Substring(at, tagEnd - at + 1)
-        let found = tabSelectedPattern.Match tag
-        let selected = found.Success && (found.Groups.[1].Value = "1" || found.Groups.[1].Value = "true")
-        if selected = active then xml
-        else
-            let bare = if found.Success then tag.Remove(found.Index, found.Length) else tag
-            let tag = if active then "<sheetView tabSelected=\"1\"" + bare.Substring 10 else bare
-            xml.Substring(0, at) + tag + xml.Substring(tagEnd + 1)
-
-let private tableIdPattern = System.Text.RegularExpressions.Regex("<table\\b[^>]*?\\sid=\"(\\d+)\"")
-let private tableNumberPattern = System.Text.RegularExpressions.Regex("table(\\d+)\\.xml$")
+/// The id of a table part (`<table id>`).
+let private tableIdOf (xml: string) : int option =
+    XmlPatch.readPart xml
+    |> Option.bind (fun part -> XmlPatch.attribute part.Node "id")
+    |> Option.bind (fun id -> match System.Int32.TryParse id with | true, id -> Some id | _ -> None)
 
 /// Where each table of each sheet is written, sheet by sheet in order: the
 /// part, and the id of a table part the writer makes (None: the file's part
@@ -2142,10 +2009,8 @@ let private tablePlacement (workbook: XlsxWorkbookOut) : (string * int option) l
         for table in sheet.Tables do
             match keptOf sheet table with
             | Some path ->
-                let number = tableNumberPattern.Match path
-                if number.Success then taken.Add (int number.Groups.[1].Value) |> ignore
-                let id = tableIdPattern.Match (System.Text.Encoding.UTF8.GetString parts.[path])
-                if id.Success then taken.Add (int id.Groups.[1].Value) |> ignore
+                match PartPath.number "table" path with Some number -> taken.Add number |> ignore | None -> ()
+                match tableIdOf (System.Text.Encoding.UTF8.GetString parts.[path]) with Some id -> taken.Add id |> ignore | None -> ()
             | None -> ()
     let mutable next = 1
     workbook.Sheets
@@ -2328,14 +2193,14 @@ let private keptLegacyDrawing (sheet: XlsxSheetOut) : string =
 /// `<tabColor>` of a sheet ("" for none).
 let private tabColorXml (sheet: XlsxSheetOut) : string =
     match sheet.View.TabColor with
-    | Some color when color.StartsWith "#" && color.Length = 7 -> sprintf "<tabColor rgb=\"FF%s\"/>" (color.Substring(1).ToUpperInvariant())
-    | Some color when color.StartsWith "theme:" ->
-        (match color.Split(':') with
-         | [| _; index |] -> sprintf "<tabColor theme=\"%s\"/>" (escaped index)
-         | [| _; index; tint |] -> sprintf "<tabColor theme=\"%s\" tint=\"%s\"/>" (escaped index) (escaped tint)
-         | _ -> "")
-    | Some color when color.StartsWith "indexed:" -> sprintf "<tabColor indexed=\"%s\"/>" (escaped (color.Substring 8))
-    | _ -> ""
+    | Some color ->
+        match ColorText.parse color with
+        | Some (ColorText.Rgb rgb) -> sprintf "<tabColor rgb=\"FF%s\"/>" (rgb.ToUpperInvariant())
+        | Some (ColorText.Theme (index, None)) -> sprintf "<tabColor theme=\"%s\"/>" (escaped index)
+        | Some (ColorText.Theme (index, Some tint)) -> sprintf "<tabColor theme=\"%s\" tint=\"%s\"/>" (escaped index) (escaped tint)
+        | Some (ColorText.Indexed index) -> sprintf "<tabColor indexed=\"%s\"/>" (escaped index)
+        | None -> ""
+    | None -> ""
 
 /// A run of a rich text of the file as the writer has it.
 let private richRunOfReader (props: XlsxReader.RunProps) (text: string) : XlsxRichRun =
@@ -2369,12 +2234,6 @@ let private commentBodyXml (runsOf: Map<int * int, (string * XlsxReader.RunProps
         |> String.concat ""
     | _ -> sprintf "<t xml:space=\"preserve\">%s</t>" (escapedCellText text)
 
-let private commentElementPattern = System.Text.RegularExpressions.Regex("<comment(?=[\\s>])[^>]*>[\\s\\S]*?</comment>")
-let private commentAuthorPattern = System.Text.RegularExpressions.Regex("<author(?:\\s[^>]*)?(?:/>|>([\\s\\S]*?)</author>)")
-let private commentRunPattern = System.Text.RegularExpressions.Regex("<r>[\\s\\S]*?</r>")
-let private commentRunPropsPattern = System.Text.RegularExpressions.Regex("<rPr>[\\s\\S]*?</rPr>")
-let private commentTextPattern = System.Text.RegularExpressions.Regex("<t(?:\\s[^>]*)?(?:/>|>([\\s\\S]*?)</t>)")
-
 /// The file's comments part with the notes of the sheet as they are now: a
 /// note that is what the file has - the same text by the same author, in
 /// its cell or (rows or columns having moved) in another - is the file's
@@ -2383,35 +2242,24 @@ let private commentTextPattern = System.Text.RegularExpressions.Regex("<t(?:\\s[
 /// written from the sheet; a note that is gone is left out. Authors are
 /// added behind the file's. None when the part has no list of comments.
 let private patchedCommentsXml (fileXml: string) (runs: ((int * int) * (string * XlsxReader.RunProps) list) list) (cells: XlsxCellOut list) : string option =
-    let listStart = fileXml.IndexOf ("<commentList>", System.StringComparison.Ordinal)
-    let listEnd = fileXml.LastIndexOf ("</commentList>", System.StringComparison.Ordinal)
-    let authorsStart = fileXml.IndexOf ("<authors>", System.StringComparison.Ordinal)
-    let authorsEnd = fileXml.IndexOf ("</authors>", System.StringComparison.Ordinal)
     let comments = cells |> List.choose (fun c -> c.Comment |> Option.map (fun comment -> c, comment))
-    if listStart < 0 || listEnd < listStart || authorsStart < 0 || authorsEnd < authorsStart || authorsEnd > listStart || comments.IsEmpty then None
-    else
-        let decoded (text: string) =
-            let text = if text.IndexOf '&' < 0 then text else text.Replace("&lt;", "<").Replace("&gt;", ">").Replace("&quot;", "\"").Replace("&apos;", "'").Replace("&amp;", "&")
-            text.Replace("\r", "")
-        let attributeOf (tag: string) (name: string) =
-            let found = System.Text.RegularExpressions.Regex.Match(tag, "\\s" + name + "=\"([^\"]*)\"")
-            if found.Success then Some found.Groups.[1].Value else None
-        let authors = ResizeArray<string>()
-        for found in commentAuthorPattern.Matches(fileXml.Substring(authorsStart, authorsEnd - authorsStart)) |> Seq.cast<System.Text.RegularExpressions.Match> do
-            authors.Add (decoded found.Groups.[1].Value)
+    match XmlPatch.readPart fileXml with
+    | Some part when not comments.IsEmpty ->
+      match childNamed "authors" part.Node, childNamed "commentList" part.Node with
+      | Some authorsNode, Some listNode when (XmlPatch.span authorsNode).End <= (XmlPatch.span listNode).Start ->
+        let authors = ResizeArray<string>(childrenNamed "author" authorsNode |> List.map (fun author -> (XmlPatch.textOf author).Replace("\r", "")))
         let fileAuthors = authors.Count
         // The file's notes: cell, author, text, element.
         let known =
-            commentElementPattern.Matches(fileXml.Substring(listStart, listEnd - listStart)) |> Seq.cast<System.Text.RegularExpressions.Match>
-            |> Seq.map (fun found ->
-                let tag = found.Value.Substring(0, found.Value.IndexOf '>' + 1)
+            childrenNamed "comment" listNode
+            |> List.map (fun comment ->
                 let author =
-                    match attributeOf tag "authorId" |> Option.map System.Int32.TryParse with
+                    match XmlPatch.attribute comment "authorId" |> Option.map System.Int32.TryParse with
                     | Some (true, id) when id >= 0 && id < fileAuthors -> authors.[id]
                     | _ -> ""
-                let text = commentTextPattern.Matches found.Value |> Seq.cast<System.Text.RegularExpressions.Match> |> Seq.map (fun t -> decoded t.Groups.[1].Value) |> String.concat ""
-                attributeOf tag "ref" |> Option.defaultValue "", author, text, found.Value)
-            |> Seq.toArray
+                let text = XmlPatch.descendantsWhere (fun node -> XmlPatch.name node = "t") comment |> List.map XmlPatch.textOf |> String.concat ""
+                XmlPatch.attribute comment "ref" |> Option.defaultValue "", author, text.Replace("\r", ""), comment)
+            |> List.toArray
         let used = Array.create known.Length false
         let runsOf = if runs.IsEmpty then Map.empty else Map.ofList runs
         // (The file's notes as the reader has them, in the order of the part - read when a note changed.)
@@ -2441,11 +2289,9 @@ let private patchedCommentsXml (fileXml: string) (runs: ((int * int) * (string *
             |> List.map (fun (cell, text, author, reference) ->
                 match found.TryGetValue reference with
                 | true, index ->
-                    let knownRef, _, _, xml = known.[index]
-                    if knownRef = reference then xml
-                    else
-                        let cut = xml.IndexOf '>'
-                        xml.Substring(0, cut).Replace(" ref=\"" + knownRef + "\"", " ref=\"" + reference + "\"") + xml.Substring cut
+                    let knownRef, _, _, comment = known.[index]
+                    if knownRef = reference then XmlPatch.bytesOf part.Text comment
+                    else XmlPatch.apply order (XmlPatch.at part comment) [ XmlPatch.SetAttribute ("ref", reference) ]
                 | false, _ ->
                     // A changed note in a cell the file has a note in keeps what the file's element
                     // says of it (`shapeId`, `xr:uid`), and its runs what the file's runs say beyond
@@ -2456,9 +2302,10 @@ let private patchedCommentsXml (fileXml: string) (runs: ((int * int) * (string *
                     match known |> Array.tryFindIndex (fun (knownRef, _, _, _) -> knownRef = reference) with
                     | Some index when not used.[index] ->
                         used.[index] <- true
-                        let _, _, _, xml = known.[index]
-                        let tag = xml.Substring(0, xml.IndexOf '>' + 1)
-                        let fileRuns = [ for run in commentRunPattern.Matches xml -> (let props = commentRunPropsPattern.Match run.Value in if props.Success then props.Value else "") ]
+                        let _, _, _, comment = known.[index]
+                        let fileRuns =
+                            XmlPatch.descendantsWhere (fun node -> XmlPatch.name node = "r") comment
+                            |> List.map (fun run -> XmlPatch.child "rPr" run |> Option.map (XmlPatch.bytesOf part.Text) |> Option.defaultValue "")
                         let readRuns = if index < fileNotes.Value.Length then fileNotes.Value.[index].Runs |> List.map snd else []
                         let runXml (props: string) (runText: string) = sprintf "<r>%s<t xml:space=\"preserve\">%s</t></r>" props (escapedCellText runText)
                         let body =
@@ -2475,15 +2322,15 @@ let private patchedCommentsXml (fileXml: string) (runs: ((int * int) * (string *
                                 match List.tryLast fileRuns with
                                 | Some props when props <> "" -> runXml props text
                                 | _ -> commentBodyXml runsOf cell text
-                        let by = sprintf " authorId=\"%d\"" (authorId author)
-                        let tag =
-                            if attributeOf tag "authorId" |> Option.isSome then System.Text.RegularExpressions.Regex.Replace(tag, "\\sauthorId=\"[^\"]*\"", by)
-                            else tag.Substring(0, tag.Length - 1) + by + ">"
-                        tag + "<text>" + body + "</text></comment>"
+                        XmlPatch.apply order (XmlPatch.at part comment)
+                            [ XmlPatch.SetAttribute ("authorId", string (authorId author)); XmlPatch.SetChild ("text", "<text>" + body + "</text>") ]
                     | _ -> sprintf "<comment ref=\"%s\" authorId=\"%d\"><text>%s</text></comment>" reference (authorId author) (commentBodyXml runsOf cell text))
-            |> String.concat ""
         let added = [ for index in fileAuthors .. authors.Count - 1 -> elemText "author" authors.[index] ] |> String.concat ""
-        Some (fileXml.Substring(0, authorsEnd) + added + fileXml.Substring(authorsEnd, listStart + 13 - authorsEnd) + elements + fileXml.Substring listEnd)
+        Some (XmlPatch.applyPart order part
+                [ if added <> "" then yield XmlPatch.EditChild ("authors", [ XmlPatch.Append added ], None)
+                  yield XmlPatch.EditChild ("commentList", [ XmlPatch.SetChildren ("comment", elements) ], None) ])
+      | _ -> None
+    | _ -> None
 
 let private commentsXml (runs: ((int * int) * (string * XlsxReader.RunProps) list) list) (cells: XlsxCellOut list) =
     let runsOf = if runs.IsEmpty then Map.empty else Map.ofList runs
@@ -2522,54 +2369,66 @@ let private vmlCommentsXml (sheetIndex: int) (cells: XlsxCellOut list) =
             |> String.concat ""
         Some (sprintf "<xml xmlns:v=\"urn:schemas-microsoft-com:vml\" xmlns:o=\"urn:schemas-microsoft-com:office:office\" xmlns:x=\"urn:schemas-microsoft-com:office:excel\"><o:shapelayout v:ext=\"edit\"><o:idmap v:ext=\"edit\" data=\"%d\"/></o:shapelayout><v:shapetype id=\"_x0000_t202\" coordsize=\"21600,21600\" o:spt=\"202\" path=\"m,l,21600r21600,l21600,xe\"><v:stroke joinstyle=\"miter\"/><v:path gradientshapeok=\"t\" o:connecttype=\"rect\"/></v:shapetype>%s</xml>" sheetIndex shapes)
 
-let private vmlShapePattern = System.Text.RegularExpressions.Regex("<v:shape\\b[\\s\\S]*?</v:shape>")
-let private vmlRowPattern = System.Text.RegularExpressions.Regex("<x:Row>\\s*(\\d+)\\s*</x:Row>")
-let private vmlColumnPattern = System.Text.RegularExpressions.Regex("<x:Column>\\s*(\\d+)\\s*</x:Column>")
-let private vmlShapeIdPattern = System.Text.RegularExpressions.Regex("_x0000_s(\\d+)")
-let private vmlIdMapPattern = System.Text.RegularExpressions.Regex("<o:idmap\\b[^>]*\\bdata=\"(\\d+)")
+/// The shapes of a VML drawing (`<v:shape>`, at any depth).
+let private vmlShapes (vml: XmlPatch.SourceElement) : XmlDsl.XmlNode list =
+    XmlPatch.descendantsWhere (fun node -> XmlPatch.name node = "v:shape") vml.Node
+
+/// Whether a VML shape is the box of a note (its client data is of a "Note").
+let private isNoteBox (shape: XmlDsl.XmlNode) : bool =
+    not (XmlPatch.descendantsWhere (fun node -> XmlPatch.attribute node "ObjectType" = Some "Note") shape).IsEmpty
+
+/// The cell of the note a VML shape is the box of: its row and column ((-1, -1) when it does not say);
+/// None for a shape that is not a note's box.
+let private noteBoxCell (shape: XmlDsl.XmlNode) : (int * int) option =
+    if not (isNoteBox shape) then None
+    else
+        let number (name: string) =
+            XmlPatch.descendantsWhere (fun node -> XmlPatch.name node = name) shape
+            |> List.tryHead
+            |> Option.bind (fun node -> match System.Int32.TryParse ((XmlPatch.textOf node).Trim()) with | true, value -> Some value | _ -> None)
+        match number "x:Row", number "x:Column" with
+        | Some row, Some col -> Some (row, col)
+        | _ -> Some (-1, -1)
 
 /// A VML drawing of the file (form controls, camera pictures, the boxes of
 /// its comments) with the boxes of the sheet's comments as they are now:
 /// the box of a comment that is gone is taken out, a comment without a box
 /// gets one, every other shape stays as it is. None when the drawing already
-/// has exactly the boxes of the comments.
+/// has exactly the boxes of the comments (or is not one this can read).
 let vmlWithCommentBoxes (vml: string) (commentCells: (int * int) list) : string option =
+    match XmlPatch.readPart vml with
+    | None -> None
+    | Some drawing ->
     let wanted = Set.ofList commentCells
-    let shapes = vmlShapePattern.Matches vml |> Seq.cast<System.Text.RegularExpressions.Match> |> Seq.toList
-    let noteCell (shape: System.Text.RegularExpressions.Match) : (int * int) option =
-        if shape.Value.IndexOf ("ObjectType=\"Note\"", System.StringComparison.Ordinal) < 0 then None
-        else
-            let row = vmlRowPattern.Match shape.Value
-            let column = vmlColumnPattern.Match shape.Value
-            if row.Success && column.Success then Some (int row.Groups.[1].Value, int column.Groups.[1].Value) else Some (-1, -1)
-    let notes = shapes |> List.choose (fun shape -> noteCell shape |> Option.map (fun cell -> shape, cell))
+    let shapes = vmlShapes drawing
+    let notes = shapes |> List.choose (fun shape -> noteBoxCell shape |> Option.map (fun cell -> shape, cell))
     let boxed = notes |> List.map snd
     if Set.ofList boxed = wanted && boxed.Length = wanted.Count then None
     else
         // The boxes that stay: the first of each comment's cell.
         let kept = System.Collections.Generic.HashSet<int * int>()
-        let sb = StringBuilder()
-        let mutable at = 0
-        for shape, cell in notes do
-            if not (Set.contains cell wanted && kept.Add cell) then
-                sb.Append(vml.Substring(at, shape.Index - at)) |> ignore
-                at <- shape.Index + shape.Length
-        sb.Append(vml.Substring at) |> ignore
-        let body = sb.ToString()
+        let gone = notes |> List.filter (fun (_, cell) -> not (Set.contains cell wanted && kept.Add cell)) |> List.map fst
+        let goneSpans = gone |> List.map XmlPatch.span |> Set.ofList
+        let removals = XmlPatch.editsAt drawing.Node [ for shape in gone -> shape, [ XmlPatch.Removed ] ]
         let missing = commentCells |> List.distinct |> List.filter (fun cell -> not (kept.Contains cell))
-        if missing.IsEmpty then Some body
+        if missing.IsEmpty then Some (XmlPatch.applyPart (fun _ -> []) drawing removals)
         else
+            // (What stays of the drawing: not in a shape that goes.)
+            let staying (node: XmlDsl.XmlNode) =
+                let span = XmlPatch.span node
+                not (goneSpans |> Set.exists (fun goneSpan -> span.Start >= goneSpan.Start && span.End <= goneSpan.End))
+            let rest = XmlPatch.descendantsWhere staying drawing.Node
             // Shape ids of a drawing are those of its block of 1024 (`<o:idmap data>`).
             let highest =
-                vmlShapeIdPattern.Matches body |> Seq.cast<System.Text.RegularExpressions.Match>
-                |> Seq.fold (fun top found -> max top (int found.Groups.[1].Value)) 0
+                rest |> List.collect (fun node -> XmlPatch.attributes node |> Map.toList |> List.choose (snd >> VmlIds.shapeNumber)) |> List.fold max 0
             let first =
                 if highest > 0 then highest + 1
                 else
-                    let block = vmlIdMapPattern.Match body
-                    (if block.Success then int block.Groups.[1].Value else 1) * 1024 + 1
+                    let block =
+                        rest |> List.tryPick (fun node -> if XmlPatch.name node = "o:idmap" then XmlPatch.attribute node "data" |> Option.bind VmlIds.firstBlock else None)
+                    (defaultArg block 1) * 1024 + 1
             let shapeType =
-                if body.IndexOf ("id=\"_x0000_t202\"", System.StringComparison.Ordinal) >= 0 then ""
+                if rest |> List.exists (fun node -> XmlPatch.attribute node "id" = Some "_x0000_t202") then ""
                 else "<v:shapetype id=\"_x0000_t202\" coordsize=\"21600,21600\" o:spt=\"202\" path=\"m,l,21600r21600,l21600,xe\"><v:stroke joinstyle=\"miter\"/><v:path gradientshapeok=\"t\" o:connecttype=\"rect\"/></v:shapetype>"
             let added =
                 missing
@@ -2577,8 +2436,7 @@ let vmlWithCommentBoxes (vml: string) (commentCells: (int * int) list) : string 
                     sprintf "<v:shape id=\"_x0000_s%d\" type=\"#_x0000_t202\" style=\"position:absolute;margin-left:80pt;margin-top:5pt;width:108pt;height:59.25pt;z-index:%d;visibility:hidden\" fillcolor=\"#ffffe1\" o:insetmode=\"auto\"><v:fill color2=\"#ffffe1\"/><v:shadow on=\"t\" color=\"black\" obscured=\"t\"/><v:path o:connecttype=\"none\"/><v:textbox style=\"mso-direction-alt:auto\"><div style=\"text-align:left\"></div></v:textbox><x:ClientData ObjectType=\"Note\"><x:MoveWithCells/><x:SizeWithCells/><x:Anchor>%d, 15, %d, 2, %d, 15, %d, 16</x:Anchor><x:AutoFill>False</x:AutoFill><x:Row>%d</x:Row><x:Column>%d</x:Column></x:ClientData></v:shape>"
                         (first + i) (shapes.Length + i + 1) (col + 1) (max 0 (row - 1)) (col + 3) (row + 3) row col)
                 |> String.concat ""
-            let close = body.LastIndexOf ("</xml>", System.StringComparison.Ordinal)
-            if close < 0 then None else Some (body.Substring(0, close) + shapeType + added + body.Substring close)
+            Some (XmlPatch.applyPart (fun _ -> []) drawing (removals @ [ XmlPatch.Append (shapeType + added) ]))
 
 let private tableXml id (table: XlsxTableOut) =
     let refText = sprintf "%s:%s" (cellRef (table.StartRow - 1) (table.StartCol - 1)) (cellRef (table.EndRow - 1) (table.EndCol - 1))
@@ -2615,70 +2473,29 @@ let private tableXml id (table: XlsxTableOut) =
 
 // ---- a table of the file, changed: the file's part with what changed replaced ----
 
-let private tableRootPattern = System.Text.RegularExpressions.Regex("<table(?=[\\s>])[^>]*>")
-let private tableColumnsPattern = System.Text.RegularExpressions.Regex("<tableColumns(?=[\\s>])[^>]*>([\\s\\S]*?)</tableColumns>")
-let private tableColumnPattern = System.Text.RegularExpressions.Regex("<tableColumn(?=[\\s>/])[^>]*?/>|<tableColumn(?=[\\s>])[^>]*>[\\s\\S]*?</tableColumn>")
-let private tableAutoFilterPattern = System.Text.RegularExpressions.Regex("<autoFilter(?=[\\s>/])[^>]*?/>|<autoFilter(?=[\\s>])[^>]*>[\\s\\S]*?</autoFilter>")
-let private tableSortStatePattern = System.Text.RegularExpressions.Regex("<sortState(?=[\\s>/])[^>]*?/>|<sortState(?=[\\s>])[^>]*>[\\s\\S]*?</sortState>")
-let private tableStyleInfoPattern = System.Text.RegularExpressions.Regex("<tableStyleInfo(?=[\\s>/])[^>]*?/>|<tableStyleInfo(?=[\\s>])[^>]*>[\\s\\S]*?</tableStyleInfo>")
-let private totalsFormulaPattern = System.Text.RegularExpressions.Regex("<totalsRowFormula(?=[\\s>/])[^>]*?/>|<totalsRowFormula(?=[\\s>])[^>]*>[\\s\\S]*?</totalsRowFormula>")
-
-/// The value of an attribute of a start tag (as the file wrote it, not decoded).
-let private tagAttribute (tag: string) (name: string) : string option =
-    let found = System.Text.RegularExpressions.Regex.Match(tag, "\\s" + name + "=\"([^\"]*)\"")
-    if found.Success then Some found.Groups.[1].Value else None
-
-/// A start tag (`<x ...>` or `<x .../>`) with an attribute set to a value
-/// (given escaped), or without it.
-let private withTagAttribute (name: string) (value: string option) (tag: string) : string =
-    let pattern = System.Text.RegularExpressions.Regex("\\s" + name + "=\"[^\"]*\"")
-    let found = pattern.Match tag
-    match value with
-    | Some value ->
-        let text = " " + name + "=\"" + value + "\""
-        if found.Success then tag.Substring(0, found.Index) + text + tag.Substring(found.Index + found.Length)
-        else
-            let cut = if tag.EndsWith "/>" then tag.Length - 2 else tag.Length - 1
-            tag.Substring(0, cut).TrimEnd() + text + tag.Substring cut
-    | None -> if found.Success then tag.Substring(0, found.Index) + tag.Substring(found.Index + found.Length) else tag
-
-/// The start tag of an element's XML (up to its first `>`), and the rest.
-let private splitStartTag (xml: string) : string * string =
-    let close = xml.IndexOf '>'
-    xml.Substring(0, close + 1), xml.Substring(close + 1)
-
 // ---------------------------------------------------------------------------
 // A sheet of the file with some of its cells changed (SheetExtras.Patch)
 // ---------------------------------------------------------------------------
-// The part of the file is written again with only those `<c>` elements
-// replaced (added, taken out), and the top-level elements whose content
-// changed made from the sheet as it is now. Everything else is the file's
-// text: sheetPr, sheetViews, the rows with their attributes, shared formulas,
-// ignoredErrors, extLst, and every relationship id.
+// The part of the file is changed by edits of its span tree (XmlPatch): the `<c>` elements that changed
+// replaced (added, taken out), the attributes of the rows that changed set, and the top-level elements
+// whose content changed made from the sheet as it is now. Everything else is the file's text: sheetPr,
+// sheetViews, the rows with their attributes, shared formulas, ignoredErrors, extLst, and every
+// relationship id.
 
-#if FABLE_COMPILER
-let inline private ordinalIndexOf (text: string) (value: string) (start: int) : int = text.IndexOf(value, start)
-#else
-let inline private ordinalIndexOf (text: string) (value: string) (start: int) : int = text.IndexOf(value, start, System.StringComparison.Ordinal)
-#endif
-
-/// An element in a text: where it starts, where its start tag ends, where it ends.
-type private PatchSpan = { Start: int; TagEnd: int; End: int }
+/// The cells of a sheet part that name a shared string.
+let private sharedStringCells (part: XmlPatch.SourceElement) : int =
+    childrenNamed "sheetData" part.Node
+    |> List.sumBy (fun data -> childrenNamed "row" data |> List.sumBy (fun row -> childrenNamed "c" row |> List.filter (fun cell -> XmlPatch.attribute cell "t" = Some "s") |> List.length))
 
 type private SheetPatchPlan = {
-    Source: string
-    /// End of the worksheet's start tag, start of its end tag.
-    RootEnd: int
-    RootClose: int
-    /// The children of the worksheet element, in order.
-    Top: (string * PatchSpan) list
-    /// The inside of `<sheetData>` (empty for `<sheetData/>`).
-    DataStart: int
-    DataEnd: int
+    /// The part, read in outline: its rows without their cells, but for the rows the patch changes cells of.
+    Source: XmlPatch.SourceElement
+    /// Its `<sheetData>`.
+    Data: XmlDsl.XmlNode
     /// The rows of the file (numbered from 0), ascending.
-    Rows: (int * PatchSpan) array
-    /// The cells of the rows that have a changed cell: column (from 0) and span, ascending.
-    RowCells: System.Collections.Generic.Dictionary<int, (int * PatchSpan) array>
+    Rows: (int * XmlDsl.XmlNode) array
+    /// The cells of the rows that have a changed cell: column (from 0) and element, ascending.
+    RowCells: System.Collections.Generic.Dictionary<int, (int * XmlDsl.XmlNode) array>
     /// The sections to be made anew can be put into the part as it is.
     SectionsSound: bool
     /// Cells that take over the formula their group shares (its cell is
@@ -2686,107 +2503,10 @@ type private SheetPatchPlan = {
     Rehome: System.Collections.Generic.Dictionary<float, string * string>
 }
 
-let private isTagNameEnd (text: string) (at: int) =
-    at >= text.Length || (let ch = text.[at] in ch = ' ' || ch = '>' || ch = '/' || ch = '\t' || ch = '\r' || ch = '\n')
-
-/// The elements named `name` between `from` and `until`, none inside another.
-let private scanPatchElements (text: string) (name: string) (from: int) (until: int) : PatchSpan array option =
-    let opening = "<" + name
-    let closing = "</" + name + ">"
-    let found = ResizeArray<PatchSpan>()
-    let mutable at = from
-    let mutable sound = true
-    let mutable going = true
-    while going && sound do
-        let start = ordinalIndexOf text opening at
-        if start < 0 || start >= until then going <- false
-        elif not (isTagNameEnd text (start + opening.Length)) then at <- start + opening.Length
-        else
-            let tagClose = text.IndexOf ('>', start)
-            if tagClose < 0 || tagClose >= until then sound <- false
-            elif text.[tagClose - 1] = '/' then
-                found.Add { Start = start; TagEnd = tagClose + 1; End = tagClose + 1 }
-                at <- tagClose + 1
-            else
-                let close = ordinalIndexOf text closing (tagClose + 1)
-                if close < 0 || close >= until then sound <- false
-                else
-                    found.Add { Start = start; TagEnd = tagClose + 1; End = close + closing.Length }
-                    at <- close + closing.Length
-    if sound then Some (found.ToArray()) else None
-
-/// The `r` attribute of the start tag at `span`.
-let private patchRefOf (text: string) (span: PatchSpan) : string option =
-    let at = ordinalIndexOf text " r=\"" span.Start
-    if at < 0 || at >= span.TagEnd then None
-    else
-        let from = at + 4
-        let close = text.IndexOf ('"', from)
-        if close < 0 || close >= span.TagEnd then None else Some (text.Substring(from, close - from))
-
-/// "AB12" as (row, column) from 0.
-let private patchCellOfRef (reference: string) : (int * int) option =
-    let mutable col = 0
-    let mutable row = 0
-    let mutable sound = reference.Length > 0
-    let mutable inDigits = false
-    for ch in reference do
-        if ch >= 'A' && ch <= 'Z' && not inDigits then col <- col * 26 + (int ch - int 'A' + 1)
-        elif ch >= '0' && ch <= '9' then
-            inDigits <- true
-            row <- row * 10 + (int ch - int '0')
-        elif ch <> '$' then sound <- false
-    if sound && row >= 1 && col >= 1 then Some (row - 1, col - 1) else None
-
-/// The child elements of CT_Worksheet in the order the schema gives them.
-let private worksheetChildOrder =
-    [ "sheetPr"; "dimension"; "sheetViews"; "sheetFormatPr"; "cols"; "sheetData"; "sheetCalcPr"; "sheetProtection"; "protectedRanges"; "scenarios"
-      "autoFilter"; "sortState"; "dataConsolidate"; "customSheetViews"; "mergeCells"; "phoneticPr"; "conditionalFormatting"; "dataValidations"
-      "hyperlinks"; "printOptions"; "pageMargins"; "pageSetup"; "headerFooter"; "rowBreaks"; "colBreaks"; "customProperties"; "cellWatches"
-      "ignoredErrors"; "smartTags"; "drawing"; "legacyDrawing"; "legacyDrawingHF"; "drawingHF"; "picture"; "oleObjects"; "controls"
-      "webPublishItems"; "tableParts"; "extLst" ]
-
 /// The sections of a sheet a patch can write anew.
 let private patchableSections =
     [ "sheetPr"; "sheetViews"; "sheetFormatPr"; "cols"; "autoFilter"; "sortState"; "mergeCells"; "conditionalFormatting"; "dataValidations"
       "hyperlinks"; "printOptions"; "pageMargins"; "pageSetup"; "headerFooter"; "rowBreaks"; "colBreaks" ]
-
-let private hyperlinkElementPattern = System.Text.RegularExpressions.Regex("<hyperlink(?=[\\s/>])[^>]*?/>|<hyperlink(?=[\\s>])[^>]*>[\\s\\S]*?</hyperlink>")
-let private anyIdAttributePattern = System.Text.RegularExpressions.Regex("[\\s:]id=\"")
-let private relationshipIdAttributePattern = System.Text.RegularExpressions.Regex("\\sr:id=\"")
-
-/// The worksheet element of a part: where its start tag begins and ends,
-/// where its end tag begins, and its children in order. None for a part
-/// that is not laid out as expected.
-let private scanWorksheetTop (source: string) : (int * int * int * (string * PatchSpan) list) option =
-    let root = System.Text.RegularExpressions.Regex.Match(source, "<worksheet(?=[\\s>])[^>]*>")
-    let rootClose = source.LastIndexOf ("</worksheet>", System.StringComparison.Ordinal)
-    if not root.Success || rootClose < root.Index then None
-    else
-        let top = ResizeArray<string * PatchSpan>()
-        let mutable at = root.Index + root.Length
-        let mutable sound = true
-        while sound && at < rootClose do
-            let ch = source.[at]
-            if ch = ' ' || ch = '\n' || ch = '\r' || ch = '\t' then at <- at + 1
-            elif ch <> '<' || at + 1 >= rootClose || source.[at + 1] = '!' || source.[at + 1] = '?' || source.[at + 1] = '/' then sound <- false
-            else
-                let mutable nameEnd = at + 1
-                while nameEnd < rootClose && not (isTagNameEnd source nameEnd) do nameEnd <- nameEnd + 1
-                let name = source.Substring(at + 1, nameEnd - at - 1)
-                let tagClose = source.IndexOf ('>', nameEnd)
-                if tagClose < 0 || tagClose >= rootClose then sound <- false
-                elif source.[tagClose - 1] = '/' then
-                    top.Add ((name, { Start = at; TagEnd = tagClose + 1; End = tagClose + 1 }))
-                    at <- tagClose + 1
-                else
-                    let closing = "</" + name + ">"
-                    let close = ordinalIndexOf source closing (tagClose + 1)
-                    if close < 0 || close >= rootClose then sound <- false
-                    else
-                        top.Add ((name, { Start = at; TagEnd = tagClose + 1; End = close + closing.Length }))
-                        at <- close + closing.Length
-        if sound then Some (root.Index, root.Index + root.Length, rootClose, List.ofSeq top) else None
 
 /// How the part of the file is to be patched; None when it cannot be (the
 /// sheet is then written from its cells): a part that is not laid out as
@@ -2795,126 +2515,127 @@ let private scanWorksheetTop (source: string) : (int * int * int * (string * Pat
 /// into the part as it is (rules and validations of the x14 list): the rows
 /// can still be the file's.
 let private sheetPatchPlan (dxfCount: int) (sheet: XlsxSheetOut) (patch: XlsxReader.SheetPatch) (source: string) : SheetPatchPlan option =
-    match scanWorksheetTop source with
+    match readWorksheet source with
     | None -> None
-    | Some (_, rootEnd, rootClose, top) ->
+    | Some part ->
+        let top = XmlPatch.elements part.Node
+        // (Whether the part has an element of these names, outside its rows.)
+        let holds (names: string list) =
+            top |> List.exists (fun kid -> XmlPatch.name kid <> "sheetData" && not (XmlPatch.descendantsWhere (fun node -> List.contains (XmlPatch.name node) names) kid).IsEmpty)
         let sectionsSound =
             patch.Sections |> List.forall (fun name -> List.contains name patchableSections)
             // (Rules and validations of the x14 list are in the sheet's extensions.)
             && (not (List.contains "conditionalFormatting" patch.Sections)
-                || (ordinalIndexOf source "x14:conditionalFormatting" 0 < 0 && snd (conditionalFormattingParts dxfCount 1 sheet.ConditionalFormats) = ""))
+                || (not (holds [ "x14:conditionalFormatting"; "x14:conditionalFormattings" ]) && snd (conditionalFormattingParts dxfCount 1 sheet.ConditionalFormats) = ""))
             && (not (List.contains "dataValidations" patch.Sections)
-                || (ordinalIndexOf source "x14:dataValidation" 0 < 0 && dataValidationsExtXml sheet.DataValidations = ""))
+                || (not (holds [ "x14:dataValidation"; "x14:dataValidations" ]) && dataValidationsExtXml sheet.DataValidations = ""))
             // (The links of the file name their relationships as `r:id`, or the list is made with the rest of the part.)
             && (not (List.contains "hyperlinks" patch.Sections)
-                || (top |> List.forall (fun (name, span) ->
-                        name <> "hyperlinks"
-                        || (let text = source.Substring(span.Start, span.End - span.Start)
-                            anyIdAttributePattern.Matches(text).Count = relationshipIdAttributePattern.Matches(text).Count))))
-        match top |> List.filter (fun (name, _) -> name = "sheetData") with
-        | [ (_, data) ] ->
-            let dataStart = data.TagEnd
-            let dataEnd = if data.End = data.TagEnd then data.TagEnd else data.End - "</sheetData>".Length
-            match scanPatchElements source "row" dataStart dataEnd with
-            | None -> None
-            | Some spans ->
-                let rows = spans |> Array.map (fun span -> (match patchRefOf source span |> Option.map System.Int32.TryParse with Some (true, number) -> number - 1 | _ -> -1), span)
-                let mutable ascending = true
-                for index in 0 .. rows.Length - 1 do
-                    if fst rows.[index] < 0 || (index > 0 && fst rows.[index] <= fst rows.[index - 1]) then ascending <- false
-                if not ascending then None
-                else
-                    let byNumber = System.Collections.Generic.Dictionary<int, PatchSpan>()
-                    for number, span in rows do byNumber.[number] <- span
-                    let rowCells = System.Collections.Generic.Dictionary<int, (int * PatchSpan) array>()
-                    let mutable cellsSound = true
-                    let scanRow (row: int) =
-                        if cellsSound && not (rowCells.ContainsKey row) then
-                            match byNumber.TryGetValue row with
-                            | true, span when span.End > span.TagEnd ->
-                                match scanPatchElements source "c" span.TagEnd (span.End - "</row>".Length) with
-                                | Some cells ->
-                                    let placed = cells |> Array.map (fun cell -> (match patchRefOf source cell |> Option.bind patchCellOfRef with Some (cellRow, col) when cellRow = row -> col | _ -> -1), cell)
-                                    for index in 0 .. placed.Length - 1 do
-                                        if fst placed.[index] < 0 || (index > 0 && fst placed.[index] <= fst placed.[index - 1]) then cellsSound <- false
-                                    rowCells.[row] <- placed
-                                | None -> cellsSound <- false
-                            | _ -> rowCells.[row] <- [||]
-                    for row, _, _ in patch.Cells do scanRow row
-                    // A changed cell whose formula other cells share (`<f t="shared" ref>`): the
-                    // first of those cells that stays as it is holds the formula from now on.
-                    let key (row: int) (col: int) = float row * 16384.0 + float col
-                    let rehome = System.Collections.Generic.Dictionary<float, string * string>()
-                    if cellsSound then
-                        let replaced = System.Collections.Generic.HashSet<float>()
-                        for row, col, valueOnly in patch.Cells do
-                            if not valueOnly then replaced.Add (key row col) |> ignore
-                        let formulaTagOf (cell: PatchSpan) =
-                            let text = source.Substring(cell.Start, cell.End - cell.Start)
-                            let formulaAt = ordinalIndexOf text "<f" 0
-                            if formulaAt < 0 then "" else text.Substring(formulaAt, text.IndexOf ('>', formulaAt) - formulaAt)
-                        for row, col, valueOnly in patch.Cells do
-                            if cellsSound && not valueOnly then
-                                match rowCells.[row] |> Array.tryFind (fun (known, _) -> known = col) with
-                                | Some (_, cell) ->
-                                    let formulaTag = formulaTagOf cell
-                                    if formulaTag.Contains "t=\"shared\"" && formulaTag.Contains " ref=\"" then
-                                        let range = (tagAttribute formulaTag "ref" |> Option.defaultValue "").Split(':')
-                                        match tagAttribute formulaTag "si", patchCellOfRef range.[0], patchCellOfRef range.[range.Length - 1] with
-                                        | Some si, Some (top, left), Some (bottom, right) when left = right || top = bottom ->
-                                            let wanted = " si=\"" + si + "\""
-                                            let mutable found = false
-                                            let mutable at = top
-                                            while cellsSound && not found && at <= bottom do
-                                                if byNumber.ContainsKey at then
-                                                    scanRow at
-                                                    if cellsSound then
-                                                        for known, other in rowCells.[at] do
-                                                            if not found && known >= left && known <= right && not (replaced.Contains (key at known)) then
-                                                                let tag = formulaTagOf other
-                                                                if tag.Contains "t=\"shared\"" && tag.Contains wanted && not (tag.Contains " ref=\"") then
-                                                                    found <- true
-                                                                    let reference = cellRef at known + ":" + cellRef bottom right
-                                                                    rehome.[key at known] <- (reference, si)
-                                                at <- at + 1
-                                        | _ -> cellsSound <- false
+                || (childrenNamed "hyperlinks" part.Node
+                    |> List.forall (fun links -> XmlPatch.allAttributes links |> List.forall (fun (name, _) -> XmlDsl.Ns.stripNs name <> "id" || name = "r:id"))))
+        match childrenNamed "sheetData" part.Node with
+        | [ data ] ->
+            let rows =
+                childrenNamed "row" data
+                |> List.map (fun row -> (match XmlPatch.attribute row "r" |> Option.map System.Int32.TryParse with Some (true, number) -> number - 1 | _ -> -1), row)
+                |> List.toArray
+            let mutable ascending = true
+            for index in 0 .. rows.Length - 1 do
+                if fst rows.[index] < 0 || (index > 0 && fst rows.[index] <= fst rows.[index - 1]) then ascending <- false
+            if not ascending then None
+            else
+                let byNumber = System.Collections.Generic.Dictionary<int, XmlDsl.XmlNode>()
+                for number, row in rows do byNumber.[number] <- row
+                let rowCells = System.Collections.Generic.Dictionary<int, (int * XmlDsl.XmlNode) array>()
+                let mutable cellsSound = true
+                let scanRow (row: int) =
+                    if cellsSound && not (rowCells.ContainsKey row) then
+                        match byNumber.TryGetValue row with
+                        | true, node when not (isSelfClosed node) ->
+                            match XmlPatch.whole part node with
+                            | Some whole ->
+                                let placed =
+                                    childrenNamed "c" whole.Node
+                                    |> List.map (fun cell -> (match XmlPatch.attribute cell "r" |> Option.bind CellRef.parse with Some (cellRow, col) when cellRow = row -> col | _ -> -1), cell)
+                                    |> List.toArray
+                                for index in 0 .. placed.Length - 1 do
+                                    if fst placed.[index] < 0 || (index > 0 && fst placed.[index] <= fst placed.[index - 1]) then cellsSound <- false
+                                rowCells.[row] <- placed
+                            | None -> cellsSound <- false
+                        | _ -> rowCells.[row] <- [||]
+                for row, _, _ in patch.Cells do scanRow row
+                // A changed cell whose formula other cells share (`<f t="shared" ref>`): the
+                // first of those cells that stays as it is holds the formula from now on.
+                let key (row: int) (col: int) = float row * 16384.0 + float col
+                let rehome = System.Collections.Generic.Dictionary<float, string * string>()
+                if cellsSound then
+                    let replaced = System.Collections.Generic.HashSet<float>()
+                    for row, col, valueOnly in patch.Cells do
+                        if not valueOnly then replaced.Add (key row col) |> ignore
+                    let sharedFormula (cell: XmlDsl.XmlNode) =
+                        XmlPatch.child "f" cell |> Option.filter (fun f -> XmlPatch.attribute f "t" = Some "shared")
+                    for row, col, valueOnly in patch.Cells do
+                        if cellsSound && not valueOnly then
+                            match rowCells.[row] |> Array.tryFind (fun (known, _) -> known = col) with
+                            | Some (_, cell) ->
+                                match sharedFormula cell |> Option.bind (fun f -> XmlPatch.attribute f "ref" |> Option.map (fun range -> f, range)) with
+                                | Some (f, range) ->
+                                    match XmlPatch.attribute f "si", CellRef.parseRange range with
+                                    | Some si, Some ((top, left), (bottom, right)) when left = right || top = bottom ->
+                                        let mutable found = false
+                                        let mutable at = top
+                                        while cellsSound && not found && at <= bottom do
+                                            if byNumber.ContainsKey at then
+                                                scanRow at
+                                                if cellsSound then
+                                                    for known, other in rowCells.[at] do
+                                                        if not found && known >= left && known <= right && not (replaced.Contains (key at known)) then
+                                                            match sharedFormula other with
+                                                            | Some formula when XmlPatch.attribute formula "si" = Some si && (XmlPatch.attribute formula "ref").IsNone ->
+                                                                found <- true
+                                                                rehome.[key at known] <- (cellRef at known + ":" + cellRef bottom right, si)
+                                                            | _ -> ()
+                                            at <- at + 1
+                                    | _ -> cellsSound <- false
                                 | None -> ()
-                        if cellsSound && rehome.Count > 0 then
-                            // (The cell that takes the formula over has to hold one.)
-                            let holding = System.Collections.Generic.HashSet<float>()
-                            for cell in sheet.Cells do
-                                match cell.Value with
-                                | XlsxFormula (formula, _) when formula <> "" -> (let position = key cell.Row cell.Col in if rehome.ContainsKey position then holding.Add position |> ignore)
-                                | _ -> ()
-                            if holding.Count <> rehome.Count then cellsSound <- false
-                    if not cellsSound then None
-                    else
-                        Some { Source = source; RootEnd = rootEnd; RootClose = rootClose; Top = top
-                               DataStart = dataStart; DataEnd = dataEnd; Rows = rows; RowCells = rowCells
-                               SectionsSound = sectionsSound; Rehome = rehome }
+                            | None -> ()
+                    if cellsSound && rehome.Count > 0 then
+                        // (The cell that takes the formula over has to hold one.)
+                        let holding = System.Collections.Generic.HashSet<float>()
+                        for cell in sheet.Cells do
+                            match cell.Value with
+                            | XlsxFormula (formula, _) when formula <> "" -> (let position = key cell.Row cell.Col in if rehome.ContainsKey position then holding.Add position |> ignore)
+                            | _ -> ()
+                        if holding.Count <> rehome.Count then cellsSound <- false
+                if not cellsSound then None
+                else
+                    // (The rows whose cells change, read whole.)
+                    let source = XmlPatch.withWhole part [ for KeyValue (row, cells) in rowCells do if cells.Length > 0 then yield (XmlPatch.span byNumber.[row]).Start ]
+                    match childNamed "sheetData" source.Node with
+                    | Some data ->
+                        Some { Source = source; Data = data; Rows = rows; RowCells = rowCells; SectionsSound = sectionsSound; Rehome = rehome }
+                    | None -> None
         | _ -> None
 
-/// A `<row>` start tag with the attributes of the row as the sheet has it now.
-let private rowTagWith (tag: string) (row: XlsxReader.SheetRowPatch) : string =
-    let tag = withTagAttribute "hidden" (if row.Hidden then Some "1" else None) tag
-    let tag =
-        if not row.HeightChanged then tag
-        else
-            match row.Height with
-            | Some height ->
-                let same = match tagAttribute tag "ht" |> Option.bind tryParseNumber with Some known -> abs (known - height) < 0.01 | None -> false
-                if same then tag else tag |> withTagAttribute "ht" (Some (invariantFixed height)) |> withTagAttribute "customHeight" (Some "1")
-            | None -> tag |> withTagAttribute "ht" None |> withTagAttribute "customHeight" None
-    let tag = withTagAttribute "outlineLevel" (if row.Level > 0 then Some (string row.Level) else None) tag
-    withTagAttribute "collapsed" (if row.Collapsed then Some "1" else None) tag
+/// The attributes of a row as the sheet has it now (`known`: the file's): each with its value, or None for
+/// none.
+let private rowAttributes (known: Map<string, string>) (row: XlsxReader.SheetRowPatch) : (string * string option) list =
+    [ yield "hidden", (if row.Hidden then Some "1" else None)
+      if row.HeightChanged then
+          match row.Height with
+          | Some height ->
+              let same = match Map.tryFind "ht" known |> Option.bind tryParseNumber with Some was -> abs (was - height) < 0.01 | None -> false
+              if not same then yield! [ "ht", Some (invariantFixed height); "customHeight", Some "1" ]
+          | None -> yield! [ "ht", None; "customHeight", None ]
+      yield "outlineLevel", (if row.Level > 0 then Some (string row.Level) else None)
+      yield "collapsed", (if row.Collapsed then Some "1" else None) ]
 
-/// The rows of the file's part with the changed cells and rows of `sheet`
-/// (the inside of `<sheetData>`), and the first and last row and column
-/// written anew (the last row -1 when no cell was).
-let private patchedSheetData (styles: StyleBook) (sharedIndex: string -> XlsxRichRun list -> int) (dynamicCm: int)
-                             (sheet: XlsxSheetOut) (patch: XlsxReader.SheetPatch) (plan: SheetPatchPlan) : string * (int * int * int * int) =
-    let source = plan.Source
-    let dataTables = sheet.Extras.DataTables |> List.map (fun table -> firstCellOfRange table.Ref, table) |> Map.ofList
+/// The edits of the file's `<sheetData>` that give it the changed cells and rows of `sheet`; the first and
+/// last row and column written anew (the last row -1 when no cell was); and how many cells of the file that
+/// name a shared string are gone.
+let private sheetDataEdits (styles: StyleBook) (sharedIndex: string -> XlsxRichRun list -> int) (dynamicCm: int)
+                           (sheet: XlsxSheetOut) (patch: XlsxReader.SheetPatch) (plan: SheetPatchPlan) : XmlPatch.ElementEdit list * (int * int * int * int) * int =
+    let dataTables = sheet.Extras.DataTables |> List.map (fun table -> CellRef.firstCell table.Ref, table) |> Map.ofList
     let arrayFormulas =
         sheet.Extras.ArrayFormulas
         |> List.map (fun (cell, range, dynamic) -> cell, (range, (if dynamic && dynamicCm > 0 then " cm=\"" + string dynamicCm + "\"" else "")))
@@ -2947,137 +2668,177 @@ let private patchedSheetData (styles: StyleBook) (sharedIndex: string -> XlsxRic
     let mutable minCol = System.Int32.MaxValue
     let mutable maxRow = -1
     let mutable maxCol = -1
-    let valuePattern = System.Text.RegularExpressions.Regex("<v(?:\\s[^>]*)?(?:/>|>[\\s\\S]*?</v>)")
-    let emptyFormulaPattern = System.Text.RegularExpressions.Regex("<f(?=[\\s/>])[^>]*/>")
+    let written (row: int) (col: int) =
+        if row < minRow then minRow <- row
+        if row > maxRow then maxRow <- row
+        if col < minCol then minCol <- col
+        if col > maxCol then maxCol <- col
+    // (The file's cells that named a shared string and do not any more.)
+    let mutable sharedGone = 0
+    let goes (cell: XmlDsl.XmlNode) = if XmlPatch.attribute cell "t" = Some "s" then sharedGone <- sharedGone + 1
+    // A cell of the sheet as it is now ("" for none).
+    let cellXml (row: int) (col: int) =
+        match outs.TryGetValue (key row col) with
+        | true, cell ->
+            let sb = StringBuilder()
+            appendCellXml sb styles sharedIndex dataTables arrayFormulas (string (row + 1)) cell
+            if sb.Length > 0 then written row col
+            sb.ToString()
+        | false, _ -> ""
     // The file's cell holding the formula its group shares from now on.
-    let rehomed (row: int) (col: int) (text: string) : string =
+    let rehomed (row: int) (col: int) (cell: XmlDsl.XmlNode) : XmlPatch.ElementEdit list =
         match plan.Rehome.TryGetValue (key row col), outs.TryGetValue (key row col) with
         | (true, (reference, si)), (true, { Value = XlsxFormula (formula, _) }) ->
-            let found = emptyFormulaPattern.Match text
-            if not found.Success then text
-            else
-                text.Substring(0, found.Index) + "<f t=\"shared\" ref=\"" + reference + "\" si=\"" + si + "\">" + escapedFast (fileFormula formula) + "</f>"
-                + text.Substring(found.Index + found.Length)
-        | _ -> text
-    let emitCell (sb: StringBuilder) (rowText: string) (row: int) (col: int) (mode: int) (sourceCell: string option) =
-        match mode, sourceCell with
-        | 2, Some text -> sb.Append(rehomed row col text) |> ignore
-        | _ ->
+            match XmlPatch.child "f" cell with
+            | Some f when XmlPatch.name f = "f" && isSelfClosed f ->
+                [ XmlPatch.SetChild ("f", "<f t=\"shared\" ref=\"" + reference + "\" si=\"" + si + "\">" + escapedFast (fileFormula formula) + "</f>") ]
+            | _ -> []
+        | _ -> []
+    // The edits of a changed cell of the file.
+    let cellEdits (row: int) (col: int) (mode: int) (cell: XmlDsl.XmlNode) : XmlPatch.ElementEdit list =
+        if mode = 2 then rehomed row col cell
+        else
             match outs.TryGetValue (key row col) with
-            | false, _ -> ()
-            | true, cell ->
-                let before = sb.Length
-                match mode = 1, sourceCell, cell.Value with
-                | true, Some text, XlsxFormula (_, cached) when ordinalIndexOf text "<f" 0 >= 0 ->
+            | false, _ ->
+                goes cell
+                [ XmlPatch.Replaced "" ]
+            | true, out ->
+                match mode = 1, out.Value with
+                | true, XlsxFormula (_, cached) when (XmlPatch.child "f" cell).IsSome ->
                     // The formula is the file's (shared, array ...): only its result is new.
-                    let text = rehomed row col text
-                    let tAttr, valueXml =
+                    let cellType, valueXml =
                         match cached with
                         | Some value -> formulaResultXml sharedIndex value
                         | None -> "", ""
-                    let tag, rest = splitStartTag text
-                    let tag = withTagAttribute "t" None tag
-                    let tag = if tAttr = "" then tag else withTagAttribute "t" (Some (tAttr.Substring(4, tAttr.Length - 5))) tag
-                    let body = valuePattern.Replace(rest, "")
-                    let close = body.LastIndexOf ("</c>", System.StringComparison.Ordinal)
-                    sb.Append(tag).Append(body.Substring(0, close)).Append(valueXml).Append("</c>") |> ignore
-                | _ -> appendCellXml sb styles sharedIndex dataTables arrayFormulas rowText cell
-                if sb.Length > before then
-                    if row < minRow then minRow <- row
-                    if row > maxRow then maxRow <- row
-                    if col < minCol then minCol <- col
-                    if col > maxCol then maxCol <- col
+                    if XmlPatch.attribute cell "t" <> Some cellType then goes cell
+                    written row col
+                    rehomed row col cell
+                    @ [ attributeEdit "t" (if cellType = "" then None else Some cellType)
+                        XmlPatch.SetChildren ("v", [])
+                        XmlPatch.Append valueXml ]
+                | _ ->
+                    goes cell
+                    [ XmlPatch.Replaced (cellXml row col) ]
+    let byNumber = System.Collections.Generic.Dictionary<int, XmlDsl.XmlNode>()
+    for number, row in plan.Rows do byNumber.[number] <- row
+    // The edits of the rows (by where each starts), and the rows put in after the file's.
+    let rowEdits = System.Collections.Generic.Dictionary<int, ResizeArray<XmlPatch.ElementEdit>>()
+    let editRow (node: XmlDsl.XmlNode) (edits: XmlPatch.ElementEdit list) =
+        let start = (XmlPatch.span node).Start
+        match rowEdits.TryGetValue start with
+        | true, known -> known.AddRange edits
+        | false, _ -> rowEdits.[start] <- ResizeArray<XmlPatch.ElementEdit>(edits)
+    let appended = ResizeArray<XmlPatch.ElementEdit>()
     let noChanges = ResizeArray<int * int>()
-    let emitRow (sb: StringBuilder) (row: int) (span: PatchSpan option) =
+    let touched = System.Collections.Generic.HashSet<int>(changedRows.Keys)
+    for row in rowPatches.Keys do touched.Add row |> ignore
+    let mutable next = 0
+    for row in touched |> Seq.sort do
         let changes = match changedRows.TryGetValue row with | true, known -> known | false, _ -> noChanges
         let rowPatch = match rowPatches.TryGetValue row with | true, known -> Some known | false, _ -> None
-        let rowText = string (row + 1)
         let sorted = changes.ToArray() |> Array.sortBy fst
-        match span with
-        | None ->
-            let inner = StringBuilder()
-            for col, _ in sorted do emitCell inner rowText row col 0 None
-            let tag = "<row r=\"" + rowText + "\">"
-            let tag = match rowPatch with Some known -> rowTagWith tag known | None -> tag
-            // (A row that says nothing is not written.)
-            if inner.Length > 0 || tag.Length > rowText.Length + 10 then sb.Append(tag).Append(inner.ToString()).Append("</row>") |> ignore
-        | Some span ->
-            let tag = source.Substring(span.Start, span.TagEnd - span.Start)
-            let tag = match rowPatch with Some known -> rowTagWith tag known | None -> tag
-            if sorted.Length = 0 then sb.Append(tag).Append(source.Substring(span.TagEnd, span.End - span.TagEnd)) |> ignore
+        match byNumber.TryGetValue row with
+        | true, node ->
+            let attributes =
+                match rowPatch with
+                | Some known -> rowAttributes (XmlPatch.attributes node) known |> List.map (fun (name, value) -> attributeEdit name value)
+                | None -> []
+            if sorted.Length = 0 then editRow node attributes
             else
                 let cells = match plan.RowCells.TryGetValue row with | true, cells -> cells | false, _ -> [||]
-                let tag = if span.End = span.TagEnd then tag.Substring(0, tag.Length - 2).TrimEnd() + ">" else tag
                 // (A cell where the row had none may lie outside the row's `spans`.)
                 let added = sorted |> Array.exists (fun (col, _) -> not (cells |> Array.exists (fun (known, _) -> known = col)))
-                sb.Append(if added then withTagAttribute "spans" None tag else tag) |> ignore
+                let edits = ResizeArray<XmlPatch.ElementEdit>(attributes)
+                if added then edits.Add (XmlPatch.RemoveAttribute "spans")
+                // (New cells go before the first cell of the file after them.)
+                let pending = StringBuilder()
+                let before () =
+                    let xml = pending.ToString()
+                    pending.Clear() |> ignore
+                    if xml = "" then [] else [ XmlPatch.InsertBefore xml ]
                 let mutable i = 0
                 let mutable j = 0
                 while i < cells.Length || j < sorted.Length do
                     if j >= sorted.Length || (i < cells.Length && fst cells.[i] < fst sorted.[j]) then
-                        let cell = snd cells.[i]
-                        sb.Append(source.Substring(cell.Start, cell.End - cell.Start)) |> ignore
+                        if pending.Length > 0 then edits.Add (XmlPatch.EditAt ((XmlPatch.span (snd cells.[i])).Start, before ()))
                         i <- i + 1
                     elif i < cells.Length && fst cells.[i] = fst sorted.[j] then
                         let cell = snd cells.[i]
-                        emitCell sb rowText row (fst sorted.[j]) (snd sorted.[j]) (Some (source.Substring(cell.Start, cell.End - cell.Start)))
+                        let inner = before () @ cellEdits row (fst sorted.[j]) (snd sorted.[j]) cell
+                        if not inner.IsEmpty then edits.Add (XmlPatch.EditAt ((XmlPatch.span cell).Start, inner))
                         i <- i + 1
                         j <- j + 1
                     else
-                        emitCell sb rowText row (fst sorted.[j]) 0 None
+                        pending.Append(cellXml row (fst sorted.[j])) |> ignore
                         j <- j + 1
-                sb.Append("</row>") |> ignore
-    // The rows: the file's, but for those with a changed cell or changed attributes.
-    let data = StringBuilder()
-    if changedRows.Count = 0 && rowPatches.Count = 0 then data.Append(source.Substring(plan.DataStart, plan.DataEnd - plan.DataStart)) |> ignore
-    else
-        let byNumber = System.Collections.Generic.Dictionary<int, PatchSpan>()
-        for number, span in plan.Rows do byNumber.[number] <- span
-        let touched = System.Collections.Generic.HashSet<int>(changedRows.Keys)
-        for row in rowPatches.Keys do touched.Add row |> ignore
-        let mutable copied = plan.DataStart
-        let mutable next = 0
-        for row in touched |> Seq.sort do
-            match byNumber.TryGetValue row with
-            | true, span ->
-                data.Append(source.Substring(copied, span.Start - copied)) |> ignore
-                emitRow data row (Some span)
-                copied <- span.End
-            | false, _ ->
-                // A new row goes before the first row of the file after it.
+                if pending.Length > 0 then edits.Add (XmlPatch.Append (pending.ToString()))
+                editRow node (List.ofSeq edits)
+        | false, _ ->
+            // A new row (as the sheet has it), before the first row of the file after it.
+            let inner = sorted |> Array.map (fun (col, _) -> cellXml row col) |> String.concat ""
+            let attributes =
+                match rowPatch with
+                | Some known -> rowAttributes Map.empty known |> List.choose (fun (name, value) -> value |> Option.map (fun value -> " " + attr name value)) |> String.concat ""
+                | None -> ""
+            // (A row that says nothing is not written.)
+            if inner <> "" || attributes <> "" then
+                let xml = "<row r=\"" + string (row + 1) + "\"" + attributes + ">" + inner + "</row>"
                 while next < plan.Rows.Length && fst plan.Rows.[next] < row do next <- next + 1
-                let at = if next < plan.Rows.Length then (snd plan.Rows.[next]).Start else plan.DataEnd
-                data.Append(source.Substring(copied, at - copied)) |> ignore
-                copied <- at
-                emitRow data row None
-        data.Append(source.Substring(copied, plan.DataEnd - copied)) |> ignore
-    data.ToString(), (minRow, minCol, maxRow, maxCol)
+                if next < plan.Rows.Length then editRow (snd plan.Rows.[next]) [ XmlPatch.InsertBefore xml ]
+                else appended.Add (XmlPatch.Append xml)
+    let edits = [ for KeyValue (start, edits) in rowEdits do yield XmlPatch.EditAt (start, List.ofSeq edits) ] @ List.ofSeq appended
+    edits, (minRow, minCol, maxRow, maxCol), sharedGone
+
+/// The file's `<sheetData>` with these edits.
+let private patchedSheetData (plan: SheetPatchPlan) (edits: XmlPatch.ElementEdit list) : string =
+    XmlPatch.apply order (XmlPatch.at plan.Source plan.Data) edits
 
 // ---- what a part of the file says beyond what a sheet holds --------------------
-
-let private sheetElementPattern (name: string) =
-    System.Text.RegularExpressions.Regex("<" + name + "(?=[\\s/>])[^>]*/>|<" + name + "(?=[\\s>])[^>]*>[\\s\\S]*?</" + name + ">")
 
 /// `<sheetPr>` as the file has it (its code name, what else it says), with
 /// the tab colour, the outline's summary sides and fit-to-page of the sheet
 /// as it is now ("" when it then says nothing).
-let private sheetPrFromSource (was: string) (sheet: XlsxSheetOut) : string =
-    let startTag = if was = "" then "<sheetPr>" else (let tag = fst (splitStartTag was) in if tag.EndsWith "/>" then tag.Substring(0, tag.Length - 2).TrimEnd() + ">" else tag)
-    let child (name: string) = (let found = (sheetElementPattern name).Match was in if found.Success then found.Value else "")
-    let bare (name: string) (xml: string) = if System.Text.RegularExpressions.Regex.IsMatch(xml, "^<" + name + "\\s*/>$") then "" else xml
-    let outline =
-        let tag = match child "outlinePr" with "" -> "<outlinePr/>" | known -> known
-        let side (name: string) (below: bool) (tag: string) =
-            let known = match tagAttribute tag name with Some "0" | Some "false" -> false | _ -> true
-            if known = below then tag else withTagAttribute name (if below then None else Some "0") tag
-        tag |> side "summaryBelow" sheet.View.SummaryBelow |> side "summaryRight" sheet.View.SummaryRight |> bare "outlinePr"
-    let pageSetUp =
+let private sheetPrFromSource (was: XmlPatch.SourceElement option) (sheet: XlsxSheetOut) : string =
+    let source = was |> Option.orElse (XmlPatch.read "<sheetPr/>")
+    match source with
+    | None -> ""
+    | Some source ->
+        // A child that holds flags (attributes): the edits that make them say what the sheet does - taken
+        // out when it says nothing then, made when the file has none.
+        let flags (name: string) (changes: Map<string, string> -> XmlPatch.ElementEdit list) : XmlPatch.ElementEdit list =
+            let known = childNamed name source.Node
+            let attributes = known |> Option.map XmlPatch.attributes |> Option.defaultValue Map.empty
+            let edits = changes attributes
+            let after =
+                edits |> List.fold (fun (now: Map<string, string>) edit ->
+                    match edit with
+                    | XmlPatch.SetAttribute (attribute, value) -> Map.add attribute value now
+                    | XmlPatch.RemoveAttribute attribute -> Map.remove attribute now
+                    | _ -> now) attributes
+            let bare = after.IsEmpty && (known |> Option.forall (fun node -> List.isEmpty (XmlPatch.elements node)))
+            match known with
+            | Some _ when bare -> [ XmlPatch.RemoveChild name ]
+            | Some _ -> if edits.IsEmpty then [] else [ XmlPatch.EditChild (name, edits, None) ]
+            | None when bare -> []
+            | None -> [ XmlPatch.SetChild (name, "<" + name + (after |> Map.toList |> List.map (fun (attribute, value) -> " " + attr attribute value) |> String.concat "") + "/>") ]
+        let side (name: string) (below: bool) (attributes: Map<string, string>) =
+            let known = match Map.tryFind name attributes with Some "0" | Some "false" -> false | _ -> true
+            if known = below then [] else [ attributeEdit name (if below then None else Some "0") ]
+        let tabColor =
+            match tabColorXml sheet, childNamed "tabColor" source.Node with
+            | "", Some _ -> [ XmlPatch.RemoveChild "tabColor" ]
+            | "", None -> []
+            // (The file's element while it says the same.)
+            | made, Some known when (XmlPatch.read made |> Option.map (fun made -> XmlPatch.attributes made.Node)) = Some (XmlPatch.attributes known) -> []
+            | made, _ -> [ XmlPatch.SetChild ("tabColor", made) ]
         let fits = sheet.PageSetup |> Option.exists (fun setup -> setup.FitToPage)
-        let tag = match child "pageSetUpPr" with "" -> "<pageSetUpPr/>" | known -> known
-        let known = match tagAttribute tag "fitToPage" with Some "1" | Some "true" -> true | _ -> false
-        (if known = fits then tag else withTagAttribute "fitToPage" (if fits then Some "1" else None) tag) |> bare "pageSetUpPr"
-    let children = tabColorXml sheet + outline + pageSetUp
-    if children = "" && startTag = "<sheetPr>" then "" else startTag + children + "</sheetPr>"
+        let edits =
+            tabColor
+            @ flags "outlinePr" (fun attributes -> side "summaryBelow" sheet.View.SummaryBelow attributes @ side "summaryRight" sheet.View.SummaryRight attributes)
+            @ flags "pageSetUpPr" (fun attributes -> if isOn (Map.tryFind "fitToPage" attributes) = fits then [] else [ attributeEdit "fitToPage" (if fits then Some "1" else None) ])
+        let made = XmlPatch.apply order source edits
+        // (A sheetPr that says nothing is not written.)
+        if (XmlPatch.attributes source.Node).IsEmpty && XmlPatch.isEmpty made then "" else made
 
 type private SheetMoves = (bool * bool * int * int) list
 
@@ -3107,129 +2868,154 @@ let private movedSpan (moves: SheetMoves) (onRows: bool) (low: int) (high: int) 
 let private movedRefText (moves: SheetMoves) (reference: string) : string option =
     if moves.IsEmpty then Some reference
     else
-        let ends = reference.Replace("$", "").Split(':')
+        let ends = CellRef.corners (reference.Replace("$", ""))
         if ends.Length > 2 then None
         else
-            match patchCellOfRef ends.[0], patchCellOfRef ends.[ends.Length - 1] with
-            | Some (top, left), Some (bottom, right) ->
+            match CellRef.parseRange (CellRef.ofCorners ends) with
+            | Some ((top, left), (bottom, right)) ->
                 match movedSpan moves true top bottom, movedSpan moves false left right with
                 | Some (top, bottom), Some (left, right) ->
                     Some (if ends.Length = 1 then cellRef top left else cellRef top left + ":" + cellRef bottom right)
                 | _ -> None
             | _ -> None
 
-let private refAttributePattern = System.Text.RegularExpressions.Regex("\\sref=\"([^\"]*)\"")
-
 /// A `<sortState>` (the range that was sorted, each `<sortCondition>` the column it was
 /// sorted by) after the edits: every range where its cells are now; "" when one of them is gone.
-let private movedSortState (moves: SheetMoves) (xml: string) : string =
-    if moves.IsEmpty || xml = "" then xml
-    else
-        let lost = ref false
+let private movedSortState (moves: SheetMoves) (was: XmlPatch.SourceElement option) : string =
+    match was with
+    | None -> ""
+    | Some was when moves.IsEmpty -> XmlPatch.bytes was
+    | Some was ->
         let moved =
-            refAttributePattern.Replace(xml, (fun (found: System.Text.RegularExpressions.Match) ->
-                match movedRefText moves found.Groups.[1].Value with
-                | Some reference -> " ref=\"" + reference + "\""
-                | None ->
-                    lost.Value <- true
-                    found.Value))
-        if lost.Value then "" else moved
+            XmlPatch.descendantsWhere (fun node -> (XmlPatch.attribute node "ref").IsSome) was.Node
+            |> List.map (fun node -> node, movedRefText moves (XmlPatch.attribute node "ref" |> Option.defaultValue ""))
+        if moved |> List.exists (fun (_, reference) -> reference.IsNone) then ""
+        else XmlPatch.apply order was (XmlPatch.editsAt was.Node [ for node, reference in moved -> node, [ XmlPatch.SetAttribute ("ref", reference.Value) ] ])
 
 /// An element whose children (`child`) name cells by `sqref`, after the
 /// edits: a child whose cells are all gone is taken out, and "" is what is
 /// left of an element without children.
-let private withMovedChildren (moves: SheetMoves) (child: string) (xml: string) : string =
-    if moves.IsEmpty || xml = "" then xml
-    else
-        let mutable left = 0
+let private withMovedChildren (moves: SheetMoves) (child: string) (was: XmlPatch.SourceElement option) : string =
+    match was with
+    | None -> ""
+    | Some was when moves.IsEmpty -> XmlPatch.bytes was
+    | Some was ->
         let moved =
-            (sheetElementPattern child).Replace(xml, (fun (found: System.Text.RegularExpressions.Match) ->
-                let tag, rest = splitStartTag found.Value
-                match tagAttribute tag "sqref" with
-                | None -> (left <- left + 1; found.Value)
-                | Some sqref ->
-                    match sqref.Split(' ') |> Array.filter (fun part -> part <> "") |> Array.choose (movedRefText moves) with
-                    | [||] -> ""
-                    | parts ->
-                        left <- left + 1
-                        withTagAttribute "sqref" (Some (String.concat " " parts)) tag + rest))
-        if left = 0 then "" else moved
+            XmlPatch.elements was.Node
+            |> List.filter (fun node -> XmlPatch.localName node = child)
+            |> List.map (fun node ->
+                node, XmlPatch.attribute node "sqref" |> Option.map (fun sqref -> CellRef.ranges sqref |> List.choose (movedRefText moves)))
+        if moved |> List.forall (fun (_, ranges) -> ranges = Some []) then ""
+        else
+            let targets =
+                moved |> List.choose (fun (node, ranges) ->
+                    match ranges with
+                    | None -> None
+                    | Some [] -> Some (node, [ XmlPatch.Removed ])
+                    | Some ranges -> Some (node, [ XmlPatch.SetAttribute ("sqref", CellRef.ofRanges ranges) ]))
+            XmlPatch.apply order was (XmlPatch.editsAt was.Node targets)
+
+/// The edits of a `<sheetViews>` that make its first view say whether the sheet is the one on display
+/// (`tabSelected`): two sheets that say so are a group to Excel. None when it says so already.
+let private tabSelectedEdits (active: bool) (views: XmlDsl.XmlNode) : XmlPatch.ElementEdit list =
+    match XmlPatch.elements views |> List.filter (fun node -> XmlPatch.localName node = "sheetView") with
+    | view :: _ when isOn (XmlPatch.attribute view "tabSelected") <> active ->
+        [ XmlPatch.EditNth (XmlPatch.name view, 0, [ attributeEdit "tabSelected" (if active then Some "1" else None) ]) ]
+    | _ -> []
+
+/// A `<sheetViews>` whose first view says whether the sheet is the one on display.
+let private viewsWithTabSelected (active: bool) (views: string) : string =
+    match XmlPatch.read views with
+    | Some element ->
+        match tabSelectedEdits active element.Node with
+        | [] -> views
+        | edits -> XmlPatch.apply order element edits
+    | None -> views
+
+/// The text of a sheet part with its first view saying whether the sheet is
+/// the one on display. The text itself when it already says the right thing.
+let private withTabSelected (active: bool) (xml: string) : string =
+    match XmlPatch.readPartExcept (fun name -> name = "sheetData") xml with
+    | Some part ->
+        match childrenNamed "sheetViews" part.Node with
+        | views :: _ ->
+            match tabSelectedEdits active views with
+            | [] -> xml
+            | edits -> XmlPatch.applyPart order part [ XmlPatch.EditChild (XmlPatch.name views, edits, None) ]
+        | [] -> xml
+    | None -> xml
 
 /// `<sheetViews>` as the file has it - the selection, where the view is
 /// scrolled to, what else it says - with the switches and the zoom of the
 /// sheet as it is now (and what names a cell where that cell is after
 /// `moves`); with other panes than the file's, the views are made anew.
-let private sheetViewsFromSource (was: string option) (moves: SheetMoves) (sheet: XlsxSheetOut) : string =
+let private sheetViewsFromSource (was: XmlPatch.SourceElement option) (moves: SheetMoves) (sheet: XlsxSheetOut) : string =
     let made = sheetViewsXml sheet false
-    // (A match that failed has no value to read under Fable.)
-    let paneOf (xml: string) = (let found = System.Text.RegularExpressions.Regex.Match(xml, "<pane(?=[\\s/>])[^>]*/>") in if found.Success then found.Value else "")
-    let viewTag (xml: string) = System.Text.RegularExpressions.Regex.Match(xml, "<sheetView(?=[\\s/>])[^>]*>")
-    let paneKey (xml: string) =
-        let pane = paneOf xml
-        if pane = "" then "" else String.concat "," [ for name in [ "xSplit"; "ySplit"; "state" ] -> tagAttribute pane name |> Option.defaultValue "" ]
-    match was with
-    | Some was when (viewTag was).Success && paneKey was = paneKey made ->
-        let found = viewTag was
-        let madeTag = (let made = viewTag made in if made.Success then made.Value else "<sheetView>")
-        let tag =
-            [ "showFormulas"; "showGridLines"; "showRowColHeaders"; "showZeros"; "showOutlineSymbols"; "zoomScale" ]
-            |> List.fold (fun (tag: string) name ->
+    let madeRoot = XmlPatch.read made
+    let paneKey (views: XmlDsl.XmlNode option) =
+        match views |> Option.bind (fun views -> XmlPatch.descendants "pane" views |> List.tryHead) with
+        | Some pane -> String.concat "," [ for name in [ "xSplit"; "ySplit"; "state" ] -> XmlPatch.attribute pane name |> Option.defaultValue "" ]
+        | None -> ""
+    match was |> Option.bind (fun was -> XmlPatch.descendants "sheetView" was.Node |> List.tryHead |> Option.map (fun view -> was, view)) with
+    | Some (was, view) when paneKey (Some was.Node) = paneKey (madeRoot |> Option.map (fun root -> root.Node)) ->
+        let madeView = madeRoot |> Option.bind (fun root -> XmlPatch.descendants "sheetView" root.Node |> List.tryHead) |> Option.map XmlPatch.attributes |> Option.defaultValue Map.empty
+        let viewEdits =
+            [ for name in [ "showFormulas"; "showGridLines"; "showRowColHeaders"; "showZeros"; "showOutlineSymbols"; "zoomScale" ] do
                 // (Left as the file has it where that says the same.)
                 let fileDefault = if name = "zoomScale" then "100" elif name = "showFormulas" then "0" else "1"
                 let normal (value: string option) = match value with Some "true" -> "1" | Some "false" -> "0" | Some value -> value | None -> fileDefault
-                if normal (tagAttribute tag name) = normal (tagAttribute madeTag name) then tag else withTagAttribute name (tagAttribute madeTag name) tag) found.Value
-        let views = was.Substring(0, found.Index) + tag + was.Substring(found.Index + found.Length)
-        if moves.IsEmpty then views
-        else
+                if normal (XmlPatch.attribute view name) <> normal (Map.tryFind name madeView) then yield attributeEdit name (Map.tryFind name madeView) ]
+        let targets = ResizeArray<XmlDsl.XmlNode * XmlPatch.ElementEdit list>()
+        targets.Add ((view, viewEdits))
+        if not moves.IsEmpty then
             // A selection of cells that are gone is not kept; a view scrolled to one starts where it starts.
-            let selections =
-                (sheetElementPattern "selection").Replace(views, (fun (found: System.Text.RegularExpressions.Match) ->
-                    let tag, rest = splitStartTag found.Value
-                    let active = tagAttribute tag "activeCell" |> Option.map (movedRefText moves)
-                    let ranges = tagAttribute tag "sqref" |> Option.map (fun sqref -> sqref.Split(' ') |> Array.filter (fun part -> part <> "") |> Array.map (movedRefText moves))
-                    match active, ranges with
-                    | Some None, _ -> ""
-                    | _, Some parts when parts |> Array.exists Option.isNone -> ""
-                    | _ ->
-                        let tag = match active with Some (Some cell) -> withTagAttribute "activeCell" (Some cell) tag | _ -> tag
-                        let tag = match ranges with Some parts -> withTagAttribute "sqref" (Some (parts |> Array.choose id |> String.concat " ")) tag | None -> tag
-                        tag + rest))
-            System.Text.RegularExpressions.Regex.Replace(selections, "<(?:sheetView|pane)(?=[\\s/>])[^>]*>", (fun (found: System.Text.RegularExpressions.Match) ->
-                match tagAttribute found.Value "topLeftCell" with
-                | Some cell -> withTagAttribute "topLeftCell" (movedRefText moves cell) found.Value
-                | None -> found.Value))
+            for selection in XmlPatch.descendants "selection" was.Node do
+                let active = XmlPatch.attribute selection "activeCell" |> Option.map (movedRefText moves)
+                let ranges = XmlPatch.attribute selection "sqref" |> Option.map (fun sqref -> CellRef.ranges sqref |> List.map (movedRefText moves))
+                match active, ranges with
+                | Some None, _ -> targets.Add ((selection, [ XmlPatch.Removed ]))
+                | _, Some parts when parts |> List.exists Option.isNone -> targets.Add ((selection, [ XmlPatch.Removed ]))
+                | _ ->
+                    targets.Add ((selection,
+                                  [ match active with Some (Some cell) -> yield XmlPatch.SetAttribute ("activeCell", cell) | _ -> ()
+                                    match ranges with Some parts -> yield XmlPatch.SetAttribute ("sqref", CellRef.ofRanges (List.choose id parts)) | None -> () ]))
+            for node in XmlPatch.descendantsWhere (fun node -> XmlPatch.localName node = "sheetView" || XmlPatch.localName node = "pane") was.Node do
+                match XmlPatch.attribute node "topLeftCell" with
+                | Some cell -> targets.Add ((node, [ attributeEdit "topLeftCell" (movedRefText moves cell) ]))
+                | None -> ()
+        XmlPatch.apply order was (XmlPatch.editsAt was.Node (List.ofSeq targets))
     | _ -> made
 
 /// `<sheetFormatPr>` as the file has it, with the outline levels of the sheet as it is now.
-let private sheetFormatFromSource (was: string) (sheet: XlsxSheetOut) : string =
-    if was = "" then sheetFormatXml sheet
-    else
+let private sheetFormatFromSource (was: XmlPatch.SourceElement option) (sheet: XlsxSheetOut) : string =
+    match was with
+    | None -> sheetFormatXml sheet
+    | Some was ->
         let deepest (axis: (int * float option * int * bool) list) = axis |> List.fold (fun level (_, _, own, _) -> max level own) 0
-        let level (name: string) (value: int) (tag: string) =
-            let known = match tagAttribute tag name |> Option.map System.Int32.TryParse with Some (true, level) -> level | _ -> 0
-            if known = value then tag else withTagAttribute name (if value > 0 then Some (string value) else None) tag
-        let tag, rest = splitStartTag was
-        (tag |> level "outlineLevelRow" (deepest sheet.Extras.RowAxis) |> level "outlineLevelCol" (deepest sheet.Extras.ColumnAxis)) + rest
+        let level (name: string) (value: int) =
+            let known = match XmlPatch.attribute was.Node name |> Option.map System.Int32.TryParse with Some (true, level) -> level | _ -> 0
+            if known = value then [] else [ attributeEdit name (if value > 0 then Some (string value) else None) ]
+        XmlPatch.apply order was (level "outlineLevelRow" (deepest sheet.Extras.RowAxis) @ level "outlineLevelCol" (deepest sheet.Extras.ColumnAxis))
 
-/// The part of the file with the changed cells, rows and sections of `sheet`.
-let private patchedSheetXml (styles: StyleBook) (sharedIndex: string -> XlsxRichRun list -> int) (dynamicCm: int) (sheetIndex: int)
-                            (sheet: XlsxSheetOut) (patch: XlsxReader.SheetPatch) (plan: SheetPatchPlan) (added: (string * string) list) : string =
-    let source = plan.Source
-    let data, (minRow, minCol, maxRow, maxCol) = patchedSheetData styles sharedIndex dynamicCm sheet patch plan
+/// The part of the file with the changed cells, rows and sections of `sheet`
+/// (and its first view saying whether it is the sheet on display: `active`);
+/// and how many of the file's cells that name a shared string are gone.
+let private patchedSheetXml (styles: StyleBook) (sharedIndex: string -> XlsxRichRun list -> int) (dynamicCm: int) (sheetIndex: int) (active: bool)
+                            (sheet: XlsxSheetOut) (patch: XlsxReader.SheetPatch) (plan: SheetPatchPlan) (added: (string * string) list) : string * int =
+    let dataEdits, (minRow, minCol, maxRow, maxCol), sharedGone = sheetDataEdits styles sharedIndex dynamicCm sheet patch plan
     // (`added`: elements the part did not have, put where the schema has them - the
     // `<legacyDrawing>` of a sheet that got its first note.)
     let patch = if added.IsEmpty then patch else { patch with Sections = patch.Sections @ (added |> List.map fst) }
     // The sections made anew.
-    let sourceElement (name: string) =
-        plan.Top |> List.tryPick (fun (known, span) -> if known = name then Some (source.Substring(span.Start, span.End - span.Start)) else None)
+    let sourceElement (name: string) = sourceChild name plan.Source
     let sectionXml (name: string) =
         match added |> List.tryPick (fun (known, xml) -> if known = name then Some xml else None) with
         | Some xml -> xml
         | None ->
         match name with
-        | "sheetPr" -> sheetPrFromSource (sourceElement "sheetPr" |> Option.defaultValue "") sheet
-        | "sheetViews" -> sheetViewsFromSource (sourceElement "sheetViews") [] sheet
-        | "sheetFormatPr" -> sheetFormatFromSource (sourceElement "sheetFormatPr" |> Option.defaultValue "") sheet
+        | "sheetPr" -> sheetPrFromSource (sourceElement "sheetPr") sheet
+        | "sheetViews" -> viewsWithTabSelected active (sheetViewsFromSource (sourceElement "sheetViews") [] sheet)
+        | "sheetFormatPr" -> sheetFormatFromSource (sourceElement "sheetFormatPr") sheet
         | "cols" -> colsXml styles sheet
         | "autoFilter" -> autoFilterXml styles.Dxfs.Length sheet
         | "mergeCells" -> mergeCellsXmlFull sheet.MergedCells
@@ -3239,103 +3025,85 @@ let private patchedSheetXml (styles: StyleBook) (sharedIndex: string -> XlsxRich
         | "pageMargins" -> (let _, margins, _, _ = pageParts sheet in margins)
         | "pageSetup" -> (let _, _, pageSetup, _ = pageParts sheet in pageSetup)
         | "headerFooter" -> (let _, _, _, headerFooter = pageParts sheet in headerFooter)
-        | "rowBreaks" -> breaksXml "rowBreaks" (sourceElement "rowBreaks" |> Option.defaultValue "") sheet.RowBreaks
-        | "colBreaks" -> breaksXml "colBreaks" (sourceElement "colBreaks" |> Option.defaultValue "") sheet.ColBreaks
+        | "rowBreaks" -> breaksXml "rowBreaks" (sourceElement "rowBreaks") sheet.RowBreaks
+        | "colBreaks" -> breaksXml "colBreaks" (sourceElement "colBreaks") sheet.ColBreaks
         // ("sortState": what the file says of a sort is not what the rows are sorted by now.)
         | _ -> ""
-    let orderOf (name: string) = worksheetChildOrder |> List.tryFindIndex (fun known -> known = name) |> Option.defaultValue -1
-    let pending = System.Collections.Generic.List<string>(patch.Sections |> List.distinct |> List.sortBy orderOf)
-    let dimensionOf (text: string) =
-        // A dimension that does not hold a written cell is made to.
-        match tagAttribute text "ref" with
-        | Some reference when maxRow >= 0 ->
-            let ends = reference.Split(':')
-            match patchCellOfRef ends.[0], patchCellOfRef ends.[ends.Length - 1] with
-            | Some (top, left), Some (bottom, right) when minRow < top || minCol < left || maxRow > bottom || maxCol > right ->
-                withTagAttribute "ref" (Some (cellRef (min top minRow) (min left minCol) + ":" + cellRef (max bottom maxRow) (max right maxCol))) text
-            | _ -> text
-        | _ -> text
-    let out = StringBuilder()
-    out.Append(source.Substring(0, plan.RootEnd)) |> ignore
-    let mutable at = plan.RootEnd
-    for name, span in plan.Top do
-        // (What is between two elements stays where it is.)
-        out.Append(source.Substring(at, span.Start - at)) |> ignore
-        at <- span.End
-        // A section the file did not have goes where the schema has it.
-        let order = orderOf name
-        if order >= 0 then
-            while pending.Count > 0 && orderOf pending.[0] < order do
-                out.Append(sectionXml pending.[0]) |> ignore
-                pending.RemoveAt 0
-        if List.contains name patch.Sections then
-            // (Every element of that name is replaced by the new ones.)
-            if pending.Contains name then
-                out.Append(sectionXml name) |> ignore
-                pending.Remove name |> ignore
-        elif name = "sheetData" then out.Append("<sheetData>").Append(data).Append("</sheetData>") |> ignore
-        elif name = "dimension" then out.Append(dimensionOf (source.Substring(span.Start, span.End - span.Start))) |> ignore
-        else out.Append(source.Substring(span.Start, span.End - span.Start)) |> ignore
-    out.Append(source.Substring(at, plan.RootClose - at)) |> ignore
-    for name in pending do out.Append(sectionXml name) |> ignore
-    out.Append(source.Substring plan.RootClose) |> ignore
-    out.ToString()
+    // (Every element of that name is replaced by the new ones; one the file did not have goes where the schema has it.)
+    let sections = patch.Sections |> List.distinct |> List.map (fun name -> XmlPatch.SetChildren (name, [ sectionXml name ]))
+    // A dimension that does not hold a written cell is made to.
+    let dimension =
+        match childNamed "dimension" plan.Source.Node with
+        | Some node when maxRow >= 0 ->
+            match XmlPatch.attribute node "ref" |> Option.bind CellRef.parseRange with
+            | Some ((top, left), (bottom, right)) when minRow < top || minCol < left || maxRow > bottom || maxCol > right ->
+                [ XmlPatch.EditChild ("dimension", [ XmlPatch.SetAttribute ("ref", cellRef (min top minRow) (min left minCol) + ":" + cellRef (max bottom maxRow) (max right maxCol)) ], None) ]
+            | _ -> []
+        | _ -> []
+    let views =
+        if List.contains "sheetViews" patch.Sections then []
+        else
+            match childrenNamed "sheetViews" plan.Source.Node with
+            | views :: _ -> (match tabSelectedEdits active views with [] -> [] | edits -> [ XmlPatch.EditChild ("sheetViews", edits, None) ])
+            | [] -> []
+    let data = if dataEdits.IsEmpty then [] else [ XmlPatch.EditChild ("sheetData", dataEdits, None) ]
+    XmlPatch.applyPart order plan.Source (dimension @ views @ data @ sections), sharedGone
 
 /// A sheet's part as it was read, for a sheet that is written from its cells.
 type private SheetSource = {
-    Xml: string
-    /// The start tag of the worksheet element (its namespaces).
-    RootTag: string
-    Top: (string * PatchSpan) list
+    /// The part, read in outline (its rows without their cells).
+    Part: XmlPatch.SourceElement
     /// The row and column edits since (see `SheetExtras.Moves`).
     Edits: SheetMoves option
 }
 
 let private sheetSourceOf (sheet: XlsxSheetOut) : SheetSource option =
-    sheet.Extras.SourceXml
-    |> Option.bind (fun xml ->
-        scanWorksheetTop xml
-        |> Option.map (fun (rootStart, rootEnd, _, top) -> { Xml = xml; RootTag = xml.Substring(rootStart, rootEnd - rootStart); Top = top; Edits = sheet.Extras.Moves }))
+    sheet.Extras.SourceXml |> Option.bind readWorksheet |> Option.map (fun part -> { Part = part; Edits = sheet.Extras.Moves })
 
-let private rowAttributePattern = System.Text.RegularExpressions.Regex("\\s([A-Za-z_][\\w:.\\-]*)=\"([^\"]*)\"")
 /// The attributes of a row that the sheet's rows are written with whatever the file says.
 let private rowAttributesOfSheet = [ "r"; "spans"; "ht"; "customHeight"; "hidden"; "outlineLevel"; "collapsed" ]
 
 /// What the rows written from the cells keep of the file's rows (see
-/// `RowCarry`). `fileStyles`: the styles are the file's, so a row's style
-/// index means what it meant.
-let private rowCarryOf (fileStyles: bool) (source: SheetSource) : RowCarry =
+/// `RowCarry`), from the text of the part the sheet was read from.
+/// `fileStyles`: the styles are the file's, so a row's style index means
+/// what it meant.
+let private rowCarryOf (fileStyles: bool) (moves: SheetMoves option) (sourceXml: string) : RowCarry option =
     let carry =
         { Attributes = System.Collections.Generic.Dictionary<int, string>()
           AutoHeights = System.Collections.Generic.Dictionary<int, float>()
           Heightless = System.Collections.Generic.HashSet<int>()
-          Share = ordinalIndexOf source.Xml "t=\"shared\"" 0 >= 0 }
-    match source.Edits, source.Top |> List.filter (fun (name, _) -> name = "sheetData") with
-    | Some moves, [ (_, data) ] when data.End > data.TagEnd ->
-        match scanPatchElements source.Xml "row" data.TagEnd (data.End - "</sheetData>".Length) with
-        | Some rows ->
+          Share = false
+          SharedStrings = None }
+    match readWorksheetCells sourceXml with
+    | None -> None
+    | Some part ->
+        let rows = childrenNamed "sheetData" part.Node |> List.collect (childrenNamed "row")
+        let share =
+            rows |> List.exists (fun row ->
+                childrenNamed "c" row |> List.exists (fun cell -> XmlPatch.child "f" cell |> Option.exists (fun f -> XmlPatch.attribute f "t" = Some "shared")))
+        let carry = { carry with Share = share; SharedStrings = Some (sharedStringCells part) }
+        match moves with
+        | Some moves ->
             // (The same attributes on row after row are worked out once.)
             let known = System.Collections.Generic.Dictionary<string, string * float option * bool>()
-            for span in rows do
-                let tag = source.Xml.Substring(span.Start, span.TagEnd - span.Start)
-                match tagAttribute tag "r" |> Option.map System.Int32.TryParse with
+            for row in rows do
+                match XmlPatch.attribute row "r" |> Option.map System.Int32.TryParse with
                 | Some (true, number) ->
-                    let rest = withTagAttribute "spans" None (withTagAttribute "r" None tag)
+                    let own = XmlPatch.attributeBytes part.Text row |> List.filter (fun (name, _) -> name <> "r" && name <> "spans")
+                    let rest = own |> List.map snd |> String.concat ""
                     let attributes, auto, heightless =
                         match known.TryGetValue rest with
                         | true, found -> found
                         | false, _ ->
-                            let kept = StringBuilder()
-                            let mutable height = None
-                            let mutable custom = false
-                            for found in rowAttributePattern.Matches rest |> Seq.cast<System.Text.RegularExpressions.Match> do
-                                let name = found.Groups.[1].Value
-                                if name = "ht" then height <- tryParseNumber found.Groups.[2].Value
-                                elif name = "customHeight" then custom <- (found.Groups.[2].Value = "1" || found.Groups.[2].Value = "true")
-                                elif List.contains name rowAttributesOfSheet then ()
-                                elif (name = "s" || name = "customFormat") && not fileStyles then ()
-                                else kept.Append(found.Value) |> ignore
-                            let made = kept.ToString(), (if custom then None else height), height.IsNone
+                            let height = XmlPatch.attribute row "ht" |> Option.bind tryParseNumber
+                            let custom = isOn (XmlPatch.attribute row "customHeight")
+                            let kept =
+                                own
+                                |> List.filter (fun (name, _) ->
+                                    not (List.contains name rowAttributesOfSheet) && (fileStyles || (name <> "s" && name <> "customFormat")))
+                                |> List.map snd
+                                |> String.concat ""
+                            let made = kept, (if custom then None else height), height.IsNone
                             known.[rest] <- made
                             made
                     if attributes <> "" || auto.IsSome || heightless then
@@ -3348,52 +3116,54 @@ let private rowCarryOf (fileStyles: bool) (source: SheetSource) : RowCarry =
                             | None -> ()
                         | None -> ()
                 | _ -> ()
-        | None -> ()
-    | _ -> ()
-    carry
+            Some carry
+        | None -> Some carry
+
+/// The rows of a worksheet part written from the sheet.
+type private SheetRows =
+    /// The file's `<sheetData>` with the changed cells and rows.
+    | FileRows of string
+    /// Rows written from the cells, with what they keep of the file's rows (None: a sheet of no file).
+    | CellRows of RowCarry option
 
 /// The worksheet part of a sheet written from its cells. With the part the
 /// sheet was read from (`SheetExtras.SourceXml`), what that says beyond what
 /// a sheet holds stays: the worksheet's namespaces, sheetPr, the views'
 /// selection, sheetFormatPr, the rows' own attributes, the sheet's
 /// protection, ignoredErrors - by where their rows and cells are now.
-/// `data`: the rows (the inside of `<sheetData>`) when they are not made
-/// from the cells; `keepSort`: the file's `<sortState>` still holds.
-let private worksheetXml (styles: StyleBook) sharedIndex (dynamicCm: int) sheetIndex active (hasDrawingPart: bool) (fileStyles: bool) (data: string option) (keepSort: bool) (sheet: XlsxSheetOut) =
+/// `keepSort`: the file's `<sortState>` still holds.
+let private worksheetXml (styles: StyleBook) sharedIndex (dynamicCm: int) sheetIndex active (hasDrawingPart: bool) (rows: SheetRows) (keepSort: bool) (sheet: XlsxSheetOut) =
     let conditionalFormats, conditionalFormatsExt = conditionalFormattingParts styles.Dxfs.Length sheetIndex sheet.ConditionalFormats
     let keptElement (name: string) =
         sheet.Extras.KeptElements |> List.tryPick (fun (known, xml) -> if known = name then Some xml else None) |> Option.defaultValue ""
     let source = sheetSourceOf sheet
     let keptIds = sheet.Extras.KeptRelationships |> List.map (fun (id, _, _, _) -> id) |> Set.ofList
-    // An element of the file's part ("" for none, and for one that names a relationship the sheet does not keep).
-    let fromFile (name: string) =
-        match source with
-        | None -> ""
-        | Some source ->
-            source.Top
-            |> List.tryPick (fun (known, span) -> if known = name then Some (source.Xml.Substring(span.Start, span.End - span.Start)) else None)
-            |> Option.filter (fun xml -> DocxReader.relationshipIdsInXml xml |> List.forall (fun id -> Set.contains id keptIds))
-            |> Option.defaultValue ""
+    // An element of the file's part (None for none, and for one that names a relationship the sheet does not keep).
+    let fromFile (name: string) : XmlPatch.SourceElement option =
+        source
+        |> Option.bind (fun source -> sourceChild name source.Part)
+        |> Option.filter (fun element -> OpcXml.relationshipIdsIn (XmlPatch.bytes element) |> List.forall (fun id -> Set.contains id keptIds))
+    let fileXml (name: string) = fromFile name |> Option.map XmlPatch.bytes |> Option.defaultValue ""
     let moves = source |> Option.bind (fun source -> source.Edits)
     // ... of one that names cells: with them where they are now, or not at all.
-    let unmoved (name: string) = match moves with Some [] -> fromFile name | _ -> ""
+    let unmoved (name: string) = match moves with Some [] -> fileXml name | _ -> ""
     let moved (name: string) (child: string) = match moves with Some moves -> withMovedChildren moves child (fromFile name) | None -> ""
     let sheetPr = sheetPrFromSource (fromFile "sheetPr") sheet
     let root =
         match source with
         | Some source ->
             // (The parts of the sheet are named by relationship.)
-            if source.RootTag.Contains "xmlns:r=" then source.RootTag
-            else source.RootTag.Substring(0, source.RootTag.Length - 1) + " xmlns:r=\"" + Namespaces.relationships + "\">"
+            let named = (XmlPatch.attribute source.Part.Node "xmlns:r").IsSome
+            XmlPatch.startTag source.Part.Text source.Part.Node (if named then [] else [ XmlPatch.SetAttribute ("xmlns:r", Namespaces.relationships) ])
         | None -> sprintf "<worksheet xmlns=\"%s\" xmlns:r=\"%s\">" Namespaces.spreadsheet Namespaces.relationships
     let views =
         match source, moves with
-        | Some _, Some moves -> withTabSelected active (sheetViewsFromSource (match fromFile "sheetViews" with "" -> None | xml -> Some xml) moves sheet)
+        | Some _, Some moves -> viewsWithTabSelected active (sheetViewsFromSource (fromFile "sheetViews") moves sheet)
         | _ -> sheetViewsXml sheet active
-    let rows =
-        match data with
-        | Some data -> data
-        | None -> rowsXml styles sharedIndex dynamicCm (source |> Option.map (rowCarryOf fileStyles)) sheet
+    let data =
+        match rows with
+        | FileRows data -> data
+        | CellRows carry -> "<sheetData>" + rowsXml styles sharedIndex dynamicCm carry sheet + "</sheetData>"
     declaration + "\n"
     + root
     + sheetPr
@@ -3401,11 +3171,11 @@ let private worksheetXml (styles: StyleBook) sharedIndex (dynamicCm: int) sheetI
     + views
     + (match source with Some _ -> sheetFormatFromSource (fromFile "sheetFormatPr") sheet | None -> sheetFormatXml sheet)
     + colsXml styles sheet
-    + ("<sheetData>" + rows + "</sheetData>")
+    + data
     // Child order is fixed by CT_Worksheet; Excel refuses a part that
     // deviates (e.g. tableParts before legacyDrawing).
-    + fromFile "sheetCalcPr"
-    + fromFile "sheetProtection"
+    + fileXml "sheetCalcPr"
+    + fileXml "sheetProtection"
     + moved "protectedRanges" "protectedRange"
     + unmoved "scenarios"
     + autoFilterXml styles.Dxfs.Length sheet
@@ -3416,7 +3186,7 @@ let private worksheetXml (styles: StyleBook) sharedIndex (dynamicCm: int) sheetI
     + unmoved "dataConsolidate"
     + unmoved "customSheetViews"
     + mergeCellsXmlFull sheet.MergedCells
-    + fromFile "phoneticPr"
+    + fileXml "phoneticPr"
     + conditionalFormats
     + dataValidationsXml sheet.DataValidations
     + hyperlinksXml sheet.Hyperlinks
@@ -3445,45 +3215,45 @@ let private worksheetXml (styles: StyleBook) sharedIndex (dynamicCm: int) sheetI
     + sheetExtLstXml conditionalFormatsExt (dataValidationsExtXml sheet.DataValidations) (sheet.Extras.KeptCellExtensions @ sheet.Extras.KeptExtensions)
     + "</worksheet>"
 
-let private queryTablePattern = System.Text.RegularExpressions.Regex("Target=\"([^\"]*queryTable[^\"]*)\"")
-let private queryFieldsPattern = System.Text.RegularExpressions.Regex("<queryTableFields(?=[\\s>])[^>]*>[\\s\\S]*?</queryTableFields>")
-let private queryFieldPattern = System.Text.RegularExpressions.Regex("<queryTableField(?=[\\s>/])[^>]*?/>|<queryTableField(?=[\\s>])[\\s\\S]*?</queryTableField>")
-let private queryRefreshPattern = System.Text.RegularExpressions.Regex("<queryTableRefresh(?=[\\s>])[^>]*>")
-
 /// The XML of a query table part for its table as written: a field per column of the table, in
 /// their order, as Excel asks (it refuses the file otherwise); a column the query does not fill
 /// is not data bound. None when the part already says that, or is not a part the writer can follow.
 let queryTableXmlFromSource (source: string) (tableXmlText: string) : string option =
-    let fields = queryFieldsPattern.Match source
-    let refresh = queryRefreshPattern.Match source
-    let columns = tableColumnsPattern.Match tableXmlText
-    if not fields.Success || not refresh.Success || not columns.Success then None
-    else
-        let startOf (xml: string) = fst (splitStartTag xml)
-        let known =
-            queryFieldPattern.Matches fields.Value |> Seq.cast<System.Text.RegularExpressions.Match> |> Seq.map (fun found -> found.Value) |> Seq.toList
-        let matched =
-            tableColumnPattern.Matches columns.Groups.[1].Value
-            |> Seq.cast<System.Text.RegularExpressions.Match>
-            |> Seq.map (fun found -> startOf found.Value)
-            |> Seq.toList
-            |> List.map (fun column ->
-                let id = tagAttribute column "id" |> Option.defaultValue "0"
-                match known |> List.tryFind (fun field -> tagAttribute (startOf field) "tableColumnId" = Some id) with
-                | Some field -> field
-                | None -> sprintf "<queryTableField id=\"%s\" dataBound=\"0\" tableColumnId=\"%s\"/>" (tagAttribute column "queryTableFieldId" |> Option.defaultValue id) id)
-        if matched = known then None
-        else
-            let top =
-                matched
-                |> List.fold (fun most field -> match tagAttribute (startOf field) "id" |> Option.map System.Int32.TryParse with Some (true, id) -> max most id | _ -> most) 0
-            let nextId =
-                match tagAttribute refresh.Value "nextId" |> Option.map System.Int32.TryParse with
-                | Some (true, id) -> max id (top + 1)
-                | _ -> top + 1
-            let newFields = sprintf "<queryTableFields count=\"%d\">%s</queryTableFields>" matched.Length (String.concat "" matched)
-            let newRefresh = withTagAttribute "nextId" (Some (string nextId)) refresh.Value
-            Some (source.Replace(fields.Value, newFields).Replace(refresh.Value, newRefresh))
+    match XmlPatch.readPart source, XmlPatch.readPart tableXmlText with
+    | Some part, Some tablePart ->
+        match XmlPatch.descendants "queryTableRefresh" part.Node |> List.tryHead with
+        | Some refresh ->
+            match XmlPatch.child "queryTableFields" refresh, XmlPatch.child "tableColumns" tablePart.Node with
+            | Some fields, Some columns ->
+                let known = XmlPatch.elements fields |> List.filter (fun node -> XmlPatch.localName node = "queryTableField")
+                let knownXml = known |> List.map (XmlPatch.bytesOf part.Text)
+                let matched =
+                    XmlPatch.elements columns
+                    |> List.filter (fun node -> XmlPatch.localName node = "tableColumn")
+                    |> List.map (fun column ->
+                        let id = XmlPatch.attribute column "id" |> Option.defaultValue "0"
+                        match known |> List.tryFind (fun field -> XmlPatch.attribute field "tableColumnId" = Some id) with
+                        | Some field -> XmlPatch.bytesOf part.Text field, XmlPatch.attribute field "id"
+                        | None ->
+                            let fieldId = XmlPatch.attribute column "queryTableFieldId" |> Option.defaultValue id
+                            sprintf "<queryTableField %s dataBound=\"0\" %s/>" (attr "id" fieldId) (attr "tableColumnId" id), Some fieldId)
+                if List.map fst matched = knownXml then None
+                else
+                    let top =
+                        matched |> List.fold (fun most (_, id) -> match id |> Option.map System.Int32.TryParse with Some (true, id) -> max most id | _ -> most) 0
+                    let nextId =
+                        match XmlPatch.attribute refresh "nextId" |> Option.map System.Int32.TryParse with
+                        | Some (true, id) -> max id (top + 1)
+                        | _ -> top + 1
+                    let edits =
+                        [ XmlPatch.SetAttribute ("nextId", string nextId)
+                          XmlPatch.EditChild (XmlPatch.name fields,
+                                              [ XmlPatch.SetAttribute ("count", string matched.Length)
+                                                XmlPatch.SetChildren ((match known with field :: _ -> XmlPatch.name field | [] -> "queryTableField"), List.map fst matched) ], None) ]
+                    Some (XmlPatch.applyPart order part (XmlPatch.editsAt part.Node [ refresh, edits ]))
+            | _ -> None
+        | None -> None
+    | _ -> None
 
 /// The XML of a table part of the file for the table as it is now: its
 /// name, range, header and totals rows, filter, columns and style are the
@@ -3493,108 +3263,86 @@ let queryTableXmlFromSource (source: string) (tableXmlText: string) : string opt
 /// are matched by position while their number is the file's, by name
 /// otherwise. None when the part is not a table the writer can follow.
 let tableXmlFromSource (source: string) (table: XlsxTableOut) : string option =
-    let root = tableRootPattern.Match source
-    let columns = tableColumnsPattern.Match source
-    if not root.Success || not columns.Success || columns.Index < root.Index then None
-    else
+    match XmlPatch.readPart source with
+    | Some part when XmlPatch.localName part.Node = "table" ->
+      match childNamed "tableColumns" part.Node with
+      | None -> None
+      | Some columnsNode ->
         let refText = sprintf "%s:%s" (cellRef (table.StartRow - 1) (table.StartCol - 1)) (cellRef (table.EndRow - 1) (table.EndCol - 1))
-        let escapedValue (text: string) =
-            let sb = StringBuilder()
-            appendEscapedAttr sb text
-            sb.ToString()
-        let rootTag = root.Value
-        let isQueryTable = tagAttribute rootTag "tableType" = Some "queryTable"
-        let refChanged = tagAttribute rootTag "ref" <> Some refText
-        let hadTotals = tagAttribute rootTag "totalsRowCount" |> Option.exists (fun count -> count <> "0")
-        let newRoot =
-            rootTag
-            |> withTagAttribute "name" (Some (escapedValue table.Name))
-            |> withTagAttribute "displayName" (Some (escapedValue table.Name))
-            |> withTagAttribute "ref" (Some refText)
-            |> withTagAttribute "headerRowCount" (if table.HeaderRowCount = 1 then None else Some (string table.HeaderRowCount))
-            |> withTagAttribute "totalsRowCount" (if table.TotalsRowCount > 0 then Some (string table.TotalsRowCount) else None)
-            |> fun tag ->
-                if table.TotalsRowCount > 0 then withTagAttribute "totalsRowShown" None tag
-                elif hadTotals then withTagAttribute "totalsRowShown" (Some "0") tag
-                else tag
+        let root = part.Node
+        let isQueryTable = XmlPatch.attribute root "tableType" = Some "queryTable"
+        let refChanged = XmlPatch.attribute root "ref" <> Some refText
+        let hadTotals = XmlPatch.attribute root "totalsRowCount" |> Option.exists (fun count -> count <> "0")
+        let rootEdits =
+            [ XmlPatch.SetAttribute ("name", table.Name)
+              XmlPatch.SetAttribute ("displayName", table.Name)
+              XmlPatch.SetAttribute ("ref", refText)
+              attributeEdit "headerRowCount" (if table.HeaderRowCount = 1 then None else Some (string table.HeaderRowCount))
+              attributeEdit "totalsRowCount" (if table.TotalsRowCount > 0 then Some (string table.TotalsRowCount) else None)
+              if table.TotalsRowCount > 0 then XmlPatch.RemoveAttribute "totalsRowShown"
+              elif hadTotals then XmlPatch.SetAttribute ("totalsRowShown", "0") ]
         // The columns.
-        let existing =
-            tableColumnPattern.Matches columns.Groups.[1].Value |> Seq.cast<System.Text.RegularExpressions.Match> |> Seq.map (fun found -> found.Value) |> Seq.toArray
+        let existing = childrenNamed "tableColumn" columnsNode |> List.toArray
         let count = table.EndCol - table.StartCol + 1
         let names = [| for i in 0 .. count - 1 -> table.Columns |> List.tryItem i |> Option.defaultValue (sprintf "Column%d" (i + 1)) |]
-        let nameOf (xml: string) = tagAttribute (fst (splitStartTag xml)) "name" |> Option.defaultValue ""
+        let nameOf (column: XmlDsl.XmlNode) = XmlPatch.attribute column "name" |> Option.defaultValue ""
         let used = Array.create existing.Length false
-        let sourceOf (i: int) : string option =
+        let sourceOf (i: int) : XmlDsl.XmlNode option =
             if existing.Length = count then (used.[i] <- true; Some existing.[i])
             else
-                let wanted = escapedValue names.[i]
                 let mutable found = -1
                 for k in 0 .. existing.Length - 1 do
-                    if found < 0 && not used.[k] && System.String.Equals(nameOf existing.[k], wanted, System.StringComparison.OrdinalIgnoreCase) then found <- k
+                    if found < 0 && not used.[k] && System.String.Equals(nameOf existing.[k], names.[i], System.StringComparison.OrdinalIgnoreCase) then found <- k
                 if found < 0 then None else (used.[found] <- true; Some existing.[found])
         let matched = [| for i in 0 .. count - 1 -> sourceOf i |]
         let mutable nextId =
-            existing |> Array.fold (fun top xml -> match tagAttribute (fst (splitStartTag xml)) "id" |> Option.map System.Int32.TryParse with Some (true, id) -> max top id | _ -> top) 0
+            existing |> Array.fold (fun top column -> match XmlPatch.attribute column "id" |> Option.map System.Int32.TryParse with Some (true, id) -> max top id | _ -> top) 0
         let columnXml (i: int) =
             let total = if table.TotalsRowCount > 0 then List.tryItem i table.Totals else None
-            let xml =
+            let column =
                 match matched.[i] with
-                | Some xml -> xml
+                | Some column -> Some (XmlPatch.at part column)
                 | None ->
                     nextId <- nextId + 1
                     // (A column of a query table names itself: Excel asks for the attribute there.)
-                    if isQueryTable then sprintf "<tableColumn id=\"%d\" uniqueName=\"%d\" name=\"\" queryTableFieldId=\"%d\"/>" nextId nextId nextId
-                    else sprintf "<tableColumn id=\"%d\" name=\"\"/>" nextId
-            let startTag, rest = splitStartTag xml
-            let startTag = withTagAttribute "name" (Some (escapedValue names.[i])) startTag
-            match total with
-            | None -> startTag + rest          // (No totals row: what the file says the column would show stays.)
-            | Some (kind, value) ->
-                let startTag =
-                    startTag
-                    |> withTagAttribute "totalsRowLabel" (if kind = "label" then Some (escapedValue value) else None)
-                    |> withTagAttribute "totalsRowFunction" (match kind with "function" -> Some (escapedValue value) | "custom" -> Some "custom" | _ -> None)
-                let rest = totalsFormulaPattern.Replace(rest, "")
-                if kind <> "custom" then startTag + rest
-                else
-                    let formula = "<totalsRowFormula>" + escapeXml value + "</totalsRowFormula>"
-                    if startTag.EndsWith "/>" then startTag.Substring(0, startTag.Length - 2).TrimEnd() + ">" + formula + "</tableColumn>"
-                    else
-                        // (After the calculated-column formula, before anything else: CT_TableColumn's order.)
-                        let close = "</calculatedColumnFormula>"
-                        let at = rest.IndexOf (close, System.StringComparison.Ordinal)
-                        if at >= 0 then startTag + rest.Substring(0, at + close.Length) + formula + rest.Substring(at + close.Length)
-                        else startTag + formula + rest
-        let columnsTag, _ = splitStartTag columns.Value
-        let newColumns =
-            withTagAttribute "count" (Some (string count)) columnsTag
-            + (String.concat "" [ for i in 0 .. count - 1 -> columnXml i ])
-            + "</tableColumns>"
-        let between = source.Substring(root.Index + root.Length, columns.Index - root.Index - root.Length)
-        let after = source.Substring(columns.Index + columns.Length)
+                    XmlPatch.read (if isQueryTable then sprintf "<tableColumn id=\"%d\" uniqueName=\"%d\" name=\"\" queryTableFieldId=\"%d\"/>" nextId nextId nextId
+                                   else sprintf "<tableColumn id=\"%d\" name=\"\"/>" nextId)
+            let edits =
+                XmlPatch.SetAttribute ("name", names.[i])
+                :: (match total with
+                    | None -> []          // (No totals row: what the file says the column would show stays.)
+                    | Some (kind, value) ->
+                        [ attributeEdit "totalsRowLabel" (if kind = "label" then Some value else None)
+                          attributeEdit "totalsRowFunction" (match kind with "function" -> Some value | "custom" -> Some "custom" | _ -> None)
+                          // (After the calculated-column formula, before anything else: CT_TableColumn's order.)
+                          XmlPatch.SetChildren ("totalsRowFormula", if kind = "custom" then [ "<totalsRowFormula>" + escapeXml value + "</totalsRowFormula>" ] else []) ])
+            column |> Option.map (fun column -> XmlPatch.apply order column edits) |> Option.defaultValue ""
+        let columns =
+            XmlPatch.EditChild ("tableColumns", [ XmlPatch.SetAttribute ("count", string count); XmlPatch.SetChildren ("tableColumn", [ for i in 0 .. count - 1 -> columnXml i ]) ], None)
         // The filter (it covers the header and the data, not the totals row).
         let filterRef = sprintf "%s:%s" (cellRef (table.StartRow - 1) (table.StartCol - 1)) (cellRef (table.EndRow - 1 - max 0 table.TotalsRowCount) (table.EndCol - 1))
-        let between =
-            let found = tableAutoFilterPattern.Match between
-            match table.AutoFilter, found.Success with
-            | None, true -> between.Substring(0, found.Index) + between.Substring(found.Index + found.Length)
-            | None, false -> between
-            | Some _, true ->
-                let startTag, rest = splitStartTag found.Value
-                between.Substring(0, found.Index) + withTagAttribute "ref" (Some filterRef) startTag + rest + between.Substring(found.Index + found.Length)
-            | Some _, false -> sprintf "<autoFilter ref=\"%s\"/>" filterRef + between
+        let filter =
+            match table.AutoFilter, childNamed "autoFilter" root with
+            | None, Some _ -> [ XmlPatch.RemoveChild "autoFilter" ]
+            | None, None -> []
+            | Some _, Some _ -> [ XmlPatch.EditChild ("autoFilter", [ XmlPatch.SetAttribute ("ref", filterRef) ], None) ]
+            | Some _, None -> [ XmlPatch.SetChild ("autoFilter", sprintf "<autoFilter ref=\"%s\"/>" filterRef) ]
         // A sort order names cells of the range it was made for.
-        let between = if refChanged then tableSortStatePattern.Replace(between, "") else between
+        let sort = if refChanged then [ XmlPatch.SetChildren ("sortState", []) ] else []
         let style =
-            table.Style
-            |> Option.map (fun s ->
-                sprintf "<tableStyleInfo %s showFirstColumn=\"%d\" showLastColumn=\"%d\" showRowStripes=\"%d\" showColumnStripes=\"%d\"/>"
-                    (attr "name" s.Name) (if s.ShowFirstColumn then 1 else 0) (if s.ShowLastColumn then 1 else 0) (if s.ShowRowStripes then 1 else 0) (if s.ShowColumnStripes then 1 else 0))
-            |> Option.defaultValue ""
-        let after =
-            let found = tableStyleInfoPattern.Match after
-            if found.Success then after.Substring(0, found.Index) + style + after.Substring(found.Index + found.Length) else style + after
-        Some (source.Substring(0, root.Index) + newRoot + between + newColumns + after)
+            let made =
+                table.Style
+                |> Option.map (fun s ->
+                    sprintf "<tableStyleInfo %s showFirstColumn=\"%d\" showLastColumn=\"%d\" showRowStripes=\"%d\" showColumnStripes=\"%d\"/>"
+                        (attr "name" s.Name) (if s.ShowFirstColumn then 1 else 0) (if s.ShowLastColumn then 1 else 0) (if s.ShowRowStripes then 1 else 0) (if s.ShowColumnStripes then 1 else 0))
+            match made, childNamed "tableStyleInfo" root with
+            | None, Some _ -> [ XmlPatch.SetChildren ("tableStyleInfo", []) ]
+            | None, None -> []
+            // (The file's element while it says the same.)
+            | Some made, Some known when (XmlPatch.read made |> Option.map (fun made -> XmlPatch.attributes made.Node)) = Some (XmlPatch.attributes known) -> []
+            | Some made, _ -> [ XmlPatch.SetChildren ("tableStyleInfo", [ made ]) ]
+        Some (XmlPatch.applyPart order part (rootEdits @ filter @ sort @ [ columns ] @ style))
+    | _ -> None
 
 let private sheetRelsXml sheetIndex (sheet: XlsxSheetOut) (tableParts: (string * int option) list) (placement: SheetPlacement) (drawingPath: string option) =
     let commentsVmlPath = placement.VmlPath
@@ -3629,102 +3377,36 @@ let private sheetRelsXml sheetIndex (sheet: XlsxSheetOut) (tableParts: (string *
 let private packageText (workbook: XlsxWorkbookOut) (path: string) : string option =
     workbook.Preserved.PackageTexts |> List.tryPick (fun (known, text) -> if known = path then Some text else None)
 
-let private plumbingDecoded (text: string) =
-    if text.IndexOf '&' < 0 then text
-    else text.Replace("&lt;", "<").Replace("&gt;", ">").Replace("&quot;", "\"").Replace("&apos;", "'").Replace("&amp;", "&")
-
-let private relationshipTagPattern = System.Text.RegularExpressions.Regex("<Relationship(?=[\\s/>])[^>]*>")
-
-/// The entries of a relationships part: id, type, target (a part path for
-/// an internal one), external, and the entry's text.
-let private relationshipEntries (baseDir: string) (xml: string) : (string * string * string * bool * string) list =
-    [ for found in relationshipTagPattern.Matches xml ->
-        let tag = found.Value
-        let value (name: string) = tagAttribute tag name |> Option.map plumbingDecoded |> Option.defaultValue ""
-        let isExternal = value "TargetMode" = "External"
-        value "Id", value "Type", (if isExternal then value "Target" else ZipInterop.resolveTarget baseDir (value "Target")), isExternal, tag ]
+/// The relationships of a relationships part (none for one that is not well formed): id, type, target (a
+/// part path for an internal one; `ownerDir`: the directory of the part they are of), external.
+let private relationshipEntries (ownerDir: string) (xml: string) : (string * string * string * bool) list =
+    OpcXml.relationshipsOrEmpty xml |> List.map (fun rel -> rel.Id, rel.Type, OpcXml.targetPath ownerDir rel, rel.External)
 
 /// The ids the file's workbook part names its parts by: part path -> id.
 let private fileWorkbookRelationshipIds (workbook: XlsxWorkbookOut) : Map<string, string> =
     match packageText workbook "xl/_rels/workbook.xml.rels" with
     | Some text ->
         relationshipEntries "xl" text
-        |> List.choose (fun (id, _, target, isExternal, _) -> if isExternal || id = "" then None else Some (target, id))
+        |> List.choose (fun (id, _, target, isExternal) -> if isExternal || id = "" then None else Some (target, id))
         |> List.distinctBy fst
         |> Map.ofList
     | None -> Map.empty
-
-/// `tag` taken out of `text` (its first occurrence).
-let private withoutFirst (tag: string) (text: string) =
-    match text.IndexOf (tag, System.StringComparison.Ordinal) with
-    | -1 -> text
-    | at -> text.Substring(0, at) + text.Substring(at + tag.Length)
 
 /// A relationships part of the file for what is written now (`made`): it is
 /// the file's text while that names the same parts; else the entries that
 /// are gone are taken out and the new ones are added behind the others.
 /// `sameIds`: an entry is the file's only under the file's id (other parts
 /// use the ids); without it a new entry gets an id none of the file's has.
-let private relationshipsFromFile (baseDir: string) (sameIds: bool) (source: string option) (made: string) : string =
-    match source with
-    | None -> made
-    | Some source ->
-        let close = source.LastIndexOf ("</Relationships>", System.StringComparison.Ordinal)
-        if close < 0 then made
-        else
-            let key (id: string, relType: string, target: string, isExternal: bool, _: string) =
-                (if sameIds then id else "") + "\n" + relType + "\n" + target + (if isExternal then "\nexternal" else "")
-            let was = relationshipEntries baseDir source
-            let now = relationshipEntries baseDir made
-            let nowKeys = System.Collections.Generic.HashSet<string>(now |> List.map key)
-            let wasKeys = System.Collections.Generic.HashSet<string>(was |> List.map key)
-            let gone = was |> List.filter (fun entry -> not (nowKeys.Contains (key entry)))
-            let added = now |> List.filter (fun entry -> not (wasKeys.Contains (key entry)))
-            if gone.IsEmpty && added.IsEmpty then source
-            else
-                let body = gone |> List.fold (fun (text: string) (_, _, _, _, tag) -> withoutFirst tag text) (source.Substring(0, close))
-                let ids = System.Collections.Generic.HashSet<string>(was |> List.filter (fun entry -> nowKeys.Contains (key entry)) |> List.map (fun (id, _, _, _, _) -> id))
-                let addedXml =
-                    added
-                    |> List.map (fun (id, _, _, _, tag) ->
-                        if ids.Add id then tag
-                        else
-                            let mutable number = 1
-                            while not (ids.Add (sprintf "rId%d" number)) do number <- number + 1
-                            withTagAttribute "Id" (Some (sprintf "rId%d" number)) tag)
-                    |> String.concat ""
-                body + addedXml + source.Substring close
-
-let private contentTypeTagPattern = System.Text.RegularExpressions.Regex("<(Default|Override)(?=[\\s/>])[^>]*>")
+let private relationshipsFromFile (ownerDir: string) (sameIds: bool) (source: string option) (made: string) : string =
+    let key (rel: OpcXml.Relationship) =
+        (if sameIds then rel.Id else "") + "\n" + rel.Type + "\n" + OpcXml.targetPath ownerDir rel + (if rel.External then "\nexternal" else "")
+    OpcXml.mergeRelationships key true source made
 
 /// `[Content_Types].xml` of the file for what is written now, likewise.
 /// `unused`: extensions no written part has (a default for one of them is
 /// not added to a file that did not have it).
 let private contentTypesFromFile (unused: string list) (source: string option) (made: string) : string =
-    match source with
-    | None -> made
-    | Some source ->
-        let close = source.LastIndexOf ("</Types>", System.StringComparison.Ordinal)
-        if close < 0 then made
-        else
-            let entries (xml: string) =
-                [ for found in contentTypeTagPattern.Matches xml ->
-                    let tag = found.Value
-                    let value (name: string) = tagAttribute tag name |> Option.map plumbingDecoded |> Option.defaultValue ""
-                    (found.Groups.[1].Value + "\n" + (value "Extension" + value "PartName").ToLowerInvariant() + "\n" + value "ContentType"), tag ]
-            let was = entries source
-            let now = entries made
-            let nowKeys = System.Collections.Generic.HashSet<string>(now |> List.map fst)
-            let wasKeys = System.Collections.Generic.HashSet<string>(was |> List.map fst)
-            let gone = was |> List.filter (fun (key, _) -> not (nowKeys.Contains key))
-            let added =
-                now
-                |> List.filter (fun (key, _) -> not (wasKeys.Contains key) && not (unused |> List.exists (fun extension -> key.StartsWith ("Default\n" + extension + "\n"))))
-                |> List.distinctBy fst
-            if gone.IsEmpty && added.IsEmpty then source
-            else
-                let body = gone |> List.fold (fun (text: string) (_, tag) -> withoutFirst tag text) (source.Substring(0, close))
-                body + (added |> List.map snd |> String.concat "") + source.Substring close
+    OpcXml.mergeContentTypes unused source made
 
 let private sheetRelationshipIds (workbook: XlsxWorkbookOut) : string list =
     let fromFile = fileWorkbookRelationshipIds workbook
@@ -3768,20 +3450,32 @@ let private sheetIds (workbook: XlsxWorkbookOut) : int list =
 /// not written any more (`Preserved.DroppedWorkbookRelationships`): a `<pivotCache>`, a slicer
 /// cache or timeline cache of the extension list - and without a list, an extension or an
 /// extension list that is left empty by that.
+let private droppedCacheTargets (ids: string list) (root: XmlDsl.XmlNode) : (XmlDsl.XmlNode * XmlPatch.ElementEdit list) list =
+    let lists = [ "slicerCaches"; "timelineCacheRefs"; "ext"; "pivotCaches"; "extLst" ]
+    // (Whether the element goes, and the elements in it that go - all of them, it alone where it goes.)
+    let rec visit (node: XmlDsl.XmlNode) : bool * XmlDsl.XmlNode list =
+        let kids = XmlPatch.elements node |> List.map visit
+        let local = XmlPatch.localName node
+        let entry =
+            List.contains local [ "pivotCache"; "slicerCache"; "timelineCacheRef" ]
+            && (XmlPatch.attribute node "r:id" |> Option.exists (fun id -> List.contains id ids))
+        let emptied = List.contains local lists && not kids.IsEmpty && kids |> List.forall fst
+        if entry || emptied then true, [ node ] else false, kids |> List.collect snd
+    if ids.IsEmpty then [] else [ for node in snd (visit root) -> node, [ XmlPatch.Removed ] ]
+
+/// workbook.xml's entries that name relationships that are not written any more
+/// (`Preserved.DroppedWorkbookRelationships`) - a `<pivotCache>`, a slicer cache or timeline cache of
+/// the extension list - taken out of XML of it (elements one after another): with a list, an extension
+/// or an extension list that is left empty by that.
 let private withoutDroppedCaches (ids: string list) (xml: string) : string =
     if ids.IsEmpty || xml = "" then xml
     else
-        let replace (pattern: string) (text: string) = System.Text.RegularExpressions.Regex.Replace(text, pattern, "")
-        let entries =
-            ids |> List.fold (fun (text: string) id ->
-                replace ("<(?:[A-Za-z0-9]+:)?(?:pivotCache|slicerCache|timelineCacheRef)\\s[^>]*?r:id=\"" + System.Text.RegularExpressions.Regex.Escape id + "\"[^>]*?/>") text) xml
-        if obj.ReferenceEquals (entries, xml) || entries = xml then xml
-        else
-            entries
-            |> replace "<((?:[A-Za-z0-9]+:)?(?:slicerCaches|timelineCacheRefs))(?:\\s[^>]*)?>\\s*</\\1>"
-            |> replace "<ext\\s[^>]*>\\s*</ext>"
-            |> replace "<pivotCaches(?:\\s[^>]*)?>\\s*</pivotCaches>"
-            |> replace "<extLst>\\s*</extLst>"
+        match XmlPatch.readFragmentRoot xml with
+        | Some fragment ->
+            match droppedCacheTargets ids fragment.Node with
+            | [] -> xml
+            | targets -> XmlPatch.applyFragment order fragment (XmlPatch.editsAt fragment.Node targets)
+        | None -> xml
 
 let private workbookXmlFull (workbook: XlsxWorkbookOut) =
     let relIds = sheetRelationshipIds workbook |> List.toArray
@@ -3806,7 +3500,7 @@ let private workbookXmlFull (workbook: XlsxWorkbookOut) =
             [ match s.PrintArea with
               | Some v ->
                   // (Each area of a print area of several is named with its sheet.)
-                  let areas = v.Split(',') |> Array.map (fun area -> sprintf "%s!%s" (quoted s.Name) (area.Trim())) |> String.concat ","
+                  let areas = CellRef.areas v |> List.map (fun area -> sprintf "%s!%s" (quoted s.Name) area) |> String.concat ","
                   yield { Name = "_xlnm.Print_Area"; RefersTo = areas; LocalSheetIndex = Some i; Comment = None; Hidden = false }
               | None -> ()
               match s.PrintTitleRows, s.PrintTitleCols with
@@ -3817,11 +3511,7 @@ let private workbookXmlFull (workbook: XlsxWorkbookOut) =
               // Excel keeps the range of a sheet's AutoFilter in a hidden name of the sheet.
               match s.Extras.AutoFilter with
               | Some filter ->
-                  let absolute (corner: string) =
-                      let letters = corner |> Seq.takeWhile (fun c -> c < '0' || c > '9') |> Seq.filter (fun c -> c <> '$') |> Seq.toArray |> System.String
-                      let digits = corner |> Seq.filter (fun c -> c >= '0' && c <= '9') |> Seq.toArray |> System.String
-                      (if letters = "" then "" else "$" + letters) + (if digits = "" then "" else "$" + digits)
-                  let reference = filter.Ref.Split(':') |> Array.map absolute |> String.concat ":"
+                  let reference = CellRef.corners filter.Ref |> List.map CellRef.absolute |> CellRef.ofCorners
                   yield { Name = "_xlnm._FilterDatabase"; RefersTo = sprintf "%s!%s" (quoted s.Name) reference; LocalSheetIndex = Some i; Comment = None; Hidden = true }
               | None -> () ])
         |> List.concat
@@ -3868,12 +3558,15 @@ let private workbookXmlFull (workbook: XlsxWorkbookOut) =
     let fromFile =
         kept.WorkbookPart
         |> Option.bind (fun path -> kept.Parts |> List.tryPick (fun (known, data) -> if known = path then Some (System.Text.Encoding.UTF8.GetString data) else None))
-        |> Option.bind (fun source ->
-            let root = System.Text.RegularExpressions.Regex.Match(source, "<workbook(?=[\\s>])[^>]*>")
-            let prefix = System.Text.RegularExpressions.Regex.Match((if root.Success then root.Value else ""), "xmlns:([A-Za-z0-9_]+)=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"")
-            let sheetsAt = System.Text.RegularExpressions.Regex.Match(source, "<sheets(?=[\\s>])[^>]*>[\\s\\S]*?</sheets>")
-            if not root.Success || not prefix.Success || not sheetsAt.Success then None
-            else
+        |> Option.bind XmlPatch.readPart
+        |> Option.bind (fun part ->
+            // (The prefix the part names relationships by.)
+            let prefix =
+                XmlPatch.attributes part.Node |> Map.toList |> List.tryPick (fun (name, value) ->
+                    let local = XmlDsl.Ns.stripNs name
+                    if name = "xmlns:" + local && value = Namespaces.relationships then Some local else None)
+            match prefix, childNamed "sheets" part.Node with
+            | Some prefix, Some sheetsNode when XmlPatch.localName part.Node = "workbook" ->
                 let sheetsXml =
                     workbook.Sheets
                     |> List.mapi (fun i s ->
@@ -3882,67 +3575,62 @@ let private workbookXmlFull (workbook: XlsxWorkbookOut) =
                             | XlsxReader.SheetVisible -> ""
                             | XlsxReader.SheetHidden -> " state=\"hidden\""
                             | XlsxReader.SheetVeryHidden -> " state=\"veryHidden\""
-                        sprintf "<sheet %s sheetId=\"%d\" %s:id=\"%s\"%s/>" (attr "name" s.Name) ids.[i] prefix.Groups.[1].Value relIds.[i] visible)
-                    |> String.concat ""
-                // (An element that says the same in the file stays as the file has it.)
-                let saysTheSame (pattern: string) (was: string) (made: string) =
-                    let entries (xml: string) =
-                        [ for found in System.Text.RegularExpressions.Regex.Matches(xml, pattern) ->
-                            let attributes =
-                                [ for attribute in System.Text.RegularExpressions.Regex.Matches(found.Groups.[1].Value, "\\s([A-Za-z0-9_:.]+)=\"([^\"]*)\"") ->
-                                    attribute.Groups.[1].Value + "=" + plumbingDecoded attribute.Groups.[2].Value ]
-                                |> List.sort
+                        sprintf "<sheet %s sheetId=\"%d\" %s:id=\"%s\"%s/>" (attr "name" s.Name) ids.[i] prefix relIds.[i] visible)
+                // (An element that says the same in the file stays as the file has it: the same entries, by
+                // their attributes and what they hold - in whatever order, the names of a file being sorted by
+                // Excel and the print names coming last here.)
+                let entries (child: string) (node: XmlDsl.XmlNode option) =
+                    match node with
+                    | Some node ->
+                        XmlPatch.elements node
+                        |> List.filter (fun entry -> XmlPatch.name entry = child)
+                        |> List.map (fun entry ->
+                            (XmlPatch.attributes entry |> Map.toList |> List.map (fun (name, value) -> name + "=" + value) |> List.sort),
                             // (A sheet name in a reference may be quoted or not.)
-                            attributes, (plumbingDecoded found.Groups.[2].Value).Replace("'", "") ]
-                    // (In whatever order: the names of a file are sorted by Excel, the print names come last here.)
-                    List.sort (entries was) = List.sort (entries made)
-                let sheetPattern = "<sheet(?=[\\s/>])([^>]*?)/?>()"
-                let text =
-                    let inOrder (xml: string) = [ for found in System.Text.RegularExpressions.Regex.Matches(xml, "\\sname=\"([^\"]*)\"") -> found.Groups.[1].Value ]
-                    if saysTheSame sheetPattern sheetsAt.Value ("<sheets>" + sheetsXml + "</sheets>") && inOrder sheetsAt.Value = inOrder sheetsXml then source
-                    else source.Substring(0, sheetsAt.Index) + "<sheets>" + sheetsXml + "</sheets>" + source.Substring(sheetsAt.Index + sheetsAt.Length)
-                let replaceTag (pattern: string) (change: string -> string) (text: string) =
-                    let found = System.Text.RegularExpressions.Regex.Match(text, pattern)
-                    if found.Success then text.Substring(0, found.Index) + change found.Value + text.Substring(found.Index + found.Length) else text
-                let insertAfter (marks: string list) (element: string) (text: string) =
-                    match marks |> List.tryPick (fun mark -> match text.IndexOf (mark, System.StringComparison.Ordinal) with -1 -> None | at -> Some (at + mark.Length)) with
-                    | Some at -> text.Substring(0, at) + element + text.Substring at
-                    | None -> text
+                            (XmlPatch.textOf entry).Replace("'", ""))
+                    | None -> []
+                let saysTheSame (child: string) (was: XmlDsl.XmlNode option) (made: string) =
+                    List.sort (entries child was) = List.sort (entries child (XmlPatch.read made |> Option.map (fun made -> made.Node)))
+                let madeSheets = "<sheets>" + String.concat "" sheetsXml + "</sheets>"
+                let sheets =
+                    let names (node: XmlDsl.XmlNode) = XmlPatch.elements node |> List.choose (fun entry -> XmlPatch.attribute entry "name")
+                    if saysTheSame "sheet" (Some sheetsNode) madeSheets
+                       && Some (names sheetsNode) = (XmlPatch.read madeSheets |> Option.map (fun made -> names made.Node)) then []
+                    else [ XmlPatch.EditChild ("sheets", [ XmlPatch.SetChildren ("sheet", sheetsXml) ], None) ]
                 // The sheet on display.
                 let active = string (max 0 workbook.ActiveSheetIndex)
-                let text =
-                    if System.Text.RegularExpressions.Regex.IsMatch(text, "<workbookView(?=[\\s>/])") then
-                        text |> replaceTag "<workbookView(?=[\\s>/])[^>]*>" (fun tag ->
-                            // (The view is the file's while it shows the same sheet.)
-                            if (tagAttribute tag "activeTab" |> Option.defaultValue "0") = active then tag
-                            else tag |> withTagAttribute "activeTab" (Some active) |> withTagAttribute "firstSheet" None)
-                    elif active = "0" then text
-                    else
-                        let at = text.IndexOf ("<sheets>", System.StringComparison.Ordinal)
-                        text.Substring(0, at) + "<bookViews><workbookView activeTab=\"" + active + "\"/></bookViews>" + text.Substring at
+                let views =
+                    match XmlPatch.descendants "workbookView" part.Node |> List.tryHead, childNamed "bookViews" part.Node with
+                    | Some view, Some _ ->
+                        // (The view is the file's while it shows the same sheet.)
+                        if (XmlPatch.attribute view "activeTab" |> Option.defaultValue "0") = active then []
+                        else XmlPatch.editsAt part.Node [ view, [ XmlPatch.SetAttribute ("activeTab", active); XmlPatch.RemoveAttribute "firstSheet" ] ]
+                    | _ when active = "0" -> []
+                    | _ -> [ XmlPatch.SetChild ("bookViews", "<bookViews><workbookView activeTab=\"" + active + "\"/></bookViews>") ]
                 // The defined names.
-                let namesPattern = "<definedNames(?=[\\s>])[^>]*>[\\s\\S]*?</definedNames>|<definedNames(?=[\\s>/])[^>]*/>"
-                let text =
-                    if System.Text.RegularExpressions.Regex.IsMatch(text, namesPattern) then
-                        replaceTag namesPattern (fun was -> if saysTheSame "<definedName(?=[\\s>])([^>]*)>([\\s\\S]*?)</definedName>" was definedNames then was else definedNames) text
-                    elif definedNames = "" then text
-                    else insertAfter [ "</externalReferences>"; "</functionGroups>"; "</sheets>" ] definedNames text
+                let names =
+                    match childNamed "definedNames" part.Node with
+                    | Some known ->
+                        if saysTheSame "definedName" (Some known) (if definedNames = "" then "<definedNames/>" else definedNames) then []
+                        elif definedNames = "" then [ XmlPatch.RemoveChild "definedNames" ]
+                        else [ XmlPatch.SetChild ("definedNames", definedNames) ]
+                    | None -> if definedNames = "" then [] else [ XmlPatch.SetChild ("definedNames", definedNames) ]
                 // Calculation: the file's settings, with what the workbook says of iteration and of formulas without a result.
-                let iterate (tag: string) =
-                    match kept.CalcIteration with
-                    | Some (count, delta) ->
-                        tag
-                        |> withTagAttribute "iterate" (Some "1")
-                        |> withTagAttribute "iterateCount" (if count <> 100 then Some (string count) else None)
-                        |> withTagAttribute "iterateDelta" (if delta <> 0.001 then Some (numberText delta) else None)
-                    | None -> tag |> withTagAttribute "iterate" None |> withTagAttribute "iterateCount" None |> withTagAttribute "iterateDelta" None
-                let calcPattern = "<calcPr(?=[\\s>/])[^>]*>"
-                let text =
-                    if System.Text.RegularExpressions.Regex.IsMatch(text, calcPattern) then
-                        text |> replaceTag calcPattern (fun tag -> iterate tag |> fun tag -> if hasUncachedFormula then withTagAttribute "fullCalcOnLoad" (Some "1") tag else tag)
-                    elif calcPr = "" then text
-                    else insertAfter [ "</definedNames>"; "</externalReferences>"; "</functionGroups>"; "</sheets>" ] calcPr text
-                Some (withoutDroppedCaches kept.DroppedWorkbookRelationships text))
+                let calculation =
+                    match childNamed "calcPr" part.Node with
+                    | Some _ ->
+                        let iterate =
+                            match kept.CalcIteration with
+                            | Some (count, delta) ->
+                                [ XmlPatch.SetAttribute ("iterate", "1")
+                                  attributeEdit "iterateCount" (if count <> 100 then Some (string count) else None)
+                                  attributeEdit "iterateDelta" (if delta <> 0.001 then Some (numberText delta) else None) ]
+                            | None -> [ XmlPatch.RemoveAttribute "iterate"; XmlPatch.RemoveAttribute "iterateCount"; XmlPatch.RemoveAttribute "iterateDelta" ]
+                        [ XmlPatch.EditChild ("calcPr", iterate @ (if hasUncachedFormula then [ XmlPatch.SetAttribute ("fullCalcOnLoad", "1") ] else []), None) ]
+                    | None -> if calcPr = "" then [] else [ XmlPatch.SetChild ("calcPr", calcPr) ]
+                let caches = XmlPatch.editsAt part.Node (droppedCacheTargets kept.DroppedWorkbookRelationships part.Node)
+                Some (XmlPatch.applyPart order part (sheets @ views @ names @ calculation @ caches))
+            | _ -> None)
     match fromFile with
     | Some text -> text
     | None ->
@@ -3995,8 +3683,8 @@ let private contentTypesXmlFull (workbook: XlsxWorkbookOut) (placements: SheetPl
                     workbook.Preserved.Overrides
                     |> List.tryPick (fun (name, contentType) -> if name.TrimStart('/').Equals(path, System.StringComparison.OrdinalIgnoreCase) then Some contentType else None)
                     |> Option.defaultValue (
-                        if relType.EndsWith "/chartsheet" then "application/vnd.openxmlformats-officedocument.spreadsheetml.chartsheet+xml"
-                        elif relType.EndsWith "/dialogsheet" then "application/vnd.openxmlformats-officedocument.spreadsheetml.dialogsheet+xml"
+                        if OpcXml.relationshipKind relType = "chartsheet" then "application/vnd.openxmlformats-officedocument.spreadsheetml.chartsheet+xml"
+                        elif OpcXml.relationshipKind relType = "dialogsheet" then "application/vnd.openxmlformats-officedocument.spreadsheetml.dialogsheet+xml"
                         else worksheetType)
                 | None -> worksheetType
             sprintf "<Override %s %s/>" (attr "PartName" ("/" + placement.SheetPath)) (attr "ContentType" contentType))
@@ -4060,7 +3748,7 @@ let private contentTypesXmlFull (workbook: XlsxWorkbookOut) (placements: SheetPl
     + "</Types>"
     |> contentTypesFromFile
         // (The default for VML drawings is for the boxes of comments and the kept drawings of that kind.)
-        (if noteBoxes || (keptParts |> List.exists (fun (path, _) -> path.EndsWith ".vml")) || (written |> List.exists (fun (sheet, _) -> sheet.Cells |> List.exists (fun c -> c.Comment.IsSome))) then [] else [ "vml" ])
+        (if noteBoxes || (keptParts |> List.exists (fun (path, _) -> PartPath.extension path = "vml")) || (written |> List.exists (fun (sheet, _) -> sheet.Cells |> List.exists (fun c -> c.Comment.IsSome))) then [] else [ "vml" ])
         (packageText workbook "[Content_Types].xml")
 
 /// The package relationships: the workbook, and the document properties kept from the opened file.
@@ -4075,8 +3763,6 @@ let private rootRelsXmlFull (workbook: XlsxWorkbookOut) =
         declaration Namespaces.relationshipsPackage mainId RelationshipTypes.officeDocument keptXml
     |> relationshipsFromFile "" false (packageText workbook "_rels/.rels")
 
-let private relationshipTargetPattern = System.Text.RegularExpressions.Regex("<Relationship\\b[^>]*>")
-
 /// The kept parts that something written still refers to: those the written
 /// relationships name, and what those parts' own relationships lead to. A
 /// part of a sheet that was removed (its pivot table, its printer settings,
@@ -4087,7 +3773,7 @@ let private reachableKeptParts (workbook: XlsxWorkbookOut) (themePath: string op
     let seen = System.Collections.Generic.HashSet<string>()
     let pending = System.Collections.Generic.Queue<string>()
     let want (target: string) (isExternal: bool) =
-        if not isExternal && not (target.StartsWith "#") then pending.Enqueue (ZipInterop.normalizePath target)
+        if not isExternal && not (OpcXml.isAnchorTarget target) then pending.Enqueue (ZipInterop.normalizePath target)
     for sheet in workbook.Sheets do
         match verbatimPart workbook sheet with
         | Some (path, _) -> want path false
@@ -4111,30 +3797,15 @@ let private reachableKeptParts (workbook: XlsxWorkbookOut) (themePath: string op
     for _, _, target, isExternal in workbook.Preserved.WorkbookRelationships @ Option.toList workbook.Preserved.CalcChain @ workbook.Preserved.RootRelationships do
         want target isExternal
     match themePath with Some path -> pending.Enqueue path | None -> ()
-    let directoryOf (path: string) = match path.LastIndexOf '/' with -1 -> "" | at -> path.Substring(0, at)
     while pending.Count > 0 do
         let path = pending.Dequeue()
         if parts.ContainsKey path && seen.Add path then
-            let directory = directoryOf path
-            let relsPath = (if directory = "" then "" else directory + "/") + "_rels/" + path.Substring(if directory = "" then 0 else directory.Length + 1) + ".rels"
+            let relsPath = PartPath.relationshipsOf path
             match parts.TryGetValue relsPath with
             | true, relsData ->
                 seen.Add relsPath |> ignore
-                let relsText = System.Text.Encoding.UTF8.GetString relsData
-                for m in relationshipTargetPattern.Matches relsText |> Seq.cast<System.Text.RegularExpressions.Match> do
-                    let tag = m.Value
-                    let attribute (name: string) =
-                        let key = " " + name + "=\""
-                        let at = tag.IndexOf key
-                        if at < 0 then None
-                        else
-                            let start = at + key.Length
-                            let close = tag.IndexOf ('"', start)
-                            if close < 0 then None else Some (tag.Substring(start, close - start))
-                    match attribute "Target" with
-                    | Some target when attribute "TargetMode" <> Some "External" ->
-                        pending.Enqueue (ZipInterop.resolveTarget directory (target.Replace("&amp;", "&")))
-                    | _ -> ()
+                for rel in OpcXml.relationshipsOrEmpty (System.Text.Encoding.UTF8.GetString relsData) do
+                    if not rel.External && rel.Target <> "" then pending.Enqueue (OpcXml.targetPath (PartPath.directory path) rel)
             | _ -> ()
     workbook.Preserved.Parts |> List.filter (fun (path, _) -> seen.Contains path)
 
@@ -4166,113 +3837,42 @@ let metadataWithDynamicArrays (existing: string) : string * int =
     let known = try XlsxReader.dynamicArrayCellMetadata existing with _ -> Set.empty
     if not known.IsEmpty then existing, Set.minElement known
     else
-        let countOf (text: string) (token: string) =
-            let mutable count = 0
-            let mutable at = text.IndexOf(token, System.StringComparison.Ordinal)
-            while at >= 0 do
-                count <- count + 1
-                at <- text.IndexOf(token, at + token.Length, System.StringComparison.Ordinal)
-            count
-        // An element that closes itself holds nothing: it is written again in full.
-        let withoutEmpty (name: string) (text: string) =
-            System.Text.RegularExpressions.Regex.Replace(text, "<" + name + "\\b[^>]*/>", "")
-        let withCount (openTag: string) (count: int) =
-            let pattern = System.Text.RegularExpressions.Regex("\\bcount=\"\\d*\"")
-            if pattern.IsMatch openTag then pattern.Replace(openTag, "count=\"" + string count + "\"")
-            else openTag.Substring(0, openTag.Length - 1) + " count=\"" + string count + "\">"
-        /// An element found by the start of its tag: (tag start, end of the start tag, start of the end tag).
-        let elementAt (text: string) (start: string) (name: string) =
-            let at = text.IndexOf(start, System.StringComparison.Ordinal)
-            if at < 0 then None
-            else
-                let tagEnd = text.IndexOf('>', at)
-                let close = if tagEnd < 0 then -1 else text.IndexOf("</" + name + ">", tagEnd, System.StringComparison.Ordinal)
-                if close < 0 then None else Some (at, tagEnd, close)
-        /// Adds `item` to the element as its last child, with the count of its `child`ren kept right.
-        let appended (text: string) (at: int, tagEnd: int, close: int) (child: string) (item: string) =
-            let had = countOf (text.Substring(tagEnd + 1, close - tagEnd - 1)) child
-            text.Substring(0, at) + withCount (text.Substring(at, tagEnd - at + 1)) (had + 1)
-            + text.Substring(tagEnd + 1, close - tagEnd - 1) + item + text.Substring close,
-            had
-        let text = existing |> withoutEmpty "metadataTypes" |> withoutEmpty "cellMetadata"
-        let rootAt = text.IndexOf("<metadata", System.StringComparison.Ordinal)
-        let rootEnd = if rootAt < 0 then -1 else text.IndexOf('>', rootAt)
-        let rootClose = text.LastIndexOf("</metadata>", System.StringComparison.Ordinal)
-        if rootEnd < 0 || rootClose < rootEnd then dynamicArrayMetadataXml, 1
-        else
+        match XmlPatch.readPart existing with
+        | Some part when XmlPatch.localName part.Node = "metadata" ->
+            let root = part.Node
+            // (An element that holds nothing is written again in full.)
+            let holding (name: string) = childNamed name root |> Option.filter (fun node -> not (isSelfClosed node))
+            let count (name: string) (node: XmlDsl.XmlNode) = XmlPatch.elements node |> List.filter (fun kid -> XmlPatch.localName kid = name) |> List.length
             // 1. The metadata type.
-            let text, typeIndex =
-                match elementAt text "<metadataTypes" "metadataTypes" with
-                | Some (at, tagEnd, close) ->
-                    let body = text.Substring(tagEnd + 1, close - tagEnd - 1)
-                    let named = body.IndexOf("name=\"XLDAPR\"", System.StringComparison.Ordinal)
-                    if named >= 0 then text, countOf (body.Substring(0, named)) "<metadataType "
-                    else
-                        let extended, had = appended text (at, tagEnd, close) "<metadataType " xldaprTypeXml
-                        extended, had + 1
-                | None ->
-                    text.Substring(0, rootEnd + 1) + "<metadataTypes count=\"1\">" + xldaprTypeXml + "</metadataTypes>" + text.Substring(rootEnd + 1), 1
-            // Where the elements that come after the future metadata begin:
-            // cellMetadata, valueMetadata, the part's own extLst.
-            let tailAt (text: string) (names: string list) =
-                let last =
-                    [ "</metadataTypes>"; "</metadataStrings>"; "</mdxMetadata>"; "</futureMetadata>"; "</cellMetadata>"; "</valueMetadata>" ]
-                    |> List.map (fun close -> text.LastIndexOf(close, System.StringComparison.Ordinal))
-                    |> List.max
-                let candidates =
-                    [ for name in names do
-                        let at = text.IndexOf("<" + name, System.StringComparison.Ordinal)
-                        if at >= 0 then yield at
-                      let ext = text.IndexOf("<extLst", max 0 last, System.StringComparison.Ordinal)
-                      if ext >= 0 then yield ext
-                      yield text.LastIndexOf("</metadata>", System.StringComparison.Ordinal) ]
-                List.min candidates
+            let typeEdits, typeIndex =
+                match holding "metadataTypes" with
+                | Some types ->
+                    let all = XmlPatch.elements types |> List.filter (fun kid -> XmlPatch.localName kid = "metadataType")
+                    match all |> List.tryFindIndex (fun kind -> XmlPatch.attribute kind "name" = Some "XLDAPR") with
+                    | Some index -> [], index + 1
+                    | None -> [ XmlPatch.EditChild ("metadataTypes", [ XmlPatch.SetAttribute ("count", string (all.Length + 1)); XmlPatch.Append xldaprTypeXml ], None) ], all.Length + 1
+                | None -> [ XmlPatch.SetChild ("metadataTypes", "<metadataTypes count=\"1\">" + xldaprTypeXml + "</metadataTypes>") ], 1
             // 2. The future metadata block that says "dynamic".
-            let text, blockIndex =
-                match elementAt text "<futureMetadata name=\"XLDAPR\"" "futureMetadata" with
-                | Some found -> appended text found "<bk>" (dynamicArrayBlockXml true)
-                | None ->
-                    let at = tailAt text [ "cellMetadata"; "valueMetadata" ]
-                    text.Substring(0, at) + "<futureMetadata name=\"XLDAPR\" count=\"1\">" + dynamicArrayBlockXml true + "</futureMetadata>" + text.Substring at, 0
+            let futureEdits, blockIndex =
+                match childrenNamed "futureMetadata" root |> List.tryFind (fun node -> XmlPatch.attribute node "name" = Some "XLDAPR" && not (isSelfClosed node)) with
+                | Some future ->
+                    let had = count "bk" future
+                    [ XmlPatch.EditChildWhere ("futureMetadata", "name", "XLDAPR", [ XmlPatch.SetAttribute ("count", string (had + 1)); XmlPatch.Append (dynamicArrayBlockXml true) ]) ], had
+                | None -> [ XmlPatch.AddChild ("futureMetadata", "<futureMetadata name=\"XLDAPR\" count=\"1\">" + dynamicArrayBlockXml true + "</futureMetadata>") ], 0
             // 3. The cell-metadata record that points at it.
             let record = sprintf "<bk><rc t=\"%d\" v=\"%d\"/></bk>" typeIndex blockIndex
-            match elementAt text "<cellMetadata" "cellMetadata" with
-            | Some found ->
-                let extended, had = appended text found "<bk>" record
-                extended, had + 1
-            | None ->
-                let at = tailAt text [ "valueMetadata" ]
-                text.Substring(0, at) + "<cellMetadata count=\"1\">" + record + "</cellMetadata>" + text.Substring at, 1
+            let cellEdits, cm =
+                match holding "cellMetadata" with
+                | Some cells ->
+                    let had = count "bk" cells
+                    [ XmlPatch.EditChild ("cellMetadata", [ XmlPatch.SetAttribute ("count", string (had + 1)); XmlPatch.Append record ], None) ], had + 1
+                | None -> [ XmlPatch.SetChild ("cellMetadata", "<cellMetadata count=\"1\">" + record + "</cellMetadata>") ], 1
+            XmlPatch.applyPart order part (typeEdits @ futureEdits @ cellEdits), cm
+        | _ -> dynamicArrayMetadataXml, 1
 
 // ---------------------------------------------------------------------------
 // Styles and shared strings extended in place (WorkbookPreservation.InPlace)
 // ---------------------------------------------------------------------------
-
-let private regexCount (pattern: string) (text: string) =
-    System.Text.RegularExpressions.Regex.Matches(text, pattern).Count
-
-/// The first element `name` of the text that has an end tag: where its start
-/// tag begins and ends and where its end tag begins.
-let private elementSpan (xml: string) (name: string) : (int * int * int) option =
-    let found = System.Text.RegularExpressions.Regex.Match(xml, "<" + name + "(?=[\\s>])[^>]*>")
-    if not found.Success then None
-    else
-        let close = xml.IndexOf ("</" + name + ">", found.Index + found.Length, System.StringComparison.Ordinal)
-        if close < 0 then None else Some (found.Index, found.Index + found.Length - 1, close)
-
-/// The element `name` with `items` added behind its children and its `count` set.
-let private withAppendedChildren (name: string) (childPattern: string) (items: string list) (xml: string) : string =
-    match (if items.IsEmpty then None else elementSpan xml name) with
-    | None -> xml
-    | Some (at, tagEnd, close) ->
-        let body = xml.Substring(tagEnd + 1, close - tagEnd - 1)
-        let total = regexCount childPattern body + items.Length
-        xml.Substring(0, at) + withTagAttribute "count" (Some (string total)) (xml.Substring(at, tagEnd - at + 1))
-        + body + String.concat "" items + xml.Substring close
-
-let private xmlAttributeDecoded (text: string) =
-    if text.IndexOf '&' < 0 then text
-    else text.Replace("&lt;", "<").Replace("&gt;", ">").Replace("&quot;", "\"").Replace("&apos;", "'").Replace("&amp;", "&")
 
 /// The file's styles part as a style book that only adds: a format the file
 /// has (the same font, fill, border, number format, alignment and named
@@ -4284,36 +3884,35 @@ let private xmlAttributeDecoded (text: string) =
 /// fonts, fills or borders; entries the reader did not count the same way).
 let private inPlaceStyles (workbook: XlsxWorkbookOut) (stylesXml: string) : (StyleBook * (unit -> string)) option =
     let kept = workbook.Preserved
-    let selfClosed (name: string) (text: string) =
-        System.Text.RegularExpressions.Regex.Replace(text, "<" + name + "((?:\\s[^>]*)?)/>", "<" + name + "$1></" + name + ">")
-    let xml = [ "numFmts"; "fonts"; "fills"; "borders"; "cellXfs"; "dxfs" ] |> List.fold (fun text name -> selfClosed name text) stylesXml
-    let bodyOf (name: string) = elementSpan xml name |> Option.map (fun (_, tagEnd, close) -> xml.Substring(tagEnd + 1, close - tagEnd - 1))
-    let fontPattern, fillPattern, borderPattern, xfPattern, dxfPattern, numFmtPattern =
-        "<font[\\s>/]", "<fill[\\s>/]", "<border[\\s>/]", "<xf[\\s>/]", "<dxf[\\s>/]", "<numFmt[\\s>/]"
-    match bodyOf "fonts", bodyOf "fills", bodyOf "borders", bodyOf "cellXfs", elementSpan xml "styleSheet" with
-    | Some fontsBody, Some fillsBody, Some bordersBody, Some xfsBody, Some _ ->
-        let fontCount, fillCount, borderCount, xfCount = regexCount fontPattern fontsBody, regexCount fillPattern fillsBody, regexCount borderPattern bordersBody, regexCount xfPattern xfsBody
-        let dxfCount = bodyOf "dxfs" |> Option.map (regexCount dxfPattern) |> Option.defaultValue 0
+    match XmlPatch.readPart stylesXml |> Option.filter (fun part -> XmlPatch.localName part.Node = "styleSheet") with
+    | None -> None
+    | Some part ->
+    // A list of the style sheet (it may close itself), and its items.
+    let list (name: string) = XmlPatch.elements part.Node |> List.tryFind (fun node -> XmlPatch.localName node = name)
+    let itemsOf (name: string) (item: string) =
+        list name |> Option.map (fun node -> XmlPatch.elements node |> List.filter (fun kid -> XmlPatch.localName kid = item))
+    match itemsOf "fonts" "font", itemsOf "fills" "fill", itemsOf "borders" "border", itemsOf "cellXfs" "xf" with
+    | Some fonts, Some fills, Some borders, Some sourceXfs ->
+        let fontCount, fillCount, borderCount, xfCount = fonts.Length, fills.Length, borders.Length, sourceXfs.Length
+        let dxfCount = itemsOf "dxfs" "dxf" |> Option.map List.length |> Option.defaultValue 0
         if xfCount = 0 || xfCount <> kept.CellFormats.Length || dxfCount <> kept.DxfCount || workbook.Dxfs.Length < dxfCount || fontCount = 0 || fillCount < 2 || borderCount = 0 then None
         else
             // The xfId of each named style, as the reader numbers them.
-            let styleXfCount = bodyOf "cellStyleXfs" |> Option.map (regexCount xfPattern) |> Option.defaultValue 0
+            let styleXfCount = itemsOf "cellStyleXfs" "xf" |> Option.map List.length |> Option.defaultValue 0
             let namedXfIds =
-                bodyOf "cellStyles" |> Option.defaultValue ""
-                |> fun body -> System.Text.RegularExpressions.Regex.Matches(body, "<cellStyle(?=[\\s>/])[^>]*>") |> Seq.cast<System.Text.RegularExpressions.Match>
-                |> Seq.choose (fun found ->
-                    match tagAttribute found.Value "name", tagAttribute found.Value "xfId" |> Option.map System.Int32.TryParse with
+                itemsOf "cellStyles" "cellStyle" |> Option.defaultValue []
+                |> List.choose (fun style ->
+                    match XmlPatch.attribute style "name", XmlPatch.attribute style "xfId" |> Option.map System.Int32.TryParse with
                     | Some _, Some (true, xfId) when xfId >= 0 && xfId < styleXfCount -> Some xfId
                     | _ -> None)
-                |> Seq.distinct |> Seq.sort |> Seq.toArray
+                |> List.distinct |> List.sort |> List.toArray
             // The custom number formats of the file.
             let numFmtIds = System.Collections.Generic.Dictionary<string, int>()
             let mutable nextNumFmt = 164
-            for found in System.Text.RegularExpressions.Regex.Matches(bodyOf "numFmts" |> Option.defaultValue "", "<numFmt(?=[\\s>/])[^>]*>") |> Seq.cast<System.Text.RegularExpressions.Match> do
-                match tagAttribute found.Value "numFmtId" |> Option.map System.Int32.TryParse, tagAttribute found.Value "formatCode" with
+            for numFmt in itemsOf "numFmts" "numFmt" |> Option.defaultValue [] do
+                match XmlPatch.attribute numFmt "numFmtId" |> Option.map System.Int32.TryParse, XmlPatch.attribute numFmt "formatCode" with
                 | Some (true, id), Some code ->
                     nextNumFmt <- max nextNumFmt (id + 1)
-                    let code = xmlAttributeDecoded code
                     if not (numFmtIds.ContainsKey code) then numFmtIds.[code] <- id
                 | _ -> ()
             // The file's formats by what the writer knows of a format.
@@ -4395,63 +3994,54 @@ let private inPlaceStyles (workbook: XlsxWorkbookOut) (stylesXml: string) : (Sty
             // not what the reader saw in that entry. Everything else of the
             // entry stays: its named style, protection, quote prefix, pivot
             // button, attributes and extensions this writer knows nothing of.
-            let sourceXfs =
-                System.Text.RegularExpressions.Regex.Matches(xfsBody, "<xf(?=[\\s>/])(?:[^>]*/>|[^>]*>[\\s\\S]*?</xf>)")
-                |> Seq.cast<System.Text.RegularExpressions.Match> |> Seq.map (fun found -> found.Value) |> Seq.toArray
+            let sourceXfs = List.toArray sourceXfs
             let derived = System.Collections.Generic.Dictionary<struct (int * XfKey), int>(HashIdentity.Structural)
             let derivedIndex (basedOn: int) (key: XfKey) : int option =
-                if sourceXfs.Length <> xfCount || basedOn < 0 || basedOn >= xfCount then None
+                if basedOn < 0 || basedOn >= xfCount then None
                 else
                     match derived.TryGetValue (struct (basedOn, key)) with
                     | true, index -> Some index
                     | false, _ ->
                         let was = columnStyleKey kept.CellFormats.[basedOn]
                         let source = sourceXfs.[basedOn]
-                        let tagEnd = source.IndexOf '>'
-                        let startTag = source.Substring(0, tagEnd + 1)
-                        let selfClosed = startTag.EndsWith "/>"
-                        let inner = if selfClosed then "" else source.Substring(tagEnd + 1, source.Length - tagEnd - 1 - 5)
-                        let openTag = if selfClosed then startTag.Substring(0, startTag.Length - 2).TrimEnd() + ">" else startTag
-                        let openTag =
-                            if key.NumFmt = was.NumFmt then openTag
-                            else openTag |> withTagAttribute "numFmtId" (Some (string (numFmtIdOf key))) |> withTagAttribute "applyNumberFormat" (Some "1")
-                        let openTag =
-                            if key.Font = was.Font then openTag
-                            else openTag |> withTagAttribute "fontId" (Some (string (fontIdOf key))) |> withTagAttribute "applyFont" (Some "1")
-                        let openTag =
-                            if key.Fill = was.Fill then openTag
-                            else openTag |> withTagAttribute "fillId" (Some (string (fillIdOf key))) |> withTagAttribute "applyFill" (Some "1")
-                        let openTag =
-                            if key.Border = was.Border then openTag
-                            else openTag |> withTagAttribute "borderId" (Some (string (borderIdOf key))) |> withTagAttribute "applyBorder" (Some "1")
+                        let ids =
+                            [ if key.NumFmt <> was.NumFmt then yield! [ XmlPatch.SetAttribute ("numFmtId", string (numFmtIdOf key)); XmlPatch.SetAttribute ("applyNumberFormat", "1") ]
+                              if key.Font <> was.Font then yield! [ XmlPatch.SetAttribute ("fontId", string (fontIdOf key)); XmlPatch.SetAttribute ("applyFont", "1") ]
+                              if key.Fill <> was.Fill then yield! [ XmlPatch.SetAttribute ("fillId", string (fillIdOf key)); XmlPatch.SetAttribute ("applyFill", "1") ]
+                              if key.Border <> was.Border then yield! [ XmlPatch.SetAttribute ("borderId", string (borderIdOf key)); XmlPatch.SetAttribute ("applyBorder", "1") ] ]
                         let sameAlignment =
                             key.HorizontalAlign = was.HorizontalAlign && key.VerticalAlign = was.VerticalAlign && key.WrapText = was.WrapText
                             && key.Indent = was.Indent && key.ShrinkToFit = was.ShrinkToFit && key.TextRotation = was.TextRotation
-                        let openTag, inner =
-                            if sameAlignment then openTag, inner
+                        let alignment =
+                            if sameAlignment then []
                             else
-                                let found = System.Text.RegularExpressions.Regex.Match(inner, "<alignment(?=[\\s>/])(?:[^>]*/>|[^>]*>[\\s\\S]*?</alignment>)")
-                                let tag = if found.Success then (let cut = found.Value.IndexOf '>' in found.Value.Substring(0, cut + 1)) else "<alignment/>"
-                                let tag = if tag.EndsWith "/>" then tag else tag.Substring(0, tag.Length - 1).TrimEnd() + "/>"
-                                let tag =
-                                    tag
-                                    |> withTagAttribute "horizontal" (key.HorizontalAlign |> Option.map escaped)
-                                    |> withTagAttribute "vertical" (key.VerticalAlign |> Option.map escaped)
-                                    |> withTagAttribute "wrapText" (if key.WrapText then Some "1" else None)
-                                    |> withTagAttribute "indent" (if key.Indent > 0 then Some (string key.Indent) else None)
-                                    |> withTagAttribute "shrinkToFit" (if key.ShrinkToFit then Some "1" else None)
-                                    |> withTagAttribute "textRotation" (if key.TextRotation <> 0 then Some (string key.TextRotation) else None)
-                                let empty = tag = "<alignment/>"
-                                let inner =
-                                    if found.Success then inner.Substring(0, found.Index) + (if empty then "" else tag) + inner.Substring(found.Index + found.Length)
-                                    elif empty then inner
-                                    else tag + inner          // (the first child of an xf)
-                                withTagAttribute "applyAlignment" (Some "1") openTag, inner
-                        let xml =
-                            if inner.Trim() = "" then openTag.Substring(0, openTag.Length - 1) + "/>"
-                            else openTag + inner + "</xf>"
+                                let known = XmlPatch.child "alignment" source
+                                let edits =
+                                    [ attributeEdit "horizontal" key.HorizontalAlign
+                                      attributeEdit "vertical" key.VerticalAlign
+                                      attributeEdit "wrapText" (if key.WrapText then Some "1" else None)
+                                      attributeEdit "indent" (if key.Indent > 0 then Some (string key.Indent) else None)
+                                      attributeEdit "shrinkToFit" (if key.ShrinkToFit then Some "1" else None)
+                                      attributeEdit "textRotation" (if key.TextRotation <> 0 then Some (string key.TextRotation) else None) ]
+                                let after =
+                                    edits |> List.fold (fun (now: Map<string, string>) edit ->
+                                        match edit with
+                                        | XmlPatch.SetAttribute (name, value) -> Map.add name value now
+                                        | XmlPatch.RemoveAttribute name -> Map.remove name now
+                                        | _ -> now) (known |> Option.map XmlPatch.attributes |> Option.defaultValue Map.empty)
+                                let made =
+                                    "<alignment"
+                                    + (edits |> List.choose (function XmlPatch.SetAttribute (name, value) -> Some (" " + attr name value) | _ -> None) |> String.concat "")
+                                    + "/>"
+                                XmlPatch.SetAttribute ("applyAlignment", "1")
+                                :: (match known with
+                                    | Some _ when after.IsEmpty -> [ XmlPatch.RemoveChild "alignment" ]
+                                    | Some node -> [ XmlPatch.EditChild (XmlPatch.name node, edits, None) ]
+                                    | None when after.IsEmpty -> []
+                                    // (The first child of an xf.)
+                                    | None -> [ XmlPatch.SetChild ("alignment", made) ])
                         let index = xfCount + newXfs.Count
-                        newXfs.Add xml
+                        newXfs.Add (XmlPatch.apply order (XmlPatch.at part source) (ids @ alignment))
                         derived.[struct (basedOn, key)] <- index
                         Some index
             let byIdentity = System.Collections.Generic.Dictionary<XlsxCellFormat, int>(HashIdentity.Reference)
@@ -4471,31 +4061,23 @@ let private inPlaceStyles (workbook: XlsxWorkbookOut) (stylesXml: string) : (Sty
                         index
             let finish () =
                 let newDxfs = workbook.Dxfs |> List.skip dxfCount |> List.map (dxfXml "dxf")
-                let insertedAfter (marks: string list) (element: string) (text: string) =
-                    let at = marks |> List.tryPick (fun mark -> match text.IndexOf (mark, System.StringComparison.Ordinal) with -1 -> None | found -> Some (found + mark.Length))
-                    match at with
-                    | Some at -> text.Substring(0, at) + element + text.Substring at
-                    | None -> text
                 // (The part is the file's text; a list written `<dxfs count="0"/>` is opened only to add to it.)
-                let appendTo (name: string) (pattern: string) (items: string list) (text: string) =
-                    if items.IsEmpty then text else withAppendedChildren name pattern items (selfClosed name text)
-                let text =
-                    if newNumFmts.Count = 0 then stylesXml
-                    elif (elementSpan xml "numFmts").IsSome then appendTo "numFmts" numFmtPattern (List.ofSeq newNumFmts) stylesXml
+                let appendTo (name: string) (item: string) (items: string list) =
+                    if items.IsEmpty then []
                     else
-                        // (The first child of the style sheet.)
-                        match elementSpan stylesXml "styleSheet" with
-                        | Some (_, tagEnd, _) -> stylesXml.Substring(0, tagEnd + 1) + sprintf "<numFmts count=\"%d\">%s</numFmts>" newNumFmts.Count (String.concat "" newNumFmts) + stylesXml.Substring(tagEnd + 1)
-                        | None -> stylesXml
-                let text =
-                    text
-                    |> appendTo "fonts" fontPattern (List.ofSeq newFonts)
-                    |> appendTo "fills" fillPattern (List.ofSeq newFills)
-                    |> appendTo "borders" borderPattern (List.ofSeq newBorders)
-                    |> appendTo "cellXfs" xfPattern (List.ofSeq newXfs)
-                if newDxfs.IsEmpty then text
-                elif (elementSpan xml "dxfs").IsSome then appendTo "dxfs" dxfPattern newDxfs text
-                else insertedAfter [ "</cellStyles>"; "</cellXfs>" ] (sprintf "<dxfs count=\"%d\">%s</dxfs>" newDxfs.Length (String.concat "" newDxfs)) text
+                        match list name with
+                        | Some node ->
+                            let had = itemsOf name item |> Option.map List.length |> Option.defaultValue 0
+                            [ XmlPatch.EditChild (XmlPatch.name node, [ XmlPatch.SetAttribute ("count", string (had + items.Length)); XmlPatch.Append (String.concat "" items) ], None) ]
+                        | None -> [ XmlPatch.SetChild (name, sprintf "<%s count=\"%d\">%s</%s>" name items.Length (String.concat "" items) name) ]
+                let edits =
+                    appendTo "numFmts" "numFmt" (List.ofSeq newNumFmts)
+                    @ appendTo "fonts" "font" (List.ofSeq newFonts)
+                    @ appendTo "fills" "fill" (List.ofSeq newFills)
+                    @ appendTo "borders" "border" (List.ofSeq newBorders)
+                    @ appendTo "cellXfs" "xf" (List.ofSeq newXfs)
+                    @ appendTo "dxfs" "dxf" newDxfs
+                if edits.IsEmpty then stylesXml else XmlPatch.applyPart order part edits
             Some ({ NamedStyles = kept.NamedStyles; Dxfs = workbook.Dxfs; Fonts = []; Fills = []; Borders = []; Xfs = []; NumFmtIds = Map.empty; StyleIndex = Map.empty
                     KeyIndex = (fun key -> Some (indexOfKey key)); StyleIdOf = styleIdOf },
                   finish)
@@ -4507,13 +4089,11 @@ let private inPlaceStyles (workbook: XlsxWorkbookOut) (stylesXml: string) : (Sty
 /// does not have the entries the reader counted.
 let private inPlaceSharedStrings (workbook: XlsxWorkbookOut) (sharedStringsXml: string) : ((string -> XlsxRichRun list -> int) * (unit -> string)) option =
     let texts, runs = workbook.Preserved.SharedStrings
-    let xml =
+    let source =
         if sharedStringsXml.Trim() = "" then declaration + "\n<sst xmlns=\"" + Namespaces.spreadsheet + "\" count=\"0\" uniqueCount=\"0\"></sst>"
-        else System.Text.RegularExpressions.Regex.Replace(sharedStringsXml, "<sst((?:\\s[^>]*)?)/>", "<sst$1></sst>")
-    let root = System.Text.RegularExpressions.Regex.Match(xml, "<sst(?=[\\s>])[^>]*>")
-    let close = xml.LastIndexOf ("</sst>", System.StringComparison.Ordinal)
-    if not root.Success || close < root.Index || regexCount "<si[\\s>/]" xml <> texts.Length then None
-    else
+        else sharedStringsXml
+    match XmlPatch.readPartExcept (fun name -> name = "si") source with
+    | Some root when XmlPatch.localName root.Node = "sst" && (XmlPatch.elements root.Node |> List.filter (fun node -> XmlPatch.localName node = "si") |> List.length) = texts.Length ->
         let plain = System.Collections.Generic.Dictionary<string, int>()
         let rich = System.Collections.Generic.Dictionary<SharedStringKey, int>(HashIdentity.Structural)
         for index in 0 .. texts.Length - 1 do
@@ -4545,70 +4125,70 @@ let private inPlaceSharedStrings (workbook: XlsxWorkbookOut) (sharedStringsXml: 
                     rich.[key] <- index
                     index
         let finish () =
-            if count = texts.Length then xml
+            if count = texts.Length then source
             else
-                let was = match tagAttribute root.Value "count" |> Option.map System.Int32.TryParse with Some (true, n) -> n | _ -> texts.Length
-                let rootTag = root.Value |> withTagAttribute "uniqueCount" (Some (string count)) |> withTagAttribute "count" (Some (string (was + count - texts.Length)))
-                xml.Substring(0, root.Index) + rootTag + xml.Substring(root.Index + root.Length, close - root.Index - root.Length) + added.ToString() + xml.Substring close
+                let was = match XmlPatch.attribute root.Node "count" |> Option.map System.Int32.TryParse with Some (true, n) -> n | _ -> texts.Length
+                XmlPatch.applyPart order root
+                    [ XmlPatch.SetAttribute ("uniqueCount", string count)
+                      XmlPatch.SetAttribute ("count", string (was + count - texts.Length))
+                      XmlPatch.AddChild ("si", added.ToString()) ]
         Some (indexOf, finish)
-
-let private drawingAnchorPattern = System.Text.RegularExpressions.Regex("<([A-Za-z0-9]+):(twoCellAnchor|oneCellAnchor|absoluteAnchor)(?=[\\s>])")
+    | _ -> None
 
 /// A drawing part of the file with its anchors where they are now
 /// (`SheetExtras.DrawingAnchors`): the `<from>` / `<to>` of an anchor that
-/// moved are rewritten - a marker that only changed its row or column keeps
+/// moved are changed - a marker that only changed its row or column keeps
 /// the offsets the file wrote -, everything else is the part's text. None
 /// when the part's anchors are not the ones given (another count, another
 /// kind, an anchor inside `mc:AlternateContent`).
 let private movedDrawingXml (xml: string) (anchors: XlsxReader.SheetAnchor list) : string option =
-    let starts = drawingAnchorPattern.Matches xml |> Seq.cast<System.Text.RegularExpressions.Match> |> Seq.toList
-    if starts.Length <> anchors.Length then None
-    else
-        let out = StringBuilder()
-        let mutable at = 0
-        let mutable sound = true
-        let mutable first = true
-        for start, anchor in List.zip starts (anchors |> List.sortBy (fun anchor -> anchor.Order)) do
-            let prefix = start.Groups.[1].Value
-            let kind = start.Groups.[2].Value
-            let closing = sprintf "</%s:%s>" prefix kind
-            let close = xml.IndexOf (closing, start.Index, System.StringComparison.Ordinal)
-            let expected = (match anchor.Kind with "twoCell" -> "twoCellAnchor" | "oneCell" -> "oneCellAnchor" | _ -> "absoluteAnchor")
-            // (Every anchor is a child of the drawing: nothing but white space between two of them.)
-            if close < 0 || start.Index < at || kind <> expected || (not first && xml.Substring(at, start.Index - at).Trim() <> "") then sound <- false
-            elif sound then
-                first <- false
-                let mutable element = xml.Substring(start.Index, close + closing.Length - start.Index)
-                let marker (name: string) (col: int) (colOffset: float) (row: int) (rowOffset: float) =
-                    let opening = sprintf "<%s:%s>" prefix name
-                    let ending = sprintf "</%s:%s>" prefix name
-                    let from = element.IndexOf (opening, System.StringComparison.Ordinal)
-                    let until = if from < 0 then -1 else element.IndexOf (ending, from, System.StringComparison.Ordinal)
-                    if from < 0 || until < 0 then sound <- false
+    match XmlPatch.readPart xml with
+    | None -> None
+    | Some part ->
+        let isAnchor (node: XmlDsl.XmlNode) = List.contains (XmlPatch.localName node) [ "twoCellAnchor"; "oneCellAnchor"; "absoluteAnchor" ]
+        let all = XmlPatch.descendantsWhere isAnchor part.Node
+        let kids = XmlPatch.elements part.Node
+        let placed = kids |> List.indexed |> List.filter (fun (_, kid) -> isAnchor kid)
+        // (Every anchor is a child of the drawing, one after another.)
+        let sound =
+            all.Length = anchors.Length && placed.Length = all.Length
+            && (placed.IsEmpty || fst (List.last placed) - fst placed.Head + 1 = placed.Length)
+        if not sound then None
+        else
+            let mutable sound = true
+            let targets =
+                [ for node, anchor in List.zip all (anchors |> List.sortBy (fun anchor -> anchor.Order)) do
+                    let expected = (match anchor.Kind with "twoCell" -> "twoCellAnchor" | "oneCell" -> "oneCellAnchor" | _ -> "absoluteAnchor")
+                    if XmlPatch.localName node <> expected then sound <- false
                     else
-                        let body = element.Substring(from + opening.Length, until - from - opening.Length)
-                        let part (tag: string) =
-                            let found = System.Text.RegularExpressions.Regex.Match(body, sprintf "<%s:%s>\\s*(-?[0-9]+)\\s*</%s:%s>" prefix tag prefix tag)
-                            if found.Success then Some (float found.Groups.[1].Value) else None
-                        match part "col", part "colOff", part "row", part "rowOff" with
-                        | Some fileCol, Some fileColOff, Some fileRow, Some fileRowOff ->
-                            // (Offsets are held in pixels: within a pixel of the file's, the file's stands.)
-                            let colOff = if abs (colOffset - fileColOff) < 9525.0 then fileColOff else colOffset
-                            let rowOff = if abs (rowOffset - fileRowOff) < 9525.0 then fileRowOff else rowOffset
-                            if int fileCol <> col || int fileRow <> row || colOff <> fileColOff || rowOff <> fileRowOff then
-                                let made =
-                                    sprintf "<%s:col>%d</%s:col><%s:colOff>%s</%s:colOff><%s:row>%d</%s:row><%s:rowOff>%s</%s:rowOff>"
-                                        prefix col prefix prefix (emu colOff) prefix prefix row prefix prefix (emu rowOff) prefix
-                                element <- element.Substring(0, from + opening.Length) + made + element.Substring until
-                        | _ -> sound <- false
-                if anchor.Kind <> "absolute" then
-                    marker "from" anchor.FromCol anchor.FromColOffset anchor.FromRow anchor.FromRowOffset
-                    match anchor.ToCol, anchor.ToRow with
-                    | Some toCol, Some toRow when sound -> marker "to" toCol anchor.ToColOffset toRow anchor.ToRowOffset
-                    | _ -> ()
-                out.Append(xml.Substring(at, start.Index - at)).Append(element) |> ignore
-                at <- close + closing.Length
-        if not sound then None else Some (out.Append(xml.Substring at).ToString())
+                        // A marker: its cell and offsets set where they moved.
+                        let marker (name: string) (col: int) (colOffset: float) (row: int) (rowOffset: float) =
+                            match XmlPatch.child name node with
+                            | None -> sound <- false; []
+                            | Some markerNode ->
+                                let part (tag: string) =
+                                    XmlPatch.child tag markerNode
+                                    |> Option.bind (fun value -> match System.Int64.TryParse ((XmlPatch.textOf value).Trim()) with | true, number -> Some (float number) | _ -> None)
+                                match part "col", part "colOff", part "row", part "rowOff" with
+                                | Some fileCol, Some fileColOff, Some fileRow, Some fileRowOff ->
+                                    // (Offsets are held in pixels: within a pixel of the file's, the file's stands.)
+                                    let colOff = if abs (colOffset - fileColOff) < 9525.0 then fileColOff else colOffset
+                                    let rowOff = if abs (rowOffset - fileRowOff) < 9525.0 then fileRowOff else rowOffset
+                                    if int fileCol <> col || int fileRow <> row || colOff <> fileColOff || rowOff <> fileRowOff then
+                                        let set (tag: string) (value: string) =
+                                            let child = (XmlPatch.child tag markerNode).Value
+                                            XmlPatch.EditChild (XmlPatch.name child, [ XmlPatch.SetText value ], None)
+                                        [ markerNode, [ set "col" (string col); set "colOff" (emu colOff); set "row" (string row); set "rowOff" (emu rowOff) ] ]
+                                    else []
+                                | _ -> sound <- false; []
+                        if anchor.Kind <> "absolute" then
+                            yield! marker "from" anchor.FromCol anchor.FromColOffset anchor.FromRow anchor.FromRowOffset
+                            match anchor.ToCol, anchor.ToRow with
+                            | Some toCol, Some toRow -> yield! marker "to" toCol anchor.ToColOffset toRow anchor.ToRowOffset
+                            | _ -> () ]
+            if not sound then None
+            elif targets.IsEmpty then Some xml
+            else Some (XmlPatch.applyPart (fun _ -> []) part (XmlPatch.editsAt part.Node targets))
 
 /// The `<hyperlinks>` of a sheet whose part stays the file's, for the links the sheet has
 /// now: a link that is what the file says of it - its cells, where it leads, its tip and
@@ -4619,50 +4199,55 @@ let private movedDrawingXml (xml: string) (anchors: XlsxReader.SheetAnchor list)
 /// prefix on a new element when the worksheet does not. Gives the element ("" for no
 /// link), the relationships to add (id, target) and the entries of the file to take out
 /// (the relationships of links that are gone).
-let private hyperlinksInPlace (fileLinks: string) (entries: (string * string * string * bool * string) list) (links: XlsxHyperlink list)
+let private hyperlinksInPlace (fileLinks: XmlPatch.SourceElement option) (entries: (string * string * string * bool) list) (links: XlsxHyperlink list)
                               (freeId: unit -> string) (namespaceText: string) : string * (string * string) list * string list =
-    let linkRels = entries |> List.filter (fun (_, relType, _, isExternal, _) -> isExternal && relType.EndsWith "/hyperlink")
+    let linkRels = entries |> List.filter (fun (_, relType, _, isExternal) -> isExternal && OpcXml.relationshipKind relType = "hyperlink")
     let known =
-        [ for found in hyperlinkElementPattern.Matches fileLinks ->
-            let text = found.Value
-            let tag = text.Substring(0, text.IndexOf '>' + 1)
-            let value (name: string) = tagAttribute tag name |> Option.map plumbingDecoded
-            let id = value "r:id"
-            let url = id |> Option.bind (fun id -> linkRels |> List.tryPick (fun (known, _, target, _, _) -> if known = id then Some target else None))
-            // (As the reader takes it.)
-            let target, isInternal =
-                match url, value "location" with
-                | Some url, Some place when place <> "" -> url + "#" + place, false
-                | Some url, _ -> url, false
-                | None, Some place -> place, true
-                | None, None -> defaultArg id "", false
-            text, id, ({ Range = defaultArg (value "ref") ""; Target = target; IsInternal = isInternal; Tooltip = value "tooltip"; Display = value "display" } : XlsxHyperlink) ]
+        match fileLinks with
+        | Some fileLinks ->
+            XmlPatch.elements fileLinks.Node
+            |> List.filter (fun node -> XmlPatch.name node = "hyperlink")
+            |> List.map (fun node ->
+                let value (name: string) = XmlPatch.attribute node name
+                let id = value "r:id"
+                let url = id |> Option.bind (fun id -> linkRels |> List.tryPick (fun (known, _, target, _) -> if known = id then Some target else None))
+                // (As the reader takes it.)
+                let target, isInternal =
+                    match url, value "location" with
+                    | Some url, Some place when place <> "" -> url + "#" + place, false
+                    | Some url, _ -> url, false
+                    | None, Some place -> place, true
+                    | None, None -> defaultArg id "", false
+                XmlPatch.bytesOf fileLinks.Text node, id,
+                ({ Range = defaultArg (value "ref") ""; Target = target; IsInternal = isInternal; Tooltip = value "tooltip"; Display = value "display" } : XlsxHyperlink))
+        | None -> []
     let taken = System.Collections.Generic.HashSet<int>()
     let keptIds = System.Collections.Generic.HashSet<string>()
     let added = ResizeArray<string * string>()
-    let body = StringBuilder()
+    let body = ResizeArray<string>()
     for link in links do
         let same = known |> List.indexed |> List.tryFind (fun (at, (_, _, fileLink)) -> not (taken.Contains at) && fileLink = link)
         match same with
         | Some (at, (text, id, _)) ->
             taken.Add at |> ignore
             (match id with Some id -> keptIds.Add id |> ignore | None -> ())
-            body.Append(text) |> ignore
+            body.Add text
         | None ->
             let extra =
                 (match link.Tooltip with Some tip -> " " + attr "tooltip" tip | None -> "")
                 + (match link.Display with Some text -> " " + attr "display" text | None -> "")
-            if link.IsInternal then body.Append(sprintf "<hyperlink %s %s%s/>" (attr "ref" link.Range) (attr "location" link.Target) extra) |> ignore
+            if link.IsInternal then body.Add (sprintf "<hyperlink %s %s%s/>" (attr "ref" link.Range) (attr "location" link.Target) extra)
             else
                 let id = freeId ()
                 added.Add ((id, link.Target))
-                body.Append(sprintf "<hyperlink%s %s r:id=\"%s\"%s/>" namespaceText (attr "ref" link.Range) id extra) |> ignore
-    let gone = linkRels |> List.choose (fun (id, _, _, _, tag) -> if keptIds.Contains id then None else Some tag)
+                body.Add (sprintf "<hyperlink%s %s r:id=\"%s\"%s/>" namespaceText (attr "ref" link.Range) id extra)
+    let gone = linkRels |> List.choose (fun (id, _, _, _) -> if keptIds.Contains id then None else Some id)
     let element =
-        if body.Length = 0 then ""
+        if body.Count = 0 then ""
         else
-            let start = if fileLinks.StartsWith "<hyperlinks" && not (fileLinks.StartsWith "<hyperlinks/") then fileLinks.Substring(0, fileLinks.IndexOf '>' + 1) else "<hyperlinks>"
-            start + body.ToString() + "</hyperlinks>"
+            match fileLinks with
+            | Some fileLinks -> XmlPatch.apply order fileLinks [ XmlPatch.SetChildren ("hyperlink", List.ofSeq body) ]
+            | None -> "<hyperlinks>" + String.concat "" body + "</hyperlinks>"
     element, List.ofSeq added, gone
 
 /// The notes of a sheet whose part goes back as the file's (see
@@ -4681,9 +4266,6 @@ type private NotesInPlace = {
     Gone: string list
 }
 
-let private legacyDrawingTag = System.Text.RegularExpressions.Regex("<legacyDrawing[\\s/>]")
-let private legacyDrawingIdPattern = System.Text.RegularExpressions.Regex("<legacyDrawing\\s[^>]*?r:id=\"([^\"]*)\"")
-let private relationshipIdPattern = System.Text.RegularExpressions.Regex("\\sId=\"([^\"]*)\"")
 
 let private workbookFiles (workbook: XlsxWorkbookOut) =
     // Styles and shared strings: the file's, added to (so that a sheet written
@@ -4709,7 +4291,7 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
                     workbook.Sheets
                     |> List.map (fun sheet ->
                         match sheet.Extras.Verbatim, sheet.Extras.SourcePart with
-                        | true, Some (_, relType) when relType.EndsWith "/worksheet" -> { sheet with Extras = { sheet.Extras with Verbatim = false } }
+                        | true, Some (_, relType) when OpcXml.relationshipKind relType = "worksheet" -> { sheet with Extras = { sheet.Extras with Verbatim = false } }
                         | _ -> sheet) }
     // A sheet that is the file's but for some cells: how its part is patched,
     // or - when it cannot be - the sheet is written from its cells.
@@ -4741,7 +4323,10 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
     // done here (no note left, a comments part without a list, a part that names a drawing
     // the reader did not keep): the part is then written from the sheet, its rows the file's.
     let notePlans = System.Collections.Generic.Dictionary<int, NotesInPlace>()
-    let notesInPlace (number: int) (sheet: XlsxSheetOut) (source: string) : NotesInPlace option =
+    let notesInPlace (number: int) (sheet: XlsxSheetOut) (source: XmlPatch.SourceElement) : NotesInPlace option =
+        // (The `<legacyDrawing>` of the sheet's part, and those that name a drawing.)
+        let legacyDrawings = childrenNamed "legacyDrawing" source.Node
+        let legacyIds = legacyDrawings |> List.choose (fun node -> XmlPatch.attribute node "r:id")
         let commentCells = sheet.Cells |> List.choose (fun c -> if c.Comment.IsSome then Some (c.Row, c.Col) else None)
         if commentCells.IsEmpty then
             // No note is left: the comments part goes; the VML drawing goes with it when it held
@@ -4749,20 +4334,18 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
             // its relationships say: the sheet itself no longer knows of either.)
             match sheet.Extras.SourcePart with
             | Some (sheetPath, _) ->
-                let baseDir = match sheetPath.LastIndexOf '/' with -1 -> "" | cut -> sheetPath.Substring(0, cut)
+                let baseDir = PartPath.directory sheetPath
                 let entries = partText (relsPathOf sheetPath) |> Option.map (relationshipEntries baseDir) |> Option.defaultValue []
-                let comments = entries |> List.filter (fun (_, relType, _, isExternal, _) -> not isExternal && relType.EndsWith "/comments")
-                let legacy = legacyDrawingIdPattern.Matches source
+                let comments = entries |> List.filter (fun (_, relType, _, isExternal) -> not isExternal && OpcXml.relationshipKind relType = "comments")
                 match comments with
-                | [ (_, _, commentsPath, _, _) ] when legacy.Count = 1 && (partText commentsPath).IsSome ->
-                    let id = legacy.[0].Groups.[1].Value
+                | [ (_, _, commentsPath, _) ] when legacyIds.Length = 1 && (partText commentsPath).IsSome ->
+                    let id = legacyIds.Head
                     let drawing =
-                        entries |> List.tryPick (fun (known, _, target, isExternal, _) ->
+                        entries |> List.tryPick (fun (known, _, target, isExternal) ->
                             if known <> id || isExternal then None else partText target |> Option.map (fun vml -> target, vml))
                     match drawing with
                     | Some (vmlPath, vml) ->
-                        let shapes = vmlShapePattern.Matches vml |> Seq.cast<System.Text.RegularExpressions.Match> |> Seq.toList
-                        let notesOnly = shapes |> List.forall (fun shape -> shape.Value.IndexOf ("ObjectType=\"Note\"", System.StringComparison.Ordinal) >= 0)
+                        let notesOnly = XmlPatch.readPart vml |> Option.exists (fun drawing -> vmlShapes drawing |> List.forall isNoteBox)
                         if notesOnly then Some { CommentsPath = Some commentsPath; CommentsXml = ""; VmlPath = Some vmlPath; VmlXml = None; Gone = [ commentsPath; vmlPath ] }
                         else
                             match vmlWithCommentBoxes vml [] with
@@ -4771,7 +4354,7 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
                     | None -> None
                 // (A file whose notes have no boxes - not written by Excel: only the comments part goes.
                 // `VmlPath` names no part: none is made, none goes.)
-                | [ (_, _, commentsPath, _, _) ] when legacy.Count = 0 && (partText commentsPath).IsSome && not (legacyDrawingTag.IsMatch source) ->
+                | [ (_, _, commentsPath, _) ] when legacyDrawings.IsEmpty && (partText commentsPath).IsSome ->
                     Some { CommentsPath = Some commentsPath; CommentsXml = ""; VmlPath = Some ""; VmlXml = None; Gone = [ commentsPath ] }
                 | _ -> None
             | None -> None
@@ -4784,15 +4367,15 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
                     |> Option.bind (fun fileXml -> patchedCommentsXml fileXml sheet.Extras.CommentRuns sheet.Cells)
                     |> Option.map (fun xml -> Some path, xml)
                 | None ->
-                    if relsText |> Option.exists (fun text -> text.Contains "/relationships/comments\"") then None
+                    if relsText |> Option.exists (fun text -> OpcXml.relationshipsOrEmpty text |> List.exists (fun rel -> OpcXml.relationshipKind rel.Type = "comments")) then None
                     else commentsXml sheet.Extras.CommentRuns sheet.Cells |> Option.map (fun xml -> None, xml)
             let boxes =
                 match keptLegacyDrawing sheet with
                 | "" ->
-                    if legacyDrawingTag.IsMatch source then None
+                    if not legacyDrawings.IsEmpty then None
                     else vmlCommentsXml number sheet.Cells |> Option.map (fun xml -> None, Some xml)
                 | keptElement ->
-                    let ids = DocxReader.relationshipIdsInXml keptElement
+                    let ids = OpcXml.relationshipIdsIn keptElement
                     sheet.Extras.KeptRelationships
                     |> List.tryPick (fun (id, _, target, isExternal) ->
                         if isExternal || not (List.contains id ids) then None
@@ -4862,7 +4445,7 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
     let keptMetadata =
         workbook.Preserved.WorkbookRelationships
         |> List.tryPick (fun (_, relType, target, isExternal) ->
-            if isExternal || not (relType.EndsWith "/sheetMetadata") then None
+            if isExternal || not (OpcXml.relationshipKind relType = "sheetMetadata") then None
             else
                 let path = ZipInterop.normalizePath target
                 keptParts |> List.tryFind (fun (kept, _) -> kept = path))
@@ -4923,8 +4506,15 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
                 same))
     let mediaExtensions = System.Collections.Generic.Dictionary<string, string>()
     let placement = tablePlacement workbook
+    // How many more cells name a shared string, by sheet written (None: not known).
+    let sharedDelta = System.Collections.Generic.Dictionary<int, int option>()
     List.zip workbook.Sheets placements
     |> List.iteri (fun i (sheet, placed) ->
+      // (The cells written that name a shared string.)
+      let sharedUses = ref 0
+      let countedShared (text: string) (runs: XlsxRichRun list) =
+          sharedUses.Value <- sharedUses.Value + 1
+          sharedIndex text runs
       // (A sheet written as it was read is one of the kept parts; only whether it is the one on display may differ.)
       if placed.Verbatim.IsSome && patchPlans.ContainsKey i then
         // The file's part with the cells and sections that changed.
@@ -4935,19 +4525,18 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
         let relsWas =
             partText relsPath
             |> Option.defaultValue (sprintf "%s\n<Relationships xmlns=\"%s\"></Relationships>" declaration Namespaces.relationshipsPackage)
-        let mutable relsNow = relsWas
-        let ids = System.Collections.Generic.HashSet<string>([ for found in relationshipIdPattern.Matches relsWas -> found.Groups.[1].Value ])
+        let ids = System.Collections.Generic.HashSet<string>(OpcXml.relationshipsOrEmpty relsWas |> List.map (fun rel -> rel.Id))
         let freeId () =
             let mutable number = 1
             while not (ids.Add (sprintf "rId%d" number)) do number <- number + 1
             sprintf "rId%d" number
         let targetOf (path: string) =
-            if placed.SheetPath.StartsWith "xl/worksheets/" && placed.SheetPath.IndexOf ('/', 14) < 0 && path.StartsWith "xl/" then "../" + path.Substring 3
+            if PartPath.directory placed.SheetPath = "xl/worksheets" && PartPath.isIn "xl" path then PartPath.relative "xl/worksheets" path
             else "/" + path
-        let entries = StringBuilder()
-        let source = patchPlans.[i].Source
-        let rootTag = source.Substring(0, patchPlans.[i].RootEnd)
-        let namespaceText = if rootTag.Contains "xmlns:r=\"" then "" else sprintf " xmlns:r=\"%s\"" Namespaces.relationships
+        let removedRels = ResizeArray<string>()
+        let addedRels = ResizeArray<OpcXml.Relationship>()
+        let plan = patchPlans.[i]
+        let namespaceText = if (XmlPatch.attribute plan.Source.Node "xmlns:r").IsSome then "" else sprintf " xmlns:r=\"%s\"" Namespaces.relationships
         // (Its notes, when they changed: in the comments part and the VML drawing; the part itself
         // says nothing of them but that it has a drawing of that kind.)
         let legacy =
@@ -4961,44 +4550,33 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
                 | Some xml when not (gone notes.VmlPath) -> textFiles.Add { Path = (match notes.VmlPath with Some path -> path | None -> newVml); Content = xml }
                 | _ -> ()
                 if not notes.Gone.IsEmpty then
-                    let baseDir = match placed.SheetPath.LastIndexOf '/' with -1 -> "" | cut -> placed.SheetPath.Substring(0, cut)
-                    for _, _, target, isExternal, tag in relationshipEntries baseDir relsWas do
-                        if not isExternal && List.contains target notes.Gone then relsNow <- withoutFirst tag relsNow
+                    for id, _, target, isExternal in relationshipEntries (PartPath.directory placed.SheetPath) relsWas do
+                        if not isExternal && List.contains target notes.Gone then removedRels.Add id
                 if newComments <> "" then
-                    entries.Append(sprintf "<Relationship Id=\"%s\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments\" Target=\"%s\"/>" (freeId ()) (targetOf newComments)) |> ignore
+                    addedRels.Add { Id = freeId (); Type = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments"; Target = targetOf newComments; External = false }
                 if gone notes.VmlPath then [ "legacyDrawing", "" ]
                 elif newVml = "" then []
                 else
                     let id = freeId ()
-                    entries.Append(sprintf "<Relationship Id=\"%s\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing\" Target=\"%s\"/>" id (targetOf newVml)) |> ignore
+                    addedRels.Add { Id = id; Type = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing"; Target = targetOf newVml; External = false }
                     [ "legacyDrawing", sprintf "<legacyDrawing%s r:id=\"%s\"/>" namespaceText id ]
             | false, _ -> []
         // Its links, when they changed: the list in the part, an external one's address in the relationships.
         let links =
             if not (List.contains "hyperlinks" sheet.Extras.Patch.Value.Sections) then []
             else
-                let fileLinks =
-                    patchPlans.[i].Top
-                    |> List.tryPick (fun (name, span) -> if name = "hyperlinks" then Some (source.Substring(span.Start, span.End - span.Start)) else None)
-                    |> Option.defaultValue ""
-                let baseDir = match placed.SheetPath.LastIndexOf '/' with -1 -> "" | cut -> placed.SheetPath.Substring(0, cut)
-                let element, added, gone = hyperlinksInPlace fileLinks (relationshipEntries baseDir relsWas) sheet.Hyperlinks freeId namespaceText
+                let element, added, gone =
+                    hyperlinksInPlace (sourceChild "hyperlinks" plan.Source) (relationshipEntries (PartPath.directory placed.SheetPath) relsWas) sheet.Hyperlinks freeId namespaceText
                 for id, target in added do
-                    entries.Append(sprintf "<Relationship Id=\"%s\" Type=\"%s\" Target=\"%s\" TargetMode=\"External\"/>" id RelationshipTypes.hyperlink (escaped target)) |> ignore
-                for tag in gone do relsNow <- withoutFirst tag relsNow
+                    addedRels.Add { Id = id; Type = RelationshipTypes.hyperlink; Target = target; External = true }
+                removedRels.AddRange gone
                 [ "hyperlinks", element ]
-        if entries.Length > 0 || not (obj.ReferenceEquals (relsNow, relsWas)) then
-            let close = relsNow.LastIndexOf ("</Relationships>", System.StringComparison.Ordinal)
-            let closed =
-                if close >= 0 then relsNow.Substring(0, close) + entries.ToString() + relsNow.Substring close
-                // (`<Relationships/>`: a list without an entry.)
-                else
-                    let empty = relsNow.LastIndexOf ("/>", System.StringComparison.Ordinal)
-                    relsNow.Substring(0, max 0 empty) + ">" + entries.ToString() + "</Relationships>"
-            textFiles.Add { Path = relsPath; Content = closed }
+        if addedRels.Count > 0 || removedRels.Count > 0 then
+            textFiles.Add { Path = relsPath; Content = OpcXml.editRelationships (List.ofSeq removedRels) (List.ofSeq addedRels) relsWas }
         let added = legacy @ links
-        let xml = patchedSheetXml styles sharedIndex dynamicCm (i + 1) sheet sheet.Extras.Patch.Value patchPlans.[i] added
-        textFiles.Add { Path = placed.SheetPath; Content = withTabSelected (i = workbook.ActiveSheetIndex) xml }
+        let xml, sharedGone = patchedSheetXml styles countedShared dynamicCm (i + 1) (i = workbook.ActiveSheetIndex) sheet sheet.Extras.Patch.Value plan added
+        sharedDelta.[i] <- Some (sharedUses.Value - sharedGone)
+        textFiles.Add { Path = placed.SheetPath; Content = xml }
       elif placed.Verbatim.IsSome then
         match keptParts |> List.tryFind (fun (path, _) -> path = placed.SheetPath) with
         | Some (_, data) ->
@@ -5015,11 +4593,25 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
             match keptDrawing with
             | Some path -> Some path
             | None -> if hasDrawing sheet then Some placed.DrawingPath else None
-        let rows =
+        // (The cells of the file that named a shared string and are not written: all of a sheet written
+        // from its cells, those that changed of rows that are the file's.)
+        let rows, sharedGone =
             match rowPlans.TryGetValue i with
-            | true, (plan, patch) -> Some (fst (patchedSheetData styles sharedIndex dynamicCm sheet patch plan))
-            | false, _ -> None
-        let sheetXml = worksheetXml styles sharedIndex dynamicCm sheetIndex (i = workbook.ActiveSheetIndex) drawingPath.IsSome inPlace.IsSome rows (sortKept.Contains i) sheet
+            | true, (plan, patch) ->
+                let edits, _, gone = sheetDataEdits styles countedShared dynamicCm sheet patch plan
+                FileRows (patchedSheetData plan edits), Some gone
+            | false, _ ->
+                match sheet.Extras.SourceXml with
+                | Some xml ->
+                    let carry = rowCarryOf inPlace.IsSome sheet.Extras.Moves xml
+                    CellRows carry, (carry |> Option.bind (fun carry -> carry.SharedStrings))
+                | None ->
+                    CellRows None,
+                    (match sheet.Extras.SourcePart with
+                     | Some (path, _) -> partText path |> Option.bind readWorksheetCells |> Option.map sharedStringCells
+                     | None -> Some 0)          // (a sheet the file does not have)
+        let sheetXml = worksheetXml styles countedShared dynamicCm sheetIndex (i = workbook.ActiveSheetIndex) drawingPath.IsSome rows (sortKept.Contains i) sheet
+        sharedDelta.[i] <- sharedGone |> Option.map (fun gone -> sharedUses.Value - gone)
         let commentsVmlPath = placed.VmlPath
         // The sheet's relationships: the file's part while it says what is written - the same
         // parts, by the ids the file names them by (the sheet's part then names them by those
@@ -5032,29 +4624,41 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
                 | _ -> None
             match made, fileRels with
             | Some made, Some source ->
-                let baseDir = match placed.SheetPath.LastIndexOf '/' with -1 -> "" | cut -> placed.SheetPath.Substring(0, cut)
+                let baseDir = PartPath.directory placed.SheetPath
                 let was = relationshipEntries baseDir source
                 let now = relationshipEntries baseDir made
                 let key (relType: string) (target: string) (isExternal: bool) = relType + "\n" + target + (if isExternal then "\nexternal" else "")
                 let taken = System.Collections.Generic.HashSet<string>()
                 let renames =
                     now
-                    |> List.choose (fun (id, relType, target, isExternal, _) ->
+                    |> List.choose (fun (id, relType, target, isExternal) ->
                         was
-                        |> List.tryFind (fun (fileId, fileType, fileTarget, fileExternal, _) -> fileId <> "" && key fileType fileTarget fileExternal = key relType target isExternal && not (taken.Contains fileId))
-                        |> Option.map (fun (fileId, _, _, _, _) -> taken.Add fileId |> ignore; id, fileId))
-                let changed = renames |> List.filter (fun (id, fileId) -> id <> fileId)
+                        |> List.tryFind (fun (fileId, fileType, fileTarget, fileExternal) -> fileId <> "" && key fileType fileTarget fileExternal = key relType target isExternal && not (taken.Contains fileId))
+                        |> Option.map (fun (fileId, _, _, _) -> taken.Add fileId |> ignore; id, fileId))
+                let changed = renames |> List.filter (fun (id, fileId) -> id <> fileId) |> Map.ofList
                 // (An id the sheet made for another part must not be one the file uses.)
-                let clash = now |> List.exists (fun (id, _, _, _, _) -> not (renames |> List.exists (fun (known, _) -> known = id)) && taken.Contains id)
+                let clash = now |> List.exists (fun (id, _, _, _) -> not (renames |> List.exists (fun (known, _) -> known = id)) && taken.Contains id)
                 if clash then sheetXml, Some made
+                elif changed.IsEmpty then sheetXml, Some (relationshipsFromFile baseDir true (Some source) made)
                 else
-                    let renamed (text: string) (attribute: string) =
-                        if changed.IsEmpty then text
-                        else
-                            // (In two steps: an id may be taken over by another entry.)
-                            let first = changed |> List.fold (fun (text: string) (id, fileId) -> text.Replace(sprintf "%s=\"%s\"" attribute id, sprintf "%s=\"\u0001%s\"" attribute fileId)) text
-                            first.Replace(attribute + "=\"\u0001", attribute + "=\"")
-                    renamed sheetXml "r:id", Some (relationshipsFromFile baseDir true (Some source) (renamed made "Id"))
+                    // (Every entry renamed at once: an id may be taken over by another entry.)
+                    let renamedMade =
+                        match XmlPatch.readPart made with
+                        | Some rels ->
+                            XmlPatch.applyPart order rels
+                                [ for KeyValue (id, fileId) in changed -> XmlPatch.EditChildWhere ("Relationship", "Id", id, [ XmlPatch.SetAttribute ("Id", fileId) ]) ]
+                        | None -> made
+                    let renamedSheet =
+                        match readWorksheet sheetXml with
+                        | Some part ->
+                            let named =
+                                XmlPatch.elements part.Node
+                                |> List.filter (fun node -> XmlPatch.name node <> "sheetData")
+                                |> List.collect (XmlPatch.descendantsWhere (fun node -> XmlPatch.attribute node "r:id" |> Option.exists changed.ContainsKey))
+                            XmlPatch.applyPart order part
+                                (XmlPatch.editsAt part.Node [ for node in named -> node, [ XmlPatch.SetAttribute ("r:id", changed.[XmlPatch.attribute node "r:id" |> Option.get]) ] ])
+                        | None -> sheetXml
+                    renamedSheet, Some (relationshipsFromFile baseDir true (Some source) renamedMade)
             | made, _ -> sheetXml, made
         textFiles.Add { Path = placed.SheetPath; Content = sheetXml }
         match relsXml with
@@ -5082,7 +4686,7 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
         | keptElement ->
             // The file's own VML drawing stands (it may hold form controls):
             // the boxes of the comments in it are made those of the comments now.
-            let ids = DocxReader.relationshipIdsInXml keptElement
+            let ids = OpcXml.relationshipIdsIn keptElement
             let part =
                 sheet.Extras.KeptRelationships
                 |> List.tryPick (fun (id, _, target, isExternal) ->
@@ -5141,15 +4745,15 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
                         textFiles.Add { Path = path; Content = xml }
                         // (The fields of its query go with the table's columns.)
                         let kept (wanted: string) = workbook.Preserved.Parts |> List.tryPick (fun (known, data) -> if known = wanted then Some (System.Text.Encoding.UTF8.GetString data) else None)
-                        for query in queryTablePattern.Matches (kept (relsPathOf path) |> Option.defaultValue "") |> Seq.cast<System.Text.RegularExpressions.Match> do
-                            let target = query.Groups.[1].Value
-                            let queryPath = if target.StartsWith "../" then "xl/" + target.Substring 3 else target.TrimStart '/'
+                        for query in OpcXml.relationshipsOrEmpty (kept (relsPathOf path) |> Option.defaultValue "") do
+                          if OpcXml.relationshipKind query.Type = "queryTable" && not query.External then
+                            let queryPath = OpcXml.targetPath (PartPath.directory path) query
                             match kept queryPath |> Option.bind (fun text -> queryTableXmlFromSource text xml) with
                             | Some updated -> textFiles.Add { Path = queryPath; Content = updated }
                             | None -> ()
                     | None ->
                         // (Not a part the writer can follow: a table of its own making under the part's name and id.)
-                        let id = source |> Option.map (fun xml -> tableIdPattern.Match xml) |> Option.filter (fun found -> found.Success) |> Option.map (fun found -> int found.Groups.[1].Value) |> Option.defaultValue 1
+                        let id = source |> Option.bind tableIdOf |> Option.defaultValue 1
                         textFiles.Add { Path = path; Content = tableXml id table })
     // (After the sheets: styles and strings that are added to grow as the cells are written.)
     textFiles.Add { Path = "xl/styles.xml"; Content = stylesText () }
@@ -5157,42 +4761,20 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
     // the uses in the parts of the sheets that were written again, plus the uses in what was written.
     let sharedXml =
         let xml = sharedText ()
+        let rootOf (text: string) = XmlPatch.readPartExcept (fun name -> name = "si") text
         let fileCount =
-            workbook.Preserved.SharedStringsPart |> Option.bind partText
-            |> Option.bind (fun was -> tagAttribute (System.Text.RegularExpressions.Regex.Match(was, "<sst(?=[\\s>])[^>]*>").Value) "count")
+            workbook.Preserved.SharedStringsPart |> Option.bind partText |> Option.bind rootOf
+            |> Option.bind (fun was -> XmlPatch.attribute was.Node "count")
             |> Option.map System.Int32.TryParse
         match inPlace, fileCount with
         | Some _, Some (true, was) ->
-            let uses (text: string) =
-                let mutable found = 0
-                let mutable at = text.IndexOf (" t=\"s\"", System.StringComparison.Ordinal)
-                while at >= 0 do
-                    found <- found + 1
-                    at <- text.IndexOf (" t=\"s\"", at + 6, System.StringComparison.Ordinal)
-                found
-            let mutable delta = 0
-            let mutable known = true
-            List.zip workbook.Sheets placements
-            |> List.iteri (fun i (sheet, placed) ->
-                match textFiles |> Seq.tryFind (fun file -> file.Path = placed.SheetPath) with
-                | None -> ()
-                | Some file ->
-                    let source =
-                        match patchPlans.TryGetValue i with
-                        | true, plan -> Some plan.Source
-                        | false, _ ->
-                            match sheet.Extras.SourceXml, sheet.Extras.SourcePart with
-                            | Some xml, _ -> Some xml
-                            | None, Some (path, _) -> partText path
-                            | None, None -> Some ""          // (a sheet the file does not have)
-                    match source with
-                    | Some source -> delta <- delta + uses file.Content - uses source
-                    | None -> known <- false)
-            let root = System.Text.RegularExpressions.Regex.Match(xml, "<sst(?=[\\s>])[^>]*>")
-            if not known || not root.Success then xml
-            else
-                let tag = withTagAttribute "count" (Some (string (max 0 (was + delta)))) root.Value
-                if tag = root.Value then xml else xml.Substring(0, root.Index) + tag + xml.Substring(root.Index + root.Length)
+            let deltas = [ for KeyValue (_, delta) in sharedDelta -> delta ]
+            match rootOf xml with
+            | Some root when deltas |> List.forall Option.isSome ->
+                let count = string (max 0 (was + (deltas |> List.sumBy (fun delta -> delta.Value))))
+                if XmlPatch.attribute root.Node "count" = Some count then xml
+                else XmlPatch.applyPart order root [ XmlPatch.SetAttribute ("count", count) ]
+            | _ -> xml
         | _ -> xml
     textFiles.Add { Path = "xl/sharedStrings.xml"; Content = sharedXml }
     let written = textFiles |> Seq.map (fun file -> file.Path) |> Set.ofSeq
@@ -5342,7 +4924,7 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
                 else []
             XlsxText (workbook.SharedStrings.[idx], runs)
         | XlsxReader.Boolean b -> XlsxBoolean b
-        | XlsxReader.Error e -> XlsxError (if e.StartsWith "#" then e else "#" + e)
+        | XlsxReader.Error e -> XlsxError (FormulaNames.errorValue e)
         | _ -> XlsxBlank
     // A formula is written with the result the source file cached for it.
     let valueOf (cell: XlsxReader.Cell) =
@@ -5537,10 +5119,7 @@ let simpleCell (value: string) : FormattedCell = {
 
 /// Convert hex color to RGB (removes # prefix)
 let hexToRgb (color: string) : string =
-    if color.StartsWith("#") then
-        "FF" + color.Substring(1).ToUpper()  // Add alpha channel
-    else
-        "FF" + color.ToUpper()
+    ColorText.argb color
 
 let private appendFormattedCell (sb: StringBuilder) (rowNumber: string) (colLetters: string) (cell: FormattedCell) =
     sb.Append("<c r=\"") |> ignore
@@ -5680,7 +5259,7 @@ let createMergedRange (startRow: int) (startCol: int) (endRow: int) (endCol: int
 
 /// Helper to create a merged range from Excel-style references (e.g., "A1:B2")
 let parseMergedRange (range: string) : MergedCellRange option =
-    let parts = range.Split(':')
+    let parts = CellRef.corners range
     if parts.Length <> 2 then
         None
     else

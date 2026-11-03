@@ -43,6 +43,11 @@ type ElementEdit =
     /// the others ("*": a paragraph's properties) -, or at its end.
     | Prepend of xml: string
     | Append of xml: string
+    /// The child element that starts at that place of the text (its span's start: an element of the tree
+    /// read) changed by these edits.
+    | EditAt of start: int * edits: ElementEdit list
+    /// The element is this XML instead (the edit of a child: `EditAt`, `EditNth` ...).
+    | Replaced of xml: string
 
 /// The order of the children of an element (local names, by the element's qualified name), for where a
 /// child that is put in goes. An element with no order puts a new child after the others. "*" stands for
@@ -201,7 +206,9 @@ let rec private applyAt (order: SchemaOrder) (text: string) (node: XmlNode) (edi
                 let before = inner |> List.choose (function InsertBefore xml -> Some xml | _ -> None) |> String.concat ""
                 let after = inner |> List.choose (function InsertAfter xml -> Some xml | _ -> None) |> String.concat ""
                 let own = inner |> List.filter (function InsertBefore _ | InsertAfter _ -> false | _ -> true)
-                ((spanOf kid).Start, (spanOf kid).End, before + applyAt order text kid own + after)
+                match own |> List.tryPick (function Replaced xml -> Some xml | _ -> None) with
+                | Some xml -> ((spanOf kid).Start, (spanOf kid).End, before + xml + after)
+                | None -> ((spanOf kid).Start, (spanOf kid).End, before + applyAt order text kid own + after)
         // (Where what is put in at the start goes: before the first child the order does not put first.)
         let startPlace =
             match ranks |> List.tryFindIndex (fun known -> known = "*") with
@@ -212,6 +219,11 @@ let rec private applyAt (order: SchemaOrder) (text: string) (node: XmlNode) (edi
                 | None -> contentEnd
         let where (child: string) (attribute: string) (value: string) =
             children |> List.filter (fun kid -> nameOf kid = child && Map.tryFind attribute (attrsOf kid) = Some value)
+        // (The children by where they start, for edits that name them so.)
+        let byStart =
+            lazy (let found = System.Collections.Generic.Dictionary<int, XmlNode>()
+                  for kid in children do found.[(spanOf kid).Start] <- kid
+                  found)
         for edit in edits do
             match edit with
             | SetChild (child, xml) ->
@@ -251,6 +263,10 @@ let rec private applyAt (order: SchemaOrder) (text: string) (node: XmlNode) (edi
                 match where child attribute value with
                 | kid :: _ -> parts.Add (edited kid inner)
                 | [] -> ()
+            | EditAt (start, inner) ->
+                match byStart.Value.TryGetValue start with
+                | true, kid -> parts.Add (edited kid inner)
+                | false, _ -> ()
             | _ -> ()
         // (Several put in at one place go in their schema order.)
         for (at, _, xml) in inserts |> Seq.sortBy (fun (at, rank, _) -> at, rank) do parts.Add ((at, at, xml))
@@ -384,7 +400,7 @@ let childOf (edit: ElementEdit) : string =
     match edit with
     | SetChild (name, _) | SetChildren (name, _) | RemoveChild name | EditChild (name, _, _) | AddChild (name, _)
     | SetChildWhere (name, _, _, _) | RemoveChildWhere (name, _, _) | EditChildWhere (name, _, _, _) | EditNth (name, _, _) -> name
-    | SetAttribute _ | SetAllAttributes _ | RemoveAttribute _ | SetText _ | Removed | InsertBefore _ | InsertAfter _ | Prepend _ | Append _ -> ""
+    | SetAttribute _ | SetAllAttributes _ | RemoveAttribute _ | SetText _ | Removed | InsertBefore _ | InsertAfter _ | Prepend _ | Append _ | EditAt _ | Replaced _ -> ""
 
 /// Whether the element has a child of that name (qualified).
 let hasChild (source: SourceElement) (name: string) : bool =
@@ -736,3 +752,279 @@ module Style =
 
     let remove (property: string) (declarations: (string * string) list) =
         declarations |> List.filter (fun (known, _) -> known <> property)
+
+// ---- A large part read in outline ----
+// A part of many elements (a worksheet of many rows) is read with the elements a change is made in whole,
+// and the many others - each a range of the text - without what they hold (`readPartExcept`). An element
+// of those that a change is made in is then read whole where it is (`withWhole`), and the edits are made
+// as in any other tree.
+
+exception private OutlineGiveUp
+
+/// An attribute value or text of an element with its references decoded.
+let private decoded (raw: string) : string =
+    if raw.IndexOf '&' < 0 then raw
+    else
+        let sb = System.Text.StringBuilder()
+        let mutable i = 0
+        while i < raw.Length do
+            let amp = raw.IndexOf('&', i)
+            if amp < 0 then
+                sb.Append(raw, i, raw.Length - i) |> ignore
+                i <- raw.Length
+            else
+                sb.Append(raw, i, amp - i) |> ignore
+                let semi = raw.IndexOf(';', amp)
+                if semi < 0 || semi - amp < 2 || semi - amp > 10 then raise OutlineGiveUp
+                match raw.Substring(amp + 1, semi - amp - 1) with
+                | "lt" -> sb.Append '<' |> ignore
+                | "gt" -> sb.Append '>' |> ignore
+                | "amp" -> sb.Append '&' |> ignore
+                | "quot" -> sb.Append '"' |> ignore
+                | "apos" -> sb.Append '\'' |> ignore
+                | entity when entity.[0] = '#' ->
+                    let hex = entity.Length > 1 && entity.[1] = 'x'
+                    let digits = entity.Substring(if hex then 2 else 1)
+                    let mutable code = 0
+                    if digits = "" then raise OutlineGiveUp
+                    for c in digits do
+                        let digit =
+                            if c >= '0' && c <= '9' then int c - 48
+                            elif hex && c >= 'a' && c <= 'f' then int c - 87
+                            elif hex && c >= 'A' && c <= 'F' then int c - 55
+                            else raise OutlineGiveUp
+                        code <- code * (if hex then 16 else 10) + digit
+                        if code > 0x10FFFF then raise OutlineGiveUp
+                    if code < 0x10000 then sb.Append(char code) |> ignore
+                    else
+                        let rest = code - 0x10000
+                        sb.Append(char (0xD800 + (rest >>> 10))).Append(char (0xDC00 + (rest &&& 0x3FF))) |> ignore
+                | _ -> raise OutlineGiveUp
+                i <- semi + 1
+        sb.ToString()
+
+/// A part's text read with the elements whose local name `shallow` says without what they hold - their
+/// children are not in the tree; their names, attributes and spans are -, the rest as `readPart` reads it.
+/// None when the text is not well formed.
+let readPartExcept (shallow: string -> bool) (text: string) : SourceElement option =
+    let n = text.Length
+    let isSpace (c: char) = c = ' ' || c = '\n' || c = '\t' || c = '\r'
+    let ordinalAt (at: int) (value: string) =
+        if at + value.Length > n then false
+        else
+            let mutable same = true
+            let mutable k = 0
+            while same && k < value.Length do
+                if text.[at + k] <> value.[k] then same <- false
+                k <- k + 1
+            same
+    let indexFrom (value: string) (from: int) =
+#if FABLE_COMPILER
+        text.IndexOf(value, from)
+#else
+        text.IndexOf(value, from, System.StringComparison.Ordinal)
+#endif
+    // The start tag at `lt`: its name, attributes, where it ends, whether it closes itself.
+    let startTag (lt: int) =
+        let mutable i = lt + 1
+        while i < n && (let c = text.[i] in not (isSpace c) && c <> '>' && c <> '/') do i <- i + 1
+        if i = lt + 1 || i >= n then raise OutlineGiveUp
+        let name = text.Substring(lt + 1, i - lt - 1)
+        let mutable attrs : Map<string, string> = Map.empty
+        let mutable selfClosing = false
+        let mutable going = true
+        while going do
+            while i < n && isSpace text.[i] do i <- i + 1
+            if i >= n then raise OutlineGiveUp
+            let c = text.[i]
+            if c = '>' then
+                going <- false
+                i <- i + 1
+            elif c = '/' then
+                if i + 1 >= n || text.[i + 1] <> '>' then raise OutlineGiveUp
+                selfClosing <- true
+                going <- false
+                i <- i + 2
+            else
+                let nameStart = i
+                while i < n && (let a = text.[i] in a <> '=' && not (isSpace a) && a <> '>' && a <> '/') do i <- i + 1
+                let attrName = text.Substring(nameStart, i - nameStart)
+                while i < n && isSpace text.[i] do i <- i + 1
+                if i >= n || text.[i] <> '=' || attrName = "" then raise OutlineGiveUp
+                i <- i + 1
+                while i < n && isSpace text.[i] do i <- i + 1
+                if i >= n || (text.[i] <> '"' && text.[i] <> '\'') then raise OutlineGiveUp
+                let close = text.IndexOf(text.[i], i + 1)
+                if close < 0 then raise OutlineGiveUp
+                let raw = text.Substring(i + 1, close - i - 1)
+                if raw.IndexOf '<' >= 0 || attrs.ContainsKey attrName then raise OutlineGiveUp
+                let raw = raw.Replace("\r\n", " ").Replace('\r', ' ').Replace('\n', ' ').Replace('\t', ' ')
+                attrs <- Map.add attrName (decoded raw) attrs
+                i <- close + 1
+        name, attrs, i, selfClosing
+    // What is not an element at `lt` (a comment, a processing instruction, CDATA): where it ends.
+    let skipOther (lt: int) =
+        let finish (closing: string) (from: int) = (let at = indexFrom closing from in if at < 0 then raise OutlineGiveUp else at + closing.Length)
+        if ordinalAt lt "<?" then finish "?>" (lt + 2)
+        elif ordinalAt lt "<!--" then finish "-->" (lt + 4)
+        elif ordinalAt lt "<![CDATA[" then finish "]]>" (lt + 9)
+        else raise OutlineGiveUp
+    // The end tag of `name` at `lt`: where it ends.
+    let endTag (lt: int) (name: string) =
+        let gt = text.IndexOf('>', lt + 2)
+        if gt < 0 then raise OutlineGiveUp
+        let mutable nameEnd = gt
+        while nameEnd > lt + 2 && isSpace text.[nameEnd - 1] do nameEnd <- nameEnd - 1
+        if nameEnd - lt - 2 <> name.Length || not (ordinalAt (lt + 2) name) then raise OutlineGiveUp
+        gt + 1
+    // The element whose start tag is at `lt`, and whether a shallow element is in it (or is it): one that
+    // has none in it is read by the scanner, whole.
+    let rec element (lt: int) : XmlNode * bool =
+        let name, attrs, tagEnd, selfClosing = startTag lt
+        let isShallow = shallow (Ns.stripNs name)
+        if selfClosing then Element (name, attrs, [], { Start = lt; StartTagEnd = tagEnd; EndTagStart = tagEnd; End = tagEnd }), isShallow
+        elif isShallow then
+            // (What it holds is passed over: to its end tag - past the elements of its name in it, each
+            // to its own.)
+            let opening = "<" + name
+            let closing = "</" + name
+            let isNameEnd (at: int) = at < n && (let c = text.[at] in isSpace c || c = '>' || c = '/')
+            let mutable depth = 1
+            let mutable at = tagEnd
+            let mutable close = -1
+            while depth > 0 do
+                let ending = indexFrom closing at
+                if ending < 0 then raise OutlineGiveUp
+                let inner = indexFrom opening at
+                if inner >= 0 && inner < ending then
+                    if isNameEnd (inner + opening.Length) then
+                        let gt = text.IndexOf('>', inner)
+                        if gt < 0 then raise OutlineGiveUp
+                        if text.[gt - 1] <> '/' then depth <- depth + 1
+                        at <- gt + 1
+                    else at <- inner + opening.Length
+                elif isNameEnd (ending + closing.Length) then
+                    depth <- depth - 1
+                    if depth = 0 then close <- ending
+                    at <- ending + closing.Length
+                else at <- ending + closing.Length
+            Element (name, attrs, [], { Start = lt; StartTagEnd = tagEnd; EndTagStart = close; End = endTag close name }), true
+        else
+            let kids = ResizeArray<XmlNode>()
+            let mutable anyShallow = false
+            let mutable at = tagEnd
+            let mutable close = -1
+            while close < 0 do
+                let next = text.IndexOf('<', at)
+                if next < 0 || next + 1 >= n then raise OutlineGiveUp
+                if next > at then
+                    let raw = text.Substring(at, next - at).Trim()
+                    if raw <> "" then kids.Add (Text (decoded raw))
+                let c = text.[next + 1]
+                if c = '/' then close <- next
+                elif c = '?' || c = '!' then
+                    if ordinalAt next "<![CDATA[" then
+                        let finish = indexFrom "]]>" (next + 9)
+                        if finish < 0 then raise OutlineGiveUp
+                        kids.Add (Text (text.Substring(next + 9, finish - next - 9)))
+                    at <- skipOther next
+                else
+                    let kid, holds = element next
+                    kids.Add kid
+                    if holds then anyShallow <- true
+                    at <- (spanOf kid).End
+            let span = { Start = lt; StartTagEnd = tagEnd; EndTagStart = close; End = endTag close name }
+            if anyShallow then Element (name, attrs, List.ofSeq kids, span), true
+            else
+                match tryScanAt text span.Start span.End (System.Collections.Generic.HashSet<string>()) with
+                | Some whole -> whole, false
+                | None -> raise OutlineGiveUp
+    try
+        let mutable at = 0
+        let mutable root = None
+        while root.IsNone do
+            let lt = text.IndexOf('<', at)
+            if lt < 0 || lt + 1 >= n || text.[lt + 1] = '/' then raise OutlineGiveUp
+            if text.[lt + 1] = '?' || text.[lt + 1] = '!' then at <- skipOther lt
+            else root <- Some (fst (element lt))
+        Some { Text = text; Node = root.Value }
+    with _ -> None
+
+/// The tree of a part read in outline with the elements that start at these places (elements of it) read
+/// whole.
+let withWhole (source: SourceElement) (starts: int seq) : SourceElement =
+    let wanted = System.Collections.Generic.HashSet<int>(starts)
+    if wanted.Count = 0 then source
+    else
+        let sorted = Seq.toArray wanted |> Array.sort
+        // (Whether one of them starts within the span: the tree changes under it.)
+        let within (span: Span) =
+            let mutable low = 0
+            let mutable high = sorted.Length
+            while low < high do
+                let mid = (low + high) / 2
+                if sorted.[mid] < span.Start then low <- mid + 1 else high <- mid
+            low < sorted.Length && sorted.[low] < span.End
+        let rec visit (node: XmlNode) =
+            match node with
+            | Element (name, attrs, kids, span) when Span.isKnown span && within span ->
+                if wanted.Contains span.Start then
+                    match tryScanAt source.Text span.Start span.End (System.Collections.Generic.HashSet<string>()) with
+                    | Some read -> read
+                    | None -> node
+                else Element (name, attrs, List.map visit kids, span)
+            | _ -> node
+        { source with Node = visit source.Node }
+
+/// An element of a part read in outline, read whole (with what it holds).
+let whole (source: SourceElement) (node: XmlNode) : SourceElement option =
+    let span = spanOf node
+    if not (Span.isKnown span) then None
+    else tryScanAt source.Text span.Start span.End (System.Collections.Generic.HashSet<string>()) |> Option.map (fun read -> { Text = source.Text; Node = read })
+
+/// An element of a text read, as an element of its own (`apply`, `childrenNamed` ... of it).
+let at (source: SourceElement) (node: XmlNode) : SourceElement = { Text = source.Text; Node = node }
+
+/// The attributes of an element of a text read, in the order they are written: each its qualified name and
+/// its text as it is written (with the white space before it).
+let attributeBytes (text: string) (node: XmlNode) : (string * string) list =
+    attributeRanges text (spanOf node) |> List.map (fun (name, start, finish, _, _) -> name, text.Substring(start, finish - start))
+
+/// The schema order of the children of the SpreadsheetML elements the writer changes (by local name: a part
+/// may name them with a prefix).
+module Spreadsheet =
+    let private worksheet =
+        [ "sheetPr"; "dimension"; "sheetViews"; "sheetFormatPr"; "cols"; "sheetData"; "sheetCalcPr"; "sheetProtection"; "protectedRanges"; "scenarios"
+          "autoFilter"; "sortState"; "dataConsolidate"; "customSheetViews"; "mergeCells"; "phoneticPr"; "conditionalFormatting"; "dataValidations"
+          "hyperlinks"; "printOptions"; "pageMargins"; "pageSetup"; "headerFooter"; "rowBreaks"; "colBreaks"; "customProperties"; "cellWatches"
+          "ignoredErrors"; "smartTags"; "drawing"; "legacyDrawing"; "legacyDrawingHF"; "drawingHF"; "picture"; "oleObjects"; "controls"
+          "webPublishItems"; "tableParts"; "extLst" ]
+    let private workbook =
+        [ "fileVersion"; "fileSharing"; "workbookPr"; "workbookProtection"; "bookViews"; "sheets"; "functionGroups"; "externalReferences"
+          "definedNames"; "calcPr"; "oleSize"; "customWorkbookViews"; "pivotCaches"; "smartTagPr"; "smartTagTypes"; "webPublishing"
+          "fileRecoveryPr"; "webPublishObjects"; "extLst" ]
+    let private styleSheet =
+        [ "numFmts"; "fonts"; "fills"; "borders"; "cellStyleXfs"; "cellXfs"; "cellStyles"; "dxfs"; "tableStyles"; "colors"; "extLst" ]
+    let private metadata =
+        [ "metadataTypes"; "metadataStrings"; "mdxMetadata"; "futureMetadata"; "cellMetadata"; "valueMetadata"; "extLst" ]
+    let order : SchemaOrder = fun name ->
+        match local name with
+        | "worksheet" -> worksheet
+        | "workbook" -> workbook
+        | "styleSheet" -> styleSheet
+        | "metadata" -> metadata
+        | "sheetPr" -> [ "tabColor"; "outlinePr"; "pageSetUpPr" ]
+        | "sheetViews" -> [ "sheetView"; "extLst" ]
+        | "sheetView" -> [ "pane"; "selection"; "pivotSelection"; "extLst" ]
+        | "row" -> [ "c"; "extLst" ]
+        | "c" -> [ "f"; "v"; "is"; "extLst" ]
+        | "xf" -> [ "alignment"; "protection"; "extLst" ]
+        | "sst" -> [ "si"; "extLst" ]
+        | "comments" -> [ "authors"; "commentList"; "extLst" ]
+        | "comment" -> [ "text"; "commentPr" ]
+        | "table" -> [ "autoFilter"; "sortState"; "tableColumns"; "tableStyleInfo"; "extLst" ]
+        | "tableColumn" -> [ "calculatedColumnFormula"; "totalsRowFormula"; "xmlColumnPr"; "extLst" ]
+        | "queryTable" -> [ "queryTableRefresh"; "extLst" ]
+        | "queryTableRefresh" -> [ "sortState"; "queryTableFields"; "queryTableDeletedFields"; "extLst" ]
+        | "bookViews" -> [ "workbookView" ]
+        | _ -> []
