@@ -2487,8 +2487,8 @@ let private plainBodyBlocks context (styleId: string option) (text: string) : ob
 /// imported body (formatting, hyperlinks, tables) as long as the reference in
 /// the text still carries the text it was imported with; otherwise from the
 /// text on the reference. Notes nothing refers to any more are left out, the
-/// separator notes are kept.
-let private notesToEditor context (noteType: string) (doc: Document) : obj array =
+/// separator notes are kept. With each, the blocks it is written from, when it is written from its body.
+let private notesWithBodies context (noteType: string) (doc: Document) : (obj * Block list option) array =
     let bodies = doc.Package.Notes |> List.filter (fun note -> note.NoteType = noteType)
     let referenced =
         allParagraphs doc
@@ -2514,7 +2514,7 @@ let private notesToEditor context (noteType: string) (doc: Document) : obj array
             "Blocks" ==> blocks
         ]
     let rich (body: NoteBody) =
-        noteObject body.Id body.Kind body.HasMark body.MarkStyle body.Text (body.Blocks |> List.map (blockToEditor context) |> List.toArray)
+        noteObject body.Id body.Kind body.HasMark body.MarkStyle body.Text (body.Blocks |> List.map (blockToEditor context) |> List.toArray), Some body.Blocks
     [| for body in bodies do
            if body.Kind.IsSome then yield rich body
        for id, text in referenced do
@@ -2522,12 +2522,15 @@ let private notesToEditor context (noteType: string) (doc: Document) : obj array
            | Some body when text.IsNone || text = Some body.Text -> yield rich body
            | Some body ->
                let text = text |> Option.defaultValue ""
-               yield noteObject id None body.HasMark body.MarkStyle text (plainBodyBlocks context textStyle text)
+               yield noteObject id None body.HasMark body.MarkStyle text (plainBodyBlocks context textStyle text), None
            | None ->
                let text = text |> Option.defaultValue ""
-               yield noteObject id None true None text (plainBodyBlocks context textStyle text) |]
+               yield noteObject id None true None text (plainBodyBlocks context textStyle text), None |]
 
-let private commentsToEditor context (doc: Document) : obj array =
+let private notesToEditor context (noteType: string) (doc: Document) : obj array =
+    notesWithBodies context noteType doc |> Array.map fst
+
+let private commentsWithBodies context (doc: Document) : (obj * Block list option) array =
     let referenced =
         allParagraphs doc
         |> List.collect (fun para ->
@@ -2549,10 +2552,13 @@ let private commentsToEditor context (doc: Document) : obj array =
            match doc.Package.Comments |> List.tryFind (fun body -> body.Id = id) with
            | Some body when style.CommentText.IsNone || style.CommentText = Some body.Text ->
                yield commentObject id (style.CommentAuthor |> Option.orElse body.Author) (style.CommentDate |> Option.orElse body.Date) body.Initials body.Text
-                         (body.Blocks |> List.map (blockToEditor context) |> List.toArray)
+                         (body.Blocks |> List.map (blockToEditor context) |> List.toArray), Some body.Blocks
            | body ->
                let text = style.CommentText |> Option.defaultValue ""
-               yield commentObject id style.CommentAuthor style.CommentDate (body |> Option.bind (fun value -> value.Initials)) text (plainBodyBlocks context None text) |]
+               yield commentObject id style.CommentAuthor style.CommentDate (body |> Option.bind (fun value -> value.Initials)) text (plainBodyBlocks context None text), None |]
+
+let private commentsToEditor context (doc: Document) : obj array =
+    commentsWithBodies context doc |> Array.map fst
 
 /// The whole document as the package DocumentWriter.writeFromEditorPackage
 /// takes: the inverse of importFromEditorPackage.
@@ -3264,9 +3270,12 @@ let private listSignatures (doc: Document) =
 
 let private exportDocumentPackageOf (doc: Document) (imported: Document option) : obj =
     let context = Some (WordStyles.styleContext doc)
-    let footnotes = notesToEditor context "footnote" doc
-    let endnotes = notesToEditor context "endnote" doc
-    let comments = commentsToEditor context doc
+    let footnotesWithBodies = notesWithBodies context "footnote" doc
+    let endnotesWithBodies = notesWithBodies context "endnote" doc
+    let commentsWithBodies = commentsWithBodies context doc
+    let footnotes = Array.map fst footnotesWithBodies
+    let endnotes = Array.map fst endnotesWithBodies
+    let comments = Array.map fst commentsWithBodies
     // A header / footer that is what it was when the document was read.
     let partsWithSource (parts: HeaderFooterPart list) (originalParts: HeaderFooterPart list) =
         let items = headerFooterPartsToEditor context parts
@@ -3323,6 +3332,24 @@ let private exportDocumentPackageOf (doc: Document) (imported: Document option) 
     markUnchanged footnotes (notesToEditor context "footnote")
     markUnchanged endnotes (notesToEditor context "endnote")
     markUnchanged comments (commentsToEditor context)
+    // A note or comment that changed and is written from its body: its blocks say which they were when it was
+    // read, as the body's do, for the writer to keep what is as it was.
+    let withSource (current: (obj * Block list option) array) (originalBlocksOf: Document -> string -> Block list option) =
+        match imported with
+        | Some original ->
+            for item, blocks in current do
+                match blocks, originalBlocksOf original (string (item?Id)) with
+                | Some blocks, Some originalBlocks when not (boolOrDefault false (item?SourceUnchanged)) ->
+                    let tagged, counts = blocksWithSource context originalBlocks blocks
+                    item?Blocks <- tagged
+                    item?SourceStoryCounts <- counts
+                | _ -> ()
+        | None -> ()
+    let noteBlocksOf (noteType: string) (original: Document) (id: string) =
+        original.Package.Notes |> List.tryFind (fun note -> note.NoteType = noteType && note.Id = id) |> Option.map (fun note -> note.Blocks)
+    withSource footnotesWithBodies (noteBlocksOf "footnote")
+    withSource endnotesWithBodies (noteBlocksOf "endnote")
+    withSource commentsWithBodies (fun original id -> original.Package.Comments |> List.tryFind (fun comment -> comment.Id = id) |> Option.map (fun comment -> comment.Blocks))
     let body = exportBodyWithSource context imported doc
     let partIds (parts: HeaderFooterPart list) = parts |> List.map (fun part -> part.Kind, part.RelationshipId)
     createObj [

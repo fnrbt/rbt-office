@@ -185,15 +185,31 @@ tags the part's blocks as it tags the body's (`blocksWithSource`). Each part's p
 what is known of the part as read (`SourceState`) is put back while that part is written.
 (`tools/word-browser/checks/header-footer-xml.js`.)
 
+### Notes and comments
+
+A part of notes or comments in which one changed is the part as read with that one's element replaced
+(`patchedStoriesPart`); the others and the separators are their bytes. The changed one goes through `planBody` as a
+header does, its container the note's element (`StoryElement`: the w:footnote, w:endnote or w:comment of its id;
+the start and end tags stay as read). The reader scans the parts with spans and records the element of the note
+each block came from (`Note.ItemChunks`, `Comment.ItemChunks`; `Preserved.NoteItemChunks` by "footnotes:2"); the
+editor tags a changed note's blocks against the note as read (`blocksWithSource`); the writer makes each such
+note's plan with the body's and puts its `SourceState` back while it writes it (`generateStoryXmlFromPlan`). The
+run of the note's own mark (w:footnoteRef, w:endnoteRef, w:annotationRef), which the model does not hold as a run,
+is the run that was read: put at the start of the first paragraph where what was written has none. A note with
+nothing as it was (a single paragraph that changed) is written from the model as before.
+The editor changes a note only as a whole (`setNote` / `setComment` give a plain-text body that is new, not a
+paragraph of the one read), so in the editor this path is reached by no edit yet; `tools/word-browser/checks/notes-xml.js`
+writes it from packages whose note says which of its blocks changed.
+
 ### Left
 
 - The model's XML written by a typed builder (it is text made by `element` / `selfClosing` now).
 - Bookmarks handed over typed, not as tokens in a string (`ModelText` reads them at the writer's end).
 - `XmlPatch.readPartExcept` still has a tokenizer of its own (XmlPatch is changed only by additions):
   `XmlDsl.tryScanOutline` reads the same outline.
-- Notes and comments: a part in which one changed keeps the others' elements as they were read
-  (`patchedStoriesPart`), but a changed note or comment is written from the model whole, not spliced as a
-  paragraph of the body is (it needs the reader's element map per note, as headers have).
+- Notes and comments in the editor: a note's or comment's paragraphs cannot be typed into or formatted - `setNote` /
+  `setComment` replace the body with plain text, a new paragraph. The writer splices a changed note as a header
+  (above) once the editor changes a note's paragraphs as it changes a header's.
 - Joins: the paragraph joined to another keeps nothing of its own properties (as Word).
 
 ### The original plan

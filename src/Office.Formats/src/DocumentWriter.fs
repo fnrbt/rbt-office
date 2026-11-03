@@ -616,6 +616,9 @@ type PreservedPackage = {
     /// The same of each header and footer, by its relationship id: the element of the part's root each item
     /// came from, and how many elements the root has.
     PartItemChunks: Map<string, int array * int>
+    /// The same of each note and comment, by its part and id ("footnotes:2"): the element of the note's
+    /// element each item came from, and how many elements it has.
+    NoteItemChunks: Map<string, int array * int>
     /// The package path each header / footer part had, by its relationship id.
     PartPaths: Map<string, string>
     /// [Content_Types].xml and relationship parts as they were read, by path.
@@ -629,6 +632,7 @@ let private emptyPreservedPackage = {
     BodyItemChunks = [||]
     BodyChunkCount = 0
     PartItemChunks = Map.empty
+    NoteItemChunks = Map.empty
     PartPaths = Map.empty
     OriginalText = Map.empty
     Parts = []
@@ -678,6 +682,14 @@ let private preservedPackageFromObject (value: obj) : PreservedPackage =
             |> List.choose (fun entry ->
                 optionalString (entry?Part)
                 |> Option.map (fun key -> key, (optionalArray (entry?Chunks) |> Array.map (fun chunk -> intOrDefault (-1) chunk), intOrDefault 0 (entry?Count))))
+            |> Map.ofList
+          NoteItemChunks =
+            optionalArray (value?NoteItemChunks)
+            |> Array.toList
+            |> List.choose (fun entry ->
+                match optionalString (entry?Part), optionalString (entry?Id) with
+                | Some part, Some id -> Some (part + ":" + id, (optionalArray (entry?Chunks) |> Array.map (fun chunk -> intOrDefault (-1) chunk), intOrDefault 0 (entry?Count)))
+                | _ -> None)
             |> Map.ofList
           PartPaths =
             optionalArray (value?PartPaths)
@@ -3813,6 +3825,8 @@ type private BodyPlan = {
     Original: string
     /// Its root element (w:document).
     Root: XmlDsl.XmlNode
+    /// The element that holds the blocks (w:body; the root of a header; a w:footnote, w:endnote, w:comment).
+    Container: XmlDsl.XmlNode
     /// Where what w:body holds starts and ends.
     ContentStart: int
     ContentEnd: int
@@ -3826,20 +3840,33 @@ type private BodyPlan = {
     Regenerated: obj array
 }
 
+/// Where the blocks of a part are (see planBody).
+type private BlockContainer =
+    /// The document's: in w:body, with its section properties.
+    | DocumentBody
+    /// A header's or a footer's: in the part's root.
+    | PartRoot
+    /// A note's or a comment's: in its element (w:footnote, w:endnote, w:comment) of this w:id.
+    | StoryElement of name: string * id: string
+
 [<Fable.Core.Emit("(typeof $0.SourceIndex === 'number' ? $0.SourceIndex : -1)")>]
 let private sourceIndexOf (_item: obj) : int = jsNative
 
 /// Which of the body's elements go back as they were read. None when the
 /// text cannot be matched with what the reader made of it (the body is then
 /// written from the model, as a new document is), or when nothing is as it was.
-/// `isBody`: the part is the document, whose blocks are in w:body; a header's or a footer's are in its root
-/// (and it has no section properties of its own).
-let private planBody (isBody: bool) (xml: string) (itemChunks: int array) (storyCounts: int array) (chunkCount: int) (items: obj array) (pageSetupUnchanged: bool) : BodyPlan option =
+/// `container`: where the blocks are - the document's in w:body; a header's or a footer's in its root, a
+/// note's or a comment's in its element (neither has section properties of its own).
+let private planBody (container: BlockContainer) (xml: string) (itemChunks: int array) (storyCounts: int array) (chunkCount: int) (items: obj array) (pageSetupUnchanged: bool) : BodyPlan option =
+    let isBody = (container = DocumentBody)
     // The part's root, its w:body, and the elements the body holds (the blocks, as the reader counted them).
     let bodyOfRoot =
         XmlPatch.readPart xml
         |> Option.bind (fun part ->
-            (if isBody then XmlPatch.elements part.Node |> List.tryFind (fun node -> XmlPatch.localName node = "body") else Some part.Node)
+            (match container with
+             | DocumentBody -> XmlPatch.elements part.Node |> List.tryFind (fun node -> XmlPatch.localName node = "body")
+             | PartRoot -> Some part.Node
+             | StoryElement (name, id) -> XmlPatch.childrenNamed part name |> List.tryFind (fun node -> XmlPatch.attribute node "w:id" = Some id))
             |> Option.filter (fun body -> (XmlPatch.span body).StartTagEnd < (XmlPatch.span body).End)
             |> Option.map (fun body ->
                 let kids = XmlPatch.elements body |> List.toArray
@@ -4039,6 +4066,7 @@ let private planBody (isBody: bool) (xml: string) (itemChunks: int array) (story
                 let sectionEnd = if sectIndex >= 0 then body.Ends.[sectIndex] else contentEnd
                 Some { Original = xml
                        Root = root
+                       Container = bodyNode
                        ContentStart = contentStart
                        ContentEnd = contentEnd
                        Segments = List.ofSeq segments
@@ -4217,11 +4245,12 @@ let private balancedPart (xml: string) : string =
             if balanced = content then xml else XmlPatch.slice xml 0 span.StartTagEnd + balanced + XmlPatch.slice xml span.EndTagStart xml.Length
     | None -> xml
 
-let private generateDocumentXmlFromPlan (plan: BodyPlan) (images: ImageScope) (hyperlinks: Map<string, string>) (pageSetup: PageSetupInfo option) (headers: HeaderFooterPartInfo array) (footers: HeaderFooterPartInfo array) : string =
-    let setup = pageSetup |> Option.defaultValue defaultPageSetupInfo
+/// What a plan's container holds up to its section properties, written: its blocks (the ranges in them opened
+/// and closed once each) and what stands after the last of them. What is written from the model is added to
+/// `written`.
+let private planContentParts (plan: BodyPlan) (setup: PageSetupInfo) (images: ImageScope) (hyperlinks: Map<string, string>) (written: ResizeArray<string>) : ResizeArray<string> =
     let slice (start: int, finish: int) = XmlPatch.slice plan.Original start finish
     let pieces = ResizeArray<PartPiece>()
-    let written = ResizeArray<string>()
     // (Paragraphs written from the model splice the part's text: see splicedRuns. The origins of what is
     // written are of this part: see sourceElementAt.)
     spliceSourceText <- plan.Original
@@ -4257,6 +4286,13 @@ let private generateDocumentXmlFromPlan (plan: BodyPlan) (images: ImageScope) (h
     writingBody <- false
     let parts = ResizeArray<string>(balancedRanges (Some (plan.Original, plan.Root)) (pieces.ToArray()))
     parts.Add (slice plan.BeforeSection)
+    parts
+
+let private generateDocumentXmlFromPlan (plan: BodyPlan) (images: ImageScope) (hyperlinks: Map<string, string>) (pageSetup: PageSetupInfo option) (headers: HeaderFooterPartInfo array) (footers: HeaderFooterPartInfo array) : string =
+    let setup = pageSetup |> Option.defaultValue defaultPageSetupInfo
+    let slice (start: int, finish: int) = XmlPatch.slice plan.Original start finish
+    let written = ResizeArray<string>()
+    let parts = planContentParts plan setup images hyperlinks written
     match plan.Section with
     | Some range -> parts.Add (slice range)
     | None ->
@@ -4275,6 +4311,31 @@ let private generateDocumentXmlFromPlan (plan: BodyPlan) (images: ImageScope) (h
     + XmlPatch.slice plan.Original rootSpan.StartTagEnd plan.ContentStart
     + String.concat "" parts
     + XmlPatch.slice plan.Original plan.ContentEnd plan.Original.Length
+
+/// The element of a note or a comment written from its plan (see planBody): its start and end tags as they were
+/// read, what it holds as `planContentParts` writes it. The run with the note's or comment's own mark
+/// (w:footnoteRef, w:endnoteRef, w:annotationRef) - which the model does not hold as a run - is what it was:
+/// where what was written has none, the one that was read is put at the start of the first paragraph.
+let private generateStoryXmlFromPlan (plan: BodyPlan) (images: ImageScope) (hyperlinks: Map<string, string>) : string =
+    let written = ResizeArray<string>()
+    let parts = planContentParts plan defaultPageSetupInfo images hyperlinks written
+    let span = XmlPatch.span plan.Container
+    let text =
+        XmlPatch.slice plan.Original span.Start plan.ContentStart
+        + String.concat "" parts
+        + XmlPatch.slice plan.Original plan.ContentEnd span.End
+    let isMark (node: XmlDsl.XmlNode) = List.contains (XmlPatch.localName node) [ "footnoteRef"; "endnoteRef"; "annotationRef" ]
+    let markRunOf (node: XmlDsl.XmlNode) =
+        XmlPatch.descendantsWhere (fun run -> XmlPatch.localName run = "r" && (XmlPatch.elements run |> List.exists isMark)) node |> List.tryHead
+    match markRunOf plan.Container, XmlPatch.readFragmentRoot text with
+    | Some mark, Some fragment ->
+        match XmlPatch.elements fragment.Node with
+        | [ story ] when (markRunOf story).IsNone ->
+            match XmlPatch.descendantsWhere (fun node -> XmlPatch.localName node = "p") story |> List.tryHead with
+            | Some first -> XmlPatch.applyFragment XmlPatch.Word.order fragment (XmlPatch.editsAt fragment.Node [ first, [ XmlPatch.Prepend (XmlPatch.bytesOf plan.Original mark) ] ])
+            | None -> text
+        | _ -> text
+    | _ -> text
 
 
 let generateDocumentXmlPackage (paragraphs: obj array) (images: ImageScope) (pageSetup: PageSetupInfo option) (headers: HeaderFooterPartInfo array) (footers: HeaderFooterPartInfo array) : string =
@@ -4505,6 +4566,9 @@ type NotePart = {
     PlainText: string option
     /// The note is what it was when it was read.
     Unchanged: bool
+    /// Of one that changed: how many paragraphs each of its blocks had when it was read (its blocks say which
+    /// they were then, as the body's do - see planBody).
+    SourceStoryCounts: int array
 }
 
 type CommentPart = {
@@ -4515,6 +4579,7 @@ type CommentPart = {
     Blocks: obj array
     PlainText: string option
     Unchanged: bool
+    SourceStoryCounts: int array
 }
 
 let private notePartsFromPackage (value: obj) : NotePart list =
@@ -4529,7 +4594,8 @@ let private notePartsFromPackage (value: obj) : NotePart list =
               MarkStyle = optionalString (item?MarkStyle)
               Blocks = optionalArray (item?Blocks)
               PlainText = None
-              Unchanged = boolOrDefault false (item?SourceUnchanged) }))
+              Unchanged = boolOrDefault false (item?SourceUnchanged)
+              SourceStoryCounts = optionalArray (item?SourceStoryCounts) |> Array.map (fun count -> intOrDefault 0 count) }))
 
 let private commentPartsFromPackage (value: obj) : CommentPart list =
     optionalArray value
@@ -4543,7 +4609,8 @@ let private commentPartsFromPackage (value: obj) : CommentPart list =
               Initials = optionalString (item?Initials)
               Blocks = optionalArray (item?Blocks)
               PlainText = None
-              Unchanged = boolOrDefault false (item?SourceUnchanged) }))
+              Unchanged = boolOrDefault false (item?SourceUnchanged)
+              SourceStoryCounts = optionalArray (item?SourceStoryCounts) |> Array.map (fun count -> intOrDefault 0 count) }))
 
 /// Bodies from the package first; a note that is only known from a reference
 /// run (NoteText) is added as plain text.
@@ -4552,14 +4619,14 @@ let private mergeNoteParts (fromPackage: NotePart list) (fromRuns: NoteRef list)
     fromPackage
     @ (fromRuns
        |> List.filter (fun note -> not (Set.contains note.Id known))
-       |> List.map (fun note -> { Id = note.Id; Kind = None; HasMark = false; MarkStyle = None; Blocks = [||]; PlainText = Some note.Text; Unchanged = false }))
+       |> List.map (fun note -> { Id = note.Id; Kind = None; HasMark = false; MarkStyle = None; Blocks = [||]; PlainText = Some note.Text; Unchanged = false; SourceStoryCounts = [||] }))
 
 let private mergeCommentParts (fromPackage: CommentPart list) (fromRuns: CommentRef list) : CommentPart list =
     let known = fromPackage |> List.map (fun comment -> comment.Id) |> Set.ofList
     fromPackage
     @ (fromRuns
        |> List.filter (fun comment -> not (Set.contains comment.Id known))
-       |> List.map (fun comment -> { Id = comment.Id; Author = comment.Author; Date = comment.Date; Initials = None; Blocks = [||]; PlainText = Some comment.Text; Unchanged = false }))
+       |> List.map (fun comment -> { Id = comment.Id; Author = comment.Author; Date = comment.Date; Initials = None; Blocks = [||]; PlainText = Some comment.Text; Unchanged = false; SourceStoryCounts = [||] }))
 
 let private partRootAttributes =
     [("xmlns:w", Namespaces.word); ("xmlns:r", Namespaces.relationships); ("xmlns:m", Namespaces.math)]
@@ -5467,7 +5534,7 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
     let bodyPlan =
         match sourceOf "document" with
         | Some xml when preserved.BodyItemChunks.Length > 0 ->
-            planBody true xml preserved.BodyItemChunks (optionalArray (package?SourceStoryCounts) |> Array.map (fun count -> intOrDefault 0 count)) preserved.BodyChunkCount paragraphs (boolOrDefault false (package?PageSetupUnchanged))
+            planBody DocumentBody xml preserved.BodyItemChunks (optionalArray (package?SourceStoryCounts) |> Array.map (fun count -> intOrDefault 0 count)) preserved.BodyChunkCount paragraphs (boolOrDefault false (package?PageSetupUnchanged))
         | _ -> None
     let bodyState = sourceState ()
     // A header or footer that was changed: what of it is as it was read goes back as it was, as the body's
@@ -5481,7 +5548,7 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
                 | Some xml, Some (chunks, count) when chunks.Length > 0 ->
                     forgetSourceBody ()
                     let counts = optionalArray (part?SourceStoryCounts) |> Array.map (fun count -> intOrDefault 0 count)
-                    planBody false xml chunks counts count (partBlocks part) false
+                    planBody PartRoot xml chunks counts count (partBlocks part) false
                     |> Option.map (fun plan -> relId, (plan, sourceState ()))
                 | _ -> None
             | _ -> None)
@@ -5583,6 +5650,30 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
         | None -> Set.empty
     let footnotes = mergeNoteParts (notePartsFromPackage (package?Footnotes)) (collectNotes "footnote" contentBlocks)
     let endnotes = mergeNoteParts (notePartsFromPackage (package?Endnotes)) (collectNotes "endnote" contentBlocks)
+    // A note or comment that was changed: what of it is as it was read goes back as it was, as the body's blocks
+    // do (its plan, and what is known of its part while it is written), by its part and id ("footnotes:2").
+    let notePlans =
+        let planOf (key: string) (elementName: string) (id: string) (unchanged: bool) (blocks: obj array) (counts: int array) =
+            if unchanged || blocks.Length = 0 then None
+            else
+                match sourceOf key, Map.tryFind (key + ":" + id) preserved.NoteItemChunks with
+                | Some xml, Some (chunks, count) when chunks.Length > 0 ->
+                    forgetSourceBody ()
+                    planBody (StoryElement (elementName, id)) xml chunks counts count blocks false
+                    |> Option.map (fun plan -> key + ":" + id, (plan, sourceState ()))
+                | _ -> None
+        [ for note in footnotes do yield planOf "footnotes" "w:footnote" note.Id note.Unchanged note.Blocks note.SourceStoryCounts
+          for note in endnotes do yield planOf "endnotes" "w:endnote" note.Id note.Unchanged note.Blocks note.SourceStoryCounts
+          for comment in comments do yield planOf "comments" "w:comment" comment.Id comment.Unchanged comment.Blocks comment.SourceStoryCounts ]
+        |> List.choose id
+        |> Map.ofList
+    forgetSourceBody ()
+    useSourceState bodyState
+    // (Of a note written from its plan, the blocks written from the model.)
+    let storyBlocks (key: string) (id: string) (blocks: obj array) =
+        match Map.tryFind (key + ":" + id) notePlans with
+        | Some (plan, _) -> plan.Regenerated
+        | None -> blocks
     // Each of these parts has its own relationships: its images and hyperlinks.
     let bodyPart (key: string) (blocks: obj array) =
         let images, next = buildImageScope nextMediaIndex blocks
@@ -5590,9 +5681,9 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
         images, hyperlinkMapWith (keptFor key) blocks
     // (Of a part that was read, those of the notes that changed: the others are written back as they were.)
     let readFor (key: string) = (sourceOf key).IsSome
-    let footnoteBlocks = footnotes |> List.filter (fun note -> not (readFor "footnotes" && note.Unchanged)) |> List.toArray |> Array.collect (fun note -> note.Blocks)
-    let endnoteBlocks = endnotes |> List.filter (fun note -> not (readFor "endnotes" && note.Unchanged)) |> List.toArray |> Array.collect (fun note -> note.Blocks)
-    let commentBlocks = comments |> List.filter (fun comment -> not (readFor "comments" && comment.Unchanged)) |> List.toArray |> Array.collect (fun comment -> comment.Blocks)
+    let footnoteBlocks = footnotes |> List.filter (fun note -> not (readFor "footnotes" && note.Unchanged)) |> List.toArray |> Array.collect (fun note -> storyBlocks "footnotes" note.Id note.Blocks)
+    let endnoteBlocks = endnotes |> List.filter (fun note -> not (readFor "endnotes" && note.Unchanged)) |> List.toArray |> Array.collect (fun note -> storyBlocks "endnotes" note.Id note.Blocks)
+    let commentBlocks = comments |> List.filter (fun comment -> not (readFor "comments" && comment.Unchanged)) |> List.toArray |> Array.collect (fun comment -> storyBlocks "comments" comment.Id comment.Blocks)
     // The notes and the comments as they were read, when nothing of them was changed.
     let footnotesSource = if boolOrDefault false (package?FootnotesUnchanged) then sourceOf "footnotes" else None
     let endnotesSource = if boolOrDefault false (package?EndnotesUnchanged) then sourceOf "endnotes" else None
@@ -5685,12 +5776,20 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
         let keptIds = keptFor key |> List.map (fun rel -> rel.Id) |> Set.ofList
         links |> Map.filter (fun _ id -> not (Set.contains id keptIds))
     // A part of notes or comments that was read, with what changed made in it (see patchedStoriesPart): each
-    // element the model writes with its ranges opened and closed in it.
-    let stories (key: string) (elementName: string) (items: (string * bool) list) (write: string -> string) =
+    // that changed from its plan (what is as it was read stays its text), or the element the model writes with
+    // its ranges opened and closed in it.
+    let stories (key: string) (elementName: string) (images: ImageScope) (links: Map<string, string>) (items: (string * bool) list) (write: string -> string) =
         sourceOf key
         |> Option.bind (fun xml ->
             let unchanged = items |> List.filter snd |> List.map fst |> Set.ofList
-            patchedStoriesPart xml elementName (List.map fst items) unchanged (fun id -> (balancedRanges None [| FromModel (write id) |]).[0]))
+            patchedStoriesPart xml elementName (List.map fst items) unchanged (fun id ->
+                match Map.tryFind (key + ":" + id) notePlans with
+                | Some (plan, state) ->
+                    useSourceState state
+                    let text = generateStoryXmlFromPlan plan images links
+                    forgetSourceBody ()
+                    text
+                | None -> (balancedRanges None [| FromModel (write id) |]).[0]))
     let partRelsNeeded (key: string) (images: ImageScope) (links: Map<string, string>) =
         images.Assets.Length > 0 || not links.IsEmpty || not (keptFor key).IsEmpty
 
@@ -5754,7 +5853,7 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
                         | None ->
                             withRelationshipsOf "comments" commentBlocks (fun () ->
                                 let write = commentElement (partBody commentImages commentLinks)
-                                stories "comments" "w:comment" (comments |> List.map (fun comment -> comment.Id, comment.Unchanged)) (fun id -> write (comments |> List.find (fun comment -> comment.Id = id)))
+                                stories "comments" "w:comment" commentImages commentLinks (comments |> List.map (fun comment -> comment.Id, comment.Unchanged)) (fun id -> write (comments |> List.find (fun comment -> comment.Id = id)))
                                 |> Option.defaultWith (fun () -> balancedPart (generateCommentsPart (partBody commentImages commentLinks) comments))) }
             if partRelsNeeded "comments" commentImages commentLinks then
                 yield { Path = "word/_rels/comments.xml.rels"; Content = generatePartRelsWithKept (keptFor "comments") (newLinks "comments" commentLinks) commentImages }
@@ -5766,7 +5865,7 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
                         | None ->
                             withRelationshipsOf "footnotes" footnoteBlocks (fun () ->
                                 let write = noteElement "w:footnote" "w:footnoteRef" (partBody footnoteImages footnoteLinks)
-                                stories "footnotes" "w:footnote" (footnotes |> List.map (fun note -> note.Id, note.Unchanged)) (fun id -> write (footnotes |> List.find (fun note -> note.Id = id)))
+                                stories "footnotes" "w:footnote" footnoteImages footnoteLinks (footnotes |> List.map (fun note -> note.Id, note.Unchanged)) (fun id -> write (footnotes |> List.find (fun note -> note.Id = id)))
                                 |> Option.defaultWith (fun () -> balancedPart (generateNotesPart "w:footnotes" "w:footnote" "w:footnoteRef" (partBody footnoteImages footnoteLinks) footnotes))) }
             if partRelsNeeded "footnotes" footnoteImages footnoteLinks then
                 yield { Path = "word/_rels/footnotes.xml.rels"; Content = generatePartRelsWithKept (keptFor "footnotes") (newLinks "footnotes" footnoteLinks) footnoteImages }
@@ -5778,7 +5877,7 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
                         | None ->
                             withRelationshipsOf "endnotes" endnoteBlocks (fun () ->
                                 let write = noteElement "w:endnote" "w:endnoteRef" (partBody endnoteImages endnoteLinks)
-                                stories "endnotes" "w:endnote" (endnotes |> List.map (fun note -> note.Id, note.Unchanged)) (fun id -> write (endnotes |> List.find (fun note -> note.Id = id)))
+                                stories "endnotes" "w:endnote" endnoteImages endnoteLinks (endnotes |> List.map (fun note -> note.Id, note.Unchanged)) (fun id -> write (endnotes |> List.find (fun note -> note.Id = id)))
                                 |> Option.defaultWith (fun () -> balancedPart (generateNotesPart "w:endnotes" "w:endnote" "w:endnoteRef" (partBody endnoteImages endnoteLinks) endnotes))) }
             if partRelsNeeded "endnotes" endnoteImages endnoteLinks then
                 yield { Path = "word/_rels/endnotes.xml.rels"; Content = generatePartRelsWithKept (keptFor "endnotes") (newLinks "endnotes" endnoteLinks) endnoteImages }

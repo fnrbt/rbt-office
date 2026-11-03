@@ -386,6 +386,19 @@ module Processors =
                     Some (createObj [ "Part" ==> relId; "Chunks" ==> Array.append contentChunks shapeChunks; "Count" ==> part.ChunkCount ])
                 | _ -> None)
         preserved?PartItemChunks <- List.toArray partChunks
+        // (Of each note and comment the same, by its part and id: the element of w:footnote, w:endnote or
+        // w:comment each of its blocks came from.)
+        let storyChunks (part: string) (stories: (string * DocxReader.DocumentContent list * int list * int) list) =
+            stories
+            |> List.choose (fun (id, blocks, chunks, count) ->
+                if chunks.Length = blocks.Length && count > 0 then
+                    Some (createObj [ "Part" ==> part; "Id" ==> id; "Chunks" ==> List.toArray chunks; "Count" ==> count ])
+                else None)
+        preserved?NoteItemChunks <-
+            List.toArray (
+                storyChunks "footnotes" (doc.Footnotes |> List.map (fun note -> note.Id, note.Blocks, note.ItemChunks, note.ChunkCount))
+                @ storyChunks "endnotes" (doc.Endnotes |> List.map (fun note -> note.Id, note.Blocks, note.ItemChunks, note.ChunkCount))
+                @ storyChunks "comments" (doc.Comments |> List.map (fun comment -> comment.Id, comment.Blocks, comment.ItemChunks, comment.ChunkCount)))
         preserved
 
     /// A copy of the file a package was opened from, when it was given as bytes: kept with what

@@ -477,6 +477,10 @@ type Comment = {
     Initials: string option
     /// The comment body in order, with tables kept as tables and run formatting.
     Blocks: DocumentContent list
+    /// The child element of w:comment each of Blocks was read from, and how many elements it has
+    /// (as Docx.bodyContentChunks says of the body).
+    ItemChunks: int list
+    ChunkCount: int
 }
 
 type RevisionType =
@@ -506,6 +510,10 @@ type Note = {
     HasMark: bool
     /// Character style of the run that holds the mark.
     MarkStyle: string option
+    /// The child element of w:footnote / w:endnote each of Blocks was read from, and how many elements it
+    /// has (as Docx.bodyContentChunks says of the body).
+    ItemChunks: int list
+    ChunkCount: int
 }
 
 /// One segment of a custom (a:custGeom) path. Op is M/L/C/Q/Z; Pts are the flat
@@ -3136,10 +3144,13 @@ module Comments =
                 InitialText = initialText
                 Initials = Docx.attr "initials" commentNode
                 Blocks = blocks
+                ItemChunks = fst (Docx.bodyContentChunks commentNode)
+                ChunkCount = snd (Docx.bodyContentChunks commentNode)
             })
 
     let parseComments (xml: string) : Comment list =
-        let doc = XmlDsl.parse xml
+        // (Scanned, as the body is: its paragraphs know where in the part they were read from.)
+        let doc, _ = Ns.parseWithLocalNames xml
         Ns.descendantsNs "comment" doc
         |> List.choose parseComment
         |> List.map (fun comment -> { comment with Blocks = completeOpaqueObjects doc comment.Blocks })
@@ -3213,6 +3224,8 @@ module Notes =
                 Kind = Docx.attr "type" noteNode |> Option.filter (fun kind -> kind <> "normal")
                 HasMark = markRun.IsSome
                 MarkStyle = markRun |> Option.bind (fun run -> (Docx.runProps run).Style)
+                ItemChunks = fst (Docx.bodyContentChunks noteNode)
+                ChunkCount = snd (Docx.bodyContentChunks noteNode)
             })
 
     let parseNote (noteNode: XmlNode) : Note option =
@@ -3220,7 +3233,8 @@ module Notes =
         parseNoteOfPart partKey noteNode
 
     let parseNotes (xml: string) : Note list =
-        let doc = XmlDsl.parse xml
+        // (Scanned, as the body is: its paragraphs know where in the part they were read from.)
+        let doc, _ = Ns.parseWithLocalNames xml
         Ns.descendantsNs "footnote" doc
         |> List.choose parseNote
         |> fun footnotes ->
