@@ -69,6 +69,24 @@ try {
     Word.insertText(editor, 'n');
     check('the text typed next is not bold, the text before it still is', [formatOf(6, 7, 1).Bold, formatOf(0, 6, 1).Bold], [false, true]);
 
+    // ---- a caret inside a word: the word, as in Word ----
+    caret(2);
+    Word.toggleBold(editor);
+    const inWord = Word.getSelection(editor);
+    check('bold with the caret inside a word: the document changed, the caret stays where it was', [text(), Word.canUndo(editor), inWord.IsCollapsed, inWord.FocusOffset, Word.getSelectionFormat(editor).Bold], ['Hello world', true, true, 2, true]);
+    check('the whole word is bold, nothing else', [formatOf(0, 5).Bold, formatOf(5, 11).Bold], [true, false]);
+    caret(3);
+    Word.setFontSizePt(editor, 20);
+    check('a size with the caret inside a word: the word', [formatOf(0, 5).FontSizePt, formatOf(6, 11).FontSizePt === 20], [20, false]);
+    check('undo: one step each', [Word.undo(editor), formatOf(0, 5).FontSizePt === 20, Word.undo(editor), formatOf(0, 5).Bold], [true, false, true, false]);
+    caret(8);
+    Word.toggleItalic(editor);
+    check('in the second word: that word', [formatOf(6, 11).Italic, formatOf(0, 6).Italic], [true, false]);
+    Word.undo(editor);
+    caret(11);
+    Word.toggleItalic(editor);
+    check('at the end of a word: for what is typed next, the document as it was', [Word.getSelectionFormat(editor).Italic, Word.canUndo(editor) && formatOf(6, 11).Italic], [true, false]);
+
     // ---- by the keyboard ----
     const line = Word.getLayoutLines(editor).find((item) => item.BlockId === ids[0]);
     const box = canvas.getBoundingClientRect();
@@ -78,12 +96,14 @@ try {
         chosen: () => { state.chosen = [Word.getSelectionFormat(editor).Bold, Word.getSelectionFormat(editor).Italic, text()]; },
         typed: () => { state.typed = text(); },
         moved: () => { state.moved = [Word.getSelectionFormat(editor).Bold, text()]; },
+        inWord: () => { const at = Word.getSelection(editor); state.inWord = [at.IsCollapsed, at.FocusOffset, text()]; },
     };
     window.drive = [
         ['click', Math.round(box.left + line.X + line.Width + 30), Math.round(box.top + line.Y + line.Height / 2)], ['eval', 'window.steps.clicked()'],
         ['press', 'Control+b'], ['press', 'Control+i'], ['eval', 'window.steps.chosen()'],
         ['type', 'ab'], ['eval', 'window.steps.typed()'],
         ['press', 'Control+b'], ['press', 'ArrowLeft'], ['press', 'ArrowRight'], ['type', 'c'], ['eval', 'window.steps.moved()'],
+        ['press', 'Home'], ['press', 'ArrowRight'], ['press', 'ArrowRight'], ['press', 'Control+u'], ['eval', 'window.steps.inWord()'],
     ];
     window.finish = () => {
         try {
@@ -93,6 +113,7 @@ try {
             check('typing: bold italic text', [state.typed, typed.Bold, typed.Italic, formatOf(0, 11).Bold], ['Hello worldab', true, true, false]);
             // (Ctrl+B after bold text: off; the arrows drop that, so "c" is bold as the text before it.)
             check('Ctrl+B, then the caret moved away and back: the choice is dropped', [state.moved[1], formatOf(13, 14).Bold], ['Hello worldabc', true]);
+            check('Ctrl+U with the caret inside a word: the word underlined, the caret where it was', [state.inWord, formatOf(0, 5).Underline, formatOf(5, 14).Underline], [[true, 2, 'Hello worldabc'], true, false]);
         } catch (e) { fail(e); }
         finish();
     };

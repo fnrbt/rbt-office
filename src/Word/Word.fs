@@ -164,7 +164,8 @@ module API =
     /// typed next at the caret, getSelectionFormat says it, and it is dropped
     /// when the caret moves (Inp.PendingFormat). `command`: as on a selection.
     let private commitCharacterFormat (editor: Editor) (command: Doc.Document -> Doc.Document) =
-        if not (Inp.formatAtCaret editor.Handler command) then commitDocumentUpdate editor (command editor.Doc)
+        let after = Inp.characterFormatted editor.Handler command
+        if not (obj.ReferenceEquals(after, editor.Handler.Document)) then commitDocumentUpdate editor after
 
     /// A number a host gave where an offset is meant, as an offset: a whole
     /// number (a fraction is cut off; no number at all - undefined, NaN - is 0).
