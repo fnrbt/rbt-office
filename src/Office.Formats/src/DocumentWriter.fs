@@ -3416,8 +3416,11 @@ paragraphSplicer <-
                                     for mark in XmlPatch.descendants name element.Node do
                                         yield! Option.toList (XmlPatch.attribute mark "w:id")
                         | None -> () ] |> Set.ofList
+                // (Only in the whole of the paragraph: a part of one, or one with others joined to it, has its break where
+                // the model says - the source's may stand in another part.)
+                let whole = not (para?SpliceLeading = box false) && not (para?SpliceTrailing = box false) && optionalArray (para?SpliceJoined) |> Array.isEmpty
                 let keepBreaks =
-                    if boolOrDefault false (para?PageBreakAfter) then Some (if boolOrDefault false (para?ColumnBreakAfter) then "column" else "page") else None
+                    if whole && boolOrDefault false (para?PageBreakAfter) then Some (if boolOrDefault false (para?ColumnBreakAfter) then "column" else "page") else None
                 para?SpliceBreakKept <- false
                 spliceSourceOf spliceSourceText (intOrDefault -1 (para?SpliceFrom?Start)) (intOrDefault -1 (para?SpliceFrom?End)) bookmarks keepBreaks (fun () -> para?SpliceBreakKept <- true)
                 |> Option.map (fun source ->

@@ -97,7 +97,7 @@ window.finish = async () => {
             const s = saved.ranges;
             const para = (s.xml.match(/<w:p>(?:(?!<\/w:p>).)*commentReference(?:(?!<\/w:p>).)*<\/w:p>/) ?? [''])[0];
             check('a paragraph with the end of a bookmark before its first run, the range of a permission and the range of a comment, spliced from its source (docs/save-architecture.md): all of them are in it, once',
-                [s.report.ModelBlocks, /^<w:p><w:bookmarkEnd w:id="22"\/><w:permStart w:id="30" w:edGrp="everyone"\/>/.test(para), /<w:commentRangeStart w:id="5"\/>/.test(para), /<w:commentRangeEnd w:id="5"\/>(?:(?!<w:r>).)*<w:permEnd w:id="30"\/><\/w:p>$|<w:permEnd w:id="30"\/><w:commentRangeEnd w:id="5"\/><\/w:p>$|<w:commentRangeEnd w:id="5"\/><w:permEnd w:id="30"\/><\/w:p>$/.test(para),
+                [s.report.ModelBlocks, /^<w:p><w:bookmarkEnd w:id="22"\/><w:permStart w:id="30" w:edGrp="everyone"\/>/.test(para), /<w:commentRangeStart w:id="5"\/>/.test(para), /<w:commentRangeEnd w:id="5"\/><w:r><w:commentReference w:id="5"\/><\/w:r><w:permEnd w:id="30"\/><\/w:p>$|<w:commentRangeEnd w:id="5"\/>(?:(?!<w:r>).)*<w:permEnd w:id="30"\/><\/w:p>$|<w:permEnd w:id="30"\/><w:commentRangeEnd w:id="5"\/><\/w:p>$|<w:commentRangeEnd w:id="5"\/><w:permEnd w:id="30"\/><\/w:p>$/.test(para),
                  para.indexOf('commentRangeStart') < para.indexOf('commented'), ranges(s.xml)], [0, true, true, true, true, []]);
         }
         {
