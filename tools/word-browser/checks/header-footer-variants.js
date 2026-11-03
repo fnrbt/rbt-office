@@ -1,9 +1,12 @@
 // Headers and footers edited in place, the cases beside the default header of
 // a plain document: undo / redo of "link to previous" keeps the caret in the
 // header (landscape-section.docx); the page count and the page number in a
-// header are those of the pages the document shows, the page of the endnotes
-// included, while editing and after saving and reading again
-// (sample-formatted.docx: 10 pages, 9 of body text); a header's text has the
+// header are those of the pages the document shows, the endnotes' included,
+// while editing and after saving and reading again (sample-formatted.docx:
+// 8 pages of body text, as Word and LibreOffice lay it out with its embedded
+// Ubuntu fonts - every Heading 1 starts a page; the endnotes follow the text,
+// on page 8 with those fonts, on a ninth page of their own with the fonts
+// this harness has, so the count N is taken from the layout); a header's text has the
 // size the size box says (the default paragraph style's, as the body);
 // entering a header changes nothing - a page without one, a title page and an
 // even page show a blank one until something is typed, which undo takes away
@@ -69,7 +72,14 @@ try {
         const context = target.getContext('2d');
         const pageCount = Word.getPageCount(editor);
         const frames = Word.getPageFrames(editor);
-        check(`${label}: ten pages (nine of body text and the page of the endnotes)`, [pageCount, frames.length], [10, 10]);
+        const N = pageCount;
+        const lines = Array.from(Word.getVbaLayoutLines(editor));
+        const isEndnote = (line) => String(line.BlockId).startsWith('__endnote__');
+        const bodyPages = Math.max(...lines.filter((line) => !isEndnote(line)).map((line) => line.Page));
+        const endnotePages = [...new Set(lines.filter(isEndnote).map((line) => line.Page))];
+        // (It was ten - nine of body text - while a first-line indent narrowed every line of its paragraph, justified lines did not stretch and the drop cap took a line of its own.)
+        check(`${label}: eight pages of body text, as in Word; the endnotes follow, on the last page (${N} pages)`,
+            [bodyPages, endnotePages, frames.length, N - bodyPages <= 1], [8, [N], N, true]);
         // The body's size at the start of the text.
         // (The document's default paragraph style - Normal - is 12 pt Ubuntu; the document defaults are 11 pt.)
         const bodyFormat = { FontSizePt: 12, FontFamily: 'Ubuntu' };
@@ -83,10 +93,10 @@ try {
         Word.insertPageNumberField(editor);
         Word.insertText(editor, ' of ');
         Word.insertPageCountField(editor);
-        check(`${label}: page number and page count: "1 of 10" (it was "1 of 9")`, [Word.getText(editor), Word.getPageCount(editor)], ['1 of 10', 10]);
+        check(`${label}: page number and page count: "1 of N"`, [Word.getText(editor), Word.getPageCount(editor)], [`1 of ${N}`, N]);
         const made = Word.exportDocumentPackage(editor);
         const runs = made.HeaderParts.length === 1 ? made.HeaderParts[0].Paragraphs[0].Runs : [];
-        check(`${label}: the first edit made the header, with its fields`, [made.HeaderParts.length, runs.filter((run) => run.FieldCode).map((run) => [run.FieldCode.trim(), run.Text])], [1, [['PAGE', '1'], ['NUMPAGES', '10']]]);
+        check(`${label}: the first edit made the header, with its fields`, [made.HeaderParts.length, runs.filter((run) => run.FieldCode).map((run) => [run.FieldCode.trim(), run.Text])], [1, [['PAGE', '1'], ['NUMPAGES', String(N)]]]);
         check(`${label}: the fields have the formatting of the text around them`, [new Set(runs.map((run) => run.FontSize)).size, new Set(runs.map((run) => run.FontFamily ?? null)).size, runs.every((run) => !run.Bold)], [1, 1, true]);
         // The size that is painted: capitals in the header at the size the box says, then at twice that.
         Word.insertText(editor, ' HHHH');
@@ -102,21 +112,21 @@ try {
         check(`${label}: header text is painted at the size the box says (${sizePt} pt: capitals ${height(rowsAtSize)} px high, ${height(rowsAtDouble)} px at one and a half times the size)`,
             [sizePt, height(rowsAtSize) >= Math.floor(sizePt * 96 / 72 * 0.66) && height(rowsAtSize) <= Math.ceil(sizePt * 96 / 72 * 0.80), Math.abs(height(rowsAtDouble) - 1.5 * height(rowsAtSize)) <= 2], [bodyFormat.FontSizePt, true, true]);
         Word.undo(editor); Word.undo(editor);
-        check(`${label}: back to "1 of 10", in the header`, [Word.getText(editor), story(editor)[0]], ['1 of 10', 'header']);
-        // The last page - the page of the endnotes - has the header, numbered 10.
-        check(`${label}: the header of the last page`, [Word.enterHeaderFooter(editor, 9, 'header'), Word.getText(editor), story(editor)], [true, '10 of 10', ['header', 'default', 9]]);
+        check(`${label}: back to "1 of N", in the header`, [Word.getText(editor), story(editor)[0]], [`1 of ${N}`, 'header']);
+        // The last page - the endnotes' - has the header, numbered N.
+        check(`${label}: the header of the last page`, [Word.enterHeaderFooter(editor, N - 1, 'header'), Word.getText(editor), story(editor)], [true, `${N} of ${N}`, ['header', 'default', N - 1]]);
         if (withViewport) {
-            Word.setViewport(editor, viewport(Math.max(0, Math.round(frames[9].Top) - 20)));
+            Word.setViewport(editor, viewport(Math.max(0, Math.round(frames[N - 1].Top) - 20)));
             Word.repaint(editor);
-            const last = Word.getPageFrames(editor)[9];
+            const last = Word.getPageFrames(editor)[N - 1];
             const ink = inkOf(context.getImageData(Math.round(last.X ?? 0), 20, Math.round(last.Width), Math.round(last.MarginTop) - 30).data, 140);
-            check(`${label}: and it is painted there (${ink} dark pixels in the header area of page 10)`, ink > 20, true);
+            check(`${label}: and it is painted there (${ink} dark pixels in the header area of page ${N})`, ink > 20, true);
             Word.setViewport(editor, viewport(0));
         }
         Word.exitHeaderFooter(editor);
         // Saved and read again.
         const reopened = await open(await save(editor), withViewport);
-        check(`${label}: saved and read again: still ten pages, "1 of 10" and "7 of 10"`, [Word.getPageCount(reopened), Word.enterHeaderFooter(reopened, 0, 'header'), Word.getText(reopened), Word.enterHeaderFooter(reopened, 6, 'header'), Word.getText(reopened), Word.isModified(reopened)], [10, true, '1 of 10', true, '7 of 10', false]);
+        check(`${label}: saved and read again: still ${N} pages, "1 of N" and "7 of N"`, [Word.getPageCount(reopened), Word.enterHeaderFooter(reopened, 0, 'header'), Word.getText(reopened), Word.enterHeaderFooter(reopened, 6, 'header'), Word.getText(reopened), Word.isModified(reopened)], [N, true, `1 of ${N}`, true, `7 of ${N}`, false]);
         // Undo of everything takes the header away again, in the header.
         Word.enterHeaderFooter(editor, 0, 'header');
         let steps = 0;
@@ -127,7 +137,7 @@ try {
         while (Word.canRedo(editor)) Word.redo(editor);
         // (All of it again, the capitals and their size too: without those.)
         Word.undo(editor); Word.undo(editor);
-        check(`${label}: redone to "1 of 10"`, Word.getText(editor), '1 of 10');
+        check(`${label}: redone to "1 of N"`, Word.getText(editor), `1 of ${N}`);
         Word.exitHeaderFooter(editor);
 
         // ---- 4. a title page and even pages: a blank header until something is typed ----
@@ -165,7 +175,7 @@ try {
         Word.insertPageNumberField(editor);
         Word.insertText(editor, ' / ');
         Word.insertSectionPageCountField(editor);
-        check(`${label}: page number and the pages of the section in the footer`, Word.getText(editor), 'Page 3 / 10');
+        check(`${label}: page number and the pages of the section in the footer`, Word.getText(editor), `Page 3 / ${N}`);
         const footerCaret = Word.getCaretRect(editor);
         const third = Word.getPageFrames(editor)[2];
         check(`${label}: the caret is at the foot of page 3`, [footerCaret.Y > third.Top + third.Height - third.MarginBottom - 2, footerCaret.Y < third.Top + third.Height], [true, true]);
@@ -181,7 +191,7 @@ try {
         const again = await open(await save(editor), withViewport);
         const shown = (pageIndex, kind) => { Word.enterHeaderFooter(again, pageIndex, kind); const text = Word.getText(again); const where = story(again); Word.exitHeaderFooter(again); return [text, where[1]]; };
         check(`${label}: saved and read again: each page shows its footer and header`, [shown(0, 'footer'), shown(1, 'footer'), shown(2, 'footer'), shown(4, 'footer'), shown(3, 'footer'), shown(0, 'header'), shown(1, 'header'), shown(2, 'header')],
-            [['first foot 1', 'first'], ['even foot 2', 'even'], ['Page 3 / 10', 'default'], ['Page 5 / 10', 'default'], ['even foot 4', 'even'], ['', 'first'], ['', 'even'], ['3 of 10', 'default']]);
+            [['first foot 1', 'first'], ['even foot 2', 'even'], [`Page 3 / ${N}`, 'default'], [`Page 5 / ${N}`, 'default'], ['even foot 4', 'even'], ['', 'first'], ['', 'even'], [`3 of ${N}`, 'default']]);
         check(`${label}: reading it changed nothing`, [Word.isModified(again), Word.canUndo(again)], [false, false]);
         return editor;
     };
