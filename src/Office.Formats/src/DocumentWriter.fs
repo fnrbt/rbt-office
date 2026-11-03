@@ -3737,10 +3737,17 @@ let private patchSourceChunk (start: int) (finish: int) (items: obj array) : (in
                     | _ ->
                         noteReason (sprintf "paragraph %d of the block: its element as it was read is not known" index)
                         ok <- false
-    // (Two paragraphs in the place of one element, or of elements one inside the other: not written from their source.)
-    let ordered = inlined |> Seq.sortBy (fun (start, _, _) -> start) |> List.ofSeq
+    // (Two paragraphs of one element - the place a vertically merged cell's continuation keeps, made of the
+    // paragraph moved out of it -: the first is written in its place, the other leaves the element as it is.
+    // Paragraphs of elements one inside the other: not written from their source.)
+    let ordered =
+        inlined
+        |> List.ofSeq
+        |> List.distinctBy (fun (start, finish, _) -> start, finish)
+        |> List.sortBy (fun (start, _, _) -> start)
+    if ordered.Length < inlined.Count then noteReason "two paragraphs of the block are of one element as it was read: the first is written in its place"
     let overlapping = ordered |> List.pairwise |> List.exists (fun ((_, firstEnd, _), (nextStart, _, _)) -> nextStart < firstEnd)
-    if overlapping then noteReason "two paragraphs of the block are of one element as it was read: the block is written from the model"
+    if overlapping then noteReason "paragraphs of the block are of elements one inside the other: the block is written from the model"
     if ok && not overlapping then Some ordered else None
 
 type private BodySegment =
