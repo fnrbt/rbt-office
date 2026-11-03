@@ -426,6 +426,10 @@ and TextBoxBlock = {
     Geometry: ShapeGeometry
     Gradient: GradientSpec option
     Rotation: float
+    /// The shape is mirrored across / upside down (a:xfrm flipH / flipV) before it
+    /// is turned; its text is not.
+    FlipH: bool
+    FlipV: bool
     /// In the text line (wp:inline) rather than floating (wp:anchor).
     Inline: bool
     /// none | square | tight | through | topAndBottom.
@@ -567,6 +571,8 @@ let defaultTextBox : TextBoxBlock = {
     Geometry = GeoRect
     Gradient = None
     Rotation = 0.0
+    FlipH = false
+    FlipV = false
     Inline = false
     Wrap = None
     PositionHAlign = None

@@ -254,6 +254,21 @@ let rotatePath cx cy deg (segs: PathSeg list) : PathSeg list =
             PCubic(c1x, c1y, c2x, c2y, nx, ny)
         | PClose -> PClose)
 
+/// A path of a box `w` × `h` (from 0, 0) mirrored in it: across (flipH: x -> w - x)
+/// and / or upside down (flipV: y -> h - y) - a:xfrm flipH / flipV.
+let flipPath (flipH: bool) (flipV: bool) (w: float) (h: float) (segs: PathSeg list) : PathSeg list =
+    if not flipH && not flipV then segs
+    else
+        let fx x = if flipH then w - x else x
+        let fy y = if flipV then h - y else y
+        segs
+        |> List.map (function
+            | PMove(x, y) -> PMove(fx x, fy y)
+            | PLine(x, y) -> PLine(fx x, fy y)
+            | PQuad(cx, cy, x, y) -> PQuad(fx cx, fy cy, fx x, fy y)
+            | PCubic(c1x, c1y, c2x, c2y, x, y) -> PCubic(fx c1x, fy c1y, fx c2x, fy c2y, fx x, fy y)
+            | PClose -> PClose)
+
 /// Translate a path by (dx,dy) — used to place the box on the page.
 let translatePath dx dy (segs: PathSeg list) : PathSeg list =
     segs

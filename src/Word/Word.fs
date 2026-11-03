@@ -1207,7 +1207,8 @@ module API =
     /// The shapes (text boxes) where they are painted: Id, X (from the left
     /// edge of the shape's page), Y (down the document), Width, Height - layout
     /// pixels, as getLayoutLines; the rectangle before the shape's turn -,
-    /// Rotation (degrees clockwise about its middle), BehindText, RelativeHeight, Wrap,
+    /// Rotation (degrees clockwise about its middle), FlipH / FlipV (mirrored
+    /// across / upside down, before the turn), BehindText, RelativeHeight, Wrap,
     /// AnchorBlockId and Text; Story says where the shape is: "body", or
     /// "header" / "footer" for a text box of a header or footer - listed once,
     /// on the first page (PageIndex; -1 for a shape of the body) that shows
@@ -1224,6 +1225,8 @@ module API =
                 "Width" ==> width
                 "Height" ==> height
                 "Rotation" ==> textBox.Rotation
+                "FlipH" ==> textBox.FlipH
+                "FlipV" ==> textBox.FlipV
                 "BehindText" ==> (textBox.BehindDoc = Some true)
                 "RelativeHeight" ==> textBox.RelativeHeight
                 "Wrap" ==> WordLayout.Floating.textBoxWrap textBox
@@ -1324,7 +1327,7 @@ module API =
                             "Underline" ==> style.Underline
                             "Color" ==> style.Color
                         ])
-                    | Layout.ImageSegment (_, x, yOffset, width, height, startOffset, floating, wrap, relativeHeight, _, _, _, _) ->
+                    | Layout.ImageSegment (_, x, yOffset, width, height, startOffset, floating, wrap, relativeHeight, _, _, _, _, _) ->
                         result.Add(createObj [
                             "Kind" ==> "image"
                             "BlockId" ==> layout.BlockId
@@ -1701,7 +1704,7 @@ module API =
         for segment in line.Segments do
             match segment with
             | Layout.TextSegment (_, _, x, width, _) -> addBounds x width
-            | Layout.ImageSegment (_, x, _, width, _, _, _, _, _, _, _, _, _) -> addBounds x width
+            | Layout.ImageSegment (_, x, _, width, _, _, _, _, _, _, _, _, _, _) -> addBounds x width
             | Layout.MathSegment (_, _, x, width, _, _, _, _) -> addBounds x width
         if hasBounds then left, max 0.0 (right - left)
         else pageLeft + alignOffset, line.Width
@@ -2033,7 +2036,7 @@ module API =
                             "X" ==> (pageLeft + x + alignOffset)
                             "Width" ==> width
                         ])
-                    | Layout.ImageSegment (_, x, yOffset, width, height, startOffset, floating, wrap, relativeHeight, _, _, _, _) ->
+                    | Layout.ImageSegment (_, x, yOffset, width, height, startOffset, floating, wrap, relativeHeight, _, _, _, _, _) ->
                         text.Append "\uFFFC" |> ignore
                         segments.Add(createObj [
                             "Kind" ==> "image"

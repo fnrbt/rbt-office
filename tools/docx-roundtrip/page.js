@@ -30,8 +30,8 @@ const RUN_KEYS = ['Bold', 'Italic', 'Underline', 'UnderlineStyle', 'UnderlineCol
 const IMAGE_KEYS = ['ImageLinked', 'ImageWidth', 'ImageHeight', 'ImageFloating', 'ImageWrap', 'ImageWrapText', 'ImageWrapPolygon', 'ImagePositionX', 'ImagePositionY',
     'ImagePositionHRelativeFrom', 'ImagePositionVRelativeFrom', 'ImagePositionHAlign', 'ImagePositionVAlign', 'ImageBehindDoc', 'ImageRelativeHeight',
     'ImageDistanceLeft', 'ImageDistanceTop', 'ImageDistanceRight', 'ImageDistanceBottom', 'ImageCropLeft', 'ImageCropTop', 'ImageCropRight', 'ImageCropBottom',
-    'ImageAllowOverlap', 'ImageLayoutInCell', 'ImageAlt', 'ImageTitle'];
-const SHAPE_KEYS = ['Width', 'Height', 'X', 'Y', 'Geometry', 'CustomPath', 'CustomW', 'CustomH', 'Gradient', 'Rotation', 'FillColor', 'BorderColor', 'BorderWidth',
+    'ImageAllowOverlap', 'ImageLayoutInCell', 'ImageAlt', 'ImageTitle', 'ImageFlipH', 'ImageFlipV'];
+const SHAPE_KEYS = ['Width', 'Height', 'X', 'Y', 'Geometry', 'CustomPath', 'CustomW', 'CustomH', 'Gradient', 'Rotation', 'FlipH', 'FlipV', 'FillColor', 'BorderColor', 'BorderWidth',
     'NoFill', 'NoLine', 'BorderDash', 'Inline', 'Wrap', 'PositionHRelativeFrom', 'PositionVRelativeFrom', 'PositionHAlign', 'PositionVAlign', 'BehindDoc',
     'RelativeHeight', 'AnchorBlock', 'DistanceTop', 'DistanceBottom', 'DistanceLeft', 'DistanceRight',
     'InsetLeft', 'InsetTop', 'InsetRight', 'InsetBottom', 'VerticalAnchor', 'AutoFit', 'NoTextWrap', 'FitText', 'Opacity'];

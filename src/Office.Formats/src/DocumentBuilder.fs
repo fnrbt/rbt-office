@@ -97,6 +97,8 @@ type DocumentBuilder(state: DocumentBuilderState) =
             ImageCropTop = None
             ImageCropRight = None
             ImageCropBottom = None
+            ImageFlipH = false
+            ImageFlipV = false
         }
 
         let para = {
@@ -229,4 +231,6 @@ let createRun (text: string) (bold: bool) (italic: bool) (fontSize: float) (font
         ImageCropTop = None
         ImageCropRight = None
         ImageCropBottom = None
+        ImageFlipH = false
+        ImageFlipV = false
     }

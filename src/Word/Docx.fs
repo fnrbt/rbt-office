@@ -656,6 +656,8 @@ let private editorRunsToBuffer (runs: obj array) : TextBuffer =
                      else
                          let values = unbox<float array> points
                          [ for i in 0 .. values.Length / 2 - 1 -> values.[i * 2], values.[i * 2 + 1] ])
+                FlipH = boolOrDefault false (run?ImageFlipH)
+                FlipV = boolOrDefault false (run?ImageFlipV)
                 Opaque =
                     optionalString (run?OpaqueXml)
                     |> Option.map (fun xml ->
@@ -1133,6 +1135,8 @@ let rec private blockFromEditor (item: obj) =
                 Geometry = geometryFromEditor item
                 Gradient = gradientFromEditor (item?Gradient)
                 Rotation = optionalNumberAsFloat (item?Rotation) |> Option.defaultValue 0.0
+                FlipH = boolOrDefault false (item?FlipH)
+                FlipV = boolOrDefault false (item?FlipV)
                 Inline = boolOrDefault false (item?Inline)
                 Wrap = optionalString (item?Wrap)
                 PositionHAlign = optionalString (item?PositionHAlign)
@@ -2030,6 +2034,8 @@ let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) 
                     "ImageCropTop" ==> img.CropTop
                     "ImageCropRight" ==> img.CropRight
                     "ImageCropBottom" ==> img.CropBottom
+                    "ImageFlipH" ==> img.FlipH
+                    "ImageFlipV" ==> img.FlipV
                     "ImagePositionHAlign" ==> img.PositionHAlign
                     "ImagePositionVAlign" ==> img.PositionVAlign
                     "ImageWrapText" ==> img.WrapText
@@ -2271,6 +2277,8 @@ let rec private blockToEditor (context: WordStyles.DocumentStyleContext option) 
                                     "Radial" ==> gradient.Radial ])
                             |> Option.toObj)
             "Rotation" ==> textBox.Rotation
+            "FlipH" ==> textBox.FlipH
+            "FlipV" ==> textBox.FlipV
             "NoFill" ==> (textBox.FillColor.IsNone && textBox.Gradient.IsNone)
             "NoLine" ==> textBox.BorderColor.IsNone
             "Inline" ==> textBox.Inline

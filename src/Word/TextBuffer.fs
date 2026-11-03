@@ -287,6 +287,9 @@ type ImageRun = {
     /// (wp:wrapPolygon): its points in the file's units, 21600 across the
     /// picture's width and down its height. Empty: the picture's box.
     WrapPolygon: (float * float) list
+    /// The picture is mirrored across / upside down (a:xfrm flipH / flipV).
+    FlipH: bool
+    FlipV: bool
     /// Set when this is not a picture but a preserved object of the file.
     Opaque: OpaqueObject option
     /// The w:r it was read from: where it starts in its part (docs/save-architecture.md).
@@ -1261,6 +1264,8 @@ let insertImageWithMetadata pos src linked width height alt name title floating 
         PositionVAlign = None
         WrapText = None
         WrapPolygon = []
+        FlipH = false
+        FlipV = false
         Opaque = None
         SourceRun = None
     } buffer

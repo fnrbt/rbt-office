@@ -122,6 +122,39 @@ check "a line is a line across its box"
     (lineCommands |> List.tryPick (function Paint.DrawShape (_, Some "#000000", _, (x, y, _, _), segs) -> Some (segs = [ PMove (x, y); PLine (x + 120.0, y + 40.0) ]) | _ -> None))
     (Some true)
 
+// A flipped shape (a:xfrm flipH / flipV): its outline mirrored in its box, its text not; a linear
+// gradient's direction mirrored with it. (Flips were not read: the shape was drawn as if unflipped.)
+let lineSegs (shape: TextBoxBlock -> TextBoxBlock) =
+    let _, _, commands = inBox (fun b -> shape { b with Geometry = GeoPreset "line"; Content = []; BorderColor = Some "#000000"; Width = 120.0; Height = 40.0 })
+    commands |> List.tryPick (function Paint.DrawShape (_, Some "#000000", _, (x, y, _, _), segs) -> Some (x, y, segs) | _ -> None)
+match lineSegs (fun b -> { b with FlipH = true }), lineSegs (fun b -> { b with FlipV = true }), lineSegs (fun b -> { b with FlipH = true; FlipV = true }) with
+| Some (x, y, across), Some (_, _, upsideDown), Some (_, _, both) ->
+    check "flipped across: the line from the top right to the bottom left" across [ PMove (x + 120.0, y); PLine (x, y + 40.0) ]
+    check "flipped upside down: from the bottom left to the top right" upsideDown [ PMove (x, y + 40.0); PLine (x + 120.0, y) ]
+    check "flipped both ways: from the bottom right to the top left" both [ PMove (x + 120.0, y + 40.0); PLine (x, y) ]
+| other -> check "a flipped line is drawn" (sprintf "%A" other) ""
+let triangleText (shape: TextBoxBlock -> TextBoxBlock) =
+    let _, _, commands = inBox (fun b -> shape { b with Geometry = GeoPreset "rtTriangle"; BorderColor = Some "#000000" })
+    textOf commands
+check "the text of a flipped shape stands where it stands in the shape unflipped" (triangleText (fun b -> { b with FlipH = true; FlipV = true })) (triangleText id)
+let gradientAngle (shape: TextBoxBlock -> TextBoxBlock) =
+    let _, _, commands = inBox (fun b -> shape { b with Gradient = Some { Stops = [ { Offset = 0.0; Color = "#FF0000" }; { Offset = 1.0; Color = "#0000FF" } ]; Angle = 30.0; Radial = false } })
+    commands |> List.tryPick (function Paint.DrawShape (Paint.FillGradient g, _, _, _, _) -> Some g.Angle | _ -> None)
+check "a linear gradient flipped across / upside down / both" (gradientAngle (fun b -> { b with FlipH = true }), gradientAngle (fun b -> { b with FlipV = true }), gradientAngle (fun b -> { b with FlipH = true; FlipV = true })) (Some 150.0, Some 330.0, Some 210.0)
+
+// A flipped picture: drawn mirrored about its middle (the picture itself is all the group holds).
+let pictureCommands (flipH: bool) (flipV: bool) =
+    let buffer = TB.insertImage 0 "data:image/png;base64,AA==" (Some 40.0) (Some 20.0) None (TB.ofString "")
+    let buffer = { buffer with Runs = buffer.Runs |> List.map (function TB.Image image -> TB.Image { image with FlipH = flipH; FlipV = flipV } | run -> run) }
+    let _, _, commands = commandsOf (docOf [ Paragraph { para "pic" "" with Buffer = buffer } ])
+    commands
+match pictureCommands true false |> List.tryPick (function Paint.DrawMirrored (h, v, cx, cy, _, inner) -> Some (h, v, cx, cy, inner) | _ -> None) with
+| Some (h, v, cx, cy, [ Paint.DrawImage (_, x, y, w, ht, _, _, _, _) ]) ->
+    check "a picture flipped across: mirrored about its middle" (h, v, near cx (x + w / 2.0), near cy (y + ht / 2.0), w, ht) (true, false, true, true, 40.0, 20.0)
+| other -> check "a flipped picture is drawn mirrored" (sprintf "%A" other) ""
+check "a picture flipped upside down" (pictureCommands false true |> List.exists (function Paint.DrawMirrored (false, true, _, _, _, _) -> true | _ -> false)) true
+check "a picture not flipped is drawn as it is" (pictureCommands false false |> List.exists (function Paint.DrawMirrored _ -> true | _ -> false), pictureCommands false false |> List.exists (function Paint.DrawImage _ -> true | _ -> false)) (false, true)
+
 // ---------------------------------------------------------------------------
 // The body's text around the shape.
 // ---------------------------------------------------------------------------
@@ -244,6 +277,45 @@ do
     let replaced, count = replaceAllText "paragraph" "PARA" true (docOf [ Paragraph (para "p1" "first paragraph"); anchored "b1" "p1" ] |> fun doc -> { doc with Blocks = doc.Blocks |> List.map (function TextBox b -> TextBox { b with Content = [ para "b1-1" "a paragraph in a box" ] } | block -> block) })
     check "replace all: in the body and in the text of a box" (count, textsOf replaced, replaced.Blocks |> List.pick (function TextBox b -> Some (TB.toString b.Content.Head.Buffer) | _ -> None)) (2, [ "first PARA" ], "a PARA in a box")
     check "find: the same" ((findText "paragraph" true (docOf [ Paragraph (para "p1" "first paragraph"); anchored "b1" "p1" ])) |> List.map (fun m -> m.BlockId)) [ "p1" ]
+
+// ---------------------------------------------------------------------------
+// allowOverlap="0": a shape that may not overlap is moved down below a shape
+// placed before it that it would overlap and that may not overlap either, as
+// Word moves it - where it is painted, where the painter says it is, and the
+// text goes around it there. (The flag was read and not used: the shapes were
+// drawn over each other, and the text went around them where they were.)
+// ---------------------------------------------------------------------------
+let overlapping (first: TextBoxBlock -> TextBoxBlock) (second: TextBoxBlock -> TextBoxBlock) =
+    let shape (shapeId: string) (x: float) (y: float) (colour: string) (change: TextBoxBlock -> TextBoxBlock) =
+        let made = { defaultTextBox with Id = shapeId; Content = [ para (shapeId + "-1") shapeId ]; Width = 200.0; Height = 100.0; FillColor = Some colour; BorderColor = None; AnchorBlockId = Some "a"; Wrap = Some "square"; X = Some x; Y = Some y }
+        TextBox (change made)
+    let doc = docOf [ Paragraph (para "before" (words 20)); Paragraph (para "a" (words 300)); Paragraph (para "after" (words 20)); shape "o1" 0.0 10.0 "#ABCDEF" first; shape "o2" 100.0 40.0 "#FEDCBA" second ]
+    let layouts, pages = layoutDocumentPages settings measureText measureRange doc
+    let anchor = layouts |> List.find (fun layout -> layout.BlockId = "a")
+    let rects = Paint.bodyShapeRects settings measureText measureRange doc layouts pages |> List.map (fun (textBox, x, y, _, _) -> textBox.Id, (x, y - anchor.Y))
+    let _, commands, _ = Paint.collectDocumentCommandsWithLayoutsAndPages settings "Calibri" measureText measureRange doc layouts pages
+    let painted colour = Paint.flattenedCommands commands |> List.tryPick (function Paint.FillRect (c, x, y, _, _) when c = colour -> Some (x, y - anchor.Y) | _ -> None)
+    // The text of the lines between `top` and `bottom` (from the top of the anchor's paragraph): their segments, across.
+    let textBetween top bottom =
+        linesOf layouts "a"
+        |> List.filter (fun line -> line.Y + line.Height > anchor.Y + top && line.Y < anchor.Y + bottom)
+        |> List.collect (fun line -> line.Segments |> List.choose (function TextSegment (text, _, x, width, _) when text.Trim() <> "" -> Some (x, x + width) | _ -> None))
+    rects, painted "#ABCDEF", painted "#FEDCBA", textBetween
+let keptClear = fun (b: TextBoxBlock) -> { b with AllowOverlap = Some false }
+let rects, firstFill, secondFill, textBetween = overlapping keptClear keptClear
+check "allowOverlap=0 on both: the first stays where its anchor puts it" (List.tryFind (fun (id, _) -> id = "o1") rects |> Option.map snd) (Some (96.0, 10.0))
+check "allowOverlap=0 on both: the second is moved down below the first, across where it was" (List.tryFind (fun (id, _) -> id = "o2") rects |> Option.map snd) (Some (196.0, 110.0))
+check "painted where the painter says they are" (firstFill, secondFill) (Some (96.0, 10.0), Some (196.0, 110.0))
+let band = textBetween 120.0 200.0
+check "the text goes around the second where it was moved to" (band.Length > 0, band |> List.forall (fun (left, right) -> right <= 100.5 || left >= 299.5)) (true, true)
+let notMoved (first: TextBoxBlock -> TextBoxBlock) (second: TextBoxBlock -> TextBoxBlock) =
+    let rects, _, fill, _ = overlapping first second
+    List.tryFind (fun (id, _) -> id = "o2") rects |> Option.map snd, fill
+check "allowOverlap=0 on the second alone: it overlaps the first" (notMoved id keptClear) (Some (196.0, 40.0), Some (196.0, 40.0))
+check "allowOverlap=0 on the first alone: the second overlaps it" (notMoved keptClear (fun b -> { b with AllowOverlap = Some true })) (Some (196.0, 40.0), Some (196.0, 40.0))
+// (Shapes that do not overlap stay where they are.)
+let apart = overlapping keptClear (fun b -> { b with AllowOverlap = Some false; X = Some 250.0 }) |> fun (rects, _, _, _) -> List.tryFind (fun (id, _) -> id = "o2") rects |> Option.map snd
+check "allowOverlap=0 on both, apart: not moved" apart (Some (346.0, 40.0))
 
 printfn "word text-boxes: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

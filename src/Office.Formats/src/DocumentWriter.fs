@@ -957,6 +957,19 @@ let private boolFlag defaultValue (value: obj) =
 /// wp:wrapNone / wrapSquare / wrapTight / wrapThrough / wrapTopAndBottom of an anchor.
 /// Tight and through have a wrap polygon: the object's own (`points`: x, y, x, y, ... in
 /// the file's units, wp:start first), or the bounding box when it has none.
+/// flipH="1" / flipV="1" of an a:xfrm, for a shape or picture that is flipped.
+let private flipAttributes (flipH: obj) (flipV: obj) : (string * string) list =
+    [ if boolOrDefault false flipH then yield ("flipH", "1")
+      if boolOrDefault false flipV then yield ("flipV", "1") ]
+
+/// The flip of a VML shape's style ("x", "y", "x y"), for a shape that is flipped.
+let private vmlFlip (flipH: obj) (flipV: obj) : string option =
+    match boolOrDefault false flipH, boolOrDefault false flipV with
+    | true, true -> Some "x y"
+    | true, false -> Some "x"
+    | false, true -> Some "y"
+    | false, false -> None
+
 let private anchorWrapElement (wrap: string option) (wrapText: string option) (points: float array) =
     let side = wrapText |> Option.defaultValue "bothSides"
     let number (value: float) = string (int (System.Math.Round value))
@@ -1052,7 +1065,7 @@ let private generateImageRun (asset: ImageAsset) (runObj: obj) =
                                 element "a:stretch" [] [selfClosing "a:fillRect" []]
                             ]
                             element "pic:spPr" [] [
-                                element "a:xfrm" [] [
+                                element "a:xfrm" (flipAttributes runObj?ImageFlipH runObj?ImageFlipV) [
                                     selfClosing "a:off" [("x", "0"); ("y", "0")]
                                     selfClosing "a:ext" [("cx", width); ("cy", height)]
                                 ]
@@ -1570,6 +1583,8 @@ let private editorRunOfObject (runObj: obj) : EditorRun =
       ImageCropTop = None
       ImageCropRight = None
       ImageCropBottom = None
+      ImageFlipH = false
+      ImageFlipV = false
     }
 
 /// The properties the model writes for a run of the editor's package (none for a picture).
@@ -2337,6 +2352,7 @@ let private generateVmlShape (shapeId: string) (item: obj) (content: string) : s
         if boolOrDefault false (item?Inline) then sprintf "width:%.4fpt;height:%.4fpt" width height
         else sprintf "position:absolute;margin-left:%.4fpt;margin-top:%.4fpt;width:%.4fpt;height:%.4fpt;z-index:1" x y width height
     let style = if abs rotation >= 0.01 then style + sprintf ";rotation:%.2f" rotation else style
+    let style = match vmlFlip item?FlipH item?FlipV with Some flip -> style + ";flip:" + flip | None -> style
     element "w:pict" [] [
         element "v:shape" [
             yield ("xmlns:v", "urn:schemas-microsoft-com:vml")
@@ -2559,6 +2575,9 @@ and private generateWordArtRun (item: obj) : string =
           yield sprintf "width:%.2fpt" (points (item?Width) 400.0)
           yield sprintf "height:%.2fpt" (points (item?Height) 100.0)
           if abs rotation >= 0.01 then yield sprintf "rotation:%.2f" rotation
+          match vmlFlip item?FlipH item?FlipV with
+          | Some flip -> yield "flip:" + flip
+          | None -> ()
           yield (if boolOrDefault false (item?BehindDoc) then "z-index:-251658752" else "z-index:251658752")
           match optionalString (item?PositionHAlign) with
           | Some align -> yield "mso-position-horizontal:" + align
@@ -2616,7 +2635,7 @@ and private generateTextBoxRunFromModel (packageSetup: PageSetupInfo) (hyperlink
         element "wps:wsp" [] [
             yield selfClosing "wps:cNvSpPr" (if paragraphs.Length > 0 then [("txBox", "1")] else [])
             yield element "wps:spPr" [] [
-                element "a:xfrm" (if abs rotation >= 0.0001 then [("rot", string (roundToInt (rotation * 60000.0)))] else []) [
+                element "a:xfrm" ((if abs rotation >= 0.0001 then [("rot", string (roundToInt (rotation * 60000.0)))] else []) @ flipAttributes item?FlipH item?FlipV) [
                     selfClosing "a:off" [("x", "0"); ("y", "0")]
                     selfClosing "a:ext" [("cx", widthEmu); ("cy", heightEmu)]
                 ]

@@ -470,6 +470,54 @@ const docs = [
         ],
     },
     {
+        // A flipped shape and picture (a:xfrm flipH / flipV): read, and written with their
+        // flips - from the model (the shape's a:xfrm after its rot, its VML fallback's style; the picture's
+        // pic:spPr) and, unchanged, as the elements they were read from.
+        name: 'synthetic/flips',
+        body:
+            p('before the flips') +
+            `<w:p><w:r><w:t>anchor paragraph</w:t></w:r>` +
+            shapeAnchor(1, 'Flipped triangle', { relH: 'column', relV: 'paragraph', x: 95250, y: 95250, cx: 952500, cy: 762000, wrap: '<wp:wrapNone/>', behind: 0, z: 4, dist: 0 },
+                `<a:xfrm flipH="1" rot="1800000"><a:off x="0" y="0"/><a:ext cx="952500" cy="762000"/></a:xfrm><a:prstGeom prst="rtTriangle"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="ED7D31"/></a:solidFill><a:ln w="12700"><a:solidFill><a:srgbClr val="000000"/></a:solidFill></a:ln>`,
+                p('upright text')) +
+            `</w:p>` +
+            `<w:p>${drawing('rId1', 457200, 228600).replace('<a:xfrm>', '<a:xfrm flipV="1" flipH="1">')}<w:r><w:t>flipped picture</w:t></w:r></w:p>`,
+        rels: `<Relationship Id="rId1" Type="${REL}/image" Target="media/body.png"/>`,
+        extra: { 'word/media/body.png': PNG },
+        types: '<Default Extension="png" ContentType="image/png"/>',
+        expect: [
+            // (A value false is read as null here.)
+            { read: 'pkg.Paragraphs.length', equals: 4 },
+            { read: 'pkg.Paragraphs.3.FlipH', equals: true }, { read: 'pkg.Paragraphs.3.FlipV', equals: null }, { read: 'pkg.Paragraphs.3.Rotation', equals: 30 },
+            { read: 'pkg.Paragraphs.2.Runs.0.ImageFlipH', equals: true }, { read: 'pkg.Paragraphs.2.Runs.0.ImageFlipV', equals: true },
+            // Written from the model.
+            { part: 'word/document.xml', has: '<a:xfrm rot="1800000" flipH="1"><a:off x="0" y="0"/><a:ext cx="952500" cy="762000"/></a:xfrm><a:prstGeom prst="rtTriangle">' },
+            { part: 'word/document.xml', has: 'rotation:30.00;flip:x"' },
+            { part: 'word/document.xml', has: '<pic:spPr><a:xfrm flipH="1" flipV="1"><a:off x="0" y="0"/><a:ext cx="457200" cy="228600"/>' },
+            // The editor's save of the unchanged document: the elements as they were read.
+            { part: 'word/document.xml', kept: '<a:xfrm flipH="1" rot="1800000">' }, { part: 'word/document.xml', kept: '<pic:spPr><a:xfrm flipV="1" flipH="1">' },
+        ],
+    },
+    {
+        // Two shapes that may not overlap (wp:anchor allowOverlap="0"), the second placed over the first: Word
+        // moves the second down below the first (tools/word-browser/checks/allow-overlap.js); both are saved
+        // with allowOverlap="0", from the model and as they were read.
+        name: 'synthetic/no-overlap',
+        body:
+            p('before the shapes') +
+            `<w:p><w:r><w:t xml:space="preserve">${Array.from({ length: 120 }, (_, i) => `w${i + 1}`).join(' ')}</w:t></w:r>` +
+            shapeAnchor(1, 'First', { relH: 'column', relV: 'paragraph', x: 0, y: 95250, cx: 1905000, cy: 952500, wrap: '<wp:wrapSquare wrapText="bothSides"/>', behind: 0, z: 4, dist: 0 },
+                `<a:xfrm><a:off x="0" y="0"/><a:ext cx="1905000" cy="952500"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="ABCDEF"/></a:solidFill>`, p('first')).replace('allowOverlap="1"', 'allowOverlap="0"') +
+            shapeAnchor(2, 'Second', { relH: 'column', relV: 'paragraph', x: 952500, y: 381000, cx: 1905000, cy: 952500, wrap: '<wp:wrapSquare wrapText="bothSides"/>', behind: 0, z: 5, dist: 0 },
+                `<a:xfrm><a:off x="0" y="0"/><a:ext cx="1905000" cy="952500"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="FEDCBA"/></a:solidFill>`, p('second')).replace('allowOverlap="1"', 'allowOverlap="0"') +
+            `</w:p>` + p('after the shapes'),
+        expect: [
+            { read: 'pkg.Paragraphs.length', equals: 5 },
+            { part: 'word/document.xml', has: 'relativeHeight="5" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="0"' },
+            { part: 'word/document.xml', kept: 'relativeHeight="5" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="0"' },
+        ],
+    },
+    {
         // Objects the editor does not model are kept as they are: the drawing XML in
         // the text, and the parts behind it (chart + embedded workbook, diagram parts,
         // OLE binary and its picture) with their relationships and content types.

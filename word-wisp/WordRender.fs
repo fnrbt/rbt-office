@@ -117,6 +117,8 @@ let rec toRendererCommand = function
     | WordPaint.DrawShape _ -> []
     // (A text box's text and fill, unclipped and upright: this painter draws no shapes.)
     | WordPaint.DrawGroup (_, _, _, _, _, _, inner) -> inner |> List.collect toRendererCommand
+    // (A flipped picture, as it is: this painter does not mirror.)
+    | WordPaint.DrawMirrored (_, _, _, _, _, inner) -> inner |> List.collect toRendererCommand
 
 /// All paint commands for the document, laid out to `width`, in page-local coordinates.
 let documentCommands (width: float) (doc: Document) : Cmd list =

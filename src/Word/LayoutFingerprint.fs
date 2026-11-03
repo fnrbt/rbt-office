@@ -132,7 +132,7 @@ let ofLayout (pageOf: float -> int) (layout: BlockLayout) : BlockFingerprint =
             | TextSegment (segmentText, style, _, _, _) ->
                 text.Append(segmentText) |> ignore
                 add (runFormat style) segmentText.Length
-            | ImageSegment (_, _, _, width, height, _, floating, wrap, _, _, _, _, _) ->
+            | ImageSegment (_, _, _, width, height, _, floating, wrap, _, _, _, _, _, _) ->
                 text.Append("￼") |> ignore
                 add (sprintf "image %s x %s %s%s" (num width) (num height) (flag "floating " floating) (optStr wrap)) 1
             | MathSegment (_, style, _, width, _, _, _, _) ->

@@ -43,7 +43,7 @@ let layoutOf (blocks: Block list) = layoutDocumentPages settings measureText mea
 let pictureOf (layouts: BlockLayout list) (id: string) =
     layouts
     |> List.filter (fun layout -> layout.BlockId = id)
-    |> List.collect (fun layout -> layout.Lines |> List.collect (fun line -> line.Segments |> List.choose (function ImageSegment (_, x, yOffset, _, _, _, _, _, _, _, _, _, _) -> Some (settings.PaddingLeft + layout.Indent * 0.0 + x, line.Y + yOffset) | _ -> None)))
+    |> List.collect (fun layout -> layout.Lines |> List.collect (fun line -> line.Segments |> List.choose (function ImageSegment (_, x, yOffset, _, _, _, _, _, _, _, _, _, _, _) -> Some (settings.PaddingLeft + layout.Indent * 0.0 + x, line.Y + yOffset) | _ -> None)))
     |> List.head
 let linesOf (layouts: BlockLayout list) (id: string) = layouts |> List.filter (fun layout -> layout.BlockId = id) |> List.collect (fun layout -> layout.Lines)
 /// Where a line's text starts and ends, from the left edge of the page.

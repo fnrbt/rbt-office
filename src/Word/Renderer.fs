@@ -1598,6 +1598,14 @@ let rec private renderPaintCommand (ctx: RenderContext) = function
         for command in commands do
             renderPaintCommand ctx command
         ctx.Ctx.restore()
+    | DrawMirrored (flipH, flipV, centerX, centerY, _, commands) ->
+        ctx.Ctx.save()
+        ctx.Ctx.translate(centerX, centerY)
+        ctx.Ctx.scale((if flipH then -1.0 else 1.0), (if flipV then -1.0 else 1.0))
+        ctx.Ctx.translate(-centerX, -centerY)
+        for command in commands do
+            renderPaintCommand ctx command
+        ctx.Ctx.restore()
 
 let private commentAnchorCommands (ctx: RenderContext) (doc: Document) (layouts: BlockLayout list) =
     commentAnchorsForLayouts ctx doc layouts

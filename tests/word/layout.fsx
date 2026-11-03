@@ -229,7 +229,7 @@ check "line lookup last" (lineForOffset lineLookupLayout 9999).StartOffset 9990
 
 let imageLine =
     { hitLine with
-        Segments = [ ImageSegment ("img", 7.0, 0.0, 32.0, 24.0, 0, false, None, None, None, None, None, None) ]
+        Segments = [ ImageSegment ("img", 7.0, 0.0, 32.0, 24.0, 0, false, None, None, None, None, None, None, (false, false)) ]
         Width = 32.0
         EndOffset = 1 }
 let imageLayouts =
