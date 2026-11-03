@@ -170,6 +170,11 @@ type StoryView = {
     /// footer: the body is not dimmed, and the story's layouts are those of
     /// the box's text where the page paints the box.
     Box: BlockId option
+    /// The story is the body of this note or comment ("footnote" | "endnote" |
+    /// "comment", id): the body is not dimmed; the story is laid out where the
+    /// page shows the note (a comment: in a balloon below its anchor) and
+    /// painted there over what the page shows of it.
+    Note: (string * string) option
 }
 
 /// Rendering context
@@ -247,6 +252,10 @@ type RenderContext = {
     /// and a point of the canvas is turned back before it is looked up in the
     /// layouts (set by storyLayouts).
     mutable StoryTurn: (float * float * float) option
+    /// Where the note or comment that is edited in place was last shown: the
+    /// left edge, top and width of its text (it is shown there while the page
+    /// shows it nowhere - a note whose text was all deleted).
+    mutable StoryNotePlace: (float * float * float) option
     /// The page frames of a layout pass (by its serial): a host asks for them with every change.
     mutable KnownPageFrames: (int * PageInfo list) option
     /// The shape that is selected (see Input.selectShape): its frame and its
@@ -322,6 +331,7 @@ let createContext (canvas: HTMLCanvasElement) = {
     StoryOverlay = []
     StoryLayouts = None
     StoryTurn = None
+    StoryNotePlace = None
     KnownPageFrames = None
     SelectedShape = None
 }
@@ -649,11 +659,34 @@ let private pageFurnitureShapeRects (ctx: RenderContext) (whole: Document) (body
             storyShapeRects settings (measureWithContext ctx) (measureRangeWithContext ctx) whole page (headerFooterStartY settings whole.PageSetup page isHeader) part.Blocks
         | _ -> []
 
+/// Where the body of a note or comment is shown while it is edited in place
+/// (see StoryView.Note), by the layouts of the whole document: the left edge,
+/// top and width of its text (defined further down).
+let private notePlace : (RenderContext -> Document -> BlockLayout list -> string * string -> (float * float * float) option) ref = ref (fun _ _ _ _ -> None)
+
 /// The layouts of a story's blocks where its page paints them.
 let private storyLayouts (ctx: RenderContext) (story: StoryView) (doc: Document) : BlockLayout list =
     let whole = story.Whole doc
     let settings = layoutSettings ctx whole
     let bodyLayouts, layoutPages = layoutDocumentWithPages ctx whole
+    match story.Note with
+    | Some note ->
+        // A note or comment: its paragraphs where the page shows it (as it was last shown, while it shows it nowhere).
+        ctx.StoryTurn <- None
+        match notePlace.Value ctx whole bodyLayouts note with
+        | Some place -> ctx.StoryNotePlace <- Some place
+        | None -> ()
+        match ctx.StoryNotePlace with
+        | None -> []
+        | Some (left, top, width) ->
+            let key = top + left / 1000000.0 + width / 1000000000.0
+            match ctx.StoryLayouts with
+            | Some (blocks, known, version, layouts) when obj.ReferenceEquals(blocks, doc.Blocks) && known = key && version = ctx.TextMeasurerVersion -> layouts
+            | _ ->
+                let layouts = noteStoryLayouts settings (measureWithContext ctx) (measureRangeWithContext ctx) whole left top width doc.Blocks
+                ctx.StoryLayouts <- Some (doc.Blocks, key, ctx.TextMeasurerVersion, layouts)
+                layouts
+    | None ->
     let pages = framePages.Value ctx whole bodyLayouts layoutPages
     match story.Box with
     | Some boxId ->
@@ -1280,6 +1313,90 @@ let private commentAnchorsForLayouts (ctx: RenderContext) (doc: Document) (layou
     |> fst
     |> List.rev
 
+do notePlace.Value <- fun ctx whole layouts (kind, id) ->
+    let settings = layoutSettings ctx whole
+    if kind = "comment" then
+        // A comment: in a balloon below the line its anchor starts on.
+        commentAnchorsForLayouts ctx whole layouts
+        |> List.tryFind (fun anchor -> anchor.Id = id)
+        |> Option.map (fun anchor ->
+            let contentWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
+            settings.PaddingLeft + 24.0, anchor.Y + anchor.Height + 10.0, min 360.0 (max 120.0 (contentWidth - 48.0)))
+    else
+        // A footnote or an endnote: where the note area shows it, after its mark.
+        layouts
+        |> List.tryFind (fun layout -> noteOfLayoutId layout.BlockId = Some (kind, id))
+        |> Option.bind (fun layout ->
+            match layout.Lines with
+            | [] -> None
+            | first :: _ ->
+                let markX = xForOffsetWithRange (measureRangeWithContext ctx) first (noteMarkText kind id).Length
+                Some (settings.PaddingLeft + markX + alignmentOffset layout first, layout.Y, max 40.0 (layout.AvailableWidth - markX)))
+
+/// What is painted over the page for a note or comment that is edited in place
+/// (see StoryView.Note): what the page shows of it covered, its paragraphs as
+/// they are laid out to be edited, and a frame around them (a comment: a balloon).
+let private noteStoryCommands (ctx: RenderContext) (whole: Document) (layouts: BlockLayout list) (kind: string) (id: string) : PaintCommand list =
+    match ctx.StoryNotePlace with
+    | None -> []
+    | Some (left, top, width) ->
+        let settings = layoutSettings ctx whole
+        let bottom =
+            match layouts with
+            | [] -> top + ctx.LineHeight
+            | _ -> layouts |> List.map (fun layout -> layout.Y + layout.Height) |> List.max
+        let text = layouts |> List.collect (paragraphCommands settings ctx.FontFamily (measureWithContext ctx) (measureRangeWithContext ctx))
+        if kind = "comment" then
+            [ FillRect ("#fffdf3", left - 10.0, top - 6.0, width + 20.0, bottom - top + 12.0)
+              StrokeRect ("#C79B00", 1.0, left - 9.5, top - 5.5, width + 19.0, bottom - top + 11.0) ]
+            @ text
+        else
+            let right = left + width
+            let shown =
+                layoutDocumentWithPages ctx whole |> fst
+                |> List.filter (fun layout -> noteOfLayoutId layout.BlockId = Some (kind, id))
+                |> List.collect (fun layout ->
+                    layout.Lines
+                    |> List.mapi (fun index line ->
+                        // (The note's mark stays: its first line is covered after it.)
+                        let x = if index = 0 then left - 1.0 else settings.PaddingLeft - 1.0
+                        FillRect ("#ffffff", x, line.Y, right + 2.0 - x, line.Height)))
+            let x0, y0, x1, y1 = left - 3.0, top - 0.5, right + 3.0, bottom + 2.0
+            shown
+            @ [ FillRect ("#ffffff", left - 1.0, top, width + 2.0, bottom - top) ]
+            @ text
+            @ [ StrokeLine ("#5b9bd5", 1.0, 2, 0.0, x0, y0, x1, y0)
+                StrokeLine ("#5b9bd5", 1.0, 2, 0.0, x1, y0, x1, y1)
+                StrokeLine ("#5b9bd5", 1.0, 2, 0.0, x1, y1, x0, y1)
+                StrokeLine ("#5b9bd5", 1.0, 2, 0.0, x0, y1, x0, y0) ]
+
+/// Whether a point (layout coordinates) is on the note or comment that is
+/// edited in place (true while another story, or none, is edited).
+let onNoteStory (ctx: RenderContext) (doc: Document) (x: float) (y: float) : bool =
+    match ctx.Story with
+    | Some story when story.Note.IsSome ->
+        match ctx.StoryNotePlace with
+        | None -> false
+        | Some (left, top, width) ->
+            let layouts = storyLayouts ctx story doc
+            let bottom =
+                match layouts with
+                | [] -> top + ctx.LineHeight
+                | _ -> layouts |> List.map (fun layout -> layout.Y + layout.Height) |> List.max
+            x >= left - 12.0 && x <= left + width + 12.0 && y >= top - 8.0 && y <= bottom + 8.0
+    | _ -> true
+
+/// The footnote or endnote (type, id) the page shows at a point (layout coordinates), if any.
+let noteAt (ctx: RenderContext) (doc: Document) (x: float) (y: float) : (string * string) option =
+    let whole = bodyDocument ctx doc
+    let settings = layoutSettings ctx whole
+    layoutDocumentWithPages ctx whole |> fst
+    |> List.tryPick (fun layout ->
+        match noteOfLayoutId layout.BlockId with
+        | Some note when y >= layout.Y && y <= layout.Y + layout.Height
+                         && x >= settings.PaddingLeft - 4.0 && x <= settings.PaddingLeft + layout.AvailableWidth + 4.0 -> Some note
+        | _ -> None)
+
 let commentAnchors (ctx: RenderContext) (doc: Document) =
     let doc = bodyDocument ctx doc
     commentAnchorsForLayouts ctx doc (layoutWholeDocument ctx doc)
@@ -1823,8 +1940,8 @@ let private renderFullFrame ctx doc frame =
 
     renderPages ctx frame.Pages
     match ctx.Story with
-    | Some story when story.Box.IsSome ->
-        // A text box edited in place: the page as it is, and over it the box's frame, selection and caret.
+    | Some story when story.Box.IsSome || story.Note.IsSome ->
+        // A text box (a note) edited in place: the page as it is, and over it the box's frame, selection and caret.
         renderChunks ctx frame.Body
         renderCommandList ctx frame.StaticOverlay
         renderCommandList ctx ctx.StoryOverlay
@@ -2229,8 +2346,8 @@ let private renderViewportBand (ctx: RenderContext) (frame: PaintFrame) (vp: Vie
             ctx.Ctx.clip()
             renderPageSheet ctx page
             match ctx.Story with
-            | Some story when story.Box.IsSome ->
-                // A text box edited in place: the page as it is, and over it the box's frame, selection and caret.
+            | Some story when story.Box.IsSome || story.Note.IsSome ->
+                // A text box (a note) edited in place: the page as it is, and over it the box's frame, selection and caret.
                 renderChunksInBand ctx frame.Body pageTop pageBottom
                 renderChunksInBand ctx [| staticOverlayIndex frame |] pageTop pageBottom
                 renderCommandListInBand ctx { Top = pageTop; Bottom = pageBottom } ctx.StoryOverlay
@@ -2323,6 +2440,9 @@ let private renderCore (ctx: RenderContext) (doc: Document) hoveredImage =
         let layouts = storyLayouts ctx story doc
         let tryFind (blockId: string) = layouts |> List.tryFind (fun layout -> layout.BlockId = blockId)
         let boundary =
+            match story.Note with
+            | Some (kind, id) -> noteStoryCommands ctx whole layouts kind id
+            | None ->
             let bodyLayouts, layoutPages = layoutDocumentWithPages ctx whole
             let pages = pageFramesForLayouts ctx settings whole bodyLayouts layoutPages
             match story.Box with

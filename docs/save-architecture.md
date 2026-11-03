@@ -197,9 +197,13 @@ note's plan with the body's and puts its `SourceState` back while it writes it (
 run of the note's own mark (w:footnoteRef, w:endnoteRef, w:annotationRef), which the model does not hold as a run,
 is the run that was read: put at the start of the first paragraph where what was written has none. A note with
 nothing as it was (a single paragraph that changed) is written from the model as before.
-The editor changes a note only as a whole (`setNote` / `setComment` give a plain-text body that is new, not a
-paragraph of the one read), so in the editor this path is reached by no edit yet; `tools/word-browser/checks/notes-xml.js`
-writes it from packages whose note says which of its blocks changed.
+The editor edits a note's or comment's body in place (`enterNote` / `enterComment`, a double click on a note where
+the page shows it: `Input.StorySession.Note`), as it edits a header: the story's blocks are the note's blocks as
+read, folded back into `Package.Notes` / `Comments` with their plain text on the references (`Doc.withStoryBody`),
+so a changed note is tagged against the note as read and reaches this path (`tools/word-browser/checks/note-body-edit.js`:
+typing, Enter, Ctrl+B, undo, the mark run once, the body's XML untouched). `setNote` / `setComment` still replace a
+body whole with plain text; `tools/word-browser/checks/notes-xml.js` also writes the path from packages whose note
+says which of its blocks changed.
 
 ### Left
 
@@ -207,9 +211,9 @@ writes it from packages whose note says which of its blocks changed.
 - Bookmarks handed over typed, not as tokens in a string (`ModelText` reads them at the writer's end).
 - `XmlPatch.readPartExcept` still has a tokenizer of its own (XmlPatch is changed only by additions):
   `XmlDsl.tryScanOutline` reads the same outline.
-- Notes and comments in the editor: a note's or comment's paragraphs cannot be typed into or formatted - `setNote` /
-  `setComment` replace the body with plain text, a new paragraph. The writer splices a changed note as a header
-  (above) once the editor changes a note's paragraphs as it changes a header's.
+- Notes and comments in the editor: their paragraphs are edited in place (above); a table in a note is edited as its
+  cells' paragraphs (shown without its grid while edited), and a footnote that grows while it is edited is shown
+  past the page's foot until it is left (the note area is laid out from its plain text).
 - Joins: the paragraph joined to another keeps nothing of its own properties (as Word).
 
 ### The original plan

@@ -2785,7 +2785,7 @@ module API =
 
     /// The header or footer being edited in place (None in the body, and in a text box).
     let private headerFooterStory (editor: Editor) : Inp.StorySession option =
-        editor.Handler.Story |> Option.filter (fun session -> session.Box.IsNone)
+        editor.Handler.Story |> Option.filter (fun session -> session.Box.IsNone && session.Note.IsNone)
 
     let private storyLabel (isHeader: bool) (kind: string) =
         (match kind with
@@ -2926,7 +2926,9 @@ module API =
                       EntryBlocks = Paint.blocksWithRunningFields target.TargetFields part.Blocks
                       Folded = ResizeArray()
                       Box = None
-                      BoxFolded = ResizeArray() }
+                      BoxFolded = ResizeArray()
+                      Note = None
+                      NoteFolded = ResizeArray() }
                 Inp.enterStory editor.Handler session None
                 true
 
@@ -3041,6 +3043,80 @@ module API =
             true
         | _ -> false
 
+    // ---- notes and comments edited in place --------------------------------------
+
+    /// The note or comment being edited in place: (kind, id); None elsewhere.
+    let private noteStory (editor: Editor) : (string * string) option =
+        editor.Handler.Story |> Option.bind (fun session -> session.Note)
+
+    /// Whether the text refers to the note (kind "footnote" | "endnote") or comment with this id.
+    let private storyIsReferenced (doc: Doc.Document) (kind: string) (id: string) : bool =
+        let refers (style: TextBuffer.TextStyle) =
+            if kind = "comment" then style.CommentId = Some id
+            else style.NoteId = Some id && (style.NoteType |> Option.defaultValue "footnote") = kind
+        doc.Blocks @ (doc.HeaderParts @ doc.FooterParts |> List.collect (fun part -> part.Blocks))
+        |> Doc.paragraphsOfBlocks
+        |> List.exists (fun para -> para.Buffer.Runs |> List.exists (function TextBuffer.Text run -> refers run.Style | TextBuffer.Image _ -> false))
+
+    let private enterStoryBody (editor: Editor) (kind: string) (id: string) : bool =
+        ensureLoaded editor
+        Inp.exitStory editor.Handler |> ignore
+        let doc = editor.Doc
+        match Doc.storyBody kind id doc with
+        | Some blocks when not (Doc.paragraphsOfBlocks blocks).IsEmpty && storyIsReferenced doc kind id ->
+            // (The note areas of every page: the note is found where its page shows it.)
+            Ren.completeLayout editor.Handler.RenderContext
+            let session : Inp.StorySession =
+                { IsHeader = false
+                  PageIndex = 0
+                  Kind = kind
+                  Section = 0
+                  PartIndex = -1
+                  Label = (match kind with "endnote" -> "Endnote" | "comment" -> "Comment" | _ -> "Footnote")
+                  Main = doc
+                  Edited = doc
+                  PartBlocks = blocks
+                  EntryBlocks = blocks
+                  Folded = ResizeArray()
+                  Box = None
+                  BoxFolded = ResizeArray()
+                  Note = Some (kind, id)
+                  NoteFolded = ResizeArray() }
+            Inp.enterStory editor.Handler session None
+            true
+        | _ -> false
+
+    /// Edit the body of a footnote or endnote (`noteType`: "footnote" |
+    /// "endnote"; an id the text refers to) in place: the caret goes to the
+    /// start of its text, where the page shows the note (the note area of
+    /// its page, the endnotes after the body), which is shown with its
+    /// formatting in a frame while it is edited. Typing, Enter, Backspace,
+    /// selection, formatting, undo and redo then work there: the document
+    /// the commands act on is the note's body (its paragraphs as they were
+    /// read: saved as the XML they were read from with the edit made in
+    /// it) until exitNote, Escape or a click off the note. getCaretContext
+    /// says so (Story "footnote" | "endnote", NoteId). Entering changes
+    /// nothing. False when the document has no such note, or no text refers
+    /// to it. (A double click on a note where the page shows it does the same.)
+    let enterNote (editor: Editor) (noteId: string) (noteType: string) : bool =
+        let kind = if noteType = "endnote" then "endnote" else "footnote"
+        enterStoryBody editor kind (string noteId)
+
+    /// Edit the body of a comment in place, as enterNote a note's: it is
+    /// shown in a balloon below the line its range starts on.
+    /// getCaretContext says so (Story "comment", CommentId). False when the
+    /// document has no such comment, or no text refers to it.
+    let enterComment (editor: Editor) (commentId: string) : bool =
+        enterStoryBody editor "comment" (string commentId)
+
+    /// Back to the body from a note or comment edited in place (Escape and a
+    /// click off the note do the same). The body's selection is what it was.
+    /// False when none was being edited.
+    let exitNote (editor: Editor) : bool =
+        match noteStory editor with
+        | Some _ -> Inp.exitStory editor.Handler
+        | None -> false
+
     /// The page the caret is on (0-based): the page of the header or footer
     /// being edited, or the page of the caret's line.
     let private caretPageIndex (editor: Editor) : int =
@@ -3101,6 +3177,14 @@ module API =
         // click elsewhere left the box already - see Input's mousedown.)
         | Some _ -> false
         | None ->
+        // (In the note or comment that is being edited a double click selects a word, as anywhere.)
+        if (noteStory editor).IsSome && Ren.onNoteStory ctx editor.Doc x y then false else
+        // A footnote or an endnote where the page shows it: its body is edited, the caret where the click was.
+        match Ren.noteAt ctx editor.Doc x y with
+        | Some (kind, id) when enterStoryBody editor kind id ->
+            caretHere ()
+            true
+        | _ ->
         match Ren.pageRegionAt ctx editor.Doc x y, headerFooterStory editor with
         | Some (_, "body"), Some _ ->
             // (A text box of the header that reaches into the body's area: its text is edited.)
@@ -3135,7 +3219,9 @@ module API =
     ///   ColumnCount, CanMergeCells (the selection spans several cells),
     ///   CanSplitCell (the caret's cell is a merged one), InHyperlink, InList,
     ///   InHeaderFooter (a header or footer is being edited in place, see enterHeaderFooter),
-    ///   Story "body" | "header" | "footer", HeaderFooter (null in the body, else
+    ///   Story "body" | "header" | "footer" | "textbox" | "footnote" | "endnote" | "comment",
+    ///   NoteId / CommentId (the note or comment edited in place, see enterNote / enterComment; null elsewhere),
+    ///   HeaderFooter (null in the body, else
     ///   { Kind, Variant, PageIndex, Section, LinkedToPrevious, CanLinkToPrevious }),
     ///   (before: InHeaderFooter was always false: headers and footers were not edited in
     ///   place), ImageSelected (the selection is one picture) }.
@@ -3154,8 +3240,11 @@ module API =
             "InHeaderFooter" ==> (headerFooterStory editor).IsSome
             "Story" ==> (match editor.Handler.Story with
                          | Some session when session.Box.IsSome -> "textbox"
+                         | Some session when session.Note.IsSome -> fst session.Note.Value
                          | Some session -> if session.IsHeader then "header" else "footer"
                          | None -> "body")
+            "NoteId" ==> (match noteStory editor with Some (kind, id) when kind <> "comment" -> Some id | _ -> None)
+            "CommentId" ==> (match noteStory editor with Some ("comment", id) -> Some id | _ -> None)
             "TextBoxId" ==> (editor.Handler.Story |> Option.bind (fun session -> session.Box))
             "HeaderFooter" ==> headerFooterInfo editor
             "ImageSelected" ==> context.ImageSelected
@@ -4023,6 +4112,9 @@ module API =
             "getCaretContext" ==> getCaretContext
             "enterHeaderFooter" ==> enterHeaderFooter
             "exitHeaderFooter" ==> exitHeaderFooter
+            "enterNote" ==> enterNote
+            "enterComment" ==> enterComment
+            "exitNote" ==> exitNote
             "getHeaderFooterLinkToPrevious" ==> getHeaderFooterLinkToPrevious
             "setHeaderFooterLinkToPrevious" ==> setHeaderFooterLinkToPrevious
             "insertPageNumberField" ==> insertPageNumberField
