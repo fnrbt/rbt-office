@@ -293,6 +293,94 @@ checks['row-column-counts'] = async () => {
     return lines;
 };
 
+// A row or column inserted or deleted makes the sheet's cell map (and its row heights) from the
+// moved entries in order, in one pass (Model.mapOfOrdered): the trees it makes must be what
+// fable-library's Map is - keys ascending, each node's height its own, balanced - and hold the
+// cells where they moved, every one found, and take further edits.
+checks['structure-moved-maps'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, close } = mountGrid();
+    try {
+        // (A leaf has no height of its own: 1.)
+        const treeProblems = (map) => {
+            const problems = [];
+            const keys = [];
+            const walk = (node) => {
+                if (node == null) return 0;
+                const left = walk(node.left);
+                keys.push(node.k);
+                const right = walk(node.right);
+                const height = node.h === undefined ? 1 : node.h;
+                if (node.h === undefined && (node.left != null || node.right != null)) problems.push('a leaf with children');
+                if (node.h !== undefined && height !== Math.max(left, right) + 1) problems.push('height ' + height + ' over ' + left + '/' + right);
+                if (Math.abs(left - right) > 2) problems.push('unbalanced ' + left + '/' + right);
+                return height;
+            };
+            walk(map.tree);
+            const order = (a, b) => typeof a === 'number' ? a - b : (a.Row - b.Row) || (a.Col - b.Col);
+            for (let i = 1; i < keys.length; i++) if (order(keys[i - 1], keys[i]) >= 0) { problems.push('keys out of order at ' + i); break; }
+            return [problems.slice(0, 3), keys.length];
+        };
+        // A block with gaps: rows 0..119, columns 0..6, every cell whose (row + col) % 5 is not 0; formulas in column 7.
+        const expected = new Map();
+        for (let row = 0; row < 120; row++) {
+            for (let col = 0; col < 7; col++) if ((row + col) % 5 !== 0) { grid.SetCell(row, col, String(row * 100 + col)); expected.set(row + ',' + col, String(row * 100 + col)); }
+            if (row % 10 === 0) grid.SetCell(row, 7, '=A' + (row + 2) + '+1');
+            if (row % 3 === 0) grid.SetRowHeight(row, 20 + row % 7);
+        }
+        const moved = (onRows, insert, at, count) => {
+            const next = new Map();
+            for (const [key, value] of expected) {
+                let [row, col] = key.split(',').map(Number);
+                let index = onRows ? row : col;
+                if (insert) { if (index >= at) index += count; }
+                else if (index >= at + count) index -= count;
+                else if (index >= at) continue;
+                if (onRows) row = index; else col = index;
+                next.set(row + ',' + col, value);
+            }
+            expected.clear();
+            for (const [key, value] of next) expected.set(key, value);
+        };
+        const { getCell, CellAddress } = await import('/spreadsheet/Model.js');
+        const allFound = () => {
+            const model = grid.GetModel();
+            let missing = 0, wrong = 0;
+            for (const [key, value] of expected) {
+                const [row, col] = key.split(',').map(Number);
+                const cell = getCell(new CellAddress(row, col), model);
+                if (!cell) missing++;
+                else if (!(cell.Value.fields && String(cell.Value.fields[0]) === value)) wrong++;
+            }
+            return [missing, wrong];
+        };
+        const edits = [
+            ['InsertRows(30, 1)', () => grid.InsertRows(30, 1), true, true, 30, 1],
+            ['DeleteRows(7, 3)', () => grid.DeleteRows(7, 3), true, false, 7, 3],
+            ['InsertColumns(2, 2)', () => grid.InsertColumns(2, 2), false, true, 2, 2],
+            ['DeleteColumns(0, 1)', () => grid.DeleteColumns(0, 1), false, false, 0, 1],
+            ['DeleteRows(0, 1)', () => grid.DeleteRows(0, 1), true, false, 0, 1],
+            ['InsertRows(500, 4) (past the cells)', () => grid.InsertRows(500, 4), true, true, 500, 4],
+        ];
+        for (const [name, run, onRows, insert, at, count] of edits) {
+            run();
+            moved(onRows, insert, at, count);
+            const model = grid.GetModel();
+            const formulaCount = [...model.Cells].filter(([, cell]) => cell.Value.tag === 5).length;
+            const [cellProblems, cellCount] = treeProblems(model.Cells);
+            const [heightProblems] = treeProblems(model.RowHeights);
+            check(name + ': the cell map is a valid tree of the moved cells, each found', [cellProblems, heightProblems, cellCount - formulaCount, allFound()], [[], [], expected.size, [0, 0]]);
+        }
+        // The map made so takes further edits, and an undo gives back the cells as they were.
+        grid.SetCell(40, 1, 'added'); expected.set('40,1', 'added');
+        grid.SetCell(41, 2, ''); expected.delete('41,2');
+        const [problems] = treeProblems(grid.GetModel().Cells);
+        check('cells set on a moved map', [problems, allFound()], [[], [0, 0]]);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
+
 // GetRevision / MarkSaved / IsModified: undo back to the saved state is clean again; a save
 // that finishes late marks the revision it wrote; OnChange carries Revision and Modified.
 checks['revision'] = async () => {

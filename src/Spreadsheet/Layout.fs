@@ -185,14 +185,18 @@ let private computeMetrics (model: SpreadsheetModel) : SheetMetrics =
     let colCount = max 0 model.ColCount
     let filtered = not (Map.isEmpty model.Filters)
     let offsetsOf (count: int) (defaultSize: float) (sizes: Map<int, float>) (hidden: int array) =
+        // (The sizes in order, read once: a long sheet may have a size for each of its rows.)
+        let entries = orderedEntries sizes
         let mutable known = 0
-        for KeyValue(index, _) in sizes do
+        for i in 0 .. entryCount entries - 1 do
+            let index = entryKey<int> entries i
             if index >= 0 && index < count && index + 1 > known then known <- index + 1
         for index in hidden do
             if index >= 0 && index < count && index + 1 > known then known <- index + 1
         let own = Array.create known defaultSize
-        for KeyValue(index, size) in sizes do
-            if index >= 0 && index < known then own.[index] <- max 0.0 size
+        for i in 0 .. entryCount entries - 1 do
+            let index = entryKey<int> entries i
+            if index >= 0 && index < known then own.[index] <- max 0.0 (entryValue<float> entries i)
         for index in hidden do
             if index >= 0 && index < known then own.[index] <- 0.0
         let prefix = Array.zeroCreate<float> (known + 1)
