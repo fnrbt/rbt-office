@@ -942,7 +942,10 @@ type Spreadsheet(container: Element) =
                             | false, _ ->
                                 let read =
                                     match parts.TryGetValue path with
-                                    | true, data -> SpreadsheetCharts.parseChart theme (System.Text.Encoding.UTF8.GetString data)
+                                    | true, data ->
+                                        // (A chartEx part reads its data through defined names, `_xlchart.v1.0`.)
+                                        let names (name: string) = source.Workbook.NamedRanges |> List.tryPick (fun known -> if known.Name = name then Some known.RefersTo else None)
+                                        SpreadsheetCharts.parseChartWith names theme (System.Text.Encoding.UTF8.GetString data)
                                     | false, _ -> None
                                 chartModels.[path] <- read
                                 read))

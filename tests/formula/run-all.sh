@@ -70,6 +70,7 @@ stages=(
     stage52-charts
     stage53-common
     stage54-tablestyles
+    stage55-chartex
     numbertext
 )
 

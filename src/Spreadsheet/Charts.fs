@@ -393,6 +393,12 @@ type PlotKind =
     | RadarPlot
     | BubblePlot
     | StockPlot
+    /// A chartEx waterfall: the points that are totals (from zero), and whether lines join the bars.
+    | WaterfallPlot of subtotals: int list * connectors: bool
+    /// A chartEx funnel: bars centred on each other, one per category, top to bottom.
+    | FunnelPlot
+    /// A chartEx chart of a kind that is not drawn (`layoutId`: "regionMap", "sunburst", ...): a placeholder.
+    | UndrawnPlot of layoutId: string
 
 type Plot = {
     Kind: PlotKind
@@ -720,30 +726,260 @@ let private axisOf (theme: ThemeColors) (node: XmlDsl.XmlNode) : Axis option =
                     | None, _ -> "")
                 |> Option.filter (fun text -> text <> "")) })
 
-/// The chart of a chart part, or None for a part this module does not draw
-/// (no plot of a kind it knows, a 3-D chart, a part that is not a chart).
+// ---------------------------------------------------------------------------
+// The newer kinds (`cx:chartSpace` of a chartEx part)
+// ---------------------------------------------------------------------------
+
+/// What a kind of chartEx series (`layoutId`) is called.
+let chartExKindName (layoutId: string) : string =
+    match layoutId with
+    | "regionMap" -> "Map chart"
+    | "sunburst" -> "Sunburst chart"
+    | "treemap" -> "Treemap chart"
+    | "boxWhisker" -> "Box and whisker chart"
+    | "clusteredColumn" -> "Histogram"
+    | "paretoLine" -> "Pareto chart"
+    | "waterfall" -> "Waterfall chart"
+    | "funnel" -> "Funnel chart"
+    | "" -> "Chart"
+    | other -> other + " chart"
+
+let private chartExSpace = "http://schemas.microsoft.com/office/drawing/2014/chartex"
+
 /// Whether a chart part is one of the newer kinds (`cx:chartSpace`: waterfall, funnel, treemap,
-/// sunburst, histogram, box and whisker, map), told by its first tag - such a part can hold
+/// sunburst, histogram, box and whisker, map), told by its root's start tag - such a part can hold
 /// megabytes of data (a map chart's geography), and is not read to find that out.
 let isChartEx (xml: string) : bool =
-    let head = if xml.Length > 4096 then xml.Substring(0, 4096) else xml
-    let mutable at = head.IndexOf '<'
-    while at >= 0 && at + 1 < head.Length && (head.[at + 1] = '?' || head.[at + 1] = '!') do
-        at <- head.IndexOf('<', at + 1)
-    if at < 0 then false
-    else
-        let close = head.IndexOf('>', at)
-        let tag = if close < 0 then head.Substring at else head.Substring(at, close - at)
-        let name = (tag.Substring 1).Split([| ' '; '\t'; '\r'; '\n'; '/' |]).[0]
-        let space = "http://schemas.microsoft.com/office/drawing/2014/chartex"
-        match name.IndexOf ':' with
-        | -1 -> tag.Contains ("xmlns=\"" + space + "\"") || tag.Contains ("xmlns='" + space + "'")
-        | colon ->
-            let prefix = name.Substring(0, colon)
-            tag.Contains ("xmlns:" + prefix + "=\"" + space + "\"") || tag.Contains ("xmlns:" + prefix + "='" + space + "'")
+    match (try XmlDsl.rootStartTag xml with _ -> None) with
+    | Some (XmlDsl.Element (name, attrs, _, _), _) ->
+        let colon = name.IndexOf ':'
+        let declaration = if colon < 0 then "xmlns" else "xmlns:" + name.Substring(0, colon)
+        localName name = "chartSpace" && Map.tryFind declaration attrs = Some chartExSpace
+    | _ -> false
 
-let parseChart (theme: ThemeColors) (xml: string) : Chart option =
-    if isChartEx xml then None else
+/// The start of a chartEx part as far as a chart that is not drawn needs it, read with the lexer
+/// without going on into the rest (a map's geography): the kind of its first series
+/// (`layoutId`), the chart's title element and that series' name (`cx:tx`).
+let private chartExOutline (xml: string) : string option * XmlDsl.XmlNode option * XmlDsl.XmlNode option =
+    let lexer = XmlDsl.XmlLexer(xml, 0, xml.Length)
+    let names = Collections.Generic.HashSet<string>()
+    let mutable kind = None
+    let mutable title = None
+    let mutable seriesName = None
+    let mutable plotSeen = false
+    let mutable going = true
+    while going do
+        match lexer.Next () with
+        | XmlDsl.XmlToken.StartTag ->
+            if kind.IsNone then
+                if lexer.LocalNameIs "plotArea" then plotSeen <- true
+                elif lexer.LocalNameIs "title" && not plotSeen && title.IsNone then title <- XmlDsl.tryReadElement lexer names
+                elif lexer.LocalNameIs "series" then
+                    let layoutId = lexer.Attribute "layoutId"
+                    kind <- Some (if isNull layoutId then "" else layoutId)
+                    if lexer.SelfClosing then going <- false
+            elif lexer.LocalNameIs "tx" && seriesName.IsNone then
+                seriesName <- XmlDsl.tryReadElement lexer names
+                going <- false
+            // (What follows a series' name - its look, its data, its geography - is not needed.)
+            else going <- false
+        | XmlDsl.XmlToken.EndTag when kind.IsSome -> going <- false
+        | XmlDsl.XmlToken.EndOfText | XmlDsl.XmlToken.Malformed -> going <- false
+        | _ -> ()
+    kind, title, seriesName
+
+/// The text of a chartEx title or series name (`cx:tx`: `cx:txData` with its cached `cx:v`, or `cx:rich`).
+let private chartExText (tx: XmlDsl.XmlNode) : string option =
+    match child "rich" tx with
+    | Some rich ->
+        let lines = childrenNamed "p" rich |> List.map (fun paragraph -> descendants "t" paragraph |> List.map innerText |> String.concat "")
+        Some (String.concat "\n" lines)
+    | None -> child "txData" tx |> Option.bind (child "v") |> Option.map innerText
+    |> Option.filter (fun text -> text.Trim() <> "")
+
+/// What a chartEx part's data dimension reads (`cx:strDim` / `cx:numDim`): its formula - a defined
+/// name (`_xlchart.v1.0`) is what `names` says it refers to - and the points cached in `cx:lvl`.
+let private chartExDim (names: string -> string option) (dim: XmlDsl.XmlNode) : DataRef =
+    let formula =
+        child "f" dim |> Option.map innerText |> Option.map (fun text -> text.Trim()) |> Option.filter (fun text -> text <> "")
+        |> Option.bind (fun text -> if text.Contains "!" then Some text else names text)
+        |> Option.map (fun text -> text.TrimStart('='))
+    let level = childrenNamed "lvl" dim |> List.tryLast
+    let mutable numbers = Map.empty<int, float>
+    let mutable strings = Map.empty<int, string>
+    let mutable count = 0
+    match level with
+    | Some level ->
+        for point in childrenNamed "pt" level do
+            match attr "idx" point |> Option.bind number with
+            | Some index ->
+                let text = innerText point
+                strings <- Map.add (int index) text strings
+                (match number text with Some value -> numbers <- Map.add (int index) value numbers | None -> ())
+                count <- max count (int index + 1)
+            | None -> ()
+        (match attr "ptCount" level |> Option.bind number with Some stated -> count <- max count (int stated) | None -> ())
+    | None -> ()
+    { Formula = formula; Numbers = numbers; Strings = strings; Count = count
+      FormatCode = level |> Option.bind (attr "formatCode") |> Option.filter (fun code -> code <> "") }
+
+/// A chartEx chart of a kind that is not drawn: a placeholder that says what it is, with its title
+/// (or, where the title is the automatic one, its series' name).
+let private undrawnChartEx (layoutId: string) (title: XmlDsl.XmlNode option) (seriesName: XmlDsl.XmlNode option) : Chart =
+    let titleText =
+        match title |> Option.bind (child "tx") |> Option.bind chartExText with
+        | Some text -> Some text
+        | None -> seriesName |> Option.bind chartExText
+    { Title = titleText; TitleStyle = noTextStyle; AutoTitleDeleted = titleText.IsNone
+      Plots =
+        [ { Kind = UndrawnPlot layoutId; Horizontal = false; Grouping = "standard"; Series = []; GapWidth = 0.0; Overlap = 0.0; HoleSize = 0.0
+            FirstSliceAngle = 0.0; VaryColors = false; AxisIds = []; Labels = None; Markers = false; ScatterStyle = ""; RadarStyle = ""
+            HiLowLines = None; UpDownBars = None; BubbleScale = 100.0 } ]
+      Axes = []; Legend = None; Background = FillAuto; Border = None; PlotBackground = FillNone; TextStyle = noTextStyle
+      RoundedCorners = false; Date1904 = false; TitleLayout = None; TitleOverlay = false; PlotLayout = None; Style = 2 }
+
+/// A chartEx part read: a waterfall or a funnel as a chart of one plot, any other kind a chart that
+/// is drawn as a placeholder. `names` resolves the defined names its data refers to.
+let private parseChartEx (names: string -> string option) (theme: ThemeColors) (xml: string) : Chart option =
+    match chartExOutline xml with
+    | None, _, _ -> None
+    | Some layoutId, title, seriesName when layoutId <> "waterfall" && layoutId <> "funnel" -> Some (undrawnChartEx layoutId title seriesName)
+    | Some layoutId, title, seriesName ->
+        let root = XmlDsl.parse (spacesKept xml)
+        match child "chart" root with
+        | None -> None
+        | Some chart ->
+            let dataSets =
+                child "chartData" root |> Option.map (childrenNamed "data") |> Option.defaultValue []
+                |> List.map (fun data -> attr "id" data |> Option.defaultValue "0", data)
+            let area = child "plotArea" chart
+            let region = area |> Option.bind (child "plotAreaRegion")
+            let seriesNodes = region |> Option.map (childrenNamed "series") |> Option.defaultValue [] |> List.filter (fun node -> attr "layoutId" node = Some layoutId)
+            let series =
+                seriesNodes
+                |> List.mapi (fun order node ->
+                    let data = valOf "dataId" node |> Option.bind (fun id -> dataSets |> List.tryFind (fun (known, _) -> known = id)) |> Option.map snd
+                    let dim (element: string) (kinds: string list) =
+                        data |> Option.bind (fun data -> childrenNamed element data |> List.tryFind (fun dim -> List.contains (defaultArg (attr "type" dim) "") kinds))
+                        |> Option.map (chartExDim names)
+                    let labels =
+                        child "dataLabels" node
+                        |> Option.map (fun labels ->
+                            let visibility = child "visibility" labels
+                            let shown (name: string) (otherwise: bool) = isOn (visibility |> Option.bind (attr name)) otherwise
+                            { ShowValue = shown "value" true
+                              ShowPercent = false
+                              ShowCategory = shown "categoryName" false
+                              ShowSeries = shown "seriesName" false
+                              Position = attr "pos" labels
+                              FormatCode = child "numFmt" labels |> Option.bind (fun format -> if isOn (attr "sourceLinked" format) false then None else attr "formatCode" format)
+                              Style = textPropsOf theme labels
+                              Separator = child "separator" labels |> Option.map innerText
+                              Deleted = childrenNamed "dataLabelHidden" labels |> List.choose (fun hidden -> attr "idx" hidden |> Option.bind number |> Option.map int) |> Set.ofList })
+                        |> Option.filter (fun spec -> spec.ShowValue || spec.ShowCategory || spec.ShowSeries)
+                    let shape = child "spPr" node
+                    { Order = order; Index = order
+                      Name =
+                        child "tx" node |> Option.bind (child "txData")
+                        |> Option.map (fun txData ->
+                            let reference = chartExDim names txData
+                            match child "v" txData |> Option.map innerText with
+                            | Some text -> { reference with Strings = Map.ofList [ 0, text ]; Count = max 1 reference.Count }
+                            | None -> reference)
+                      Categories = dim "strDim" [ "cat" ] |> Option.orElse (dim "numDim" [ "cat" ])
+                      Values = dim "numDim" [ "val"; "" ]
+                      XValues = None
+                      Fill = shape |> Option.map (shapeFillOf theme) |> Option.defaultValue FillAuto
+                      Line = shape |> Option.bind (strokeOf theme)
+                      MarkerSymbol = None; MarkerSize = 0.0; MarkerFill = FillAuto; MarkerLine = None; Smooth = false
+                      PointFills =
+                        childrenNamed "dataPt" node
+                        |> List.choose (fun point ->
+                            match attr "idx" point |> Option.bind number, child "spPr" point |> Option.map (shapeFillOf theme) with
+                            | Some index, Some fill when fill <> FillAuto -> Some (int index, fill)
+                            | _ -> None)
+                        |> Map.ofList
+                      Labels = labels
+                      BubbleSizes = None
+                      Explosion = 0.0 })
+            let first = seriesNodes |> List.tryHead
+            let subtotals =
+                first |> Option.bind (path [ "layoutPr"; "subtotals" ])
+                |> Option.map (fun totals -> childrenNamed "idx" totals |> List.choose (attr "val" >> Option.bind number >> Option.map int))
+                |> Option.defaultValue []
+            let connectors = first |> Option.bind (path [ "layoutPr"; "visibility" ]) |> Option.bind (attr "connectorLines") |> fun value -> isOn value true
+            let axes =
+                area |> Option.map (childrenNamed "axis") |> Option.defaultValue []
+                |> List.map (fun axis ->
+                    let isValue = (child "valScaling" axis).IsSome
+                    let scaling = child "valScaling" axis |> Option.orElse (child "catScaling" axis)
+                    let scaled (name: string) = scaling |> Option.bind (attr name) |> Option.bind number
+                    let format = child "numFmt" axis
+                    { Id = attr "id" axis |> Option.defaultValue ""
+                      Kind = (if isValue then "val" else "cat")
+                      OnTicks = false
+                      Position = (match layoutId, isValue with "funnel", false -> "l" | "funnel", true -> "b" | _, true -> "l" | _ -> "b")
+                      Deleted = isOn (attr "hidden" axis) false
+                      Min = scaled "min"; Max = scaled "max"; MajorUnit = scaled "majorUnit"
+                      Reversed = false
+                      FormatCode = format |> Option.bind (attr "formatCode")
+                      SourceLinked = format |> Option.map (fun item -> isOn (attr "sourceLinked" item) false) |> Option.defaultValue true
+                      Gridlines =
+                        child "majorGridlines" axis
+                        |> Option.map (fun lines ->
+                            match child "spPr" lines |> Option.bind (strokeOf theme) with
+                            | Some stroke -> stroke
+                            | None -> { Paint = FillColor ("#D9D9D9", 1.0); Width = 1.0; Dash = None })
+                      Title = child "title" axis |> Option.bind (child "tx") |> Option.bind chartExText
+                      TitleStyle = noTextStyle
+                      LabelStyle = textPropsOf theme axis
+                      Line = child "spPr" axis |> Option.bind (strokeOf theme)
+                      LabelsShown = (child "tickLabels" axis).IsSome
+                      CrossesId = None
+                      LogBase = None
+                      DisplayUnit = 1.0
+                      DisplayUnitLabel = None })
+            let titleNode = child "title" chart
+            let titleText =
+                match titleNode |> Option.bind (child "tx") |> Option.bind chartExText with
+                | Some text -> Some text
+                | None when titleNode.IsSome -> series |> List.tryHead |> Option.bind (fun item -> item.Name) |> Option.bind (fun name -> Map.tryFind 0 name.Strings)
+                | None -> None
+            let shape = child "spPr" root
+            let gap =
+                area |> Option.map (childrenNamed "axis") |> Option.defaultValue []
+                |> List.tryPick (fun axis -> child "catScaling" axis |> Option.bind (attr "gapWidth") |> Option.bind number)
+                |> Option.defaultValue (if layoutId = "funnel" then 0.06 else 0.5)
+            Some
+                { Title = titleText
+                  TitleStyle = titleNode |> Option.map (titleStyle theme) |> Option.defaultValue noTextStyle
+                  AutoTitleDeleted = titleText.IsNone
+                  Plots =
+                    [ { Kind = (if layoutId = "funnel" then FunnelPlot else WaterfallPlot (subtotals, connectors))
+                        Horizontal = (layoutId = "funnel"); Grouping = "standard"; Series = series
+                        GapWidth = gap * 100.0; Overlap = 0.0; HoleSize = 0.0; FirstSliceAngle = 0.0; VaryColors = false
+                        AxisIds = axes |> List.map (fun axis -> axis.Id); Labels = None; Markers = false; ScatterStyle = ""; RadarStyle = ""
+                        HiLowLines = None; UpDownBars = None; BubbleScale = 100.0 } ]
+                  Axes = axes
+                  Legend =
+                    child "legend" chart
+                    |> Option.map (fun legend ->
+                        { Position = attr "pos" legend |> Option.defaultValue "t"; Style = textPropsOf theme legend; Layout = None
+                          Overlay = isOn (attr "overlay" legend) false; Deleted = Set.empty })
+                  Background = shape |> Option.map (shapeFillOf theme) |> Option.defaultValue FillAuto
+                  Border = shape |> Option.bind (strokeOf theme)
+                  PlotBackground = area |> Option.bind (child "spPr") |> Option.map (shapeFillOf theme) |> Option.defaultValue FillNone
+                  TextStyle = textPropsOf theme root
+                  RoundedCorners = false
+                  Date1904 = false
+                  TitleLayout = None
+                  TitleOverlay = titleNode |> Option.map (fun node -> isOn (attr "overlay" node) false) |> Option.defaultValue false
+                  PlotLayout = None
+                  Style = 2 }
+
+/// A chart part of the classic kind (`c:chartSpace`) read; None for a part this module does not
+/// draw (no plot of a kind it knows, a part that is not a chart).
+let private parseClassicChart (theme: ThemeColors) (xml: string) : Chart option =
     try
         let root = XmlDsl.parse (spacesKept xml)
         let space = if nameOf root = "chartSpace" then Some root else descendants "chartSpace" root |> List.tryHead
@@ -791,6 +1027,16 @@ let parseChart (theme: ThemeColors) (xml: string) : Chart option =
                              kids space |> List.collect flattened |> List.tryPick (fun item -> if nameOf item = "style" then attr "val" item |> Option.bind number |> Option.map int else None)
                              |> Option.defaultValue 2 }
     with _ -> None
+
+
+/// `parseChart`, with what the defined names a chartEx part reads its data through refer to.
+let parseChartWith (names: string -> string option) (theme: ThemeColors) (xml: string) : Chart option =
+    if isChartEx xml then (try parseChartEx names theme xml with _ -> None)
+    else parseClassicChart theme xml
+
+/// The chart of a chart part, or None for a part this module does not draw: a chartEx part reads
+/// its data through defined names, which this does not resolve (`parseChartWith` does).
+let parseChart (theme: ThemeColors) (xml: string) : Chart option = parseChartWith (fun _ -> None) theme xml
 
 // ---------------------------------------------------------------------------
 // The scene: what a chart or a shape is drawn with
@@ -1305,8 +1551,241 @@ let private layoutRect (layout: ManualLayout option) (width: float) (height: flo
         Some (left, top, min (width - left) (w * width), min (height - top) (h * height))
     | _ -> None
 
-/// The scene of a chart in a rectangle of `width` x `height` pixels.
-let layoutChart (theme: ThemeColors) (data: ChartData) (chart: Chart) (width: float) (height: float) : Scene =
+/// A placeholder for a chartEx chart of a kind that is not drawn: what it is, with its title.
+let private layoutUndrawnChartEx (layoutId: string) (chart: Chart) (width: float) (height: float) : Scene =
+    let items = ResizeArray<Primitive>()
+    let add (item: Primitive) = items.Add item
+    let fitted (size: float) (room: float) (text: string) =
+        if room <= 0.0 || textWidth size text <= room || text.Length <= 2 then text
+        else
+            let keep = max 1 (int (float text.Length * room / textWidth size text) - 1)
+            text.Substring(0, min text.Length keep) + "…"
+    add (PRect (0.5, 0.5, max 0.0 (width - 1.0), max 0.0 (height - 1.0), Some "#F6F8FA", 1.0, Some "#8A94A6", 1.0, 0.0))
+    let lines = (match chart.Title with Some title -> title.Split('\n') |> Array.toList | None -> [])
+    let titleSize = 14.0
+    let block = float lines.Length * titleSize * 1.3 + 16.0
+    let mutable y = height / 2.0 - block / 2.0 + titleSize * 0.65
+    for line in lines do
+        add (PText (width / 2.0, y, fitted titleSize (width - 16.0) line, titleSize, "#2D3748", "middle", true, false, 0.0))
+        y <- y + titleSize * 1.3
+    add (PText (width / 2.0, y + 2.0, fitted 11.0 (width - 16.0) (chartExKindName layoutId + " (not drawn)"), 11.0, "#718096", "middle", false, false, 0.0))
+    { Width = width; Height = height; Items = List.ofSeq items }
+
+/// The scene of a chartEx waterfall or funnel.
+let private layoutPlottedChartEx (theme: ThemeColors) (data: ChartData) (chart: Chart) (plot: Plot) (width: float) (height: float) : Scene =
+    let items = ResizeArray<Primitive>()
+    let add (item: Primitive) = items.Add item
+    let textColor (style: TextStyle) = (over style chart.TextStyle).Color |> Option.defaultValue "#595959"
+    let textSize (style: TextStyle) (otherwise: float) = px ((over style chart.TextStyle).Size |> Option.defaultValue otherwise)
+    let isBold (style: TextStyle) = (over style chart.TextStyle).Bold |> Option.defaultValue false
+    let fitted (size: float) (room: float) (text: string) =
+        if room <= 0.0 || textWidth size text <= room || text.Length <= 2 then text
+        else
+            let keep = max 1 (int (float text.Length * room / textWidth size text) - 1)
+            text.Substring(0, min text.Length keep) + "…"
+    (match chart.Background with
+     | FillNone -> ()
+     | FillColor (color, opacity) -> add (PRect (0.0, 0.0, width, height, Some color, opacity, None, 0.0, 0.0))
+     | FillAuto -> add (PRect (0.0, 0.0, width, height, Some "#FFFFFF", 1.0, None, 0.0, 0.0)))
+    (match strokeColor chart.Border with
+     | Some (color, strokeWidth, _) -> add (PRect (strokeWidth / 2.0, strokeWidth / 2.0, width - strokeWidth, height - strokeWidth, None, 1.0, Some color, strokeWidth, 0.0))
+     | None -> ())
+    let pad = 8.0
+    let mutable top = pad
+    let mutable bottom = height - pad
+    let mutable left = pad
+    let mutable right = width - pad
+    (match (if chart.AutoTitleDeleted then None else chart.Title) with
+     | Some title ->
+        let size = textSize chart.TitleStyle 14.0
+        let lines = title.Split('\n')
+        for index in 0 .. lines.Length - 1 do
+            add (PText (width / 2.0, top + size * 0.6 + float index * size * 1.2, fitted size (width - 2.0 * pad) lines.[index], size, textColor chart.TitleStyle, "middle", isBold chart.TitleStyle, false, 0.0))
+        if not chart.TitleOverlay then top <- top + float lines.Length * size * 1.2 + 4.0
+     | None -> ())
+    (match plot.Series |> List.tryHead with
+     | None -> ()
+     | Some series ->
+        let categories = textsOf data series.Categories
+        let values = numbersOf data series.Values
+        let count = max categories.Length values.Length
+        let value (index: int) = if index < values.Length then defaultArg values.[index] 0.0 else 0.0
+        let category (index: int) = if index < categories.Length then categories.[index] else ""
+        let sourceFormat = formatCodeOf data series.Values
+        let labelSpec = series.Labels
+        let labelSize = labelSpec |> Option.map (fun spec -> textSize spec.Style 9.0) |> Option.defaultValue (px 9.0)
+        let labelText (index: int) (amount: float) =
+            match labelSpec with
+            | Some spec when not (spec.Deleted.Contains index) ->
+                let number =
+                    match spec.FormatCode |> Option.orElse sourceFormat with
+                    | Some code -> data.Format code amount
+                    | None -> generalNumber amount
+                let seriesName = series.Name |> Option.bind (fun name -> textsOf data (Some name) |> Array.tryHead) |> Option.defaultValue ""
+                let parts =
+                    [ if spec.ShowSeries && seriesName <> "" then yield seriesName
+                      if spec.ShowCategory then yield category index
+                      if spec.ShowValue then yield number ]
+                match parts with
+                | [] -> None
+                | _ -> Some (String.concat (defaultArg spec.Separator ", ") parts)
+            | _ -> None
+        let fillOfPoint (index: int) (automatic: string) : (string * float) option =
+            match Map.tryFind index series.PointFills with
+            | Some (FillColor (color, opacity)) -> Some (color, opacity)
+            | Some FillNone -> None
+            | _ ->
+                match series.Fill with
+                | FillColor (color, opacity) -> Some (color, opacity)
+                | FillNone -> None
+                | FillAuto -> Some (automatic, 1.0)
+        let outline = strokeColor series.Line
+        /// A label's colour inside a bar: the label's own, else white on a dark bar.
+        let insideColor (fill: (string * float) option) =
+            match labelSpec |> Option.bind (fun spec -> spec.Style.Color) with
+            | Some color -> color
+            | None ->
+                match fill with
+                | Some (color, _) ->
+                    let r, g, b = rgbOf (solidOf color)
+                    if 0.299 * r + 0.587 * g + 0.114 * b < 140.0 then "#FFFFFF" else "#404040"
+                | None -> "#404040"
+        let labelColor = labelSpec |> Option.map (fun spec -> textColor spec.Style) |> Option.defaultValue "#595959"
+        let catAxis = chart.Axes |> List.tryFind (fun axis -> axis.Kind = "cat")
+        let valAxis = chart.Axes |> List.tryFind (fun axis -> axis.Kind = "val")
+        let shows (axis: Axis option) = match axis with Some axis -> not axis.Deleted && axis.LabelsShown | None -> false
+        let axisSize (axis: Axis option) = axis |> Option.map (fun axis -> textSize axis.LabelStyle 9.0) |> Option.defaultValue (px 9.0)
+        let axisColor (axis: Axis option) = axis |> Option.map (fun axis -> textColor axis.LabelStyle) |> Option.defaultValue "#595959"
+        match plot.Kind with
+        | WaterfallPlot (subtotals, connectors) ->
+            let isTotal (index: int) = List.contains index subtotals
+            // Increase, decrease, total: the theme's first three accents.
+            let automatic (kind: int) = autoColor theme kind
+            (match chart.Legend with
+             | Some legend ->
+                let size = textSize legend.Style 9.0
+                let color = textColor legend.Style
+                let entries = [ "Increase", 0; "Decrease", 1; "Total", 2 ]
+                let swatch (kind: int) = match series.Fill with FillColor (fill, _) -> fill | _ -> automatic kind
+                let entryWidth (text: string) = size * 0.8 + 4.0 + textWidth size text + 12.0
+                let draw (x: float) (y: float) (text: string) (kind: int) =
+                    add (PRect (x, y - size * 0.4, size * 0.8, size * 0.8, Some (swatch kind), 1.0, None, 0.0, 0.0))
+                    add (PText (x + size * 0.8 + 4.0, y, text, size, color, "start", false, false, 0.0))
+                match legend.Position with
+                | "l" | "r" ->
+                    let column = entries |> List.map (fst >> entryWidth) |> List.max
+                    let x = if legend.Position = "l" then left else right - column
+                    let start = (top + bottom) / 2.0 - float entries.Length * size * 1.4 / 2.0
+                    entries |> List.iteri (fun index (text, kind) -> draw x (start + float index * size * 1.4 + size * 0.7) text kind)
+                    if not legend.Overlay then (if legend.Position = "l" then left <- left + column + 6.0 else right <- right - column - 6.0)
+                | position ->
+                    let total = entries |> List.sumBy (fst >> entryWidth)
+                    let y = if position = "b" then bottom - size * 0.6 else top + size * 0.6
+                    let mutable x = (width - total) / 2.0
+                    for text, kind in entries do
+                        draw x y text kind
+                        x <- x + entryWidth text
+                    if not legend.Overlay then (if position = "b" then bottom <- bottom - size * 1.6 else top <- top + size * 1.6)
+             | None -> ())
+            // Where each bar starts and ends: a total from zero, every other point on from the last.
+            let starts = Array.zeroCreate<float> count
+            let ends = Array.zeroCreate<float> count
+            let mutable running = 0.0
+            for index in 0 .. count - 1 do
+                let amount = value index
+                if isTotal index then
+                    starts.[index] <- 0.0
+                    ends.[index] <- amount
+                    running <- amount
+                else
+                    starts.[index] <- running
+                    ends.[index] <- running + amount
+                    running <- running + amount
+            let lo = Array.append starts ends |> Array.fold min 0.0
+            let hi = Array.append starts ends |> Array.fold max 0.0
+            let minimum, maximum, step =
+                valueScale lo hi (valAxis |> Option.bind (fun axis -> axis.Min)) (valAxis |> Option.bind (fun axis -> axis.Max)) (valAxis |> Option.bind (fun axis -> axis.MajorUnit))
+            let ticks = ticksOf { Min = minimum; Max = maximum; Step = step; Log = None }
+            let tickText (tick: float) =
+                match valAxis with
+                | Some { FormatCode = Some code; SourceLinked = false } when code <> "General" -> data.Format code tick
+                | _ -> match sourceFormat with Some code -> data.Format code tick | None -> generalNumber tick
+            let valSize, catSize = axisSize valAxis, axisSize catAxis
+            if shows valAxis then left <- left + (ticks |> List.map (tickText >> textWidth valSize) |> List.fold max 0.0) + 6.0
+            if shows catAxis then bottom <- bottom - catSize * 1.6
+            if labelSpec.IsSome then top <- top + labelSize * 1.2
+            let plotTop, plotBottom = top, max (top + 1.0) bottom
+            let yOf (amount: float) = plotBottom - (amount - minimum) / (maximum - minimum) * (plotBottom - plotTop)
+            (match valAxis |> Option.bind (fun axis -> axis.Gridlines) |> strokeColor with
+             | Some (color, lineWidth, dash) -> for tick in ticks do add (PLine (left, yOf tick, right, yOf tick, color, lineWidth, dash))
+             | None -> ())
+            if shows valAxis then
+                for tick in ticks do add (PText (left - 6.0, yOf tick, tickText tick, valSize, axisColor valAxis, "end", false, false, 0.0))
+            let band = (right - left) / float (max 1 count)
+            let barWidth = band / (1.0 + max 0.0 plot.GapWidth / 100.0)
+            for index in 0 .. count - 1 do
+                let x = left + band * float index + (band - barWidth) / 2.0
+                let kind = if isTotal index then 2 elif value index >= 0.0 then 0 else 1
+                let fill = fillOfPoint index (automatic kind)
+                let high, low = max starts.[index] ends.[index], min starts.[index] ends.[index]
+                let y0, y1 = yOf high, yOf low
+                add (PRect (x, y0, barWidth, max 1.0 (y1 - y0), fill |> Option.map fst, (match fill with Some (_, opacity) -> opacity | None -> 1.0),
+                            (outline |> Option.map (fun (color, _, _) -> color)), (match outline with Some (_, lineWidth, _) -> lineWidth | None -> 0.0), 0.0))
+                if connectors && index < count - 1 then
+                    add (PLine (x + barWidth, yOf ends.[index], x + band, yOf ends.[index], "#A6A6A6", 0.75, None))
+                match labelText index (value index) with
+                | Some text ->
+                    let position = labelSpec |> Option.bind (fun spec -> spec.Position) |> Option.defaultValue "outEnd"
+                    let rising = kind <> 1
+                    let y =
+                        match position with
+                        | "ctr" -> (y0 + y1) / 2.0
+                        | "inEnd" -> if rising then y0 + labelSize * 0.7 else y1 - labelSize * 0.7
+                        | "inBase" -> if rising then y1 - labelSize * 0.7 else y0 + labelSize * 0.7
+                        | _ -> if rising then y0 - labelSize * 0.7 else y1 + labelSize * 0.7
+                    let color = if position = "outEnd" || position = "" then labelColor else insideColor fill
+                    add (PText (x + barWidth / 2.0, y, fitted labelSize (band + 4.0) text, labelSize, color, "middle", false, false, 0.0))
+                | None -> ()
+            if minimum < 0.0 && maximum > 0.0 then add (PLine (left, yOf 0.0, right, yOf 0.0, "#D9D9D9", 0.75, None))
+            if shows catAxis then
+                for index in 0 .. count - 1 do
+                    add (PText (left + band * (float index + 0.5), plotBottom + catSize * 0.9, fitted catSize (band - 2.0) (category index), catSize, axisColor catAxis, "middle", false, false, 0.0))
+        | _ ->
+            // A funnel: one bar a category, top to bottom, centred, as long as its value is of the largest.
+            let catSize = axisSize catAxis
+            if shows catAxis then
+                left <- left + (Seq.init count category |> Seq.map (textWidth catSize) |> Seq.fold max 0.0) + 8.0
+            let band = (bottom - top) / float (max 1 count)
+            let barHeight = band / (1.0 + max 0.0 plot.GapWidth / 100.0)
+            let largest = Seq.init count (value >> abs) |> Seq.fold max 0.0
+            let largest = if largest > 0.0 then largest else 1.0
+            let centre = (left + right) / 2.0
+            let automatic = autoColor theme 0
+            for index in 0 .. count - 1 do
+                let length = (right - left) * abs (value index) / largest
+                let y = top + band * float index + (band - barHeight) / 2.0
+                let fill = fillOfPoint index automatic
+                add (PRect (centre - length / 2.0, y, length, barHeight, fill |> Option.map fst, (match fill with Some (_, opacity) -> opacity | None -> 1.0),
+                            (outline |> Option.map (fun (color, _, _) -> color)), (match outline with Some (_, lineWidth, _) -> lineWidth | None -> 0.0), 0.0))
+                if shows catAxis then
+                    add (PText (left - 8.0, y + barHeight / 2.0, category index, catSize, axisColor catAxis, "end", false, false, 0.0))
+                match labelText index (value index) with
+                | Some text ->
+                    let inside = textWidth labelSize text <= length
+                    let x, anchor, color = if inside then centre, "middle", insideColor fill else centre + length / 2.0 + 4.0, "start", labelColor
+                    add (PText (x, y + barHeight / 2.0, text, labelSize, color, anchor, false, false, 0.0))
+                | None -> ())
+    { Width = width; Height = height; Items = List.ofSeq items }
+
+/// The scene of a chartEx chart: a waterfall, a funnel, or a placeholder that says what a chart of
+/// another kind is, with its title.
+let private layoutChartEx (theme: ThemeColors) (data: ChartData) (chart: Chart) (plot: Plot) (width: float) (height: float) : Scene =
+    match plot.Kind with
+    | UndrawnPlot layoutId -> layoutUndrawnChartEx layoutId chart width height
+    | _ -> layoutPlottedChartEx theme data chart plot width height
+
+/// The scene of a chart of the classic kinds.
+let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Chart) (width: float) (height: float) : Scene =
     let items = ResizeArray<Primitive>()
     let add (item: Primitive) = items.Add item
     let textColor (style: TextStyle) = over style chart.TextStyle |> fun merged -> merged.Color |> Option.defaultValue "#595959"
@@ -2108,6 +2587,12 @@ let layoutChart (theme: ThemeColors) (data: ChartData) (chart: Chart) (width: fl
                     if index % every = 0 then add (PText (pointAt index, plotBottom + baseSize * 0.85, text, categorySize, categoryColor, "middle", false, false, 0.0)))
         for label in pendingLabels do add label
     { Width = width; Height = height; Items = List.ofSeq items }
+
+/// The scene of a chart in a rectangle of `width` x `height` pixels.
+let layoutChart (theme: ThemeColors) (data: ChartData) (chart: Chart) (width: float) (height: float) : Scene =
+    match chart.Plots |> List.tryFind (fun plot -> match plot.Kind with WaterfallPlot _ | FunnelPlot | UndrawnPlot _ -> true | _ -> false) with
+    | Some plot -> layoutChartEx theme data chart plot width height
+    | None -> layoutClassicChart theme data chart width height
 
 // ---------------------------------------------------------------------------
 // Shapes, groups, and what an anchor of a drawing holds
