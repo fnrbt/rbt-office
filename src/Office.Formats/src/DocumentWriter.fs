@@ -1582,7 +1582,7 @@ let mutable private spliceSourceText : string = ""
 
 [<Fable.Core.Emit("JSON.stringify($0)")>]
 let private jsonText (_value: obj) : string = jsNative
-[<Fable.Core.Emit("JSON.stringify(Object.assign({}, $0, { Runs: undefined, SpliceFrom: undefined, SpliceOriginal: undefined, SpliceLeading: undefined, SpliceTrailing: undefined, SpliceJoined: undefined, CarrySource: undefined, CarrySave: undefined, SourcePara: undefined, SourceIndex: undefined, SourceUnchanged: undefined, SourceWhy: undefined, SourceTextChanges: undefined }))")>]
+[<Fable.Core.Emit("JSON.stringify(Object.assign({}, $0, { Runs: undefined, SpliceFrom: undefined, SpliceOriginal: undefined, SpliceLeading: undefined, SpliceTrailing: undefined, SpliceJoined: undefined, SpliceBreakKept: undefined, CarrySource: undefined, CarrySave: undefined, SourcePara: undefined, SourceIndex: undefined, SourceUnchanged: undefined, SourceWhy: undefined, SourceTextChanges: undefined }))")>]
 let private paragraphPropertiesText (_value: obj) : string = jsNative
 
 /// A paragraph written from its source (see splicedRuns, defined with the merging of properties
@@ -1765,7 +1765,8 @@ let private generateParagraphWithHyperlinksAndImagesWithPageSetup (packageSetup:
     let runs =
         // (A page break after the paragraph is one the paragraph has: a section that ends with it
         // says nothing of a break - the section after it says how it starts.)
-        if boolOrDefault false (para?PageBreakAfter) then
+        // (Spliced from a source that has the break where it stands: there it stays - see spliceSourceOf.)
+        if boolOrDefault false (para?PageBreakAfter) && not (splice.IsSome && boolOrDefault false (para?SpliceBreakKept)) then
             runs @ [element "w:r" [] [selfClosing "w:br" [("w:type", (if boolOrDefault false (para?ColumnBreakAfter) then "column" else "page"))]]]
         else runs
 
@@ -3040,7 +3041,7 @@ let rec private holdsShape (node: XmlDsl.XmlNode) : bool =
 let private holdsShapeItem (run: XmlDsl.XmlNode) : bool =
     not (XmlPatch.descendantsWhere (fun node -> XmlPatch.prefix node = "wps" || XmlPatch.prefix node = "wpg" || XmlPatch.name node = "v:textbox") run).IsEmpty
 
-let private spliceSourceOf (text: string) (start: int) (finish: int) (bookmarks: Set<string>) : SpliceSource option =
+let private spliceSourceOf (text: string) (start: int) (finish: int) (bookmarks: Set<string>) (keepBreaks: string option) (breaksKept: unit -> unit) : SpliceSource option =
     match XmlDsl.tryScanAt text start finish (System.Collections.Generic.HashSet<string>()) with
     | Some (XmlDsl.Element (_, _, _, span) as paragraph) when XmlDsl.Span.isKnown span && span.StartTagEnd < span.End ->
         let runs = System.Collections.Generic.Dictionary<int, XmlDsl.XmlNode>()
@@ -3095,8 +3096,14 @@ let private spliceSourceOf (text: string) (start: int) (finish: int) (bookmarks:
             shapeRuns |> List.exists (fun outer -> span.Start >= outer.Start && span.End <= outer.End)
         // (Nor is a run that holds nothing but its properties: the model has no run of it.)
         let holdsContent (node: XmlDsl.XmlNode) = XmlPatch.elements node |> List.exists (fun kid -> XmlPatch.localName kid <> "rPr")
+        // (A run that holds only a page or column break, where the model holds the paragraph's break - after it,
+        // wherever it stands -: the break as it stands.)
+        let breakOnly (node: XmlDsl.XmlNode) =
+            match keepBreaks, XmlPatch.elements node |> List.filter (fun kid -> XmlPatch.localName kid <> "rPr" && XmlPatch.localName kid <> "lastRenderedPageBreak") with
+            | Some kind, [ only ] when XmlPatch.name only = "w:br" && XmlPatch.attribute only "w:type" = Some kind -> breaksKept (); true
+            | _ -> false
         let isItem (node: XmlDsl.XmlNode) =
-            XmlPatch.localName node = "r" && holdsContent node && not (outerFieldRuns.Contains (XmlPatch.span node).Start) && not (inShape node)
+            XmlPatch.localName node = "r" && holdsContent node && not (outerFieldRuns.Contains (XmlPatch.span node).Start) && not (inShape node) && not (breakOnly node)
         XmlPatch.layout isItem modelledWrapper skip take text paragraph from
         |> Option.map (fun laid ->
             // The fields: each begin mark with the end mark that closes it, through the runs in order.
@@ -3356,7 +3363,27 @@ let private splicedRuns (source: SpliceSource) (original: obj) (joined: obj arra
                          // an edit puts a child in at its schema place, and the order of a run's content is its text.)
                          let contentNames (element: XmlPatch.SourceElement) = XmlPatch.elements element.Node |> List.map XmlPatch.name |> List.filter (fun name -> name <> "w:rPr")
                          let reordered = not sameText && contentNames before <> contentNames after
-                         if ofSeveral || reordered || content |> List.exists (function XmlPatch.SetChildren _ -> true | _ -> false) then
+                         // (The run as read holds its text otherwise than the model writes it - in two w:t, say: the edits of
+                         // the model's run are not edits of it. Its text written in the w:t the change is in, where the
+                         // change is in one; else the model's content.)
+                         let sourceShape = contentNames source
+                         let otherShape = not sameText && sourceShape <> contentNames before
+                         let textOnly (names: string list) = not names.IsEmpty && names |> List.forall (fun name -> name = "w:t")
+                         let textInPlace =
+                             // (The model's text of the run as read: all of the runs it held it as, when they are of one format.)
+                             let wasText = match originalRuns.TryGetValue at with | true, list -> (match alike list with [ (_, merged) ] -> Some merged | _ -> None) | _ -> None
+                             let nowText = stringOrDefault "" (runObj?Text)
+                             let plain (value: string) = ModelText.textPieces value |> List.forall (function ModelText.Text _ -> true | _ -> false)
+                             match wasText with
+                             | Some was when not sameText && currentCount.[at] = 1 && textOnly sourceShape && sourceShape.Length > 1 && plain was && plain nowText ->
+                                 let pieces = XmlPatch.elements source.Node |> List.filter (fun kid -> XmlPatch.name kid = "w:t") |> List.map XmlPatch.textOf
+                                 ModelText.changeInPieces pieces was nowText
+                                 |> Option.map (fun (index, value) -> [ XmlPatch.EditNth ("w:t", index, [ XmlPatch.SetText value ]) ])
+                             | _ -> None
+                         match textInPlace with
+                         | Some textEdits -> yield place, wrap (XmlPatch.apply XmlPatch.Word.order source (propsEdit :: textEdits))
+                         | None ->
+                         if ofSeveral || reordered || otherShape || content |> List.exists (function XmlPatch.SetChildren _ -> true | _ -> false) then
                              let runSpan = match run with XmlDsl.Element (_, _, _, sp) -> sp | _ -> XmlDsl.Span.none
                              let modelContent = XmlPatch.childrenBytes after (fun name -> name <> "rPr")
                              if runSpan.StartTagEnd < runSpan.End then
@@ -3389,7 +3416,10 @@ paragraphSplicer <-
                                     for mark in XmlPatch.descendants name element.Node do
                                         yield! Option.toList (XmlPatch.attribute mark "w:id")
                         | None -> () ] |> Set.ofList
-                spliceSourceOf spliceSourceText (intOrDefault -1 (para?SpliceFrom?Start)) (intOrDefault -1 (para?SpliceFrom?End)) bookmarks
+                let keepBreaks =
+                    if boolOrDefault false (para?PageBreakAfter) then Some (if boolOrDefault false (para?ColumnBreakAfter) then "column" else "page") else None
+                para?SpliceBreakKept <- false
+                spliceSourceOf spliceSourceText (intOrDefault -1 (para?SpliceFrom?Start)) (intOrDefault -1 (para?SpliceFrom?End)) bookmarks keepBreaks (fun () -> para?SpliceBreakKept <- true)
                 |> Option.map (fun source ->
                     let flag (value: obj) = isNullOrUndefined value || unbox<bool> value
                     // The runs of the paragraphs joined to it, in the elements they were read from.

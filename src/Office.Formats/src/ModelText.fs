@@ -88,6 +88,24 @@ let textPieces (text: string) : TextPiece list =
 /// Whether a run's text is what the editor shows of a field without a result ("[Field:<code>]").
 let isFieldPlaceholder (text: string) : bool = text.StartsWith "[Field:" && text.EndsWith "]"
 
+/// A text held in pieces (`pieces`, which together are `was`) changed to `now`: the piece the change is in
+/// and what that piece is now - None where the change is not within one piece (or the pieces are not `was`).
+let changeInPieces (pieces: string list) (was: string) (now: string) : (int * string) option =
+    if String.concat "" pieces <> was then None
+    else
+        // (What is the same at the start and at the end; the change is between.)
+        let common = Seq.zip was now |> Seq.takeWhile (fun (a, b) -> a = b) |> Seq.length
+        let room = min (was.Length - common) (now.Length - common)
+        let same = Seq.zip (Seq.rev was) (Seq.rev now) |> Seq.truncate room |> Seq.takeWhile (fun (a, b) -> a = b) |> Seq.length
+        let changedFrom, changedTo = common, was.Length - same
+        let inserted = now.Substring(common, now.Length - same - common)
+        let starts = pieces |> List.scan (fun at (piece: string) -> at + piece.Length) 0
+        List.zip pieces (List.take pieces.Length starts)
+        |> List.mapi (fun index (piece, start) -> index, piece, start)
+        // (The piece the change is in, from its start to its end; an insertion where two meet is the first's.)
+        |> List.tryFind (fun (_, piece, start) -> changedFrom >= start && changedTo <= start + piece.Length && (changedFrom < start + piece.Length || changedFrom = changedTo))
+        |> Option.map (fun (index, piece, start) -> index, piece.Substring(0, changedFrom - start) + inserted + piece.Substring(changedTo - start))
+
 // ---- links, pictures, colours, lists ----
 
 /// The bookmark a link names in the document itself ("#name" -> "name"); None for a link elsewhere.

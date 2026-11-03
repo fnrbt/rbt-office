@@ -219,5 +219,7 @@ check "data url" (ModelText.dataUrl "data:image/png;base64,AAA") (Some { ModelTe
 check "numbering level" [ ModelText.numberingLevel "7/2"; ModelText.numberingLevel "7" ] [ ("7", 1); ("7", -1) ]
 check "anchor" [ ModelText.anchorOf "#top"; ModelText.anchorOf "#"; ModelText.anchorOf "http://x" ] [ Some "top"; None; None ]
 
+check "a change in the piece it is in" [ ModelText.changeInPieces [ "ab"; "cd" ] "abcd" "Qabcd"; ModelText.changeInPieces [ "ab"; "cd" ] "abcd" "abXcd"; ModelText.changeInPieces [ "ab"; "cd" ] "abcd" "acd"; ModelText.changeInPieces [ "ab"; "cd" ] "abcd" "aXd" ] [ Some (0, "Qab"); Some (0, "abX"); Some (0, "a"); None ]
+
 printfn "xml-patch: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
