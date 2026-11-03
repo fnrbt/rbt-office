@@ -1817,18 +1817,31 @@ let sortRange (memberName: string) (range: CellRange) (keys: SortKey list) (opti
         if rows.Length < 2 then { model with SortState = sortState }
         else
             let valueAt (row: int) (col: int) =
-                match Map.tryFind { Row = row; Col = col } model.Cells with
+                match getCellAt row col model with
                 | Some data -> unwrapFormulaValue data.Value
                 | None -> CellValue.Empty
             let colorAt (font: bool) (row: int) (col: int) =
-                match Map.tryFind { Row = row; Col = col } model.Cells with
+                match getCellAt row col model with
                 | Some data -> ((if font then data.Format.TextColor else data.Format.BgColor) |> Option.defaultValue "").ToUpperInvariant()
                 | None -> ""
             let isBlank (value: CellValue) = match value with CellValue.Empty | String "" -> true | _ -> false
-            let compareBy (key: SortKey) (a: int) (b: int) : int =
+            // What each key compares, read once per row (rows.[i] at i), not at every comparison.
+            let keyColumns =
+                keys
+                |> List.map (fun key ->
+                    match key.By with
+                    | SortByValue -> rows |> Array.map (fun row -> valueAt row key.Column), [||]
+                    | SortByCellColor | SortByFontColor ->
+                        let wanted = key.Color.ToUpperInvariant()
+                        [||], rows |> Array.map (fun row -> if colorAt (key.By = SortByFontColor) row key.Column = wanted then 0 else 1))
+                |> Array.ofList
+            let keyArray = Array.ofList keys
+            let compareBy (index: int) (a: int) (b: int) : int =
+                let key = keyArray.[index]
+                let values, colors = keyColumns.[index]
                 match key.By with
                 | SortByValue ->
-                    let va, vb = valueAt a key.Column, valueAt b key.Column
+                    let va, vb = values.[a], values.[b]
                     match isBlank va, isBlank vb with
                     | true, true -> 0
                     | true, false -> 1
@@ -1837,44 +1850,31 @@ let sortRange (memberName: string) (range: CellRange) (keys: SortKey list) (opti
                         let order = compareSortValues options.CaseSensitive va vb
                         if key.Descending then -order else order
                 | SortByCellColor | SortByFontColor ->
-                    let wanted = key.Color.ToUpperInvariant()
-                    let has (row: int) = if colorAt (key.By = SortByFontColor) row key.Column = wanted then 0 else 1
-                    let order = compare (has a) (has b)
+                    let order = compare colors.[a] colors.[b]
                     if key.Descending then -order else order
-            let compareRows (a: int) (b: int) : int =
+            // (Positions in `rows`; rows that tie on every key keep their order.)
+            let comparePositions (a: int) (b: int) : int =
                 let mutable order = 0
-                let mutable rest = keys
-                while order = 0 && not rest.IsEmpty do
-                    order <- compareBy rest.Head a b
-                    rest <- rest.Tail
-                order
-            // (List.sortWith is stable.)
-            let ordered = rows |> List.ofArray |> List.sortWith compareRows |> Array.ofList
+                let mutable index = 0
+                while order = 0 && index < keyArray.Length do
+                    order <- compareBy index a b
+                    index <- index + 1
+                if order <> 0 then order else compare a b
+            let ordered = Array.init rows.Length id |> Array.sortWith comparePositions |> Array.map (fun position -> rows.[position])
             // ordered.[i] is the row whose cells land on rows.[i].
             let target = System.Collections.Generic.Dictionary<int, int>()
+            let sourceOf = System.Collections.Generic.Dictionary<int, int>()
             let mutable moved = false
             for i in 0 .. rows.Length - 1 do
                 target.[ordered.[i]] <- rows.[i]
+                sourceOf.[rows.[i]] <- ordered.[i]
                 if ordered.[i] <> rows.[i] then moved <- true
             if not moved then { model with SortState = sortState }
             else
                 let moves (addr: CellAddress) = addr.Col >= left && addr.Col <= right && target.ContainsKey addr.Row
+                // (The maps by address are made anew in one pass: `moveRowBlocks`.)
                 let moveMap (items: Map<CellAddress, 'T>) (onMove: int -> 'T -> 'T) : Map<CellAddress, 'T> =
-                    if Map.isEmpty items then items
-                    else
-                        let taken = ResizeArray<CellAddress * 'T>()
-                        for row in rows do
-                            for col in left .. right do
-                                let addr = { Row = row; Col = col }
-                                match Map.tryFind addr items with
-                                | Some item -> taken.Add ((addr, item))
-                                | None -> ()
-                        let mutable result = items
-                        for addr, _ in taken do result <- Map.remove addr result
-                        for addr, item in taken do
-                            let row = target.[addr.Row]
-                            result <- Map.add { addr with Row = row } (onMove (row - addr.Row) item) result
-                        result
+                    moveRowBlocks left right sourceOf onMove items
                 let cells =
                     moveMap model.Cells (fun delta data ->
                         match data.Value with

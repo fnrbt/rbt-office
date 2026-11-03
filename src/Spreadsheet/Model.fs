@@ -3562,6 +3562,83 @@ let private moveCellMap (onRows: bool) (isInsert: bool) (at: int) (count: int) (
                     kept <- kept + 1
             mapOfOrdered cells movedKeys movedValues kept
 
+/// A map by address with the blocks of some rows exchanged (a sort): the row `dest` of
+/// `sourceOf` takes, in the columns `left` .. `right`, the entries row `sourceOf.[dest]` had
+/// there, each changed by `onMove` (given the rows it moved by); `sourceOf` is a
+/// permutation of its rows. Everything else stays. The map is made anew from its entries
+/// in order (`mapOfOrdered`): a sort of a long sheet moves its cells in one pass.
+let moveRowBlocks (left: int) (right: int) (sourceOf: System.Collections.Generic.Dictionary<int, int>) (onMove: int -> 'T -> 'T) (items: Map<CellAddress, 'T>) : Map<CellAddress, 'T> =
+    if Map.isEmpty items || sourceOf.Count = 0 then items
+    else
+        let entries = orderedEntries items
+        let total = entryCount entries
+        // The entries of each row: rows.[i] from starts.[i] to starts.[i + 1] - 1.
+        let rows = ResizeArray<int>()
+        let starts = ResizeArray<int>()
+        let segmentOf = System.Collections.Generic.Dictionary<int, int>()
+        for i in 0 .. total - 1 do
+            let row = (entryKey<CellAddress> entries i).Row
+            if rows.Count = 0 || rows.[rows.Count - 1] <> row then
+                segmentOf.[row] <- rows.Count
+                rows.Add row
+                starts.Add i
+        starts.Add total
+        // The rows of the new map, in order: those that held entries and those that take a block.
+        let taking = Array.ofSeq sourceOf.Keys
+        Array.sortInPlace taking
+        let destinations = ResizeArray<int>(rows.Count + taking.Length)
+        let mutable a = 0
+        let mutable b = 0
+        while a < rows.Count || b < taking.Length do
+            if b >= taking.Length || (a < rows.Count && rows.[a] < taking.[b]) then
+                destinations.Add rows.[a]
+                a <- a + 1
+            elif a >= rows.Count || taking.[b] < rows.[a] then
+                destinations.Add taking.[b]
+                b <- b + 1
+            else
+                destinations.Add rows.[a]
+                a <- a + 1
+                b <- b + 1
+        let keys = Array.zeroCreate<CellAddress> total
+        let values = Array.zeroCreate<'T> total
+        let mutable kept = 0
+        let keep (key: CellAddress) (value: 'T) =
+            keys.[kept] <- key
+            values.[kept] <- value
+            kept <- kept + 1
+        let segment (row: int) =
+            match segmentOf.TryGetValue row with
+            | true, index -> starts.[index], starts.[index + 1] - 1
+            | _ -> 0, -1
+        // (A moved entry takes the key of the entry that stood where it lands, when there was one.)
+        let mutable cursor = 0
+        let landing (row: int) (col: int) =
+            while cursor < total && (let key = entryKey<CellAddress> entries cursor in key.Row < row || (key.Row = row && key.Col < col)) do
+                cursor <- cursor + 1
+            if cursor < total && (let key = entryKey<CellAddress> entries cursor in key.Row = row && key.Col = col) then entryKey<CellAddress> entries cursor
+            else { Row = row; Col = col }
+        for row in destinations do
+            let first, last = segment row
+            match sourceOf.TryGetValue row with
+            | true, source ->
+                for i in first .. last do
+                    let key = entryKey<CellAddress> entries i
+                    if key.Col < left then keep key (entryValue<'T> entries i)
+                let sourceFirst, sourceLast = segment source
+                for i in sourceFirst .. sourceLast do
+                    let key = entryKey<CellAddress> entries i
+                    if key.Col >= left && key.Col <= right then
+                        let value = entryValue<'T> entries i
+                        if source = row then keep key value
+                        else keep (landing row key.Col) (onMove (row - source) value)
+                for i in first .. last do
+                    let key = entryKey<CellAddress> entries i
+                    if key.Col > right then keep key (entryValue<'T> entries i)
+            | _ ->
+                for i in first .. last do keep (entryKey<CellAddress> entries i) (entryValue<'T> entries i)
+        mapOfOrdered items keys values kept
+
 /// Insert or delete rows/columns on a sheet. `targetsEditedSheet` tells which
 /// sheet qualifiers in this sheet's own formulas refer back to it (always the
 /// unqualified ones; a workbook also passes the sheet's name).
@@ -3996,10 +4073,15 @@ let usedBounds (model: SpreadsheetModel) : (int * int) option =
     let mutable any = false
     let mutable maxRow = 0
     let mutable maxCol = 0
-    for KeyValue(addr, _) in model.Cells do
+    // (The last row is the last key's; the columns are read in one walk of the map.)
+    if not (Map.isEmpty model.Cells) then
         any <- true
-        if addr.Row > maxRow then maxRow <- addr.Row
-        if addr.Col > maxCol then maxCol <- addr.Col
+        let entries = orderedEntries model.Cells
+        let count = entryCount entries
+        maxRow <- (entryKey<CellAddress> entries (count - 1)).Row
+        for i in 0 .. count - 1 do
+            let col = (entryKey<CellAddress> entries i).Col
+            if col > maxCol then maxCol <- col
     for merge in model.MergedCells do
         any <- true
         if merge.EndRow > maxRow then maxRow <- merge.EndRow
