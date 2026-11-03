@@ -135,7 +135,7 @@ const tenthConfinedShare = 0.99;
 // content control, a body whose section properties come first).
 const boldConfinedShare = 0.97;
 // The edit passes (page.js, EDIT_PASSES): the share of the edited paragraphs that must be changed in their own XML.
-// (A row or a column of a table that is new is the model's: its paragraphs are written from the model.)
+// (A row or a column of a table that is new is made like its neighbour of the table's XML: none of its paragraphs is the model's.)
 // (The passes that type with a format chosen at the caret take, besides every tenth paragraph, those with a bookmark, a
 // comment or a field - also the entries of a table of contents, and text in the result of a field. --reasons says, per
 // pass, why the others were written from the model. Over the corpus 98% are changed in their own XML; of the synthetic

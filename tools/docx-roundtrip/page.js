@@ -336,11 +336,51 @@ function xmlCensus(text) {
     walk(dom.documentElement);
     return counts;
 }
-// { kind: [count before, count after] } for every kind whose count changed.
-function xmlCensusDiff(before, after) {
+// { kind: [count before, count after] } for every kind whose count changed. `takenOut`: what an edit took out (the
+// rows of a table that were deleted) is not counted in `before` - see rowsTakenOut.
+function xmlCensusDiff(before, after, takenOut = () => []) {
     const a = xmlCensus(before), b = xmlCensus(after), out = {};
+    for (const el of takenOut(before, after)) {
+        const drop = (node) => {
+            // (The marks of ranges stay where the row stood: still counted.)
+            if (/^w:(bookmark|commentRange|perm)(Start|End)$/.test(node.nodeName)) return;
+            a.set(`<${node.nodeName}>`, (a.get(`<${node.nodeName}>`) ?? 0) - 1);
+            for (const attr of node.attributes) if (!attr.name.startsWith('xmlns')) a.set(`<${node.nodeName} ${attr.name}>`, (a.get(`<${node.nodeName} ${attr.name}>`) ?? 0) - 1);
+            for (const child of node.children) drop(child);
+        };
+        drop(el);
+    }
     for (const key of new Set([...a.keys(), ...b.keys()])) if ((a.get(key) ?? 0) !== (b.get(key) ?? 0)) out[key] = [a.get(key) ?? 0, b.get(key) ?? 0];
     return out;
+}
+// The rows (w:tr, at any depth) of `before` that were taken out: those `after` does not have as they were, nor any
+// row in them.
+function rowsTakenOut(before, after) {
+    const parse = (text) => new DOMParser().parseFromString(text, 'application/xml');
+    const was = parse(before), now = parse(after);
+    if (was.getElementsByTagName('parsererror')[0] || now.getElementsByTagName('parsererror')[0]) return [];
+    const serializer = new XMLSerializer();
+    const left = new Map();
+    for (const row of now.getElementsByTagName('w:tr')) { const text = serializer.serializeToString(row); left.set(text, (left.get(text) ?? 0) + 1); }
+    const missing = [];
+    for (const row of was.getElementsByTagName('w:tr')) {
+        const text = serializer.serializeToString(row);
+        const count = left.get(text) ?? 0;
+        if (count > 0) left.set(text, count - 1); else missing.push(row);
+    }
+    // (A row taken out is one the saved document has none of the rows in: a row that holds a table one of whose rows
+    // was taken out is changed, not taken out. The outermost of those.)
+    const gone = new Set(missing);
+    const removed = missing.filter((row) => [...row.getElementsByTagName('w:tr')].every((inner) => gone.has(inner)));
+    const outermost = removed.filter((row) => !removed.some((other) => other !== row && other.contains(row)));
+    // (With the content control or custom XML around a row that holds no other row that is left: a repeating section's item.)
+    const units = outermost.map((row) => {
+        let unit = row;
+        for (let up = row.parentNode; up && up.nodeName !== 'w:tbl'; up = up.parentNode)
+            if ((up.nodeName === 'w:sdt' || up.nodeName === 'w:customXml') && [...up.getElementsByTagName('w:tr')].every((other) => gone.has(other))) unit = up;
+        return unit;
+    });
+    return [...new Set(units)];
 }
 
 // ---- pipeline --------------------------------------------------------------
@@ -1155,7 +1195,8 @@ const passResult = async (handle, before, label, result, piecesPerEdit) => {
     // saved document than in the original - other than those of text and its formatting, which an edit changes.
     {
         const formatting = /^<w:(r|t|rPr|pPr|p|b|bCs|i|iCs|u|sz|szCs|color|rFonts|highlight|caps|smallCaps|vertAlign|jc|spacing|ind|tab|tabs|br|lang|kern|w|position|noProof|rStyle|pStyle|strike|dstrike|shd|numPr|ilvl|numId|lastRenderedPageBreak|proofErr|rtl|cs|bdr|webHidden|vanish|specVanish|em|effect|fitText|eastAsianLayout|snapToGrid|contextualSpacing|keepNext|keepLines|widowControl|outlineLvl|sectPr|delText|ins|del|instrText|fldChar|fldSimple|hyperlink|bookmarkStart|bookmarkEnd|softHyphen|noBreakHyphen|sym|cr|ptab|fldData)( |>)/;
-        const census = xmlCensusDiff(before['word/document.xml'], saved['word/document.xml']);
+        // (A row deleted takes what is in it: not lost - but the marks of ranges in it, which stay where it stood.)
+        const census = xmlCensusDiff(before['word/document.xml'], saved['word/document.xml'], kindOfPass(label) === 'a table row deleted' ? rowsTakenOut : undefined);
         result.lost = Object.entries(census).filter(([key, [was, now]]) => now < was && !formatting.test(key)).map(([key, [was, now]]) => `${key} ${was}->${now}`);
     }
     // (The paragraphs the model wrote, of the body: a block written whole, a paragraph of a table written alone.
