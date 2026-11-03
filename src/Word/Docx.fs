@@ -656,6 +656,7 @@ let private editorRunsToBuffer (runs: obj array) : TextBuffer =
                         { Xml = xml
                           Kind = run?OpaqueKind |> stringOrDefault "drawing"
                           ParagraphLevel = run?OpaqueParagraphLevel |> boolOrDefault false })
+                SourceRun = optionalInt (run?SourceRun)
             })
 
             currentOffset <- currentOffset + 1
@@ -2026,6 +2027,7 @@ let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) 
                     "OpaqueXml" ==> (img.Opaque |> Option.map (fun opaque -> opaque.Xml))
                     "OpaqueKind" ==> (img.Opaque |> Option.map (fun opaque -> opaque.Kind))
                     "OpaqueParagraphLevel" ==> (img.Opaque |> Option.map (fun opaque -> opaque.ParagraphLevel))
+                    "SourceRun" ==> img.SourceRun
                 ])
         )
 

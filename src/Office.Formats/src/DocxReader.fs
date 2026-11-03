@@ -1905,7 +1905,8 @@ module Docx =
                 ThemeColor = None; ThemeTint = None; ThemeShade = None; Highlight = None; Strike = None
                 DoubleStrike = None; Hidden = None; Position = None; EmphasisMark = None; VertAlign = None
             }
-            let linkRun (text: string) (props: RunProperties) =
+            // (The w:r a link run is of, where it is one alone: docs/save-architecture.md.)
+            let linkRun (text: string) (props: RunProperties) (source: XmlDsl.Span) =
                 RunToken {
                     Content = Link {
                         Text = text
@@ -1920,20 +1921,22 @@ module Docx =
                     RevisionId = None
                     RevisionType = None
                     RevisionAuthor = None
-                    RevisionDate = None; InsertedRevision = None; MoveName = None; Source = XmlDsl.Span.none
+                    RevisionDate = None; InsertedRevision = None; MoveName = None; Source = source
                 }
-            // (Runs that are formatted alike are one run, as they were before each was read on its own.)
+            // (Runs that are formatted alike are one run, as they were before each was read on its own: of the
+            // w:r of the first, where it is of that one alone.)
             let texts =
                 runs
-                |> List.choose (fun r -> match r.Content with | Text t when t <> "" -> Some (t, hyperlinkRunProps r.Properties) | _ -> None)
-                |> List.fold (fun (acc: (string * RunProperties) list) (text, props) ->
+                |> List.choose (fun r -> match r.Content with | Text t when t <> "" -> Some (t, hyperlinkRunProps r.Properties, r.Source) | _ -> None)
+                |> List.fold (fun (acc: (string * RunProperties * XmlDsl.Span) list) (text, props, source) ->
                     match acc with
-                    | (previous, previousProps) :: rest when previousProps = props -> (previous + text, props) :: rest
-                    | _ -> (text, props) :: acc) []
+                    | (previous, previousProps, previousSource) :: rest when previousProps = props ->
+                        (previous + text, props, (if previousSource = source then source else XmlDsl.Span.none)) :: rest
+                    | _ -> (text, props, source) :: acc) []
                 |> List.rev
             match texts with
-            | [] -> [ linkRun "" (runs |> List.tryHead |> Option.map (fun r -> hyperlinkRunProps r.Properties) |> Option.defaultValue defaultProps) ]
-            | _ -> texts |> List.map (fun (text, props) -> linkRun text props)
+            | [] -> [ linkRun "" (runs |> List.tryHead |> Option.map (fun r -> hyperlinkRunProps r.Properties) |> Option.defaultValue defaultProps) XmlDsl.Span.none ]
+            | _ -> texts |> List.map (fun (text, props, source) -> linkRun text props source)
 
     // Hyperlink extraction
     let hyperlink (hlNode: XmlNode) : Run list =
@@ -5783,6 +5786,8 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                 "BookmarkName" ==> (run.BookmarkStart |> Option.bind (fun bookmark -> bookmark.Name))
                 "BookmarkEndId" ==> run.BookmarkEnd
                 "RenderedPageBreakBefore" ==> run.RenderedPageBreakBefore
+                // (The w:r it was read from, of every kind of run: docs/save-architecture.md.)
+                "SourceRun" ==> (if XmlDsl.Span.isKnown run.Source then Some run.Source.Start else None)
             ]
 
             // Convert Run to EditorRun format
@@ -5823,13 +5828,13 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                             "InsertedRevisionAuthor" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Author))
                             "InsertedRevisionDate" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Date))
                             "RevisionMoveName" ==> run.MoveName
-                            "SourceRun" ==> (if XmlDsl.Span.isKnown run.Source then Some run.Source.Start else None)
                         ] @ bookmarkRunProps run))
                     | Image img ->
                         // Image run - resolve relationship ID to data URL
                         let imageSrc = editorImageSource images img
                         Some (objFromFields [
                             "IsImage" ==> true
+                            "SourceRun" ==> (if XmlDsl.Span.isKnown run.Source then Some run.Source.Start else None)
                             "ImageSrc" ==> imageSrc
                             "ImageLinked" ==> (img.Linked || isExternalImageSource imageSrc)
                             "ImageWidth" ==> img.Width
@@ -5975,7 +5980,6 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                                 "InsertedRevisionAuthor" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Author))
                                 "InsertedRevisionDate" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Date))
                                 "RevisionMoveName" ==> run.MoveName
-                                "SourceRun" ==> (if XmlDsl.Span.isKnown run.Source then Some run.Source.Start else None)
                             ] @ bookmarkRunProps run))
                         | EquationXml xml ->
                             Some (objFromFields [
@@ -6077,6 +6081,8 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                     "BookmarkName" ==> (run.BookmarkStart |> Option.bind (fun bookmark -> bookmark.Name))
                     "BookmarkEndId" ==> run.BookmarkEnd
                     "RenderedPageBreakBefore" ==> run.RenderedPageBreakBefore
+                    // (The w:r it was read from, of every kind of run: docs/save-architecture.md.)
+                    "SourceRun" ==> (if XmlDsl.Span.isKnown run.Source then Some run.Source.Start else None)
                 ]
 
                 let editorRuns =
@@ -6114,12 +6120,12 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                                 "InsertedRevisionAuthor" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Author))
                                 "InsertedRevisionDate" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Date))
                                 "RevisionMoveName" ==> run.MoveName
-                                "SourceRun" ==> (if XmlDsl.Span.isKnown run.Source then Some run.Source.Start else None)
                             ] @ bookmarkRunProps run))
                         | Image img ->
                             let imageSrc = editorImageSource images img
                             Some (objFromFields [
                                 "IsImage" ==> true
+                                "SourceRun" ==> (if XmlDsl.Span.isKnown run.Source then Some run.Source.Start else None)
                                 "ImageSrc" ==> imageSrc
                                 "ImageLinked" ==> (img.Linked || isExternalImageSource imageSrc)
                                 "ImageWidth" ==> img.Width
@@ -6264,7 +6270,6 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                                 "InsertedRevisionAuthor" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Author))
                                 "InsertedRevisionDate" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Date))
                                 "RevisionMoveName" ==> run.MoveName
-                                "SourceRun" ==> (if XmlDsl.Span.isKnown run.Source then Some run.Source.Start else None)
                             ] @ bookmarkRunProps run))
                         | EquationXml xml ->
                             Some (objFromFields [

@@ -553,6 +553,7 @@ let private editorRunsToBufferWithImages (decorate: int -> Rbt.Word.TextBuffer.T
                 WrapText = None
                 WrapPolygon = []
                 Opaque = None
+                SourceRun = None
             } |> decorateImage runIndex)
             offset <- offset + 1
         elif not (String.IsNullOrEmpty run.Text) then
@@ -786,7 +787,8 @@ let private mkPara resolver images styleMap comments notes useDocumentMarkForPur
                     WrapPolygon = source.WrapPolygon
                     // An opaque object shows its fallback picture, or a placeholder frame.
                     Src = (if source.Opaque.IsSome then DocxReader.editorImageSource images source else image.Src)
-                    Opaque = source.Opaque |> Option.map (fun opaque -> ({ Xml = opaque.Xml; Kind = opaque.Kind; ParagraphLevel = opaque.ParagraphLevel }: Rbt.Word.TextBuffer.OpaqueObject)) }
+                    Opaque = source.Opaque |> Option.map (fun opaque -> ({ Xml = opaque.Xml; Kind = opaque.Kind; ParagraphLevel = opaque.ParagraphLevel }: Rbt.Word.TextBuffer.OpaqueObject))
+                    SourceRun = if XmlDsl.Span.isKnown sourceRuns.[index].Source then Some sourceRuns.[index].Source.Start else None }
             | _ -> image
         else image
     {

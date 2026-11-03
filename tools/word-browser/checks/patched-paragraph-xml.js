@@ -134,11 +134,12 @@ try {
     await stage('in a table cell, a word made bold', (editor, select) => { select('gamma'); Word.toggleBold(editor); }, 'cell', [
         ['the word bold', `<w:rPr>${props}<w:b/><w:noProof/><w14:ligatures w14:val="standard"/></w:rPr><w:t xml:space="preserve">gamma</w:t></w:r>`],
     ], [1, 0, 0]);
-    // A paragraph of the table that cannot be changed in its XML: it alone is written from the model.
+    // A paragraph of the table whose run has a tracked change of its properties: changed in its XML, the bold
+    // put in at its place among the run's properties, the tracked change (what they were before it) kept.
     await stage('in a table cell, a paragraph with a tracked change of its properties', (editor, select) => { select('format', 'tracked format here'); Word.toggleBold(editor); }, 'tracked', [
-        ['the word bold, from the model', /<w:b\/>(<[^>]*>)*<\/w:rPr><w:t[^>]*>format<\/w:t>/],
-        ['the cell it is in', /<w:tcFitText\/><\/w:tcPr><w:p>/],
-    ], [0, 1, 0]);
+        ['the word bold, the tracked change kept', /<w:rPr><w:b\/><w:i\/><w:rPrChange w:id="9" w:author="A" w:date="2020-01-01T00:00:00Z"><w:rPr\/><\/w:rPrChange><\/w:rPr><w:t[^>]*>format<\/w:t>/],
+        ['the paragraph is the one that was read', '<w:tcFitText/></w:tcPr><w:p w14:paraId="3A3B3C03">'],
+    ], [1, 0, 0]);
 
     // ---- the table's rows, columns and cells: what was read goes back as it was read ----
     const table = tableOf(original);

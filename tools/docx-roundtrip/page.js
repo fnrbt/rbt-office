@@ -769,6 +769,7 @@ window.editKeptFinish = async (original, expect) => {
         const typed = Word.getText(editor);
         if (typed.length !== state.text.length + 1) problems.push(`edit: the typed character is not in the text (${JSON.stringify(state.text.slice(0, 80))} -> ${JSON.stringify(typed.slice(0, 80))}, selection ${JSON.stringify(Word.getSelection(editor))})`);
         const bytes = await writePackage(Word.exportDocumentPackage(editor), 'edit');
+        window.passSaves['edit'] = toBase64(bytes);
         const reopened = await open(bytes);
         const handle = openEditor(reopened.pkg);
         if (Word.getText(handle.editor) !== typed) problems.push('edit: the saved document does not read back with the text that was saved');
@@ -872,6 +873,7 @@ window.tenthFinish = async () => {
         if (typed.length !== text.length + chosen.length) problems.push(`every tenth paragraph: ${chosen.length} characters typed, the text is ${typed.length - text.length} longer`);
         const layout = layoutOf(editor);
         const bytes = await writePackage(Word.exportDocumentPackage(editor), 'every tenth paragraph');
+        window.passSaves['tenth typed'] = toBase64(bytes);
         const reopened = await open(bytes);
         const second = openEditor(reopened.pkg);
         if (Word.getText(second.editor) !== typed) problems.push('every tenth paragraph: the saved document does not read back with the text that was saved');
@@ -979,6 +981,7 @@ window.formatTenth = async (name) => {
         if (Word.getText(editor) !== text) problems.push('every tenth paragraph made bold: the text changed');
         const layout = layoutOf(editor);
         const out = await writePackage(Word.exportDocumentPackage(editor), 'every tenth paragraph made bold');
+        window.passSaves['tenth bold'] = toBase64(out);
         const reopened = await open(out);
         const second = openEditor(reopened.pkg);
         if (Word.getText(second.editor) !== text) problems.push('every tenth paragraph made bold: the saved document does not read back with the text that was saved');
@@ -1157,7 +1160,7 @@ const passResult = async (handle, before, label, result, piecesPerEdit) => {
     }
     // (The paragraphs the model wrote, of the body: a block written whole, a paragraph of a table written alone.
     // A paragraph spliced from its source - docs/save-architecture.md - is one kept in the XML it was read from.)
-    result.model = report.GeneratedParagraphs - (report.SplicedParagraphs ?? 0);
+    result.model = report.GeneratedParagraphs;
     result.kept = Math.max(0, result.edited - result.model);
     result.others = Math.max(0, changed - result.edited * piecesPerEdit);
     // (A block the model wrote takes the paragraphs in it along: a table whose rows are in content controls.)

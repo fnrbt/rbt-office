@@ -91,18 +91,58 @@ The spreadsheet's per-cell spans (`XlsxWriter` patch plan) become the same mecha
 
 ## Order of work
 
-Progress on `refactor/one-save`:
-- Step 1 done: `XmlNode.Element` carries its `Span`; one scanner, the part's text unchanged (`xml-source.fsx`).
-- Step 2 done: the reader's paragraphs and runs carry their source spans, read whole or front first
-  (`docx-source-spans.fsx`).
-- Step 3 done for runs: `TextStyle.SourceRun`, kept through typing and formatting; paste is plain text.
-- Step 4 under way: a paragraph the patch cannot change in its XML, and one made of a paragraph that was read
-  (split, joined), is spliced from its source (`DocumentWriter.splicedRuns`): wrappers the model does not hold
-  (`w:sdt`, `w:smartTag`, `w:customXml`, unknown), unknown elements between runs, unchanged runs as their bytes,
-  changed runs as their `w:r` with the changed properties merged into the `w:rPr`. Full round trip passes;
-  paragraphs written from the model: bold at a caret 35 -> 20, splits 319 -> 257, joins 239 -> 210.
-  Next: tables (a row or column insert writes the whole table from the model: 547 / 1552 paragraphs), the
-  remaining splits and joins, then the save written entirely from the model for a document that was read.
+### XmlPatch: the only way the writers change XML that was read
+
+`src/Office.Formats/src/XmlPatch.fs` (`tests/office-formats/xml-patch.fsx`). Every change to XML that was read is
+a typed edit of a node of the span tree, made in its text; what no edit names stays its bytes:
+
+- `ElementEdit`: `SetAttribute` / `RemoveAttribute`; `SetChild` / `SetChildren` / `RemoveChild` / `EditChild`
+  (by name, with the element to put in where there is none); `AddChild`, `SetChildWhere` / `RemoveChildWhere` /
+  `EditChildWhere` (a child chosen by an attribute: the `w:num` with this `w:numId`); `EditNth` (the n-th of a
+  name); `SetText` (with `xml:space` where the text needs it). A child put in goes to its place in the schema
+  order (`XmlPatch.Word.order`; `*` for the names it does not list).
+- `apply` / `applyPart` make the edits; `diff was now` gives the edits that make what the model wrote before into
+  what it writes now (attributes, children by name, repeated children in their places, text) - so a merge is
+  `apply (diff was now)` on the element that was read: the model's change, and nothing else.
+- `layout` / `writeLayout`: the children of a table, row, cell or paragraph as items (rows, cells, paragraphs,
+  runs) in the wrappers they are in (content controls, custom XML, links, tracked changes), among what the model
+  does not hold (marks, unknown elements, white space); written back with the items the model has, each `AtItem`
+  (in its wrappers), `WithPrevious` (new, in the wrappers of the one before) or `Outside`.
+- `tests/xml-text-ratchet.sh` (in `tests/run-all.sh`): the lines of the writers with text operations
+  (`Substring`, `IndexOf`, `Regex`, ...) may only go down. DocumentWriter 244 -> 137 so far; XlsxWriter 235.
+
+### Done
+
+- Spans: `XmlNode.Element` carries its `Span`; one scanner, the part's text unchanged (`xml-source.fsx`); the
+  reader's paragraphs, runs (of every kind: text, link, picture), tables, rows and cells carry their source.
+- Origins (`Document.SourceOrigin`): paragraphs, rows and cells of the model keep `ReadAt` the start of their
+  element; one made like another (a row or column put in, the second half of a split) is `LikeAt` it. The writer
+  finds each element by its origin in one span tree of the part (`sourceElementAt`) - no indexes of blocks and
+  paragraphs, no rescanning.
+- Tables: a table is its properties and grid, its rows in their wrappers (a content control around rows, around
+  cells, around the table), a row its cells, a cell its paragraphs; a copy of a row or cell is its origin's
+  element without its own ids. Row and column insert, cell shading, split: nothing lost (census).
+- Paragraphs: one path. A paragraph that changed is its source paragraph (its start tag, its properties merged,
+  `mergedProperties` on XmlPatch) with its runs: a run as it was read is its bytes; a run whose formatting or text
+  changed is its source `w:r` with the model's change made in it (`diff` of the model's run before and after:
+  properties merged, text `SetText` in its `w:t`); a new run next to a run that was read (typed with its style) is
+  a copy of that run's element without its session ids; a field that is as it was is its runs from begin mark to
+  end mark, one whose result was formatted has the result's runs changed in place. Links and tracked changes are
+  source wrappers while the model's wrapping of a run is what it was. Comment and permission ranges stay where
+  they stood; the bookmarks the model writes are its. The old text patcher (`scanSourceParagraphs`,
+  `planParagraphChange`, `sourceRunsOf`, `runPiece`, cut and join) is deleted.
+- Numbering: definitions and lists added and levels changed by edits of the part's tree.
+
+### Left
+
+- The rest of DocumentWriter onto XmlPatch: the body plan (`planBody`'s chunk and field-depth scanning),
+  carried marks (`carriedTokenPattern`, `withoutElementsNamed`), shapes (`patchShapeAnchor`, VML style), notes,
+  `writeFromEditorPackage`'s part handling; the model's XML written by a typed builder.
+- Headers, footers, notes and comments through the same path (origins of their own part).
+- XlsxWriter (235): cells, rows, sheets by the same means.
+- Joins: the paragraph joined to another keeps nothing of its own properties (as Word).
+
+### The original plan
 
 1. Range parser in `XmlDsl` with the identity test (slice of every node = its source; speed no worse than the
    scanner); an `XmlNode` view of it so the reader can switch parser without other changes.

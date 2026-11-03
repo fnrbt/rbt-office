@@ -63,6 +63,8 @@ fi
 
 echo "=== print ==="
 run_suite "print-helpers" "tests/print/helpers.fsx"
+echo "--- xml-text-ratchet ---"
+bash tests/xml-text-ratchet.sh || failed=1
 
 echo ""
 if [ "$failed" -ne 0 ]; then

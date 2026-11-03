@@ -5,6 +5,7 @@
 
   <ItemGroup>
     <Compile Include="src/XmlDsl.fs" />
+    <Compile Include="src/XmlPatch.fs" />
     <Compile Include="src/OfficeDsl.fs" />
     <Compile Include="src/ZipInterop.fs" />
     <Compile Include="src/VbaProject.fs" />

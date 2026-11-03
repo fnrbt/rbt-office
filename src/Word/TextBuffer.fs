@@ -283,6 +283,8 @@ type ImageRun = {
     WrapPolygon: (float * float) list
     /// Set when this is not a picture but a preserved object of the file.
     Opaque: OpaqueObject option
+    /// The w:r it was read from: where it starts in its part (docs/save-architecture.md).
+    SourceRun: int option
 }
 
 /// Text run with consistent styling
@@ -1237,6 +1239,7 @@ let insertImageWithMetadata pos src linked width height alt name title floating 
         WrapText = None
         WrapPolygon = []
         Opaque = None
+        SourceRun = None
     } buffer
 
 let insertImage pos src width height alt buffer =
