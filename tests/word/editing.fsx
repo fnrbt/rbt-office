@@ -211,6 +211,35 @@ check "Backspace at the start of a list item: out of the list, the text as it wa
     (texts unlisted, Doc.allParagraphs unlisted |> List.map (fun p -> p.Metadata.ListStyle), selectionOf unlisted) ([ "first"; "second" ], [ Doc.Bullet; Doc.NoList ], Some ("l2", 0, "l2", 0))
 check "Backspace again: joined to the item before" (texts (Doc.deleteBackward unlisted)) [ "firstsecond" ]
 
+// ---- a content control's checkbox: one character, a run of its own ----
+// (Its glyph is of the control's w:r, source 100; the text after it of another, 200.)
+let checkboxStyle = { TB.defaultStyle with Checkbox = Some false; SourceRun = Some 100; Bold = true }
+let afterStyle = { TB.defaultStyle with SourceRun = Some 200 }
+let checkboxBuffer =
+    { Rope = Rbt.Word.Rope.ofString "\u2610 Yes"
+      Runs = [ Text { Start = 0; Length = 1; Style = checkboxStyle }; Text { Start = 1; Length = 4; Style = afterStyle } ] }
+let checkboxDoc = docOf [ Doc.Paragraph { paragraph "x" "" with Buffer = checkboxBuffer } ]
+let runsOf (doc: Doc.Document) =
+    (Doc.findParagraph doc "x").Value.Buffer
+    |> fun b -> [ for run in b.Runs do match run with Text tr -> yield TB.slice tr.Start tr.Length b, tr.Style.Checkbox, tr.Style.SourceRun | Image _ -> () ]
+let typedBefore = checkboxDoc |> caret "x" 0 |> Doc.insertText "Q"
+check "checkbox: typed before it, a run of its own of no source"
+    (runsOf typedBefore) [ "Q", None, None; "\u2610", Some false, Some 100; " Yes", None, Some 200 ]
+let typedAfter = checkboxDoc |> caret "x" 1 |> Doc.insertText "Q"
+check "checkbox: typed after it, of the run after it"
+    (runsOf typedAfter) [ "\u2610", Some false, Some 100; "Q Yes", None, Some 200 ]
+let typedAtEnd = docOf [ Doc.Paragraph { paragraph "x" "" with Buffer = TB.sliceBuffer 0 1 checkboxBuffer } ] |> caret "x" 1 |> Doc.insertText "QR"
+check "checkbox: typed after it at the end, a run of its own of no source"
+    (runsOf typedAtEnd) [ "\u2610", Some false, Some 100; "QR", None, None ]
+let twoBoxes = TB.append (TB.sliceBuffer 0 1 checkboxBuffer) checkboxBuffer
+check "checkbox: two side by side are two runs"
+    (twoBoxes.Runs |> List.map (function Text tr -> tr.Length | Image _ -> -1)) [ 1; 1; 4 ]
+let allBold = TB.applyStyle 0 6 (fun style -> { style with Bold = true; SourceRun = None }) twoBoxes
+check "checkbox: formatted as its neighbours, still a run of its own"
+    (allBold.Runs |> List.map (function Text tr -> tr.Length | Image _ -> -1)) [ 1; 1; 4 ]
+let deletedBox = checkboxDoc |> caret "x" 1 |> Doc.deleteBackward
+check "checkbox: Backspace after it deletes it, one character" (runsOf deletedBox) [ " Yes", None, Some 200 ]
+
 printfn ""
 printfn "Word editing tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

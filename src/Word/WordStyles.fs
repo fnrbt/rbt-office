@@ -514,7 +514,7 @@ let effectiveBufferWith transformStyle (buffer: TextBuffer) =
             pendingStyle <- style
             hasPendingText <- true
         let addText index (run: TextRun) style =
-            if hasPendingText && pendingStart + pendingLength = run.Start && (obj.ReferenceEquals(pendingStyle, style) || pendingStyle = style) then
+            if hasPendingText && pendingStart + pendingLength = run.Start && pendingStyle.Checkbox.IsNone && (obj.ReferenceEquals(pendingStyle, style) || pendingStyle = style) then
                 ensureChanged pendingIndex
                 pendingLength <- pendingLength + run.Length
                 changed <- true

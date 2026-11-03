@@ -175,6 +175,9 @@ type Run = {
     /// Name of the move range (w:moveFromRangeStart / w:moveToRangeStart) a
     /// moveFrom / moveTo run lies in.
     MoveName: string option
+    /// The glyph of a w14:checkbox content control (☐ / ☒): its checked state.
+    /// The run is the control's - one character, never text typed beside it.
+    Checkbox: bool option
     /// The w:r the run was read from, in its part's text (docs/save-architecture.md);
     /// Span.none for a run that is not one (a bookmark, a picture outside a run).
     Source: XmlDsl.Span
@@ -1498,7 +1501,7 @@ module Docx =
                   RevisionId = None
                   RevisionType = None
                   RevisionAuthor = None
-                  RevisionDate = None; InsertedRevision = None; MoveName = None; Source = XmlDsl.Span.none }
+                  RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = None; Source = XmlDsl.Span.none }
             let whole () = [ fieldOf (runs |> List.tryHead |> Option.map runProps |> Option.defaultValue (runProps fldNode)) None ]
             let computed = ValueText.FieldCode.isComputed (code.Trim().ToUpperInvariant())
             if runs.Length < 2 || computed then whole ()
@@ -1613,6 +1616,7 @@ module Docx =
                 RevisionDate = first |> Option.bind (fun run -> run.RevisionDate)
                 InsertedRevision = first |> Option.bind (fun run -> run.InsertedRevision)
                 MoveName = first |> Option.bind (fun run -> run.MoveName)
+                Checkbox = None
                 Source = (match first with Some run -> run.Source | None -> XmlDsl.Span.none)
             }
         let whole () = [ fieldOf (if field.ResultRuns.Count > 0 then Some field.ResultRuns.[0] else None) None ]
@@ -1788,7 +1792,7 @@ module Docx =
               RevisionId = revId
               RevisionType = None
               RevisionAuthor = None
-              RevisionDate = None; InsertedRevision = None; MoveName = None
+              RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = None
               Source = (match rNode with XmlDsl.Element (_, _, _, span) -> span | _ -> XmlDsl.Span.none) }
 
         let childTokens =
@@ -1922,7 +1926,7 @@ module Docx =
                     RevisionId = None
                     RevisionType = None
                     RevisionAuthor = None
-                    RevisionDate = None; InsertedRevision = None; MoveName = None; Source = source
+                    RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = None; Source = source
                 }
             // (Runs that are formatted alike are one run, as they were before each was read on its own: of the
             // w:r of the first, where it is of that one alone.)
@@ -1999,14 +2003,14 @@ module Docx =
                 | Some name when Ns.stripNs name = "fldSimple" ->
                     simpleFieldRuns child |> List.map RunToken
                 | Some name when Ns.stripNs name = "oMath" || Ns.stripNs name = "oMathPara" ->
-                    [RunToken { Content = EquationXml (xmlToString child); Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None; Source = XmlDsl.Span.none }]
+                    [RunToken { Content = EquationXml (xmlToString child); Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = None; Source = XmlDsl.Span.none }]
                 | Some name when Ns.stripNs name = "bookmarkStart" ->
                     attr "id" child
-                    |> Option.map (fun id -> RunToken { Content = BookmarkStart { Id = id; Name = attr "name" child }; Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None; Source = XmlDsl.Span.none })
+                    |> Option.map (fun id -> RunToken { Content = BookmarkStart { Id = id; Name = attr "name" child }; Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = None; Source = XmlDsl.Span.none })
                     |> Option.toList
                 | Some name when Ns.stripNs name = "bookmarkEnd" ->
                     attr "id" child
-                    |> Option.map (fun id -> RunToken { Content = BookmarkEnd id; Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None; Source = XmlDsl.Span.none })
+                    |> Option.map (fun id -> RunToken { Content = BookmarkEnd id; Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = None; Source = XmlDsl.Span.none })
                     |> Option.toList
                 // Transparent inline wrappers: their runs are ordinary paragraph content.
                 | Some name when (match Ns.stripNs name with "smartTag" | "customXml" | "dir" | "bdo" -> true | _ -> false) ->
@@ -2014,7 +2018,7 @@ module Docx =
                 | Some name when Ns.stripNs name = "AlternateContent" ->
                     if isGraphicAlternateContent child then
                         // A drawing in two forms: kept whole rather than reduced to its fallback.
-                        [RunToken { Content = Image (opaqueObject true child); Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None; Source = XmlDsl.Span.none }]
+                        [RunToken { Content = Image (opaqueObject true child); Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = None; Source = XmlDsl.Span.none }]
                     else
                         // Take the fallback (plain WordprocessingML/VML) when there is one, else the first choice.
                         match Ns.childNs "Fallback" child |> Option.orElseWith (fun () -> Ns.childNs "Choice" child) with
@@ -2068,7 +2072,7 @@ module Docx =
                             |> Option.defaultValue XmlDsl.Span.none   // ☒ / ☐
                         // (Formatted as the control's run is.)
                         let checkboxRun = Ns.childNs "sdtContent" child |> Option.bind (fun content -> Ns.descendantsNs "r" content |> List.tryHead)
-                        [RunToken { Content = Text glyph; Properties = runProps (checkboxRun |> Option.defaultValue child); BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None; Source = checkboxRunSource }]
+                        [RunToken { Content = Text glyph; Properties = runProps (checkboxRun |> Option.defaultValue child); BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = Some isChecked; Source = checkboxRunSource }]
                     | None ->
                         Ns.childNs "sdtContent" child
                         |> Option.map tokensFromNode
@@ -5679,6 +5683,7 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                             "InsertedRevisionAuthor" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Author))
                             "InsertedRevisionDate" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Date))
                             "RevisionMoveName" ==> run.MoveName
+                            "Checkbox" ==> run.Checkbox
                         ] @ bookmarkRunProps run))
                     | Image img ->
                         // Image run - resolve relationship ID to data URL
@@ -5833,6 +5838,7 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                                 "InsertedRevisionAuthor" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Author))
                                 "InsertedRevisionDate" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Date))
                                 "RevisionMoveName" ==> run.MoveName
+                                "Checkbox" ==> run.Checkbox
                             ] @ bookmarkRunProps run))
                         | EquationXml xml ->
                             Some (objFromFields [
@@ -5973,6 +5979,7 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                                 "InsertedRevisionAuthor" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Author))
                                 "InsertedRevisionDate" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Date))
                                 "RevisionMoveName" ==> run.MoveName
+                                "Checkbox" ==> run.Checkbox
                             ] @ bookmarkRunProps run))
                         | Image img ->
                             let imageSrc = editorImageSource images img
@@ -6125,6 +6132,7 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                                 "InsertedRevisionAuthor" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Author))
                                 "InsertedRevisionDate" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Date))
                                 "RevisionMoveName" ==> run.MoveName
+                                "Checkbox" ==> run.Checkbox
                             ] @ bookmarkRunProps run))
                         | EquationXml xml ->
                             Some (objFromFields [

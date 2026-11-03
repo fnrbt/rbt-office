@@ -75,6 +75,11 @@ type TextStyle = {
     /// bytes when the text and the formatting are what they were. Text typed
     /// into the run is of it; text made elsewhere is of none.
     SourceRun: int option
+    /// The glyph (☐ / ☒) of a w14:checkbox content control, with its checked
+    /// state. It is a run of its own, one character: text typed or pasted
+    /// beside it, or formatted as it is, is never part of it and is not of its
+    /// source run (a save writes the run inside the control).
+    Checkbox: bool option
     VertAlign: string option
     /// Bit set of ExplicitFormat flags: the on/off properties and the font size
     /// that were set directly on this run. A flagged property overrides the
@@ -158,6 +163,7 @@ let defaultStyle = {
     DeletedInsertion = None
     MoveName = None
     SourceRun = None
+    Checkbox = None
     VertAlign = None
     Explicit = 0
 }
@@ -389,13 +395,19 @@ let sameTextStyle (left: TextStyle) (right: TextStyle) : bool =
         && left.DeletedInsertion = right.DeletedInsertion
         && left.MoveName = right.MoveName
         && left.SourceRun = right.SourceRun
+        && left.Checkbox = right.Checkbox
         && left.VertAlign = right.VertAlign)
+
+/// Whether two adjacent runs of these styles may be one run: of the same
+/// style, and neither a content control's checkbox (one character each).
+let canJoinStyles (left: TextStyle) (right: TextStyle) =
+    left.Checkbox.IsNone && right.Checkbox.IsNone && sameTextStyle left right
 
 let private mergedRunList (runs: ResizeArray<Run>) =
     let mutable result = []
     for i = runs.Count - 1 downto 0 do
         match runs.[i], result with
-        | Text current, Text next :: rest when current.Start + current.Length = next.Start && sameTextStyle current.Style next.Style ->
+        | Text current, Text next :: rest when current.Start + current.Length = next.Start && canJoinStyles current.Style next.Style ->
             result <- Text { current with Length = current.Length + next.Length } :: rest
         | run, _ ->
             result <- run :: result
@@ -642,6 +654,7 @@ let hasAnnotationIdentity (style: TextStyle) =
     || style.DeletedInsertion.IsSome
     || style.MoveName.IsSome
     || style.RenderedPageBreakBefore
+    || style.Checkbox.IsSome
 
 /// What parts the bookmarks of a run in BookmarkStartId, BookmarkName and
 /// BookmarkEndId: a run has all the bookmarks that start before it and end
@@ -696,47 +709,53 @@ let withBookmarks (keep: string -> string -> bool) (rename: string -> string -> 
 /// really inside it - and so is the field, where the run on the other side is
 /// of the result of the same field (a part of the result was formatted, or
 /// text typed into it in another format: the result is several runs).
-let private boundaryInsertStyle (style: TextStyle) (otherSide: TextStyle option) =
+/// Text typed beside a content control's checkbox is not of it: it is of the
+/// run on the other side, typed at its start; with none, of no source run.
+let rec private boundaryInsertStyle (style: TextStyle) (otherSide: TextStyle option) =
     if not (hasAnnotationIdentity style) then
         style
     else
-        let keepHyperlink =
-            match otherSide with
-            | Some other -> (style.Hyperlink.IsSome || style.InactiveHyperlink.IsSome) && other.Hyperlink = style.Hyperlink && other.InactiveHyperlink = style.InactiveHyperlink
-            | None -> false
-        let keepComment =
-            match otherSide with
-            | Some other -> style.CommentId.IsSome && other.CommentId = style.CommentId
-            | None -> false
-        let keepField =
-            match otherSide with
-            | Some other -> style.FieldCode.IsSome && style.FieldResult.IsSome && other.FieldCode = style.FieldCode && other.FieldResult = style.FieldResult
-            | None -> false
-        { style with
-            Hyperlink = if keepHyperlink then style.Hyperlink else None
-            InactiveHyperlink = if keepHyperlink then style.InactiveHyperlink else None
-            CommentId = if keepComment then style.CommentId else None
-            CommentText = if keepComment then style.CommentText else None
-            CommentAuthor = if keepComment then style.CommentAuthor else None
-            CommentDate = if keepComment then style.CommentDate else None
-            // (The colour a comment's mark is shown in is the mark's: text typed beside it is not of that colour.)
-            Color = (if style.CommentId.IsSome && not keepComment && style.Color = Some commentMarkDisplayColor then None else style.Color)
-            NoteId = None
-            NoteType = None
-            NoteText = None
-            BookmarkStartId = None
-            BookmarkName = None
-            BookmarkEndId = None
-            FieldCode = (if keepField then style.FieldCode else None)
-            FieldResult = (if keepField then style.FieldResult else None)
-            RenderedPageBreakBefore = false
-            EquationXml = None
-            RevisionId = None
-            RevisionType = None
-            RevisionAuthor = None
-            RevisionDate = None
-            DeletedInsertion = None
-            MoveName = None }
+        match style.Checkbox, otherSide with
+        | Some _, Some other when other.Checkbox.IsNone -> boundaryInsertStyle other None
+        | Some _, _ -> { boundaryInsertStyle { style with Checkbox = None } None with SourceRun = None }
+        | None, _ ->
+            let keepHyperlink =
+                match otherSide with
+                | Some other -> (style.Hyperlink.IsSome || style.InactiveHyperlink.IsSome) && other.Hyperlink = style.Hyperlink && other.InactiveHyperlink = style.InactiveHyperlink
+                | None -> false
+            let keepComment =
+                match otherSide with
+                | Some other -> style.CommentId.IsSome && other.CommentId = style.CommentId
+                | None -> false
+            let keepField =
+                match otherSide with
+                | Some other -> style.FieldCode.IsSome && style.FieldResult.IsSome && other.FieldCode = style.FieldCode && other.FieldResult = style.FieldResult
+                | None -> false
+            { style with
+                Hyperlink = if keepHyperlink then style.Hyperlink else None
+                InactiveHyperlink = if keepHyperlink then style.InactiveHyperlink else None
+                CommentId = if keepComment then style.CommentId else None
+                CommentText = if keepComment then style.CommentText else None
+                CommentAuthor = if keepComment then style.CommentAuthor else None
+                CommentDate = if keepComment then style.CommentDate else None
+                // (The colour a comment's mark is shown in is the mark's: text typed beside it is not of that colour.)
+                Color = (if style.CommentId.IsSome && not keepComment && style.Color = Some commentMarkDisplayColor then None else style.Color)
+                NoteId = None
+                NoteType = None
+                NoteText = None
+                BookmarkStartId = None
+                BookmarkName = None
+                BookmarkEndId = None
+                FieldCode = (if keepField then style.FieldCode else None)
+                FieldResult = (if keepField then style.FieldResult else None)
+                RenderedPageBreakBefore = false
+                EquationXml = None
+                RevisionId = None
+                RevisionType = None
+                RevisionAuthor = None
+                RevisionDate = None
+                DeletedInsertion = None
+                MoveName = None }
 
 /// A run's character formatting alone: what text typed next to it has when
 /// it is part of none of the run's field, link, comment, note, bookmark or
@@ -802,7 +821,7 @@ let insert pos (text: string) buffer =
                             let beforeLen = pos - tr.Start
                             let afterLen = tr.Length - beforeLen
                             newRuns.Add(Text { tr with Length = beforeLen })
-                            newRuns.Add(Text { Start = pos; Length = textLen; Style = clearRevisionFields tr.Style })
+                            newRuns.Add(Text { Start = pos; Length = textLen; Style = (if tr.Style.Checkbox.IsSome then boundaryInsertStyle tr.Style None else clearRevisionFields tr.Style) })
                             newRuns.Add(Text { Start = pos + textLen; Length = afterLen; Style = tr.Style })
                     inserted <- true
                 elif inserted then
@@ -939,7 +958,7 @@ let append left right =
         match left.Runs, right.Runs with
         | [ Text leftRun ], [ Text rightRun ] when leftRun.Start = 0 && rightRun.Start = 0 && leftRun.Length = leftLen && rightRun.Length = rightLen ->
             let runs =
-                if leftRun.Style = rightRun.Style then
+                if canJoinStyles leftRun.Style rightRun.Style then
                     [ Text { leftRun with Length = leftLen + rightLen } ]
                 else
                     [ Text leftRun; Text { rightRun with Start = leftLen } ]
@@ -1341,7 +1360,7 @@ let applyStyle start len styleTransform buffer =
                         hasPendingText <- false
                 let addText start length style =
                     if length > 0 then
-                        if hasPendingText && pendingStart + pendingLength = start && sameTextStyle pendingStyle style then
+                        if hasPendingText && pendingStart + pendingLength = start && canJoinStyles pendingStyle style then
                             pendingLength <- pendingLength + length
                         else
                             flushPendingText ()
@@ -1978,6 +1997,7 @@ let clearFormatting start len buffer =
                 DeletedInsertion = style.DeletedInsertion
                 MoveName = style.MoveName
                 SourceRun = style.SourceRun
+                Checkbox = style.Checkbox
         }) buffer
 
 /// Get style at position
