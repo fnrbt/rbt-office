@@ -141,5 +141,56 @@ let made =
 let madeMoved = Doc.increaseIndent { made with Selection = Some { Anchor = { BlockId = "m2"; Offset = 0 }; Focus = { BlockId = "m2"; Offset = 0 } } }
 check "a list made in the editor: Tab changes the level" ((paragraphs madeMoved) |> List.map (fun para -> para.Metadata.ListLevel, para.Metadata.ListLevels.IsEmpty), prefixes made) ([ (1, true); (2, true) ], [ "1. "; "2. " ])
 
+// ---- where the text after the number starts ------------------------------------
+// The number stands at the first-line indent. A tab after it goes to the
+// nearest of a custom tab stop (the level's own too) and the left indent when
+// the paragraph hangs and the number ends before it; else to the next default
+// tab stop (every 48 px from the margin). A number wider than its hanging
+// indent so pushes the text on instead of overlapping it. The lines after
+// the first start at the left indent.
+let placement =
+    "<w:abstractNum w:abstractNumId=\"5\">"
+    + level 0 ("<w:numFmt w:val=\"decimal\"/><w:lvlText w:val=\"%1.\"/>" + ind 720 360)
+    + level 1 ("<w:numFmt w:val=\"decimal\"/><w:lvlText w:val=\"Article %2.\"/>" + ind 720 360)
+    + level 2 ("<w:numFmt w:val=\"decimal\"/><w:lvlText w:val=\"%3.\"/><w:suff w:val=\"space\"/>" + ind 720 360)
+    + level 3 ("<w:numFmt w:val=\"decimal\"/><w:lvlText w:val=\"%4.\"/><w:pPr><w:tabs><w:tab w:val=\"num\" w:pos=\"1080\"/></w:tabs><w:ind w:left=\"1440\" w:hanging=\"720\"/></w:pPr>")
+    + level 4 ("<w:numFmt w:val=\"decimal\"/><w:lvlText w:val=\"%5.\"/><w:pPr><w:ind w:left=\"0\" w:firstLine=\"0\"/></w:pPr>")
+    + "</w:abstractNum><w:num w:numId=\"5\"><w:abstractNumId w:val=\"5\"/></w:num>"
+let longText = String.replicate 30 "word "
+let placedDoc = import (item 5 0 "one" + item 5 1 "two" + item 5 2 "three" + item 5 3 "four" + item 5 4 longText) placement
+let placedLayouts = layoutsOf placedDoc
+/// The first line's text, from the left indent; the number's end, from the margin.
+let textFromIndent (layout: Layout.BlockLayout) =
+    match layout.Lines.Head.Segments with
+    | Layout.TextSegment (_, _, x, _, _) :: _ -> Math.Round(x - layout.Indent, 2)
+    | _ -> nan
+let numberEnd (layout: Layout.BlockLayout) =
+    layout.Indent + Rbt.Word.WordLayout.Paragraph.firstLineIndent layout.Metadata + measureText (layout.Prefix.TrimEnd()) layout.PrefixStyle.Value
+let nextDefaultStop x = (floor (x / 48.0) + 1.0) * 48.0
+check "a number that ends before the hanging indent: the text at the indent" (textFromIndent placedLayouts.[0]) 0.0
+check "a number wider than the hanging indent: the text at the next default tab stop, past the number"
+    (textFromIndent placedLayouts.[1]) (Math.Round(nextDefaultStop (numberEnd placedLayouts.[1]) - placedLayouts.[1].Indent, 2))
+check "and that is past the number" (textFromIndent placedLayouts.[1] + placedLayouts.[1].Indent > numberEnd placedLayouts.[1]) true
+check "w:suff space: a space after the number"
+    (textFromIndent placedLayouts.[2]) (Math.Round(numberEnd placedLayouts.[2] + measureText " " placedLayouts.[2].PrefixStyle.Value - placedLayouts.[2].Indent, 2))
+check "the level's tab stop before the indent: the text at it" (textFromIndent placedLayouts.[3]) -24.0
+check "no hanging indent: the text at the next default tab stop" (textFromIndent placedLayouts.[4]) 48.0
+check "no hanging indent: the lines after the first at the indent"
+    (placedLayouts.[4].Lines.Length > 1
+     && placedLayouts.[4].Lines.Tail |> List.forall (fun line -> match line.Segments with Layout.TextSegment (_, _, x, _, _) :: _ -> x = placedLayouts.[4].Indent | _ -> false))
+    true
+check "no hanging indent: the lines are as wide as the paragraph (the page's 624 px)" (placedLayouts.[4].AvailableWidth) 624.0
+
+// Word's render of tests/repros/word/list-default-indent.docx (docs/images/word/list-default-indent-word.png):
+// levels with no indents put every number at the margin and every text half an inch in.
+let defaultIndentDoc =
+    IO.File.ReadAllBytes(IO.Path.Combine(__SOURCE_DIRECTORY__, "../repros/word/list-default-indent.docx"))
+    |> DocxReader.loadBytesNative |> Option.get |> Rbt.Word.Import.importDoc
+let defaultIndentItems = layoutsOf defaultIndentDoc |> List.filter (fun layout -> layout.Prefix <> "")
+check "list-default-indent: six numbered paragraphs" defaultIndentItems.Length 6
+check "list-default-indent: the numbers at the margin, the texts half an inch in, as in Word"
+    (defaultIndentItems |> List.map (fun layout -> Math.Round(layout.Indent + Rbt.Word.WordLayout.Paragraph.firstLineIndent layout.Metadata, 2), Math.Round(textFromIndent layout + layout.Indent, 2)) |> List.distinct)
+    [ 0.0, 48.0 ]
+
 printfn "word list levels: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

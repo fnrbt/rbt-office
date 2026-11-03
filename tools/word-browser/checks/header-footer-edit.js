@@ -100,7 +100,7 @@ try {
             check('Escape goes back to the body; the header keeps what was typed', [state.escaped[0], state.escaped[1], state.escaped[2].includes('Typed ')], [[false, 'body'], true, true]);
             check('typing in the body', state.body, [true, [false, 'body']]);
             check('undo: the body edit first (still the body, the header as typed)', [state.undoBody[0], state.undoBody[1], state.undoBody[2].includes('Typed ')], [true, [false, 'body'], true]);
-            check('undo again: the last header edit (a keystroke), and the caret is back in the header', [state.undoHeader[0], state.undoHeader[1], state.undoHeader[2]], [[true, 'header'], state.typedHeaders[0].replace('Typed ', 'Typed'), state.typed.replace('Typed ', 'Typed')]);
+            check('undo again: the last header edit (the keys typed there, one step), and the caret is back in the header', [state.undoHeader[0], state.undoHeader[1], state.undoHeader[2]], [[true, 'header'], 'header one', 'header one']);
             check('redo: the header edit (in the header), then the body edit (in the body)', [state.redoHeader[0], state.redoHeader[1], state.redoBody], [[true, 'header'], state.typedHeaders[0], [[false, 'body'], true]]);
             check('a double click on the header again, then on the body', [state.reentered, state.left], [[true, 'header'], [false, 'body']]);
 

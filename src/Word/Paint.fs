@@ -1049,7 +1049,8 @@ let private addParagraphCommandsWithBaselineOffset baselineOffset (settings: Lay
         let firstLine = layout.Lines.Head
         let baseline = paragraphLineBaseline baselineOffset settings.FontSize layout.Metadata firstLine
         let firstLineIndent = WordLayout.Paragraph.firstLineIndent layout.Metadata
-        let prefixX = settings.PaddingLeft + layout.Indent + min 0.0 firstLineIndent
+        // (The number stands at the first-line indent, hanging or not.)
+        let prefixX = settings.PaddingLeft + layout.Indent + firstLineIndent
         let prefixText = WordLayout.Numbering.displayMarkerText layout.Prefix
         let prefixStyle =
             if prefixText <> layout.Prefix then defaultPaintStyle settings.FontSize fontFamily

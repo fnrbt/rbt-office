@@ -292,31 +292,58 @@ The editor handles these keys itself, on its canvas and its input element
 | Shift+Enter | a line break in the paragraph (`insertLineBreak`) |
 | Ctrl+Enter | a page break (`insertPageBreak`); nothing where a page cannot break - a text box, a header, a footer, a note |
 | Ctrl+Shift+Enter | a column break (`insertColumnBreak`): the next column, the next page in a section of one column |
-| Backspace, Delete | a character, or the selection |
+| Backspace, Delete | a character, or the selection; Backspace at the start of a list item takes it out of the list first, as in Word (0.1.26; it joined the item to the one before) |
 | Ctrl+Backspace, Ctrl+Delete | the word before / after the caret, as far as Ctrl+Left / Ctrl+Right moves (Alt on a Mac) |
 | Tab, Shift+Tab | in a table: the next / the previous cell (Tab in the last one adds a row); in a list: the item a level down / up; elsewhere Tab is a tab character and Shift+Tab nothing |
 | Ctrl+Tab | a tab character in a table cell |
 | Arrows, Home, End, PageUp, PageDown | the caret; with Shift the selection; Ctrl+Left / Right by words, Ctrl+Up / Down by paragraphs, Ctrl+Home / End the ends of the document |
-| Ctrl+A, Ctrl+C, Ctrl+X, Ctrl+V | everything, copy, cut, paste (plain text) |
-| Ctrl+Z, Ctrl+Y, Ctrl+Shift+Z | undo, redo |
+| Ctrl+A, Ctrl+C, Ctrl+X, Ctrl+V | everything, copy, cut, paste - with formatting (see Pasting) |
+| Ctrl+Z, Ctrl+Y, Ctrl+Shift+Z | undo, redo (keys typed one after the other are one step, as in Word - so are Backspaces, and Deletes; a caret move, another key or a format chosen starts the next) |
 | Ctrl+B, Ctrl+I, Ctrl+U | bold, italic, underline |
 | Ctrl+1, Ctrl+2, Ctrl+3 | heading 1 - 3 |
+| Ctrl+E, Ctrl+L, Ctrl+R, Ctrl+J | centre, left, right, justify the paragraphs (0.1.26) |
+| Ctrl+M, Ctrl+Shift+M | Increase / Decrease Indent: half an inch further in / out; a list item a level down / up (0.1.26) |
+| Ctrl+Shift+>, Ctrl+Shift+< | Grow / Shrink Font: the next size of Word's size box (0.1.26) |
+| Ctrl+], Ctrl+[ | a point larger / smaller (0.1.26) |
+| Ctrl+=, Ctrl+Shift+= | subscript, superscript (on / off; 0.1.26) |
+| Ctrl+Space | the character formatting cleared (0.1.26) |
 | Escape | out of a header, a footer or a text box that is edited |
 
-(On a Mac the Command key is Ctrl here.) Until 0.1.16 Ctrl+Enter and
+The character keys work as Ctrl+B does: on the selection, or with nothing
+selected for what is typed next at the caret. `getSelectionFormat` says
+`VertAlign` ("superscript", "subscript", null). (On a Mac the Command key is Ctrl here.) Until 0.1.16 Ctrl+Enter and
 Shift+Enter were Enter, Ctrl+Backspace and Ctrl+Delete took one character,
 and Tab outside a list and a table did nothing. **A host that handles
 Ctrl+Enter itself and calls `insertPageBreak` removes that handler** (two
 breaks otherwise), unless it stops the event before it reaches the editor's
 canvas and input element.
 
-## Pasting
+## Copying and pasting
 
-`pasteText(editor, text)` does what Ctrl+V does with the clipboard's plain
-text: its lines are paragraphs, the whole is one undo step, and with nothing
-selected the text has the format chosen at the caret (`toggleBold` and the
-like with nothing selected), every line of it. A host that reads the
-clipboard itself, or pastes from a menu, calls it.
+Ctrl+C, Ctrl+X and Ctrl+V go through the browser's own copy, cut and paste
+events on the editor's input element (0.1.26; before, the asynchronous
+clipboard, which asks for a permission to read and never had HTML). Copy
+writes the selection's text and its HTML (paragraphs, headings, lists,
+alignment, bold, italic, underline, strike, sizes, faces, colours, links) and
+keeps what it copied. Paste puts back what the last Copy or Cut of an editor
+on the page kept, with all its formatting and the properties of the
+paragraphs whose marks it took (Word's "keep source formatting"; the last
+paragraph joins the text after the caret and keeps that paragraph's
+properties), while the clipboard's text is still its text; else the
+clipboard's HTML with its formatting (from Word, a browser, a mail); else its
+text. With changes tracked it is the text. Each is one undo step. What a copy
+leaves out: the marks of comments, bookmarks, fields (their result is text),
+the objects of the file kept as they were read (charts). A host that handles
+the events on the input element itself stops them first.
+
+`pasteText(editor, text)` puts plain text in: its lines are paragraphs, the
+whole is one undo step, and with nothing selected the text has the format
+chosen at the caret (`toggleBold` and the like with nothing selected), every
+line of it. A host that pastes from a menu calls `pasteClipboard(editor,
+text, html)` with what it read (`navigator.clipboard.read()`), which pastes as
+Ctrl+V does; `copySelection(editor)` / `cutSelection(editor)` give
+`{ Text, Html }` to write (null with nothing selected) and keep the copy as
+Ctrl+C / Ctrl+X do.
 
 ## The functions
 
@@ -432,6 +459,9 @@ clipboard itself, or pastes from a menu, calls it.
 | `replaceAllText(editor, query: string, replacement: string, matchCase: boolean)` | Replace every occurrence of `query` with `replacement` (literal text; `matchCase`), as one undo step; returns how many were replaced. |
 | `insertText(editor, text: string)` | Insert text at cursor. |
 | `pasteText(editor, text: string): void` | Put plain text in at the caret, or over the selection, as Ctrl+V does with the clipboard's text (a host that reads the clipboard itself, or pastes from a menu, calls this): the lines of the text are paragraphs, the whole is one undo step, and with nothing selected the text has the format chosen at the caret for what is typed ... |
+| `pasteClipboard(editor, text: string, html: string): void` | Paste what a host read from the clipboard (either may be empty or null), as Ctrl+V does: what the last copy kept, with its formatting, while `text` is its text; else the HTML with its formatting; else the text as `pasteText` puts it. One undo step. |
+| `copySelection(editor): { Text, Html } \| null` | Copy the selection as Ctrl+C does: the text and the HTML to write to the clipboard; kept for a paste. Null with nothing selected. |
+| `cutSelection(editor): { Text, Html } \| null` | `copySelection`, and the selection deleted (one undo step). |
 
 ### Character formatting
 

@@ -176,6 +176,22 @@ type PendingFormat = {
     PendingStyle: TextBuffer.TextStyle
 }
 
+/// Keys typed one after the other make one undo step, as in Word: a run of
+/// typed characters, of Backspaces, of Deletes. The run goes on while each
+/// keystroke starts from the document the one before it left (no caret move,
+/// no other edit in between) and the run's step is still the last one of the
+/// history.
+type TypingRun = {
+    /// "type", "backspace" or "delete".
+    Kind: string
+    /// The document before the run's first keystroke: what its step undoes to.
+    Start: Doc.Document
+    /// The document after its last keystroke.
+    After: Doc.Document
+    /// The run's step in the history (the top of the undo list while the run goes on).
+    Step: ICommand
+}
+
 /// Input handler state
 type InputHandler = {
     Canvas: HTMLCanvasElement
@@ -232,6 +248,15 @@ type InputHandler = {
     /// Put plain text in at the caret, or over the selection, as Ctrl+V does
     /// (its lines are paragraphs; one undo step). Set when the handler is made.
     mutable PasteText: string -> unit
+    /// Paste what the clipboard has, its text and its HTML (either may be
+    /// empty), as Ctrl+V does: what the last Copy kept, with its formatting,
+    /// while the text is its text; else the HTML with its formatting; else the
+    /// text. One undo step. Set when the handler is made.
+    mutable PasteClipboard: string -> string -> unit
+    /// Copy (true: Cut) the selection, as Ctrl+C / Ctrl+X do: kept for Paste;
+    /// its text and its HTML for the system clipboard, None with nothing
+    /// selected. Set when the handler is made.
+    mutable CopyToClipboard: bool -> (string * string) option
     /// The shape that is selected (see selectShape): its frame and handles
     /// are painted, the pointer drags it by its frame and resizes it by its
     /// handles, Delete takes it out, the arrow keys move it, Escape lets go of it.
@@ -240,6 +265,8 @@ type InputHandler = {
     mutable ShapeDrag: ShapeDragState option
     /// Called when another shape, or none, is selected (set by the editor).
     mutable OnShapeSelection: unit -> unit
+    /// The run of typing the last undo step is, while it can go on (see TypingRun).
+    mutable Typing: TypingRun option
 }
 
 [<Emit("$0.focus({ preventScroll: true })")>]
@@ -259,6 +286,50 @@ let private proxyValue (_element: HTMLElement) : string = jsNative
 
 [<Emit("$0.value = $1")>]
 let private setProxyValue (_element: HTMLElement) (_value: string) : unit = jsNative
+
+[<Emit("$0.select()")>]
+let private selectProxyText (_element: HTMLElement) : unit = jsNative
+
+[<Emit("setTimeout($0, 0)")>]
+let private soon (_action: unit -> unit) : unit = jsNative
+
+// ---- the clipboard -----------------------------------------------------------
+// Copy and Cut put the selection's text and its HTML on the system clipboard
+// and keep what they copied as a clip (Doc.copySelection); Paste puts the
+// clip back with its formatting while the clipboard's text is still the
+// clip's, else the clipboard's HTML (from Word, a browser, a mail), else its
+// text. The keys work through the browser's own copy, cut and paste events
+// on the input proxy: no permission is asked, and the HTML reaches us.
+
+/// What the last Copy or Cut of an editor on the page kept.
+let mutable private lastClip : Doc.Clip option = None
+
+[<Emit("(function (h) { try { return new DOMParser().parseFromString(h, 'text/html').body; } catch (e) { return null; } })($0)")>]
+let private parseHtmlBody (_html: string) : obj = jsNative
+
+[<Emit("Array.from($0 || [])")>]
+let private arrayOf (_list: obj) : obj array = jsNative
+
+let rec private htmlNodeOf (node: obj) : Doc.HtmlNode option =
+    match unbox<int> node?nodeType with
+    | 3 -> Some (Doc.HtmlText (unbox<string> node?nodeValue))
+    | 1 ->
+        let tag = (unbox<string> node?tagName).ToLowerInvariant()
+        let attributes =
+            arrayOf node?attributes
+            |> Array.map (fun attribute -> (unbox<string> attribute?name).ToLowerInvariant(), unbox<string> attribute?value)
+            |> List.ofArray
+        let children = arrayOf node?childNodes |> Array.choose htmlNodeOf |> List.ofArray
+        Some (Doc.HtmlElement (tag, attributes, children))
+    | _ -> None
+
+/// The clipboard's HTML as a clip (see Doc.clipOfHtml); None for no HTML, or HTML without text.
+let htmlClip (html: string) : Doc.Clip option =
+    if System.String.IsNullOrWhiteSpace html then None
+    else
+        let body = parseHtmlBody html
+        if isNull body then None
+        else arrayOf body?childNodes |> Array.choose htmlNodeOf |> List.ofArray |> Doc.clipOfHtml
 
 // ---- a header or footer edited in place --------------------------------------
 
@@ -461,9 +532,38 @@ let private hideStory (handler: InputHandler) =
 /// changes are not recorded.
 let private recordChange (handler: InputHandler) (description: string) (beforeDoc: Doc.Document) (afterDoc: Doc.Document) =
     if not (sameContent beforeDoc afterDoc) then
+        handler.Typing <- None
         let cmd = DeleteTextCommand(beforeDoc, afterDoc, description) :> ICommand
         let _, history = Cmd.execute cmd beforeDoc handler.History
         handler.History <- storyHistory handler handler.History history
+
+/// The history with a keystroke of a run of typing (`kind`: see TypingRun)
+/// that made `afterDoc` of `beforeDoc`: the run's step undoes it too when the
+/// keystroke goes on from where the run's last one left the document,
+/// otherwise the keystroke starts a run of its own, a new step.
+let private typingHistory (handler: InputHandler) (kind: string) (description: string) (beforeDoc: Doc.Document) (afterDoc: Doc.Document) : CommandHistory =
+    let continued =
+        match handler.Typing, handler.History.Undos with
+        | Some run, top :: rest when run.Kind = kind && obj.ReferenceEquals(top, run.Step) && obj.ReferenceEquals(beforeDoc, run.After) -> Some (run, rest)
+        | _ -> None
+    let start, below =
+        match continued with
+        | Some (run, rest) -> run.Start, { handler.History with Undos = rest }
+        | None -> beforeDoc, handler.History
+    let cmd = DeleteTextCommand(start, afterDoc, description) :> ICommand
+    let _, history = Cmd.execute cmd start below
+    let history = storyHistory handler below history
+    handler.Typing <- Some { Kind = kind; Start = start; After = afterDoc; Step = List.head history.Undos }
+    history
+
+/// A keystroke of a run of typing made `afterDoc` of the handler's document:
+/// recorded (see typingHistory) and shown.
+let private commitTyping (handler: InputHandler) (kind: string) (description: string) (afterDoc: Doc.Document) : bool =
+    let beforeDoc = handler.Document
+    if sameContent beforeDoc afterDoc then false
+    else
+        handler.History <- typingHistory handler kind description beforeDoc afterDoc
+        true
 
 let private showDocument (handler: InputHandler) (doc: Doc.Document) =
     handler.Document <- doc
@@ -476,6 +576,8 @@ let private showDocument (handler: InputHandler) (doc: Doc.Document) =
 /// to work on - the story's when the step was made in a header or footer
 /// (which is then the story on display), the whole document otherwise.
 let private historyStep (handler: InputHandler) (step: Doc.Document -> CommandHistory -> Doc.Document * CommandHistory) : Doc.Document * CommandHistory =
+    // (What is typed after an undo or a redo is a step of its own.)
+    handler.Typing <- None
     handler.HistoryStory <- None
     handler.HistoryPlace <- None
     let whole, history = step (wholeDocument handler handler.Document) handler.History
@@ -598,6 +700,8 @@ let formatAtCaret (handler: InputHandler) (command: Doc.Document -> Doc.Document
     | Some (probe, at) ->
         match styleOfCharacterAt probe at, styleOfCharacterAt (command probe) at with
         | Some before, Some style when before <> style ->
+            // (What is typed in the format chosen is a step of its own.)
+            handler.Typing <- None
             handler.Pending <- Some { PendingDocument = handler.Document; PendingStyle = style }
             handler.OnPendingFormat ()
         | _ -> ()
@@ -802,9 +906,12 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         Pending = None
         OnPendingFormat = ignore
         PasteText = ignore
+        PasteClipboard = fun _ _ -> ()
+        CopyToClipboard = fun _ -> None
         SelectedShape = None
         ShapeDrag = None
         OnShapeSelection = ignore
+        Typing = None
     }
 
     // ---- caret movement over the layout that is on screen -------------------
@@ -1155,6 +1262,48 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                 handler.OnChange doc''
     handler.PasteText <- pasteText
 
+    /// An edit of the clipboard (a paste, a cut) as one undo step, shown.
+    let commitClipboardEdit (description: string) (afterDoc: Doc.Document) =
+        let beforeDoc = handler.Document
+        if not (documentsEqualForChange afterDoc beforeDoc) then
+            let cmd = DeleteTextCommand(beforeDoc, afterDoc, description) :> ICommand
+            let doc', history = Cmd.execute cmd beforeDoc handler.History
+            dropPendingFormat handler doc'
+            handler.Document <- doc'
+            handler.History <- storyHistory handler handler.History history
+            renderWithHover handler.RenderContext doc' handler.HoveredImage
+            handler.SyncInputProxy doc'
+            handler.OnChange doc'
+
+    /// Copy (cut: and Cut): the selection kept as the clip to paste, and its
+    /// text and HTML for the system clipboard. None with nothing selected.
+    let copyToClipboard (cut: bool) : (string * string) option =
+        match Doc.copySelection handler.Document with
+        | None -> None
+        | Some clip ->
+            lastClip <- Some clip
+            if cut then commitClipboardEdit "Cut" (deleteSelectionForMode handler.Document)
+            Some (clip.Text, Doc.clipToHtml clip)
+
+    /// Paste the clipboard's `text` and `html` (either may be empty): the
+    /// clip Copy kept while the text is still its text, with its formatting;
+    /// else the HTML's text with its formatting; else the text (pasteText).
+    /// With changes tracked: the text.
+    let pasteClipboard (text: string) (html: string) =
+        let text = if isNull text then "" else text
+        let normalize (value: string) = value.Replace("\r\n", "\n").Replace("\r", "\n")
+        let clip =
+            if handler.TrackChanges then None
+            else
+                match lastClip with
+                | Some clip when text <> "" && normalize text = normalize clip.Text -> Some clip
+                | _ -> htmlClip html
+        match clip with
+        | Some clip -> commitClipboardEdit "Paste" (Doc.pasteClip clip handler.Document)
+        | None -> pasteText text
+    handler.PasteClipboard <- pasteClipboard
+    handler.CopyToClipboard <- copyToClipboard
+
     let deleteBackwardForMode doc =
         if handler.TrackChanges then Doc.trackDeleteBackward handler.TrackChangesAuthor handler.TrackChangesDate doc else Doc.deleteBackward doc
 
@@ -1214,6 +1363,15 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             |> Option.map (fun (shape, x, y, _, _, pageTop) -> shape, x, y, pageTop)
         | _ -> None
 
+    /// A character format given by a key (Ctrl+B and the like): the
+    /// selection's, or with nothing selected the caret's (see formatAtCaret).
+    /// The document and the history with it, when the document changed.
+    let characterFormatStep (description: string) (command: Doc.Document -> Doc.Document) : (Doc.Document * CommandHistory) option =
+        let beforeDoc = handler.Document
+        let afterDoc = if formatAtCaret handler command then handler.Document else command handler.Document
+        if documentsEqualForChange afterDoc beforeDoc then None
+        else Some (Cmd.execute (FormatTextCommand(beforeDoc, afterDoc, description) :> ICommand) beforeDoc handler.History)
+
     // Handle keyboard input. The listener serves the canvas and the input
     // proxy (which normally has the focus).
     let onKeyDown (e: Event) =
@@ -1223,7 +1381,8 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         let mutable newDoc = handler.Document
         let mutable newHistory = handler.History
         let mutable useCommand = false
-        // An undo / redo step: the history it hands back holds no new command.
+        // An undo / redo step, or a keystroke of a run of typing: the history
+        // in newHistory is the one to keep as it is (storyHistory is not applied).
         let mutable stepped = false
         // Up / Down / PageUp / PageDown keep their column from one to the next.
         let goalBefore = handler.GoalX
@@ -1354,52 +1513,98 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         | "3" when commandKey ->
             newDoc <- Doc.setHeadingLevel 3 handler.Document
             e.preventDefault()
-        | key when commandKey && keyEquals 'c' key ->
-            // Copy (Ctrl+C)
-            let text = Doc.getSelectionText handler.Document
-            if text <> "" then
-                Clipboard.copyText text |> ignore
+        | key when commandKey && not ke.altKey && not shift && (keyEquals 'e' key || keyEquals 'l' key || keyEquals 'r' key || keyEquals 'j' key) ->
+            // Word's alignment keys: Ctrl+E centre, Ctrl+L left, Ctrl+R right, Ctrl+J justify.
+            let align =
+                if keyEquals 'e' key then Doc.alignCenter
+                elif keyEquals 'r' key then Doc.alignRight
+                elif keyEquals 'j' key then Doc.alignJustify
+                else Doc.alignLeft
+            newDoc <- align handler.Document
             e.preventDefault()
-        | key when commandKey && keyEquals 'x' key ->
-            // Cut (Ctrl+X)
-            let text = Doc.getSelectionText handler.Document
-            if text <> "" then
-                Clipboard.copyText text |> ignore
-                // Delete selection
-                let beforeDoc = handler.Document
-                let afterDoc = deleteSelectionForMode handler.Document
-                if not (documentsEqualForChange afterDoc beforeDoc) then
-                    let cmd = DeleteTextCommand(beforeDoc, afterDoc, "Cut") :> ICommand
-                    let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
-                    newDoc <- doc'
-                    newHistory <- hist'
-                    useCommand <- true
+        | key when commandKey && not ke.altKey && keyEquals 'm' key ->
+            // Ctrl+M / Ctrl+Shift+M: Increase / Decrease Indent.
+            newDoc <- Doc.indentParagraphs (not shift) handler.Document
             e.preventDefault()
-        | key when commandKey && keyEquals 'v' key ->
-            // Paste (Ctrl+V)
+        | key when commandKey && not ke.altKey && (key = "]" || key = "[" || key = ">" || key = "<" || key = "=" || key = "+" || key = " " || (shift && (key = "." || key = ","))) ->
+            // Word's character keys: Ctrl+] / Ctrl+[ a point larger / smaller,
+            // Ctrl+Shift+> / < the next size up / down, Ctrl+= subscript,
+            // Ctrl+Shift+= superscript, Ctrl+Space the character formatting cleared.
+            let description, command =
+                match key with
+                | "]" -> "Grow font", WordStyles.growFont true false
+                | "[" -> "Shrink font", WordStyles.growFont false false
+                | ">" | "." -> "Grow font", WordStyles.growFont true true
+                | "<" | "," -> "Shrink font", WordStyles.growFont false true
+                | "+" -> "Superscript", WordStyles.toggleSuperscript
+                | "=" when shift -> "Superscript", WordStyles.toggleSuperscript
+                | "=" -> "Subscript", WordStyles.toggleSubscript
+                | _ -> "Clear formatting", Doc.clearFormatting
+            match characterFormatStep description command with
+            | Some (doc', hist') ->
+                newDoc <- doc'
+                newHistory <- hist'
+                useCommand <- true
+            | None -> ()
             e.preventDefault()
-            Clipboard.pasteText().``then``(fun text -> pasteText text
-            ) |> ignore
+        | key when commandKey && not ke.altKey && (keyEquals 'c' key || keyEquals 'x' key || keyEquals 'v' key) ->
+            // Copy, Cut, Paste. On the input proxy the browser's own copy / cut /
+            // paste event follows the key (see the listeners below): the key is
+            // left to it. For a browser that copies only what is selected, the
+            // selection's text is put in the proxy, selected, until then.
+            let fromProxy = match handler.InputProxy with Some element -> obj.ReferenceEquals(e.target, element) | None -> false
+            if fromProxy then
+                match handler.InputProxy with
+                | Some element when not (keyEquals 'v' key) ->
+                    let text = Doc.getSelectionText handler.Document
+                    if text <> "" then
+                        setProxyValue element text
+                        selectProxyText element
+                        soon (fun () -> if proxyValue element = text then setProxyValue element "")
+                | _ -> ()
+            else
+                // (The key reached the canvas itself: through the asynchronous clipboard.)
+                e.preventDefault()
+                if keyEquals 'v' key then
+                    Clipboard.pasteText().``then``(fun text -> pasteClipboard text "") |> ignore
+                else
+                    let copied = copyToClipboard (keyEquals 'x' key)
+                    // (A cut has changed the document already.)
+                    newDoc <- handler.Document
+                    copied |> Option.iter (fun (text, _) -> Clipboard.copyText text |> ignore)
         | "Backspace" ->
             let beforeDoc = handler.Document
             // (Ctrl+Backspace, Option+Backspace on a Mac: the word before the caret.)
-            let afterDoc = if ke.ctrlKey || ke.altKey then deleteWordForMode false handler.Document else deleteBackwardForMode handler.Document
+            let byWord = ke.ctrlKey || ke.altKey
+            let afterDoc = if byWord then deleteWordForMode false handler.Document else deleteBackwardForMode handler.Document
             if not (documentsEqualForChange afterDoc beforeDoc) then
-                let cmd = DeleteTextCommand(beforeDoc, afterDoc, "Delete backward") :> ICommand
-                let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
-                newDoc <- doc'
-                newHistory <- hist'
+                if byWord then
+                    let cmd = DeleteTextCommand(beforeDoc, afterDoc, "Delete backward") :> ICommand
+                    let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
+                    newDoc <- doc'
+                    newHistory <- hist'
+                else
+                    // (Backspaces one after the other are one undo step.)
+                    newDoc <- afterDoc
+                    newHistory <- typingHistory handler "backspace" "Delete backward" beforeDoc afterDoc
+                    stepped <- true
                 useCommand <- true
             e.preventDefault()
         | "Delete" ->
             let beforeDoc = handler.Document
             // (Ctrl+Delete: the word after the caret.)
-            let afterDoc = if ke.ctrlKey || ke.altKey then deleteWordForMode true handler.Document else deleteForwardForMode handler.Document
+            let byWord = ke.ctrlKey || ke.altKey
+            let afterDoc = if byWord then deleteWordForMode true handler.Document else deleteForwardForMode handler.Document
             if not (documentsEqualForChange afterDoc beforeDoc) then
-                let cmd = DeleteTextCommand(beforeDoc, afterDoc, "Delete forward") :> ICommand
-                let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
-                newDoc <- doc'
-                newHistory <- hist'
+                if byWord then
+                    let cmd = DeleteTextCommand(beforeDoc, afterDoc, "Delete forward") :> ICommand
+                    let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
+                    newDoc <- doc'
+                    newHistory <- hist'
+                else
+                    newDoc <- afterDoc
+                    newHistory <- typingHistory handler "delete" "Delete forward" beforeDoc afterDoc
+                    stepped <- true
                 useCommand <- true
             e.preventDefault()
         | "ArrowLeft" ->
@@ -1528,10 +1733,10 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             let beforeDoc = handler.Document
             let afterDoc = insertTextForMode key handler.Document
             if not (documentsEqualForChange afterDoc beforeDoc) then
-                let cmd = DeleteTextCommand(beforeDoc, afterDoc, sprintf "Insert '%s'" key) :> ICommand
-                let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
-                newDoc <- doc'
-                newHistory <- hist'
+                // (Characters typed one after the other are one undo step, as in Word.)
+                newDoc <- afterDoc
+                newHistory <- typingHistory handler "type" "Typing" beforeDoc afterDoc
+                stepped <- true
                 useCommand <- true
             e.preventDefault()
         | _ -> ()
@@ -1622,11 +1827,14 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         renderWithHover handler.RenderContext preview handler.HoveredImage
         syncInputProxy preview
 
-    /// Text that arrived through the proxy becomes one undo step.
-    let commitInput description (afterDoc: Doc.Document) =
+    /// Text that arrived through the proxy becomes one undo step; with a
+    /// `typing` kind (see TypingRun) it goes on the run of typing before it.
+    let commitInputAs (typing: string option) description (afterDoc: Doc.Document) =
         let beforeDoc = handler.Document
         if not (documentsEqualForChange afterDoc beforeDoc) then
-            recordChange handler description beforeDoc afterDoc
+            match typing with
+            | Some kind -> commitTyping handler kind description afterDoc |> ignore
+            | None -> recordChange handler description beforeDoc afterDoc
             dropPendingFormat handler afterDoc
             handler.Document <- afterDoc
             renderWithHover handler.RenderContext afterDoc handler.HoveredImage
@@ -1636,6 +1844,8 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             // Take a composition preview off the canvas again.
             renderWithHover handler.RenderContext beforeDoc handler.HoveredImage
             syncInputProxy beforeDoc
+
+    let commitInput description afterDoc = commitInputAs None description afterDoc
 
     proxy.addEventListener("keydown", onKeyDown)
 
@@ -1670,13 +1880,13 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                 | null | "" -> ()
                 | data ->
                     e.preventDefault()
-                    commitInput "Typing" (insertTextForMode data handler.Document)
+                    commitInputAs (Some "type") "Typing" (insertTextForMode data handler.Document)
             | "deleteContentBackward" ->
                 e.preventDefault()
-                commitInput "Delete" (deleteBackwardForMode handler.Document)
+                commitInputAs (Some "backspace") "Delete backward" (deleteBackwardForMode handler.Document)
             | "deleteContentForward" ->
                 e.preventDefault()
-                commitInput "Delete" (deleteForwardForMode handler.Document)
+                commitInputAs (Some "delete") "Delete forward" (deleteForwardForMode handler.Document)
             | "deleteWordBackward" ->
                 e.preventDefault()
                 commitInput "Delete" (deleteWordForMode false handler.Document)
@@ -1687,6 +1897,27 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                 e.preventDefault()
                 commitInput "Typing" (insertTextForMode "\n" handler.Document)
             | _ -> ())
+
+    // The browser's copy / cut / paste on the proxy (Ctrl+C / X / V, the
+    // browser's menu): the clipboard is the editor's selection, not the proxy's text.
+    let onCopy (cut: bool) (e: Event) =
+        let data = e?clipboardData
+        if not (isNull data) && handler.Composition.IsNone then
+            match copyToClipboard cut with
+            | Some (text, html) ->
+                data?setData("text/plain", text) |> ignore
+                data?setData("text/html", html) |> ignore
+                e.preventDefault()
+            | None -> ()
+            setProxyValue proxy ""
+    proxy.addEventListener("copy", onCopy false)
+    proxy.addEventListener("cut", onCopy true)
+    proxy.addEventListener("paste", fun (e: Event) ->
+        let data = e?clipboardData
+        if not (isNull data) && handler.Composition.IsNone then
+            e.preventDefault()
+            let read (kind: string) = match unbox<string> (data?getData(kind)) with null -> "" | value -> value
+            pasteClipboard (read "text/plain") (read "text/html"))
 
     proxy.addEventListener("input", fun (_: Event) ->
         // Whatever still reached the proxy (a paste from the context menu, an

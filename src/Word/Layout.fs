@@ -192,20 +192,6 @@ type MeasuredLine = {
     EndOffset: int
 }
 
-let private lineStartsAfterWrapObstacle (line: MeasuredLine) =
-    let mutable foundSegment = false
-    let mutable minX = 0.0
-    for segment in line.Segments do
-        let x =
-            match segment with
-            | TextSegment (_, _, x, _, _)
-            | ImageSegment (_, x, _, _, _, _, _, _, _, _, _, _, _)
-            | MathSegment (_, _, x, _, _, _, _, _) -> x
-        if not foundSegment || x < minX then
-            foundSegment <- true
-            minX <- x
-    foundSegment && minX > 0.01
-
 /// Layout result for a block.
 type BlockLayout = {
     BlockId: BlockId
@@ -495,6 +481,39 @@ let private shiftLinesY delta lines =
     for line in lines do
         result.Add { line with Y = line.Y + delta }
     resizeArrayToList result
+
+let private shiftSegmentX dx segment =
+    match segment with
+    | TextSegment (t, st, x, w, off) -> TextSegment (t, st, x + dx, w, off)
+    | ImageSegment (src, x, yOff, w, h, off, fl, wr, rh, cl, ct, cr, cb) ->
+        ImageSegment (src, x + dx, yOff, w, h, off, fl, wr, rh, cl, ct, cr, cb)
+    | MathSegment (p, st, x, w, asc, desc, off, len) -> MathSegment (p, st, x + dx, w, asc, desc, off, len)
+
+let private shiftSegmentsX dx segments =
+    let shifted = ResizeArray<Segment>()
+    for segment in segments do
+        shifted.Add(shiftSegmentX dx segment)
+    resizeArrayToList shifted
+
+let private shiftLinesX dx lines =
+    let shifted = ResizeArray<MeasuredLine>()
+    for line in lines do
+        shifted.Add { line with Segments = shiftSegmentsX dx line.Segments }
+    resizeArrayToList shifted
+
+let private shiftBlockX dx (layout: BlockLayout) =
+    if dx = 0.0 then layout
+    else
+        { layout with
+            Indent = layout.Indent + dx
+            Lines = shiftLinesX dx layout.Lines }
+
+let private shiftBlockY dy (layout: BlockLayout) =
+    if dy = 0.0 then layout
+    else
+        { layout with
+            Y = layout.Y + dy
+            Lines = shiftLinesY dy layout.Lines }
 
 let private moveLayoutToY newY (layout: BlockLayout) =
     let delta = newY - layout.Y
@@ -1204,61 +1223,75 @@ let private repositionRtl (line: MeasuredLine) : MeasuredLine =
         { line with Segments = resizeArrayToList newSegs }
 
 /// Distribute the slack between a line's visible right edge and `rightEdge`
-/// across its inter-word gaps, returning the line with stretched segment x.
-/// `rightEdge` is in the same (post-indent) coordinate frame as the line's
-/// segment x. A "gap" is a non-final segment whose token ends in a regular
-/// space; tabs, nbsp, and images are not stretched. Caller excludes the
-/// paragraph's last line (Word never justifies it).
-let private justifyLineToEdge (rightEdge: float) (line: MeasuredLine) : MeasuredLine =
-    let segs = line.Segments
-    let endsInStretchSpace = function
-        | TextSegment (t, _, _, _, _) when t.Length > 0 -> t.[t.Length - 1] = ' '
-        | _ -> false
-    // A tab advances to a fixed stop and an image is atomic — neither stretches,
-    // and a line containing one is left ragged (Word stretches only the spaces,
-    // which this simple model doesn't isolate around the fixed element).
-    let mutable hasTabOrImage = false
-    let mutable gapCount = 0
-    let mutable baseX = System.Double.PositiveInfinity
-    let rec scan previous remaining =
-        match remaining with
-        | [] ->
-            previous |> Option.iter (fun segment ->
-                baseX <- min baseX (segmentX segment))
-        | segment :: rest ->
-            baseX <- min baseX (segmentX segment)
-            match previous with
-            | Some prior when endsInStretchSpace prior -> gapCount <- gapCount + 1
-            | _ -> ()
-            match segment with
-            | ImageSegment _ -> hasTabOrImage <- true
-            | MathSegment _ -> hasTabOrImage <- true
-            | TextSegment (t, _, _, _, _) when t.Contains("\t") -> hasTabOrImage <- true
-            | TextSegment _ -> ()
-            scan (Some segment) rest
-    scan None segs
-    let baseX = if System.Double.IsPositiveInfinity baseX then 0.0 else baseX
-    let extra = rightEdge - (baseX + line.Width)
-    if hasTabOrImage || gapCount = 0 || extra <= 0.5 then line
+/// over the spaces between its words, as Word justifies a line: the words
+/// move right, the spaces between them widen. A line is broken into
+/// segments of runs of one style, so a segment is first cut into its words
+/// (each with the spaces after it), measured as the line breaker measured
+/// them. Only the spaces after the line's last tab, picture or equation
+/// stretch: what comes before it stands where its tab stop put it. The
+/// spaces at the line's end do not stretch. `rightEdge` and `origin` (the
+/// paragraph's indent, from which line.Width reaches) are in the frame of the
+/// segments' x. Caller excludes the paragraph's last line (Word never
+/// justifies it).
+let private justifyLineToEdge (measureRange: TextRangeMeasurer) (origin: float) (rightEdge: float) (line: MeasuredLine) : MeasuredLine =
+    let extra = rightEdge - (origin + line.Width)
+    if extra <= 0.5 then line
     else
-        let perGap = extra / float gapCount
-        let mutable shift = 0.0
-        let newSegs = ResizeArray<Segment>()
-        let rec build remaining =
-            match remaining with
-            | [] -> ()
-            | segment :: rest ->
+        // The line's segments, each text segment cut after every run of spaces in it.
+        let pieces = ResizeArray<Segment>()
+        for segment in line.Segments do
+            match segment with
+            | TextSegment (text, style, x, width, startOffset) when text.Length > 1 && text.IndexOf('\t') < 0 ->
+                let displayText = WordLayout.Text.displayText style text
+                if displayText.Length <> text.Length then pieces.Add segment
+                else
+                    let displayStyle = WordLayout.Text.displayStyle style
+                    let mutable pieceStart = 0
+                    let mutable index = 0
+                    while index < text.Length do
+                        if text.[index] = ' ' && (index + 1 >= text.Length || text.[index + 1] <> ' ') && index + 1 < text.Length then
+                            let pieceX = if pieceStart = 0 then x else x + measureRange displayText displayStyle 0 pieceStart
+                            let pieceEnd = index + 1
+                            let pieceWidth = measureRange displayText displayStyle pieceStart (pieceEnd - pieceStart)
+                            pieces.Add(TextSegment (text.Substring(pieceStart, pieceEnd - pieceStart), style, pieceX, pieceWidth, startOffset + pieceStart))
+                            pieceStart <- pieceEnd
+                        index <- index + 1
+                    if pieceStart = 0 then pieces.Add segment
+                    else
+                        let pieceX = x + measureRange displayText displayStyle 0 pieceStart
+                        pieces.Add(TextSegment (text.Substring pieceStart, style, pieceX, max 0.0 (x + width - pieceX), startOffset + pieceStart))
+            | _ -> pieces.Add segment
+        let isFixed = function
+            | ImageSegment _ | MathSegment _ -> true
+            | TextSegment (text, _, _, _, _) -> text.IndexOf('\t') >= 0
+        let endsInSpace = function
+            | TextSegment (text, _, _, _, _) when text.Length > 0 -> text.[text.Length - 1] = ' '
+            | _ -> false
+        let mutable lastFixed = -1
+        for index in 0 .. pieces.Count - 1 do
+            if isFixed pieces.[index] then lastFixed <- index
+        // A gap: a piece after the last fixed one, ending in a space, with something after it.
+        let mutable lastVisible = pieces.Count - 1
+        while lastVisible >= 0 && (match pieces.[lastVisible] with TextSegment (text, _, _, _, _) -> text.Trim() = "" | _ -> false) do
+            lastVisible <- lastVisible - 1
+        let isGap index = index > lastFixed && index < lastVisible && endsInSpace pieces.[index]
+        let mutable gapCount = 0
+        for index in 0 .. pieces.Count - 1 do
+            if isGap index then gapCount <- gapCount + 1
+        if gapCount = 0 then line
+        else
+            let perGap = extra / float gapCount
+            let mutable shift = 0.0
+            let newSegs = ResizeArray<Segment>(pieces.Count)
+            for index in 0 .. pieces.Count - 1 do
                 newSegs.Add(
-                    match segment with
+                    match pieces.[index] with
                     | TextSegment (t, st, x, w, off) -> TextSegment (t, st, x + shift, w, off)
                     | ImageSegment (src, x, yOff, w, h, off, fl, wr, rh, cl, ct, cr, cb) ->
                         ImageSegment (src, x + shift, yOff, w, h, off, fl, wr, rh, cl, ct, cr, cb)
                     | MathSegment (p, st, x, w, asc, desc, off, len) -> MathSegment (p, st, x + shift, w, asc, desc, off, len))
-                if (match rest with [] -> false | _ -> true) && endsInStretchSpace segment then
-                    shift <- shift + perGap
-                build rest
-        build segs
-        { line with Segments = resizeArrayToList newSegs }
+                if isGap index then shift <- shift + perGap
+            { line with Segments = resizeArrayToList newSegs }
 
 let emptyLine y height : MeasuredLine = {
     Segments = []
@@ -1719,7 +1752,16 @@ let private iterWordWrapTokenRanges (text: string) (f: int -> int -> unit) =
             f start (index - start)
 
 /// Layout buffer into lines with styled runs and images.
-let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureRange: TextRangeMeasurer) (buffer: TextBuffer.TextBuffer) (maxWidth: float) (contentY: float) (tabStops: TabStop list) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) =
+/// Word's default tab stops, every half inch from the margin (w:defaultTabStop 720).
+let defaultTabStopWidth = 48.0
+
+/// The lines of a paragraph's text, in x from its left indent. The first line
+/// starts at firstLineStart (the first-line indent, or after the list number;
+/// negative when it hangs) unless something floating stands at its start;
+/// the others at the indent. Tab stops are measured from the margin, which is
+/// tabOrigin to the left of the indent; when hanging, the left indent is a
+/// tab stop of the first line as well.
+let layoutLinesFromIndent (settings: LayoutSettings) (measureRange: TextRangeMeasurer) (buffer: TextBuffer.TextBuffer) (maxWidth: float) (contentY: float) (tabStops: TabStop list) (firstLineStart: float) (tabOrigin: float) (hanging: bool) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) =
     let mutable lines = []
     let currentSegments = ResizeArray<Segment>()
     let mutable currentHasTextMetric = false
@@ -1830,7 +1872,8 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
     let private_setIntervalToFirst () =
         match pendingIntervals with
         | (s, e) :: rest ->
-            currentX <- s
+            // (The first-line indent applies from the indent, not beside a float.)
+            currentX <- if flushedLineCount = 0 && s <= 0.01 then firstLineStart else s
             currentLineEnd <- e
             pendingIntervals <- rest
         | [] ->
@@ -1840,7 +1883,7 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
     let moveToWrappableLine () =
         if floatObstacles.IsEmpty then
             pendingIntervals <- []
-            currentX <- 0.0
+            currentX <- if flushedLineCount = 0 then firstLineStart else 0.0
             currentLineEnd <- availableWidth
         else
             pendingIntervals <- wrapIntervalsForY y
@@ -2003,11 +2046,11 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
             index <- index + 1
         width
 
-    // Next non-bar tab stop strictly to the right of x.
+    // Next non-bar tab stop strictly to the right of x (from the indent).
     let nextTabStop x =
         let mutable best: TabStop option = None
         for stop in tabStops do
-            if stop.Alignment <> "bar" && stop.Position > x + 0.01 then
+            if stop.Alignment <> "bar" && stop.Position - tabOrigin > x + 0.01 then
                 match best with
                 | None -> best <- Some stop
                 | Some current when stop.Position < current.Position -> best <- Some stop
@@ -2030,17 +2073,20 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
         if upto > 0 then measureRange currentDisplayText currentDisplayStyle currentTextStart upto else 0.0
 
     let tabWidth runIndex currentTextStart (currentDisplayText: string) currentDisplayStyle =
-        let defaultTab = (floor (currentX / 48.0) + 1.0) * 48.0
+        let defaultTab = (floor ((currentX + tabOrigin) / defaultTabStopWidth) + 1.0) * defaultTabStopWidth - tabOrigin
+        // (Left of a hanging indent, the indent is the next stop unless a custom one comes first.)
+        let beforeHangingIndent = hanging && currentX < -0.01
         match nextTabStop currentX with
-        | Some stop ->
-            let target = min stop.Position currentLineEnd
+        | Some stop when not beforeHangingIndent || stop.Position - tabOrigin <= 0.0 ->
+            let target = min (stop.Position - tabOrigin) currentLineEnd
             let following () = followingTextWidth runIndex currentTextStart currentDisplayText currentDisplayStyle
             match stop.Alignment with
             | "right" -> max 0.0 (target - currentX - following ())
             | "center" -> max 0.0 (target - currentX - following () / 2.0)
             | "decimal" -> max 0.0 (target - currentX - followingWidthToDecimal currentTextStart currentDisplayText currentDisplayStyle)
             | _ -> max 0.0 (target - currentX)   // left (default)
-        | None ->
+        | _ when beforeHangingIndent -> -currentX
+        | _ ->
             max 12.0 (min defaultTab currentLineEnd - currentX)
 
     let addTextSegment text style x width startOffset =
@@ -2280,6 +2326,9 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
         } :: lines
     List.rev lines, floatObstacles, placedBoxes
 
+let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureRange: TextRangeMeasurer) (buffer: TextBuffer.TextBuffer) (maxWidth: float) (contentY: float) (tabStops: TabStop list) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) =
+    layoutLinesFromIndent settings measureRange buffer maxWidth contentY tabStops 0.0 0.0 false initialObstacles initialPlacedBoxes
+
 let layoutLinesStyledWithObstacles (settings: LayoutSettings) (measureText: TextMeasurer) (buffer: TextBuffer.TextBuffer) (maxWidth: float) (contentY: float) (tabStops: TabStop list) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) =
     layoutLinesStyledWithObstaclesWithRange settings (rangeMeasurerFromTextMeasurer measureText) buffer maxWidth contentY tabStops initialObstacles initialPlacedBoxes
 
@@ -2287,7 +2336,7 @@ let layoutLinesStyled (settings: LayoutSettings) (measureText: TextMeasurer) (bu
     let lines, _, _ = layoutLinesStyledWithObstacles settings measureText buffer maxWidth 0.0 [] [] []
     lines
 
-let private trySingleLineStyledNoObstacles (settings: LayoutSettings) (measureRange: TextRangeMeasurer) (buffer: TextBuffer.TextBuffer) (maxWidth: float) (tabStops: TabStop list) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) =
+let private trySingleLineStyledNoObstacles (settings: LayoutSettings) (measureRange: TextRangeMeasurer) (buffer: TextBuffer.TextBuffer) (maxWidth: float) (tabStops: TabStop list) (firstLineStart: float) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) =
     if not tabStops.IsEmpty || not initialObstacles.IsEmpty || not initialPlacedBoxes.IsEmpty then
         None
     else
@@ -2306,18 +2355,18 @@ let private trySingleLineStyledNoObstacles (settings: LayoutSettings) (measureRa
                 let width = measureRange displayText displayStyle 0 displayText.Length
                 let availableWidth = max 1.0 maxWidth
                 let fitSafety = if settings.InTableCell then tableCellLineFitSafety else lineFitSafety
-                if width > availableWidth - fitSafety then
+                if firstLineStart + width > availableWidth - fitSafety then
                     None
                 else
-                    let segment = TextSegment (rawText, textRun.Style, 0.0, width, textRun.Start)
+                    let segment = TextSegment (rawText, textRun.Style, firstLineStart, width, textRun.Start)
                     let scale = settings.LineHeight / settings.FontSize
                     let lineHeight = max settings.LineHeight (segmentHeight scale segment)
                     let segments = [segment]
                     let lineWidth =
                         let visibleLength = visibleTokenLength rawText
-                        if visibleLength = rawText.Length then width
-                        elif visibleLength > 0 then measureRange displayText displayStyle 0 visibleLength
-                        else 0.0
+                        if visibleLength = rawText.Length then firstLineStart + width
+                        elif visibleLength > 0 then firstLineStart + measureRange displayText displayStyle 0 visibleLength
+                        else firstLineStart
                     Some [{
                         Segments = segments
                         Y = minBodyTop settings 0.0
@@ -2363,7 +2412,7 @@ let private trySingleLineParagraphHeightNoObstacles (settings: LayoutSettings) (
                 if rawText.Length = 0 || rangeContainsTab rawText 0 rawText.Length || rawText.Contains("\r") || rawText.Contains("\n") then
                     None
                 else
-                    let availableWidth = maxWidth - indent - rightIndent - max 0.0 firstLineIndent - borderRight
+                    let availableWidth = maxWidth - indent - rightIndent - firstLineIndent - borderRight
                     let displayText = WordLayout.Text.displayText textStyle rawText
                     let displayStyle = WordLayout.Text.displayStyle textStyle
                     let width = measureText displayText displayStyle
@@ -2408,6 +2457,8 @@ type ParagraphLineBreakKey = {
     LineTrailingSpaceFitSafety: float
     LineAvailableWidth: float
     LineSingleLineFastPath: bool
+    LineFirstStart: float
+    LineIndent: float
 }
 
 type ParagraphPlacementKey = {
@@ -2455,6 +2506,8 @@ type PassCheckpoint = {
     CheckPreviousLayout: BlockLayout option
     CheckObstacles: FloatingObstacle list
     CheckPlacedBoxes: PlacedFloatingBox list
+    /// A drop cap read and not yet placed: it is placed with the paragraph after it.
+    CheckDropCap: (ParagraphBlock * ParagraphStyle) option
 }
 
 /// What a block-by-block pass was given and what it made, kept for the next
@@ -2701,9 +2754,14 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
     let prefixWidth =
         WordLayout.Numbering.markerWidth measureText prefix (prefixStyle |> Option.defaultValue paragraphStyle.Text)
 
-    let isHangingList = prefix <> "" && firstLineIndent < 0.0
-    let markerReserve = if isHangingList then 0.0 else prefixWidth
-    let availableWidth = maxWidth - indent - rightIndent - markerReserve - max 0.0 firstLineIndent - borderRight
+    // Every line is as wide as the paragraph between its indents: the first
+    // starts further in or out (the first-line indent, or after the number).
+    let availableWidth = maxWidth - indent - rightIndent - borderRight
+    let firstLineStart =
+        match prefixStyle with
+        | Some markerStyle -> WordLayout.Numbering.textStart measureText defaultTabStopWidth metadata indent firstLineIndent prefix markerStyle
+        | None -> firstLineIndent
+    let hanging = firstLineIndent < 0.0
     let contentFontSize, contentTextStyle =
         match memoEntry with
         | Some entry -> entry.MemoContentFontSize, entry.MemoContentTextStyle
@@ -2714,11 +2772,11 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
     let singleLineFastPath = prefix = "" && not metadata.Rtl
     let breakLines () =
         if singleLineFastPath then
-            match trySingleLineStyledNoObstacles lineSettings measureRange buffer availableWidth metadata.TabStops initialObstacles initialPlacedBoxes with
+            match trySingleLineStyledNoObstacles lineSettings measureRange buffer availableWidth metadata.TabStops firstLineStart initialObstacles initialPlacedBoxes with
             | Some lines -> lines, initialObstacles, initialPlacedBoxes
-            | None -> layoutLinesStyledWithObstaclesWithRange lineSettings measureRange buffer availableWidth contentY metadata.TabStops initialObstacles initialPlacedBoxes
+            | None -> layoutLinesFromIndent lineSettings measureRange buffer availableWidth contentY metadata.TabStops firstLineStart indent hanging initialObstacles initialPlacedBoxes
         else
-            layoutLinesStyledWithObstaclesWithRange lineSettings measureRange buffer availableWidth contentY metadata.TabStops initialObstacles initialPlacedBoxes
+            layoutLinesFromIndent lineSettings measureRange buffer availableWidth contentY metadata.TabStops firstLineStart indent hanging initialObstacles initialPlacedBoxes
     let lines, updatedObstacles, updatedPlacedBoxes =
         match memoEntry with
         | Some entry ->
@@ -2732,6 +2790,8 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
                 LineTrailingSpaceFitSafety = lineSettings.LongTrailingSpaceFitSafety
                 LineAvailableWidth = availableWidth
                 LineSingleLineFastPath = singleLineFastPath
+                LineFirstStart = firstLineStart
+                LineIndent = indent
             }
             match entry.MemoLines, entry.MemoLinesOlder with
             | Some (cachedKey, cachedLines), _ when cachedKey = key -> cachedLines, initialObstacles, initialPlacedBoxes
@@ -2746,20 +2806,12 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
                 lines, obstacles, placedBoxes
         | None -> breakLines ()
 
-    let mutable isFirstLine = true
     let mutable hasRenderedPageBreak = false
     let markerLineBoxFactor = prefixStyle |> Option.bind WordLayout.Numbering.markerLineBoxFactor
     let adjustedLines =
         let adjusted = ResizeArray<MeasuredLine>()
         for line in lines do
-            let startsAfterWrapObstacle = lineStartsAfterWrapObstacle line
-            let isFirst = isFirstLine
-            isFirstLine <- false
-            let lineFirstIndent =
-                if isFirst then
-                    if isHangingList || startsAfterWrapObstacle then 0.0 else firstLineIndent
-                else 0.0
-            let dx = xOffset + indent + markerReserve + lineFirstIndent
+            let dx = xOffset + indent
             let adjustedSegments =
                 if abs dx < 0.001 then
                     for segment in line.Segments do
@@ -2804,11 +2856,11 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
     let adjustedLines =
         if metadata.Alignment <> Justify || not (List.isEmpty updatedObstacles) then adjustedLines
         else
-            let rightContentEdge = xOffset + indent + markerReserve + availableWidth + max 0.0 firstLineIndent
+            let rightContentEdge = xOffset + indent + availableWidth
             let rec justifyNonLast acc = function
                 | [] -> List.rev acc
                 | [last] -> List.rev (last :: acc)
-                | line :: rest -> justifyNonLast (justifyLineToEdge rightContentEdge line :: acc) rest
+                | line :: rest -> justifyNonLast (justifyLineToEdge measureRange (xOffset + indent) rightContentEdge line :: acc) rest
             justifyNonLast [] adjustedLines
 
     // RTL paragraphs: reposition each line's tokens right-to-left (guarded by
@@ -4458,6 +4510,10 @@ let private samePassState (left: PassCheckpoint) (right: PassCheckpoint) =
         | _ -> false)
     && sameOrEqual left.CheckObstacles right.CheckObstacles
     && sameOrEqual left.CheckPlacedBoxes right.CheckPlacedBoxes
+    && (match left.CheckDropCap, right.CheckDropCap with
+        | None, None -> true
+        | Some (leftPara, leftStyle), Some (rightPara, rightStyle) -> obj.ReferenceEquals(leftPara, rightPara) && sameOrEqual leftStyle rightStyle
+        | _ -> false)
 
 /// How many blocks two block arrays have in common at the start and (of the
 /// rest) at the end: the same objects in the same order.
@@ -4618,11 +4674,13 @@ let private layoutDocumentPassKept
     let mutable previousParagraphContext: (ParagraphBlock * ParagraphStyle * BlockMetadata * float) option = None
     let mutable previousParagraphLayout: BlockLayout option = None
     let mutable hasEndnoteRefs = false
+    let mutable pendingDropCap: (ParagraphBlock * ParagraphStyle) option = None
     let blocks = doc.Blocks |> List.toArray
     let currentState () = {
         CheckCol = 0; CheckPage = 0; CheckY = y; CheckCounters = numberedCounters; CheckFootnotes = footnotesByPage
         CheckPrevious = previousParagraphContext; CheckPreviousLayout = previousParagraphLayout
         CheckObstacles = floatingObstacles; CheckPlacedBoxes = placedFloatingBoxes
+        CheckDropCap = pendingDropCap
     }
     let restoreState (state: PassCheckpoint) =
         y <- state.CheckY
@@ -4632,6 +4690,7 @@ let private layoutDocumentPassKept
         previousParagraphLayout <- state.CheckPreviousLayout
         floatingObstacles <- state.CheckObstacles
         placedFloatingBoxes <- state.CheckPlacedBoxes
+        pendingDropCap <- state.CheckDropCap
     let initialState = currentState ()
     let lastPass = tryPassRecord memo slot settings None 0 settings.PaddingTop 0.0 0.0 false false initialState doc
 
@@ -5040,10 +5099,45 @@ let private layoutDocumentPassKept
             if traceTimingEnabled then
                 traceSlow (sprintf "block[%d]:table rows=%d" index (List.length tableBlock.Rows)) blockStart
 
+        | _ when (getParagraph block).Metadata.DropCap.IsSome
+                 && pendingDropCap.IsNone
+                 && (match nextParagraphBlock index with
+                     | Some (_, next) -> next.Metadata.DropCap.IsNone
+                     | None -> false) ->
+            // A drop cap takes no room of its own: it is placed with the
+            // paragraph after it, which goes around it (see placeWithDropCap).
+            pendingDropCap <- Some (getParagraph block, forBlockInContext styleContext block)
         | _ ->
             let blockStart = timingStart ()
             let para = getParagraph block
             let paragraphStyle = forBlockInContext styleContext block
+            let dropCap = pendingDropCap
+            pendingDropCap <- None
+            // The paragraph after a drop cap (w:framePr w:dropCap): the
+            // letter stands at the top of its first line, as high as the
+            // number of its lines the drop cap says; those lines are beside
+            // it ("drop") - or it stands in the margin to their left
+            // ("margin"). The letter's paragraph is laid out on its own and
+            // placed there.
+            let capLayoutAt (atY: float) =
+                match dropCap with
+                | None -> None
+                | Some (capPara, capStyle) ->
+                    let capLayout, _, _, _ = layoutParagraphWithMemo memo settings measureText measureRange maxWidth atY 0.0 capStyle (effectiveBufferInContext styleContext) capPara numberedCounters [] []
+                    let capWidth = capLayout.Lines |> List.fold (fun widest (line: MeasuredLine) -> max widest line.Width) 0.0
+                    Some (capLayout, capWidth, capPara.Metadata.DropCap.Value)
+            let placeWithDropCap (atY: float) (obstacles: FloatingObstacle list) (placed: PlacedFloatingBox list) =
+                let laidOut () = layoutParagraphWithMemo memo settings measureText measureRange maxWidth atY 0.0 paragraphStyle (effectiveBufferInContext styleContext) para numberedCounters obstacles placed
+                match capLayoutAt atY with
+                | Some (_, capWidth, cap) when not cap.InMargin && capWidth > 0.0 ->
+                    let probe, _, _, _ = laidOut ()
+                    match probe.Lines with
+                    | first :: _ ->
+                        // (Short of its last line's bottom, so that the line after it is clear.)
+                        let obstacle = (0.0, first.Y, capWidth + cap.Distance, float cap.Lines * first.Height - 0.5)
+                        layoutParagraphWithMemo memo settings measureText measureRange maxWidth atY 0.0 paragraphStyle (effectiveBufferInContext styleContext) para numberedCounters (obstacle :: obstacles) placed
+                    | [] -> laidOut ()
+                | _ -> laidOut ()
             let beforeRenderedHintY = y
             y <- applyRenderedPageBreakHint settings y para
             if y <> beforeRenderedHintY then resetPreviousParagraph ()
@@ -5062,7 +5156,7 @@ let private layoutDocumentPassKept
             let initialStart = timingStart ()
             // (With the shapes anchored in the paragraph that text goes around, placed from its top.)
             let struct (obstaclesAtY, placedAtY) = withAnchoredBoxes para.Id y floatingObstacles placedFloatingBoxes
-            let initialLayout, initialCounters, initialObstacles, initialPlacedBoxes = layoutParagraphWithMemo memo settings measureText measureRange maxWidth y 0.0 paragraphStyle (effectiveBufferInContext styleContext) para numberedCounters obstaclesAtY placedAtY
+            let initialLayout, initialCounters, initialObstacles, initialPlacedBoxes = placeWithDropCap y obstaclesAtY placedAtY
             if traceTimingEnabled then traceSlow (sprintf "block[%d]:initial lines=%d" index initialLayout.Lines.Length) initialStart
             let keepWithNextY =
                 if WordStyles.keepNext paragraphStyle para.Metadata then
@@ -5147,7 +5241,7 @@ let private layoutDocumentPassKept
                     let relayoutStart = timingStart ()
                     let result =
                         let struct (obstaclesPaged, placedPaged) = withAnchoredBoxes para.Id pagedY floatingObstacles placedFloatingBoxes
-                        layoutParagraphWithMemo memo settings measureText measureRange maxWidth pagedY 0.0 paragraphStyle (effectiveBufferInContext styleContext) para numberedCounters obstaclesPaged placedPaged
+                        placeWithDropCap pagedY obstaclesPaged placedPaged
                     if traceTimingEnabled then traceSlow (sprintf "block[%d]:relayout" index) relayoutStart
                     result
             let layout =
@@ -5176,6 +5270,19 @@ let private layoutDocumentPassKept
             numberedCounters <- counters
             floatingObstacles <- obstacles
             placedFloatingBoxes <- placedBoxes
+            match layout.Lines with
+            | first :: _ ->
+                match capLayoutAt layout.Y with
+                | Some (capLayout, capWidth, cap) ->
+                    // (Its line ends where the lines it is as high as end: its
+                    // baseline on theirs, whatever its own line height.)
+                    let capLayout =
+                        match List.tryLast capLayout.Lines with
+                        | Some capLast -> moveLayoutToY (capLayout.Y + first.Y + float cap.Lines * first.Height - (capLast.Y + capLast.Height)) capLayout
+                        | None -> capLayout
+                    addBodyLayout (if cap.InMargin then shiftBlockX (-(capWidth + cap.Distance)) capLayout else capLayout)
+                | None -> ()
+            | [] -> ()
             addBodyLayout layout
             footnotesByPage <- addLayoutFootnotes settings footnotesByPage layout
             y <- layout.Y + layout.Height
@@ -5447,39 +5554,6 @@ let private computeAnchorExtendedObstacles
                     [ (obstacleX, extendedTop, obstacleWidth, extendedHeight) ])
     if anyExtended then extended, placed else [], []
 
-let private shiftSegmentX dx segment =
-    match segment with
-    | TextSegment (t, st, x, w, off) -> TextSegment (t, st, x + dx, w, off)
-    | ImageSegment (src, x, yOff, w, h, off, fl, wr, rh, cl, ct, cr, cb) ->
-        ImageSegment (src, x + dx, yOff, w, h, off, fl, wr, rh, cl, ct, cr, cb)
-    | MathSegment (p, st, x, w, asc, desc, off, len) -> MathSegment (p, st, x + dx, w, asc, desc, off, len)
-
-let private shiftSegmentsX dx segments =
-    let shifted = ResizeArray<Segment>()
-    for segment in segments do
-        shifted.Add(shiftSegmentX dx segment)
-    resizeArrayToList shifted
-
-let private shiftLinesX dx lines =
-    let shifted = ResizeArray<MeasuredLine>()
-    for line in lines do
-        shifted.Add { line with Segments = shiftSegmentsX dx line.Segments }
-    resizeArrayToList shifted
-
-let private shiftBlockX dx (layout: BlockLayout) =
-    if dx = 0.0 then layout
-    else
-        { layout with
-            Indent = layout.Indent + dx
-            Lines = shiftLinesX dx layout.Lines }
-
-let private shiftBlockY dy (layout: BlockLayout) =
-    if dy = 0.0 then layout
-    else
-        { layout with
-            Y = layout.Y + dy
-            Lines = shiftLinesY dy layout.Lines }
-
 let private takeLines count (lines: MeasuredLine list) =
     let taken = ResizeArray<MeasuredLine>()
     let mutable remainingCount = count
@@ -5609,7 +5683,7 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
     let blocks = List.toArray doc.Blocks
     let initialState = {
         CheckCol = 0; CheckPage = startPage; CheckY = startY; CheckCounters = Map.empty; CheckFootnotes = initialFootnotes
-        CheckPrevious = None; CheckPreviousLayout = None; CheckObstacles = []; CheckPlacedBoxes = []
+        CheckPrevious = None; CheckPreviousLayout = None; CheckObstacles = []; CheckPlacedBoxes = []; CheckDropCap = None
     }
     let lastPass = tryPassRecord memo slot settings (Some columns) startPage startY (pageTopOf startPage) (pageTopOf (startPage + 1)) nonUniform balanced initialState doc
     // The last pass over the very same blocks: it stands as a whole.
@@ -5715,7 +5789,7 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
 
     let currentState () = {
         CheckCol = col; CheckPage = page; CheckY = y; CheckCounters = counters; CheckFootnotes = footnotesByPage
-        CheckPrevious = previousParagraph; CheckPreviousLayout = None; CheckObstacles = []; CheckPlacedBoxes = []
+        CheckPrevious = previousParagraph; CheckPreviousLayout = None; CheckObstacles = []; CheckPlacedBoxes = []; CheckDropCap = None
     }
     let restoreState (state: PassCheckpoint) =
         col <- state.CheckCol
@@ -5792,6 +5866,9 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                     | _ -> y
                 let rawLayout, newCounters, _, _ =
                     layoutParagraphWithMemo memo flowSettings measureText measureRange (columnWidth col) layoutY 0.0 style (effectiveBufferInContext styleContext) remaining counters [] []
+                let newCounters =
+                    if isContinuation then snd (WordLayout.Numbering.markerAndCounters (WordStyles.effectiveMetadata style para0.Metadata) counters)
+                    else newCounters
                 let moveKeepGroup =
                     if keepChecked || isContinuation then false
                     else
@@ -5844,10 +5921,14 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                         // lastFit.EndOffset is in paragraph offsets; the buffer
                         // being cut starts at consumedOffset.
                         let cut = lastFit.EndOffset - consumedOffset
+                        // (The rest starts at the indent: no first-line indent, no number -
+                        // the number was counted with the first fragment, see newCounters.)
                         let continuationMetadata =
                             { remaining.Metadata with
                                 SpacingBefore = Some 0.0
-                                FirstLineIndent = if remaining.Metadata.ListStyle = NoList then Some 0.0 else remaining.Metadata.FirstLineIndent }
+                                IndentLeft = Some (WordLayout.Paragraph.leftIndent (WordStyles.effectiveMetadata style remaining.Metadata))
+                                FirstLineIndent = Some 0.0
+                                ListStyle = NoList }
                         remaining <-
                             // The rest of the paragraph: the same object as at the last
                             // pass while it is cut from the same buffer at the same place.

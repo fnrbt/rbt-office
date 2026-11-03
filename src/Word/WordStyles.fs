@@ -465,6 +465,10 @@ let toggleUnderline (doc: Document) = Document.toggleUnderlineWith (effectiveRun
 let toggleAllCaps (doc: Document) = Document.toggleAllCapsWith (effectiveRunStyleResolver doc) doc
 let toggleSmallCaps (doc: Document) = Document.toggleSmallCapsWith (effectiveRunStyleResolver doc) doc
 let toggleStrike (doc: Document) = Document.toggleStrikeWith (effectiveRunStyleResolver doc) doc
+/// Grow Font / Shrink Font (by Word's size steps, or by a point when not `stepwise`) from the size the text shows.
+let growFont (grow: bool) (stepwise: bool) (doc: Document) = Document.resizeFontWith (effectiveRunStyleResolver doc) grow stepwise doc
+let toggleSubscript (doc: Document) = Document.toggleVertAlignWith (effectiveRunStyleResolver doc) "subscript" doc
+let toggleSuperscript (doc: Document) = Document.toggleVertAlignWith (effectiveRunStyleResolver doc) "superscript" doc
 
 let effectiveBufferWith transformStyle (buffer: TextBuffer) =
     match buffer.Runs with
@@ -645,6 +649,8 @@ type SelectionFormat = {
     /// None: automatic colour.
     Color: FormatValue<string option>
     Highlight: FormatValue<string option>
+    /// "superscript" | "subscript"; None: on the baseline.
+    VertAlign: FormatValue<string option>
     /// The paragraph style id; None for the default paragraph style.
     StyleId: FormatValue<string option>
     /// 0 for body text.
@@ -686,6 +692,7 @@ let selectionFormat (doc: Document) : SelectionFormat =
     let mutable fontSize = NoValue
     let mutable color = NoValue
     let mutable highlight = NoValue
+    let mutable vertAlign = NoValue
     let mutable styleId = NoValue
     let mutable headingLevel = NoValue
     let mutable alignment = NoValue
@@ -701,7 +708,7 @@ let selectionFormat (doc: Document) : SelectionFormat =
     let inline isMixed (value: FormatValue<'T>) = (match value with Mixed -> true | _ -> false)
     let charactersMixed () =
         isMixed bold && isMixed italic && isMixed underline && isMixed strike
-        && isMixed fontFamily && isMixed fontSize && isMixed color && isMixed highlight
+        && isMixed fontFamily && isMixed fontSize && isMixed color && isMixed highlight && isMixed vertAlign
     let paragraphsMixed () =
         isMixed styleId && isMixed headingLevel && isMixed alignment && isMixed listKind && isMixed listLevel
         && isMixed indentLeft && isMixed indentRight && isMixed firstLineIndent
@@ -774,7 +781,8 @@ let selectionFormat (doc: Document) : SelectionFormat =
                         && runStyle.Underline = lastRunStyle.Underline && runStyle.Strike = lastRunStyle.Strike
                         && runStyle.DoubleStrike = lastRunStyle.DoubleStrike && runStyle.FontSize = lastRunStyle.FontSize
                         && sameText runStyle.FontFamily lastRunStyle.FontFamily && sameText runStyle.Color lastRunStyle.Color
-                        && sameText runStyle.Highlight lastRunStyle.Highlight && sameText runStyle.Style lastRunStyle.Style))
+                        && sameText runStyle.Highlight lastRunStyle.Highlight && sameText runStyle.Style lastRunStyle.Style
+                        && sameText runStyle.VertAlign lastRunStyle.VertAlign))
             if not asLast then
                 lastRunStyle <- runStyle
                 lastParagraphStyle <- paragraphStyle
@@ -804,6 +812,7 @@ let selectionFormat (doc: Document) : SelectionFormat =
                 if not (isMixed color) then
                     color <- FormatValue.add (if ExplicitFormat.has ExplicitFormat.ColorAuto own then own.Color else own.Color |> Option.orElse inherited.Color) color
                 if not (isMixed highlight) then highlight <- FormatValue.add (own.Highlight |> Option.orElse inherited.Highlight) highlight
+                if not (isMixed vertAlign) then vertAlign <- FormatValue.add (own.VertAlign |> Option.orElse inherited.VertAlign) vertAlign
         let addParagraph (level: int option) (para: ParagraphBlock) (paragraphStyle: ParagraphStyle) =
             let own = para.Metadata
             // (What effectiveMetadata gives for the properties reported here.)
@@ -877,7 +886,7 @@ let selectionFormat (doc: Document) : SelectionFormat =
                 | None -> ()
             if styleId = NoValue then addCaret selection.Focus.BlockId selection.Focus.Offset
     { SelectionFormat.Bold = bold; Italic = italic; Underline = underline; Strike = strike
-      FontFamily = fontFamily; FontSize = fontSize; Color = color; Highlight = highlight
+      FontFamily = fontFamily; FontSize = fontSize; Color = color; Highlight = highlight; VertAlign = vertAlign
       StyleId = styleId; HeadingLevel = headingLevel; Alignment = alignment
       ListKind = listKind; ListLevel = listLevel; IndentLeft = indentLeft; IndentRight = indentRight; FirstLineIndent = firstLineIndent
       ParagraphLineSpacing = lineSpacing; ParagraphLineSpacingRule = lineSpacingRule; ParagraphSpacingBefore = spacingBefore; ParagraphSpacingAfter = spacingAfter }

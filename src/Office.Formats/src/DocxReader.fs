@@ -276,6 +276,9 @@ type ParagraphProperties = {
     RenderedPageBreakBefore: int option
     HeaderReferences: HeaderFooterReference list
     FooterReferences: HeaderFooterReference list
+    /// w:framePr w:dropCap: the paragraph is a drop cap - ("drop" | "margin",
+    /// w:lines, w:hSpace in twips).
+    DropCap: (string * int * string option) option
 }
 
 type Paragraph = {
@@ -1031,6 +1034,17 @@ module Docx =
                 RenderedPageBreakBefore = None
                 HeaderReferences = sectPr |> Option.map (headerFooterReferences "headerReference") |> Option.defaultValue []
                 FooterReferences = sectPr |> Option.map (headerFooterReferences "footerReference") |> Option.defaultValue []
+                DropCap =
+                    wElem "framePr" props
+                    |> Option.bind (fun frame ->
+                        match attr "dropCap" frame with
+                        | Some ("drop" | "margin" as kind) ->
+                            let lines =
+                                match attr "lines" frame |> Option.map System.Int32.TryParse with
+                                | Some (true, value) when value > 0 -> value
+                                | _ -> 1
+                            Some (kind, lines, attr "hSpace" frame)
+                        | _ -> None)
             }
         | None ->
             {
@@ -1074,6 +1088,7 @@ module Docx =
                 RenderedPageBreakBefore = None
                 HeaderReferences = []
                 FooterReferences = []
+                DropCap = None
             }
 
     let private emuToPixels (emu: float) = emu / 9525.0
@@ -2503,6 +2518,7 @@ module Styles =
             RenderedPageBreakBefore = None
             HeaderReferences = []
             FooterReferences = []
+            DropCap = None
         }
 
     let private tableStylePropertiesFrom marginsChild bordersChild (node: XmlNode) : TableStyleProperties option =
@@ -5034,6 +5050,10 @@ let private paragraphLayoutProps fontSize defaultMissingSpacingToZero (borderAdv
         // The paragraph mark has run properties of its own (w:pPr/w:rPr), and the size it states.
         "HasMarkProperties" ==> direct.ParagraphRunProperties.IsSome
         "ExplicitMarkFontSize" ==> (direct.ParagraphRunProperties |> Option.bind (fun mark -> mark.FontSize |> Option.map (fun _ -> wordFontSizeToPoints mark.FontSize)))
+        // w:framePr w:dropCap: (kind, lines, room beside it in points).
+        "DropCapKind" ==> (props.DropCap |> Option.map (fun (kind, _, _) -> kind))
+        "DropCapLines" ==> (props.DropCap |> Option.map (fun (_, lines, _) -> lines))
+        "DropCapDistance" ==> (props.DropCap |> Option.bind (fun (_, _, hSpace) -> wordTwipsToPoints hSpace))
         "ContentControlId" ==> props.ContentControlId
         "ContentControlTag" ==> props.ContentControlTag
         "ContentControlAlias" ==> props.ContentControlAlias
@@ -5251,6 +5271,7 @@ let private mergeParagraphProperties baseProps props = {
     RenderedPageBreakBefore = props.RenderedPageBreakBefore
     HeaderReferences = props.HeaderReferences
     FooterReferences = props.FooterReferences
+    DropCap = props.DropCap
 }
 
 let private paragraphPropertiesWithRunProperties runProps props =

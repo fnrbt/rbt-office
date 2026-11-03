@@ -561,6 +561,12 @@ let private metadataFromEditor (item: obj) =
                 if boolOrDefault false (item?HasListLevelIndents) then Some (optionalFloat (item?ListLevelIndentLeft), optionalFloat (item?ListLevelFirstLineIndent))
                 else None
             ListLevels = (if listStyle = NoList then [] else listLevelsFromEditor (item?ListLevels))
+            DropCap =
+                optionalString (item?DropCapKind)
+                |> Option.map (fun kind ->
+                    { InMargin = (kind = "margin")
+                      Lines = optionalInt (item?DropCapLines) |> Option.defaultValue 1 |> max 1
+                      Distance = optionalFloat (item?DropCapDistance) |> Option.defaultValue 0.0 })
     }
 
 /// Convert EditorRun array to TextBuffer
@@ -2110,6 +2116,10 @@ let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) 
         "WidowControl" ==> para.Metadata.WidowControl
         "KeepNext" ==> para.Metadata.KeepNext
         "KeepLines" ==> para.Metadata.KeepLines
+        // A drop cap (w:framePr w:dropCap): read back by metadataFromEditor, written by the writer.
+        "DropCapKind" ==> (para.Metadata.DropCap |> Option.map (fun cap -> if cap.InMargin then "margin" else "drop"))
+        "DropCapLines" ==> (para.Metadata.DropCap |> Option.map (fun cap -> cap.Lines))
+        "DropCapDistance" ==> (para.Metadata.DropCap |> Option.map (fun cap -> cap.Distance))
         "BackgroundColor" ==> para.Metadata.BackgroundColor
         "ParagraphBorders" ==> paragraphBordersToEditor para.Metadata.ParagraphBorders
         "ParagraphBorderBefore" ==> para.Metadata.ParagraphBorderBefore

@@ -1089,6 +1089,52 @@ module Numbering =
         | NoList -> "left"
         | _ -> ownLevel metadata |> Option.bind (fun definition -> definition.Justification) |> Option.defaultValue "left"
 
+    /// What follows the number (w:suff): "tab" (the default), "space" or "nothing".
+    let markerSuffixKind (metadata: BlockMetadata) =
+        match ownLevel metadata |> Option.bind (fun definition -> definition.Suffix) with
+        | Some "space" -> "space"
+        | Some "nothing" -> "nothing"
+        | _ -> "tab"
+
+    /// The number or bullet without what follows it (formatMarker shows a tab as a space).
+    let markerBody (metadata: BlockMetadata) (marker: string) =
+        if markerSuffixKind metadata <> "nothing" && marker.EndsWith " " then marker.Substring(0, marker.Length - 1)
+        else marker
+
+    /// Where the text of a numbered paragraph's first line starts, from the
+    /// left indent, as Word places it. The number stands at the first-line
+    /// indent (w:lvlJc: its start, middle or end there). A tab after it goes
+    /// to the nearest of: a custom tab stop past the number (the paragraph's,
+    /// or the level's own), the left indent when the paragraph hangs and the
+    /// number ends before it; failing those, the next default tab stop. A
+    /// space after it is a space; nothing, nothing. A number wider than its
+    /// hanging indent so pushes the text on instead of running into it.
+    let textStart (measureText: string -> TextStyle -> float) (defaultTabStop: float) (metadata: BlockMetadata) (indent: float) (firstLineIndent: float) (marker: string) (markerStyle: TextStyle) =
+        let body = displayMarkerText (markerBody metadata marker)
+        let bodyWidth = if body = "" then 0.0 else measureText body markerStyle
+        let markerEnd =
+            match markerJustification metadata with
+            | "right" | "end" -> firstLineIndent
+            | "center" -> firstLineIndent + bodyWidth / 2.0
+            | _ -> firstLineIndent + bodyWidth
+        match markerSuffixKind metadata with
+        | "nothing" -> markerEnd
+        | "space" -> markerEnd + measureText " " markerStyle
+        | _ ->
+            // Tab stops are measured from the margin, not from the indent.
+            let endAtMargin = indent + markerEnd
+            let mutable best = System.Double.MaxValue
+            let consider position = if position > endAtMargin + 0.01 && position < best then best <- position
+            for stop in metadata.TabStops do
+                if stop.Alignment <> "bar" then consider stop.Position
+            metadata.RightTabPosition |> Option.iter consider
+            if firstLineIndent < 0.0 then consider indent
+            let target =
+                if best < System.Double.MaxValue then best
+                elif defaultTabStop > 0.0 then (floor (endAtMargin / defaultTabStop) + 1.0) * defaultTabStop
+                else endAtMargin
+            target - indent
+
     let markerWidth measureText marker textStyle =
         if marker = "" then 0.0
         else max 20.0 (measureText marker textStyle + 8.0)

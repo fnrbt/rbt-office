@@ -687,6 +687,7 @@ module API =
     ///     size box shows: 11, 12, 14 ...; the unit of setFontSizePt)
     ///   Hyperlink: the target of the link the caret / selection is in (null: none)
     ///   Color: "#RRGGBB" (null: automatic), Highlight: colour name / value (null: none)
+    ///   VertAlign: "superscript" | "subscript" (null: on the baseline)
     ///   Paragraph: { StyleId (null: default style; never an internal entry such as "__docDefaults"),
     ///     HeadingLevel (0: body text),
     ///     Alignment "left" | "center" | "right" | "justify",
@@ -730,6 +731,7 @@ module API =
                  | None -> null)
             "Color" ==> text format.Color
             "Highlight" ==> text format.Highlight
+            "VertAlign" ==> text format.VertAlign
             "Paragraph" ==> createObj [
                 "StyleId" ==> text format.StyleId
                 "HeadingLevel" ==> formatValueToJs (fun (level: int) -> box level) format.HeadingLevel
@@ -2230,6 +2232,31 @@ module API =
     /// nothing selected), if one was - every line of it.
     let pasteText (editor: Editor) (text: string) : unit =
         editor.Handler.PasteText text
+
+    /// Paste what a host read from the clipboard - its text/plain and its
+    /// text/html, either may be empty or null -, as Ctrl+V does: what the
+    /// last Copy / Cut of the editor kept, with its formatting, while the
+    /// text is still its text; else the HTML with its formatting (paragraphs,
+    /// headings, lists, bold, italic, sizes, colours, links); else the text
+    /// as pasteText puts it. One undo step.
+    let pasteClipboard (editor: Editor) (text: string) (html: string) : unit =
+        editor.Handler.PasteClipboard (if isNull text then "" else text) (if isNull html then "" else html)
+
+    /// Copy the selection as Ctrl+C does, for a host that writes the
+    /// clipboard itself (a menu): { Text, Html } to write as text/plain and
+    /// text/html; null with nothing selected. Pasted again in the editor
+    /// (Ctrl+V, pasteClipboard), it has its formatting.
+    let copySelection (editor: Editor) : obj =
+        match editor.Handler.CopyToClipboard false with
+        | Some (text, html) -> createObj [ "Text" ==> text; "Html" ==> html ]
+        | None -> null
+
+    /// Cut the selection, as Ctrl+X does: copySelection, and the selection
+    /// deleted (one undo step).
+    let cutSelection (editor: Editor) : obj =
+        match editor.Handler.CopyToClipboard true with
+        | Some (text, html) -> createObj [ "Text" ==> text; "Html" ==> html ]
+        | None -> null
 
     let insertFieldAt (editor: Editor) (fieldCode: string) (result: string) =
         let newDoc = Doc.insertField fieldCode result editor.Doc
@@ -4022,6 +4049,9 @@ module API =
             "replaceAllText" ==> replaceAllText
             "insertText" ==> insertTextAt
             "pasteText" ==> pasteText
+            "pasteClipboard" ==> pasteClipboard
+            "copySelection" ==> copySelection
+            "cutSelection" ==> cutSelection
             "setContent" ==> setContent
             "setParagraphs" ==> setParagraphs
             "testRope" ==> testRope
