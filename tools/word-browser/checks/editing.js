@@ -91,6 +91,33 @@ try {
         Word.dispose(editor);
     }
 
+    // ---- a run of Backspaces across a paragraph mark or a bullet is one step ----
+    {
+        const editor = Word.initialize('c');
+        const proxy = Word.getInputElement(editor);
+        canvas.focus();
+        const text = () => Word.getText(editor);
+        Word.setParagraphs(editor, ['ab', 'cd']);
+        let ids = [...new Set(Word.getLayoutLines(editor).map((line) => line.BlockId))];
+        Word.setSelection(editor, ids[1], 2, ids[1], 2);
+        for (let i = 0; i < 4; i++) key(proxy, 'Backspace');
+        check('Backspaces over a paragraph mark', text(), 'a');
+        check('... one undo step with the characters', [Word.undo(editor), text(), Word.canUndo(editor)], [true, 'ab\ncd', false]);
+        check('... redone as one', [Word.redo(editor), text()], [true, 'a']);
+        Word.undo(editor);
+        Word.setSelection(editor, ids[1], 0, ids[1], 0);
+        Word.toggleBulletList(editor);
+        Word.setSelection(editor, ids[1], 2, ids[1], 2);
+        const list = () => Word.getSelectionFormat(editor).Paragraph.ListKind;
+        key(proxy, 'Backspace'); key(proxy, 'Backspace'); key(proxy, 'Backspace');
+        check('Backspaces to the start of a list item, then the bullet taken off', [text(), list()], ['ab\n', 'none']);
+        key(proxy, 'Backspace');
+        check('... and the paragraphs joined', text(), 'ab');
+        check('... all one undo step', [Word.undo(editor), text(), (Word.setSelection(editor, ids[1], 0, ids[1], 0), list())], [true, 'ab\ncd', 'bullet']);
+        check('... the step before it is the bullet', [Word.undo(editor), list()], [true, 'none']);
+        Word.dispose(editor);
+    }
+
     // ---- copy, cut and paste with formatting ----
     {
         const editor = Word.initialize('c');
