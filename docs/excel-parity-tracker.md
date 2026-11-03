@@ -368,14 +368,22 @@ Status: open.
 
 Known gaps:
 
-- TableStyleMedium overlays exist.
-- TableStyleLight and TableStyleDark are intentionally not overlaid yet.
+- Every built-in style (Light1-21, Medium1-28, Dark1-11) is drawn from Excel's own
+  definition (`src/Spreadsheet/TableStyles.fs`, from ECMA-376 `presetTableStyles.xml`);
+  custom styles from `<tableStyles>` of styles.xml. Elements are laid over each other in
+  Excel's order, each element's lines on the edges of the block it covers.
+- Not compared with Excel yet (the VM was unreachable): `synthetic-table-styles.xlsx`
+  is the fixture to compare.
+- Tints are 1 off in a channel against Excel (floating-point HLS, `Xlsx.applyColorTint`).
 - Filter button rendering is native PNG only; PDF and Fable/web paths ignore it.
 
 Checks to add:
 
-- [ ] Light/Dark table style synthetic fixture.
-- [ ] Table with explicit cell styles overriding table style.
+- [x] Light/Dark table style synthetic fixture (`tests/test-documents-excel/synthetic-table-styles.xlsx`,
+  `tools/excel-parity/make-table-styles-fixture.py`; `tests/formula/stage54-tablestyles.fsx`).
+- [x] Table with explicit cell styles overriding table style (stage48: a cell's own fill wins,
+  black text is the default font's).
+- [ ] Excel's PDF of `synthetic-table-styles.xlsx` against ours.
 - [ ] Filter button crop in native PNG, PDF, and Fable/web.
 
 Likely files:

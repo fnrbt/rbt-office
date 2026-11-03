@@ -561,20 +561,26 @@ module Import =
             | CellValue.String "" -> CellValue.Empty
             | other -> other
 
-    let private tableFills (workbook: XlsxReader.Workbook) (styleName: string) : string * string =
-        // Excel's TableStyle{Light,Medium,Dark}N cycle through black and the six accents (N mod 7).
-        let mutable n = 0
-        let mutable any = false
-        for ch in styleName do
-            if Char.IsDigit ch && n < 100000 then
-                any <- true
-                n <- n * 10 + (int ch - int '0')
-        let n = if any then n else 2
-        let slot = (max 1 n - 1) % 7
-        let accent =
-            if slot = 0 || slot - 1 >= workbook.ThemeAccents.Length then "000000"
-            else workbook.ThemeAccents.[slot - 1]
-        "#" + accent, "#" + XlsxReader.Xlsx.applyColorTint accent 0.8
+    /// The elements of a table's style: the workbook's custom style of that name (styles.xml), else
+    /// Excel's built-in one in the workbook's theme; none for a name neither knows.
+    let tableStyleElements (workbook: XlsxReader.Workbook) (styleName: string) : TableStyles.TableStyleElement list =
+        let hex (color: string option) = color |> Option.map (fun value -> "#" + value.TrimStart('#').ToUpperInvariant())
+        let line (edge: XlsxReader.TableStyleLine option) : TableStyles.TableLine option =
+            edge |> Option.map (fun edge -> { Style = edge.Style; Color = defaultArg (hex edge.Color) "#000000" })
+        match workbook.TableStyles |> List.tryFind (fun style -> style.Name = styleName && style.Table) with
+        | Some custom ->
+            custom.Elements
+            |> List.map (fun element ->
+                let format = element.Format
+                ({ Kind = element.Type
+                   Size = max 1 element.Size
+                   Format =
+                     { Fill = hex format.Fill; Text = hex format.FontColor; Bold = format.Bold; Italic = format.Italic
+                       Top = line format.Top; Bottom = line format.Bottom; Left = line format.Left; Right = line format.Right
+                       Horizontal = line format.Horizontal; Vertical = line format.Vertical } } : TableStyles.TableStyleElement))
+        | None ->
+            let theme = if workbook.ThemeColors.Length >= 10 then workbook.ThemeColors else TableStyles.officeTheme
+            TableStyles.builtIn theme styleName |> Option.defaultValue []
 
     let private tables (workbook: XlsxReader.Workbook) (sheet: XlsxReader.Worksheet) : Table list * Map<string, string list> =
         let mutable columns = Map.empty<string, string list>
@@ -585,16 +591,13 @@ module Import =
                 let style =
                     t.Style
                     |> Option.map (fun s ->
-                        // HeaderFill / StripeFill make `applyTableStyles` paint the
-                        // table at render time; nothing is baked into the cells.
-                        let headerFill, stripeFill = tableFills workbook s.Name
+                        // The style's elements are drawn at render time; nothing is baked into the cells.
                         ({ Name = s.Name
                            ShowFirstColumn = s.ShowFirstColumn
                            ShowLastColumn = s.ShowLastColumn
                            ShowRowStripes = s.ShowRowStripes
                            ShowColumnStripes = s.ShowColumnStripes
-                           HeaderFill = Some headerFill
-                           StripeFill = Some stripeFill } : TableStyle))
+                           Elements = tableStyleElements workbook s.Name } : TableStyle))
                 ({ Name = t.Name
                    StartRow = t.StartRow
                    StartCol = t.StartCol

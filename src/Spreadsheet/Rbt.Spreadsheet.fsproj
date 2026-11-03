@@ -6,6 +6,7 @@
 
   <ItemGroup>
     <Compile Include="NumberText.fs" />
+    <Compile Include="TableStyles.fs" />
     <Compile Include="Model.fs" />
     <Compile Include="CellText.fs" />
     <Compile Include="Input.fs" />

@@ -145,7 +145,7 @@ throws "an unknown table" (fun () -> Ops.deleteTable "DeleteTable" "Nope" true w
 
 // ---- style ----------------------------------------------------------------------------------
 let restyled = (Ops.setTableStyle "SetTableStyle" "Sales" (Some { Ops.tableStyleNamed "TableStyleLight10" with ShowRowStripes = false }) wb1).Book
-eq "another style" (infoOf "Sales" restyled |> fun t -> t.Style |> Option.map (fun s -> s.Name, s.ShowRowStripes, s.HeaderFill)) (Some ("TableStyleLight10", false, Some "#ED7D31"))
+eq "another style" (infoOf "Sales" restyled |> fun t -> t.Style |> Option.map (fun s -> s.Name, s.ShowRowStripes, s.Elements |> List.tryFind (fun e -> e.Kind = "headerRow") |> Option.bind (fun e -> e.Format.Fill))) (Some ("TableStyleLight10", false, Some "#ED7D31"))
 eq "no style" ((Ops.setTableStyle "SetTableStyle" "Sales" None wb1).Book |> infoOf "Sales" |> fun t -> t.Style) None
 eq "the same style is no change" (obj.ReferenceEquals((Ops.setTableStyle "SetTableStyle" "Sales" style wb1).Book, wb1)) true
 

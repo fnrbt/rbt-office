@@ -1326,9 +1326,9 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
                        ShowLastColumn = s.ShowLastColumn
                        ShowRowStripes = s.ShowRowStripes
                        ShowColumnStripes = s.ShowColumnStripes
-                       // None → applyTableStyles is a no-op; imported tables are
+                       // No elements → applyTableStyles is a no-op; imported tables are
                        // already baked into cell formats by toModel above.
-                       HeaderFill = None; StripeFill = None } : TableStyle))
+                       Elements = [] } : TableStyle))
               AutoFilter = t.AutoFilter })
 
     let baseModel = createEmpty excelRowCount excelColCount

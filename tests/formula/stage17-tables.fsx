@@ -147,15 +147,15 @@ check "style header fill"   hdr.BgColor (Some "#4472C4")
 check "style header white"  hdr.TextColor (Some "#FFFFFF")
 check "style header bold"    hdr.Bold true
 check "style header filter btn" hdr.FilterButton true
-check "style stripe row0"   (fmtAt styledM 1 0).BgColor (Some "#D9E1F2")   // East, even data idx
+check "style stripe row0"   (fmtAt styledM 1 0).BgColor (Some "#DAE3F3")   // East, even data idx
 check "style no stripe row1" (fmtAt styledM 2 0).BgColor None               // West, odd data idx
-// Imported-style table (HeaderFill None) is left untouched.
+// A table whose style has no elements (a runner that bakes the styling itself) is left untouched.
 let importedStyleModel =
     { dataModel with
         Tables = [ { Name="T"; StartRow=1; StartCol=1; EndRow=3; EndCol=3; HeaderRowCount=1
-                     Style = Some { Name="TableStyleMedium7"; ShowFirstColumn=false; ShowLastColumn=false; ShowRowStripes=true; ShowColumnStripes=false; HeaderFill=None; StripeFill=None }
+                     Style = Some { Name="TableStyleMedium7"; ShowFirstColumn=false; ShowLastColumn=false; ShowRowStripes=true; ShowColumnStripes=false; Elements=[] }
                      AutoFilter = Some (1,3); HasTotals=false } ] }
-check "style no-op when HeaderFill None" (fmtAt (applyTableStyles importedStyleModel) 0 0).BgColor None
+check "style no-op without elements" (fmtAt (applyTableStyles importedStyleModel) 0 0).BgColor None
 
 // A column inserted into a table has a header of its own: Excel refuses a table with two columns of one name.
 let headed =

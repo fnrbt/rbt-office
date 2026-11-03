@@ -231,6 +231,32 @@ type Dxf = {
     Strike: bool option
 }
 
+/// A line of a table style's format: its kind ("thin", "medium", ...) and colour (RRGGBB).
+type TableStyleLine = { Style: string; Color: string option }
+
+/// The differential format (`<dxf>`) an element of a custom table style points at: fill, font
+/// colour, bold and italic, and lines - the edges of the block the element covers (`Top` ..
+/// `Right`) and the lines between its cells (`Horizontal`, `Vertical`).
+type TableStyleDxf = {
+    Fill: string option
+    FontColor: string option
+    Bold: bool option
+    Italic: bool option
+    Top: TableStyleLine option
+    Bottom: TableStyleLine option
+    Left: TableStyleLine option
+    Right: TableStyleLine option
+    Horizontal: TableStyleLine option
+    Vertical: TableStyleLine option
+}
+
+/// An element of a custom table style (`<tableStyleElement type size dxfId>`).
+type TableStyleElementDef = { Type: string; Size: int; Format: TableStyleDxf }
+
+/// A custom table style of styles.xml (`<tableStyles><tableStyle>`): `Table` / `Pivot` say what it
+/// may style (a slicer style is neither).
+type TableStyleDefinition = { Name: string; Table: bool; Pivot: bool; Elements: TableStyleElementDef list }
+
 /// The x14 form of a data bar (`<x14:dataBar>` in the sheet's extension
 /// list), attribute by attribute with the schema's defaults.
 type CfDataBarExt = {
@@ -1233,6 +1259,11 @@ type Workbook = {
     Relationships: Relationship list
     NamedRanges: NamedRange list
     ThemeAccents: string array
+    /// The theme's twelve colours (RRGGBB) in the order `<color theme="N">` counts them: lt1, dk1,
+    /// lt2, dk2, accent1-6, hlink, folHlink.
+    ThemeColors: string array
+    /// The custom table styles of styles.xml (`<tableStyles>`), their formats resolved.
+    TableStyles: TableStyleDefinition list
     /// True when the source workbook uses the 1904 date system
     /// (`<workbookPr date1904="1"/>`). Every consumer of this model assumes
     /// 1900-system serials, so the reader has already shifted the value of
@@ -4685,6 +4716,76 @@ module ConditionalFormats =
         |> List.map (parseDxf themeColors)
         |> List.toArray
 
+// Custom table styles
+module TableStyleDefinitions =
+    let private emptyDxf : TableStyleDxf =
+        { Fill = None; FontColor = None; Bold = None; Italic = None
+          Top = None; Bottom = None; Left = None; Right = None; Horizontal = None; Vertical = None }
+
+    /// One `<dxf>` as an element of a table style uses it (its fill, font colour, bold, italic, lines).
+    let parseDxf (themeColors: string array) (dxf: XmlNode) : TableStyleDxf =
+        let font = Xlsx.sElem "font" dxf
+        let flag (name: string) =
+            font
+            |> Option.bind (Xlsx.sElem name)
+            |> Option.map (fun node -> match Xml.attr "val" node with Some text -> isTrueText text | None -> true)
+        let fill =
+            Xlsx.sElem "fill" dxf
+            |> Option.bind (Xlsx.sElem "patternFill")
+            |> Option.filter (fun pattern -> Xml.attr "patternType" pattern <> Some "none")
+            |> Option.bind (fun pattern ->
+                Xlsx.sElem "bgColor" pattern |> Option.bind (Xlsx.resolveColorElement themeColors)
+                |> Option.orElseWith (fun () -> Xlsx.sElem "fgColor" pattern |> Option.bind (Xlsx.resolveColorElement themeColors)))
+        let border = Xlsx.sElem "border" dxf
+        let line (name: string) : TableStyleLine option =
+            border
+            |> Option.bind (Xlsx.sElem name)
+            |> Option.bind (fun edge ->
+                match Xml.attr "style" edge with
+                | Some style when style <> "none" && style <> "" ->
+                    Some { Style = style; Color = Xlsx.sElem "color" edge |> Option.bind (Xlsx.resolveColorElement themeColors) }
+                | _ -> None)
+        { emptyDxf with
+            Fill = fill
+            FontColor = font |> Option.bind (Xlsx.sElem "color") |> Option.bind (Xlsx.resolveColorElement themeColors)
+            Bold = flag "b"
+            Italic = flag "i"
+            Top = line "top"
+            Bottom = line "bottom"
+            Left = line "left"
+            Right = line "right"
+            Horizontal = line "horizontal"
+            Vertical = line "vertical" }
+
+    /// The custom table styles of a styles part, each element's format resolved from `<dxfs>`.
+    let parse (themeColors: string array) (stylesDoc: XmlNode) : TableStyleDefinition list =
+        let dxfs =
+            Xlsx.sElem "dxfs" stylesDoc
+            |> Option.map (Xlsx.sElems "dxf")
+            |> Option.defaultValue []
+            |> List.toArray
+        Xlsx.sElem "tableStyles" stylesDoc
+        |> Option.map (Xlsx.sElems "tableStyle")
+        |> Option.defaultValue []
+        |> List.choose (fun style ->
+            Xml.attr "name" style
+            |> Option.map (fun name ->
+                let on (attribute: string) = Xml.attr attribute style |> Option.map isTrueText |> Option.defaultValue true
+                { Name = name
+                  Table = on "table"
+                  Pivot = on "pivot"
+                  Elements =
+                    Xlsx.sElems "tableStyleElement" style
+                    |> List.choose (fun element ->
+                        match Xml.attr "type" element with
+                        | Some kind ->
+                            let format =
+                                match Xml.attr "dxfId" element |> Option.bind tryParseInt with
+                                | Some id when id >= 0 && id < dxfs.Length -> parseDxf themeColors dxfs.[id]
+                                | _ -> emptyDxf
+                            Some { Type = kind; Size = Xml.attr "size" element |> Option.bind tryParseInt |> Option.defaultValue 1; Format = format }
+                        | None -> None) }))
+
 // Data Validation parsing
 module DataValidations =
     let parseDataValidation (dvNode: XmlNode) : DataValidation option =
@@ -5604,10 +5705,15 @@ let private buildWorkbook (scanRows: bool) (source: PartSource) (header: Workboo
         stylesXml
         |> Option.map (Xlsx.parseStyles themeColors themeMajorFont themeMinorFont)
         |> Option.defaultValue [||]
+    let stylesDoc = stylesXml |> Option.map XmlDsl.parse
     let dxfs =
-        stylesXml
-        |> Option.map (XmlDsl.parse >> ConditionalFormats.parseDxfs themeColors)
+        stylesDoc
+        |> Option.map (ConditionalFormats.parseDxfs themeColors)
         |> Option.defaultValue [||]
+    let tableStyles =
+        stylesDoc
+        |> Option.map (TableStyleDefinitions.parse themeColors)
+        |> Option.defaultValue []
 
     // Which `<c cm>` values say "dynamic array formula".
     let dynamicCm =
@@ -5887,6 +5993,8 @@ let private buildWorkbook (scanRows: bool) (source: PartSource) (header: Workboo
         Relationships = header.Rels
         NamedRanges = header.NamedRanges
         ThemeAccents = themeAccents
+        ThemeColors = themeColors
+        TableStyles = tableStyles
         Date1904 = header.Date1904
         Preserved = preserved
     }

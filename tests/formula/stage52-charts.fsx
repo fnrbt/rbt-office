@@ -273,7 +273,8 @@ do
 
 // ---- a part of the newer kinds is told by its first tag -----------------------------------
 // dashboard-sales-analysis.xlsx has a map chart of 8 MB (`cx:chartSpace`): reading all of it to
-// find that it is not drawn took a tenth of a second of the workbook's opening.
+// find that it is not drawn took a tenth of a second of the workbook's opening. (It is a
+// placeholder, read up to its series' name: stage55-chartex.)
 do
     let _, _, parts, theme = openBook "real-world/dashboard-sales-analysis.xlsx"
     let chartEx = text parts.["xl/charts/chartEx1.xml"]
@@ -281,7 +282,7 @@ do
         [ for _ in 1 .. 3 ->
             let watch = Diagnostics.Stopwatch.StartNew()
             let read = Charts.parseChart theme chartEx
-            if read.IsSome then failwith "a chartEx part read as a chart"
+            if not (read |> Option.exists (fun chart -> chart.Plots |> List.exists (fun plot -> match plot.Kind with Charts.UndrawnPlot "regionMap" -> true | _ -> false))) then failwith "a map read as something else than a placeholder"
             watch.Elapsed.TotalMilliseconds ]
         |> List.min
     ok "a chartEx part of 8 MB is not read to say what it is" (chartEx.Length > 8000000 && best < 10.0) (sprintf "%d characters, %.1f ms" chartEx.Length best)

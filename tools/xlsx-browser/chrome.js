@@ -1747,7 +1747,12 @@ checks['charts-in-grid'] = async () => {
                 const away = grid.GetChartLayouts();
                 grid.SwitchSheet(index); await frame();
                 // (Every sheet was shown: a pivot chart draws the points its cache has, not the pivot table's grand total.)
-                check('no chart has a "Grand Total" among its points, its source sheet shown or not', drawn().flatMap((node) => [...node.querySelectorAll('svg text')].map((text) => text.textContent)).filter((text) => text === 'Grand Total'), []);
+                // (A waterfall has the grand total as its total point, as in Excel: told by the lines that join its bars.
+                // Each chart is a clipped group of the drawing's SVG, the innermost, or the SVG itself.)
+                const charts = drawn().flatMap((node) => { const groups = [...node.querySelectorAll('svg g[clip-path]')].filter((group) => !group.querySelector('g[clip-path]')); return groups.length ? groups : [...node.querySelectorAll('svg')].slice(0, 1); });
+                const textsOf = (chart) => [...chart.querySelectorAll('text')].map((text) => text.textContent);
+                const isWaterfall = (chart) => chart.querySelector('line[stroke="#A6A6A6"]') !== null;
+                check('no chart has a "Grand Total" among its points, its source sheet shown or not', charts.filter((chart) => !isWaterfall(chart)).flatMap(textsOf).filter((text) => text === 'Grand Total'), []);
                 check('shown again after another sheet: the same drawings, none laid out again', [grid.GetChartLayouts() - away, away - layouts, drawn().length === svgs.length && drawn().every((node, at) => node.innerHTML === svgs[at])], [0, 0, true]);
                 // Scrolling and an entry no object reads lay nothing out either.
                 host.querySelector('.spreadsheet-container').scrollTop = 400; await frame();
