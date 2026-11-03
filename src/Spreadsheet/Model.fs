@@ -341,6 +341,11 @@ let private treeKey (node: obj) : obj = Fable.Core.Util.jsNative
 let private treeValue (node: obj) : obj = Fable.Core.Util.jsNative
 [<Fable.Core.Emit("($0 == null)")>]
 let private isNoTree (node: obj) : bool = Fable.Core.Util.jsNative
+/// A leaf has no height of its own.
+[<Fable.Core.Emit("($0.h === undefined)")>]
+let private isTreeLeaf (node: obj) : bool = Fable.Core.Util.jsNative
+[<Fable.Core.Emit("$0.h")>]
+let private treeHeight (node: obj) : int = Fable.Core.Util.jsNative
 [<Fable.Core.Emit("new ($0.constructor)($1, $2)")>]
 let private newTreeLeaf (like: obj) (key: obj) (value: obj) : obj = Fable.Core.Util.jsNative
 [<Fable.Core.Emit("new ($0.constructor)($1, $2, $3, $4, $5)")>]
@@ -384,7 +389,74 @@ let rec private buildTree (node: obj) (leaf: obj) (keys: obj[]) (values: obj[]) 
     else
         let mid = (lo + hi + 1) >>> 1
         newTreeNode node keys.[mid] values.[mid] (buildTree node leaf keys values lo (mid - 1)) (buildTree node leaf keys values (mid + 1) hi) (balancedHeight (hi - lo + 1))
+/// A tree with each key moved and each value changed, in order (left, the node, right),
+/// its shape kept; a subtree where nothing changed is the subtree itself.
+let rec private remapTree (node: obj) (nodeShape: obj) (leafShape: obj) (moveKey: obj -> obj) (moveValue: obj -> obj -> obj) : obj =
+    if isNoTree node then node
+    elif isTreeLeaf node then
+        let key = treeKey node
+        let moved = moveKey key
+        let value = moveValue moved (treeValue node)
+        if obj.ReferenceEquals(moved, key) && obj.ReferenceEquals(value, treeValue node) then node
+        else newTreeLeaf leafShape moved value
+    else
+        let left = remapTree (treeLeft node) nodeShape leafShape moveKey moveValue
+        let key = treeKey node
+        let moved = moveKey key
+        let value = moveValue moved (treeValue node)
+        let right = remapTree (treeRight node) nodeShape leafShape moveKey moveValue
+        if obj.ReferenceEquals(moved, key) && obj.ReferenceEquals(value, treeValue node)
+           && obj.ReferenceEquals(left, treeLeft node) && obj.ReferenceEquals(right, treeRight node) then node
+        else newTreeNode nodeShape moved value left right (treeHeight node)
 #endif
+
+/// A map with each key moved by `moveKey` and each value changed by `moveValue`
+/// (given the moved key), where `moveKey` keeps the order of the keys and makes no two
+/// alike - the caller's word for it, nothing checks. Both are called once per entry,
+/// in the order of the keys. In JavaScript the map's tree keeps its shape, and the
+/// part of it where nothing changed is shared.
+let remapOrdered (moveKey: 'K -> 'K) (moveValue: 'K -> 'V -> 'V) (map: Map<'K, 'V>) : Map<'K, 'V> =
+#if FABLE_COMPILER
+    let node, leaf = treeShapes
+    let tree = mapTree (box map)
+    let remapped = remapTree tree node leaf (fun key -> box (moveKey (unbox<'K> key))) (fun key value -> box (moveValue (unbox<'K> key) (unbox<'V> value)))
+    if obj.ReferenceEquals(remapped, tree) then map
+    else unbox<Map<'K, 'V>> (mapWithTree (box map) remapped)
+#else
+    let mutable result = Map.empty
+    for KeyValue (key, value) in map do
+        let moved = moveKey key
+        result <- Map.add moved (moveValue moved value) result
+    result
+#endif
+
+/// The keys of a map from `first` on, in order, while `stillIn` holds of them (JavaScript:
+/// the subtrees before `first` are not entered).
+let keysFrom (first: 'K) (stillIn: 'K -> bool) (map: Map<'K, 'V>) : ResizeArray<'K> =
+    let found = ResizeArray<'K>()
+#if FABLE_COMPILER
+    let comparer = LanguagePrimitives.FastGenericComparer<'K>
+    let rec walk (node: obj) : bool =
+        // (False once a key past the range was met: nothing after it is wanted.)
+        if isNoTree node then true
+        else
+            let key = unbox<'K> (treeKey node)
+            let atOrAfter = comparer.Compare(key, first) >= 0
+            let goOn = if atOrAfter && not (isTreeLeaf node) then walk (treeLeft node) else true
+            if not goOn then false
+            elif atOrAfter && not (stillIn key) then false
+            else
+                if atOrAfter then found.Add key
+                if isTreeLeaf node then true else walk (treeRight node)
+    walk (mapTree (box map)) |> ignore
+#else
+    let comparer = LanguagePrimitives.FastGenericComparer<'K>
+    let mutable going = true
+    for KeyValue (key, _) in map do
+        if going && comparer.Compare(key, first) >= 0 then
+            if stillIn key then found.Add key else going <- false
+#endif
+    found
 
 /// The entries of a map in its order, read with `entryCount`, `entryKey` and
 /// `entryValue`. (In JavaScript the nodes of the map's tree; in .NET each key
@@ -3387,49 +3459,108 @@ let private moveOrderedMap (moveKey: 'K -> 'K option) (items: Map<'K, 'T>) : Map
             | None -> ()
         mapOfOrdered items movedKeys movedValues kept
 
+/// What a structure edit deletes of a map at most for it to be taken out entry by entry
+/// before the rest is moved (`remapOrdered`) rather than the map made anew.
+let private fewDeleted = 4096
+
+/// A map by row or column index (row heights, column widths, outline levels) moved by a
+/// structure edit: an insertion moves the keys in place (`remapOrdered`), as does a
+/// deletion of a few rows once they are taken out.
+let private moveIndexKeyed (isInsert: bool) (at: int) (count: int) (moveIndex: int -> int option) (items: Map<int, 'T>) : Map<int, 'T> =
+    if Map.isEmpty items then items
+    elif isInsert then remapOrdered (fun index -> if index >= at then index + count else index) (fun _ value -> value) items
+    elif count <= fewDeleted then
+        let mutable rest = items
+        for index in at .. at + count - 1 do rest <- Map.remove index rest
+        remapOrdered (fun index -> if index >= at + count then index - count else index) (fun _ value -> value) rest
+    else moveOrderedMap moveIndex items
+
+/// Where a cell moved by a structure edit goes: the address of the old map's cell that
+/// stood there when there was one (the keys are met in order: one pass), so that a long
+/// sheet's cells move with few new addresses made.
+type private CellKeyReuse(cells: Map<CellAddress, CellData>) =
+#if FABLE_COMPILER
+    // (The old map's keys in order, by a walk of its tree that is never written down.)
+    let stack = Array.zeroCreate<obj> 64
+    let mutable depth = 0
+    let mutable next = mapTree (box cells)
+    let nextKey () : CellAddress =
+        while not (isNoTree next) do
+            stack.[depth] <- next
+            depth <- depth + 1
+            next <- treeLeft next
+        if depth = 0 then Unchecked.defaultof<CellAddress>
+        else
+            depth <- depth - 1
+            let node = stack.[depth]
+            next <- treeRight node
+            unbox<CellAddress> (treeKey node)
+#else
+    let keys = (cells :> seq<System.Collections.Generic.KeyValuePair<CellAddress, CellData>>).GetEnumerator()
+    let nextKey () : CellAddress = if keys.MoveNext() then keys.Current.Key else Unchecked.defaultof<CellAddress>
+#endif
+    let mutable cursorKey = nextKey ()
+    member _.At (row: int) (col: int) : CellAddress =
+        while not (isNull (box cursorKey)) && (cursorKey.Row < row || (cursorKey.Row = row && cursorKey.Col < col)) do
+            cursorKey <- nextKey ()
+        if not (isNull (box cursorKey)) && cursorKey.Row = row && cursorKey.Col = col then cursorKey
+        else { Row = row; Col = col }
+
 /// The cells of a sheet moved by a structure edit (`moveIndex` on the rows, or on the
 /// columns), their formulas re-pointed by `adjust`; the formula cells (at their new
-/// addresses) are added to `formulaCells`. Where a cell's new address is the address
-/// another cell had, the new map takes that cell's key (both are ascending: one pass),
-/// so that a long sheet's cells move with few new addresses made.
-let private moveCellMap (onRows: bool) (moveIndex: int -> int option) (adjust: string -> string) (formulaCells: ResizeArray<CellAddress>) (cells: Map<CellAddress, CellData>) : Map<CellAddress, CellData> =
+/// addresses) are added to `formulaCells`. Rows or columns inserted, and a few rows
+/// deleted once their cells are taken out, move the cells in the map's tree as it is
+/// (`remapOrdered`: what stands before the edit is shared); otherwise the map is made
+/// anew from its moved entries in order (`mapOfOrdered`).
+let private moveCellMap (onRows: bool) (isInsert: bool) (at: int) (count: int) (moveIndex: int -> int option) (adjust: string -> string) (formulaCells: ResizeArray<CellAddress>) (cells: Map<CellAddress, CellData>) : Map<CellAddress, CellData> =
+    let moveCell (moved: CellAddress) (cellData: CellData) =
+        match cellData.Value with
+        | Formula (formula, cached) ->
+            formulaCells.Add moved
+            let adjusted = adjust formula
+            if adjusted = formula then cellData
+            else { cellData with Value = Formula (adjusted, cached) }
+        | _ -> cellData
     if Map.isEmpty cells then cells
     else
-        let entries = orderedEntries cells
-        let count = entryCount entries
-        let movedKeys = Array.zeroCreate<CellAddress> count
-        let movedValues = Array.zeroCreate<CellData> count
-        let mutable kept = 0
-        let mutable cursor = 0
-        let mutable cursorKey = entryKey<CellAddress> entries 0
-        for i in 0 .. count - 1 do
-            let addr = entryKey<CellAddress> entries i
-            match moveIndex (if onRows then addr.Row else addr.Col) with
-            | None -> ()
-            | Some index ->
-                let row = if onRows then index else addr.Row
-                let col = if onRows then addr.Col else index
-                let moved =
-                    if row = addr.Row && col = addr.Col then addr
-                    else
-                        while cursor < count && (cursorKey.Row < row || (cursorKey.Row = row && cursorKey.Col < col)) do
-                            cursor <- cursor + 1
-                            if cursor < count then cursorKey <- entryKey<CellAddress> entries cursor
-                        if cursor < count && cursorKey.Row = row && cursorKey.Col = col then cursorKey
-                        else { Row = row; Col = col }
-                let cellData = entryValue<CellData> entries i
-                let cellData =
-                    match cellData.Value with
-                    | Formula (formula, cached) ->
-                        formulaCells.Add moved
-                        let adjusted = adjust formula
-                        if adjusted = formula then cellData
-                        else { cellData with Value = Formula (adjusted, cached) }
-                    | _ -> cellData
-                movedKeys.[kept] <- moved
-                movedValues.[kept] <- cellData
-                kept <- kept + 1
-        mapOfOrdered cells movedKeys movedValues kept
+        // (A few rows deleted: their cells, taken out first.)
+        let deleted =
+            if isInsert || not onRows then null
+            else
+                let found = keysFrom { Row = at; Col = 0 } (fun addr -> addr.Row < at + count) cells
+                if found.Count <= fewDeleted then found else null
+        if isInsert || not (isNull deleted) then
+            let mutable rest = cells
+            if not (isNull deleted) then
+                for addr in deleted do rest <- Map.remove addr rest
+            let reuse = CellKeyReuse rest
+            let moveKey (addr: CellAddress) =
+                let index = if onRows then addr.Row else addr.Col
+                let moved = if isInsert then (if index >= at then index + count else index) else (if index >= at + count then index - count else index)
+                if moved = index then addr
+                elif onRows then reuse.At moved addr.Col
+                else reuse.At addr.Row moved
+            remapOrdered moveKey moveCell rest
+        else
+            let entries = orderedEntries cells
+            let total = entryCount entries
+            let movedKeys = Array.zeroCreate<CellAddress> total
+            let movedValues = Array.zeroCreate<CellData> total
+            let mutable kept = 0
+            let reuse = CellKeyReuse cells
+            for i in 0 .. total - 1 do
+                let addr = entryKey<CellAddress> entries i
+                match moveIndex (if onRows then addr.Row else addr.Col) with
+                | None -> ()
+                | Some index ->
+                    let moved =
+                        if index = (if onRows then addr.Row else addr.Col) then addr
+                        elif onRows then reuse.At index addr.Col
+                        else reuse.At addr.Row index
+                    movedKeys.[kept] <- moved
+                    movedValues.[kept] <- moveCell moved (entryValue<CellData> entries i)
+                    kept <- kept + 1
+            mapOfOrdered cells movedKeys movedValues kept
 
 /// Insert or delete rows/columns on a sheet. `targetsEditedSheet` tells which
 /// sheet qualifiers in this sheet's own formulas refer back to it (always the
@@ -3446,11 +3577,11 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
     // between entries, a deleted one takes entries out - so each moved map is
     // made from its entries in order: `mapOfOrdered`.)
     let moveAddressMap (items: Map<CellAddress, 'T>) : Map<CellAddress, 'T> = moveOrderedMap moveAddr items
-    let moveIndexMap (items: Map<int, 'T>) : Map<int, 'T> = moveOrderedMap moveIndex items
+    let moveIndexMap (items: Map<int, 'T>) : Map<int, 'T> = moveIndexKeyed isInsert at count moveIndex items
 
     // The cells (see `moveCellMap`), with their formula index.
     let formulaCells = ResizeArray<CellAddress>()
-    let cells = moveCellMap onRows moveIndex (adjustFormulaForEdit edit targetsEditedSheet) formulaCells model.Cells
+    let cells = moveCellMap onRows isInsert at count moveIndex (adjustFormulaForEdit edit targetsEditedSheet) formulaCells model.Cells
     registerFormulaIndex cells (if formulaCells.Count = 0 then Set.empty else Set.ofSeq formulaCells)
 
     // A deleted selection falls back onto the row/column that took its place.
