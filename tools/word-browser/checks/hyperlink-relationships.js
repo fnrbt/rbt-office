@@ -46,18 +46,18 @@ try {
     check('a word made bold: the paragraph is the XML it was read from, with the change (its ids, its link)', [paragraphOf(saved.xml, 'PHPWord').includes('w14:paraId="21C0B3CD" w14:textId="77777777" w:rsidR="000B6ACB"'), saved.rels === original.rels], [true, true]);
     check('a word made bold: the word is bold', /<w:b\/>(<[^>]*>)*<w:t[^>]*>\s?is\s?<\/w:t>/.test(paragraphOf(saved.xml, 'PHPWord')), true);
 
-    // A bookmark set on a word: the paragraph is written from the model.
+    // A bookmark set on a word: the paragraph is written from its source, with the bookmark (docs/save-architecture.md).
     select('PHPWord is a', 'PHPWord');
     Word.setBookmark(editor, 'mark');
     saved = await save();
-    check('written from the model: the paragraph is', [paragraphOf(saved.xml, 'PHPWord').includes('w:name="mark"'), paragraphOf(saved.xml, 'PHPWord').includes('w14:paraId')], [true, false]);
-    check('written from the model: the link refers to the relationship it had', linkIds(saved.xml), ['rId8']);
-    check('written from the model: the relationships of links are the file\'s', links(saved.rels), [['rId8', target]]);
-    check('written from the model: no relationship without a referrer', orphans(saved), []);
-    check('written from the model: no empty w:pPr', saved.xml.includes('<w:pPr/>'), false);
+    check('a bookmark set: the paragraph is the XML it was read from, with the bookmark', [paragraphOf(saved.xml, 'PHPWord').includes('w:name="mark"'), paragraphOf(saved.xml, 'PHPWord').includes('w14:paraId')], [true, true]);
+    check('a bookmark set: the link refers to the relationship it had', linkIds(saved.xml), ['rId8']);
+    check('a bookmark set: the relationships of links are the file\'s', links(saved.rels), [['rId8', target]]);
+    check('a bookmark set: no relationship without a referrer', orphans(saved), []);
+    check('a bookmark set: no empty w:pPr', saved.xml.includes('<w:pPr/>'), false);
     const again = Word.initializeCanvas(document.createElement('canvas'));
     Word.importFromDocxPackage(again, await OF.processors.forEditorPackage(new Uint8Array(await (await OF.word.writeFromEditorPackage(Word.exportDocumentPackage(editor))).arrayBuffer())));
-    check('written from the model: read again, the text', Word.getText(again) === Word.getText(editor), true);
+    check('a bookmark set: read again, the text', Word.getText(again) === Word.getText(editor), true);
     Word.dispose(again);
 
     // The link taken away: its relationship goes with it.

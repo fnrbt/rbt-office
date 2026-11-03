@@ -1702,7 +1702,11 @@ let private generateParagraphWithHyperlinksAndImagesWithPageSetup (packageSetup:
     let textRunXml (runObj: obj) =
         fieldResultParts <- []
         generateReferenceRun runObj (editorRunOfObject runObj)
-    let splice = paragraphSplicer.Splice para runs textRunXml wrapOf
+    // (What wraps a run, to compare its wrapping before and after: its tracked change and its link's target - not
+    // the link's relationship, which only the links still in the document have.)
+    let wrappingOf (runObj: obj) (inner: string) =
+        revisionWrappedRun runObj inner + (match runHyperlinkTarget runObj with Some target -> "\u0003" + target | None -> "")
+    let splice = paragraphSplicer.Splice para runs textRunXml wrappingOf
     // (A paragraph written from its source is one changed in the XML it was read from, not one of the model's.)
     if splice.IsSome then
         reportSpliced <- reportSpliced + 1
