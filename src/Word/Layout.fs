@@ -458,6 +458,8 @@ type LayoutSettings = {
     // Long trailing-space tokens need backend-specific slack: PDF/native
     // shapers track Word more closely than browser canvas for some fonts.
     LongTrailingSpaceFitSafety: float
+    /// The distance of the default tab stops (PageSetup.DefaultTabStop).
+    DefaultTabStop: float
 }
 
 let pageHeight settings = settings.PageHeight
@@ -1752,7 +1754,9 @@ let private iterWordWrapTokenRanges (text: string) (f: int -> int -> unit) =
             f start (index - start)
 
 /// Layout buffer into lines with styled runs and images.
-/// Word's default tab stops, every half inch from the margin (w:defaultTabStop 720).
+/// Word's default tab stops when the document states none: every half inch
+/// from the margin (w:defaultTabStop 720). A document's own are
+/// LayoutSettings.DefaultTabStop.
 let defaultTabStopWidth = 48.0
 
 /// The lines of a paragraph's text, in x from its left indent. The first line
@@ -2073,7 +2077,7 @@ let layoutLinesFromIndent (settings: LayoutSettings) (measureRange: TextRangeMea
         if upto > 0 then measureRange currentDisplayText currentDisplayStyle currentTextStart upto else 0.0
 
     let tabWidth runIndex currentTextStart (currentDisplayText: string) currentDisplayStyle =
-        let defaultTab = (floor ((currentX + tabOrigin) / defaultTabStopWidth) + 1.0) * defaultTabStopWidth - tabOrigin
+        let defaultTab = (floor ((currentX + tabOrigin) / settings.DefaultTabStop) + 1.0) * settings.DefaultTabStop - tabOrigin
         // (Left of a hanging indent, the indent is the next stop unless a custom one comes first.)
         let beforeHangingIndent = hanging && currentX < -0.01
         match nextTabStop currentX with
@@ -2759,7 +2763,7 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
     let availableWidth = maxWidth - indent - rightIndent - borderRight
     let firstLineStart =
         match prefixStyle with
-        | Some markerStyle -> WordLayout.Numbering.textStart measureText defaultTabStopWidth metadata indent firstLineIndent prefix markerStyle
+        | Some markerStyle -> WordLayout.Numbering.textStart measureText settings.DefaultTabStop metadata indent firstLineIndent prefix markerStyle
         | None -> firstLineIndent
     let hanging = firstLineIndent < 0.0
     let contentFontSize, contentTextStyle =

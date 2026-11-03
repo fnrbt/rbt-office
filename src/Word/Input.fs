@@ -708,6 +708,40 @@ let formatAtCaret (handler: InputHandler) (command: Doc.Document -> Doc.Document
         true
     | None -> false
 
+/// A character of a word (Ctrl+Left / Right and a double click go by them).
+let isWordChar (ch: char) = System.Char.IsLetterOrDigit ch || ch = '_' || ch = '\'' || ch = '’'
+
+/// The word a caret is inside of - a character of the word before it and
+/// one after it -, from its start to its end. None at a word's start or end,
+/// in white space, or with text selected.
+let wordAroundCaret (doc: Doc.Document) : (Doc.Position * Doc.Position) option =
+    match doc.Selection with
+    | Some selection when selection.IsCollapsed ->
+        let at = selection.Focus
+        match Doc.findParagraph doc at.BlockId with
+        | Some para ->
+            let text = TextBuffer.toString para.Buffer
+            if at.Offset > 0 && at.Offset < text.Length && isWordChar text.[at.Offset - 1] && isWordChar text.[at.Offset] then
+                let mutable first = at.Offset - 1
+                while first > 0 && isWordChar text.[first - 1] do first <- first - 1
+                let mutable last = at.Offset + 1
+                while last < text.Length && isWordChar text.[last] do last <- last + 1
+                Some ({ at with Offset = first }, { at with Offset = last })
+            else None
+        | None -> None
+    | _ -> None
+
+/// The document after a character format command, as Word gives it: on the
+/// selection; with the caret inside a word on that word (the caret stays
+/// where it was); with the caret elsewhere for the text typed next (see
+/// formatAtCaret: the document is as it was).
+let characterFormatted (handler: InputHandler) (command: Doc.Document -> Doc.Document) : Doc.Document =
+    match wordAroundCaret handler.Document with
+    | Some (first, last) ->
+        let formatted = command (Doc.setSelection first last handler.Document)
+        { formatted with Selection = handler.Document.Selection }
+    | None -> if formatAtCaret handler command then handler.Document else command handler.Document
+
 /// The style of text typed with a pending format: the format that was chosen,
 /// and of what the text is part of - a link, a comment's range, a tracked
 /// insertion - what typing there gives without one. It is not the bookmarks,
@@ -1108,8 +1142,6 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         | Some whole -> withFocus doc extend (if toEnd then whole.Focus else whole.Anchor)
         | None -> doc
 
-    let isWordChar (ch: char) = System.Char.IsLetterOrDigit ch || ch = '_' || ch = '\'' || ch = '\u2019'
-
     /// The start of the word at or after `offset` going right, or before it going left.
     let wordBoundary (text: string) (offset: int) (forward: bool) : int =
         let mutable i = max 0 (min text.Length offset)
@@ -1299,7 +1331,10 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                 | Some clip when text <> "" && normalize text = normalize clip.Text -> Some clip
                 | _ -> htmlClip html
         match clip with
-        | Some clip -> commitClipboardEdit "Paste" (Doc.pasteClip clip handler.Document)
+        | Some clip ->
+            // (A text box holds paragraphs only: a table's rows are pasted as paragraphs.)
+            let clip = match handler.Story with Some session when session.Box.IsSome -> Doc.clipWithoutTables clip | _ -> clip
+            commitClipboardEdit "Paste" (Doc.pasteClip clip handler.Document)
         | None -> pasteText text
     handler.PasteClipboard <- pasteClipboard
     handler.CopyToClipboard <- copyToClipboard
@@ -1368,7 +1403,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
     /// The document and the history with it, when the document changed.
     let characterFormatStep (description: string) (command: Doc.Document -> Doc.Document) : (Doc.Document * CommandHistory) option =
         let beforeDoc = handler.Document
-        let afterDoc = if formatAtCaret handler command then handler.Document else command handler.Document
+        let afterDoc = characterFormatted handler command
         if documentsEqualForChange afterDoc beforeDoc then None
         else Some (Cmd.execute (FormatTextCommand(beforeDoc, afterDoc, description) :> ICommand) beforeDoc handler.History)
 
@@ -1473,8 +1508,8 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             e.preventDefault()
         | key when commandKey && keyEquals 'b' key ->
             let beforeDoc = handler.Document
-            // (With nothing selected: for what is typed next.)
-            let afterDoc = if formatAtCaret handler WordStyles.toggleBold then handler.Document else WordStyles.toggleBold handler.Document
+            // (With nothing selected: the word the caret is in, or what is typed next.)
+            let afterDoc = characterFormatted handler WordStyles.toggleBold
             if not (documentsEqualForChange afterDoc beforeDoc) then
                 let cmd = FormatTextCommand(beforeDoc, afterDoc, "bold") :> ICommand
                 let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
@@ -1484,8 +1519,8 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             e.preventDefault()
         | key when commandKey && keyEquals 'i' key ->
             let beforeDoc = handler.Document
-            // (With nothing selected: for what is typed next.)
-            let afterDoc = if formatAtCaret handler WordStyles.toggleItalic then handler.Document else WordStyles.toggleItalic handler.Document
+            // (With nothing selected: the word the caret is in, or what is typed next.)
+            let afterDoc = characterFormatted handler WordStyles.toggleItalic
             if not (documentsEqualForChange afterDoc beforeDoc) then
                 let cmd = FormatTextCommand(beforeDoc, afterDoc, "italic") :> ICommand
                 let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
@@ -1495,8 +1530,8 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             e.preventDefault()
         | key when commandKey && keyEquals 'u' key ->
             let beforeDoc = handler.Document
-            // (With nothing selected: for what is typed next.)
-            let afterDoc = if formatAtCaret handler WordStyles.toggleUnderline then handler.Document else WordStyles.toggleUnderline handler.Document
+            // (With nothing selected: the word the caret is in, or what is typed next.)
+            let afterDoc = characterFormatted handler WordStyles.toggleUnderline
             if not (documentsEqualForChange afterDoc beforeDoc) then
                 let cmd = FormatTextCommand(beforeDoc, afterDoc, "underline") :> ICommand
                 let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
@@ -1512,6 +1547,18 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             e.preventDefault()
         | "3" when commandKey ->
             newDoc <- Doc.setHeadingLevel 3 handler.Document
+            e.preventDefault()
+        | "F3" when shift && not commandKey && not ke.altKey ->
+            // Shift+F3: Change Case of the selection or the word at the caret.
+            newDoc <- Doc.changeCase handler.Document
+            e.preventDefault()
+        | key when commandKey && shift && not ke.altKey && keyEquals 'l' key ->
+            // Ctrl+Shift+L: a bulleted list (Word's List Bullet).
+            newDoc <- Doc.applyBulletList handler.Document
+            e.preventDefault()
+        | key when commandKey && shift && not ke.altKey && keyEquals 'n' key ->
+            // Ctrl+Shift+N: the Normal style.
+            newDoc <- Doc.setNormalStyle handler.Document
             e.preventDefault()
         | key when commandKey && not ke.altKey && not shift && (keyEquals 'e' key || keyEquals 'l' key || keyEquals 'r' key || keyEquals 'j' key) ->
             // Word's alignment keys: Ctrl+E centre, Ctrl+L left, Ctrl+R right, Ctrl+J justify.
@@ -2311,6 +2358,7 @@ let applyEdit _ _ _ = ()
 let pendingFormat _ = None
 let pendingProbe _ = None
 let formatAtCaret _ _ = false
+let characterFormatted _ command doc = command doc
 let withPendingFormat _ _ after = after
 let applyEditAtStoryPlace _ _ _ _ _ = ()
 let enterTextBox _ _ _ = false

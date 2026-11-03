@@ -423,6 +423,7 @@ module Vba =
         InTableCell = false
         TableContinuationHeaderHeight = 0.0
         LongTrailingSpaceFitSafety = 0.0
+        DefaultTabStop = doc.PageSetup.DefaultTabStop
     }
 
     let private measureText (text: string) (style: TextBuf.TextStyle) =

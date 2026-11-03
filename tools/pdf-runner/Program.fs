@@ -157,6 +157,7 @@ let private pdfLayoutSettings (doc: Doc.Document) : WordLayout.LayoutSettings =
         InTableCell = false
         TableContinuationHeaderHeight = 0.0
         LongTrailingSpaceFitSafety = 0.25
+        DefaultTabStop = doc.PageSetup.DefaultTabStop
     }
 
 let private pageMapFromLayouts (doc: Doc.Document) (pages: WordLayout.PageInfo list) (layouts: WordLayout.BlockLayout list) : Doc.PageMap =

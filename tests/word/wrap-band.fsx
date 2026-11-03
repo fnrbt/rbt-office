@@ -36,7 +36,7 @@ let measureRange = Layout.rangeMeasurerFromTextMeasurer measureText
 let settingsOf (doc: Doc.Document) : Layout.LayoutSettings =
     let s = doc.PageSetup
     { Width = s.PageWidth; PageHeight = s.PageHeight; FontSize = 16.0; LineHeight = 24.0; PaddingLeft = s.MarginLeft; PaddingTop = s.MarginTop
-      MarginRight = s.MarginRight; MarginBottom = s.MarginBottom; InTableCell = false; TableContinuationHeaderHeight = 0.0; LongTrailingSpaceFitSafety = 3.5 }
+      MarginRight = s.MarginRight; MarginBottom = s.MarginBottom; InTableCell = false; TableContinuationHeaderHeight = 0.0; LongTrailingSpaceFitSafety = 3.5; DefaultTabStop = s.DefaultTabStop }
 
 /// The text of each line with where it starts and ends across the text area and where it is down the page.
 let textLines (doc: Doc.Document) =

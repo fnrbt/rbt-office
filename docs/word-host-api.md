@@ -459,7 +459,7 @@ Ctrl+C / Ctrl+X do.
 | `replaceAllText(editor, query: string, replacement: string, matchCase: boolean)` | Replace every occurrence of `query` with `replacement` (literal text; `matchCase`), as one undo step; returns how many were replaced. |
 | `insertText(editor, text: string)` | Insert text at cursor. |
 | `pasteText(editor, text: string): void` | Put plain text in at the caret, or over the selection, as Ctrl+V does with the clipboard's text (a host that reads the clipboard itself, or pastes from a menu, calls this): the lines of the text are paragraphs, the whole is one undo step, and with nothing selected the text has the format chosen at the caret for what is typed ... |
-| `pasteClipboard(editor, text: string, html: string): void` | Paste what a host read from the clipboard (either may be empty or null), as Ctrl+V does: what the last copy kept, with its formatting, while `text` is its text; else the HTML with its formatting; else the text as `pasteText` puts it. One undo step. |
+| `pasteClipboard(editor, text: string, html: string): void` | Paste what a host read from the clipboard (either may be empty or null), as Ctrl+V does: what the last copy kept, with its formatting, while `text` is its text; else the HTML with its formatting (tables as tables between paragraphs; in a table cell or a text box their rows as paragraphs, the cells parted by tabs); else the text as `pasteText` puts it. One undo step. |
 | `copySelection(editor): { Text, Html } \| null` | Copy the selection as Ctrl+C does: the text and the HTML to write to the clipboard; kept for a paste. Null with nothing selected. |
 | `cutSelection(editor): { Text, Html } \| null` | `copySelection`, and the selection deleted (one undo step). |
 

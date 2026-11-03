@@ -591,6 +591,9 @@ type PageSetup = {
     FooterDistance: float option
     DifferentFirstPage: bool option
     EvenAndOddHeaders: bool option
+    /// w:defaultTabStop of the settings part, in pixels: the distance of the
+    /// default tab stops (Word's 720 twips when the part says none).
+    DefaultTabStop: float option
     Columns: SectionColumns option
     SectionStart: string option   // body sectPr w:type (e.g. "continuous")
     /// Header / footer references and page number start of the body-level
@@ -3707,7 +3710,17 @@ let private parseSettings (xml: string option) =
         | None -> false)
     |> Option.defaultValue false
 
-let private parsePageSetup evenAndOddHeaders (sectPr: XmlNode option) : PageSetup option =
+/// w:defaultTabStop of the settings part, in pixels; None when it says none
+/// (or none above zero).
+let private parseDefaultTabStop (xml: string option) =
+    xml
+    |> Option.map XmlDsl.parse
+    |> Option.bind (fun settings -> Ns.descendantsNs "defaultTabStop" settings |> List.tryHead)
+    |> Option.bind (Docx.attr "val")
+    |> wordTwipsToPixels
+    |> Option.filter (fun width -> width > 0.0)
+
+let private parsePageSetup evenAndOddHeaders defaultTabStop (sectPr: XmlNode option) : PageSetup option =
     sectPr
     |> Option.map (fun section ->
         let pgSz = Ns.childNs "pgSz" section
@@ -3724,6 +3737,7 @@ let private parsePageSetup evenAndOddHeaders (sectPr: XmlNode option) : PageSetu
             FooterDistance = pgMar |> Option.bind (Docx.attr "footer") |> wordTwipsToPixels
             DifferentFirstPage = Some (Docx.onOff "titlePg" section |> Option.defaultValue false)
             EvenAndOddHeaders = Some evenAndOddHeaders
+            DefaultTabStop = defaultTabStop
             Columns = columns
             SectionStart = Docx.getPropVal "type" "val" section
             HeaderReferences = Docx.headerFooterReferences "headerReference" section
@@ -3935,6 +3949,8 @@ type private MainPart = {
     Theme: Theme option
     NumberingDefinitions: NumberingDefinition list
     EvenAndOddHeaders: bool
+    /// See PageSetup.DefaultTabStop.
+    DefaultTabStop: float option
     Properties: DocumentProperties option
 }
 
@@ -4002,6 +4018,7 @@ let private readMainPart (source: PartSource) : MainPart option =
           Theme = themeXml |> Option.map Theme.parseTheme
           NumberingDefinitions = numberingXml |> Option.map Numbering.parseNumbering |> Option.defaultValue []
           EvenAndOddHeaders = parseSettings settingsXml
+          DefaultTabStop = parseDefaultTabStop settingsXml
           Properties = propsXml |> Option.map Properties.parseProperties })
 
 /// The headers, the footers, the notes and the comments. `headerRefTypes` /
@@ -4233,7 +4250,7 @@ let parseFromSource (source: PartSource) : WordDocument option =
         let pageSetup =
             body
             |> Option.bind (Ns.childNs "sectPr")
-            |> parsePageSetup main.EvenAndOddHeaders
+            |> parsePageSetup main.EvenAndOddHeaders main.DefaultTabStop
 
         let revisions = Revisions.parseRevisionsWhere docHolds doc
         let shapes =
@@ -4503,7 +4520,7 @@ let openProgressiveFromSource (keepContent: bool) (source: PartSource) : Progres
         let finalSetup =
             cursorAndFinal
             |> Option.bind (fun (cursor, (start, node)) ->
-                try Some (cursor, start, parsePageSetup main.EvenAndOddHeaders (Some node))
+                try Some (cursor, start, parsePageSetup main.EvenAndOddHeaders main.DefaultTabStop (Some node))
                 with _ -> None)
         match finalSetup with
         | None -> parseFromSource source |> Option.map wholeReader
@@ -4536,7 +4553,7 @@ let openProgressiveFromSource (keepContent: bool) (source: PartSource) : Progres
                     else
                         openSectionAt <- at
                         openSectionSetup <-
-                            (try parsePageSetup main.EvenAndOddHeaders (Some (parseElement cursor at))
+                            (try parsePageSetup main.EvenAndOddHeaders main.DefaultTabStop (Some (parseElement cursor at))
                              with _ -> finalPageSetup)
                 openSectionSetup
             let mutable made = 0
@@ -4693,7 +4710,7 @@ let openProgressiveFromSource (keepContent: bool) (source: PartSource) : Progres
                     // body that has more than one.)
                     let pageSetup =
                         if firstSectionProperties >= 0 && firstSectionProperties <> finalStart then
-                            parsePageSetup main.EvenAndOddHeaders (Some (parseElement cursor firstSectionProperties))
+                            parsePageSetup main.EvenAndOddHeaders main.DefaultTabStop (Some (parseElement cursor firstSectionProperties))
                         else finalPageSetup
                     let doc =
                         assembleDocument main stories (List.ofSeq allContent) (List.ofSeq allShapes) pageSetup
@@ -6693,6 +6710,7 @@ let toEditorPageSetup (doc: WordDocument) : obj =
             "FooterDistance" ==> setup.FooterDistance
             "DifferentFirstPage" ==> setup.DifferentFirstPage
             "EvenAndOddHeaders" ==> setup.EvenAndOddHeaders
+            "DefaultTabStop" ==> setup.DefaultTabStop
             "ColumnCount" ==> (setup.Columns |> Option.map (fun c -> c.Count) |> Option.defaultValue 1)
             "ColumnSpace" ==> (setup.Columns |> Option.map (fun c -> c.Gap) |> Option.defaultValue 0.0)
             "ColumnSeparator" ==> (setup.Columns |> Option.map (fun c -> c.Separator) |> Option.defaultValue false)

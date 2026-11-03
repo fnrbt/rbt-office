@@ -208,6 +208,7 @@ let private layoutSettings width (doc: Document) : WordLayout.LayoutSettings =
         InTableCell = false
         TableContinuationHeaderHeight = 0.0
         LongTrailingSpaceFitSafety = 0.25
+        DefaultTabStop = doc.PageSetup.DefaultTabStop * scale
     }
 
 let hitTest width doc x y =

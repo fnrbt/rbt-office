@@ -91,6 +91,33 @@ try {
         Word.dispose(editor);
     }
 
+    // ---- a run of Backspaces across a paragraph mark or a bullet is one step ----
+    {
+        const editor = Word.initialize('c');
+        const proxy = Word.getInputElement(editor);
+        canvas.focus();
+        const text = () => Word.getText(editor);
+        Word.setParagraphs(editor, ['ab', 'cd']);
+        let ids = [...new Set(Word.getLayoutLines(editor).map((line) => line.BlockId))];
+        Word.setSelection(editor, ids[1], 2, ids[1], 2);
+        for (let i = 0; i < 4; i++) key(proxy, 'Backspace');
+        check('Backspaces over a paragraph mark', text(), 'a');
+        check('... one undo step with the characters', [Word.undo(editor), text(), Word.canUndo(editor)], [true, 'ab\ncd', false]);
+        check('... redone as one', [Word.redo(editor), text()], [true, 'a']);
+        Word.undo(editor);
+        Word.setSelection(editor, ids[1], 0, ids[1], 0);
+        Word.toggleBulletList(editor);
+        Word.setSelection(editor, ids[1], 2, ids[1], 2);
+        const list = () => Word.getSelectionFormat(editor).Paragraph.ListKind;
+        key(proxy, 'Backspace'); key(proxy, 'Backspace'); key(proxy, 'Backspace');
+        check('Backspaces to the start of a list item, then the bullet taken off', [text(), list()], ['ab\n', 'none']);
+        key(proxy, 'Backspace');
+        check('... and the paragraphs joined', text(), 'ab');
+        check('... all one undo step', [Word.undo(editor), text(), (Word.setSelection(editor, ids[1], 0, ids[1], 0), list())], [true, 'ab\ncd', 'bullet']);
+        check('... the step before it is the bullet', [Word.undo(editor), list()], [true, 'none']);
+        Word.dispose(editor);
+    }
+
     // ---- copy, cut and paste with formatting ----
     {
         const editor = Word.initialize('c');
@@ -128,6 +155,23 @@ try {
         check('... its bold text', boldIn(blockOf('x Big'), 2, 5), true);
         Word.setSelection(editor, blockOf('item'), 1, blockOf('item'), 1);
         check('... its list', Word.getSelectionFormat(editor).Paragraph.ListKind, 'bullet');
+        check('... one undo step', [Word.undo(editor), text()], [true, 'Hello bold world\nSecond\n']);
+        // A table of another program is a table.
+        Word.setSelection(editor, ids[0], 5, ids[0], 5);
+        paste('x\na\tb\nc\td\ny', '<html><body><!--StartFragment--><p>x</p><table border="1"><tbody><tr><td>a</td><td><b>b</b></td></tr><tr><td>c</td><td><p>d</p><p>d2</p></td></tr></tbody></table><p>y</p><!--EndFragment--></body></html>');
+        const cellOf = (start) => { Word.setSelection(editor, blockOf(start), 0, blockOf(start), 0); const at = Word.getCaretContext(editor); return [at.InTable, at.Row, at.Column, at.RowCount, at.ColumnCount]; };
+        check('HTML table: a table, its cells', [cellOf('a'), cellOf('b'), cellOf('c'), cellOf('d2')], [[true, 0, 0, 2, 2], [true, 0, 1, 2, 2], [true, 1, 0, 2, 2], [true, 1, 1, 2, 2]]);
+        check('... no tabs in its text', Word.getLayoutLines(editor).some((line) => (line.Text ?? '').includes('\t')), false);
+        check('... the text before and after it', [cellOf('Hellox')[0], cellOf('y bold')[0]], [false, false]);
+        check('... the formatting of its cells', boldIn(blockOf('b'), 0, 1), true);
+        const savedTable = await (await OF.word.writeFromEditorPackage(Word.exportDocumentPackage(editor))).arrayBuffer();
+        const tableXml = await (await window.JSZip.loadAsync(savedTable)).file('word/document.xml').async('string');
+        check('... saved as a table of two rows', [tableXml.split('<w:tbl>').length - 1, tableXml.split('<w:tr>').length - 1 + tableXml.split('<w:tr ').length - 1], [1, 2]);
+        // Pasted into a cell of a table: its rows are paragraphs, the cells parted by tabs.
+        Word.setSelection(editor, blockOf('c'), 1, blockOf('c'), 1);
+        paste('m\tn', '<table><tr><td>m</td><td>n</td></tr></table>');
+        check('a table pasted into a cell: its text, the cells parted by a tab', [Word.getLayoutLines(editor).some((line) => line.Text === 'cm\tn'), cellOf('cm')[0]], [true, true]);
+        Word.undo(editor);
         check('... one undo step', [Word.undo(editor), text()], [true, 'Hello bold world\nSecond\n']);
         // Cut.
         Word.setSelection(editor, ids[0], 0, ids[0], 6);
@@ -198,6 +242,45 @@ try {
         type(proxy, 'X');
         select(14, 15);
         check('at a caret: the size of what is typed next', format().FontSizePt, 12);
+        Word.dispose(editor);
+    }
+
+    // ---- Shift+F3, Ctrl+Shift+L, Ctrl+Shift+N ----
+    {
+        const editor = Word.initialize('c');
+        Word.setParagraphs(editor, ['the quick fox', 'Second']);
+        const ids = [...new Set(Word.getLayoutLines(editor).map((line) => line.BlockId))];
+        const proxy = Word.getInputElement(editor);
+        canvas.focus();
+        const select = (from, to, block = 0) => Word.setSelection(editor, ids[block], from, ids[block], to);
+        const first = () => Word.getText(editor).split('\n')[0];
+        const format = () => Word.getSelectionFormat(editor);
+        select(4, 9);
+        Word.toggleBold(editor);
+        select(0, 13);
+        const cycle = [];
+        for (let i = 0; i < 3; i++) { key(proxy, 'F3', { shiftKey: true }); cycle.push(first()); }
+        check('Shift+F3 on a selection: Each Word, UPPER, lower (taken)', cycle, ['The Quick Fox', 'THE QUICK FOX', 'the quick fox']);
+        const sel = Word.getSelection(editor);
+        check('... the selection stays, the formatting too', [sel.AnchorOffset, sel.FocusOffset, (select(4, 9), format().Bold), (select(0, 3), format().Bold)], [0, 13, true, false]);
+        check('... one undo step each', [Word.undo(editor), first(), Word.undo(editor), first()], [true, 'THE QUICK FOX', true, 'The Quick Fox']);
+        Word.undo(editor);
+        select(6, 6);
+        key(proxy, 'F3', { shiftKey: true });
+        check('with a caret: the word at it', [first(), Word.getSelection(editor).FocusOffset, Word.getSelection(editor).IsCollapsed], ['the Quick fox', 6, true]);
+        key(proxy, 'F3', { shiftKey: true });
+        check('... again: upper case', first(), 'the QUICK fox');
+        select(0, 0, 1);
+        check('Ctrl+Shift+L: a bulleted list (taken)', [key(proxy, 'L', { ctrlKey: true, shiftKey: true }), format().Paragraph.ListKind], [true, 'bullet']);
+        key(proxy, 'L', { ctrlKey: true, shiftKey: true });
+        check('... twice: still one', format().Paragraph.ListKind, 'bullet');
+        check('... the alignment is as it was', format().Paragraph.Alignment, 'left');
+        key(proxy, '1', { ctrlKey: true });
+        check('a heading', format().Paragraph.HeadingLevel, 1);
+        check('Ctrl+Shift+N: the Normal style (taken)', [key(proxy, 'N', { ctrlKey: true, shiftKey: true }), format().Paragraph.HeadingLevel ?? 0], [true, 0]);
+        Word.setParagraphStyle(editor, 'Quote');
+        key(proxy, 'N', { ctrlKey: true, shiftKey: true });
+        check('... a named style taken off', format().Paragraph.StyleId ?? null, null);
         Word.dispose(editor);
     }
 } catch (e) { fail(e); }

@@ -173,6 +173,29 @@ check "html in: Word's list paragraphs, without their numbers"
     (wordClip.Paragraphs |> List.map (fun p -> TB.toString p.Buffer, p.Metadata.ListStyle, p.Metadata.ListLevel)) [ "First", Doc.Numbered, 1; "Dot", Doc.Bullet, 2 ]
 let htmlPasted = docOf [ Doc.Paragraph (paragraph "h" "[]") ] |> caret "h" 1 |> Doc.pasteClip (fromHtml [ el "p" [] [ el "b" [] [ txt "x" ] ]; el "p" [] [ txt "y" ] ])
 check "html in: pasted" (texts htmlPasted) [ "[x"; "y]" ]
+let tableHtml =
+    [ el "p" [] [ txt "x" ]
+      el "table" [] [ el "tbody" [] [ el "tr" [] [ el "th" [] [ txt "h1" ]; txt "\n"; el "th" [] [ txt "h2" ] ]
+                                      el "tr" [] [ el "td" [ "style", "text-align:right" ] [ txt "a" ]; el "td" [] [ el "p" [] [ txt "b1" ]; el "p" [] [ txt "b2" ] ] ] ] ]
+      el "p" [] [ txt "y" ] ]
+let tableClip = fromHtml tableHtml
+check "html in: a table is one piece, its rows and cells"
+    (tableClip.Paragraphs |> List.map (fun p -> TB.toString p.Buffer, p.TableRows |> List.map (List.map (List.map (fun c -> TB.toString c.Buffer)))))
+    [ "x", []; "", [ [ [ "h1" ]; [ "h2" ] ]; [ [ "a" ]; [ "b1"; "b2" ] ] ]; "y", [] ]
+check "html in: a table's text, cells parted by tabs" tableClip.Text "x\nh1\th2\na\tb1 b2\ny"
+let tableCell row column = tableClip.Paragraphs.[1].TableRows.[row].[column]
+check "html in: header cells bold, a cell's alignment" ((TB.getStyleAt 0 (tableCell 0 0).[0].Buffer).Bold, (tableCell 1 0).[0].Metadata.Alignment) (true, Doc.Right)
+let tablePasted = docOf [ Doc.Paragraph (paragraph "t" "[]") ] |> caret "t" 1 |> Doc.pasteClip tableClip
+let blockShapes (doc: Doc.Document) =
+    doc.Blocks |> List.map (function
+        | Doc.Table table -> sprintf "table %dx%d %s" table.Rows.Length table.Rows.Head.Cells.Length (table.Rows |> List.collect (fun row -> row.Cells |> List.map (fun cell -> cell.Content |> List.map (fun p -> TB.toString p.Buffer) |> String.concat "+")) |> String.concat ",")
+        | Doc.Paragraph p | Doc.Heading (_, p) -> TB.toString p.Buffer
+        | _ -> "?")
+check "html in: a table pasted between the paragraphs it splits" (blockShapes tablePasted) [ "[x"; "table 2x2 h1,h2,a,b1+b2"; "y]" ]
+let tableFirst = docOf [ Doc.Paragraph (paragraph "u" "ab") ] |> caret "u" 1 |> Doc.pasteClip (fromHtml [ el "table" [] [ el "tr" [] [ el "td" [] [ txt "c" ] ] ] ])
+check "html in: a table alone, the caret mid-paragraph: before the paragraph's second part" (blockShapes tableFirst) [ "a"; "table 1x1 c"; "b" ]
+let inCell = cellDoc |> caret "cell" 1 |> Doc.pasteClip (fromHtml [ el "table" [] [ el "tr" [] [ el "td" [] [ txt "m" ]; el "td" [] [ txt "n" ] ] ] ])
+check "html in: a table pasted in a table cell: a row of text parted by tabs" (inCell.Blocks.Length, Doc.allParagraphs inCell |> List.exists (fun p -> (TB.toString p.Buffer).Contains "m\tn")) (cellDoc.Blocks.Length, true)
 
 // ---- Word's keys for character and paragraph formatting ----
 check "grow font: Word's size steps" ([ 8.0; 10.0; 10.5; 11.0; 28.0; 72.0; 75.0; 1638.0 ] |> List.map (Doc.nextFontSizePoints true true)) [ 9.0; 10.5; 11.0; 12.0; 36.0; 80.0; 80.0; 1638.0 ]

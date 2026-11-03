@@ -41,7 +41,8 @@ try {
     const typed = async (count) => {
         const editor = await open();
         const match = Word.findText(editor, 'Demonstration of DOCX', true)[0];
-        Word.setSelection(editor, match.BlockId, 4, match.BlockId, 4);
+        // (At the end of a word, in the middle of the run: inside a word Bold is the word's.)
+        Word.setSelection(editor, match.BlockId, 13, match.BlockId, 13);
         Word.toggleBold(editor);
         for (let index = 0; index < count; index++) Word.insertText(editor, 'Q');
         return { editor, id: match.BlockId };
@@ -52,7 +53,7 @@ try {
         const result = await saved(editor, false);
         const title = titleOf(result.xml);
         const runs = result.pkg.Paragraphs[0].Runs.map((run) => [run.Text, run.Bold]);
-        check(`bold chosen at the caret, ${count} typed: the typed characters are one bold run`, runs, [['Demo', false], [text, true], ['nstration of DOCX support in calibre', false]]);
+        check(`bold chosen at the caret, ${count} typed: the typed characters are one bold run`, runs, [['Demonstration', false], [text, true], [' of DOCX support in calibre', false]]);
         check(`${count} typed: the paragraph is changed in the XML it was read from`, [result.report.PatchedParagraphs, result.report.GeneratedParagraphs, result.report.ModelBlocks, result.report.Reasons], [1, 0, 0, []]);
         check(`${count} typed: its bookmarks, once each, its outline level and its rsids are there; the document's ranges are balanced`,
             [names(title), (title.match(/<w:bookmarkEnd /g) ?? []).length, /<w:outlineLvl w:val="0"\/>/.test(title), /w:rsidR="00332BA2"/.test(title), ranges(result.xml), names(result.xml).length],

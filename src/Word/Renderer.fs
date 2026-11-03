@@ -430,6 +430,7 @@ let layoutSettingsFor (fontSize: float) (lineHeight: float) (doc: Document) =
     InTableCell = false
     TableContinuationHeaderHeight = 0.0
     LongTrailingSpaceFitSafety = 3.5
+    DefaultTabStop = doc.PageSetup.DefaultTabStop
     }
 
 let layoutSettings (ctx: RenderContext) (doc: Document) =
