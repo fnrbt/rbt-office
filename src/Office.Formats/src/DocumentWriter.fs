@@ -3160,7 +3160,12 @@ let private splicedRuns (source: SpliceSource) (original: obj) (leading: bool) (
                      match originalRuns.TryGetValue at with
                      | true, list when list.Count = 1 -> Some list.[0]
                      | true, list when sameText -> Some list.[0]
+                     // (A run the model held as several of one format - a tab, text, a break - split: each part the
+                     // run with the change of format made in it, and the model's content.)
+                     | true, list when (alike list).Length = 1 -> Some list.[0]
                      | _ -> None
+                 // (Whether the run is one of several the model held it as, and is not all of them now.)
+                 let ofSeveral = not sameText && (match originalRuns.TryGetValue at with | true, list -> list.Count > 1 | _ -> false)
                  ignore alone
                  let wrappedAsBefore =
                      match originalRuns.TryGetValue at with
@@ -3213,7 +3218,7 @@ let private splicedRuns (source: SpliceSource) (original: obj) (leading: bool) (
                          yield place, wrap inner
                  | Some _ when not (isNullOrUndefined (runObj?FieldCode)) -> yield place, wrap inner
                  // As it was read in every respect: its bytes.
-                 | Some model when jsonText model = jsonText runObj -> yield place, wrap (XmlPatch.bytesOf text run)
+                 | Some model when jsonText model = jsonText runObj && not ofSeveral -> yield place, wrap (XmlPatch.bytesOf text run)
                  // Changed in its formatting, its text, or both: the run as it was read with what the model changed
                  // made in it (XmlPatch): its properties merged (see mergedProperties), its text set in its w:t.
                  // Where its children are not of the same names in the same order the model's are written in it.
@@ -3227,7 +3232,9 @@ let private splicedRuns (source: SpliceSource) (original: obj) (leading: bool) (
                          let content =
                              if sameText then []
                              else XmlPatch.diff before after |> List.filter (fun edit -> let child = XmlPatch.childOf edit in child <> "" && child <> "w:rPr")
-                         if content |> List.exists (function XmlPatch.SetChildren _ -> true | _ -> false) then
+                         // (Content of its own - not the run's as it was - where the run's text changed in a way edits do not
+                         // say, or the run is one of several the model held it as: its part of the content is the model's.)
+                         if ofSeveral || content |> List.exists (function XmlPatch.SetChildren _ -> true | _ -> false) then
                              let runSpan = match run with XmlDsl.Element (_, _, _, sp) -> sp | _ -> XmlDsl.Span.none
                              let modelContent = XmlPatch.childrenBytes after (fun name -> name <> "rPr")
                              if runSpan.StartTagEnd < runSpan.End then

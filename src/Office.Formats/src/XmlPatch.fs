@@ -349,8 +349,9 @@ and private diffNodes (wasText: string) (wasNode: XmlNode) (nowText: string) (no
     let attributeEdits =
         [ for KeyValue (name, value) in nowAttrs do
               if Map.tryFind name wasAttrs <> Some value then yield SetAttribute (name, value)
+          // (A text's xml:space="preserve" is never wrong to keep: the model writes it only where its text needs it.)
           for KeyValue (name, _) in wasAttrs do
-              if not (nowAttrs.ContainsKey name) then yield RemoveAttribute name ]
+              if not (nowAttrs.ContainsKey name) && name <> "xml:space" then yield RemoveAttribute name ]
     let wasKids, nowKids = elementChildren wasNode, elementChildren nowNode
     // (Whether the children are of the same names in the same order: each can be changed in its place.)
     let sameOrder = (wasKids |> List.map nameOf) = (nowKids |> List.map nameOf)
