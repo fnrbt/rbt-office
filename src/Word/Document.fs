@@ -1862,6 +1862,22 @@ let private editContainerOf (doc: Document) (paragraphId: string) (edit: Paragra
         if not changed then None
         else Some { doc with Blocks = doc.Blocks |> List.mapi (fun i b -> if i = index then edited else b) }
 
+/// The properties of the first part of a paragraph that is split: what stands
+/// at the paragraph's end - the end of its section (Word keeps it in the
+/// paragraph mark), a page or column break after its text - goes with the
+/// second part, which ends where the paragraph ended. (Both parts had them:
+/// Enter in the last paragraph of a section made a section of each part, and
+/// Enter before a break a second break.)
+let private withoutParagraphEnd (metadata: BlockMetadata) : BlockMetadata =
+    if metadata.SectionBreak.IsNone && metadata.SectionPageSetup.IsNone && not metadata.PageBreakAfter && not metadata.ColumnBreakAfter
+       && metadata.HeaderReferences.IsEmpty && metadata.FooterReferences.IsEmpty then metadata
+    else
+        { metadata with
+            PageBreakAfter = false; ColumnBreakAfter = false
+            SectionBreak = None; SectionColumns = None; SectionPageSetup = None; SectionPageNumberStart = None
+            SectionPageNumberFormat = None; SectionVerticalAlign = None
+            HeaderReferences = []; FooterReferences = [] }
+
 /// Split block at cursor, creating two blocks
 let splitBlock doc =
     match doc.Selection with
@@ -1879,7 +1895,7 @@ let splitBlock doc =
                 let afterBuffer = TextBuffer.sliceBuffer offset (TextBuffer.length para.Buffer - offset) para.Buffer
                 let newBlockId = nextBlockId()
                 let newPara = { Id = newBlockId; Buffer = afterBuffer; Metadata = para.Metadata }
-                let updatedPara = { para with Buffer = beforeBuffer }
+                let updatedPara = { para with Buffer = beforeBuffer; Metadata = withoutParagraphEnd para.Metadata }
                 let split =
                     editContainerOf doc para.Id (fun content anchors ->
                         let index = content |> List.findIndex (fun p -> p.Id = para.Id)
@@ -1911,7 +1927,7 @@ let splitBlock doc =
                 | TextBox t -> TextBox t
 
             // Update first block with before text (keep existing metadata)
-            let updatedPara = { para with Buffer = beforeBuffer }
+            let updatedPara = { para with Buffer = beforeBuffer; Metadata = withoutParagraphEnd para.Metadata }
             let updatedBlock =
                 match block with
                 | Paragraph _ -> Paragraph updatedPara
@@ -2578,8 +2594,15 @@ let deleteBackward doc =
         // Delete selection if active
         deleteSelection doc
     | Some sel when sel.Focus.Offset = 0 ->
-        // At start of block, merge with previous
-        mergeWithPrevious doc sel.Focus.BlockId
+        match findParagraph doc sel.Focus.BlockId with
+        | Some para when para.Metadata.ListStyle <> NoList ->
+            // At the start of a list item, as in Word: its number or bullet goes
+            // (the paragraph leaves the list, as Enter in an empty item takes it
+            // out); the next Backspace joins it to the paragraph before.
+            replaceParagraph doc para.Id { para with Metadata = { para.Metadata with ListStyle = NoList; ListLevel = 0 } }
+        | _ ->
+            // At start of block, merge with previous
+            mergeWithPrevious doc sel.Focus.BlockId
     | Some _ when (markSelectedAtCaret true doc).IsSome -> deleteSelection (markSelectedAtCaret true doc).Value
     | Some sel ->
         match findParagraph doc sel.Focus.BlockId with
@@ -4661,6 +4684,39 @@ let setFontSize size doc =
 let setFontFamily family doc =
     applyFormattingToSelection (fun start len buf -> TextBuffer.setFontFamily start len family buf) doc
 
+/// Word's font sizes in points for Grow Font / Shrink Font (Ctrl+Shift+> / <):
+/// those of its size box; above 72 pt steps of 10, below 8 pt steps of 1.
+let private fontSizeSteps = [ 8.0; 9.0; 10.0; 10.5; 11.0; 12.0; 14.0; 16.0; 18.0; 20.0; 22.0; 24.0; 26.0; 28.0; 36.0; 48.0; 72.0 ]
+
+/// The size in points a run of `points` gets from Grow Font (grow) or Shrink
+/// Font; by one point (Ctrl+] / Ctrl+[) when not `stepwise`. From 1 to 1638 pt.
+let nextFontSizePoints (grow: bool) (stepwise: bool) (points: float) : float =
+    let points = System.Math.Round(points * 100.0) / 100.0
+    let next =
+        if not stepwise then (if grow then floor points + 1.0 else ceil points - 1.0)
+        elif grow then
+            match fontSizeSteps |> List.tryFind (fun size -> size > points) with
+            | Some size -> size
+            | None -> (floor (points / 10.0) + 1.0) * 10.0
+        elif points > 72.0 then max 72.0 ((ceil (points / 10.0) - 1.0) * 10.0)
+        elif points > 8.0 then fontSizeSteps |> List.filter (fun size -> size < points) |> List.last
+        else ceil points - 1.0
+    max 1.0 (min 1638.0 next)
+
+/// Grow Font / Shrink Font on the selection: each run from the size it shows
+/// (`effective`: its style resolved against its paragraph's, see
+/// WordStyles.growFont) to the next size (nextFontSizePoints).
+let resizeFontWith (effective: ParagraphBlock -> TextBuffer.TextStyle -> TextBuffer.TextStyle) (grow: bool) (stepwise: bool) doc =
+    applyFormattingToSelectionInParagraph (fun para start len buffer ->
+        TextBuffer.applyStyle start len (fun style ->
+            let points = (effective para style).FontSize * 72.0 / 96.0
+            TextBuffer.withExplicitFontSize (nextFontSizePoints grow stepwise points * 96.0 / 72.0) style) buffer) doc
+
+/// Subscript (Ctrl+=) / superscript (Ctrl+Shift+=) switched on the selection,
+/// as bold is: off when all of it is so already, on otherwise.
+let toggleVertAlignWith (effective: ParagraphBlock -> TextBuffer.TextStyle -> TextBuffer.TextStyle) (align: string) doc =
+    toggleOnSelection effective (fun style -> style.VertAlign = Some align) (fun on style -> { style with VertAlign = (if on then Some align else None) }) doc
+
 /// Get selected text as plain text
 let getSelectionText doc =
     match doc.Selection with
@@ -4684,6 +4740,485 @@ let getSelectionText doc =
                     builder.Append(TextBuffer.slice sliceStart sliceLen para.Buffer) |> ignore
             i <- i + 1
         builder.ToString()
+
+// ---- copy and paste with formatting ---------------------------------------------
+//
+// What Copy keeps of a selection to paste it as it was: the selected part of
+// each paragraph the selection touches, with its formatting, and the
+// paragraph's properties (in Word, those of its paragraph mark - copied with
+// every paragraph but the last, whose mark the selection does not reach).
+
+/// A copied part of a paragraph.
+type ClipParagraph = {
+    /// The selected text, with its formatting and pictures.
+    Buffer: TextBuffer.TextBuffer
+    /// The paragraph's properties.
+    Metadata: BlockMetadata
+    /// The heading level of a paragraph of the body that is a heading.
+    HeadingLevel: int option
+}
+
+/// What Copy and Cut keep of the selection (see copySelection).
+type Clip = {
+    Paragraphs: ClipParagraph list
+    /// The selection's plain text, as getSelectionText gives it: what the
+    /// system clipboard was given with the clip.
+    Text: string
+}
+
+/// The style of copied text: its character formatting and its link; not the
+/// comment, note, bookmark, field, revision of the run it was in, nor the
+/// run of the file it was read from (pasted text is new text).
+let private clipStyle (style: TextBuffer.TextStyle) : TextBuffer.TextStyle =
+    let plain = TextBuffer.withoutAnnotations style
+    { plain with Hyperlink = style.Hyperlink; InactiveHyperlink = style.InactiveHyperlink; SourceRun = None }
+
+/// The part [start, finish) of a paragraph's text as copied: without the marks
+/// of comments and the objects of the file kept as they were read (charts,
+/// SmartArt - they are the file's parts, one place each).
+let private clipBuffer (para: ParagraphBlock) (start: int) (finish: int) : TextBuffer.TextBuffer =
+    if finish <= start then TextBuffer.empty
+    else
+        let sliced = TextBuffer.sliceBuffer start (finish - start) para.Buffer
+        let cuts =
+            [ for (markStart, markEnd) in commentMarkRanges para do
+                let from = max markStart start
+                let until = min markEnd finish
+                if from < until then yield (from - start, until - from)
+              for run in sliced.Runs do
+                match run with
+                | TextBuffer.Image image when image.Opaque.IsSome -> yield (image.Start, 1)
+                | _ -> () ]
+            |> List.sortByDescending fst
+        let mutable buffer = sliced
+        for (at, len) in cuts do
+            buffer <- TextBuffer.delete at len buffer
+        let len = TextBuffer.length buffer
+        if len = 0 then buffer else TextBuffer.applyStyle 0 len clipStyle buffer
+
+/// The paragraph properties a pasted paragraph mark brings: its formatting,
+/// not what ties a paragraph to its place - the section it ends, the content
+/// control it is in, a tracked change of its mark, where a page broke before it.
+let private withPastedFormatting (pasted: BlockMetadata) (target: BlockMetadata) : BlockMetadata =
+    { pasted with
+        ContentControlId = target.ContentControlId
+        ContentControlTag = target.ContentControlTag
+        ContentControlAlias = target.ContentControlAlias
+        ContentControlXml = target.ContentControlXml
+        SectionBreak = target.SectionBreak
+        SectionColumns = target.SectionColumns
+        SectionPageNumberStart = target.SectionPageNumberStart
+        SectionPageNumberFormat = target.SectionPageNumberFormat
+        SectionVerticalAlign = target.SectionVerticalAlign
+        SectionPageSetup = target.SectionPageSetup
+        HeaderReferences = target.HeaderReferences
+        FooterReferences = target.FooterReferences
+        RenderedPageBreakBefore = target.RenderedPageBreakBefore
+        MarkRevision = target.MarkRevision }
+
+/// The selection as Copy keeps it: None with nothing selected.
+let copySelection (doc: Document) : Clip option =
+    match doc.Selection with
+    | Some sel when not sel.IsCollapsed ->
+        let ranges = selectedParagraphRanges doc
+        if ranges.IsEmpty then None
+        else
+            let headingLevel (id: BlockId) =
+                match findBlock doc id with
+                | Some (Heading (level, _)) -> Some level
+                | _ -> None
+            Some {
+                Paragraphs =
+                    ranges |> List.map (fun (para, start, finish) ->
+                        { Buffer = clipBuffer para start finish; Metadata = para.Metadata; HeadingLevel = headingLevel para.Id })
+                Text = getSelectionText doc }
+    | _ -> None
+
+/// A block of the body made a heading of this level, or a paragraph (None).
+let private withHeadingLevel (id: BlockId) (level: int option) (doc: Document) : Document =
+    let blocks =
+        doc.Blocks |> mapListSharing (fun block ->
+            match block, level with
+            | Paragraph para, Some level when para.Id = id -> Heading (level, para)
+            | Heading (current, para), Some level when para.Id = id && current <> level -> Heading (level, para)
+            | Heading (_, para), None when para.Id = id -> Paragraph para
+            | _ -> block)
+    if sameReference blocks doc.Blocks then doc else { doc with Blocks = blocks }
+
+/// Paste what Copy kept at the caret, or over the selection (Word's "keep
+/// source formatting"): the text with its formatting; with more than one
+/// paragraph, each paragraph whose mark was copied with the properties it
+/// had, and the last part joined to the text after the caret, in the
+/// paragraph that keeps its own properties. The caret ends after the pasted
+/// text. Works where Enter does - the body, a table cell, a text box, a
+/// header (the paragraphs are split as Enter splits them).
+let pasteClip (clip: Clip) (doc: Document) : Document =
+    if clip.Paragraphs.IsEmpty then doc else
+    let doc = snapSelectionToMarks None doc
+    match doc.Selection with
+    | None -> doc
+    | Some sel ->
+        let start = if sel.IsCollapsed then doc else deleteSelection doc
+        let last = List.length clip.Paragraphs - 1
+        let mutable current = start
+        let mutable failed = false
+        clip.Paragraphs |> List.iteri (fun index piece ->
+            if not failed then
+                match current.Selection with
+                | Some caret when caret.IsCollapsed ->
+                    match findParagraph current caret.Focus.BlockId with
+                    | Some para ->
+                        let len = TextBuffer.length para.Buffer
+                        let at = max 0 (min caret.Focus.Offset len)
+                        let buffer =
+                            TextBuffer.append
+                                (TextBuffer.append (TextBuffer.sliceBuffer 0 at para.Buffer) piece.Buffer)
+                                (TextBuffer.sliceBuffer at (len - at) para.Buffer)
+                        let past = { caret.Focus with Offset = at + TextBuffer.length piece.Buffer }
+                        let inserted = { replaceParagraph current para.Id { para with Buffer = buffer } with Selection = Some { Anchor = past; Focus = past } }
+                        if index = last then current <- inserted
+                        else
+                            // (Split as Enter splits: the part after the caret keeps the
+                            // paragraph's own properties, the part before it is given
+                            // those of the copied paragraph.)
+                            let split = splitBlock inserted
+                            if obj.ReferenceEquals(split, inserted) then failed <- true
+                            else
+                                match findParagraph split para.Id with
+                                | Some before ->
+                                    let metadata = withPastedFormatting piece.Metadata before.Metadata
+                                    let withMetadata = replaceParagraph split para.Id { before with Metadata = metadata }
+                                    current <-
+                                        match findBlock withMetadata para.Id with
+                                        | Some (Paragraph _)
+                                        | Some (Heading _) -> withHeadingLevel para.Id piece.HeadingLevel withMetadata
+                                        | _ -> withMetadata
+                                | None -> failed <- true
+                    | None -> failed <- true
+                | _ -> failed <- true)
+        // (No caret in a paragraph to paste at: the text alone, as insertText puts it.)
+        if failed then insertText clip.Text doc
+        else current
+
+/// A clip as HTML, for the system clipboard (text/html): what other programs
+/// - Word, a browser, a mail editor - paste with its formatting. Paragraphs
+/// (headings as h1-h3, list items as li of ul / ol), their alignment, and the
+/// character formatting the runs state themselves: bold, italic, underline,
+/// strike, a size, a face, a colour, raised / lowered, a link. Pictures that
+/// are data are img; others are left out.
+let clipToHtml (clip: Clip) : string =
+    let html = StringBuilder()
+    let escape (text: string) = text.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;").Replace("\"", "&quot;")
+    let points (pixels: float) = System.Math.Round(pixels * 72.0 / 96.0 * 100.0) / 100.0
+    let runHtml (text: string) (style: TextBuffer.TextStyle) =
+        let css = ResizeArray<string>()
+        if style.Bold then css.Add "font-weight:bold"
+        if style.Italic then css.Add "font-style:italic"
+        let lines = [ if style.Underline then yield "underline"
+                      if style.Strike || style.DoubleStrike then yield "line-through" ]
+        if not lines.IsEmpty then css.Add ("text-decoration:" + String.concat " " lines)
+        if TextBuffer.ExplicitFormat.has TextBuffer.ExplicitFormat.FontSize style then css.Add ("font-size:" + string (points style.FontSize) + "pt")
+        style.FontFamily |> Option.iter (fun family -> css.Add (sprintf "font-family:'%s'" (family.Replace("'", ""))))
+        style.Color |> Option.iter (fun color -> css.Add ("color:" + color))
+        style.Highlight |> Option.iter (fun color -> css.Add ("background-color:" + color))
+        match style.VertAlign with
+        | Some "superscript" -> css.Add "vertical-align:super"
+        | Some "subscript" -> css.Add "vertical-align:sub"
+        | _ -> ()
+        if style.AllCaps then css.Add "text-transform:uppercase"
+        if style.SmallCaps then css.Add "font-variant:small-caps"
+        let body = (escape text).Replace("\n", "<br>")
+        let spanned = if css.Count = 0 then body else sprintf "<span style=\"%s\">%s</span>" (String.concat ";" css) body
+        match style.Hyperlink with
+        | Some target -> sprintf "<a href=\"%s\">%s</a>" (escape target) spanned
+        | None -> spanned
+    let mutable openList : string option = None
+    let closeList () =
+        match openList with
+        | Some tag -> html.Append("</").Append(tag).Append(">") |> ignore; openList <- None
+        | None -> ()
+    for piece in clip.Paragraphs do
+        let metadata = piece.Metadata
+        let listTag = match metadata.ListStyle with Bullet -> Some "ul" | Numbered -> Some "ol" | _ -> None
+        if listTag <> openList then
+            closeList ()
+            match listTag with
+            | Some tag -> html.Append("<").Append(tag).Append(">") |> ignore; openList <- listTag
+            | None -> ()
+        let tag =
+            match listTag, piece.HeadingLevel with
+            | Some _, _ -> "li"
+            | None, Some level -> sprintf "h%d" (max 1 (min 6 level))
+            | None, None -> "p"
+        let css = ResizeArray<string>()
+        match metadata.Alignment with
+        | Center -> css.Add "text-align:center"
+        | Right -> css.Add "text-align:right"
+        | Justify -> css.Add "text-align:justify"
+        | _ -> ()
+        if listTag.IsSome && metadata.ListLevel > 1 then css.Add (sprintf "margin-left:%dem" ((metadata.ListLevel - 1) * 2))
+        html.Append("<").Append(tag) |> ignore
+        if css.Count > 0 then html.Append(" style=\"").Append(String.concat ";" css).Append("\"") |> ignore
+        html.Append(">") |> ignore
+        let text = Rope.toString piece.Buffer.Rope
+        for run in piece.Buffer.Runs do
+            match run with
+            | Text run when run.Length > 0 && not run.Style.Hidden ->
+                html.Append(runHtml (text.Substring(run.Start, run.Length)) run.Style) |> ignore
+            | Image image when image.Src.StartsWith "data:" ->
+                html.Append("<img src=\"").Append(escape image.Src).Append("\"") |> ignore
+                image.Width |> Option.iter (fun width -> html.Append(" width=\"" + string width + "\"") |> ignore)
+                image.Height |> Option.iter (fun height -> html.Append(" height=\"" + string height + "\"") |> ignore)
+                image.Alt |> Option.iter (fun alt -> html.Append(" alt=\"").Append(escape alt).Append("\"") |> ignore)
+                html.Append(">") |> ignore
+            | _ -> ()
+        // (An empty paragraph keeps its line.)
+        if text.Length = 0 then html.Append("<br>") |> ignore
+        html.Append("</").Append(tag).Append(">") |> ignore
+    closeList ()
+    html.ToString()
+
+/// HTML as a tree (what the browser's parser gives, see Input): text, and
+/// elements with their tag (lower case), attributes and children.
+type HtmlNode =
+    | HtmlText of string
+    | HtmlElement of tag: string * attributes: (string * string) list * children: HtmlNode list
+
+let private htmlAttribute (name: string) (attributes: (string * string) list) =
+    attributes |> List.tryPick (fun (key, value) -> if key = name then Some value else None)
+
+/// The declarations of an element's style attribute: (property in lower case, value).
+let private htmlCss (attributes: (string * string) list) : (string * string) list =
+    match htmlAttribute "style" attributes with
+    | None -> []
+    | Some css ->
+        css.Split(';')
+        |> Array.choose (fun declaration ->
+            let colon = declaration.IndexOf ':'
+            if colon <= 0 then None
+            else Some (declaration.Substring(0, colon).Trim().ToLowerInvariant(), declaration.Substring(colon + 1).Trim()))
+        |> List.ofArray
+
+let private parseNumber (text: string) : float option =
+    match System.Double.TryParse(text.Trim()) with
+    | true, value -> Some value
+    | _ -> None
+
+/// A CSS length in layout pixels (pt and px; a bare number is pixels).
+let private htmlLength (value: string) : float option =
+    let value = value.Trim().ToLowerInvariant()
+    if value.EndsWith "pt" then parseNumber (value.Substring(0, value.Length - 2)) |> Option.map (fun points -> points * 96.0 / 72.0)
+    elif value.EndsWith "px" then parseNumber (value.Substring(0, value.Length - 2))
+    else parseNumber value
+
+/// A CSS colour as "#RRGGBB" (hex and rgb() forms; named colours are left out).
+let private htmlColor (value: string) : string option =
+    let value = value.Trim().ToLowerInvariant()
+    let digits = "0123456789ABCDEF"
+    let hex (n: int) = let n = max 0 (min 255 n) in string digits.[n / 16] + string digits.[n % 16]
+    if value.StartsWith "#" && value.Length = 7 then Some (value.ToUpperInvariant())
+    elif value.StartsWith "#" && value.Length = 4 then
+        Some (("#" + (value.Substring 1 |> Seq.map (fun c -> string c + string c) |> String.concat "")).ToUpperInvariant())
+    elif value.StartsWith "rgb" then
+        let inner = value.Substring(value.IndexOf '(' + 1).TrimEnd(')')
+        let parts = inner.Split(',') |> Array.choose parseNumber
+        if parts.Length >= 3 then Some ("#" + hex (int parts.[0]) + hex (int parts.[1]) + hex (int parts.[2])) else None
+    else None
+
+/// The character formatting an element gives the text in it.
+let private htmlTextStyle (tag: string) (attributes: (string * string) list) (style: TextBuffer.TextStyle) : TextBuffer.TextStyle =
+    let mutable style = style
+    match tag with
+    | "b" | "strong" -> style <- TextBuffer.withExplicitBold true style
+    | "i" | "em" | "cite" | "var" | "dfn" -> style <- TextBuffer.withExplicitItalic true style
+    | "u" | "ins" -> style <- TextBuffer.withExplicitUnderline true style
+    | "s" | "strike" | "del" -> style <- TextBuffer.withExplicitStrike true style
+    | "sup" -> style <- { style with VertAlign = Some "superscript" }
+    | "sub" -> style <- { style with VertAlign = Some "subscript" }
+    | "code" | "kbd" | "tt" | "samp" | "pre" -> style <- { style with FontFamily = Some "Courier New" }
+    | "a" ->
+        match htmlAttribute "href" attributes with
+        | Some target when TextBuffer.isActiveHyperlinkTarget target -> style <- { style with Hyperlink = Some target }
+        | _ -> ()
+    | _ -> ()
+    for (name, value) in htmlCss attributes do
+        let value' = value.ToLowerInvariant()
+        match name with
+        | "font-weight" ->
+            match value' with
+            | "bold" | "bolder" -> style <- TextBuffer.withExplicitBold true style
+            | "normal" | "lighter" -> style <- TextBuffer.withExplicitBold false style
+            | _ ->
+                match parseNumber value' with
+                | Some weight -> style <- TextBuffer.withExplicitBold (weight >= 600.0) style
+                | None -> ()
+        | "font-style" -> style <- TextBuffer.withExplicitItalic (value' = "italic" || value' = "oblique") style
+        | "text-decoration" | "text-decoration-line" ->
+            if value'.Contains "none" then
+                style <- style |> TextBuffer.withExplicitUnderline false |> TextBuffer.withExplicitStrike false
+            else
+                if value'.Contains "underline" then style <- TextBuffer.withExplicitUnderline true style
+                if value'.Contains "line-through" then style <- TextBuffer.withExplicitStrike true style
+        | "font-size" ->
+            match htmlLength value with
+            | Some size when size > 0.0 -> style <- TextBuffer.withExplicitFontSize size style
+            | _ -> ()
+        | "font-family" ->
+            let first = value.Split(',').[0].Trim().Trim('"', '\'').Trim()
+            match first.ToLowerInvariant() with
+            | "" | "serif" | "sans-serif" | "monospace" | "cursive" | "fantasy" | "system-ui" | "inherit" | "initial" -> ()
+            | _ -> style <- { style with FontFamily = Some first }
+        | "color" ->
+            match htmlColor value with
+            | Some color -> style <- { style with Color = Some color }
+            | None -> ()
+        | "vertical-align" ->
+            match value' with
+            | "super" -> style <- { style with VertAlign = Some "superscript" }
+            | "sub" -> style <- { style with VertAlign = Some "subscript" }
+            | "baseline" -> style <- { style with VertAlign = None }
+            | _ -> ()
+        | _ -> ()
+    style
+
+let private htmlAlignment (attributes: (string * string) list) : Alignment option =
+    let value =
+        match htmlCss attributes |> List.tryPick (fun (name, value) -> if name = "text-align" then Some value else None) with
+        | Some value -> Some value
+        | None -> htmlAttribute "align" attributes
+    match value |> Option.map (fun v -> v.Trim().ToLowerInvariant()) with
+    | Some "center" -> Some Center
+    | Some "right" | Some "end" -> Some Right
+    | Some "justify" -> Some Justify
+    | Some "left" | Some "start" -> Some Left
+    | _ -> None
+
+/// Pasted HTML (text/html of the clipboard: from Word, a browser, a mail) as
+/// a clip (see pasteClip): a paragraph of each block - p, a heading (h1-h3 a
+/// heading of that level, h4-h6 of level 3), a list item (ul: bullets, ol:
+/// numbers; nested lists a level down; Word's own list paragraphs, mso-list,
+/// too), a table row (its cells parted by tabs) -, br a line break, the text's
+/// character formatting (see htmlTextStyle), pictures that are data. Spaces
+/// are collapsed as a browser shows them. None when there is no text.
+let clipOfHtml (nodes: HtmlNode list) : Clip option =
+    let paragraphs = ResizeArray<ClipParagraph>()
+    let mutable buffer = TextBuffer.empty
+    let mutable metadata = defaultMetadata
+    let mutable heading : int option = None
+    let mutable preformatted = false
+    let lastChar () =
+        let len = TextBuffer.length buffer
+        if len = 0 then None else Some ((TextBuffer.slice (len - 1) 1 buffer).[0])
+    let flush (always: bool) =
+        // (Spaces at the end of a paragraph are not shown; Word's empty paragraph is a no-break space.)
+        let text = TextBuffer.toString buffer
+        let trimmed = text.TrimEnd(' ')
+        if trimmed.Length < text.Length then buffer <- TextBuffer.delete trimmed.Length (text.Length - trimmed.Length) buffer
+        if trimmed = " " then buffer <- TextBuffer.empty
+        if always || TextBuffer.length buffer > 0 then
+            paragraphs.Add { Buffer = buffer; Metadata = metadata; HeadingLevel = heading }
+        buffer <- TextBuffer.empty
+        heading <- None
+    let append (text: string) (style: TextBuffer.TextStyle) =
+        if text <> "" then
+            let at = TextBuffer.length buffer
+            buffer <- TextBuffer.insert at text buffer |> TextBuffer.applyStyle at text.Length (fun _ -> style)
+    let appendText (text: string) (style: TextBuffer.TextStyle) =
+        if preformatted then append (text.Replace("\r\n", "\n")) style
+        else
+            let collapsed = System.Text.RegularExpressions.Regex.Replace(text, "[ \t\r\n\f]+", " ")
+            // (A space at the start of a line, or after a space, is not shown.)
+            let collapsed =
+                match lastChar () with
+                | None | Some ' ' | Some '\n' -> collapsed.TrimStart(' ')
+                | _ -> collapsed
+            append collapsed style
+    let rec textOf (node: HtmlNode) =
+        match node with
+        | HtmlText text -> text
+        | HtmlElement (_, _, children) -> children |> List.map textOf |> String.concat ""
+    let blockTags = set [ "p"; "div"; "h1"; "h2"; "h3"; "h4"; "h5"; "h6"; "li"; "blockquote"; "pre"; "address"; "center"; "dt"; "dd"
+                          "tr"; "caption"; "figcaption"; "section"; "article"; "header"; "footer"; "main"; "nav"; "aside"; "table"
+                          "tbody"; "thead"; "tfoot"; "ul"; "ol"; "dl"; "form"; "fieldset"; "body"; "html"; "figure" ]
+    let paragraphTags = set [ "p"; "h1"; "h2"; "h3"; "h4"; "h5"; "h6"; "li"; "pre"; "dt"; "dd"; "tr"; "caption"; "figcaption"; "address" ]
+    let skipped = set [ "head"; "style"; "script"; "title"; "meta"; "link"; "template"; "noscript"; "xml"; "button"; "select"; "textarea"; "input" ]
+    // lists: the kind of each list the walk is in, innermost first.
+    let rec walk (lists: ListStyle list) (alignment: Alignment option) (style: TextBuffer.TextStyle) (node: HtmlNode) =
+        match node with
+        | HtmlText text -> appendText text style
+        | HtmlElement (tag, attributes, children) ->
+            let css = htmlCss attributes
+            let msoList = css |> List.tryPick (fun (name, value) -> if name = "mso-list" then Some value else None)
+            if skipped.Contains tag || (msoList |> Option.exists (fun value -> value.Trim().ToLowerInvariant() = "ignore")) then ()
+            elif tag = "br" then append "\n" style
+            elif tag = "img" then
+                match htmlAttribute "src" attributes with
+                | Some src when src.StartsWith "data:image/" ->
+                    let size name = htmlAttribute name attributes |> Option.bind htmlLength
+                    buffer <- TextBuffer.insertImage (TextBuffer.length buffer) src (size "width") (size "height") (htmlAttribute "alt" attributes) buffer
+                | _ -> ()
+            elif tag = "td" || tag = "th" then
+                if TextBuffer.length buffer > 0 then append "\t" style
+                children |> List.iter (walk lists alignment (htmlTextStyle tag attributes style))
+            elif blockTags.Contains tag then
+                let alignment = htmlAlignment attributes |> Option.orElse alignment
+                let lists =
+                    match tag with
+                    | "ul" -> Bullet :: lists
+                    | "ol" -> Numbered :: lists
+                    | _ -> lists
+                if paragraphTags.Contains tag || msoList.IsSome then
+                    flush false
+                    let listed =
+                        match tag, msoList with
+                        | _, Some value ->
+                            // (Word's list paragraph: "l0 level2 lfo1"; its number or bullet is
+                            // the text of the span marked mso-list:Ignore.)
+                            let level =
+                                let found = System.Text.RegularExpressions.Regex.Match(value, "level(\\d)")
+                                if found.Success then int found.Groups.[1].Value else 1
+                            let rec ignored (node: HtmlNode) =
+                                match node with
+                                | HtmlElement (_, attrs, kids) ->
+                                    if htmlCss attrs |> List.exists (fun (name, v) -> name = "mso-list" && v.Trim().ToLowerInvariant() = "ignore") then Some (textOf node)
+                                    else kids |> List.tryPick ignored
+                                | HtmlText _ -> None
+                            let marker = children |> List.tryPick ignored |> Option.defaultValue ""
+                            let numbered = System.Text.RegularExpressions.Regex.IsMatch(marker.Trim(), "^[0-9A-Za-z]+[.)]")
+                            Some ((if numbered then Numbered else Bullet), level)
+                        | "li", _ -> Some ((match lists with kind :: _ -> kind | [] -> Bullet), max 1 lists.Length)
+                        | _ -> None
+                    metadata <-
+                        { defaultMetadata with
+                            Alignment = alignment |> Option.defaultValue Left
+                            ExplicitAlignment = alignment.IsSome
+                            ListStyle = (match listed with Some (kind, _) -> kind | None -> NoList)
+                            ListLevel = (match listed with Some (_, level) -> max 1 (min 9 level) | None -> 0) }
+                    heading <-
+                        match tag with
+                        | "h1" -> Some 1
+                        | "h2" -> Some 2
+                        | "h3" | "h4" | "h5" | "h6" -> Some 3
+                        | _ -> None
+                    let wasPreformatted = preformatted
+                    preformatted <- preformatted || tag = "pre"
+                    let before = paragraphs.Count
+                    children |> List.iter (walk lists alignment (htmlTextStyle tag attributes style))
+                    preformatted <- wasPreformatted
+                    // (An empty one is an empty paragraph - unless a block in it made its paragraphs.)
+                    flush (paragraphs.Count = before)
+                    metadata <- defaultMetadata
+                else
+                    flush false
+                    children |> List.iter (walk lists alignment (htmlTextStyle tag attributes style))
+                    flush false
+            else children |> List.iter (walk lists alignment (htmlTextStyle tag attributes style))
+    nodes |> List.iter (walk [] None TextBuffer.defaultStyle)
+    flush false
+    if paragraphs.Count = 0 then None
+    else
+        let pieces = List.ofSeq paragraphs
+        Some { Paragraphs = pieces; Text = pieces |> List.map (fun piece -> TextBuffer.toString piece.Buffer) |> String.concat "\n" }
 
 let private toggleListStyle listStyle doc =
     // Word's rule: if every selected paragraph is already in this kind of
@@ -4790,6 +5325,23 @@ let alignRight doc =
 /// Set alignment to justify
 let alignJustify doc =
     setAlignment Justify doc
+
+/// Increase Indent (Ctrl+M) / Decrease Indent (Ctrl+Shift+M) of the selected
+/// paragraphs, as Word's: a paragraph of a list a level down / up (not out of
+/// the list), any other the left indent to the next / previous half inch.
+let indentParagraphs (forward: bool) doc =
+    let step = 48.0
+    mapSelectedMetadata (fun metadata ->
+        if metadata.ListStyle <> NoList then
+            let level = if forward then min 9 (metadata.ListLevel + 1) else max 1 (metadata.ListLevel - 1)
+            if level = metadata.ListLevel then metadata else withListLevel level metadata
+        else
+            let current = metadata.IndentLeft |> Option.defaultValue 0.0
+            let next =
+                if forward then (floor (current / step + 0.001) + 1.0) * step
+                else max 0.0 ((ceil (current / step - 0.001) - 1.0) * step)
+            if Some next = metadata.IndentLeft || (next = 0.0 && metadata.IndentLeft.IsNone) then metadata
+            else { metadata with IndentLeft = Some next; Explicit = metadata.Explicit ||| ParagraphExplicit.IndentLeft }) doc
 
 let setCurrentParagraphStyle alignment indentLeft indentRight spacingBefore spacingAfter lineSpacing firstLineIndent backgroundColor doc =
     mapSelectedMetadata (fun metadata ->

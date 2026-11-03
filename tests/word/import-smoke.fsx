@@ -430,7 +430,7 @@ module FormatReference =
             | None -> WS.forBlockInContext context (Paragraph para)
         let mutable f : WS.SelectionFormat =
             { Bold = WS.NoValue; Italic = WS.NoValue; Underline = WS.NoValue; Strike = WS.NoValue; FontFamily = WS.NoValue; FontSize = WS.NoValue
-              Color = WS.NoValue; Highlight = WS.NoValue; StyleId = WS.NoValue; HeadingLevel = WS.NoValue; Alignment = WS.NoValue; ListKind = WS.NoValue
+              Color = WS.NoValue; Highlight = WS.NoValue; VertAlign = WS.NoValue; StyleId = WS.NoValue; HeadingLevel = WS.NoValue; Alignment = WS.NoValue; ListKind = WS.NoValue
               ListLevel = WS.NoValue; IndentLeft = WS.NoValue; IndentRight = WS.NoValue; FirstLineIndent = WS.NoValue; ParagraphLineSpacing = WS.NoValue
               ParagraphLineSpacingRule = WS.NoValue; ParagraphSpacingBefore = WS.NoValue; ParagraphSpacingAfter = WS.NoValue }
         let character (paragraphStyle: WS.ParagraphStyle) (runStyle: TB.TextStyle) =
@@ -438,7 +438,8 @@ module FormatReference =
             f <- { f with
                     Bold = add style.Bold f.Bold; Italic = add style.Italic f.Italic; Underline = add style.Underline f.Underline
                     Strike = add (style.Strike || style.DoubleStrike) f.Strike; FontFamily = add style.FontFamily f.FontFamily
-                    FontSize = add style.FontSize f.FontSize; Color = add style.Color f.Color; Highlight = add style.Highlight f.Highlight }
+                    FontSize = add style.FontSize f.FontSize; Color = add style.Color f.Color; Highlight = add style.Highlight f.Highlight
+                    VertAlign = add style.VertAlign f.VertAlign }
         let paragraph (para: ParagraphBlock) (paragraphStyle: WS.ParagraphStyle) =
             let metadata = WS.effectiveMetadata paragraphStyle para.Metadata
             let level =
