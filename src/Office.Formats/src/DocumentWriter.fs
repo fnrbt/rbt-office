@@ -1608,6 +1608,10 @@ let private setSpliceCut (spec: obj) (para: obj) =
             // (The paragraphs joined to it as they were read: their runs are found in their own XML.)
             para?SpliceJoined <- optionalArray (spec?Join) |> Array.map (fun join -> join?Original) |> Array.filter (isNullOrUndefined >> not)
 
+/// The further runs of a field's result the model holds as several (a part of it typed or formatted), by
+/// the field's first run: what the splicer writes of the field (see splicedRuns).
+let private spliceFieldParts = System.Collections.Generic.Dictionary<obj, obj list>(HashIdentity.Reference)
+
 let private generateParagraphWithHyperlinksAndImagesWithPageSetup (packageSetup: PageSetupInfo) (hyperlinks: Map<string, string>) (images: ImageScope) (para: obj) : string =
   match (if isNullOrUndefined (para?SourcePara) || not paragraphsInContext then None else paragraphSource.Of para) with
   | Some xml ->
@@ -1690,6 +1694,7 @@ let private generateParagraphWithHyperlinksAndImagesWithPageSetup (packageSetup:
         |> List.filter (fun (runIndex, _) -> not (fieldPartRuns.Contains runIndex))
         |> List.map (fun (runIndex, runObj) ->
             fieldResultParts <- (match fieldParts.TryGetValue runIndex with | true, parts -> parts | _ -> [])
+            if not fieldResultParts.IsEmpty then spliceFieldParts.[runObj] <- fieldResultParts |> List.map fst
             let runXml =
                 if not (isNullOrUndefined runObj?OpaqueXml) then
                     // An object kept from the file (chart, SmartArt, OLE object, ...):
@@ -1723,6 +1728,7 @@ let private generateParagraphWithHyperlinksAndImagesWithPageSetup (packageSetup:
     let wrappingOf (runObj: obj) (inner: string) =
         revisionWrappedRun runObj inner + (match runHyperlinkTarget runObj with Some target -> "\u0003" + target | None -> "")
     let splice = paragraphSplicer.Splice para runs textRunXml wrappingOf
+    spliceFieldParts.Clear()
     // (A paragraph written from its source is one changed in the XML it was read from, not one of the model's.)
     if splice.IsSome then
         reportSpliced <- reportSpliced + 1
@@ -3032,7 +3038,30 @@ let private spliceSourceOf (text: string) (start: int) (finish: int) (bookmarks:
                 | "commentRangeStart" | "commentRangeEnd" -> XmlPatch.attribute node "w:id" |> Option.exists (fun id -> Set.contains id deletedCommentIds)
                 | local -> modelledLeaf local
             | _ -> false
-        XmlPatch.layout (fun name -> name = "r") modelledWrapper skip take text paragraph from
+        // (The runs that hold the marks of a field that begins or ends in another paragraph - a table of contents
+        // - are the paragraph's as they were: the model does not hold that field.)
+        let outerFieldRuns =
+            let kept = System.Collections.Generic.HashSet<int>()
+            let mutable opened : (int list) list = []   // per open field: the runs of its marks, last first
+            for run in XmlPatch.descendantsWhere (fun node -> XmlPatch.name node = "w:r") paragraph do
+                let start = (XmlPatch.span run).Start
+                let marks = XmlPatch.descendants "fldChar" run |> List.choose (fun mark -> XmlPatch.attribute mark "w:fldCharType")
+                let isCode = not (XmlPatch.descendants "instrText" run).IsEmpty
+                for mark in marks do
+                    match mark, opened with
+                    | "begin", _ -> opened <- [ start ] :: opened
+                    | "end", _ :: rest -> opened <- rest
+                    | "end", [] -> kept.Add start |> ignore
+                    | _, current :: rest -> opened <- (start :: current) :: rest
+                    | _ -> ()
+                if isCode && marks.IsEmpty then
+                    match opened with
+                    | current :: rest -> opened <- (start :: current) :: rest
+                    | [] -> ()
+            for runs in opened do for start in runs do kept.Add start |> ignore
+            kept
+        let isItem (node: XmlDsl.XmlNode) = XmlPatch.localName node = "r" && not (outerFieldRuns.Contains (XmlPatch.span node).Start)
+        XmlPatch.layout isItem modelledWrapper skip take text paragraph from
         |> Option.map (fun laid ->
             // The fields: each begin mark with the end mark that closes it, through the runs in order.
             let fields = System.Collections.Generic.Dictionary<int, int>()
@@ -3145,6 +3174,13 @@ let private splicedRuns (source: SpliceSource) (original: obj) (joined: obj arra
     let wrapping (runObj: obj) = wrapOf runObj "\u0002"
     let mutable previousInSource = false
     let mutable previousWrapping = ""
+    // (The runs of a field's result: after the run with its separate mark, to its end mark.)
+    let fieldResultRunsOf (at: int) (finish: int) =
+        let fieldRuns = source.Runs |> Seq.filter (fun (KeyValue (start, _)) -> start >= at && start < finish) |> Seq.sortBy (fun (KeyValue (start, _)) -> start) |> Seq.map (fun (KeyValue (_, node)) -> node) |> List.ofSeq
+        let marks (node: XmlDsl.XmlNode) = XmlPatch.descendants "fldChar" node |> List.choose (fun mark -> XmlPatch.attribute mark "w:fldCharType")
+        match fieldRuns |> List.tryFindIndex (fun node -> marks node |> List.contains "separate") with
+        | Some index -> fieldRuns |> List.skip (index + 1) |> List.filter (fun node -> not (marks node |> List.contains "end"))
+        | None -> []
     let marksWritten = System.Collections.Generic.HashSet<int>()
     let written =
         [| for runObj, whole, wrap in pieces do
@@ -3239,6 +3275,29 @@ let private splicedRuns (source: SpliceSource) (original: obj) (joined: obj arra
                      else
                          covered.RemoveAt (covered.Count - 1)
                          yield place, wrap inner
+                 // A field whose result was typed into (its code as it was): its runs as read, its one result run
+                 // written as the model's parts of the result - each that run with the part's formatting and text.
+                 | Some model when source.Fields.ContainsKey at && optionalString (model?FieldCode) = optionalString (runObj?FieldCode)
+                                   && (fieldResultRunsOf at source.Fields.[at]).Length = 1 ->
+                     let finish = source.Fields.[at]
+                     let resultRun = (fieldResultRunsOf at finish).Head
+                     let props = XmlPatch.child "rPr" resultRun |> Option.map (XmlPatch.bytesOf text) |> Option.defaultValue ""
+                     let parts = runObj :: (match spliceFieldParts.TryGetValue runObj with | true, parts -> parts | _ -> [])
+                     let written =
+                         parts |> List.map (fun part ->
+                             mergedProperties "w:rPr" props (modelRunProperties model) (modelRunProperties part)
+                             |> Option.map (fun merged ->
+                                 XmlPatch.startTag text resultRun [] + merged
+                                 + String.concat "" (runTextElements (isDeletedRun part) (stringOrDefault "" (part?Text))) + "</w:r>"))
+                     if written |> List.forall Option.isSome then
+                         covered.Add ((at, finish))
+                         let span = XmlPatch.span resultRun
+                         let bytes = XmlPatch.sliceWith text at finish [ span.Start, span.End, written |> List.choose id |> String.concat "" ]
+                         let bytes = match XmlPatch.readFragment bytes with
+                                     | Some elements -> elements |> List.filter (fun element -> match element.Node with XmlDsl.Element (name, _, _, _) -> name <> "w:bookmarkStart" && name <> "w:bookmarkEnd" | _ -> true) |> List.map XmlPatch.bytes |> String.concat ""
+                                     | None -> bytes
+                         yield place, wrap bytes
+                     else yield place, wrap inner
                  | Some _ when not (isNullOrUndefined (runObj?FieldCode)) -> yield place, wrap inner
                  // As it was read in every respect: its bytes.
                  | Some model when jsonText model = jsonText runObj && not ofSeveral -> yield place, wrap (XmlPatch.bytesOf text run)
@@ -3392,13 +3451,14 @@ let private sourceParagraphOf (para: obj) : XmlDsl.XmlNode option =
         match optionalInt (para?SourceAt) |> Option.bind sourceElementAt with
         | Some (XmlDsl.Element (name, _, _, _) as node) when name = "w:p" -> Some node
         | _ -> None
+/// Whether a shape is anchored in a paragraph as it was read (it is written with its block).
+let rec private holdsShape (node: XmlDsl.XmlNode) : bool =
+    match node with
+    | XmlDsl.Element (name, _, kids, _) -> name = "mc:AlternateContent" || name = "w:pict" || XmlPatch.prefix node = "wps" || XmlPatch.prefix node = "wpg" || List.exists holdsShape kids
+    | _ -> false
 /// Whether a paragraph as it was read is tied to what is around it, so that it cannot be written on its
 /// own: a shape is anchored in it (written with its block), or a field begins in it and ends in another.
 let private paragraphIsBound (node: XmlDsl.XmlNode) : bool =
-    let rec holdsShape (kid: XmlDsl.XmlNode) =
-        match kid with
-        | XmlDsl.Element (name, _, kids, _) -> name = "mc:AlternateContent" || name = "w:pict" || XmlPatch.prefix kid = "wps" || XmlPatch.prefix kid = "wpg" || List.exists holdsShape kids
-        | _ -> false
     let marks = XmlPatch.descendants "fldChar" node |> List.choose (fun mark -> XmlPatch.attribute mark "w:fldCharType")
     holdsShape node || (marks |> List.filter ((=) "begin")).Length <> (marks |> List.filter ((=) "end")).Length
 let private forgetSourceBody () =
@@ -3465,7 +3525,7 @@ tableSource <-
                             |> List.takeWhile (fun kid -> List.contains (local kid) names)
                             |> List.fold (fun at kid -> let kidSpan = spanOf kid in if XmlDsl.Span.isKnown kidSpan then kidSpan.End else at) sp.StartTagEnd
                         let laid (isItem: string -> bool) (take: XmlDsl.XmlNode -> unit) (node: XmlDsl.XmlNode) (from: int) =
-                            match XmlPatch.layout isItem (fun _ -> false) (fun _ -> false) take xml node from with
+                            match XmlPatch.layout (XmlPatch.localName >> isItem) (fun _ -> false) (fun _ -> false) take xml node from with
                             | Some found -> found
                             | None ->
                                 sound <- false
@@ -3525,8 +3585,10 @@ let private patchSourceChunk (start: int) (finish: int) (items: obj array) : (in
                     let index = intOrDefault -1 (change?Paragraph)
                     match (if isNullOrUndefined after then None else sourceParagraphOf after) with
                     | Some (XmlDsl.Element (_, _, _, span) as node) when span.Start >= start && span.End <= finish ->
-                        if paragraphIsBound node then
-                            noteReason (sprintf "paragraph %d of the block: a shape is anchored in it, or a field begins or ends in it: the block is written from the model" index)
+                        // (A field that begins or ends in another paragraph is not in the way: its marks stay as they were,
+                        // see spliceSourceOf; the block keeps its place among the blocks of that field.)
+                        if holdsShape node then
+                            noteReason (sprintf "paragraph %d of the block: a shape is anchored in it: the block is written from the model" index)
                             ok <- false
                         elif isNullOrUndefined (after?SpliceOriginal) then
                             noteReason (sprintf "paragraph %d of the block: %s" index (optionalString (change?Why) |> Option.defaultValue "changed, and not of a paragraph that was read"))

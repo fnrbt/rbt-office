@@ -73,7 +73,7 @@ check "startTag: no edits" (startTag row rowNode []) "<w:tr w:rsidR=\"00A\" w14:
 let tableText = "<w:tbl>\n <w:tblPr/>\n <w:tr><w:tc/></w:tr>\n <w:bookmarkStart w:id=\"1\"/>\n <w:sdt><w:sdtPr><w:tag w:val=\"r\"/></w:sdtPr><w:sdtContent>\n  <w:tr><w:tc/></w:tr>\n </w:sdtContent></w:sdt>\n</w:tbl>"
 let tableNode = (el tableText).Node
 let propsEnd = match tableNode with XmlDsl.Element (_, _, kids, _) -> kids |> List.pick (function XmlDsl.Element (n, _, _, sp) when n = "w:tblPr" -> Some sp.End | _ -> None) | _ -> 0
-let laid = (layout (fun name -> name = "tr") (fun _ -> false) (fun _ -> false) ignore tableText tableNode propsEnd).Value
+let laid = (layout (fun node -> localName node = "tr") (fun _ -> false) (fun _ -> false) ignore tableText tableNode propsEnd).Value
 let rowStarts = laid.Children |> List.choose (function LaidItem (at, _) -> Some at | _ -> None)
 let content = tableText.Substring(propsEnd, tableText.LastIndexOf "</w:tbl>" - propsEnd)
 check "layout: the items" rowStarts.Length 2
@@ -89,7 +89,7 @@ check "layout: a new item after the second, in its wrapper"
 let paraText = "<w:p><w:pPr/><w:r><w:t>a</w:t></w:r><w:ins w:id=\"1\"><w:r><w:t>b</w:t></w:r></w:ins><w:bookmarkStart w:id=\"2\"/><w:proofErr/><w:r><w:t>c</w:t></w:r></w:p>"
 let paraNode = (el paraText).Node
 let pPrEnd = paraText.IndexOf "<w:r>"
-let paraLaid = (layout (fun name -> name = "r") (fun name -> name = "ins") (fun node -> match node with XmlDsl.Element (name, _, _, _) -> name = "w:bookmarkStart" | _ -> false) ignore paraText paraNode pPrEnd).Value
+let paraLaid = (layout (fun node -> localName node = "r") (fun name -> name = "ins") (fun node -> match node with XmlDsl.Element (name, _, _, _) -> name = "w:bookmarkStart" | _ -> false) ignore paraText paraNode pPrEnd).Value
 let runStarts = paraLaid.Children |> List.choose (function LaidItem (at, _) -> Some at | _ -> None)
 check "layout: the runs, also the one in the pass-through" runStarts.Length 3
 check "layout: the pass-through's tags are not in what is written, the skipped mark is not, the kept one is"

@@ -481,18 +481,18 @@ type Layout = {
 }
 
 /// The layout of the children of `node` (an element of `text`) from `from` on (after the properties):
-/// the items (children whose local name `isItem`, handed to `take`), in the wrappers they are in - a child
+/// the items (children `isItem` says are, handed to `take`), in the wrappers they are in - a child
 /// that holds items, at any depth, and is not one `passThrough` says the model holds itself (then its own
 /// children are taken as the element's) -; elements `skip` says the model writes itself (or are to go) left
 /// out; the rest kept. None when an element of it has no place in the text.
-let layout (isItem: string -> bool) (passThrough: string -> bool) (skip: XmlNode -> bool) (take: XmlNode -> unit) (text: string) (node: XmlNode) (from: int) : Layout option =
+let layout (isItem: XmlNode -> bool) (passThrough: string -> bool) (skip: XmlNode -> bool) (take: XmlNode -> unit) (text: string) (node: XmlNode) (from: int) : Layout option =
     let span = spanOf node
     let wrappers = System.Collections.Generic.Dictionary<int, (int * int) * (int * int)>()
     let leads = System.Collections.Generic.Dictionary<int, int * int>()
     let keptEnds = System.Collections.Generic.Dictionary<int, int>()
     let found = ResizeArray<LayoutChild>()
     let mutable sound = Span.isKnown span && span.StartTagEnd < span.End
-    let rec holds (kid: XmlNode) = isItem (local (nameOf kid)) || List.exists holds (elementChildren kid)
+    let rec holds (kid: XmlNode) = isItem kid || List.exists holds (elementChildren kid)
     // The children of one element from `start` on: where the last ends.
     let rec visitAll (chain: int list) (start: int) (nodes: XmlNode list) : int =
         let mutable at = start
@@ -503,7 +503,7 @@ let layout (isItem: string -> bool) (passThrough: string -> bool) (skip: XmlNode
             | Element _ when kidSpan.End <= from -> ()
             | Element _ ->
                 let name = local (nameOf kid)
-                if isItem name then
+                if isItem kid then
                     found.Add (LaidItem (kidSpan.Start, chain))
                     leads.[kidSpan.Start] <- (at, kidSpan.Start)
                     take kid
