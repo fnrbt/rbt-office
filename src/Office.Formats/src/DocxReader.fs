@@ -1294,18 +1294,10 @@ module Docx =
                     |> Option.map (fun rId ->
                         let shape = Ns.descendantsNs "shape" pict |> List.tryHead
                         let style = shape |> Option.bind (Xml.attr "style")
-                        let styleValue name =
-                            style
-                            |> Option.bind (fun value ->
-                                value.Split(';')
-                                |> Array.tryPick (fun part ->
-                                    let pieces = part.Split([| ':' |], 2)
-                                    if pieces.Length = 2 && pieces.[0].Trim().Equals(name, System.StringComparison.OrdinalIgnoreCase) then Some (pieces.[1].Trim())
-                                    else None))
+                        let styleValue name = style |> Option.bind (ValueText.Css.valueIgnoringCase name)
                         let stylePoints name =
                             styleValue name
-                            |> Option.bind (fun value ->
-                                Some (if value.EndsWith("pt", System.StringComparison.OrdinalIgnoreCase) then value.Substring(0, value.Length - 2) else value))
+                            |> Option.map ValueText.Css.withoutPoints
                             |> Option.bind parseFloat
                             |> Option.map ptToPixels
                         emptyImage rId false (shape |> Option.bind (fun value -> Xml.attr "id" value)) (Xml.attr "o:title" image) (shape |> Option.bind (fun value -> Xml.attr "alt" value)) (stylePoints "width") (stylePoints "height"))))
@@ -1355,7 +1347,7 @@ module Docx =
             if not fromChoice.IsEmpty then fromChoice
             else Ns.childNs "Fallback" node |> Option.map modelledShapeRoots |> Option.defaultValue []
         | Some "anchor" | Some "inline" -> if isModelledShape node then [node] else []
-        | Some "shape" | Some "rect" | Some "roundrect" | Some "oval" when (match node with XmlDsl.Element(name, _, _, _) -> name.StartsWith "v:" | _ -> false) ->
+        | Some "shape" | Some "rect" | Some "roundrect" | Some "oval" when (match node with XmlDsl.Element(name, _, _, _) -> Ns.hasPrefix "v" name | _ -> false) ->
             if isModelledShape node then [node] else []
         | Some _ -> Xml.children node |> List.collect modelledShapeRoots
         | None -> []
@@ -1408,20 +1400,18 @@ module Docx =
                     |> List.tryPick (Xml.attr "style")
                     |> Option.defaultValue ""
                 let styleNumber (name: string) =
-                    style.Split(';')
-                    |> Array.tryPick (fun part ->
-                        let pieces = part.Split([| ':' |], 2)
-                        if pieces.Length = 2 && pieces.[0].Trim().ToLowerInvariant() = name then
-                            let raw = pieces.[1].Trim().ToLowerInvariant()
-                            let number (text: string) =
-                                match System.Double.TryParse(text, Globalization.NumberStyles.Float, Globalization.CultureInfo.InvariantCulture) with
-                                | true, parsed -> Some parsed
-                                | false, _ -> None
-                            if raw.EndsWith "pt" then number (raw.Substring(0, raw.Length - 2)) |> Option.map (fun pt -> pt * 96.0 / 72.0)
-                            elif raw.EndsWith "in" then number (raw.Substring(0, raw.Length - 2)) |> Option.map (fun inches -> inches * 96.0)
-                            elif raw.EndsWith "px" then number (raw.Substring(0, raw.Length - 2))
-                            else number raw
-                        else None)
+                    ValueText.Css.valueIgnoringCase name style
+                    |> Option.bind (fun value ->
+                        let raw = value.ToLowerInvariant()
+                        let number (text: string) =
+                            match System.Double.TryParse(text, Globalization.NumberStyles.Float, Globalization.CultureInfo.InvariantCulture) with
+                            | true, parsed -> Some parsed
+                            | false, _ -> None
+                        match ValueText.Css.withUnit [ "pt"; "in"; "px" ] raw with
+                        | Some (value, "pt") -> number value |> Option.map (fun pt -> pt * 96.0 / 72.0)
+                        | Some (value, "in") -> number value |> Option.map (fun inches -> inches * 96.0)
+                        | Some (value, _) -> number value
+                        | None -> number raw)
                 { blankImageData fallbackRelationship with
                     Width = styleNumber "width"
                     Height = styleNumber "height"
@@ -1461,11 +1451,11 @@ module Docx =
     let fieldTypeFromCode (code: string) =
         let normalized = code.Trim()
         let upper = normalized.ToUpperInvariant()
-        if upper.StartsWith("DATE") then Date
-        elif upper.StartsWith("PAGE") then PageNumber
-        elif upper.StartsWith("NUMPAGES") then NumPages
-        elif upper.StartsWith("HYPERLINK") then Hyperlink normalized
-        elif upper.StartsWith("REF ") then Ref (normalized.Substring(4).Trim())
+        if ValueText.FieldCode.startsWith "DATE" upper then Date
+        elif ValueText.FieldCode.startsWith "PAGE" upper then PageNumber
+        elif ValueText.FieldCode.startsWith "NUMPAGES" upper then NumPages
+        elif ValueText.FieldCode.startsWith "HYPERLINK" upper then Hyperlink normalized
+        elif ValueText.FieldCode.startsWith "REF " upper then Ref (ValueText.FieldCode.refTarget normalized)
         else Unknown normalized
 
     /// The runs of a field shown by its own element (w:fldSimple): one run with the field's
@@ -1495,9 +1485,7 @@ module Docx =
                   RevisionAuthor = None
                   RevisionDate = None; InsertedRevision = None; MoveName = None; Source = XmlDsl.Span.none }
             let whole () = [ fieldOf (runs |> List.tryHead |> Option.map runProps |> Option.defaultValue (runProps fldNode)) None ]
-            let computed =
-                let upper = code.Trim().ToUpperInvariant()
-                upper.StartsWith "PAGE" || upper.StartsWith "NUMPAGES" || upper.StartsWith "SECTIONPAGES"
+            let computed = ValueText.FieldCode.isComputed (code.Trim().ToUpperInvariant())
             if runs.Length < 2 || computed then whole ()
             else
                 // The stretches of runs that are formatted alike.
@@ -1613,9 +1601,7 @@ module Docx =
                 Source = (match first with Some run -> run.Source | None -> XmlDsl.Span.none)
             }
         let whole () = [ fieldOf (if field.ResultRuns.Count > 0 then Some field.ResultRuns.[0] else None) None ]
-        let computed =
-            let upper = code.ToUpperInvariant()
-            upper.StartsWith "PAGE" || upper.StartsWith "NUMPAGES" || upper.StartsWith "SECTIONPAGES"
+        let computed = ValueText.FieldCode.isComputed (code.ToUpperInvariant())
         let plain = field.ResultRuns |> Seq.forall (fun run -> match run.Content with Text _ -> true | _ -> false)
         if field.ResultRuns.Count < 2 || computed || not plain then whole ()
         else
@@ -1745,7 +1731,7 @@ module Docx =
                 pendingRenderedPageBreak <- false
         // (What is opened after the last run.)
         for (token, name) in pendingStarts do
-            addEnd ("!" + token.TrimEnd('!') + "=" + name + (if token.EndsWith "!" then "" else "<"))
+            addEnd (ModelText.openedBookmarkEnd token name)
 
         output |> Seq.toList
 
@@ -1767,7 +1753,7 @@ module Docx =
 
     let private normalizeTocRuns (props: ParagraphProperties) (runs: Run list) =
         match props.Style with
-        | Some style when style.StartsWith("TOC", StringComparison.OrdinalIgnoreCase) ->
+        | Some style when ValueText.StyleName.isTableOfContents style ->
             runs |> List.map clearTocHyperlinkStyle
         | _ -> runs
 
@@ -2697,7 +2683,7 @@ module Theme =
         Ns.childNs "srgbClr" node
         |> Option.bind (Docx.attr "val")
         |> Option.orElseWith (fun () -> Ns.childNs "sysClr" node |> Option.bind (Docx.attr "lastClr"))
-        |> Option.map (fun value -> if value.StartsWith("#") then value.ToUpper() else "#" + value.ToUpper())
+        |> Option.map (fun value -> ValueText.Color.withHash (value.ToUpper()))
 
     let private latinTypeface node =
         Ns.childNs "latin" node |> Option.bind (Docx.attr "typeface") |> Option.filter ((<>) "")
@@ -2905,11 +2891,11 @@ let mapBlockRuns (mapRun: Run -> Run) (blocks: DocumentContent list) : DocumentC
 let private xmlnsDeclarations (attrs: Map<string, string>) : Map<string, string> =
     attrs
     |> Map.toList
-    |> List.choose (fun (name, value) -> if name.StartsWith "xmlns:" then Some (name.Substring 6, value) else None)
+    |> List.choose (fun (name, value) -> Ns.declaredPrefix name |> Option.map (fun prefix -> prefix, value))
     |> Map.ofList
 
 /// The words of an attribute's value that is a list (mc:Ignorable="w14 wp14", Requires="wps").
-let private valueWords (value: string) = value.Split([| ' '; '\t'; '\n'; '\r' |], StringSplitOptions.RemoveEmptyEntries) |> Array.toList
+let private valueWords (value: string) = ValueText.words value
 
 /// `xml` (one element, serialised) with the namespace declarations of the
 /// part's root element it relies on added to its own root, so it stays valid
@@ -2925,9 +2911,9 @@ let selfContainedXml (rootAttributes: Map<string, string>) (xml: string) : strin
         let used =
             [ for node in nodes do yield XmlPatch.prefix node
               for (name, value) in attributes do
-                  match name.Split(':') with
-                  | [| prefix; _ |] when prefix <> "xmlns" -> yield prefix
-                  | _ -> ()
+                  match ModelText.prefixOf name with
+                  | "" | "xmlns" -> ()
+                  | prefix -> yield prefix
                   if name = "Requires" || name = "mc:Ignorable" then yield! valueWords value ]
             |> List.filter (fun prefix -> prefix <> "")
             |> Set.ofList
@@ -3036,7 +3022,7 @@ let resolveHyperlinkRun (relMap: Map<string, string>) (run: Run) : Run =
         match link.RelationshipId |> Option.bind (fun rId -> Map.tryFind rId relMap) with
         | Some target ->
             // With a w:anchor as well, the anchor is the fragment of the target.
-            let fragment = match link.Target with | Some (anchor: string) when anchor.StartsWith "#" && not (target.Contains "#") -> anchor | _ -> ""
+            let fragment = match link.Target with | Some (anchor: string) when OpcXml.isAnchorTarget anchor && not (target.Contains "#") -> anchor | _ -> ""
             { run with Content = Link { link with Target = Some (target + fragment) } }
         | None -> run
     | _ -> run
@@ -3232,53 +3218,32 @@ module Shapes =
         | false, _ -> None
 
     let private shapeNumberFromStyle name (style: string) =
-        style.Split(';')
-        |> Array.tryPick (fun part ->
-            let text = part.Trim()
-            if text.StartsWith(name + ":") then
-                let raw = text.Substring(name.Length + 1).Trim()
-                if raw.EndsWith("pt") then raw.Substring(0, raw.Length - 2) |> parseFloat |> Option.map (fun pt -> pt * 96.0 / 72.0)
-                elif raw.EndsWith("px") then raw.Substring(0, raw.Length - 2) |> parseFloat
-                elif raw.EndsWith("in") then raw.Substring(0, raw.Length - 2) |> parseFloat |> Option.map (fun inches -> inches * 96.0)
-                elif raw.EndsWith("mm") then raw.Substring(0, raw.Length - 2) |> parseFloat |> Option.map (fun mm -> mm * 96.0 / 25.4)
-                elif raw.EndsWith("cm") then raw.Substring(0, raw.Length - 2) |> parseFloat |> Option.map (fun cm -> cm * 96.0 / 2.54)
-                else parseFloat raw
-            else None)
-
-    let private namedColors =
-        Map.ofList [ "black", "#000000"; "white", "#FFFFFF"; "silver", "#C0C0C0"; "gray", "#808080"; "grey", "#808080"; "red", "#FF0000"; "maroon", "#800000"
-                     "yellow", "#FFFF00"; "olive", "#808000"; "lime", "#00FF00"; "green", "#008000"; "aqua", "#00FFFF"; "teal", "#008080"; "blue", "#0000FF"
-                     "navy", "#000080"; "fuchsia", "#FF00FF"; "purple", "#800080"; "orange", "#FFA500" ]
+        ValueText.Css.valueOf name style
+        |> Option.bind (fun raw ->
+            match ValueText.Css.withUnit [ "pt"; "px"; "in"; "mm"; "cm" ] raw with
+            | Some (value, "pt") -> parseFloat value |> Option.map (fun pt -> pt * 96.0 / 72.0)
+            | Some (value, "px") -> parseFloat value
+            | Some (value, "in") -> parseFloat value |> Option.map (fun inches -> inches * 96.0)
+            | Some (value, "mm") -> parseFloat value |> Option.map (fun mm -> mm * 96.0 / 25.4)
+            | Some (value, _) -> parseFloat value |> Option.map (fun cm -> cm * 96.0 / 2.54)
+            | None -> parseFloat raw)
 
     /// A colour as VML writes it: "#rgb", "#rrggbb", a name, each with or without a palette entry after it ("silver [3209]").
-    let private normalizeColor (value: string option) =
-        match value |> Option.map (fun text -> (text.Trim().Split(' ')).[0]) with
-        | Some "" | None -> None
-        | Some color when color.StartsWith("#") && color.Length = 4 ->
-            Some (sprintf "#%c%c%c%c%c%c" color.[1] color.[1] color.[2] color.[2] color.[3] color.[3])
-        | Some color when color.StartsWith("#") -> Some color
-        | Some color ->
-            match Map.tryFind (color.ToLowerInvariant()) namedColors with
-            | Some hex -> Some hex
-            | None -> Some ("#" + color)
+    let private normalizeColor (value: string option) = ValueText.Color.ofVml value
 
     /// The value of a property of a VML style ("name:value;name:value").
-    let private styleText (name: string) (style: string) : string option =
-        style.Split(';')
-        |> Array.tryPick (fun part ->
-            let text = part.Trim()
-            if text.ToLowerInvariant().StartsWith(name + ":") then Some (text.Substring(name.Length + 1).Trim()) else None)
+    let private styleText (name: string) (style: string) : string option = ValueText.Css.valueOfLower name style
 
     /// A VML length in pixels: points, inches, millimetres, centimetres, pixels; EMU without a unit.
     let private vmlLength (text: string) : float option =
         let raw = text.Trim().ToLowerInvariant()
-        let number (suffix: string) (factor: float) = raw.Substring(0, raw.Length - suffix.Length) |> parseFloat |> Option.map (fun value -> value * factor)
-        if raw.EndsWith "pt" then number "pt" (96.0 / 72.0)
-        elif raw.EndsWith "in" then number "in" 96.0
-        elif raw.EndsWith "mm" then number "mm" (96.0 / 25.4)
-        elif raw.EndsWith "cm" then number "cm" (96.0 / 2.54)
-        elif raw.EndsWith "px" then number "px" 1.0
-        else parseFloat raw |> Option.map (fun emu -> emu / 9525.0)
+        match ValueText.Css.withUnit [ "pt"; "in"; "mm"; "cm"; "px" ] raw with
+        | Some (value, "pt") -> parseFloat value |> Option.map (fun value -> value * (96.0 / 72.0))
+        | Some (value, "in") -> parseFloat value |> Option.map (fun value -> value * 96.0)
+        | Some (value, "mm") -> parseFloat value |> Option.map (fun value -> value * (96.0 / 25.4))
+        | Some (value, "cm") -> parseFloat value |> Option.map (fun value -> value * (96.0 / 2.54))
+        | Some (value, _) -> parseFloat value |> Option.map (fun value -> value * 1.0)
+        | None -> parseFloat raw |> Option.map (fun emu -> emu / 9525.0)
 
     let private xmlEscaped (text: string) =
         text.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;").Replace("\"", "&quot;")
@@ -3287,16 +3252,17 @@ module Shapes =
         value
         |> Option.bind (fun raw ->
             let text = raw.Trim()
-            if text.EndsWith("pt") then text.Substring(0, text.Length - 2) |> parseFloat |> Option.map (fun pt -> pt * 96.0 / 72.0)
-            elif text.EndsWith("px") then text.Substring(0, text.Length - 2) |> parseFloat
-            else parseFloat text)
+            match ValueText.Css.withUnit [ "pt"; "px" ] text with
+            | Some (value, "pt") -> parseFloat value |> Option.map (fun pt -> pt * 96.0 / 72.0)
+            | Some (value, _) -> parseFloat value
+            | None -> parseFloat text)
 
     // --- DrawingML geometry/fill parsing (a:prstGeom / a:custGeom / a:gradFill) ---
 
     let private srgbOf (node: XmlNode) : string option =
         Ns.descendantsNs "srgbClr" node |> List.tryHead
         |> Option.bind (Xml.attr "val")
-        |> Option.map (fun v -> if v.StartsWith("#") then v else "#" + v)
+        |> Option.map ValueText.Color.withHash
 
     let private parsePreset (shapeNode: XmlNode) : string option =
         Ns.descendantsNs "prstGeom" shapeNode |> List.tryHead
@@ -3414,7 +3380,7 @@ module Shapes =
         let vmlInsets =
             vmlTextBox
             |> Option.bind (Xml.attr "inset")
-            |> Option.map (fun inset -> inset.Split(',') |> Array.map vmlLength)
+            |> Option.map (fun inset -> ValueText.Css.items ',' inset |> Array.map vmlLength)
             |> Option.defaultValue [||]
         let inset (name: string) (index: int) =
             bodyPr |> Option.bind (Xml.attr name) |> Option.bind parseFloat |> Option.map emuToPixels
@@ -3470,7 +3436,7 @@ module Shapes =
                 | XmlDsl.Element ("v:oval", _, _, _) -> Some "ellipse"
                 | XmlDsl.Element ("v:roundrect", _, _, _) -> Some "roundRect"
                 | _ -> None)
-        let isVml = match shapeNode with XmlDsl.Element (name, _, _, _) -> name.StartsWith "v:" | _ -> false
+        let isVml = match shapeNode with XmlDsl.Element (name, _, _, _) -> Ns.hasPrefix "v" name | _ -> false
         // A VML shape says in its style where it stands: aligned or by its margins, relative to what, behind the text.
         let vmlAlign (name: string) = if isVml then styleText name vmlStyle |> Option.filter (fun value -> value <> "absolute" && value <> "") else None
         let vmlRelative (name: string) =
@@ -3495,7 +3461,7 @@ module Shapes =
             if not isVml then None
             else
                 styleText "rotation" vmlStyle
-                |> Option.bind (fun text -> if text.EndsWith "fd" then text.Substring(0, text.Length - 2) |> parseFloat |> Option.map (fun fd -> fd / 65536.0) else parseFloat text)
+                |> Option.bind (fun text -> match ValueText.Css.withUnit [ "fd" ] text with Some (value, _) -> parseFloat value |> Option.map (fun fd -> fd / 65536.0) | None -> parseFloat text)
         let isAnchor = Xml.name shapeNode |> Option.map Ns.stripNs = Some "anchor"
         let isInline = Xml.name shapeNode |> Option.map Ns.stripNs = Some "inline"
         let anchorBool name = if isAnchor then Xml.attr name shapeNode |> Option.map (fun value -> value = "1" || value.ToLowerInvariant() = "true") else None
@@ -3588,7 +3554,7 @@ module Shapes =
                 // (Of WordArt: the opacity of its letters.)
                 (if txbxContent.IsNone && textPath.IsSome then Ns.descendantsNs "fill" shapeNode else [])
                 |> List.tryPick (Xml.attr "opacity")
-                |> Option.bind (fun text -> if text.EndsWith "f" then text.Substring(0, text.Length - 1) |> parseFloat |> Option.map (fun f -> f / 65536.0) else parseFloat text)
+                |> Option.bind (fun text -> match ValueText.Css.withUnit [ "f" ] text with Some (value, _) -> parseFloat value |> Option.map (fun f -> f / 65536.0) | None -> parseFloat text)
                 |> Option.filter (fun value -> value >= 0.0 && value < 1.0)
             SourceXml = None
         }
@@ -3687,18 +3653,7 @@ let private resolveCommentHyperlinks (rels: Relationship list) (comment: Comment
     else { comment with Blocks = comment.Blocks |> mapBlockRuns (resolveHyperlinkRun (hyperlinkTargets rels)) }
 
 // Determine MIME type from file extension
-let getMimeType (path: string) : string =
-    let ext = path.ToLower()
-    if ext.EndsWith(".png") then "image/png"
-    elif ext.EndsWith(".jpg") || ext.EndsWith(".jpeg") then "image/jpeg"
-    elif ext.EndsWith(".gif") then "image/gif"
-    elif ext.EndsWith(".bmp") then "image/bmp"
-    elif ext.EndsWith(".svg") then "image/svg+xml"
-    elif ext.EndsWith(".webp") then "image/webp"
-    elif ext.EndsWith(".emf") then "image/x-emf"
-    elif ext.EndsWith(".wmf") then "image/x-wmf"
-    elif ext.EndsWith(".tif") || ext.EndsWith(".tiff") then "image/tiff"
-    else "application/octet-stream"
+let getMimeType (path: string) : string = ValueText.mediaTypeOf path
 
 let private wordTwipsToPixels value =
     value
@@ -3768,14 +3723,9 @@ let extractImageDataUrl (archive: ZipArchive) (relationshipId: string) (relation
             return None
     }
 
-let private lastPathSegment (path: string) =
-    let parts = (normalizePath path).Split('/')
-    parts.[parts.Length - 1]
+let private lastPathSegment (path: string) = PartPath.fileName (normalizePath path)
 
-let private parentPath (path: string) =
-    let normalized = normalizePath path
-    let index = normalized.LastIndexOf('/')
-    if index > 0 then normalized.Substring(0, index) else ""
+let private parentPath (path: string) = PartPath.directory (normalizePath path)
 
 let private resolveRelationshipTarget baseDir target =
     ZipInterop.resolveTarget baseDir target
@@ -3788,7 +3738,7 @@ let private partRelsPath (partPath: string) =
 /// The package path of the part a relationship of the given type points at, or `fallback`.
 let private partPathOfType (baseDir: string) (rels: Relationship list) (typeSuffix: string) (fallback: string) =
     rels
-    |> List.tryFind (fun rel -> rel.Type.EndsWith typeSuffix && rel.TargetMode <> Some "External")
+    |> List.tryFind (fun rel -> ValueText.isRelationshipType typeSuffix rel.Type && rel.TargetMode <> Some "External")
     |> Option.map (fun rel -> ZipInterop.resolveTarget baseDir rel.Target)
     |> Option.defaultValue fallback
 
@@ -3825,11 +3775,8 @@ let private loadImages (source: PartSource) (baseDir: string) (rels: Relationshi
         else
             None)
 
-let private relationshipIdPattern = System.Text.RegularExpressions.Regex("\\s(?:r:[A-Za-z]+|o:relid)=\"([^\"]*)\"")
-
-/// Relationship ids an XML fragment refers to (r:id, r:embed, r:link, r:dm, ..., o:relid).
-let relationshipIdsInXml (xml: string) : string list =
-    [ for m in relationshipIdPattern.Matches xml -> m.Groups.[1].Value ] |> List.distinct
+/// Relationship ids an XML fragment refers to (r:id, r:embed, r:link, r:dm, ..., o:relid), each once.
+let relationshipIdsInXml (xml: string) : string list = OpcXml.relationshipIdsIn xml
 
 let private opaqueXmlOfBlocks (blocks: DocumentContent list) : string list =
     blockParagraphs blocks
@@ -3845,7 +3792,7 @@ let private opaqueXmlOfBlocks (blocks: DocumentContent list) : string list =
 let private isRegeneratedRelationshipType (relType: string) =
     [ "/styles"; "/numbering"; "/settings"; "/header"; "/footer"; "/footnotes"; "/endnotes"; "/comments"
       "/commentsExtended"; "/commentsIds"; "/commentsExtensible" ]
-    |> List.exists (fun suffix -> relType.EndsWith suffix)
+    |> List.exists (fun suffix -> ValueText.isRelationshipType suffix relType)
 
 /// The relationships of a regenerated part that are written back: everything
 /// the writer does not produce itself. Pictures and hyperlinks are produced by
@@ -3855,7 +3802,7 @@ let private keptRelationshipsReferenced (baseDir: string) (rels: Relationship li
     rels
     |> List.filter (fun rel ->
         if isRegeneratedRelationshipType rel.Type then false
-        elif rel.Type.EndsWith "/image" || rel.Type.EndsWith "/hyperlink" then Set.contains rel.Id referenced
+        elif ValueText.isRelationshipType "/image" rel.Type || ValueText.isRelationshipType "/hyperlink" rel.Type then Set.contains rel.Id referenced
         else true)
     |> List.map (fun rel ->
         let isExternal = rel.TargetMode = Some "External"
@@ -3975,7 +3922,7 @@ type private Stories = {
 /// found through the relationships of the part that refers to it.
 let private readMainPart (source: PartSource) : MainPart option =
     let rootRels = source.Text "_rels/.rels" |> relationshipsOfXml
-    let mainRelationship = rootRels |> List.tryFind (fun rel -> rel.Type.EndsWith "/officeDocument" && rel.TargetMode <> Some "External")
+    let mainRelationship = rootRels |> List.tryFind (fun rel -> ValueText.isRelationshipType "/officeDocument" rel.Type && rel.TargetMode <> Some "External")
     let mainPath =
         mainRelationship
         |> Option.map (fun rel -> ZipInterop.resolveTarget "" rel.Target)
@@ -4040,9 +3987,9 @@ let private readStories (main: MainPart) (headerRefTypes: Map<string, string>) (
         |> Option.map (fun value ->
             let hfType = refTypes |> Map.tryFind rel.Id |> Option.defaultValue "default"
             let part = HeaderFooter.parseHeaderFooter value hfType (Some rel.Id) |> resolveHeaderFooterHyperlinks partRels
-            let holds (name: string) = value.IndexOf(name, System.StringComparison.Ordinal) >= 0
             let part =
-                if holds "txbxContent" || holds "prstGeom" || holds "custGeom" || holds "textpath" then
+                // (A modelled shape has text or a geometry: see Docx.isModelledShape.)
+                if not (XmlDsl.startTagsNamed [ "txbxContent"; "prstGeom"; "custGeom"; "textpath" ] value).IsEmpty then
                     let root = XmlDsl.parse value
                     let shapes =
                         Shapes.parseShapesOfPart root
@@ -4055,8 +4002,8 @@ let private readStories (main: MainPart) (headerRefTypes: Map<string, string>) (
                         Content = part.Content |> List.map Para |> dropModelledShapeRuns |> List.choose (function Para para -> Some para | Tbl _ -> None) }
                 else part
             part, path, partRels)
-    let headerParts = main.Rels |> List.filter (fun rel -> rel.Type.EndsWith "/header") |> List.choose (loadHeaderFooter headerRefTypes)
-    let footerParts = main.Rels |> List.filter (fun rel -> rel.Type.EndsWith "/footer") |> List.choose (loadHeaderFooter footerRefTypes)
+    let headerParts = main.Rels |> List.filter (fun rel -> ValueText.isRelationshipType "/header" rel.Type) |> List.choose (loadHeaderFooter headerRefTypes)
+    let footerParts = main.Rels |> List.filter (fun rel -> ValueText.isRelationshipType "/footer" rel.Type) |> List.choose (loadHeaderFooter footerRefTypes)
     { HeaderParts = headerParts
       FooterParts = footerParts
       PartShapes = Map.ofSeq partShapes
@@ -4106,7 +4053,7 @@ let private assembleDocument (main: MainPart) (stories: Stories) (content: Docum
     let comments = stories.Comments
     // ---- what is kept of the package for the next save ----
     let rootKept =
-        keptRelationships "" (main.RootRels |> List.filter (fun rel -> not (rel.Type.EndsWith "/officeDocument"))) []
+        keptRelationships "" (main.RootRels |> List.filter (fun rel -> not (ValueText.isRelationshipType "/officeDocument" rel.Type))) []
     let partKept =
         [ yield "document", keptRelationshipsReferenced docDir rels documentReferenced
           for part, path, partRels in headerParts @ footerParts do
@@ -4285,240 +4232,136 @@ let parseFromSource (source: PartSource) : WordDocument option =
 // section properties at the end of the body, tracked moves - whose names span
 // the part -, a document type declaration) is read at once.
 
-let private textAt (s: string) (at: int) (value: string) : bool =
-    if at < 0 || at + value.Length > s.Length then false
-    else
-        let mutable same = true
-        let mutable k = 0
-        while same && k < value.Length do
-            if s.[at + k] <> value.[k] then same <- false
-            k <- k + 1
-        same
-
-let private indexOfText (s: string) (value: string) (from: int) : int =
-#if FABLE_COMPILER
-    s.IndexOf(value, from)
-#else
-    s.IndexOf(value, from, System.StringComparison.Ordinal)
-#endif
-
-let private lastIndexOfText (s: string) (value: string) : int =
-#if FABLE_COMPILER
-    s.LastIndexOf(value)
-#else
-    s.LastIndexOf(value, System.StringComparison.Ordinal)
-#endif
-
-/// Index of the '>' that ends the tag starting at `lt` (an attribute value may hold one); -1: none.
-let private tagEndAt (xml: string) (lt: int) : int =
-    let n = xml.Length
-    let mutable i = lt + 1
-    let mutable inQuote = false
-    let mutable quote = '"'
-    let mutable found = -1
-    while found < 0 && i < n do
-        let c = xml.[i]
-        if inQuote then
-            if c = quote then inQuote <- false
-        elif c = '>' then found <- i
-        elif c = '"' || c = '\'' then
-            inQuote <- true
-            quote <- c
-        i <- i + 1
-    found
-
-let private tagNameAt (xml: string) (lt: int) : string =
-    let mutable i = lt + 1
-    let mutable fin = false
-    while not fin && i < xml.Length do
-        let c = xml.[i]
-        if c = ' ' || c = '>' || c = '/' || c = '\n' || c = '\t' || c = '\r' then fin <- true else i <- i + 1
-    xml.Substring(lt + 1, i - lt - 1)
-
-/// The next tag of an element's content from `pos` on that is not a comment,
-/// a CDATA section or a processing instruction: where its '<' is (-1: the
-/// text ends, or is not well formed).
-let private nextTagAt (xml: string) (pos: int) : int =
-    let n = xml.Length
-    let mutable at = pos
-    let mutable found = -2
-    while found = -2 do
-        let lt = if at >= 0 && at < n then xml.IndexOf('<', at) else -1
-        if lt < 0 || lt + 1 >= n then found <- -1
-        elif xml.[lt + 1] = '!' then
-            let terminator = if textAt xml lt "<!--" then "-->" elif textAt xml lt "<![CDATA[" then "]]>" else ""
-            if terminator = "" then found <- -1
-            else
-                let fin = indexOfText xml terminator lt
-                if fin < 0 then found <- -1 else at <- fin + terminator.Length
-        elif xml.[lt + 1] = '?' then
-            let fin = indexOfText xml "?>" lt
-            if fin < 0 then found <- -1 else at <- fin + 2
-        else found <- lt
-    found
-
-/// Index just after the element whose start tag begins at `lt`; -1 when the text is not well formed.
-let private elementEndAt (xml: string) (lt: int) : int =
-    let gt = tagEndAt xml lt
-    if gt < 0 then -1
-    elif xml.[gt - 1] = '/' then gt + 1
-    else
-        let mutable depth = 1
-        let mutable pos = gt + 1
-        while depth > 0 && pos >= 0 do
-            let next = nextTagAt xml pos
-            if next < 0 then pos <- -1
-            elif xml.[next + 1] = '/' then
-                let fin = xml.IndexOf('>', next)
-                if fin < 0 then pos <- -1
-                else
-                    depth <- depth - 1
-                    pos <- fin + 1
-            else
-                let fin = tagEndAt xml next
-                if fin < 0 then pos <- -1
-                else
-                    if xml.[fin - 1] <> '/' then depth <- depth + 1
-                    pos <- fin + 1
-        pos
-
 /// Where the child elements of the body are in the text of the main part,
-/// found one at a time.
+/// read one at a time by the scanner's lexer.
 type private BodyCursor = {
     Xml: string
     /// The root element with its attributes (the namespaces of the part) and no content.
     Root: XmlNode
-    /// The root's start tag and its name: what a child element is wrapped in for the platform's parser.
-    RootTag: string
-    RootName: string
+    /// The lexer in what the body holds: it stands on the end of the last child element read.
+    Lexer: XmlDsl.XmlLexer
     /// Where the body's end tag starts.
     BodyClose: int
-    /// Where the next child element is looked for.
-    mutable Pos: int
+    /// Where what the body holds starts.
+    BodyStart: int
+    /// The names of the elements of the last child element read.
+    Names: System.Collections.Generic.HashSet<string>
     /// How many child elements were found.
     mutable Count: int
     mutable AtEnd: bool
 }
 
 /// The cursor at the first child element of the body; None for a main part
-/// that is read at once (a document type declaration, no body, an empty one).
+/// that is read at once (a document type declaration, no body, an empty one,
+/// a body that is not the last element of the root).
 let private openBodyCursor (xml: string) : BodyCursor option =
-    // The root element: after the declaration and comments (a document type declaration is not read here).
-    let rootAt = nextTagAt xml 0
-    if rootAt < 0 || xml.[rootAt + 1] = '/' then None
-    else
-        let rootEnd = tagEndAt xml rootAt
-        if rootEnd < 0 || xml.[rootEnd - 1] = '/' then None
+    match XmlDsl.rootStartTag xml with
+    | None -> None
+    | Some (root, lexer) ->
+        // (A root's `xml:space` holds for the text of the whole part: not for elements read one by one.)
+        if lexer.SelfClosing || (Xml.attr "xml:space" root).IsSome then None
         else
-            let rootName = tagNameAt xml rootAt
-            let rootTag = xml.Substring(rootAt, rootEnd + 1 - rootAt)
-            match XmlDsl.tryScan (rootTag.Substring(0, rootTag.Length - 1) + "/>") (System.Collections.Generic.HashSet<string>()) with
-            | None -> None
-            // (A root's `xml:space` holds for the text of the whole part: not for elements read one by one.)
-            | Some root when (Xml.attr "xml:space" root).IsSome -> None
-            | Some root ->
-                // The first child of the root that is a body.
-                let mutable pos = rootEnd + 1
-                let mutable result = None
-                let mutable searching = true
-                while searching do
-                    let lt = nextTagAt xml pos
-                    if lt < 0 || xml.[lt + 1] = '/' then searching <- false
-                    else
-                        let name = tagNameAt xml lt
-                        if Ns.stripNs name = "body" then
-                            searching <- false
-                            let gt = tagEndAt xml lt
-                            let close = lastIndexOfText xml ("</" + name)
-                            if gt >= 0 && xml.[gt - 1] <> '/' && close > gt then
-                                result <- Some { Xml = xml; Root = root; RootTag = rootTag; RootName = rootName; BodyClose = close; Pos = gt + 1; Count = 0; AtEnd = false }
-                        else
-                            let fin = elementEndAt xml lt
-                            if fin < 0 then searching <- false else pos <- fin
-                result
+            // The first child of the root that is a body.
+            let mutable result = None
+            let mutable searching = true
+            while searching do
+                match lexer.Next () with
+                | XmlDsl.XmlToken.Text | XmlDsl.XmlToken.Comment | XmlDsl.XmlToken.Instruction | XmlDsl.XmlToken.CData -> ()
+                | XmlDsl.XmlToken.StartTag when lexer.LocalNameIs "body" ->
+                    searching <- false
+                    if not lexer.SelfClosing then
+                        let bodyName = lexer.Name
+                        let bodyStart = lexer.End
+                        // Its end tag: the one before the root's.
+                        match XmlDsl.endTagBefore xml xml.Length with
+                        | Some (rootClose, rootName) when Some rootName = Xml.name root ->
+                            match XmlDsl.endTagBefore xml rootClose with
+                            | Some (close, name) when name = bodyName && close >= bodyStart ->
+                                result <-
+                                    Some { Xml = xml; Root = root; Lexer = XmlDsl.XmlLexer(xml, bodyStart, close); BodyClose = close; BodyStart = bodyStart
+                                           Names = System.Collections.Generic.HashSet<string>(); Count = 0; AtEnd = false }
+                            | _ -> ()
+                        | _ -> ()
+                | XmlDsl.XmlToken.StartTag -> if lexer.SkipElement () < 0 then searching <- false
+                | _ -> searching <- false
+            result
 
 /// The next child element of the body: (where it starts, where it ends, its
-/// name); None at the end of the body. (Text that is not well formed ends the body.)
-let private nextBodyChild (cursor: BodyCursor) : (int * int * string) option =
+/// name, the element as the scanner reads it - None where it does not, the
+/// platform's parser then reads it); None at the end of the body.
+let private nextBodyChild (cursor: BodyCursor) : (int * int * string * XmlNode option) option =
     if cursor.AtEnd then None
     else
-        let lt = nextTagAt cursor.Xml cursor.Pos
-        if lt < 0 || cursor.Xml.[lt + 1] = '/' then
-            cursor.AtEnd <- true
-            None
-        else
-            let fin = elementEndAt cursor.Xml lt
-            // (An element that does not end, or ends after the body does: the tags do not match.)
-            if fin < 0 || fin > cursor.BodyClose then
-                failwith "The main part of the document is not well formed"
-            else
-                cursor.Pos <- fin
+        let lexer = cursor.Lexer
+        let mutable result = None
+        let mutable going = true
+        while going do
+            match lexer.Next () with
+            | XmlDsl.XmlToken.Text | XmlDsl.XmlToken.Comment | XmlDsl.XmlToken.Instruction | XmlDsl.XmlToken.CData -> ()
+            | XmlDsl.XmlToken.StartTag ->
+                going <- false
+                let start = lexer.Start
+                let name = lexer.Name
+                cursor.Names.Clear ()
+                let node = XmlDsl.tryReadElement lexer cursor.Names
+                // (An element that does not end, or ends after the body does: the tags do not match.)
+                if lexer.Token = XmlDsl.XmlToken.Malformed || lexer.Token = XmlDsl.XmlToken.EndOfText then
+                    failwith "The main part of the document is not well formed"
                 cursor.Count <- cursor.Count + 1
-                Some (lt, fin, tagNameAt cursor.Xml lt)
+                result <- Some (start, lexer.End, name, node)
+            | XmlDsl.XmlToken.EndOfText ->
+                going <- false
+                cursor.AtEnd <- true
+            | _ -> failwith "The main part of the document is not well formed"
+        result
 
 /// The last child element of the body when that is its section properties:
-/// (where it starts, where it ends).
-let private finalSectionPropertiesAt (cursor: BodyCursor) : (int * int) option =
-    let xml = cursor.Xml
-    let isSpace (c: char) = c = ' ' || c = '\n' || c = '\t' || c = '\r'
-    let mutable fin = cursor.BodyClose
-    while fin > 0 && isSpace xml.[fin - 1] do fin <- fin - 1
-    if fin < 2 || xml.[fin - 1] <> '>' then None
-    else
-        // The '<' of the tag that ends there (an attribute value holds none).
-        let mutable lt = fin - 1
-        while lt >= 0 && xml.[lt] <> '<' do lt <- lt - 1
-        if lt < 0 then None
-        elif xml.[fin - 2] = '/' then
-            if xml.[lt + 1] <> '/' && Ns.stripNs (tagNameAt xml lt) = "sectPr" then Some (lt, fin) else None
-        elif xml.[lt + 1] <> '/' then None
-        else
-            let name = xml.Substring(lt + 2, fin - 1 - (lt + 2)).Trim()
-            if Ns.stripNs name <> "sectPr" then None
-            else
-                // Back to the start tag this end tag closes (section properties may hold
-                // earlier ones of the same name, in a tracked change).
-                let opening = "<" + name
-                let closing = "</" + name
-                let mutable depth = 1
-                let mutable at = lt - 1
-                let mutable start = -1
-                while start < 0 && at >= 0 do
-                    if xml.[at] = '<' then
-                        if textAt xml at closing then depth <- depth + 1
-                        elif textAt xml at opening
-                             && (let after = at + opening.Length
-                                 after < xml.Length && (isSpace xml.[after] || xml.[after] = '>' || xml.[after] = '/')) then
-                            let gt = tagEndAt xml at
-                            if gt >= 0 && xml.[gt - 1] <> '/' then
-                                depth <- depth - 1
-                                if depth = 0 then start <- at
-                    at <- at - 1
-                // (It is a child of the body when the elements before it close up to there:
-                // the reader finds out as it goes, see ProgressiveReader.)
-                if start < 0 then None else Some (start, fin)
+/// (where it starts, the element).
+let private finalSectionProperties (cursor: BodyCursor) : (int * XmlNode) option =
+    // (It is a child of the body when the elements before it close up to there:
+    // the reader finds out as it goes, see ProgressiveReader.)
+    match XmlDsl.elementBefore cursor.Xml cursor.BodyClose cursor.BodyStart (System.Collections.Generic.HashSet<string>()) with
+    | Some (XmlDsl.Element (name, _, _, span) as node) when Ns.stripNs name = "sectPr" -> Some (span.Start, node)
+    | _ -> None
 
-let private referenceTagPattern = System.Text.RegularExpressions.Regex("<(?:[A-Za-z_][A-Za-z0-9_.\\-]*:)?(headerReference|footerReference)[\\s/][^>]*>")
+/// What the main part holds that is read before its body: where each section
+/// properties element starts, what the sections' header / footer references say
+/// each part is (relationship id -> type: headers, footers), and whether it has
+/// tracked moves.
+type private MainPartOutline = {
+    SectionStarts: int[]
+    HeaderTypes: Map<string, string>
+    FooterTypes: Map<string, string>
+    HasMoves: bool
+}
 
-/// What the sections' header / footer references say each part is
-/// (relationship id -> type), read off the text of the main part: (headers, footers).
-let private referenceTypesInText (xml: string) : Map<string, string> * Map<string, string> =
-    let headers = ResizeArray<string * string>()
-    let footers = ResizeArray<string * string>()
-    if indexOfText xml "Reference" 0 >= 0 then
-        let names = System.Collections.Generic.HashSet<string>()
-        for m in referenceTagPattern.Matches xml do
-            let tag = m.Value
-            let closed = if tag.EndsWith "/>" then tag else tag.Substring(0, tag.Length - 1) + "/>"
-            match XmlDsl.tryScan closed names with
-            | Some node ->
-                match Xml.attr "r:id" node with
-                | Some id ->
-                    let entry = id, (Docx.attr "type" node |> Option.defaultValue "default")
-                    if m.Groups.[1].Value = "headerReference" then headers.Add entry else footers.Add entry
-                | None -> ()
-            | None -> ()
-    Map.ofSeq headers, Map.ofSeq footers
+let private outlineOfMainPart (xml: string) : MainPartOutline =
+    let tags = XmlDsl.startTagsNamed [ "sectPr"; "headerReference"; "footerReference"; "moveFromRangeStart"; "moveToRangeStart" ] xml
+    let local (node: XmlNode) = Xml.name node |> Option.map Ns.stripNs |> Option.defaultValue ""
+    let referenceTypes (kind: string) =
+        tags
+        |> List.filter (fun node -> local node = kind)
+        |> List.choose (fun node -> Xml.attr "r:id" node |> Option.map (fun id -> id, (Docx.attr "type" node |> Option.defaultValue "default")))
+        |> Map.ofList
+    { SectionStarts = tags |> List.filter (fun node -> local node = "sectPr") |> List.map (function XmlDsl.Element (_, _, _, span) -> span.Start | _ -> -1) |> Array.ofList
+      HeaderTypes = referenceTypes "headerReference"
+      FooterTypes = referenceTypes "footerReference"
+      HasMoves = tags |> List.exists (fun node -> local node = "moveFromRangeStart" || local node = "moveToRangeStart") }
+
+/// The local names of the elements of a node, from the names the scanner gave (`scanned`), or found in it.
+let private localNamesOf (scanned: System.Collections.Generic.HashSet<string> option) (node: XmlNode) : System.Collections.Generic.HashSet<string> =
+    let local = System.Collections.Generic.HashSet<string>()
+    match scanned with
+    | Some names -> for name in names do local.Add (Ns.stripNs name) |> ignore
+    | None ->
+        let rec visit (current: XmlNode) =
+            match current with
+            | XmlDsl.Element (name, _, kids, _) ->
+                local.Add (Ns.stripNs name) |> ignore
+                for kid in kids do visit kid
+            | _ -> ()
+        visit node
+    local
 
 /// Blocks a ProgressiveReader has read.
 type ProgressiveBatch = {
@@ -4609,58 +4452,48 @@ let openProgressiveFromSource (keepContent: bool) (source: PartSource) : Progres
     | None -> None
     | Some main ->
         let xml = main.Xml
+        let outline = outlineOfMainPart xml
         let cursorAndFinal =
             // (The names of tracked moves are found by following their range markers through the part.)
-            if indexOfText xml "moveFromRangeStart" 0 >= 0 || indexOfText xml "moveToRangeStart" 0 >= 0 then None
+            if outline.HasMoves then None
             else
                 openBodyCursor xml
-                |> Option.bind (fun cursor -> finalSectionPropertiesAt cursor |> Option.map (fun final -> cursor, final))
-        let names = System.Collections.Generic.HashSet<string>()
-        /// One element of the main part as a node, the text from `start` to `fin` (its spans are places in the part).
-        let parseElement (cursor: BodyCursor) (start: int) (fin: int) : XmlNode =
-            match XmlDsl.tryScanAt xml start fin names with
+                |> Option.bind (fun cursor -> finalSectionProperties cursor |> Option.map (fun final -> cursor, final))
+        /// The element of the main part that starts at `start` as a node (its spans are places in the part).
+        let parseElement (cursor: BodyCursor) (start: int) : XmlNode =
+            match XmlDsl.tryReadElementAt xml start (System.Collections.Generic.HashSet<string>()) with
             | Some node -> node
             | None ->
                 // (What the scanner does not read: by the platform's parser, in the root's namespaces.)
-                match XmlDsl.parse (cursor.RootTag + xml.Substring(start, fin - start) + "</" + cursor.RootName + ">") with
-                | XmlDsl.Element (_, _, children, _) -> children |> List.tryFind (fun child -> (Xml.name child).IsSome) |> Option.defaultValue XmlDsl.Empty
-                | _ -> XmlDsl.Empty
+                match XmlDsl.elementEndAt xml start with
+                | fin when fin > start -> XmlDsl.parseElementOf xml cursor.Root start fin
+                | _ -> failwith "The main part of the document is not well formed"
         let finalSetup =
             cursorAndFinal
-            |> Option.bind (fun (cursor, (start, fin)) ->
-                try Some (cursor, start, parsePageSetup main.EvenAndOddHeaders (Some (parseElement cursor start fin)))
+            |> Option.bind (fun (cursor, (start, node)) ->
+                try Some (cursor, start, parsePageSetup main.EvenAndOddHeaders (Some node))
                 with _ -> None)
         match finalSetup with
         | None -> parseFromSource source |> Option.map wholeReader
         | Some (cursor, finalStart, finalPageSetup) ->
-            let headerRefTypes, footerRefTypes = referenceTypesInText xml
+            let headerRefTypes, footerRefTypes = outline.HeaderTypes, outline.FooterTypes
             let stories = readStories main headerRefTypes footerRefTypes
             let hyperlinks = hyperlinkTargets main.Rels
             let renderedBreakCounter = ref 0
             // The last block made, not given yet: what it is depends on the block after it.
             let mutable held : (DocumentContent * Shape list * int * int) option = None
             // Where the element of the last block given ends in the text.
-            let mutable givenTo = cursor.Pos
+            let mutable givenTo = cursor.BodyStart
             // The section properties that come next in the text after what is given: where their
             // start tag is (-1: none before the body's own; -2: not looked for), and the page setup they give.
             let mutable openSectionAt = -2
             let mutable openSectionSetup : PageSetup option = None
-            let isNameChar (c: char) = System.Char.IsLetterOrDigit c || c = '_' || c = '.' || c = '-'
+            // (The section properties ahead: from the outline of the part, passed by as the blocks are given.)
+            let mutable sectionIndex = 0
             /// Where the start tag of the next section properties element at or after `from` begins; -1: none.
             let nextSectionProperties (from: int) : int =
-                let mutable at = indexOfText xml "sectPr" from
-                let mutable found = -1
-                while found < 0 && at >= 0 do
-                    let after = at + 6
-                    // (A start tag: "<sectPr" or "<prefix:sectPr", the name ending there.)
-                    let mutable start = at - 1
-                    if start >= 0 && xml.[start] = ':' then
-                        start <- start - 1
-                        while start >= 0 && isNameChar xml.[start] do start <- start - 1
-                    if start >= 0 && xml.[start] = '<' && after < xml.Length && (xml.[after] = ' ' || xml.[after] = '>' || xml.[after] = '/' || xml.[after] = '\n' || xml.[after] = '\t' || xml.[after] = '\r') then
-                        found <- start
-                    else at <- indexOfText xml "sectPr" after
-                found
+                while sectionIndex < outline.SectionStarts.Length && outline.SectionStarts.[sectionIndex] < from do sectionIndex <- sectionIndex + 1
+                if sectionIndex < outline.SectionStarts.Length then outline.SectionStarts.[sectionIndex] else -1
             let openSection () : PageSetup option =
                 // (Looked for again when the paragraph that holds them was given.)
                 if openSectionAt = -2 || (openSectionAt >= 0 && givenTo > openSectionAt) then
@@ -4671,10 +4504,7 @@ let openProgressiveFromSource (keepContent: bool) (source: PartSource) : Progres
                     else
                         openSectionAt <- at
                         openSectionSetup <-
-                            (try
-                                let fin = elementEndAt xml at
-                                if fin < 0 then finalPageSetup
-                                else parsePageSetup main.EvenAndOddHeaders (Some (parseElement cursor at fin))
+                            (try parsePageSetup main.EvenAndOddHeaders (Some (parseElement cursor at))
                              with _ -> finalPageSetup)
                 openSectionSetup
             let mutable made = 0
@@ -4772,23 +4602,28 @@ let openProgressiveFromSource (keepContent: bool) (source: PartSource) : Progres
                               held <- None
                               deliver released shapesOut raw shapes chunk chunkEnd
                           | None -> ()
-                      | Some (start, fin, name) ->
+                      | Some (start, fin, name, scanned) ->
                           let chunk = cursor.Count - 1
                           let localName = Ns.stripNs name
                           if localName = "sectPr" && firstSectionProperties < 0 then firstSectionProperties <- start
                           let givesBlocks = localName = "p" || localName = "tbl" || localName = "sdt" || localName = "customXml"
                           if givesBlocks || keepContent then
-                              let text = xml.Substring(start, fin - start)
-                              let node = parseElement cursor start fin
+                              let node =
+                                  match scanned with
+                                  | Some node -> node
+                                  // (What the scanner does not read: by the platform's parser, in the root's namespaces.)
+                                  | None -> XmlDsl.parseElementOf xml cursor.Root start fin
+                              // The local names of the elements it holds.
+                              let holds = localNamesOf (if scanned.IsSome then Some cursor.Names else None) node
                               if keepContent then
                                   List.iter2 (fun revisionType (found: ResizeArray<Revision>) ->
-                                      if indexOfText text revisionType 0 >= 0 then
+                                      if holds.Contains revisionType then
                                           found.AddRange (Ns.descendantsNs revisionType node |> List.choose Revisions.parseRevision)) revisionTypes revisions
                               if givesBlocks then
                                   let blocks = Docx.contentOfChild renderedBreakCounter node
                                   // (A modelled shape has text or a geometry: see Docx.isModelledShape.)
                                   let blockNodes =
-                                      if indexOfText text "txbxContent" 0 >= 0 || indexOfText text "prstGeom" 0 >= 0 || indexOfText text "custGeom" 0 >= 0 || indexOfText text "textpath" 0 >= 0 then
+                                      if holds.Contains "txbxContent" || holds.Contains "prstGeom" || holds.Contains "custGeom" || holds.Contains "textpath" then
                                           Shapes.blockNodesOfChild node |> List.toArray
                                       else [||]
                                   blocks
@@ -4826,8 +4661,7 @@ let openProgressiveFromSource (keepContent: bool) (source: PartSource) : Progres
                     // body that has more than one.)
                     let pageSetup =
                         if firstSectionProperties >= 0 && firstSectionProperties <> finalStart then
-                            let fin = elementEndAt xml firstSectionProperties
-                            parsePageSetup main.EvenAndOddHeaders (Some (parseElement cursor firstSectionProperties fin))
+                            parsePageSetup main.EvenAndOddHeaders (Some (parseElement cursor firstSectionProperties))
                         else finalPageSetup
                     let doc =
                         assembleDocument main stories (List.ofSeq allContent) (List.ofSeq allShapes) pageSetup
@@ -4861,7 +4695,7 @@ let openProgressiveFromSource (keepContent: bool) (source: PartSource) : Progres
                   OpenSection = (fun () -> if finished then finalPageSetup else openSection ())
                   AtOnce = false
                   BlockCount = fun () -> blockChunks.Count
-                  Progress = fun () -> if finished then 1.0 else float (cursor.Pos) / float (max 1 cursor.BodyClose)
+                  Progress = fun () -> if finished then 1.0 else float cursor.Lexer.Position / float (max 1 cursor.BodyClose)
                   ImagesOf = imagesOf
                   Finish = finish }
 
@@ -5002,11 +4836,11 @@ let private wordCharacterSpacingToCssPixels (spacing: string option) =
         | false, _ -> None)
 
 let private resolveThemeFont (theme: Theme option) (themeFont: string option) =
-    match theme, themeFont with
-    | Some theme, Some value when value.StartsWith("major") -> theme.MajorFont
-    | Some theme, Some value when value.StartsWith("minor") -> theme.MinorFont
-    | _, Some value when value.StartsWith("major") -> Some "Cambria"
-    | _, Some value when value.StartsWith("minor") -> Some "Calibri"
+    match theme, themeFont |> Option.bind ValueText.StyleName.isMajorThemeFont with
+    | Some theme, Some true -> theme.MajorFont
+    | Some theme, Some false -> theme.MinorFont
+    | _, Some true -> Some "Cambria"
+    | _, Some false -> Some "Calibri"
     | _ -> None
 
 let private wordFontFamilyToCss (theme: Theme option) (props: RunProperties) =
@@ -5017,8 +4851,8 @@ let private wordFontFamilyToCss (theme: Theme option) (props: RunProperties) =
 let private wordColorToCss (color: string option) =
     match color with
     | Some value when value = "" || value = "auto" -> None
-    | Some value when value.StartsWith("#") -> Some value
-    | Some value when value.Length = 8 -> Some ("#" + value.Substring(2).ToUpper())
+    | Some value when ValueText.Color.isHash value -> Some value
+    | Some value when value.Length = 8 -> Some (ValueText.Color.ofArgb value)
     | Some value -> Some ("#" + value.ToUpper())
     | None -> None
 
@@ -5701,13 +5535,12 @@ let isActiveHyperlinkTarget (target: string) =
     if String.IsNullOrWhiteSpace target then false
     else
         let lower = target.ToLowerInvariant()
-        lower.StartsWith "http://" || lower.StartsWith "https://" || lower.StartsWith "mailto:" || lower.StartsWith "tel:"
-        || (lower.StartsWith "#" && lower.Length > 1)
+        ValueText.Link.isActive lower
 
 /// A picture source that is an address the document names rather than data
 /// from the package: a linked picture, which is not loaded unless the host allows it.
 let isExternalImageSource (source: string) =
-    not (isNull source) && source.Contains "://" && not (source.StartsWith "data:")
+    not (isNull source) && source.Contains "://" && not (ValueText.Link.isDataUrl source)
 
 /// Source prefix of an opaque object that has no picture to show: the painter
 /// draws a placeholder frame for "opaque:<kind>".
@@ -5719,7 +5552,7 @@ let editorImageSource (images: Map<string, string>) (img: ImageData) : string =
     match img.Opaque with
     | Some opaque ->
         match Map.tryFind img.RelationshipId images with
-        | Some (source: string) when source.StartsWith "data:image/" && not (source.StartsWith "data:image/x-emf") && not (source.StartsWith "data:image/x-wmf") && not (source.StartsWith "data:image/tiff") -> source
+        | Some (source: string) when ValueText.Link.isDrawnPicture source -> source
         | _ -> opaqueSourcePrefix + opaque.Kind
     | None ->
         images
@@ -6011,8 +5844,8 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
 
             let itemType, headingLevel =
                 match effectiveParaProps.Style with
-                | Some style when style.StartsWith("Heading") ->
-                    let suffix = style.Substring("Heading".Length)
+                | Some style when (ValueText.StyleName.headingSuffix style).IsSome ->
+                    let suffix = (ValueText.StyleName.headingSuffix style).Value
                     match System.Int32.TryParse(suffix) with
                     | true, level -> ("Heading", max 1 (min 3 level))
                     | false, _ -> ("Heading", 1)

@@ -44,6 +44,11 @@ let bookmarkEnds (ids: string) : BookmarkEnd list =
             | parts -> Opens (parts.[0], "bookmark" + parts.[0], not opened)
         | _ -> Ends token)
 
+/// The end token of a bookmark opened after the last run of a paragraph (`start`: its start token, "id" or
+/// "id!" for one that ends there too): "!id=name<", or "!id=name".
+let openedBookmarkEnd (start: string) (name: string) : string =
+    "!" + start.TrimEnd('!') + "=" + name + (if start.EndsWith "!" then "" else "<")
+
 /// Whether a run's start ids are of one bookmark that does not end where it starts.
 let isOneOpenBookmark (ids: string) : bool =
     match bookmarkStarts ids "" with

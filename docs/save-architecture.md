@@ -115,8 +115,38 @@ a typed edit of a node of the span tree, made in its text; what no edit names st
   does not hold (marks, unknown elements, white space); written back with the items the model has, each `AtItem`
   (in its wrappers), `InItem` (a further part of a split item, in its wrappers), `WithPrevious` (new, in the
   wrappers of the one before) or `Outside`.
-- `tests/xml-text-ratchet.sh` (in `tests/run-all.sh`): the lines of the writers with text operations
-  (`Substring`, `IndexOf`, `Regex`, ...) may only go down: DocumentWriter 244 -> 0, XlsxWriter 235 -> 0.
+- `tests/xml-text-ratchet.sh` (in `tests/run-all.sh`): the lines of the writers and readers with text
+  operations (`Substring`, `IndexOf`, `Regex`, ...) may only go down: DocumentWriter 244 -> 0, XlsxWriter
+  235 -> 0, DocxReader 96 -> 0, XlsxReader 98 -> 0.
+
+### The one scanner: how the readers read XML
+
+`XmlDsl` holds the only code that takes XML text apart: `XmlLexer`, a pull lexer over a range of a part's
+text (`Next` gives a start tag, an end tag, text, CDATA, a comment, a processing instruction; the name,
+attributes - as written or decoded, into an array in one pass (`ReadAttributes`) - and text of the token are
+read off it without making strings of what is not asked for; end tags must close the open element, unless
+`Nesting` is off). On it:
+
+- `tryScan` / `tryScanAt`: a part (a range of one) as a span tree.
+- `tryReadElement` / `tryReadElementAt`: the element the lexer stands on, read to its end tag, the lexer then
+  past it - a large part read element by element (a document's body: `DocxReader.openProgressiveFromSource`;
+  a cell with an inline string). `elementEndAt`, `SkipElement` (lexed) and `SkipContent` (to the end tag of
+  its name, what is between not read: a sheet's rows passed over) for what is not read. `parseElementOf`: an
+  element the scanner does not read, by the platform's parser in the namespaces of the part's root.
+- `rootStartTag`: the root's start tag and the lexer after it; `startTagsNamed`: the start tags of some local
+  names, tag after tag, whatever they nest like (the section properties, header references and moves of a
+  main part, before its body is read; the client data of a VML part, which need not be well formed);
+  `SeekStartTag`: on to the next start tag of a name (a sheet's formulas, for a what-if data table).
+- `tryScanOutline`: a part with the elements of some names without what they hold (a sheet without its
+  rows); `tryScanKeeping`: with the text of some elements kept as written (a drawing's `a:t`).
+- `endTagBefore` / `elementBefore`: the last elements of a part found from its end, read forward again by
+  the scanner (the section properties that end a body, read before the body).
+
+XlsxReader reads a sheet's rows token by token on the lexer (`scanSheetRows`, `scanRowHeaders`,
+`scanFormulaCells`) and the rest of the sheet - kept elements and extensions, the auto filter, the printer
+settings, whether the fast native reader may read it - in outline. Values that are text but not XML (VML
+style declarations and lengths, field instructions, colours, cell references, number formats, paths) are read
+by `ValueText` (with `ModelText`, `PartPath`, `OpcXml`).
 
 ### Done
 
@@ -150,8 +180,8 @@ a typed edit of a node of the span tree, made in its text; what no edit names st
 
 - The model's XML written by a typed builder (it is text made by `element` / `selfClosing` now).
 - Bookmarks handed over typed, not as tokens in a string (`ModelText` reads them at the writer's end).
-- The reader's progressive body cursor (`openBodyCursor`, `nextTagAt`, `finalSectionPropertiesAt`) and
-  XlsxReader's fast scanners still find elements in the text: onto the one scanner (`XmlDsl`).
+- `XmlPatch.readPartExcept` still has a tokenizer of its own (XmlPatch is changed only by additions):
+  `XmlDsl.tryScanOutline` reads the same outline.
 - Headers, footers, notes and comments through the same path (origins of their own part).
 - Joins: the paragraph joined to another keeps nothing of its own properties (as Word).
 

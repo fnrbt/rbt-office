@@ -1,7 +1,8 @@
 // Spans (docs/save-architecture.md) over every XML part of every document and workbook of the
 // corpus: the scanner reads the tree .NET's parser reads (spans aside), and the span of every
 // element is its place in the part - its slice starts with its start tag and ends with its end
-// tag, and the elements in it lie inside its content, one after another.
+// tag, and the elements in it lie inside its content, one after another. The root's children read one at
+// a time by the lexer are the scanner's, and an outline read has them where they are.
 #r "nuget: Fable.Core, 4.3.0"
 #r "../../src/Office.Formats/bin/Debug/netstandard2.0/Rbt.OfficeFormat.dll"
 
@@ -83,6 +84,32 @@ for file in files do
                     match placed text node with
                     | Some problem -> ok (label + ": spans") false problem
                     | None -> ok (label + ": spans") true ""
+                    // The root's children read one at a time by the lexer (as a long document's body is
+                    // read) are the scanner's; in outline (none of them read) they are where they are.
+                    match node, rootStartTag text with
+                    | Element (rootName, rootAttrs, kids, span), Some (Element (name, attrs, [], start), lexer) ->
+                        ok (label + ": the root's start tag") (name = rootName && attrs = rootAttrs && start.Start = span.Start && start.StartTagEnd = span.StartTagEnd) ""
+                        let read = ResizeArray<XmlNode>()
+                        let mutable going = not lexer.SelfClosing
+                        while going do
+                            match lexer.Next () with
+                            | XmlToken.StartTag ->
+                                match tryReadElement lexer (Collections.Generic.HashSet()) with
+                                | Some child -> read.Add child
+                                | None -> going <- false
+                            | XmlToken.EndTag | XmlToken.EndOfText | XmlToken.Malformed -> going <- false
+                            | _ -> ()
+                        let elements = kids |> List.filter (function Element _ -> true | _ -> false)
+                        // (A root's xml:space holds for the whole part: not for its elements read one by one.)
+                        if not (rootAttrs.ContainsKey "xml:space") then
+                            ok (label + ": element by element") (List.ofSeq read = elements) ""
+                        let names = elements |> List.choose Xml.name |> List.map Ns.stripNs |> Set.ofList
+                        match tryScanOutline names.Contains text with
+                        | Some (Element (_, _, outlineKids, _)) ->
+                            let shallow = elements |> List.map (function Element (name, attrs, _, span) -> Element (name, attrs, [], span) | other -> other)
+                            ok (label + ": in outline") (outlineKids |> List.filter (function Element _ -> true | _ -> false) = shallow) ""
+                        | _ -> ok (label + ": in outline") false "not read"
+                    | _ -> ok (label + ": the root's start tag") false "not read"
     with error -> ok name false ("not read: " + error.Message)
 
 for line in failures do printfn "%s" line
