@@ -317,6 +317,128 @@ let private cellDataIsFormula (cell: CellData) =
     | _ -> false
 
 // ---------------------------------------------------------------------------
+// Maps made from entries in their order
+// ---------------------------------------------------------------------------
+// A row or column inserted or deleted moves every cell after it, keeping their
+// order: the sheet's cells are a new map of the same entries in the same order.
+// Added one by one that is a search and a rebalancing per cell (seconds for a
+// sheet of 800 000 cells in the browser); in JavaScript the tree is instead
+// built at once from the ordered entries, balanced, in one pass, and read in
+// order without an enumerator. (It reads and makes fable-library's `Map`
+// nodes - a leaf `k, v`, a node `k, v, left, right, h` - through the
+// constructors of a map's own nodes: see also `Recalc.diffCells`, which reads
+// them.) In .NET the entries are read and added as before.
+#if FABLE_COMPILER
+[<Fable.Core.Emit("$0.tree")>]
+let private mapTree (map: obj) : obj = Fable.Core.Util.jsNative
+[<Fable.Core.Emit("$0.left")>]
+let private treeLeft (node: obj) : obj = Fable.Core.Util.jsNative
+[<Fable.Core.Emit("$0.right")>]
+let private treeRight (node: obj) : obj = Fable.Core.Util.jsNative
+[<Fable.Core.Emit("$0.k")>]
+let private treeKey (node: obj) : obj = Fable.Core.Util.jsNative
+[<Fable.Core.Emit("$0.v")>]
+let private treeValue (node: obj) : obj = Fable.Core.Util.jsNative
+[<Fable.Core.Emit("($0 == null)")>]
+let private isNoTree (node: obj) : bool = Fable.Core.Util.jsNative
+[<Fable.Core.Emit("new ($0.constructor)($1, $2)")>]
+let private newTreeLeaf (like: obj) (key: obj) (value: obj) : obj = Fable.Core.Util.jsNative
+[<Fable.Core.Emit("new ($0.constructor)($1, $2, $3, $4, $5)")>]
+let private newTreeNode (like: obj) (key: obj) (value: obj) (left: obj) (right: obj) (height: int) : obj = Fable.Core.Util.jsNative
+[<Fable.Core.Emit("undefined")>]
+let private noTree () : obj = Fable.Core.Util.jsNative
+[<Fable.Core.Emit("new ($0.constructor)($0.comparer, $1)")>]
+let private mapWithTree (like: obj) (tree: obj) : obj = Fable.Core.Util.jsNative
+/// A node and a leaf of a map's tree, whose constructors make the new ones.
+let private treeShapes =
+    let tree = mapTree (box (Map.ofArray [| 0, 0; 1, 1; 2, 2 |]))
+    tree, treeLeft tree
+/// The height of a balanced tree of n entries: the bits of n.
+let private balancedHeight (n: int) =
+    let mutable h = 0
+    let mutable rest = n
+    while rest > 0 do
+        h <- h + 1
+        rest <- rest >>> 1
+    h
+/// The nodes of a tree in order (a leaf has no left or right: undefined).
+let private treeNodes (tree: obj) : ResizeArray<obj> =
+    let nodes = ResizeArray<obj>()
+    // (A balanced tree of 2^31 entries is less than 64 high.)
+    let stack = Array.zeroCreate<obj> 64
+    let mutable depth = 0
+    let mutable node = tree
+    while not (isNoTree node) || depth > 0 do
+        while not (isNoTree node) do
+            stack.[depth] <- node
+            depth <- depth + 1
+            node <- treeLeft node
+        depth <- depth - 1
+        node <- stack.[depth]
+        nodes.Add node
+        node <- treeRight node
+    nodes
+let rec private buildTree (node: obj) (leaf: obj) (keys: obj[]) (values: obj[]) (lo: int) (hi: int) : obj =
+    if lo > hi then noTree ()
+    elif lo = hi then newTreeLeaf leaf keys.[lo] values.[lo]
+    else
+        let mid = (lo + hi + 1) >>> 1
+        newTreeNode node keys.[mid] values.[mid] (buildTree node leaf keys values lo (mid - 1)) (buildTree node leaf keys values (mid + 1) hi) (balancedHeight (hi - lo + 1))
+#endif
+
+/// The entries of a map in its order, read with `entryCount`, `entryKey` and
+/// `entryValue`. (In JavaScript the nodes of the map's tree; in .NET each key
+/// followed by its value.)
+type OrderedEntries = OrderedEntries of ResizeArray<obj>
+
+let orderedEntries (map: Map<'K, 'V>) : OrderedEntries =
+#if FABLE_COMPILER
+    OrderedEntries (treeNodes (mapTree (box map)))
+#else
+    let entries = ResizeArray<obj>()
+    for KeyValue (key, value) in map do
+        entries.Add (box key)
+        entries.Add (box value)
+    OrderedEntries entries
+#endif
+
+let inline entryCount (OrderedEntries entries) : int =
+#if FABLE_COMPILER
+    entries.Count
+#else
+    entries.Count / 2
+#endif
+
+let inline entryKey<'K> (OrderedEntries entries) (index: int) : 'K =
+#if FABLE_COMPILER
+    unbox<'K> (treeKey entries.[index])
+#else
+    unbox<'K> entries.[2 * index]
+#endif
+
+let inline entryValue<'V> (OrderedEntries entries) (index: int) : 'V =
+#if FABLE_COMPILER
+    unbox<'V> (treeValue entries.[index])
+#else
+    unbox<'V> entries.[2 * index + 1]
+#endif
+
+/// The map of the first `count` entries `keys.[i], values.[i]`, the keys ascending
+/// (as the map compares them) and distinct - the caller's word for it, nothing
+/// checks. `like`: a map of the same key type, whose comparison the new one keeps.
+let mapOfOrdered (like: Map<'K, 'V>) (keys: 'K[]) (values: 'V[]) (count: int) : Map<'K, 'V> =
+#if FABLE_COMPILER
+    let node, leaf = treeShapes
+    let tree = buildTree node leaf (unbox<obj[]> (box keys)) (unbox<obj[]> (box values)) 0 (count - 1)
+    unbox<Map<'K, 'V>> (mapWithTree (box like) tree)
+#else
+    ignore like
+    let mutable map = Map.empty
+    for i in 0 .. count - 1 do map <- Map.add keys.[i] values.[i] map
+    map
+#endif
+
+// ---------------------------------------------------------------------------
 // The formula index of a sheet's cells
 // ---------------------------------------------------------------------------
 // Which cells of a cell map hold formulas, kept beside the map (a map never
@@ -3242,6 +3364,73 @@ let mapModelFormulas (rewrite: string -> string) (model: SpreadsheetModel) : Spr
                 Validations = (if sameValidations then model.Validations else validations) }
         if sameCells then changed else invalidateFilterProjection changed
 
+// (Functions of their own, not part of `applyStructureEditWith`: that one is too long
+// for the browser's optimising compiler, and these run once per cell.)
+
+/// A map whose keys a structure edit moves (`moveKey`: where a key goes, None when it is
+/// deleted), keeping their order - an inserted row or column goes between entries, a
+/// deleted one takes entries out -, so the moved map is made from its entries in order.
+let private moveOrderedMap (moveKey: 'K -> 'K option) (items: Map<'K, 'T>) : Map<'K, 'T> =
+    if Map.isEmpty items then items
+    else
+        let entries = orderedEntries items
+        let count = entryCount entries
+        let movedKeys = Array.zeroCreate<'K> count
+        let movedValues = Array.zeroCreate<'T> count
+        let mutable kept = 0
+        for i in 0 .. count - 1 do
+            match moveKey (entryKey entries i) with
+            | Some moved ->
+                movedKeys.[kept] <- moved
+                movedValues.[kept] <- entryValue entries i
+                kept <- kept + 1
+            | None -> ()
+        mapOfOrdered items movedKeys movedValues kept
+
+/// The cells of a sheet moved by a structure edit (`moveIndex` on the rows, or on the
+/// columns), their formulas re-pointed by `adjust`; the formula cells (at their new
+/// addresses) are added to `formulaCells`. Where a cell's new address is the address
+/// another cell had, the new map takes that cell's key (both are ascending: one pass),
+/// so that a long sheet's cells move with few new addresses made.
+let private moveCellMap (onRows: bool) (moveIndex: int -> int option) (adjust: string -> string) (formulaCells: ResizeArray<CellAddress>) (cells: Map<CellAddress, CellData>) : Map<CellAddress, CellData> =
+    if Map.isEmpty cells then cells
+    else
+        let entries = orderedEntries cells
+        let count = entryCount entries
+        let movedKeys = Array.zeroCreate<CellAddress> count
+        let movedValues = Array.zeroCreate<CellData> count
+        let mutable kept = 0
+        let mutable cursor = 0
+        let mutable cursorKey = entryKey<CellAddress> entries 0
+        for i in 0 .. count - 1 do
+            let addr = entryKey<CellAddress> entries i
+            match moveIndex (if onRows then addr.Row else addr.Col) with
+            | None -> ()
+            | Some index ->
+                let row = if onRows then index else addr.Row
+                let col = if onRows then addr.Col else index
+                let moved =
+                    if row = addr.Row && col = addr.Col then addr
+                    else
+                        while cursor < count && (cursorKey.Row < row || (cursorKey.Row = row && cursorKey.Col < col)) do
+                            cursor <- cursor + 1
+                            if cursor < count then cursorKey <- entryKey<CellAddress> entries cursor
+                        if cursor < count && cursorKey.Row = row && cursorKey.Col = col then cursorKey
+                        else { Row = row; Col = col }
+                let cellData = entryValue<CellData> entries i
+                let cellData =
+                    match cellData.Value with
+                    | Formula (formula, cached) ->
+                        formulaCells.Add moved
+                        let adjusted = adjust formula
+                        if adjusted = formula then cellData
+                        else { cellData with Value = Formula (adjusted, cached) }
+                    | _ -> cellData
+                movedKeys.[kept] <- moved
+                movedValues.[kept] <- cellData
+                kept <- kept + 1
+        mapOfOrdered cells movedKeys movedValues kept
+
 /// Insert or delete rows/columns on a sheet. `targetsEditedSheet` tells which
 /// sheet qualifiers in this sheet's own formulas refer back to it (always the
 /// unqualified ones; a workbook also passes the sheet's name).
@@ -3253,36 +3442,15 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
     let moveAddr (addr: CellAddress) =
         if onRows then moveIndex addr.Row |> Option.map (fun row -> { addr with Row = row })
         else moveIndex addr.Col |> Option.map (fun col -> { addr with Col = col })
-    let moveAddressMap (items: Map<CellAddress, 'T>) : Map<CellAddress, 'T> =
-        items
-        |> Map.fold (fun acc addr value ->
-            match moveAddr addr with
-            | Some moved -> Map.add moved value acc
-            | None -> acc) Map.empty
-    let moveIndexMap (items: Map<int, 'T>) : Map<int, 'T> =
-        items
-        |> Map.fold (fun acc index value ->
-            match moveIndex index with
-            | Some moved -> Map.add moved value acc
-            | None -> acc) Map.empty
+    // (A move keeps the order of what it moves - an inserted row or column goes
+    // between entries, a deleted one takes entries out - so each moved map is
+    // made from its entries in order: `mapOfOrdered`.)
+    let moveAddressMap (items: Map<CellAddress, 'T>) : Map<CellAddress, 'T> = moveOrderedMap moveAddr items
+    let moveIndexMap (items: Map<int, 'T>) : Map<int, 'T> = moveOrderedMap moveIndex items
 
-    // (The formula cells are noted as they go by: the new map has its formula index.)
+    // The cells (see `moveCellMap`), with their formula index.
     let formulaCells = ResizeArray<CellAddress>()
-    let cells =
-        model.Cells
-        |> Map.fold (fun acc addr cellData ->
-            match moveAddr addr with
-            | None -> acc
-            | Some moved ->
-                let cellData =
-                    match cellData.Value with
-                    | Formula (formula, cached) ->
-                        formulaCells.Add moved
-                        let adjusted = adjustFormulaForEdit edit targetsEditedSheet formula
-                        if adjusted = formula then cellData
-                        else { cellData with Value = Formula (adjusted, cached) }
-                    | _ -> cellData
-                Map.add moved cellData acc) Map.empty
+    let cells = moveCellMap onRows moveIndex (adjustFormulaForEdit edit targetsEditedSheet) formulaCells model.Cells
     registerFormulaIndex cells (if formulaCells.Count = 0 then Set.empty else Set.ofSeq formulaCells)
 
     // A deleted selection falls back onto the row/column that took its place.
