@@ -1735,10 +1735,12 @@ let private generateParagraphWithHyperlinksAndImagesWithPageSetup (packageSetup:
     let textRunXml (runObj: obj) =
         fieldResultParts <- []
         generateReferenceRun runObj (editorRunOfObject runObj)
-    // (What wraps a run, to compare its wrapping before and after: its tracked change and its link's target - not
+    // (What wraps a run, to compare its wrapping before and after: its tracked change, its link's target - not
     // the link's relationship, which only the links still in the document have.)
     let wrappingOf (runObj: obj) (inner: string) =
         revisionWrappedRun runObj inner + (match runHyperlinkTarget runObj with Some target -> "\u0003" + target | None -> "")
+        // (And the field it is of: text typed beside a simple field is not in it.)
+        + (match optionalString (runObj?FieldCode) with Some code -> "\u0004" + code | None -> "")
     let splice = paragraphSplicer.Splice para runs textRunXml wrappingOf
     spliceFieldParts.Clear()
     // (A paragraph written from its source is one changed in the XML it was read from, not one of the model's.)
@@ -3017,8 +3019,8 @@ type private SpliceSource = {
 /// links, tracked changes, simple fields. The marks of ranges are carried (carriedMarksOf);
 /// equations and paragraph-level objects are runs of the model.
 let private modelledWrapper (local: string) =
+    // (A simple field is a wrapper as it was read, as a link is: a field the model writes otherwise is written outside it.)
     match local with
-    | "fldSimple" -> true
     | _ -> false
 let private modelledLeaf (local: string) =
     match local with
@@ -3177,6 +3179,13 @@ let private splicedRuns (source: SpliceSource) (original: obj) (joined: obj arra
                 Some (bytes (List.take index elements), XmlPatch.bytes run, bytes (List.skip (index + 1) elements))
             | _ -> None
         | None -> None
+    // (Whether what the model writes of a run is marks with it: a simple field alone - the model's form of a field
+    // run - is not.)
+    let hasMarks (whole: string) =
+        match partsOf whole with
+        | Some ("", _, "") -> false
+        | Some _ -> true
+        | None -> (match XmlPatch.read whole with Some field -> XmlPatch.name field.Node <> "w:fldSimple" | None -> true)
     // (A run that was read whose text and formatting are what they were - however the model holds it, as one
     // run or several (a tab, text, a break), merged where they are formatted alike: its bytes, for the first of
     // them, and nothing for the others.)
@@ -3187,12 +3196,21 @@ let private splicedRuns (source: SpliceSource) (original: obj) (joined: obj arra
             match merged with
             | (previous, previousText) :: rest when previous = format -> (format, previousText + text) :: rest
             | _ -> (format, text) :: merged) []
+    // (Whether a run that was read is in a simple field.)
+    let simpleFields = XmlPatch.descendantsWhere (fun node -> XmlPatch.name node = "w:fldSimple") source.Paragraph |> List.map XmlPatch.span
+    let inSimpleField (at: int) = simpleFields |> List.exists (fun span -> at > span.Start && at < span.End)
     let wholeAsRead = System.Collections.Generic.HashSet<int>()
     for KeyValue (at, list) in originalRuns do
         let now = pieces |> List.filter (fun (runObj, _, _) -> optionalInt (runObj?SourceRun) = Some at) |> List.map (fun (runObj, _, _) -> runObj)
         // (With no marks of the model's around them: a bookmark on one of them is written with it.)
-        let marked = pieces |> List.exists (fun (runObj, whole, _) -> optionalInt (runObj?SourceRun) = Some at && (match partsOf whole with Some ("", _, "") -> false | _ -> true))
-        if not now.IsEmpty && source.Runs.ContainsKey at && not marked && alike now = alike list then wholeAsRead.Add at |> ignore
+        let marked = pieces |> List.exists (fun (runObj, whole, _) -> optionalInt (runObj?SourceRun) = Some at && hasMarks whole)
+        // (Not the begin run of a field of several runs: that is written from its begin mark to its end mark. A run of
+        // a field is as read only as the one run of a simple field, all of the field - none of its result in parts.)
+        let fieldAsRead =
+            now |> List.forall (fun runObj ->
+                isNullOrUndefined (runObj?FieldCode)
+                || (inSimpleField at && not (spliceFieldParts.ContainsKey runObj)))
+        if not now.IsEmpty && source.Runs.ContainsKey at && not (source.Fields.ContainsKey at) && fieldAsRead && not marked && alike now = alike list then wholeAsRead.Add at |> ignore
     // (A run that was read whose formatting is what it was and whose text changed - however the model holds it, the
     // mark of a page break as it was rendered on its first character, say -: its text changed in the w:t the
     // change is in, the rest of it as it was; written for the first of the model's runs of it.)
@@ -3205,14 +3223,16 @@ let private splicedRuns (source: SpliceSource) (original: obj) (joined: obj arra
             | (previous, previousText) :: rest when previous = format -> (format, previousText + text) :: rest
             | _ -> (format, text) :: merged) []
     for KeyValue (at, list) in originalRuns do
-        if not (wholeAsRead.Contains at) && source.Runs.ContainsKey at then
+        if not (wholeAsRead.Contains at) && source.Runs.ContainsKey at && not (source.Fields.ContainsKey at) then
             let indexes = pieces |> List.indexed |> List.filter (fun (_, (runObj, _, _)) -> optionalInt (runObj?SourceRun) = Some at) |> List.map fst
             let now = indexes |> List.map (fun index -> let runObj, _, _ = pieces.[index] in runObj)
-            let marked = indexes |> List.exists (fun index -> let _, whole, _ = pieces.[index] in (match partsOf whole with Some ("", _, "") -> false | _ -> true))
+            let marked = indexes |> List.exists (fun index -> let _, whole, _ = pieces.[index] in hasMarks whole)
             let together = not indexes.IsEmpty && List.last indexes - List.head indexes = indexes.Length - 1
+            // (Not of a field: the model writes a field as a whole.)
+            let ofField = now |> List.exists (fun runObj -> not (isNullOrUndefined (runObj?FieldCode)))
             let plain (value: string) = ModelText.textPieces value |> List.forall (function ModelText.Text _ -> true | _ -> false)
             match alikeIgnoringMark list, alikeIgnoringMark now with
-            | [ (formatWas, was) ], [ (formatNow, nowText) ] when formatWas = formatNow && together && not marked && was <> nowText && plain was && plain nowText ->
+            | [ (formatWas, was) ], [ (formatNow, nowText) ] when formatWas = formatNow && together && not marked && not ofField && was <> nowText && plain was && plain nowText ->
                 let run = source.Runs.[at]
                 let content = XmlPatch.elements run |> List.filter (fun kid -> XmlPatch.localName kid <> "rPr")
                 if not content.IsEmpty && content |> List.forall (fun kid -> XmlPatch.name kid = "w:t" || XmlPatch.name kid = "w:lastRenderedPageBreak")
@@ -3384,7 +3404,8 @@ let private splicedRuns (source: SpliceSource) (original: obj) (joined: obj arra
                                      | None -> bytes
                          yield place, wrap bytes
                      else yield place, wrap inner
-                 | Some _ when not (isNullOrUndefined (runObj?FieldCode)) -> yield place, wrap inner
+                 // (Written by the model: outside the wrappers it was in - a simple field the model writes is not in the one it was.)
+                 | Some _ when not (isNullOrUndefined (runObj?FieldCode)) -> yield XmlPatch.Outside, wrap inner
                  // As it was read in every respect: its bytes.
                  | Some model when jsonText model = jsonText runObj && not ofSeveral -> yield place, wrap (XmlPatch.bytesOf text run)
                  // Changed in its formatting, its text, or both: the run as it was read with what the model changed

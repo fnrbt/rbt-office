@@ -1502,7 +1502,12 @@ module Docx =
                   RevisionType = None
                   RevisionAuthor = None
                   RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = None; Source = XmlDsl.Span.none }
-            let whole () = [ fieldOf (runs |> List.tryHead |> Option.map runProps |> Option.defaultValue (runProps fldNode)) None ]
+            // (A field of one run is of that run: a save writes it from there while it is as read.)
+            let whole () =
+                let field = fieldOf (runs |> List.tryHead |> Option.map runProps |> Option.defaultValue (runProps fldNode)) None
+                [ match runs with
+                  | [ XmlDsl.Element (_, _, _, span) ] -> { field with Source = span }
+                  | _ -> field ]
             let computed = ValueText.FieldCode.isComputed (code.Trim().ToUpperInvariant())
             if runs.Length < 2 || computed then whole ()
             else
