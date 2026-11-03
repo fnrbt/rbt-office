@@ -465,6 +465,31 @@ ok "shape-text-is-not-body-text"
    (contentTexts shapesDoc.Content = [ "one"; "two"; "three" ])
    (sprintf "%A" (contentTexts shapesDoc.Content))
 
+// ----- flips: a:xfrm flipH / flipV of a shape and of a picture, VML flip:x / flip:y ----
+let flippedShape (flips: string) =
+    "<w:p><w:r><w:t>anchor</w:t></w:r><w:r><mc:AlternateContent><mc:Choice Requires=\"wps\" xmlns:wps=\"http://schemas.microsoft.com/office/word/2010/wordprocessingShape\"><w:drawing><wp:anchor distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\" simplePos=\"0\" relativeHeight=\"3\" behindDoc=\"0\" locked=\"0\" layoutInCell=\"1\" allowOverlap=\"1\"><wp:simplePos x=\"0\" y=\"0\"/><wp:positionH relativeFrom=\"column\"><wp:posOffset>0</wp:posOffset></wp:positionH><wp:positionV relativeFrom=\"paragraph\"><wp:posOffset>0</wp:posOffset></wp:positionV><wp:extent cx=\"952500\" cy=\"952500\"/><wp:wrapNone/><wp:docPr id=\"4\" name=\"Triangle 4\"/><a:graphic><a:graphicData uri=\"http://schemas.microsoft.com/office/word/2010/wordprocessingShape\"><wps:wsp><wps:cNvSpPr/><wps:spPr>"
+    + sprintf "<a:xfrm%s><a:off x=\"0\" y=\"0\"/><a:ext cx=\"952500\" cy=\"952500\"/></a:xfrm>" flips
+    + "<a:prstGeom prst=\"rtTriangle\"><a:avLst/></a:prstGeom></wps:spPr><wps:txbx><w:txbxContent><w:p><w:r><w:t>text</w:t></w:r></w:p></w:txbxContent></wps:txbx><wps:bodyPr/></wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></mc:Choice><mc:Fallback/></mc:AlternateContent></w:r></w:p>"
+let flipsOfShapes (body: string) =
+    (docxWithParts body [] [] |> DocxReader.loadBytesNative |> Option.get).Shapes |> List.map (fun shape -> shape.FlipH, shape.FlipV)
+ok "shape-flip-h" (flipsOfShapes (flippedShape " flipH=\"1\"") = [ true, false ]) (sprintf "%A" (flipsOfShapes (flippedShape " flipH=\"1\"")))
+ok "shape-flip-v-and-rot" (flipsOfShapes (flippedShape " rot=\"5400000\" flipV=\"1\"") = [ false, true ]) (sprintf "%A" (flipsOfShapes (flippedShape " rot=\"5400000\" flipV=\"1\"")))
+ok "shape-not-flipped" (flipsOfShapes (flippedShape "") = [ false, false ]) (sprintf "%A" (flipsOfShapes (flippedShape "")))
+let vmlFlipped (flip: string) =
+    sprintf "<w:p><w:r><w:pict><v:shape xmlns:v=\"urn:schemas-microsoft-com:vml\" id=\"s9\" type=\"#_x0000_t202\" style=\"position:absolute;margin-left:10pt;margin-top:10pt;width:50pt;height:30pt;%s\"><v:textbox><w:txbxContent><w:p><w:r><w:t>vml</w:t></w:r></w:p></w:txbxContent></v:textbox></v:shape></w:pict></w:r></w:p>" flip
+ok "vml-shape-flip-x-y" (flipsOfShapes (vmlFlipped "flip:x y") = [ true, true ]) (sprintf "%A" (flipsOfShapes (vmlFlipped "flip:x y")))
+ok "vml-shape-flip-y" (flipsOfShapes (vmlFlipped "flip:y") = [ false, true ]) (sprintf "%A" (flipsOfShapes (vmlFlipped "flip:y")))
+let flippedPicture (flips: string) =
+    "<w:p><w:r><w:drawing><wp:inline><wp:extent cx=\"457200\" cy=\"457200\"/><wp:docPr id=\"5\" name=\"pic\"/><a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/picture\"><pic:pic><pic:nvPicPr><pic:cNvPr id=\"5\" name=\"pic\"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed=\"rId1\"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>"
+    + sprintf "<pic:spPr><a:xfrm%s><a:off x=\"0\" y=\"0\"/><a:ext cx=\"457200\" cy=\"457200\"/></a:xfrm><a:prstGeom prst=\"rect\"/></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>" flips
+    + "<w:r><w:pict><v:shape xmlns:v=\"urn:schemas-microsoft-com:vml\" id=\"p2\" style=\"width:20pt;height:20pt;flip:x\"><v:imagedata r:id=\"rId1\" xmlns:o=\"urn:schemas-microsoft-com:office:office\" o:title=\"\"/></v:shape></w:pict></w:r></w:p>"
+let flipsOfPictures (body: string) =
+    match (loadBody body).Content with
+    | DocxReader.Para para :: _ -> para.Runs |> List.choose (fun run -> match run.Content with DocxReader.Image image -> Some (image.FlipH, image.FlipV) | _ -> None)
+    | _ -> []
+ok "picture-flips" (flipsOfPictures (flippedPicture " flipH=\"1\" flipV=\"1\"") = [ (true, true); (true, false) ]) (sprintf "%A" (flipsOfPictures (flippedPicture " flipH=\"1\" flipV=\"1\"")))
+ok "picture-flip-v-only" (flipsOfPictures (flippedPicture " flipV=\"true\"") = [ (false, true); (true, false) ]) (sprintf "%A" (flipsOfPictures (flippedPicture " flipV=\"true\"")))
+
 // ----- objects the reader does not model are kept, with their parts -----------
 let docxPackage (parts: (string * string) list) (binaryParts: (string * byte[]) list) =
     use stream = new System.IO.MemoryStream()

@@ -122,6 +122,39 @@ check "a line is a line across its box"
     (lineCommands |> List.tryPick (function Paint.DrawShape (_, Some "#000000", _, (x, y, _, _), segs) -> Some (segs = [ PMove (x, y); PLine (x + 120.0, y + 40.0) ]) | _ -> None))
     (Some true)
 
+// A flipped shape (a:xfrm flipH / flipV): its outline mirrored in its box, its text not; a linear
+// gradient's direction mirrored with it. (Flips were not read: the shape was drawn as if unflipped.)
+let lineSegs (shape: TextBoxBlock -> TextBoxBlock) =
+    let _, _, commands = inBox (fun b -> shape { b with Geometry = GeoPreset "line"; Content = []; BorderColor = Some "#000000"; Width = 120.0; Height = 40.0 })
+    commands |> List.tryPick (function Paint.DrawShape (_, Some "#000000", _, (x, y, _, _), segs) -> Some (x, y, segs) | _ -> None)
+match lineSegs (fun b -> { b with FlipH = true }), lineSegs (fun b -> { b with FlipV = true }), lineSegs (fun b -> { b with FlipH = true; FlipV = true }) with
+| Some (x, y, across), Some (_, _, upsideDown), Some (_, _, both) ->
+    check "flipped across: the line from the top right to the bottom left" across [ PMove (x + 120.0, y); PLine (x, y + 40.0) ]
+    check "flipped upside down: from the bottom left to the top right" upsideDown [ PMove (x, y + 40.0); PLine (x + 120.0, y) ]
+    check "flipped both ways: from the bottom right to the top left" both [ PMove (x + 120.0, y + 40.0); PLine (x, y) ]
+| other -> check "a flipped line is drawn" (sprintf "%A" other) ""
+let triangleText (shape: TextBoxBlock -> TextBoxBlock) =
+    let _, _, commands = inBox (fun b -> shape { b with Geometry = GeoPreset "rtTriangle"; BorderColor = Some "#000000" })
+    textOf commands
+check "the text of a flipped shape stands where it stands in the shape unflipped" (triangleText (fun b -> { b with FlipH = true; FlipV = true })) (triangleText id)
+let gradientAngle (shape: TextBoxBlock -> TextBoxBlock) =
+    let _, _, commands = inBox (fun b -> shape { b with Gradient = Some { Stops = [ { Offset = 0.0; Color = "#FF0000" }; { Offset = 1.0; Color = "#0000FF" } ]; Angle = 30.0; Radial = false } })
+    commands |> List.tryPick (function Paint.DrawShape (Paint.FillGradient g, _, _, _, _) -> Some g.Angle | _ -> None)
+check "a linear gradient flipped across / upside down / both" (gradientAngle (fun b -> { b with FlipH = true }), gradientAngle (fun b -> { b with FlipV = true }), gradientAngle (fun b -> { b with FlipH = true; FlipV = true })) (Some 150.0, Some 330.0, Some 210.0)
+
+// A flipped picture: drawn mirrored about its middle (the picture itself is all the group holds).
+let pictureCommands (flipH: bool) (flipV: bool) =
+    let buffer = TB.insertImage 0 "data:image/png;base64,AA==" (Some 40.0) (Some 20.0) None (TB.ofString "")
+    let buffer = { buffer with Runs = buffer.Runs |> List.map (function TB.Image image -> TB.Image { image with FlipH = flipH; FlipV = flipV } | run -> run) }
+    let _, _, commands = commandsOf (docOf [ Paragraph { para "pic" "" with Buffer = buffer } ])
+    commands
+match pictureCommands true false |> List.tryPick (function Paint.DrawMirrored (h, v, cx, cy, _, inner) -> Some (h, v, cx, cy, inner) | _ -> None) with
+| Some (h, v, cx, cy, [ Paint.DrawImage (_, x, y, w, ht, _, _, _, _) ]) ->
+    check "a picture flipped across: mirrored about its middle" (h, v, near cx (x + w / 2.0), near cy (y + ht / 2.0), w, ht) (true, false, true, true, 40.0, 20.0)
+| other -> check "a flipped picture is drawn mirrored" (sprintf "%A" other) ""
+check "a picture flipped upside down" (pictureCommands false true |> List.exists (function Paint.DrawMirrored (false, true, _, _, _, _) -> true | _ -> false)) true
+check "a picture not flipped is drawn as it is" (pictureCommands false false |> List.exists (function Paint.DrawMirrored _ -> true | _ -> false), pictureCommands false false |> List.exists (function Paint.DrawImage _ -> true | _ -> false)) (false, true)
+
 // ---------------------------------------------------------------------------
 // The body's text around the shape.
 // ---------------------------------------------------------------------------

@@ -307,6 +307,8 @@ module Processors =
                 "CustomH" ==> (shape.CustomH |> Option.defaultValue 0.0)
                 "Gradient" ==> gradient
                 "Rotation" ==> shape.Rotation
+                "FlipH" ==> shape.FlipH
+                "FlipV" ==> shape.FlipV
                 "AnchorBlock" ==> shape.AnchorBlock
                 "Inline" ==> shape.Inline
                 "Wrap" ==> shape.Wrap

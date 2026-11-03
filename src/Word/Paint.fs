@@ -158,6 +158,11 @@ type PaintCommand =
     /// `opacity` (1: opaque). `bbox`: a rectangle (x, y, width, height) on the
     /// page that holds all of it as it is painted - turned.
     | DrawGroup of clip: (float * float * float * float) option * rotation: float * centerX: float * centerY: float * opacity: float * bbox: (float * float * float * float) * commands: PaintCommand list
+    /// Commands drawn mirrored across the vertical line through `centerX`
+    /// (`flipH`) and / or the horizontal one through `centerY` (`flipV`): a
+    /// flipped picture (a:xfrm flipH / flipV). `bbox`: the rectangle (x, y,
+    /// width, height) that holds all of it.
+    | DrawMirrored of flipH: bool * flipV: bool * centerX: float * centerY: float * bbox: (float * float * float * float) * commands: PaintCommand list
 
 let commandYExtent = function
     | DrawText (_, style, _, baseline, _) ->
@@ -194,7 +199,8 @@ let commandYExtent = function
                 bottom <- max bottom (max c1y (max c2y sy))
             | PClose -> ()
         Some (top - pad, bottom + pad)
-    | DrawGroup (_, _, _, _, _, (_, y, _, height), _) ->
+    | DrawGroup (_, _, _, _, _, (_, y, _, height), _)
+    | DrawMirrored (_, _, _, _, (_, y, _, height), _) ->
         Some (y - 1.0, y + height + 1.0)
 
 // ---- anchored drawings and the order they are painted in --------------------
@@ -1157,7 +1163,7 @@ let private addParagraphCommandsWithBaselineOffset baselineOffset (settings: Lay
                         acc <- acc + cw
                 | _ -> ()
 
-            | ImageSegment (src, x, yOffset, width, height, _, floating, _, relativeHeight, cropLeft, cropTop, cropRight, cropBottom) ->
+            | ImageSegment (src, x, yOffset, width, height, _, floating, _, relativeHeight, cropLeft, cropTop, cropRight, cropBottom, flip) ->
                 // (An anchored picture is a drawing of its page: see Drawing.)
                 let target = if floating && not (isNull drawingSink) then ResizeArray<PaintCommand>() else commands
                 let imageX = settings.PaddingLeft + x + lineAlignmentOffset
@@ -1197,7 +1203,11 @@ let private addParagraphCommandsWithBaselineOffset baselineOffset (settings: Lay
                             target.Add(DrawText (fitted, labelStyle, imageX + (width - labelWidth) / 2.0, imageY + height / 2.0 + 13.0 * 0.35, labelWidth))
                     | _ -> ()
                 else
-                    target.Add(DrawImage (src, imageX, imageY, width, height, cropLeft, cropTop, cropRight, cropBottom))
+                    let picture = DrawImage (src, imageX, imageY, width, height, cropLeft, cropTop, cropRight, cropBottom)
+                    match flip with
+                    | false, false -> target.Add picture
+                    // (A flipped picture is drawn mirrored about its middle.)
+                    | flipH, flipV -> target.Add(DrawMirrored (flipH, flipV, imageX + width / 2.0, imageY + height / 2.0, (imageX, imageY, width, height), [ picture ]))
                 if not (obj.ReferenceEquals(target, commands)) && target.Count > 0 then
                     let behind, height = splitSegmentHeight relativeHeight
                     drawingSink.Add { DrawingBehind = behind; DrawingZ = drawingHeight height; DrawingCommands = target.ToArray() }
@@ -2113,6 +2123,8 @@ let rec private shiftCommandY dy command =
         DrawShape (fill, stroke, sw, (bx, by + dy, bw, bh), Shapes.translatePath 0.0 dy segs)
     | DrawGroup (clip, rotation, cx, cy, opacity, (bx, by, bw, bh), commands) ->
         DrawGroup (clip |> Option.map (fun (x, y, w, h) -> (x, y + dy, w, h)), rotation, cx, cy + dy, opacity, (bx, by + dy, bw, bh), commands |> List.map (shiftCommandY dy))
+    | DrawMirrored (flipH, flipV, cx, cy, (bx, by, bw, bh), commands) ->
+        DrawMirrored (flipH, flipV, cx, cy + dy, (bx, by + dy, bw, bh), commands |> List.map (shiftCommandY dy))
 
 let private shiftCommandsY dy commands =
     if abs dy < 0.001 then
@@ -2127,15 +2139,24 @@ let private shiftCommandsY dy commands =
 let private storyTableDocument (doc: Document) (table: TableBlock) : Document =
     { Rbt.Word.Document.empty with Blocks = [ Table table ]; Selection = None; Styles = doc.Styles }
 
-/// A shape's fill and outline, its box at `x`, `y` and `height` high (not turned).
+/// A shape's fill and outline, its box at `x`, `y` and `height` high (not
+/// turned) - mirrored in its box when the shape is flipped (its gradient too).
 let private shapeFrameCommands (textBox: TextBoxBlock) (x: float) (y: float) (height: float) : PaintCommand list =
     let commands = ResizeArray<PaintCommand>()
     let borderWidth = textBox.BorderWidth |> Option.defaultValue 1.0
     let useShape = (match textBox.Geometry with GeoRect -> false | _ -> true) || textBox.Gradient.IsSome || textBox.BorderDash.IsSome
     if useShape then
-        let segs = Shapes.geometryPath textBox.Geometry textBox.Width height |> Shapes.translatePath x y
+        let segs =
+            Shapes.geometryPath textBox.Geometry textBox.Width height
+            |> Shapes.flipPath textBox.FlipH textBox.FlipV textBox.Width height
+            |> Shapes.translatePath x y
         let fill =
             match textBox.Gradient with
+            | Some g when (textBox.FlipH || textBox.FlipV) && not g.Radial ->
+                // (The direction of a linear gradient, mirrored as the shape is.)
+                let angle = if textBox.FlipH then 180.0 - g.Angle else g.Angle
+                let angle = if textBox.FlipV then -angle else angle
+                FillGradient { g with Angle = ((angle % 360.0) + 360.0) % 360.0 }
             | Some g -> FillGradient g
             | None -> match textBox.FillColor with Some c -> FillSolid c | None -> FillNone
         if fill <> FillNone || textBox.BorderColor.IsSome then
@@ -2856,6 +2877,8 @@ let rec private shiftCommandX dx command =
         DrawShape (fill, stroke, sw, (bx + dx, by, bw, bh), Shapes.translatePath dx 0.0 segs)
     | DrawGroup (clip, rotation, cx, cy, opacity, (bx, by, bw, bh), commands) ->
         DrawGroup (clip |> Option.map (fun (x, y, w, h) -> (x + dx, y, w, h)), rotation, cx + dx, cy, opacity, (bx + dx, by, bw, bh), commands |> List.map (shiftCommandX dx))
+    | DrawMirrored (flipH, flipV, cx, cy, (bx, by, bw, bh), commands) ->
+        DrawMirrored (flipH, flipV, cx + dx, cy, (bx + dx, by, bw, bh), commands |> List.map (shiftCommandX dx))
 
 let private shiftCommandsX dx commands =
     let shifted = ResizeArray<PaintCommand>()
@@ -2933,6 +2956,7 @@ let private clipCommandToBand (top: float) (bottom: float) (command: PaintComman
     | DrawImage (_, _, y, _, h, _, _, _, _) -> if y >= top - slack && y + h <= bottom + slack then Some command else None
     | DrawShape (_, _, _, (_, y, _, h), _) -> if y >= top - slack && y + h <= bottom + slack then Some command else None
     | DrawGroup (_, _, _, _, _, (_, y, _, h), _) -> if y >= top - slack && y + h <= bottom + slack then Some command else None
+    | DrawMirrored (_, _, _, _, (_, y, _, h), _) -> if y >= top - slack && y + h <= bottom + slack then Some command else None
 
 /// The borders and fills of a table in a multi-column section. The layout
 /// pass lays such a table out on a strip as wide as a column and places it row
@@ -3357,9 +3381,10 @@ type PaintChunk = {
 /// Commands with those of their groups in their place (for what looks at
 /// every command: the pictures a document shows, its text).
 let rec flattenedCommands (commands: PaintCommand list) : PaintCommand list =
-    if commands |> List.exists (function DrawGroup _ -> true | _ -> false) then
+    if commands |> List.exists (function DrawGroup _ | DrawMirrored _ -> true | _ -> false) then
         commands |> List.collect (function
             | DrawGroup (_, _, _, _, _, _, inner) -> flattenedCommands inner
+            | DrawMirrored (_, _, _, _, _, inner) -> flattenedCommands inner
             | command -> [ command ])
     else commands
 
@@ -3368,6 +3393,7 @@ let rec commandsHoldPicture (commands: PaintCommand list) : bool =
     commands |> List.exists (function
         | DrawImage _ -> true
         | DrawGroup (_, _, _, _, _, _, inner) -> commandsHoldPicture inner
+        | DrawMirrored (_, _, _, _, _, inner) -> commandsHoldPicture inner
         | _ -> false)
 
 let private fillChunk (chunk: PaintChunk) (commands: PaintCommand array) =
@@ -3386,7 +3412,8 @@ let private fillChunk (chunk: PaintChunk) (commands: PaintCommand array) =
             | DrawImage _ ->
                 imageTop <- min imageTop commandTop
                 imageBottom <- max imageBottom commandBottom
-            | DrawGroup (_, _, _, _, _, _, inner) when commandsHoldPicture inner ->
+            | DrawGroup (_, _, _, _, _, _, inner)
+            | DrawMirrored (_, _, _, _, _, inner) when commandsHoldPicture inner ->
                 imageTop <- min imageTop commandTop
                 imageBottom <- max imageBottom commandBottom
             | _ -> ()

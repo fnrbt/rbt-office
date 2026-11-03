@@ -41,6 +41,14 @@ module Css =
     /// The items of a list of values ("1pt,2pt,1pt,2pt").
     let items (separator: char) (value: string) : string array = value.Split(separator)
 
+    /// The flip of a VML shape's style ("flip:x", "flip:y", "flip:x y"): across, upside down.
+    let flip (style: string) : bool * bool =
+        match valueIgnoringCase "flip" style with
+        | Some value ->
+            let parts = value.ToLowerInvariant().Split([| ' '; ',' |], System.StringSplitOptions.RemoveEmptyEntries)
+            Array.contains "x" parts, Array.contains "y" parts
+        | None -> false, false
+
 /// Colours as the parts write them.
 module Color =
     /// "#rrggbb" of "rrggbb" or "#rrggbb".

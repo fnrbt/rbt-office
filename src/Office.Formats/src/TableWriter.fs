@@ -272,6 +272,8 @@ let createSimpleTable (data: string list list) : Table =
                             ImageCropTop = None
                             ImageCropRight = None
                             ImageCropBottom = None
+                            ImageFlipH = false
+                            ImageFlipV = false
                         }]
                         Alignment = "left"
                         IndentLeft = None

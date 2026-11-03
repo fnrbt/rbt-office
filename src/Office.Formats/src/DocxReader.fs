@@ -91,6 +91,10 @@ type ImageData = {
     WrapText: string option
     /// wp:wrapPolygon of wp:wrapTight / wp:wrapThrough: wp:start and the wp:lineTo points (x, y).
     WrapPolygon: (float * float) list
+    /// The picture is mirrored across (a:xfrm flipH of its pic:spPr; flip:x in
+    /// the style of a VML picture) / upside down (flipV; flip:y).
+    FlipH: bool
+    FlipV: bool
     /// Set for an object the reader does not model (chart, SmartArt, OLE object,
     /// grouped / VML drawing, unknown mc:AlternateContent): the element as it is
     /// in the file, to be written back unchanged. The other fields then describe
@@ -534,6 +538,10 @@ type Shape = {
     Gradient: ShapeGradient option
     /// Shape rotation in degrees (a:xfrm@rot, 60000ths -> degrees).
     Rotation: float
+    /// The shape is mirrored across / upside down (a:xfrm flipH / flipV; flip:x / flip:y
+    /// in a VML shape's style), before it is turned. Its text is not.
+    FlipH: bool
+    FlipV: bool
     /// Index of the body block (paragraph or table) the shape is anchored in.
     AnchorBlock: int option
     /// wp:inline (in the text line) rather than wp:anchor.
@@ -1213,6 +1221,13 @@ module Docx =
         let cropTop = srcRect |> Option.bind (Xml.attr "t")
         let cropRight = srcRect |> Option.bind (Xml.attr "r")
         let cropBottom = srcRect |> Option.bind (Xml.attr "b")
+        // (The picture's own transform: pic:pic > pic:spPr > a:xfrm.)
+        let pictureFlip attrName =
+            Ns.descendantsNs "pic" drawing |> List.tryHead
+            |> Option.bind (Ns.childNs "spPr")
+            |> Option.bind (Ns.childNs "xfrm")
+            |> Option.bind (Xml.attr attrName)
+            |> Option.exists (fun value -> value = "1" || value.ToLowerInvariant() = "true")
         {
             RelationshipId = rId
             Linked = linked
@@ -1247,6 +1262,8 @@ module Docx =
             PositionVAlign = positionAlign "positionV"
             WrapText = wrapText
             WrapPolygon = wrapPolygon
+            FlipH = pictureFlip "flipH"
+            FlipV = pictureFlip "flipV"
             Opaque = None
         }
 
@@ -1294,6 +1311,8 @@ module Docx =
             PositionVAlign = None
             WrapText = None
             WrapPolygon = []
+            FlipH = false
+            FlipV = false
             Opaque = None
         }
         let drawingImage =
@@ -1325,7 +1344,9 @@ module Docx =
                             |> Option.map ValueText.Css.withoutPoints
                             |> Option.bind parseFloat
                             |> Option.map ptToPixels
-                        emptyImage rId false (shape |> Option.bind (fun value -> Xml.attr "id" value)) (Xml.attr "o:title" image) (shape |> Option.bind (fun value -> Xml.attr "alt" value)) (stylePoints "width") (stylePoints "height"))))
+                        let flipH, flipV = style |> Option.map ValueText.Css.flip |> Option.defaultValue (false, false)
+                        { emptyImage rId false (shape |> Option.bind (fun value -> Xml.attr "id" value)) (Xml.attr "o:title" image) (shape |> Option.bind (fun value -> Xml.attr "alt" value)) (stylePoints "width") (stylePoints "height")
+                            with FlipH = flipH; FlipV = flipV })))
         drawingImage |> Option.orElseWith (fun () -> vmlImage)
 
     // ---- drawings the reader does not model ---------------------------------
@@ -1393,7 +1414,7 @@ module Docx =
           BehindDoc = None; AllowOverlap = None; LayoutInCell = None; DistanceTop = None; DistanceBottom = None; DistanceLeft = None
           DistanceRight = None; RelativeHeight = None; Locked = None; SimplePosition = None; SimplePositionX = None; SimplePositionY = None
           CropLeft = None; CropTop = None; CropRight = None; CropBottom = None; PositionHAlign = None; PositionVAlign = None; WrapText = None; WrapPolygon = []
-          Opaque = None }
+          FlipH = false; FlipV = false; Opaque = None }
 
     /// An object the reader does not model, as an image-like run: its frame
     /// (size, floating position), the fallback picture when the document has
@@ -3367,6 +3388,13 @@ module Shapes =
             Xml.children spPr |> List.tryPick (fun c -> if Xml.name c |> Option.map Ns.stripNs = Some "ln" then Some c else None))
         |> Option.bind srgbOf
 
+    /// a:xfrm flipH / flipV of the shape's own properties (wps:spPr).
+    let private parseFlip (attrName: string) (shapeNode: XmlNode) : bool =
+        Ns.descendantsNs "spPr" shapeNode |> List.tryHead
+        |> Option.bind (Ns.childNs "xfrm")
+        |> Option.bind (Xml.attr attrName)
+        |> Option.exists (fun value -> value = "1" || value.ToLowerInvariant() = "true")
+
     let private parseRotation (shapeNode: XmlNode) : float =
         Ns.descendantsNs "xfrm" shapeNode |> List.tryHead
         |> Option.bind (Xml.attr "rot")
@@ -3530,6 +3558,8 @@ module Shapes =
             CustomH = custom |> Option.map (fun (_, _, h) -> h)
             Gradient = parseGradient shapeNode
             Rotation = vmlRotation |> Option.defaultWith (fun () -> parseRotation shapeNode)
+            FlipH = (if isVml then fst (ValueText.Css.flip vmlStyle) else parseFlip "flipH" shapeNode)
+            FlipV = (if isVml then snd (ValueText.Css.flip vmlStyle) else parseFlip "flipV" shapeNode)
             AnchorBlock = None
             Inline = isInline || (isVml && not (vmlStyle.Replace(" ", "").ToLowerInvariant().Contains "position:absolute"))
             Wrap = wrapChild |> Option.orElse vmlWrap
@@ -5749,6 +5779,8 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                             "ImageCropTop" ==> img.CropTop
                             "ImageCropRight" ==> img.CropRight
                             "ImageCropBottom" ==> img.CropBottom
+                            "ImageFlipH" ==> img.FlipH
+                            "ImageFlipV" ==> img.FlipV
                             "ImagePositionHAlign" ==> img.PositionHAlign
                             "ImagePositionVAlign" ==> img.PositionVAlign
                             "ImageWrapText" ==> img.WrapText
@@ -6044,6 +6076,8 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                                 "ImageCropTop" ==> img.CropTop
                                 "ImageCropRight" ==> img.CropRight
                                 "ImageCropBottom" ==> img.CropBottom
+                                "ImageFlipH" ==> img.FlipH
+                                "ImageFlipV" ==> img.FlipV
                                 "ImagePositionHAlign" ==> img.PositionHAlign
                                 "ImagePositionVAlign" ==> img.PositionVAlign
                                 "ImageWrapText" ==> img.WrapText

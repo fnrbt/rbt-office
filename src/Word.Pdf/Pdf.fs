@@ -671,6 +671,7 @@ let private commandBounds = function
         Some (min x1 x2 - lineWidth, min y1 y2 - lineWidth, max x1 x2 + lineWidth, max y1 y2 + lineWidth)
     | WordPaint.DrawShape (_, _, sw, (x, y, w, h), _) -> Some (x - sw, y - sw, x + w + sw, y + h + sw)
     | WordPaint.DrawGroup (_, _, _, _, _, (x, y, w, h), _) -> Some (x, y, x + w, y + h)
+    | WordPaint.DrawMirrored (_, _, _, _, (x, y, w, h), _) -> Some (x, y, x + w, y + h)
 
 let private intersectsPage pageTop pageHeight command =
     match commandBounds command with
@@ -810,6 +811,17 @@ let rec private pdfOpsForCommand (textContext: TextContext) (usage: GlyphUsage) 
             ops.Add PdfDraw.ClipPath
             ops.Add PdfDraw.EndPath
         | None -> ()
+        for command in commands do
+            ops.AddRange (pdfOpsForCommand textContext usage imageNames pageTop pageHeight command)
+        ops.Add PdfDraw.RestoreState
+        List.ofSeq ops
+    | WordPaint.DrawMirrored (flipH, flipV, centerX, centerY, _, commands) ->
+        // A flipped picture: mirrored about its middle (x -> 2cx - x, y -> 2cy - y on the page).
+        let sx, sy = (if flipH then -1.0 else 1.0), (if flipV then -1.0 else 1.0)
+        let cx, cy = centerX, yPdf centerY
+        let ops = ResizeArray<PdfDraw.DrawOp>()
+        ops.Add PdfDraw.SaveState
+        ops.Add (PdfDraw.Transform (sx, 0.0, 0.0, sy, cx - sx * cx, cy - sy * cy))
         for command in commands do
             ops.AddRange (pdfOpsForCommand textContext usage imageNames pageTop pageHeight command)
         ops.Add PdfDraw.RestoreState

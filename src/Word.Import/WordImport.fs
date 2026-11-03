@@ -554,6 +554,8 @@ let private editorRunsToBufferWithImages (decorate: int -> Rbt.Word.TextBuffer.T
                 PositionVAlign = None
                 WrapText = None
                 WrapPolygon = []
+                FlipH = run.ImageFlipH
+                FlipV = run.ImageFlipV
                 Opaque = None
                 SourceRun = None
             } |> decorateImage runIndex)
@@ -1150,6 +1152,8 @@ let importDoc (doc: DocxReader.WordDocument) =
                     Geometry = geometry
                     Gradient = gradient
                     Rotation = shape.Rotation
+                    FlipH = shape.FlipH
+                    FlipV = shape.FlipV
                     Inline = shape.Inline
                     Wrap = shape.Wrap
                     PositionHAlign = shape.PositionHAlign

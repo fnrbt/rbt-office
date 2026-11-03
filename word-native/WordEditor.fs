@@ -985,6 +985,12 @@ let rec private toRendererCommand (resolveImage: string -> Framebuffer option) =
                 { M11 = c; M12 = s; M21 = -s; M22 = c
                   DX = centerX - centerX * c + centerY * s; DY = centerY - centerX * s - centerY * c }
             [ Cmd.Group(xform, opacity, clipped) ]
+    | WordPaint.DrawMirrored (flipH, flipV, centerX, centerY, _, inner) ->
+        // A flipped picture: mirrored about its middle.
+        let innerCmds = inner |> List.collect (toRendererCommand resolveImage)
+        let sx, sy = (if flipH then -1.0 else 1.0), (if flipV then -1.0 else 1.0)
+        let xform : Matrix3x2 = { M11 = sx; M12 = 0.0; M21 = 0.0; M22 = sy; DX = centerX - sx * centerX; DY = centerY - sy * centerY }
+        [ Cmd.Group(xform, 1.0, innerCmds) ]
 
 let commands (width: float) (height: float) (resolveImage: string -> Framebuffer option) (hoveredImage: (BlockId * int) option) (doc: Document) =
     let settings = layoutSettings width doc

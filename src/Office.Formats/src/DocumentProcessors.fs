@@ -472,6 +472,9 @@ module EditorProcessor =
         ImageCropTop: string option
         ImageCropRight: string option
         ImageCropBottom: string option
+        /// The picture is mirrored across / upside down (a:xfrm flipH / flipV).
+        ImageFlipH: bool
+        ImageFlipV: bool
     }
 
     /// Editor-friendly paragraph format
@@ -612,6 +615,8 @@ module EditorProcessor =
                 ImageCropTop = img.CropTop
                 ImageCropRight = img.CropRight
                 ImageCropBottom = img.CropBottom
+                ImageFlipH = img.FlipH
+                ImageFlipV = img.FlipV
             }
         | _ ->
             let text = extractRunText comments run.Content
@@ -712,6 +717,8 @@ module EditorProcessor =
                     ImageCropTop = None
                     ImageCropRight = None
                     ImageCropBottom = None
+                    ImageFlipH = false
+                    ImageFlipV = false
                 }
 
     /// Convert a paragraph to EditorParagraph format
