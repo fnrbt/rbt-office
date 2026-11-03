@@ -1847,6 +1847,22 @@ let private editContainerOf (doc: Document) (paragraphId: string) (edit: Paragra
         if not changed then None
         else Some { doc with Blocks = doc.Blocks |> List.mapi (fun i b -> if i = index then edited else b) }
 
+/// The properties of the first part of a paragraph that is split: what stands
+/// at the paragraph's end - the end of its section (Word keeps it in the
+/// paragraph mark), a page or column break after its text - goes with the
+/// second part, which ends where the paragraph ended. (Both parts had them:
+/// Enter in the last paragraph of a section made a section of each part, and
+/// Enter before a break a second break.)
+let private withoutParagraphEnd (metadata: BlockMetadata) : BlockMetadata =
+    if metadata.SectionBreak.IsNone && metadata.SectionPageSetup.IsNone && not metadata.PageBreakAfter && not metadata.ColumnBreakAfter
+       && metadata.HeaderReferences.IsEmpty && metadata.FooterReferences.IsEmpty then metadata
+    else
+        { metadata with
+            PageBreakAfter = false; ColumnBreakAfter = false
+            SectionBreak = None; SectionColumns = None; SectionPageSetup = None; SectionPageNumberStart = None
+            SectionPageNumberFormat = None; SectionVerticalAlign = None
+            HeaderReferences = []; FooterReferences = [] }
+
 /// Split block at cursor, creating two blocks
 let splitBlock doc =
     match doc.Selection with
@@ -1864,7 +1880,7 @@ let splitBlock doc =
                 let afterBuffer = TextBuffer.sliceBuffer offset (TextBuffer.length para.Buffer - offset) para.Buffer
                 let newBlockId = nextBlockId()
                 let newPara = { Id = newBlockId; Buffer = afterBuffer; Metadata = para.Metadata }
-                let updatedPara = { para with Buffer = beforeBuffer }
+                let updatedPara = { para with Buffer = beforeBuffer; Metadata = withoutParagraphEnd para.Metadata }
                 let split =
                     editContainerOf doc para.Id (fun content anchors ->
                         let index = content |> List.findIndex (fun p -> p.Id = para.Id)
@@ -1896,7 +1912,7 @@ let splitBlock doc =
                 | TextBox t -> TextBox t
 
             // Update first block with before text (keep existing metadata)
-            let updatedPara = { para with Buffer = beforeBuffer }
+            let updatedPara = { para with Buffer = beforeBuffer; Metadata = withoutParagraphEnd para.Metadata }
             let updatedBlock =
                 match block with
                 | Paragraph _ -> Paragraph updatedPara
