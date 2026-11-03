@@ -8,6 +8,8 @@
     <Compile Include="src/XmlPatch.fs" />
     <Compile Include="src/OfficeDsl.fs" />
     <Compile Include="src/ZipInterop.fs" />
+    <Compile Include="src/PartPath.fs" />
+    <Compile Include="src/OpcXml.fs" />
     <Compile Include="src/VbaProject.fs" />
     <Compile Include="src/DocxReader.fs" />
     <Compile Include="src/DocumentProcessors.fs" />

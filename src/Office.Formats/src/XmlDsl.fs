@@ -507,6 +507,12 @@ module Ns =
         | -1 -> name
         | idx -> name.Substring(idx + 1)
 
+    /// A local name with the prefix of a qualified name ("w:settings", "evenAndOddHeaders" -> "w:evenAndOddHeaders").
+    let withPrefixOf (qualified: string) (localName: string) =
+        match qualified.LastIndexOf(':') with
+        | -1 -> localName
+        | idx -> qualified.Substring(0, idx + 1) + localName
+
     /// `stripNs name = localName`, without making the stripped name.
     /// (A local name holds no colon: a name that ends with ":" + localName has it after its last colon.)
     let private hasLocalName (localName: string) (name: string) =

@@ -32,6 +32,15 @@ type ElementEdit =
     | RemoveChildWhere of name: string * attribute: string * value: string
     /// The child of that name whose attribute has that value changed by these edits; nothing where there is none.
     | EditChildWhere of name: string * attribute: string * value: string * edits: ElementEdit list
+    /// The element taken out, with the white space before it (the edit of a child: `editsAt`).
+    | Removed
+    /// XML put in just before the element, or just after it (the edit of a child: `editsAt`).
+    | InsertBefore of xml: string
+    | InsertAfter of xml: string
+    /// XML put in at the start of what the element holds - after the children its schema order puts before
+    /// the others ("*": a paragraph's properties) -, or at its end.
+    | Prepend of xml: string
+    | Append of xml: string
 
 /// The order of the children of an element (local names, by the element's qualified name), for where a
 /// child that is put in goes. An element with no order puts a new child after the others. "*" stands for
@@ -177,6 +186,22 @@ let rec private applyAt (order: SchemaOrder) (text: string) (node: XmlNode) (edi
             | SetText value -> parts.Add ((contentStart, contentEnd, escapeText value))
             | _ -> ()
         let first (child: string) = children |> List.tryFind (fun kid -> nameOf kid = child)
+        // (A child changed by edits: taken out, or its text with them made - with what goes before and after it.)
+        let edited (kid: XmlNode) (inner: ElementEdit list) =
+            if List.contains Removed inner then (withSpaceBefore (spanOf kid).Start, (spanOf kid).End, "")
+            else
+                let before = inner |> List.choose (function InsertBefore xml -> Some xml | _ -> None) |> String.concat ""
+                let after = inner |> List.choose (function InsertAfter xml -> Some xml | _ -> None) |> String.concat ""
+                let own = inner |> List.filter (function InsertBefore _ | InsertAfter _ -> false | _ -> true)
+                ((spanOf kid).Start, (spanOf kid).End, before + applyAt order text kid own + after)
+        // (Where what is put in at the start goes: before the first child the order does not put first.)
+        let startPlace =
+            match ranks |> List.tryFindIndex (fun known -> known = "*") with
+            | None -> contentStart
+            | Some star ->
+                match children |> List.tryFind (fun kid -> match rankOf (nameOf kid) with Some rank -> rank >= star | None -> true) with
+                | Some kid -> (spanOf kid).Start
+                | None -> contentEnd
         let where (child: string) (attribute: string) (value: string) =
             children |> List.filter (fun kid -> nameOf kid = child && Map.tryFind attribute (attrsOf kid) = Some value)
         for edit in edits do
@@ -198,13 +223,15 @@ let rec private applyAt (order: SchemaOrder) (text: string) (node: XmlNode) (edi
                 | None -> ()
             | EditChild (child, inner, whole) ->
                 match first child, whole with
-                | Some kid, _ -> parts.Add ((spanOf kid).Start, (spanOf kid).End, applyAt order text kid inner)
+                | Some kid, _ -> parts.Add (edited kid inner)
                 | None, Some xml -> inserts.Add ((placeFor child, defaultArg (rankOf child) 9999, xml))
                 | None, None -> ()
             | AddChild (child, xml) -> inserts.Add ((placeFor child, defaultArg (rankOf child) 9999, xml))
+            | Prepend xml -> inserts.Add ((startPlace, -1, xml))
+            | Append xml -> inserts.Add ((contentEnd, System.Int32.MaxValue, xml))
             | EditNth (child, index, inner) ->
                 match children |> List.filter (fun kid -> nameOf kid = child) |> List.tryItem index with
-                | Some kid -> parts.Add ((spanOf kid).Start, (spanOf kid).End, applyAt order text kid inner)
+                | Some kid -> parts.Add (edited kid inner)
                 | None -> ()
             | SetChildWhere (child, attribute, value, xml) ->
                 match where child attribute value with
@@ -214,7 +241,7 @@ let rec private applyAt (order: SchemaOrder) (text: string) (node: XmlNode) (edi
                 for kid in where child attribute value do parts.Add ((withSpaceBefore (spanOf kid).Start, (spanOf kid).End, ""))
             | EditChildWhere (child, attribute, value, inner) ->
                 match where child attribute value with
-                | kid :: _ -> parts.Add ((spanOf kid).Start, (spanOf kid).End, applyAt order text kid inner)
+                | kid :: _ -> parts.Add (edited kid inner)
                 | [] -> ()
             | _ -> ()
         // (Several put in at one place go in their schema order.)
@@ -229,6 +256,22 @@ let rec private applyAt (order: SchemaOrder) (text: string) (node: XmlNode) (edi
 let apply (order: SchemaOrder) (source: SourceElement) (edits: ElementEdit list) : string =
     applyAt order source.Text source.Node edits
 
+/// The edits of `node` that make `targets` - elements of its tree, at any depth (itself too), each with its
+/// edits - in it: each reached through the children it is in (EditNth), one chain of edits for those in the
+/// same child.
+let rec editsAt (node: XmlNode) (targets: (XmlNode * ElementEdit list) list) : ElementEdit list =
+    let span = spanOf node
+    let own = targets |> List.filter (fun (target, _) -> spanOf target = span) |> List.collect snd
+    let within (outer: Span) (target: XmlNode) = let inner = spanOf target in inner.Start >= outer.Start && inner.End <= outer.End
+    let kids = elementChildren node |> List.filter (fun kid -> Span.isKnown (spanOf kid))
+    let childEdits =
+        [ for kid in kids do
+              let inside = targets |> List.filter (fun (target, _) -> spanOf target <> span && within (spanOf kid) target)
+              if not inside.IsEmpty then
+                  let index = kids |> List.filter (fun other -> nameOf other = nameOf kid) |> List.findIndex (fun other -> spanOf other = spanOf kid)
+                  yield EditNth (nameOf kid, index, editsAt kid inside) ]
+    own @ childEdits
+
 /// The elements of a fragment of XML (one after another, no root), each with its text.
 let readFragment (text: string) : SourceElement list option =
     let wrapped = "<fragment>" + text + "</fragment>"
@@ -239,6 +282,21 @@ let readFragment (text: string) : SourceElement list option =
                  | Element _ -> yield { Text = wrapped; Node = kid }
                  | _ -> () ]
     | _ -> None
+
+/// A fragment of XML (elements one after another) as the children of one element, to be changed as one
+/// (`applyFragment`). None when it is not well formed.
+let readFragmentRoot (text: string) : SourceElement option =
+    let wrapped = "<fragment>" + text + "</fragment>"
+    match tryScan wrapped (System.Collections.Generic.HashSet<string>()) with
+    | Some (Element _ as node) -> Some { Text = wrapped; Node = node }
+    | _ -> None
+
+/// The fragment with these edits made in it (edits of the element `readFragmentRoot` makes of it).
+let applyFragment (order: SchemaOrder) (fragment: SourceElement) (edits: ElementEdit list) : string =
+    let edited = applyAt order fragment.Text fragment.Node edits
+    match tryScan edited (System.Collections.Generic.HashSet<string>()) with
+    | Some (Element (_, _, _, span)) when Span.isKnown span -> edited.Substring(span.StartTagEnd, span.EndTagStart - span.StartTagEnd)
+    | _ -> edited
 
 /// The root element of a part's text (what stands around it - the XML declaration - stays): None when the
 /// text is not well formed.
@@ -318,7 +376,7 @@ let childOf (edit: ElementEdit) : string =
     match edit with
     | SetChild (name, _) | SetChildren (name, _) | RemoveChild name | EditChild (name, _, _) | AddChild (name, _)
     | SetChildWhere (name, _, _, _) | RemoveChildWhere (name, _, _) | EditChildWhere (name, _, _, _) | EditNth (name, _, _) -> name
-    | SetAttribute _ | RemoveAttribute _ | SetText _ -> ""
+    | SetAttribute _ | RemoveAttribute _ | SetText _ | Removed | InsertBefore _ | InsertAfter _ | Prepend _ | Append _ -> ""
 
 /// Whether the element has a child of that name (qualified).
 let hasChild (source: SourceElement) (name: string) : bool =
@@ -518,6 +576,35 @@ and writeLayoutWith (how: LayoutWrite) (laid: Layout) (written: (Placed * string
 /// The qualified names of an element's attributes.
 let attributeNames (node: XmlNode) : string list = attrsOf node |> Map.toList |> List.map fst
 
+/// The attributes of an element (qualified name -> value).
+let attributes (node: XmlNode) : Map<string, string> = attrsOf node
+
+/// The qualified name of an element ("" for text).
+let name (node: XmlNode) : string = nameOf node
+
+/// Where an element is in the text it was read from.
+let span (node: XmlNode) : Span = spanOf node
+
+/// The prefix of an element's name ("" for none).
+let prefix (node: XmlNode) : string =
+    let qualified = nameOf node
+    match qualified.IndexOf ':' with
+    | -1 -> ""
+    | at -> qualified.Substring(0, at)
+
+/// The local name of an element (without its prefix).
+let localName (node: XmlNode) : string = local (nameOf node)
+
+/// The elements an element holds, in order.
+let elements (node: XmlNode) : XmlNode list = elementChildren node
+
+/// Every attribute of an element and of the elements in it, at any depth (qualified name, value), in
+/// document order.
+let rec allAttributes (node: XmlNode) : (string * string) list =
+    match node with
+    | Element (_, attrs, kids, _) -> (attrs |> Map.toList) @ List.collect allAttributes kids
+    | _ -> []
+
 /// The text of a text read from `start` to `finish` without the elements in it that `drop` names (local names).
 let sliceWithout (text: string) (node: XmlNode) (start: int) (finish: int) (drop: string -> bool) : string =
     let gone = ResizeArray<int * int>()
@@ -549,6 +636,12 @@ let sliceWith (text: string) (start: int) (finish: int) (replacements: (int * in
 
 /// The value of an attribute of an element (qualified name).
 let attribute (node: XmlNode) (name: string) : string option = Map.tryFind name (attrsOf node)
+
+/// The elements of a tree (itself too) `wanted` says, in document order.
+let rec descendantsWhere (wanted: XmlNode -> bool) (node: XmlNode) : XmlNode list =
+    match node with
+    | Element (_, _, kids, _) -> (if wanted node then [ node ] else []) @ List.collect (descendantsWhere wanted) kids
+    | _ -> []
 
 /// The elements of a tree whose local name is `name`, in document order.
 let rec descendants (name: string) (node: XmlNode) : XmlNode list =
@@ -608,3 +701,26 @@ module Word =
         | "w:abstractNum" -> [ "nsid"; "multiLevelType"; "tmpl"; "name"; "styleLink"; "numStyleLink"; "lvl" ]
         | "w:num" -> [ "abstractNumId"; "lvlOverride" ]
         | _ -> []
+
+/// A style attribute's value (VML's style="position:absolute;margin-left:12pt"): its declarations in
+/// order, each a property and its value.
+module Style =
+    let parse (value: string) : (string * string) list =
+        value.Split(';')
+        |> Array.toList
+        |> List.choose (fun declaration ->
+            match declaration.Split([| ':' |], 2) with
+            | [| property; value |] when property.Trim() <> "" -> Some (property.Trim(), value.Trim())
+            | _ -> None)
+
+    let write (declarations: (string * string) list) : string =
+        declarations |> List.map (fun (property, value) -> property + ":" + value) |> String.concat ";"
+
+    /// The declarations with the property's value set: in its place, or after the others.
+    let set (property: string) (value: string) (declarations: (string * string) list) =
+        if declarations |> List.exists (fun (known, _) -> known = property) then
+            declarations |> List.map (fun (known, was) -> if known = property then known, value else known, was)
+        else declarations @ [ property, value ]
+
+    let remove (property: string) (declarations: (string * string) list) =
+        declarations |> List.filter (fun (known, _) -> known <> property)

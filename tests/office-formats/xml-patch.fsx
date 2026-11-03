@@ -127,5 +127,53 @@ check "merge: none read - the change made in an empty element"
 check "merge: a text that is not one element" (mergeOf "<w:rPr/>" "<w:rPr>" "<w:rPr/>" "<w:rPr/>") None
 check "isEmpty" [ isEmpty "<w:rPr/>"; isEmpty "<w:rPr> </w:rPr>"; isEmpty "<w:rPr><w:b/></w:rPr>"; isEmpty "<w:rPr w:x=\"1\"/>" ] [ true; true; false; false ]
 
+// ---- edits of an element anywhere in the tree; insert, prepend, append, remove ----
+let drawing = """<mc:AlternateContent><mc:Choice Requires="wps"><w:drawing><wp:anchor a="1">
+  <wp:positionH relativeFrom="column"><wp:align>center</wp:align></wp:positionH>
+  <wp:extent cx="1" cy="2"/></wp:anchor></w:drawing></mc:Choice>
+  <mc:Fallback><w:pict/></mc:Fallback></mc:AlternateContent>"""
+let source = el drawing
+let positionH = (descendants "positionH" source.Node).Head
+let extent = (descendants "extent" source.Node).Head
+let fallback = (descendants "Fallback" source.Node).Head
+check "editsAt: edits of descendants, each in place, the rest the bytes"
+    (apply (fun _ -> []) source (editsAt source.Node [ (positionH, [ RemoveChild "wp:align"; AddChild ("wp:posOffset", "<wp:posOffset>9</wp:posOffset>") ]);
+                                                     (extent, [ SetAttribute ("cx", "5") ]);
+                                                     (fallback, [ Removed ]) ]))
+    """<mc:AlternateContent><mc:Choice Requires="wps"><w:drawing><wp:anchor a="1">
+  <wp:positionH relativeFrom="column"><wp:posOffset>9</wp:posOffset></wp:positionH>
+  <wp:extent cx="5" cy="2"/></wp:anchor></w:drawing></mc:Choice></mc:AlternateContent>"""
+let para = el "<w:p><w:pPr><w:jc w:val=\"left\"/></w:pPr><w:r><w:t>a</w:t></w:r></w:p>"
+check "Prepend: after the properties; Append: at the end"
+    (apply order para [ Prepend "<w:bookmarkStart w:id=\"1\"/>"; Append "<w:bookmarkEnd w:id=\"1\"/>" ])
+    "<w:p><w:pPr><w:jc w:val=\"left\"/></w:pPr><w:bookmarkStart w:id=\"1\"/><w:r><w:t>a</w:t></w:r><w:bookmarkEnd w:id=\"1\"/></w:p>"
+check "Prepend into an empty paragraph opens it" (apply order (el "<w:p/>") [ Prepend "<w:r/>" ]) "<w:p><w:r/></w:p>"
+let run = (descendants "r" para.Node).Head
+check "InsertBefore / InsertAfter a child"
+    (apply order para (editsAt para.Node [ run, [ InsertBefore "<x/>"; InsertAfter "<y/>" ] ]))
+    "<w:p><w:pPr><w:jc w:val=\"left\"/></w:pPr><x/><w:r><w:t>a</w:t></w:r><y/></w:p>"
+let fragment = (readFragmentRoot "<w:bookmarkStart w:id=\"1\"/> <w:p/>").Value
+check "applyFragment: a fragment's elements edited as one"
+    (applyFragment order fragment (editsAt fragment.Node [ (descendants "bookmarkStart" fragment.Node).Head, [ InsertAfter "<w:bookmarkEnd w:id=\"1\"/>" ] ]))
+    "<w:bookmarkStart w:id=\"1\"/><w:bookmarkEnd w:id=\"1\"/> <w:p/>"
+check "Style: declarations set in place and after, taken out"
+    (Style.parse "position:absolute; margin-left:1pt;width:2pt" |> Style.set "margin-left" "3pt" |> Style.remove "width" |> Style.set "height" "4pt" |> Style.write)
+    "position:absolute;margin-left:3pt;height:4pt"
+
+// ---- the package's plumbing parts ----
+let rels = "<?xml version=\"1.0\"?>\n<Relationships xmlns=\"p\">\n  <Relationship Id=\"rId1\" Type=\"t/styles\" Target=\"styles.xml\"/>\n  <Relationship Id=\"rId2\" Type=\"t/image\" Target=\"media/a.png\"/>\n</Relationships>"
+check "relationships read" (OpcXml.relationships rels |> Option.map (List.map (fun rel -> rel.Id))) (Some [ "rId1"; "rId2" ])
+check "a relationship taken out with its line, the rest the bytes"
+    (OpcXml.withoutRelationships (fun rel -> rel.Id = "rId1") rels)
+    "<?xml version=\"1.0\"?>\n<Relationships xmlns=\"p\">\n  <Relationship Id=\"rId2\" Type=\"t/image\" Target=\"media/a.png\"/>\n</Relationships>"
+check "relationship ids referred to: by the relationships namespace, whatever its prefix"
+    (set (OpcXml.relationshipIdsIn "<w:drawing xmlns:x=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><a:blip x:embed=\"rId5\" w:id=\"rId9\"/></w:drawing><v:imagedata r:id=\"rId6\" o:relid=\"rId7\"/>"))
+    (set [ "rId5"; "rId6"; "rId7" ])
+check "content types: by part name, by extension"
+    (let lookup, _ = OpcXml.contentTypeLookup "<Types><Default Extension=\"png\" ContentType=\"image/png\"/><Override PartName=\"/word/document.xml\" ContentType=\"doc\"/></Types>"
+     [ lookup "word/document.xml"; lookup "word/media/a.PNG"; lookup "word/x.bin" ])
+    [ Some "doc"; Some "image/png"; None ]
+check "part paths" [ PartPath.ofRelationships "word/_rels/document.xml.rels"; PartPath.ofRelationships "_rels/.rels"; PartPath.ofRelationships "word/document.xml" ] [ Some "word/document.xml"; Some ""; None ]
+
 printfn "xml-patch: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
