@@ -106,6 +106,10 @@ let changeInPieces (pieces: string list) (was: string) (now: string) : (int * st
         |> List.tryFind (fun (_, piece, start) -> changedFrom >= start && changedTo <= start + piece.Length && (changedFrom < start + piece.Length || changedFrom = changedTo))
         |> Option.map (fun (index, piece, start) -> index, piece.Substring(0, changedFrom - start) + inserted + piece.Substring(changedTo - start))
 
+/// The text put in before a text (`now` is it and then `was`), when that is all that changed.
+let insertedBefore (was: string) (now: string) : string option =
+    if now.Length > was.Length && now.EndsWith was then Some (now.Substring(0, now.Length - was.Length)) else None
+
 // ---- links, pictures, colours, lists ----
 
 /// The bookmark a link names in the document itself ("#name" -> "name"); None for a link elsewhere.

@@ -3412,9 +3412,9 @@ let private splicedRuns (source: SpliceSource) (original: obj) (joined: obj arra
                          let sourceShape = contentNames source
                          let otherShape = not sameText && sourceShape <> contentNames before
                          let textOnly (names: string list) = not names.IsEmpty && names |> List.forall (fun name -> name = "w:t")
+                         // (The model's text of the run as read: all of the runs it held it as, when they are of one format.)
+                         let wasText = match originalRuns.TryGetValue at with | true, list -> (match alike list with [ (_, whole) ] -> Some whole | _ -> None) | _ -> None
                          let textInPlace =
-                             // (The model's text of the run as read: all of the runs it held it as, when they are of one format.)
-                             let wasText = match originalRuns.TryGetValue at with | true, list -> (match alike list with [ (_, merged) ] -> Some merged | _ -> None) | _ -> None
                              let nowText = stringOrDefault "" (runObj?Text)
                              let plain (value: string) = ModelText.textPieces value |> List.forall (function ModelText.Text _ -> true | _ -> false)
                              match wasText with
@@ -3423,9 +3423,22 @@ let private splicedRuns (source: SpliceSource) (original: obj) (joined: obj arra
                                  ModelText.changeInPieces pieces was nowText
                                  |> Option.map (fun (index, value) -> [ XmlPatch.EditNth ("w:t", index, [ XmlPatch.SetText value ]) ])
                              | _ -> None
-                         match textInPlace with
-                         | Some textEdits -> yield place, wrap (XmlPatch.apply XmlPatch.Word.order source (propsEdit :: textEdits))
-                         | None ->
+                         // (Text typed before a run whose content does not begin with its text - a tab, a break -, in its
+                         // formatting: a run of its own before it, made like it; the run as it was.)
+                         let typedBefore =
+                             match wasText with
+                             | Some was when currentCount.[at] = 1 && merged = (props |> Option.map (XmlPatch.bytesOf text) |> Option.defaultValue "")
+                                             && (match sourceShape with first :: _ -> first <> "w:t" | [] -> false) ->
+                                 ModelText.insertedBefore was (stringOrDefault "" (runObj?Text))
+                                 |> Option.filter (fun typed -> ModelText.textPieces typed |> List.forall (function ModelText.Text _ -> true | _ -> false))
+                             | _ -> None
+                         match textInPlace, typedBefore with
+                         | _, Some typed ->
+                             let rsids = XmlPatch.attributeNames run |> List.filter ModelText.isRevisionId |> List.map XmlPatch.RemoveAttribute
+                             let copy = XmlPatch.startTag text run rsids + merged + String.concat "" (runTextElements false typed) + "</w:r>"
+                             yield place, wrap (copy + XmlPatch.bytesOf text run)
+                         | Some textEdits, None -> yield place, wrap (XmlPatch.apply XmlPatch.Word.order source (propsEdit :: textEdits))
+                         | None, None ->
                          if ofSeveral || reordered || otherShape || content |> List.exists (function XmlPatch.SetChildren _ -> true | _ -> false) then
                              let runSpan = match run with XmlDsl.Element (_, _, _, sp) -> sp | _ -> XmlDsl.Span.none
                              let modelContent = XmlPatch.childrenBytes after (fun name -> name <> "rPr")
