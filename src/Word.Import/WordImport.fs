@@ -191,6 +191,7 @@ let private mergeParagraphProperties (baseProps: DocxReader.ParagraphProperties)
     RenderedPageBreakBefore = props.RenderedPageBreakBefore |> Option.orElse baseProps.RenderedPageBreakBefore
     HeaderReferences = if props.HeaderReferences.IsEmpty then baseProps.HeaderReferences else props.HeaderReferences
     FooterReferences = if props.FooterReferences.IsEmpty then baseProps.FooterReferences else props.FooterReferences
+    DropCap = props.DropCap
 }
 
 let private resolveTableStyleProperties (styleMap: Map<string, DocxReader.StyleDefinition>) styleId =
@@ -722,6 +723,10 @@ let private paraMetadata styleMap resolver useDocumentMarkForPureEmpty defaultMi
             ExplicitMarkFontSize = props.ParagraphRunProperties |> Option.bind (fun mark -> mark.FontSize |> Option.map (fun _ -> TC.fontSizeToPoints mark.FontSize))
             ListLevelIndents = numberingDef |> Option.map (fun _ -> numberingIndentLeft, numberingFirstLineIndent)
             ListLevels = numberingDef |> Option.bind (fun def -> resolver.Levels |> Map.tryFind def.NumId) |> Option.defaultValue []
+            DropCap =
+                para.Properties.DropCap
+                |> Option.map (fun (kind, lines, hSpace) ->
+                    ({ InMargin = (kind = "margin"); Lines = max 1 lines; Distance = twipsToCanvasPixels hSpace |> Option.defaultValue 0.0 }: Rbt.Word.Document.DropCap))
             MarkRevision =
                 para.MarkRevision
                 |> Option.map (fun (revisionType, mark) ->

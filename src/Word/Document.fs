@@ -102,6 +102,18 @@ type TabStop = {
     Leader: string option
 }
 
+/// A drop cap (w:framePr w:dropCap): the paragraph is the large first letter
+/// of the paragraph after it, which goes around it.
+type DropCap = {
+    /// "margin": the letter stands in the margin, left of the text; else
+    /// ("drop") within the text's width, the first lines of text beside it.
+    InMargin: bool
+    /// The lines of the next paragraph the letter is as high as (w:lines).
+    Lines: int
+    /// The room between the letter and the text beside it (w:hSpace), in pixels.
+    Distance: float
+}
+
 /// One level of a list as the file's numbering part defines it (a w:lvl of
 /// the list's abstract numbering, with the list's overrides).
 type ListLevelDefinition = {
@@ -212,6 +224,8 @@ type BlockMetadata = {
     /// mark's run properties): inserted = the paragraph was split here, deleted
     /// = it is to be joined with the next one.
     MarkRevision: ParagraphMarkRevision option
+    /// The paragraph is the drop cap of the paragraph after it.
+    DropCap: DropCap option
 }
 
 /// A tracked paragraph mark: RevisionType is "insert" or "delete".
@@ -302,6 +316,7 @@ let defaultMetadata = {
     ListLevelIndents = None
     ListLevels = []
     MarkRevision = None
+    DropCap = None
 }
 
 /// One segment of a vector path. Coordinates are in the path's own coordinate

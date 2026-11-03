@@ -550,6 +550,12 @@ let private metadataFromEditor (item: obj) =
                 if boolOrDefault false (item?HasListLevelIndents) then Some (optionalFloat (item?ListLevelIndentLeft), optionalFloat (item?ListLevelFirstLineIndent))
                 else None
             ListLevels = (if listStyle = NoList then [] else listLevelsFromEditor (item?ListLevels))
+            DropCap =
+                optionalString (item?DropCapKind)
+                |> Option.map (fun kind ->
+                    { InMargin = (kind = "margin")
+                      Lines = optionalInt (item?DropCapLines) |> Option.defaultValue 1 |> max 1
+                      Distance = optionalFloat (item?DropCapDistance) |> Option.defaultValue 0.0 })
     }
 
 /// Convert EditorRun array to TextBuffer
