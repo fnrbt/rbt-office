@@ -700,7 +700,9 @@ let private endnoteMark (id: string) =
 let noteMarkText (noteType: string) (id: string) =
     if noteType = "endnote" then endnoteMark id else id
 
-/// The block id of a synthetic note paragraph ends with the note's id after this.
+/// The block id of a synthetic note paragraph: the note area's prefix (with
+/// the page and the note's place on it), the note's id and the id of the
+/// note's own paragraph, parted by this.
 let private noteIdSeparator = "#"
 
 /// The note (type, id) a synthetic paragraph of the note areas shows: by its block id.
@@ -712,30 +714,333 @@ let noteOfLayoutId (blockId: BlockId) : (string * string) option =
     match noteType with
     | Some noteType ->
         let at = blockId.IndexOf noteIdSeparator
-        if at < 0 then None else Some (noteType, blockId.Substring(at + noteIdSeparator.Length))
+        if at < 0 then None
+        else
+            let idStart = at + noteIdSeparator.Length
+            let idEnd = blockId.IndexOf(noteIdSeparator, idStart)
+            Some (noteType, (if idEnd < 0 then blockId.Substring idStart else blockId.Substring(idStart, idEnd - idStart)))
     | None -> None
+
+/// The id of the note's own paragraph (one of its body's, a table cell's
+/// among them) a synthetic paragraph of the note areas is laid out from.
+let noteParagraphIdOfLayoutId (blockId: BlockId) : BlockId option =
+    if blockId.StartsWith footnoteBlockIdPrefix || blockId.StartsWith endnoteBlockIdPrefix then
+        let at = blockId.IndexOf noteIdSeparator
+        if at < 0 then None
+        else
+            let second = blockId.IndexOf(noteIdSeparator, at + noteIdSeparator.Length)
+            if second < 0 then None else Some (blockId.Substring(second + noteIdSeparator.Length))
+    else None
+
+/// The part of a synthetic note paragraph's block id before the note's id:
+/// the same for the paragraphs of one note where one page shows them (and
+/// for those of its part that goes on on the next page).
+let noteAreaSlotOfLayoutId (blockId: BlockId) : string =
+    let at = blockId.IndexOf noteIdSeparator
+    if at < 0 then blockId else blockId.Substring(0, at)
+
 // Font sizes in the layout/buffer are CSS px (1pt = 96/72 px), as produced by
 // the editor import (11pt body = 14.667px). Word's FootnoteText is 10pt.
 let private footnoteFontSize = 10.0 * 96.0 / 72.0
-// Footnotes inherit the document body font; Calibri is Word's default and the
-// repro/most real docs use it. (A doc-default-font lookup would be more robust.)
+// A note without a body of its own (its plain text only) is set in Calibri,
+// Word's default face.
 let private footnoteFontFamily = "Calibri"
 // Small gap left below the footnote block, above the bottom page margin.
 let private footnoteBottomPad = 6.0
-// Footnote single-line height (10pt body font) and the separator gap above the
-// first note. The reserve must be >= the actual footnote-block height so body
-// content does not overlap the notes (which are positioned by their real height).
+// Footnote single-line height (10pt body font), for an estimate outside a
+// layout pass, and the separator gap above the first note.
 let private footnoteLineHeight = 16.0
 let private footnoteSeparatorGap = 16.0
 // Gap below the last body line before the endnote separator + first endnote.
 let private endnoteTopGap = 24.0
 
+/// Page height used when content is measured for its natural height rather
+/// than placed on a page (table rows; see measureTableRow...RowLocal).
+let private unpagedMeasurementPageHeight = 1000000.0
+
+// ---- notes laid out from their blocks ---------------------------------------
+//
+// A footnote or an endnote is laid out from its body (Package.Notes): its
+// paragraphs with their formatting and its tables, by the pass that lays the
+// body out, in the style its paragraphs have (FootnoteText / EndnoteText as
+// the file says), its mark (the note's number, superscript) before its first
+// paragraph's text. A note with no body (only the text its reference carries,
+// or a reference whose text was set on its own - setNote) is that text, in
+// Calibri 10 pt. Pages make room for the notes by these heights.
+
+/// A note laid out by itself, its top at y = 0, at the width of a page's
+/// text: what it was laid out from, and its layouts.
+type NoteLayoutRecord = {
+    RecordText: string
+    /// Laid out from the body in the package (RecordBlocks), not from the text.
+    RecordFromBody: bool
+    RecordBlocks: Block list
+    RecordStyles: NamedStyle list
+    RecordSettings: LayoutSettings
+    /// The layouts of the note's paragraphs (those of its tables' cells too), with their own block ids.
+    RecordLayouts: BlockLayout list
+    /// The layouts block by block, in order: a paragraph's (true: it may be
+    /// broken between its lines) or a table's (kept whole), with where the
+    /// block starts and where the next one does.
+    RecordUnits: (BlockLayout list * bool * float * float) list
+    RecordHeight: float
+}
+
+/// What the notes of a layout pass are laid out with (see withNoteLayoutContext).
+type private NoteLayoutContext = {
+    NoteDoc: Document
+    NoteMeasure: string -> TextStyle -> float
+    NoteMeasureRange: string -> TextStyle -> int -> int -> float
+    /// Kept from layout to layout when the layout has a memo; by note and width.
+    NoteRecords: Dictionary<string, NoteLayoutRecord>
+    mutable NoteBodies: Dictionary<string, NoteBody> option
+    /// The notes being laid out (a note's text that refers to a note is not followed).
+    NoteBusy: HashSet<string>
+}
+
+let mutable private noteLayoutContext : NoteLayoutContext option = None
+
+/// Lays a note's blocks out on an unpaged page (set further down: the body's pass).
+let private noteBlocksLayouter : (LayoutSettings -> (string -> TextStyle -> float) -> (string -> TextStyle -> int -> int -> float) -> Document -> BlockLayout list) ref =
+    ref (fun _ _ _ _ -> [])
+
+/// Lays one paragraph out by itself at y = 0 (set further down).
+let private noteParagraphLayouter : (LayoutSettings -> (string -> TextStyle -> float) -> (string -> TextStyle -> int -> int -> float) -> ParagraphBlock -> BlockLayout) ref =
+    ref (fun _ _ _ _ -> Unchecked.defaultof<BlockLayout>)
+
+/// Run `f` with the notes of `doc` at hand for the layout (a layout inside
+/// another one uses the outer one's).
+let private withNoteLayoutContext (records: Dictionary<string, NoteLayoutRecord> option) (measureText: string -> TextStyle -> float) (measureRange: string -> TextStyle -> int -> int -> float) (doc: Document) (f: unit -> 'T) : 'T =
+    match noteLayoutContext with
+    | Some _ -> f ()
+    | None ->
+        noteLayoutContext <-
+            Some { NoteDoc = doc
+                   NoteMeasure = measureText
+                   NoteMeasureRange = measureRange
+                   NoteRecords = (match records with Some records -> records | None -> Dictionary<string, NoteLayoutRecord>())
+                   NoteBodies = None
+                   NoteBusy = HashSet<string>() }
+        try f ()
+        finally noteLayoutContext <- None
+
+let private noteBodyKey (noteType: string) (id: string) = noteType + "\u0001" + id
+
+/// The body of a note in the context's document, when it has one (an ordinary note: not a separator).
+let private noteBodyOf (context: NoteLayoutContext) (noteType: string) (id: string) : NoteBody option =
+    let bodies =
+        match context.NoteBodies with
+        | Some bodies -> bodies
+        | None ->
+            let bodies = Dictionary<string, NoteBody>()
+            for body in context.NoteDoc.Package.Notes do
+                if body.Kind.IsNone then bodies.[noteBodyKey body.NoteType body.Id] <- body
+            context.NoteBodies <- Some bodies
+            bodies
+    match bodies.TryGetValue (noteBodyKey noteType id) with
+    | true, body -> Some body
+    | false, _ -> None
+
+/// The settings a note is laid out with by itself: an unpaged page, the width of the page's text.
+let private noteRecordSettings (settings: LayoutSettings) : LayoutSettings =
+    { settings with PageHeight = unpagedMeasurementPageHeight; MarginBottom = 0.0; PaddingTop = 0.0; TableContinuationHeaderHeight = 0.0; InTableCell = false }
+
+/// A buffer with `mark` in `style` before its text.
+let private withLeadingMark (mark: string) (style: TextStyle) (buffer: TextBuffer) : TextBuffer =
+    { Rope = Rope.insert 0 mark buffer.Rope
+      Runs = Text { Start = 0; Length = mark.Length; Style = style } :: (buffer.Runs |> List.map (Run.shiftStart mark.Length)) }
+
+/// The layout of a paragraph laid out with `mark` before its text: the mark
+/// as the layout's prefix (drawn where the first line starts, as a list's
+/// number is), the text at its own offsets.
+let private markAsPrefix (mark: string) (layout: BlockLayout) : BlockLayout =
+    let markLength = mark.Length
+    let mutable markStyle = None
+    let mutable markWidth = 0.0
+    let shiftSegment segment =
+        match segment with
+        | TextSegment (text, style, x, width, offset) -> TextSegment (text, style, x, width, offset - markLength)
+        | ImageSegment (src, x, yOffset, width, height, offset, floating, wrap, relativeHeight, cropLeft, cropTop, cropRight, cropBottom, flip) ->
+            ImageSegment (src, x, yOffset, width, height, offset - markLength, floating, wrap, relativeHeight, cropLeft, cropTop, cropRight, cropBottom, flip)
+        | MathSegment (prims, style, x, width, ascent, descent, offset, length) ->
+            MathSegment (prims, style, x, width, ascent, descent, offset - markLength, length)
+    let lines =
+        layout.Lines
+        |> List.mapi (fun index line ->
+            let segments =
+                if index > 0 then line.Segments
+                else
+                    line.Segments
+                    |> List.filter (fun segment ->
+                        match segment with
+                        | TextSegment (_, style, _, width, offset) when offset < markLength ->
+                            if markStyle.IsNone then markStyle <- Some style
+                            markWidth <- markWidth + width
+                            false
+                        | _ -> true)
+            { line with
+                StartOffset = max 0 (line.StartOffset - markLength)
+                EndOffset = max 0 (line.EndOffset - markLength)
+                Segments = segments |> List.map shiftSegment })
+    match markStyle with
+    | Some style when layout.Prefix = "" -> { layout with Lines = lines; Prefix = mark; PrefixStyle = Some style; PrefixWidth = markWidth }
+    | _ -> { layout with Lines = lines }
+
+/// Lay a note out by itself (see NoteLayoutRecord).
+let private layOutNote (context: NoteLayoutContext) (settings: LayoutSettings) (noteType: string) (id: string) (text: string) (body: NoteBody option) : NoteLayoutRecord =
+    let noteSettings = noteRecordSettings settings
+    let mark = noteMarkText noteType id
+    let layouts, units =
+        match body with
+        | Some body ->
+            // The body's blocks, the mark before the first paragraph's text.
+            let mutable marked = None
+            let shown =
+                match body.Blocks with
+                | first :: rest when body.HasMark ->
+                    match first with
+                    | Paragraph para
+                    | Heading (_, para) ->
+                        let firstStyle = para.Buffer.Runs |> List.tryPick (function Text run -> Some run.Style | Image _ -> None)
+                        let markStyle =
+                            { defaultStyle with
+                                Style = body.MarkStyle
+                                VertAlign = Some "superscript"
+                                FontFamily = firstStyle |> Option.bind (fun style -> style.FontFamily)
+                                FontSize = (match firstStyle with Some style -> style.FontSize | None -> defaultStyle.FontSize)
+                                Explicit = (match firstStyle with Some style -> style.Explicit &&& ExplicitFormat.FontSize | None -> 0) }
+                        let markedPara = { para with Buffer = withLeadingMark mark markStyle para.Buffer; Metadata = { para.Metadata with PageBreakBefore = false; PageBreakAfter = false } }
+                        marked <- Some para.Id
+                        (match first with Heading (level, _) -> Heading (level, markedPara) | _ -> Paragraph markedPara) :: rest
+                    | _ -> body.Blocks
+                | _ -> body.Blocks
+            let raw =
+                noteBlocksLayouter.Value noteSettings context.NoteMeasure context.NoteMeasureRange { context.NoteDoc with Blocks = shown }
+                |> List.filter (fun layout -> not (layout.BlockId.StartsWith footnoteBlockIdPrefix) && not (layout.BlockId.StartsWith endnoteBlockIdPrefix))
+                |> List.map (fun layout -> if Some layout.BlockId = marked then markAsPrefix mark layout else layout)
+            // Block by block (a table's cells together).
+            let byId = Dictionary<BlockId, ResizeArray<BlockLayout>>()
+            for layout in raw do
+                match byId.TryGetValue layout.BlockId with
+                | true, list -> list.Add layout
+                | false, _ ->
+                    let list = ResizeArray<BlockLayout>()
+                    list.Add layout
+                    byId.[layout.BlockId] <- list
+            let units = ResizeArray<BlockLayout list * bool>()
+            for block in shown do
+                match block with
+                | Paragraph para
+                | Heading (_, para) ->
+                    match byId.TryGetValue para.Id with
+                    | true, list -> units.Add (List.ofSeq list, true)
+                    | false, _ -> ()
+                | Table table ->
+                    let ids = HashSet<BlockId>(tableParagraphsInOrder table |> List.map (fun para -> para.Id))
+                    let cells = raw |> List.filter (fun layout -> ids.Contains layout.BlockId)
+                    if not cells.IsEmpty then units.Add (cells, false)
+                | TextBox _ -> ()
+            raw, List.ofSeq units
+        | None ->
+            // The text the reference carries, in Calibri 10 pt.
+            let noteString = mark + " " + text.Trim()
+            let buffer =
+                ofString noteString
+                |> setFontFamily 0 noteString.Length footnoteFontFamily
+                |> setFontSize 0 noteString.Length footnoteFontSize
+                |> setVertAlign 0 mark.Length (Some "superscript")
+            let para = { Id = "note"; Buffer = buffer; Metadata = { defaultMetadata with SpacingBefore = Some 0.0; SpacingAfter = Some 0.0 } }
+            let layout = noteParagraphLayouter.Value noteSettings context.NoteMeasure context.NoteMeasureRange para |> markAsPrefix mark
+            [ layout ], [ [ layout ], true ]
+    let mutable height = 0.0
+    for layout in layouts do
+        height <- max height (layout.Y + layout.Height)
+    let topOf (list: BlockLayout list) = list |> List.fold (fun top (layout: BlockLayout) -> min top layout.Y) System.Double.MaxValue
+    let unitArray = units |> List.toArray
+    let placedUnits =
+        unitArray
+        |> Array.mapi (fun index (list, splittable) ->
+            let top = if index = 0 then 0.0 else topOf list
+            let next = if index + 1 < unitArray.Length then topOf (fst unitArray.[index + 1]) else height
+            list, splittable, top, max top next)
+        |> Array.toList
+    { RecordText = text
+      RecordFromBody = body.IsSome
+      RecordBlocks = (match body with Some body -> body.Blocks | None -> [])
+      RecordStyles = context.NoteDoc.Styles
+      RecordSettings = noteSettings
+      RecordLayouts = layouts
+      RecordUnits = placedUnits
+      RecordHeight = height }
+
+/// The note laid out by itself at the width of the text of `settings`'s page
+/// (kept while what it is laid out from is what it was). None outside a layout pass.
+let private noteRecordFor (settings: LayoutSettings) (noteType: string) (id: string) (text: string) : NoteLayoutRecord option =
+    match noteLayoutContext with
+    | None -> None
+    | Some context ->
+        let width = settings.Width - settings.PaddingLeft - settings.MarginRight
+        let key = noteBodyKey noteType id + "\u0001" + string width
+        if context.NoteBusy.Contains key then None
+        else
+            // (The body is what the note shows while the reference's text is the body's: setNote replaces it.)
+            let body = noteBodyOf context noteType id |> Option.filter (fun body -> body.Text = text && not body.Blocks.IsEmpty)
+            let noteSettings = noteRecordSettings settings
+            match context.NoteRecords.TryGetValue key with
+            | true, record when record.RecordText = text
+                                && record.RecordFromBody = body.IsSome
+                                && (match body with Some body -> obj.ReferenceEquals(record.RecordBlocks, body.Blocks) | None -> true)
+                                && obj.ReferenceEquals(record.RecordStyles, context.NoteDoc.Styles)
+                                && (obj.ReferenceEquals(record.RecordSettings, noteSettings) || record.RecordSettings = noteSettings) -> Some record
+            | _ ->
+                context.NoteBusy.Add key |> ignore
+                try
+                    let record = layOutNote context settings noteType id text body
+                    context.NoteRecords.[key] <- record
+                    Some record
+                finally context.NoteBusy.Remove key |> ignore
+
+/// The height of a note at the width of the text of `settings`'s page.
+let private noteHeight (settings: LayoutSettings) (noteType: string) (id: string) (text: string) =
+    match noteRecordFor settings noteType id text with
+    | Some record -> record.RecordHeight
+    // (Outside a layout pass: an estimate by the number of lines.)
+    | None -> float (noteLineCount settings (sprintf "%s. %s" id text)) * footnoteLineHeight
+
 let private footnoteReserveHeight settings footnotes =
     match footnotes with
     | [] -> 0.0
     | notes ->
-        let lineCount = notes |> List.sumBy (fun (id, text) -> noteLineCount settings (sprintf "%s. %s" id text))
-        footnoteSeparatorGap + float lineCount * footnoteLineHeight + footnoteBottomPad
+        let mutable height = 0.0
+        for id, text in notes do
+            height <- height + noteHeight settings "footnote" id text
+        footnoteSeparatorGap + height + footnoteBottomPad
+
+/// What of the footnotes of the pages before a page goes on at its foot:
+/// what a page cannot hold of its own notes and of what it was handed, when
+/// its text is one line (looked at over the eight pages before it).
+let private footnoteCarryInto (settings: LayoutSettings) (footnotesByPage: Map<int, (string * string) list>) (pageIndex: int) =
+    if footnotesByPage.IsEmpty || pageIndex <= 0 then 0.0
+    else
+        let contentHeight = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom 0.0 - WordLayout.Page.contentTop settings.PaddingTop 0.0
+        let room = contentHeight - settings.LineHeight - footnoteSeparatorGap - footnoteBottomPad
+        let mutable carry = 0.0
+        for page in max 0 (pageIndex - 8) .. pageIndex - 1 do
+            let own =
+                match footnotesByPage |> Map.tryFind page with
+                | Some notes when not notes.IsEmpty -> footnoteReserveHeight settings notes - footnoteSeparatorGap - footnoteBottomPad
+                | _ -> 0.0
+            carry <- max 0.0 (own + carry - room)
+        carry
+
+/// The room a page's footnotes take at its foot: its own and what the pages
+/// before it carry over.
+let private footnoteReserveOnPage settings (footnotesByPage: Map<int, (string * string) list>) (pageIndex: int) =
+    let own = footnotesByPage |> Map.tryFind pageIndex |> Option.defaultValue []
+    let carried = footnoteCarryInto settings footnotesByPage pageIndex
+    if carried <= 0.0 then footnoteReserveHeight settings own
+    elif own.IsEmpty then footnoteSeparatorGap + carried + footnoteBottomPad
+    else footnoteReserveHeight settings own + carried
 
 let private addLayoutFootnotes settings (footnotesByPage: Map<int, (string * string) list>) (layout: BlockLayout) =
     layout.Lines
@@ -753,7 +1058,7 @@ let private contentBottomWithFootnotes settings footnotesByPage y =
     let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) y
     let pageIndex = pageIndexForY settings y
     WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
-    - footnoteReserveHeight settings (footnotesByPage |> Map.tryFind pageIndex |> Option.defaultValue [])
+    - footnoteReserveOnPage settings footnotesByPage pageIndex
 
 let private paginateBlockWithFootnotes settings footnotesByPage y blockHeight =
     let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) y
@@ -863,10 +1168,6 @@ let private moveWidowParagraphToNextPage settings (lines: MeasuredLine list) =
             else
                 lines
     | _ -> lines
-
-/// Page height used when content is measured for its natural height rather
-/// than placed on a page (table rows; see measureTableRow...RowLocal).
-let private unpagedMeasurementPageHeight = 1000000.0
 
 let private lineHasRenderedPageBreakBefore (line: MeasuredLine) =
     let rec loop segments =
@@ -2596,6 +2897,8 @@ type FootnoteAreaRecord = {
     AreaMaxWidth: float
     AreaContentBottom: float
     AreaNotes: (string * string) list
+    /// The notes as they were laid out by themselves (the same objects while they stand).
+    AreaRecords: NoteLayoutRecord list
     AreaLayouts: BlockLayout list
 }
 
@@ -2613,6 +2916,8 @@ type ParagraphLayoutMemo = {
     /// Block-by-block passes of the last layout, by the place they have in it.
     MemoPasses: System.Collections.Generic.Dictionary<string, PassRecord>
     MemoFootnoteAreas: System.Collections.Generic.Dictionary<string, FootnoteAreaRecord>
+    /// The notes laid out by themselves (see noteRecordFor), by note and width.
+    MemoNoteRecords: System.Collections.Generic.Dictionary<string, NoteLayoutRecord>
     /// Set by a pass that kept layouts of the last one (see the sweep in layoutDocumentPagesIncremental).
     mutable MemoKeptPass: bool
     /// Blocks the recorded passes of the layout in hand laid out (the others kept their layouts).
@@ -2640,6 +2945,7 @@ type ParagraphLayoutMemo = {
 let private createParagraphLayoutMemo () = {
     MemoPasses = System.Collections.Generic.Dictionary<string, PassRecord>()
     MemoFootnoteAreas = System.Collections.Generic.Dictionary<string, FootnoteAreaRecord>()
+    MemoNoteRecords = System.Collections.Generic.Dictionary<string, NoteLayoutRecord>()
     MemoKeptPass = false
     MemoBlocksLaidOut = 0
     MemoSlices = None
@@ -4420,68 +4726,178 @@ let private buildTableLayoutPlanAtWithMemo (memo: ParagraphLayoutMemo option) (i
 let buildTableLayoutPlanForDocumentAt settings measureText measureRange doc tableBlock tableY =
     buildTableLayoutPlanAtWithMemo None ValueNone settings measureText measureRange doc tableBlock tableY
 
-/// Layout document blocks. Table cell paragraphs are included so shared hit/cursor logic works inside tables.
-let private footnoteParagraphMetadataForLayout = { defaultMetadata with SpacingBefore = Some 0.0; SpacingAfter = Some 0.0 }
+/// A note's layout placed where a page shows it: moved down by `dy`, its
+/// block id that of the note area (`slot`: the area and the note's place in
+/// it; the note's id; the paragraph's own id - see noteOfLayoutId).
+let private placeNoteLayout (slot: string) (noteId: string) (dy: float) (layout: BlockLayout) : BlockLayout =
+    let moved = shiftBlockY dy layout
+    { moved with BlockId = slot + noteIdSeparator + noteId + noteIdSeparator + layout.BlockId }
+
+/// A part of a note's layouts that a page shows as a whole: a paragraph (or
+/// some of its lines) or a table, its top at y = 0, as high as it takes up.
+type private NotePiece = {
+    PieceSlot: string
+    PieceNote: string
+    PieceLayouts: BlockLayout list
+    PieceHeight: float
+    /// A paragraph of more than one line: it may be broken between them.
+    PieceSplittable: bool
+}
+
+/// A note's layouts block by block (see NoteLayoutRecord.RecordUnits).
+let private notePieces (slot: string) (noteId: string) (record: NoteLayoutRecord) : NotePiece list =
+    record.RecordUnits
+    |> List.map (fun (layouts, splittable, top, next) ->
+        { PieceSlot = slot
+          PieceNote = noteId
+          PieceLayouts = layouts |> List.map (shiftBlockY (-top))
+          PieceHeight = next - top
+          PieceSplittable = splittable && (match layouts with [ layout ] -> layout.Lines.Length > 1 | _ -> false) })
+
+/// A paragraph piece broken after the lines that end within `room`: those
+/// lines, and the rest (from y = 0). None when no line, or every line, does.
+let private splitNotePiece (piece: NotePiece) (room: float) : (NotePiece * NotePiece) option =
+    match piece.PieceLayouts with
+    | [ layout ] when piece.PieceSplittable ->
+        let fit = layout.Lines |> List.takeWhile (fun line -> line.Y + line.Height <= room + pageFitTolerance) |> List.length
+        if fit = 0 || fit >= layout.Lines.Length then None
+        else
+            let first = List.take fit layout.Lines
+            let rest = List.skip fit layout.Lines
+            let lastFirst = List.last first
+            let firstHeight = lastFirst.Y + lastFirst.Height - layout.Y
+            let restTop = rest.Head.Y
+            let restLayout =
+                { layout with
+                    Lines = shiftLinesY (-restTop) rest
+                    Y = 0.0
+                    Height = layout.Y + layout.Height - restTop
+                    // (The mark stands before the first line only.)
+                    Prefix = ""
+                    PrefixStyle = None
+                    PrefixWidth = 0.0 }
+            Some ({ piece with PieceLayouts = [ { layout with Lines = first; Height = firstHeight } ]; PieceHeight = firstHeight },
+                  { piece with PieceLayouts = [ restLayout ]; PieceHeight = max 0.0 (piece.PieceHeight - restTop); PieceSplittable = rest.Length > 1 })
+    | _ -> None
+
+/// The footnotes of a page as laid out by themselves, with the place each has in the area.
+let private pageFootnoteRecords (settings: LayoutSettings) (pageIndex: int) (notes: (string * string) list) : (string * string * NoteLayoutRecord) list =
+    notes
+    |> List.mapi (fun noteIndex (id, text) ->
+        noteRecordFor settings "footnote" id text
+        |> Option.map (fun record -> sprintf "%s%d_%d" footnoteBlockIdPrefix pageIndex noteIndex, id, record))
+    |> List.choose id
 
 /// Lay out one page's footnotes in the reserved area at the bottom of the
-/// page. The notes are laid out at a temporary origin to get their real height
-/// (10pt body font, superscript mark number), then placed so the block ends
-/// just above the bottom margin, the way Word stacks footnotes.
-let private footnoteLayoutsForPage (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) maxWidth (pageIndex: int) pageContentBottom (notes: (string * string) list) : BlockLayout list =
-    // An unpaged page: the notes are positioned explicitly below.
-    let noteSettings = { settings with PageHeight = unpagedMeasurementPageHeight }
-    let mutable tempY = 0.0
-    let laidOut =
-        notes |> List.mapi (fun noteIndex (id, text) ->
-            let noteString = sprintf "%s %s" id (text.Trim())
-            let buffer =
-                TextBuffer.ofString noteString
-                |> TextBuffer.setFontFamily 0 noteString.Length footnoteFontFamily
-                |> TextBuffer.setFontSize 0 noteString.Length footnoteFontSize
-                |> TextBuffer.setVertAlign 0 id.Length (Some "superscript")
-            let para = { Id = sprintf "%s%d_%d%s%s" footnoteBlockIdPrefix pageIndex noteIndex noteIdSeparator id; Buffer = buffer; Metadata = footnoteParagraphMetadataForLayout }
-            let layout, _ = layoutParagraphAtWithRange noteSettings measureText measureRange maxWidth tempY 0.0 para Map.empty
-            tempY <- tempY + layout.Height
-            layout)
-    let blockTop = pageContentBottom - footnoteBottomPad - tempY
-    laidOut |> List.map (fun layout -> moveLayoutToY (blockTop + layout.Y) layout)
+/// page: each note as it is laid out by itself (see noteRecordFor), stacked
+/// so that the last ends just above the bottom margin, the way Word stacks
+/// footnotes.
+let private footnoteLayoutsForPage (settings: LayoutSettings) (pageIndex: int) pageContentBottom (notes: (string * string) list) : BlockLayout list =
+    let records = pageFootnoteRecords settings pageIndex notes
+    let mutable total = 0.0
+    for _, _, record in records do
+        total <- total + record.RecordHeight
+    let mutable top = pageContentBottom - footnoteBottomPad - total
+    let placed = ResizeArray<BlockLayout>()
+    for slot, id, record in records do
+        for layout in record.RecordLayouts do
+            placed.Add (placeNoteLayout slot id top layout)
+        top <- top + record.RecordHeight
+    resizeArrayToList placed
+
+/// One page's footnote area when a note does not fit on the page: `carried`
+/// (what the page before could not hold) and then the page's own notes,
+/// stacked to end above the bottom margin; what goes beyond `room` (the room
+/// between the page's text and its bottom margin) is handed back for the next
+/// page - a paragraph broken between its lines, a table whole. At least one
+/// line stays on the page.
+let private footnoteLayoutsWithCarry (settings: LayoutSettings) (pageIndex: int) pageContentBottom (room: float) (carried: NotePiece list) (notes: (string * string) list) : BlockLayout list * NotePiece list =
+    let own =
+        pageFootnoteRecords settings pageIndex notes
+        |> List.collect (fun (slot, id, record) -> notePieces slot id record)
+    let fit = ResizeArray<NotePiece>()
+    let rest = ResizeArray<NotePiece>()
+    let mutable used = 0.0
+    for piece in carried @ own do
+        if rest.Count > 0 then rest.Add piece
+        elif used + piece.PieceHeight <= room + pageFitTolerance then
+            fit.Add piece
+            used <- used + piece.PieceHeight
+        else
+            match splitNotePiece piece (max 0.0 (room - used)) with
+            | Some (first, after) ->
+                fit.Add first
+                used <- used + first.PieceHeight
+                rest.Add after
+            | None when fit.Count = 0 ->
+                // (Nothing of it fits: its first line stays, or the whole of it when it cannot be broken.)
+                match splitNotePiece piece (match piece.PieceLayouts with [ layout ] when not layout.Lines.IsEmpty -> (let line = layout.Lines.Head in line.Y + line.Height) | _ -> 0.0) with
+                | Some (first, after) ->
+                    fit.Add first
+                    used <- used + first.PieceHeight
+                    rest.Add after
+                | None ->
+                    fit.Add piece
+                    used <- used + piece.PieceHeight
+            | None -> rest.Add piece
+    let mutable top = pageContentBottom - footnoteBottomPad - used
+    let placed = ResizeArray<BlockLayout>()
+    for piece in fit do
+        for layout in piece.PieceLayouts do
+            placed.Add (placeNoteLayout piece.PieceSlot piece.PieceNote top layout)
+        top <- top + piece.PieceHeight
+    resizeArrayToList placed, List.ofSeq rest
 
 /// Endnote paragraphs for every endnote referenced in `bodyLayouts`, in document
 /// order, stacked below `bodyBottom` (Word puts endnotes at the end of the
 /// document); Paint draws the separator above the first. `pageAt y` gives the
 /// content top and bottom of the page holding `y` and the content top of the
-/// page after it, so the notes continue onto further pages.
-let private endnoteLayoutsAfterBody (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (maxWidth: float) (bodyLayouts: BlockLayout seq) (bodyBottom: float) (pageAt: float -> struct (float * float * float)) : BlockLayout list =
+/// page after it, so the notes continue onto further pages: a note that does
+/// not fit below the one before it starts the next page; one longer than a
+/// page goes on on the next, broken between the lines of a paragraph.
+let private endnoteLayoutsAfterBody (settings: LayoutSettings) (bodyLayouts: BlockLayout seq) (bodyBottom: float) (pageAt: float -> struct (float * float * float)) : BlockLayout list =
     let ordered = ResizeArray<BlockLayout>(bodyLayouts)
     ordered.Sort(System.Comparison<BlockLayout>(fun left right -> compare left.Y right.Y))
     let endnotes = ResizeArray<string * string>()
-    let seenEndnotes = System.Collections.Generic.HashSet<string>()
+    let seenEndnotes = HashSet<string>()
     for layout in ordered do
         for line in layout.Lines do
             for id, text in endnotesInLine line do
                 if seenEndnotes.Add id then
                     endnotes.Add(id, text)
     let result = ResizeArray<BlockLayout>()
-    // An unpaged page: each note is measured for its natural height and placed explicitly.
-    let noteSettings = { settings with PageHeight = unpagedMeasurementPageHeight }
     let mutable noteY = bodyBottom + endnoteTopGap
+    let place (piece: NotePiece) =
+        for layout in piece.PieceLayouts do
+            result.Add (placeNoteLayout piece.PieceSlot piece.PieceNote noteY layout)
+        noteY <- noteY + piece.PieceHeight
     for noteIndex = 0 to endnotes.Count - 1 do
         let id, text = endnotes.[noteIndex]
-        let mark = endnoteMark id
-        let noteString = sprintf "%s %s" mark (text.Trim())
-        let buffer =
-            TextBuffer.ofString noteString
-            |> TextBuffer.setFontFamily 0 noteString.Length footnoteFontFamily
-            |> TextBuffer.setFontSize 0 noteString.Length footnoteFontSize
-            |> TextBuffer.setVertAlign 0 mark.Length (Some "superscript")
-        let para = { Id = sprintf "%s%d%s%s" endnoteBlockIdPrefix noteIndex noteIdSeparator id; Buffer = buffer; Metadata = footnoteParagraphMetadataForLayout }
-        let probe, _ = layoutParagraphAtWithRange noteSettings measureText measureRange maxWidth 0.0 0.0 para Map.empty
-        let height = probe.Height
-        let struct (contentTop, contentBottom, nextContentTop) = pageAt noteY
-        // A note that does not fit on the current page starts the next one.
-        let startY = if noteY > contentTop && noteY + height > contentBottom then nextContentTop else noteY
-        result.Add(moveLayoutToY startY probe)
-        noteY <- startY + height
+        match noteRecordFor settings "endnote" id text with
+        | None -> ()
+        | Some record ->
+            let struct (contentTop, contentBottom, nextContentTop) = pageAt noteY
+            // A note that does not fit on the current page starts the next one.
+            if noteY > contentTop && noteY + record.RecordHeight > contentBottom then noteY <- nextContentTop
+            for piece in notePieces (sprintf "%s%d" endnoteBlockIdPrefix noteIndex) id record do
+                let mutable pending = Some piece
+                while pending.IsSome do
+                    let piece = pending.Value
+                    let struct (contentTop, contentBottom, nextContentTop) = pageAt noteY
+                    if noteY + piece.PieceHeight <= contentBottom + pageFitTolerance then
+                        place piece
+                        pending <- None
+                    else
+                        match splitNotePiece piece (contentBottom - noteY) with
+                        | Some (first, rest) ->
+                            place first
+                            noteY <- nextContentTop
+                            pending <- Some rest
+                        | None when noteY > contentTop + pageFitTolerance -> noteY <- nextContentTop
+                        | None ->
+                            // (Longer than a page and not to be broken: it runs past the page's foot.)
+                            place piece
+                            pending <- None
     resizeArrayToList result
 
 /// Vertical position of a paragraph that follows another one directly, given
@@ -4661,18 +5077,93 @@ let private resultsHaveEndnotes (results: ResizeArray<BlockLayout>) first last =
 
 /// `footnoteLayoutsForPage`, kept from pass to pass: a page whose notes, place
 /// and geometry are what they were has the paragraphs it had - the same objects.
-let private footnoteLayoutsForPageKept (slot: string) (memo: ParagraphLayoutMemo option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) maxWidth (pageIndex: int) pageContentBottom (notes: (string * string) list) : BlockLayout list =
+let private footnoteLayoutsForPageKept (slot: string) (memo: ParagraphLayoutMemo option) (settings: LayoutSettings) maxWidth (pageIndex: int) pageContentBottom (notes: (string * string) list) : BlockLayout list =
     let key = slot + ":" + string pageIndex
     match memo with
-    | None -> footnoteLayoutsForPage settings measureText measureRange maxWidth pageIndex pageContentBottom notes
+    | None -> footnoteLayoutsForPage settings pageIndex pageContentBottom notes
     | Some memo ->
+        let records = pageFootnoteRecords settings pageIndex notes |> List.map (fun (_, _, record) -> record)
         match memo.MemoFootnoteAreas.TryGetValue key with
         | true, area when area.AreaMaxWidth = maxWidth && area.AreaContentBottom = pageContentBottom
-                          && sameOrEqual area.AreaNotes notes && sameOrEqual area.AreaSettings settings -> area.AreaLayouts
+                          && sameOrEqual area.AreaNotes notes && sameOrEqual area.AreaSettings settings
+                          && area.AreaRecords.Length = records.Length
+                          && List.forall2 (fun (a: NoteLayoutRecord) b -> obj.ReferenceEquals(a, b)) area.AreaRecords records -> area.AreaLayouts
         | _ ->
-            let layouts = footnoteLayoutsForPage settings measureText measureRange maxWidth pageIndex pageContentBottom notes
-            memo.MemoFootnoteAreas.[key] <- { AreaSettings = settings; AreaMaxWidth = maxWidth; AreaContentBottom = pageContentBottom; AreaNotes = notes; AreaLayouts = layouts }
+            let layouts = footnoteLayoutsForPage settings pageIndex pageContentBottom notes
+            memo.MemoFootnoteAreas.[key] <- { AreaSettings = settings; AreaMaxWidth = maxWidth; AreaContentBottom = pageContentBottom; AreaNotes = notes; AreaRecords = records; AreaLayouts = layouts }
             layouts
+
+/// The footnote areas of the pages, page by page: `notesByPage` are the
+/// pages that have footnotes, in order, with their notes; `geometryOf` gives
+/// a laid out page's settings and content top and bottom, `bodyBottomOf`
+/// where its text ends. The notes of a page that do not fit between its text
+/// and its bottom margin go on at the foot of the next page when there is
+/// one (see footnoteLayoutsWithCarry); the notes of every other page are
+/// stacked above its bottom margin (kept from pass to pass, see
+/// footnoteLayoutsForPageKept).
+let private footnoteAreas (slot: string) (memo: ParagraphLayoutMemo option) (notesByPage: (int * (string * string) list) list) (geometryOf: int -> (LayoutSettings * float * float) option) (bodyBottomOf: int -> float) : (int * BlockLayout list) list =
+    let result = ResizeArray<int * BlockLayout list>()
+    let entries = notesByPage |> List.filter (fun (_, notes) -> not notes.IsEmpty) |> List.toArray
+    let mutable next = 0
+    let mutable carriedPage = -1
+    let mutable carriedPieces : NotePiece list = []
+    while next < entries.Length || not carriedPieces.IsEmpty do
+        let pageIndex, notes =
+            if not carriedPieces.IsEmpty && (next >= entries.Length || fst entries.[next] > carriedPage) then carriedPage, []
+            else
+                let entry = entries.[next]
+                next <- next + 1
+                entry
+        let carriedIn = if carriedPage = pageIndex then carriedPieces else []
+        carriedPage <- -1
+        carriedPieces <- []
+        match geometryOf pageIndex with
+        | None -> ()
+        | Some (settings, contentTop, contentBottom) ->
+            let maxWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
+            let mutable total = 0.0
+            for _, _, record in pageFootnoteRecords settings pageIndex notes do
+                total <- total + record.RecordHeight
+            for piece in carriedIn do
+                total <- total + piece.PieceHeight
+            // (Notes that take less than a third of the page are not looked at further: the text made room for them.)
+            let mayOverflow = footnoteSeparatorGap + total + footnoteBottomPad > (contentBottom - contentTop) / 3.0 && (geometryOf (pageIndex + 1)).IsSome
+            let room =
+                if mayOverflow then contentBottom - footnoteBottomPad - (max contentTop (bodyBottomOf pageIndex) + footnoteSeparatorGap)
+                else System.Double.MaxValue
+            if carriedIn.IsEmpty && total <= room + pageFitTolerance then
+                result.Add (pageIndex, footnoteLayoutsForPageKept slot memo settings maxWidth pageIndex contentBottom notes)
+            else
+                let layouts, rest = footnoteLayoutsWithCarry settings pageIndex contentBottom room carriedIn notes
+                result.Add (pageIndex, layouts)
+                if not rest.IsEmpty && (geometryOf (pageIndex + 1)).IsSome then
+                    carriedPage <- pageIndex + 1
+                    carriedPieces <- rest
+    List.ofSeq result
+
+/// Where the text of each page ends (the bottom of its lowest line), by
+/// page, for the pages `pageOf` puts the body's layouts on; made when first asked.
+let private bodyBottoms (layouts: seq<BlockLayout>) (pageOf: float -> int) : int -> float =
+    let mutable known : Dictionary<int, float> option = None
+    fun pageIndex ->
+        let bottoms =
+            match known with
+            | Some bottoms -> bottoms
+            | None ->
+                let bottoms = Dictionary<int, float>()
+                for layout in layouts do
+                    if not (layout.BlockId.StartsWith footnoteBlockIdPrefix) && not (layout.BlockId.StartsWith endnoteBlockIdPrefix) then
+                        for line in layout.Lines do
+                            let page = pageOf line.Y
+                            let bottom = line.Y + line.Height
+                            match bottoms.TryGetValue page with
+                            | true, known when known >= bottom -> ()
+                            | _ -> bottoms.[page] <- bottom
+                known <- Some bottoms
+                bottoms
+        match bottoms.TryGetValue pageIndex with
+        | true, bottom -> bottom
+        | false, _ -> System.Double.NegativeInfinity
 
 let private layoutDocumentPassKept
         (slot: string)
@@ -5455,17 +5946,27 @@ let private layoutDocumentPassKept
     let bodyCount = layouts.Count
 
     // Lay out each page's footnotes in the reserved area at the bottom of the
-    // page, at a smaller font, tagged with footnoteBlockIdPrefix so Paint can
-    // render them and draw the separator. The note id doubles as Word's mark.
-    let footnoteParagraphMetadata = { defaultMetadata with SpacingBefore = Some 0.0; SpacingAfter = Some 0.0 }
+    // page, tagged with footnoteBlockIdPrefix so Paint can render them and
+    // draw the separator.
     let footnoteStride = pageHeight settings + pageGap
-    for KeyValue (pageIndex, notes) in footnotesByPage do
-        if not notes.IsEmpty then
-            let pageTop = float pageIndex * footnoteStride
-            let pageContentBottom = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
-            layouts.AddRange(
-                if slot = "" then footnoteLayoutsForPage settings measureText measureRange maxWidth pageIndex pageContentBottom notes
-                else footnoteLayoutsForPageKept slot memo settings measureText measureRange maxWidth pageIndex pageContentBottom notes)
+    if not footnotesByPage.IsEmpty then
+        // (The last page and where the text of a page ends are looked for when a page's notes may not fit on it.)
+        let lastPage =
+            lazy (
+                let mutable bodyBottom = settings.PaddingTop
+                for index in 0 .. bodyCount - 1 do
+                    bodyBottom <- max bodyBottom (layouts.[index].Y + layouts.[index].Height)
+                pageIndexForY settings bodyBottom)
+        let geometryOf pageIndex =
+            // (A page with notes is one the text is on.)
+            if pageIndex < 0 || (not (footnotesByPage.ContainsKey pageIndex) && pageIndex > lastPage.Value) then None
+            else
+                let pageTop = float pageIndex * footnoteStride
+                Some (settings, WordLayout.Page.contentTop settings.PaddingTop pageTop, WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop)
+        let body = Seq.init bodyCount (fun index -> layouts.[index])
+        let areas = footnoteAreas slot memo [ for KeyValue (pageIndex, notes) in footnotesByPage -> pageIndex, notes ] geometryOf (bodyBottoms body (pageIndexForY settings))
+        for _, area in areas do
+            layouts.AddRange area
 
     // Endnotes: collect every endnote in document order and lay them out after
     // the body content (Word stacks endnotes at the end of the document), with a
@@ -5473,10 +5974,10 @@ let private layoutDocumentPassKept
     if hasEndnoteRefs then
         let bodyLayouts = ResizeArray<BlockLayout>()
         let mutable bodyBottom = settings.PaddingTop
-        for layout in layouts do
-            if not (layout.BlockId.StartsWith footnoteBlockIdPrefix) then
-                bodyLayouts.Add layout
-                bodyBottom <- max bodyBottom (layout.Y + layout.Height)
+        for index in 0 .. bodyCount - 1 do
+            let layout = layouts.[index]
+            bodyLayouts.Add layout
+            bodyBottom <- max bodyBottom (layout.Y + layout.Height)
         let stride = pageHeight settings + pageGap
         let pageAt noteY =
             let pageIndex = int (floor (noteY / stride))
@@ -5484,7 +5985,7 @@ let private layoutDocumentPassKept
             struct (WordLayout.Page.contentTop settings.PaddingTop pageTop,
                     WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop,
                     WordLayout.Page.contentTop settings.PaddingTop (float (pageIndex + 1) * stride))
-        layouts.AddRange(endnoteLayoutsAfterBody settings measureText measureRange maxWidth bodyLayouts bodyBottom pageAt)
+        layouts.AddRange(endnoteLayoutsAfterBody settings bodyLayouts bodyBottom pageAt)
 
     let notes = ResizeArray<BlockLayout>()
     for index in bodyCount .. layouts.Count - 1 do
@@ -5502,6 +6003,12 @@ let private layoutDocumentWithRangeAndInitial
         (initialPlacedBoxes: PlacedFloatingBox list) =
     let layouts, placed, _, _ = layoutDocumentPassKept "" memo settings measureText measureRange doc initialCounters initialObstacles initialPlacedBoxes
     layouts, placed
+
+do noteBlocksLayouter.Value <- fun settings measureText measureRange doc ->
+    fst (layoutDocumentWithRangeAndInitial None settings measureText measureRange doc Map.empty [] [])
+do noteParagraphLayouter.Value <- fun settings measureText measureRange para ->
+    let maxWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
+    fst (layoutParagraphAtWithRange settings measureText measureRange maxWidth 0.0 0.0 para Map.empty)
 
 // Walk a first-pass layout result and shift each placed float's obstacle top
 // up to the top of whichever line first sits "inside" the float's effective
@@ -5786,7 +6293,7 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
         // in it rather than wrapping back over column 0.
         | Some _ when col >= n - 1 -> System.Double.MaxValue
         | Some bh -> startY + bh
-        | None -> contentBottomAt page - footnoteReserveHeight settings (pageFootnotes ())
+        | None -> contentBottomAt page - footnoteReserveOnPage settings footnotesByPage page
     let atColumnTop () = abs (y - columnTop ()) < 0.5
     // The paragraph placed just above in this column, for spacing collapse:
     // (paragraph, style, effective metadata, spacing after). None at a column top.
@@ -6427,7 +6934,7 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
                         for index in first .. at - 1 do
                             bottom <- max bottom (moved.[index].Y + moved.[index].Height)
                         let footnotes = match Map.tryFind p footnotesByPage with Some notes -> notes | None -> []
-                        let contentBottom = WordLayout.Page.contentBottom (pageHeight secSettings) secSettings.MarginBottom pageTop - footnoteReserveHeight secSettings footnotes
+                        let contentBottom = WordLayout.Page.contentBottom (pageHeight secSettings) secSettings.MarginBottom pageTop - footnoteReserveOnPage secSettings footnotesByPage p
                         let slack = contentBottom - bottom
                         if slack > 0.5 then
                             match vAlign with
@@ -6467,11 +6974,22 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
     let bodyLayouts = results.ToArray()
     blockStarts.Add bodyLayouts.Length
     let noteLayouts = ResizeArray<BlockLayout>()
-    for KeyValue (pageIndex, notes) in footnotesByPage do
-        if not notes.IsEmpty && pageIndex <= maxPage && pageIndex < pageSettings.Count then
+    let geometryOf pageIndex =
+        if pageIndex < 0 || pageIndex > maxPage || pageIndex >= pageSettings.Count then None
+        else
             let s = pageSettings.[pageIndex]
-            let contentBottom = WordLayout.Page.contentBottom (pageHeight s) s.MarginBottom pageTops.[pageIndex]
-            let own = footnoteLayoutsForPageKept "s" memo s measureText measureRange (s.Width - s.PaddingLeft - s.MarginRight) pageIndex contentBottom notes
+            Some (s, WordLayout.Page.contentTop s.PaddingTop pageTops.[pageIndex], WordLayout.Page.contentBottom (pageHeight s) s.MarginBottom pageTops.[pageIndex])
+    // (The page a point is on: the last that starts above it.)
+    let pageOfY (y: float) =
+        let mutable low = 0
+        let mutable high = maxPage
+        while low < high do
+            let middle = (low + high + 1) / 2
+            if pageTops.[middle] <= y + 0.5 then low <- middle else high <- middle - 1
+        low
+    let areas = footnoteAreas "s" memo [ for KeyValue (pageIndex, notes) in footnotesByPage -> pageIndex, notes ] geometryOf (bodyBottoms bodyLayouts pageOfY)
+    for pageIndex, own in areas do
+            let s = pageSettings.[pageIndex]
             // (Moved sideways as the text of their section is; the same objects while nothing changed.)
             let shift = s.PaddingLeft - settings.PaddingLeft
             let placed =
@@ -6514,7 +7032,7 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
             let mutable bodyBottom = 0.0
             for layout in bodyLayouts do
                 bodyBottom <- max bodyBottom (layout.Y + layout.Height)
-            endnoteLayoutsAfterBody lastSettings measureText measureRange (lastSettings.Width - lastSettings.PaddingLeft - lastSettings.MarginRight) bodyLayouts bodyBottom pageAt
+            endnoteLayoutsAfterBody lastSettings bodyLayouts bodyBottom pageAt
     results.AddRange endnotes
     noteLayouts.AddRange endnotes
     match memo with
@@ -6553,7 +7071,7 @@ let private sectionsUpTo (limit: int) (sections: (Block list * SectionColumns op
 /// a part is laid out as it is in the whole, up to the blocks around the cut
 /// (a paragraph kept with the next, a balanced section), which a pass with a
 /// larger limit lays out again.
-let private layoutDocumentPagesWithMemo (memo: ParagraphLayoutMemo option) (limit: int) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (whole: Document) : BlockLayout list * PageInfo list =
+let private layoutDocumentPagesWithMemoInContext (memo: ParagraphLayoutMemo option) (limit: int) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (whole: Document) : BlockLayout list * PageInfo list =
     let allSections, endMetadata = splitIntoSectionsWithEnds whole
     let limited = limit < System.Int32.MaxValue
     let doc = if limited then { whole with Blocks = List.truncate (max 1 limit) whole.Blocks } else whole
@@ -6566,23 +7084,26 @@ let private layoutDocumentPagesWithMemo (memo: ParagraphLayoutMemo option) (limi
             | Some c when c.Count >= 2 ->
                 let stride = pageHeight settings + pageGap
                 let r, _, _, footnotesByPage = flowColumns memo settings measureText measureRange doc c (fun p -> float p * stride) false 0 (WordLayout.Page.contentTop settings.PaddingTop 0.0) false Map.empty
-                let maxWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
-                let footnotes =
-                    [ for KeyValue (pageIndex, notes) in footnotesByPage do
-                        if not notes.IsEmpty then
-                            let contentBottom = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom (float pageIndex * stride)
-                            yield! footnoteLayoutsForPage settings measureText measureRange maxWidth pageIndex contentBottom notes ]
                 // Endnotes after the columns' text, across the full text width.
                 let mutable bodyBottom = settings.PaddingTop
                 for layout in r do
                     bodyBottom <- max bodyBottom (layout.Y + layout.Height)
+                let lastPage = pageIndexForY settings bodyBottom
+                let geometryOf pageIndex =
+                    if pageIndex < 0 || pageIndex > lastPage then None
+                    else
+                        let pageTop = float pageIndex * stride
+                        Some (settings, WordLayout.Page.contentTop settings.PaddingTop pageTop, WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop)
+                let footnotes =
+                    footnoteAreas "" None [ for KeyValue (pageIndex, notes) in footnotesByPage -> pageIndex, notes ] geometryOf (bodyBottoms r (pageIndexForY settings))
+                    |> List.collect snd
                 let pageAt noteY =
                     let pageIndex = int (floor (noteY / stride))
                     let pageTop = float pageIndex * stride
                     struct (WordLayout.Page.contentTop settings.PaddingTop pageTop,
                             WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop,
                             WordLayout.Page.contentTop settings.PaddingTop (float (pageIndex + 1) * stride))
-                r @ footnotes @ endnoteLayoutsAfterBody settings measureText measureRange maxWidth r bodyBottom pageAt
+                r @ footnotes @ endnoteLayoutsAfterBody settings r bodyBottom pageAt
             | _ ->
                 let slot name = match memo with Some _ -> name | None -> ""
                 let keepSlices (record: PassRecord) notes =
@@ -6619,6 +7140,11 @@ let private layoutDocumentPagesWithMemo (memo: ParagraphLayoutMemo option) (limi
         let numberStarts = endMetadata |> Array.mapi (fun index metadata -> match metadata with Some m -> m.SectionPageNumberStart | None -> (if index = endMetadata.Length - 1 then whole.PageSetup.PageNumberStart else None))
         let verticalAligns = endMetadata |> Array.mapi (fun index metadata -> match metadata with Some m -> m.SectionVerticalAlign | None -> (if index = endMetadata.Length - 1 then whole.PageSetup.VerticalAlign else None))
         layoutSections memo settings measureText measureRange doc headerReferences numberStarts verticalAligns sections
+
+let private layoutDocumentPagesWithMemo (memo: ParagraphLayoutMemo option) (limit: int) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (whole: Document) : BlockLayout list * PageInfo list =
+    // (The notes are laid out from the document's bodies of them, with the layout's measurers.)
+    withNoteLayoutContext (memo |> Option.map (fun memo -> memo.MemoNoteRecords)) measureText measureRange whole (fun () ->
+        layoutDocumentPagesWithMemoInContext memo limit settings measureText measureRange whole)
 
 /// True when the document has more than one section, i.e. its pages need not
 /// all have the body PageSetup's geometry.
@@ -6727,6 +7253,7 @@ let clearIncrementalLayoutState (state: IncrementalLayoutState) =
     state.Memo.MemoPlaced.Clear()
     state.Memo.MemoPlacedNotes.Clear()
     state.Memo.MemoFootnoteAreas.Clear()
+    state.Memo.MemoNoteRecords.Clear()
     state.Memo.MemoSlices <- None
     state.Memo.MemoEntries.Clear()
     state.Memo.MemoContinuations.Clear()
@@ -6848,6 +7375,7 @@ let invalidateFacesInIncrementalLayoutBelow (state: IncrementalLayoutState) (use
                 changed <- changed + 1
     // What is cheap to make again and was made of text in any face: the note areas.
     memo.MemoFootnoteAreas.Clear()
+    memo.MemoNoteRecords.Clear()
     memo.MemoPlacedNotes.Clear()
     memo.MemoSlices <- None
     // The last result is not what the next pass gives.
@@ -6901,6 +7429,7 @@ let layoutDocumentPagesIncremental (state: IncrementalLayoutState) (settings: La
                 memo.MemoPlaced.Clear()
                 memo.MemoPlacedNotes.Clear()
                 memo.MemoFootnoteAreas.Clear()
+                memo.MemoNoteRecords.Clear()
             memo.MemoStyles <- doc.Styles
             memo.MemoStyleContext <- None
         memo.Generation <- memo.Generation + 1

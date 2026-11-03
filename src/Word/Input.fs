@@ -575,12 +575,14 @@ let private showStory (handler: InputHandler) (session: StorySession) =
     ctx.Story <- Some { Whole = whole; PageIndex = session.PageIndex; IsHeader = session.IsHeader; Label = session.Label; Box = session.Box; Note = session.Note }
     ctx.StoryLayouts <- None
     ctx.StoryNotePlace <- None
+    ctx.StoryNoteLayouts <- None
 
 let private hideStory (handler: InputHandler) =
     handler.Story <- None
     handler.RenderContext.Story <- None
     handler.RenderContext.StoryLayouts <- None
     handler.RenderContext.StoryNotePlace <- None
+    handler.RenderContext.StoryNoteLayouts <- None
 
 /// Record a finished change in the undo history as one step. Selection-only
 /// changes are not recorded.

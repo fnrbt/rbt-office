@@ -159,6 +159,17 @@ try {
             for (let i = 0; i < count; i++) { const t0 = performance.now(); Word.insertText(editor, 'x'); times.push(performance.now() - t0); }
             return stats(times);
         },
+        // Keystrokes in the body of a footnote edited in place (enterNote), then back to the body.
+        noteKeys(count, id) {
+            if (!Word.enterNote || !Word.enterNote(editor, id, 'footnote')) return null;
+            for (let i = 0; i < 3; i++) Word.insertText(editor, 'x');
+            const times = [];
+            for (let i = 0; i < count; i++) { const t0 = performance.now(); Word.insertText(editor, 'x'); times.push(performance.now() - t0); }
+            const enters = [];
+            for (let i = 0; i < 6; i++) { const t0 = performance.now(); Word.insertText(editor, ' a longer piece of text to make the note take another line now and then'); enters.push(performance.now() - t0); }
+            Word.exitNote(editor);
+            return { ...stats(times), grow: stats(enters), pages: Word.getDocumentSize(editor).PageCount };
+        },
         moves(count) {
             const times = [];
             for (let i = 0; i < count; i++) { const t0 = performance.now(); Word.moveLeft ? Word.moveLeft(editor) : null; times.push(performance.now() - t0); }
@@ -375,6 +386,9 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
             for (const [key, time] of [...total.entries()].filter(([key]) => /word\//.test(key)).sort((a, b) => b[1] - a[1]).slice(0, 60)) console.log(`  ${(time / keys).toFixed(2).padStart(7)} ms  ${key}`);
         }
         console.log(`  a keystroke (insertText in a plain paragraph, page ${Math.floor(loaded.pages / 2) + 1}): ${line(typed)}`);
+        const noted = await tab.evaluate((n) => window.perf.noteKeys(n, '2'), keys);
+        if (noted) console.log(`  a keystroke in footnote 2 (enterNote, insertText): ${line(noted)}; a line's worth of text inserted there: ${line(noted.grow)}`);
+        else console.log('  a keystroke in a footnote: enterNote failed');
         const carets = await tab.evaluate((n) => window.perf.carets(n), 40);
         console.log(`  a caret move (setSelection):  ${line(carets)}; frame builds ${carets.builds} in 40`);
         const arrows = await tab.evaluate(() => window.perf.pressed(['ArrowRight', 'ArrowLeft'], 20));

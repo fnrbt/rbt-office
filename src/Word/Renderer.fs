@@ -256,6 +256,9 @@ type RenderContext = {
     /// left edge, top and width of its text (it is shown there while the page
     /// shows it nowhere - a note whose text was all deleted).
     mutable StoryNotePlace: (float * float * float) option
+    /// The layouts of the footnote or endnote that is edited in place, and
+    /// the layouts of the whole document they were taken from.
+    mutable StoryNoteLayouts: (BlockLayout list * BlockLayout list) option
     /// The page frames of a layout pass (by its serial): a host asks for them with every change.
     mutable KnownPageFrames: (int * PageInfo list) option
     /// The shape that is selected (see Input.selectShape): its frame and its
@@ -332,6 +335,7 @@ let createContext (canvas: HTMLCanvasElement) = {
     StoryLayouts = None
     StoryTurn = None
     StoryNotePlace = None
+    StoryNoteLayouts = None
     KnownPageFrames = None
     SelectedShape = None
 }
@@ -664,14 +668,47 @@ let private pageFurnitureShapeRects (ctx: RenderContext) (whole: Document) (body
 /// top and width of its text (defined further down).
 let private notePlace : (RenderContext -> Document -> BlockLayout list -> string * string -> (float * float * float) option) ref = ref (fun _ _ _ _ -> None)
 
+/// The layouts of a footnote's or endnote's paragraphs where the note area
+/// shows the note (the first place, for a note shown twice), with the note's
+/// own block ids: a paragraph the area breaks between two pages is one layout
+/// with the lines of both.
+let private noteLayoutsShown (layouts: BlockLayout list) (kind: string) (id: string) : BlockLayout list =
+    let found = ResizeArray<BlockLayout>()
+    let mutable slot = None
+    for layout in layouts do
+        match noteOfLayoutId layout.BlockId with
+        | Some (layoutKind, layoutId) when layoutKind = kind && layoutId = id ->
+            let layoutSlot = noteAreaSlotOfLayoutId layout.BlockId
+            if slot.IsNone then slot <- Some layoutSlot
+            if slot = Some layoutSlot then
+                match noteParagraphIdOfLayoutId layout.BlockId with
+                | Some own ->
+                    if found.Count > 0 && found.[found.Count - 1].BlockId = own then
+                        let before = found.[found.Count - 1]
+                        found.[found.Count - 1] <- { before with Lines = before.Lines @ layout.Lines; Height = layout.Y + layout.Height - before.Y }
+                    else found.Add { layout with BlockId = own }
+                | None -> ()
+        | _ -> ()
+    List.ofSeq found
+
 /// The layouts of a story's blocks where its page paints them.
 let private storyLayouts (ctx: RenderContext) (story: StoryView) (doc: Document) : BlockLayout list =
     let whole = story.Whole doc
     let settings = layoutSettings ctx whole
     let bodyLayouts, layoutPages = layoutDocumentWithPages ctx whole
     match story.Note with
+    | Some (kind, id) when kind <> "comment" ->
+        // A footnote or an endnote: its paragraphs where the note area shows them (the layout lays
+        // the note out from the story's blocks, see Doc.withStoryBody), with their own block ids.
+        ctx.StoryTurn <- None
+        match ctx.StoryNoteLayouts with
+        | Some (source, layouts) when obj.ReferenceEquals(source, bodyLayouts) -> layouts
+        | _ ->
+            let layouts = noteLayoutsShown bodyLayouts kind id
+            ctx.StoryNoteLayouts <- Some (bodyLayouts, layouts)
+            layouts
     | Some note ->
-        // A note or comment: its paragraphs where the page shows it (as it was last shown, while it shows it nowhere).
+        // A comment: its paragraphs in a balloon below its anchor (as it was last shown, while it shows it nowhere).
         ctx.StoryTurn <- None
         match notePlace.Value ctx whole bodyLayouts note with
         | Some place -> ctx.StoryNotePlace <- Some place
@@ -1333,10 +1370,40 @@ do notePlace.Value <- fun ctx whole layouts (kind, id) ->
                 let markX = xForOffsetWithRange (measureRangeWithContext ctx) first (noteMarkText kind id).Length
                 Some (settings.PaddingLeft + markX + alignmentOffset layout first, layout.Y, max 40.0 (layout.AvailableWidth - markX)))
 
+/// The parts of a note's layouts page by page: the top and bottom of each.
+let private noteFrames (settings: LayoutSettings) (layouts: BlockLayout list) : (float * float) list =
+    let stride = settings.PageHeight + pageGap
+    let parts = ResizeArray<int * float * float>()
+    for layout in layouts do
+        for line in layout.Lines do
+            let page = int (floor (line.Y / stride))
+            match parts |> Seq.tryFindIndex (fun (known, _, _) -> known = page) with
+            | Some index ->
+                let _, top, bottom = parts.[index]
+                parts.[index] <- (page, min top line.Y, max bottom (line.Y + line.Height))
+            | None -> parts.Add (page, line.Y, line.Y + line.Height)
+        if layout.Lines.IsEmpty then
+            let page = int (floor (layout.Y / stride))
+            if not (parts |> Seq.exists (fun (known, _, _) -> known = page)) then parts.Add (page, layout.Y, layout.Y + layout.Height)
+    parts |> Seq.map (fun (_, top, bottom) -> top, bottom) |> List.ofSeq
+
 /// What is painted over the page for a note or comment that is edited in place
 /// (see StoryView.Note): what the page shows of it covered, its paragraphs as
 /// they are laid out to be edited, and a frame around them (a comment: a balloon).
 let private noteStoryCommands (ctx: RenderContext) (whole: Document) (layouts: BlockLayout list) (kind: string) (id: string) : PaintCommand list =
+    if kind <> "comment" then
+        // A footnote or an endnote is edited where the note area shows it, as it is laid out
+        // there: a frame around it (each page's part of it) says that it is the note that is edited.
+        let settings = layoutSettings ctx whole
+        let frames = noteFrames settings layouts
+        frames
+        |> List.collect (fun (top, bottom) ->
+            let x0, y0, x1, y1 = settings.PaddingLeft - 4.0, top - 2.5, settings.Width - settings.MarginRight + 4.0, bottom + 2.5
+            [ StrokeLine ("#5b9bd5", 1.0, 2, 0.0, x0, y0, x1, y0)
+              StrokeLine ("#5b9bd5", 1.0, 2, 0.0, x1, y0, x1, y1)
+              StrokeLine ("#5b9bd5", 1.0, 2, 0.0, x1, y1, x0, y1)
+              StrokeLine ("#5b9bd5", 1.0, 2, 0.0, x0, y1, x0, y0) ])
+    else
     match ctx.StoryNotePlace with
     | None -> []
     | Some (left, top, width) ->
@@ -1350,30 +1417,18 @@ let private noteStoryCommands (ctx: RenderContext) (whole: Document) (layouts: B
             [ FillRect ("#fffdf3", left - 10.0, top - 6.0, width + 20.0, bottom - top + 12.0)
               StrokeRect ("#C79B00", 1.0, left - 9.5, top - 5.5, width + 19.0, bottom - top + 11.0) ]
             @ text
-        else
-            let right = left + width
-            let shown =
-                layoutDocumentWithPages ctx whole |> fst
-                |> List.filter (fun layout -> noteOfLayoutId layout.BlockId = Some (kind, id))
-                |> List.collect (fun layout ->
-                    layout.Lines
-                    |> List.mapi (fun index line ->
-                        // (The note's mark stays: its first line is covered after it.)
-                        let x = if index = 0 then left - 1.0 else settings.PaddingLeft - 1.0
-                        FillRect ("#ffffff", x, line.Y, right + 2.0 - x, line.Height)))
-            let x0, y0, x1, y1 = left - 3.0, top - 0.5, right + 3.0, bottom + 2.0
-            shown
-            @ [ FillRect ("#ffffff", left - 1.0, top, width + 2.0, bottom - top) ]
-            @ text
-            @ [ StrokeLine ("#5b9bd5", 1.0, 2, 0.0, x0, y0, x1, y0)
-                StrokeLine ("#5b9bd5", 1.0, 2, 0.0, x1, y0, x1, y1)
-                StrokeLine ("#5b9bd5", 1.0, 2, 0.0, x1, y1, x0, y1)
-                StrokeLine ("#5b9bd5", 1.0, 2, 0.0, x0, y1, x0, y0) ]
+        else []
 
 /// Whether a point (layout coordinates) is on the note or comment that is
 /// edited in place (true while another story, or none, is edited).
 let onNoteStory (ctx: RenderContext) (doc: Document) (x: float) (y: float) : bool =
     match ctx.Story with
+    | Some story when (match story.Note with Some (kind, _) -> kind <> "comment" | None -> false) ->
+        // A footnote or an endnote: on the lines of the note where the note area shows them.
+        let whole = story.Whole doc
+        let settings = layoutSettings ctx whole
+        noteFrames settings (storyLayouts ctx story doc)
+        |> List.exists (fun (top, bottom) -> x >= settings.PaddingLeft - 12.0 && x <= settings.Width - settings.MarginRight + 12.0 && y >= top - 6.0 && y <= bottom + 6.0)
     | Some story when story.Note.IsSome ->
         match ctx.StoryNotePlace with
         | None -> false

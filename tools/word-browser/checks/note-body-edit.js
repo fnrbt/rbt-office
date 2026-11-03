@@ -4,6 +4,9 @@
 // paragraph and nothing else: the other notes, the separators, the note's other paragraphs and its mark run
 // (w:footnoteRef, w:annotationRef) are the text they were, and the body is the text it was. (synthetic/kept-notes;
 // an endnote, by the API and a double click where the endnotes follow the text: synthetic/rich-notes.)
+// The note areas are laid out from the notes' blocks: a note of two paragraphs is two, a note's table is its cells
+// side by side; a note is edited where the area shows it, as it is laid out there, and a note that grows while it
+// is edited stays above the page's bottom margin, the page's text making room for it.
 import { check, finish, fail, loadWord, loadFormats, bytesOf } from './common.js';
 let OF, Word, editor;
 const bytes = {};
@@ -42,6 +45,27 @@ try {
     window.endnoteLine = () => Word.getLayoutLines(editor).find((line) => String(line.BlockId).startsWith('__endnote__') && (line.Text ?? '').includes('italic endnote'));
     // Dark pixels of the canvas in a rectangle (layout coordinates: the canvas holds the whole document).
     const inkAt = (x, y, w, h) => { const data = canvas.getContext('2d').getImageData(x, y, w, h).data; let ink = 0; for (let i = 0; i < data.length; i += 4) if (data[i] < 100 && data[i + 1] < 100 && data[i + 2] < 100) ink++; return ink; };
+    // The lines of a note where the note area shows it (by the block ids of the area: prefix#note#paragraph).
+    const noteLines = (kind, id) => Word.getLayoutLines(editor).filter((line) => String(line.BlockId).startsWith(`__${kind}__`) && String(line.BlockId).split('#')[1] === id);
+    const frameOf = (page) => { const frames = Word.getPageFrames(editor); return frames[Math.max(0, Math.min(frames.length - 1, (page ?? 1) - 1))]; };
+    window.area = (stage, kind, id) => {
+        const lines = noteLines(kind, id);
+        seen[stage] = Object.assign(seen[stage] ?? {}, { blocks: [...new Set(lines.map((line) => line.BlockId))].length, lines: lines.map((line) => ({ text: line.Text, x: line.X, y: line.Y, page: line.Page, marker: line.ListMarker, segments: line.Segments })) });
+    };
+    // The lines of the note that is edited (the story's) against the page's bottom margin; the body's text above them once left.
+    window.grown = (stage) => {
+        const lines = Word.getLayoutLines(editor);
+        const outside = lines.filter((line) => { const frame = frameOf(line.Page); return line.Y + line.Height > frame.Top + frame.Height - frame.MarginBottom + 0.5; });
+        seen[stage] = Object.assign(seen[stage] ?? {}, { context: context(), count: lines.length, outside: outside.length, frame: frameOf(1), last: lines.length ? lines[lines.length - 1] : null, caret: Word.getCaretRect(editor) });
+        Word.exitNote(editor);
+        const all = Word.getLayoutLines(editor);
+        const note = noteLines('footnote', '2');
+        const body = all.filter((line) => !String(line.BlockId).startsWith('__'));
+        seen[stage].noteTop = Math.min(...note.map((line) => line.Y));
+        seen[stage].bodyBottom = Math.max(...body.filter((line) => line.Page === note[0]?.Page).map((line) => line.Y + line.Height));
+        seen[stage].noteLines = note.length;
+        seen[stage].noteOutside = note.filter((line) => { const frame = frameOf(line.Page); return line.Y + line.Height > frame.Top + frame.Height - frame.MarginBottom + 0.5; }).length;
+    };
     window.look = (stage) => {
         const caret = Word.getCaretRect(editor);
         seen[stage] = Object.assign(seen[stage] ?? {}, { context: context(), caret, text: Word.getText(editor), ink: caret ? inkAt(Math.round(caret.X), Math.round(caret.Y), 200, Math.round(caret.Height)) : -1 });
@@ -58,6 +82,11 @@ try {
         Word.dispose(again);
     });
     window.drive = [
+        ['eval', 'window.place("area", null)'], ['eval', 'window.area("area", "footnote", "2")'],
+        ['eval', 'window.place("tablearea", null, "rich")'], ['eval', 'window.area("tablearea", "footnote", "2")'],
+        ['eval', 'window.place("grow", "footnote")'], ['press', 'Control+End'], ['type', ' and a much longer text that the note is given here, to take several lines of the footnote area at the foot of the page'],
+        ['press', 'Enter'], ['type', 'A third paragraph of the note, as long as the one before it and longer still, to make it grow'], ['press', 'Enter'], ['type', 'And a fourth one'],
+        ['eval', 'window.grown("grow")'],
         ['eval', 'window.place("type", "footnote")'], ['eval', 'window.look("enterNote")'], ['type', 'X'], ['eval', 'window.look("typed")'], ['eval', 'window.snap("type")'],
         ['eval', 'window.place("end", "footnote")'], ['press', 'Control+End'], ['type', 'Z'], ['eval', 'window.snap("end")'],
         ['eval', 'window.place("comment", "comment")'], ['type', 'Y'], ['eval', 'window.snap("comment")'],
@@ -80,6 +109,20 @@ const footnoteMark = '<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:f
 window.finish = async () => {
     try {
         const others = (xml) => [elementOf(original.footnotes, 'w:footnote', '-1'), elementOf(original.footnotes, 'w:footnote', '0'), elementOf(original.footnotes, 'w:footnote', '1')].map((piece) => xml.includes(piece));
+
+        // The note areas are laid out from the notes' blocks.
+        check('the footnote of two paragraphs is two in its area', seen.area.blocks, 2);
+        check('its first paragraph: the mark before it, its text', [seen.area.lines[0]?.marker, seen.area.lines[0]?.text], ['2', ' The second note']);
+        check('its second paragraph: on a line of its own below the first', [seen.area.lines[1]?.text, seen.area.lines[1]?.y > seen.area.lines[0]?.y], ['Its second paragraph ends', true]);
+        const cell = (name) => seen.tablearea.lines.find((line) => line.text === name);
+        check('a footnote with a table: its cells are laid out side by side', [!!cell('note cell a'), !!cell('note cell b'), cell('note cell a')?.y === cell('note cell b')?.y, cell('note cell b')?.x > cell('note cell a')?.x + 50], [true, true, true, true]);
+        check('a footnote with a table: its bold words are bold, the paragraph after the table below the cells',
+            [seen.tablearea.lines[0]?.text.includes('the bold source'), seen.tablearea.lines.find((line) => line.text === 'after the note table')?.y > cell('note cell a')?.y], [true, true]);
+        // A note that grows while it is edited.
+        check('a growing note is edited in its area: the caret in the note, its lines laid out', [seen.grow.context, seen.grow.count >= 5], [['footnote', '2', null], true]);
+        check('a growing note does not run past the bottom margin while it is edited', seen.grow.outside, 0);
+        check('the caret is on the note where the area shows it', seen.grow.caret && seen.grow.last ? Math.abs(seen.grow.caret.Y - seen.grow.last.Y) < seen.grow.last.Height + 1 : null, true);
+        check('left, the grown note is in the area, the page\'s text above it', [seen.grow.noteLines >= 5, seen.grow.noteOutside, seen.grow.bodyBottom <= seen.grow.noteTop], [true, 0, true]);
 
         // enterNote, a character typed at the start of the note's text.
         check('enterNote: true, the caret in the footnote', seen.type.entered === true && seen.type.context, ['footnote', '2', null]);

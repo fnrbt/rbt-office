@@ -269,6 +269,24 @@ has all of it or none of it, text is typed before or after it, and Backspace
 after it (Delete before it) removes it whole. A host that kept a position
 inside a mark gets the end of the mark back from `getSelection`.
 
+## Footnotes and endnotes on the page
+
+A footnote stands at the foot of the page its reference is on, an endnote
+after the text (on further pages as it needs them), each laid out from its
+body as the file has it - its paragraphs with their formatting, their
+paragraph properties and style (FootnoteText / EndnoteText as the file
+says), its tables - by the layout that lays out the body, with its mark (the
+note's number, superscript) before its first paragraph's text. A page makes
+room for its footnotes by their real height: a footnote too long for the
+room below its reference goes on at the foot of the next page when the
+layout has one (broken between the lines of a paragraph; a table goes on
+whole), and the next page keeps room for it. A note whose reference's text
+was set on its own (`setNote`) shows that text, and a note the package has
+no body for shows the text its reference carries, in Calibri 10 pt.
+`getLayoutLines` has a note's lines with block ids `__footnote__<page>_<n>#<note
+id>#<paragraph id>` (`__endnote__<n>#...`), the paragraph being the note's own
+(a cell's for a table), and the mark as the first line's `ListMarker`.
+
 ## Notes and comments edited in place
 
 `enterNote(editor, noteId, noteType)` (`noteType` "footnote" | "endnote") and
@@ -276,10 +294,12 @@ inside a mark gets the end of the mark back from `getSelection`.
 comment, as `enterHeaderFooter` does into a header: from then on the document
 the editor's commands and keys act on is that body - typing, Enter,
 Backspace, selection, character and paragraph formatting, undo and redo work
-there - until `exitNote`, Escape or a click off the note. A footnote is shown
-where its page shows it (an endnote after the body), with its formatting, in
-a frame while it is edited; a comment in a balloon below the line its range
-starts on (the host's own comment pane, from `getCommentAnchors`, shows its
+there - until `exitNote`, Escape or a click off the note. A footnote or an
+endnote is edited where the page shows it, as it is laid out there (see
+above): the text typed is laid out in the note area at once, the page's text
+making room for a note that grows, and a dashed frame around the note says
+that it is the note that is edited; a comment is edited in a balloon below the
+line its range starts on (the host's own comment pane, from `getCommentAnchors`, shows its
 text as before, and the anchor's `Text` follows the edit). A double click on a
 footnote or an endnote where the page shows it enters it with the caret where
 the click was. `getCaretContext` says `Story` "footnote" | "endnote" |
@@ -294,8 +314,7 @@ paragraphs and its mark run (`w:footnoteRef`, `w:annotationRef`) stay the
 text they were, and the body's XML is not touched. (Before 0.1.27 a note's
 body could only be replaced whole by `setNote` / `setComment`, as a new plain
 paragraph.) Not yet: the note's mark itself is not part of what is edited; a
-note or comment the text does not refer to cannot be entered; nothing but its
-paragraphs is shown of a table in a note while it is edited.
+note or comment the text does not refer to cannot be entered.
 
 ## Fields
 

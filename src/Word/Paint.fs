@@ -1077,7 +1077,13 @@ let private addParagraphCommandsWithBaselineOffset baselineOffset (settings: Lay
                 layout.PrefixStyle
                 |> Option.map (measureText prefixText)
                 |> Option.defaultValue 0.0
-        commands.Add(DrawText (prefixText, prefixStyle, prefixX, baseline, prefixDrawWidth))
+        // (A note's mark stands raised, as a superscript run of the text does.)
+        let prefixBaseline =
+            match prefixStyle.VertAlign with
+            | Some "superscript" -> baseline - prefixStyle.FontSize * 0.5
+            | Some "subscript" -> baseline + prefixStyle.FontSize * 0.25
+            | _ -> baseline
+        commands.Add(DrawText (prefixText, prefixStyle, prefixX, prefixBaseline, prefixDrawWidth))
 
     for line in layout.Lines do
         let baseline = paragraphLineBaseline baselineOffset settings.FontSize layout.Metadata line
@@ -3226,7 +3232,46 @@ let private addNestedTableBorders (styleContext: DocumentStyleContext option) (s
 
 /// The footnote and endnote areas: the synthetic note paragraphs the layout
 /// appended, with their separator rules.
-let private addNoteAreaCommands (settings: LayoutSettings) fontFamily measureText measureRange (commands: ResizeArray<PaintCommand>) (footnotes: ResizeArray<BlockLayout>) (endnotes: ResizeArray<BlockLayout>) =
+/// The borders of the tables of the notes the note areas show, where their
+/// cells are laid out (a note's paragraphs and cells are laid out by the
+/// layout pass with the note's own block ids in theirs, see Layout.noteParagraphIdOfLayoutId).
+let private addNoteTableCommands (settings: LayoutSettings) measureText measureRange (doc: Document) (commands: ResizeArray<PaintCommand>) (noteLayouts: seq<BlockLayout>) =
+    // (Note by note, where a page shows it: a note shown twice has its tables twice.)
+    let shown = Dictionary<string, ResizeArray<BlockLayout>>()
+    let order = ResizeArray<string * string * string>()
+    for layout in noteLayouts do
+        match noteOfLayoutId layout.BlockId, noteParagraphIdOfLayoutId layout.BlockId with
+        | Some (kind, id), Some own ->
+            let key = noteAreaSlotOfLayoutId layout.BlockId + "\u0001" + kind + "\u0001" + id
+            match shown.TryGetValue key with
+            | true, list -> list.Add { layout with BlockId = own }
+            | false, _ ->
+                let list = ResizeArray<BlockLayout>()
+                list.Add { layout with BlockId = own }
+                shown.[key] <- list
+                order.Add (key, kind, id)
+        | _ -> ()
+    for key, kind, id in order do
+        match storyBody kind id doc with
+        | Some blocks when blocks |> List.exists (function Table _ -> true | _ -> false) ->
+            let layouts = List.ofSeq shown.[key]
+            let index = buildLayoutIndex settings false layouts.Length layouts
+            // (Laid out on an unpaged page, as the note was: a table of a note is not broken by the page it is on.)
+            let noteSettings = { settings with PageHeight = 1.0e12; MarginBottom = 0.0; TableContinuationHeaderHeight = 0.0 }
+            let noteDoc = { doc with Blocks = blocks; PageSetup = { doc.PageSetup with Columns = None } }
+            for block in blocks do
+                match block with
+                | Table table ->
+                    match tableFragmentPaintCommandsForDocument noteSettings measureText measureRange noteDoc index true table with
+                    | Some (tableCommands, _) -> commands.AddRange tableCommands
+                    | None -> ()
+                | _ -> ()
+        | _ -> ()
+
+let private addNoteAreaCommands (settings: LayoutSettings) fontFamily measureText measureRange (doc: Document) (commands: ResizeArray<PaintCommand>) (footnotes: ResizeArray<BlockLayout>) (endnotes: ResizeArray<BlockLayout>) =
+    // The tables of the notes, under their text.
+    if footnotes.Count > 0 || endnotes.Count > 0 then
+        addNoteTableCommands settings measureText measureRange doc commands (Seq.append footnotes endnotes)
     // Footnote area: paint the synthetic footnote paragraphs appended by layout
     // at the bottom of each page, and a short separator rule above the topmost
     // note on each page (Word draws ~2in).
@@ -3343,7 +3388,7 @@ let private collectDocumentCommandsWithLayoutsUncached (settings: LayoutSettings
                     if para.Metadata.PageBreakAfter || (para.Metadata.SectionBreak.IsSome && sectionPageBreaks.Value.Contains para.Id) then
                         currentY <- WordLayout.Page.advanceToNextPage settings.PageHeight settings.PaddingTop currentY
 
-     addNoteAreaCommands settings fontFamily measureText measureRange commands index.Footnotes index.Endnotes
+     addNoteAreaCommands settings fontFamily measureText measureRange doc commands index.Footnotes index.Endnotes
     finally drawingSink <- outerSink
 
     // Column separator rules (w:sep): a vertical line centred in each gap,
@@ -3959,7 +4004,7 @@ let collectDocumentChunksWith (deferCollection: bool) (cache: PaintCache) (setti
                 if layout.BlockId.StartsWith footnoteBlockIdPrefix then footnotes.Add layout
                 elif layout.BlockId.StartsWith endnoteBlockIdPrefix then endnotes.Add layout
             let commands = ResizeArray<PaintCommand>()
-            addNoteAreaCommands settings fontFamily measureText measureRange commands footnotes endnotes
+            addNoteAreaCommands settings fontFamily measureText measureRange doc commands footnotes endnotes
             cache.CacheNotes <- slices.SliceNotes
             cache.CacheNoteChunk <- if commands.Count = 0 then emptyChunk else chunkOfCommands (commands.ToArray())
         chunks.Add cache.CacheNoteChunk
