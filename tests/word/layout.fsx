@@ -589,8 +589,10 @@ check "tall wide grid paint perf"
     (tallWideGridPaintNextY > 0.0
      && tallWideGridPaintSw.Elapsed.TotalMilliseconds < 350.0)
     true
+// (About 34.95 MB, two text styles made a row among it: a field more of
+// TextStyle, the checkbox of a content control, is 64 KB more.)
 check "tall wide grid paint allocation"
-    (tallWideGridPaintBytes < 35000000L)
+    (tallWideGridPaintBytes < 35500000L)
     true
 let repeatedHeaderFastHeaderCount = 5000
 let repeatedHeaderFastBodyCount = 5000

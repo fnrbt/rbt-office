@@ -790,6 +790,8 @@ let private editorRunsToBuffer (runs: obj array) : TextBuffer =
                         else Some { Id = optionalString (run?InsertedRevisionId); Author = optionalString (run?InsertedRevisionAuthor); Date = optionalString (run?InsertedRevisionDate) }
                     MoveName = optionalString (run?RevisionMoveName)
                     SourceRun = optionalInt (run?SourceRun)
+                    // (The glyph of a content control's checkbox: see TextStyle.Checkbox.)
+                    Checkbox = optionalBool (run?Checkbox)
                     VertAlign = vertAlign
                     Explicit = explicitFlags
                 }
@@ -1990,6 +1992,7 @@ let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) 
                     "IsDeletedInsertion" ==> tr.Style.DeletedInsertion.IsSome
                     "RevisionMoveName" ==> tr.Style.MoveName
                     "SourceRun" ==> tr.Style.SourceRun
+                    "Checkbox" ==> tr.Style.Checkbox
                     "VertAlign" ==> tr.Style.VertAlign
                     "IsImage" ==> false
                 ])
@@ -2768,7 +2771,7 @@ let private bufferOfCharacters (text: string) (runs: TextBuffer.Run array) : Tex
             let mutable j = i + 1
             while j < runs.Length
                   && (match runs.[j] with
-                      | TextBuffer.Text other -> obj.ReferenceEquals(other, run) || obj.ReferenceEquals(other.Style, run.Style) || other.Style = run.Style
+                      | TextBuffer.Text other -> run.Style.Checkbox.IsNone && (obj.ReferenceEquals(other, run) || obj.ReferenceEquals(other.Style, run.Style) || other.Style = run.Style)
                       | TextBuffer.Image _ -> false) do
                 j <- j + 1
             result.Add (TextBuffer.Text { Start = i; Length = j - i; Style = run.Style })
