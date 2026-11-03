@@ -799,7 +799,7 @@ let insert pos (text: string) buffer =
                             let typed = boundaryInsertStyle tr.Style None
                             // (Text of the run's own style - nothing of it is an annotation the typed text is outside of -
                             // is the run's: the mark of a page break as it was rendered stays before both.)
-                            if typed = tr.Style then
+                            if { typed with RenderedPageBreakBefore = tr.Style.RenderedPageBreakBefore } = tr.Style then
                                 newRuns.Add(Text { tr with Length = tr.Length + textLen })
                             elif tr.Style.RenderedPageBreakBefore then
                                 newRuns.Add(Text { Start = tr.Start; Length = textLen; Style = { typed with RenderedPageBreakBefore = true } })

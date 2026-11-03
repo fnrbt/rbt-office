@@ -118,6 +118,61 @@ let private attributeRanges (text: string) (span: Span) : (string * int * int * 
                     found.Add ((name, wsStart, at, valueStart, valueEnd))
     List.ofSeq found
 
+/// A character's code point as text (two UTF-16 units above the basic plane).
+let private ofCodePoint (code: int) : string =
+    if code < 0x10000 then string (char code)
+    else
+        let rest = code - 0x10000
+        string (char (0xD800 + (rest >>> 10))) + string (char (0xDC00 + (rest &&& 0x3FF)))
+
+/// The characters of an element's text as written (from `start` to `finish`): for each character of its value,
+/// where it is written (a reference - &amp; &#x201C; - is one, or two for a pair of surrogates). None where the
+/// text is not plain characters and references (markup, a line end the reader normalises).
+let private writtenCharacters (text: string) (start: int) (finish: int) : (string * (int * int) array) option =
+    let value = System.Text.StringBuilder()
+    let places = ResizeArray<int * int>()
+    let mutable at = start
+    let mutable ok = true
+    while ok && at < finish do
+        match text.[at] with
+        | '<' | '\r' -> ok <- false
+        | '&' ->
+            let close = text.IndexOf(';', at)
+            if close < 0 || close >= finish then ok <- false
+            else
+                let name = text.Substring(at + 1, close - at - 1)
+                let decoded =
+                    match name with
+                    | "amp" -> Some "&" | "lt" -> Some "<" | "gt" -> Some ">" | "quot" -> Some "\"" | "apos" -> Some "'"
+                    | _ when name.StartsWith "#x" -> (match System.Int32.TryParse(name.Substring 2, System.Globalization.NumberStyles.HexNumber, null) with | true, code -> Some (ofCodePoint code) | _ -> None)
+                    | _ when name.StartsWith "#" -> (match System.Int32.TryParse(name.Substring 1) with | true, code -> Some (ofCodePoint code) | _ -> None)
+                    | _ -> None
+                match decoded with
+                | Some chars ->
+                    for _ in 1 .. chars.Length do places.Add ((at, close + 1))
+                    value.Append(chars) |> ignore
+                    at <- close + 1
+                | None -> ok <- false
+        | c ->
+            places.Add ((at, at + 1))
+            value.Append(c) |> ignore
+            at <- at + 1
+    if ok then Some (value.ToString(), places.ToArray()) else None
+
+/// An element's text (from `start` to `finish` in `text`, its value `was`) made `value`: what is the same at its
+/// start and at its end stays as it is written - its references too -, what is between is written anew.
+let private textEdited (text: string) (start: int) (finish: int) (was: string) (value: string) : string =
+    match writtenCharacters text start finish with
+    | Some (read, places) when read = was && was <> value ->
+        let common = Seq.zip was value |> Seq.takeWhile (fun (a, b) -> a = b) |> Seq.length
+        let room = min (was.Length - common) (value.Length - common)
+        let same = Seq.zip (Seq.rev was) (Seq.rev value) |> Seq.truncate room |> Seq.takeWhile (fun (a, b) -> a = b) |> Seq.length
+        // (A character written as a reference is all of it or none: the cut is where one begins.)
+        let placeOf (index: int) = if index < places.Length then fst places.[index] else finish
+        let before, after = placeOf common, placeOf (was.Length - same)
+        text.Substring(start, before - start) + escapeText (value.Substring(common, value.Length - same - common)) + text.Substring(after, finish - after)
+    | _ -> escapeText value
+
 /// The text of `node` (an element of `text`) with `edits` made in it.
 let rec private applyAt (order: SchemaOrder) (text: string) (node: XmlNode) (edits: ElementEdit list) : string =
     let span = spanOf node
@@ -196,7 +251,7 @@ let rec private applyAt (order: SchemaOrder) (text: string) (node: XmlNode) (edi
         let inserts = ResizeArray<int * int * string>()
         for edit in edits do
             match edit with
-            | SetText value -> parts.Add ((contentStart, contentEnd, escapeText value))
+            | SetText value -> parts.Add ((contentStart, contentEnd, textEdited text contentStart contentEnd (textOf node) value))
             | _ -> ()
         let first (child: string) = children |> List.tryFind (fun kid -> nameOf kid = child)
         // (A child changed by edits: taken out, or its text with them made - with what goes before and after it.)

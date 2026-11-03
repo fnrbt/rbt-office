@@ -221,5 +221,11 @@ check "anchor" [ ModelText.anchorOf "#top"; ModelText.anchorOf "#"; ModelText.an
 
 check "a change in the piece it is in" [ ModelText.changeInPieces [ "ab"; "cd" ] "abcd" "Qabcd"; ModelText.changeInPieces [ "ab"; "cd" ] "abcd" "abXcd"; ModelText.changeInPieces [ "ab"; "cd" ] "abcd" "acd"; ModelText.changeInPieces [ "ab"; "cd" ] "abcd" "aXd" ] [ Some (0, "Qab"); Some (0, "abX"); Some (0, "a"); None ]
 
+check "SetText keeps what is the same as it is written - its references too"
+    [ edit "<w:t>&quot;Contribution&quot; shall</w:t>" [ SetText "Q\"Contribution\" shall" ]
+      edit "<w:t>a &amp; b</w:t>" [ SetText "a & bc" ]
+      edit "<w:t>x&#x201C;y</w:t>" [ SetText "x\u201Cy!" ] ]
+    [ "<w:t>Q&quot;Contribution&quot; shall</w:t>"; "<w:t>a &amp; bc</w:t>"; "<w:t>x&#x201C;y!</w:t>" ]
+
 printfn "xml-patch: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

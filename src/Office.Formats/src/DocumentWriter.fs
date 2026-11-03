@@ -3133,6 +3133,8 @@ let private spliceSourceOf (text: string) (start: int) (finish: int) (bookmarks:
 
 /// The runs of a paragraph written from its source (see above): `pieces` are the model's runs
 /// with their XML (the run itself, and the link or tracked change around it).
+[<Fable.Core.Emit("JSON.stringify(Object.assign({}, $0, { Text: undefined, RenderedPageBreakBefore: undefined }))")>]
+let private jsonWithoutTextOrMark (_run: obj) : string = jsNative
 [<Fable.Core.Emit("JSON.stringify(Object.assign({}, $0, { Text: undefined }))")>]
 let private jsonWithoutText (_run: obj) : string = jsNative
 
@@ -3191,6 +3193,35 @@ let private splicedRuns (source: SpliceSource) (original: obj) (joined: obj arra
         // (With no marks of the model's around them: a bookmark on one of them is written with it.)
         let marked = pieces |> List.exists (fun (runObj, whole, _) -> optionalInt (runObj?SourceRun) = Some at && (match partsOf whole with Some ("", _, "") -> false | _ -> true))
         if not now.IsEmpty && source.Runs.ContainsKey at && not marked && alike now = alike list then wholeAsRead.Add at |> ignore
+    // (A run that was read whose formatting is what it was and whose text changed - however the model holds it, the
+    // mark of a page break as it was rendered on its first character, say -: its text changed in the w:t the
+    // change is in, the rest of it as it was; written for the first of the model's runs of it.)
+    let textOfWhole = System.Collections.Generic.Dictionary<int, XmlPatch.ElementEdit list>()
+    let alikeIgnoringMark (runs: obj seq) =
+        runs
+        |> Seq.fold (fun (merged: (string * string) list) (run: obj) ->
+            let format, text = jsonWithoutTextOrMark run, stringOrDefault "" (run?Text)
+            match merged with
+            | (previous, previousText) :: rest when previous = format -> (format, previousText + text) :: rest
+            | _ -> (format, text) :: merged) []
+    for KeyValue (at, list) in originalRuns do
+        if not (wholeAsRead.Contains at) && source.Runs.ContainsKey at then
+            let indexes = pieces |> List.indexed |> List.filter (fun (_, (runObj, _, _)) -> optionalInt (runObj?SourceRun) = Some at) |> List.map fst
+            let now = indexes |> List.map (fun index -> let runObj, _, _ = pieces.[index] in runObj)
+            let marked = indexes |> List.exists (fun index -> let _, whole, _ = pieces.[index] in (match partsOf whole with Some ("", _, "") -> false | _ -> true))
+            let together = not indexes.IsEmpty && List.last indexes - List.head indexes = indexes.Length - 1
+            let plain (value: string) = ModelText.textPieces value |> List.forall (function ModelText.Text _ -> true | _ -> false)
+            match alikeIgnoringMark list, alikeIgnoringMark now with
+            | [ (formatWas, was) ], [ (formatNow, nowText) ] when formatWas = formatNow && together && not marked && was <> nowText && plain was && plain nowText ->
+                let run = source.Runs.[at]
+                let content = XmlPatch.elements run |> List.filter (fun kid -> XmlPatch.localName kid <> "rPr")
+                if not content.IsEmpty && content |> List.forall (fun kid -> XmlPatch.name kid = "w:t" || XmlPatch.name kid = "w:lastRenderedPageBreak")
+                   && content |> List.exists (fun kid -> XmlPatch.name kid = "w:t") then
+                    let texts = content |> List.filter (fun kid -> XmlPatch.name kid = "w:t") |> List.map XmlPatch.textOf
+                    match ModelText.changeInPieces texts was nowText with
+                    | Some (index, value) -> textOfWhole.[at] <- [ XmlPatch.EditNth ("w:t", index, [ XmlPatch.SetText value ]) ]
+                    | None -> ()
+            | _ -> ()
     let firstOfWhole = System.Collections.Generic.HashSet<int>()
     let placedAt = System.Collections.Generic.HashSet<int>()
     let sourceOfRun (runObj: obj) =
@@ -3243,6 +3274,12 @@ let private splicedRuns (source: SpliceSource) (original: obj) (joined: obj arra
                    previousInSource <- true
                    previousWrapping <- wrapping runObj
                    yield XmlPatch.AtItem at, XmlPatch.bytesOf text source.Runs.[at]
+           | Some at when textOfWhole.ContainsKey at ->
+               if firstOfWhole.Add at then
+                   placedAt.Add at |> ignore
+                   previousInSource <- true
+                   previousWrapping <- wrapping runObj
+                   yield XmlPatch.AtItem at, XmlPatch.apply XmlPatch.Word.order { XmlPatch.SourceElement.Text = text; XmlPatch.SourceElement.Node = source.Runs.[at] } textOfWhole.[at]
            | _ ->
              let now = wrapping runObj
              // (The marks the model writes around the run go around what is written of it.)

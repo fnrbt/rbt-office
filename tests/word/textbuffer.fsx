@@ -2175,12 +2175,14 @@ check "format: a heading alone in a long document" (let f = WS.selectionFormat (
 
 // Text typed just before a run that begins with the mark of a page break as it
 // was rendered (w:lastRenderedPageBreak): the mark stays before the text - the
-// paragraph still begins the page, and it is saved as the mark and then the text.
+// paragraph still begins the page, and it is saved as the mark and then the text,
+// in the run it was read as.
 do
     let marked = { empty with Rope = (ofString "which page").Rope; Runs = [ Text { Start = 0; Length = 10; Style = { defaultStyle with RenderedPageBreakBefore = true } } ] }
     let typed = insert 0 "Q" marked
     let runs = typed.Runs |> List.choose (function Text run -> Some (run.Start, run.Length, run.Style.RenderedPageBreakBefore) | Image _ -> None)
-    check "typed before a rendered page break: the mark is before the new text" runs [ (0, 1, true); (1, 10, false) ]
+    // (Of the run's own style, the text is the run's: the mark before both - saved as the mark, then the text.)
+    check "typed before a rendered page break: the mark is before the new text" runs [ (0, 11, true) ]
     check "typed before a rendered page break: the text" (toString typed) "Qwhich page"
     let inside = insert 3 "Q" marked
     check "typed inside the marked run: the mark stays at its start" (inside.Runs |> List.choose (function Text run -> Some (run.Start, run.Style.RenderedPageBreakBefore) | Image _ -> None) |> List.head) (0, true)
