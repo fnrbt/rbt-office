@@ -2579,8 +2579,15 @@ let deleteBackward doc =
         // Delete selection if active
         deleteSelection doc
     | Some sel when sel.Focus.Offset = 0 ->
-        // At start of block, merge with previous
-        mergeWithPrevious doc sel.Focus.BlockId
+        match findParagraph doc sel.Focus.BlockId with
+        | Some para when para.Metadata.ListStyle <> NoList ->
+            // At the start of a list item, as in Word: its number or bullet goes
+            // (the paragraph leaves the list, as Enter in an empty item takes it
+            // out); the next Backspace joins it to the paragraph before.
+            replaceParagraph doc para.Id { para with Metadata = { para.Metadata with ListStyle = NoList; ListLevel = 0 } }
+        | _ ->
+            // At start of block, merge with previous
+            mergeWithPrevious doc sel.Focus.BlockId
     | Some _ when (markSelectedAtCaret true doc).IsSome -> deleteSelection (markSelectedAtCaret true doc).Value
     | Some sel ->
         match findParagraph doc sel.Focus.BlockId with

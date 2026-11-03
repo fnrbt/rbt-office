@@ -292,7 +292,7 @@ The editor handles these keys itself, on its canvas and its input element
 | Shift+Enter | a line break in the paragraph (`insertLineBreak`) |
 | Ctrl+Enter | a page break (`insertPageBreak`); nothing where a page cannot break - a text box, a header, a footer, a note |
 | Ctrl+Shift+Enter | a column break (`insertColumnBreak`): the next column, the next page in a section of one column |
-| Backspace, Delete | a character, or the selection |
+| Backspace, Delete | a character, or the selection; Backspace at the start of a list item takes it out of the list first, as in Word (0.1.26; it joined the item to the one before) |
 | Ctrl+Backspace, Ctrl+Delete | the word before / after the caret, as far as Ctrl+Left / Ctrl+Right moves (Alt on a Mac) |
 | Tab, Shift+Tab | in a table: the next / the previous cell (Tab in the last one adds a row); in a list: the item a level down / up; elsewhere Tab is a tab character and Shift+Tab nothing |
 | Ctrl+Tab | a tab character in a table cell |

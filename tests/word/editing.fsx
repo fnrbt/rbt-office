@@ -196,6 +196,15 @@ check "Ctrl+M: the indent is the paragraph's own" ((Doc.allParagraphs indented).
 check "Ctrl+Shift+M: back" (indentOf (Doc.indentParagraphs false indented)) [ Some 0.0, 0; Some 0.0, 0; None, 1 ]
 check "Ctrl+Shift+M: not below the margin, nor out of the list" (indentOf (Doc.indentParagraphs false indentDoc)) [ None, 0; Some 0.0, 0; None, 1 ]
 
+// ---- Backspace at the start of a list item: the bullet goes first ----
+let listDoc =
+    docOf [ Doc.Paragraph { paragraph "l1" "first" with Metadata = listed }
+            Doc.Paragraph { paragraph "l2" "second" with Metadata = { listed with ListLevel = 2 } } ]
+let unlisted = listDoc |> caret "l2" 0 |> Doc.deleteBackward
+check "Backspace at the start of a list item: out of the list, the text as it was"
+    (texts unlisted, Doc.allParagraphs unlisted |> List.map (fun p -> p.Metadata.ListStyle), selectionOf unlisted) ([ "first"; "second" ], [ Doc.Bullet; Doc.NoList ], Some ("l2", 0, "l2", 0))
+check "Backspace again: joined to the item before" (texts (Doc.deleteBackward unlisted)) [ "firstsecond" ]
+
 printfn ""
 printfn "Word editing tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
