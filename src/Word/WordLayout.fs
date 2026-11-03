@@ -512,6 +512,22 @@ module Floating =
                     changed <- true
         adjusted
 
+    /// A shape that may not overlap other objects (wp:anchor allowOverlap="0")
+    /// where Word puts it: moved down below each shape placed before it that it
+    /// would overlap and that may not overlap either (Word moves it when both
+    /// say so; it stays across where it was). Any other box as it is.
+    let keptClearOfShapes (placed: Box list) (box: Box) : Box =
+        match box.Kind with
+        | TextBox textBox when textBox.AllowOverlap = Some false && not textBox.Inline ->
+            let others =
+                placed
+                |> List.filter (fun other ->
+                    match other.Kind with
+                    | TextBox shape -> shape.AllowOverlap = Some false && not shape.Inline && shape.Id <> textBox.Id
+                    | _ -> false)
+            if others.IsEmpty then box else avoidOverlap others box
+        | _ -> box
+
     /// The page an anchored object is placed on, as the paragraph that holds
     /// its anchor is laid out: the page's size and margins (layout pixels).
     type AnchorPage = {

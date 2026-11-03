@@ -2223,26 +2223,58 @@ let private textBoxCommandsAt (settings: LayoutSettings) fontFamily measureText 
         if not turned && not translucent then inner
         else [ DrawGroup (None, textBox.Rotation, centerX, centerY, textBox.Opacity, bbox, inner) ]
 
+/// A shape where its anchor puts it (see `textBoxPlace`), as a box: its left
+/// edge from the left edge of the text, the left margin of its page, and its height.
+let private anchoredShapeBox (settings: LayoutSettings) measureText measureRange (styleContext: DocumentStyleContext) (pages: PageInfo array) (top: float) (textBox: TextBoxBlock) : struct (WordLayout.Floating.Box * float * float) =
+    let height = textBoxFrameHeight settings measureText measureRange styleContext textBox
+    let info = pages.[pageIndexForY pages top]
+    let page : WordLayout.Floating.AnchorPage =
+        { PageWidth = info.Width; PageHeight = info.Height; MarginLeft = info.MarginLeft; MarginRight = info.MarginRight; MarginTop = info.MarginTop; MarginBottom = info.MarginBottom }
+    struct (WordLayout.Floating.anchoredTextBoxBox page info.Top top height textBox, info.MarginLeft, height)
+
 /// Where a shape is: its left edge and top (across and down the canvas) and
 /// its height. `anchorTop`: the top of the block it is anchored in, as laid
 /// out (None for a shape without an anchor, or whose anchor has no layout:
-/// by its offsets from the first page's margins, as before).
-let private textBoxPlace (settings: LayoutSettings) measureText measureRange (styleContext: DocumentStyleContext) (pages: PageInfo array) (anchorTop: float option) (textBox: TextBoxBlock) : struct (float * float * float) =
-    let height = textBoxFrameHeight settings measureText measureRange styleContext textBox
+/// by its offsets from the first page's margins, as before). `shift`: how far
+/// down it is moved to keep it clear of another shape (see `overlapShifts`).
+let private textBoxPlace (settings: LayoutSettings) measureText measureRange (styleContext: DocumentStyleContext) (pages: PageInfo array) (anchorTop: float option) (shift: float) (textBox: TextBoxBlock) : struct (float * float * float) =
     match anchorTop with
     | Some top when pages.Length > 0 ->
-        let info = pages.[pageIndexForY pages top]
-        let page : WordLayout.Floating.AnchorPage =
-            { PageWidth = info.Width; PageHeight = info.Height; MarginLeft = info.MarginLeft; MarginRight = info.MarginRight; MarginTop = info.MarginTop; MarginBottom = info.MarginBottom }
-        let box = WordLayout.Floating.anchoredTextBoxBox page info.Top top height textBox
-        struct (info.MarginLeft + box.X, box.Y, height)
+        let struct (box, marginLeft, height) = anchoredShapeBox settings measureText measureRange styleContext pages top textBox
+        struct (marginLeft + box.X, box.Y + shift, height)
     | _ ->
+        let height = textBoxFrameHeight settings measureText measureRange styleContext textBox
         let box = WordLayout.Floating.textBoxCanvasBox settings.PaddingLeft settings.PaddingTop textBox
         struct (box.X, box.Y, height)
 
+/// How far down the shapes that may not overlap (allowOverlap="0") are moved
+/// to keep clear of those before them, as the layout moves them (see
+/// WordLayout.Floating.keptClearOfShapes): by id, for the shapes that are
+/// moved. `shapes`: in the order they are placed (that of the document);
+/// `anchorTopOf`: where the block a shape is anchored in starts.
+let private overlapShifts (settings: LayoutSettings) measureText measureRange (styleContext: DocumentStyleContext) (pages: PageInfo array) (anchorTopOf: TextBoxBlock -> float option) (shapes: TextBoxBlock seq) : Dictionary<BlockId, float> =
+    let shifts = Dictionary<BlockId, float>()
+    let keptClear = shapes |> Seq.filter (fun textBox -> textBox.AllowOverlap = Some false && not textBox.Inline) |> Seq.toList
+    if keptClear.Length > 1 && pages.Length > 0 then
+        let mutable placed : WordLayout.Floating.Box list = []
+        for textBox in keptClear do
+            match anchorTopOf textBox with
+            | Some top ->
+                let struct (box, _, _) = anchoredShapeBox settings measureText measureRange styleContext pages top textBox
+                let kept = WordLayout.Floating.keptClearOfShapes placed box
+                if abs (kept.Y - box.Y) > 0.001 then shifts.[textBox.Id] <- kept.Y - box.Y
+                placed <- kept :: placed
+            | None -> ()
+    shifts
+
+let private shiftOf (shifts: Dictionary<BlockId, float>) (textBox: TextBoxBlock) =
+    match shifts.TryGetValue textBox.Id with
+    | true, shift -> shift
+    | false, _ -> 0.0
+
 /// A text box as a drawing of its page.
-let private textBoxDrawing (settings: LayoutSettings) fontFamily measureText measureRange (styleContext: DocumentStyleContext) (pages: PageInfo array) (anchorTop: float option) (textBox: TextBoxBlock) : Drawing =
-    let struct (x, y, height) = textBoxPlace settings measureText measureRange styleContext pages anchorTop textBox
+let private textBoxDrawing (settings: LayoutSettings) fontFamily measureText measureRange (styleContext: DocumentStyleContext) (pages: PageInfo array) (anchorTop: float option) (shift: float) (textBox: TextBoxBlock) : Drawing =
+    let struct (x, y, height) = textBoxPlace settings measureText measureRange styleContext pages anchorTop shift textBox
     { DrawingBehind = (textBox.BehindDoc = Some true)
       DrawingZ = drawingHeight textBox.RelativeHeight
       DrawingCommands = textBoxCommandsAt settings fontFamily measureText measureRange styleContext textBox x y height |> List.toArray }
@@ -2310,7 +2342,7 @@ let private repeatedBlockCommands (settings: LayoutSettings) fontFamily measureT
                         | false, _ -> None
                     | None -> None
                 match page, anchorTop with
-                | Some info, Some _ -> drawings.Add (textBoxDrawing settings fontFamily measureText measureRange styleContext [| info |] anchorTop textBox)
+                | Some info, Some _ -> drawings.Add (textBoxDrawing settings fontFamily measureText measureRange styleContext [| info |] anchorTop 0.0 textBox)
                 | _ -> ()
     finally drawingSink <- outerSink
     resizeArrayToList (commandsInLayers commands drawings)
@@ -2674,7 +2706,7 @@ let storyShapeRects (settings: LayoutSettings) measureText measureRange (doc: Do
                     | false, _ -> None)
             match anchorTop with
             | Some _ ->
-                let struct (x, y, height) = textBoxPlace settings measureText measureRange styleContext [| page |] anchorTop textBox
+                let struct (x, y, height) = textBoxPlace settings measureText measureRange styleContext [| page |] anchorTop 0.0 textBox
                 Some (textBox, x, y, textBox.Width, height)
             // (A shape of a header that is anchored in nothing is not painted.)
             | None -> None)
@@ -2705,23 +2737,24 @@ let bodyShapeRects (settings: LayoutSettings) measureText measureRange (doc: Doc
         let tops = Dictionary<BlockId, float>()
         for layout in layouts do
             if not (tops.ContainsKey layout.BlockId) then tops.[layout.BlockId] <- layout.Y
+        let anchorTopOf (textBox: TextBoxBlock) =
+            textBox.AnchorBlockId
+            |> Option.bind (fun anchorId ->
+                doc.Blocks
+                |> List.tryFind (function
+                    | Paragraph para
+                    | Heading (_, para) -> para.Id = anchorId
+                    | Table table -> table.Id = anchorId
+                    | TextBox _ -> false))
+            |> Option.bind firstParagraphIdOf
+            |> Option.bind (fun id ->
+                match tops.TryGetValue id with
+                | true, top -> Some top
+                | false, _ -> None)
+        let shifts = overlapShifts settings measureText measureRange styleContext pageArray anchorTopOf shapes
         shapes
         |> List.map (fun textBox ->
-            let anchorTop =
-                textBox.AnchorBlockId
-                |> Option.bind (fun anchorId ->
-                    doc.Blocks
-                    |> List.tryFind (function
-                        | Paragraph para
-                        | Heading (_, para) -> para.Id = anchorId
-                        | Table table -> table.Id = anchorId
-                        | TextBox _ -> false))
-                |> Option.bind firstParagraphIdOf
-                |> Option.bind (fun id ->
-                    match tops.TryGetValue id with
-                    | true, top -> Some top
-                    | false, _ -> None)
-            let struct (x, y, height) = textBoxPlace settings measureText measureRange styleContext pageArray anchorTop textBox
+            let struct (x, y, height) = textBoxPlace settings measureText measureRange styleContext pageArray (anchorTopOf textBox) (shiftOf shifts textBox) textBox
             textBox, x, y, textBox.Width, height)
 
 /// The layouts of a shape's text where the painter draws it (see `bodyShapeRects` for the shape's place).
@@ -3244,6 +3277,20 @@ let private collectDocumentCommandsWithLayoutsUncached (settings: LayoutSettings
     // (The anchored drawings of the body are painted below and above its text: see Drawing.)
     let drawings = ResizeArray<Drawing>()
     let pageArray = lazy (List.toArray pages)
+    // (Where the block a shape is anchored in starts.)
+    let anchorTopOf (textBox: TextBoxBlock) =
+        textBox.AnchorBlockId
+        |> Option.bind (fun anchorId ->
+            doc.Blocks
+            |> List.tryFind (function
+                | Paragraph para
+                | Heading (_, para) -> para.Id = anchorId
+                | Table table -> table.Id = anchorId
+                | TextBox _ -> false))
+        |> Option.bind firstParagraphIdOf
+        |> Option.bind (fun id -> tryFirstBlockLayout id index)
+        |> Option.map (fun layout -> layout.Y)
+    let shifts = lazy (overlapShifts settings measureText measureRange styleContext pageArray.Value anchorTopOf (doc.Blocks |> Seq.choose (function TextBox textBox -> Some textBox | _ -> None)))
     let outerSink = drawingSink
     drawingSink <- drawings
 
@@ -3259,20 +3306,7 @@ let private collectDocumentCommandsWithLayoutsUncached (settings: LayoutSettings
             addTableTextCommands settings fontFamily measureText measureRange index commands tableBlock
             addNestedTableBorders (Some styleContext) settings measureText measureRange index commands tableBlock
         | TextBox textBox ->
-            // (Where the block it is anchored in starts.)
-            let anchorTop =
-                textBox.AnchorBlockId
-                |> Option.bind (fun anchorId ->
-                    doc.Blocks
-                    |> List.tryFind (function
-                        | Paragraph para
-                        | Heading (_, para) -> para.Id = anchorId
-                        | Table table -> table.Id = anchorId
-                        | TextBox _ -> false))
-                |> Option.bind firstParagraphIdOf
-                |> Option.bind (fun id -> tryFirstBlockLayout id index)
-                |> Option.map (fun layout -> layout.Y)
-            drawings.Add (textBoxDrawing settings fontFamily measureText measureRange styleContext pageArray.Value anchorTop textBox)
+            drawings.Add (textBoxDrawing settings fontFamily measureText measureRange styleContext pageArray.Value (anchorTopOf textBox) (shiftOf shifts.Value textBox) textBox)
         | _ ->
             match Rbt.Word.Document.tryGetParagraph block with
             | None -> ()
@@ -3757,6 +3791,11 @@ let collectDocumentChunksWith (deferCollection: bool) (cache: PaintCache) (setti
                 | true, index when slices.SliceStarts.[index + 1] > slices.SliceStarts.[index] -> layouts.[slices.SliceStarts.[index]].Y
                 | _ -> System.Double.NaN
         let pageArray = lazy (List.toArray pages)
+        // (How far the shapes that may not overlap are moved: see overlapShifts.)
+        let shifts =
+            lazy (
+                let anchorTopOrNone (textBox: TextBoxBlock) = let top = anchorTopOf textBox in if System.Double.IsNaN top then None else Some top
+                overlapShifts settings measureText measureRange styleContext pageArray.Value anchorTopOrNone (blocks |> Seq.choose (function TextBox textBox -> Some textBox | _ -> None)))
         let keepEntry (blockIndex: int) (entry: BlockPaintEntry) =
             entries.[blockIndex] <- entry
             chunks.Add entry.EntryChunk
@@ -3767,7 +3806,9 @@ let collectDocumentChunksWith (deferCollection: bool) (cache: PaintCache) (setti
             System.Double.IsNaN entry.EntryYIn || entry.EntryYIn = yAfter (blockIndex - 1)
         for blockIndex in 0 .. blocks.Length - 1 do
             // (A shape is drawn from where its anchor is, not from layouts of its own: it is looked at every time.)
-            let anchorTop = match blocks.[blockIndex] with TextBox textBox -> anchorTopOf textBox | _ -> System.Double.NaN
+            // (And how far it is moved to keep clear of another shape: a shape that is moved is drawn again.)
+            let shapeShift = match blocks.[blockIndex] with TextBox textBox when textBox.AllowOverlap = Some false -> shiftOf shifts.Value textBox | _ -> 0.0
+            let anchorTop = match blocks.[blockIndex] with TextBox textBox -> anchorTopOf textBox + shapeShift | _ -> System.Double.NaN
             let isShape = match blocks.[blockIndex] with TextBox _ -> true | _ -> false
             let anchorStands (entry: BlockPaintEntry) =
                 not isShape || entry.EntryAnchorTop = anchorTop || (System.Double.IsNaN entry.EntryAnchorTop && System.Double.IsNaN anchorTop)
@@ -3853,7 +3894,7 @@ let collectDocumentChunksWith (deferCollection: bool) (cache: PaintCache) (setti
                         yIn <- drawnAt
                         if not tableBlock.Floating then yOut <- nextY
                 | TextBox textBox ->
-                    drawings.Add (textBoxDrawing settings fontFamily measureText measureRange styleContext pageArray.Value (if System.Double.IsNaN anchorTop then None else Some anchorTop) textBox)
+                    drawings.Add (textBoxDrawing settings fontFamily measureText measureRange styleContext pageArray.Value (if System.Double.IsNaN anchorTop then None else Some (anchorTop - shapeShift)) shapeShift textBox)
                 | _ ->
                     match Rbt.Word.Document.tryGetParagraph block with
                     | None -> ()

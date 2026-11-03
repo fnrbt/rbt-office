@@ -499,6 +499,25 @@ const docs = [
         ],
     },
     {
+        // Two shapes that may not overlap (wp:anchor allowOverlap="0"), the second placed over the first: Word
+        // moves the second down below the first (tools/word-browser/checks/allow-overlap.js); both are saved
+        // with allowOverlap="0", from the model and as they were read.
+        name: 'synthetic/no-overlap',
+        body:
+            p('before the shapes') +
+            `<w:p><w:r><w:t xml:space="preserve">${Array.from({ length: 120 }, (_, i) => `w${i + 1}`).join(' ')}</w:t></w:r>` +
+            shapeAnchor(1, 'First', { relH: 'column', relV: 'paragraph', x: 0, y: 95250, cx: 1905000, cy: 952500, wrap: '<wp:wrapSquare wrapText="bothSides"/>', behind: 0, z: 4, dist: 0 },
+                `<a:xfrm><a:off x="0" y="0"/><a:ext cx="1905000" cy="952500"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="ABCDEF"/></a:solidFill>`, p('first')).replace('allowOverlap="1"', 'allowOverlap="0"') +
+            shapeAnchor(2, 'Second', { relH: 'column', relV: 'paragraph', x: 952500, y: 381000, cx: 1905000, cy: 952500, wrap: '<wp:wrapSquare wrapText="bothSides"/>', behind: 0, z: 5, dist: 0 },
+                `<a:xfrm><a:off x="0" y="0"/><a:ext cx="1905000" cy="952500"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="FEDCBA"/></a:solidFill>`, p('second')).replace('allowOverlap="1"', 'allowOverlap="0"') +
+            `</w:p>` + p('after the shapes'),
+        expect: [
+            { read: 'pkg.Paragraphs.length', equals: 5 },
+            { part: 'word/document.xml', has: 'relativeHeight="5" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="0"' },
+            { part: 'word/document.xml', kept: 'relativeHeight="5" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="0"' },
+        ],
+    },
+    {
         // Objects the editor does not model are kept as they are: the drawing XML in
         // the text, and the parts behind it (chart + embedded workbook, diagram parts,
         // OLE binary and its picture) with their relationships and content types.

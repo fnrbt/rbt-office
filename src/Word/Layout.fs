@@ -4843,7 +4843,7 @@ let private layoutDocumentPassKept
                 let mutable placed = placed
                 for textBox in boxes do
                     let height = textBoxFrameHeight settings measureText measureRange styleContext textBox
-                    let box = WordLayout.Floating.anchoredTextBoxBox page pageTop atY height textBox
+                    let box = WordLayout.Floating.anchoredTextBoxBox page pageTop atY height textBox |> WordLayout.Floating.keptClearOfShapes placed
                     let obstacleX, obstacleTop, obstacleWidth, obstacleHeight = WordLayout.Floating.obstacleForBox maxWidth box
                     obstacles <-
                         (if WordLayout.Floating.wrapsTopAndBottom box.Wrap then (0.0, obstacleTop, maxWidth, obstacleHeight)
