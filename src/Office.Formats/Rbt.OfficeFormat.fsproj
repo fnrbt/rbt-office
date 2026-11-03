@@ -18,6 +18,10 @@
     <Compile Include="src/XmlGenerator.fs" />
     <Compile Include="src/ZipWriter.fs" />
     <Compile Include="src/DocxWriter.fs" />
+    <Compile Include="src/CellRef.fs" />
+    <Compile Include="src/FormulaNames.fs" />
+    <Compile Include="src/VmlIds.fs" />
+    <Compile Include="src/ColorText.fs" />
     <Compile Include="src/XlsxWriter.fs" />
     <Compile Include="src/DocumentWriter.fs" />
     <Compile Include="src/StyleWriter.fs" />
