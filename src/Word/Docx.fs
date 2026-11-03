@@ -2099,6 +2099,10 @@ let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) 
         "WidowControl" ==> para.Metadata.WidowControl
         "KeepNext" ==> para.Metadata.KeepNext
         "KeepLines" ==> para.Metadata.KeepLines
+        // A drop cap (w:framePr w:dropCap): read back by metadataFromEditor, written by the writer.
+        "DropCapKind" ==> (para.Metadata.DropCap |> Option.map (fun cap -> if cap.InMargin then "margin" else "drop"))
+        "DropCapLines" ==> (para.Metadata.DropCap |> Option.map (fun cap -> cap.Lines))
+        "DropCapDistance" ==> (para.Metadata.DropCap |> Option.map (fun cap -> cap.Distance))
         "BackgroundColor" ==> para.Metadata.BackgroundColor
         "ParagraphBorders" ==> paragraphBordersToEditor para.Metadata.ParagraphBorders
         "ParagraphBorderBefore" ==> para.Metadata.ParagraphBorderBefore

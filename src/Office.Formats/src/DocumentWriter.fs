@@ -1349,6 +1349,18 @@ let private generateParaPropsWithPageSetup (packageSetup: PageSetupInfo) (para: 
         // gives a heading that started a page: written, either would be the
         // paragraph's own from then on.)
         if boolOrDefault false (para?PageBreakBefore) && not (boolOrDefault false (para?PageBreakBeforeDerived)) then yield selfClosing "w:pageBreakBefore" []
+        // A drop cap: the frame Word writes for one, at the place of w:framePr.
+        match optionalString (para?DropCapKind) with
+        | Some kind when kind = "drop" || kind = "margin" ->
+            let distance = optionalFloat (para?DropCapDistance) |> Option.defaultValue 0.0
+            yield selfClosing "w:framePr" [
+                yield ("w:dropCap", kind)
+                yield ("w:lines", string (max 1 (optionalInt (para?DropCapLines) |> Option.defaultValue 1)))
+                if distance > 0.0 then yield ("w:hSpace", pixelsToTwips distance)
+                yield ("w:wrap", "around")
+                yield ("w:vAnchor", "text")
+                yield ("w:hAnchor", "text") ]
+        | _ -> ()
         yield! onOff "w:widowControl" (para?WidowControl)
         if listStyle = "bullet" || listStyle = "numbered" then
             let numId = optionalIntString (para?ListId) |> Option.defaultValue (if listStyle = "bullet" then fst defaultListNumIds else snd defaultListNumIds)
