@@ -11,6 +11,14 @@ actual_version="$(node -p "require('./package.json').version")"
     exit 1
 }
 
+# The SDK's own checks of its installation (workloads, first run) are not this build's: in the sandbox they
+# failed the v0.1.27 action ("An issue was encountered verifying workloads").
+export DOTNET_SKIP_WORKLOAD_INTEGRITY_CHECK=true
+export DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE=true
+export DOTNET_SKIP_FIRST_TIME_EXPERIENCE=true
+export DOTNET_NOLOGO=true
+export DOTNET_CLI_TELEMETRY_OPTOUT=true
+
 # `dotnet tool restore` does not read RestoreConfigFile, so hand it the
 # sandbox's NuGet configuration explicitly.
 dotnet tool restore ${NUGET_CONFIG_FILE:+--configfile "$NUGET_CONFIG_FILE"}
