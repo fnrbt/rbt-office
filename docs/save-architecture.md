@@ -99,17 +99,24 @@ a typed edit of a node of the span tree, made in its text; what no edit names st
 - `ElementEdit`: `SetAttribute` / `RemoveAttribute`; `SetChild` / `SetChildren` / `RemoveChild` / `EditChild`
   (by name, with the element to put in where there is none); `AddChild`, `SetChildWhere` / `RemoveChildWhere` /
   `EditChildWhere` (a child chosen by an attribute: the `w:num` with this `w:numId`); `EditNth` (the n-th of a
-  name); `SetText` (with `xml:space` where the text needs it). A child put in goes to its place in the schema
-  order (`XmlPatch.Word.order`; `*` for the names it does not list).
+  name); `SetText` (with `xml:space` where the text needs it); `Removed`, `InsertBefore` / `InsertAfter`,
+  `Prepend` / `Append`, `Replaced`, `SetAllAttributes`; `editsAt` reaches any element of the tree (a chain of
+  `EditNth`), `EditAt` a child by where it starts. A child put in goes to its place in the schema order
+  (`XmlPatch.Word.order`, `XmlPatch.Spreadsheet.order`; `*` for the names it does not list). Fragments
+  (`readFragmentRoot` / `applyFragment`) and big parts in outline (`readPartExcept`) are edited the same way.
+- `OpcXml`: relationships parts and `[Content_Types].xml` read, edited and merged as entries; the relationship
+  ids XML refers to, by the relationships namespace. `PartPath`: package paths by segment. `ModelText`: the
+  values the editor hands over as text (bookmark tokens, a run's tabs and breaks, link targets, data URLs).
 - `apply` / `applyPart` make the edits; `diff was now` gives the edits that make what the model wrote before into
   what it writes now (attributes, children by name, repeated children in their places, text) - so a merge is
   `apply (diff was now)` on the element that was read: the model's change, and nothing else.
 - `layout` / `writeLayout`: the children of a table, row, cell or paragraph as items (rows, cells, paragraphs,
   runs) in the wrappers they are in (content controls, custom XML, links, tracked changes), among what the model
   does not hold (marks, unknown elements, white space); written back with the items the model has, each `AtItem`
-  (in its wrappers), `WithPrevious` (new, in the wrappers of the one before) or `Outside`.
+  (in its wrappers), `InItem` (a further part of a split item, in its wrappers), `WithPrevious` (new, in the
+  wrappers of the one before) or `Outside`.
 - `tests/xml-text-ratchet.sh` (in `tests/run-all.sh`): the lines of the writers with text operations
-  (`Substring`, `IndexOf`, `Regex`, ...) may only go down. DocumentWriter 244 -> 137 so far; XlsxWriter 235.
+  (`Substring`, `IndexOf`, `Regex`, ...) may only go down: DocumentWriter 244 -> 0, XlsxWriter 235 -> 0.
 
 ### Done
 
@@ -132,14 +139,20 @@ a typed edit of a node of the span tree, made in its text; what no edit names st
   they stood; the bookmarks the model writes are its. The old text patcher (`scanSourceParagraphs`,
   `planParagraphChange`, `sourceRunsOf`, `runPiece`, cut and join) is deleted.
 - Numbering: definitions and lists added and levels changed by edits of the part's tree.
+- The rest of DocumentWriter: the body plan (the body's elements, field marks and the marks between blocks from
+  the part's tree), carried and balanced range marks (a piece of the source is a range of its tree; a piece of
+  the model is edited by `editsAt`), shapes moved or resized (anchor, extent and VML style edited), settings,
+  note marks, content controls, relationships and content types. Its own tokenizer is gone.
+- XlsxWriter: cells, rows, sheet sections, relationships, comments, VML, tables, workbook, styles, shared
+  strings - all by edits of the parts' trees.
 
 ### Left
 
-- The rest of DocumentWriter onto XmlPatch: the body plan (`planBody`'s chunk and field-depth scanning),
-  carried marks (`carriedTokenPattern`, `withoutElementsNamed`), shapes (`patchShapeAnchor`, VML style), notes,
-  `writeFromEditorPackage`'s part handling; the model's XML written by a typed builder.
+- The model's XML written by a typed builder (it is text made by `element` / `selfClosing` now).
+- Bookmarks handed over typed, not as tokens in a string (`ModelText` reads them at the writer's end).
+- The reader's progressive body cursor (`openBodyCursor`, `nextTagAt`, `finalSectionPropertiesAt`) and
+  XlsxReader's fast scanners still find elements in the text: onto the one scanner (`XmlDsl`).
 - Headers, footers, notes and comments through the same path (origins of their own part).
-- XlsxWriter (235): cells, rows, sheets by the same means.
 - Joins: the paragraph joined to another keeps nothing of its own properties (as Word).
 
 ### The original plan

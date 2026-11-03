@@ -245,12 +245,7 @@ module InverseConversion =
     /// Convert CSS color (#RRGGBB) to Word format (RRGGBB)
     let cssColorToWord (color: string option) : string option =
         color
-        |> Option.map (fun c ->
-            if c.StartsWith("#") then
-                c.Substring(1).ToUpper()
-            else
-                c.ToUpper()
-        )
+        |> Option.map ModelText.wordColor
 
     /// Convert web alignment to Word alignment
     let alignmentToWord (alignment: string) : string =
@@ -406,32 +401,12 @@ let private runTextElements (deleted: bool) (text: string) : string list =
     // (xml:space where the text needs it: white space at an end, or two together.)
     let textElement (value: string) = elementWithText textName (if XmlPatch.needsPreserve value then [("xml:space", "preserve")] else []) value
     if isNull text || text = "" then [ textElement "" ]
-    elif text.IndexOf('\t') < 0 && text.IndexOf('\n') < 0 && text.IndexOf('\r') < 0 then [ textElement text ]
     else
-        let parts = ResizeArray<string>()
-        let mutable segmentStart = 0
-        let flush upTo =
-            if upTo > segmentStart then parts.Add (textElement (text.Substring(segmentStart, upTo - segmentStart)))
-        let mutable i = 0
-        while i < text.Length do
-            match text.[i] with
-            | '\t' ->
-                flush i
-                parts.Add (selfClosing "w:tab" [])
-                segmentStart <- i + 1
-            | '\n' ->
-                flush i
-                parts.Add (selfClosing "w:br" [])
-                segmentStart <- i + 1
-            | '\r' ->
-                flush i
-                parts.Add (selfClosing "w:br" [])
-                if i + 1 < text.Length && text.[i + 1] = '\n' then i <- i + 1
-                segmentStart <- i + 1
-            | _ -> ()
-            i <- i + 1
-        flush text.Length
-        List.ofSeq parts
+        ModelText.textPieces text
+        |> List.map (function
+            | ModelText.Text value -> textElement value
+            | ModelText.Tab -> selfClosing "w:tab" []
+            | ModelText.Break -> selfClosing "w:br" [])
 
 let private runElement (rPr: string list) (deleted: bool) (text: string) : string =
     let rPrElement = if List.isEmpty rPr then [] else [element "w:rPr" [] rPr]
@@ -489,7 +464,7 @@ let private generateFieldRun (runObj: obj) (fallbackRun: EditorRun) (fieldCode: 
     match fieldResultParts with
     | [] ->
         // (A field without a result is shown as "[Field:<code>]": that is not its result.)
-        let placeholder = fallbackRun.Text.StartsWith "[Field:" && fallbackRun.Text.EndsWith "]"
+        let placeholder = ModelText.isFieldPlaceholder fallbackRun.Text
         let result = optionalString (runObj?FieldResult) |> Option.defaultValue (if placeholder then "" else fallbackRun.Text)
         // (A part of the result alone - the paragraph was split in the field's result: what the run shows.)
         let result = if not placeholder && fallbackRun.Text <> "" && fallbackRun.Text.Length < result.Length && result.Contains fallbackRun.Text then fallbackRun.Text else result
@@ -499,9 +474,6 @@ let private generateFieldRun (runObj: obj) (fallbackRun: EditorRun) (fieldCode: 
         fieldResultParts <- []
         element "w:fldSimple" [("w:instr", fieldCode)] (generateRunWithObjectProps runObj fallbackRun :: (parts |> List.map (fun (part, run) -> generateRunWithObjectProps part run)))
 
-/// What parts the bookmarks of a run in one string (as the reader joins them:
-/// a run has all the bookmarks that start before it and end after it).
-let private bookmarkSeparator = "\u001F"
 
 /// The bookmarks that start before a run: every one of them, once, in the
 /// order of the file. A token "id!" is a bookmark that ends where it starts.
@@ -509,14 +481,9 @@ let private bookmarkStartXml (runObj: obj) =
     optionalString (runObj?BookmarkStartId)
     |> Option.orElse (optionalString (runObj?BookmarkId))
     |> Option.map (fun ids ->
-        let tokens = ids.Split(bookmarkSeparator.[0])
-        let names = (optionalString (runObj?BookmarkName) |> Option.defaultValue "").Split(bookmarkSeparator.[0])
-        tokens
-        |> Array.mapi (fun index token ->
-            let collapsed = token.EndsWith "!"
-            let id = if collapsed then token.Substring(0, token.Length - 1) else token
-            let name = if index < names.Length && names.[index] <> "" then names.[index] else "bookmark" + id
-            selfClosing "w:bookmarkStart" [("w:id", id); ("w:name", name)] + (if collapsed then selfClosing "w:bookmarkEnd" [("w:id", id)] else ""))
+        ModelText.bookmarkStarts ids (optionalString (runObj?BookmarkName) |> Option.defaultValue "")
+        |> List.map (fun start ->
+            selfClosing "w:bookmarkStart" [("w:id", start.Id); ("w:name", start.Name)] + (if start.EndsHere then selfClosing "w:bookmarkEnd" [("w:id", start.Id)] else ""))
         |> String.concat "")
 
 /// The bookmarks that end after a run (and those opened after the last run
@@ -528,20 +495,15 @@ let private bookmarkEndXml (runObj: obj) =
     let fieldWrappedEnd =
         optionalString (runObj?FieldCode)
         |> Option.bind (fun _ -> optionalString (runObj?BookmarkStartId))
-        |> Option.filter (fun ids -> not (ids.Contains bookmarkSeparator) && not (ids.EndsWith "!"))
+        |> Option.filter ModelText.isOneOpenBookmark
     explicitEnd
     |> Option.orElse fieldWrappedEnd
     |> Option.map (fun ids ->
-        ids.Split(bookmarkSeparator.[0])
-        |> Array.map (fun token ->
-            if token.StartsWith "!" then
-                let opened = token.EndsWith "<"
-                let body = token.Substring(1, token.Length - (if opened then 2 else 1))
-                let at = body.IndexOf '='
-                let id = if at < 0 then body else body.Substring(0, at)
-                let name = if at < 0 || at = body.Length - 1 then "bookmark" + id else body.Substring(at + 1)
-                selfClosing "w:bookmarkStart" [("w:id", id); ("w:name", name)] + (if opened then "" else selfClosing "w:bookmarkEnd" [("w:id", id)])
-            else selfClosing "w:bookmarkEnd" [("w:id", token)])
+        ModelText.bookmarkEnds ids
+        |> List.map (function
+            | ModelText.Opens (id, name, endsHere) ->
+                selfClosing "w:bookmarkStart" [("w:id", id); ("w:name", name)] + (if endsHere then selfClosing "w:bookmarkEnd" [("w:id", id)] else "")
+            | ModelText.Ends id -> selfClosing "w:bookmarkEnd" [("w:id", id)])
         |> String.concat "")
 
 let private generateReferenceRun (runObj: obj) (fallbackRun: EditorRun) =
@@ -792,7 +754,7 @@ let private collectParagraphHyperlinks (para: obj) =
     optionalArray (para?Runs)
     |> Array.toList
     |> List.choose runHyperlinkTarget
-    |> List.filter (fun target -> not (target.StartsWith "#"))
+    |> List.filter (ModelText.isAnchor >> not)
 
 let private collectItemHyperlinks (item: obj) =
     collectItemParagraphs item |> List.collect collectParagraphHyperlinks
@@ -805,7 +767,7 @@ let private collectItemHyperlinks (item: obj) =
 let private hyperlinkMapWith (existing: PreservedRelationshipInfo list) (items: obj array) =
     let known =
         existing
-        |> List.filter (fun rel -> rel.External && rel.Type.EndsWith "/hyperlink")
+        |> List.filter (fun rel -> rel.External && OpcXml.relationshipKind rel.Type = "hyperlink")
     items
     |> Array.toList
     |> List.collect collectItemHyperlinks
@@ -858,19 +820,10 @@ let private mimeToExtensionAndContentType (mime: string) =
     | _ -> None
 
 let private parseDataUrl (src: string) =
-    if src.StartsWith("data:") then
-        let commaIndex = src.IndexOf(',')
-        if commaIndex > 0 then
-            let meta = src.Substring(5, commaIndex - 5)
-            let data = src.Substring(commaIndex + 1)
-            let parts = meta.Split(';')
-            let mime = if parts.Length > 0 then parts.[0] else ""
-            if meta.ToLowerInvariant().Contains("base64") then
-                mimeToExtensionAndContentType mime
-                |> Option.map (fun (extension, contentType) -> extension, contentType, base64ToBytes data)
-            else None
-        else None
-    else None
+    match ModelText.dataUrl src with
+    | Some { MediaType = mime; Base64 = Some data } ->
+        mimeToExtensionAndContentType mime |> Option.map (fun (extension, contentType) -> extension, contentType, base64ToBytes data)
+    | _ -> None
 
 let private markerText defaultValue (value: obj) =
     optionalString value |> Option.defaultValue defaultValue
@@ -966,7 +919,7 @@ let private buildImageScope (mediaStartIndex: int) (items: obj array) =
                 nextMediaIndex <- nextMediaIndex + 1
                 { Src = src; RelId = relId; FileName = fileName; Extension = extension; ContentType = contentType; Data = Some data; Linked = false })
             |> Option.orElseWith (fun () ->
-                if src.Contains "://" && not (src.StartsWith "data:") && not (src.StartsWith "blob:") then
+                if ModelText.isLinkedSource src then
                     let relId = freshRelationshipId (sprintf "rIdImage%d" nextMediaIndex)
                     nextMediaIndex <- nextMediaIndex + 1
                     Some { Src = src; RelId = relId; FileName = ""; Extension = ""; ContentType = ""; Data = None; Linked = true }
@@ -1708,7 +1661,7 @@ let private generateParagraphWithHyperlinksAndImagesWithPageSetup (packageSetup:
     let wrapOf (runObj: obj) (inner: string) =
         let runXml = revisionWrappedRun runObj inner
         match runHyperlinkTarget runObj with
-        | Some target when target.StartsWith "#" && target.Length > 1 -> element "w:hyperlink" [("w:anchor", target.Substring 1); ("w:history", "1")] [runXml]
+        | Some target when (ModelText.anchorOf target).IsSome -> element "w:hyperlink" [("w:anchor", (ModelText.anchorOf target).Value); ("w:history", "1")] [runXml]
         | Some target ->
             match Map.tryFind target hyperlinks with
             | Some relId -> element "w:hyperlink" [("r:id", relId); ("w:history", "1")] [runXml]
@@ -2972,7 +2925,7 @@ let private mergedProperties (container: string) (source: string) (was: string l
             let lower = key.ToLowerInvariant()
             not (written.ContainsKey key)
             && (if element = "w:rFonts" then lower.Contains "theme" && written |> Map.exists (fun known _ -> lower = known.ToLowerInvariant() + "theme")
-                else lower.Contains "theme" || key.EndsWith "Lines" || key.EndsWith "Chars")
+                else lower.Contains "theme" || ModelText.isInOtherUnits key)
         let edits =
             edits
             |> List.collect (fun edit ->
@@ -3160,7 +3113,7 @@ let private splicedRuns (source: SpliceSource) (original: obj) (leading: bool) (
                 match mergedProperties "w:rPr" props (modelRunProperties list.[0]) (modelRunProperties runObj), run with
                 | Some merged, XmlDsl.Element (_, _, _, runSpan) when runSpan.StartTagEnd < runSpan.End ->
                     // (Without the ids of the editing session the run was made in: the text is new.)
-                    let rsids = XmlPatch.attributeNames run |> List.filter (fun name -> name.StartsWith "w:rsid") |> List.map XmlPatch.RemoveAttribute
+                    let rsids = XmlPatch.attributeNames run |> List.filter ModelText.isRevisionId |> List.map XmlPatch.RemoveAttribute
                     Some (XmlPatch.startTag text run rsids + merged + XmlPatch.childrenBytes now (fun name -> name <> "rPr") + "</w:r>")
                 | _ -> None
             | _ -> None
@@ -3785,7 +3738,7 @@ let private writerNamespaceEdits (root: XmlDsl.XmlNode) (written: string list) :
         |> List.collect (fun fragment ->
             let nodes = XmlPatch.descendantsWhere (fun _ -> true) fragment.Node
             (nodes |> List.map XmlPatch.prefix)
-            @ (nodes |> List.collect (fun node -> XmlPatch.attributeNames node) |> List.choose (fun name -> match name.Split(':') with [| prefix; _ |] -> Some prefix | _ -> None)))
+            @ (nodes |> List.collect (fun node -> XmlPatch.attributeNames node) |> List.map ModelText.prefixOf))
         |> Set.ofList
     [ "w", Namespaces.word; "r", Namespaces.relationships; "m", Namespaces.math ]
     |> List.filter (fun (prefix, _) -> used.Contains prefix && (XmlPatch.attribute root ("xmlns:" + prefix)).IsNone)
@@ -4979,10 +4932,8 @@ let private patchNumberingLevels (original: string) (customInfos: NumberingInfo 
         match text |> Option.bind XmlPatch.readPart with
         | None -> text <- None
         | Some part ->
-            let slash = key.LastIndexOf '/'
-            let numId = if slash > 0 then key.Substring(0, slash) else key
             // (The editor counts levels from one, the file from zero.)
-            let level = if slash > 0 then (match System.Int32.TryParse(key.Substring(slash + 1)) with | true, value -> value - 1 | _ -> -1) else -1
+            let numId, level = ModelText.numberingLevel key
             let lists = XmlPatch.childrenNamed part "w:num"
             let list = lists |> List.tryFind (fun num -> XmlPatch.attribute num "w:numId" = Some numId)
             let abstractId = list |> Option.bind (XmlPatch.child "abstractNumId") |> Option.bind (fun reference -> XmlPatch.attribute reference "w:val")
@@ -5061,7 +5012,7 @@ let private patchSettings (originalXml: string) (pageSetup: PageSetupInfo option
 
 /// Relationship types of the parts a document has one of, which nothing refers to by id.
 let private isImplicitRelationshipType (relType: string) =
-    [ "styles"; "numbering"; "settings"; "comments"; "footnotes"; "endnotes" ] |> List.contains (relType.Split('/') |> Array.last)
+    [ "styles"; "numbering"; "settings"; "comments"; "footnotes"; "endnotes" ] |> List.contains (OpcXml.relationshipKind relType)
 
 /// What a relationships part says: one entry per relationship (its id - but
 /// for the parts nothing refers to by id -, type, mode and target, a target
@@ -5472,7 +5423,7 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
                             match source, originalIds with
                             | Some (usedThen, _), Some ids -> not (Set.contains rel.Id usedThen) && Set.contains rel.Id ids
                             | _ -> false
-                        let kind = rel.Type.Split('/') |> Array.last
+                        let kind = OpcXml.relationshipKind rel.Type
                         let picture = kind = "image" && not rel.External && not leftBehind
                         let link = kind = "hyperlink" && not inherited
                         (picture || link) && not (Set.contains rel.Id usedNow)
@@ -5509,7 +5460,7 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
             |> List.filter (fun file -> file.Path <> "word/styles.xml")
             |> List.map (fun file ->
                 if file.Path = "word/_rels/document.xml.rels" then
-                    { file with Content = file.Content |> OpcXml.withoutRelationships (fun rel -> isImplicitRelationshipType rel.Type && rel.Type.Split('/') |> Array.last = "styles") }
+                    { file with Content = file.Content |> OpcXml.withoutRelationships (fun rel -> OpcXml.relationshipKind rel.Type = "styles") }
                 elif file.Path = "[Content_Types].xml" then
                     let styles = OpcXml.contentTypeEntries file.Content |> Option.defaultValue [] |> List.filter (function OpcXml.Override (name, _) -> name = "/word/styles.xml" | _ -> false)
                     { file with Content = file.Content |> OpcXml.editContentTypes styles [] }

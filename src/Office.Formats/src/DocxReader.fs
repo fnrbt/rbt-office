@@ -2917,9 +2917,9 @@ let private valueWords (value: string) = value.Split([| ' '; '\t'; '\n'; '\r' |]
 /// element of the part the fragment was taken from.
 let selfContainedXml (rootAttributes: Map<string, string>) (xml: string) : string =
     let rootNamespaces = xmlnsDeclarations rootAttributes
-    match XmlPatch.read xml with
-    | Some source when not rootNamespaces.IsEmpty ->
-        let nodes = XmlPatch.descendantsWhere (fun _ -> true) source.Node
+    // The declarations one element needs: (its edits) - none when it declares what it uses.
+    let edits (element: XmlNode) : XmlPatch.ElementEdit list =
+        let nodes = XmlPatch.descendantsWhere (fun _ -> true) element
         let attributes = nodes |> List.collect (fun node -> XmlPatch.attributes node |> Map.toList)
         // (The prefixes it uses: of its elements and attributes, and those its alternate content requires or ignores.)
         let used =
@@ -2931,7 +2931,7 @@ let selfContainedXml (rootAttributes: Map<string, string>) (xml: string) : strin
                   if name = "Requires" || name = "mc:Ignorable" then yield! valueWords value ]
             |> List.filter (fun prefix -> prefix <> "")
             |> Set.ofList
-        let own = XmlPatch.attributes source.Node
+        let own = XmlPatch.attributes element
         // Prefixes the part declares ignorable and the fragment uses.
         let ignorable =
             match Map.tryFind "mc:Ignorable" rootAttributes with
@@ -2942,11 +2942,17 @@ let selfContainedXml (rootAttributes: Map<string, string>) (xml: string) : strin
             [ for KeyValue(prefix, uri) in rootNamespaces do
                 if Set.contains prefix used && not (own.ContainsKey ("xmlns:" + prefix)) then yield "xmlns:" + prefix, uri
               if not ignorable.IsEmpty then yield "mc:Ignorable", String.concat " " ignorable ]
-        // (The root's attributes in name order, the order the serialiser writes them in: reading the result
-        // again and serialising it gives the same text. The rest of it stays the text it was.)
-        if additions.IsEmpty then xml
-        else XmlPatch.apply (fun _ -> []) source [ XmlPatch.SetAllAttributes (Map.toList own @ additions |> Map.ofList |> Map.toList) ]
-    | _ -> xml
+        // (Its attributes in name order, the order the serialiser writes them in: reading the result again and
+        // serialising it gives the same text. The rest of it stays the text it was.)
+        if additions.IsEmpty then [] else [ XmlPatch.SetAllAttributes (Map.toList own @ additions |> Map.ofList |> Map.toList) ]
+    if rootNamespaces.IsEmpty then xml
+    else
+        // (One element, or several one after another - a content control's properties and end properties.)
+        match XmlPatch.readFragmentRoot xml with
+        | Some fragment ->
+            let changes = XmlPatch.elements fragment.Node |> List.map (fun element -> element, edits element) |> List.filter (fun (_, found) -> not found.IsEmpty)
+            if changes.IsEmpty then xml else XmlPatch.applyFragment (fun _ -> []) fragment (XmlPatch.editsAt fragment.Node changes)
+        | None -> xml
 
 /// Make the XML of every opaque object in `blocks` self-contained (see selfContainedXml).
 let completeOpaqueObjects (root: XmlNode) (blocks: DocumentContent list) : DocumentContent list =

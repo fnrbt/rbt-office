@@ -7,7 +7,7 @@
 set -u
 cd "$(dirname "$0")/.."
 declare -A LIMIT=(
-    [src/Office.Formats/src/DocumentWriter.fs]=33
+    [src/Office.Formats/src/DocumentWriter.fs]=0
     [src/Office.Formats/src/XlsxWriter.fs]=0
 )
 pattern='\.Substring\(|\.IndexOf\(|\.LastIndexOf\(|Regex|\.StartsWith|\.EndsWith|\.Split\('
