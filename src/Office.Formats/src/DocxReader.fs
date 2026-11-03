@@ -409,6 +409,10 @@ type HeaderFooter = {
     Blocks: DocumentContent list
     Type: string  // "header", "footer", "first", "even"
     RelationshipId: string option
+    /// The child element of the part's root each of Blocks was read from, and how many elements it has
+    /// (as Docx.bodyContentChunks says of the body).
+    ItemChunks: int list
+    ChunkCount: int
 }
 
 type StyleDefinition = {
@@ -3072,7 +3076,8 @@ let rec blockParagraphs (blocks: DocumentContent list) : Paragraph list =
 // Header/Footer parsing
 module HeaderFooter =
     let parseHeaderFooter (xml: string) (hfType: string) (relationshipId: string option) : HeaderFooter =
-        let doc = XmlDsl.parse xml
+        // (Scanned, as the body is: its paragraphs know where in the part they were read from.)
+        let doc, _ = Ns.parseWithLocalNames xml
         let qualify blocks =
             match relationshipId with
             | Some partId -> mapBlockRuns (qualifyImageRun partId) blocks
@@ -3088,6 +3093,8 @@ module HeaderFooter =
             Blocks = blocks
             Type = hfType
             RelationshipId = relationshipId
+            ItemChunks = fst (Docx.bodyContentChunks doc)
+            ChunkCount = snd (Docx.bodyContentChunks doc)
         }
 
 // Comments parsing

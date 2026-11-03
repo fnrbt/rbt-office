@@ -368,6 +368,24 @@ module Processors =
                     let anchor = anchorBlockOrMinusOne shape
                     if anchor >= 0 && anchor < contentChunks.Length then contentChunks.[anchor] else -1)
             preserved?BodyItemChunks <- Array.append contentChunks shapeChunks
+        // (Of each header and footer the same, by its relationship id: its shapes follow its blocks.)
+        let partChunks =
+            doc.Headers @ doc.Footers
+            |> List.choose (fun part ->
+                match part.RelationshipId with
+                | Some relId when part.ItemChunks.Length = part.Blocks.Length ->
+                    let contentChunks = part.ItemChunks |> List.toArray
+                    let shapeChunks =
+                        match Map.tryFind relId doc.PartShapes with
+                        | Some shapes when not shapes.IsEmpty ->
+                            shapeObjectsFor { doc with Shapes = shapes }
+                            |> Array.map (fun shape ->
+                                let anchor = anchorBlockOrMinusOne shape
+                                if anchor >= 0 && anchor < contentChunks.Length then contentChunks.[anchor] else -1)
+                        | _ -> [||]
+                    Some (createObj [ "Part" ==> relId; "Chunks" ==> Array.append contentChunks shapeChunks; "Count" ==> part.ChunkCount ])
+                | _ -> None)
+        preserved?PartItemChunks <- List.toArray partChunks
         preserved
 
     /// A copy of the file a package was opened from, when it was given as bytes: kept with what

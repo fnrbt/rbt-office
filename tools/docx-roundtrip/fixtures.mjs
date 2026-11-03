@@ -802,6 +802,48 @@ const docs = [
             `<w:p w14:paraId="3A3B3C05"><w:pPr><w:keepLines/></w:pPr><w:bookmarkStart w:id="11" w:name="second"/><w:r w:rsidR="00BB0007"><w:rPr><w:noProof/></w:rPr><w:t>second of two</w:t></w:r><w:bookmarkEnd w:id="11"/></w:p>`,
         rels: `<Relationship Id="rId30" Type="${REL}/hyperlink" Target="https://example.com/kept" TargetMode="External"/>`,
     },
+    {
+        // A header and a footer that hold what the model does not (tools/word-browser's header-footer-xml): typed
+        // in, a part is saved as the XML it was read from with the change made in it, as the body is.
+        name: 'synthetic/kept-header',
+        body: p('the body'),
+        sect: `<w:sectPr><w:headerReference w:type="default" r:id="rId11"/><w:footerReference w:type="default" r:id="rId12"/><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr>`,
+        rels: `<Relationship Id="rId11" Type="${REL}/header" Target="header1.xml"/><Relationship Id="rId12" Type="${REL}/footer" Target="footer1.xml"/>`,
+        extra: {
+            'word/header1.xml': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n<w:hdr ${W} xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" mc:Ignorable="w14">${patchedKept('09')}` +
+                `<w:p w14:paraId="3A3B3C10" w14:textId="77777777"><w:pPr><w:pStyle w:val="Normal"/><w:jc w:val="right"/></w:pPr><w:bookmarkStart w:id="12" w:name="inHeader"/><w:r w:rsidR="00BB0011"><w:rPr><w:noProof/></w:rPr><w:t>second line</w:t></w:r><w:bookmarkEnd w:id="12"/></w:p></w:hdr>`,
+            'word/_rels/header1.xml.rels': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId30" Type="${REL}/hyperlink" Target="https://example.com/kept" TargetMode="External"/></Relationships>`,
+            'word/footer1.xml': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n<w:ftr ${W} xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" mc:Ignorable="w14"><w:p w14:paraId="3A3B3C20"><w:pPr><w:jc w:val="center"/></w:pPr><w:proofErr w:type="gramStart"/><w:r><w:t xml:space="preserve">Page </w:t></w:r><w:proofErr w:type="gramEnd"/>` +
+                `<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> PAGE </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:rPr><w:noProof/></w:rPr><w:t>1</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p></w:ftr>`,
+        },
+        types: '<Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/><Override PartName="/word/footer1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/>',
+    },
+    {
+        // Two footnotes and two comments that hold what the model does not (tools/word-browser's notes-xml): one of
+        // each changed, the part is saved as the XML it was read from with that one written anew; the others, and
+        // the separators, are the text they were.
+        name: 'synthetic/kept-notes',
+        body:
+            `<w:p><w:r><w:t xml:space="preserve">First note</w:t></w:r><w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:footnoteReference w:id="1"/></w:r>` +
+            `<w:r><w:t xml:space="preserve"> second note</w:t></w:r><w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:footnoteReference w:id="2"/></w:r></w:p>` +
+            `<w:p><w:commentRangeStart w:id="3"/><w:r><w:t>one</w:t></w:r><w:commentRangeEnd w:id="3"/><w:r><w:commentReference w:id="3"/></w:r>` +
+            `<w:r><w:t xml:space="preserve"> and </w:t></w:r><w:commentRangeStart w:id="4"/><w:r><w:t>two</w:t></w:r><w:commentRangeEnd w:id="4"/><w:r><w:commentReference w:id="4"/></w:r></w:p>`,
+        rels: `<Relationship Id="rId20" Type="${REL}/footnotes" Target="footnotes.xml"/><Relationship Id="rId22" Type="${REL}/comments" Target="comments.xml"/>`,
+        types:
+            '<Override PartName="/word/footnotes.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml"/>' +
+            '<Override PartName="/word/comments.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"/>',
+        extra: {
+            'word/footnotes.xml': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n<w:footnotes ${W} xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" mc:Ignorable="w14">` +
+                `<w:footnote w:type="separator" w:id="-1"><w:p w14:paraId="1A000001"><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr><w:r><w:separator/></w:r></w:p></w:footnote>` +
+                `<w:footnote w:type="continuationSeparator" w:id="0"><w:p w14:paraId="1A000002"><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>` +
+                `<w:footnote w:id="1"><w:p w14:paraId="1A000003" w:rsidR="00CC0001"><w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:footnoteRef/></w:r><w:proofErr w:type="spellStart"/><w:r w:rsidR="00CC0002"><w:t xml:space="preserve"> Kept nnote</w:t></w:r><w:proofErr w:type="spellEnd"/>` +
+                `<w:bookmarkStart w:id="20" w:name="inNote"/><w:r><w:rPr><w:noProof/></w:rPr><w:t xml:space="preserve"> text</w:t></w:r><w:bookmarkEnd w:id="20"/></w:p></w:footnote>` +
+                `<w:footnote w:id="2"><w:p w14:paraId="1A000004"><w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:footnoteRef/></w:r><w:r><w:t xml:space="preserve"> The second note</w:t></w:r></w:p></w:footnote></w:footnotes>`,
+            'word/comments.xml': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n<w:comments ${W} xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" mc:Ignorable="w14">` +
+                `<w:comment w:id="3" w:author="Ann" w:date="2020-01-01T00:00:00Z" w:initials="A"><w:p w14:paraId="2B000001" w14:textId="77777777"><w:pPr><w:pStyle w:val="Normal"/></w:pPr><w:r><w:rPr><w:rStyle w:val="Normal"/></w:rPr><w:annotationRef/></w:r><w:proofErr w:type="gramStart"/><w:r><w:t>A kept comment</w:t></w:r><w:proofErr w:type="gramEnd"/></w:p></w:comment>` +
+                `<w:comment w:id="4" w:author="Bo" w:date="2020-01-02T00:00:00Z" w:initials="B"><w:p w14:paraId="2B000002"><w:r><w:annotationRef/></w:r><w:r><w:t>The other comment</w:t></w:r></w:p></w:comment></w:comments>`,
+        },
+    },
 ];
 
 export async function syntheticFixtures(JSZip) {

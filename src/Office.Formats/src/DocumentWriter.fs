@@ -613,6 +613,9 @@ type PreservedPackage = {
     /// The child element of w:body each item of the imported body came from.
     BodyItemChunks: int array
     BodyChunkCount: int
+    /// The same of each header and footer, by its relationship id: the element of the part's root each item
+    /// came from, and how many elements the root has.
+    PartItemChunks: Map<string, int array * int>
     /// The package path each header / footer part had, by its relationship id.
     PartPaths: Map<string, string>
     /// [Content_Types].xml and relationship parts as they were read, by path.
@@ -625,6 +628,7 @@ let private emptyPreservedPackage = {
     SourceParts = []
     BodyItemChunks = [||]
     BodyChunkCount = 0
+    PartItemChunks = Map.empty
     PartPaths = Map.empty
     OriginalText = Map.empty
     Parts = []
@@ -668,6 +672,13 @@ let private preservedPackageFromObject (value: obj) : PreservedPackage =
           SourceParts = partList (value?SourceParts)
           BodyItemChunks = optionalArray (value?BodyItemChunks) |> Array.map (fun chunk -> intOrDefault (-1) chunk)
           BodyChunkCount = intOrDefault 0 (value?BodyChunkCount)
+          PartItemChunks =
+            optionalArray (value?PartItemChunks)
+            |> Array.toList
+            |> List.choose (fun entry ->
+                optionalString (entry?Part)
+                |> Option.map (fun key -> key, (optionalArray (entry?Chunks) |> Array.map (fun chunk -> intOrDefault (-1) chunk), intOrDefault 0 (entry?Count))))
+            |> Map.ofList
           PartPaths =
             optionalArray (value?PartPaths)
             |> Array.toList
@@ -3256,7 +3267,8 @@ let private splicedRuns (source: SpliceSource) (original: obj) (joined: obj arra
         match optionalInt (runObj?SourceRun) |> Option.filter (fun at -> source.Runs.ContainsKey at) with
         | Some at ->
             match originalRuns.TryGetValue at, XmlPatch.read inner with
-            | (true, list), Some now when list.Count = 1 && not (boolOrDefault false (runObj?IsImage)) && isNullOrUndefined runObj?OpaqueXml ->
+            // (Of what the model writes as a run: a field it writes - a simple field around its run - is its own.)
+            | (true, list), Some now when list.Count = 1 && XmlPatch.name now.Node = "w:r" && not (boolOrDefault false (runObj?IsImage)) && isNullOrUndefined runObj?OpaqueXml ->
                 let run = source.Runs.[at]
                 let props = XmlPatch.child "rPr" run |> Option.map (XmlPatch.bytesOf text) |> Option.defaultValue ""
                 match mergedProperties "w:rPr" props (modelRunProperties list.[0]) (modelRunProperties runObj), run with
@@ -3615,6 +3627,22 @@ let private sourceParagraphOf (para: obj) : XmlDsl.XmlNode option =
 let private paragraphIsBound (node: XmlDsl.XmlNode) : bool =
     let marks = XmlPatch.descendants "fldChar" node |> List.choose (fun mark -> XmlPatch.attribute mark "w:fldCharType")
     holdsShape node || (marks |> List.filter ((=) "begin")).Length <> (marks |> List.filter ((=) "end")).Length
+/// What is known of the part being written as it was read (see planBody): a header's plan is made with
+/// the body's, and each is put back while its part is written.
+type private SourceState = {
+    Xml: string; Elements: System.Collections.Generic.Dictionary<int, XmlDsl.XmlNode> option
+    ChunkStarts: int array; ChunkElementStarts: int array; ChunkEnds: int array; ItemChunks: int array; StoryCounts: int array }
+let private sourceState () : SourceState =
+    { Xml = sourceBodyXml; Elements = sourceElements; ChunkStarts = sourceChunkStarts; ChunkElementStarts = sourceChunkElementStarts
+      ChunkEnds = sourceChunkEnds; ItemChunks = sourceItemChunks; StoryCounts = sourceStoryCounts }
+let private useSourceState (state: SourceState) =
+    sourceBodyXml <- state.Xml
+    sourceElements <- state.Elements
+    sourceChunkStarts <- state.ChunkStarts
+    sourceChunkElementStarts <- state.ChunkElementStarts
+    sourceChunkEnds <- state.ChunkEnds
+    sourceItemChunks <- state.ItemChunks
+    sourceStoryCounts <- state.StoryCounts
 let private forgetSourceBody () =
     sourceElements <- None
     sourceBodyXml <- ""
@@ -3804,13 +3832,14 @@ let private sourceIndexOf (_item: obj) : int = jsNative
 /// Which of the body's elements go back as they were read. None when the
 /// text cannot be matched with what the reader made of it (the body is then
 /// written from the model, as a new document is), or when nothing is as it was.
-let private planBody (xml: string) (itemChunks: int array) (storyCounts: int array) (chunkCount: int) (items: obj array) (pageSetupUnchanged: bool) : BodyPlan option =
+/// `isBody`: the part is the document, whose blocks are in w:body; a header's or a footer's are in its root
+/// (and it has no section properties of its own).
+let private planBody (isBody: bool) (xml: string) (itemChunks: int array) (storyCounts: int array) (chunkCount: int) (items: obj array) (pageSetupUnchanged: bool) : BodyPlan option =
     // The part's root, its w:body, and the elements the body holds (the blocks, as the reader counted them).
     let bodyOfRoot =
         XmlPatch.readPart xml
         |> Option.bind (fun part ->
-            XmlPatch.elements part.Node
-            |> List.tryFind (fun node -> XmlPatch.localName node = "body")
+            (if isBody then XmlPatch.elements part.Node |> List.tryFind (fun node -> XmlPatch.localName node = "body") else Some part.Node)
             |> Option.filter (fun body -> (XmlPatch.span body).StartTagEnd < (XmlPatch.span body).End)
             |> Option.map (fun body ->
                 let kids = XmlPatch.elements body |> List.toArray
@@ -3822,7 +3851,7 @@ let private planBody (xml: string) (itemChunks: int array) (storyCounts: int arr
     | Some (root, bodyNode, body) when body.Starts.Length = chunkCount && chunkCount > 0 ->
         let contentStart = (XmlPatch.span bodyNode).StartTagEnd
         let contentEnd = body.CloseAt
-        let isSection index = XmlPatch.localName body.Nodes.[index] = "sectPr"
+        let isSection index = isBody && XmlPatch.localName body.Nodes.[index] = "sectPr"
         let sectIndex = if isSection (chunkCount - 1) then chunkCount - 1 else -1
         let strayFinalSection = [ 0 .. chunkCount - 2 ] |> List.exists isSection
         // How many items each element gave when it was read.
@@ -4004,7 +4033,7 @@ let private planBody (xml: string) (itemChunks: int array) (storyCounts: int arr
             if carriedAtEnd.Count > 0 then segments.Add (CarriedMarks (List.ofSeq carriedAtEnd))
             // (Nothing as it was read: a new body. Around it the document stays the text it
             // was - the root's start tag, the section properties - when the page setup is.)
-            if not anySource && not pageSetupUnchanged then None
+            if not anySource && (not pageSetupUnchanged || not isBody) then None
             else
                 let sectionStart = if sectIndex >= 0 then body.Starts.[sectIndex] else contentEnd
                 let sectionEnd = if sectIndex >= 0 then body.Ends.[sectIndex] else contentEnd
@@ -4014,7 +4043,7 @@ let private planBody (xml: string) (itemChunks: int array) (storyCounts: int arr
                        ContentEnd = contentEnd
                        Segments = List.ofSeq segments
                        BeforeSection = (tailStart, max tailStart sectionStart)
-                       Section = if pageSetupUnchanged then Some (sectionStart, sectionEnd) else None
+                       Section = if pageSetupUnchanged || not isBody then Some (sectionStart, sectionEnd) else None
                        AfterSection = (sectionEnd, contentEnd)
                        Regenerated = regenerated.ToArray() }
     | _ -> None
@@ -4474,6 +4503,8 @@ type NotePart = {
     MarkStyle: string option
     Blocks: obj array
     PlainText: string option
+    /// The note is what it was when it was read.
+    Unchanged: bool
 }
 
 type CommentPart = {
@@ -4483,6 +4514,7 @@ type CommentPart = {
     Initials: string option
     Blocks: obj array
     PlainText: string option
+    Unchanged: bool
 }
 
 let private notePartsFromPackage (value: obj) : NotePart list =
@@ -4496,7 +4528,8 @@ let private notePartsFromPackage (value: obj) : NotePart list =
               HasMark = boolOrDefault true (item?HasMark)
               MarkStyle = optionalString (item?MarkStyle)
               Blocks = optionalArray (item?Blocks)
-              PlainText = None }))
+              PlainText = None
+              Unchanged = boolOrDefault false (item?SourceUnchanged) }))
 
 let private commentPartsFromPackage (value: obj) : CommentPart list =
     optionalArray value
@@ -4509,7 +4542,8 @@ let private commentPartsFromPackage (value: obj) : CommentPart list =
               Date = optionalString (item?Date)
               Initials = optionalString (item?Initials)
               Blocks = optionalArray (item?Blocks)
-              PlainText = None }))
+              PlainText = None
+              Unchanged = boolOrDefault false (item?SourceUnchanged) }))
 
 /// Bodies from the package first; a note that is only known from a reference
 /// run (NoteText) is added as plain text.
@@ -4518,14 +4552,14 @@ let private mergeNoteParts (fromPackage: NotePart list) (fromRuns: NoteRef list)
     fromPackage
     @ (fromRuns
        |> List.filter (fun note -> not (Set.contains note.Id known))
-       |> List.map (fun note -> { Id = note.Id; Kind = None; HasMark = false; MarkStyle = None; Blocks = [||]; PlainText = Some note.Text }))
+       |> List.map (fun note -> { Id = note.Id; Kind = None; HasMark = false; MarkStyle = None; Blocks = [||]; PlainText = Some note.Text; Unchanged = false }))
 
 let private mergeCommentParts (fromPackage: CommentPart list) (fromRuns: CommentRef list) : CommentPart list =
     let known = fromPackage |> List.map (fun comment -> comment.Id) |> Set.ofList
     fromPackage
     @ (fromRuns
        |> List.filter (fun comment -> not (Set.contains comment.Id known))
-       |> List.map (fun comment -> { Id = comment.Id; Author = comment.Author; Date = comment.Date; Initials = None; Blocks = [||]; PlainText = Some comment.Text }))
+       |> List.map (fun comment -> { Id = comment.Id; Author = comment.Author; Date = comment.Date; Initials = None; Blocks = [||]; PlainText = Some comment.Text; Unchanged = false }))
 
 let private partRootAttributes =
     [("xmlns:w", Namespaces.word); ("xmlns:r", Namespaces.relationships); ("xmlns:m", Namespaces.math)]
@@ -4533,7 +4567,7 @@ let private partRootAttributes =
 /// footnotes.xml / endnotes.xml with the note bodies as blocks. The reader
 /// used to hand over the text of a note only, and this wrote one plain run per
 /// note, so a table, a hyperlink or bold text in a footnote was gone after a save.
-let private generateNotesPart (rootName: string) (noteElementName: string) (markElementName: string) (generateBody: obj array -> string) (notes: NotePart list) : string =
+let private noteElement (noteElementName: string) (markElementName: string) (generateBody: obj array -> string) (note: NotePart) : string =
     let markRun (note: NotePart) =
         match note.Kind with
         | Some "separator" -> element "w:r" [] [selfClosing "w:separator" []]
@@ -4557,45 +4591,71 @@ let private generateNotesPart (rootName: string) (noteElementName: string) (mark
                     XmlPatch.applyFragment XmlPatch.Word.order fragment (XmlPatch.editsAt fragment.Node [ first, [ XmlPatch.Prepend (markRun note) ] ])
                 | _ -> body
             | None -> body
-    let children =
-        notes
-        |> List.map (fun note ->
-            let attrs =
-                [ match note.Kind with
-                  | Some kind -> yield ("w:type", kind)
-                  | None -> ()
-                  yield ("w:id", note.Id) ]
-            let body =
-                match note.PlainText with
-                | Some text -> element "w:p" [] [runElement [] false text]
-                | None ->
-                    let body = generateBody note.Blocks
-                    // A note must hold at least one paragraph.
-                    withMark note (if body = "" then "<w:p></w:p>" else body)
-            element noteElementName attrs [body])
-    document (element rootName partRootAttributes children)
+    let attrs =
+        [ match note.Kind with
+          | Some kind -> yield ("w:type", kind)
+          | None -> ()
+          yield ("w:id", note.Id) ]
+    let body =
+        match note.PlainText with
+        | Some text -> element "w:p" [] [runElement [] false text]
+        | None ->
+            let body = generateBody note.Blocks
+            // A note must hold at least one paragraph.
+            withMark note (if body = "" then "<w:p></w:p>" else body)
+    element noteElementName attrs [body]
+
+let private generateNotesPart (rootName: string) (noteElementName: string) (markElementName: string) (generateBody: obj array -> string) (notes: NotePart list) : string =
+    document (element rootName partRootAttributes (notes |> List.map (noteElement noteElementName markElementName generateBody)))
+
+let private commentElement (generateBody: obj array -> string) (comment: CommentPart) : string =
+    let attrs =
+        [ yield ("w:id", comment.Id)
+          yield ("w:author", comment.Author |> Option.defaultValue "RedBat")
+          match comment.Date with
+          | Some date -> yield ("w:date", date)
+          | None -> ()
+          match comment.Initials with
+          | Some initials -> yield ("w:initials", initials)
+          | None -> () ]
+    let body =
+        match comment.PlainText with
+        | Some text -> element "w:p" [] [runElement [] false text]
+        | None ->
+            let body = generateBody comment.Blocks
+            if body = "" then element "w:p" [] [] else body
+    element "w:comment" attrs [body]
 
 let private generateCommentsPart (generateBody: obj array -> string) (comments: CommentPart list) : string =
-    let children =
-        comments
-        |> List.map (fun comment ->
-            let attrs =
-                [ yield ("w:id", comment.Id)
-                  yield ("w:author", comment.Author |> Option.defaultValue "RedBat")
-                  match comment.Date with
-                  | Some date -> yield ("w:date", date)
+    document (element "w:comments" partRootAttributes (comments |> List.map (commentElement generateBody)))
+
+/// A part of notes or comments (`elementName`: w:footnote, w:endnote, w:comment) as it was read with what
+/// changed made in it: the element of each that is what it was (`unchanged`, by id) stays its text, one that
+/// changed is what the model writes of it (`write`; `ids`: those the model has, in order), one the model has
+/// no more goes, a new one is put in at the end; the root keeps its declarations and gets those what the model
+/// wrote needs. None when the part does not read.
+let private patchedStoriesPart (xml: string) (elementName: string) (ids: string list) (unchanged: Set<string>) (write: string -> string) : string option =
+    XmlPatch.readPart xml
+    |> Option.map (fun part ->
+        let readIdsFirst = XmlPatch.childrenNamed part elementName |> List.choose (fun node -> XmlPatch.attribute node "w:id") |> Set.ofList
+        let written = ids |> List.filter (fun id -> not (Set.contains id unchanged && Set.contains id readIdsFirst)) |> List.map (fun id -> id, write id)
+        let byId = Map.ofList written
+        let present = Set.ofList ids
+        let read = XmlPatch.childrenNamed part elementName |> List.choose (fun node -> XmlPatch.attribute node "w:id" |> Option.map (fun id -> id, node))
+        let readIds = read |> List.map fst |> Set.ofList
+        let changes =
+            [ for id, node in read do
+                  let at = (XmlPatch.span node).Start
+                  match Map.tryFind id byId with
+                  | Some text -> yield XmlPatch.EditAt (at, [ XmlPatch.Replaced text ])
+                  | None when not (Set.contains id present) -> yield XmlPatch.EditAt (at, [ XmlPatch.Removed ])
                   | None -> ()
-                  match comment.Initials with
-                  | Some initials -> yield ("w:initials", initials)
-                  | None -> () ]
-            let body =
-                match comment.PlainText with
-                | Some text -> element "w:p" [] [runElement [] false text]
-                | None ->
-                    let body = generateBody comment.Blocks
-                    if body = "" then element "w:p" [] [] else body
-            element "w:comment" attrs [body])
-    document (element "w:comments" partRootAttributes children)
+              for id, text in written do
+                  if not (Set.contains id readIds) then yield XmlPatch.Append text ]
+        let fromModel = written |> List.map snd
+        let namespaces = if fromModel.IsEmpty then [] else writerNamespaceEdits part.Node fromModel
+        if changes.IsEmpty && namespaces.IsEmpty then xml
+        else XmlPatch.applyPart (fun _ -> []) part (namespaces @ changes))
 
 type NumberingInfo = {
     NumId: string
@@ -5407,19 +5467,41 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
     let bodyPlan =
         match sourceOf "document" with
         | Some xml when preserved.BodyItemChunks.Length > 0 ->
-            planBody xml preserved.BodyItemChunks (optionalArray (package?SourceStoryCounts) |> Array.map (fun count -> intOrDefault 0 count)) preserved.BodyChunkCount paragraphs (boolOrDefault false (package?PageSetupUnchanged))
+            planBody true xml preserved.BodyItemChunks (optionalArray (package?SourceStoryCounts) |> Array.map (fun count -> intOrDefault 0 count)) preserved.BodyChunkCount paragraphs (boolOrDefault false (package?PageSetupUnchanged))
         | _ -> None
+    let bodyState = sourceState ()
+    // A header or footer that was changed: what of it is as it was read goes back as it was, as the body's
+    // blocks do (its plan, and what is known of its text while it is written).
+    let partPlans =
+        Array.append (optionalArray (package?HeaderParts)) (optionalArray (package?FooterParts))
+        |> Array.choose (fun part ->
+            match optionalString (part?RelationshipId) with
+            | Some relId when not (boolOrDefault false (part?SourceUnchanged)) ->
+                match sourceOf relId, Map.tryFind relId preserved.PartItemChunks with
+                | Some xml, Some (chunks, count) when chunks.Length > 0 ->
+                    forgetSourceBody ()
+                    let counts = optionalArray (part?SourceStoryCounts) |> Array.map (fun count -> intOrDefault 0 count)
+                    planBody false xml chunks counts count (partBlocks part) false
+                    |> Option.map (fun plan -> relId, (plan, sourceState ()))
+                | _ -> None
+            | _ -> None)
+        |> Map.ofArray
+    forgetSourceBody ()
+    useSourceState bodyState
     /// The parts that are written back as they were read keep all the
     /// relationships they had; a part written from the model keeps those the
     /// writer does not make itself.
     let sourceParts = System.Collections.Generic.HashSet<string>()
     if bodyPlan.IsSome then sourceParts.Add "document" |> ignore
+    for KeyValue (relId, _) in partPlans do sourceParts.Add relId |> ignore
     for part in Array.append (optionalArray (package?HeaderParts)) (optionalArray (package?FooterParts)) do
         match optionalString (part?RelationshipId) with
         | Some relId when boolOrDefault false (part?SourceUnchanged) && (sourceOf relId).IsSome -> sourceParts.Add relId |> ignore
         | _ -> ()
-    for key, flag in [ "footnotes", package?FootnotesUnchanged; "endnotes", package?EndnotesUnchanged; "comments", package?CommentsUnchanged ] do
-        if boolOrDefault false flag && (sourceOf key).IsSome then sourceParts.Add key |> ignore
+    // (A part of notes or comments that was read keeps them whether it is as it was or not: the notes in it
+    // that are what they were are written back as they were - see patchedStoriesPart.)
+    for key in [ "footnotes"; "endnotes"; "comments" ] do
+        if (sourceOf key).IsSome then sourceParts.Add key |> ignore
     let keptFor (key: string) =
         let ofMap (map: Map<string, PreservedRelationshipInfo list>) = map |> Map.tryFind key |> Option.defaultValue []
         if sourceParts.Contains key then
@@ -5468,8 +5550,14 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
     let bodyImages, nextAfterBody = buildImageScope 1 bodyModelBlocks
     let mutable nextMediaIndex = nextAfterBody
     let partPackage (part: HeaderFooterPartInfo) =
-        if (partSource part).IsSome then { Info = part; Images = emptyImageScope; Hyperlinks = Map.empty }
-        else
+        match partSource part, Map.tryFind part.RelId partPlans with
+        | Some _, _ -> { Info = part; Images = emptyImageScope; Hyperlinks = Map.empty }
+        | None, Some (plan, _) ->
+            // (Its pictures and links are those of what is written from the model; the others keep theirs.)
+            let images, next = buildImageScope nextMediaIndex plan.Regenerated
+            nextMediaIndex <- next
+            { Info = part; Images = images; Hyperlinks = hyperlinkMapWith (keptFor part.RelId) plan.Regenerated }
+        | None, None ->
             let images, next = buildImageScope nextMediaIndex part.Blocks
             nextMediaIndex <- next
             { Info = part; Images = images; Hyperlinks = hyperlinkMap part.Blocks }
@@ -5496,20 +5584,22 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
     let footnotes = mergeNoteParts (notePartsFromPackage (package?Footnotes)) (collectNotes "footnote" contentBlocks)
     let endnotes = mergeNoteParts (notePartsFromPackage (package?Endnotes)) (collectNotes "endnote" contentBlocks)
     // Each of these parts has its own relationships: its images and hyperlinks.
-    let bodyPart (blocks: obj array) =
+    let bodyPart (key: string) (blocks: obj array) =
         let images, next = buildImageScope nextMediaIndex blocks
         nextMediaIndex <- next
-        images, hyperlinkMap blocks
-    let footnoteBlocks = footnotes |> List.toArray |> Array.collect (fun note -> note.Blocks)
-    let endnoteBlocks = endnotes |> List.toArray |> Array.collect (fun note -> note.Blocks)
-    let commentBlocks = comments |> List.toArray |> Array.collect (fun comment -> comment.Blocks)
+        images, hyperlinkMapWith (keptFor key) blocks
+    // (Of a part that was read, those of the notes that changed: the others are written back as they were.)
+    let readFor (key: string) = (sourceOf key).IsSome
+    let footnoteBlocks = footnotes |> List.filter (fun note -> not (readFor "footnotes" && note.Unchanged)) |> List.toArray |> Array.collect (fun note -> note.Blocks)
+    let endnoteBlocks = endnotes |> List.filter (fun note -> not (readFor "endnotes" && note.Unchanged)) |> List.toArray |> Array.collect (fun note -> note.Blocks)
+    let commentBlocks = comments |> List.filter (fun comment -> not (readFor "comments" && comment.Unchanged)) |> List.toArray |> Array.collect (fun comment -> comment.Blocks)
     // The notes and the comments as they were read, when nothing of them was changed.
     let footnotesSource = if boolOrDefault false (package?FootnotesUnchanged) then sourceOf "footnotes" else None
     let endnotesSource = if boolOrDefault false (package?EndnotesUnchanged) then sourceOf "endnotes" else None
     let commentsSource = if boolOrDefault false (package?CommentsUnchanged) then sourceOf "comments" else None
-    let footnoteImages, footnoteLinks = if footnotesSource.IsSome then emptyImageScope, Map.empty else bodyPart footnoteBlocks
-    let endnoteImages, endnoteLinks = if endnotesSource.IsSome then emptyImageScope, Map.empty else bodyPart endnoteBlocks
-    let commentImages, commentLinks = if commentsSource.IsSome then emptyImageScope, Map.empty else bodyPart commentBlocks
+    let footnoteImages, footnoteLinks = if footnotesSource.IsSome then emptyImageScope, Map.empty else bodyPart "footnotes" footnoteBlocks
+    let endnoteImages, endnoteLinks = if endnotesSource.IsSome then emptyImageScope, Map.empty else bodyPart "endnotes" endnoteBlocks
+    let commentImages, commentLinks = if commentsSource.IsSome then emptyImageScope, Map.empty else bodyPart "comments" commentBlocks
     let partBody (images: ImageScope) (links: Map<string, string>) (blocks: obj array) =
         blocks |> generateBlocks (generateDocumentItemWithImages links images) (generateTextBoxRun defaultPageSetupInfo links images)
     let allImages =
@@ -5521,9 +5611,10 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
            yield! commentImages.Assets |]
     let allBlocks =
         [| yield! contentBlocks
-           yield! footnoteBlocks
-           yield! endnoteBlocks
-           yield! commentBlocks |]
+           // (All of them: the lists and styles of those written back as they were are the document's too.)
+           for note in footnotes do yield! note.Blocks
+           for note in endnotes do yield! note.Blocks
+           for comment in comments do yield! comment.Blocks |]
     // Rendered first: it picks the default list ids the paragraph writer uses.
     let numberingXml =
         let infos = collectNumberingInfoOf (not (isNullOrUndefined (package?Preserved))) allBlocks
@@ -5531,7 +5622,10 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
         let modelBlocks =
             [| yield! bodyModelBlocks
                for part in Array.append headerParts footerParts do
-                   if (partSource part).IsNone then yield! part.Blocks
+                   match partSource part, Map.tryFind part.RelId partPlans with
+                   | Some _, _ -> ()
+                   | None, Some (plan, _) -> yield! plan.Regenerated
+                   | None, None -> yield! part.Blocks
                if footnotesSource.IsNone then yield! footnoteBlocks
                if endnotesSource.IsNone then yield! endnoteBlocks
                if commentsSource.IsNone then yield! commentBlocks |]
@@ -5577,6 +5671,26 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
     let hasEndnotes = not endnotes.IsEmpty || endnotesSource.IsSome
     // Pictures and other parts that only content written back as it was read refers to.
     let preserved = if sourceParts.Count > 0 then { preserved with Parts = preserved.Parts @ preserved.SourceParts } else preserved
+    // A header or footer: from its plan (what is as it was read stays its text), or from the model.
+    let writeHeaderFooter (rootName: string) (part: HeaderFooterPartPackage) =
+        match Map.tryFind part.Info.RelId partPlans with
+        | Some (plan, state) ->
+            useSourceState state
+            let text = withRelationshipsOf part.Info.RelId plan.Regenerated (fun () -> generateDocumentXmlFromPlan plan part.Images part.Hyperlinks None [||] [||])
+            forgetSourceBody ()
+            text
+        | None -> withRelationshipsOf part.Info.RelId part.Info.Blocks (fun () -> balancedPart (generateHeaderFooterXml rootName part.Hyperlinks part.Images part.Info.Blocks))
+    // (The links of a part that kept the relationships it had: those it had are among the kept ones.)
+    let newLinks (key: string) (links: Map<string, string>) =
+        let keptIds = keptFor key |> List.map (fun rel -> rel.Id) |> Set.ofList
+        links |> Map.filter (fun _ id -> not (Set.contains id keptIds))
+    // A part of notes or comments that was read, with what changed made in it (see patchedStoriesPart): each
+    // element the model writes with its ranges opened and closed in it.
+    let stories (key: string) (elementName: string) (items: (string * bool) list) (write: string -> string) =
+        sourceOf key
+        |> Option.bind (fun xml ->
+            let unchanged = items |> List.filter snd |> List.map fst |> Set.ofList
+            patchedStoriesPart xml elementName (List.map fst items) unchanged (fun id -> (balancedRanges None [| FromModel (write id) |]).[0]))
     let partRelsNeeded (key: string) (images: ImageScope) (links: Map<string, string>) =
         images.Assets.Length > 0 || not links.IsEmpty || not (keptFor key).IsEmpty
 
@@ -5621,41 +5735,53 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
                     Content =
                         match partSource header.Info with
                         | Some text -> text
-                        | None -> withRelationshipsOf header.Info.RelId header.Info.Blocks (fun () -> balancedPart (generateHeaderFooterXml "w:hdr" header.Hyperlinks header.Images header.Info.Blocks)) }
+                        | None -> writeHeaderFooter "w:hdr" header }
             if partRelsNeeded header.Info.RelId header.Images header.Hyperlinks then
-                yield { Path = sprintf "word/_rels/%s.rels" header.Info.Target; Content = generatePartRelsWithKept (keptFor header.Info.RelId) header.Hyperlinks header.Images }
+                yield { Path = sprintf "word/_rels/%s.rels" header.Info.Target; Content = generatePartRelsWithKept (keptFor header.Info.RelId) (newLinks header.Info.RelId header.Hyperlinks) header.Images }
         for footer in footerPackages do
             yield { Path = "word/" + footer.Info.Target
                     Content =
                         match partSource footer.Info with
                         | Some text -> text
-                        | None -> withRelationshipsOf footer.Info.RelId footer.Info.Blocks (fun () -> balancedPart (generateHeaderFooterXml "w:ftr" footer.Hyperlinks footer.Images footer.Info.Blocks)) }
+                        | None -> writeHeaderFooter "w:ftr" footer }
             if partRelsNeeded footer.Info.RelId footer.Images footer.Hyperlinks then
-                yield { Path = sprintf "word/_rels/%s.rels" footer.Info.Target; Content = generatePartRelsWithKept (keptFor footer.Info.RelId) footer.Hyperlinks footer.Images }
+                yield { Path = sprintf "word/_rels/%s.rels" footer.Info.Target; Content = generatePartRelsWithKept (keptFor footer.Info.RelId) (newLinks footer.Info.RelId footer.Hyperlinks) footer.Images }
         if hasComments then
             yield { Path = "word/comments.xml"
                     Content =
                         match commentsSource with
                         | Some text -> text
-                        | None -> withRelationshipsOf "comments" commentBlocks (fun () -> balancedPart (generateCommentsPart (partBody commentImages commentLinks) comments)) }
+                        | None ->
+                            withRelationshipsOf "comments" commentBlocks (fun () ->
+                                let write = commentElement (partBody commentImages commentLinks)
+                                stories "comments" "w:comment" (comments |> List.map (fun comment -> comment.Id, comment.Unchanged)) (fun id -> write (comments |> List.find (fun comment -> comment.Id = id)))
+                                |> Option.defaultWith (fun () -> balancedPart (generateCommentsPart (partBody commentImages commentLinks) comments))) }
             if partRelsNeeded "comments" commentImages commentLinks then
-                yield { Path = "word/_rels/comments.xml.rels"; Content = generatePartRelsWithKept (keptFor "comments") commentLinks commentImages }
+                yield { Path = "word/_rels/comments.xml.rels"; Content = generatePartRelsWithKept (keptFor "comments") (newLinks "comments" commentLinks) commentImages }
         if hasFootnotes then
             yield { Path = "word/footnotes.xml"
                     Content =
                         match footnotesSource with
                         | Some text -> text
-                        | None -> withRelationshipsOf "footnotes" footnoteBlocks (fun () -> balancedPart (generateNotesPart "w:footnotes" "w:footnote" "w:footnoteRef" (partBody footnoteImages footnoteLinks) footnotes)) }
+                        | None ->
+                            withRelationshipsOf "footnotes" footnoteBlocks (fun () ->
+                                let write = noteElement "w:footnote" "w:footnoteRef" (partBody footnoteImages footnoteLinks)
+                                stories "footnotes" "w:footnote" (footnotes |> List.map (fun note -> note.Id, note.Unchanged)) (fun id -> write (footnotes |> List.find (fun note -> note.Id = id)))
+                                |> Option.defaultWith (fun () -> balancedPart (generateNotesPart "w:footnotes" "w:footnote" "w:footnoteRef" (partBody footnoteImages footnoteLinks) footnotes))) }
             if partRelsNeeded "footnotes" footnoteImages footnoteLinks then
-                yield { Path = "word/_rels/footnotes.xml.rels"; Content = generatePartRelsWithKept (keptFor "footnotes") footnoteLinks footnoteImages }
+                yield { Path = "word/_rels/footnotes.xml.rels"; Content = generatePartRelsWithKept (keptFor "footnotes") (newLinks "footnotes" footnoteLinks) footnoteImages }
         if hasEndnotes then
             yield { Path = "word/endnotes.xml"
                     Content =
                         match endnotesSource with
                         | Some text -> text
-                        | None -> withRelationshipsOf "endnotes" endnoteBlocks (fun () -> balancedPart (generateNotesPart "w:endnotes" "w:endnote" "w:endnoteRef" (partBody endnoteImages endnoteLinks) endnotes)) }
+                        | None ->
+                            withRelationshipsOf "endnotes" endnoteBlocks (fun () ->
+                                let write = noteElement "w:endnote" "w:endnoteRef" (partBody endnoteImages endnoteLinks)
+                                stories "endnotes" "w:endnote" (endnotes |> List.map (fun note -> note.Id, note.Unchanged)) (fun id -> write (endnotes |> List.find (fun note -> note.Id = id)))
+                                |> Option.defaultWith (fun () -> balancedPart (generateNotesPart "w:endnotes" "w:endnote" "w:endnoteRef" (partBody endnoteImages endnoteLinks) endnotes))) }
             if partRelsNeeded "endnotes" endnoteImages endnoteLinks then
-                yield { Path = "word/_rels/endnotes.xml.rels"; Content = generatePartRelsWithKept (keptFor "endnotes") endnoteLinks endnoteImages }
+                yield { Path = "word/_rels/endnotes.xml.rels"; Content = generatePartRelsWithKept (keptFor "endnotes") (newLinks "endnotes" endnoteLinks) endnoteImages }
     ]
 
     // Kept parts go back as they were, except where the writer produced a part

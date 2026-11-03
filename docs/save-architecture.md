@@ -176,13 +176,24 @@ by `ValueText` (with `ModelText`, `PartPath`, `OpcXml`).
 - XlsxWriter: cells, rows, sheet sections, relationships, comments, VML, tables, workbook, styles, shared
   strings - all by edits of the parts' trees.
 
+### Headers and footers
+
+A header or footer that changed goes through `planBody` as the body does (`isBody = false`: its blocks are the
+children of w:hdr / w:ftr, it has no section properties). The reader scans the part with spans and records which
+child each block came from (`HeaderFooter.ItemChunks`, `Preserved.PartItemChunks` by relationship id); the editor
+tags the part's blocks as it tags the body's (`blocksWithSource`). Each part's plan is made with the body's, and
+what is known of the part as read (`SourceState`) is put back while that part is written.
+(`tools/word-browser/checks/header-footer-xml.js`.)
+
 ### Left
 
 - The model's XML written by a typed builder (it is text made by `element` / `selfClosing` now).
 - Bookmarks handed over typed, not as tokens in a string (`ModelText` reads them at the writer's end).
 - `XmlPatch.readPartExcept` still has a tokenizer of its own (XmlPatch is changed only by additions):
   `XmlDsl.tryScanOutline` reads the same outline.
-- Headers, footers, notes and comments through the same path (origins of their own part).
+- Notes and comments: a part in which one changed keeps the others' elements as they were read
+  (`patchedStoriesPart`), but a changed note or comment is written from the model whole, not spliced as a
+  paragraph of the body is (it needs the reader's element map per note, as headers have).
 - Joins: the paragraph joined to another keeps nothing of its own properties (as Word).
 
 ### The original plan

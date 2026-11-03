@@ -2900,10 +2900,10 @@ type private Derivation = {
 }
 
 /// The paragraphs of the blocks that were read, in the order of the XML: (block, paragraph of the block, paragraph, heading level).
-let private originalStory (original: Document) : (int * int * ParagraphBlock * int) array * int array =
+let private originalStory (originalBlocks: Block list) : (int * int * ParagraphBlock * int) array * int array =
     let story = ResizeArray<int * int * ParagraphBlock * int>()
     let counts = ResizeArray<int>()
-    original.Blocks
+    originalBlocks
     |> List.iteri (fun index block ->
         let level = match block with Heading (level, _) -> level | _ -> 0
         match storyParagraphs block with
@@ -2914,7 +2914,7 @@ let private originalStory (original: Document) : (int * int * ParagraphBlock * i
     story.ToArray(), counts.ToArray()
 
 /// Which paragraph of the document is which that was read (by the id of the paragraph it is now).
-let private derivationsOf (story: (int * int * ParagraphBlock * int) array) (doc: Document) : Dictionary<string, Derivation> =
+let private derivationsOf (story: (int * int * ParagraphBlock * int) array) (blocks: Block list) : Dictionary<string, Derivation> =
     let result = Dictionary<string, Derivation>()
     // A paragraph that was read, by its id - where the id is one paragraph's alone.
     let byId = Dictionary<string, int>()
@@ -2922,7 +2922,7 @@ let private derivationsOf (story: (int * int * ParagraphBlock * int) array) (doc
     story |> Array.iteri (fun at (_, _, para, _) -> if byId.ContainsKey para.Id then twice.Add para.Id |> ignore else byId.[para.Id] <- at)
     for id in twice do byId.Remove id |> ignore
     let present = HashSet<string>()
-    for para in paragraphsOfBlocks doc.Blocks do present.Add para.Id |> ignore
+    for para in paragraphsOfBlocks blocks do present.Add para.Id |> ignore
     let textOf (para: ParagraphBlock) = TextBuffer.toString para.Buffer
     /// The paragraphs that stand one after the other in one place: the body's, a cell's.
     let consider (siblings: ParagraphBlock array) =
@@ -2988,8 +2988,8 @@ let private derivationsOf (story: (int * int * ParagraphBlock * int) array) (doc
             for cell in row.Cells do
                 consider (List.toArray cell.Content)
                 for inner in cell.NestedTables do ofTable inner
-    consider (doc.Blocks |> List.choose (function Paragraph para | Heading (_, para) -> Some para | _ -> None) |> List.toArray)
-    for block in doc.Blocks do
+    consider (blocks |> List.choose (function Paragraph para | Heading (_, para) -> Some para | _ -> None) |> List.toArray)
+    for block in blocks do
         match block with
         | Table table -> ofTable table
         | _ -> ()
@@ -3191,12 +3191,9 @@ let private blockTextChanges (context: WordStyles.DocumentStyleContext option) (
 /// what it was then (SourceUnchanged: the same object, or one that exports to
 /// the same item - a character typed and deleted again): the writer puts the
 /// XML of such a block back as it was in the file.
-let private exportBodyWithSource context (imported: Document option) (doc: Document) : obj array * int array =
-    match imported with
-    | None -> exportToEditor doc, [||]
-    | Some original ->
+let private blocksWithSource context (originalBlocks: Block list) (blocks: Block list) : obj array * int array =
         let known = Dictionary<string, int * Block>()
-        original.Blocks |> List.iteri (fun index block -> known.[blockIdOf block] <- (index, block))
+        originalBlocks |> List.iteri (fun index block -> known.[blockIdOf block] <- (index, block))
         // (Which paragraph is which that was read: asked for by the first block that is not what it was.)
         let story : ((int * int * ParagraphBlock * int) array * int array) option ref = ref None
         let derivations : Dictionary<string, Derivation> option ref = ref None
@@ -3204,13 +3201,13 @@ let private exportBodyWithSource context (imported: Document option) (doc: Docum
             match derivations.Value with
             | Some found -> found
             | None ->
-                let known = originalStory original
+                let known = originalStory originalBlocks
                 story.Value <- Some known
-                let found = derivationsOf (fst known) doc
+                let found = derivationsOf (fst known) blocks
                 derivations.Value <- Some found
                 found
         let items =
-            blocksInAnchorOrder doc.Blocks
+            blocksInAnchorOrder blocks
             |> List.map (fun block ->
                 let item = blockToEditor context block
                 match known.TryGetValue (blockIdOf block) with
@@ -3233,6 +3230,11 @@ let private exportBodyWithSource context (imported: Document option) (doc: Docum
                 item)
             |> List.toArray
         items, (match story.Value with Some (_, counts) -> counts | None -> [||])
+
+let private exportBodyWithSource context (imported: Document option) (doc: Document) : obj array * int array =
+    match imported with
+    | None -> exportToEditor doc, [||]
+    | Some original -> blocksWithSource context original.Blocks doc.Blocks
 
 /// (list id, level) -> how the paragraphs of that list level are numbered.
 let private listSignatures (doc: Document) =
@@ -3275,6 +3277,13 @@ let private exportDocumentPackageOf (doc: Document) (imported: Document option) 
                     || obj.ReferenceEquals(part.Blocks, originalPart.Blocks) && part.Kind = originalPart.Kind
                     || jsonOf items.[index] = jsonOf (headerFooterPartsToEditor context [ originalPart ]).[0]
                 items.[index]?SourceUnchanged <- unchanged
+                // (A part that was changed: its blocks say which they were when it was read, as the body's do,
+                // for the writer to keep what is as it was.)
+                if not unchanged then
+                    let blocks, counts = blocksWithSource context originalPart.Blocks part.Blocks
+                    items.[index]?Blocks <- blocks
+                    items.[index]?Paragraphs <- blocks
+                    items.[index]?SourceStoryCounts <- counts
             | None -> ())
         items
     let sameAsImported (current: obj array) (ofOriginal: Document -> obj array) =
@@ -3296,6 +3305,22 @@ let private exportDocumentPackageOf (doc: Document) (imported: Document option) 
             |> Seq.toArray
         | None -> [||]
     let listsUnchanged = imported.IsSome && changedListLevels.Length = 0
+    let footnotesUnchanged = sameAsImported footnotes (notesToEditor context "footnote")
+    let endnotesUnchanged = sameAsImported endnotes (notesToEditor context "endnote")
+    let commentsUnchanged = sameAsImported comments (commentsToEditor context)
+    // Each note and comment that is what it was when it was read says so (the writer then writes its element
+    // back as it was, when others of its part changed).
+    let markUnchanged (current: obj array) (ofOriginal: Document -> obj array) =
+        match imported with
+        | Some original ->
+            let before = Dictionary<string, string>()
+            for item in ofOriginal original do before.[string (item?Id)] <- jsonOf item
+            for item in current do
+                item?SourceUnchanged <- (match before.TryGetValue (string (item?Id)) with | true, json -> json = jsonOf item | _ -> false)
+        | None -> ()
+    markUnchanged footnotes (notesToEditor context "footnote")
+    markUnchanged endnotes (notesToEditor context "endnote")
+    markUnchanged comments (commentsToEditor context)
     let body = exportBodyWithSource context imported doc
     let partIds (parts: HeaderFooterPart list) = parts |> List.map (fun part -> part.Kind, part.RelationshipId)
     createObj [
@@ -3303,9 +3328,9 @@ let private exportDocumentPackageOf (doc: Document) (imported: Document option) 
         "Endnotes" ==> endnotes
         "Comments" ==> comments
         // What is still as it was read (the writer then writes it back from the file's own XML).
-        "FootnotesUnchanged" ==> sameAsImported footnotes (notesToEditor context "footnote")
-        "EndnotesUnchanged" ==> sameAsImported endnotes (notesToEditor context "endnote")
-        "CommentsUnchanged" ==> sameAsImported comments (commentsToEditor context)
+        "FootnotesUnchanged" ==> footnotesUnchanged
+        "EndnotesUnchanged" ==> endnotesUnchanged
+        "CommentsUnchanged" ==> commentsUnchanged
         "ListsUnchanged" ==> listsUnchanged
         // (The writer then writes those levels anew and leaves the rest of the numbering as it was read.)
         "ChangedListLevels" ==> changedListLevels
