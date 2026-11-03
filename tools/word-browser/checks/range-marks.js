@@ -102,8 +102,9 @@ window.finish = async () => {
         }
         {
             const s = saved.cell;
-            check('a paragraph of a table with the range of a permission, written from the model into the table\'s XML: the range is in it',
-                [s.report.ModelBlocks, s.report.ModelParagraphsInTables, /<w:p><w:permStart w:id="31" w:edGrp="everyone"\/>(?:(?!<\/w:p>).)*LINK(?:(?!<\/w:p>).)*<w:permEnd w:id="31"\/><\/w:p>/.test(s.xml), ranges(s.xml)], [0, 1, true, []]);
+            // (Spliced from its source: one changed in the XML it was read from, not one of the model's.)
+            check('a paragraph of a table with the range of a permission, written from its source into the table\'s XML: the range is in it',
+                [s.report.ModelBlocks, s.report.ModelParagraphsInTables, /<w:p><w:permStart w:id="31" w:edGrp="everyone"\/>(?:(?!<\/w:p>).)*LINK(?:(?!<\/w:p>).)*<w:permEnd w:id="31"\/><\/w:p>/.test(s.xml), ranges(s.xml)], [0, 0, true, []]);
         }
         for (const stage of ['between', 'empty', 'ranges', 'cell']) check(`${stage}: read again, the editor lists the bookmarks it listed`, [saved[stage].bookmarks, saved[stage].text.includes('LINK')],
             // (The bookmark of the paragraph that had no run is, now that the paragraph has one, a bookmark the editor lists.)

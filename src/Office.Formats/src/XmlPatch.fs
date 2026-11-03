@@ -10,6 +10,8 @@ open XmlDsl
 type ElementEdit =
     /// The attribute (qualified name) has this value: changed in place, or put after the others.
     | SetAttribute of name: string * value: string
+    /// The start tag's attributes are these, in this order (what stands between them as written goes).
+    | SetAllAttributes of attributes: (string * string) list
     | RemoveAttribute of name: string
     /// The child of that name (qualified; the first, where there are several) is this XML; where there is
     /// none it is put in at its place in the element's schema order.
@@ -141,6 +143,12 @@ let rec private applyAt (order: SchemaOrder) (text: string) (node: XmlNode) (edi
                 | None -> ()
             | _ -> ()
         if added.Length > 0 then tagParts.Add ((tagClose, tagClose, added.ToString()))
+        match edits |> List.tryPick (function SetAllAttributes all -> Some all | _ -> None) with
+        | Some all ->
+            tagParts.Clear()
+            let nameEnd = span.Start + 1 + name.Length
+            tagParts.Add ((nameEnd, tagClose, all |> List.map (fun (attr, value) -> " " + attr + "=\"" + escapeAttribute value + "\"") |> String.concat ""))
+        | None -> ()
         let spliced (from: int) (until: int) (parts: (int * int * string) seq) =
             let out = System.Text.StringBuilder()
             let mutable at = from
@@ -376,7 +384,7 @@ let childOf (edit: ElementEdit) : string =
     match edit with
     | SetChild (name, _) | SetChildren (name, _) | RemoveChild name | EditChild (name, _, _) | AddChild (name, _)
     | SetChildWhere (name, _, _, _) | RemoveChildWhere (name, _, _) | EditChildWhere (name, _, _, _) | EditNth (name, _, _) -> name
-    | SetAttribute _ | RemoveAttribute _ | SetText _ | Removed | InsertBefore _ | InsertAfter _ | Prepend _ | Append _ -> ""
+    | SetAttribute _ | SetAllAttributes _ | RemoveAttribute _ | SetText _ | Removed | InsertBefore _ | InsertAfter _ | Prepend _ | Append _ -> ""
 
 /// Whether the element has a child of that name (qualified).
 let hasChild (source: SourceElement) (name: string) : bool =
@@ -421,7 +429,7 @@ let slice (text: string) (start: int) (finish: int) : string = text.Substring(st
 let startTag (text: string) (node: XmlNode) (edits: ElementEdit list) : string =
     let span = spanOf node
     let tag = { Start = span.Start; StartTagEnd = span.StartTagEnd; EndTagStart = span.StartTagEnd; End = span.StartTagEnd }
-    let attributeEdits = edits |> List.filter (function SetAttribute _ | RemoveAttribute _ -> true | _ -> false)
+    let attributeEdits = edits |> List.filter (function SetAttribute _ | SetAllAttributes _ | RemoveAttribute _ -> true | _ -> false)
     if attributeEdits.IsEmpty then slice text span.Start span.StartTagEnd
     else
         // (The start tag alone, as an element that ends with it.)
@@ -520,6 +528,9 @@ type Placed =
     | AtItem of int
     /// New: in the wrappers of the one before it.
     | WithPrevious
+    /// A further part of the item of the layout that starts there (a run split): in the wrappers that one
+    /// was in, after what is written before it.
+    | InItem of int
     /// New: outside the wrappers of the layout (what it is in, the XML written has).
     | Outside
 
@@ -566,6 +577,7 @@ and writeLayoutWith (how: LayoutWrite) (laid: Layout) (written: (Placed * string
             started <- true
             moveTo chainOf.[at]
             out.Append(slice laid.Leads.[at]) |> ignore
+        | InItem at when chainOf.ContainsKey at -> moveTo chainOf.[at]
         | Outside -> moveTo []
         | _ -> ()
         out.Append(xml) |> ignore

@@ -2908,9 +2908,8 @@ let private xmlnsDeclarations (attrs: Map<string, string>) : Map<string, string>
     |> List.choose (fun (name, value) -> if name.StartsWith "xmlns:" then Some (name.Substring 6, value) else None)
     |> Map.ofList
 
-let private prefixPattern = System.Text.RegularExpressions.Regex(@"[<\s/]([A-Za-z_][A-Za-z0-9_.\-]*):[A-Za-z_]")
-let private startTagAttributePattern = System.Text.RegularExpressions.Regex("\\s([^\\s=]+)=\"([^\"]*)\"")
-let private prefixListPattern = System.Text.RegularExpressions.Regex("(?:Requires|Ignorable)=\"([^\"]*)\"")
+/// The words of an attribute's value that is a list (mc:Ignorable="w14 wp14", Requires="wps").
+let private valueWords (value: string) = value.Split([| ' '; '\t'; '\n'; '\r' |], StringSplitOptions.RemoveEmptyEntries) |> Array.toList
 
 /// `xml` (one element, serialised) with the namespace declarations of the
 /// part's root element it relies on added to its own root, so it stays valid
@@ -2918,44 +2917,36 @@ let private prefixListPattern = System.Text.RegularExpressions.Regex("(?:Require
 /// element of the part the fragment was taken from.
 let selfContainedXml (rootAttributes: Map<string, string>) (xml: string) : string =
     let rootNamespaces = xmlnsDeclarations rootAttributes
-    let tagEnd = xml.IndexOf '>'
-    if rootNamespaces.IsEmpty || tagEnd < 0 then xml
-    else
+    match XmlPatch.read xml with
+    | Some source when not rootNamespaces.IsEmpty ->
+        let nodes = XmlPatch.descendantsWhere (fun _ -> true) source.Node
+        let attributes = nodes |> List.collect (fun node -> XmlPatch.attributes node |> Map.toList)
+        // (The prefixes it uses: of its elements and attributes, and those its alternate content requires or ignores.)
         let used =
-            [ for m in prefixPattern.Matches xml do yield m.Groups.[1].Value
-              for m in prefixListPattern.Matches xml do yield! m.Groups.[1].Value.Split([| ' ' |], StringSplitOptions.RemoveEmptyEntries) ]
+            [ for node in nodes do yield XmlPatch.prefix node
+              for (name, value) in attributes do
+                  match name.Split(':') with
+                  | [| prefix; _ |] when prefix <> "xmlns" -> yield prefix
+                  | _ -> ()
+                  if name = "Requires" || name = "mc:Ignorable" then yield! valueWords value ]
+            |> List.filter (fun prefix -> prefix <> "")
             |> Set.ofList
-        let startTag = xml.Substring(0, tagEnd)
+        let own = XmlPatch.attributes source.Node
         // Prefixes the part declares ignorable and the fragment uses.
         let ignorable =
             match Map.tryFind "mc:Ignorable" rootAttributes with
-            | Some value when not (startTag.Contains "mc:Ignorable=") ->
-                value.Split([| ' ' |], StringSplitOptions.RemoveEmptyEntries) |> Array.filter (fun prefix -> Set.contains prefix used) |> Array.toList
+            | Some value when not (own.ContainsKey "mc:Ignorable") -> valueWords value |> List.filter (fun prefix -> Set.contains prefix used)
             | _ -> []
         let used = if ignorable.IsEmpty then used else Set.add "mc" used
         let additions =
             [ for KeyValue(prefix, uri) in rootNamespaces do
-                if Set.contains prefix used && not (startTag.Contains ("xmlns:" + prefix + "=")) then
-                    yield "xmlns:" + prefix, uri.Replace("&", "&amp;").Replace("\"", "&quot;").Replace("<", "&lt;")
+                if Set.contains prefix used && not (own.ContainsKey ("xmlns:" + prefix)) then yield "xmlns:" + prefix, uri
               if not ignorable.IsEmpty then yield "mc:Ignorable", String.concat " " ignorable ]
+        // (The root's attributes in name order, the order the serialiser writes them in: reading the result
+        // again and serialising it gives the same text. The rest of it stays the text it was.)
         if additions.IsEmpty then xml
-        else
-            // The root start tag is rebuilt with its attributes in name order, the
-            // order the serialiser writes them in: reading the result again and
-            // serialising it gives the same text.
-            let mutable nameEnd = 1
-            while nameEnd < xml.Length && xml.[nameEnd] <> ' ' && xml.[nameEnd] <> '>' && xml.[nameEnd] <> '/' do
-                nameEnd <- nameEnd + 1
-            let selfClosed = tagEnd > 0 && xml.[tagEnd - 1] = '/'
-            let attributeText = xml.Substring(nameEnd, (if selfClosed then tagEnd - 1 else tagEnd) - nameEnd)
-            let existing = [ for m in startTagAttributePattern.Matches attributeText -> m.Groups.[1].Value, m.Groups.[2].Value ]
-            let attributes =
-                (existing @ additions)
-                |> Map.ofList
-                |> Map.toList
-                |> List.map (fun (name, value) -> " " + name + "=\"" + value + "\"")
-                |> String.concat ""
-            xml.Substring(0, nameEnd) + attributes + xml.Substring(if selfClosed then tagEnd - 1 else tagEnd)
+        else XmlPatch.apply (fun _ -> []) source [ XmlPatch.SetAllAttributes (Map.toList own @ additions |> Map.ofList |> Map.toList) ]
+    | _ -> xml
 
 /// Make the XML of every opaque object in `blocks` self-contained (see selfContainedXml).
 let completeOpaqueObjects (root: XmlNode) (blocks: DocumentContent list) : DocumentContent list =

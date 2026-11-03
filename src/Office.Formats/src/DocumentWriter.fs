@@ -2694,7 +2694,12 @@ let private generateBlocks (generateItem: obj -> string) (generateTextBoxRun: ob
                 |> Option.bind (fun block ->
                     match XmlPatch.name block.Node with
                     | "w:p" -> Some (block, block.Node)
-                    | "w:tbl" -> XmlPatch.descendantsWhere (fun node -> XmlPatch.name node = "w:p") block.Node |> List.tryLast |> Option.map (fun para -> block, para)
+                    // (The paragraph that ends last: not one of a text box in it.)
+                    | "w:tbl" ->
+                        XmlPatch.descendantsWhere (fun node -> XmlPatch.name node = "w:p") block.Node
+                        |> List.sortBy (fun para -> (XmlPatch.span para).End)
+                        |> List.tryLast
+                        |> Option.map (fun para -> block, para)
                     | _ -> None)
         match anchor with
         | Some (block, para) ->
@@ -3206,7 +3211,7 @@ let private splicedRuns (source: SpliceSource) (original: obj) (leading: bool) (
                      | _ -> false
                  // (The parts of a run that was split after the first are in its place after it.)
                  let place, wrap =
-                     if wrappedAsBefore then (if placedAt.Add at then XmlPatch.AtItem at else XmlPatch.WithPrevious), (fun xml -> if xml = whole then xml else before + xml + after)
+                     if wrappedAsBefore then (if placedAt.Add at then XmlPatch.AtItem at else XmlPatch.InItem at), (fun xml -> if xml = whole then xml else before + xml + after)
                      else XmlPatch.Outside, wrap
                  previousInSource <- wrappedAsBefore
                  previousWrapping <- now
@@ -3519,7 +3524,6 @@ let private patchSourceChunk (start: int) (finish: int) (items: obj array) : (in
                             noteReason (sprintf "paragraph %d of the block: %s" index (optionalString (change?Why) |> Option.defaultValue "changed, and not of a paragraph that was read"))
                             ok <- false
                         else
-                            noteReason (sprintf "paragraph %d: spliced from its source" index)
                             // (The marks of ranges its XML holds go with it: see carriedMarksOf.)
                             after?CarrySource <- XmlPatch.bytesOf sourceBodyXml node
                             after?CarrySave <- saveNumber
@@ -3528,7 +3532,11 @@ let private patchSourceChunk (start: int) (finish: int) (items: obj array) : (in
                     | _ ->
                         noteReason (sprintf "paragraph %d of the block: its element as it was read is not known" index)
                         ok <- false
-    if ok then Some (List.ofSeq inlined) else None
+    // (Two paragraphs in the place of one element, or of elements one inside the other: not written from their source.)
+    let ordered = inlined |> Seq.sortBy (fun (start, _, _) -> start) |> List.ofSeq
+    let overlapping = ordered |> List.pairwise |> List.exists (fun ((_, firstEnd, _), (nextStart, _, _)) -> nextStart < firstEnd)
+    if overlapping then noteReason "two paragraphs of the block are of one element as it was read: the block is written from the model"
+    if ok && not overlapping then Some ordered else None
 
 type private BodySegment =
     /// The part's text from `start` to `finish`, as it was read but for the paragraphs in it written from
@@ -3783,6 +3791,11 @@ let private writerNamespaceEdits (root: XmlDsl.XmlNode) (written: string list) :
     |> List.filter (fun (prefix, _) -> used.Contains prefix && (XmlPatch.attribute root ("xmlns:" + prefix)).IsNone)
     |> List.map (fun (prefix, uri) -> XmlPatch.SetAttribute ("xmlns:" + prefix, uri))
 
+/// A piece of a part that is put together: a range of the text it was read as, or XML the model wrote.
+type private PartPiece =
+    | FromSource of start: int * finish: int
+    | FromModel of xml: string
+
 /// The ranges of a part that is put together of text as it was read and text
 /// written from the model - bookmarks, comment ranges, permission ranges, the
 /// ranges of moved text - opened once and closed once each. `parts`: the
@@ -3796,10 +3809,25 @@ let private writerNamespaceEdits (root: XmlDsl.XmlNode) (written: string list) :
 /// any more is closed at the start of the next piece of the model - or where it
 /// is opened, when none follows; an end in the file's text of a range nothing
 /// opens any more (the block its start stood in is gone) is left out. What the
-/// part had so when it was read (`original`: its marks) is left as it is.
-let private balancedRanges (original: RangeMark list option) (parts: (string * bool) array) : string array =
-    let trees = parts |> Array.map (fun (text, _) -> XmlPatch.readFragmentRoot text)
-    let occurrences = trees |> Array.map (function Some fragment -> rangeMarksIn allRangeKinds fragment.Node | None -> [])
+/// part had so when it was read (`source`: its text and root) is left as it is.
+let private balancedRanges (source: (string * XmlDsl.XmlNode) option) (pieces: PartPiece array) : string array =
+    let sourceText, sourceMarks =
+        match source with
+        | Some (text, root) -> text, rangeMarksIn allRangeKinds root
+        | None -> "", []
+    let original = source |> Option.map (fun _ -> sourceMarks)
+    // (A piece of the source is a range of its text - not always well formed on its own: its marks are those
+    // of the tree of the part in that range. A piece of the model is XML of its own.)
+    let parts = pieces |> Array.map (function FromSource (start, finish) -> XmlPatch.slice sourceText start finish, false | FromModel text -> text, true)
+    let trees = pieces |> Array.map (function FromModel text -> XmlPatch.readFragmentRoot text | FromSource _ -> None)
+    let occurrences =
+        pieces
+        |> Array.mapi (fun index piece ->
+            match piece, trees.[index] with
+            | FromSource (start, finish), _ ->
+                sourceMarks |> List.filter (fun mark -> (XmlPatch.span mark.Node).Start >= start && (XmlPatch.span mark.Node).End <= finish)
+            | FromModel _, Some fragment -> rangeMarksIn allRangeKinds fragment.Node
+            | FromModel _, None -> [])
     if occurrences |> Array.forall List.isEmpty then parts |> Array.map fst
     else
         let sourceStarts = System.Collections.Generic.Dictionary<string, int>()   // key -> the first piece that has it
@@ -3863,16 +3891,22 @@ let private balancedRanges (original: RangeMark list option) (parts: (string * b
             parts
             |> Array.mapi (fun index (text, isModel) ->
                 if not isModel then
-                    if strayEnds.Count = 0 && strayStarts.Count = 0 then text
-                    else
-                        edited index
+                    match pieces.[index] with
+                    | FromSource (start, finish) when strayEnds.Count > 0 || strayStarts.Count > 0 ->
+                        // (A start nothing closes: closed where it is opened. An end nothing opens: left out.)
+                        XmlPatch.sliceWith sourceText start finish
                             [ for mark in occurrences.[index] do
-                                  // (A start nothing closes: closed where it is opened. An end nothing opens: left out.)
-                                  if mark.Opens && strayStarts.Contains mark.Key then yield mark.Node, [ XmlPatch.InsertAfter (endTag mark.Key) ]
-                                  elif not mark.Opens && strayEnds.Contains mark.Key then yield mark.Node, [ XmlPatch.Removed ] ]
+                                  let span = XmlPatch.span mark.Node
+                                  if mark.Opens && strayStarts.Contains mark.Key then yield span.Start, span.End, XmlPatch.bytesOf sourceText mark.Node + endTag mark.Key
+                                  elif not mark.Opens && strayEnds.Contains mark.Key then yield span.Start, span.End, "" ]
+                    | _ -> text
                 else
                     let opening = match closeAt.TryGetValue index with | true, keys -> keys |> Seq.map endTag |> String.concat "" | false, _ -> ""
-                    let paragraphs = match trees.[index] with Some fragment -> XmlPatch.descendantsWhere (fun node -> XmlPatch.name node = "w:p") fragment.Node | None -> []
+                    // (The paragraphs of the part by where they end: the first that ends after a mark is the one it is in, or the next.)
+                    let paragraphs =
+                        match trees.[index] with
+                        | Some fragment -> XmlPatch.descendantsWhere (fun node -> XmlPatch.name node = "w:p") fragment.Node |> List.sortBy (fun para -> (XmlPatch.span para).EndTagStart)
+                        | None -> []
                     let atEnd = System.Text.StringBuilder()
                     let edits =
                         [ for mark in occurrences.[index] do
@@ -3906,17 +3940,15 @@ let private balancedPart (xml: string) : string =
         if span.StartTagEnd >= span.End then xml
         else
             let content = XmlPatch.slice xml span.StartTagEnd span.EndTagStart
-            let balanced = (balancedRanges None [| content, true |]).[0]
+            let balanced = (balancedRanges None [| FromModel content |]).[0]
             if balanced = content then xml else XmlPatch.slice xml 0 span.StartTagEnd + balanced + XmlPatch.slice xml span.EndTagStart xml.Length
     | None -> xml
 
 let private generateDocumentXmlFromPlan (plan: BodyPlan) (images: ImageScope) (hyperlinks: Map<string, string>) (pageSetup: PageSetupInfo option) (headers: HeaderFooterPartInfo array) (footers: HeaderFooterPartInfo array) : string =
     let setup = pageSetup |> Option.defaultValue defaultPageSetupInfo
     let slice (start: int, finish: int) = XmlPatch.slice plan.Original start finish
-    let parts = ResizeArray<string>()
+    let pieces = ResizeArray<PartPiece>()
     let written = ResizeArray<string>()
-    // (Which of the parts were written from the model: see balancedRanges.)
-    let fromModel = System.Collections.Generic.HashSet<int>()
     // (Paragraphs written from the model splice the part's text: see splicedRuns. The origins of what is
     // written are of this part: see sourceElementAt.)
     spliceSourceText <- plan.Original
@@ -3927,21 +3959,19 @@ let private generateDocumentXmlFromPlan (plan: BodyPlan) (images: ImageScope) (h
             // The paragraphs written from their source: each in the place of its element.
             let mutable at = start
             for (paraStart, paraEnd, para) in paragraphs |> List.sortBy (fun (paraStart, _, _) -> paraStart) do
-                parts.Add (slice (at, paraStart))
+                pieces.Add (FromSource (at, paraStart))
                 let splicedBefore = reportSpliced
                 let paragraph = generateParagraphWithHyperlinksAndImagesWithPageSetup setup hyperlinks images para
                 // (The paragraphs of a block kept as it was read that are not written from their source.)
                 if reportSpliced = splicedBefore then reportInline <- reportInline + 1
                 written.Add paragraph
-                fromModel.Add parts.Count |> ignore
-                parts.Add paragraph
+                pieces.Add (FromModel paragraph)
                 at <- paraEnd
-            parts.Add (slice (at, finish))
+            pieces.Add (FromSource (at, finish))
         | ModelBlocks items ->
             let text = items |> generateBlocks (generateDocumentItemWithImagesAndPageSetup setup hyperlinks images) (generateTextBoxRun setup hyperlinks images)
             written.Add text
-            fromModel.Add parts.Count |> ignore
-            parts.Add text
+            pieces.Add (FromModel text)
         | CarriedMarks marks ->
             // (As what the model writes: a mark of a range that is not there any more is left out.)
             // (Nor the range of a comment the document has no more.)
@@ -3950,13 +3980,9 @@ let private generateDocumentXmlFromPlan (plan: BodyPlan) (images: ImageScope) (h
                 |> List.filter (fun mark -> mark.Kind <> "commentRange" || Set.contains mark.Id liveCommentIds)
                 |> List.map (fun mark -> XmlPatch.bytesOf plan.Original mark.Node)
                 |> String.concat ""
-            fromModel.Add parts.Count |> ignore
-            parts.Add live
+            pieces.Add (FromModel live)
     writingBody <- false
-    let originalMarks = rangeMarksIn allRangeKinds plan.Root
-    let balanced = balancedRanges (Some originalMarks) (parts.ToArray() |> Array.mapi (fun index text -> text, fromModel.Contains index))
-    parts.Clear()
-    parts.AddRange balanced
+    let parts = ResizeArray<string>(balancedRanges (Some (plan.Original, plan.Root)) (pieces.ToArray()))
     parts.Add (slice plan.BeforeSection)
     match plan.Section with
     | Some range -> parts.Add (slice range)
