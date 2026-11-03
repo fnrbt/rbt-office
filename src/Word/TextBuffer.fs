@@ -1638,6 +1638,22 @@ let private toggleProperty start len (isSet: TextStyle -> bool) (apply: bool -> 
     let turnOn = not (textRunsInRangeSatisfy start len isSet buffer)
     applyStyle start len (apply turnOn) buffer
 
+/// The characters of a range each replaced by another (`map` gets the
+/// paragraph's text and an offset in it, returns the character for that
+/// offset): the runs and their formatting as they were. The same buffer when
+/// no character changed.
+let mapCharacters start len (map: string -> int -> char) buffer =
+    let text = toString buffer
+    let finish = min text.Length (start + len)
+    let chars = text.ToCharArray()
+    let mutable changed = false
+    for i = max 0 start to finish - 1 do
+        let ch = map text i
+        if ch <> chars.[i] then
+            chars.[i] <- ch
+            changed <- true
+    if changed then { buffer with Rope = Rope.ofString (System.String chars) } else buffer
+
 /// Toggle bold for range
 let toggleBold start len buffer =
     toggleProperty start len (fun style -> style.Bold) withExplicitBold buffer

@@ -200,5 +200,44 @@ try {
         check('at a caret: the size of what is typed next', format().FontSizePt, 12);
         Word.dispose(editor);
     }
+
+    // ---- Shift+F3, Ctrl+Shift+L, Ctrl+Shift+N ----
+    {
+        const editor = Word.initialize('c');
+        Word.setParagraphs(editor, ['the quick fox', 'Second']);
+        const ids = [...new Set(Word.getLayoutLines(editor).map((line) => line.BlockId))];
+        const proxy = Word.getInputElement(editor);
+        canvas.focus();
+        const select = (from, to, block = 0) => Word.setSelection(editor, ids[block], from, ids[block], to);
+        const first = () => Word.getText(editor).split('\n')[0];
+        const format = () => Word.getSelectionFormat(editor);
+        select(4, 9);
+        Word.toggleBold(editor);
+        select(0, 13);
+        const cycle = [];
+        for (let i = 0; i < 3; i++) { key(proxy, 'F3', { shiftKey: true }); cycle.push(first()); }
+        check('Shift+F3 on a selection: Each Word, UPPER, lower (taken)', cycle, ['The Quick Fox', 'THE QUICK FOX', 'the quick fox']);
+        const sel = Word.getSelection(editor);
+        check('... the selection stays, the formatting too', [sel.AnchorOffset, sel.FocusOffset, (select(4, 9), format().Bold), (select(0, 3), format().Bold)], [0, 13, true, false]);
+        check('... one undo step each', [Word.undo(editor), first(), Word.undo(editor), first()], [true, 'THE QUICK FOX', true, 'The Quick Fox']);
+        Word.undo(editor);
+        select(6, 6);
+        key(proxy, 'F3', { shiftKey: true });
+        check('with a caret: the word at it', [first(), Word.getSelection(editor).FocusOffset, Word.getSelection(editor).IsCollapsed], ['the Quick fox', 6, true]);
+        key(proxy, 'F3', { shiftKey: true });
+        check('... again: upper case', first(), 'the QUICK fox');
+        select(0, 0, 1);
+        check('Ctrl+Shift+L: a bulleted list (taken)', [key(proxy, 'L', { ctrlKey: true, shiftKey: true }), format().Paragraph.ListKind], [true, 'bullet']);
+        key(proxy, 'L', { ctrlKey: true, shiftKey: true });
+        check('... twice: still one', format().Paragraph.ListKind, 'bullet');
+        check('... the alignment is as it was', format().Paragraph.Alignment, 'left');
+        key(proxy, '1', { ctrlKey: true });
+        check('a heading', format().Paragraph.HeadingLevel, 1);
+        check('Ctrl+Shift+N: the Normal style (taken)', [key(proxy, 'N', { ctrlKey: true, shiftKey: true }), format().Paragraph.HeadingLevel ?? 0], [true, 0]);
+        Word.setParagraphStyle(editor, 'Quote');
+        key(proxy, 'N', { ctrlKey: true, shiftKey: true });
+        check('... a named style taken off', format().Paragraph.StyleId ?? null, null);
+        Word.dispose(editor);
+    }
 } catch (e) { fail(e); }
 finish();

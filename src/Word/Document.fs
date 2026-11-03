@@ -4179,6 +4179,53 @@ let toggleItalic doc = toggleItalicWith rawStyle doc
 /// Toggle underline on selection
 let toggleUnderline doc = toggleUnderlineWith rawStyle doc
 
+let private isCaseWordChar (ch: char) = System.Char.IsLetterOrDigit ch || ch = '\'' || ch = '’'
+
+/// Change Case (Word's Shift+F3) on the selection, or with nothing selected
+/// on the word at the caret (the caret stays): text with no capitals becomes
+/// Capitalized Each Word, text with some becomes UPPER CASE, text in upper
+/// case lower case - one after the other, as Word cycles. The characters
+/// keep their formatting.
+let changeCase doc =
+    let caretWord =
+        match doc.Selection with
+        | Some sel when sel.IsCollapsed ->
+            match findParagraph doc sel.Focus.BlockId with
+            | Some para ->
+                let text = TextBuffer.toString para.Buffer
+                let at = max 0 (min text.Length sel.Focus.Offset)
+                let mutable first = at
+                while first > 0 && isCaseWordChar text.[first - 1] do first <- first - 1
+                let mutable last = at
+                while last < text.Length && isCaseWordChar text.[last] do last <- last + 1
+                if last > first then Some (setSelection { sel.Focus with Offset = first } { sel.Focus with Offset = last } doc) else None
+            | None -> None
+        | _ -> None
+    let target = caretWord |> Option.defaultValue doc
+    match selectionFormatter target with
+    | None -> doc
+    | Some format ->
+        let mutable anyUpper = false
+        let mutable anyLower = false
+        format (fun () -> false) (fun _ start len buffer ->
+            let text = TextBuffer.toString buffer
+            for i = start to min text.Length (start + len) - 1 do
+                if System.Char.IsUpper text.[i] then anyUpper <- true
+                elif System.Char.IsLower text.[i] then anyLower <- true
+            buffer)
+        |> ignore
+        if not anyUpper && not anyLower then doc
+        else
+            let map: string -> int -> char =
+                if not anyUpper then
+                    fun text i ->
+                        let ch = text.[i]
+                        if i = 0 || not (isCaseWordChar text.[i - 1]) then System.Char.ToUpperInvariant ch else ch
+                elif not anyLower then fun text i -> System.Char.ToLowerInvariant text.[i]
+                else fun text i -> System.Char.ToUpperInvariant text.[i]
+            let changed = format (fun () -> false) (fun _ start len buffer -> TextBuffer.mapCharacters start len map buffer)
+            { changed with Selection = doc.Selection }
+
 /// Toggle all caps on selection
 let toggleAllCaps doc = toggleAllCapsWith rawStyle doc
 
@@ -4272,6 +4319,14 @@ let setParagraphStyle styleId doc =
             replaceParagraph currentDoc para.Id {
                 para with Metadata = { para.Metadata with Style = normalizedStyle }
             })
+
+/// Word's Ctrl+Shift+N: the selected paragraphs in the Normal style (the
+/// document's default paragraph style), headings no longer.
+let setNormalStyle doc =
+    let cleared = clearHeading doc
+    let paragraphs = selectedParagraphIds cleared |> List.choose (findParagraph cleared)
+    if paragraphs |> List.forall (fun para -> para.Metadata.Style.IsNone) then cleared
+    else setParagraphStyle "" cleared
 
 /// Set named character style on selection
 let setCharacterStyle styleId doc =
@@ -5263,6 +5318,13 @@ let private toggleListStyle listStyle doc =
 /// Toggle bullet list on the selected paragraphs
 let toggleBulletList doc =
     toggleListStyle Bullet doc
+
+/// Word's Ctrl+Shift+L (the List Bullet style): the selected paragraphs are
+/// bulleted list items; they stay so when they are already.
+let applyBulletList doc =
+    mapSelectedMetadata (fun metadata ->
+        if metadata.ListStyle = Bullet then metadata
+        else { metadata with ListStyle = Bullet; ListLevel = max 1 metadata.ListLevel }) doc
 
 /// Toggle numbered list on the selected paragraphs
 let toggleNumberedList doc =

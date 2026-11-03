@@ -1545,6 +1545,18 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         | "3" when commandKey ->
             newDoc <- Doc.setHeadingLevel 3 handler.Document
             e.preventDefault()
+        | "F3" when shift && not commandKey && not ke.altKey ->
+            // Shift+F3: Change Case of the selection or the word at the caret.
+            newDoc <- Doc.changeCase handler.Document
+            e.preventDefault()
+        | key when commandKey && shift && not ke.altKey && keyEquals 'l' key ->
+            // Ctrl+Shift+L: a bulleted list (Word's List Bullet).
+            newDoc <- Doc.applyBulletList handler.Document
+            e.preventDefault()
+        | key when commandKey && shift && not ke.altKey && keyEquals 'n' key ->
+            // Ctrl+Shift+N: the Normal style.
+            newDoc <- Doc.setNormalStyle handler.Document
+            e.preventDefault()
         | key when commandKey && not ke.altKey && not shift && (keyEquals 'e' key || keyEquals 'l' key || keyEquals 'r' key || keyEquals 'j' key) ->
             // Word's alignment keys: Ctrl+E centre, Ctrl+L left, Ctrl+R right, Ctrl+J justify.
             let align =
