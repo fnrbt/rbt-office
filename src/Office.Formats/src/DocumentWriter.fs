@@ -3062,7 +3062,7 @@ let private spliceSourceOf (text: string) (start: int) (finish: int) (bookmarks:
 [<Fable.Core.Emit("JSON.stringify(Object.assign({}, $0, { Text: undefined }))")>]
 let private jsonWithoutText (_run: obj) : string = jsNative
 
-let private splicedRuns (source: SpliceSource) (original: obj) (joined: obj array) (leading: bool) (trailing: bool) (pieces: (obj * string * (string -> string)) list) (runXml: obj -> string) (wrapOf: obj -> string -> string) : string =
+let private splicedRuns (source: SpliceSource) (original: obj) (joined: obj array) (marksBefore: Map<int, string>) (leading: bool) (trailing: bool) (pieces: (obj * string * (string -> string)) list) (runXml: obj -> string) (wrapOf: obj -> string -> string) : string =
     let text = source.Layout.Text
     // The runs read, by source: the run objects the model had for each.
     let originalRuns = System.Collections.Generic.Dictionary<int, ResizeArray<obj>>()
@@ -3145,8 +3145,13 @@ let private splicedRuns (source: SpliceSource) (original: obj) (joined: obj arra
     let wrapping (runObj: obj) = wrapOf runObj "\u0002"
     let mutable previousInSource = false
     let mutable previousWrapping = ""
+    let marksWritten = System.Collections.Generic.HashSet<int>()
     let written =
         [| for runObj, whole, wrap in pieces do
+           // (The starts of ranges that stood before a paragraph joined to this one: where its text begins.)
+           match optionalInt (runObj?SourceRun) |> Option.bind (fun at -> Map.tryFind at marksBefore |> Option.map (fun marks -> at, marks)) with
+           | Some (at, marks) when marksWritten.Add at -> yield XmlPatch.Outside, marks
+           | _ -> ()
            match optionalInt (runObj?SourceRun) with
            | Some at when wholeAsRead.Contains at ->
                if firstOfWhole.Add at then
@@ -3290,13 +3295,26 @@ paragraphSplicer <-
                     let flag (value: obj) = isNullOrUndefined value || unbox<bool> value
                     // The runs of the paragraphs joined to it, in the elements they were read from.
                     let joined = optionalArray (para?SpliceJoined)
+                    // (And the starts of the ranges that stood between it and the paragraph before it: before its first run.)
+                    let mutable marksBefore = Map.empty
+                    let mutable previousEnd = intOrDefault -1 (para?SpliceFrom?End)
                     for other in joined do
-                        match paragraphSource.SpanOf other |> Option.bind (fun (start, finish) -> XmlDsl.tryScanAt spliceSourceText start finish (System.Collections.Generic.HashSet<string>())) with
-                        | Some node ->
-                            for run in XmlPatch.descendantsWhere (fun inner -> XmlPatch.name inner = "w:r") node do
-                                source.Runs.[(XmlPatch.span run).Start] <- run
-                        | None -> ()
-                    [ splicedRuns source para?SpliceOriginal joined (flag para?SpliceLeading) (flag para?SpliceTrailing) pieces runXml wrapOf ], source.Properties,
+                        match paragraphSource.SpanOf other with
+                        | Some (start, finish) ->
+                            match XmlDsl.tryScanAt spliceSourceText start finish (System.Collections.Generic.HashSet<string>()) with
+                            | Some node ->
+                                let runs = XmlPatch.descendantsWhere (fun inner -> XmlPatch.name inner = "w:r") node
+                                for run in runs do source.Runs.[(XmlPatch.span run).Start] <- run
+                                if previousEnd >= 0 && previousEnd <= start && not runs.IsEmpty then
+                                    match XmlPatch.readFragmentRoot (XmlPatch.slice spliceSourceText previousEnd start) with
+                                    | Some between ->
+                                        let starts = rangeMarksIn carriedRangeKinds between.Node |> List.filter (fun mark -> mark.Opens) |> List.map (fun mark -> XmlPatch.bytesOf between.Text mark.Node)
+                                        if not starts.IsEmpty then marksBefore <- Map.add (XmlPatch.span runs.Head).Start (String.concat "" starts) marksBefore
+                                    | None -> ()
+                            | None -> ()
+                            previousEnd <- finish
+                        | None -> previousEnd <- -1
+                    [ splicedRuns source para?SpliceOriginal joined marksBefore (flag para?SpliceLeading) (flag para?SpliceTrailing) pieces runXml wrapOf ], source.Properties,
                     (if boolOrDefault false (para?SourceCopy) then source.CopyHead else source.Head))
         member _.MergeProperties source was now =
             mergedProperties "w:pPr" source (propertyElementsOf was) (propertyElementsOf now) }

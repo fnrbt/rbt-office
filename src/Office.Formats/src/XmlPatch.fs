@@ -587,7 +587,16 @@ and writeLayoutWith (how: LayoutWrite) (laid: Layout) (written: (Placed * string
                     moveTo chain
                     out.Append(slice laid.Leads.[start]).Append(laid.Text, start, laid.KeptEnds.[start] - start) |> ignore
                 rest <- rest.Tail
+    let mutable placedAny = false
     for placed, xml in written do
+        // (New content before any item of the layout is written: after what stood before its first item - the
+        // marks at the start of a paragraph without runs are at its start still.)
+        match placed with
+        | AtItem at when chainOf.ContainsKey at -> ()
+        | _ when not placedAny ->
+            emitBefore (rest |> List.tryPick (function LaidItem (at, _) -> Some at | _ -> None))
+        | _ -> ()
+        placedAny <- true
         match placed with
         | AtItem at when chainOf.ContainsKey at ->
             if rest |> List.exists (function LaidItem (other, _) -> other = at | _ -> false) then emitBefore (Some at)
