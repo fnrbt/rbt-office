@@ -1878,6 +1878,16 @@ let private withoutParagraphEnd (metadata: BlockMetadata) : BlockMetadata =
             SectionPageNumberFormat = None; SectionVerticalAlign = None
             HeaderReferences = []; FooterReferences = [] }
 
+/// The properties of the second part of a paragraph that is split: not that
+/// the paragraph started a page or a column when Word last laid it out
+/// (RenderedPageBreakBefore, from its w:lastRenderedPageBreak) - the second
+/// part did not; its first part did. (The column flow starts a new column at
+/// a paragraph that has it: the second part went to the next column in the
+/// editor and stayed in its column in the saved document, which does not say it.)
+let private withoutParagraphStart (metadata: BlockMetadata) : BlockMetadata =
+    if metadata.RenderedPageBreakBefore.IsNone then metadata
+    else { metadata with RenderedPageBreakBefore = None }
+
 /// Split block at cursor, creating two blocks
 let splitBlock doc =
     match doc.Selection with
@@ -1894,7 +1904,7 @@ let splitBlock doc =
                 let beforeBuffer = TextBuffer.sliceBuffer 0 offset para.Buffer
                 let afterBuffer = TextBuffer.sliceBuffer offset (TextBuffer.length para.Buffer - offset) para.Buffer
                 let newBlockId = nextBlockId()
-                let newPara = { Id = newBlockId; Buffer = afterBuffer; Metadata = para.Metadata }
+                let newPara = { Id = newBlockId; Buffer = afterBuffer; Metadata = withoutParagraphStart para.Metadata }
                 let updatedPara = { para with Buffer = beforeBuffer; Metadata = withoutParagraphEnd para.Metadata }
                 let split =
                     editContainerOf doc para.Id (fun content anchors ->
@@ -1918,7 +1928,7 @@ let splitBlock doc =
 
             // Create new block for the second part (carry over metadata)
             let newBlockId = nextBlockId()
-            let newPara = { Id = newBlockId; Buffer = afterBuffer; Metadata = para.Metadata }
+            let newPara = { Id = newBlockId; Buffer = afterBuffer; Metadata = withoutParagraphStart para.Metadata }
             let newBlock =
                 match block with
                 | Paragraph _ -> Paragraph newPara

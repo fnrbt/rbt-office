@@ -119,6 +119,12 @@ let broken =
 check "Enter: a column break after the text stays after it"
     (Doc.allParagraphs broken |> List.map (fun p -> textOf p, p.Metadata.PageBreakAfter, p.Metadata.ColumnBreakAfter))
     [ "before", false, false; " break", true, true ]
+let rendered =
+    docOf [ Doc.Paragraph { paragraph "r1" "started a column" with Metadata = { Doc.defaultMetadata with RenderedPageBreakBefore = Some 2 } } ]
+    |> caret "r1" 7 |> Doc.splitBlock
+check "Enter: only the first part started a page or column when Word laid it out"
+    (Doc.allParagraphs rendered |> List.map (fun p -> textOf p, p.Metadata.RenderedPageBreakBefore))
+    [ "started", Some 2; " a column", None ]
 
 // ---- the clip as HTML for other programs ----
 let html = Doc.clipToHtml multi
