@@ -635,7 +635,7 @@ let private splitBlockPreservingStyles doc =
     match doc.Selection with
     | None -> doc
     | Some selection ->
-        let addSplit para makeBeforeBlock makeAfterBlock =
+        let addSplit (para: ParagraphBlock) makeBeforeBlock makeAfterBlock =
             let beforeBuffer, afterBuffer = splitBufferPreservingRuns selection.Focus.Offset para.Buffer
             let newBlockId = "editor-block-" + System.Guid.NewGuid().ToString("N")
             let beforePara = { para with Buffer = beforeBuffer }
