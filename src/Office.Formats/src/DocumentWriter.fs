@@ -3440,7 +3440,8 @@ paragraphSplicer <-
                                 if previousEnd >= 0 && previousEnd <= start && not runs.IsEmpty then
                                     match XmlPatch.readFragmentRoot (XmlPatch.slice spliceSourceText previousEnd start) with
                                     | Some between ->
-                                        let starts = rangeMarksIn carriedRangeKinds between.Node |> List.filter (fun mark -> mark.Opens) |> List.map (fun mark -> XmlPatch.bytesOf between.Text mark.Node)
+                                        // (All of them, in their order: a bookmark that began and ended there is where the text begins.)
+                                        let starts = rangeMarksIn carriedRangeKinds between.Node |> List.filter (fun mark -> mark.Kind <> "commentRange" || Set.contains mark.Id liveCommentIds) |> List.map (fun mark -> XmlPatch.bytesOf between.Text mark.Node)
                                         if not starts.IsEmpty then marksBefore <- Map.add (XmlPatch.span runs.Head).Start (String.concat "" starts) marksBefore
                                     | None -> ()
                             | None -> ()
@@ -3851,10 +3852,21 @@ let private planBody (xml: string) (itemChunks: int array) (storyCounts: int arr
             // The marks of ranges that stand between two blocks (in the text before an element: see
             // textStart) stay where they stood when the element is written from the model, or is
             // not there any more: before the element's first item, or before what comes next.
+            // (The elements of paragraphs joined to another: what stood before each goes with its text - see the splice.)
+            let joinedChunks =
+                let found = System.Collections.Generic.HashSet<int>()
+                for item in items do
+                    let changes = item?SourceTextChanges
+                    if not (isNullOrUndefined changes) then
+                        for change in optionalArray (changes?Edits) do
+                            for join in optionalArray (change?Join) do
+                                let block = intOrDefault -1 (join?Block)
+                                if block >= 0 && block < itemChunks.Length && itemChunks.[block] >= 0 then found.Add itemChunks.[block] |> ignore
+                found
             let carriedBefore = System.Collections.Generic.Dictionary<int, ResizeArray<RangeMark>>()
             let carriedAtEnd = ResizeArray<RangeMark>()
             for chunk in 0 .. chunkCount - 1 do
-                if originalCount.[chunk] > 0 && not keep.[chunk] && body.Starts.[chunk] > textStart.[chunk] then
+                if originalCount.[chunk] > 0 && not keep.[chunk] && not (joinedChunks.Contains chunk) && body.Starts.[chunk] > textStart.[chunk] then
                     let marks =
                         body.Nodes
                         |> Array.filter (fun node -> (XmlPatch.span node).Start >= textStart.[chunk] && (XmlPatch.span node).End <= body.Starts.[chunk])
