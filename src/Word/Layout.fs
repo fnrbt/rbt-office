@@ -695,6 +695,25 @@ let private endnoteMark (id: string) =
     match System.Int32.TryParse id with
     | true, n -> toLowerRoman n
     | _ -> id
+
+/// The mark a note is shown with in the note area ("footnote": its id; "endnote": the id in roman numerals).
+let noteMarkText (noteType: string) (id: string) =
+    if noteType = "endnote" then endnoteMark id else id
+
+/// The block id of a synthetic note paragraph ends with the note's id after this.
+let private noteIdSeparator = "#"
+
+/// The note (type, id) a synthetic paragraph of the note areas shows: by its block id.
+let noteOfLayoutId (blockId: BlockId) : (string * string) option =
+    let noteType =
+        if blockId.StartsWith footnoteBlockIdPrefix then Some "footnote"
+        elif blockId.StartsWith endnoteBlockIdPrefix then Some "endnote"
+        else None
+    match noteType with
+    | Some noteType ->
+        let at = blockId.IndexOf noteIdSeparator
+        if at < 0 then None else Some (noteType, blockId.Substring(at + noteIdSeparator.Length))
+    | None -> None
 // Font sizes in the layout/buffer are CSS px (1pt = 96/72 px), as produced by
 // the editor import (11pt body = 14.667px). Word's FootnoteText is 10pt.
 let private footnoteFontSize = 10.0 * 96.0 / 72.0
@@ -4420,7 +4439,7 @@ let private footnoteLayoutsForPage (settings: LayoutSettings) (measureText: Text
                 |> TextBuffer.setFontFamily 0 noteString.Length footnoteFontFamily
                 |> TextBuffer.setFontSize 0 noteString.Length footnoteFontSize
                 |> TextBuffer.setVertAlign 0 id.Length (Some "superscript")
-            let para = { Id = sprintf "%s%d_%d" footnoteBlockIdPrefix pageIndex noteIndex; Buffer = buffer; Metadata = footnoteParagraphMetadataForLayout }
+            let para = { Id = sprintf "%s%d_%d%s%s" footnoteBlockIdPrefix pageIndex noteIndex noteIdSeparator id; Buffer = buffer; Metadata = footnoteParagraphMetadataForLayout }
             let layout, _ = layoutParagraphAtWithRange noteSettings measureText measureRange maxWidth tempY 0.0 para Map.empty
             tempY <- tempY + layout.Height
             layout)
@@ -4455,7 +4474,7 @@ let private endnoteLayoutsAfterBody (settings: LayoutSettings) (measureText: Tex
             |> TextBuffer.setFontFamily 0 noteString.Length footnoteFontFamily
             |> TextBuffer.setFontSize 0 noteString.Length footnoteFontSize
             |> TextBuffer.setVertAlign 0 mark.Length (Some "superscript")
-        let para = { Id = sprintf "%s%d" endnoteBlockIdPrefix noteIndex; Buffer = buffer; Metadata = footnoteParagraphMetadataForLayout }
+        let para = { Id = sprintf "%s%d%s%s" endnoteBlockIdPrefix noteIndex noteIdSeparator id; Buffer = buffer; Metadata = footnoteParagraphMetadataForLayout }
         let probe, _ = layoutParagraphAtWithRange noteSettings measureText measureRange maxWidth 0.0 0.0 para Map.empty
         let height = probe.Height
         let struct (contentTop, contentBottom, nextContentTop) = pageAt noteY

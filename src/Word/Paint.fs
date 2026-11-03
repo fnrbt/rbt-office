@@ -2761,6 +2761,25 @@ let bodyShapeRects (settings: LayoutSettings) measureText measureRange (doc: Doc
 let shapeTextLayouts (settings: LayoutSettings) measureText measureRange (doc: Document) (textBox: TextBoxBlock) (x: float) (y: float) (height: float) : BlockLayout list =
     if textBox.FitText then [] else textBoxContentLayouts settings measureText measureRange (WordStyles.styleContext doc) textBox x y height
 
+/// The layouts of the paragraphs of a note's or comment's body that is edited
+/// in place, their left edge at `left` and the first one's top at `top`
+/// (across and down the canvas), each `width` wide at most, with the
+/// formatting they have (not broken over pages).
+let noteStoryLayouts (settings: LayoutSettings) measureText measureRange (doc: Document) (left: float) (top: float) (width: float) (blocks: Block list) : BlockLayout list =
+    let styleContext = WordStyles.styleContext doc
+    let storySettings = { settings with MarginBottom = 0.0; InTableCell = false }
+    let result = ResizeArray<BlockLayout>()
+    let mutable y = top
+    let mutable counters : Map<string * int, int> = Map.empty
+    for para in paragraphsOfBlocks blocks do
+        let safePara = { para with Metadata = { para.Metadata with PageBreakAfter = false } }
+        let layout, next =
+            layoutParagraphAtWithStyleWithRange storySettings measureText measureRange (max 1.0 width) y (left - settings.PaddingLeft) (forBlockInContext styleContext (Paragraph para)) (effectiveBufferInContext styleContext) safePara counters
+        counters <- next
+        result.Add layout
+        y <- layout.Y + layout.Height
+    resizeArrayToList result
+
 let private tableHasRowSpanningVerticalAlignment (tableBlock: TableBlock) =
     let mutable found = false
     for row in tableBlock.Rows do

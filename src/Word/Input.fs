@@ -3,6 +3,11 @@ module Rbt.Word.Input
 let private sameListOrEqual left right =
     obj.ReferenceEquals(left, right) || left = right
 
+/// The bodies of the notes and comments are the same (a note's body is edited in place, see Input.StorySession.Note).
+let private sameNoteBodies (left: Rbt.Word.Document.Document) (right: Rbt.Word.Document.Document) =
+    obj.ReferenceEquals(left.Package, right.Package)
+    || (sameListOrEqual left.Package.Notes right.Package.Notes && sameListOrEqual left.Package.Comments right.Package.Comments)
+
 let private documentsEqualForChange (left: Rbt.Word.Document.Document) (right: Rbt.Word.Document.Document) =
     obj.ReferenceEquals(left, right)
     || (left.Selection = right.Selection
@@ -12,7 +17,8 @@ let private documentsEqualForChange (left: Rbt.Word.Document.Document) (right: R
         && sameListOrEqual left.Headers right.Headers
         && sameListOrEqual left.Footers right.Footers
         && sameListOrEqual left.HeaderParts right.HeaderParts
-        && sameListOrEqual left.FooterParts right.FooterParts)
+        && sameListOrEqual left.FooterParts right.FooterParts
+        && sameNoteBodies left right)
 
 /// True when two documents differ at most in their selection. Moving the
 /// caret is not something Undo steps through.
@@ -27,7 +33,8 @@ let sameContentObjects (left: Rbt.Word.Document.Document) (right: Rbt.Word.Docum
         && obj.ReferenceEquals(left.Headers, right.Headers)
         && obj.ReferenceEquals(left.Footers, right.Footers)
         && obj.ReferenceEquals(left.HeaderParts, right.HeaderParts)
-        && obj.ReferenceEquals(left.FooterParts, right.FooterParts))
+        && obj.ReferenceEquals(left.FooterParts, right.FooterParts)
+        && obj.ReferenceEquals(left.Package, right.Package))
 
 let sameContent (left: Rbt.Word.Document.Document) (right: Rbt.Word.Document.Document) =
     sameContentObjects left right
@@ -37,7 +44,8 @@ let sameContent (left: Rbt.Word.Document.Document) (right: Rbt.Word.Document.Doc
         && sameListOrEqual left.Headers right.Headers
         && sameListOrEqual left.Footers right.Footers
         && sameListOrEqual left.HeaderParts right.HeaderParts
-        && sameListOrEqual left.FooterParts right.FooterParts)
+        && sameListOrEqual left.FooterParts right.FooterParts
+        && sameNoteBodies left right)
 
 #if FABLE_COMPILER
 open Fable.Core
@@ -163,6 +171,13 @@ type StorySession = {
     Box: Doc.BlockId option
     /// The body's blocks with the story's blocks in the box, by those blocks (as Folded).
     BoxFolded: ResizeArray<struct (Doc.Block list * Doc.Block list)>
+    /// The story is the body of this note or comment ("footnote" | "endnote" |
+    /// "comment", id; see `Doc.withStoryBody`), not a header or footer: its
+    /// blocks are the body's blocks in the package, and the whole document is
+    /// Main with them there (and their text on the references).
+    Note: (string * string) option
+    /// The whole documents with the story's blocks as the note's body, by those blocks (as Folded).
+    NoteFolded: ResizeArray<struct (Doc.Block list * Doc.Document)>
 }
 
 /// Character formatting chosen with nothing selected (Ctrl+B at a caret, a
@@ -356,6 +371,25 @@ let private storyParts (session: StorySession) (blocks: Doc.Block list) : Doc.He
 /// blocks in their part, the story's selection (and whatever else an edit of
 /// the story changed - the styles).
 let private foldStory (session: StorySession) (story: Doc.Document) : Doc.Document =
+    match session.Note with
+    | Some (kind, id) ->
+        // The body of a note or comment: the document as it was, the story's blocks as that body.
+        let main = session.Main
+        if obj.ReferenceEquals(story.Blocks, session.EntryBlocks) then
+            { story with Blocks = main.Blocks; HeaderParts = main.HeaderParts; FooterParts = main.FooterParts; Package = main.Package }
+        else
+            let mutable found = Unchecked.defaultof<Doc.Document>
+            let mutable known = false
+            for struct (knownBlocks, knownWhole) in session.NoteFolded do
+                if not known && obj.ReferenceEquals(knownBlocks, story.Blocks) then
+                    found <- knownWhole
+                    known <- true
+            if not known then
+                found <- Doc.withStoryBody kind id story.Blocks main
+                if session.NoteFolded.Count >= 256 then session.NoteFolded.RemoveAt 0
+                session.NoteFolded.Add(struct (story.Blocks, found))
+            { story with Blocks = found.Blocks; HeaderParts = found.HeaderParts; FooterParts = found.FooterParts; Package = found.Package }
+    | None ->
     match session.Box with
     | Some boxId when session.PartIndex >= 0 ->
         // A text box of a header or footer: the document as it was, the story's paragraphs in the box of its part.
@@ -416,6 +450,24 @@ let private foldStory (session: StorySession) (story: Doc.Document) : Doc.Docume
 
 /// The story document of a whole document: the blocks of the story's part.
 let private unfoldStory (session: StorySession) (whole: Doc.Document) : Doc.Document =
+    match session.Note with
+    | Some (kind, id) ->
+        let blocks =
+            if obj.ReferenceEquals(whole.Package, session.Main.Package) then session.EntryBlocks
+            else
+                let mutable found = Unchecked.defaultof<Doc.Block list>
+                let mutable known = false
+                for struct (knownBlocks, knownWhole) in session.NoteFolded do
+                    if not known && obj.ReferenceEquals(knownWhole.Package, whole.Package) then
+                        found <- knownBlocks
+                        known <- true
+                if known then found
+                else
+                    match Doc.storyBody kind id whole with
+                    | Some blocks when not (Doc.paragraphsOfBlocks blocks).IsEmpty -> blocks
+                    | _ -> session.EntryBlocks
+        { whole with Blocks = blocks }
+    | None ->
     match session.Box with
     | Some boxId when session.PartIndex >= 0 ->
         let parts = if session.IsHeader then whole.HeaderParts else whole.FooterParts
@@ -520,13 +572,15 @@ let private showStory (handler: InputHandler) (session: StorySession) =
             last.Add((story, folded))
             folded
     handler.Story <- Some session
-    ctx.Story <- Some { Whole = whole; PageIndex = session.PageIndex; IsHeader = session.IsHeader; Label = session.Label; Box = session.Box }
+    ctx.Story <- Some { Whole = whole; PageIndex = session.PageIndex; IsHeader = session.IsHeader; Label = session.Label; Box = session.Box; Note = session.Note }
     ctx.StoryLayouts <- None
+    ctx.StoryNotePlace <- None
 
 let private hideStory (handler: InputHandler) =
     handler.Story <- None
     handler.RenderContext.Story <- None
     handler.RenderContext.StoryLayouts <- None
+    handler.RenderContext.StoryNotePlace <- None
 
 /// Record a finished change in the undo history as one step. Selection-only
 /// changes are not recorded.
@@ -809,7 +863,7 @@ let enterTextBoxOnPage (handler: InputHandler) (boxId: Doc.BlockId) (selection: 
         let session : StorySession =
             { IsHeader = false; PageIndex = pageIndex; Kind = "textbox"; Section = 0; PartIndex = -1; Label = "Text box"
               Main = doc; Edited = doc; PartBlocks = []; EntryBlocks = entry; Folded = ResizeArray()
-              Box = Some boxId; BoxFolded = ResizeArray() }
+              Box = Some boxId; BoxFolded = ResizeArray(); Note = None; NoteFolded = ResizeArray() }
         enterStory handler session selection
         true
     | Some _ -> false
@@ -835,7 +889,7 @@ let enterTextBoxOnPage (handler: InputHandler) (boxId: Doc.BlockId) (selection: 
                 let session : StorySession =
                     { IsHeader = isHeader; PageIndex = pageIndex; Kind = "textbox"; Section = 0; PartIndex = partIndex; Label = "Text box"
                       Main = doc; Edited = doc; PartBlocks = []; EntryBlocks = entry; Folded = ResizeArray()
-                      Box = Some boxId; BoxFolded = ResizeArray() }
+                      Box = Some boxId; BoxFolded = ResizeArray(); Note = None; NoteFolded = ResizeArray() }
                 enterStory handler session selection
                 true
             // (No page that is laid out shows that header.)
@@ -2057,6 +2111,9 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                 match boxAt with
                 | Some boxId -> enterTextBox handler boxId None |> ignore
                 | None -> ()
+         | Some session when session.Note.IsSome ->
+            // A note or comment is edited: a click off it goes back to the body (the caret goes where the click was).
+            if not (onNoteStory handler.RenderContext handler.Document x y) then exitStory handler |> ignore
          | Some _ ->
             // A header or footer is edited: a click in one of its text boxes (or of another
             // header's or footer's) edits the box's text, on the page the click is on.

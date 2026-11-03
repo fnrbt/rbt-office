@@ -4279,6 +4279,89 @@ let setComment commentId commentText author date doc =
 let setNote noteId noteType noteText doc =
     applyFormattingToSelection (fun start len buf -> TextBuffer.setNote start len noteId noteType noteText buf) doc
 
+// ---- the body of a note or comment edited in place --------------------------
+
+/// The blocks with each paragraph (those of tables and text boxes too) mapped;
+/// a block nothing of which the mapper changed is the object it was.
+let private mapParagraphsKeeping (mapper: ParagraphBlock -> ParagraphBlock) (blocks: Block list) : Block list =
+    let mutable changed = false
+    let mapList (paras: ParagraphBlock list) =
+        let mapped = paras |> List.map mapper
+        if List.forall2 (fun (a: ParagraphBlock) b -> obj.ReferenceEquals(a, b)) paras mapped then paras else mapped
+    let rec mapTable (table: TableBlock) : TableBlock =
+        let rows =
+            table.Rows
+            |> List.map (fun row ->
+                let cells =
+                    row.Cells
+                    |> List.map (fun cell ->
+                        let content = mapList cell.Content
+                        let nested = cell.NestedTables |> List.map mapTable
+                        if obj.ReferenceEquals(content, cell.Content) && List.forall2 (fun (a: TableBlock) b -> obj.ReferenceEquals(a, b)) cell.NestedTables nested then cell
+                        else { cell with Content = content; NestedTables = nested })
+                if List.forall2 (fun (a: TableCell) b -> obj.ReferenceEquals(a, b)) row.Cells cells then row else { row with Cells = cells })
+        if List.forall2 (fun (a: TableRow) b -> obj.ReferenceEquals(a, b)) table.Rows rows then table else { table with Rows = rows }
+    let mapped =
+        blocks
+        |> List.map (fun block ->
+            let next =
+                match block with
+                | Paragraph para -> (let p = mapper para in if obj.ReferenceEquals(p, para) then block else Paragraph p)
+                | Heading (level, para) -> (let p = mapper para in if obj.ReferenceEquals(p, para) then block else Heading (level, p))
+                | Table table -> (let t = mapTable table in if obj.ReferenceEquals(t, table) then block else Table t)
+                | TextBox textBox -> (let content = mapList textBox.Content in if obj.ReferenceEquals(content, textBox.Content) then block else TextBox { textBox with Content = content })
+            if not (obj.ReferenceEquals(next, block)) then changed <- true
+            next)
+    if changed then mapped else blocks
+
+/// The plain text a note's or comment's reference shows of its body, as the
+/// reader gives it: the text of its paragraphs, joined (a comment's, those
+/// with text, parted by a space).
+let storyPlainText (kind: string) (blocks: Block list) : string =
+    let texts = paragraphsOfBlocks blocks |> List.map (fun para -> TextBuffer.toString para.Buffer |> String.filter (fun c -> c <> '\uFFFC'))
+    if kind = "comment" then texts |> List.filter (fun text -> text <> "") |> String.concat " "
+    else String.concat "" texts
+
+/// The document with `blocks` as the body of the note (kind "footnote" |
+/// "endnote") or comment (kind "comment") with this id: the body in the
+/// package, its plain text there and on the references that show it (the
+/// runs of the text that refer to it). What does not refer to it is the
+/// object it was.
+let withStoryBody (kind: string) (id: string) (blocks: Block list) (doc: Document) : Document =
+    let text = storyPlainText kind blocks
+    let refers (style: TextBuffer.TextStyle) =
+        if kind = "comment" then style.CommentId = Some id && style.CommentText <> Some text
+        else style.NoteId = Some id && (style.NoteType |> Option.defaultValue "footnote") = kind && style.NoteText <> Some text
+    let mapper (para: ParagraphBlock) =
+        let found = para.Buffer.Runs |> List.exists (function TextBuffer.Text run -> refers run.Style | TextBuffer.Image _ -> false)
+        if not found then para
+        else
+            let runs =
+                para.Buffer.Runs
+                |> List.map (function
+                    | TextBuffer.Text run when refers run.Style ->
+                        TextBuffer.Text { run with Style = (if kind = "comment" then { run.Style with CommentText = Some text } else { run.Style with NoteText = Some text }) }
+                    | other -> other)
+            { para with Buffer = { para.Buffer with Runs = runs } }
+    let parts (list: HeaderFooterPart list) =
+        let mapped = list |> List.map (fun part -> let blocks = mapParagraphsKeeping mapper part.Blocks in if obj.ReferenceEquals(blocks, part.Blocks) then part else { part with Blocks = blocks })
+        if List.forall2 (fun (a: HeaderFooterPart) b -> obj.ReferenceEquals(a, b)) list mapped then list else mapped
+    let package =
+        if kind = "comment" then
+            { doc.Package with Comments = doc.Package.Comments |> List.map (fun body -> if body.Id = id then { body with Blocks = blocks; Text = text } else body) }
+        else
+            { doc.Package with Notes = doc.Package.Notes |> List.map (fun body -> if body.Id = id && body.NoteType = kind && body.Kind.IsNone then { body with Blocks = blocks; Text = text } else body) }
+    { doc with
+        Blocks = mapParagraphsKeeping mapper doc.Blocks
+        HeaderParts = parts doc.HeaderParts
+        FooterParts = parts doc.FooterParts
+        Package = package }
+
+/// The body of the note or comment with this id (see withStoryBody), when the document has it.
+let storyBody (kind: string) (id: string) (doc: Document) : Block list option =
+    if kind = "comment" then doc.Package.Comments |> List.tryFind (fun body -> body.Id = id) |> Option.map (fun body -> body.Blocks)
+    else doc.Package.Notes |> List.tryFind (fun body -> body.Id = id && body.NoteType = kind && body.Kind.IsNone) |> Option.map (fun body -> body.Blocks)
+
 /// Set bookmark markers on selection
 let setBookmark bookmarkName doc =
     let normalizedName =

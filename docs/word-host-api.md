@@ -269,6 +269,34 @@ has all of it or none of it, text is typed before or after it, and Backspace
 after it (Delete before it) removes it whole. A host that kept a position
 inside a mark gets the end of the mark back from `getSelection`.
 
+## Notes and comments edited in place
+
+`enterNote(editor, noteId, noteType)` (`noteType` "footnote" | "endnote") and
+`enterComment(editor, commentId)` put the caret into the body of that note or
+comment, as `enterHeaderFooter` does into a header: from then on the document
+the editor's commands and keys act on is that body - typing, Enter,
+Backspace, selection, character and paragraph formatting, undo and redo work
+there - until `exitNote`, Escape or a click off the note. A footnote is shown
+where its page shows it (an endnote after the body), with its formatting, in
+a frame while it is edited; a comment in a balloon below the line its range
+starts on (the host's own comment pane, from `getCommentAnchors`, shows its
+text as before, and the anchor's `Text` follows the edit). A double click on a
+footnote or an endnote where the page shows it enters it with the caret where
+the click was. `getCaretContext` says `Story` "footnote" | "endnote" |
+"comment" and `NoteId` / `CommentId`; `getLayoutLines` and `getText` are those
+of the body while it is edited, as in a header. Entering changes nothing, and
+an undo step made there brings the caret back into the note.
+
+The paragraphs edited are the note's paragraphs as they were read: the save
+writes the part of notes (comments) as it was read with the edit made in the
+note's paragraph - the other notes, the separators, the note's other
+paragraphs and its mark run (`w:footnoteRef`, `w:annotationRef`) stay the
+text they were, and the body's XML is not touched. (Before 0.1.27 a note's
+body could only be replaced whole by `setNote` / `setComment`, as a new plain
+paragraph.) Not yet: the note's mark itself is not part of what is edited; a
+note or comment the text does not refer to cannot be entered; nothing but its
+paragraphs is shown of a table in a note while it is edited.
+
 ## Fields
 
 Text typed into the result of a field - also with a format chosen at the
@@ -307,7 +335,7 @@ The editor handles these keys itself, on its canvas and its input element
 | Ctrl+], Ctrl+[ | a point larger / smaller (0.1.26) |
 | Ctrl+=, Ctrl+Shift+= | subscript, superscript (on / off; 0.1.26) |
 | Ctrl+Space | the character formatting cleared (0.1.26) |
-| Escape | out of a header, a footer or a text box that is edited |
+| Escape | out of a header, a footer, a text box, a note or a comment that is edited |
 
 The character keys work as Ctrl+B does: on the selection, or with nothing
 selected for what is typed next at the caret. `getSelectionFormat` says
@@ -443,7 +471,7 @@ Ctrl+C / Ctrl+X do.
 | Function | What it does |
 | --- | --- |
 | `getSelectionFormat(editor)` | The formatting of the current selection, for toolbar state. |
-| `getCaretContext(editor): object` | What the caret is in, read off the document alone (no layout pass: a few microseconds whatever the document's length, where getSelectionInformation lays the caret's surroundings out): { InTable, Row, Column (0-based; -1 outside a table), RowCount, ColumnCount, CanMergeCells (the selection spans several cells), CanSplitCell ... |
+| `getCaretContext(editor): object` | What the caret is in, read off the document alone (no layout pass: a few microseconds whatever the document's length, where getSelectionInformation lays the caret's surroundings out): { InTable, Row, Column (0-based; -1 outside a table), RowCount, ColumnCount, CanMergeCells (the selection spans several cells), CanSplitCell, InHyperlink, InList, InHeaderFooter, Story ("body" \| "header" \| "footer" \| "textbox" \| "footnote" \| "endnote" \| "comment"), TextBoxId, NoteId / CommentId (the note or comment edited in place, else null), HeaderFooter, ImageSelected }. |
 | `moveToAdjacentTableCell(editor, forward: boolean): boolean` | Tab (forward) / Shift+Tab in a table, for a host's own keys or buttons: true when the caret moved to another cell. |
 | `getSelection(editor)` | The selection: { AnchorBlockId, AnchorOffset, FocusBlockId, FocusOffset, IsCollapsed }, or null when there is none. |
 | `setSelection(editor, anchorBlockId: string, anchorOffset: number, focusBlockId: string, focusOffset: number): boolean` | Select from one document position to another (the same position twice places the caret). |
@@ -512,6 +540,9 @@ Ctrl+C / Ctrl+X do.
 | --- | --- |
 | `enterHeaderFooter(editor, pageIndex: number, kind: string): boolean` | Edit the header or the footer (`kind`: "header" \| "footer") of a page in place: the caret goes into it, the body is dimmed and a labelled line marks where it ends. |
 | `exitHeaderFooter(editor): boolean` | Back to the body from a header or footer that is edited in place (Escape and a double click on the body do the same). |
+| `enterNote(editor, noteId: string, noteType: string): boolean` | Edit the body of a footnote or endnote (`noteType` "footnote" \| "endnote") in place: the caret goes to the start of its text, where the page shows the note (see *Notes and comments edited in place*). False when there is no such note, or nothing in the text refers to it. |
+| `enterComment(editor, commentId: string): boolean` | Edit the body of a comment in place, in a balloon below its anchor (see *Notes and comments edited in place*). False when there is no such comment, or nothing in the text refers to it. |
+| `exitNote(editor): boolean` | Back to the body from a note or comment edited in place (Escape and a click off the note do the same); the body's selection is what it was. False when none was edited. |
 | `getHeaderFooterLinkToPrevious(editor): boolean` | Whether the header or footer being edited is the one of the section before it ("Link to Previous"). |
 | `setHeaderFooterLinkToPrevious(editor, linked: boolean): boolean` | "Link to Previous" for the header or footer being edited. |
 | `insertPageNumberField(editor)` | Insert a page number field (PAGE) at the caret: every page shows its own number where the field stands in a header or footer - as its section counts and writes it (a section's first page number and number format, w:pgNumType). |
