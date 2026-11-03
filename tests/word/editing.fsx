@@ -168,6 +168,34 @@ check "html in: Word's list paragraphs, without their numbers"
 let htmlPasted = docOf [ Doc.Paragraph (paragraph "h" "[]") ] |> caret "h" 1 |> Doc.pasteClip (fromHtml [ el "p" [] [ el "b" [] [ txt "x" ] ]; el "p" [] [ txt "y" ] ])
 check "html in: pasted" (texts htmlPasted) [ "[x"; "y]" ]
 
+// ---- Word's keys for character and paragraph formatting ----
+check "grow font: Word's size steps" ([ 8.0; 10.0; 10.5; 11.0; 28.0; 72.0; 75.0; 1638.0 ] |> List.map (Doc.nextFontSizePoints true true)) [ 9.0; 10.5; 11.0; 12.0; 36.0; 80.0; 80.0; 1638.0 ]
+check "shrink font: Word's size steps" ([ 12.0; 11.0; 36.0; 80.0; 75.0; 8.0; 1.0 ] |> List.map (Doc.nextFontSizePoints false true)) [ 11.0; 10.5; 28.0; 72.0; 72.0; 7.0; 1.0 ]
+check "a point larger / smaller" [ Doc.nextFontSizePoints true false 11.0; Doc.nextFontSizePoints false false 11.0; Doc.nextFontSizePoints true false 10.5 ] [ 12.0; 10.0; 11.0 ]
+let raw (_: Doc.ParagraphBlock) (style: TextStyle) = style
+let sizedDoc =
+    let para = paragraph "f" "small big"
+    docOf [ Doc.Paragraph { para with Buffer = para.Buffer |> TB.setFontSize 6 3 (24.0 * 96.0 / 72.0) } ] |> range ("f", 0) ("f", 9)
+let grown = Doc.resizeFontWith raw true true sizedDoc
+let pointsAt (doc: Doc.Document) offset = System.Math.Round((styleAt doc "f" offset).FontSize * 72.0 / 96.0, 2)
+check "grow font: each run from its own size" (pointsAt grown 0, pointsAt grown 7) (Doc.nextFontSizePoints true true (TB.defaultStyle.FontSize * 72.0 / 96.0), 26.0)
+check "grow font: stated on the runs" (TB.ExplicitFormat.has TB.ExplicitFormat.FontSize (styleAt grown "f" 0)) true
+let sub = Doc.toggleVertAlignWith raw "subscript" sizedDoc
+check "subscript on" ((styleAt sub "f" 0).VertAlign, (styleAt sub "f" 8).VertAlign) (Some "subscript", Some "subscript")
+check "subscript off again" ((styleAt (Doc.toggleVertAlignWith raw "subscript" sub) "f" 0).VertAlign) None
+check "superscript over subscript" ((styleAt (Doc.toggleVertAlignWith raw "superscript" sub) "f" 0).VertAlign) (Some "superscript")
+let indentDoc =
+    docOf [ Doc.Paragraph (paragraph "i1" "plain")
+            Doc.Paragraph { paragraph "i2" "odd" with Metadata = { Doc.defaultMetadata with IndentLeft = Some 20.0 } }
+            Doc.Paragraph { paragraph "i3" "item" with Metadata = listed } ]
+    |> range ("i1", 0) ("i3", 2)
+let indentOf (doc: Doc.Document) = Doc.allParagraphs doc |> List.map (fun p -> p.Metadata.IndentLeft, p.Metadata.ListLevel)
+let indented = Doc.indentParagraphs true indentDoc
+check "Ctrl+M: to the next half inch; a list item a level down" (indentOf indented) [ Some 48.0, 0; Some 48.0, 0; None, 2 ]
+check "Ctrl+M: the indent is the paragraph's own" ((Doc.allParagraphs indented).Head.Metadata.Explicit &&& Doc.ParagraphExplicit.IndentLeft <> 0) true
+check "Ctrl+Shift+M: back" (indentOf (Doc.indentParagraphs false indented)) [ Some 0.0, 0; Some 0.0, 0; None, 1 ]
+check "Ctrl+Shift+M: not below the margin, nor out of the list" (indentOf (Doc.indentParagraphs false indentDoc)) [ None, 0; Some 0.0, 0; None, 1 ]
+
 printfn ""
 printfn "Word editing tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

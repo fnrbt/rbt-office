@@ -4662,6 +4662,39 @@ let setFontSize size doc =
 let setFontFamily family doc =
     applyFormattingToSelection (fun start len buf -> TextBuffer.setFontFamily start len family buf) doc
 
+/// Word's font sizes in points for Grow Font / Shrink Font (Ctrl+Shift+> / <):
+/// those of its size box; above 72 pt steps of 10, below 8 pt steps of 1.
+let private fontSizeSteps = [ 8.0; 9.0; 10.0; 10.5; 11.0; 12.0; 14.0; 16.0; 18.0; 20.0; 22.0; 24.0; 26.0; 28.0; 36.0; 48.0; 72.0 ]
+
+/// The size in points a run of `points` gets from Grow Font (grow) or Shrink
+/// Font; by one point (Ctrl+] / Ctrl+[) when not `stepwise`. From 1 to 1638 pt.
+let nextFontSizePoints (grow: bool) (stepwise: bool) (points: float) : float =
+    let points = System.Math.Round(points * 100.0) / 100.0
+    let next =
+        if not stepwise then (if grow then floor points + 1.0 else ceil points - 1.0)
+        elif grow then
+            match fontSizeSteps |> List.tryFind (fun size -> size > points) with
+            | Some size -> size
+            | None -> (floor (points / 10.0) + 1.0) * 10.0
+        elif points > 72.0 then max 72.0 ((ceil (points / 10.0) - 1.0) * 10.0)
+        elif points > 8.0 then fontSizeSteps |> List.filter (fun size -> size < points) |> List.last
+        else ceil points - 1.0
+    max 1.0 (min 1638.0 next)
+
+/// Grow Font / Shrink Font on the selection: each run from the size it shows
+/// (`effective`: its style resolved against its paragraph's, see
+/// WordStyles.growFont) to the next size (nextFontSizePoints).
+let resizeFontWith (effective: ParagraphBlock -> TextBuffer.TextStyle -> TextBuffer.TextStyle) (grow: bool) (stepwise: bool) doc =
+    applyFormattingToSelectionInParagraph (fun para start len buffer ->
+        TextBuffer.applyStyle start len (fun style ->
+            let points = (effective para style).FontSize * 72.0 / 96.0
+            TextBuffer.withExplicitFontSize (nextFontSizePoints grow stepwise points * 96.0 / 72.0) style) buffer) doc
+
+/// Subscript (Ctrl+=) / superscript (Ctrl+Shift+=) switched on the selection,
+/// as bold is: off when all of it is so already, on otherwise.
+let toggleVertAlignWith (effective: ParagraphBlock -> TextBuffer.TextStyle -> TextBuffer.TextStyle) (align: string) doc =
+    toggleOnSelection effective (fun style -> style.VertAlign = Some align) (fun on style -> { style with VertAlign = (if on then Some align else None) }) doc
+
 /// Get selected text as plain text
 let getSelectionText doc =
     match doc.Selection with
@@ -5270,6 +5303,23 @@ let alignRight doc =
 /// Set alignment to justify
 let alignJustify doc =
     setAlignment Justify doc
+
+/// Increase Indent (Ctrl+M) / Decrease Indent (Ctrl+Shift+M) of the selected
+/// paragraphs, as Word's: a paragraph of a list a level down / up (not out of
+/// the list), any other the left indent to the next / previous half inch.
+let indentParagraphs (forward: bool) doc =
+    let step = 48.0
+    mapSelectedMetadata (fun metadata ->
+        if metadata.ListStyle <> NoList then
+            let level = if forward then min 9 (metadata.ListLevel + 1) else max 1 (metadata.ListLevel - 1)
+            if level = metadata.ListLevel then metadata else withListLevel level metadata
+        else
+            let current = metadata.IndentLeft |> Option.defaultValue 0.0
+            let next =
+                if forward then (floor (current / step + 0.001) + 1.0) * step
+                else max 0.0 ((ceil (current / step - 0.001) - 1.0) * step)
+            if Some next = metadata.IndentLeft || (next = 0.0 && metadata.IndentLeft.IsNone) then metadata
+            else { metadata with IndentLeft = Some next; Explicit = metadata.Explicit ||| ParagraphExplicit.IndentLeft }) doc
 
 let setCurrentParagraphStyle alignment indentLeft indentRight spacingBefore spacingAfter lineSpacing firstLineIndent backgroundColor doc =
     mapSelectedMetadata (fun metadata ->

@@ -301,9 +301,17 @@ The editor handles these keys itself, on its canvas and its input element
 | Ctrl+Z, Ctrl+Y, Ctrl+Shift+Z | undo, redo (keys typed one after the other are one step, as in Word - so are Backspaces, and Deletes; a caret move, another key or a format chosen starts the next) |
 | Ctrl+B, Ctrl+I, Ctrl+U | bold, italic, underline |
 | Ctrl+1, Ctrl+2, Ctrl+3 | heading 1 - 3 |
+| Ctrl+E, Ctrl+L, Ctrl+R, Ctrl+J | centre, left, right, justify the paragraphs (0.1.26) |
+| Ctrl+M, Ctrl+Shift+M | Increase / Decrease Indent: half an inch further in / out; a list item a level down / up (0.1.26) |
+| Ctrl+Shift+>, Ctrl+Shift+< | Grow / Shrink Font: the next size of Word's size box (0.1.26) |
+| Ctrl+], Ctrl+[ | a point larger / smaller (0.1.26) |
+| Ctrl+=, Ctrl+Shift+= | subscript, superscript (on / off; 0.1.26) |
+| Ctrl+Space | the character formatting cleared (0.1.26) |
 | Escape | out of a header, a footer or a text box that is edited |
 
-(On a Mac the Command key is Ctrl here.) Until 0.1.16 Ctrl+Enter and
+The character keys work as Ctrl+B does: on the selection, or with nothing
+selected for what is typed next at the caret. `getSelectionFormat` says
+`VertAlign` ("superscript", "subscript", null). (On a Mac the Command key is Ctrl here.) Until 0.1.16 Ctrl+Enter and
 Shift+Enter were Enter, Ctrl+Backspace and Ctrl+Delete took one character,
 and Tab outside a list and a table did nothing. **A host that handles
 Ctrl+Enter itself and calls `insertPageBreak` removes that handler** (two

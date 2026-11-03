@@ -1363,6 +1363,15 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             |> Option.map (fun (shape, x, y, _, _, pageTop) -> shape, x, y, pageTop)
         | _ -> None
 
+    /// A character format given by a key (Ctrl+B and the like): the
+    /// selection's, or with nothing selected the caret's (see formatAtCaret).
+    /// The document and the history with it, when the document changed.
+    let characterFormatStep (description: string) (command: Doc.Document -> Doc.Document) : (Doc.Document * CommandHistory) option =
+        let beforeDoc = handler.Document
+        let afterDoc = if formatAtCaret handler command then handler.Document else command handler.Document
+        if documentsEqualForChange afterDoc beforeDoc then None
+        else Some (Cmd.execute (FormatTextCommand(beforeDoc, afterDoc, description) :> ICommand) beforeDoc handler.History)
+
     // Handle keyboard input. The listener serves the canvas and the input
     // proxy (which normally has the focus).
     let onKeyDown (e: Event) =
@@ -1503,6 +1512,40 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             e.preventDefault()
         | "3" when commandKey ->
             newDoc <- Doc.setHeadingLevel 3 handler.Document
+            e.preventDefault()
+        | key when commandKey && not ke.altKey && not shift && (keyEquals 'e' key || keyEquals 'l' key || keyEquals 'r' key || keyEquals 'j' key) ->
+            // Word's alignment keys: Ctrl+E centre, Ctrl+L left, Ctrl+R right, Ctrl+J justify.
+            let align =
+                if keyEquals 'e' key then Doc.alignCenter
+                elif keyEquals 'r' key then Doc.alignRight
+                elif keyEquals 'j' key then Doc.alignJustify
+                else Doc.alignLeft
+            newDoc <- align handler.Document
+            e.preventDefault()
+        | key when commandKey && not ke.altKey && keyEquals 'm' key ->
+            // Ctrl+M / Ctrl+Shift+M: Increase / Decrease Indent.
+            newDoc <- Doc.indentParagraphs (not shift) handler.Document
+            e.preventDefault()
+        | key when commandKey && not ke.altKey && (key = "]" || key = "[" || key = ">" || key = "<" || key = "=" || key = "+" || key = " " || (shift && (key = "." || key = ","))) ->
+            // Word's character keys: Ctrl+] / Ctrl+[ a point larger / smaller,
+            // Ctrl+Shift+> / < the next size up / down, Ctrl+= subscript,
+            // Ctrl+Shift+= superscript, Ctrl+Space the character formatting cleared.
+            let description, command =
+                match key with
+                | "]" -> "Grow font", WordStyles.growFont true false
+                | "[" -> "Shrink font", WordStyles.growFont false false
+                | ">" | "." -> "Grow font", WordStyles.growFont true true
+                | "<" | "," -> "Shrink font", WordStyles.growFont false true
+                | "+" -> "Superscript", WordStyles.toggleSuperscript
+                | "=" when shift -> "Superscript", WordStyles.toggleSuperscript
+                | "=" -> "Subscript", WordStyles.toggleSubscript
+                | _ -> "Clear formatting", Doc.clearFormatting
+            match characterFormatStep description command with
+            | Some (doc', hist') ->
+                newDoc <- doc'
+                newHistory <- hist'
+                useCommand <- true
+            | None -> ()
             e.preventDefault()
         | key when commandKey && not ke.altKey && (keyEquals 'c' key || keyEquals 'x' key || keyEquals 'v' key) ->
             // Copy, Cut, Paste. On the input proxy the browser's own copy / cut /

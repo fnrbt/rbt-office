@@ -150,5 +150,55 @@ try {
         check('copySelection with nothing selected', Word.copySelection(editor), null);
         Word.dispose(editor);
     }
+
+    // ---- Word's formatting keys ----
+    {
+        const editor = Word.initialize('c');
+        Word.setParagraphs(editor, ['Some text here', 'Second']);
+        const ids = [...new Set(Word.getLayoutLines(editor).map((line) => line.BlockId))];
+        const proxy = Word.getInputElement(editor);
+        canvas.focus();
+        const ctrl = (k, extra = {}) => key(proxy, k, { ctrlKey: true, ...extra });
+        const select = (from, to, block = 0) => Word.setSelection(editor, ids[block], from, ids[block], to);
+        const format = () => Word.getSelectionFormat(editor);
+        select(2, 2);
+        check('Ctrl+E centres the paragraph (taken)', [ctrl('e'), format().Paragraph.Alignment], [true, 'center']);
+        ctrl('r'); const right = format().Paragraph.Alignment;
+        ctrl('j'); const justified = format().Paragraph.Alignment;
+        ctrl('l');
+        check('Ctrl+R, Ctrl+J, Ctrl+L', [right, justified, format().Paragraph.Alignment], ['right', 'justify', 'left']);
+        check('each one undo step', [Word.undo(editor), format().Paragraph.Alignment, Word.undo(editor), format().Paragraph.Alignment], [true, 'justify', true, 'right']);
+        ctrl('m');
+        check('Ctrl+M: half an inch in', format().Paragraph.IndentLeft, 48);
+        ctrl('M', { shiftKey: true });
+        check('Ctrl+Shift+M: back', format().Paragraph.IndentLeft, 0);
+        select(0, 14);
+        Word.setFontSizePt(editor, 11);
+        select(0, 4);
+        const size = format().FontSizePt;
+        ctrl('>', { shiftKey: true });
+        check('Ctrl+Shift+>: the next size', [size, format().FontSizePt], [11, 12]);
+        ctrl(']');
+        check('Ctrl+]: a point larger', format().FontSizePt, 13);
+        ctrl('<', { shiftKey: true });
+        check('Ctrl+Shift+<: the size below', format().FontSizePt, 12);
+        ctrl('[');
+        check('Ctrl+[: a point smaller', format().FontSizePt, 11);
+        ctrl('=');
+        check('Ctrl+=: subscript', format().VertAlign, 'subscript');
+        ctrl('+', { shiftKey: true });
+        check('Ctrl+Shift+=: superscript', format().VertAlign, 'superscript');
+        ctrl('b');
+        ctrl(' ');
+        check('Ctrl+Space: the character formatting cleared', [format().Bold, format().VertAlign ?? null], [false, null]);
+        check('the text is as it was', Word.getText(editor), 'Some text here\nSecond');
+        // At a caret: for what is typed next, as Ctrl+B.
+        select(14, 14);
+        ctrl('>', { shiftKey: true });
+        type(proxy, 'X');
+        select(14, 15);
+        check('at a caret: the size of what is typed next', format().FontSizePt, 12);
+        Word.dispose(editor);
+    }
 } catch (e) { fail(e); }
 finish();

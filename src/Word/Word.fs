@@ -687,6 +687,7 @@ module API =
     ///     size box shows: 11, 12, 14 ...; the unit of setFontSizePt)
     ///   Hyperlink: the target of the link the caret / selection is in (null: none)
     ///   Color: "#RRGGBB" (null: automatic), Highlight: colour name / value (null: none)
+    ///   VertAlign: "superscript" | "subscript" (null: on the baseline)
     ///   Paragraph: { StyleId (null: default style; never an internal entry such as "__docDefaults"),
     ///     HeadingLevel (0: body text),
     ///     Alignment "left" | "center" | "right" | "justify",
@@ -730,6 +731,7 @@ module API =
                  | None -> null)
             "Color" ==> text format.Color
             "Highlight" ==> text format.Highlight
+            "VertAlign" ==> text format.VertAlign
             "Paragraph" ==> createObj [
                 "StyleId" ==> text format.StyleId
                 "HeadingLevel" ==> formatValueToJs (fun (level: int) -> box level) format.HeadingLevel
