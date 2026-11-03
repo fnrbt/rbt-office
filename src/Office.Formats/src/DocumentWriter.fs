@@ -3041,7 +3041,7 @@ let rec private holdsShape (node: XmlDsl.XmlNode) : bool =
 let private holdsShapeItem (run: XmlDsl.XmlNode) : bool =
     not (XmlPatch.descendantsWhere (fun node -> XmlPatch.prefix node = "wps" || XmlPatch.prefix node = "wpg" || XmlPatch.name node = "v:textbox") run).IsEmpty
 
-let private spliceSourceOf (text: string) (start: int) (finish: int) (bookmarks: Set<string>) (keepBreaks: string option) (breaksKept: unit -> unit) : SpliceSource option =
+let private spliceSourceOf (text: string) (start: int) (finish: int) (bookmarks: Set<string>) (keepBookmarks: bool) (keepBreaks: string option) (breaksKept: unit -> unit) : SpliceSource option =
     match XmlDsl.tryScanAt text start finish (System.Collections.Generic.HashSet<string>()) with
     | Some (XmlDsl.Element (_, _, _, span) as paragraph) when XmlDsl.Span.isKnown span && span.StartTagEnd < span.End ->
         let runs = System.Collections.Generic.Dictionary<int, XmlDsl.XmlNode>()
@@ -3058,7 +3058,9 @@ let private spliceSourceOf (text: string) (start: int) (finish: int) (bookmarks:
             match node with
             | XmlDsl.Element (name, _, _, _) ->
                 match XmlDsl.Ns.stripNs name with
-                | "bookmarkStart" | "bookmarkEnd" -> XmlPatch.attribute node "w:id" |> Option.exists (fun id -> Set.contains id bookmarks)
+                // (The model's bookmarks: written by it - or, in the whole of the paragraph, the source's where they stand.
+                // One the model does not hold stays: not every bookmark of a file is one the model has.)
+                | "bookmarkStart" | "bookmarkEnd" -> not keepBookmarks && (XmlPatch.attribute node "w:id" |> Option.exists bookmarks.Contains)
                 | "commentRangeStart" | "commentRangeEnd" -> XmlPatch.attribute node "w:id" |> Option.exists (fun id -> Set.contains id deletedCommentIds)
                 | local -> modelledLeaf local
             | _ -> false
@@ -3134,7 +3136,7 @@ let private spliceSourceOf (text: string) (start: int) (finish: int) (bookmarks:
 [<Fable.Core.Emit("JSON.stringify(Object.assign({}, $0, { Text: undefined }))")>]
 let private jsonWithoutText (_run: obj) : string = jsNative
 
-let private splicedRuns (source: SpliceSource) (original: obj) (joined: obj array) (marksBefore: Map<int, string>) (leading: bool) (trailing: bool) (pieces: (obj * string * (string -> string)) list) (runXml: obj -> string) (wrapOf: obj -> string -> string) : string =
+let private splicedRuns (source: SpliceSource) (original: obj) (joined: obj array) (marksBefore: Map<int, string>) (ownBookmarks: Set<string>) (leading: bool) (trailing: bool) (pieces: (obj * string * (string -> string)) list) (runXml: obj -> string) (wrapOf: obj -> string -> string) : string =
     let text = source.Layout.Text
     // The runs read, by source: the run objects the model had for each.
     let originalRuns = System.Collections.Generic.Dictionary<int, ResizeArray<obj>>()
@@ -3165,7 +3167,11 @@ let private splicedRuns (source: SpliceSource) (original: obj) (joined: obj arra
             match elements |> List.filter isRun with
             | [ run ] ->
                 let index = elements |> List.findIndex isRun
-                let bytes (list: XmlPatch.SourceElement list) = list |> List.map XmlPatch.bytes |> String.concat ""
+                // (Without the bookmarks the source has where they stand: see spliceSourceOf.)
+                let theSource (element: XmlPatch.SourceElement) =
+                    (XmlPatch.name element.Node = "w:bookmarkStart" || XmlPatch.name element.Node = "w:bookmarkEnd")
+                    && (XmlPatch.attribute element.Node "w:id" |> Option.exists ownBookmarks.Contains)
+                let bytes (list: XmlPatch.SourceElement list) = list |> List.filter (theSource >> not) |> List.map XmlPatch.bytes |> String.concat ""
                 Some (bytes (List.take index elements), XmlPatch.bytes run, bytes (List.skip (index + 1) elements))
             | _ -> None
         | None -> None
@@ -3422,7 +3428,7 @@ paragraphSplicer <-
                 let keepBreaks =
                     if whole && boolOrDefault false (para?PageBreakAfter) then Some (if boolOrDefault false (para?ColumnBreakAfter) then "column" else "page") else None
                 para?SpliceBreakKept <- false
-                spliceSourceOf spliceSourceText (intOrDefault -1 (para?SpliceFrom?Start)) (intOrDefault -1 (para?SpliceFrom?End)) bookmarks keepBreaks (fun () -> para?SpliceBreakKept <- true)
+                spliceSourceOf spliceSourceText (intOrDefault -1 (para?SpliceFrom?Start)) (intOrDefault -1 (para?SpliceFrom?End)) bookmarks whole keepBreaks (fun () -> para?SpliceBreakKept <- true)
                 |> Option.map (fun source ->
                     let flag (value: obj) = isNullOrUndefined value || unbox<bool> value
                     // The runs of the paragraphs joined to it, in the elements they were read from.
@@ -3447,7 +3453,15 @@ paragraphSplicer <-
                             | None -> ()
                             previousEnd <- finish
                         | None -> previousEnd <- -1
-                    [ splicedRuns source para?SpliceOriginal joined marksBefore (flag para?SpliceLeading) (flag para?SpliceTrailing) pieces runXml wrapOf ], source.Properties,
+                    // (The bookmarks the model writes that the source has, in the whole of the paragraph: the source's.)
+                    let ownBookmarks =
+                        if not whole then Set.empty
+                        else
+                            XmlPatch.descendantsWhere (fun node -> XmlPatch.name node = "w:bookmarkStart" || XmlPatch.name node = "w:bookmarkEnd") source.Paragraph
+                            |> List.choose (fun node -> XmlPatch.attribute node "w:id")
+                            |> List.filter bookmarks.Contains
+                            |> Set.ofList
+                    [ splicedRuns source para?SpliceOriginal joined marksBefore ownBookmarks (flag para?SpliceLeading) (flag para?SpliceTrailing) pieces runXml wrapOf ], source.Properties,
                     (if boolOrDefault false (para?SourceCopy) then source.CopyHead else source.Head))
         member _.MergeProperties source was now =
             mergedProperties "w:pPr" source (propertyElementsOf was) (propertyElementsOf now) }

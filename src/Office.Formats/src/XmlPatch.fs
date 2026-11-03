@@ -589,12 +589,11 @@ and writeLayoutWith (how: LayoutWrite) (laid: Layout) (written: (Placed * string
                 rest <- rest.Tail
     let mutable placedAny = false
     for placed, xml in written do
-        // (New content before any item of the layout is written: after what stood before its first item - the
-        // marks at the start of a paragraph without runs are at its start still.)
+        // (New content of an element that had no items: after what it held - the marks of a paragraph without
+        // runs are at its start still.)
         match placed with
         | AtItem at when chainOf.ContainsKey at -> ()
-        | _ when not placedAny ->
-            emitBefore (rest |> List.tryPick (function LaidItem (at, _) -> Some at | _ -> None))
+        | _ when not placedAny && not (laid.Children |> List.exists (function LaidItem _ -> true | _ -> false)) -> emitBefore None
         | _ -> ()
         placedAny <- true
         match placed with
