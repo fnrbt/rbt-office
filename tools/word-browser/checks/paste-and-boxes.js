@@ -75,6 +75,15 @@ try {
     Word.pasteText(editor, '-');
     check('the body from the fourth character of its first paragraph on pasted over: the box stays', [body(), boxes().map((box) => box[0])], [['fir- paragraph'], ['boxed paragraph']]);
     Word.undo(editor);
+    // A table pasted into the text of a box: its rows, the cells parted by tabs (a box holds paragraphs).
+    check('into the box', Word.enterTextBox(editor, Word.getShapeRects(editor)[0].Id), true);
+    Word.pasteClipboard(editor, 'a\tb', '<table><tr><td>a</td><td>b</td></tr></table>');
+    Word.exitTextBox(editor);
+    check('a table pasted into a text box: a row of text, the box kept', [boxes().map((box) => box[0])], [['a\tbboxed paragraph']]);
+    Word.undo(editor);
+    // (Undo goes back into the box the step was made in.)
+    Word.exitTextBox(editor);
+    check('... undone', boxes().map((box) => box[0]), ['boxed paragraph']);
     // Find and replace go by all the text.
     check('findText finds in the body and in the box', Word.findText(editor, 'paragraph', true).length, 4);
     check('replaceAllText replaces there too (4)', [Word.replaceAllText(editor, 'paragraph', 'PARA', true), body(), boxes().map((box) => box[0])], [4, ['first PARA', 'second PARA', 'third PARA'], ['boxed PARA']]);

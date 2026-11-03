@@ -156,6 +156,23 @@ try {
         Word.setSelection(editor, blockOf('item'), 1, blockOf('item'), 1);
         check('... its list', Word.getSelectionFormat(editor).Paragraph.ListKind, 'bullet');
         check('... one undo step', [Word.undo(editor), text()], [true, 'Hello bold world\nSecond\n']);
+        // A table of another program is a table.
+        Word.setSelection(editor, ids[0], 5, ids[0], 5);
+        paste('x\na\tb\nc\td\ny', '<html><body><!--StartFragment--><p>x</p><table border="1"><tbody><tr><td>a</td><td><b>b</b></td></tr><tr><td>c</td><td><p>d</p><p>d2</p></td></tr></tbody></table><p>y</p><!--EndFragment--></body></html>');
+        const cellOf = (start) => { Word.setSelection(editor, blockOf(start), 0, blockOf(start), 0); const at = Word.getCaretContext(editor); return [at.InTable, at.Row, at.Column, at.RowCount, at.ColumnCount]; };
+        check('HTML table: a table, its cells', [cellOf('a'), cellOf('b'), cellOf('c'), cellOf('d2')], [[true, 0, 0, 2, 2], [true, 0, 1, 2, 2], [true, 1, 0, 2, 2], [true, 1, 1, 2, 2]]);
+        check('... no tabs in its text', Word.getLayoutLines(editor).some((line) => (line.Text ?? '').includes('\t')), false);
+        check('... the text before and after it', [cellOf('Hellox')[0], cellOf('y bold')[0]], [false, false]);
+        check('... the formatting of its cells', boldIn(blockOf('b'), 0, 1), true);
+        const savedTable = await (await OF.word.writeFromEditorPackage(Word.exportDocumentPackage(editor))).arrayBuffer();
+        const tableXml = await (await window.JSZip.loadAsync(savedTable)).file('word/document.xml').async('string');
+        check('... saved as a table of two rows', [tableXml.split('<w:tbl>').length - 1, tableXml.split('<w:tr>').length - 1 + tableXml.split('<w:tr ').length - 1], [1, 2]);
+        // Pasted into a cell of a table: its rows are paragraphs, the cells parted by tabs.
+        Word.setSelection(editor, blockOf('c'), 1, blockOf('c'), 1);
+        paste('m\tn', '<table><tr><td>m</td><td>n</td></tr></table>');
+        check('a table pasted into a cell: its text, the cells parted by a tab', [Word.getLayoutLines(editor).some((line) => line.Text === 'cm\tn'), cellOf('cm')[0]], [true, true]);
+        Word.undo(editor);
+        check('... one undo step', [Word.undo(editor), text()], [true, 'Hello bold world\nSecond\n']);
         // Cut.
         Word.setSelection(editor, ids[0], 0, ids[0], 6);
         const cut = new DataTransfer();

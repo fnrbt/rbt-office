@@ -2976,7 +2976,9 @@ let deleteSelectedTableColumn doc =
                 | None -> updatedDoc
             | None -> updatedDoc
 
-let insertTable rows columns doc =
+/// A new table of empty cells as insertTable makes one (thin borders, the
+/// document's table style for new tables), with ids of its own.
+let private newTable rows columns (doc: Document) : TableBlock =
     let rowCount = max 1 rows
     let columnCount = max 1 columns
     // (One layout pixel - three quarters of a point: a thinner line is
@@ -3013,6 +3015,10 @@ let insertTable rows columns doc =
         StyleId = defaultTableStyleId
         Look = None
     }
+    table
+
+let insertTable rows columns doc =
+    let table = newTable rows columns doc
     let firstCellPara = table.Rows.Head.Cells.Head.Content.Head
     let tableBlock = Table table
     let blocks =
@@ -4845,6 +4851,9 @@ type ClipParagraph = {
     Metadata: BlockMetadata
     /// The heading level of a paragraph of the body that is a heading.
     HeadingLevel: int option
+    /// Not a paragraph but a table (pasted HTML): its rows, their cells, the
+    /// paragraphs of each cell. Empty for a paragraph.
+    TableRows: ClipParagraph list list list
 }
 
 /// What Copy and Cut keep of the selection (see copySelection).
@@ -4919,7 +4928,7 @@ let copySelection (doc: Document) : Clip option =
             Some {
                 Paragraphs =
                     ranges |> List.map (fun (para, start, finish) ->
-                        { Buffer = clipBuffer para start finish; Metadata = para.Metadata; HeadingLevel = headingLevel para.Id })
+                        { Buffer = clipBuffer para start finish; Metadata = para.Metadata; HeadingLevel = headingLevel para.Id; TableRows = [] })
                 Text = getSelectionText doc }
     | _ -> None
 
@@ -4933,6 +4942,25 @@ let private withHeadingLevel (id: BlockId) (level: int option) (doc: Document) :
             | Heading (_, para), None when para.Id = id -> Paragraph para
             | _ -> block)
     if sameReference blocks doc.Blocks then doc else { doc with Blocks = blocks }
+
+/// A clip with each table (see ClipParagraph.TableRows) as paragraphs, one a
+/// row, its cells parted by tabs (a cell's paragraphs by spaces): what is
+/// pasted where a table cannot go - a table cell, a text box.
+let clipWithoutTables (clip: Clip) : Clip =
+    if clip.Paragraphs |> List.forall (fun piece -> piece.TableRows.IsEmpty) then clip
+    else
+        let separated (separator: string) (buffers: TextBuffer.TextBuffer list) =
+            buffers |> List.reduce (fun left right -> TextBuffer.append (TextBuffer.append left (TextBuffer.ofString separator)) right)
+        let cellBuffer (paragraphs: ClipParagraph list) =
+            if paragraphs.IsEmpty then TextBuffer.empty else paragraphs |> List.map (fun para -> para.Buffer) |> separated " "
+        { clip with
+            Paragraphs =
+                clip.Paragraphs |> List.collect (fun piece ->
+                    if piece.TableRows.IsEmpty then [ piece ]
+                    else
+                        piece.TableRows |> List.map (fun cells ->
+                            let buffer = if cells.IsEmpty then TextBuffer.empty else cells |> List.map cellBuffer |> separated "\t"
+                            { Buffer = buffer; Metadata = defaultMetadata; HeadingLevel = None; TableRows = [] })) }
 
 /// Paste what Copy kept at the caret, or over the selection (Word's "keep
 /// source formatting"): the text with its formatting; with more than one
@@ -4948,11 +4976,56 @@ let pasteClip (clip: Clip) (doc: Document) : Document =
     | None -> doc
     | Some sel ->
         let start = if sel.IsCollapsed then doc else deleteSelection doc
-        let last = List.length clip.Paragraphs - 1
+        // The block of the body (or of the story) a paragraph is, by its index.
+        let topIndex (current: Document) (id: BlockId) =
+            current.Blocks |> List.tryFindIndex (function
+                | Paragraph para when para.Id = id -> true
+                | Heading (_, para) when para.Id = id -> true
+                | _ -> false)
+        // A table goes between blocks: where the caret is not in one (a table
+        // cell, a text box), its rows are paragraphs, the cells parted by tabs.
+        let atTopLevel =
+            match start.Selection with
+            | Some caret -> (topIndex start caret.Focus.BlockId).IsSome
+            | None -> false
+        let pieces = if atTopLevel then clip.Paragraphs else (clipWithoutTables clip).Paragraphs
+        let last = List.length pieces - 1
         let mutable current = start
         let mutable failed = false
-        clip.Paragraphs |> List.iteri (fun index piece ->
+        pieces |> List.iteri (fun index piece ->
             if not failed then
+              if not piece.TableRows.IsEmpty then
+                // A table: before the paragraph the caret is at the start of
+                // (the paragraph split at the caret first), the caret where it was.
+                match current.Selection with
+                | Some caret when caret.IsCollapsed ->
+                    let split = if caret.Focus.Offset = 0 then current else splitBlock current
+                    match split.Selection with
+                    | Some after when not (obj.ReferenceEquals(split, current) && caret.Focus.Offset > 0) ->
+                        match topIndex split after.Focus.BlockId with
+                        | Some at ->
+                            let columns = piece.TableRows |> List.map List.length |> List.max
+                            let table = newTable piece.TableRows.Length columns split
+                            let filled =
+                                { table with
+                                    Rows =
+                                        List.zip table.Rows piece.TableRows
+                                        |> List.map (fun (row, cells) ->
+                                            { row with
+                                                Cells =
+                                                    row.Cells |> List.mapi (fun column cell ->
+                                                        match List.tryItem column cells with
+                                                        | Some (first :: rest) ->
+                                                            { cell with
+                                                                Content =
+                                                                    (first :: rest) |> List.map (fun para ->
+                                                                        { Id = nextBlockId (); Buffer = para.Buffer; Metadata = withPastedFormatting para.Metadata defaultMetadata }) }
+                                                        | _ -> cell) }) }
+                            current <- { split with Blocks = List.take at split.Blocks @ (Table filled :: List.skip at split.Blocks) }
+                        | None -> failed <- true
+                    | _ -> failed <- true
+                | _ -> failed <- true
+              else
                 match current.Selection with
                 | Some caret when caret.IsCollapsed ->
                     match findParagraph current caret.Focus.BlockId with
@@ -5186,10 +5259,11 @@ let private htmlAlignment (attributes: (string * string) list) : Alignment optio
 /// a clip (see pasteClip): a paragraph of each block - p, a heading (h1-h3 a
 /// heading of that level, h4-h6 of level 3), a list item (ul: bullets, ol:
 /// numbers; nested lists a level down; Word's own list paragraphs, mso-list,
-/// too), a table row (its cells parted by tabs) -, br a line break, the text's
-/// character formatting (see htmlTextStyle), pictures that are data. Spaces
-/// are collapsed as a browser shows them. None when there is no text.
-let clipOfHtml (nodes: HtmlNode list) : Clip option =
+/// too) -, a table (its rows and cells, the paragraphs of each cell; a table
+/// in a cell is its rows, the cells parted by tabs), br a line break, the
+/// text's character formatting (see htmlTextStyle), pictures that are data.
+/// Spaces are collapsed as a browser shows them. None when there is no text.
+let rec private clipPiecesOfHtml (allowTables: bool) (baseStyle: TextBuffer.TextStyle) (nodes: HtmlNode list) : ClipParagraph list =
     let paragraphs = ResizeArray<ClipParagraph>()
     let mutable buffer = TextBuffer.empty
     let mutable metadata = defaultMetadata
@@ -5205,7 +5279,7 @@ let clipOfHtml (nodes: HtmlNode list) : Clip option =
         if trimmed.Length < text.Length then buffer <- TextBuffer.delete trimmed.Length (text.Length - trimmed.Length) buffer
         if trimmed = " " then buffer <- TextBuffer.empty
         if always || TextBuffer.length buffer > 0 then
-            paragraphs.Add { Buffer = buffer; Metadata = metadata; HeadingLevel = heading }
+            paragraphs.Add { Buffer = buffer; Metadata = metadata; HeadingLevel = heading; TableRows = [] }
         buffer <- TextBuffer.empty
         heading <- None
     let append (text: string) (style: TextBuffer.TextStyle) =
@@ -5246,6 +5320,24 @@ let clipOfHtml (nodes: HtmlNode list) : Clip option =
                     let size name = htmlAttribute name attributes |> Option.bind htmlLength
                     buffer <- TextBuffer.insertImage (TextBuffer.length buffer) src (size "width") (size "height") (htmlAttribute "alt" attributes) buffer
                 | _ -> ()
+            elif tag = "table" && allowTables && not (tableRows children).IsEmpty then
+                flush false
+                let tableStyle = htmlTextStyle tag attributes style
+                let rows =
+                    tableRows children |> List.map (fun (rowAttributes, cells) ->
+                        let rowStyle = htmlTextStyle "tr" rowAttributes tableStyle
+                        cells |> List.map (fun (cellTag, cellAttributes, cellChildren) ->
+                            let cellStyle = htmlTextStyle cellTag cellAttributes rowStyle
+                            let cellStyle = if cellTag = "th" then TextBuffer.withExplicitBold true cellStyle else cellStyle
+                            let content = clipPiecesOfHtml false cellStyle cellChildren
+                            match htmlAlignment cellAttributes with
+                            | Some cellAlignment ->
+                                content |> List.map (fun para ->
+                                    if para.Metadata.ExplicitAlignment then para
+                                    else { para with Metadata = { para.Metadata with Alignment = cellAlignment; ExplicitAlignment = true } })
+                            | None -> content))
+                    |> List.filter (fun cells -> not cells.IsEmpty)
+                paragraphs.Add { Buffer = TextBuffer.empty; Metadata = defaultMetadata; HeadingLevel = None; TableRows = rows }
             elif tag = "td" || tag = "th" then
                 if TextBuffer.length buffer > 0 then append "\t" style
                 children |> List.iter (walk lists alignment (htmlTextStyle tag attributes style))
@@ -5302,12 +5394,35 @@ let clipOfHtml (nodes: HtmlNode list) : Clip option =
                     children |> List.iter (walk lists alignment (htmlTextStyle tag attributes style))
                     flush false
             else children |> List.iter (walk lists alignment (htmlTextStyle tag attributes style))
-    nodes |> List.iter (walk [] None TextBuffer.defaultStyle)
+    nodes |> List.iter (walk [] None baseStyle)
     flush false
-    if paragraphs.Count = 0 then None
+    List.ofSeq paragraphs
+
+/// The rows of a table element's children (in thead, tbody, tfoot or not;
+/// not those of a table in a cell): each row's attributes and its cells (tag,
+/// attributes, children).
+and private tableRows (children: HtmlNode list) : ((string * string) list * (string * (string * string) list * HtmlNode list) list) list =
+    children |> List.collect (fun node ->
+        match node with
+        | HtmlElement ("tr", attributes, cells) ->
+            [ attributes, cells |> List.choose (function
+                                    | HtmlElement (("td" | "th") as tag, cellAttributes, cellChildren) -> Some (tag, cellAttributes, cellChildren)
+                                    | _ -> None) ]
+        | HtmlElement (("thead" | "tbody" | "tfoot"), _, rows) -> tableRows rows
+        | _ -> [])
+
+/// Pasted HTML as a clip (see clipPiecesOfHtml and pasteClip). None when it has no text.
+let clipOfHtml (nodes: HtmlNode list) : Clip option =
+    let pieces = clipPiecesOfHtml true TextBuffer.defaultStyle nodes
+    if pieces.IsEmpty then None
     else
-        let pieces = List.ofSeq paragraphs
-        Some { Paragraphs = pieces; Text = pieces |> List.map (fun piece -> TextBuffer.toString piece.Buffer) |> String.concat "\n" }
+        let textOf (piece: ClipParagraph) =
+            if piece.TableRows.IsEmpty then TextBuffer.toString piece.Buffer
+            else
+                piece.TableRows
+                |> List.map (fun cells -> cells |> List.map (fun paragraphs -> paragraphs |> List.map (fun para -> TextBuffer.toString para.Buffer) |> String.concat " ") |> String.concat "\t")
+                |> String.concat "\n"
+        Some { Paragraphs = pieces; Text = pieces |> List.map textOf |> String.concat "\n" }
 
 let private toggleListStyle listStyle doc =
     // Word's rule: if every selected paragraph is already in this kind of

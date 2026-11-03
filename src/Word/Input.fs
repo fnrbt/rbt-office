@@ -1331,7 +1331,10 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                 | Some clip when text <> "" && normalize text = normalize clip.Text -> Some clip
                 | _ -> htmlClip html
         match clip with
-        | Some clip -> commitClipboardEdit "Paste" (Doc.pasteClip clip handler.Document)
+        | Some clip ->
+            // (A text box holds paragraphs only: a table's rows are pasted as paragraphs.)
+            let clip = match handler.Story with Some session when session.Box.IsSome -> Doc.clipWithoutTables clip | _ -> clip
+            commitClipboardEdit "Paste" (Doc.pasteClip clip handler.Document)
         | None -> pasteText text
     handler.PasteClipboard <- pasteClipboard
     handler.CopyToClipboard <- copyToClipboard
