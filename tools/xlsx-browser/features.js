@@ -256,8 +256,8 @@ checks['table-entry'] = async () => {
         const white = 'rgb(255, 255, 255)', black = 'rgb(0, 0, 0)';
         check('Medium2: header in the accent with white bold text, banded rows', [look(0, 0), look(1, 0)[0], look(2, 0)[0]], [['rgb(68, 114, 196)', white, true], 'rgb(218, 227, 243)', white]);
         grid.SetTableStyle('Sales', 'TableStyleLight1'); await frames();
-        // (A cell draws the line above it: the one under the header is the first row's.)
-        check('Light1: a bold header without a fill, grey bands, lines above and below the header', [look(0, 0), look(1, 0)[0], node(0, 0).querySelectorAll('.spreadsheet-edge').length >= 1 && node(1, 0).querySelectorAll('.spreadsheet-edge').length >= 1], [[white, black, true], 'rgb(217, 217, 217)', true]);
+        // (A cell draws the line above it - the one under the header is the first row's -, a thin one as its grid line.)
+        check('Light1: a bold header without a fill, grey bands, lines above and below the header', [look(0, 0), look(1, 0)[0], [node(0, 0), node(1, 0)].every((cell) => cell.querySelector('.spreadsheet-edge') !== null || getComputedStyle(cell).boxShadow.includes('rgb(0, 0, 0)'))], [[white, black, true], 'rgb(217, 217, 217)', true]);
         grid.SetTableStyle('Sales', 'TableStyleDark2'); await frames();
         check('Dark2: dark fills, white text', [look(0, 0), look(1, 0).slice(0, 2), look(2, 0).slice(0, 2)], [[black, white, true], ['rgb(47, 85, 151)', white], ['rgb(68, 114, 196)', white]]);
         grid.SetTableStyle('Sales', { name: 'TableStyleMedium9', showFirstColumn: true }); grid.SetTableTotalRow('Sales', true); await frames();

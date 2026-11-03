@@ -195,15 +195,15 @@ let private tableStyleFormat row col (lookup: TableStyleLookup) (format: CellFor
     let mutable rowTables = Unchecked.defaultof<ResizeArray<Table>>
     if lookup.Rows.TryGetValue(row, &rowTables) then
         for table in rowTables do
-            match tableCellLook table row col with
-            | Some look ->
+            match tableCellEntry table row col with
+            | Some entry ->
                 let isHeader = row < table.StartRow - 1 + table.HeaderRowCount
                 let hasFilter =
                     isHeader
                     && (match table.AutoFilter with
                         | Some (firstCol, lastCol) -> (col + 1) >= firstCol && (col + 1) <= lastCol
                         | None -> false)
-                let styled = formatWithTableLook look fmt
+                let styled = formatWithTableEntry entry fmt
                 fmt <- if hasFilter then { styled with FilterButton = true } else styled
             | None -> ()
     fmt

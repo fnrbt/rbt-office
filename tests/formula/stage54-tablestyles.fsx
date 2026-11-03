@@ -132,6 +132,21 @@ let made : Table =
 let lookOf (table: Table) row col = tableCellLook table row col |> Option.map (fun look -> formatWithTableLook look defaultFormat)
 eq "a built-in style named in the app is Excel's" ((lookOf made 0 0).Value.BgColor, (lookOf made 2 1).Value.BorderTop |> line) (Some "#4472C4", Some ("thin", "#8FAADC"))
 
+// ---- a look is worked out once a kind of row, and is the same as worked out for the cell itself ----------
+do
+    let boxed = synthetic.Tables |> List.find (fun table -> table.Style |> Option.exists (fun style -> style.Name = "Boxed"))
+    for rows, totals in [ 1, false; 2, true; 5, true; 7, false; 40, true; 41, false ] do
+        let table = { boxed with StartRow = 3; EndRow = 3 + rows + (if totals then 1 else 0); HasTotals = totals }
+        let style = table.Style.Value
+        let direct row col =
+            Rbt.Spreadsheet.TableStyles.cellLook style.Elements (table.StartRow - 1, table.StartCol - 1, table.EndRow - 1, table.EndCol - 1)
+                table.HeaderRowCount (if totals then 1 else 0) (style.ShowFirstColumn, style.ShowLastColumn, style.ShowRowStripes, style.ShowColumnStripes) row col
+        let differing =
+            [ for row in table.StartRow - 2 .. table.EndRow do
+                for col in table.StartCol - 2 .. table.EndCol do
+                    if tableCellLook table row col <> direct row col then yield row, col ]
+        eq (sprintf "the looked-up look is the cell's own: %d rows%s" rows (if totals then " and a total row" else "")) differing []
+
 // ---- the e-commerce dashboard's table, in its custom "Data-style" ---------------------------------------------
 let ecommerce = sheetOf "real-world/dashboard-ecommerce-sales.xlsx" "Data"
 eq "Data-style: the header in accent 1 of the workbook's theme, the text its own" (fill ecommerce "B1", bold ecommerce "B1") (Some "#1CADE4", (getCell (cellAt "B1") ecommerce).Value.Format.Bold)
