@@ -244,7 +244,7 @@ let private writeProjectPdf (inputPath: string) (outputPath: string) =
         | Some parsed -> parsed
         | None -> failwithf "Could not parse DOCX: %s" inputPath
     let options = { pdfOptions() with Images = decodeImageResources wordDoc }
-    let doc = Rbt.WordImport.importDoc wordDoc |> refreshFieldsForPdf options
+    let doc = Rbt.Word.Import.importDoc wordDoc |> refreshFieldsForPdf options
     let bytes = Rbt.Word.Pdf.toBytes options doc
     Directory.CreateDirectory(Path.GetDirectoryName outputPath) |> ignore
     File.WriteAllBytes(outputPath, bytes)
