@@ -3017,6 +3017,17 @@ let private modelledLeaf (local: string) =
 /// of the source; the others - a bookmark where no run is there to have it - stay where they stood, as do
 /// the ranges of comments (of comments the document still has) and of permissions, which the model does
 /// not hold.
+/// Whether a shape (a text box, a drawing the model holds as an item of its own) is in an element as read.
+let rec private holdsShape (node: XmlDsl.XmlNode) : bool =
+    match node with
+    | XmlDsl.Element (name, _, kids, _) -> name = "mc:AlternateContent" || name = "w:pict" || XmlPatch.prefix node = "wps" || XmlPatch.prefix node = "wpg" || List.exists holdsShape kids
+    | _ -> false
+
+/// Whether a run holds a shape the model holds as an item of its own (a text box, a drawing shape or group:
+/// DrawingML wps / wpg, or VML with a text box) - not a picture, which is a run of the model's.
+let private holdsShapeItem (run: XmlDsl.XmlNode) : bool =
+    not (XmlPatch.descendantsWhere (fun node -> XmlPatch.prefix node = "wps" || XmlPatch.prefix node = "wpg" || XmlPatch.name node = "v:textbox") run).IsEmpty
+
 let private spliceSourceOf (text: string) (start: int) (finish: int) (bookmarks: Set<string>) : SpliceSource option =
     match XmlDsl.tryScanAt text start finish (System.Collections.Generic.HashSet<string>()) with
     | Some (XmlDsl.Element (_, _, _, span) as paragraph) when XmlDsl.Span.isKnown span && span.StartTagEnd < span.End ->
@@ -3060,7 +3071,17 @@ let private spliceSourceOf (text: string) (start: int) (finish: int) (bookmarks:
                     | [] -> ()
             for runs in opened do for start in runs do kept.Add start |> ignore
             kept
-        let isItem (node: XmlDsl.XmlNode) = XmlPatch.localName node = "r" && not (outerFieldRuns.Contains (XmlPatch.span node).Start)
+        // (A run that holds a shape anchored in the paragraph is the paragraph's as it was too: the model holds the
+        // shape as an item of its own, and a block whose shapes changed is not written from its source.)
+        // (Nor are the runs in such a shape - a text box's - the paragraph's.)
+        let shapeRuns =
+            XmlPatch.elements paragraph
+            |> List.collect (fun kid -> XmlPatch.descendantsWhere (fun node -> XmlPatch.name node = "w:r" && holdsShapeItem node) kid |> List.truncate 1)
+            |> List.map XmlPatch.span
+        let inShape (node: XmlDsl.XmlNode) =
+            let span = XmlPatch.span node
+            shapeRuns |> List.exists (fun outer -> span.Start >= outer.Start && span.End <= outer.End)
+        let isItem (node: XmlDsl.XmlNode) = XmlPatch.localName node = "r" && not (outerFieldRuns.Contains (XmlPatch.span node).Start) && not (inShape node)
         XmlPatch.layout isItem modelledWrapper skip take text paragraph from
         |> Option.map (fun laid ->
             // The fields: each begin mark with the end mark that closes it, through the runs in order.
@@ -3451,11 +3472,6 @@ let private sourceParagraphOf (para: obj) : XmlDsl.XmlNode option =
         match optionalInt (para?SourceAt) |> Option.bind sourceElementAt with
         | Some (XmlDsl.Element (name, _, _, _) as node) when name = "w:p" -> Some node
         | _ -> None
-/// Whether a shape is anchored in a paragraph as it was read (it is written with its block).
-let rec private holdsShape (node: XmlDsl.XmlNode) : bool =
-    match node with
-    | XmlDsl.Element (name, _, kids, _) -> name = "mc:AlternateContent" || name = "w:pict" || XmlPatch.prefix node = "wps" || XmlPatch.prefix node = "wpg" || List.exists holdsShape kids
-    | _ -> false
 /// Whether a paragraph as it was read is tied to what is around it, so that it cannot be written on its
 /// own: a shape is anchored in it (written with its block), or a field begins in it and ends in another.
 let private paragraphIsBound (node: XmlDsl.XmlNode) : bool =
@@ -3585,10 +3601,11 @@ let private patchSourceChunk (start: int) (finish: int) (items: obj array) : (in
                     let index = intOrDefault -1 (change?Paragraph)
                     match (if isNullOrUndefined after then None else sourceParagraphOf after) with
                     | Some (XmlDsl.Element (_, _, _, span) as node) when span.Start >= start && span.End <= finish ->
-                        // (A field that begins or ends in another paragraph is not in the way: its marks stay as they were,
-                        // see spliceSourceOf; the block keeps its place among the blocks of that field.)
-                        if holdsShape node then
-                            noteReason (sprintf "paragraph %d of the block: a shape is anchored in it: the block is written from the model" index)
+                        // (A field that begins or ends in another paragraph, a shape anchored in it: not in the way - their
+                        // runs stay as they were, see spliceSourceOf. Another kind of shape is.)
+                        let otherShape = XmlPatch.descendantsWhere (fun inner -> XmlPatch.name inner = "w:r" && holdsShape inner && not (holdsShapeItem inner)) node
+                        if not otherShape.IsEmpty then
+                            noteReason (sprintf "paragraph %d of the block: a shape the model does not hold as an item is in it: the block is written from the model" index)
                             ok <- false
                         elif isNullOrUndefined (after?SpliceOriginal) then
                             noteReason (sprintf "paragraph %d of the block: %s" index (optionalString (change?Why) |> Option.defaultValue "changed, and not of a paragraph that was read"))

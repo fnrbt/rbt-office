@@ -168,18 +168,13 @@ try {
     const boldSaved = await documentOf(saved.editor);
     check('its paragraph changed: the bold is saved', /<w:b\/>[^]*?anchor/.test(boldSaved), true);
     check('its paragraph changed: the box is the text it was read from', boldSaved.includes(source), true);
-    // A bookmark set in the paragraph: it is written from the model; the box's XML is not made anew.
+    // A bookmark set in the paragraph: it is written from its source too (docs/save-architecture.md) - the box in it
+    // is the text it was read from.
     Word.setSelection(saved.editor, anchorBlock.BlockId, 7, anchorBlock.BlockId, 16);
     Word.setBookmark(saved.editor, 'beside_the_box');
     const modelSaved = await documentOf(saved.editor);
-    check('its paragraph written from the model: the bookmark is saved', modelSaved.includes('w:name="beside_the_box"'), true);
-    // (As the reader holds an element: its attributes in the order of their names, its namespaces declared on it.)
-    const boxOf = (xml) => xml.slice(xml.indexOf('<mc:AlternateContent'), xml.indexOf('</mc:AlternateContent>'));
-    check('its paragraph written from the model: the box is still the element it was read from - choice, fallback and what the model does not hold',
-        [boxOf(modelSaved).includes(extra), /<wps:bodyPr anchor="ctr" anchorCtr="0" bIns="45720" lIns="190500" rIns="91440" rot="0" tIns="95250" vert="horz" wrap="square"><a:noAutofit\/><\/wps:bodyPr>/.test(boxOf(modelSaved)),
-            /<mc:Fallback><w:pict><v:shape fillcolor="#CCDDEE" id="vml51" stroked="f" style="position:absolute;margin-left:30pt;margin-top:30pt;width:150pt;height:60pt;z-index:7" type="#_x0000_t202"/.test(boxOf(modelSaved)),
-            (boxOf(modelSaved).match(/<[a-zA-Z0-9]+:[a-zA-Z0-9]+[ >\/]/g) ?? []).length === (source.match(/<[a-zA-Z0-9]+:[a-zA-Z0-9]+[ >\/]/g) ?? []).length],
-        [true, true, true, true]);
+    check('a bookmark set in its paragraph: the bookmark is saved', modelSaved.includes('w:name="beside_the_box"'), true);
+    check('a bookmark set in its paragraph: the box is the text it was read from - choice, fallback and what the model does not hold', [modelSaved.includes(source), modelSaved.includes(extra)], [true, true]);
     check('read again: the same box', (await OF.processors.forEditorPackage(new Uint8Array(await (await OF.word.writeFromEditorPackage(Word.exportDocumentPackage(saved.editor))).arrayBuffer()))).Paragraphs.filter((item) => item.Type === 'TextBox').map((item) => [Math.round(item.InsetLeft), Math.round(item.InsetTop), item.VerticalAnchor, item.Width, item.Height]), [[20, 10, 'ctr', 200, 80]]);
     // The box itself changed (its fill): both the choice and the fallback are written from the model, with its insets and anchor.
     Word.setCurrentTextBoxStyle(saved.editor, 40, 40, 200, 80, '#112233', '#445566', 1);
