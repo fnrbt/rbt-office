@@ -4159,19 +4159,43 @@ let setColumnWidth (col: int) (width: float) (model: SpreadsheetModel): Spreadsh
         | Some existing when existing = width -> model
         | _ -> { model with ColumnWidths = Map.add col width model.ColumnWidths }
 
+#if FABLE_COMPILER
+/// What `cellBounds` found of a cell map (held weakly, as the formula index).
+let private cellBoundsTable = newFormulaIndexTable ()
+#endif
+
+/// The last row and the last column of a non-empty cell map (the last row is the last key's;
+/// the columns are read in one walk of the map). In JavaScript it is found once per map: a
+/// sort asks it twice, and so do the views of the same cells.
+let private cellBounds (cells: Map<CellAddress, CellData>) : int * int =
+    let find () =
+        let entries = orderedEntries cells
+        let count = entryCount entries
+        let mutable maxCol = 0
+        for i in 0 .. count - 1 do
+            let col = (entryKey<CellAddress> entries i).Col
+            if col > maxCol then maxCol <- col
+        (entryKey<CellAddress> entries (count - 1)).Row, maxCol
+#if FABLE_COMPILER
+    let known = formulaIndexGet cellBoundsTable (box cells)
+    if not (isNull known) then unbox<int * int> known
+    else
+        let found = find ()
+        formulaIndexSet cellBoundsTable (box cells) (box found)
+        found
+#else
+    find ()
+#endif
+
 let usedBounds (model: SpreadsheetModel) : (int * int) option =
     let mutable any = false
     let mutable maxRow = 0
     let mutable maxCol = 0
-    // (The last row is the last key's; the columns are read in one walk of the map.)
     if not (Map.isEmpty model.Cells) then
         any <- true
-        let entries = orderedEntries model.Cells
-        let count = entryCount entries
-        maxRow <- (entryKey<CellAddress> entries (count - 1)).Row
-        for i in 0 .. count - 1 do
-            let col = (entryKey<CellAddress> entries i).Col
-            if col > maxCol then maxCol <- col
+        let lastRow, lastCol = cellBounds model.Cells
+        maxRow <- lastRow
+        maxCol <- lastCol
     for merge in model.MergedCells do
         any <- true
         if merge.EndRow > maxRow then maxRow <- merge.EndRow

@@ -1830,19 +1830,21 @@ let sortRange (memberName: string) (range: CellRange) (keys: SortKey list) (opti
                 keys
                 |> List.map (fun key ->
                     match key.By with
-                    | SortByValue -> rows |> Array.map (fun row -> valueAt row key.Column), [||]
+                    | SortByValue ->
+                        let values = rows |> Array.map (fun row -> valueAt row key.Column)
+                        values, Array.map isBlank values, [||]
                     | SortByCellColor | SortByFontColor ->
                         let wanted = key.Color.ToUpperInvariant()
-                        [||], rows |> Array.map (fun row -> if colorAt (key.By = SortByFontColor) row key.Column = wanted then 0 else 1))
+                        [||], [||], rows |> Array.map (fun row -> if colorAt (key.By = SortByFontColor) row key.Column = wanted then 0 else 1))
                 |> Array.ofList
             let keyArray = Array.ofList keys
             let compareBy (index: int) (a: int) (b: int) : int =
                 let key = keyArray.[index]
-                let values, colors = keyColumns.[index]
+                let values, blanks, colors = keyColumns.[index]
                 match key.By with
                 | SortByValue ->
                     let va, vb = values.[a], values.[b]
-                    match isBlank va, isBlank vb with
+                    match blanks.[a], blanks.[b] with
                     | true, true -> 0
                     | true, false -> 1
                     | false, true -> -1
