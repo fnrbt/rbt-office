@@ -1100,10 +1100,9 @@ let importDoc (doc: DocxReader.WordDocument) =
 
     // Drawing shapes / autoshapes -> floating TextBox blocks (preset/custom
     // geometry + gradient), mirroring the Fable bridge in Office.Formats Main.
-    let shapeBlocksOf (prefix: string) (blocks: Block list) (shapes: DocxReader.Shape list) : Block list =
-        shapes
-        |> List.filter (fun s -> not s.Content.IsEmpty || s.Preset.IsSome || not s.CustomPath.IsEmpty)
-        |> List.mapi (fun i (shape: DocxReader.Shape) ->
+    let shapeBlocksOf (imageKeyOf: string -> string) (prefix: string) (blocks: Block list) (shapes: DocxReader.Shape list) : Block list =
+        // (A shape of a group, `id` its id, has its place in the group: see TextBoxBlock.Children.)
+        let rec shapeBlock (id: string) (anchorId: BlockId option) (shape: DocxReader.Shape) : TextBoxBlock =
             let content = shape.Content |> List.map (mkPara resolver doc.Images styleMap comments notes true false)
             let geometry =
                 if not shape.CustomPath.IsEmpty then
@@ -1127,17 +1126,9 @@ let importDoc (doc: DocxReader.WordDocument) =
                 shape.Gradient
                 |> Option.map (fun g ->
                     { Stops = g.Stops |> List.map (fun s -> { Offset = s.Offset; Color = s.Color }); Angle = g.Angle; Radial = g.Radial })
-            let anchorId =
-                shape.AnchorBlock
-                |> Option.bind (fun index -> List.tryItem index blocks)
-                |> Option.bind (function
-                    | Paragraph para
-                    | Heading (_, para) -> Some para.Id
-                    | Table table -> Some table.Id
-                    | TextBox _ -> None)
-            TextBox {
+            {
                 defaultTextBox with
-                    Id = sprintf "%s-%d" prefix i
+                    Id = id
                     Content = content
                     X = shape.Position |> Option.map fst
                     Y = shape.Position |> Option.map snd
@@ -1177,9 +1168,24 @@ let importDoc (doc: DocxReader.WordDocument) =
                     NoTextWrap = shape.NoTextWrap
                     FitText = shape.FitText
                     Opacity = shape.Opacity |> Option.defaultValue 1.0
-            })
+                    Children = shape.Children |> List.mapi (fun index child -> shapeBlock (sprintf "%s/%d" id index) None child)
+                    ChildSpace = shape.ChildSpace
+                    ImageSource = shape.ImageRelationshipId |> Option.bind (fun rId -> Map.tryFind (imageKeyOf rId) doc.Images)
+            }
+        shapes
+        |> List.filter (fun s -> not s.Content.IsEmpty || s.Preset.IsSome || not s.CustomPath.IsEmpty || not s.Children.IsEmpty)
+        |> List.mapi (fun i (shape: DocxReader.Shape) ->
+            let anchorId =
+                shape.AnchorBlock
+                |> Option.bind (fun index -> List.tryItem index blocks)
+                |> Option.bind (function
+                    | Paragraph para
+                    | Heading (_, para) -> Some para.Id
+                    | Table table -> Some table.Id
+                    | TextBox _ -> None)
+            TextBox (shapeBlock (sprintf "%s-%d" prefix i) anchorId shape))
 
-    let blocks = blocks @ shapeBlocksOf "shape" blocks doc.Shapes
+    let blocks = blocks @ shapeBlocksOf id "shape" blocks doc.Shapes
 
     let firstParagraph =
         blocks
@@ -1193,7 +1199,7 @@ let importDoc (doc: DocxReader.WordDocument) =
     // (A header's shapes - a text box, a watermark - follow its blocks, as the body's follow the body's.)
     let withPartShapes (part: HeaderFooterPart) : HeaderFooterPart =
         match part.RelationshipId |> Option.bind (fun id -> Map.tryFind id doc.PartShapes) with
-        | Some shapes when not shapes.IsEmpty -> { part with Blocks = part.Blocks @ shapeBlocksOf ("shape-" + (part.RelationshipId |> Option.defaultValue "part")) part.Blocks shapes }
+        | Some shapes when not shapes.IsEmpty -> { part with Blocks = part.Blocks @ shapeBlocksOf (DocxReader.partImageKey (part.RelationshipId |> Option.defaultValue "")) ("shape-" + (part.RelationshipId |> Option.defaultValue "part")) part.Blocks shapes }
         | _ -> part
     let headerParts = doc.Headers |> List.map (headerFooterPart resolver doc.Images styleMap tableStyleMap comments notes >> withPartShapes)
     let footerParts = doc.Footers |> List.map (headerFooterPart resolver doc.Images styleMap tableStyleMap comments notes >> withPartShapes)
