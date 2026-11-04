@@ -11,7 +11,7 @@
 // Usage:
 //   node tools/word-browser/perf.mjs --dist $DIST [--progressive] [--repeat N] [--keys N] [--profile keys] [--callers FUNCTION] [--painter] [--measure-cost MICROSECONDS]
 // --profile select: the time under each function while everything is selected and the host's queries are answered;
-// --profile keys prints the functions with the most self time while typing, and the time under each
+// --profile note: the same for keystrokes in a footnote; --profile keys prints the functions with the most self time while typing, and the time under each
 // function (--profile enter: the time under each function while Enter and Backspace alternate;
 // --profile load: where opening the document spends its time); --callers FUNCTION adds the time under that function by its chain of callers.
 // --painter installs a (trivial) text path painter and measurers first.
@@ -158,6 +158,17 @@ try {
             const times = [];
             for (let i = 0; i < count; i++) { const t0 = performance.now(); Word.insertText(editor, 'x'); times.push(performance.now() - t0); }
             return stats(times);
+        },
+        // Keystrokes in the body of a footnote edited in place (enterNote), then back to the body.
+        noteKeys(count, id) {
+            if (!Word.enterNote || !Word.enterNote(editor, id, 'footnote')) return null;
+            for (let i = 0; i < 3; i++) Word.insertText(editor, 'x');
+            const times = [];
+            for (let i = 0; i < count; i++) { const t0 = performance.now(); Word.insertText(editor, 'x'); times.push(performance.now() - t0); }
+            const enters = [];
+            for (let i = 0; i < 6; i++) { const t0 = performance.now(); Word.insertText(editor, ' a longer piece of text to make the note take another line now and then'); enters.push(performance.now() - t0); }
+            Word.exitNote(editor);
+            return { ...stats(times), grow: stats(enters), pages: Word.getDocumentSize(editor).PageCount };
         },
         moves(count) {
             const times = [];
@@ -375,6 +386,32 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
             for (const [key, time] of [...total.entries()].filter(([key]) => /word\//.test(key)).sort((a, b) => b[1] - a[1]).slice(0, 60)) console.log(`  ${(time / keys).toFixed(2).padStart(7)} ms  ${key}`);
         }
         console.log(`  a keystroke (insertText in a plain paragraph, page ${Math.floor(loaded.pages / 2) + 1}): ${line(typed)}`);
+        if (profile === 'note') { await cdp.send('Profiler.enable'); await cdp.send('Profiler.setSamplingInterval', { interval: 200 }); await cdp.send('Profiler.start'); }
+        const noted = await tab.evaluate((n) => window.perf.noteKeys(n, '2'), keys);
+        if (profile === 'note') {
+            // --profile note: the time under each function while typing in the footnote (per keystroke, of keys + 9).
+            const { profile: cpu } = await cdp.send('Profiler.stop');
+            const interval = cpu.timeDeltas.reduce((a, b) => a + b, 0) / Math.max(1, cpu.samples.length) / 1000;
+            const byId = new Map(cpu.nodes.map((node) => [node.id, node]));
+            const selfById = new Map();
+            for (const id of cpu.samples) selfById.set(id, (selfById.get(id) ?? 0) + interval);
+            const keyOf = (frame) => `${frame.functionName || '(anonymous)'}  ${frame.url.split('/').slice(-2).join('/')}:${frame.lineNumber + 1}`;
+            const total = new Map();
+            const walk = (node, open) => {
+                const key = keyOf(node.callFrame);
+                let sum = selfById.get(node.id) ?? 0;
+                const inside = open.has(key);
+                if (!inside) open.add(key);
+                for (const child of node.children ?? []) sum += walk(byId.get(child), open);
+                if (!inside) { open.delete(key); total.set(key, (total.get(key) ?? 0) + sum); }
+                return sum;
+            };
+            walk(cpu.nodes[0], new Set());
+            console.log('  -- typing in the footnote: time under a function per keystroke --');
+            for (const [key, time] of [...total.entries()].filter(([key]) => /word\//.test(key)).sort((a, b) => b[1] - a[1]).slice(0, 50)) console.log(`  ${(time / (keys + 9)).toFixed(2).padStart(7)} ms  ${key}`);
+        }
+        if (noted) console.log(`  a keystroke in footnote 2 (enterNote, insertText): ${line(noted)}; a line's worth of text inserted there: ${line(noted.grow)}`);
+        else console.log('  a keystroke in a footnote: enterNote failed');
         const carets = await tab.evaluate((n) => window.perf.carets(n), 40);
         console.log(`  a caret move (setSelection):  ${line(carets)}; frame builds ${carets.builds} in 40`);
         const arrows = await tab.evaluate(() => window.perf.pressed(['ArrowRight', 'ArrowLeft'], 20));

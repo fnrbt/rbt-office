@@ -367,6 +367,18 @@ let private storyParts (session: StorySession) (blocks: Doc.Block list) : Doc.He
             session.Folded.Add(struct (blocks, next))
             next
 
+/// The indexes of the body's blocks that refer to a note or comment (see
+/// Doc.storyReferenceIndexes), for the body a story was entered from: the
+/// other blocks are not looked at again at each keystroke in the note.
+let mutable private knownReferenceIndexes : (Doc.Document * string * string * int array) option = None
+let private storyReferenceIndexesOf (main: Doc.Document) (kind: string) (id: string) : int array =
+    match knownReferenceIndexes with
+    | Some (known, knownKind, knownId, indexes) when obj.ReferenceEquals(known, main) && knownKind = kind && knownId = id -> indexes
+    | _ ->
+        let indexes = Doc.storyReferenceIndexes kind id main
+        knownReferenceIndexes <- Some (main, kind, id, indexes)
+        indexes
+
 /// The whole document a story document stands for: the body, the story's
 /// blocks in their part, the story's selection (and whatever else an edit of
 /// the story changed - the styles).
@@ -385,7 +397,7 @@ let private foldStory (session: StorySession) (story: Doc.Document) : Doc.Docume
                     found <- knownWhole
                     known <- true
             if not known then
-                found <- Doc.withStoryBody kind id story.Blocks main
+                found <- Doc.withStoryBodyAt kind id story.Blocks (Some (storyReferenceIndexesOf main kind id)) main
                 if session.NoteFolded.Count >= 256 then session.NoteFolded.RemoveAt 0
                 session.NoteFolded.Add(struct (story.Blocks, found))
             { story with Blocks = found.Blocks; HeaderParts = found.HeaderParts; FooterParts = found.FooterParts; Package = found.Package }
@@ -575,12 +587,14 @@ let private showStory (handler: InputHandler) (session: StorySession) =
     ctx.Story <- Some { Whole = whole; PageIndex = session.PageIndex; IsHeader = session.IsHeader; Label = session.Label; Box = session.Box; Note = session.Note }
     ctx.StoryLayouts <- None
     ctx.StoryNotePlace <- None
+    ctx.StoryNoteLayouts <- None
 
 let private hideStory (handler: InputHandler) =
     handler.Story <- None
     handler.RenderContext.Story <- None
     handler.RenderContext.StoryLayouts <- None
     handler.RenderContext.StoryNotePlace <- None
+    handler.RenderContext.StoryNoteLayouts <- None
 
 /// Record a finished change in the undo history as one step. Selection-only
 /// changes are not recorded.
