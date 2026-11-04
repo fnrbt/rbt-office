@@ -841,9 +841,11 @@ let private noteBodyOf (context: NoteLayoutContext) (noteType: string) (id: stri
     | true, body -> Some body
     | false, _ -> None
 
-/// The settings a note is laid out with by itself: an unpaged page, the width of the page's text.
+/// The settings a note is laid out with by itself: an unpaged page, the width
+/// of the page's text. (Its text starts below a top margin as deep as a page's
+/// first line is put at least: the layouts are moved up by it, see layOutNote.)
 let private noteRecordSettings (settings: LayoutSettings) : LayoutSettings =
-    { settings with PageHeight = unpagedMeasurementPageHeight; MarginBottom = 0.0; PaddingTop = 0.0; TableContinuationHeaderHeight = 0.0; InTableCell = false }
+    { settings with PageHeight = unpagedMeasurementPageHeight; MarginBottom = 0.0; PaddingTop = settings.FontSize * 2.0; TableContinuationHeaderHeight = 0.0; InTableCell = false }
 
 /// A buffer with `mark` in `style` before its text.
 let private withLeadingMark (mark: string) (style: TextStyle) (buffer: TextBuffer) : TextBuffer =
@@ -917,6 +919,7 @@ let private layOutNote (context: NoteLayoutContext) (settings: LayoutSettings) (
             let raw =
                 noteBlocksLayouter.Value noteSettings context.NoteMeasure context.NoteMeasureRange { context.NoteDoc with Blocks = shown }
                 |> List.filter (fun layout -> not (layout.BlockId.StartsWith footnoteBlockIdPrefix) && not (layout.BlockId.StartsWith endnoteBlockIdPrefix))
+                |> List.map (shiftBlockY (-noteSettings.PaddingTop))
                 |> List.map (fun layout -> if Some layout.BlockId = marked then markAsPrefix mark layout else layout)
             // Block by block (a table's cells together).
             let byId = Dictionary<BlockId, ResizeArray<BlockLayout>>()
@@ -5486,9 +5489,22 @@ let private layoutDocumentPassKept
                     let mutable rowHeight = measuredRow.Height
                     let mutable cellLayoutGroups = moveTableRowMeasurementToY rowY rowLocalMeasurement |> fun measurement -> measurement.CellGroups
 
+                    // (The footnotes the row's cells refer to take room at the foot of the page it is put on.)
+                    let rowNotes =
+                        let mutable notes = []
+                        for group in rowLocalMeasurement.CellGroups do
+                            for layout in group.Layouts do
+                                for line in layout.Lines do
+                                    notes <- appendNewNotes notes (footnotesInLine line)
+                        notes
+                    let withRowNotes y =
+                        if rowNotes.IsEmpty then footnotesByPage
+                        else
+                            let page = pageIndexForY settings y
+                            footnotesByPage |> Map.add page (appendNewNotes (footnotesByPage |> Map.tryFind page |> Option.defaultValue []) rowNotes)
                     let pagedRowY = paginateTableRow settings row rowY rowHeight
-                    let pagedRowY = paginateTableRowWithFootnotes settings footnotesByPage row pagedRowY rowHeight
-                    let contentBottom = contentBottomWithFootnotes settings footnotesByPage rowY
+                    let pagedRowY = paginateTableRowWithFootnotes settings (withRowNotes pagedRowY) row pagedRowY rowHeight
+                    let contentBottom = contentBottomWithFootnotes settings (withRowNotes rowY) rowY
                     let pagedRowY = keepRowWithNextY settings headerHeight contentBottom tableRowArray rowKeepsWithNext measureRowLocal rowIndex rowY rowHeight pagedRowY
                     let pagedRowY =
                         if pagedRowY = rowY
@@ -6008,7 +6024,9 @@ do noteBlocksLayouter.Value <- fun settings measureText measureRange doc ->
     fst (layoutDocumentWithRangeAndInitial None settings measureText measureRange doc Map.empty [] [])
 do noteParagraphLayouter.Value <- fun settings measureText measureRange para ->
     let maxWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
-    fst (layoutParagraphAtWithRange settings measureText measureRange maxWidth 0.0 0.0 para Map.empty)
+    // (At the top of the text of the settings' page, moved up to y = 0.)
+    fst (layoutParagraphAtWithRange settings measureText measureRange maxWidth settings.PaddingTop 0.0 para Map.empty)
+    |> shiftBlockY (-settings.PaddingTop)
 
 // Walk a first-pass layout result and shift each placed float's obstacle top
 // up to the top of whichever line first sits "inside" the float's effective

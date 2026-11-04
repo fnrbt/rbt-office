@@ -6,7 +6,8 @@
 // an endnote, by the API and a double click where the endnotes follow the text: synthetic/rich-notes.)
 // The note areas are laid out from the notes' blocks: a note of two paragraphs is two, a note's table is its cells
 // side by side; a note is edited where the area shows it, as it is laid out there, and a note that grows while it
-// is edited stays above the page's bottom margin, the page's text making room for it.
+// is edited stays above the page's bottom margin, the page's text making room for it; a page whose table cells refer
+// to footnotes keeps room for them (phpword-sample-11).
 import { check, finish, fail, loadWord, loadFormats, bytesOf } from './common.js';
 let OF, Word, editor;
 const bytes = {};
@@ -66,6 +67,23 @@ try {
         seen[stage].noteLines = note.length;
         seen[stage].noteOutside = note.filter((line) => { const frame = frameOf(line.Page); return line.Y + line.Height > frame.Top + frame.Height - frame.MarginBottom + 0.5; }).length;
     };
+    // A document of the corpus whose footnotes are referred to from a table's cells near the foot of a page:
+    // the page's text ends above its notes.
+    window.corpusNotes = guarded(async (stage, file) => {
+        const other = Word.initializeCanvas(document.createElement('canvas'));
+        Word.importFromDocxPackage(other, await OF.processors.forEditorPackage(await bytesOf('/repo/' + file)));
+        Word.completeLayout(other);
+        const lines = Word.getLayoutLines(other);
+        const byPage = new Map();
+        for (const line of lines) {
+            const entry = byPage.get(line.Page) ?? { bodyBottom: 0, noteTop: Infinity, notes: 0 };
+            if (String(line.BlockId).startsWith('__footnote__')) { entry.noteTop = Math.min(entry.noteTop, line.PageY); entry.notes++; }
+            else if (!String(line.BlockId).startsWith('__')) entry.bodyBottom = Math.max(entry.bodyBottom, line.PageY + line.Height);
+            byPage.set(line.Page, entry);
+        }
+        seen[stage] = { pages: [...byPage.entries()].filter(([, entry]) => entry.notes > 0).map(([page, entry]) => [page, Math.round(entry.bodyBottom), Math.round(entry.noteTop)]) };
+        Word.dispose(other);
+    });
     window.look = (stage) => {
         const caret = Word.getCaretRect(editor);
         seen[stage] = Object.assign(seen[stage] ?? {}, { context: context(), caret, text: Word.getText(editor), ink: caret ? inkAt(Math.round(caret.X), Math.round(caret.Y), 200, Math.round(caret.Height)) : -1 });
@@ -83,6 +101,7 @@ try {
     });
     window.drive = [
         ['eval', 'window.place("area", null)'], ['eval', 'window.area("area", "footnote", "2")'],
+        ['eval', 'window.corpusNotes("phpword", "tests/test-documents-wild/phpword-sample-11-readword2007.docx")'],
         ['eval', 'window.place("tablearea", null, "rich")'], ['eval', 'window.area("tablearea", "footnote", "2")'],
         ['eval', 'window.place("grow", "footnote")'], ['press', 'Control+End'], ['type', ' and a much longer text that the note is given here, to take several lines of the footnote area at the foot of the page'],
         ['press', 'Enter'], ['type', 'A third paragraph of the note, as long as the one before it and longer still, to make it grow'], ['press', 'Enter'], ['type', 'And a fourth one'],
@@ -118,6 +137,8 @@ window.finish = async () => {
         check('a footnote with a table: its cells are laid out side by side', [!!cell('note cell a'), !!cell('note cell b'), cell('note cell a')?.y === cell('note cell b')?.y, cell('note cell b')?.x > cell('note cell a')?.x + 50], [true, true, true, true]);
         check('a footnote with a table: its bold words are bold, the paragraph after the table below the cells',
             [seen.tablearea.lines[0]?.text.includes('the bold source'), seen.tablearea.lines.find((line) => line.text === 'after the note table')?.y > cell('note cell a')?.y], [true, true]);
+        check('a table\'s cells referring to footnotes at the foot of a page (phpword-sample-11): the text ends above the notes',
+            seen.phpword.pages.length > 0 && seen.phpword.pages.every(([, bodyBottom, noteTop]) => bodyBottom <= noteTop) ? true : seen.phpword.pages, true);
         // A note that grows while it is edited.
         check('a growing note is edited in its area: the caret in the note, its lines laid out', [seen.grow.context, seen.grow.count >= 5], [['footnote', '2', null], true]);
         check('a growing note does not run past the bottom margin while it is edited', seen.grow.outside, 0);

@@ -118,6 +118,9 @@ match formattedArea with
 | _ -> check "the note's paragraphs are laid out one by one" formattedArea.Length 3
 check "the note ends above the bottom margin" (bottomOf formattedArea <= contentBottomOf 0 + 0.01) true
 check "the note is on its reference's page" (formattedArea |> List.forall (fun layout -> pageOf layout.Y = 0)) true
+// (Laid out by itself, a note is not put as low as a page's first line: its first line is at its top.)
+check "the note's first line is at the top of the note" (abs (formattedArea.Head.Lines.Head.Y - formattedArea.Head.Y) < 0.01) true
+check "the note is as high as its paragraphs" (abs ((bottomOf formattedArea - topOf formattedArea) - (formattedArea |> List.sumBy (fun layout -> layout.Height))) < 0.01) true
 
 // ---- the pages make room for the note's real height -----------------------------
 
@@ -167,6 +170,17 @@ check "no part of it is outside a page's text area"
 check "its paragraphs are in order" (ownIds longArea) [ for index in 1 .. 30 -> sprintf "long-%d" index ]
 let carriedTop = longArea |> List.filter (fun layout -> pageOf layout.Y = 1) |> topOf
 check "the next page's text ends above what goes on there" ((bodyLinesOnPage 1 longLayouts |> List.map (fun line -> line.Y + line.Height) |> List.fold max 0.0) <= carriedTop + 0.01) true
+
+// A table's cell that refers to a footnote: the row is put where the page has room for the note too.
+let cellNote = noteBody "footnote" "1" [ for index in 1 .. 5 -> Doc.Paragraph (paragraph (sprintf "cn-%d" index) (sprintf "cell note paragraph %d" index)) ]
+let cellTable = table "ct" [ for index in 1 .. 4 -> tableRow [ tableCell [ (if index = 4 then referring "ct-ref" "the cell with the note x" "footnote" "1" cellNote.Text else paragraph (sprintf "ct-%d" index) (sprintf "cell %d" index)) ]; tableCell [ paragraph (sprintf "ct-b%d" index) "b" ] ] ]
+let cellCheck fillCount =
+    let layouts, _ = layOut (documentWith (fillers fillCount @ [ Doc.Table cellTable; Doc.Paragraph (paragraph "after-table" "after") ]) [ cellNote ])
+    let area = layouts |> List.filter isFootnote
+    let page = pageOf (topOf area)
+    let bodyBottom = bodyLinesOnPage page layouts |> List.map (fun line -> line.Y + line.Height) |> List.fold max 0.0
+    bodyBottom <= topOf area + 0.01
+check "a row referring to a note leaves room for it, wherever the table falls" ([ 0 .. 12 ] |> List.forall cellCheck) true
 
 // ---- endnotes -------------------------------------------------------------------------
 
