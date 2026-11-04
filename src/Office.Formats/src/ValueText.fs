@@ -152,6 +152,15 @@ let withoutPrefix (prefix: string) (value: string) : string = if value.StartsWit
 /// The number of `count` hex digits at `at` (the character of an escape "_x000D_").
 let hexNumber (text: string) (at: int) (count: int) : int = System.Convert.ToInt32(text.Substring(at, count), 16)
 
+/// The date of an xsd:dateTime ("2013-11-09T00:00:00") as (year, month, day); None when it is not one.
+let isoDate (value: string) : (int * int * int) option =
+    let parts = value.Split('T').[0].Split('-')
+    if parts.Length <> 3 then None
+    else
+        match System.Int32.TryParse parts.[0], System.Int32.TryParse parts.[1], System.Int32.TryParse parts.[2] with
+        | (true, year), (true, month), (true, day) when month >= 1 && month <= 12 && day >= 1 && day <= 31 -> Some (year, month, day)
+        | _ -> None
+
 /// The extension of a path (lower case, after its last dot; "" for none).
 let extensionOf (lowerPath: string) : string =
     match lowerPath.LastIndexOf '.' with

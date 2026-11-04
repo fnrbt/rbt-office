@@ -2605,6 +2605,10 @@ type DrawingParts = {
     Chart: string -> Chart option
     /// The picture of a relationship id (`<a:blip r:embed>`), as a data URL.
     Picture: string -> string option
+    /// A slicer or a timeline the drawing shows by name (`<sle:slicer name>`: kind "slicer";
+    /// `<tsle:timeslicer name>`: "timeslicer") drawn in a rectangle of that width and height, reading
+    /// the cells it needs through the data (`Slicers.drawer`); None when the workbook has none of that name.
+    Slicer: string -> string -> ChartData -> float -> float -> Primitive list option
 }
 
 let private emuPx (emu: float) = emu / 9525.0
@@ -2942,16 +2946,31 @@ let rec private elementItems (parts: DrawingParts) (data: ChartData) (charts: in
          | Some href -> [ PImage (x, y, width, height, href) ]
          | None -> unknown.Value <- unknown.Value + 1; [])
     | "graphicFrame" ->
-        (match descendants "chart" element |> List.tryPick (attr "r:id") |> Option.bind parts.Chart with
-         | Some chart ->
+        // (A slicer or a timeline: what the workbook says of the one of that name.)
+        let control =
+            descendants "graphicData" element
+            |> List.tryHead
+            |> Option.bind (fun graphic ->
+                kids graphic |> List.tryPick (fun item ->
+                    match nameOf item with
+                    | "slicer" | "timeslicer" as kind -> attr "name" item |> Option.map (fun name -> kind, name)
+                    | _ -> None))
+            |> Option.bind (fun (kind, name) -> parts.Slicer kind name data width height)
+        match control with
+        | Some items ->
             charts.Value <- charts.Value + 1
-            [ PGroup (x, y, width, height, (layoutChart parts.Theme data chart width height).Items) ]
-         | None ->
-            // (A slicer, a chart of a kind that is not drawn: a box that says what it is.)
-            unknown.Value <- unknown.Value + 1
-            let name = descendants "cNvPr" element |> List.tryPick (attr "name") |> Option.defaultValue ""
-            [ PRect (x + 0.5, y + 0.5, max 0.0 (width - 1.0), max 0.0 (height - 1.0), Some "#F6F8FA", 1.0, Some "#8A94A6", 1.0, 0.0)
-              PText (x + width / 2.0, y + height / 2.0, name, 12.0, "#4A5568", "middle", false, false, 0.0) ])
+            [ PGroup (x, y, width, height, items) ]
+        | None ->
+            (match descendants "chart" element |> List.tryPick (attr "r:id") |> Option.bind parts.Chart with
+             | Some chart ->
+                charts.Value <- charts.Value + 1
+                [ PGroup (x, y, width, height, (layoutChart parts.Theme data chart width height).Items) ]
+             | None ->
+                // (A slicer, a chart of a kind that is not drawn: a box that says what it is.)
+                unknown.Value <- unknown.Value + 1
+                let name = descendants "cNvPr" element |> List.tryPick (attr "name") |> Option.defaultValue ""
+                [ PRect (x + 0.5, y + 0.5, max 0.0 (width - 1.0), max 0.0 (height - 1.0), Some "#F6F8FA", 1.0, Some "#8A94A6", 1.0, 0.0)
+                  PText (x + width / 2.0, y + height / 2.0, name, 12.0, "#4A5568", "middle", false, false, 0.0) ])
     | "grpSp" ->
         // The group's own rectangle (`chOff` / `chExt`) is mapped onto the one it is given.
         let transform = child "grpSpPr" element |> Option.bind (child "xfrm")

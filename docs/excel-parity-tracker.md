@@ -81,9 +81,11 @@ dashboard-ecommerce-sales.xlsx (19 charts / 30 pivots / 11 images).
 
 Rendered the sales-analysis Dashboard sheet: the new chart pipeline already
 draws several charts in-place (bar "Sales By Category/Manager", line "Sales By
-Chain"). NOT yet rendered: slicers (filter-button controls), in-cell
+Chain"). Slicers are drawn since `sheet/slicers` (caption, buttons in their
+columns, selected / no-data looks from the slicer style; see the roadmap's
+backlog for what is approximated). NOT yet rendered: in-cell
 sparklines, images/logos; pivot tables show as cached cell values (OK).
-Reaching parity needs: slicer rendering, sparklines, image embedding, and
+Reaching parity needs: sparklines, image embedding, and
 chart-position/layout polish. Not started — flagged as the big next goal.
 
 ## Chart zoo (goal: render chart-zoo.xlsx at parity, one type at a time)

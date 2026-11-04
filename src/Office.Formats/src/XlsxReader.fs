@@ -257,6 +257,74 @@ type TableStyleElementDef = { Type: string; Size: int; Format: TableStyleDxf }
 /// may style (a slicer style is neither).
 type TableStyleDefinition = { Name: string; Table: bool; Pivot: bool; Elements: TableStyleElementDef list }
 
+/// A custom slicer or timeline style of styles.xml (`<x14:slicerStyle>` / `<x15:timelineStyle>` in its
+/// extension list): the format of each of its elements by type (`selectedItemWithData`,
+/// `unselectedItemWithNoData` ..., `selectedTimeBlock` ...), from the `<x14:dxfs>` it points into. The
+/// whole slicer and its header are the elements of the table style of the same name (`<tableStyle
+/// table="0" pivot="0">`).
+type SlicerStyleDefinition = { Name: string; Elements: (string * TableStyleDxf) list }
+
+/// The slicer and timeline styles of a workbook: its custom ones and the default it names.
+type SlicerStyles = {
+    Slicers: SlicerStyleDefinition list
+    DefaultSlicer: string option
+    Timelines: SlicerStyleDefinition list
+    DefaultTimeline: string option
+}
+
+/// A button of a slicer: its caption, whether it is selected (the filter lets it through) and
+/// whether there is data behind it (a pivot table's other filters leave none: drawn dimmed).
+type SlicerItem = { Label: string; Selected: bool; HasData: bool }
+
+/// Where a slicer's buttons come from: the items its cache lists (a pivot table's slicer: their
+/// captions from the pivot cache's field), or a column of a table, read from its cells
+/// (sheet, first and last data row, column - 0-based) with the values its filter lets through
+/// (None: all).
+type SlicerSource =
+    | CachedItems of SlicerItem list
+    | TableColumn of sheet: string * firstRow: int * lastRow: int * column: int * selected: string list option
+
+/// A slicer (`<slicer>` of a slicers part, x14) with what its cache (`<slicerCacheDefinition>`) says.
+type SlicerInfo = {
+    Name: string
+    Caption: string
+    ShowCaption: bool
+    ColumnCount: int
+    /// The height of a button, EMU (`rowHeight`).
+    RowHeight: float
+    /// `style` (None: the workbook's default).
+    Style: string option
+    /// The first button shown (`startItem`): the slicer is scrolled down to it.
+    StartItem: int
+    Source: SlicerSource
+    /// `crossFilter` of the cache: "showItemsWithDataAtTop" (the default), "showItemsWithNoData", "none".
+    CrossFilter: string
+    /// The cache hides the buttons without data (`x15:slicerCacheHideItemsWithNoData`).
+    HideItemsWithNoData: bool
+    /// `sortOrder` of a table's slicer cache: "descending" sorts its values so.
+    Descending: bool
+}
+
+/// A timeline (`<timeline>` of a timelines part, x15) with its cache's state: the dates as (year,
+/// month, day).
+type TimelineInfo = {
+    Name: string
+    Caption: string
+    ShowHeader: bool
+    ShowSelectionLabel: bool
+    ShowTimeLevel: bool
+    ShowHorizontalScrollbar: bool
+    /// `level`: 0 years, 1 quarters, 2 months, 3 days.
+    Level: int
+    Style: string option
+    /// The first date in view (`scrollPosition`).
+    ScrollPosition: (int * int * int) option
+    /// The period the filter lets through (`<selection startDate endDate>`); None: all periods.
+    Selection: ((int * int * int) * (int * int * int)) option
+    /// The dates of the source (`<bounds>`).
+    Bounds: ((int * int * int) * (int * int * int)) option
+}
+
 /// The x14 form of a data bar (`<x14:dataBar>` in the sheet's extension
 /// list), attribute by attribute with the schema's defaults.
 type CfDataBarExt = {
@@ -1264,6 +1332,8 @@ type Workbook = {
     ThemeColors: string array
     /// The custom table styles of styles.xml (`<tableStyles>`), their formats resolved.
     TableStyles: TableStyleDefinition list
+    /// The custom slicer and timeline styles and the defaults styles.xml names (its extension list).
+    SlicerStyles: SlicerStyles
     /// True when the source workbook uses the 1904 date system
     /// (`<workbookPr date1904="1"/>`). Every consumer of this model assumes
     /// 1900-system serials, so the reader has already shifted the value of
@@ -3522,8 +3592,8 @@ module Xlsx =
     let worksheet name sheetXml comments condFormats dataVals charts pivotTables tables sheetRels printNames =
         worksheetWithStyles None name sheetXml comments condFormats dataVals charts pivotTables tables sheetRels printNames
 
-    /// Parse an `A1:F5` style range into 1-indexed inclusive bounds.
-    let private parseRange (ref: string) =
+    /// Parse an `A1:F5` style range into 1-indexed inclusive bounds (row, column, row, column).
+    let parseRange (ref: string) =
         let parts = ValueText.Sheet.corners ref
         let parseCorner (s: string) =
             let letters, parsedRow = parseCellRefParts s
@@ -4786,6 +4856,42 @@ module TableStyleDefinitions =
                             Some { Type = kind; Size = Xml.attr "size" element |> Option.bind tryParseInt |> Option.defaultValue 1; Format = format }
                         | None -> None) }))
 
+/// The slicer and timeline styles of a styles part: `<x14:slicerStyles defaultSlicerStyle>` and
+/// `<x15:timelineStyles defaultTimelineStyle>` of its extension list, their elements' formats from the
+/// `<x14:dxfs>` there.
+module SlicerStyleDefinitions =
+    let none : SlicerStyles = { Slicers = []; DefaultSlicer = None; Timelines = []; DefaultTimeline = None }
+
+    let parse (themeColors: string array) (stylesDoc: XmlNode) : SlicerStyles =
+        match Xlsx.sElem "extLst" stylesDoc with
+        | None -> none
+        | Some extLst ->
+            let dxfs =
+                Xlsx.sElems "dxfs" extLst
+                |> List.tryHead
+                |> Option.map (fun list -> Xml.children list |> List.filter (fun node -> Xml.name node |> Option.map Ns.stripNs = Some "dxf"))
+                |> Option.defaultValue []
+                |> List.toArray
+            let styles (listName: string) (styleName: string) (elementName: string) (defaultName: string) =
+                match Xlsx.sElems listName extLst |> List.tryHead with
+                | None -> [], None
+                | Some list ->
+                    Xlsx.sElems styleName list
+                    |> List.choose (fun style ->
+                        Xml.attr "name" style
+                        |> Option.map (fun name ->
+                            { Name = name
+                              Elements =
+                                Xlsx.sElems elementName style
+                                |> List.choose (fun element ->
+                                    match Xml.attr "type" element, Xml.attr "dxfId" element |> Option.bind tryParseInt with
+                                    | Some kind, Some id when id >= 0 && id < dxfs.Length -> Some (kind, TableStyleDefinitions.parseDxf themeColors dxfs.[id])
+                                    | _ -> None) } : SlicerStyleDefinition)),
+                    Xml.attr defaultName list
+            let slicers, defaultSlicer = styles "slicerStyles" "slicerStyle" "slicerStyleElement" "defaultSlicerStyle"
+            let timelines, defaultTimeline = styles "timelineStyles" "timelineStyle" "timelineStyleElement" "defaultTimelineStyle"
+            { Slicers = slicers; DefaultSlicer = defaultSlicer; Timelines = timelines; DefaultTimeline = defaultTimeline }
+
 // Data Validation parsing
 module DataValidations =
     let parseDataValidation (dvNode: XmlNode) : DataValidation option =
@@ -5114,6 +5220,220 @@ let private isInternal (rel: Relationship) =
 /// Path of the part a relationship of `ownerPath` points at.
 let private relTargetPath (ownerPath: string) (rel: Relationship) =
     ZipInterop.resolveTarget (partDirectory ownerPath) rel.Target
+
+/// The slicers and timelines of a workbook, read from the parts it keeps (`Preserved.Parts`): the slicers
+/// parts and timelines parts its sheets relate to (`<x14:slicerList>`, `<x15:timelineRefs>` name them), the
+/// slicer and timeline caches of the workbook part (`<x14:slicerCaches>`, `<x15:timelineCacheRefs>`), and
+/// what a slicer cache's buttons are: the items of a pivot cache's field (the cache says which pivot cache
+/// by its `pivotCacheId`, the x14 extension of the pivot cache definition) or the values of a table's
+/// column. A drawing shows one by name (`<sle:slicer name>`, `<tsle:timeslicer name>`). The parts
+/// themselves are not changed: a writer keeps them as they were.
+module SlicerParts =
+    type Book = { Slicers: Map<string, SlicerInfo>; Timelines: Map<string, TimelineInfo> }
+
+    let empty : Book = { Slicers = Map.empty; Timelines = Map.empty }
+
+    let private localIs (localName: string) (node: XmlNode) = Xml.name node |> Option.map Ns.stripNs = Some localName
+    let private kids (localName: string) (node: XmlNode) = Xml.children node |> List.filter (localIs localName)
+    let private flag (name: string) (fallback: bool) (node: XmlNode) =
+        match Xml.attr name node with
+        | Some text -> isTrueText text
+        | None -> fallback
+    let private intAttr (name: string) (fallback: int) (node: XmlNode) =
+        Xml.attr name node |> Option.bind tryParseInt |> Option.defaultValue fallback
+
+    /// A shared item of a pivot cache as a slicer's button says it.
+    let private itemLabel (item: XmlNode) : string =
+        let value = Xml.attr "v" item |> Option.defaultValue ""
+        match Xml.name item |> Option.map Ns.stripNs with
+        | Some "m" -> "(blank)"
+        | Some "b" -> if isTrueText value then "TRUE" else "FALSE"
+        | Some "d" ->
+            (match ValueText.isoDate value with
+             | Some (year, month, day) -> sprintf "%d/%d/%d" month day year
+             | None -> value)
+        | _ -> value
+
+    let read (workbook: Workbook) : Book =
+        let parts = System.Collections.Generic.Dictionary<string, byte[]>()
+        for path, data in workbook.Preserved.Parts do parts.[path] <- data
+        let parsed (path: string) : XmlNode option =
+            match parts.TryGetValue path with
+            | true, data ->
+                let text = System.Text.Encoding.UTF8.GetString data
+                (try XmlDsl.tryScan text (System.Collections.Generic.HashSet<string>()) with _ -> None)
+                |> Option.orElseWith (fun () -> try Some (XmlDsl.parse text) with _ -> None)
+            | false, _ -> None
+        let targetsOf (relationships: (string * string * string * bool) list) (kind: string) =
+            relationships
+            |> List.choose (fun (_, relType, target, isExternal) ->
+                if not isExternal && ValueText.isRelationshipType kind relType then Some (ZipInterop.normalizePath target) else None)
+        let workbookTargets = targetsOf workbook.Preserved.WorkbookRelationships
+        let sheetTargets (kind: string) = workbook.Sheets |> List.collect (fun sheet -> targetsOf sheet.Extras.KeptRelationships kind) |> List.distinct
+        // The pivot caches by the id slicer caches know them by (`<x14:pivotCacheDefinition pivotCacheId>`).
+        let pivotCaches =
+            lazy
+                (workbookTargets "/pivotCacheDefinition"
+                 |> List.choose (fun path ->
+                    parsed path
+                    |> Option.bind (fun root ->
+                        Xlsx.sElem "extLst" root
+                        |> Option.bind (fun extLst -> Xlsx.sElems "pivotCacheDefinition" extLst |> List.tryPick (Xml.attr "pivotCacheId"))
+                        |> Option.map (fun id -> id, root)))
+                 |> Map.ofList)
+        // The items of a field of a pivot cache: its shared items, or the groups of a grouped field.
+        let fieldItems (cacheId: string) (field: string) : string array =
+            match Map.tryFind cacheId pivotCaches.Value with
+            | None -> [||]
+            | Some root ->
+                Xlsx.sElem "cacheFields" root
+                |> Option.map (kids "cacheField")
+                |> Option.defaultValue []
+                |> List.tryFind (fun node -> Xml.attr "name" node = Some field)
+                |> Option.map (fun node ->
+                    let grouped =
+                        Xlsx.sElem "fieldGroup" node |> Option.bind (Xlsx.sElem "groupItems") |> Option.map Xml.children |> Option.defaultValue []
+                        |> List.filter (fun item -> Xml.name item |> Option.isSome)
+                    let shared =
+                        Xlsx.sElem "sharedItems" node |> Option.map Xml.children |> Option.defaultValue []
+                        |> List.filter (fun item -> Xml.name item |> Option.isSome)
+                    (if grouped.IsEmpty then shared else grouped) |> List.map itemLabel |> List.toArray)
+                |> Option.defaultValue [||]
+        // The tables of the sheets by their id: sheet name, the part read.
+        let tables =
+            lazy
+                (workbook.Sheets
+                 |> List.collect (fun sheet ->
+                    sheet.Extras.TableParts
+                    |> List.choose (fun (_, path) ->
+                        parsed (ZipInterop.normalizePath path)
+                        |> Option.bind (fun root -> Xml.attr "id" root |> Option.map (fun id -> id, (sheet.Name, root)))))
+                 |> Map.ofList)
+        let tableColumn (tableId: string) (columnId: string) : SlicerSource option =
+            match Map.tryFind tableId tables.Value with
+            | None -> None
+            | Some (sheet, root) ->
+                let columns = Xlsx.sElem "tableColumns" root |> Option.map (kids "tableColumn") |> Option.defaultValue []
+                match Xml.attr "ref" root |> Option.bind Xlsx.parseRange, columns |> List.tryFindIndex (fun column -> Xml.attr "id" column = Some columnId) with
+                | Some (top, left, bottom, _), Some index ->
+                    let selected =
+                        Xlsx.sElem "autoFilter" root
+                        |> Option.map (kids "filterColumn")
+                        |> Option.defaultValue []
+                        |> List.tryFind (fun filter -> Xml.attr "colId" filter = Some (string index))
+                        |> Option.bind (Xlsx.sElem "filters")
+                        |> Option.map (fun filters -> kids "filter" filters |> List.choose (Xml.attr "val"))
+                    // (The range's rows and columns from 1; the cells' from 0.)
+                    let first = top - 1 + intAttr "headerRowCount" 1 root
+                    let last = bottom - 1 - intAttr "totalsRowCount" 0 root
+                    Some (TableColumn (sheet, first, last, left - 1 + index, selected))
+                | _ -> None
+        // The slicer caches by name: where their buttons come from, how no data is shown, the order.
+        let slicerCaches =
+            workbookTargets "/slicerCache"
+            |> List.choose parsed
+            |> List.choose (fun root ->
+                Xml.attr "name" root
+                |> Option.map (fun name ->
+                    let sourceName = Xml.attr "sourceName" root |> Option.defaultValue ""
+                    let data = Xlsx.sElem "data" root
+                    let tabular = data |> Option.bind (Xlsx.sElem "tabular")
+                    let olap = data |> Option.bind (Xlsx.sElem "olap")
+                    let tableCache = Xlsx.sElem "extLst" root |> Option.bind (fun extLst -> Xlsx.sElems "tableSlicerCache" extLst |> List.tryHead)
+                    let hidesNoData =
+                        tabular |> Option.bind (Xlsx.sElem "extLst") |> Option.map (fun extLst -> not (Xlsx.sElems "slicerCacheHideItemsWithNoData" extLst).IsEmpty) |> Option.defaultValue false
+                    let source =
+                        match tabular, olap, tableCache with
+                        | Some tabular, _, _ ->
+                            let labels = fieldItems (Xml.attr "pivotCacheId" tabular |> Option.defaultValue "") sourceName
+                            Xlsx.sElem "items" tabular
+                            |> Option.map (kids "i")
+                            |> Option.defaultValue []
+                            |> List.choose (fun item ->
+                                match Xml.attr "x" item |> Option.bind tryParseInt with
+                                | Some index when index >= 0 && index < labels.Length ->
+                                    Some ({ Label = labels.[index]; Selected = flag "s" false item; HasData = not (flag "nd" false item) } : SlicerItem)
+                                | _ -> None)
+                            |> CachedItems
+                        | None, Some olap, _ ->
+                            let chosen = Xlsx.sElem "selections" root |> Option.map (kids "selection") |> Option.defaultValue [] |> List.choose (Xml.attr "n")
+                            Xlsx.sElem "levels" olap
+                            |> Option.map (kids "level")
+                            |> Option.defaultValue []
+                            |> List.tryHead
+                            |> Option.map (Xlsx.sElems "i")
+                            |> Option.defaultValue []
+                            |> List.map (fun item ->
+                                let unique = Xml.attr "n" item |> Option.defaultValue ""
+                                ({ Label = Xml.attr "c" item |> Option.defaultValue unique
+                                   Selected = chosen.IsEmpty || List.contains unique chosen
+                                   HasData = not (flag "nd" false item) } : SlicerItem))
+                            |> CachedItems
+                        | None, None, Some table ->
+                            tableColumn (Xml.attr "tableId" table |> Option.defaultValue "") (Xml.attr "column" table |> Option.defaultValue "")
+                            |> Option.defaultValue (CachedItems [])
+                        | _ -> CachedItems []
+                    let attribute (name: string) =
+                        tabular |> Option.bind (Xml.attr name) |> Option.orElse (tableCache |> Option.bind (Xml.attr name))
+                    name, (source, attribute "crossFilter" |> Option.defaultValue "showItemsWithDataAtTop", hidesNoData, attribute "sortOrder" = Some "descending")))
+            |> Map.ofList
+        let slicers =
+            sheetTargets "/slicer"
+            |> List.choose parsed
+            |> List.collect (kids "slicer")
+            |> List.choose (fun slicer ->
+                match Xml.attr "name" slicer, Xml.attr "cache" slicer |> Option.bind (fun cache -> Map.tryFind cache slicerCaches) with
+                | Some name, Some (source, crossFilter, hidesNoData, descending) ->
+                    Some (name,
+                          ({ Name = name
+                             Caption = Xml.attr "caption" slicer |> Option.defaultValue name
+                             ShowCaption = flag "showCaption" true slicer
+                             ColumnCount = max 1 (intAttr "columnCount" 1 slicer)
+                             RowHeight = Xml.attr "rowHeight" slicer |> Option.bind tryParseFloat |> Option.defaultValue 241300.0
+                             Style = Xml.attr "style" slicer
+                             StartItem = max 0 (intAttr "startItem" 0 slicer)
+                             Source = source
+                             CrossFilter = crossFilter
+                             HideItemsWithNoData = hidesNoData
+                             Descending = descending } : SlicerInfo))
+                | _ -> None)
+            |> Map.ofList
+        let dateOf (node: XmlNode option) (name: string) = node |> Option.bind (Xml.attr name) |> Option.bind ValueText.isoDate
+        let span (node: XmlNode option) =
+            match dateOf node "startDate", dateOf node "endDate" with
+            | Some first, Some last -> Some (first, last)
+            | _ -> None
+        let timelineCaches =
+            workbookTargets "/timelineCache"
+            |> List.choose parsed
+            |> List.choose (fun root ->
+                Xml.attr "name" root
+                |> Option.map (fun name ->
+                    let state = Xlsx.sElem "state" root
+                    name, (span (state |> Option.bind (Xlsx.sElem "selection")), span (state |> Option.bind (Xlsx.sElem "bounds")))))
+            |> Map.ofList
+        let timelines =
+            sheetTargets "/timeline"
+            |> List.choose parsed
+            |> List.collect (kids "timeline")
+            |> List.choose (fun timeline ->
+                match Xml.attr "name" timeline, Xml.attr "cache" timeline |> Option.bind (fun cache -> Map.tryFind cache timelineCaches) with
+                | Some name, Some (selection, bounds) ->
+                    Some (name,
+                          ({ Name = name
+                             Caption = Xml.attr "caption" timeline |> Option.defaultValue name
+                             ShowHeader = flag "showHeader" true timeline
+                             ShowSelectionLabel = flag "showSelectionLabel" true timeline
+                             ShowTimeLevel = flag "showTimeLevel" true timeline
+                             ShowHorizontalScrollbar = flag "showHorizontalScrollbar" true timeline
+                             Level = intAttr "level" 0 timeline
+                             Style = Xml.attr "style" timeline
+                             ScrollPosition = dateOf (Some timeline) "scrollPosition"
+                             Selection = selection
+                             Bounds = bounds } : TimelineInfo))
+                | _ -> None)
+            |> Map.ofList
+        { Slicers = slicers; Timelines = timelines }
 
 let private defaultWorkbookPath = "xl/workbook.xml"
 
@@ -5714,6 +6034,10 @@ let private buildWorkbook (scanRows: bool) (source: PartSource) (header: Workboo
         stylesDoc
         |> Option.map (TableStyleDefinitions.parse themeColors)
         |> Option.defaultValue []
+    let slicerStyles =
+        stylesDoc
+        |> Option.map (SlicerStyleDefinitions.parse themeColors)
+        |> Option.defaultValue SlicerStyleDefinitions.none
 
     // Which `<c cm>` values say "dynamic array formula".
     let dynamicCm =
@@ -5995,6 +6319,7 @@ let private buildWorkbook (scanRows: bool) (source: PartSource) (header: Workboo
         ThemeAccents = themeAccents
         ThemeColors = themeColors
         TableStyles = tableStyles
+        SlicerStyles = slicerStyles
         Date1904 = header.Date1904
         Preserved = preserved
     }

@@ -71,6 +71,7 @@ stages=(
     stage53-common
     stage54-tablestyles
     stage55-chartex
+    stage56-slicers
     numbertext
 )
 

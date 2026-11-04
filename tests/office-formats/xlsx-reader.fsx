@@ -168,6 +168,7 @@ let mkWorkbook sheet : XlsxReader.Workbook =
         ThemeAccents = [||]
         ThemeColors = [||]
         TableStyles = []
+        SlicerStyles = XlsxReader.SlicerStyleDefinitions.none
         Date1904 = false
         Preserved = XlsxReader.emptyWorkbookPreservation
     }
