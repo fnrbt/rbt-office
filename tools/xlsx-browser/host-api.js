@@ -360,6 +360,7 @@ checks['structure-moved-maps'] = async () => {
             ['InsertColumns(2, 2)', () => grid.InsertColumns(2, 2), false, true, 2, 2],
             ['DeleteColumns(0, 1)', () => grid.DeleteColumns(0, 1), false, false, 0, 1],
             ['DeleteRows(0, 1)', () => grid.DeleteRows(0, 1), true, false, 0, 1],
+            ['DeleteColumns(3, 2)', () => grid.DeleteColumns(3, 2), false, false, 3, 2],
             ['InsertRows(500, 4) (past the cells)', () => grid.InsertRows(500, 4), true, true, 500, 4],
         ];
         for (const [name, run, onRows, insert, at, count] of edits) {
