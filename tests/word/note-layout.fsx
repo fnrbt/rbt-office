@@ -229,6 +229,68 @@ let bigThird = incremental bolded |> List.filter isFootnote
 check "a note made larger takes more room" (match List.tryItem 2 bigThird, List.tryItem 2 before with Some big, Some small -> big.Lines.Head.Height > small.Lines.Head.Height + 5.0 | _ -> false) true
 check "the larger note is as laid out at once" (bigThird |> List.map (fun layout -> layout.BlockId, layout.Y)) (layOut bolded |> fst |> List.filter isFootnote |> List.map (fun layout -> layout.BlockId, layout.Y))
 
+// ---- an edit of a note lays out what it changes ----------------------------------------
+// (The layout of a long document: a note edited in place lays out the block that refers to
+// it and the pages its height moves, not the rest; what it gives is the whole laid out at once.)
+
+let shape (layouts: BlockLayout list) = layouts |> List.map (fun layout -> layout.BlockId, System.Math.Round(layout.Y, 3), System.Math.Round(layout.Height, 3), textOf layout)
+let longBody (notes: Doc.NoteBody list) =
+    let refer index noteId = Doc.Paragraph (referring (sprintf "long-ref-%d" index) (sprintf "filler paragraph %d with a note x" index) "footnote" noteId (notes |> List.find (fun note -> note.Id = noteId)).Text)
+    [ for index in 1 .. 300 ->
+        if index = 5 then refer index "1"
+        elif index = 250 then refer index "2"
+        else Doc.Paragraph (filler index) ]
+let reuseNote1 = noteBody "footnote" "1" [ Doc.Paragraph (paragraph "r1-p1" " The first note"); Doc.Paragraph (paragraph "r1-p2" "Its second paragraph") ]
+let reuseNote2 = noteBody "footnote" "2" [ Doc.Paragraph (paragraph "r2-p1" " The note far down") ]
+let reuseDoc = documentWith (longBody [ reuseNote1; reuseNote2 ]) [ reuseNote1; reuseNote2 ]
+let reuseState = createIncrementalLayoutState ()
+let reuseLayout doc = layoutDocumentPagesIncremental reuseState settings measureText measureRange doc |> fst
+reuseLayout reuseDoc |> ignore
+// A character typed in the note: its height is what it was.
+let typed = Doc.withStoryBody "footnote" "1" [ Doc.Paragraph (paragraph "r1-p1" " The first notes"); Doc.Paragraph (paragraph "r1-p2" "Its second paragraph") ] reuseDoc
+let typedLayouts = reuseLayout typed
+check "a character typed in a note: few blocks laid out" (incrementalLayoutBlocksLaidOut reuseState < 20) true
+check "a character typed in a note: as laid out at once" (shape typedLayouts) (shape (layOut typed |> fst))
+check "a character typed in a note: the note has it" (typedLayouts |> List.exists (fun layout -> isFootnote layout && textOf layout = " The first notes")) true
+// A paragraph more in the note: it is taller.
+let grown = Doc.withStoryBody "footnote" "1" [ Doc.Paragraph (paragraph "r1-p1" " The first notes"); Doc.Paragraph (paragraph "r1-p2" "Its second paragraph"); Doc.Paragraph (paragraph "r1-p3" "And a third") ] typed
+let grownLayouts = reuseLayout grown
+check "a note grown by a paragraph: as laid out at once" (shape grownLayouts) (shape (layOut grown |> fst))
+check "a note grown by a paragraph: the blocks before its reference are kept" (incrementalLayoutBlocksLaidOut reuseState < 300) true
+// The note made larger without a change of its text (the text of its reference is the same).
+let larger = Doc.withStoryBody "footnote" "1" [ Doc.Paragraph (paragraph "r1-p1" " The first notes"); Doc.Paragraph { paragraph "r1-p2" "Its second paragraph" with Buffer = ofString "Its second paragraph" |> applyStyle 0 20 (fun style -> { style with FontSize = 40.0; Explicit = style.Explicit ||| ExplicitFormat.FontSize }) }; Doc.Paragraph (paragraph "r1-p3" "And a third") ] grown
+let largerLayouts = reuseLayout larger
+check "a note made larger, its text the same: as laid out at once" (shape largerLayouts) (shape (layOut larger |> fst))
+// Then the body edited far below the note: the note keeps the text it was last given.
+let bodyEdited = { larger with Blocks = larger.Blocks |> List.map (function Doc.Paragraph para when para.Id = "fill-200" -> Doc.Paragraph { para with Buffer = ofString "filler paragraph 200, changed" } | block -> block) }
+let bodyEditedLayouts = reuseLayout bodyEdited
+check "the body edited after the note: as laid out at once" (shape bodyEditedLayouts) (shape (layOut bodyEdited |> fst))
+check "the body edited after the note: few blocks laid out" (incrementalLayoutBlocksLaidOut reuseState < 20) true
+// A note far down changed, then the body edited near the start: the far note is laid out with its new height.
+let farGrown = Doc.withStoryBody "footnote" "2" [ for index in 1 .. 8 -> Doc.Paragraph (paragraph (sprintf "r2-p%d" index) (sprintf "the far note, paragraph %d" index)) ] bodyEdited
+reuseLayout farGrown |> ignore
+let nearEdited = Doc.withStoryBody "footnote" "1" [ Doc.Paragraph (paragraph "r1-p1" " The first") ] farGrown
+let nearEditedLayouts = reuseLayout nearEdited
+check "a note far down grown, then one near the start changed: as laid out at once" (shape nearEditedLayouts) (shape (layOut nearEdited |> fst))
+// setNote on the reference after the note was edited: the text set is shown.
+let setOnReference = { nearEdited with Blocks = nearEdited.Blocks |> List.map (function Doc.Paragraph para when para.Id = "long-ref-5" -> Doc.Paragraph (referring "long-ref-5" "filler paragraph 5 with a note x" "footnote" "1" "a text set on the reference") | block -> block) }
+let setLayouts = reuseLayout setOnReference
+check "setNote after an edit of the note: the text set is shown" (setLayouts |> List.filter isFootnote |> List.exists (fun layout -> textOf layout = " a text set on the reference")) true
+check "setNote after an edit of the note: as laid out at once" (shape setLayouts) (shape (layOut setOnReference |> fst))
+
+// The same in a document of two sections (each laid out by its own pass).
+let sectioned (doc: Doc.Document) =
+    { doc with Blocks = doc.Blocks |> List.map (function Doc.Paragraph para when para.Id = "fill-100" -> Doc.Paragraph { para with Metadata = { para.Metadata with SectionBreak = Some "nextPage" } } | block -> block) }
+let sectionState = createIncrementalLayoutState ()
+let sectionLayout doc = layoutDocumentPagesIncremental sectionState settings measureText measureRange doc |> fst
+sectionLayout (sectioned reuseDoc) |> ignore
+for label, doc in [ "typed", typed; "grown", grown; "larger", larger; "body edited", bodyEdited; "far grown", farGrown; "near edited", nearEdited ] do
+    let doc = sectioned doc
+    let incremental = sectionLayout doc
+    check (sprintf "two sections, %s: as laid out at once" label) (shape incremental) (shape (layOut doc |> fst))
+    if label = "typed" || label = "body edited" then
+        check (sprintf "two sections, %s: the other section kept" label) (incrementalLayoutBlocksLaidOut sectionState < 150) true
+
 // ---- a document read from a file -------------------------------------------------------
 
 let richNotes = Path.Combine(__SOURCE_DIRECTORY__, "roundtrip-saved", "rich-notes.original.docx")

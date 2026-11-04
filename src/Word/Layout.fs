@@ -632,6 +632,11 @@ let private layoutHasNoteType noteTypeName (layout: BlockLayout) =
             found <- true
     found
 
+/// The text each note's reference had where a layout pass last laid it out,
+/// by note type and id (see withNoteLayoutContext): a note is laid out with
+/// that text, whatever text a state of the pass kept from an earlier pass says.
+let mutable private noteTextsSeen : System.Collections.Generic.Dictionary<string, string> option = None
+
 let private notesInLine noteTypeName (line: MeasuredLine) =
     let mutable seen = Unchecked.defaultof<System.Collections.Generic.HashSet<string>>
     let mutable notes = Unchecked.defaultof<ResizeArray<string * string>>
@@ -647,6 +652,9 @@ let private notesInLine noteTypeName (line: MeasuredLine) =
                     hasNotes <- true
                 if seen.Add id then
                     notes.Add(id, text)
+                    match noteTextsSeen with
+                    | Some texts -> texts.[noteTypeName + "\u0001" + id] <- text
+                    | None -> ()
             | _ -> ()
         | ImageSegment _ | MathSegment _ -> ()
     if hasNotes then resizeArrayToList notes else []
@@ -810,10 +818,11 @@ let private noteParagraphLayouter : (LayoutSettings -> (string -> TextStyle -> f
 
 /// Run `f` with the notes of `doc` at hand for the layout (a layout inside
 /// another one uses the outer one's).
-let private withNoteLayoutContext (records: Dictionary<string, NoteLayoutRecord> option) (measureText: string -> TextStyle -> float) (measureRange: string -> TextStyle -> int -> int -> float) (doc: Document) (f: unit -> 'T) : 'T =
+let private withNoteLayoutContext (records: Dictionary<string, NoteLayoutRecord> option) (texts: Dictionary<string, string> option) (measureText: string -> TextStyle -> float) (measureRange: string -> TextStyle -> int -> int -> float) (doc: Document) (f: unit -> 'T) : 'T =
     match noteLayoutContext with
     | Some _ -> f ()
     | None ->
+        noteTextsSeen <- Some (match texts with Some texts -> texts | None -> Dictionary<string, string>())
         noteLayoutContext <-
             Some { NoteDoc = doc
                    NoteMeasure = measureText
@@ -822,7 +831,9 @@ let private withNoteLayoutContext (records: Dictionary<string, NoteLayoutRecord>
                    NoteBodies = None
                    NoteBusy = HashSet<string>() }
         try f ()
-        finally noteLayoutContext <- None
+        finally
+            noteLayoutContext <- None
+            noteTextsSeen <- None
 
 let private noteBodyKey (noteType: string) (id: string) = noteType + "\u0001" + id
 
@@ -983,6 +994,14 @@ let private noteRecordFor (settings: LayoutSettings) (noteType: string) (id: str
     | None -> None
     | Some context ->
         let width = settings.Width - settings.PaddingLeft - settings.MarginRight
+        // (The text the reference has where the pass last laid it out.)
+        let text =
+            match noteTextsSeen with
+            | Some texts ->
+                match texts.TryGetValue (noteBodyKey noteType id) with
+                | true, seen -> seen
+                | false, _ -> text
+            | None -> text
         let key = noteBodyKey noteType id + "\u0001" + string width
         if context.NoteBusy.Contains key then None
         else
@@ -2829,6 +2848,9 @@ type PassCheckpoint = {
     CheckY: float
     CheckCounters: Map<string * int, int>
     CheckFootnotes: Map<int, (string * string) list>
+    /// The room the footnotes take at the foot of the page the pass is on
+    /// (by their heights when the state was taken: a note that changed changes it).
+    CheckReserve: float
     CheckPrevious: (ParagraphBlock * ParagraphStyle * BlockMetadata * float) option
     CheckPreviousLayout: BlockLayout option
     CheckObstacles: FloatingObstacle list
@@ -2921,6 +2943,8 @@ type ParagraphLayoutMemo = {
     MemoFootnoteAreas: System.Collections.Generic.Dictionary<string, FootnoteAreaRecord>
     /// The notes laid out by themselves (see noteRecordFor), by note and width.
     MemoNoteRecords: System.Collections.Generic.Dictionary<string, NoteLayoutRecord>
+    /// The text of each note's reference where a pass last laid it out (see noteTextsSeen).
+    MemoNoteTexts: System.Collections.Generic.Dictionary<string, string>
     /// Set by a pass that kept layouts of the last one (see the sweep in layoutDocumentPagesIncremental).
     mutable MemoKeptPass: bool
     /// Blocks the recorded passes of the layout in hand laid out (the others kept their layouts).
@@ -2949,6 +2973,7 @@ let private createParagraphLayoutMemo () = {
     MemoPasses = System.Collections.Generic.Dictionary<string, PassRecord>()
     MemoFootnoteAreas = System.Collections.Generic.Dictionary<string, FootnoteAreaRecord>()
     MemoNoteRecords = System.Collections.Generic.Dictionary<string, NoteLayoutRecord>()
+    MemoNoteTexts = System.Collections.Generic.Dictionary<string, string>()
     MemoKeptPass = false
     MemoBlocksLaidOut = 0
     MemoSlices = None
@@ -4929,6 +4954,19 @@ let private collapseParagraphSpacing (y: float) (previousPara: ParagraphBlock) (
         collapsed - previousBorderAfter - currentBorderBefore
     else collapsed
 
+/// The same notes on the same pages (their texts aside: a note is laid out
+/// with the text its reference last had, see noteTextsSeen; what its height
+/// does to the page is in PassCheckpoint.CheckReserve).
+let private sameFootnoteIds (left: Map<int, (string * string) list>) (right: Map<int, (string * string) list>) =
+    obj.ReferenceEquals(left, right)
+    || (left.Count = right.Count
+        && left |> Map.forall (fun page notes ->
+            match right.TryFind page with
+            | Some others ->
+                obj.ReferenceEquals(notes, others)
+                || (List.length notes = List.length others && List.forall2 (fun (leftId: string, _) (rightId, _) -> leftId = rightId) notes others)
+            | None -> false))
+
 /// Whether two states of a block-by-block pass lead to the same layout of
 /// the same blocks. (Of the paragraph above, the spacing rules look at its
 /// style name, its resolved style and metadata and its spacing after.)
@@ -4937,7 +4975,8 @@ let private samePassState (left: PassCheckpoint) (right: PassCheckpoint) =
     && left.CheckPage = right.CheckPage
     && left.CheckY = right.CheckY
     && sameOrEqual left.CheckCounters right.CheckCounters
-    && sameOrEqual left.CheckFootnotes right.CheckFootnotes
+    && sameFootnoteIds left.CheckFootnotes right.CheckFootnotes
+    && left.CheckReserve = right.CheckReserve
     && (match left.CheckPrevious, right.CheckPrevious with
         | None, None -> true
         | Some (leftPara, leftStyle, leftMetadata, leftAfter), Some (rightPara, rightStyle, rightMetadata, rightAfter) ->
@@ -5048,8 +5087,61 @@ let commonBlockEnds (before: Block array) (after: Block array) =
         suffix <- suffix + 1
     struct (prefix, suffix)
 
+/// The footnotes whose bodies differ between two packages, by id (one that
+/// is in only one of them too).
+let private changedFootnotes (before: PackageData) (after: PackageData) : HashSet<string> =
+    let changed = HashSet<string>()
+    if not (obj.ReferenceEquals(before.Notes, after.Notes)) then
+        let known = Dictionary<string, NoteBody>()
+        for body in before.Notes do
+            if body.NoteType = "footnote" && body.Kind.IsNone then known.[body.Id] <- body
+        for body in after.Notes do
+            if body.NoteType = "footnote" && body.Kind.IsNone then
+                match known.TryGetValue body.Id with
+                | true, old ->
+                    if not (obj.ReferenceEquals(old, body)) && not (obj.ReferenceEquals(old.Blocks, body.Blocks) && old.Text = body.Text && old.HasMark = body.HasMark && old.MarkStyle = body.MarkStyle) then
+                        changed.Add body.Id |> ignore
+                    known.Remove body.Id |> ignore
+                | false, _ -> changed.Add body.Id |> ignore
+        for KeyValue (id, _) in known do changed.Add id |> ignore
+    changed
+
+/// The first state of a pass (by index) that has one of the footnotes on a
+/// page: the block before it is the one that refers to it first (the notes
+/// of a pass only grow from state to state). The number of states when none has.
+let private firstStateWithFootnote (checkpoints: PassCheckpoint array) (ids: HashSet<string>) =
+    let has (state: PassCheckpoint) = state.CheckFootnotes |> Map.exists (fun _ notes -> notes |> List.exists (fun (id, _) -> ids.Contains id))
+    let mutable low = 0
+    let mutable high = checkpoints.Length
+    while low < high do
+        let middle = (low + high) / 2
+        if has checkpoints.[middle] then high <- middle else low <- middle + 1
+    low
+
 /// The record of the last pass in this place, when it was given what this
 /// pass is given (the blocks apart).
+/// (A pass stands with footnotes that changed: see changedFootnoteBlocks.)
+/// Footnotes whose bodies changed since a pass (an edit of a note): what the
+/// pass laid out stands up to the first block that refers to one of them
+/// (the first of the pair, MaxValue when none does), and a new pass does not
+/// come back to its layouts before the state after the last block that
+/// refers to one (the second, -1 when none does) - by the pass's block indices.
+let private changedFootnoteBlocks (record: PassRecord) (doc: Document) =
+    if obj.ReferenceEquals(record.PassPackage, doc.Package) then System.Int32.MaxValue, -1
+    else
+        let changed = changedFootnotes record.PassPackage doc.Package
+        if changed.Count = 0 then System.Int32.MaxValue, -1
+        else
+            let states = record.PassCheckpoints
+            let first = firstStateWithFootnote states changed
+            let mutable last = -1
+            for id in changed do
+                let one = HashSet<string>()
+                one.Add id |> ignore
+                let at = firstStateWithFootnote states one
+                if at < states.Length then last <- max last at
+            (if first < states.Length then max 0 (first - 1) else System.Int32.MaxValue), last
+
 let private tryPassRecord (memo: ParagraphLayoutMemo option) (slot: string) (settings: LayoutSettings) (columns: SectionColumns option) startPage (startY: float) (pageTop: float) (nextPageTop: float) nonUniform balanced (initial: PassCheckpoint) (doc: Document) =
     match memo with
     | Some memo when slot <> "" ->
@@ -5062,7 +5154,7 @@ let private tryPassRecord (memo: ParagraphLayoutMemo option) (slot: string) (set
                  && record.PassNonUniform = nonUniform
                  && record.PassBalanced = balanced
                  && obj.ReferenceEquals(record.PassStyles, doc.Styles)
-                 && obj.ReferenceEquals(record.PassPackage, doc.Package)
+                 // (Of the package, the footnotes the pass made room for: see changedFootnoteBlocks.)
                  && sameOrEqual record.PassSettings settings
                  && sameOrEqual record.PassColumns columns
                  && sameOrEqual record.PassPageSetup doc.PageSetup
@@ -5195,6 +5287,7 @@ let private layoutDocumentPassKept
     let blocks = doc.Blocks |> List.toArray
     let currentState () = {
         CheckCol = 0; CheckPage = 0; CheckY = y; CheckCounters = numberedCounters; CheckFootnotes = footnotesByPage
+        CheckReserve = (if footnotesByPage.IsEmpty then 0.0 else footnoteReserveOnPage settings footnotesByPage (pageIndexForY settings y))
         CheckPrevious = previousParagraphContext; CheckPreviousLayout = previousParagraphLayout
         CheckObstacles = floatingObstacles; CheckPlacedBoxes = placedFloatingBoxes
         CheckDropCap = pendingDropCap
@@ -5839,7 +5932,12 @@ let private layoutDocumentPassKept
     let mutable unchanged = false
     match lastPass with
     | Some record ->
-        let struct (prefix, suffix) = commonBlockEnds record.PassBlocks blocks
+        let struct (blockPrefix, suffix) = commonBlockEnds record.PassBlocks blocks
+        // Footnotes whose bodies changed (an edit of a note): what the last pass laid out
+        // stands up to the first block that refers to one of them, and the pass does not
+        // come back to the last one's layouts before the last block that refers to one.
+        let noteFirst, noteLast = changedFootnoteBlocks record doc
+        let prefix = min blockPrefix noteFirst
         if prefix = blocks.Length && record.PassBlocks.Length = blocks.Length then
             unchanged <- true
             layouts.AddRange record.PassResults
@@ -5895,6 +5993,8 @@ let private layoutDocumentPassKept
             blockIndex <- restart
             convergeFrom <- blocks.Length - suffix + 1
             indexShift <- record.PassBlocks.Length - blocks.Length
+            if noteLast >= 0 then
+                convergeFrom <- max convergeFrom (if noteLast <= blockPrefix then noteLast else noteLast - indexShift)
     | None -> ()
     let mutable keptLayouts = layouts.Count > 0
     let keptPrefix = blockIndex
@@ -6231,13 +6331,18 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
     let blocks = List.toArray doc.Blocks
     let initialState = {
         CheckCol = 0; CheckPage = startPage; CheckY = startY; CheckCounters = Map.empty; CheckFootnotes = initialFootnotes
+        CheckReserve = (if initialFootnotes.IsEmpty then 0.0 else footnoteReserveOnPage settings initialFootnotes startPage)
         CheckPrevious = None; CheckPreviousLayout = None; CheckObstacles = []; CheckPlacedBoxes = []; CheckDropCap = None
     }
     let lastPass = tryPassRecord memo slot settings (Some columns) startPage startY (pageTopOf startPage) (pageTopOf (startPage + 1)) nonUniform balanced initialState doc
     // The last pass over the very same blocks: it stands as a whole.
+    let noteFirst, noteLast =
+        match lastPass with
+        | Some record -> changedFootnoteBlocks record doc
+        | None -> System.Int32.MaxValue, -1
     let unchangedPass =
         match lastPass with
-        | Some record when record.PassBlocks.Length = blocks.Length ->
+        | Some record when record.PassBlocks.Length = blocks.Length && noteFirst = System.Int32.MaxValue ->
             let struct (prefix, _) = commonBlockEnds record.PassBlocks blocks
             if prefix = blocks.Length then Some record else None
         | _ -> None
@@ -6337,6 +6442,7 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
 
     let currentState () = {
         CheckCol = col; CheckPage = page; CheckY = y; CheckCounters = counters; CheckFootnotes = footnotesByPage
+        CheckReserve = (if footnotesByPage.IsEmpty then 0.0 else footnoteReserveOnPage settings footnotesByPage page)
         CheckPrevious = previousParagraph; CheckPreviousLayout = None; CheckObstacles = []; CheckPlacedBoxes = []; CheckDropCap = None
     }
     let restoreState (state: PassCheckpoint) =
@@ -6601,8 +6707,8 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
         restoreState record.PassCheckpoints.[blocks.Length]
         blockIndex <- blocks.Length
     | None, Some record when not balanced ->
-        let struct (prefix, suffix) = commonBlockEnds record.PassBlocks blocks
-        let mutable restart = prefix
+        let struct (blockPrefix, suffix) = commonBlockEnds record.PassBlocks blocks
+        let mutable restart = min blockPrefix noteFirst
         let keepsNext index =
             match tryGetParagraph blocks.[index] with
             | Some para -> WordStyles.keepNext (forBlockInContext styleContext blocks.[index]) para.Metadata
@@ -6618,6 +6724,8 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
         blockIndex <- restart
         convergeFrom <- blocks.Length - suffix
         indexShift <- record.PassBlocks.Length - blocks.Length
+        if noteLast >= 0 then
+            convergeFrom <- max convergeFrom (if noteLast <= blockPrefix then noteLast else noteLast - indexShift)
         keptEndnotes <- record.PassHasEndnotes
     | _ -> ()
     let freshFrom = results.Count
@@ -7161,7 +7269,7 @@ let private layoutDocumentPagesWithMemoInContext (memo: ParagraphLayoutMemo opti
 
 let private layoutDocumentPagesWithMemo (memo: ParagraphLayoutMemo option) (limit: int) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (whole: Document) : BlockLayout list * PageInfo list =
     // (The notes are laid out from the document's bodies of them, with the layout's measurers.)
-    withNoteLayoutContext (memo |> Option.map (fun memo -> memo.MemoNoteRecords)) measureText measureRange whole (fun () ->
+    withNoteLayoutContext (memo |> Option.map (fun memo -> memo.MemoNoteRecords)) (memo |> Option.map (fun memo -> memo.MemoNoteTexts)) measureText measureRange whole (fun () ->
         layoutDocumentPagesWithMemoInContext memo limit settings measureText measureRange whole)
 
 /// True when the document has more than one section, i.e. its pages need not
@@ -7272,6 +7380,7 @@ let clearIncrementalLayoutState (state: IncrementalLayoutState) =
     state.Memo.MemoPlacedNotes.Clear()
     state.Memo.MemoFootnoteAreas.Clear()
     state.Memo.MemoNoteRecords.Clear()
+    state.Memo.MemoNoteTexts.Clear()
     state.Memo.MemoSlices <- None
     state.Memo.MemoEntries.Clear()
     state.Memo.MemoContinuations.Clear()

@@ -4327,7 +4327,26 @@ let storyPlainText (kind: string) (blocks: Block list) : string =
 /// package, its plain text there and on the references that show it (the
 /// runs of the text that refer to it). What does not refer to it is the
 /// object it was.
-let withStoryBody (kind: string) (id: string) (blocks: Block list) (doc: Document) : Document =
+let rec withStoryBody (kind: string) (id: string) (blocks: Block list) (doc: Document) : Document =
+    withStoryBodyAt kind id blocks None doc
+
+/// The indexes of the blocks of the body that refer to the note (kind
+/// "footnote" | "endnote") or comment with this id (see withStoryBodyAt).
+and storyReferenceIndexes (kind: string) (id: string) (doc: Document) : int array =
+    let refers (style: TextBuffer.TextStyle) =
+        if kind = "comment" then style.CommentId = Some id
+        else style.NoteId = Some id && (style.NoteType |> Option.defaultValue "footnote") = kind
+    doc.Blocks
+    |> List.mapi (fun index block -> index, block)
+    |> List.filter (fun (_, block) ->
+        paragraphsOfBlocks [ block ] |> List.exists (fun para -> para.Buffer.Runs |> List.exists (function TextBuffer.Text run -> refers run.Style | TextBuffer.Image _ -> false)))
+    |> List.map fst
+    |> List.toArray
+
+/// withStoryBody, the body's blocks other than those at `indexes` (when
+/// given: storyReferenceIndexes of `doc`) taken as they are without a look
+/// at their runs - what a keystroke in a note of a long document costs.
+and withStoryBodyAt (kind: string) (id: string) (blocks: Block list) (indexes: int array option) (doc: Document) : Document =
     let text = storyPlainText kind blocks
     let refers (style: TextBuffer.TextStyle) =
         if kind = "comment" then style.CommentId = Some id && style.CommentText <> Some text
@@ -4351,8 +4370,15 @@ let withStoryBody (kind: string) (id: string) (blocks: Block list) (doc: Documen
             { doc.Package with Comments = doc.Package.Comments |> List.map (fun body -> if body.Id = id then { body with Blocks = blocks; Text = text } else body) }
         else
             { doc.Package with Notes = doc.Package.Notes |> List.map (fun body -> if body.Id = id && body.NoteType = kind && body.Kind.IsNone then { body with Blocks = blocks; Text = text } else body) }
+    let body =
+        match indexes with
+        | None -> mapParagraphsKeeping mapper doc.Blocks
+        | Some indexes when indexes.Length = 0 -> doc.Blocks
+        | Some indexes ->
+            let wanted = System.Collections.Generic.HashSet<int>(indexes)
+            doc.Blocks |> List.mapi (fun index block -> if wanted.Contains index then (match mapParagraphsKeeping mapper [ block ] with [ mapped ] -> mapped | _ -> block) else block)
     { doc with
-        Blocks = mapParagraphsKeeping mapper doc.Blocks
+        Blocks = body
         HeaderParts = parts doc.HeaderParts
         FooterParts = parts doc.FooterParts
         Package = package }
