@@ -675,6 +675,22 @@ do
     ok "... and by the scanner" (scanned |> Option.map texts = Some [ " "; "no\u00A0"; " a " ]) (sprintf "%A" scanned)
     ok "... whitespace between elements stays nothing" (scanned |> Option.map strays = Some 0) ""
 
+// A paragraph that starts with a w:lastRenderedPageBreak is where Word started a page: which one
+// is the number of those marks up to it - also the marks of the table rows before it.
+do
+    let body =
+        "<w:body xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">"
+        + "<w:p><w:r><w:t>first page</w:t></w:r></w:p>"
+        + "<w:tbl><w:tr><w:tc><w:p><w:r><w:lastRenderedPageBreak/><w:t>row on page 1</w:t></w:r></w:p></w:tc></w:tr></w:tbl>"
+        + "<w:p><w:r><w:lastRenderedPageBreak/><w:t>page 2</w:t></w:r></w:p>"
+        + "<w:p><w:r><w:t>text, then </w:t></w:r><w:r><w:lastRenderedPageBreak/><w:t>page 3</w:t></w:r></w:p>"
+        + "<w:p><w:r><w:lastRenderedPageBreak/><w:t>page 4</w:t></w:r></w:p>"
+        + "</w:body>"
+    let marks =
+        DocxReader.Docx.bodyContent (XmlDsl.parse body)
+        |> List.choose (function DocxReader.Para para -> Some para.Properties.RenderedPageBreakBefore | _ -> None)
+    ok "rendered page marks are counted through tables" (marks = [ None; Some 2; None; Some 4 ]) (sprintf "%A" marks)
+
 printfn ""
 printfn "OfficeFormat DocxReader tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

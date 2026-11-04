@@ -1200,7 +1200,48 @@ let private lineHasRenderedPageBreakBefore (line: MeasuredLine) =
 
     loop line.Segments
 
-let private paginateLines settings widowControl (lines: MeasuredLine list) =
+/// Whether the w:lastRenderedPageBreak a paragraph starts with starts a page
+/// here: the pass has said which page Word started there, in its own pages
+/// (renderedBreakPage, see hintPage); on that page or one after it, the page
+/// has been started already.
+let private renderedBreakStartsPage settings (renderedBreakPage: int option) (line: MeasuredLine) shiftedY =
+    match renderedBreakPage with
+    | Some page when line.StartOffset = 0 -> pageIndexForY settings shiftedY < page
+    | _ -> true
+
+/// A paragraph that starts with a w:lastRenderedPageBreak is where Word started
+/// page `ordinal` (from 0: the marks of the body up to it, see the reader) when
+/// it last laid the document out. The page of a pass that is: the pass's pages
+/// less Word's as they were where the last such paragraph was placed (`offset`)
+/// on from it; before any, the page after the one the pass started on. A page
+/// the pass has started since by itself - its text came out taller than
+/// Word's, and the lines before the mark went on to a page of their own - is
+/// that page already: starting another one at the mark left a page with only
+/// those few lines on it.
+let private hintPage (hintOffset: int option) passStartPage (ordinal: int) =
+    match hintOffset with
+    | Some offset -> ordinal + offset
+    | None -> passStartPage + 1
+
+/// The paragraph as a pass lays it out: its mark's page in the pass's pages (see hintPage).
+let private withHintPage (hintOffset: int option) passStartPage (para: ParagraphBlock) =
+    match para.Metadata.RenderedPageBreakBefore with
+    | Some ordinal ->
+        let page = hintPage hintOffset passStartPage ordinal
+        if page = ordinal then para
+        else { para with Metadata = { para.Metadata with RenderedPageBreakBefore = Some page } }
+    | None -> para
+
+/// The page break before a Heading 1 that the reader made of the
+/// w:lastRenderedPageBreak the heading starts with (not one of the paragraph's
+/// or its style's own): it is the mark's, and starts a page where the mark does.
+let private pageBreakIsRenderedMark (paragraphStyle: ParagraphStyle) (metadata: BlockMetadata) =
+    metadata.PageBreakBefore
+    && ParagraphExplicit.has ParagraphExplicit.DerivedPageBreakBefore metadata
+    && metadata.RenderedPageBreakBefore.IsSome
+    && paragraphStyle.PageBreakBefore <> Some true
+
+let private paginateLines settings widowControl (renderedBreakPage: int option) (lines: MeasuredLine list) =
     let mutable delta = 0.0
     let mutable footnotesByPage: Map<int, (string * string) list> = Map.empty
     let lines = if widowControl then moveWidowParagraphToNextPage settings lines else lines
@@ -1221,7 +1262,8 @@ let private paginateLines settings widowControl (lines: MeasuredLine list) =
         // Table rows are first measured on a 1,000,000px "page" to get their
         // natural height; honouring the hint there would move the line a
         // million pixels down and report that as the row height.
-        let renderedBreakBefore = not unpagedMeasurement && lineHasRenderedPageBreakBefore line
+        let renderedBreakBefore =
+            not unpagedMeasurement && lineHasRenderedPageBreakBefore line && renderedBreakStartsPage settings renderedBreakPage line shiftedY
         if shiftedY > contentTop && (renderedBreakBefore || shiftedY + lineVisibleFitHeight line > contentBottom + pageFitTolerance) then
             let nextY = WordLayout.Page.contentTop settings.PaddingTop (pageTop + pageHeight settings + pageGap) + settings.TableContinuationHeaderHeight
             delta <- delta + (nextY - shiftedY)
@@ -2857,6 +2899,9 @@ type PassCheckpoint = {
     CheckPlacedBoxes: PlacedFloatingBox list
     /// A drop cap read and not yet placed: it is placed with the paragraph after it.
     CheckDropCap: (ParagraphBlock * ParagraphStyle) option
+    /// This pass's pages against Word's as the last w:lastRenderedPageBreak at a paragraph's
+    /// start had them (see hintPage).
+    CheckHintOffset: int option
 }
 
 /// What a block-by-block pass was given and what it made, kept for the next
@@ -3231,7 +3276,7 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
         else adjustedLines
 
     let pagedLines =
-        paginateLines settings ((widowControl paragraphStyle metadata) && not hasRenderedPageBreak) adjustedLines
+        paginateLines settings ((widowControl paragraphStyle metadata) && not hasRenderedPageBreak) para.Metadata.RenderedPageBreakBefore adjustedLines
 
     let blockHeight =
         if pagedLines.IsEmpty then paragraphLineHeight
@@ -4995,6 +5040,7 @@ let private samePassState (left: PassCheckpoint) (right: PassCheckpoint) =
         | None, None -> true
         | Some (leftPara, leftStyle), Some (rightPara, rightStyle) -> obj.ReferenceEquals(leftPara, rightPara) && sameOrEqual leftStyle rightStyle
         | _ -> false)
+    && left.CheckHintOffset = right.CheckHintOffset
 
 /// How many blocks two block arrays have in common at the start and (of the
 /// rest) at the end: the same objects in the same order.
@@ -5284,15 +5330,17 @@ let private layoutDocumentPassKept
     let mutable previousParagraphLayout: BlockLayout option = None
     let mutable hasEndnoteRefs = false
     let mutable pendingDropCap: (ParagraphBlock * ParagraphStyle) option = None
+    let mutable hintOffset: int option = Some 0
     let blocks = doc.Blocks |> List.toArray
     let currentState () = {
         CheckCol = 0; CheckPage = 0; CheckY = y; CheckCounters = numberedCounters; CheckFootnotes = footnotesByPage
         CheckReserve = (if footnotesByPage.IsEmpty then 0.0 else footnoteReserveOnPage settings footnotesByPage (pageIndexForY settings y))
         CheckPrevious = previousParagraphContext; CheckPreviousLayout = previousParagraphLayout
         CheckObstacles = floatingObstacles; CheckPlacedBoxes = placedFloatingBoxes
-        CheckDropCap = pendingDropCap
+        CheckDropCap = pendingDropCap; CheckHintOffset = hintOffset
     }
     let restoreState (state: PassCheckpoint) =
+        hintOffset <- state.CheckHintOffset
         y <- state.CheckY
         numberedCounters <- state.CheckCounters
         footnotesByPage <- state.CheckFootnotes
@@ -5732,7 +5780,8 @@ let private layoutDocumentPassKept
             pendingDropCap <- Some (getParagraph block, forBlockInContext styleContext block)
         | _ ->
             let blockStart = timingStart ()
-            let para = getParagraph block
+            let renderedOrdinal = (getParagraph block).Metadata.RenderedPageBreakBefore
+            let para = withHintPage hintOffset 0 (getParagraph block)
             let paragraphStyle = forBlockInContext styleContext block
             let dropCap = pendingDropCap
             pendingDropCap <- None
@@ -5764,7 +5813,9 @@ let private layoutDocumentPassKept
             let beforeRenderedHintY = y
             y <- applyRenderedPageBreakHint settings y para
             if y <> beforeRenderedHintY then resetPreviousParagraph ()
-            if (para.Metadata.PageBreakBefore || paragraphStyle.PageBreakBefore = Some true) && layouts.Count > 0 then
+            let pageStartedAtMark =
+                pageBreakIsRenderedMark paragraphStyle para.Metadata && pageIndexForY settings y >= para.Metadata.RenderedPageBreakBefore.Value
+            if (para.Metadata.PageBreakBefore || paragraphStyle.PageBreakBefore = Some true) && layouts.Count > 0 && not pageStartedAtMark then
                 y <- advanceToNextPage settings y
                 resetPreviousParagraph ()
             let effectiveMetadata = WordStyles.effectiveMetadata paragraphStyle para.Metadata
@@ -5907,6 +5958,9 @@ let private layoutDocumentPassKept
                 | None -> ()
             | [] -> ()
             addBodyLayout layout
+            match renderedOrdinal, layout.Lines with
+            | Some ordinal, first :: _ -> hintOffset <- Some (pageIndexForY settings first.Y - ordinal)
+            | _ -> ()
             footnotesByPage <- addLayoutFootnotes settings footnotesByPage layout
             y <- layout.Y + layout.Height
             previousParagraphContext <- Some (para, paragraphStyle, layout.Metadata, WordLayout.Paragraph.spacingAfter paragraphStyle layout.Metadata)
@@ -6326,13 +6380,14 @@ let tableColumnStripSettings (settings: LayoutSettings) (doc: Document) (tableBl
     tableColumnSection settings doc tableBlock
     |> Option.map (fun (sectionSettings, columns) -> columnStripSettings sectionSettings (sectionColumnWidth sectionSettings columns))
 
-let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (columns: SectionColumns) (pageTopOf: int -> float) (nonUniform: bool) (startPage: int) (startY: float) (balanced: bool) (initialFootnotes: Map<int, (string * string) list>) =
+let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (columns: SectionColumns) (pageTopOf: int -> float) (nonUniform: bool) (startPage: int) (startY: float) (balanced: bool) (initialFootnotes: Map<int, (string * string) list>) (initialHintOffset: int option) =
     let styleContext = styleContextForLayout memo doc
     let blocks = List.toArray doc.Blocks
     let initialState = {
         CheckCol = 0; CheckPage = startPage; CheckY = startY; CheckCounters = Map.empty; CheckFootnotes = initialFootnotes
         CheckReserve = (if initialFootnotes.IsEmpty then 0.0 else footnoteReserveOnPage settings initialFootnotes startPage)
         CheckPrevious = None; CheckPreviousLayout = None; CheckObstacles = []; CheckPlacedBoxes = []; CheckDropCap = None
+        CheckHintOffset = initialHintOffset
     }
     let lastPass = tryPassRecord memo slot settings (Some columns) startPage startY (pageTopOf startPage) (pageTopOf (startPage + 1)) nonUniform balanced initialState doc
     // The last pass over the very same blocks: it stands as a whole.
@@ -6391,6 +6446,7 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
     let mutable col = 0
     let mutable page = startPage
     let mutable y = startY
+    let mutable hintOffset = initialHintOffset
     let mutable counters : Map<string * int, int> = Map.empty
     // Footnotes referenced so far, by page. Their block sits at the bottom of
     // the page, so each page's columns end above it.
@@ -6444,8 +6500,10 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
         CheckCol = col; CheckPage = page; CheckY = y; CheckCounters = counters; CheckFootnotes = footnotesByPage
         CheckReserve = (if footnotesByPage.IsEmpty then 0.0 else footnoteReserveOnPage settings footnotesByPage page)
         CheckPrevious = previousParagraph; CheckPreviousLayout = None; CheckObstacles = []; CheckPlacedBoxes = []; CheckDropCap = None
+        CheckHintOffset = hintOffset
     }
     let restoreState (state: PassCheckpoint) =
+        hintOffset <- state.CheckHintOffset
         col <- state.CheckCol
         page <- state.CheckPage
         y <- state.CheckY
@@ -6495,10 +6553,23 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
         let block = blocks.[blockIndex]
         match tryGetParagraph block with
         | Some para0 ->
-            if para0.Metadata.PageBreakBefore && n >= 2 && balancedHeight.IsNone then
+            // (In columns a mark may be where Word started a column: it starts one here too.)
+            let renderedOrdinal = if n <= 1 then para0.Metadata.RenderedPageBreakBefore else None
+            let para0 = if n <= 1 then withHintPage hintOffset startPage para0 else para0
+            let renderedBreak =
+                match para0.Metadata.RenderedPageBreakBefore with
+                | Some hinted -> n >= 2 || page < hinted
+                | None -> false
+            let pageBreakBefore =
+                para0.Metadata.PageBreakBefore
+                && (renderedBreak || not (pageBreakIsRenderedMark (forBlockInContext styleContext block) para0.Metadata))
+            if pageBreakBefore && n >= 2 && balancedHeight.IsNone then
                 if not (atPageTop ()) then advancePage ()
-            elif (para0.Metadata.PageBreakBefore || para0.Metadata.RenderedPageBreakBefore.IsSome) && not (atColumnTop ()) then
+            elif (pageBreakBefore || renderedBreak) && not (atColumnTop ()) then
                 advanceColumn ()
+            match renderedOrdinal with
+            | Some ordinal -> hintOffset <- Some (page - ordinal)
+            | None -> ()
             let style = forBlockInContext styleContext block
             let mutable keepChecked = false
             let mutable remaining = para0
@@ -6797,7 +6868,7 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
         record, page, y, footnotesByPage
 
 let private flowColumns (memo: ParagraphLayoutMemo option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (columns: SectionColumns) (pageTopOf: int -> float) (nonUniform: bool) (startPage: int) (startY: float) (balanced: bool) (initialFootnotes: Map<int, (string * string) list>) =
-    let record, page, y, footnotes = flowColumnsKept "" memo settings measureText measureRange doc columns pageTopOf nonUniform startPage startY balanced initialFootnotes
+    let record, page, y, footnotes = flowColumnsKept "" memo settings measureText measureRange doc columns pageTopOf nonUniform startPage startY balanced initialFootnotes (Some 0)
     List.ofArray record.PassResults, page, y, footnotes
 
 /// Absolute geometry of one rendered page. For single-section documents every
@@ -7026,7 +7097,7 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
             match Map.tryFind sectionBase footnotesByPage with
             | Some notes when not notes.IsEmpty -> Map.empty |> Map.add 0 notes
             | _ -> Map.empty
-        let record, ownEndPage, ownEndY, secFootnotes = flowColumnsKept slot memo secSettings measureText measureRange secDoc secColumns ownTopOf true 0 currentYInPage balanced ownFootnotes
+        let record, ownEndPage, ownEndY, secFootnotes = flowColumnsKept slot memo secSettings measureText measureRange secDoc secColumns ownTopOf true 0 currentYInPage balanced ownFootnotes (if i = 0 then Some 0 else None)
         for KeyValue (ownPage, notes) in secFootnotes do
             footnotesByPage <- footnotesByPage |> Map.add (sectionBase + ownPage) notes
         let endPage = sectionBase + ownEndPage
