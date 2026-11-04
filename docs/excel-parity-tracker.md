@@ -81,7 +81,7 @@ dashboard-ecommerce-sales.xlsx (19 charts / 30 pivots / 11 images).
 
 Rendered the sales-analysis Dashboard sheet: the new chart pipeline already
 draws several charts in-place (bar "Sales By Category/Manager", line "Sales By
-Chain"). Slicers are drawn since `sheet/slicers` (caption, buttons in their
+Chain"). Slicers are drawn since the merge after 0.1.28 (caption, buttons in their
 columns, selected / no-data looks from the slicer style; see the roadmap's
 backlog for what is approximated). NOT yet rendered: in-cell
 sparklines, images/logos; pivot tables show as cached cell values (OK).
