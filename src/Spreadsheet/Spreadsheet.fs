@@ -2540,10 +2540,25 @@ type Spreadsheet(container: Element) =
         else
             model <- sorted
             recalculateFormulas()
+            // The cells as the sort and its recalculation left them: taken back from these, the sort
+            // is a sort the other way round for the recalculation (the formulas of the sheet changed
+            // value and nothing else, when the sheet has no dynamic arrays).
+            let calculated = model.Cells
+            let mutable undoable = sorted.RowsSorted
             let put (from: SpreadsheetModel) (m: SpreadsheetModel) =
                 { restoreCellMapWithSpill from.Cells from.Spill m with RichRuns = from.RichRuns; Threads = from.Threads; Hyperlinks = from.Hyperlinks; SortState = from.SortState }
-            model <- pushCommand { Undo = put before
-                                   Redo = (fun m -> SheetOps.sortRange memberName range keys options m)
+            let undoSort (m: SpreadsheetModel) =
+                let restored = put before m
+                match undoable with
+                | Some sort when sameRef m.Cells calculated && Map.isEmpty m.Spill && Map.isEmpty before.Spill ->
+                    { restored with RowsSorted = Some (RowsSorted(sort.Left, sort.Right, sort.Sources, sort.Rows, m.Cells, restored.Cells)) }
+                | _ -> restored
+            model <- { model with RowsSorted = None }
+            model <- pushCommand { Undo = undoSort
+                                   Redo = (fun m ->
+                                       // (Calculated anew after the redo: its undo compares the cells.)
+                                       undoable <- None
+                                       SheetOps.sortRange memberName range keys options m)
                                    Description = description } model
             true
     /// Sort the block of data around a cell by the cell's column (a quick

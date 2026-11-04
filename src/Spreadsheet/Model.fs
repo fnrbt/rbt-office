@@ -1322,6 +1322,22 @@ type StructureMove = {
     Version: int
 }
 
+/// The rows of a block that a sort exchanged, as a recalculation needs to know it: in the
+/// columns `Left` .. `Right`, row `Rows.[i]` took the cells that row `Sources.[i]` held (each
+/// row that took another's; together a permutation of those rows), their formulas re-pointed
+/// as copies are. It holds between the cell maps `Before` and `After` - those very maps - and
+/// nothing else of the sheet changed: a recalculation that holds `Before` and is given `After`
+/// knows which cells moved without comparing them. (A class: compared as itself, never by
+/// its maps.)
+[<AllowNullLiteral>]
+type RowsSorted(left: int, right: int, rows: int[], sources: int[], before: Map<CellAddress, CellData>, after: Map<CellAddress, CellData>) =
+    member _.Left = left
+    member _.Right = right
+    member _.Rows = rows
+    member _.Sources = sources
+    member _.Before = before
+    member _.After = after
+
 /// A row or column of a pivot table as laid out: its kind ("data", "default" - a subtotal -,
 /// "grand" ...), how many leading fields it repeats from the one before, and its items after those.
 type PivotLine = { Kind: string; Repeat: int; Items: int list }
@@ -1565,6 +1581,8 @@ type SpreadsheetModel = {
     /// the earlier list back): a save follows them to where the rows and
     /// columns of the opened file are now.
     StructureLog: StructureMove list
+    /// The sort that made the sheet's cells (see `RowsSorted`; it names the maps it holds between).
+    RowsSorted: RowsSorted option
 
     /// Set on the stand-in for a sheet of an opened file that has not been
     /// converted to a model yet (a sheet is converted when it is first shown,
@@ -1665,6 +1683,7 @@ let createEmpty rowCount colCount = {
     StructureVersion = 0
     StructureMove = None
     StructureLog = []
+    RowsSorted = None
     Deferred = None
 }
 

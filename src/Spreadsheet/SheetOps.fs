@@ -1880,6 +1880,16 @@ let sortRange (memberName: string) (range: CellRange) (keys: SortKey list) (opti
                         match data.Value with
                         | Formula (formula, cached) when delta <> 0 -> { data with Value = Formula (shiftFormulaReferences delta 0 formula, cached) }
                         | _ -> data)
+                // (The formula cells of the sorted map, from those of the map before: no walk of the cells.)
+                match tryFormulaIndex model.Cells with
+                | Some index ->
+                    let moved = index |> Set.map (fun addr -> if moves addr then { addr with Row = target.[addr.Row] } else addr)
+                    registerFormulaIndex cells moved
+                | None -> ()
+                // What moved, for the recalculation: the rows that took another's cells.
+                let sorted =
+                    let pairs = [| for i in 0 .. rows.Length - 1 do if ordered.[i] <> rows.[i] then yield rows.[i], ordered.[i] |]
+                    RowsSorted(left, right, Array.map fst pairs, Array.map snd pairs, model.Cells, cells)
                 let hyperlinks =
                     if model.Hyperlinks.IsEmpty then model.Hyperlinks
                     else
@@ -1895,7 +1905,8 @@ let sortRange (memberName: string) (range: CellRange) (keys: SortKey list) (opti
                     ArrayMarks = followArrayMarks cells (moveMap model.ArrayMarks (fun _ mark -> mark))
                     Threads = moveMap model.Threads (fun _ thread -> thread)
                     Hyperlinks = hyperlinks
-                    SortState = sortState }
+                    SortState = sortState
+                    RowsSorted = Some sorted }
                 |> invalidateFilterProjection
 
 /// What a quick sort (Sort A to Z / Z to A with one cell selected) acts on:

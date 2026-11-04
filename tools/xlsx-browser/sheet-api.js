@@ -3324,6 +3324,18 @@ checks['api-recalc-more'] = async () => {
         both((grid) => grid.DeleteColumns(1, 1));
         stepIs('the column deleted: by the engine', 'Sheet1!A1:F12');
 
+        // ---- a sort: the rows that moved are known; a formula that moved with what it reads keeps its value ----
+        both((grid) => grid.SortRange('A1:C6', [{ column: 1, descending: true }], { hasHeader: true }));
+        now = stepIs('a sort: by the engine', 'Sheet1!A1:F12');
+        check('... the formulas moved with their rows; what reads the moved cells by place follows, few formulas were evaluated',
+            [incremental.grid.GetCell(1, 2).formula, now.rows[1][1], now.rows[1][2], now.rows[10][3], texts(incremental.grid, 'Two!A2')[0][0], now.evaluated < 10],
+            ['=B2*2', '10', '20', texts(full.grid, 'Sheet1!D11')[0][0], texts(full.grid, 'Two!A2')[0][0], true]);
+        both((grid) => grid.Undo());
+        check('the sort undone', stepIs('the undo of a sort: by the engine', 'Sheet1!A1:F12').rows[1][1], '4');
+        both((grid) => grid.Redo());
+        stepIs('the sort redone: by the engine', 'Sheet1!A1:F12');
+        both((grid) => grid.Undo());
+
         // ---- tables ----
         both((grid) => { grid.DefineTable('A1:C6', 'Sales'); grid.SetCell(12, 1, '=SUM(Sales[Qty])'); });
         check('a table and a structured reference', stepIs('a structured reference entered: incremental', 'Sheet1!A1:C13').rows[12][1], '24');
