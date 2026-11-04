@@ -855,6 +855,17 @@ do
     ok "the undo of a sort: the workbook is what it was" ((difference current beforeSort).IsNone) (sprintf "%A" (difference current beforeSort))
     // An edit of a moved cell afterwards reaches what reads it where it is now.
     sortEdit "a moved cell typed" (setCells "sheet1" [ at 3 1, Some (number 99.0) ]) |> ignore
+// Rows on circular references sorted, with iterative calculation: the moved formulas are calculated.
+do
+    let wb =
+        Wb.createWorkbook ()
+        |> setCells "sheet1" [ for row in 0 .. 5 do
+                                 yield at row 0, Some (number (float ((row * 5) % 7)))
+                                 yield at row 1, Some (formula (sprintf "=C%d*0.5+A%d" (row + 1) (row + 1)))
+                                 yield at row 2, Some (formula (sprintf "=B%d*0.5+1" (row + 1))) ]
+    start { wb with Iteration = Some { Wb.IterativeCalculation.MaxIterations = 3; MaxChange = 0.000001 } }
+    sortEdit "a sort of rows on circular references (iterative calculation)" (sortSheet "sheet1" { From = at 0 0; To = at 5 2 } [ sortKey 0 false ] false) |> ignore
+    sortEdit "... an edit afterwards" (setCells "sheet1" [ at 7 0, Some (number 1.0) ]) |> ignore
 /// Random sorts of a random sheet: formulas reading their row, other rows, ranges, other sheets,
 /// names; sorts by random keys, ranges and directions, undone now and then; typing between them.
 let randomSorts (seed: int) (steps: int) =

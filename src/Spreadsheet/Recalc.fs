@@ -1741,9 +1741,11 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
         let followed (node: Node) (change: CellChange) (was: CellData voption) : bool =
             match sorts.TryGetValue change.State.Id with
             | true, sorted ->
-                // (Moved by the sort, as a copy: it gives what it gave when what it reads moved with it.)
+                // (Moved by the sort, as a copy: it gives what it gave when what it reads moved with it.
+                // With iterative calculation it is calculated: wired again, it is not known to be on a
+                // circular reference that is calculated at every edit.)
                 match node.Expr with
-                | Some expr when not node.Spills && node.Traits = 0 && sorted.Moved change.Row change.Col ->
+                | Some expr when not node.Spills && node.Traits = 0 && edited.Iteration.IsNone && sorted.Moved change.Row change.Col ->
                     let text = formulaOf was
                     if isNull text || effectiveValue was <> effectiveValue change.After then false
                     else
