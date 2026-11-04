@@ -4038,6 +4038,9 @@ module API =
         // document's styles and so leaves inherited formatting out of header/footer runs too.
         let package = Docx.exportDocumentPackage (wholeDocument editor)
         package?Unchanged <- (editor.Revision = editor.OpenedRevision)
+        // An export is what a save writes: what is typed after it is an undo step of its own, so that undoing it
+        // gives the state that was saved (the keys typed before and after would otherwise be one run of typing).
+        editor.Handler.Typing <- None
         package
 
     /// Test rope operations
