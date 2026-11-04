@@ -22,7 +22,9 @@ const paraText = (page, id) => ev(page, (id) => { const m = window.__wordModule,
   const notices = await ev(page, () => { window.__notices = []; window.__word.onChange(window.__editors[0], (c) => window.__notices.push({ d: c.DocumentChanged, s: c.SelectionChanged, f: c.FormatChanged, m: c.Modified, r: c.Revision })); return true; });
   const fp = await ev(page, () => window.__wordModule.getLayoutFingerprint(window.__editors[0]).filter((b) => (b.Text ?? "").length > 30).slice(0, 3).map((b) => ({ text: b.Text.slice(0, 30), runs: b.Runs })));
   console.log("  paragraphs", JSON.stringify(fp).slice(0, 500));
-  const at = await caretAt(page, fp[0].text.slice(0, 20), 4); await frame(page);
+  // (At the end of the first word: inside a word a format command formats the word, as Word does - @rbt/office 0.1.28.)
+  const edge = fp[0].text.indexOf(" ") > 0 ? fp[0].text.indexOf(" ") : 4;
+  const at = await caretAt(page, fp[0].text.slice(0, 20), edge); await frame(page);
   const f0 = await fmt(page);
   check("a caret in plain text: Bold is off in the engine and in the toolbar", at && at.ok === true && f0.collapsed === true && f0.bold === false && (await pressed(page, "word-bold")) === "false", { at, f0 });
   await ev(page, () => (window.__notices.length = 0));
@@ -33,7 +35,7 @@ const paraText = (page, id) => ev(page, (id) => { const m = window.__wordModule,
   check("the notice is FormatChanged with SelectionChanged, not DocumentChanged, not Modified", n1.length >= 1 && n1.every((n) => n.d === false && n.m === false) && n1.some((n) => n.f === true && n.s === true), n1);
   check("the document is not dirty, nothing was uploaded, undo is not offered for it", /No changes/.test(await status(page)) && page.uploads.length === 0 && (await sel(page, "word-undo").isDisabled()), await status(page));
   await page.keyboard.type("QQ"); await frame(page);
-  const blk = await ev(page, (t) => { const b = window.__wordModule.getLayoutFingerprint(window.__editors[0]).find((b) => (b.Text ?? "").startsWith(t)); return b ? { text: b.Text.slice(0, 20), runs: b.Runs } : null; }, fp[0].text.slice(0, 4) + "QQ");
+  const blk = await ev(page, (t) => { const b = window.__wordModule.getLayoutFingerprint(window.__editors[0]).find((b) => (b.Text ?? "").startsWith(t)); return b ? { text: b.Text.slice(0, 20), runs: b.Runs } : null; }, fp[0].text.slice(0, edge) + "QQ");
   const parts = (blk?.runs ?? "").split(" | ");
   check("what is typed is a run of its own (bold), between two that are not", !!blk && parts.length === 3 && parts[1].startsWith("2*") && parts[1] !== parts[0].replace(/^\d+/, "2"), blk);
   check("typing made it dirty", /Unsaved/.test(await status(page)));
