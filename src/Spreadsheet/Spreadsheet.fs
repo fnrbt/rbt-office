@@ -14,6 +14,7 @@ module SpreadsheetCellText = Rbt.Spreadsheet.CellText
 module SpreadsheetInput = Rbt.Spreadsheet.Input
 module SheetOps = Rbt.Spreadsheet.SheetOps
 module SpreadsheetCharts = Rbt.Spreadsheet.Charts
+module SpreadsheetSlicers = Rbt.Spreadsheet.Slicers
 module Host = Rbt.Spreadsheet.HostShapes
 
 // Additional helpers
@@ -872,6 +873,8 @@ type Spreadsheet(container: Element) =
     // series read as they are now. The parts themselves are never changed.
     /// The parts of the opened file by path and its theme (made when a kept object is first drawn).
     let mutable drawingSource : (int * System.Collections.Generic.Dictionary<string, byte[]> * SpreadsheetCharts.ThemeColors) option = None
+    /// The slicers and timelines of the opened file, drawn (`Slicers.drawer`: its parts read when one is first drawn).
+    let mutable slicerDrawer : (int * (string -> string -> SpreadsheetCharts.ChartData -> float -> float -> SpreadsheetCharts.Primitive list option)) option = None
     /// The chart parts that were read, by path (None: not a chart that is drawn).
     let chartModels = System.Collections.Generic.Dictionary<string, SpreadsheetCharts.Chart option>()
     /// The frames on display that hold a drawn object: the node, its drawing, its size, and the blocks of
@@ -917,6 +920,13 @@ type Spreadsheet(container: Element) =
                     chartModels.Clear()
                     drawnObjects.Clear()
                     parts, theme
+            let slicers =
+                match slicerDrawer with
+                | Some (id, drawer) when id = source.Id -> drawer
+                | _ ->
+                    let drawer = SpreadsheetSlicers.drawer source.Workbook
+                    slicerDrawer <- Some (source.Id, drawer)
+                    drawer
             let relationships = (List.item origin.Sheet source.Workbook.Sheets).Extras.DrawingRelationships
             let target (id: string) =
                 relationships |> List.tryPick (fun (known, _, target, isExternal) -> if known = id && not isExternal then Some (ZipInterop.normalizePath target) else None)
@@ -949,7 +959,8 @@ type Spreadsheet(container: Element) =
                                     | "png" -> "image/png" | "jpg" | "jpeg" -> "image/jpeg" | "gif" -> "image/gif" | "svg" -> "image/svg+xml" | "bmp" -> "image/bmp" | "webp" -> "image/webp"
                                     | _ -> ""
                                 if contentType = "" then None else Some (pictureUrl data contentType)
-                            | false, _ -> None)) }
+                            | false, _ -> None))
+                   Slicer = slicers }
         | _ -> None
     /// A block of cells of a sheet (by name) as a chart reads it; None when the sheet is not there.
     let chartBlock (name: string) (r0: int) (c0: int) (r1: int) (c1: int) : CellData option [] [] option =

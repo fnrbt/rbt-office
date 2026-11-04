@@ -172,7 +172,7 @@ let _, _, ecoParts, ecoTheme = openBook "real-world/dashboard-ecommerce-sales.xl
 eq "the theme's colours are read (Integral: accent1 1CADE4)" (ecoTheme.["accent1"], ecoTheme.["dk1"], ecoTheme.["lt1"]) ("1CADE4", "000000", "FFFFFF")
 
 // ---- shapes and groups ---------------------------------------------------------------
-let noParts : Charts.DrawingParts = { Theme = Charts.defaultTheme; Chart = (fun _ -> None); Picture = (fun _ -> None) }
+let noParts : Charts.DrawingParts = { Theme = Charts.defaultTheme; Chart = (fun _ -> None); Picture = (fun _ -> None); Slicer = (fun _ _ _ _ _ -> None) }
 let ns = "xmlns:xdr=\"http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\""
 let shapeXml (geometry: string) (extra: string) (body: string) =
     sprintf "<xdr:sp><xdr:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"1905000\" cy=\"952500\"/></a:xfrm><a:prstGeom prst=\"%s\"><a:avLst/></a:prstGeom>%s</xdr:spPr>%s</xdr:sp>" geometry extra body
@@ -224,7 +224,7 @@ for file in [ "real-world/dashboard-ecommerce-sales.xlsx"; "real-world/dashboard
         let drawing : Charts.DrawingParts =
             { Theme = theme
               Chart = (fun id -> target id |> Option.bind (fun path -> Map.tryFind path parts) |> Option.bind (fun bytes -> Charts.parseChart theme (text bytes)))
-              Picture = (fun id -> target id |> Option.map (fun path -> "blob:" + path)) }
+              Picture = (fun id -> target id |> Option.map (fun path -> "blob:" + path)); Slicer = (fun _ _ _ _ _ -> None) }
         for item in sheet.Extras.Objects do
             if item.Xml.Contains "grpSp" || item.Kind = "chart" then
                 match Charts.objectScene drawing data item.Xml 600.0 400.0 with
@@ -256,7 +256,7 @@ do
         let drawing : Charts.DrawingParts =
             { Theme = theme
               Chart = (fun id -> target id |> Option.bind (fun path -> Map.tryFind path parts) |> Option.bind (fun bytes -> Charts.parseChart theme (text bytes)))
-              Picture = (fun id -> target id |> Option.map (fun path -> "blob:" + path)) }
+              Picture = (fun id -> target id |> Option.map (fun path -> "blob:" + path)); Slicer = (fun _ _ _ _ _ -> None) }
         for item in sheet.Extras.Objects do
             if item.Xml.Contains "grpSp" || item.Kind = "chart" then
                 match Charts.objectScene drawing live item.Xml 600.0 400.0, Charts.objectScene drawing noData item.Xml 600.0 400.0 with
@@ -309,7 +309,7 @@ let threeD = parsed (chartXml ("<c:bar3DChart><c:barDir val=\"col\"/><c:grouping
 eq "a 3-D bar chart is drawn flat: its bars" (barsOf (Charts.layoutChart Charts.defaultTheme noData threeD 400.0 300.0) "#FF0000" |> List.length) 2
 
 // Shapes.
-let shapeParts : Charts.DrawingParts = { Theme = Charts.defaultTheme; Chart = (fun _ -> None); Picture = (fun _ -> None) }
+let shapeParts : Charts.DrawingParts = { Theme = Charts.defaultTheme; Chart = (fun _ -> None); Picture = (fun _ -> None); Slicer = (fun _ _ _ _ _ -> None) }
 let shapeOf (attrs: string) (xfrm: string) (geometry: string) (body: string) =
     sprintf "<xdr:twoCellAnchor xmlns:xdr=\"x\" xmlns:a=\"a\"><xdr:sp %s><xdr:spPr><a:xfrm %s><a:off x=\"0\" y=\"0\"/><a:ext cx=\"952500\" cy=\"476250\"/></a:xfrm>%s<a:solidFill><a:srgbClr val=\"FF0000\"/></a:solidFill></xdr:spPr>%s</xdr:sp></xdr:twoCellAnchor>" attrs xfrm geometry body
 let shapeSvg (data: Charts.ChartData) xml = Charts.objectScene shapeParts data xml 100.0 50.0 |> Option.map Charts.sceneSvg |> Option.defaultValue "(no scene)"

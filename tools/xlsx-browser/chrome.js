@@ -1400,7 +1400,8 @@ checks['object-label-fits'] = async () => {
             }
         }
         note(`${frames} frames, ${drawnObjects} of them drawn, ${cut} labels cut with an ellipsis`);
-        check('the workbooks have frames: drawn ones, and labelled ones for what is not drawn (slicers)', [frames > 5, drawnObjects > 5, frames - drawnObjects > 0], [true, true, true]);
+        // (Since slicers are drawn these workbooks have no labelled frame: what is checked of a label above holds for any.)
+        check('the workbooks have frames, drawn ones among them', [frames > 5, drawnObjects > 5], [true, true]);
     } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
     finally { close(); }
     return lines;
@@ -1760,6 +1761,59 @@ checks['charts-in-grid'] = async () => {
                 check('... nor by scrolling', grid.GetChartLayouts() - away, 0);
             } else check('GetChartLayouts is there', false, true);
         }
+    } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
+    finally { grid.Dispose(); host.remove(); }
+    return lines;
+};
+
+// Slicers and timelines: drawn where their frames are (synthetic-slicers.xlsx is synthetic,
+// tools/excel-parity/make-slicers-fixture.py; the dashboards' slicers are Excel's).
+checks['slicers-in-grid'] = async () => {
+    const { lines, check, note } = makeLog();
+    const { bytesOf } = await import('/component.js');
+    const host = container('position:absolute;left:0;top:0;width:1180px;height:880px');
+    const grid = createSpreadsheet(host);
+    grid.Mount();
+    const errors = [];
+    grid.OnError((error) => errors.push(error.source + ': ' + error.message));
+    const drawn = () => [...host.querySelectorAll('.spreadsheet-object-drawn')];
+    const textsOf = (node) => [...node.querySelectorAll('svg text')].map((text) => text.textContent);
+    const frameWith = (text) => drawn().find((node) => textsOf(node).includes(text));
+    const labels = () => [...host.querySelectorAll('.spreadsheet-object-label')].map((node) => node.textContent);
+    const shoot = async (label) => { await frame(); if (window.screenshotRegion) await window.screenshotRegion(0, 0, 1180, 880); note(`screenshot: ${label}`); };
+    try {
+        const original = await bytesOf('tests/test-documents-excel/synthetic-slicers.xlsx');
+        await grid.ImportXlsx(original.slice());
+        grid.SwitchSheet(grid.GetSheetNames().indexOf('Report')); await frame();
+        await seenAll(host);
+        const region = frameWith('North'), product = frameWith('Product (pivot)'), timeline = frameWith('Mar 2012 - Dec 2012');
+        check('Report: the two slicers and the timeline are drawn, none a labelled frame', [!!region, !!product, !!timeline, labels()], [true, true, true, []]);
+        if (region) check('Region: its caption and a button an item, no data last', textsOf(region), ['Region', 'North', 'South', 'East', 'West']);
+        if (product) check('Product 2: in its custom style (orange buttons)', [...product.querySelectorAll('svg rect')].filter((rect) => rect.getAttribute('fill') === '#FFC000').length, 3);
+        if (timeline) check('the timeline: its caption, level, months', ['Date', 'MONTHS ▾', 'JAN', 'MAR'].every((text) => textsOf(timeline).includes(text)), true);
+        await shoot('synthetic-slicers Report');
+        check('drawing them changes nothing: unmodified, exported as the file', [grid.IsModified(), (await grid.ExportXlsx()).length === original.length], [false, true]);
+        grid.SwitchSheet(grid.GetSheetNames().indexOf('Data')); await frame();
+        await seenAll(host);
+        const buttonsOf = () => { const node = frameWith('Product'); return node ? textsOf(node).slice(1) : null; };
+        check('Data: the table slicer, the column\'s values', buttonsOf(), ['Apples', 'Pears', 'Plums']);
+        // (The table's slicer reads its column's cells: an entry there draws it again.)
+        grid.EnterText(1, 2, 'Kiwis'); await frame();
+        check('... a value typed into the column is a button', buttonsOf(), ['Apples', 'Kiwis', 'Pears', 'Plums']);
+        grid.Undo(); await frame();
+        check('... undone', buttonsOf(), ['Apples', 'Pears', 'Plums']);
+        await shoot('synthetic-slicers Data');
+        for (const [file, slicers] of [['tests/real-world/dashboard-ecommerce-sales.xlsx', ['Select Region', 'Select Shipment Mode']], ['tests/real-world/dashboard-sales-analysis.xlsx', ['Financial Year', 'State', 'Category']]]) {
+            const bytes = await bytesOf(file);
+            await grid.ImportXlsx(bytes.slice());
+            grid.SwitchSheet(grid.GetSheetNames().indexOf('Dashboard')); await frame();
+            await seenAll(host);
+            const name = file.split('/').pop();
+            check(`${name}: its slicers are drawn with their captions`, slicers.map((caption) => !!frameWith(caption)), slicers.map(() => true));
+            check('... no slicer is a labelled frame', labels().filter((label) => /Region|Ship|Year|State|Category/.test(label)), []);
+            await shoot(`${name} Dashboard`);
+        }
+        check('no error reported', errors, []);
     } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
     finally { grid.Dispose(); host.remove(); }
     return lines;
