@@ -2193,16 +2193,65 @@ let private fittedTextCommands (fontFamily: string) (measureText: TextMeasurer) 
             let paintStyle = { styleFromTextStyle fitted with FontFamily = (styleFromTextStyle fitted).FontFamily |> Option.orElse (Some fontFamily) }
             [ DrawText (text, paintStyle, x + (textBox.Width - width) / 2.0, y + height / 2.0 + size * 0.35, width) ]
 
+/// The shapes of a group or a drawing canvas as they are drawn in the group's
+/// box (`height` high): each with its left edge and top from the group's
+/// top-left corner and its height - scaled as the group is from the size its
+/// shapes' places are given in (ChildSpace; a canvas's are not), and mirrored
+/// when the group is flipped: a shape's place across (upside down), its own
+/// flip the other way, its turn the other way round (a shape mirrored after
+/// it is turned is the mirrored shape turned back). Its text stays upright,
+/// as a flipped shape's does.
+let groupChildBoxes (group: TextBoxBlock) (height: float) : (TextBoxBlock * (float * float * float)) list =
+    let scaleX, scaleY =
+        match group.ChildSpace with
+        | Some (width, spaceHeight) when width > 0.0 && spaceHeight > 0.0 -> group.Width / width, height / spaceHeight
+        | _ -> 1.0, 1.0
+    let mirrored = group.FlipH <> group.FlipV
+    group.Children
+    |> List.map (fun child ->
+        let width, childHeight = child.Width * scaleX, child.Height * scaleY
+        let left = (child.X |> Option.defaultValue 0.0) * scaleX
+        let top = (child.Y |> Option.defaultValue 0.0) * scaleY
+        let left = if group.FlipH then group.Width - left - width else left
+        let top = if group.FlipV then height - top - childHeight else top
+        let placed =
+            if not group.FlipH && not group.FlipV && scaleX = 1.0 && scaleY = 1.0 then child
+            else
+                { child with
+                    Width = width
+                    Height = childHeight
+                    FlipH = (child.FlipH <> group.FlipH)
+                    FlipV = (child.FlipV <> group.FlipV)
+                    Rotation = (if mirrored then -child.Rotation else child.Rotation)
+                    // (A group in it scales its own shapes from the size it is drawn at.)
+                    ChildSpace = child.ChildSpace }
+        placed, (left, top, childHeight))
+
 /// A text box or shape, its box at `x`, `y` (across and down the canvas) and
 /// `height` high: its fill and outline, and its text inside its insets -
 /// from the top, the middle or the bottom of the shape -, clipped to the
 /// shape when the shape has a height of its own; all of it turned when the
 /// shape is. (The text stood 6 pixels inside the box whatever the shape said,
 /// ran out of the box below, and stayed upright in a turned shape.)
-let private textBoxCommandsAt (settings: LayoutSettings) fontFamily measureText measureRange (styleContext: DocumentStyleContext) (textBox: TextBoxBlock) (x: float) (y: float) (height: float) : PaintCommand list =
-    let frame = shapeFrameCommands textBox x y height
+///
+/// A group or a drawing canvas (Children): its shapes - each drawn as a shape
+/// is, with its text - where the group's child coordinates put them (see
+/// groupChildBoxes), over the canvas's background; all of it turned when the
+/// group is. A picture of a group (ImageSource): the picture in its box,
+/// mirrored and turned as it says.
+let rec private textBoxCommandsAt (settings: LayoutSettings) fontFamily measureText measureRange (styleContext: DocumentStyleContext) (textBox: TextBoxBlock) (x: float) (y: float) (height: float) : PaintCommand list =
+    let frame =
+        match textBox.ImageSource with
+        | Some src ->
+            let picture = DrawImage (src, x, y, textBox.Width, height, None, None, None, None)
+            if textBox.FlipH || textBox.FlipV then [ DrawMirrored (textBox.FlipH, textBox.FlipV, x + textBox.Width / 2.0, y + height / 2.0, (x, y, textBox.Width, height), [ picture ]) ]
+            else [ picture ]
+        | None -> shapeFrameCommands textBox x y height
     let text = ResizeArray<PaintCommand>()
-    if textBox.FitText then text.AddRange (fittedTextCommands fontFamily measureText textBox x y height)
+    if not textBox.Children.IsEmpty then
+        for child, (childX, childY, childHeight) in groupChildBoxes textBox height do
+            text.AddRange (textBoxCommandsAt settings fontFamily measureText measureRange styleContext child (x + childX) (y + childY) childHeight)
+    elif textBox.FitText then text.AddRange (fittedTextCommands fontFamily measureText textBox x y height)
     else
         // (A picture anchored in the box's text is part of the box.)
         let outerSink = drawingSink
@@ -2212,7 +2261,7 @@ let private textBoxCommandsAt (settings: LayoutSettings) fontFamily measureText 
                 addParagraphCommands settings fontFamily measureText measureRange text layout
         finally drawingSink <- outerSink
     let turned = abs textBox.Rotation >= 0.01
-    let clipped = text.Count > 0 && not textBox.AutoFit && not textBox.NoTextWrap && not textBox.FitText
+    let clipped = text.Count > 0 && not textBox.AutoFit && not textBox.NoTextWrap && not textBox.FitText && textBox.Children.IsEmpty
     let translucent = textBox.Opacity < 0.999
     if not turned && not clipped && not translucent then frame @ resizeArrayToList text
     else

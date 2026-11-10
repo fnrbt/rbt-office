@@ -591,6 +591,21 @@ type Shape = {
     FitText: bool
     /// The opacity of the fill (v:fill@opacity), when it is not opaque.
     Opacity: float option
+    /// The shapes of a group or a drawing canvas (wpg:wgp, wpc:wpc, v:group), in
+    /// the order they are drawn: each with its Position and Width / Height in
+    /// pixels from the group's top-left corner, as the group's child coordinates
+    /// (a:chOff / a:chExt, coordorigin / coordsize) put it in the group's box as
+    /// read (ChildSpace); a group in a group has shapes of its own. Empty for
+    /// any other shape. A group has no text of its own (Content is empty).
+    Children: Shape list
+    /// The size (pixels) the places of the children are given in: the group's
+    /// own as read - a group drawn larger or smaller scales its shapes with it.
+    /// None: they are not scaled (a drawing canvas, whose shapes keep their size
+    /// when it is resized).
+    ChildSpace: (float * float) option
+    /// A picture of a group (pic:pic, a VML shape's v:imagedata): the
+    /// relationship id of the picture it shows, drawn in its box.
+    ImageRelationshipId: string option
     /// The element the shape was read from as it stood in its run
     /// (mc:AlternateContent, w:drawing, w:pict), with the namespaces it needs.
     SourceXml: string option
@@ -1325,6 +1340,8 @@ module Docx =
         }
         let drawingImage =
             wElem "drawing" rNode
+            // (A group or a drawing canvas is not its picture: see Docx.groupElement.)
+            |> Option.filter (fun drawing -> (Ns.descendantsNs "wgp" drawing).IsEmpty && (Ns.descendantsNs "wpc" drawing).IsEmpty)
             |> Option.bind (fun drawing ->
                 match Ns.descendantsNs "blip" drawing |> List.tryHead with
                 | Some b ->
@@ -1337,6 +1354,7 @@ module Docx =
                 | None -> None)
         let vmlImage =
             wElem "pict" rNode
+            |> Option.filter (fun pict -> (Ns.descendantsNs "group" pict).IsEmpty)
             |> Option.bind (fun pict ->
                 let image = Ns.descendantsNs "imagedata" pict |> List.tryHead
                 image
@@ -1376,8 +1394,111 @@ module Docx =
             && ((Ns.descendantsNs "prstGeom" node |> List.isEmpty |> not)
                 || (Ns.descendantsNs "custGeom" node |> List.isEmpty |> not)))
 
+    let private localNameOf (node: XmlNode) = Xml.name node |> Option.map Ns.stripNs |> Option.defaultValue ""
+
+    let private isVmlElement (node: XmlNode) =
+        match node with
+        | XmlDsl.Element (name, _, _, _) -> Ns.hasPrefix "v" name
+        | _ -> false
+
+    /// The group or drawing canvas a drawing is (wpg:wgp, wpc:wpc under the
+    /// a:graphicData of a wp:anchor / wp:inline), or a VML group itself.
+    let groupElement (node: XmlNode) : XmlNode option =
+        match localNameOf node with
+        | "group" when isVmlElement node -> Some node
+        | "anchor" | "inline" ->
+            Ns.childNs "graphic" node
+            |> Option.bind (Ns.childNs "graphicData")
+            |> Option.bind (fun data -> Xml.children data |> List.tryFind (fun child -> match localNameOf child with "wgp" | "wpc" -> true | _ -> false))
+        | _ -> None
+
+    /// The a:ext of an element's own a:xfrm (wps:spPr, pic:spPr, wpg:grpSpPr) - not one of a shape in it.
+    let private ownExtent (element: XmlNode) : XmlNode option =
+        Xml.children element
+        |> List.tryFind (fun child -> match localNameOf child with "spPr" | "grpSpPr" -> true | _ -> false)
+        |> Option.bind (Ns.childNs "xfrm")
+        |> Option.bind (Ns.childNs "ext")
+
+    /// The relationship id of the picture of a pic:pic (its a:blip's r:embed or r:link).
+    let pictureRelationshipOf (picture: XmlNode) : string option =
+        Ns.descendantsNs "blip" picture
+        |> List.tryHead
+        |> Option.bind (fun blip -> Xml.attr "r:embed" blip |> Option.orElse (Xml.attr "r:link" blip))
+
+    /// The relationship id of the picture of a VML shape (its v:imagedata).
+    let vmlPictureRelationshipOf (shape: XmlNode) : string option =
+        Ns.descendantsNs "imagedata" shape
+        |> List.tryHead
+        |> Option.bind (fun image -> Xml.attr "r:id" image |> Option.orElse (Xml.attr "o:relid" image))
+
+    /// Whether the shapes of a group are drawn of the element of one (and so whether
+    /// the shape model holds the group): a DrawingML shape, picture or group with
+    /// its place (a:xfrm); a picture that says which picture it shows; a VML
+    /// rectangle, oval, rounded rectangle or line; a VML shape with text, a
+    /// picture or an outline the reader knows (a text box's, a rectangle's -
+    /// not a path, nor a shape type of its own: an arrow, a connector); a group
+    /// of such. Every element of the group is one of those or what the group
+    /// says of itself, and there is one at least: a group with a chart, a
+    /// diagram, ink or a kind of drawing the reader does not draw is kept as
+    /// it is (its fallback picture is what is shown).
+    let rec isDrawnGroupChild (node: XmlNode) : bool =
+        match node with
+        | XmlDsl.Element (name, _, _, _) ->
+            let local = Ns.stripNs name
+            if Ns.hasPrefix "v" name then
+                match local with
+                | "rect" | "oval" | "roundrect" | "line" -> true
+                | "shape" ->
+                    (vmlPictureRelationshipOf node).IsSome
+                    || not (Ns.descendantsNs "txbxContent" node).IsEmpty
+                    || (match Xml.attr "type" node with
+                        | None -> (Xml.attr "path" node).IsNone
+                        | Some kind -> kind = "#_x0000_t202" || kind = "#_x0000_t1")
+                | "group" -> isGroupOfShapes node
+                | _ -> false
+            else
+                match local with
+                | "wsp" -> (ownExtent node).IsSome
+                | "pic" -> (ownExtent node).IsSome && (pictureRelationshipOf node).IsSome
+                | "grpSp" | "wgp" -> (ownExtent node).IsSome && isGroupOfShapes node
+                | _ -> false
+        | _ -> false
+
+    and private isGroupOfShapes (group: XmlNode) : bool =
+        let vml = isVmlElement group
+        let mutable drawn = false
+        let mutable known = true
+        for child in Xml.children group do
+            match child with
+            | XmlDsl.Element (name, _, _, _) ->
+                let local = Ns.stripNs name
+                if vml then
+                    if Ns.hasPrefix "v" name then
+                        match local with
+                        | "shape" | "rect" | "oval" | "roundrect" | "line" | "group" ->
+                            if isDrawnGroupChild child then drawn <- true
+                            // (A group in it that is not drawn is not: something in it is unknown.)
+                            elif local = "group" then known <- false
+                        | "shapetype" | "path" | "fill" | "stroke" | "shadow" | "textbox" | "formulas" | "handles" -> ()
+                        | _ -> known <- false
+                    // (o:lock, w10:wrap: what the group says of itself.)
+                else
+                    match local with
+                    | "wsp" | "pic" | "grpSp" | "wgp" ->
+                        if isDrawnGroupChild child then drawn <- true
+                        elif local = "grpSp" || local = "wgp" then known <- false
+                    | "cNvPr" | "cNvGrpSpPr" | "nvGrpSpPr" | "grpSpPr" | "extLst" | "bg" | "whole" -> ()
+                    | _ -> known <- false
+            | _ -> ()
+        drawn && known
+
+    /// A group or drawing canvas the shape model holds (see isGroupOfShapes).
+    let isModelledGroup (node: XmlNode) : bool =
+        groupElement node |> Option.exists isGroupOfShapes
+
     /// A drawing the shape model can hold: one shape with text and / or
-    /// geometry. Groups, drawing canvases, charts and diagrams are not.
+    /// geometry. Groups and drawing canvases are held as groups
+    /// (isModelledGroup); charts and diagrams are not.
     let isModelledShape (node: XmlNode) =
         hasShapeContent node
         && (Ns.descendantsNs "wgp" node).IsEmpty
@@ -1400,9 +1521,11 @@ module Docx =
             let fromChoice = Ns.childNs "Choice" node |> Option.map modelledShapeRoots |> Option.defaultValue []
             if not fromChoice.IsEmpty then fromChoice
             else Ns.childNs "Fallback" node |> Option.map modelledShapeRoots |> Option.defaultValue []
-        | Some "anchor" | Some "inline" -> if isModelledShape node then [node] else []
+        | Some "anchor" | Some "inline" -> if isModelledShape node || isModelledGroup node then [node] else []
         | Some "shape" | Some "rect" | Some "roundrect" | Some "oval" when (match node with XmlDsl.Element(name, _, _, _) -> Ns.hasPrefix "v" name | _ -> false) ->
             if isModelledShape node then [node] else []
+        // (A VML group is one drawing: its shapes are not shapes of their own.)
+        | Some "group" when isVmlElement node -> if isModelledGroup node then [node] else []
         | Some _ -> Xml.children node |> List.collect modelledShapeRoots
         | None -> []
 
@@ -3426,7 +3549,7 @@ module Shapes =
     let private vmlBool (value: string option) =
         value |> Option.map (fun text -> let t = text.ToLowerInvariant() in t = "t" || t = "true" || t = "1")
 
-    let parseShape (shapeNode: XmlNode) : Shape option =
+    let private parseOneShape (shapeNode: XmlNode) : Shape option =
         let id = Xml.attr "id" shapeNode
         let shapeType = Xml.attr "type" shapeNode
 
@@ -3635,8 +3758,224 @@ module Shapes =
                 |> List.tryPick (Xml.attr "opacity")
                 |> Option.bind (fun text -> match ValueText.Css.withUnit [ "f" ] text with Some (value, _) -> parseFloat value |> Option.map (fun f -> f / 65536.0) | None -> parseFloat text)
                 |> Option.filter (fun value -> value >= 0.0 && value < 1.0)
+            Children = []
+            ChildSpace = None
+            ImageRelationshipId = None
             SourceXml = None
         }
+
+    // --- groups and drawing canvases (wpg:wgp, wpc:wpc, v:group) ------------
+
+    /// Where a group's child coordinates are in pixels from the group's
+    /// top-left corner: x -> (x - OriginX) * ScaleX, y -> (y - OriginY) * ScaleY.
+    type private ChildMapping = { OriginX: float; OriginY: float; ScaleX: float; ScaleY: float }
+
+    /// EMU from the top-left corner (a drawing canvas's shapes).
+    let private emuMapping = { OriginX = 0.0; OriginY = 0.0; ScaleX = 1.0 / 9525.0; ScaleY = 1.0 / 9525.0 }
+
+    let private isTrue (value: string) = value = "1" || value.ToLowerInvariant() = "true"
+
+    /// The a:xfrm of an element's own properties (wps:spPr, pic:spPr,
+    /// wpg:grpSpPr) - not one of a shape in it.
+    let private ownTransform (element: XmlNode) : XmlNode option =
+        Xml.children element
+        |> List.tryFind (fun child -> match Xml.name child |> Option.map Ns.stripNs with Some "spPr" | Some "grpSpPr" -> true | _ -> false)
+        |> Option.bind (Ns.childNs "xfrm")
+
+    /// A point or size of an a:xfrm (a:off x / y, a:ext cx / cy, a:chOff, a:chExt).
+    let private transformPair (childName: string) (xAttr: string) (yAttr: string) (xfrm: XmlNode option) : (float * float) option =
+        xfrm
+        |> Option.bind (Ns.childNs childName)
+        |> Option.bind (fun point ->
+            match Xml.attr xAttr point |> Option.bind parseFloat, Xml.attr yAttr point |> Option.bind parseFloat with
+            | Some x, Some y -> Some (x, y)
+            | _ -> None)
+
+    /// An element's box in its group's child coordinates: a:off and a:ext of its own a:xfrm.
+    let private transformBox (xfrm: XmlNode option) : (float * float * float * float) option =
+        match transformPair "off" "x" "y" xfrm, transformPair "ext" "cx" "cy" xfrm with
+        | Some (x, y), Some (cx, cy) -> Some (x, y, cx, cy)
+        | None, Some (cx, cy) -> Some (0.0, 0.0, cx, cy)
+        | _ -> None
+
+    let private transformRotation (xfrm: XmlNode option) : float =
+        xfrm |> Option.bind (Xml.attr "rot") |> Option.bind parseFloat |> Option.map (fun r -> r / 60000.0) |> Option.defaultValue 0.0
+
+    let private transformFlip (attrName: string) (xfrm: XmlNode option) : bool =
+        xfrm |> Option.bind (Xml.attr attrName) |> Option.exists isTrue
+
+    /// A DrawingML group's children in its box of `width` × `height` pixels:
+    /// a:chOff / a:chExt of its a:xfrm map onto it (its a:off / a:ext when it
+    /// states no child extent; EMU where an extent is 0).
+    let private drawingMapping (xfrm: XmlNode option) (width: float) (height: float) : ChildMapping =
+        let ox, oy =
+            transformPair "chOff" "x" "y" xfrm |> Option.orElse (transformPair "off" "x" "y" xfrm) |> Option.defaultValue (0.0, 0.0)
+        let cx, cy = transformPair "chExt" "cx" "cy" xfrm |> Option.orElse (transformPair "ext" "cx" "cy" xfrm) |> Option.defaultValue (0.0, 0.0)
+        { OriginX = ox; OriginY = oy
+          ScaleX = (if cx > 0.0 then width / cx else 1.0 / 9525.0)
+          ScaleY = (if cy > 0.0 then height / cy else 1.0 / 9525.0) }
+
+    /// The two numbers of a VML pair ("0,0", "21600,21600"); one it does not state is `fallback`'s.
+    let private vmlPair (fallback: float * float) (value: string option) : float * float =
+        match value with
+        | Some text ->
+            let parts = ValueText.Css.items ',' text |> Array.map (fun part -> parseFloat (part.Trim()))
+            (if parts.Length > 0 then parts.[0] else None) |> Option.defaultValue (fst fallback),
+            (if parts.Length > 1 then parts.[1] else None) |> Option.defaultValue (snd fallback)
+        | None -> fallback
+
+    /// A VML group's children in its box of `width` × `height` pixels: its
+    /// coordorigin and coordsize (0,0 and 1000,1000 when it states none).
+    let private vmlMapping (group: XmlNode) (width: float) (height: float) : ChildMapping =
+        let ox, oy = vmlPair (0.0, 0.0) (Xml.attr "coordorigin" group)
+        let cw, ch = vmlPair (1000.0, 1000.0) (Xml.attr "coordsize" group)
+        { OriginX = ox; OriginY = oy
+          ScaleX = (if cw <> 0.0 then width / cw else 1.0)
+          ScaleY = (if ch <> 0.0 then height / ch else 1.0) }
+
+    /// A VML element's box in its group's coordinates: left, top, width and height of its style.
+    let private vmlBox (node: XmlNode) : float * float * float * float =
+        let style = Xml.attr "style" node |> Option.defaultValue ""
+        let number name = ValueText.Css.valueIgnoringCase name style |> Option.bind parseFloat |> Option.defaultValue 0.0
+        number "left", number "top", number "width", number "height"
+
+    let private mappedBox (mapping: ChildMapping) (x: float, y: float, w: float, h: float) =
+        (x - mapping.OriginX) * mapping.ScaleX, (y - mapping.OriginY) * mapping.ScaleY, w * mapping.ScaleX, h * mapping.ScaleY
+
+    /// A shape of a group at its place in the group (pixels from the group's top-left corner).
+    let private placedIn (x: float, y: float, w: float, h: float) (shape: Shape) : Shape =
+        { shape with
+            Position = Some (x, y); Width = Some (max 0.0 w); Height = Some (max 0.0 h)
+            AnchorBlock = None; Inline = false; Wrap = None; PositionHRelativeFrom = None; PositionVRelativeFrom = None
+            PositionHAlign = None; PositionVAlign = None; BehindDoc = None; AllowOverlap = None; LayoutInCell = None; RelativeHeight = None
+            DistanceTop = None; DistanceBottom = None; DistanceLeft = None; DistanceRight = None }
+
+    /// What a group is of its own: no text, outline or fill (but a canvas's).
+    let private asGroup (shape: Shape) : Shape =
+        { shape with
+            Content = []; Preset = None; CustomPath = []; CustomW = None; CustomH = None; Gradient = None
+            FillColor = None; BorderColor = None; BorderWidth = None; NoFill = true; NoLine = true; LineDash = None
+            InsetLeft = None; InsetTop = None; InsetRight = None; InsetBottom = None; VerticalAnchor = None
+            AutoFit = false; NoTextWrap = false; FitText = false; Opacity = None }
+
+    /// A picture of a group: the picture in its box, no fill or outline.
+    let private asPicture (relationshipId: string) (shape: Shape) : Shape =
+        { asGroup shape with ImageRelationshipId = Some relationshipId }
+
+    /// The shapes of a group element (wpg:wgp / wpg:grpSp, wpc:wpc, v:group) in
+    /// the order they are drawn, `mapping` its child coordinates: those
+    /// Docx.isDrawnGroupChild says are (a VML shape the reader does not know
+    /// the outline of and that has no text is left out).
+    let rec private groupChildren (group: XmlNode) (mapping: ChildMapping) : Shape list =
+        Xml.children group
+        |> List.filter Docx.isDrawnGroupChild
+        |> List.choose (fun node ->
+            let vml = match node with XmlDsl.Element (name, _, _, _) -> Ns.hasPrefix "v" name | _ -> false
+            match Xml.name node |> Option.map Ns.stripNs with
+            | Some ("wsp" | "pic" | "grpSp" | "wgp" as kind) when not vml ->
+                let xfrm = ownTransform node
+                match transformBox xfrm with
+                | None -> None
+                | Some box ->
+                    let (_, _, w, h) as placed = mappedBox mapping box
+                    match kind with
+                    | "wsp" -> parseOneShape node |> Option.map (placedIn placed)
+                    | "pic" ->
+                        Docx.pictureRelationshipOf node
+                        |> Option.bind (fun relationshipId ->
+                            parseOneShape node
+                            |> Option.map (fun shape ->
+                                { (placedIn placed shape |> asPicture relationshipId) with
+                                    Rotation = transformRotation xfrm; FlipH = transformFlip "flipH" xfrm; FlipV = transformFlip "flipV" xfrm }))
+                    | _ ->
+                        // (A group in the group: its shapes in its own child coordinates.)
+                        parseOneShape node
+                        |> Option.map (fun shape ->
+                            { (placedIn placed shape |> asGroup) with
+                                Type = Some "group"
+                                Rotation = transformRotation xfrm; FlipH = transformFlip "flipH" xfrm; FlipV = transformFlip "flipV" xfrm
+                                Children = groupChildren node (drawingMapping xfrm w h)
+                                ChildSpace = Some (w, h) })
+            | Some local when vml ->
+                let (_, _, w, h) as placed = mappedBox mapping (vmlBox node)
+                match local with
+                | "group" ->
+                    // (Its turn and flips are those of its style: as parseOneShape reads a VML shape's.)
+                    parseOneShape node
+                    |> Option.map (fun shape ->
+                        { (placedIn placed shape |> asGroup) with
+                            Type = Some "group"; Children = groupChildren node (vmlMapping node w h); ChildSpace = Some (w, h) })
+                | "line" ->
+                    // (From one end to the other: a line across its box, mirrored when it rises.)
+                    let x1, y1 = vmlPair (0.0, 0.0) (Xml.attr "from" node)
+                    let x2, y2 = vmlPair (0.0, 0.0) (Xml.attr "to" node)
+                    parseOneShape node
+                    |> Option.map (fun shape ->
+                        { (placedIn (mappedBox mapping (min x1 x2, min y1 y2, abs (x2 - x1), abs (y2 - y1))) shape |> asGroup) with
+                            Type = Some "line"; Preset = Some "line"
+                            BorderColor = shape.BorderColor |> Option.orElse (Some "#000000"); BorderWidth = shape.BorderWidth; NoLine = shape.NoLine
+                            FlipH = ((x2 < x1) <> (y2 < y1)); FlipV = false })
+                | "shape" | "rect" | "oval" | "roundrect" ->
+                    match Docx.vmlPictureRelationshipOf node with
+                    | Some relationshipId -> parseOneShape node |> Option.map (fun shape -> { (placedIn placed shape |> asPicture relationshipId) with Rotation = shape.Rotation; FlipH = shape.FlipH; FlipV = shape.FlipV })
+                    | None -> parseOneShape node |> Option.map (placedIn placed)
+                | _ -> None
+            | _ -> None)
+
+    /// A group or drawing canvas where its anchor (wp:anchor / wp:inline around
+    /// a wpg:wgp or wpc:wpc) or its style (a VML group) puts it, as large as
+    /// its extent, with its shapes in it; a canvas with its background
+    /// (wpc:bg) and outline (wpc:whole), a group turned and flipped as its
+    /// own a:xfrm says (a VML group: its style).
+    let private parseGroupShape (root: XmlNode) (group: XmlNode) : Shape option =
+        parseOneShape root
+        |> Option.map (fun outer ->
+            let vml = match root with XmlDsl.Element (name, _, _, _) -> Ns.hasPrefix "v" name | _ -> false
+            let canvas = Xml.name group |> Option.map Ns.stripNs = Some "wpc"
+            let xfrm = if vml || canvas then None else ownTransform group
+            let extent pick = transformPair "ext" "cx" "cy" xfrm |> Option.map (fun pair -> pick pair / 9525.0)
+            let width = outer.Width |> Option.orElse (extent fst) |> Option.defaultValue 0.0
+            let height = outer.Height |> Option.orElse (extent snd) |> Option.defaultValue 0.0
+            let mapping =
+                if vml then vmlMapping group width height
+                elif canvas then emuMapping
+                else drawingMapping xfrm width height
+            let canvasFill = if canvas then Ns.childNs "bg" group |> Option.bind (Ns.childNs "solidFill") |> Option.bind srgbOf else None
+            let canvasLine = if canvas then Ns.childNs "whole" group |> Option.bind (Ns.childNs "ln") else None
+            let lineColor = canvasLine |> Option.bind (Ns.childNs "solidFill") |> Option.bind srgbOf
+            { asGroup outer with
+                Type = Some (if canvas then "canvas" else "group")
+                Width = Some width
+                Height = Some height
+                FillColor = canvasFill
+                NoFill = canvasFill.IsNone
+                BorderColor = lineColor
+                NoLine = lineColor.IsNone
+                BorderWidth = (if lineColor.IsSome then canvasLine |> Option.bind (Xml.attr "w") |> Option.bind parseFloat |> Option.map emuToPixels else None)
+                Rotation = (if vml then outer.Rotation else transformRotation xfrm)
+                FlipH = (if vml then outer.FlipH else transformFlip "flipH" xfrm)
+                FlipV = (if vml then outer.FlipV else transformFlip "flipV" xfrm)
+                // (A VML group is known by its id: see withShapeSources.)
+                Name = (if vml then None else outer.Name)
+                Children = groupChildren group mapping
+                ChildSpace = (if canvas then None else Some (width, height)) })
+
+    /// A shape of a shape root (Docx.modelledShapeRoots): one shape, or a
+    /// group or drawing canvas with its shapes.
+    let parseShape (shapeNode: XmlNode) : Shape option =
+        match Docx.groupElement shapeNode with
+        | Some group when Docx.isModelledGroup shapeNode -> parseGroupShape shapeNode group
+        | _ -> parseOneShape shapeNode
+
+    /// A shape's text with that of the shapes of it (a group's), changed by `change`.
+    let rec mapContent (change: Paragraph list -> Paragraph list) (shape: Shape) : Shape =
+        { shape with
+            Content = change shape.Content
+            Children = shape.Children |> List.map (mapContent change) }
+
+    /// A shape's text and that of the shapes of it (a group's).
+    let rec allContent (shape: Shape) : Paragraph list =
+        shape.Content @ (shape.Children |> List.collect allContent)
 
     /// Shapes of the document body, each with the index of the body block
     /// (as Docx.bodyContent numbers them) it is anchored in.
@@ -4082,12 +4421,12 @@ let private readStories (main: MainPart) (headerRefTypes: Map<string, string>) (
             let part = HeaderFooter.parseHeaderFooter value hfType (Some rel.Id) |> resolveHeaderFooterHyperlinks partRels
             let part =
                 // (A modelled shape has text or a geometry: see Docx.isModelledShape.)
-                if not (XmlDsl.startTagsNamed [ "txbxContent"; "prstGeom"; "custGeom"; "textpath" ] value).IsEmpty then
+                if not (XmlDsl.startTagsNamed [ "txbxContent"; "prstGeom"; "custGeom"; "textpath"; "wgp"; "wpc"; "group" ] value).IsEmpty then
                     let root = XmlDsl.parse value
                     let shapes =
                         Shapes.parseShapesOfPart root
                         |> List.map (fun shape ->
-                            { shape with Content = shape.Content |> List.map Para |> completeOpaqueObjects root |> List.choose (function Para para -> Some para | Tbl _ -> None) })
+                            Shapes.mapContent (fun content -> content |> List.map Para |> completeOpaqueObjects root |> List.choose (function Para para -> Some para | Tbl _ -> None)) shape)
                         |> Shapes.withShapeSourcesOf part.Blocks
                     if not shapes.IsEmpty then partShapes.Add((rel.Id, shapes))
                     { part with
@@ -4129,6 +4468,13 @@ let private allImages (main: MainPart) (stories: Stories) : Map<string, string> 
 let private opaqueReferences (blocks: DocumentContent list) : string list =
     opaqueXmlOfBlocks blocks |> List.collect relationshipIdsInXml
 
+/// The relationship ids a shape refers to: the opaque objects of its text and
+/// of its shapes' - and, of a group, its element's (its pictures: it is
+/// written back as it was read).
+let private shapeReferences (shape: Shape) : string list =
+    opaqueReferences (Shapes.allContent shape |> List.map Para)
+    @ (if shape.Children.IsEmpty then [] else shape.SourceXml |> Option.map relationshipIdsInXml |> Option.defaultValue [])
+
 /// The document of a package whose parts are read. `content` is the body's
 /// blocks (as they are delivered: opaque objects completed, modelled shapes
 /// dropped), `documentReferenced` the relationship ids the opaque objects of
@@ -4151,7 +4497,12 @@ let private assembleDocument (main: MainPart) (stories: Stories) (content: Docum
         [ yield "document", keptRelationshipsReferenced docDir rels documentReferenced
           for part, path, partRels in headerParts @ footerParts do
               match part.RelationshipId with
-              | Some partId -> yield partId, keptRelationships (parentPath path) partRels (opaqueXmlOfBlocks part.Blocks)
+              | Some partId ->
+                  // (A group of the part is written back as it was read: its pictures stay with it.)
+                  let groupXml =
+                      Map.tryFind partId stories.PartShapes |> Option.defaultValue []
+                      |> List.choose (fun shape -> if shape.Children.IsEmpty then None else shape.SourceXml)
+                  yield partId, keptRelationships (parentPath path) partRels (opaqueXmlOfBlocks part.Blocks @ groupXml)
               | None -> ()
           yield footnotesPartKey, keptRelationships (parentPath main.FootnotesPath) main.FootnotesRels (footnotes |> List.collect (fun note -> opaqueXmlOfBlocks note.Blocks))
           yield endnotesPartKey, keptRelationships (parentPath main.EndnotesPath) main.EndnotesRels (endnotes |> List.collect (fun note -> opaqueXmlOfBlocks note.Blocks))
@@ -4299,15 +4650,15 @@ let parseFromSource (source: PartSource) : WordDocument option =
         let revisions = Revisions.parseRevisionsWhere docHolds doc
         let shapes =
             // (A modelled shape has text or a geometry: see Docx.isModelledShape.)
-            (if docHolds "txbxContent" || docHolds "prstGeom" || docHolds "custGeom" || docHolds "textpath" then Shapes.parseShapes doc else [])
+            (if docHolds "txbxContent" || docHolds "prstGeom" || docHolds "custGeom" || docHolds "textpath" || docHolds "wgp" || docHolds "wpc" || docHolds "group" then Shapes.parseShapes doc else [])
             |> List.map (fun shape ->
-                { shape with Content = shape.Content |> List.map Para |> completeOpaqueObjects doc |> List.choose (function Para para -> Some para | Tbl _ -> None) })
+                Shapes.mapContent (fun content -> content |> List.map Para |> completeOpaqueObjects doc |> List.choose (function Para para -> Some para | Tbl _ -> None)) shape)
             |> Shapes.withShapeSourcesOf completedContent
 
         let bodyChunks, bodyChunkCount =
             body |> Option.map Docx.bodyContentChunks |> Option.defaultValue ([], 0)
         let documentReferenced =
-            opaqueReferences content @ (shapes |> List.collect (fun shape -> opaqueReferences (shape.Content |> List.map Para))) |> Set.ofList
+            opaqueReferences content @ (shapes |> List.collect shapeReferences) |> Set.ofList
         assembleDocument main stories content shapes pageSetup revisions bodyChunks bodyChunkCount documentReferenced (allImages main stories)
         |> resolveHyperlinks)
 
@@ -4498,6 +4849,9 @@ type ProgressiveReader = {
     /// has them, for the keys the blocks use. (A picture is made a data URL
     /// when a block that shows it is asked for.)
     ImagesOf: DocumentContent list -> Map<string, string>
+    /// The picture of an image key (a relationship id of the body; see
+    /// partImageKey) as a data URL: a picture of a group's (Shape.ImageRelationshipId).
+    ImageOf: string -> string option
     /// The document once the body is read (the rest is read first): what
     /// `parseFromSource` gives - Content, Revisions and Images when the reader
     /// was opened to keep them, else empty.
@@ -4531,6 +4885,7 @@ let private wholeReader (doc: WordDocument) : ProgressiveReader =
       BlockCount = fun () -> if given then doc.Content.Length else 0
       Progress = fun () -> if given then 1.0 else 0.0
       ImagesOf = fun _ -> doc.Images
+      ImageOf = fun key -> Map.tryFind key doc.Images
       Finish =
         fun () ->
             given <- true
@@ -4673,7 +5028,7 @@ let openProgressiveFromSource (keepContent: bool) (source: PartSource) : Progres
                     |> mapBlockRuns (resolveHyperlinkRun hyperlinks)
                 for id in opaqueReferences block do referenced.Add id |> ignore
                 for shape in shapes do
-                    for id in opaqueReferences (shape.Content |> List.map Para) do referenced.Add id |> ignore
+                    for id in shapeReferences shape do referenced.Add id |> ignore
                 blockChunks.Add chunk
                 allShapes.AddRange shapes
                 shapesOut.AddRange shapes
@@ -4716,7 +5071,7 @@ let openProgressiveFromSource (keepContent: bool) (source: PartSource) : Progres
                                   let blocks = Docx.contentOfChild renderedBreakCounter node
                                   // (A modelled shape has text or a geometry: see Docx.isModelledShape.)
                                   let blockNodes =
-                                      if holds.Contains "txbxContent" || holds.Contains "prstGeom" || holds.Contains "custGeom" || holds.Contains "textpath" then
+                                      if holds.Contains "txbxContent" || holds.Contains "prstGeom" || holds.Contains "custGeom" || holds.Contains "textpath" || holds.Contains "wgp" || holds.Contains "wpc" || holds.Contains "group" then
                                           Shapes.blockNodesOfChild node |> List.toArray
                                       else [||]
                                   blocks
@@ -4725,7 +5080,7 @@ let openProgressiveFromSource (keepContent: bool) (source: PartSource) : Progres
                                           if i < blockNodes.Length then
                                               Shapes.shapesOfBlock (made + i) blockNodes.[i]
                                               |> List.map (fun shape ->
-                                                  { shape with Content = shape.Content |> List.map Para |> completeOpaqueObjects cursor.Root |> List.choose (function Para para -> Some para | Tbl _ -> None) })
+                                                  Shapes.mapContent (fun content -> content |> List.map Para |> completeOpaqueObjects cursor.Root |> List.choose (function Para para -> Some para | Tbl _ -> None)) shape)
                                           else []
                                       match held with
                                       | Some (before, beforeShapes, beforeChunk, beforeEnd) -> deliver released shapesOut (Docx.normalizedSectionBreak before (Some raw)) beforeShapes beforeChunk beforeEnd
@@ -4790,6 +5145,7 @@ let openProgressiveFromSource (keepContent: bool) (source: PartSource) : Progres
                   BlockCount = fun () -> blockChunks.Count
                   Progress = fun () -> if finished then 1.0 else float cursor.Lexer.Position / float (max 1 cursor.BodyClose)
                   ImagesOf = imagesOf
+                  ImageOf = imageOf
                   Finish = finish }
 
 #if FABLE_COMPILER
