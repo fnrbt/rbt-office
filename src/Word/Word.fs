@@ -2318,10 +2318,10 @@ module API =
                                 PageNumber = pageNumber
                             }
                         | None -> ()
-                        for (_, name) in TextBuf.bookmarkStarts style do
-                          if name <> "" && seenBookmarks.Add name then
+                        for (bookmark, _) in TextBuf.bookmarksStarted style do
+                          if bookmark.Name <> "" && seenBookmarks.Add bookmark.Name then
                             bookmarkAnchors.Add {
-                                PageBookmarkName = name
+                                PageBookmarkName = bookmark.Name
                                 PageBookmarkBlockId = layout.BlockId
                                 PageBookmarkStartOffset = startOffset
                                 PageNumber = pageNumber

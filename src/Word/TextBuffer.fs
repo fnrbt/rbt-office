@@ -15,6 +15,18 @@ type RevisionMark = {
     Date: string option
 }
 
+/// A bookmark that starts before a run: its id and its name as the file has
+/// them (the name "" when the file gives none), and whether it ends where it
+/// starts (before the run too).
+type BookmarkStart = { Id: string; Name: string; EndsHere: bool }
+
+/// What ends after a run: a bookmark's end, or a bookmark opened after it - as
+/// the file has one after the last run of a paragraph (EndsHere: it ends there
+/// too; otherwise further on).
+type BookmarkEnd =
+    | Ends of id: string
+    | Opens of BookmarkStart
+
 /// Text style for a run
 type TextStyle = {
     Style: string option
@@ -51,9 +63,13 @@ type TextStyle = {
     NoteId: string option
     NoteType: string option
     NoteText: string option
-    BookmarkStartId: string option
-    BookmarkName: string option
-    BookmarkEndId: string option
+    /// The bookmarks that start before the run, and what ends (or is opened)
+    /// after it: a run has every bookmark that starts before it and ends after
+    /// it, in the order of the file. A run split in parts has them on every part
+    /// (the save writes a start before the first part that has it, an end after
+    /// the last: Docx.paragraphToEditor).
+    BookmarkStarts: BookmarkStart list
+    BookmarkEnds: BookmarkEnd list
     FieldCode: string option
     FieldResult: string option
     RenderedPageBreakBefore: bool
@@ -149,9 +165,8 @@ let defaultStyle = {
     NoteId = None
     NoteType = None
     NoteText = None
-    BookmarkStartId = None
-    BookmarkName = None
-    BookmarkEndId = None
+    BookmarkStarts = []
+    BookmarkEnds = []
     FieldCode = None
     FieldResult = None
     RenderedPageBreakBefore = false
@@ -349,6 +364,12 @@ module Run =
         | Text tr -> Text { tr with Start = tr.Start + offset }
         | Image ir -> Image { ir with Start = ir.Start + offset }
 
+/// Whether two lists of a style are equal - at once when both are empty (most
+/// runs have no bookmark: two empty lists are two objects, and `=` on them goes
+/// through the list's own equality).
+let inline private sameList (left: 'T list) (right: 'T list) =
+    (left.IsEmpty && right.IsEmpty) || left = right
+
 /// Whether two styles are equal: what `left = right` says, field by field.
 /// (The record's own equality gathers the forty fields of both sides before
 /// it compares the first - most of the time of a format given to a whole long
@@ -385,9 +406,8 @@ let sameTextStyle (left: TextStyle) (right: TextStyle) : bool =
         && left.NoteId = right.NoteId
         && left.NoteType = right.NoteType
         && left.NoteText = right.NoteText
-        && left.BookmarkStartId = right.BookmarkStartId
-        && left.BookmarkName = right.BookmarkName
-        && left.BookmarkEndId = right.BookmarkEndId
+        && sameList left.BookmarkStarts right.BookmarkStarts
+        && sameList left.BookmarkEnds right.BookmarkEnds
         && left.FieldCode = right.FieldCode
         && left.FieldResult = right.FieldResult
         && left.EquationXml = right.EquationXml
@@ -644,9 +664,8 @@ let hasAnnotationIdentity (style: TextStyle) =
     || style.NoteId.IsSome
     || style.NoteType.IsSome
     || style.NoteText.IsSome
-    || style.BookmarkStartId.IsSome
-    || style.BookmarkName.IsSome
-    || style.BookmarkEndId.IsSome
+    || not style.BookmarkStarts.IsEmpty
+    || not style.BookmarkEnds.IsEmpty
     || style.FieldCode.IsSome
     || style.FieldResult.IsSome
     || style.EquationXml.IsSome
@@ -659,49 +678,33 @@ let hasAnnotationIdentity (style: TextStyle) =
     || style.RenderedPageBreakBefore
     || style.Checkbox.IsSome
 
-/// What parts the bookmarks of a run in BookmarkStartId, BookmarkName and
-/// BookmarkEndId: a run has all the bookmarks that start before it and end
-/// after it, their ids (and names) joined in the order of the file. A start
-/// "id!" is a bookmark that ends where it starts; an end "!id=name" one that
-/// is opened after the run (the last of its paragraph) and ends there,
-/// "!id=name<" one that ends further on.
-let bookmarkSeparator = '\u001F'
+/// The bookmarks a run of this style starts: those that start before it, and
+/// (true) those opened after it.
+let bookmarksStarted (style: TextStyle) : (BookmarkStart * bool) list =
+    (style.BookmarkStarts |> List.map (fun start -> start, false))
+    @ (style.BookmarkEnds |> List.choose (function Opens start -> Some (start, true) | Ends _ -> None))
 
-/// The bookmarks that start before a run of this style: (id, name).
-let bookmarkStarts (style: TextStyle) : (string * string) list =
-    match style.BookmarkStartId with
-    | None -> []
-    | Some ids ->
-        let tokens = ids.Split bookmarkSeparator
-        let names = (style.BookmarkName |> Option.defaultValue "").Split bookmarkSeparator
-        [ for index in 0 .. tokens.Length - 1 -> tokens.[index].TrimEnd('!'), (if index < names.Length then names.[index] else "") ]
+/// The ids of every bookmark a run of this style starts, ends or opens.
+let bookmarkIds (style: TextStyle) : string list =
+    (style.BookmarkStarts |> List.map (fun start -> start.Id))
+    @ (style.BookmarkEnds |> List.map (function Opens start -> start.Id | Ends id -> id))
 
-/// A style whose bookmarks are those of `style` that `keep id name` says to
-/// keep, each with the name `rename id name` gives.
-let withBookmarks (keep: string -> string -> bool) (rename: string -> string -> string) (style: TextStyle) : TextStyle =
-    match style.BookmarkStartId with
-    | None -> style
-    | Some ids ->
-        let tokens = ids.Split bookmarkSeparator
-        let names = (style.BookmarkName |> Option.defaultValue "").Split bookmarkSeparator
-        let kept =
-            [ for index in 0 .. tokens.Length - 1 do
-                let id = tokens.[index].TrimEnd('!')
-                let name = if index < names.Length then names.[index] else ""
-                if keep id name then yield tokens.[index], rename id name ]
-        let gone = tokens |> Array.map (fun token -> token.TrimEnd('!')) |> Array.filter (fun id -> not (kept |> List.exists (fun (token, _) -> token.TrimEnd('!') = id)))
-        let ends =
-            match style.BookmarkEndId with
-            | None -> None
-            | Some ends ->
-                let left = ends.Split bookmarkSeparator |> Array.filter (fun token -> not (Array.contains token gone))
-                if left.Length = 0 then None else Some (System.String.Join(string bookmarkSeparator, left))
-        if kept.IsEmpty then { style with BookmarkStartId = None; BookmarkName = None; BookmarkEndId = ends }
-        else
-            { style with
-                BookmarkStartId = Some (System.String.Join(string bookmarkSeparator, kept |> List.map fst))
-                BookmarkName = Some (System.String.Join(string bookmarkSeparator, kept |> List.map snd))
-                BookmarkEndId = ends }
+/// The name of the first bookmark that starts before a run of this style (that
+/// of a caption's number: its SEQ field's run), when it has one.
+let bookmarkName (style: TextStyle) : string option =
+    style.BookmarkStarts |> List.tryPick (fun start -> if start.Name <> "" then Some start.Name else None)
+
+/// A style whose bookmarks are those of `style` that `keep id` keeps - their
+/// starts, ends and openings - each with the name `rename` gives it.
+let withBookmarks (keep: string -> bool) (rename: BookmarkStart -> string) (style: TextStyle) : TextStyle =
+    if style.BookmarkStarts.IsEmpty && style.BookmarkEnds.IsEmpty then style
+    else
+        { style with
+            BookmarkStarts = style.BookmarkStarts |> List.filter (fun start -> keep start.Id) |> List.map (fun start -> { start with Name = rename start })
+            BookmarkEnds =
+                style.BookmarkEnds
+                |> List.filter (function Ends id -> keep id | Opens start -> keep start.Id)
+                |> List.map (function Opens start -> Opens { start with Name = rename start } | ending -> ending) }
 
 /// Style for text typed at the edge of a run. The new text takes the run's
 /// character formatting but not its annotation identity: text typed after a
@@ -746,9 +749,8 @@ let rec private boundaryInsertStyle (style: TextStyle) (otherSide: TextStyle opt
                 NoteId = None
                 NoteType = None
                 NoteText = None
-                BookmarkStartId = None
-                BookmarkName = None
-                BookmarkEndId = None
+                BookmarkStarts = []
+                BookmarkEnds = []
                 FieldCode = (if keepField then style.FieldCode else None)
                 FieldResult = (if keepField then style.FieldResult else None)
                 RenderedPageBreakBefore = false
@@ -1738,9 +1740,13 @@ let setNote start len noteId noteType noteText buffer =
     else
         applyStyle start len (fun style -> { style with NoteId = noteId; NoteType = noteType; NoteText = noteText }) buffer
 
-/// Set bookmark markers for range
+/// Set bookmark markers for range: a bookmark around the text, inside the
+/// bookmarks the text has (they stay).
 let setBookmark start len bookmarkId bookmarkName buffer =
-    applyStyle start len (fun style -> { style with BookmarkStartId = Some bookmarkId; BookmarkName = Some bookmarkName; BookmarkEndId = Some bookmarkId }) buffer
+    applyStyle start len (fun style ->
+        { style with
+            BookmarkStarts = style.BookmarkStarts @ [ { Id = bookmarkId; Name = bookmarkName; EndsHere = false } ]
+            BookmarkEnds = Ends bookmarkId :: style.BookmarkEnds }) buffer
 
 /// Set named character style for range
 let setCharacterStyle start len styleId buffer =
@@ -2004,9 +2010,8 @@ let clearFormatting start len buffer =
                 NoteId = style.NoteId
                 NoteType = style.NoteType
                 NoteText = style.NoteText
-                BookmarkStartId = style.BookmarkStartId
-                BookmarkName = style.BookmarkName
-                BookmarkEndId = style.BookmarkEndId
+                BookmarkStarts = style.BookmarkStarts
+                BookmarkEnds = style.BookmarkEnds
                 FieldCode = style.FieldCode
                 FieldResult = style.FieldResult
                 RenderedPageBreakBefore = style.RenderedPageBreakBefore

@@ -236,19 +236,28 @@ do
              + """<w:p><w:r><w:t xml:space="preserve">form </w:t></w:r><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:bookmarkStart w:id="9" w:name="Text1"/><w:r><w:instrText> FORMTEXT </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>value</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r><w:bookmarkEnd w:id="9"/></w:p>""")
         |> DocxReader.loadBytesNative |> Option.get |> Rbt.Word.Import.importDoc
     let runsOf index = (doc.Blocks |> List.choose (function Paragraph para -> Some para | _ -> None)).[index].Buffer.Runs |> List.choose (function Rbt.Word.TextBuffer.Text run -> Some run | _ -> None)
-    let sep = string Rbt.Word.TextBuffer.bookmarkSeparator
     let first = runsOf 0
-    check "three bookmarks start before a run: all three, with their names" (first.[0].Style.BookmarkStartId, first.[0].Style.BookmarkName) (Some ("0" + sep + "1" + sep + "2"), Some ("A" + sep + "B" + sep + "C"))
-    check "two end after it: both, in the order of the file" first.[0].Style.BookmarkEndId (Some ("2" + sep + "0"))
-    check "a bookmark that ends where it starts stands before the next run" (first.[2].Style.BookmarkStartId, first.[2].Style.BookmarkName) (Some "5!", Some "Point")
-    check "one that is opened after the last run of its paragraph" first.[2].Style.BookmarkEndId (Some "!7=Open<")
-    check "the bookmarks the document lists" (bookmarkInfos doc |> List.map (fun info -> info.Id, info.Name) |> List.sort) [ ("0", "A"); ("1", "B"); ("2", "C"); ("5", "Point"); ("9", "Text1") ]
+    let start id name : Rbt.Word.TextBuffer.BookmarkStart = { Id = id; Name = name; EndsHere = false }
+    check "three bookmarks start before a run: all three, with their names" first.[0].Style.BookmarkStarts [ start "0" "A"; start "1" "B"; start "2" "C" ]
+    check "two end after it: both, in the order of the file" first.[0].Style.BookmarkEnds [ Rbt.Word.TextBuffer.Ends "2"; Rbt.Word.TextBuffer.Ends "0" ]
+    check "a bookmark that ends where it starts stands before the next run" first.[2].Style.BookmarkStarts [ { start "5" "Point" with EndsHere = true } ]
+    check "one that is opened after the last run of its paragraph" first.[2].Style.BookmarkEnds [ Rbt.Word.TextBuffer.Opens (start "7" "Open") ]
+    check "the second paragraph: what ends after its run" ((runsOf 1).[0].Style.BookmarkStarts, (runsOf 1).[0].Style.BookmarkEnds) ([], [ Rbt.Word.TextBuffer.Ends "1"; Rbt.Word.TextBuffer.Ends "7" ])
+    // (The one opened after the last run of a paragraph too: it starts at the paragraph's end.)
+    check "the bookmarks the document lists" (bookmarkInfos doc |> List.map (fun info -> info.Id, info.Name) |> List.sort) [ ("0", "A"); ("1", "B"); ("2", "C"); ("5", "Point"); ("7", "Open"); ("9", "Text1") ]
+    check "the one opened after the last run: where it starts" (bookmarkInfos doc |> List.filter (fun info -> info.Name = "Open") |> List.map (fun info -> info.StartOffset, info.EndOffset)) [ (15, 15) ]
     let form = runsOf 2
-    check "a bookmark that starts inside a field (a form field's name) is the field's run's" (form |> List.map (fun run -> run.Style.BookmarkStartId, run.Style.BookmarkEndId, run.Style.FieldCode.IsSome)) [ (None, None, false); (Some "9", Some "9", true) ]
+    check "a bookmark that starts inside a field (a form field's name) is the field's run's" (form |> List.map (fun run -> run.Style.BookmarkStarts, run.Style.BookmarkEnds, run.Style.FieldCode.IsSome)) [ ([], [], false); ([ start "9" "Text1" ], [ Rbt.Word.TextBuffer.Ends "9" ], true) ]
     // One of the three removed: the other two stay, and the end of the one that is gone goes with it.
     let removed = removeBookmark "A" doc
     let after = (removed.Blocks |> List.choose (function Paragraph para -> Some para | _ -> None)).[0].Buffer.Runs |> List.choose (function Rbt.Word.TextBuffer.Text run -> Some run | _ -> None)
-    check "one of three removed" (after.[0].Style.BookmarkStartId, after.[0].Style.BookmarkName, after.[0].Style.BookmarkEndId) (Some ("1" + sep + "2"), Some ("B" + sep + "C"), Some "2")
+    check "one of three removed" (after.[0].Style.BookmarkStarts, after.[0].Style.BookmarkEnds) ([ start "1" "B"; start "2" "C" ], [ Rbt.Word.TextBuffer.Ends "2" ])
+    // The one opened after the last run removed: its opening and its end in the next paragraph go.
+    let removedOpen = removeBookmark "Open" doc
+    let runsAfter index = (removedOpen.Blocks |> List.choose (function Paragraph para -> Some para | _ -> None)).[index].Buffer.Runs |> List.choose (function Rbt.Word.TextBuffer.Text run -> Some run | _ -> None)
+    check "the one opened after the last run removed: its opening and its end" ((runsAfter 0).[2].Style.BookmarkEnds, (runsAfter 1).[0].Style.BookmarkEnds) ([], [ Rbt.Word.TextBuffer.Ends "1" ])
+    let renamedOpen = renameBookmark "Open" "Opened" doc
+    check "... renamed" (bookmarkInfos renamedOpen |> List.map (fun info -> info.Name) |> List.sort) [ "A"; "B"; "C"; "Opened"; "Point"; "Text1" ]
 
 // ----- footnote / endnote / comment bodies ---------------------------------
 /// A package made of the given parts (word/document.xml gets the body wrapper).

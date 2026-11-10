@@ -372,6 +372,9 @@ let private wordAutoSpacingPoints = 14.0
 let private spacingValue value auto =
     if auto = Some true then Some wordAutoSpacingPoints else twipsToPoints value
 
+let private bookmarkStart (start: ModelText.BookmarkStart) : Rbt.Word.TextBuffer.BookmarkStart =
+    { Id = start.Id; Name = start.Name; EndsHere = start.EndsHere }
+
 let private textStyle (run: EP.EditorRun) : Rbt.Word.TextBuffer.TextStyle =
     {
         defaultStyle with
@@ -394,9 +397,12 @@ let private textStyle (run: EP.EditorRun) : Rbt.Word.TextBuffer.TextStyle =
             // Only a target that may be followed is a link (see DocxReader.isActiveHyperlinkTarget).
             Hyperlink = run.Hyperlink |> Option.filter DocxReader.isActiveHyperlinkTarget
             InactiveHyperlink = run.Hyperlink |> Option.filter (fun target -> not (DocxReader.isActiveHyperlinkTarget target))
-            BookmarkStartId = run.BookmarkStartId
-            BookmarkName = run.BookmarkName
-            BookmarkEndId = run.BookmarkEndId
+            BookmarkStarts = run.BookmarkStarts |> List.map bookmarkStart
+            BookmarkEnds =
+                run.BookmarkEnds
+                |> List.map (function
+                    | ModelText.Ends id -> Ends id
+                    | ModelText.Opens start -> Opens (bookmarkStart start))
             FieldCode = run.FieldCode
             FieldResult = run.FieldResult
             EquationXml = run.EquationXml

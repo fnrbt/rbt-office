@@ -825,7 +825,7 @@ let private pendingStyleOver (chosen: TextBuffer.TextStyle) (typed: TextBuffer.T
         Position = chosen.Position; EmphasisMark = chosen.EmphasisMark; FontSize = chosen.FontSize
         CharacterSpacing = chosen.CharacterSpacing; FontFamily = chosen.FontFamily; Color = chosen.Color
         Highlight = chosen.Highlight; VertAlign = chosen.VertAlign; Explicit = chosen.Explicit
-        BookmarkStartId = None; BookmarkName = None; BookmarkEndId = None; RenderedPageBreakBefore = false }
+        BookmarkStarts = []; BookmarkEnds = []; RenderedPageBreakBefore = false }
 
 /// `after`: `before` with text typed at its caret. The text has the pending
 /// format of that caret, if there is one. (What says that the text is a

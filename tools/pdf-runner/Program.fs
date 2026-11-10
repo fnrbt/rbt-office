@@ -202,7 +202,7 @@ let private pageMapFromLayouts (doc: Doc.Document) (pages: WordLayout.PageInfo l
                 line.Segments
                 |> List.choose (function
                     | WordLayout.TextSegment (_, style, _, _, startOffset) ->
-                        style.BookmarkName
+                        Rbt.Word.TextBuffer.bookmarkName style
                         |> Option.map (fun name ->
                             ({
                                 PageBookmarkName = name

@@ -56,7 +56,7 @@ Re-clone with `git clone --depth 1 https://github.com/eigenpal/docx-editor`.
 ### B. Document model & round-trip
 | Dimension | Status | Us | Them | Notes |
 |---|---|---|---|---|
-| Model freedom for overlapping ranges | 🔵 | run carries `CommentId`+`BookmarkStartId`+`RevisionId`+`NoteId` independently (`TextBuffer`/`Document.fs`) | PM tree+marks → needs **marker nodes** (`injectReplyRangeMarkers.ts`, `commentIdAllocator.ts`) | Our schema-free model is structurally cleaner; they pay the PM tax. |
+| Model freedom for overlapping ranges | 🔵 | run carries `CommentId`+`BookmarkStarts`+`RevisionId`+`NoteId` independently (`TextBuffer`/`Document.fs`) | PM tree+marks → needs **marker nodes** (`injectReplyRangeMarkers.ts`, `commentIdAllocator.ts`) | Our schema-free model is structurally cleaner; they pay the PM tax. |
 | **Selective round-trip save** (preserve unknown XML) | 🔴 | regenerates XML (`DocumentWriter.fs`, 1900 LOC) → drops unsupported constructs | `docx/selectiveSave.ts` + `selectiveXmlPatch.ts`: patch changed nodes, preserve the rest | Biggest *round-trip* gap. Math/charts/SmartArt/CC/watermarks survive their save, not ours. |
 | DOCX export coverage | 🟡 | paragraphs/runs/tables/numbering/section/borders/shading (`DocumentWriter.fs`) | full serializer suite (`docx/serializer/*`) | Ours solid for core; theirs broader + lossless. |
 | Parser breadth (OOXML read) | 🟢 | `DocxReader.fs` 4291 LOC: styles, numbering, sections, tables, footnotes, fields, bookmarks, comments(refs), drawings, theme | comparable `docx/*Parser.ts` suite | Roughly even; spot-check specifics. |

@@ -87,8 +87,47 @@ let annotatedClip = annotated |> range ("n", 0) ("n", 26) |> copy
 let annotatedPasted = docOf [ Doc.Paragraph (paragraph "p" "") ] |> caret "p" 0 |> Doc.pasteClip annotatedClip
 check "paste: the mark of a comment is not pasted" (texts annotatedPasted) [ "link here  tail" ]
 check "paste: a link stays a link" ((styleAt annotatedPasted "p" 1).Hyperlink) (Some "https://example.com")
-check "paste: a bookmark is not copied" ((styleAt annotatedPasted "p" 6).BookmarkStartId, (styleAt annotatedPasted "p" 6).BookmarkName) (None, None)
+check "paste: a bookmark is not copied" ((styleAt annotatedPasted "p" 6).BookmarkStarts, (styleAt annotatedPasted "p" 6).BookmarkEnds) ([], [])
 check "paste: pasted text is of no run of the file" ((styleAt annotatedPasted "p" 12).SourceRun) None
+
+// ---- a run's bookmarks (typed: TextStyle.BookmarkStarts / BookmarkEnds) through the edits ----
+let mark id name : TB.BookmarkStart = { Id = id; Name = name; EndsHere = false }
+let marksAt (doc: Doc.Document) id offset = let style = styleAt doc id offset in style.BookmarkStarts, style.BookmarkEnds
+// "alpha [beta gamma] delta" with "across" around "beta gamma", "second" with "point" before it (it ends where it starts).
+let bookmarked =
+    let first = paragraph "m1" "alpha beta gamma delta"
+    let second = paragraph "m2" "second"
+    docOf [
+        Doc.Paragraph { first with Buffer = first.Buffer |> TB.applyStyle 6 10 (fun style -> { style with BookmarkStarts = [ mark "1" "across" ]; BookmarkEnds = [ TB.Ends "1" ] }) }
+        Doc.Paragraph { second with Buffer = second.Buffer |> TB.applyStyle 0 6 (fun style -> { style with BookmarkStarts = [ { mark "2" "point" with EndsHere = true } ]; BookmarkEnds = [ TB.Opens (mark "3" "opened") ] }) } ]
+// Enter inside the bookmark: both halves of its run have it (the save writes its start before the first, its end after the last).
+let splitInMark = bookmarked |> caret "m1" 10 |> Doc.splitBlock
+let secondHalf = (Doc.allParagraphs splitInMark).[1].Id
+check "split: the first half has the bookmark" (marksAt splitInMark "m1" 7) ([ mark "1" "across" ], [ TB.Ends "1" ])
+check "split: the second half too" (marksAt splitInMark secondHalf 2) ([ mark "1" "across" ], [ TB.Ends "1" ])
+check "split: the text after it has none" (marksAt splitInMark secondHalf 8) ([], [])
+check "split: the document lists it once, from where it starts" (Doc.bookmarkInfos splitInMark |> List.map (fun info -> info.Name, info.BlockId, info.StartOffset)) [ ("across", "m1", 6); ("point", "m2", 0); ("opened", "m2", 6) ]
+// Joined again: one run with it, as before the split.
+let joinedAgain = splitInMark |> caret secondHalf 0 |> Doc.deleteBackward
+check "join: the text as it was" (texts joinedAgain) [ "alpha beta gamma delta"; "second" ]
+check "join: the bookmark around its text" ([ 5; 6; 15; 16 ] |> List.map (fun offset -> marksAt joinedAgain "m1" offset |> fst |> List.map (fun start -> start.Name))) [ []; [ "across" ]; [ "across" ]; [] ]
+// The paragraph with the bookmark that ends where it starts joined to the one before: it stays before its text, the opening after it.
+let joinedPoint = bookmarked |> caret "m2" 0 |> Doc.deleteBackward
+check "join: a bookmark that ends where it starts stays before its run" (marksAt joinedPoint "m1" 22) ([ { mark "2" "point" with EndsHere = true } ], [ TB.Opens (mark "3" "opened") ])
+check "join: the document's bookmarks" (Doc.bookmarkInfos joinedPoint |> List.map (fun info -> info.Name, info.StartOffset)) [ ("across", 6); ("point", 22); ("opened", 28) ]
+// Text copied from inside the bookmark and pasted: of no bookmark; the bookmark is where it was.
+let pastedMark = bookmarked |> range ("m1", 6) ("m1", 10) |> copy |> fun clip -> bookmarked |> caret "m2" 3 |> Doc.pasteClip clip
+check "paste: the text pasted from a bookmark is of none" (marksAt pastedMark "m2" 4) ([], [])
+check "paste: the run it was pasted into keeps its bookmarks on both sides" (marksAt pastedMark "m2" 1, marksAt pastedMark "m2" 8) (([ { mark "2" "point" with EndsHere = true } ], [ TB.Opens (mark "3" "opened") ]), ([ { mark "2" "point" with EndsHere = true } ], [ TB.Opens (mark "3" "opened") ]))
+check "paste: the document's bookmarks" (Doc.bookmarkInfos pastedMark |> List.map (fun info -> info.Name)) [ "across"; "point"; "opened" ]
+// A bookmark set inside another: the other stays around the text.
+let nested = bookmarked |> range ("m1", 11) ("m1", 16) |> Doc.setBookmark "inner"
+check "a bookmark set inside another: both" (marksAt nested "m1" 12) ([ mark "1" "across"; mark "4" "inner" ], [ TB.Ends "4"; TB.Ends "1" ])
+check "... the text before it has the other alone" (marksAt nested "m1" 7) ([ mark "1" "across" ], [ TB.Ends "1" ])
+// Removed and renamed: the start, the end and the opening of that one go or change.
+check "remove: the start and the end go" (marksAt (Doc.removeBookmark "across" bookmarked) "m1" 7) ([], [])
+check "remove: one opened after a run" (marksAt (Doc.removeBookmark "opened" bookmarked) "m2" 0) ([ { mark "2" "point" with EndsHere = true } ], [])
+check "rename: one opened after a run" (marksAt (Doc.renameBookmark "3" "now" bookmarked) "m2" 0 |> snd) [ TB.Opens (mark "3" "now") ]
 
 // ---- in a table cell: paragraphs split there as Enter splits them ----
 let cellDoc =

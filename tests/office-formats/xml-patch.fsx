@@ -212,8 +212,6 @@ check "Spreadsheet.order: a list put in at its place"
     "<styleSheet><numFmts/><fonts/><cellXfs/><dxfs/></styleSheet>"
 
 // ---- the editor's values read ----
-check "bookmark starts" (ModelText.bookmarkStarts "1\u001F2!" "a\u001F") [ { ModelText.Id = "1"; ModelText.Name = "a"; ModelText.EndsHere = false }; { ModelText.Id = "2"; ModelText.Name = "bookmark2"; ModelText.EndsHere = true } ]
-check "bookmark ends" (ModelText.bookmarkEnds "3\u001F!4=b\u001F!5=c<\u001F!6") [ ModelText.Ends "3"; ModelText.Opens ("4", "b", true); ModelText.Opens ("5", "c", false); ModelText.Opens ("6", "bookmark6", true) ]
 check "text pieces" (ModelText.textPieces "a\tb\r\nc\n") [ ModelText.Text "a"; ModelText.Tab; ModelText.Text "b"; ModelText.Break; ModelText.Text "c"; ModelText.Break ]
 check "data url" (ModelText.dataUrl "data:image/png;base64,AAA") (Some { ModelText.MediaType = "image/png"; ModelText.Base64 = Some "AAA" })
 check "numbering level" [ ModelText.numberingLevel "7/2"; ModelText.numberingLevel "7" ] [ ("7", 1); ("7", -1) ]

@@ -516,9 +516,8 @@ check "replace same insensitive count" sameInsensitiveReplaceCount 2
 
 let bookmarkStyle =
     { defaultStyle with
-        BookmarkStartId = Some "bookmark-id-1"
-        BookmarkName = Some "Bookmark_1"
-        BookmarkEndId = Some "bookmark-id-1" }
+        BookmarkStarts = [ { Id = "bookmark-id-1"; Name = "Bookmark_1"; EndsHere = false } ]
+        BookmarkEnds = [ Ends "bookmark-id-1" ] }
 let bookmarkDoc =
     { Doc.empty with
         Blocks =
@@ -568,9 +567,10 @@ for index in 1 .. 20 do
                 Selection = Some { Anchor = pos bookmarkIdBlockId 0; Focus = pos bookmarkIdBlockId 1 } }
 let bookmarkIdLatest =
     Doc.findParagraph bookmarkIdDoc bookmarkIdBlockId
-    |> Option.map (fun p -> (getStyleAt 0 p.Buffer).BookmarkStartId)
-    |> Option.defaultValue None
-check "bookmark id numbering" bookmarkIdLatest (Some "20")
+    |> Option.map (fun p -> (getStyleAt 0 p.Buffer).BookmarkStarts |> List.map (fun start -> start.Id))
+    |> Option.defaultValue []
+// (Each set inside the ones before: the text has all twenty.)
+check "bookmark id numbering" bookmarkIdLatest [ for index in 1 .. 20 -> string index ]
 // removed: tested deleted cache/perf machinery
 
 let contentControlDoc =
@@ -772,7 +772,7 @@ match Doc.findParagraph refreshedToc "toc-field" with
     printfn "FAIL %-28s expected paragraph" "field refresh toc"
 
 let fieldParagraph id text fieldCode bookmarkName =
-    let style = { defaultStyle with FieldCode = Some fieldCode; FieldResult = Some text; BookmarkName = bookmarkName }
+    let style = { defaultStyle with FieldCode = Some fieldCode; FieldResult = Some text; BookmarkStarts = bookmarkName |> Option.map (fun name -> { Id = name; Name = name; EndsHere = false }) |> Option.toList }
     Doc.Paragraph
         { Id = id
           Buffer =
@@ -1723,17 +1723,16 @@ let annotated =
         CommentId = Some "c1"
         CommentText = Some "note"
         NoteId = Some "n1"
-        BookmarkStartId = Some "b1"
-        BookmarkName = Some "bm"
-        BookmarkEndId = Some "b1"
+        BookmarkStarts = [ { Id = "b1"; Name = "bm"; EndsHere = false } ]
+        BookmarkEnds = [ Ends "b1" ]
         RevisionType = Some "delete"
         RevisionId = Some "r1" }
 let annotatedBuffer = { Rope = Rbt.Word.Rope.ofString "link"; Runs = [ Text { Start = 0; Length = 4; Style = annotated } ] }
 let afterAnnotated = getStyleAt 4 (insert 4 "x" annotatedBuffer)
 check "typing after annotated run keeps formatting" afterAnnotated.Bold true
 check "typing after annotated run drops identity"
-    (afterAnnotated.Hyperlink, afterAnnotated.CommentId, afterAnnotated.CommentText, afterAnnotated.NoteId, afterAnnotated.BookmarkName, afterAnnotated.BookmarkEndId, afterAnnotated.RevisionType)
-    (None, None, None, None, None, None, None)
+    (afterAnnotated.Hyperlink, afterAnnotated.CommentId, afterAnnotated.CommentText, afterAnnotated.NoteId, afterAnnotated.BookmarkStarts, afterAnnotated.BookmarkEnds, afterAnnotated.RevisionType)
+    (None, None, None, None, [], [], None)
 let beforeAnnotated = getStyleAt 0 (insert 0 "x" annotatedBuffer)
 check "typing before annotated run drops identity" (beforeAnnotated.Bold, beforeAnnotated.Hyperlink, beforeAnnotated.NoteId) (true, None, None)
 let insideAnnotated = insert 2 "x" annotatedBuffer
@@ -2186,7 +2185,7 @@ do
     check "typed before a rendered page break: the text" (toString typed) "Qwhich page"
     let inside = insert 3 "Q" marked
     check "typed inside the marked run: the mark stays at its start" (inside.Runs |> List.choose (function Text run -> Some (run.Start, run.Style.RenderedPageBreakBefore) | Image _ -> None) |> List.head) (0, true)
-    check "withoutAnnotations: the formatting alone" ((withoutAnnotations { defaultStyle with Bold = true; RenderedPageBreakBefore = true; BookmarkName = Some "b"; FieldCode = Some "PAGE" }) = { defaultStyle with Bold = true }) true
+    check "withoutAnnotations: the formatting alone" ((withoutAnnotations { defaultStyle with Bold = true; RenderedPageBreakBefore = true; BookmarkStarts = [ { Id = "1"; Name = "b"; EndsHere = false } ]; BookmarkEnds = [ Ends "1" ]; FieldCode = Some "PAGE" }) = { defaultStyle with Bold = true }) true
 
 // sameTextStyle compares the fields one by one: every field of the record is
 // one of them (a style that differs in one field alone is another style), and
@@ -2202,6 +2201,8 @@ do
         elif fieldType = typeof<int option> then box (Some 7)
         elif fieldType = typeof<bool option> then box (Some true)
         elif fieldType = typeof<RevisionMark option> then box (Some { Id = Some "1"; Author = None; Date = None })
+        elif fieldType = typeof<BookmarkStart list> then box [ { Id = "1"; Name = "other"; EndsHere = false } ]
+        elif fieldType = typeof<BookmarkEnd list> then box [ Ends "1" ]
         else failwithf "a field of a type the test does not know: %s" fieldType.Name
     let missed =
         [ for index in 0 .. fields.Length - 1 do

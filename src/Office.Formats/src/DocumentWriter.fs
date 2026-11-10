@@ -475,36 +475,56 @@ let private generateFieldRun (runObj: obj) (fallbackRun: EditorRun) (fieldCode: 
         element "w:fldSimple" [("w:instr", fieldCode)] (generateRunWithObjectProps runObj fallbackRun :: (parts |> List.map (fun (part, run) -> generateRunWithObjectProps part run)))
 
 
-/// The bookmarks that start before a run: every one of them, once, in the
-/// order of the file. A token "id!" is a bookmark that ends where it starts.
-let private bookmarkStartXml (runObj: obj) =
-    optionalString (runObj?BookmarkStartId)
-    |> Option.orElse (optionalString (runObj?BookmarkId))
-    |> Option.map (fun ids ->
-        ModelText.bookmarkStarts ids (optionalString (runObj?BookmarkName) |> Option.defaultValue "")
-        |> List.map (fun start ->
-            selfClosing "w:bookmarkStart" [("w:id", start.Id); ("w:name", start.Name)] + (if start.EndsHere then selfClosing "w:bookmarkEnd" [("w:id", start.Id)] else ""))
-        |> String.concat "")
+/// A bookmark of a run of the editor's package (DocxReader.bookmarkFields): { Id, Name, EndsHere }.
+let private bookmarkStartOf (entry: obj) : ModelText.BookmarkStart =
+    { Id = stringOrDefault "" (entry?Id); Name = stringOrDefault "" (entry?Name); EndsHere = boolOrDefault false (entry?EndsHere) }
 
-/// The bookmarks that end after a run (and those opened after the last run
-/// of a paragraph: "!id=name" ends there too, "!id=name<" ends further on).
+/// The bookmarks that start before a run of the editor's package.
+let private runBookmarkStarts (runObj: obj) : ModelText.BookmarkStart list =
+    optionalArray (runObj?BookmarkStarts) |> Array.map bookmarkStartOf |> List.ofArray
+
+/// What ends after a run of the editor's package: { Id } an end, { Id, Name, EndsHere, Opens: true } a bookmark opened there.
+let private runBookmarkEnds (runObj: obj) : ModelText.BookmarkEnd list =
+    optionalArray (runObj?BookmarkEnds)
+    |> Array.map (fun entry -> if boolOrDefault false (entry?Opens) then ModelText.Opens (bookmarkStartOf entry) else ModelText.Ends (stringOrDefault "" (entry?Id)))
+    |> List.ofArray
+
+/// Whether a run of the editor's package has bookmarks.
+let private hasBookmarks (runObj: obj) =
+    optionalArray (runObj?BookmarkStarts) |> Array.isEmpty |> not || optionalArray (runObj?BookmarkEnds) |> Array.isEmpty |> not
+
+/// A bookmark's start (and its end, when it ends where it starts), with its name - or one made of its id.
+let private bookmarkStartElements (start: ModelText.BookmarkStart) =
+    let name = if start.Name <> "" then start.Name else "bookmark" + start.Id
+    selfClosing "w:bookmarkStart" [("w:id", start.Id); ("w:name", name)] + (if start.EndsHere then selfClosing "w:bookmarkEnd" [("w:id", start.Id)] else "")
+
+/// The bookmarks that start before a run: every one of them, once, in the
+/// order of the file.
+let private bookmarkStartXml (runObj: obj) =
+    match runBookmarkStarts runObj with
+    | [] -> None
+    | starts -> Some (starts |> List.map bookmarkStartElements |> String.concat "")
+
+/// The bookmarks that end after a run, and those opened after the last run
+/// of a paragraph. (A field's run that starts one bookmark and ends none: the
+/// bookmark ends after the field.)
 let private bookmarkEndXml (runObj: obj) =
-    let explicitEnd =
-        optionalString (runObj?BookmarkEndId)
-        |> Option.orElse (optionalString (runObj?BookmarkId))
-    let fieldWrappedEnd =
-        optionalString (runObj?FieldCode)
-        |> Option.bind (fun _ -> optionalString (runObj?BookmarkStartId))
-        |> Option.filter ModelText.isOneOpenBookmark
-    explicitEnd
-    |> Option.orElse fieldWrappedEnd
-    |> Option.map (fun ids ->
-        ModelText.bookmarkEnds ids
+    let ends =
+        match runBookmarkEnds runObj with
+        | [] when (optionalString (runObj?FieldCode)).IsSome ->
+            match runBookmarkStarts runObj with
+            | [ start ] when not start.EndsHere -> [ ModelText.Ends start.Id ]
+            | _ -> []
+        | ends -> ends
+    match ends with
+    | [] -> None
+    | ends ->
+        ends
         |> List.map (function
-            | ModelText.Opens (id, name, endsHere) ->
-                selfClosing "w:bookmarkStart" [("w:id", id); ("w:name", name)] + (if endsHere then selfClosing "w:bookmarkEnd" [("w:id", id)] else "")
+            | ModelText.Opens start -> bookmarkStartElements start
             | ModelText.Ends id -> selfClosing "w:bookmarkEnd" [("w:id", id)])
-        |> String.concat "")
+        |> String.concat ""
+        |> Some
 
 let private generateReferenceRun (runObj: obj) (fallbackRun: EditorRun) =
     let inner =
@@ -1558,9 +1578,8 @@ let private editorRunOfObject (runObj: obj) : EditorRun =
       NoteType = optionalString (runObj?NoteType)
       NoteText = optionalString (runObj?NoteText)
       Hyperlink = optionalString (runObj?Hyperlink)
-      BookmarkStartId = optionalString (runObj?BookmarkStartId)
-      BookmarkName = optionalString (runObj?BookmarkName)
-      BookmarkEndId = optionalString (runObj?BookmarkEndId)
+      BookmarkStarts = runBookmarkStarts runObj
+      BookmarkEnds = runBookmarkEnds runObj
       FieldCode = optionalString (runObj?FieldCode)
       FieldResult = optionalString (runObj?FieldResult)
       EquationXml = optionalString (runObj?EquationXml)
@@ -1700,7 +1719,7 @@ let private generateParagraphWithHyperlinksAndImagesWithPageSetup (packageSetup:
     let fieldPartRuns = System.Collections.Generic.HashSet<int>()
     (let isPlainText (run: obj) = not (boolOrDefault false (run?IsImage)) && isNullOrUndefined run?OpaqueXml && not (boolOrDefault false (run?IsEquation))
      let wrapper (run: obj) = (runHyperlinkTarget run, optionalString (run?RevisionType), optionalString (run?RevisionId), optionalString (run?CommentId), optionalString (run?NoteId))
-     let marked (run: obj) = (optionalString (run?BookmarkStartId)).IsSome || (optionalString (run?BookmarkEndId)).IsSome || (optionalString (run?BookmarkId)).IsSome
+     let marked (run: obj) = hasBookmarks run
      let mutable index = 0
      while index < runsArray.Length do
          let head = runsArray.[index]
@@ -2089,7 +2108,8 @@ let private paragraphIsEmpty (para: obj) : bool =
     optionalArray (para?Runs)
     |> Array.forall (fun run ->
         stringOrDefault "" (run?Text) = "" && not (boolOrDefault false (run?IsImage)) && isNullOrUndefined (run?OpaqueXml)
-        && [ "FieldCode"; "FieldResult"; "NoteId"; "CommentId"; "BookmarkStartId"; "BookmarkEndId"; "BookmarkId" ] |> List.forall (fun key -> isNullOrUndefined (run?(key))))
+        && [ "FieldCode"; "FieldResult"; "NoteId"; "CommentId" ] |> List.forall (fun key -> isNullOrUndefined (run?(key)))
+        && not (hasBookmarks run))
 
 /// An empty paragraph made like one that was read (`paragraphXml`: the first of a cell next to which a row or a
 /// column was put in): its element without its ids (w14:paraId, w14:textId) and without what it holds but its
