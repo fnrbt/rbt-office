@@ -106,7 +106,8 @@ a typed edit of a node of the span tree, made in its text; what no edit names st
   (`readFragmentRoot` / `applyFragment`) and big parts in outline (`readPartExcept`) are edited the same way.
 - `OpcXml`: relationships parts and `[Content_Types].xml` read, edited and merged as entries; the relationship
   ids XML refers to, by the relationships namespace. `PartPath`: package paths by segment. `ModelText`: the
-  values the editor hands over as text (bookmark tokens, a run's tabs and breaks, link targets, data URLs).
+  values the editor hands over, read into what they say (a run's tabs and breaks, link targets, data URLs; the
+  types of a run's bookmarks, which are handed over typed - see *Done*).
 - `apply` / `applyPart` make the edits; `diff was now` gives the edits that make what the model wrote before into
   what it writes now (attributes, children by name, repeated children in their places, text) - so a merge is
   `apply (diff was now)` on the element that was read: the model's change, and nothing else.
@@ -180,6 +181,19 @@ by `ValueText` (with `ModelText`, `PartPath`, `OpcXml`).
   source wrappers while the model's wrapping of a run is what it was. Comment and permission ranges stay where
   they stood; the bookmarks the model writes are its. The old text patcher (`scanSourceParagraphs`,
   `planParagraphChange`, `sourceRunsOf`, `runPiece`, cut and join) is deleted.
+- Bookmarks: handed from the reader through the editor to the writer as typed values, not as tokens in a string.
+  A run has every bookmark that starts before it and every one that ends (or is opened) after it, in the order of
+  the file: `ModelText.BookmarkStart` (`Id`, `Name`, `EndsHere`: it ends where it starts) and `BookmarkEnd`
+  (`Ends id` | `Opens start`: opened after the last run of a paragraph) in the reader's runs and `EditorRun`;
+  `TextBuffer.BookmarkStarts` / `BookmarkEnds` in the editor's run style (the same two types), kept by every edit as
+  the rest of the style is (a run split has them on every part; text typed or pasted next to them has none); in the
+  editor's package a run's `BookmarkStarts: [{ Id, Name, EndsHere }]` and `BookmarkEnds: [{ Id }]` - an opening
+  `{ Id, Name, EndsHere, Opens: true }` (`DocxReader.bookmarkFields`, `Docx.packageBookmarkStarts` / `Ends`); the
+  writer writes them from those (`bookmarkStartXml` / `bookmarkEndXml`). Nothing parses a bookmark string; the
+  U+001F separator and ModelText's token functions are gone. A bookmark opened after the last run of a paragraph is
+  one the editor lists (`getBookmarkInfos`, at the paragraph's end), removes and renames - with its end in the
+  paragraph it ends in; a bookmark set inside another leaves the other around the text
+  (`tools/word-browser/checks/bookmark-handover.js`).
 - Numbering: definitions and lists added and levels changed by edits of the part's tree.
 - The rest of DocumentWriter: the body plan (the body's elements, field marks and the marks between blocks from
   the part's tree), carried and balanced range marks (a piece of the source is a range of its tree; a piece of
@@ -220,7 +234,10 @@ says which of its blocks changed.
 ### Left
 
 - The model's XML written by a typed builder (it is text made by `element` / `selfClosing` now).
-- Bookmarks handed over typed, not as tokens in a string (`ModelText` reads them at the writer's end).
+- A bookmark renamed or removed in a paragraph that is saved as the XML it was read from keeps its name, or stays,
+  as the source has it (the source's bookmarks win where they stand in the whole of a paragraph: `spliceSourceOf`,
+  `splicedRuns`); written from the model it is renamed or gone. So since before the bookmarks were typed (the same on
+  `master` at 3aedf68f).
 - `XmlPatch.readPartExcept` still has a tokenizer of its own (XmlPatch is changed only by additions):
   `XmlDsl.tryScanOutline` reads the same outline.
 - Notes and comments in the editor: their paragraphs are edited in place (above); a table in a note is edited as its
