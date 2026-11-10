@@ -1,7 +1,7 @@
 // Progressive read (0.1.10): the editor and the preview show a long document while its package is
 // still being read; typing and saving meanwhile; pictures and fonts of blocks that are read later.
 import fs from "node:fs";
-import { launch, newPage, open, S, SHOTS, check, summary, waitUploads, saved } from "./lib.mjs";
+import { launch, newPage, open, S, SHOTS, check, summary, waitUploads, saved, LONG_PAGES } from "./lib.mjs";
 const { browser, context } = await launch();
 const ev = (page, fn, arg) => page.evaluate(fn, arg);
 const long = `${S}/long-generated.docx`, late = `${S}/late.docx`;
@@ -18,7 +18,7 @@ let reference;
   await open(page, "word-editor", long);
   await page.waitForSelector('[data-testid="word-toolbar"]', { timeout: 300000 });
   reference = await ev(page, async () => { const w = window.__word, e = window.__editors[0]; await w.whenLoadComplete(e); await w.whenLayoutComplete(e); return { text: w.getText(e), pages: w.getPageCount(e), blocks: w.getRenderStats(e).Blocks }; });
-  check("the reference document is long", reference.pages === 522 && reference.text.length > 500000, { pages: reference.pages, chars: reference.text.length, blocks: reference.blocks });
+  check("the reference document is long", reference.pages === LONG_PAGES && reference.text.length > 500000, { pages: reference.pages, chars: reference.text.length, blocks: reference.blocks });
   await page.close();
 }
 
@@ -46,7 +46,7 @@ let reference;
   await page.waitForTimeout(200);
   const end = await ev(page, () => { const w = window.__word, e = window.__editors[0]; return { load: w.isLoadComplete(e), pages: w.getDocumentSize(e).PageCount, text: w.getText(e), modified: w.isModified(e) }; });
   check("read and laid out in the background it is the whole document: text and pages", end.load && end.pages === reference.pages && end.text === reference.text && !end.modified, { pages: end.pages, chars: end.text.length });
-  check("the status shows the page count once it is there", /No changes\s+522 pages$/.test((await status(page)).trim()), await status(page));
+  check("the status shows the page count once it is there", new RegExp(`No changes\\s+${LONG_PAGES} pages$`).test((await status(page)).trim()), await status(page));
   await page.close();
 }
 
@@ -110,7 +110,7 @@ let reference;
   const settled = await ev(page, async () => { const w = window.__word, e = window.__editors[0]; await new Promise((r) => { const f = () => (window.__word.getPendingFonts(window.__editors[0]).length === 0 ? r() : setTimeout(f, 20)); f(); }); await w.whenLayoutComplete(e); return { pages: w.getPageCount(e), text: w.getText(e).length }; });
   await raf(page);
   check("a page count forced at open reads the rest; with the later blocks' faces loaded the pages are the document's", forced.before === false && forced.after === true && settled.pages === reference.pages && settled.text === reference.text.length, { forced, settled });
-  check("and the status shows them", /No changes\s+522 pages$/.test((await status(page)).trim()), await status(page));
+  check("and the status shows them", new RegExp(`No changes\\s+${LONG_PAGES} pages$`).test((await status(page)).trim()), await status(page));
   await page.close();
 }
 

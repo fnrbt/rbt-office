@@ -1,5 +1,5 @@
 // Render stats while scrolling, save protocol with a delayed / failed upload, caret context in the toolbar.
-import { launch, newPage, open, T, S, SHOTS, check, summary, unzip, waitUploads } from "./lib.mjs";
+import { launch, newPage, open, T, S, SHOTS, check, summary, unzip, waitUploads, LONG_PAGES } from "./lib.mjs";
 const { browser, context } = await launch();
 const ev = (page, fn, arg) => page.evaluate(fn, arg);
 const ready = async (page) => { await page.waitForSelector('[data-testid="word-toolbar"]', { timeout: 300000 }); await page.waitForTimeout(400); };
@@ -38,7 +38,7 @@ const docText = async (bytes) => (await (await unzip(bytes)).get("word/document.
     return { max, pages: window.__word.getPageCount(window.__editors[0]), median: times[times.length >> 1], p95: times[Math.floor(times.length * 0.95)], worst: times.at(-1) };
   });
   const s1 = await stats(page);
-  check("scrolling a 522-page document end to end builds no frame", s1.FrameBuilds === s0.FrameBuilds && s1.PainterVersion === s0.PainterVersion && s1.MeasurerVersion === s0.MeasurerVersion && scrolled.pages === 522, { before: s0, after: s1 });
+  check("scrolling the long document end to end builds no frame", s1.FrameBuilds === s0.FrameBuilds && s1.PainterVersion === s0.PainterVersion && s1.MeasurerVersion === s0.MeasurerVersion && scrolled.pages === LONG_PAGES, { before: s0, after: s1 });
   console.log(`  scroll repaint ms: median ${scrolled.median.toFixed(1)}, p95 ${scrolled.p95.toFixed(1)}, worst ${scrolled.worst.toFixed(1)} (120 scroll positions)`);
   check("a scroll repaint is a few ms, not a frame build", scrolled.p95 < 40, scrolled);
   // pixels: the page in view is painted with glyph outlines (not blank)
@@ -56,14 +56,14 @@ const docText = async (bytes) => (await (await unzip(bytes)).get("word/document.
   await frame(page);
   const s3 = await stats(page);
   check("caret moves build no frame, lay out and collect nothing", s3.FrameBuilds === s2.FrameBuilds && s3.LaidOutBlocks === s2.LaidOutBlocks && s3.CollectedBlocks === s2.CollectedBlocks, { s2, s3 });
-  console.log(`  15 caret moves at page 1 of 522: ${Date.now() - t2} ms wall`);
+  console.log(`  15 caret moves at page 1 of ${LONG_PAGES}: ${Date.now() - t2} ms wall`);
   t2 = Date.now();
   await page.keyboard.type("a");
   const s4 = await stats(page);
   check("a keystroke lays out and collects the paragraph it is in, not the document (9008 blocks)", s4.Blocks === 9008 && s4.LaidOutBlocks <= 3 && s4.CollectedBlocks <= 3 && s4.FrameBuilds === s3.FrameBuilds + 1, s4);
   await page.keyboard.type("bcde");
   await frame(page);
-  console.log(`  5 keystrokes at page 1 of 522: ${Date.now() - t2} ms wall`);
+  console.log(`  5 keystrokes at page 1 of ${LONG_PAGES}: ${Date.now() - t2} ms wall`);
   await page.close();
 }
 
@@ -74,7 +74,7 @@ const docText = async (bytes) => (await (await unzip(bytes)).get("word/document.
   await page.waitForFunction(() => window.__wordPages > 0, null, { timeout: 300000 });
   console.log("  viewer stats once the preview shows its first pages:", JSON.stringify(await ev(page, () => window.__wordLoaded.viewer.getRenderStats())));
   const r = await ev(page, () => { const v = window.__wordLoaded.viewer; const c = document.createElement("canvas"); const times = []; for (const i of [0, 50, 100, 200, 300, 400, 500, 529, 1, 2, 3, 4, 5, 6, 7, 8]) { const t = performance.now(); v.renderPage(c, i, 1); times.push(performance.now() - t); } times.sort((a, b) => a - b); return { first: times.at(-1), median: times[times.length >> 1], w: c.width }; });
-  console.log(`  preview renderPage on 522 pages: median ${r.median.toFixed(1)} ms, slowest (first, builds the frame) ${r.first.toFixed(1)} ms`);
+  console.log(`  preview renderPage on ${LONG_PAGES} pages: median ${r.median.toFixed(1)} ms, slowest (first, builds the frame) ${r.first.toFixed(1)} ms`);
   check("preview: painting a page of a long document reuses the frame", r.median < 30 && r.w > 700, r);
   await page.close();
 }
@@ -98,11 +98,13 @@ const docText = async (bytes) => (await (await unzip(bytes)).get("word/document.
   check("typing during the upload leaves the document dirty", (await status(page)).includes("Unsaved") && (await ev(page, () => window.__word.isModified(window.__editors[0]))) && !(await sel(page, "office-editor-save").isDisabled()), await status(page));
   const x1 = await docText(one);
   check("the first upload holds what was there when the save began", x1.includes("FIRST") && !x1.includes("SECOND"));
-  for (let i = 0; i < 7; i++) await page.keyboard.press("Control+z");
+  // (What was typed after the save began is one undo step - keys typed one after the other are one step since
+  // @rbt/office 0.1.26, and an export ends the run since 0.1.29.)
+  await page.keyboard.press("Control+z");
   const afterUndo = { status: await status(page), modified: await ev(page, () => window.__word.isModified(window.__editors[0])) };
   console.log("  after undoing what was typed during the upload:", JSON.stringify(afterUndo));
   check("undoing what was typed during the upload gives the saved state", afterUndo.status.includes("Saved") && !afterUndo.modified, afterUndo);
-  for (let i = 0; i < 7; i++) await page.keyboard.press("Control+y");
+  await page.keyboard.press("Control+y");
   await page.keyboard.press("Control+s");
   const two = await waitUploads(page, 2);
   await page.waitForTimeout(200);

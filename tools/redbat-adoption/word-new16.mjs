@@ -1,5 +1,5 @@
 // 0.1.15 / 0.1.16 in the host, Word: the ScrollTop notice, shapes picked / moved / resized / deleted by their frame, header text boxes.
-import { launch, newPage, open, T, S, check, summary, waitUploads, unzip } from "./lib.mjs";
+import { launch, newPage, open, T, S, check, summary, waitUploads, unzip, LONG_PAGES } from "./lib.mjs";
 const { browser, context } = await launch({ viewport: { width: 1366, height: 768 } });
 const ev = (page, fn, arg) => page.evaluate(fn, arg);
 const frame = (page) => ev(page, () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
@@ -243,7 +243,7 @@ if (want("scroll")) {
   const undone = await anchor(); const told2 = await ev(page, () => window.__scrolls.slice());
   console.log("  undo:", JSON.stringify({ b2, undone, told2 }));
   check("undo: the view shows the same text, host and engine agree", undone.at === b2.at && Math.abs(undone.y - b2.y) <= 6 && Math.abs(undone.engineTop - undone.hostTop) < 1.5, [b2, undone]);
-  check("the page count is the document's again", (await ev(page, () => window.__word.getDocumentSize(window.__editors[0]).PageCount)) === 522);
+  check("the page count is the document's again", (await ev(page, () => window.__word.getDocumentSize(window.__editors[0]).PageCount)) === LONG_PAGES);
   await page.close();
 }
 // ---------------- the same when the bold faces arrive while the layout is under way ----------------

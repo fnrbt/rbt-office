@@ -46,6 +46,8 @@ const paraText = (page, id) => ev(page, (id) => { const m = window.__wordModule,
   await page.keyboard.press("ArrowLeft"); await frame(page); await frame(page);
   await page.keyboard.press("ArrowLeft"); await frame(page); await frame(page);
   check("moving the caret drops it: the toolbar shows the text's own format again", (await pressed(page, "word-italic")) === "false" && (await fmt(page)).italic === false, await fmt(page));
+  // (Back to the end of the word: inside a word a format command formats the word - @rbt/office 0.1.28.)
+  for (let i = 0; i < 3; i++) { await page.keyboard.press("ArrowRight"); await frame(page); }
   // the size box at a caret
   await sel(page, "word-font-size").selectOption("20"); await frame(page);
   check("a size chosen at the caret is shown in the size box", (await sel(page, "word-font-size").inputValue()) === "20" && (await fmt(page)).size === 20, await fmt(page));

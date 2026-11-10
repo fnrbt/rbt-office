@@ -1,6 +1,6 @@
 // What 0.1.11 / 0.1.12 add to the Word host: cancel / dispose, fonts as they arrive, Unchanged saves.
 import fs from "node:fs";
-import { launch, newPage, open, S, T, check, summary, waitUploads } from "./lib.mjs";
+import { launch, newPage, open, S, T, check, summary, waitUploads, LONG_PAGES } from "./lib.mjs";
 const { browser, context } = await launch();
 const ev = (page, fn, arg) => page.evaluate(fn, arg);
 const long = `${S}/long-generated.docx`, late = `${S}/late.docx`;
@@ -58,8 +58,8 @@ const busyProbe = () => new Promise((resolve) => { let last = performance.now(),
   });
   await raf(page);
   console.log("  cold:", JSON.stringify(cold));
-  check("cold: the count asked for at open is known to be provisional while faces are fetched", cold.pendingAfter.length > 0 ? cold.sizePending === true && /about \d+ pages…/.test(cold.sub) : cold.first === 522, { first: cold.first, pending: cold.pendingAfter, sub: cold.sub });
-  check("cold: with the faces there the count is the document's and nothing is pending", cold.final === 522 && /No changes \| 522 pages$/.test((await status(page)).replace(/\n/g, " | ").trim()), { final: cold.final, status: await status(page) });
+  check("cold: the count asked for at open is known to be provisional while faces are fetched", cold.pendingAfter.length > 0 ? cold.sizePending === true && /about \d+ pages…/.test(cold.sub) : cold.first === LONG_PAGES, { first: cold.first, pending: cold.pendingAfter, sub: cold.sub });
+  check("cold: with the faces there the count is the document's and nothing is pending", cold.final === LONG_PAGES && new RegExp(`No changes \\| ${LONG_PAGES} pages$`).test((await status(page)).replace(/\n/g, " | ").trim()), { final: cold.final, status: await status(page) });
   // warm: the same document again in the same session - the faces' bytes are at hand
   await ev(page, () => { window.__setOpen(false); });
   await raf(page);
@@ -74,9 +74,9 @@ const busyProbe = () => new Promise((resolve) => { let last = performance.now(),
     return { before, first, pending, sizePending: size.FontsPending, later: w.getPageCount(e), installs: w.getRenderStats(e).MeasurerVersion - v0, noticesPending: notices.filter((n) => n.pending).length };
   });
   console.log("  warm:", JSON.stringify(warm));
-  check("warm: a page count forced at open (document still being read) is the final one the first time", warm.before === false && warm.first === 522 && warm.later === 522 && warm.pending === 0 && warm.sizePending === false && warm.noticesPending === 0, warm);
+  check("warm: a page count forced at open (document still being read) is the final one the first time", warm.before === false && warm.first === LONG_PAGES && warm.later === LONG_PAGES && warm.pending === 0 && warm.sizePending === false && warm.noticesPending === 0, warm);
   await raf(page);
-  check("warm: the status shows it without a provisional mark", /No changes \| 522 pages$/.test((await status(page)).replace(/\n/g, " | ").trim()), await status(page));
+  check("warm: the status shows it without a provisional mark", new RegExp(`No changes \\| ${LONG_PAGES} pages$`).test((await status(page)).replace(/\n/g, " | ").trim()), await status(page));
   await page.close();
 }
 
