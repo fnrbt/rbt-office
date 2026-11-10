@@ -269,6 +269,11 @@ module ParagraphExplicit =
     /// the document was last laid out. It is not saved as a break of the paragraph.
     [<Literal>]
     let DerivedPageBreakBefore = 512
+    /// The paragraph's PageBreakBefore is a page break its text starts with
+    /// (w:br w:type="page" before its first run of text): saved as that break,
+    /// not as w:pageBreakBefore. Split, it stays with the first part.
+    [<Literal>]
+    let PageBreakRunBefore = 1024
 
     let has (flag: int) (metadata: BlockMetadata) = metadata.Explicit &&& flag <> 0
 
@@ -1913,8 +1918,13 @@ let private withoutParagraphEnd (metadata: BlockMetadata) : BlockMetadata =
 /// a paragraph that has it: the second part went to the next column in the
 /// editor and stayed in its column in the saved document, which does not say it.)
 let private withoutParagraphStart (metadata: BlockMetadata) : BlockMetadata =
-    if metadata.RenderedPageBreakBefore.IsNone then metadata
-    else { metadata with RenderedPageBreakBefore = None }
+    let metadata =
+        if metadata.RenderedPageBreakBefore.IsNone then metadata
+        else { metadata with RenderedPageBreakBefore = None }
+    // (Nor the page break the paragraph started with: it stands before the first part.)
+    if ParagraphExplicit.has ParagraphExplicit.PageBreakRunBefore metadata then
+        { metadata with PageBreakBefore = false; Explicit = metadata.Explicit &&& ~~~ParagraphExplicit.PageBreakRunBefore }
+    else metadata
 
 /// Split block at cursor, creating two blocks
 let splitBlock doc =

@@ -4903,6 +4903,26 @@ let extractText (doc: WordDocument) : string =
     |> List.map contentText
     |> String.concat "\n\n"
 
+/// Where a paragraph's page breaks (w:br w:type="page") stand: (at its start, after it). One the paragraph
+/// starts with - before any of its text, pictures or fields; bookmarks and Word's marks of where it started a
+/// page are none - and that has text after it is a break before the paragraph: its text starts the next page.
+/// Any other is a break after its text, as the model has it - a paragraph that is a page break and nothing
+/// else too: Word keeps its mark on the page the break ends (its w:lastRenderedPageBreak is in the next
+/// paragraph). (A column break stays a break after: see ColumnBreak.)
+let paragraphPageBreaks (para: Paragraph) : bool * bool =
+    let isBreak (run: Run) = match run.Content with PageBreak -> true | _ -> false
+    let isNothing (run: Run) =
+        match run.Content with
+        | BookmarkStart _ | BookmarkEnd _ | RenderedPageBreak | Text "" -> true
+        | _ -> false
+    let rec leading (runs: Run list) =
+        match runs with
+        | run :: rest when isNothing run -> leading rest
+        | run :: rest when isBreak run && not para.Properties.ColumnBreak && rest |> List.exists (fun other -> not (isNothing other) && not (isBreak other)) ->
+            true, List.exists isBreak rest
+        | _ -> false, List.exists isBreak runs
+    leading para.Runs
+
 // Convert DocumentContent to EditorParagraph format for Word editor
 /// Text no style, no document default and no run gives a size is 10 pt in Word
 /// (w:sz's own default, 20 half-points), not the 11 pt of Normal in Word's template.
@@ -5710,9 +5730,8 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                 maxSize
             // (Only a page break of its own: a paragraph that ends a section is followed by a new page
             // when the section after it starts on one, which that section's properties say.)
-            let pageBreakAfter =
-                para.Runs
-                |> List.exists (fun run -> match run.Content with | PageBreak -> true | _ -> false)
+            // (One it starts with is a break before it: see paragraphPageBreaks.)
+            let pageBreakAtStart, pageBreakAfter = paragraphPageBreaks para
             let bookmarkRunProps (run: Run) = explicitRunFields styleMap effectiveParaProps run @ [
                 "BookmarkStartId" ==> (run.BookmarkStart |> Option.map (fun bookmark -> bookmark.Id))
                 "BookmarkName" ==> (run.BookmarkStart |> Option.bind (fun bookmark -> bookmark.Name))
@@ -5978,9 +5997,11 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                 "StyleKeepNext" ==> (styleKeepProperties styleMap para effectiveParaProps).KeepNext
                 "StyleKeepLines" ==> (styleKeepProperties styleMap para effectiveParaProps).KeepLines
                 "StylePageBreakBefore" ==> effectiveParaProps.PageBreakBefore
-                "PageBreakBefore" ==> effectiveParaProps.PageBreakBefore
+                "PageBreakBefore" ==> (if pageBreakAtStart then Some true else effectiveParaProps.PageBreakBefore)
                 // The break is the style's, or the reader's own (see PageBreakBeforeDerived): not the paragraph's.
                 "PageBreakBeforeDerived" ==> (effectiveParaProps.PageBreakBefore = Some true && (para.Properties.PageBreakBefore <> Some true || para.Properties.PageBreakBeforeDerived))
+                // (A w:br w:type="page" the paragraph starts with, saved as that.)
+                "PageBreakAtStart" ==> pageBreakAtStart
                 "StyleWidowControl" ==> effectiveParaProps.WidowControl
                 "StyleContextualSpacing" ==> effectiveParaProps.ContextualSpacing
                 "Alignment" ==> (effectiveParaProps.Alignment |> Option.defaultValue "left")

@@ -1338,7 +1338,7 @@ let private generateParaPropsWithPageSetup (packageSetup: PageSetupInfo) (para: 
         // (Not the page break of the paragraph's style, nor the one the reader
         // gives a heading that started a page: written, either would be the
         // paragraph's own from then on.)
-        if boolOrDefault false (para?PageBreakBefore) && not (boolOrDefault false (para?PageBreakBeforeDerived)) then yield selfClosing "w:pageBreakBefore" []
+        if boolOrDefault false (para?PageBreakBefore) && not (boolOrDefault false (para?PageBreakBeforeDerived)) && not (boolOrDefault false (para?PageBreakAtStart)) then yield selfClosing "w:pageBreakBefore" []
         // A drop cap: the frame Word writes for one, at the place of w:framePr.
         match optionalString (para?DropCapKind) with
         | Some kind when kind = "drop" || kind = "margin" ->
@@ -1810,6 +1810,11 @@ let private generateParagraphWithHyperlinksAndImagesWithPageSetup (packageSetup:
         // (Spliced from a source that has the break where it stands: there it stays - see spliceSourceOf.)
         if boolOrDefault false (para?PageBreakAfter) && not (splice.IsSome && boolOrDefault false (para?SpliceBreakKept)) then
             runs @ [element "w:r" [] [selfClosing "w:br" [("w:type", (if boolOrDefault false (para?ColumnBreakAfter) then "column" else "page"))]]]
+        else runs
+    let runs =
+        // (A page break the paragraph starts with: before its first run.)
+        if boolOrDefault false (para?PageBreakAtStart) && not (splice.IsSome && boolOrDefault false (para?SpliceBreakKept)) then
+            element "w:r" [] [selfClosing "w:br" [("w:type", "page")]] :: runs
         else runs
 
     // (A paragraph that states nothing of its own has no properties element.)
@@ -3593,7 +3598,9 @@ paragraphSplicer <-
                 // the model says - the source's may stand in another part.)
                 let whole = not (para?SpliceLeading = box false) && not (para?SpliceTrailing = box false) && optionalArray (para?SpliceJoined) |> Array.isEmpty
                 let keepBreaks =
-                    if whole && boolOrDefault false (para?PageBreakAfter) then Some (if boolOrDefault false (para?ColumnBreakAfter) then "column" else "page") else None
+                    if whole && boolOrDefault false (para?PageBreakAfter) then Some (if boolOrDefault false (para?ColumnBreakAfter) then "column" else "page")
+                    elif whole && boolOrDefault false (para?PageBreakAtStart) then Some "page"
+                    else None
                 para?SpliceBreakKept <- false
                 spliceSourceOf spliceSourceText (intOrDefault -1 (para?SpliceFrom?Start)) (intOrDefault -1 (para?SpliceFrom?End)) bookmarks whole keepBreaks (fun () -> para?SpliceBreakKept <- true)
                 |> Option.map (fun source ->

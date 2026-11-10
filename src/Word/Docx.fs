@@ -550,6 +550,7 @@ let private metadataFromEditor (item: obj) =
                     ||| flag backgroundColor.IsSome ParagraphExplicit.BackgroundColor
                     ||| flag (not tabStops.IsEmpty || rightTabPosition.IsSome) ParagraphExplicit.Tabs
                 |> fun flags -> if pageBreakBefore && boolOrDefault false (item?PageBreakBeforeDerived) then flags ||| ParagraphExplicit.DerivedPageBreakBefore else flags
+                |> fun flags -> if pageBreakBefore && boolOrDefault false (item?PageBreakAtStart) then flags ||| ParagraphExplicit.PageBreakRunBefore else flags
             HasMarkProperties = boolOrDefault false (item?HasMarkProperties)
             ExplicitMarkFontSize = optionalFloat (item?ExplicitMarkFontSize)
             MarkRevision =
@@ -2136,6 +2137,7 @@ let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) 
         "ParagraphBorderAfter" ==> para.Metadata.ParagraphBorderAfter
         "PageBreakBefore" ==> para.Metadata.PageBreakBefore
         "PageBreakBeforeDerived" ==> (para.Metadata.PageBreakBefore && ParagraphExplicit.has ParagraphExplicit.DerivedPageBreakBefore para.Metadata)
+        "PageBreakAtStart" ==> (para.Metadata.PageBreakBefore && ParagraphExplicit.has ParagraphExplicit.PageBreakRunBefore para.Metadata)
         "PageBreakAfter" ==> para.Metadata.PageBreakAfter
         "ColumnBreakAfter" ==> (para.Metadata.PageBreakAfter && para.Metadata.ColumnBreakAfter)
         "SectionVerticalAlign" ==> para.Metadata.SectionVerticalAlign

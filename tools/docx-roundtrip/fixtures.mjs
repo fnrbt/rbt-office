@@ -172,6 +172,23 @@ const docs = [
         ],
     },
     {
+        // A page break a paragraph starts with is a break before it (its text starts the next page), saved where it
+        // stood - as the run before the paragraph's text, not as w:pageBreakBefore; one after the text stays after it.
+        // (A paragraph that is a break and nothing else: a break after it - Word keeps its mark on the page.)
+        name: 'synthetic/page-break-at-start',
+        body:
+            p('first page') +
+            `<w:p><w:r><w:br w:type="page"/></w:r><w:r><w:lastRenderedPageBreak/><w:t>starts page two</w:t></w:r></w:p>` +
+            `<w:p><w:r><w:t>then a break</w:t></w:r><w:r><w:br w:type="page"/></w:r></w:p>` +
+            p('page three') + `<w:p><w:r><w:br w:type="page"/></w:r></w:p>` + p('page four'),
+        expect: [
+            { part: 'word/document.xml', has: '<w:p>(<w:pPr>(?:(?!</w:pPr>).)*</w:pPr>)?<w:r><w:br w:type="page"/></w:r>(?:(?!</w:p>).)*tarts page two</w:t>' },
+            { part: 'word/document.xml', has: 'then a break</w:t></w:r><w:r><w:br w:type="page"/></w:r></w:p>' },
+            { part: 'word/document.xml', lacks: 'pageBreakBefore' },
+            { part: 'word/document.xml', kept: '<w:p><w:r><w:br w:type="page"/></w:r><w:r><w:lastRenderedPageBreak/><w:t>starts page two</w:t></w:r></w:p>' },
+        ],
+    },
+    {
         name: 'synthetic/run-props',
         body:
             p('hidden', '', '<w:vanish/>') + p('double strike', '', '<w:dstrike/>') +

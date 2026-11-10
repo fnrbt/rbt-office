@@ -1238,6 +1238,8 @@ let private withHintPage (hintOffset: int option) passStartPage (para: Paragraph
 let private pageBreakIsRenderedMark (paragraphStyle: ParagraphStyle) (metadata: BlockMetadata) =
     metadata.PageBreakBefore
     && ParagraphExplicit.has ParagraphExplicit.DerivedPageBreakBefore metadata
+    // (A page break its text starts with is a break as any other.)
+    && not (ParagraphExplicit.has ParagraphExplicit.PageBreakRunBefore metadata)
     && metadata.RenderedPageBreakBefore.IsSome
     && paragraphStyle.PageBreakBefore <> Some true
 
@@ -5880,7 +5882,9 @@ let private layoutDocumentPassKept
             if y <> beforeRenderedHintY then resetPreviousParagraph ()
             let pageStartedAtMark =
                 pageBreakIsRenderedMark paragraphStyle para.Metadata && pageIndexForY settings y >= para.Metadata.RenderedPageBreakBefore.Value
-            if (para.Metadata.PageBreakBefore || paragraphStyle.PageBreakBefore = Some true) && layouts.Count > 0 && not pageStartedAtMark then
+            // (A page break the paragraph's text starts with is a break in its text: in the first paragraph too.)
+            let breakInText = para.Metadata.PageBreakBefore && ParagraphExplicit.has ParagraphExplicit.PageBreakRunBefore para.Metadata
+            if (para.Metadata.PageBreakBefore || paragraphStyle.PageBreakBefore = Some true) && (layouts.Count > 0 || breakInText) && not pageStartedAtMark then
                 y <- advanceToNextPage settings y
                 resetPreviousParagraph ()
             let effectiveMetadata = WordStyles.effectiveMetadata paragraphStyle para.Metadata

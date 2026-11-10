@@ -712,6 +712,36 @@ do
         |> List.choose (function DocxReader.Para para -> Some para.Properties.RenderedPageBreakBefore | _ -> None)
     ok "rendered page marks are counted through tables" (marks = [ None; Some 2; None; Some 4 ]) (sprintf "%A" marks)
 
+// A w:br w:type="page" a paragraph starts with (before its text; a bookmark or Word's mark of a page it
+// started is not text) is a break before the paragraph: its text is on the next page
+// (phpword-sample-11: "Images" went on a page of its own, and its text and picture on the next).
+// Anywhere else it is a break after the paragraph's text - in a paragraph that is a break and nothing else
+// too (Word keeps its mark on the page: its w:lastRenderedPageBreak is in the next paragraph).
+do
+    let breaks =
+        docxWithParts
+            ("<w:p><w:r><w:t>before</w:t></w:r></w:p>"
+             + "<w:p><w:bookmarkStart w:id=\"1\" w:name=\"b\"/><w:r><w:br w:type=\"page\"/></w:r><w:r><w:lastRenderedPageBreak/><w:t>starts with a break</w:t></w:r></w:p>"
+             + "<w:p><w:r><w:t>text, then</w:t></w:r><w:r><w:br w:type=\"page\"/></w:r></w:p>"
+             + "<w:p><w:r><w:br w:type=\"page\"/></w:r></w:p>"
+             + "<w:p><w:r><w:t>after</w:t></w:r></w:p>")
+            []
+            []
+        |> DocxReader.loadBytesNative |> Option.get
+    let items =
+        DocxReader.toEditorParagraphsWithStylesThemeAndNumbering
+            breaks.Theme breaks.Content breaks.Images breaks.Styles breaks.NumberingDefinitions breaks.Footnotes breaks.Endnotes
+        |> Array.map (fun item -> item :?> System.Collections.Generic.Dictionary<string, obj>)
+    let field (name: string) (item: System.Collections.Generic.Dictionary<string, obj>) =
+        match item.TryGetValue name with
+        | true, (:? bool as value) -> value
+        | true, (:? (bool option) as value) -> value = Some true
+        | _ -> false
+    let summary = items |> Array.map (fun item -> field "PageBreakBefore" item, field "PageBreakAtStart" item, field "PageBreakAfter" item) |> Array.toList
+    ok "a page break a paragraph starts with is a break before it"
+        (summary = [ (false, false, false); (true, true, false); (false, false, true); (false, false, true); (false, false, false) ])
+        (sprintf "%A" summary)
+
 printfn ""
 printfn "OfficeFormat DocxReader tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

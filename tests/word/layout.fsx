@@ -1607,6 +1607,29 @@ let mixedFontLines =
 check "a line with Calibri text in an Arial paragraph is Calibri's" mixedFontLines.Head (System.Math.Round(calibriLine, 2))
 check "... and the Arial lines after it Arial's" (mixedFontLines.Tail |> List.distinct) [ System.Math.Round(arialLine, 2) ]
 
+// ---------------------------------------------------------------------------
+// A page break a paragraph's text starts with (w:br at its start, read as
+// PageBreakBefore with PageBreakRunBefore) puts the paragraph on the next
+// page - the first paragraph of the document too: Word's first page is then
+// blank. (w:pageBreakBefore on the first paragraph starts no page.)
+// ---------------------------------------------------------------------------
+let breakRunPara id =
+    { hintLine 0 with
+        Id = id
+        Metadata = { (hintLine 0).Metadata with PageBreakBefore = true; Explicit = Doc.ParagraphExplicit.PageBreakRunBefore } }
+let propertyBreakPara id = { hintLine 0 with Id = id; Metadata = { (hintLine 0).Metadata with PageBreakBefore = true } }
+check "a page break the first paragraph starts with puts it on page 2" ((hintPages [ Doc.Paragraph (breakRunPara "broken") ]) "broken") 1
+check "w:pageBreakBefore on the first paragraph starts no page" ((hintPages [ Doc.Paragraph (propertyBreakPara "broken") ]) "broken") 0
+check "a page break a later paragraph starts with puts it on the next page" ((hintPages [ Doc.Paragraph (hintLine 1); Doc.Paragraph (breakRunPara "broken") ]) "broken") 1
+// (Split, the break stays before the first part.)
+let splitBreakDoc =
+    let para = breakRunPara "split-break"
+    let doc = { Doc.empty with Blocks = [ Doc.Paragraph para ]; Selection = Some { Anchor = { BlockId = para.Id; Offset = 4 }; Focus = { BlockId = para.Id; Offset = 4 } } }
+    Doc.splitBlock doc
+let splitBreaks =
+    splitBreakDoc.Blocks |> List.choose (function Doc.Paragraph para -> Some (para.Metadata.PageBreakBefore, Doc.ParagraphExplicit.has Doc.ParagraphExplicit.PageBreakRunBefore para.Metadata) | _ -> None)
+check "a split paragraph's break stays before its first part" splitBreaks [ (true, true); (false, false) ]
+
 printfn ""
 printfn "Word layout tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
