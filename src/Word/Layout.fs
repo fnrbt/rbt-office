@@ -1359,6 +1359,38 @@ let private spacedSpannedWidthFromPrefix prefix spacing start span fallback =
 // Word line boxes include font leading beyond the nominal font size. Auto
 // w:line multiples (eg 259/276) still need this Calibri-leading factor.
 let private wordLineBoxFactor = 1.224
+
+/// A font's single line per unit of size as Word sets it: GDI's height (OS/2
+/// usWinAscent + usWinDescent) and the hhea line gap beyond it, over the em -
+/// of the Windows fonts (and the fonts made to their metrics). The line box
+/// factors here were measured on Calibri; text in another font has its line
+/// box in the ratio of the two (Arial's lines are 6% lower than Calibri's).
+/// A font not in the table is taken as Calibri.
+let private calibriLineFactor = 1.2207
+let private wordFontLineFactors =
+    [| "Calibri", calibriLineFactor; "Calibri Light", calibriLineFactor
+       "Arial", 1.1499; "ArialMT", 1.1499; "Helvetica", 1.1499; "Liberation Sans", 1.1499; "Arimo", 1.1499
+       "Times New Roman", 1.1499; "Times", 1.1499; "Liberation Serif", 1.1499; "Tinos", 1.1499
+       "Courier New", 1.1328; "Courier", 1.1328; "Liberation Mono", 1.1328; "Cousine", 1.1328
+       "Cambria", 1.1724; "Cambria Math", 1.1724; "Georgia", 1.1362; "Verdana", 1.2153
+       "Trebuchet MS", 1.1611; "Segoe UI", 1.3301; "Comic Sans MS", 1.3936; "Consolas", 1.1709 |]
+let private wordFontLineFactor (family: string) =
+    let mutable factor = calibriLineFactor
+    let mutable index = 0
+    while index < wordFontLineFactors.Length do
+        let entry = wordFontLineFactors.[index]
+        if trimmedEqualsIgnoreCase family (fst entry) then
+            factor <- snd entry
+            index <- wordFontLineFactors.Length
+        else
+            index <- index + 1
+    factor
+
+/// How much taller (or lower) a line in this text's font is than in Calibri.
+let private fontLineRatio (style: TextBuffer.TextStyle) =
+    match style.FontFamily with
+    | Some family -> wordFontLineFactor family / calibriLineFactor
+    | None -> 1.0
 let private wordSingleLineBoxFactor = 1.15
 let private wordDefaultSpacingSingleLineBoxFactor = 1.316
 let private wordTableFollowSingleLineBoxFactor = wordDefaultSpacingSingleLineBoxFactor
@@ -1384,15 +1416,16 @@ let private lineBoxFactorForTextStyle (style: TextBuffer.TextStyle) =
                        || trimmedEqualsIgnoreCase family "courier new"
                        || trimmedEqualsIgnoreCase family "courier" -> monospaceLineBoxFactor
     | Some family when trimmedEqualsIgnoreCase family "ubuntu" -> ubuntuLineBoxFactor
-    | _ -> wordLineBoxFactor
+    | _ -> wordLineBoxFactor * fontLineRatio style
 
 let private tableCellLineBoxFactorForTextStyle hasExplicitLineSpacing (style: TextBuffer.TextStyle) =
     if not hasExplicitLineSpacing then
-        tableCellDefaultLineBoxFactor
+        tableCellDefaultLineBoxFactor * fontLineRatio style
     else
         match style.FontFamily with
+        // (Measured on Word; the font ratio gives the same, 1.1926.)
         | Some family when trimmedEqualsIgnoreCase family "arial" -> arialTableCellExplicitLineBoxFactor
-        | _ -> tableCellExplicitLineBoxFactor
+        | _ -> tableCellExplicitLineBoxFactor * fontLineRatio style
 
 let private usesDefaultParagraphSpacing (metadata: BlockMetadata) =
     metadata.SpacingBefore.IsNone && metadata.SpacingAfter.IsNone
@@ -1421,10 +1454,11 @@ let private headingUsesDefaultLineBox (paragraphStyle: ParagraphStyle) (metadata
 let private wordLineHeight textStyle fontSize lineSpacing defaultParagraphSpacing tocEntry headingDefaultLineBox =
     let factor =
         if abs (lineSpacing - 1.0) < 0.001 then
-            if tocEntry then wordTocEntrySingleLineBoxFactor
-            elif headingDefaultLineBox then wordDefaultSpacingSingleLineBoxFactor
-            elif defaultParagraphSpacing then wordDefaultSpacingSingleLineBoxFactor
-            else wordSingleLineBoxFactor
+            fontLineRatio textStyle
+            * (if tocEntry then wordTocEntrySingleLineBoxFactor
+               elif headingDefaultLineBox then wordDefaultSpacingSingleLineBoxFactor
+               elif defaultParagraphSpacing then wordDefaultSpacingSingleLineBoxFactor
+               else wordSingleLineBoxFactor)
         else
             lineBoxFactorForTextStyle textStyle
     fontSize * lineSpacing * factor
@@ -2154,7 +2188,9 @@ let defaultTabStopWidth = 48.0
 /// settings.LineHeight / settings.FontSize per unit of size), and no less than
 /// this - the line height of "exact" spacing, the least of "atLeast", 0 for
 /// "auto". A line without text (a picture alone) is at least settings.LineHeight.
-let layoutLinesFromIndentWith (textLineFloor: float) (settings: LayoutSettings) (measureRange: TextRangeMeasurer) (buffer: TextBuffer.TextBuffer) (maxWidth: float) (contentY: float) (tabStops: TabStop list) (firstLineStart: float) (tabOrigin: float) (hanging: bool) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) =
+/// `contentLineRatio`: fontLineRatio of the text settings.LineHeight is of; text
+/// in another font is as tall as its own font's line (0: every font as that one).
+let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (settings: LayoutSettings) (measureRange: TextRangeMeasurer) (buffer: TextBuffer.TextBuffer) (maxWidth: float) (contentY: float) (tabStops: TabStop list) (firstLineStart: float) (tabOrigin: float) (hanging: bool) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) =
     let mutable lines = []
     let currentSegments = ResizeArray<Segment>()
     let mutable currentHasTextMetric = false
@@ -2363,7 +2399,11 @@ let layoutLinesFromIndentWith (textLineFloor: float) (settings: LayoutSettings) 
                 match segment with
                 | TextSegment _ -> hasText <- true
                 | _ -> ()
-                let height = segmentHeight scale segment
+                let height =
+                    match segment with
+                    | TextSegment (_, style, _, _, _) when contentLineRatio > 0.0 ->
+                        segmentHeight (scale * fontLineRatio style / contentLineRatio) segment
+                    | _ -> segmentHeight scale segment
                 if height > segmentMaxHeight then
                     segmentMaxHeight <- height
             let inlineImageDescent = if hasInlineImage then settings.FontSize * 0.27 else 0.0
@@ -2725,7 +2765,7 @@ let layoutLinesFromIndentWith (textLineFloor: float) (settings: LayoutSettings) 
     List.rev lines, floatObstacles, placedBoxes
 
 let layoutLinesFromIndent (settings: LayoutSettings) measureRange buffer maxWidth contentY tabStops firstLineStart tabOrigin hanging initialObstacles initialPlacedBoxes =
-    layoutLinesFromIndentWith settings.LineHeight settings measureRange buffer maxWidth contentY tabStops firstLineStart tabOrigin hanging initialObstacles initialPlacedBoxes
+    layoutLinesFromIndentWith settings.LineHeight 0.0 settings measureRange buffer maxWidth contentY tabStops firstLineStart tabOrigin hanging initialObstacles initialPlacedBoxes
 
 let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureRange: TextRangeMeasurer) (buffer: TextBuffer.TextBuffer) (maxWidth: float) (contentY: float) (tabStops: TabStop list) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) =
     layoutLinesFromIndent settings measureRange buffer maxWidth contentY tabStops 0.0 0.0 false initialObstacles initialPlacedBoxes
@@ -2859,6 +2899,7 @@ type ParagraphLineBreakKey = {
     LineAvailableWidth: float
     LineSingleLineFastPath: bool
     LineTextFloor: float
+    LineContentRatio: float
     LineFirstStart: float
     LineIndent: float
 }
@@ -3191,14 +3232,16 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
         | "exact" -> paragraphLineHeight
         | "atLeast" -> lineSpacingPixels
         | _ -> 0.0
+    // (An exact line is that high whatever its fonts.)
+    let contentLineRatio = if lineSpacingRule = "exact" then 0.0 else fontLineRatio contentTextStyle
     let singleLineFastPath = prefix = "" && not metadata.Rtl
     let breakLines () =
         if singleLineFastPath then
             match trySingleLineStyledNoObstacles lineSettings measureRange buffer availableWidth metadata.TabStops firstLineStart initialObstacles initialPlacedBoxes with
             | Some lines -> lines, initialObstacles, initialPlacedBoxes
-            | None -> layoutLinesFromIndentWith textLineFloor lineSettings measureRange buffer availableWidth contentY metadata.TabStops firstLineStart indent hanging initialObstacles initialPlacedBoxes
+            | None -> layoutLinesFromIndentWith textLineFloor contentLineRatio lineSettings measureRange buffer availableWidth contentY metadata.TabStops firstLineStart indent hanging initialObstacles initialPlacedBoxes
         else
-            layoutLinesFromIndentWith textLineFloor lineSettings measureRange buffer availableWidth contentY metadata.TabStops firstLineStart indent hanging initialObstacles initialPlacedBoxes
+            layoutLinesFromIndentWith textLineFloor contentLineRatio lineSettings measureRange buffer availableWidth contentY metadata.TabStops firstLineStart indent hanging initialObstacles initialPlacedBoxes
     let lines, updatedObstacles, updatedPlacedBoxes =
         match memoEntry with
         | Some entry ->
@@ -3213,6 +3256,7 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
                 LineAvailableWidth = availableWidth
                 LineSingleLineFastPath = singleLineFastPath
                 LineTextFloor = textLineFloor
+                LineContentRatio = contentLineRatio
                 LineFirstStart = firstLineStart
                 LineIndent = indent
             }

@@ -1572,6 +1572,41 @@ let atLeastHeights = mixedLineHeights { Doc.defaultMetadata with LineSpacing = S
 check "an at-least line height is each line's least" (atLeastHeights.Tail |> List.distinct) [ max 20.0 smallLineHeight ]
 check "... and the large word's line is its own" (atLeastHeights.Head) autoHeights.Head
 
+// ---------------------------------------------------------------------------
+// A line box is of its font's metrics: Word sets a line at the font's GDI
+// height (usWinAscent + usWinDescent, and the hhea line gap beyond them).
+// Arial's is 1.1499 of the size and Calibri's 1.2207, so Arial lines are 6%
+// lower than Calibri's at the same spacing (they were all Calibri's). Text in
+// two fonts on one line: the line is as tall as the taller font's.
+// ---------------------------------------------------------------------------
+let fontLineHeights family (metadata: Doc.BlockMetadata) text =
+    let para =
+        { paragraph "font-line" text with
+            Buffer = ofString text |> applyStyle 0 (String.length text) (fun style -> { style with FontFamily = Some family; FontSize = 20.0 })
+            Metadata = { metadata with SpacingAfter = Some 0.0; SpacingBefore = Some 0.0 } }
+    let layout, _ = layoutParagraphAtWithRange settings measureText (rangeMeasurerFromTextMeasurer measureText) 120.0 0.0 0.0 para Map.empty
+    layout.Lines |> List.map (fun line -> line.Height)
+let multiple = { Doc.defaultMetadata with LineSpacing = Some (259.0 / 240.0); LineSpacingRule = Some "auto" }
+let calibriLine = (fontLineHeights "Calibri" multiple "w01").Head
+let arialLine = (fontLineHeights "Arial" multiple "w01").Head
+check "Arial lines are Arial's height, not Calibri's" (System.Math.Round(arialLine / calibriLine, 3)) (System.Math.Round(1.1499 / 1.2207, 3))
+let singleCalibri = (fontLineHeights "Calibri" Doc.defaultMetadata "w01").Head
+let singleArial = (fontLineHeights "Arial" Doc.defaultMetadata "w01").Head
+check "... at single spacing too" (System.Math.Round(singleArial / singleCalibri, 3)) (System.Math.Round(1.1499 / 1.2207, 3))
+let mixedFontText = "aaa " + String.concat " " [ for i in 1 .. 30 -> sprintf "w%02d" i ]
+let mixedFontLines =
+    let para =
+        { paragraph "font-mix" mixedFontText with
+            Buffer =
+                ofString mixedFontText
+                |> applyStyle 0 mixedFontText.Length (fun style -> { style with FontFamily = Some "Arial"; FontSize = 20.0 })
+                |> applyStyle 0 3 (fun style -> { style with FontFamily = Some "Calibri" })
+            Metadata = { multiple with SpacingAfter = Some 0.0; SpacingBefore = Some 0.0 } }
+    let layout, _ = layoutParagraphAtWithRange settings measureText (rangeMeasurerFromTextMeasurer measureText) 120.0 0.0 0.0 para Map.empty
+    layout.Lines |> List.map (fun line -> System.Math.Round(line.Height, 2))
+check "a line with Calibri text in an Arial paragraph is Calibri's" mixedFontLines.Head (System.Math.Round(calibriLine, 2))
+check "... and the Arial lines after it Arial's" (mixedFontLines.Tail |> List.distinct) [ System.Math.Round(arialLine, 2) ]
+
 printfn ""
 printfn "Word layout tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
