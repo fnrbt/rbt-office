@@ -256,7 +256,7 @@ module Processors =
     [<Fable.Core.Emit("($0.AnchorBlock == null ? -1 : $0.AnchorBlock)")>]
     let private anchorBlockOrMinusOne (_shape: obj) : int = Fable.Core.Util.jsNative
 
-    let private shapeObjectsFor (doc: DocxReader.WordDocument) : obj array =
+    let private shapeObjectsFor (imageOf: string -> string option) (doc: DocxReader.WordDocument) : obj array =
         let styleMap = DocumentProcessors.StyleResolution.buildStyleMapWithTheme doc.Theme doc.Styles
         let comments = doc.Comments |> List.map (fun comment -> comment.Id, comment) |> Map.ofList
         let noteText (note: DocxReader.Note) =
@@ -268,9 +268,7 @@ module Processors =
             (doc.Footnotes |> List.map (fun note -> ("footnote", note.Id), noteText note)) @
             (doc.Endnotes |> List.map (fun note -> ("endnote", note.Id), noteText note))
             |> Map.ofList
-        doc.Shapes
-        |> List.filter (fun shape -> not shape.Content.IsEmpty || shape.Preset.IsSome || not shape.CustomPath.IsEmpty)
-        |> List.map (fun shape ->
+        let rec shapeObject (shape: DocxReader.Shape) : obj =
             // (As the body's paragraphs are made: the same properties in the same units. They were made
             // by an older path that gave an indent in points where the editor reads pixels.)
             let paragraphs =
@@ -339,7 +337,15 @@ module Processors =
                 "Opacity" ==> shape.Opacity
                 "SourceXml" ==> shape.SourceXml
                 "Paragraphs" ==> paragraphs
-            ])
+                // (The shapes of a group or a drawing canvas, each where the group puts it.)
+                "Children" ==> (if shape.Children.IsEmpty then null else shape.Children |> List.map shapeObject |> List.toArray |> box)
+                "ChildSpaceWidth" ==> (shape.ChildSpace |> Option.map fst)
+                "ChildSpaceHeight" ==> (shape.ChildSpace |> Option.map snd)
+                "ImageSrc" ==> (shape.ImageRelationshipId |> Option.bind imageOf)
+            ]
+        doc.Shapes
+        |> List.filter (fun shape -> not shape.Content.IsEmpty || shape.Preset.IsSome || not shape.CustomPath.IsEmpty || not shape.Children.IsEmpty)
+        |> List.map shapeObject
         |> List.toArray
 
     /// The header / footer parts for the editor with their shapes: a part's
@@ -350,7 +356,7 @@ module Processors =
         |> List.iteri (fun index part ->
             match part.RelationshipId |> Option.bind (fun id -> Map.tryFind id doc.PartShapes) with
             | Some shapes when not shapes.IsEmpty && index < items.Length ->
-                let shapeItems = shapeObjectsFor { doc with Shapes = shapes }
+                let shapeItems = shapeObjectsFor (fun id -> Map.tryFind (DocxReader.partImageKey (part.RelationshipId |> Option.defaultValue "") id) images) { doc with Shapes = shapes }
                 let paragraphs : obj array = items.[index]?Paragraphs |> unbox
                 items.[index]?Paragraphs <- Array.append paragraphs shapeItems
             | _ -> ())
@@ -380,7 +386,7 @@ module Processors =
                     let shapeChunks =
                         match Map.tryFind relId doc.PartShapes with
                         | Some shapes when not shapes.IsEmpty ->
-                            shapeObjectsFor { doc with Shapes = shapes }
+                            shapeObjectsFor (fun _ -> None) { doc with Shapes = shapes }
                             |> Array.map (fun shape ->
                                 let anchor = anchorBlockOrMinusOne shape
                                 if anchor >= 0 && anchor < contentChunks.Length then contentChunks.[anchor] else -1)
@@ -418,7 +424,7 @@ module Processors =
             | Some doc ->
                 let paragraphs =
                     DocxReader.toEditorParagraphsWithStylesThemeAndNumbering doc.Theme doc.Content doc.Images doc.Styles doc.NumberingDefinitions doc.Footnotes doc.Endnotes
-                let shapeItems = shapeObjectsFor doc
+                let shapeItems = shapeObjectsFor (fun id -> Map.tryFind id doc.Images) doc
                 let preserved = preservedWithItemChunks doc paragraphs shapeItems
                 preserved?OpenedBytes <- openedBytesOf fileData
                 let paragraphs = Array.append paragraphs shapeItems
@@ -557,6 +563,7 @@ module Processors =
                         BlockCount = (fun () -> 0)
                         Progress = (fun () -> 0.0)
                         ImagesOf = (fun _ -> Map.empty)
+                        ImageOf = (fun _ -> None)
                         Finish = (fun () -> failwith "The reading of the document was cancelled") }
                 let reader () : DocxReader.ProgressiveReader = match current with | Some reader -> reader | None -> cancelledReader
                 let firstBlocks = max 1 (int (numberOption options "firstBlocks" 64.0))
@@ -604,7 +611,7 @@ module Processors =
                     if not batch.Blocks.IsEmpty then
                         for item in convert batch.Blocks ((reader ()).ImagesOf batch.Blocks) do pushItem paragraphs item
                     if not batch.Shapes.IsEmpty then
-                        shapeItems.AddRange (shapeObjectsFor { front with Shapes = batch.Shapes })
+                        shapeItems.AddRange (shapeObjectsFor (reader ()).ImageOf { front with Shapes = batch.Shapes })
                     if not ((reader ()).IsDone ()) then statePageSetup ((reader ()).OpenSection ())
                     // (What the reader could not read: the blocks before it were in the batch.)
                     match (reader ()).Failure () with

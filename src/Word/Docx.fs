@@ -1200,6 +1200,16 @@ let rec private blockFromEditor (item: obj) =
                 NoTextWrap = boolOrDefault false (item?NoTextWrap)
                 FitText = boolOrDefault false (item?FitText)
                 Opacity = optionalNumberAsFloat (item?Opacity) |> Option.defaultValue 1.0
+                // (The shapes of a group or a drawing canvas, and the size their places are given in.)
+                Children =
+                    (if isNullOrUndefined (item?Children) then [||] else item?Children |> unbox<obj array>)
+                    |> Array.choose (fun child -> match blockFromEditor child with TextBox shape -> Some shape | _ -> None)
+                    |> Array.toList
+                ChildSpace =
+                    match optionalNumberAsFloat (item?ChildSpaceWidth), optionalNumberAsFloat (item?ChildSpaceHeight) with
+                    | Some width, Some height -> Some (width, height)
+                    | _ -> None
+                ImageSource = optionalString (item?ImageSrc)
                 SourceXml = optionalString (item?SourceXml)
         }
 
@@ -2246,7 +2256,8 @@ let private textBoxIsAsImported (textBox: TextBoxBlock) : bool =
     && (match importedTextBoxes.TryGetValue textBox.Id with
         | true, original ->
             obj.ReferenceEquals(original, textBox)
-            || (obj.ReferenceEquals(original.Content, textBox.Content) && { original with Content = [] } = { textBox with Content = [] })
+            || (obj.ReferenceEquals(original.Content, textBox.Content) && obj.ReferenceEquals(original.Children, textBox.Children)
+                && { original with Content = []; Children = [] } = { textBox with Content = []; Children = [] })
         | false, _ -> false)
 
 /// A shape that was read and is what it was but for where it stands and how large it is
@@ -2257,15 +2268,28 @@ let private textBoxMovedFrom (textBox: TextBoxBlock) : TextBoxBlock option =
     if textBox.SourceXml.IsNone || isNull importedTextBoxes then None
     else
         match importedTextBoxes.TryGetValue textBox.Id with
-        | true, original when not (obj.ReferenceEquals(original, textBox)) && obj.ReferenceEquals(original.Content, textBox.Content) ->
+        | true, original when not (obj.ReferenceEquals(original, textBox)) && obj.ReferenceEquals(original.Content, textBox.Content) && obj.ReferenceEquals(original.Children, textBox.Children) ->
             let placed =
                 { original with
                     Content = []
+                    Children = []
                     X = textBox.X; Y = textBox.Y; Width = textBox.Width; Height = textBox.Height
                     PositionHAlign = textBox.PositionHAlign; PositionVAlign = textBox.PositionVAlign
                     PositionHRelativeFrom = textBox.PositionHRelativeFrom; PositionVRelativeFrom = textBox.PositionVRelativeFrom }
-            if placed = { textBox with Content = [] } && placed <> { original with Content = [] } then Some original else None
+            let unplaced = { original with Content = []; Children = [] }
+            let now = { textBox with Content = []; Children = [] }
+            // (A group or a canvas is written as it was read whatever else of it was changed - the
+            // editor does not write one from the model -: its place and size alone are saved.)
+            if (placed = now || not original.Children.IsEmpty) && placed <> unplaced then Some original else None
         | _ -> None
+
+/// A group or a drawing canvas (a shape with shapes of its own, Children): it is
+/// written as the element it was read from (SourceXml), with its place and size
+/// changed in it when they were (textBoxMovedFrom). Whatever else of it was
+/// changed (its turn, its wrap) is not saved; its shapes and their text are not
+/// edited in the editor.
+let private isGroupFromSource (textBox: TextBoxBlock) : bool =
+    not textBox.Children.IsEmpty && textBox.SourceXml.IsSome
 
 let rec private blockToEditor (context: WordStyles.DocumentStyleContext option) block =
     match block with
@@ -2329,7 +2353,7 @@ let rec private blockToEditor (context: WordStyles.DocumentStyleContext option) 
             "FitText" ==> textBox.FitText
             "Opacity" ==> (if textBox.Opacity < 0.999 then Some textBox.Opacity else None)
             // (Its element as it was read, while the shape is what was read: see importedTextBoxes.)
-            "SourceXml" ==> (if textBoxIsAsImported textBox || (textBoxMovedFrom textBox).IsSome then textBox.SourceXml else None)
+            "SourceXml" ==> (if textBoxIsAsImported textBox || isGroupFromSource textBox || (textBoxMovedFrom textBox).IsSome then textBox.SourceXml else None)
             // (What of its anchor is not what the element says: see textBoxMovedFrom.)
             "SourceMoved" ==> (textBoxMovedFrom textBox
                                |> Option.map (fun original ->
@@ -2352,6 +2376,11 @@ let rec private blockToEditor (context: WordStyles.DocumentStyleContext option) 
             "RelativeHeight" ==> textBox.RelativeHeight
             "TextBoxRelativeHeight" ==> textBox.RelativeHeight
             "Paragraphs" ==> (textBox.Content |> List.map (paragraphToEditor context "Paragraph" 0) |> List.toArray)
+            // (A group's shapes, as shapes are: see blockFromEditor.)
+            "Children" ==> (if textBox.Children.IsEmpty then null else textBox.Children |> List.map (TextBox >> blockToEditor context) |> List.toArray |> box)
+            "ChildSpaceWidth" ==> (textBox.ChildSpace |> Option.map fst)
+            "ChildSpaceHeight" ==> (textBox.ChildSpace |> Option.map snd)
+            "ImageSrc" ==> textBox.ImageSource
         ]
     | Table table ->
             let rows =

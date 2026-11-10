@@ -490,6 +490,89 @@ let flipsOfPictures (body: string) =
 ok "picture-flips" (flipsOfPictures (flippedPicture " flipH=\"1\" flipV=\"1\"") = [ (true, true); (true, false) ]) (sprintf "%A" (flipsOfPictures (flippedPicture " flipH=\"1\" flipV=\"1\"")))
 ok "picture-flip-v-only" (flipsOfPictures (flippedPicture " flipV=\"true\"") = [ (false, true); (true, false) ]) (sprintf "%A" (flipsOfPictures (flippedPicture " flipV=\"true\"")))
 
+// ----- groups and drawing canvases: shapes whose children are shapes -----------
+// (Synthetic: no document of the corpus has a group or a canvas.) A group is one shape where its
+// anchor puts it, its children placed by the group's child coordinates (a:chOff / a:chExt;
+// coordorigin / coordsize) in its box, in pixels from its top-left corner; a group in a group has
+// children of its own; a canvas has its background and outline. (They were kept as opaque objects:
+// not one of the document's shapes, drawn only through a fallback picture.)
+let groupNs = "xmlns:wps=\"http://schemas.microsoft.com/office/word/2010/wordprocessingShape\" xmlns:wpg=\"http://schemas.microsoft.com/office/word/2010/wordprocessingGroup\" xmlns:wpc=\"http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas\""
+let groupAnchor (name: string) (graphicUri: string) (inner: string) =
+    sprintf "<w:p><w:r><w:t>anchor</w:t></w:r><w:r><w:drawing><wp:anchor distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\" simplePos=\"0\" relativeHeight=\"5\" behindDoc=\"0\" locked=\"0\" layoutInCell=\"1\" allowOverlap=\"1\"><wp:simplePos x=\"0\" y=\"0\"/><wp:positionH relativeFrom=\"column\"><wp:posOffset>95250</wp:posOffset></wp:positionH><wp:positionV relativeFrom=\"paragraph\"><wp:posOffset>190500</wp:posOffset></wp:positionV><wp:extent cx=\"1905000\" cy=\"952500\"/><wp:wrapSquare wrapText=\"bothSides\"/><wp:docPr id=\"7\" name=\"%s\"/><a:graphic><a:graphicData uri=\"%s\">%s</a:graphicData></a:graphic></wp:anchor></w:drawing></w:r></w:p>" name graphicUri inner
+let groupShape (offX: int) (offY: int) (cx: int) (cy: int) (attrs: string) (geometry: string) (fill: string) (text: string) =
+    sprintf "<wps:wsp %s><wps:cNvSpPr/><wps:spPr><a:xfrm%s><a:off x=\"%d\" y=\"%d\"/><a:ext cx=\"%d\" cy=\"%d\"/></a:xfrm><a:prstGeom prst=\"%s\"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val=\"%s\"/></a:solidFill></wps:spPr>%s<wps:bodyPr/></wps:wsp>"
+        groupNs attrs offX offY cx cy geometry fill (if text = "" then "" else sprintf "<wps:txbx><w:txbxContent><w:p><w:r><w:t>%s</w:t></w:r></w:p></w:txbxContent></wps:txbx>" text)
+let groupBody (rotation: string) =
+    groupAnchor "Group 7" "http://schemas.microsoft.com/office/word/2010/wordprocessingGroup"
+        (sprintf "<wpg:wgp %s><wpg:cNvGrpSpPr/><wpg:grpSpPr><a:xfrm%s><a:off x=\"0\" y=\"0\"/><a:ext cx=\"1905000\" cy=\"952500\"/><a:chOff x=\"1000\" y=\"2000\"/><a:chExt cx=\"3810000\" cy=\"1905000\"/></a:xfrm></wpg:grpSpPr>" groupNs rotation
+         + groupShape 1000 2000 1905000 952500 "" "rect" "FF0000" "left box"
+         + groupShape (1000 + 1905000) (2000 + 952500) 1905000 952500 " flipH=\"1\" rot=\"5400000\"" "ellipse" "0000FF" ""
+         + sprintf "<wpg:grpSp><wpg:cNvGrpSpPr/><wpg:grpSpPr><a:xfrm><a:off x=\"%d\" y=\"2000\"/><a:ext cx=\"1905000\" cy=\"952500\"/><a:chOff x=\"0\" y=\"0\"/><a:chExt cx=\"100\" cy=\"100\"/></a:xfrm></wpg:grpSpPr>%s</wpg:grpSp>" (1000 + 1905000) (groupShape 50 0 50 100 "" "triangle" "00FF00" "inner")
+         + "<pic:pic><pic:nvPicPr><pic:cNvPr id=\"9\" name=\"pic\"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed=\"rId1\"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm flipV=\"1\"><a:off x=\"1000\" y=\"954500\"/><a:ext cx=\"952500\" cy=\"952500\"/></a:xfrm><a:prstGeom prst=\"rect\"/></pic:spPr></pic:pic>"
+         + "</wpg:wgp>")
+let shapesOfBody (body: string) = (docxWithParts body [] [] |> DocxReader.loadBytesNative |> Option.get).Shapes
+let near1 (a: float) (b: float) = abs (a - b) < 0.01
+let boxOf (shape: DocxReader.Shape) =
+    let x, y = shape.Position |> Option.defaultValue (nan, nan)
+    [ x; y; shape.Width |> Option.defaultValue nan; shape.Height |> Option.defaultValue nan ]
+let sameBox (shape: DocxReader.Shape) (expected: float list) = List.forall2 near1 (boxOf shape) expected
+let textOfShape (shape: DocxReader.Shape) = shape.Content |> List.map paragraphText |> String.concat "|"
+match shapesOfBody (groupBody "") with
+| [ group ] ->
+    ok "group-is-one-shape" (group.Type = Some "group" && group.Content.IsEmpty && group.Name = Some "Group 7" && group.Wrap = Some "square") (sprintf "%A %A %A" group.Type group.Name group.Wrap)
+    ok "group-anchor-box" (sameBox group [ 10.0; 20.0; 200.0; 100.0 ] && group.ChildSpace = Some (200.0, 100.0)) (sprintf "%A %A" (boxOf group) group.ChildSpace)
+    match group.Children with
+    | [ first; second; nested; picture ] ->
+        ok "group-child-mapped" (sameBox first [ 0.0; 0.0; 100.0; 50.0 ] && first.FillColor = Some "#FF0000" && textOfShape first = "left box") (sprintf "%A %A %s" (boxOf first) first.FillColor (textOfShape first))
+        ok "group-child-geometry-flip-rotation" (sameBox second [ 100.0; 50.0; 100.0; 50.0 ] && second.Preset = Some "ellipse" && second.FlipH && near1 second.Rotation 90.0) (sprintf "%A %A %b %f" (boxOf second) second.Preset second.FlipH second.Rotation)
+        ok "group-in-group" (sameBox nested [ 100.0; 0.0; 100.0; 50.0 ] && nested.ChildSpace = Some (100.0, 50.0) && nested.Content.IsEmpty) (sprintf "%A %A" (boxOf nested) nested.ChildSpace)
+        match nested.Children with
+        | [ inner ] -> ok "group-in-group-child" (sameBox inner [ 50.0; 0.0; 50.0; 50.0 ] && textOfShape inner = "inner" && inner.Preset = Some "triangle") (sprintf "%A %s" (boxOf inner) (textOfShape inner))
+        | other -> ok "group-in-group-child" false (sprintf "%A" other)
+        ok "group-picture" (sameBox picture [ 0.0; 50.0; 50.0; 50.0 ] && picture.ImageRelationshipId = Some "rId1" && picture.FlipV && picture.NoFill && picture.NoLine) (sprintf "%A %A %b" (boxOf picture) picture.ImageRelationshipId picture.FlipV)
+    | other -> ok "group-children" false (sprintf "%d children" other.Length)
+| other -> ok "group-is-one-shape" false (sprintf "%d shapes" other.Length)
+match shapesOfBody (groupBody " rot=\"1800000\" flipV=\"1\"") with
+| [ group ] -> ok "group-turned-and-flipped" (near1 group.Rotation 30.0 && group.FlipV && not group.FlipH) (sprintf "%f %b %b" group.Rotation group.FlipH group.FlipV)
+| other -> ok "group-turned-and-flipped" false (sprintf "%d shapes" other.Length)
+// (The group's run is not kept as an opaque object in the paragraph: the shape is the group.)
+ok "group-run-is-the-shape"
+   ((loadBody (groupBody "")).Content |> List.exists (function DocxReader.Para para -> para.Runs |> List.exists (fun run -> match run.Content with DocxReader.Image _ -> true | _ -> false) | _ -> false) |> not)
+   "the group's run is still in the paragraph"
+let canvasBody =
+    groupAnchor "Canvas 3" "http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas"
+        (sprintf "<wpc:wpc %s><wpc:bg><a:solidFill><a:srgbClr val=\"FFFF00\"/></a:solidFill></wpc:bg><wpc:whole><a:ln w=\"12700\"><a:solidFill><a:srgbClr val=\"000000\"/></a:solidFill></a:ln></wpc:whole>%s</wpc:wpc>"
+            groupNs (groupShape 952500 476250 952500 476250 "" "rect" "FF00FF" "on canvas"))
+match shapesOfBody canvasBody with
+| [ canvas ] ->
+    ok "canvas-background" (canvas.Type = Some "canvas" && canvas.FillColor = Some "#FFFF00" && canvas.BorderColor = Some "#000000" && not canvas.NoFill && canvas.ChildSpace = None) (sprintf "%A %A %A %A" canvas.Type canvas.FillColor canvas.BorderColor canvas.ChildSpace)
+    match canvas.Children with
+    | [ child ] -> ok "canvas-child-in-emu" (sameBox child [ 100.0; 50.0; 100.0; 50.0 ] && textOfShape child = "on canvas") (sprintf "%A" (boxOf child))
+    | other -> ok "canvas-child-in-emu" false (sprintf "%d children" other.Length)
+| other -> ok "canvas-background" false (sprintf "%d shapes" other.Length)
+let vmlGroupBody =
+    "<w:p><w:r><w:t>anchor</w:t></w:r><w:r><w:pict><v:group xmlns:v=\"urn:schemas-microsoft-com:vml\" id=\"_x0000_s1030\" style=\"position:absolute;margin-left:10pt;margin-top:20pt;width:150pt;height:75pt;z-index:1\" coordorigin=\"100,0\" coordsize=\"2000,1000\">"
+    + "<v:rect style=\"position:absolute;left:100;top:0;width:1000;height:500\" fillcolor=\"#00FF00\"><v:textbox><w:txbxContent><w:p><w:r><w:t>vml child</w:t></w:r></w:p></w:txbxContent></v:textbox></v:rect>"
+    + "<v:oval style=\"position:absolute;left:1100;top:500;width:1000;height:500\"/>"
+    + "<v:line from=\"100,1000\" to=\"2100,0\"/>"
+    + "<v:shape style=\"position:absolute;left:100;top:0;width:10;height:10\" type=\"#_x0000_t13\"/>"
+    + "</v:group></w:pict></w:r></w:p>"
+match shapesOfBody vmlGroupBody with
+| [ group ] ->
+    ok "vml-group" (group.Type = Some "group" && sameBox group [ 40.0 / 3.0; 80.0 / 3.0; 200.0; 100.0 ] && group.Name = None && group.Id = Some "_x0000_s1030") (sprintf "%A %A %A" group.Type (boxOf group) group.Id)
+    match group.Children with
+    | [ rect; oval; line ] ->
+        ok "vml-group-children" (sameBox rect [ 0.0; 0.0; 100.0; 50.0 ] && textOfShape rect = "vml child" && sameBox oval [ 100.0; 50.0; 100.0; 50.0 ] && oval.Preset = Some "ellipse") (sprintf "%A %A" (boxOf rect) (boxOf oval))
+        ok "vml-group-line" (sameBox line [ 0.0; 0.0; 200.0; 100.0 ] && line.Preset = Some "line" && line.FlipH) (sprintf "%A %A %b" (boxOf line) line.Preset line.FlipH)
+    | other -> ok "vml-group-children (an arrow of its own shape type left out)" false (sprintf "%d children" other.Length)
+| other -> ok "vml-group" false (sprintf "%d shapes" other.Length)
+// A group with something in it the shape model does not draw (a chart) is kept as it was: an opaque object.
+let groupWithChart =
+    groupAnchor "Group 8" "http://schemas.microsoft.com/office/word/2010/wordprocessingGroup"
+        (sprintf "<wpg:wgp %s><wpg:cNvGrpSpPr/><wpg:grpSpPr/>%s<wpg:graphicFrame><wpg:cNvPr id=\"3\" name=\"Chart\"/><a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/chart\"><c:chart xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\" r:id=\"rId5\"/></a:graphicData></a:graphic></wpg:graphicFrame></wpg:wgp>"
+            groupNs (groupShape 0 0 952500 952500 "" "rect" "FF0000" "beside a chart"))
+ok "group-with-chart-not-modelled" (shapesOfBody groupWithChart |> List.isEmpty) (sprintf "%d shapes" (shapesOfBody groupWithChart).Length)
+
 // ----- objects the reader does not model are kept, with their parts -----------
 let docxPackage (parts: (string * string) list) (binaryParts: (string * byte[]) list) =
     use stream = new System.IO.MemoryStream()

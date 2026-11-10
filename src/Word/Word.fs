@@ -1213,10 +1213,39 @@ module API =
     /// "header" / "footer" for a text box of a header or footer - listed once,
     /// on the first page (PageIndex; -1 for a shape of the body) that shows
     /// its header. enterTextBox takes the Id of any of them.
+    ///
+    /// A group or a drawing canvas is one shape (IsGroup true), selected, moved
+    /// and resized as one; its Children are its shapes - Id, X, Y, Width,
+    /// Height (in the same pixels, where the group's coordinates put them at
+    /// its size now, before the group's turn), Rotation, FlipH / FlipV, IsGroup,
+    /// Text and Children of their own -, which are not shapes of the document's:
+    /// enterTextBox and moveShape do not take their ids.
     let getShapeRects (editor: Editor) : obj array =
         ensureLoaded editor
+        let rec childrenToJs (group: Doc.TextBoxBlock) (x: float) (y: float) (height: float) : obj =
+            if group.Children.IsEmpty then null
+            else
+                Paint.groupChildBoxes group height
+                |> List.map (fun (child, (left, top, childHeight)) ->
+                    createObj [
+                        "Id" ==> child.Id
+                        "X" ==> x + left
+                        "Y" ==> y + top
+                        "Width" ==> child.Width
+                        "Height" ==> childHeight
+                        "Rotation" ==> child.Rotation
+                        "FlipH" ==> child.FlipH
+                        "FlipV" ==> child.FlipV
+                        "IsGroup" ==> not child.Children.IsEmpty
+                        "Text" ==> (child.Content |> List.map (fun para -> TextBuffer.toString para.Buffer) |> String.concat "\n")
+                        "Children" ==> childrenToJs child (x + left) (y + top) childHeight
+                    ])
+                |> List.toArray
+                |> box
         let shapeToJs (story: string) (pageIndex: int) (textBox: Doc.TextBoxBlock, x: float, y: float, width: float, height: float) =
             createObj [
+                "IsGroup" ==> not textBox.Children.IsEmpty
+                "Children" ==> childrenToJs { textBox with Width = width } x y height
                 "Story" ==> story
                 "PageIndex" ==> pageIndex
                 "Id" ==> textBox.Id

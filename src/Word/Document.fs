@@ -466,6 +466,18 @@ and TextBoxBlock = {
     FitText: bool
     /// The opacity of the fill and of fitted text (1: opaque).
     Opacity: float
+    /// The shapes of a group or a drawing canvas (wpg:wgp, wpc:wpc, v:group), in
+    /// the order they are drawn: each with its X / Y / Width / Height in pixels
+    /// from the group's top-left corner in its ChildSpace (a group in a group
+    /// has shapes of its own). Empty for any other shape. A group has no text
+    /// of its own; the text of its shapes is drawn, not edited.
+    Children: TextBoxBlock list
+    /// The size the places of a group's shapes are given in (the group's own as
+    /// it was read): a group drawn at another size scales them with it. None:
+    /// not scaled (a drawing canvas).
+    ChildSpace: (float * float) option
+    /// A picture of a group: the picture drawn in the shape's box.
+    ImageSource: string option
     /// The element the shape was read from (mc:AlternateContent, w:drawing or
     /// w:pict, as it stood in its run): written back while the shape is what was read.
     SourceXml: string option
@@ -596,6 +608,9 @@ let defaultTextBox : TextBoxBlock = {
     NoTextWrap = false
     FitText = false
     Opacity = 1.0
+    Children = []
+    ChildSpace = None
+    ImageSource = None
     SourceXml = None
 }
 

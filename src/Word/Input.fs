@@ -854,7 +854,8 @@ let private dropPendingFormat (handler: InputHandler) (doc: Doc.Document) =
 /// `enterStory`): typing, selecting, formatting and undo work in it; Escape,
 /// or a click outside the box, goes back to the body. `selection`: where the
 /// caret goes (None: the start of the box's text). False when the document
-/// has no such box, or its text is not laid out as text (a watermark).
+/// has no such box, or its text is not laid out as text (a watermark), or it
+/// is a group or a drawing canvas (the text of its shapes is not edited).
 ///
 /// A text box of a header or footer is edited where `page` paints it when
 /// that page shows it (the page the pointer is on), else on the first page
@@ -864,7 +865,7 @@ let enterTextBoxOnPage (handler: InputHandler) (boxId: Doc.BlockId) (selection: 
     if handler.Story.IsSome then exitStory handler |> ignore
     let doc = handler.Document
     match doc.Blocks |> List.tryPick (function Doc.TextBox box when box.Id = boxId -> Some box | _ -> None) with
-    | Some box when not box.FitText ->
+    | Some box when not box.FitText && box.Children.IsEmpty ->
         // (A box without a paragraph gets one with the first edit.)
         let entry = (if box.Content.IsEmpty then [ Doc.newEmptyParagraph () ] else box.Content) |> List.map Doc.Paragraph
         let pageIndex =
@@ -889,7 +890,7 @@ let enterTextBoxOnPage (handler: InputHandler) (boxId: Doc.BlockId) (selection: 
             |> List.tryPick (fun (index, part) ->
                 part.Blocks |> List.tryPick (function Doc.TextBox box when box.Id = boxId -> Some (isHeader, index, box) | _ -> None))
         match inParts true doc.HeaderParts |> Option.orElseWith (fun () -> inParts false doc.FooterParts) with
-        | Some (isHeader, partIndex, box) when not box.FitText ->
+        | Some (isHeader, partIndex, box) when not box.FitText && box.Children.IsEmpty ->
             let onPage =
                 match page with
                 | Some pageIndex when pageShapeRects handler.RenderContext doc pageIndex |> List.exists (fun (textBox, _, _, _, _, _) -> textBox.Id = boxId) -> Some pageIndex

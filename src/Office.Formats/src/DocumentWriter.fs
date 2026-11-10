@@ -2472,14 +2472,21 @@ let private generateVmlShape (shapeId: string) (item: obj) (content: string) : s
 /// (mso-position-horizontal-relative / mso-position-vertical-relative); an alignment in a direction that
 /// was moved in (mso-position-horizontal: center) and a size or place in percent go. Everything else of
 /// the fallback - its text, fill, line, path - stays the text it was. None: a fallback this does not know
-/// how to place (a line, a group, a shape in a line of text, no style): it is left out then, as it says
+/// how to place (a line, a shape in a line of text, no style): it is left out then, as it says
 /// the old place.
+///
+/// A VML group (v:group) is placed and sized by its own style the same way - the first, outermost one:
+/// its coordsize stays, so its shapes are where they were in it and scale with it.
 let private vmlFallbackEdits (fallback: XmlDsl.XmlNode) (item: obj) (moveH: bool) (moveV: bool) (resize: bool) : (XmlDsl.XmlNode * XmlPatch.ElementEdit list) option =
     let isShape (node: XmlDsl.XmlNode) =
         XmlPatch.prefix node = "v" && List.contains (XmlPatch.localName node) [ "shape"; "rect"; "oval"; "roundrect" ] && (XmlPatch.attribute node "style").IsSome
-    let grouped = XmlPatch.descendantsWhere (fun node -> XmlPatch.name node = "v:group") fallback |> List.isEmpty |> not
-    match XmlPatch.descendantsWhere isShape fallback with
-    | shape :: _ when not grouped ->
+    let isGroup (node: XmlDsl.XmlNode) = XmlPatch.name node = "v:group" && (XmlPatch.attribute node "style").IsSome
+    let target =
+        match XmlPatch.descendantsWhere (fun node -> XmlPatch.name node = "v:group") fallback with
+        | group :: _ -> if isGroup group then Some group else None
+        | [] -> XmlPatch.descendantsWhere isShape fallback |> List.tryHead
+    match target with
+    | Some shape ->
         let mutable declarations = XmlPatch.Style.parse (XmlPatch.attribute shape "style" |> Option.defaultValue "")
         let set property value = declarations <- XmlPatch.Style.set property value declarations
         let remove property = declarations <- XmlPatch.Style.remove property declarations
@@ -2541,12 +2548,19 @@ let private vmlFallbackEdits (fallback: XmlDsl.XmlNode) (item: obj) (moveH: bool
 /// place and the size in its own way: they are changed in it too (vmlFallbackEdits), and a
 /// fallback that cannot be is left out (the DrawingML is what a reader that knows it takes;
 /// Word writes the fallback anew). None: not in this element - a shape in a line
-/// of text that is moved, a group, a canvas, an anchor without the offsets.
+/// of text that is moved, an anchor without the offsets.
+///
+/// A group or a drawing canvas (an item with Children: wpg:wgp, wpc:wpc, v:group) is placed the same
+/// way; resized, its own extent changes - wp:extent and the a:ext of the group's a:xfrm (the first
+/// wpg:grpSpPr: its a:chExt stays, so its shapes scale with it; a canvas has wp:extent alone) -, and a
+/// VML group (a w:pict of its own, or the fallback) its style's place and size. Its shapes' XML is never
+/// touched. (A shape that is not a group: a wpg / wpc / w:pict in its DrawingML is not placed here.)
 let private patchShapeAnchor (xml: string) (item: obj) : string option =
     let moved = item?SourceMoved
     let moveH = boolOrDefault false (moved?H)
     let moveV = boolOrDefault false (moved?V)
     let resize = boolOrDefault false (moved?Size)
+    let isGroup = optionalArray (item?Children) |> Array.isEmpty |> not
     match XmlPatch.readFragmentRoot xml with
     | None -> None
     | Some fragment ->
@@ -2554,10 +2568,17 @@ let private patchShapeAnchor (xml: string) (item: obj) : string option =
         // (The DrawingML: the choice of the alternate content, or the drawing itself.)
         let drawing = named "mc:Choice" fragment.Node |> List.tryHead |> Option.defaultValue fragment.Node
         let fallback = named "mc:Fallback" fragment.Node |> List.tryHead
+        // (A VML group alone: a w:pict and no DrawingML. The fragment's root is a wrapper of the run's content.)
+        let vmlOnly = (named "w:drawing" drawing).IsEmpty && not (named "w:pict" drawing).IsEmpty
         let unplaceable =
-            XmlPatch.descendantsWhere (fun node -> XmlPatch.prefix node = "wpg" || XmlPatch.prefix node = "wpc" || XmlPatch.name node = "w:pict") drawing
+            if isGroup then []
+            else XmlPatch.descendantsWhere (fun node -> XmlPatch.prefix node = "wpg" || XmlPatch.prefix node = "wpc" || XmlPatch.name node = "w:pict") drawing
         let anchor = named "wp:anchor" drawing |> List.tryHead
-        if not unplaceable.IsEmpty then None
+        if isGroup && vmlOnly then
+            // (A VML group alone: its style says where it stands and how large it is.)
+            vmlFallbackEdits drawing item moveH moveV resize
+            |> Option.map (fun placed -> XmlPatch.applyFragment (fun _ -> []) fragment (XmlPatch.editsAt fragment.Node [ placed ]))
+        elif not unplaceable.IsEmpty then None
         elif (moveH || moveV) && anchor.IsNone then None
         else
             let emu (pixels: float) = string (int64 (System.Math.Round(pixels * 9525.0)))
@@ -2587,13 +2608,23 @@ let private patchShapeAnchor (xml: string) (item: obj) : string option =
                 | Some width, Some height ->
                     let size = [ XmlPatch.SetAttribute ("cx", emu width); XmlPatch.SetAttribute ("cy", emu height) ]
                     edit "wp:extent" drawing (fun _ -> size)
-                    // (The shape's own extent: in its properties.)
-                    match XmlPatch.descendantsWhere (fun node -> XmlPatch.localName node = "spPr" && (XmlPatch.prefix node = "wps" || XmlPatch.prefix node = "pic")) drawing with
-                    | properties :: _ ->
-                        match named "a:ext" properties with
-                        | extent :: _ -> edits.Add ((extent, size))
+                    if isGroup then
+                        // (A group's own extent: the a:ext of the a:xfrm of its properties - the outermost group's.
+                        // A canvas has none: its shapes are placed in it, not scaled.)
+                        match named "wpg:grpSpPr" drawing with
+                        | properties :: _ ->
+                            match XmlPatch.child "xfrm" properties |> Option.bind (XmlPatch.child "ext") with
+                            | Some extent when XmlPatch.name extent = "a:ext" -> edits.Add ((extent, size))
+                            | _ -> ok <- false
+                        | [] -> if (named "wpc:wpc" drawing).IsEmpty then ok <- false
+                    else
+                        // (The shape's own extent: in its properties.)
+                        match XmlPatch.descendantsWhere (fun node -> XmlPatch.localName node = "spPr" && (XmlPatch.prefix node = "wps" || XmlPatch.prefix node = "pic")) drawing with
+                        | properties :: _ ->
+                            match named "a:ext" properties with
+                            | extent :: _ -> edits.Add ((extent, size))
+                            | [] -> ()
                         | [] -> ()
-                    | [] -> ()
                 | _ -> ok <- false
             if not ok then None
             else
@@ -2611,14 +2642,21 @@ let rec private generateTextBoxRun (packageSetup: PageSetupInfo) (hyperlinks: Ma
     // (its DrawingML and its VML fallback, with what the model does not hold
     // of them) - when everything that element refers to is in this part.
     let source =
-        (if shapesFromModel then None else optionalString (item?SourceXml))
+        (if shapesFromModel && optionalArray (item?Children) |> Array.isEmpty then None else optionalString (item?SourceXml))
         |> Option.filter (fun xml ->
             OpcXml.relationshipIdsIn xml
             |> List.forall (fun id -> Set.contains id currentPartRelationshipIds))
     // (Moved or resized, and otherwise what was read: its element with the anchor changed in it.)
+    // (A group or a canvas is never written from the model, which has no XML of its shapes: not placed
+    // anew in its element, it is the element as it was read.)
+    let isGroup = optionalArray (item?Children) |> Array.isEmpty |> not
     let source =
         match source with
-        | Some xml when not (isNullOrUndefined (item?SourceMoved)) -> patchShapeAnchor xml item
+        | Some xml when not (isNullOrUndefined (item?SourceMoved)) ->
+            match patchShapeAnchor xml item with
+            | Some patched -> Some patched
+            | None when isGroup -> Some xml
+            | None -> None
         | other -> other
     match source with
     | Some xml -> "<w:r>" + xml + "</w:r>"
@@ -3153,8 +3191,10 @@ let rec private holdsShape (node: XmlDsl.XmlNode) : bool =
 
 /// Whether a run holds a shape the model holds as an item of its own (a text box, a drawing shape or group:
 /// DrawingML wps / wpg, or VML with a text box) - not a picture, which is a run of the model's.
+/// (A drawing canvas or a VML group the reader holds as a group is one too: see DocxReader.Docx.isModelledGroup.)
 let private holdsShapeItem (run: XmlDsl.XmlNode) : bool =
     not (XmlPatch.descendantsWhere (fun node -> XmlPatch.prefix node = "wps" || XmlPatch.prefix node = "wpg" || XmlPatch.name node = "v:textbox") run).IsEmpty
+    || (DocxReader.Docx.modelledShapeRoots run |> List.exists DocxReader.Docx.isModelledGroup)
 
 let private spliceSourceOf (text: string) (start: int) (finish: int) (bookmarks: Set<string>) (keepBookmarks: bool) (keepBreaks: string option) (breaksKept: unit -> unit) : SpliceSource option =
     match XmlDsl.tryScanAt text start finish (System.Collections.Generic.HashSet<string>()) with
