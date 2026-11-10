@@ -3676,6 +3676,11 @@ type Spreadsheet(container: Element) =
                     || (match leftRuns with
                         | (_, _, SpreadsheetLayout.EdgeBorder own) :: _ -> borderWidth own >= cornerWidth
                         | _ -> false)
+                    // (A thin line of a table's style drawn as the cell's grid line covers the corner pixel too:
+                    // inside a table with inner lines that is every cell, and a node at each corner cost a
+                    // screenful of cells a node each.)
+                    || (not (isNull tableShadow.[0]) && cornerHeight <= 1)
+                    || (not (isNull tableShadow.[1]) && cornerWidth <= 1)
                 if not covered && cornerWidth > 0 && cornerHeight > 0 then
                     let stronger = if borderPriority vertical.Style > borderPriority horizontal.Style then vertical else horizontal
                     edgeChildren.Add (100, "position:absolute;pointer-events:none;left:0;top:0;width:" + string cornerWidth + "px;height:" + string cornerHeight

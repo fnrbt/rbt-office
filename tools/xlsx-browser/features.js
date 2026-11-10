@@ -262,6 +262,9 @@ checks['table-entry'] = async () => {
         check('Dark2: dark fills, white text', [look(0, 0), look(1, 0).slice(0, 2), look(2, 0).slice(0, 2)], [[black, white, true], ['rgb(47, 85, 151)', white], ['rgb(68, 114, 196)', white]]);
         grid.SetTableStyle('Sales', { name: 'TableStyleMedium9', showFirstColumn: true }); grid.SetTableTotalRow('Sales', true); await frames();
         check('Medium9: bands in two tints, the first column and the total row in the accent', [look(1, 1)[0], look(2, 1)[0], look(1, 0), look(4, 1)], ['rgb(180, 199, 231)', 'rgb(218, 227, 243)', ['rgb(68, 114, 196)', white, true], ['rgb(68, 114, 196)', white, true]]);
+        // (Its thin white lines inside the table are the cells' grid lines, which cover the corners where they
+        // cross: a node at every corner made scrolling a long table a node a cell slower - grid-scroll-frames.)
+        check('Medium9: the white lines inside drawn as grid lines, no node at the corners', [2, 3].flatMap((row) => [1, 2].map((col) => [node(row, col).querySelectorAll('.spreadsheet-edge').length, getComputedStyle(node(row, col)).boxShadow.includes(white)])), [[0, true], [0, true], [0, true], [0, true]]);
         grid.SetTableTotalRow('Sales', false); grid.SetTableStyle('Sales', 'TableStyleMedium2');
 
         // ---- saved and opened again ----
