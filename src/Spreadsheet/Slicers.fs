@@ -200,9 +200,13 @@ let private box (dxf: Dxf) (x: float) (y: float) (width: float) (height: float) 
     (match dxf.Fill with Some fill -> [ PRect (x, y, width, height, Some (hash fill), 1.0, None, 0.0, 0.0) ] | None -> [])
     @ edges dxf x y width height
 
-/// Margins of a slicer, pixels (Excel's are not in the file: measured by eye).
-let private margin = 6.0
+/// Margins of a slicer, pixels (Excel's are not in the file). Measured on Excel 2019's own picture of
+/// synthetic-slicers.xlsx at 100%: the buttons and the header's line 10 px in from the frame at the sides,
+/// the line 27 px below the top, the first row of buttons 32 px below it, a button's text 8 px into it.
+let private margin = 10.0
+let private bottomMargin = 6.0
 let private headerHeight = 30.0
+let private buttonPadding = 8.0
 let private columnGap = 4.0
 let private rowGap = 3.0
 let private scrollWidth = 10.0
@@ -253,14 +257,14 @@ let slicerItems (look: SlicerLook) (data: ChartData) (info: XlsxReader.SlicerInf
             let bold = look.Header.Bold |> Option.defaultValue false
             let color = look.Header.FontColor |> Option.orElse look.Whole.FontColor |> Option.defaultValue "000000"
             (match look.Header.Fill with Some fill -> [ PRect (0.0, 0.0, width, headerHeight, Some (hash fill), 1.0, None, 0.0, 0.0) ] | None -> [])
-            @ [ PText (margin + 2.0, headerHeight / 2.0, fitted textSize bold (width - 2.0 * margin - 4.0) info.Caption, textSize, hash color, "start", bold, false, 0.0) ]
-            @ edges { plain with Bottom = look.Header.Bottom } margin 0.0 (width - 2.0 * margin) (headerHeight - 4.0)
+            @ [ PText (margin, headerHeight / 2.0, fitted textSize bold (width - 2.0 * margin - 4.0) info.Caption, textSize, hash color, "start", bold, false, 0.0) ]
+            @ edges { plain with Bottom = look.Header.Bottom } margin 0.0 (width - 2.0 * margin) (headerHeight - 2.0)
     let buttons = slicerButtons data info
-    let top = if info.ShowCaption then headerHeight + 2.0 else margin
+    let top = if info.ShowCaption then headerHeight + 2.0 else bottomMargin
     let buttonHeight = max 4.0 (info.RowHeight / 9525.0)
     let columns = max 1 info.ColumnCount
     let rows = (buttons.Length + columns - 1) / columns
-    let fit = max 1 (int (floor ((height - top - margin + rowGap) / (buttonHeight + rowGap))))
+    let fit = max 1 (int (floor ((height - top - bottomMargin + rowGap) / (buttonHeight + rowGap))))
     let firstRow = min (info.StartItem / columns) (max 0 (rows - fit))
     let scrolls = rows > fit
     let inner = width - 2.0 * margin - (if scrolls then scrollWidth + columnGap else 0.0)
@@ -282,12 +286,13 @@ let slicerItems (look: SlicerLook) (data: ChartData) (info: XlsxReader.SlicerInf
             let bold = format.Bold |> Option.defaultValue false
             let color = format.FontColor |> Option.orElse look.Whole.FontColor |> Option.defaultValue "000000"
             box format x y buttonWidth buttonHeight
-            @ [ PText (x + buttonWidth / 2.0, y + buttonHeight / 2.0, fitted textSize bold (buttonWidth - 8.0) item.Label, textSize, hash color, "middle", bold, format.Italic |> Option.defaultValue false, 0.0) ])
+            // (The text at the button's left, as Excel sets it.)
+            @ [ PText (x + buttonPadding, y + buttonHeight / 2.0, fitted textSize bold (buttonWidth - buttonPadding - 4.0) item.Label, textSize, hash color, "start", bold, format.Italic |> Option.defaultValue false, 0.0) ])
     let scrollBar =
         if not scrolls then []
         else
             let x = width - margin - scrollWidth
-            let track = height - top - margin
+            let track = height - top - bottomMargin
             let thumb = max 12.0 (track * float fit / float rows)
             let thumbTop = top + (track - thumb) * float firstRow / float (max 1 (rows - fit))
             [ PRect (x, top, scrollWidth, track, Some "#F0F0F0", 1.0, None, 0.0, 0.0)
@@ -295,7 +300,7 @@ let slicerItems (look: SlicerLook) (data: ChartData) (info: XlsxReader.SlicerInf
     (match look.Whole.Fill with Some fill -> [ PRect (0.0, 0.0, width, height, Some (hash fill), 1.0, None, 0.0, 0.0) ] | None -> [ PRect (0.0, 0.0, width, height, Some "#FFFFFF", 1.0, None, 0.0, 0.0) ])
     @ header
     // (The buttons stop at the bottom margin; what is below is cut off.)
-    @ [ PGroup (0.0, 0.0, width, height - margin + 1.0, buttonItems) ]
+    @ [ PGroup (0.0, 0.0, width, height - bottomMargin + 1.0, buttonItems) ]
     @ scrollBar
     @ edges look.Whole 0.0 0.0 width height
 

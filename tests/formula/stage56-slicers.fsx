@@ -39,15 +39,16 @@ let rec flat (items: Charts.Primitive list) : Charts.Primitive list =
                 | other -> other)
         | other -> [ other ])
 let texts (items: Charts.Primitive list) = flat items |> List.choose (fun item -> match item with Charts.PText (_, _, value, _, _, _, _, _, _) -> Some value | _ -> None)
-/// The buttons drawn: (label, x, y, fill, text colour, bold), the label centred on its rectangle.
+/// The buttons drawn: (label, x, y, fill, text colour, bold), the label at the rectangle's left, 8 px in
+/// (as Excel 2019 draws it), centred on its height.
 let buttons (items: Charts.Primitive list) =
     let all = flat items
     all |> List.choose (fun item ->
         match item with
-        | Charts.PText (x, y, label, _, color, "middle", bold, _, _) ->
+        | Charts.PText (x, y, label, _, color, "start", bold, _, _) ->
             all |> List.tryPick (fun other ->
                 match other with
-                | Charts.PRect (rx, ry, w, h, fill, _, _, _, _) when abs (rx + w / 2.0 - x) < 0.01 && abs (ry + h / 2.0 - y) < 0.01 -> Some (label, rx, ry, fill, color, bold)
+                | Charts.PRect (rx, ry, w, h, fill, _, _, _, _) when abs (rx + 8.0 - x) < 0.01 && abs (ry + h / 2.0 - y) < 0.01 && w > 16.0 -> Some (label, rx, ry, fill, color, bold)
                 | _ -> None)
         | _ -> None)
 let noData : Charts.ChartData =
@@ -121,6 +122,11 @@ match sceneNamed syn drawer synData "Region" 240.0 200.0 with
     | [ (_, x0, y0, _, _, _); (_, x1, y1, _, _, _); (_, x2, y2, _, _, _); (_, x3, y3, _, _, _) ] ->
         ok "... North and South side by side, East and West under them" (y0 = y1 && x0 < x1 && y2 = y3 && y2 > y0 && x2 = x0 && x3 = x1) (sprintf "%A" shown)
         ok "... as high as the slicer says (241300 EMU: 25.33 px) with a gap" (abs (y2 - y0 - (241300.0 / 9525.0 + 3.0)) < 0.01) (sprintf "%g" (y2 - y0))
+        // (Excel 2019 at 100%: the buttons 10 px in from the frame at both sides, 4 px apart, the first row
+        // 32 px below the top, the header's line 27 px below it.)
+        eq "... where Excel puts them: 10 px in at both sides, 4 px apart, 32 px from the top" (x0, x1 + (x1 - x0 - 4.0), y0) (10.0, 230.0, 32.0)
+        ok "... the header's line 27 px down, from 10 px in to 10 px from the right"
+            (flat scene.Items |> List.exists (fun item -> match item with Charts.PLine (10.0, 27.5, 230.0, 27.5, _, _, _) -> true | _ -> false)) (sprintf "%A" (flat scene.Items))
     | _ -> ok "Region: four buttons" false (sprintf "%A" shown)
     eq "... in SlicerStyleLight1 in the theme: selected with data in accent 1 tint 60%, unselected white, selected without data tint 80% in grey text"
         (shown |> List.map (fun (_, _, _, fill, color, _) -> fill, color))
