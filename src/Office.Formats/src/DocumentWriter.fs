@@ -1147,6 +1147,8 @@ let private paragraphSectionProperties (packageSetup: PageSetupInfo) (para: obj)
         Some (element "w:sectPr" [] (sectionPropertiesChildren refs sectionBreak (Some setup) pageNumberStart (optionalString (para?SectionPageNumberFormat))))
 
 let private defaultFontSizePixels = 11.0 * 96.0 / 72.0
+/// The reader's size of text no style sizes (Word's 10pt; DocxReader.wordFontSizeToPoints).
+let private unsetFontSizePixels = 10.0 * 96.0 / 72.0
 
 /// The reader's name for the document defaults (w:docDefaults) in its style
 /// list, and the style id it gives a table cell paragraph that only has those.
@@ -1167,7 +1169,7 @@ let private paragraphFontSize (para: obj) : float =
         optionalArray (para?Runs)
         |> Array.choose (fun run ->
             if boolOrDefault false (run?IsImage) then None else optionalFloat (run?FontSize))
-        |> fun sizes -> if sizes.Length = 0 then defaultFontSizePixels else Array.max sizes
+        |> fun sizes -> if sizes.Length = 0 then unsetFontSizePixels else Array.max sizes
 
 let private paragraphBorderElement name (value: obj) =
     if isNullOrUndefined value then None

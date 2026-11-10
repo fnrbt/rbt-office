@@ -4904,13 +4904,15 @@ let extractText (doc: WordDocument) : string =
     |> String.concat "\n\n"
 
 // Convert DocumentContent to EditorParagraph format for Word editor
+/// Text no style, no document default and no run gives a size is 10 pt in Word
+/// (w:sz's own default, 20 half-points), not the 11 pt of Normal in Word's template.
 let private wordFontSizeToPoints (fontSize: string option) =
     match fontSize with
     | Some value ->
         match System.Double.TryParse(value) with
         | true, halfPoints -> (halfPoints / 2.0) * 96.0 / 72.0
-        | false, _ -> 11.0 * 96.0 / 72.0
-    | None -> 11.0 * 96.0 / 72.0
+        | false, _ -> 10.0 * 96.0 / 72.0
+    | None -> 10.0 * 96.0 / 72.0
 
 /// w:position is in half-points and the editor (Paint) takes points. It used to
 /// go through wordFontSizeToPoints, which turned it into px and, worse, turned

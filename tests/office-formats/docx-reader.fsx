@@ -299,9 +299,30 @@ ok "column-separator-read"
    (partsDoc.PageSetup |> Option.bind (fun setup -> setup.Columns) |> Option.exists (fun columns -> columns.Count = 2 && columns.Separator))
    (sprintf "%A" (partsDoc.PageSetup |> Option.map (fun setup -> setup.Columns)))
 ok "picture-is-not-a-shape" partsDoc.Shapes.IsEmpty (sprintf "%d shapes" partsDoc.Shapes.Length)
-ok "default-run-size-is-11pt-in-px"
-   (abs (DocumentProcessors.StyleResolution.defaultRunProps.FontSize - 11.0 * 96.0 / 72.0) < 1e-9)
+// Text whose size no style, no document default and no run states is 10 pt in Word (w:sz's
+// default of 20 half-points), not the 11 pt of Normal in Word's own template.
+ok "default-run-size-is-10pt-in-px"
+   (abs (DocumentProcessors.StyleResolution.defaultRunProps.FontSize - 10.0 * 96.0 / 72.0) < 1e-9)
    (string DocumentProcessors.StyleResolution.defaultRunProps.FontSize)
+do
+    let unsized =
+        docxWithParts
+            "<w:p><w:r><w:t>no size anywhere</w:t></w:r></w:p>"
+            [ "word/styles.xml", sprintf "<w:styles %s><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii=\"Arial\"/></w:rPr></w:rPrDefault></w:docDefaults><w:style w:type=\"paragraph\" w:default=\"1\" w:styleId=\"Normal\"><w:name w:val=\"Normal\"/></w:style></w:styles>" wNs ]
+            []
+        |> DocxReader.loadBytesNative |> Option.get
+    let items =
+        DocxReader.toEditorParagraphsWithStylesThemeAndNumbering
+            unsized.Theme unsized.Content unsized.Images unsized.Styles unsized.NumberingDefinitions unsized.Footnotes unsized.Endnotes
+        |> Array.map (fun item -> item :?> System.Collections.Generic.Dictionary<string, obj>)
+    let sizes =
+        items
+        |> Array.collect (fun item ->
+            match item.TryGetValue "Runs" with
+            | true, (:? (obj array) as runs) -> runs |> Array.map (fun run -> Math.Round(unbox<float> ((run :?> System.Collections.Generic.Dictionary<string, obj>).["FontSize"]) * 72.0 / 96.0, 2))
+            | _ -> [||])
+        |> Array.toList
+    ok "a run no style sizes is 10 pt" (sizes = [ 10.0 ]) (sprintf "%A" sizes)
 
 // ----- explicit (direct) run and paragraph formatting for the editor ---------
 // The editor objects carry effective formatting; ExplicitX says what was set on

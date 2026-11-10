@@ -1797,9 +1797,9 @@ let importFromEditorPackage (package: obj) : Document =
             doc
 
 /// Export Word document to EditorParagraphs for Office.Formats
-/// Reader px for a run with no size anywhere (11pt), which the model holds as
+/// Reader px for a run with no size anywhere (Word's 10pt), which the model holds as
 /// the unset size TextBuffer.defaultStyle.FontSize.
-let private unsetFontSizePixels = 11.0 * 96.0 / 72.0
+let private unsetFontSizePixels = 10.0 * 96.0 / 72.0
 
 /// `context` is the style context of the document being exported; with it,
 /// formatting a run merely inherits from its paragraph / character style is
