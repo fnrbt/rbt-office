@@ -87,6 +87,11 @@ eq "the workbook's slicer and timeline styles: the defaults, the custom ones and
      syn.SlicerStyles.DefaultTimeline, syn.SlicerStyles.Timelines |> List.map (fun style -> style.Name, style.Elements |> List.map fst))
     (Some "SlicerStyleLight1", [ "Slicer Custom", [ "unselectedItemWithData"; "unselectedItemWithNoData"; "selectedItemWithData"; "selectedItemWithNoData" ] ],
      Some "TimeSlicerStyleLight1", [ "Timeline Custom", [ "selectedTimeBlock" ] ])
+// A timeline style's elements point into <x15:dxfs>, a list of their own, not into the slicer styles' <x14:dxfs>.
+eq "the custom timeline's selected periods: its <x15:dxfs> format (accent 6), the custom slicer's selected buttons theirs (orange)"
+    (syn.SlicerStyles.Timelines |> List.collect (fun style -> style.Elements) |> List.map (fun (_, dxf) -> dxf.Fill),
+     syn.SlicerStyles.Slicers |> List.collect (fun style -> style.Elements) |> List.filter (fst >> (=) "selectedItemWithData") |> List.map (fun (_, dxf) -> dxf.Fill))
+    ([ Some "70AD47" ], [ Some "FFC000" ])
 
 // ---- ... and drawn, through the drawing's anchors ------------------------------------------------------
 let drawer = Slicers.drawer syn

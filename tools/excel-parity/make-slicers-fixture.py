@@ -250,7 +250,11 @@ x14_dxfs = [
     '<dxf><font><color rgb="FFA6A6A6"/></font><fill><patternFill patternType="solid"><fgColor rgb="FFFFE699"/><bgColor rgb="FFFFE699"/></patternFill></fill></dxf>',
     # 3 unselectedItemWithNoData
     '<dxf><font><color rgb="FFA6A6A6"/></font><fill><patternFill patternType="solid"><fgColor rgb="FFFFFFFF"/><bgColor rgb="FFFFFFFF"/></patternFill></fill></dxf>',
-    # 4 the custom timeline's selected periods: green
+]
+# A timeline style's elements point into a list of their own, <x15:dxfs> (Excel does not open a workbook whose
+# timeline style points into <x14:dxfs>, as this fixture's first version did).
+x15_dxfs = [
+    # 0 the custom timeline's selected periods: green
     '<dxf><fill><patternFill patternType="solid"><fgColor theme="9"/><bgColor theme="9"/></patternFill></fill></dxf>',
 ]
 styles = (DECL + '<styleSheet xmlns="%s" xmlns:mc="%s" mc:Ignorable="x14ac" xmlns:x14ac="http://schemas.microsoft.com/office/spreadsheetml/2009/9/ac">'
@@ -261,18 +265,20 @@ styles = (DECL + '<styleSheet xmlns="%s" xmlns:mc="%s" mc:Ignorable="x14ac" xmln
           '<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="14" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs>'
           '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>'
           '<dxfs count="%d">%s</dxfs>'
-          '<tableStyles count="1" defaultTableStyle="TableStyleMedium2" defaultPivotStyle="PivotStyleLight16">'
-          '<tableStyle name="Slicer Custom" pivot="0" table="0" count="2"><tableStyleElement type="wholeTable" dxfId="0"/><tableStyleElement type="headerRow" dxfId="1"/></tableStyle></tableStyles>'
+          '<tableStyles count="2" defaultTableStyle="TableStyleMedium2" defaultPivotStyle="PivotStyleLight16">'
+          '<tableStyle name="Slicer Custom" pivot="0" table="0" count="2"><tableStyleElement type="wholeTable" dxfId="0"/><tableStyleElement type="headerRow" dxfId="1"/></tableStyle>'
+          '<tableStyle name="Timeline Custom" pivot="0" table="0" count="0"/></tableStyles>'
           '<extLst>'
           '<ext uri="{46F421CA-312F-682f-3DD2-61675219B42D}" xmlns:x14="%s"><x14:dxfs count="%d">%s</x14:dxfs></ext>'
           '<ext uri="{EB79DEF2-80B8-43e5-95BD-54CBDDF9020C}" xmlns:x14="%s"><x14:slicerStyles defaultSlicerStyle="SlicerStyleLight1">'
           '<x14:slicerStyle name="Slicer Custom"><x14:slicerStyleElements><x14:slicerStyleElement type="unselectedItemWithData" dxfId="1"/>'
           '<x14:slicerStyleElement type="unselectedItemWithNoData" dxfId="3"/><x14:slicerStyleElement type="selectedItemWithData" dxfId="0"/>'
           '<x14:slicerStyleElement type="selectedItemWithNoData" dxfId="2"/></x14:slicerStyleElements></x14:slicerStyle></x14:slicerStyles></ext>'
+          '<ext uri="{A0A4C193-F2C1-4fcb-8827-314CF55A85BB}" xmlns:x15="%s"><x15:dxfs count="%d">%s</x15:dxfs></ext>'
           '<ext uri="{9260A510-F301-46a8-8635-F512D64BE5F5}" xmlns:x15="%s"><x15:timelineStyles defaultTimelineStyle="TimeSlicerStyleLight1">'
-          '<x15:timelineStyle name="Timeline Custom"><x15:timelineStyleElements><x15:timelineStyleElement type="selectedTimeBlock" dxfId="4"/></x15:timelineStyleElements></x15:timelineStyle>'
+          '<x15:timelineStyle name="Timeline Custom"><x15:timelineStyleElements><x15:timelineStyleElement type="selectedTimeBlock" dxfId="0"/></x15:timelineStyleElements></x15:timelineStyle>'
           '</x15:timelineStyles></ext></extLst></styleSheet>') % (
-    MAIN, MC, len(dxfs), ''.join(dxfs), X14, len(x14_dxfs), ''.join(x14_dxfs), X14, X15)
+    MAIN, MC, len(dxfs), ''.join(dxfs), X14, len(x14_dxfs), ''.join(x14_dxfs), X14, X15, len(x15_dxfs), ''.join(x15_dxfs), X15)
 
 shared = (DECL + '<sst xmlns="%s" count="%d" uniqueCount="%d">%s</sst>') % (
     MAIN, len(strings), len(strings), ''.join('<si><t>%s</t></si>' % s for s in strings))

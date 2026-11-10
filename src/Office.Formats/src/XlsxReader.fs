@@ -259,7 +259,8 @@ type TableStyleDefinition = { Name: string; Table: bool; Pivot: bool; Elements: 
 
 /// A custom slicer or timeline style of styles.xml (`<x14:slicerStyle>` / `<x15:timelineStyle>` in its
 /// extension list): the format of each of its elements by type (`selectedItemWithData`,
-/// `unselectedItemWithNoData` ..., `selectedTimeBlock` ...), from the `<x14:dxfs>` it points into. The
+/// `unselectedItemWithNoData` ..., `selectedTimeBlock` ...), from the `<x14:dxfs>` (a slicer style's) or
+/// `<x15:dxfs>` (a timeline style's) it points into. The
 /// whole slicer and its header are the elements of the table style of the same name (`<tableStyle
 /// table="0" pivot="0">`).
 type SlicerStyleDefinition = { Name: string; Elements: (string * TableStyleDxf) list }
@@ -4858,7 +4859,7 @@ module TableStyleDefinitions =
 
 /// The slicer and timeline styles of a styles part: `<x14:slicerStyles defaultSlicerStyle>` and
 /// `<x15:timelineStyles defaultTimelineStyle>` of its extension list, their elements' formats from the
-/// `<x14:dxfs>` there.
+/// `<x14:dxfs>` (slicers) and `<x15:dxfs>` (timelines) there.
 module SlicerStyleDefinitions =
     let none : SlicerStyles = { Slicers = []; DefaultSlicer = None; Timelines = []; DefaultTimeline = None }
 
@@ -4866,13 +4867,16 @@ module SlicerStyleDefinitions =
         match Xlsx.sElem "extLst" stylesDoc with
         | None -> none
         | Some extLst ->
-            let dxfs =
-                Xlsx.sElems "dxfs" extLst
-                |> List.tryHead
+            // The formats of slicer styles are the <x14:dxfs> of the extension {46F421CA-...}, those of timeline
+            // styles the <x15:dxfs> of {A0A4C193-...}: two lists, each numbered from 0.
+            let dxfsOf (uri: string) =
+                Xml.children extLst
+                |> List.tryFind (fun ext -> Xml.attr "uri" ext |> Option.exists (fun value -> System.String.Equals(value, uri, System.StringComparison.OrdinalIgnoreCase)))
+                |> Option.bind (fun ext -> Xlsx.sElems "dxfs" ext |> List.tryHead)
                 |> Option.map (fun list -> Xml.children list |> List.filter (fun node -> Xml.name node |> Option.map Ns.stripNs = Some "dxf"))
                 |> Option.defaultValue []
                 |> List.toArray
-            let styles (listName: string) (styleName: string) (elementName: string) (defaultName: string) =
+            let styles (dxfs: XmlNode array) (listName: string) (styleName: string) (elementName: string) (defaultName: string) =
                 match Xlsx.sElems listName extLst |> List.tryHead with
                 | None -> [], None
                 | Some list ->
@@ -4888,8 +4892,8 @@ module SlicerStyleDefinitions =
                                     | Some kind, Some id when id >= 0 && id < dxfs.Length -> Some (kind, TableStyleDefinitions.parseDxf themeColors dxfs.[id])
                                     | _ -> None) } : SlicerStyleDefinition)),
                     Xml.attr defaultName list
-            let slicers, defaultSlicer = styles "slicerStyles" "slicerStyle" "slicerStyleElement" "defaultSlicerStyle"
-            let timelines, defaultTimeline = styles "timelineStyles" "timelineStyle" "timelineStyleElement" "defaultTimelineStyle"
+            let slicers, defaultSlicer = styles (dxfsOf "{46F421CA-312F-682f-3DD2-61675219B42D}") "slicerStyles" "slicerStyle" "slicerStyleElement" "defaultSlicerStyle"
+            let timelines, defaultTimeline = styles (dxfsOf "{A0A4C193-F2C1-4fcb-8827-314CF55A85BB}") "timelineStyles" "timelineStyle" "timelineStyleElement" "defaultTimelineStyle"
             { Slicers = slicers; DefaultSlicer = defaultSlicer; Timelines = timelines; DefaultTimeline = defaultTimeline }
 
 // Data Validation parsing
