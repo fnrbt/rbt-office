@@ -153,10 +153,17 @@ match sceneNamed syn drawer synData "Date" 600.0 140.0 with
     ok "the timeline: caption, selection in words, level, years and months"
         ([ "Date"; "Mar 2012 - Dec 2012"; "MONTHS ▾"; "2012"; "JAN"; "FEB"; "MAR"; "DEC"; "2013" ] |> List.forall (fun value -> List.contains value shown)) (sprintf "%A" shown)
     let blocks =
-        flat scene.Items |> List.choose (fun item -> match item with Charts.PRect (x, _, w, h, Some fill, _, _, _, _) when w > 30.0 && w < 40.0 && h = 16.0 -> Some (x, fill) | _ -> None) |> List.sortBy fst |> List.map snd
-    eq "... a block a month from January 2012: March to December in the custom style's green, the others grey"
-        (blocks |> List.truncate 14)
-        ([ "#E7E6E6"; "#E7E6E6" ] @ List.replicate 10 ("#" + theme.[9]) @ [ "#E7E6E6"; "#E7E6E6" ])
+        flat scene.Items |> List.choose (fun item -> match item with Charts.PRect (x, y, w, h, fill, _, _, _, _) when w > 40.0 && w < 50.0 && h = 16.0 -> Some (x, y, fill) | _ -> None) |> List.sortBy (fun (x, _, _) -> x)
+    // (Excel 2019: a month 48.5 px wide; the custom style has only selectedTimeBlock, so the others have no fill.)
+    eq "... a block a month from January 2012, 48.5 px apart: March to December in the custom style's green, the others without a fill"
+        (blocks |> List.truncate 13 |> List.map (fun (_, _, fill) -> fill), blocks |> List.pairwise |> List.map (fun ((a, _, _), (b, _, _)) -> b - a) |> List.distinct)
+        ([ None; None ] @ List.replicate 10 (Some ("#" + theme.[9])) @ [ None ], [ 48.5 ])
+    let labelAt (value: string) = flat scene.Items |> List.tryPick (fun item -> match item with Charts.PText (x, y, known, _, _, anchor, _, _, _) when known = value -> Some (x, y, anchor) | _ -> None)
+    eq "... a month's label at its block's left, above it (as Excel), the year above that"
+        (match labelAt "MAR", labelAt "2012", blocks |> List.tryItem 2 with
+         | Some (x, y, anchor), Some (_, yearY, _), Some (blockX, blockY, _) -> Some (x - blockX, anchor, y < blockY, yearY < y)
+         | _ -> None)
+        (Some (1.0, "start", true, true))
 | None -> ok "the timeline is drawn" false "a placeholder"
 eq "a name the workbook has no slicer of: None (the frame says what it is)" (drawer "slicer" "Nothing" noData 100.0 100.0) None
 
