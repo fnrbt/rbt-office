@@ -2411,6 +2411,8 @@ module Docx =
         | Some name when Ns.stripNs name = "p" ->
             [ Para (paragraphWithRenderedBreakCounter (Some renderedBreakCounter) child) ]
         | Some name when Ns.stripNs name = "tbl" ->
+            // (Its rows start pages too: the paragraphs after it are counted from Word's page.)
+            renderedBreakCounter.Value <- renderedBreakCounter.Value + List.length (Ns.descendantsNs "lastRenderedPageBreak" child)
             [ Tbl (table child) ]
         | Some name when Ns.stripNs name = "sdt" ->
             match Ns.childNs "sdtContent" child with
