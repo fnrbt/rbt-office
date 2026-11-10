@@ -1,59 +1,22 @@
-/// Values the editor's package hands the writer as text, read into what they say: the bookmarks of a run,
+/// Values the editor's package hands the writer, read into what they say: the bookmarks of a run (typed),
 /// a run's text with its tabs and breaks, link targets, picture sources, colours, the keys of numbering
 /// levels. (XML is not among them: that is XmlPatch's.)
 module ModelText
 
 // ---- bookmarks ----
-// The reader joins the bookmarks of a run in one string, separated by U+001F: a run has all the bookmarks
-// that start before it and end after it. A start token "id!" is a bookmark that ends where it starts; an
-// end token "!id=name" is a bookmark opened after the last run of a paragraph that ends there too,
-// "!id=name<" one that ends further on.
+// A run has all the bookmarks that start before it and end after it, in the order of the file: the reader
+// reads them into these, the editor's package carries them as arrays of objects (a run's BookmarkStarts and
+// BookmarkEnds), and the writer writes them from those. (Typed: no text to take apart.)
 
-let separator = '\u001F'
-
-/// A bookmark that starts before a run.
+/// A bookmark that starts before a run (its name "" when the file gives none); `EndsHere`: it ends where it
+/// starts, before the run too.
 type BookmarkStart = { Id: string; Name: string; EndsHere: bool }
 
-/// What ends after a run: a bookmark's end, or a bookmark opened there (and whether it ends there too).
+/// What ends after a run: a bookmark's end, or a bookmark opened there - after the last run of a paragraph
+/// (`EndsHere`: it ends there too; otherwise further on).
 type BookmarkEnd =
     | Ends of id: string
-    | Opens of id: string * name: string * endsHere: bool
-
-let private tokens (ids: string) = ids.Split(separator) |> Array.toList
-
-/// The bookmarks a run's ids and names (one string each, as the reader joins them) start.
-let bookmarkStarts (ids: string) (names: string) : BookmarkStart list =
-    let names = tokens names
-    tokens ids
-    |> List.mapi (fun index token ->
-        let endsHere = token.EndsWith "!"
-        let id = if endsHere then token.TrimEnd('!') else token
-        let name = match List.tryItem index names with Some name when name <> "" -> name | _ -> "bookmark" + id
-        { Id = id; Name = name; EndsHere = endsHere })
-
-/// What a run's end ids (as the reader joins them) end, or open after it.
-let bookmarkEnds (ids: string) : BookmarkEnd list =
-    tokens ids
-    |> List.map (fun token ->
-        match List.ofSeq token with
-        | '!' :: rest ->
-            let opened = List.tryLast rest = Some '<'
-            let body = (if opened then List.take (rest.Length - 1) rest else rest) |> List.map string |> String.concat ""
-            match body.Split([| '=' |], 2) with
-            | [| id; name |] when name <> "" -> Opens (id, name, not opened)
-            | parts -> Opens (parts.[0], "bookmark" + parts.[0], not opened)
-        | _ -> Ends token)
-
-/// The end token of a bookmark opened after the last run of a paragraph (`start`: its start token, "id" or
-/// "id!" for one that ends there too): "!id=name<", or "!id=name".
-let openedBookmarkEnd (start: string) (name: string) : string =
-    "!" + start.TrimEnd('!') + "=" + name + (if start.EndsWith "!" then "" else "<")
-
-/// Whether a run's start ids are of one bookmark that does not end where it starts.
-let isOneOpenBookmark (ids: string) : bool =
-    match bookmarkStarts ids "" with
-    | [ start ] -> not start.EndsHere
-    | _ -> false
+    | Opens of BookmarkStart
 
 // ---- a run's text ----
 

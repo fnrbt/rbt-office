@@ -90,6 +90,50 @@ let private boolOrDefault defaultValue (value: obj) =
     if isNullOrUndefined value then defaultValue
     else unbox<bool> value
 
+// ---- a run's bookmarks in the package (Office.Formats' DocxReader.bookmarkFields) ----
+// BookmarkStarts: [{ Id, Name, EndsHere }], the bookmarks that start before the run; BookmarkEnds: what ends
+// after it - [{ Id }] a bookmark's end, [{ Id, Name, EndsHere, Opens: true }] a bookmark opened after it.
+
+let private bookmarkStartOf (entry: obj) : TextBuffer.BookmarkStart =
+    { Id = (match optionalString (entry?Id) with Some id -> id | None -> "")
+      Name = (match optionalString (entry?Name) with Some name -> name | None -> "")
+      EndsHere = boolOrDefault false (entry?EndsHere) }
+
+let private packageArray (value: obj) : obj array =
+    if isNullOrUndefined value then [||] else unbox<obj array> value
+
+/// The bookmarks that start before a run of the package, and what ends or is opened after it.
+let private bookmarksOfPackageRun (run: obj) : TextBuffer.BookmarkStart list * TextBuffer.BookmarkEnd list =
+    (packageArray (run?BookmarkStarts) |> Array.map bookmarkStartOf |> List.ofArray),
+    (packageArray (run?BookmarkEnds)
+     |> Array.map (fun entry -> if boolOrDefault false (entry?Opens) then TextBuffer.Opens (bookmarkStartOf entry) else TextBuffer.Ends (bookmarkStartOf entry).Id)
+     |> List.ofArray)
+
+/// Which bookmark a start (or an end) of a run is, among those of a paragraph's runs: a start by its id and
+/// whether it ends where it starts, an end by its id and whether it is a bookmark opened there.
+let private startKey (start: TextBuffer.BookmarkStart) = (if start.EndsHere then "point " else "start ") + start.Id
+let private endKey (ending: TextBuffer.BookmarkEnd) =
+    match ending with
+    | TextBuffer.Ends id -> "end " + id
+    | TextBuffer.Opens start -> (if start.EndsHere then "opens point " else "opens ") + start.Id
+
+let private bookmarkStartObject (start: TextBuffer.BookmarkStart) : obj =
+    createObj [ "Id" ==> start.Id; "Name" ==> start.Name; "EndsHere" ==> start.EndsHere ]
+
+/// A run's bookmarks for the package (none: not there).
+let private packageBookmarkStarts (starts: TextBuffer.BookmarkStart list) : obj array option =
+    if starts.IsEmpty then None else Some (starts |> List.map bookmarkStartObject |> List.toArray)
+
+let private packageBookmarkEnds (ends: TextBuffer.BookmarkEnd list) : obj array option =
+    if ends.IsEmpty then None
+    else
+        ends
+        |> List.map (function
+            | TextBuffer.Ends id -> createObj [ "Id" ==> id ]
+            | TextBuffer.Opens start -> createObj [ "Id" ==> start.Id; "Name" ==> start.Name; "EndsHere" ==> start.EndsHere; "Opens" ==> true ])
+        |> List.toArray
+        |> Some
+
 let private floatOrDefault defaultValue (value: obj) =
     if isNullOrUndefined value then defaultValue
     else unbox<float> value
@@ -707,9 +751,7 @@ let private editorRunsToBuffer (runs: obj array) : TextBuffer =
                 let noteId = optionalString (run?NoteId)
                 let noteType = optionalString (run?NoteType)
                 let noteText = optionalString (run?NoteText)
-                let bookmarkStartId = optionalString (run?BookmarkStartId)
-                let bookmarkName = optionalString (run?BookmarkName)
-                let bookmarkEndId = optionalString (run?BookmarkEndId)
+                let bookmarkStarts, bookmarkEnds = bookmarksOfPackageRun run
                 let fieldCode = optionalString (run?FieldCode)
                 let fieldResult = optionalString (run?FieldResult)
                 let renderedPageBreakBefore = run?RenderedPageBreakBefore |> boolOrDefault false
@@ -775,9 +817,8 @@ let private editorRunsToBuffer (runs: obj array) : TextBuffer =
                     NoteId = noteId
                     NoteType = noteType
                     NoteText = noteText
-                    BookmarkStartId = bookmarkStartId
-                    BookmarkName = bookmarkName
-                    BookmarkEndId = bookmarkEndId
+                    BookmarkStarts = bookmarkStarts
+                    BookmarkEnds = bookmarkEnds
                     FieldCode = fieldCode
                     FieldResult = fieldResult
                     RenderedPageBreakBefore = renderedPageBreakBefore
@@ -1891,6 +1932,7 @@ let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) 
     // A bookmark is written once. A run that was split - a part of it made bold, text typed
     // into it in another format - leaves its bookmarks on every part: the start belongs to
     // the first run of the paragraph that has it, the end to the last.
+    // (A start by its id, and whether it ends where it starts; an end by its id, and whether it is an opening.)
     let bookmarkOwners =
         let firstStart = System.Collections.Generic.Dictionary<string, TextBuffer.TextRun>()
         let lastEnd = System.Collections.Generic.Dictionary<string, TextBuffer.TextRun>()
@@ -1898,44 +1940,28 @@ let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) 
         for run in buffer.Runs do
             match run with
             | Text tr ->
-                match tr.Style.BookmarkStartId with
-                | Some ids ->
+                for start in tr.Style.BookmarkStarts do
                     any <- true
-                    for token in ids.Split TextBuffer.bookmarkSeparator do
-                        if not (firstStart.ContainsKey token) then firstStart.[token] <- tr
-                | None -> ()
-                match tr.Style.BookmarkEndId with
-                | Some ids ->
+                    let key = startKey start
+                    if not (firstStart.ContainsKey key) then firstStart.[key] <- tr
+                for ending in tr.Style.BookmarkEnds do
                     any <- true
-                    for token in ids.Split TextBuffer.bookmarkSeparator do lastEnd.[token] <- tr
-                | None -> ()
+                    lastEnd.[endKey ending] <- tr
             | Image _ -> ()
         if any then Some (firstStart, lastEnd) else None
-    let ownBookmarks (tr: TextBuffer.TextRun) : string option * string option * string option =
+    let ownBookmarks (tr: TextBuffer.TextRun) : TextBuffer.BookmarkStart list * TextBuffer.BookmarkEnd list =
         match bookmarkOwners with
-        | None -> None, None, None
+        | None -> [], []
         | Some (firstStart, lastEnd) ->
-            let join (values: string list) = if values.IsEmpty then None else Some (System.String.Join(string TextBuffer.bookmarkSeparator, values))
-            let starts =
-                match tr.Style.BookmarkStartId with
-                | None -> []
-                | Some ids ->
-                    let tokens = ids.Split TextBuffer.bookmarkSeparator
-                    let names = (tr.Style.BookmarkName |> Option.defaultValue "").Split TextBuffer.bookmarkSeparator
-                    [ for index in 0 .. tokens.Length - 1 do
-                        if obj.ReferenceEquals(firstStart.[tokens.[index]], tr) then yield tokens.[index], (if index < names.Length then names.[index] else "") ]
-            let ends =
-                match tr.Style.BookmarkEndId with
-                | None -> []
-                | Some ids -> [ for token in ids.Split TextBuffer.bookmarkSeparator do if obj.ReferenceEquals(lastEnd.[token], tr) then yield token ]
-            join (starts |> List.map fst), (if starts.IsEmpty then None else Some (System.String.Join(string TextBuffer.bookmarkSeparator, starts |> List.map snd))), join ends
+            (tr.Style.BookmarkStarts |> List.filter (fun start -> obj.ReferenceEquals(firstStart.[startKey start], tr))),
+            (tr.Style.BookmarkEnds |> List.filter (fun ending -> obj.ReferenceEquals(lastEnd.[endKey ending], tr)))
     let runs =
         buffer.Runs
         |> List.choose (function
             | Text tr ->
                 let text = Rope.slice tr.Start tr.Length buffer.Rope
                 let inherited = inheritedStyle tr.Style
-                let bookmarkStartIds, bookmarkNames, bookmarkEndIds = ownBookmarks tr
+                let bookmarkStarts, bookmarkEnds = ownBookmarks tr
                 Some (createObj [
                     "Text" ==> text
                     "HasExplicit" ==> true
@@ -1979,9 +2005,8 @@ let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) 
                     "NoteId" ==> tr.Style.NoteId
                     "NoteType" ==> tr.Style.NoteType
                     "NoteText" ==> tr.Style.NoteText
-                    "BookmarkStartId" ==> bookmarkStartIds
-                    "BookmarkName" ==> bookmarkNames
-                    "BookmarkEndId" ==> bookmarkEndIds
+                    "BookmarkStarts" ==> packageBookmarkStarts bookmarkStarts
+                    "BookmarkEnds" ==> packageBookmarkEnds bookmarkEnds
                     "FieldCode" ==> tr.Style.FieldCode
                     "FieldResult" ==> tr.Style.FieldResult
                     "RenderedPageBreakBefore" ==> tr.Style.RenderedPageBreakBefore

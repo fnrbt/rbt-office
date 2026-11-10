@@ -252,6 +252,18 @@ right - see `balancedRanges` in the writer. The headers, the footers, the
 notes and the comments are checked the same way when they are written from
 the model.
 
+In the editor package (`forEditorPackage`, `exportDocumentPackage`) a run's
+bookmarks are typed: `BookmarkStarts: [{ Id, Name, EndsHere }]`, the bookmarks
+that start before the run (`EndsHere`: it ends where it starts), and
+`BookmarkEnds`, what ends after it - `{ Id }` a bookmark's end, `{ Id, Name,
+EndsHere, Opens: true }` a bookmark opened after the run (after the last run
+of a paragraph, as a file can have it). Packages of 0.1.28 and before had
+strings instead (`BookmarkStartId`, `BookmarkName`, `BookmarkEndId`, their
+tokens joined by U+001F); those fields are not read any more - a package is
+made and used by the same release. A bookmark opened after the last run of a
+paragraph is listed by `getBookmarkInfos` (its StartOffset and EndOffset at
+that paragraph's end), and `removeBookmark` / `renameBookmark` take it.
+
 What the model does not hold of ranges is written where the file had it when
 its paragraph is written from the model: a bookmark in a paragraph without
 text, the end of a bookmark before the first run of the next paragraph, a

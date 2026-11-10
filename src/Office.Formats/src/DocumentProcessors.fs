@@ -434,9 +434,9 @@ module EditorProcessor =
         NoteType: string option
         NoteText: string option
         Hyperlink: string option
-        BookmarkStartId: string option
-        BookmarkName: string option
-        BookmarkEndId: string option
+        /// The bookmarks that start before the run, and what ends (or is opened) after it.
+        BookmarkStarts: ModelText.BookmarkStart list
+        BookmarkEnds: ModelText.BookmarkEnd list
         FieldCode: string option
         FieldResult: string option
         EquationXml: string option
@@ -578,9 +578,8 @@ module EditorProcessor =
                 NoteType = None
                 NoteText = None
                 Hyperlink = None
-                BookmarkStartId = None
-                BookmarkName = None
-                BookmarkEndId = None
+                BookmarkStarts = []
+                BookmarkEnds = []
                 FieldCode = None
                 FieldResult = None
                 EquationXml = None
@@ -680,9 +679,8 @@ module EditorProcessor =
                     NoteType = note |> Option.map (fun value -> value.NoteType)
                     NoteText = note |> Option.bind (noteText notes)
                     Hyperlink = hyperlink
-                    BookmarkStartId = run.BookmarkStart |> Option.map (fun bookmark -> bookmark.Id)
-                    BookmarkName = run.BookmarkStart |> Option.bind (fun bookmark -> bookmark.Name)
-                    BookmarkEndId = run.BookmarkEnd
+                    BookmarkStarts = run.BookmarkStarts
+                    BookmarkEnds = run.BookmarkEnds
                     FieldCode = field |> Option.map (fun value -> value.Code)
                     FieldResult = field |> Option.bind (fun value -> value.Result)
                     EquationXml = (match run.Content with EquationXml xml -> Some xml | _ -> None)

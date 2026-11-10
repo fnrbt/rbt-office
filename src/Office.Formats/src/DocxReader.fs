@@ -165,8 +165,10 @@ type RevisionMark = {
 type Run = {
     Content: RunContent
     Properties: RunProperties
-    BookmarkStart: BookmarkReference option
-    BookmarkEnd: string option
+    /// The bookmarks that start before the run and those that end (or are opened) after it, in the order
+    /// of the file (see attachRunMarkers).
+    BookmarkStarts: ModelText.BookmarkStart list
+    BookmarkEnds: ModelText.BookmarkEnd list
     RenderedPageBreakBefore: bool
     RevisionId: string option  // For track changes
     /// insert | delete | moveFrom | moveTo
@@ -1531,8 +1533,8 @@ module Docx =
             let fieldOf (props: RunProperties) (part: string option) : Run =
                 { Content = FieldRef { FieldType = fieldType; Code = code; Result = (if result = "" then None else Some result); Part = part }
                   Properties = props
-                  BookmarkStart = None
-                  BookmarkEnd = None
+                  BookmarkStarts = []
+                  BookmarkEnds = []
                   RenderedPageBreakBefore = false
                   RevisionId = None
                   RevisionType = None
@@ -1648,8 +1650,8 @@ module Docx =
                     Part = part
                 }
                 Properties = (match first with Some run -> run.Properties | None -> field.Properties)
-                BookmarkStart = first |> Option.bind (fun run -> run.BookmarkStart)
-                BookmarkEnd = first |> Option.bind (fun run -> run.BookmarkEnd)
+                BookmarkStarts = first |> Option.map (fun run -> run.BookmarkStarts) |> Option.defaultValue []
+                BookmarkEnds = first |> Option.map (fun run -> run.BookmarkEnds) |> Option.defaultValue []
                 RenderedPageBreakBefore = first |> Option.exists (fun run -> run.RenderedPageBreakBefore)
                 RevisionId = first |> Option.bind (fun run -> run.RevisionId)
                 RevisionType = first |> Option.bind (fun run -> run.RevisionType)
@@ -1744,45 +1746,40 @@ module Docx =
 
         List.rev output
 
-    /// What parts the bookmarks of a run in one string (see attachRunMarkers).
-    let bookmarkSeparator = "\u001F"
-
     // The bookmarks that start before a run and end after it are the run's. A
     // run can have several of each (three w:bookmarkStart before a heading's
-    // text): their ids, and the names, are joined with bookmarkSeparator - all
-    // of them, in the order of the file (only the first start and the last end
-    // used to be kept: the others were lost once the paragraph was written from
-    // the model). A bookmark that ends where it starts is one token of the run
-    // after it, its id followed by "!"; one that is opened after the last run
-    // (and whatever ends there) is written after that run: the end tokens
-    // "!id=name" (opened there) in the order of the file.
+    // text): all of them, in the order of the file (only the first start and
+    // the last end used to be kept: the others were lost once the paragraph
+    // was written from the model). A bookmark that ends where it starts is a
+    // start of the run after it that ends here (EndsHere); one that is opened
+    // after the last run (and whatever ends there) is written after that run:
+    // its Opens, after what ends there.
     let private attachRunMarkers (runs: Run list) =
-        let pendingStarts = ResizeArray<string * string>()   // token, name
+        let pendingStarts = ResizeArray<ModelText.BookmarkStart>()
         let mutable pendingRenderedPageBreak = false
         let output = ResizeArray<Run>()
-        let join (values: string seq) = System.String.Join(bookmarkSeparator, values)
 
         let attachStart run =
             let withBookmark =
                 if pendingStarts.Count = 0 then run
-                else { run with BookmarkStart = Some { Id = join (pendingStarts |> Seq.map fst); Name = Some (join (pendingStarts |> Seq.map snd)) } }
+                else { run with BookmarkStarts = List.ofSeq pendingStarts }
             if pendingRenderedPageBreak then { withBookmark with RenderedPageBreakBefore = true } else withBookmark
-        let addEnd (token: string) =
+        let addEnd (ending: ModelText.BookmarkEnd) =
             if output.Count > 0 then
                 let previous = output.[output.Count - 1]
-                output.[output.Count - 1] <- { previous with BookmarkEnd = Some (match previous.BookmarkEnd with Some ends -> ends + bookmarkSeparator + token | None -> token) }
+                output.[output.Count - 1] <- { previous with BookmarkEnds = previous.BookmarkEnds @ [ ending ] }
 
         for run in runs do
             match run.Content with
             | BookmarkStart bookmark ->
-                pendingStarts.Add (bookmark.Id, bookmark.Name |> Option.defaultValue "")
+                pendingStarts.Add { Id = bookmark.Id; Name = bookmark.Name |> Option.defaultValue ""; EndsHere = false }
             | BookmarkEnd id ->
                 // (A bookmark that ends where it starts: it stands before the next run.)
                 let mutable at = -1
                 for index in 0 .. pendingStarts.Count - 1 do
-                    if at < 0 && fst pendingStarts.[index] = id then at <- index
-                if at >= 0 then pendingStarts.[at] <- (id + "!", snd pendingStarts.[at])
-                else addEnd id
+                    if at < 0 && pendingStarts.[index].Id = id && not pendingStarts.[index].EndsHere then at <- index
+                if at >= 0 then pendingStarts.[at] <- { pendingStarts.[at] with EndsHere = true }
+                else addEnd (ModelText.Ends id)
             | RenderedPageBreak ->
                 pendingRenderedPageBreak <- true
             | _ ->
@@ -1790,8 +1787,8 @@ module Docx =
                 pendingStarts.Clear()
                 pendingRenderedPageBreak <- false
         // (What is opened after the last run.)
-        for (token, name) in pendingStarts do
-            addEnd (ModelText.openedBookmarkEnd token name)
+        for start in pendingStarts do
+            addEnd (ModelText.Opens start)
 
         output |> Seq.toList
 
@@ -1827,8 +1824,8 @@ module Docx =
         let makeRun content =
             { Content = content
               Properties = props
-              BookmarkStart = None
-              BookmarkEnd = None
+              BookmarkStarts = []
+              BookmarkEnds = []
               RenderedPageBreakBefore = false
               RevisionId = revId
               RevisionType = None
@@ -1961,8 +1958,8 @@ module Docx =
                         Properties = props
                     }
                     Properties = props
-                    BookmarkStart = None
-                    BookmarkEnd = None
+                    BookmarkStarts = []
+                    BookmarkEnds = []
                     RenderedPageBreakBefore = false
                     RevisionId = None
                     RevisionType = None
@@ -2044,14 +2041,14 @@ module Docx =
                 | Some name when Ns.stripNs name = "fldSimple" ->
                     simpleFieldRuns child |> List.map RunToken
                 | Some name when Ns.stripNs name = "oMath" || Ns.stripNs name = "oMathPara" ->
-                    [RunToken { Content = EquationXml (xmlToString child); Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = None; Source = XmlDsl.Span.none }]
+                    [RunToken { Content = EquationXml (xmlToString child); Properties = runProps child; BookmarkStarts = []; BookmarkEnds = []; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = None; Source = XmlDsl.Span.none }]
                 | Some name when Ns.stripNs name = "bookmarkStart" ->
                     attr "id" child
-                    |> Option.map (fun id -> RunToken { Content = BookmarkStart { Id = id; Name = attr "name" child }; Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = None; Source = XmlDsl.Span.none })
+                    |> Option.map (fun id -> RunToken { Content = BookmarkStart { Id = id; Name = attr "name" child }; Properties = runProps child; BookmarkStarts = []; BookmarkEnds = []; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = None; Source = XmlDsl.Span.none })
                     |> Option.toList
                 | Some name when Ns.stripNs name = "bookmarkEnd" ->
                     attr "id" child
-                    |> Option.map (fun id -> RunToken { Content = BookmarkEnd id; Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = None; Source = XmlDsl.Span.none })
+                    |> Option.map (fun id -> RunToken { Content = BookmarkEnd id; Properties = runProps child; BookmarkStarts = []; BookmarkEnds = []; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = None; Source = XmlDsl.Span.none })
                     |> Option.toList
                 // Transparent inline wrappers: their runs are ordinary paragraph content.
                 | Some name when (match Ns.stripNs name with "smartTag" | "customXml" | "dir" | "bdo" -> true | _ -> false) ->
@@ -2059,7 +2056,7 @@ module Docx =
                 | Some name when Ns.stripNs name = "AlternateContent" ->
                     if isGraphicAlternateContent child then
                         // A drawing in two forms: kept whole rather than reduced to its fallback.
-                        [RunToken { Content = Image (opaqueObject true child); Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = None; Source = XmlDsl.Span.none }]
+                        [RunToken { Content = Image (opaqueObject true child); Properties = runProps child; BookmarkStarts = []; BookmarkEnds = []; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = None; Source = XmlDsl.Span.none }]
                     else
                         // Take the fallback (plain WordprocessingML/VML) when there is one, else the first choice.
                         match Ns.childNs "Fallback" child |> Option.orElseWith (fun () -> Ns.childNs "Choice" child) with
@@ -2113,7 +2110,7 @@ module Docx =
                             |> Option.defaultValue XmlDsl.Span.none   // ☒ / ☐
                         // (Formatted as the control's run is.)
                         let checkboxRun = Ns.childNs "sdtContent" child |> Option.bind (fun content -> Ns.descendantsNs "r" content |> List.tryHead)
-                        [RunToken { Content = Text glyph; Properties = runProps (checkboxRun |> Option.defaultValue child); BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = Some isChecked; Source = checkboxRunSource }]
+                        [RunToken { Content = Text glyph; Properties = runProps (checkboxRun |> Option.defaultValue child); BookmarkStarts = []; BookmarkEnds = []; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = Some isChecked; Source = checkboxRunSource }]
                     | None ->
                         Ns.childNs "sdtContent" child
                         |> Option.map tokensFromNode
@@ -5620,6 +5617,18 @@ let private explicitRunFields (styleMap: Map<string, StyleDefinition>) (paraProp
 
 /// The paragraph properties its styles give without the paragraph's direct
 /// keepNext / keepLines (only resolved again when it has any).
+/// A run's bookmarks as the editor's package holds them: BookmarkStarts, [{ Id, Name, EndsHere }], the
+/// bookmarks that start before it; BookmarkEnds, what ends after it - [{ Id }] a bookmark's end, [{ Id, Name,
+/// EndsHere, Opens: true }] a bookmark opened after it. (Not there when the run has none.)
+let bookmarkFields (starts: ModelText.BookmarkStart list) (ends: ModelText.BookmarkEnd list) : (string * obj) list =
+    let startFields (start: ModelText.BookmarkStart) = [ "Id" ==> start.Id; "Name" ==> start.Name; "EndsHere" ==> start.EndsHere ]
+    let endObject (ending: ModelText.BookmarkEnd) =
+        match ending with
+        | ModelText.Ends id -> objFromFields [ "Id" ==> id ]
+        | ModelText.Opens start -> objFromFields (startFields start @ [ "Opens" ==> true ])
+    [ "BookmarkStarts" ==> (if starts.IsEmpty then None else Some (starts |> List.map (startFields >> objFromFields) |> List.toArray))
+      "BookmarkEnds" ==> (if ends.IsEmpty then None else Some (ends |> List.map endObject |> List.toArray)) ]
+
 let private styleKeepProperties (styleMap: Map<string, StyleDefinition>) (para: Paragraph) (effectiveParaProps: ParagraphProperties) =
     if para.Properties.KeepNext.IsNone && para.Properties.KeepLines.IsNone then effectiveParaProps
     else resolvedParagraphProperties styleMap { para.Properties with KeepNext = None; KeepLines = None }
@@ -5709,14 +5718,12 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
             let pageBreakAfter =
                 para.Runs
                 |> List.exists (fun run -> match run.Content with | PageBreak -> true | _ -> false)
-            let bookmarkRunProps (run: Run) = explicitRunFields styleMap effectiveParaProps run @ [
-                "BookmarkStartId" ==> (run.BookmarkStart |> Option.map (fun bookmark -> bookmark.Id))
-                "BookmarkName" ==> (run.BookmarkStart |> Option.bind (fun bookmark -> bookmark.Name))
-                "BookmarkEndId" ==> run.BookmarkEnd
-                "RenderedPageBreakBefore" ==> run.RenderedPageBreakBefore
-                // (The w:r it was read from, of every kind of run: docs/save-architecture.md.)
-                "SourceRun" ==> (if XmlDsl.Span.isKnown run.Source then Some run.Source.Start else None)
-            ]
+            let bookmarkRunProps (run: Run) =
+                explicitRunFields styleMap effectiveParaProps run @ [
+                    "RenderedPageBreakBefore" ==> run.RenderedPageBreakBefore
+                    // (The w:r it was read from, of every kind of run: docs/save-architecture.md.)
+                    "SourceRun" ==> (if XmlDsl.Span.isKnown run.Source then Some run.Source.Start else None)
+                ] @ bookmarkFields run.BookmarkStarts run.BookmarkEnds
 
             // Convert Run to EditorRun format
             let editorRuns =
@@ -5852,7 +5859,7 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                                 "SourceRun" ==> (if XmlDsl.Span.isKnown run.Source then Some run.Source.Start else None)
                             ] @ referenceMarkFormat styleMap theme effectiveParaProps run))
                         | BookmarkStart bookmark ->
-                            Some (objFromFields [
+                            Some (objFromFields ([
                                 "Text" ==> ""
                                 "Bold" ==> false
                                 "Italic" ==> false
@@ -5863,11 +5870,9 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                                 "FontSize" ==> 11.0
                                 "FontFamily" ==> "Calibri"
                                 "IsImage" ==> false
-                                "BookmarkStartId" ==> bookmark.Id
-                                "BookmarkName" ==> bookmark.Name
-                            ])
+                            ] @ bookmarkFields [ { Id = bookmark.Id; Name = bookmark.Name |> Option.defaultValue ""; EndsHere = false } ] []))
                         | BookmarkEnd id ->
-                            Some (objFromFields [
+                            Some (objFromFields ([
                                 "Text" ==> ""
                                 "Bold" ==> false
                                 "Italic" ==> false
@@ -5878,8 +5883,7 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                                 "FontSize" ==> 11.0
                                 "FontFamily" ==> "Calibri"
                                 "IsImage" ==> false
-                                "BookmarkEndId" ==> id
-                            ])
+                            ] @ bookmarkFields [] [ ModelText.Ends id ]))
                         | FieldRef field ->
                             Some (objFromFields ([
                                 "Text" ==> (field.Part |> Option.orElse field.Result |> Option.defaultValue (sprintf "[Field:%s]" field.Code))
@@ -6010,14 +6014,12 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                 let pageBreakAfter =
                     para.Runs
                     |> List.exists (fun run -> match run.Content with | PageBreak -> true | _ -> false)
-                let bookmarkRunProps (run: Run) = explicitRunFields styleMap effectiveParaProps run @ [
-                    "BookmarkStartId" ==> (run.BookmarkStart |> Option.map (fun bookmark -> bookmark.Id))
-                    "BookmarkName" ==> (run.BookmarkStart |> Option.bind (fun bookmark -> bookmark.Name))
-                    "BookmarkEndId" ==> run.BookmarkEnd
-                    "RenderedPageBreakBefore" ==> run.RenderedPageBreakBefore
-                    // (The w:r it was read from, of every kind of run: docs/save-architecture.md.)
-                    "SourceRun" ==> (if XmlDsl.Span.isKnown run.Source then Some run.Source.Start else None)
-                ]
+                let bookmarkRunProps (run: Run) =
+                    explicitRunFields styleMap effectiveParaProps run @ [
+                        "RenderedPageBreakBefore" ==> run.RenderedPageBreakBefore
+                        // (The w:r it was read from, of every kind of run: docs/save-architecture.md.)
+                        "SourceRun" ==> (if XmlDsl.Span.isKnown run.Source then Some run.Source.Start else None)
+                    ] @ bookmarkFields run.BookmarkStarts run.BookmarkEnds
 
                 let editorRuns =
                     para.Runs
@@ -6149,7 +6151,7 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                                 "SourceRun" ==> (if XmlDsl.Span.isKnown run.Source then Some run.Source.Start else None)
                             ] @ referenceMarkFormat styleMap theme effectiveParaProps run))
                         | BookmarkStart bookmark ->
-                            Some (objFromFields [
+                            Some (objFromFields ([
                                 "Text" ==> ""
                                 "Bold" ==> false
                                 "Italic" ==> false
@@ -6160,11 +6162,9 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                                 "FontSize" ==> 11.0
                                 "FontFamily" ==> "Calibri"
                                 "IsImage" ==> false
-                                "BookmarkStartId" ==> bookmark.Id
-                                "BookmarkName" ==> bookmark.Name
-                            ])
+                            ] @ bookmarkFields [ { Id = bookmark.Id; Name = bookmark.Name |> Option.defaultValue ""; EndsHere = false } ] []))
                         | BookmarkEnd id ->
-                            Some (objFromFields [
+                            Some (objFromFields ([
                                 "Text" ==> ""
                                 "Bold" ==> false
                                 "Italic" ==> false
@@ -6175,8 +6175,7 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                                 "FontSize" ==> 11.0
                                 "FontFamily" ==> "Calibri"
                                 "IsImage" ==> false
-                                "BookmarkEndId" ==> id
-                            ])
+                            ] @ bookmarkFields [] [ ModelText.Ends id ]))
                         | FieldRef field ->
                             Some (objFromFields ([
                                 "Text" ==> (field.Part |> Option.orElse field.Result |> Option.defaultValue (sprintf "[Field:%s]" field.Code))

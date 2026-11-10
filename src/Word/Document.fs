@@ -1465,9 +1465,9 @@ let buildPageMap (doc: Document) =
                 run.Style.FieldCode
                 |> Option.iter (fun code ->
                     fieldAnchors <- fieldAnchors @ [{ PageFieldBlockId = para.Id; PageFieldStartOffset = run.Start; PageFieldCode = code; PageNumber = pageNumber }])
-                for (_, name) in TextBuffer.bookmarkStarts run.Style do
-                    if name <> "" then
-                        bookmarkAnchors <- bookmarkAnchors @ [{ PageBookmarkName = name; PageBookmarkBlockId = para.Id; PageBookmarkStartOffset = run.Start; PageNumber = pageNumber }]
+                for (bookmark, opened) in TextBuffer.bookmarksStarted run.Style do
+                    if bookmark.Name <> "" then
+                        bookmarkAnchors <- bookmarkAnchors @ [{ PageBookmarkName = bookmark.Name; PageBookmarkBlockId = para.Id; PageBookmarkStartOffset = (if opened then run.Start + run.Length else run.Start); PageNumber = pageNumber }]
             | Image _ -> ())
 
     let restarts = pageNumberRestarts doc
@@ -1504,15 +1504,16 @@ let bookmarkInfos (doc: Document) =
             para.Buffer.Runs
             |> List.collect (function
                 | Text run ->
-                    // (A run has all the bookmarks that start before it.)
-                    TextBuffer.bookmarkStarts run.Style
-                    |> List.filter (fun (_, name) -> name <> "")
-                    |> List.map (fun (bookmarkId, bookmarkName) ->
+                    // (A run has all the bookmarks that start before it - and one opened after the last run
+                    // of a paragraph, which starts at its end.)
+                    TextBuffer.bookmarksStarted run.Style
+                    |> List.filter (fun (bookmark, _) -> bookmark.Name <> "")
+                    |> List.map (fun (bookmark, opened) ->
                         {
-                            Id = bookmarkId
-                            Name = bookmarkName
+                            Id = bookmark.Id
+                            Name = bookmark.Name
                             BlockId = para.Id
-                            StartOffset = run.Start
+                            StartOffset = (if opened then run.Start + run.Length else run.Start)
                             EndOffset = run.Start + run.Length
                         })
                 | Image _ -> []))
@@ -1590,11 +1591,21 @@ let selectContentControl controlId doc =
                     Focus = { BlockId = para.Id; Offset = TextBuffer.length para.Buffer }
                 } }
 
+/// The ids of the bookmarks of a document that have this id or this name.
+let private bookmarkIdsNamed (bookmarkId: string) (doc: Document) : Set<string> =
+    editableParagraphsInOrder doc
+    |> List.collect (fun para ->
+        para.Buffer.Runs
+        |> List.collect (function
+            | Text run -> TextBuffer.bookmarksStarted run.Style |> List.choose (fun (bookmark, _) -> if bookmark.Id = bookmarkId || bookmark.Name = bookmarkId then Some bookmark.Id else None)
+            | Image _ -> []))
+    |> Set.ofList
+
 let removeBookmark bookmarkId doc =
+    let ids = bookmarkIdsNamed bookmarkId doc
     let clearBookmarkStyle (style: TextBuffer.TextStyle) =
-        // (That bookmark alone: the others of the run stay.)
-        if style.BookmarkStartId.IsNone then style
-        else TextBuffer.withBookmarks (fun id name -> id <> bookmarkId && name <> bookmarkId) (fun _ name -> name) style
+        // (That bookmark alone - its start and its end, wherever they are: the others of the run stay.)
+        TextBuffer.withBookmarks (fun id -> not (ids.Contains id)) (fun bookmark -> bookmark.Name) style
 
     (doc, editableParagraphsInOrder doc)
     ||> List.fold (fun currentDoc para ->
@@ -1610,9 +1621,9 @@ let renameBookmark bookmarkId bookmarkName doc =
         if System.String.IsNullOrWhiteSpace bookmarkName then "Bookmark"
         else bookmarkName.Trim().Replace(" ", "_")
 
+    let ids = bookmarkIdsNamed bookmarkId doc
     let renameBookmarkStyle (style: TextBuffer.TextStyle) =
-        if style.BookmarkStartId.IsNone then style
-        else TextBuffer.withBookmarks (fun _ _ -> true) (fun id name -> if id = bookmarkId || name = bookmarkId then normalizedName else name) style
+        TextBuffer.withBookmarks (fun _ -> true) (fun bookmark -> if ids.Contains bookmark.Id then normalizedName else bookmark.Name) style
 
     (doc, editableParagraphsInOrder doc)
     ||> List.fold (fun currentDoc para ->
@@ -3255,11 +3266,8 @@ let private nextBookmarkId doc =
     let maxExisting =
         doc.Blocks
         |> List.collect textRunsInBlock
-        |> List.collect (fun run -> [run.Style.BookmarkStartId; run.Style.BookmarkEndId])
-        |> List.choose id
-        // (A run has several: every id among them, as it is written - "id", "id!", "!id=name".)
-        |> List.collect (fun value -> value.Split TextBuffer.bookmarkSeparator |> Array.toList)
-        |> List.map (fun token -> (let body = token.TrimStart('!') in (if body.Contains "=" then body.Substring(0, body.IndexOf '=') else body).TrimEnd('!')))
+        // (A run has several: every id among them, of a start, an end or one opened after it.)
+        |> List.collect (fun run -> TextBuffer.bookmarkIds run.Style)
         |> List.choose (fun value ->
             match System.Int32.TryParse(value) with
             | true, parsed -> Some parsed
@@ -3294,9 +3302,8 @@ let insertCaption label captionText doc =
         TextBuffer.ofString fullText
         |> TextBuffer.applyStyle prefix.Length result.Length (fun style ->
             { style with
-                BookmarkStartId = Some bookmarkId
-                BookmarkName = Some bookmarkName
-                BookmarkEndId = Some bookmarkId
+                BookmarkStarts = [ { Id = bookmarkId; Name = bookmarkName; EndsHere = false } ]
+                BookmarkEnds = [ TextBuffer.Ends bookmarkId ]
                 FieldCode = Some (sprintf " SEQ %s \\* ARABIC " label)
                 FieldResult = Some result })
     let para = Paragraph {
@@ -3312,7 +3319,7 @@ let insertCrossReferenceToLatestCaption label doc =
         doc.Blocks
         |> List.collect textRunsInBlock
         |> List.choose (fun run ->
-            match run.Style.FieldCode, run.Style.FieldResult, run.Style.BookmarkName with
+            match run.Style.FieldCode, run.Style.FieldResult, TextBuffer.bookmarkName run.Style with
             | Some code, Some result, Some bookmarkName when code.StartsWith(prefix) ->
                 match System.Int32.TryParse(result) with
                 | true, number -> Some (number, result, bookmarkName)
@@ -3467,12 +3474,12 @@ let private collectSequenceRefreshTargets doc =
     let mutable sequences: Map<string, string list> = Map.empty
     let mutable bookmarks: Map<string, string> = Map.empty
 
-    let addSequence label bookmarkName =
+    let addSequence label (bookmarkNames: string list) =
         let next = (counters |> Map.tryFind label |> Option.defaultValue 0) + 1
         counters <- counters |> Map.add label next
         let result = string next
         sequences <- sequences |> Map.add label ((sequences |> Map.tryFind label |> Option.defaultValue []) @ [result])
-        bookmarkName |> Option.iter (fun name -> bookmarks <- bookmarks |> Map.add name result)
+        for name in bookmarkNames do bookmarks <- bookmarks |> Map.add name result
 
     editableParagraphsInOrder doc
     |> List.iter (fun para ->
@@ -3480,7 +3487,7 @@ let private collectSequenceRefreshTargets doc =
         |> List.iter (function
             | Text run ->
                 match run.Style.FieldCode |> Option.map fieldCodeParts with
-                | Some ("SEQ" :: label :: _) -> addSequence label run.Style.BookmarkName
+                | Some ("SEQ" :: label :: _) -> addSequence label (run.Style.BookmarkStarts |> List.map (fun bookmark -> bookmark.Name) |> List.filter (fun name -> name <> ""))
                 | _ -> ()
             | Image _ -> ()))
     sequences, bookmarks
@@ -3593,7 +3600,7 @@ let refreshFieldsWithPageMap pageMap doc =
                     | Some ("SEQ" :: label :: _) ->
                         let next = (counters |> Map.tryFind label |> Option.defaultValue 0) + 1
                         counters <- counters |> Map.add label next
-                        let pageNumber = run.Style.BookmarkName |> Option.map bookmarkPage |> Option.defaultValue (fieldPage para.Id run.Start)
+                        let pageNumber = TextBuffer.bookmarkName run.Style |> Option.map bookmarkPage |> Option.defaultValue (fieldPage para.Id run.Start)
                         let existing = results |> Map.tryFind label |> Option.defaultValue []
                         results <- results |> Map.add label (existing @ [sprintf "%d\t%d" next pageNumber])
                     | _ -> ()
