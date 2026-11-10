@@ -1389,9 +1389,18 @@ let private wordFontLineFactor (family: string) =
     factor
 
 /// How much taller (or lower) a line in this text's font is than in Calibri.
+// (The family last asked for and its ratio: asked for every line, nearly always of one family. One
+// reference, swapped whole, so that layouts on other threads read a family with its own ratio.)
+let mutable private lastFontLineRatio : System.Tuple<string, float> = System.Tuple<string, float>("Calibri", 1.0)
 let private fontLineRatio (style: TextBuffer.TextStyle) =
     match style.FontFamily with
-    | Some family -> wordFontLineFactor family / calibriLineFactor
+    | Some family ->
+        let last = lastFontLineRatio
+        if obj.ReferenceEquals(last.Item1, family) || last.Item1 = family then last.Item2
+        else
+            let ratio = wordFontLineFactor family / calibriLineFactor
+            lastFontLineRatio <- System.Tuple<string, float>(family, ratio)
+            ratio
     | None -> 1.0
 let private wordSingleLineBoxFactor = 1.15
 let private wordDefaultSpacingSingleLineBoxFactor = 1.316
