@@ -35,6 +35,44 @@ let pictureId = 1000;
 const drawing = (rid, cx, cy) => `<w:r><w:drawing><wp:inline><wp:extent cx="${cx}" cy="${cy}"/><wp:docPr id="${pictureId++}" name="pic"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="1" name="pic"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${rid}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"/></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>`;
 
 const WPS = 'http://schemas.microsoft.com/office/word/2010/wordprocessingShape';
+
+const WPG = 'http://schemas.microsoft.com/office/word/2010/wordprocessingGroup';
+const WPC = 'http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas';
+const escapeRegex = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// A shape of a group: its place and size in the group's child coordinates (EMU), its geometry, fill and text.
+const groupWsp = (x, y, cx, cy, prst, fill, text) =>
+    `<wps:wsp><wps:cNvPr id="${pictureId++}" name="Shape ${x}-${y}"/><wps:cNvSpPr/><wps:spPr><a:xfrm><a:off x="${x}" y="${y}"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="${prst}"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="${fill}"/></a:solidFill></wps:spPr>` +
+    (text ? `<wps:txbx><w:txbxContent><w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:txbxContent></wps:txbx>` : '') + '<wps:bodyPr rot="0" vert="horz" wrap="square" lIns="91440" tIns="45720" rIns="91440" bIns="45720" anchor="t" anchorCtr="0"><a:noAutofit/></wps:bodyPr></wps:wsp>';
+const groupAnchorOf = (id, name, relH, x, relV, y, cx, cy, uri, graphic) =>
+    `<wp:anchor distT="0" distB="0" distL="114300" distR="114300" simplePos="0" relativeHeight="${id}" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/>` +
+    `<wp:positionH relativeFrom="${relH}"><wp:posOffset>${x}</wp:posOffset></wp:positionH><wp:positionV relativeFrom="${relV}"><wp:posOffset>${y}</wp:posOffset></wp:positionV>` +
+    `<wp:extent cx="${cx}" cy="${cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:wrapNone/><wp:docPr id="${id}" name="${name}"/><wp:cNvGraphicFramePr/><a:graphic><a:graphicData uri="${uri}">${graphic}</a:graphicData></a:graphic></wp:anchor>`;
+// A group of 200 x 100 px whose child coordinates are twice as large (its shapes drawn at half their size in them): a
+// red text box at the top left, the picture at the top right, a group in it along the bottom whose one shape, green,
+// is its right half. Its VML fallback is a v:group of two rectangles.
+const groupShapesWpg =
+    '<w:r><mc:AlternateContent><mc:Choice Requires="wpg"><w:drawing>' +
+    groupAnchorOf(11, 'Group 11', 'column', 95250, 'paragraph', 190500, 1905000, 952500, WPG,
+        '<wpg:wgp><wpg:cNvGrpSpPr/><wpg:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="1905000" cy="952500"/><a:chOff x="0" y="0"/><a:chExt cx="3810000" cy="1905000"/></a:xfrm></wpg:grpSpPr>' +
+        groupWsp(0, 0, 1905000, 952500, 'rect', 'FF0000', 'group text') +
+        '<pic:pic><pic:nvPicPr><pic:cNvPr id="12" name="Picture 12"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="rId1"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>' +
+        '<pic:spPr><a:xfrm><a:off x="1905000" y="0"/><a:ext cx="1905000" cy="952500"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic>' +
+        '<wpg:grpSp><wpg:cNvPr id="13" name="Group 13"/><wpg:cNvGrpSpPr/><wpg:grpSpPr><a:xfrm><a:off x="0" y="952500"/><a:ext cx="3810000" cy="952500"/><a:chOff x="0" y="0"/><a:chExt cx="100" cy="100"/></a:xfrm></wpg:grpSpPr>' +
+        groupWsp(50, 0, 50, 100, 'rect', '00FF00', '') + '</wpg:grpSp></wpg:wgp>') +
+    '</w:drawing></mc:Choice><mc:Fallback><w:pict><v:group id="Group 11" o:spid="_x0000_s1100" style="position:absolute;margin-left:7.5pt;margin-top:15pt;width:150pt;height:75pt;z-index:11;mso-position-horizontal-relative:text;mso-position-vertical-relative:text" coordsize="2000,1000">' +
+    '<v:rect id="_x0000_s1101" style="position:absolute;width:1000;height:500" fillcolor="red" stroked="f"/><v:rect id="_x0000_s1102" style="position:absolute;left:1000;top:500;width:1000;height:500" fillcolor="lime" stroked="f"/></v:group></w:pict></mc:Fallback></mc:AlternateContent></w:r>';
+// A canvas of 200 x 100 px, yellow, with a blue rectangle of 100 x 50 px at its bottom right, 300 px below its paragraph.
+const groupShapesCanvas =
+    '<w:r><w:drawing>' +
+    groupAnchorOf(14, 'Canvas 14', 'column', 0, 'paragraph', 2857500, 1905000, 952500, WPC,
+        '<wpc:wpc><wpc:bg><a:solidFill><a:srgbClr val="FFFF00"/></a:solidFill></wpc:bg><wpc:whole><a:ln><a:noFill/></a:ln></wpc:whole>' + groupWsp(952500, 476250, 952500, 476250, 'rect', '0000FF', '') + '</wpc:wpc>') +
+    '</w:drawing></w:r>';
+// A VML group alone, 200 x 100 px, 400 px right of the column and 160 px below its paragraph: a magenta text box at
+// its top left and a cyan oval at its bottom right. (Clear of the others, also when they are moved and made larger.)
+const groupShapesVml =
+    '<w:r><w:pict><v:group id="_x0000_s1200" style="position:absolute;margin-left:300pt;margin-top:120pt;width:150pt;height:75pt;z-index:15" coordorigin="0,0" coordsize="2000,1000">' +
+    '<v:rect id="_x0000_s1201" style="position:absolute;left:0;top:0;width:1000;height:500" fillcolor="#FF00FF" stroked="f"><v:textbox><w:txbxContent><w:p><w:r><w:t>vml text</w:t></w:r></w:p></w:txbxContent></v:textbox></v:rect>' +
+    '<v:oval id="_x0000_s1202" style="position:absolute;left:1000;top:500;width:1000;height:500" fillcolor="#00FFFF" stroked="f"/></v:group></w:pict></w:r>';
 // A wps shape in mc:AlternateContent with the VML fallback Word writes next to it.
 const shapeAnchor = (id, name, o, spPr, text) =>
     `<w:r><mc:AlternateContent><mc:Choice Requires="wps" xmlns:wps="${WPS}"><w:drawing><wp:anchor distT="${o.dist}" distB="${o.dist}" distL="${o.dist}" distR="${o.dist}" simplePos="0" relativeHeight="${o.z}" behindDoc="${o.behind}" locked="0" layoutInCell="1" allowOverlap="1">` +
@@ -499,6 +537,44 @@ const docs = [
         ],
     },
     {
+        // Groups and drawing canvases (no document of the corpus has one): a wpg group of a text box, a picture and a
+        // group in it (with its VML fallback, a v:group), a wpc canvas with its background, a VML group alone - read as
+        // one shape each whose shapes are where the group's coordinates put them, and never written from the model: saved
+        // unedited, from the model (the group as it was read), with a character typed into the paragraph the group is
+        // anchored in, and with every shape moved (moveShape, the anchor's offsets changed in the element), each keeps its
+        // element. (tools/word-browser/checks/group-shapes.js draws them, moves and resizes them.)
+        name: 'synthetic/group-shapes',
+        root: `xmlns:wpg="${WPG}" xmlns:wps="${WPS}" xmlns:wpc="${WPC}" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office"`,
+        body:
+            `<w:p><w:r><w:t>anchor paragraph of the group</w:t></w:r>${groupShapesWpg}</w:p>` +
+            `<w:p><w:r><w:t>anchor paragraph of the canvas</w:t></w:r>${groupShapesCanvas}</w:p>` +
+            `<w:p><w:r><w:t>anchor paragraph of the VML group</w:t></w:r>${groupShapesVml}</w:p>` +
+            p('after the groups'),
+        rels: `<Relationship Id="rId1" Type="${REL}/image" Target="media/body.png"/>`,
+        extra: { 'word/media/body.png': PNG },
+        types: '<Default Extension="png" ContentType="image/png"/>',
+        expect: [
+            // (The shapes follow the paragraphs: the group, the canvas, the VML group.)
+            { read: 'pkg.Paragraphs.length', equals: 7 },
+            { read: 'pkg.Paragraphs.4.Children.length', equals: 3 }, { read: 'pkg.Paragraphs.4.Children.2.Children.length', equals: 1 },
+            { read: 'pkg.Paragraphs.4.Children.0.Paragraphs.0.Runs.0.Text', equals: 'group text' }, { read: 'pkg.Paragraphs.4.ChildSpaceWidth', equals: 200 },
+            { read: 'pkg.Paragraphs.5.Children.length', equals: 1 }, { read: 'pkg.Paragraphs.5.FillColor', equals: '#FFFF00' },
+            { read: 'pkg.Paragraphs.6.Children.length', equals: 2 }, { read: 'pkg.Paragraphs.6.AnchorBlock', equals: 2 },
+            // Written from the model: each group is the element it was read from.
+            { part: 'word/document.xml', has: escapeRegex(groupShapesWpg) }, { part: 'word/document.xml', has: escapeRegex(groupShapesCanvas) },
+            { part: 'word/document.xml', has: escapeRegex(groupShapesVml) },
+            { part: 'word/document.xml', has: 'anchor paragraph of the group</w:t></w:r><w:r><mc:AlternateContent>' },
+            // A character typed into the paragraph the group is anchored in: the group's element as it was.
+            { editKeeps: escapeRegex(groupShapesWpg) }, { editKeeps: escapeRegex(groupShapesCanvas) }, { editKeeps: escapeRegex(groupShapesVml) },
+            // Every shape moved 10 px right and 5 px down: the anchors' offsets changed (95250 + 95250, 190500 + 47625; the canvas's
+            // 0 + 95250, 2857500 + 47625), the VML groups' margins (7.5 + 7.5 pt, 15 + 3.75 pt; 300 + 7.5 pt, 120 + 3.75 pt), all else as it was.
+            { movedKeeps: escapeRegex(groupShapesWpg.replace('<wp:posOffset>95250</wp:posOffset>', '<wp:posOffset>190500</wp:posOffset>').replace('<wp:posOffset>190500</wp:posOffset></wp:positionV>', '<wp:posOffset>238125</wp:posOffset></wp:positionV>')
+                .replace('margin-left:7.5pt;margin-top:15pt', 'margin-left:15pt;margin-top:18.75pt')) },
+            { movedKeeps: escapeRegex(groupShapesCanvas.replace('<wp:posOffset>0</wp:posOffset>', '<wp:posOffset>95250</wp:posOffset>').replace('<wp:posOffset>2857500</wp:posOffset>', '<wp:posOffset>2905125</wp:posOffset>')) },
+            { movedKeeps: escapeRegex(groupShapesVml.replace('margin-left:300pt;margin-top:120pt', 'margin-left:307.5pt;margin-top:123.75pt')) },
+        ],
+    },
+    {
         // Two shapes that may not overlap (wp:anchor allowOverlap="0"), the second placed over the first: Word
         // moves the second down below the first (tools/word-browser/checks/allow-overlap.js); both are saved
         // with allowOverlap="0", from the model and as they were read.
@@ -594,7 +670,8 @@ const docs = [
             { read: 'pkg.Paragraphs.1.Runs.0.OpaqueKind', equals: 'diagram' }, { read: 'pkg.Paragraphs.2.Runs.0.OpaqueKind', equals: 'ole' },
             // The chart with a fallback picture shows that picture.
             { read: 'pkg.Paragraphs.3.Runs.0.ImageSrc.length', equals: 22 + Math.ceil(PNG2.length / 3) * 4 },
-            { read: 'pkg.Paragraphs.4.Runs.0.OpaqueKind', equals: 'drawing' }, { read: 'pkg.Paragraphs.length', equals: 6 },
+            // (The group of two shapes is a shape of the body now, a group (synthetic/group-shapes): not an opaque run of its paragraph.)
+            { read: 'pkg.Paragraphs.4.Runs.0.Text', equals: 'after the group' }, { read: 'pkg.Paragraphs.length', equals: 7 }, { read: 'pkg.Paragraphs.6.Children.length', equals: 2 },
             { read: 'pkg.HeaderParts.0.Paragraphs.1.FitText', equals: true }, { read: 'pkg.HeaderParts.0.Paragraphs.1.Name', equals: 'PowerPlusWaterMarkObject1' },
         ],
     },

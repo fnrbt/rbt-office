@@ -843,6 +843,18 @@ window.editKeptFinish = async (original, expect) => {
                 for (const e of boldKeeps) if (!new RegExp(e.boldKeeps).test(bold)) problems.push(`bold: word/document.xml lost /${e.boldKeeps}/`);
             }
         }
+        // {movedKeeps}: every shape of the body moved 10 px right and 5 px down as well (moveShape): a shape that was read
+        // and only moved is its element with its place changed in it.
+        const movedKeeps = (expect ?? []).filter((e) => e.movedKeeps);
+        if (movedKeeps.length) {
+            const shapes = Word.getShapeRects(editor).filter((shape) => shape.Story === 'body');
+            if (!shapes.length) problems.push('move: no shape to move');
+            for (const shape of shapes) if (!Word.moveShape(editor, shape.Id, 10, 5)) problems.push(`move: shape ${shape.Id} was not moved`);
+            const movedBytes = await writePackage(Word.exportDocumentPackage(editor), 'moved');
+            window.passSaves['moved'] = toBase64(movedBytes);
+            const moved = (await parts(movedBytes))['word/document.xml'] ?? '';
+            for (const e of movedKeeps) if (!new RegExp(e.movedKeeps).test(moved)) problems.push(`move: word/document.xml lost /${e.movedKeeps.slice(0, 300)}.../`);
+        }
         // The root element stays as it was read (a namespace is added to it only when what was written needs one).
         const rootTag = (xml) => /<w:document\b[^>]*>/.exec(xml ?? '')?.[0];
         if (was !== undefined && /<\/w:sectPr>\s*<\/w:body>/.test(was) && rootTag(was) !== rootTag(is) && !/<m:/.test(is.slice(is.indexOf('<w:body'))))
