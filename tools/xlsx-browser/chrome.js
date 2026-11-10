@@ -1735,6 +1735,12 @@ checks['charts-in-grid'] = async () => {
             note(`${file.split('/').pop()} "${sheet}": ${objects.length} objects, ${drawn().length} drawn (${inGroups} charts inside groups), ${host.querySelectorAll('.spreadsheet-object-label').length} labelled frames`);
             check(`${file.split('/').pop()}: objects are drawn, charts inside groups among them`, [drawn().length > 0, whole > 0, inGroups + drawn().filter((node) => node.className.includes('spreadsheet-object-chart')).length >= 3], [true, true, true]);
             check('... and the workbook is unmodified', grid.IsModified(), false);
+            // (A chartEx part keeps no copy of its data: the e-commerce waterfall reads a sheet not shown yet,
+            // and has its points - the grand total its last bar, its bars joined by lines - when first shown.)
+            if (file.includes('ecommerce')) {
+                const texts = drawn().flatMap((node) => [...node.querySelectorAll('svg text')].map((text) => text.textContent));
+                check('the waterfall, its data on a sheet not shown yet: its points on first display', [texts.includes('Grand Total'), drawn().some((node) => node.querySelector('line[stroke="#A6A6A6"]') !== null), grid.IsModified()], [true, true, false]);
+            }
             await shoot(`${file.split('/').pop()} ${sheet}`);
             // Another sheet and back: the objects are as they were drawn - nothing is laid out again.
             if (grid.GetChartLayouts) {

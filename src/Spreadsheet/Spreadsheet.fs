@@ -1000,9 +1000,34 @@ type Spreadsheet(container: Element) =
             drawingPartsOf model
             |> Option.bind (fun parts ->
                 let seen = ResizeArray<string * int * int * int * int * CellData option [] []>()
+                // A chartEx chart (a waterfall, a funnel) keeps no copy of its data in its part: a sheet it
+                // reads that is not converted yet is converted, and the chart drawn again with its cells
+                // (a classic chart draws its cache until then).
+                let mutable uncached = false
+                let reading =
+                    { parts with
+                        Chart = (fun id ->
+                            let chart = parts.Chart id
+                            (match chart with
+                             | Some read when read.Plots |> List.exists (fun plot -> match plot.Kind with SpreadsheetCharts.WaterfallPlot _ | SpreadsheetCharts.FunnelPlot -> true | _ -> false) -> uncached <- true
+                             | _ -> ())
+                            chart) }
                 chartLayouts <- chartLayouts + 1
-                SpreadsheetCharts.objectScene parts (chartDataReading seen) xml width height
-                |> Option.map (fun scene -> SpreadsheetCharts.sceneSvg scene, seen.ToArray()))
+                let first = SpreadsheetCharts.objectScene reading (chartDataReading seen) xml width height
+                let pending =
+                    if not uncached then [||]
+                    else
+                        seen.ToArray()
+                        |> Array.choose (fun (name, _, _, _, _, cells) -> if isNull cells then Some name else None)
+                        |> Array.distinct
+                        |> Array.choose (fun name -> sheetNames |> Array.tryFindIndex (fun known -> known.ToUpperInvariant() = name))
+                        |> Array.filter (fun index -> index <> activeSheetIndex && isDeferredSheet sheets.[index])
+                if pending.Length = 0 then first |> Option.map (fun scene -> SpreadsheetCharts.sceneSvg scene, seen.ToArray())
+                else
+                    for index in pending do convertInPlace index
+                    seen.Clear()
+                    SpreadsheetCharts.objectScene parts (chartDataReading seen) xml width height
+                    |> Option.map (fun scene -> SpreadsheetCharts.sceneSvg scene, seen.ToArray()))
         with error ->
             // (A part that cannot be drawn is a frame that says what it is; the error is the host's to see.)
             reportError "drawing" (box error)
