@@ -408,6 +408,39 @@ let rec private remapTree (node: obj) (nodeShape: obj) (leafShape: obj) (moveKey
         if obj.ReferenceEquals(moved, key) && obj.ReferenceEquals(value, treeValue node)
            && obj.ReferenceEquals(left, treeLeft node) && obj.ReferenceEquals(right, treeRight node) then node
         else newTreeNode nodeShape moved value left right (treeHeight node)
+/// The nodes of a tree in order whose keys `keep` holds of.
+let private keptTreeNodes (tree: obj) (keep: obj -> bool) : ResizeArray<obj> =
+    let nodes = ResizeArray<obj>()
+    let stack = Array.zeroCreate<obj> 64
+    let mutable depth = 0
+    let mutable node = tree
+    while not (isNoTree node) || depth > 0 do
+        while not (isNoTree node) do
+            stack.[depth] <- node
+            depth <- depth + 1
+            node <- treeLeft node
+        depth <- depth - 1
+        node <- stack.[depth]
+        if keep (treeKey node) then nodes.Add node
+        node <- treeRight node
+    nodes
+/// A balanced tree of the entries of `nodes.[lo .. hi]`, each key moved and value changed, in
+/// order (`moveKey` is called for the keys in their order).
+let rec private treeOfNodes (nodes: ResizeArray<obj>) (nodeShape: obj) (leafShape: obj) (moveKey: obj -> obj) (moveValue: obj -> obj -> obj) (lo: int) (hi: int) : obj =
+    if lo > hi then noTree ()
+    elif lo = hi then
+        let entry = nodes.[lo]
+        let moved = moveKey (treeKey entry)
+        newTreeLeaf leafShape moved (moveValue moved (treeValue entry))
+    else
+        // (As `buildTree`: the middle entry at the root.)
+        let mid = (lo + hi + 1) >>> 1
+        let left = treeOfNodes nodes nodeShape leafShape moveKey moveValue lo (mid - 1)
+        let entry = nodes.[mid]
+        let moved = moveKey (treeKey entry)
+        let value = moveValue moved (treeValue entry)
+        let right = treeOfNodes nodes nodeShape leafShape moveKey moveValue (mid + 1) hi
+        newTreeNode nodeShape moved value left right (balancedHeight (hi - lo + 1))
 #endif
 
 /// A map with each key moved by `moveKey` and each value changed by `moveValue`
@@ -427,6 +460,27 @@ let remapOrdered (moveKey: 'K -> 'K) (moveValue: 'K -> 'V -> 'V) (map: Map<'K, '
     for KeyValue (key, value) in map do
         let moved = moveKey key
         result <- Map.add moved (moveValue moved value) result
+    result
+#endif
+
+/// A map of the entries `keep` holds of, each key moved by `moveKey` and each value changed
+/// by `moveValue` (given the moved key), where `moveKey` keeps the order of the kept keys and
+/// makes no two alike - the caller's word for it, nothing checks. `moveKey` and `moveValue` are
+/// called once per kept entry, in the order of the keys. In JavaScript the new tree is built
+/// balanced from the old one's nodes that are kept, read in order in one walk (a column deleted
+/// from a long sheet: an entry out of every row, the rest moved).
+let rebuildOrdered (keep: 'K -> bool) (moveKey: 'K -> 'K) (moveValue: 'K -> 'V -> 'V) (map: Map<'K, 'V>) : Map<'K, 'V> =
+#if FABLE_COMPILER
+    let node, leaf = treeShapes
+    let kept = keptTreeNodes (mapTree (box map)) (fun key -> keep (unbox<'K> key))
+    let built = treeOfNodes kept node leaf (fun key -> box (moveKey (unbox<'K> key))) (fun key value -> box (moveValue (unbox<'K> key) (unbox<'V> value))) 0 (kept.Count - 1)
+    unbox<Map<'K, 'V>> (mapWithTree (box map) built)
+#else
+    let mutable result = Map.empty
+    for KeyValue (key, value) in map do
+        if keep key then
+            let moved = moveKey key
+            result <- Map.add moved (moveValue moved value) result
     result
 #endif
 
@@ -1320,6 +1374,22 @@ type StructureMove = {
     Version: int
 }
 
+/// The rows of a block that a sort exchanged, as a recalculation needs to know it: in the
+/// columns `Left` .. `Right`, row `Rows.[i]` took the cells that row `Sources.[i]` held (each
+/// row that took another's; together a permutation of those rows), their formulas re-pointed
+/// as copies are. It holds between the cell maps `Before` and `After` - those very maps - and
+/// nothing else of the sheet changed: a recalculation that holds `Before` and is given `After`
+/// knows which cells moved without comparing them. (A class: compared as itself, never by
+/// its maps.)
+[<AllowNullLiteral>]
+type RowsSorted(left: int, right: int, rows: int[], sources: int[], before: Map<CellAddress, CellData>, after: Map<CellAddress, CellData>) =
+    member _.Left = left
+    member _.Right = right
+    member _.Rows = rows
+    member _.Sources = sources
+    member _.Before = before
+    member _.After = after
+
 /// A row or column of a pivot table as laid out: its kind ("data", "default" - a subtotal -,
 /// "grand" ...), how many leading fields it repeats from the one before, and its items after those.
 type PivotLine = { Kind: string; Repeat: int; Items: int list }
@@ -1563,6 +1633,8 @@ type SpreadsheetModel = {
     /// the earlier list back): a save follows them to where the rows and
     /// columns of the opened file are now.
     StructureLog: StructureMove list
+    /// The sort that made the sheet's cells (see `RowsSorted`; it names the maps it holds between).
+    RowsSorted: RowsSorted option
 
     /// Set on the stand-in for a sheet of an opened file that has not been
     /// converted to a model yet (a sheet is converted when it is first shown,
@@ -1663,6 +1735,7 @@ let createEmpty rowCount colCount = {
     StructureVersion = 0
     StructureMove = None
     StructureLog = []
+    RowsSorted = None
     Deferred = None
 }
 
@@ -3555,6 +3628,22 @@ let private moveCellMap (onRows: bool) (isInsert: bool) (at: int) (count: int) (
                 else reuse.At addr.Row moved
             remapOrdered moveKey moveCell rest
         else
+#if FABLE_COMPILER
+            // (Columns deleted, or many rows: a cell out of every row. The map is made anew while the
+            // old one is walked, nothing written down between: `rebuildOrdered`.)
+            // (A deletion: the indices `at` .. `at + count - 1` go, those after move back by `count`.)
+            let reuse = CellKeyReuse cells
+            let past = at + count
+            let keep (addr: CellAddress) =
+                let index = if onRows then addr.Row else addr.Col
+                index < at || index >= past
+            let moveKey (addr: CellAddress) =
+                if onRows then (if addr.Row >= past then reuse.At (addr.Row - count) addr.Col else addr)
+                elif addr.Col >= past then reuse.At addr.Row (addr.Col - count)
+                else addr
+            ignore moveIndex
+            rebuildOrdered keep moveKey moveCell cells
+#else
             let entries = orderedEntries cells
             let total = entryCount entries
             let movedKeys = Array.zeroCreate<CellAddress> total
@@ -3574,6 +3663,7 @@ let private moveCellMap (onRows: bool) (isInsert: bool) (at: int) (count: int) (
                     movedValues.[kept] <- moveCell moved (entryValue<CellData> entries i)
                     kept <- kept + 1
             mapOfOrdered cells movedKeys movedValues kept
+#endif
 
 /// A map by address with the blocks of some rows exchanged (a sort): the row `dest` of
 /// `sourceOf` takes, in the columns `left` .. `right`, the entries row `sourceOf.[dest]` had
@@ -4082,19 +4172,43 @@ let setColumnWidth (col: int) (width: float) (model: SpreadsheetModel): Spreadsh
         | Some existing when existing = width -> model
         | _ -> { model with ColumnWidths = Map.add col width model.ColumnWidths }
 
+#if FABLE_COMPILER
+/// What `cellBounds` found of a cell map (held weakly, as the formula index).
+let private cellBoundsTable = newFormulaIndexTable ()
+#endif
+
+/// The last row and the last column of a non-empty cell map (the last row is the last key's;
+/// the columns are read in one walk of the map). In JavaScript it is found once per map: a
+/// sort asks it twice, and so do the views of the same cells.
+let private cellBounds (cells: Map<CellAddress, CellData>) : int * int =
+    let find () =
+        let entries = orderedEntries cells
+        let count = entryCount entries
+        let mutable maxCol = 0
+        for i in 0 .. count - 1 do
+            let col = (entryKey<CellAddress> entries i).Col
+            if col > maxCol then maxCol <- col
+        (entryKey<CellAddress> entries (count - 1)).Row, maxCol
+#if FABLE_COMPILER
+    let known = formulaIndexGet cellBoundsTable (box cells)
+    if not (isNull known) then unbox<int * int> known
+    else
+        let found = find ()
+        formulaIndexSet cellBoundsTable (box cells) (box found)
+        found
+#else
+    find ()
+#endif
+
 let usedBounds (model: SpreadsheetModel) : (int * int) option =
     let mutable any = false
     let mutable maxRow = 0
     let mutable maxCol = 0
-    // (The last row is the last key's; the columns are read in one walk of the map.)
     if not (Map.isEmpty model.Cells) then
         any <- true
-        let entries = orderedEntries model.Cells
-        let count = entryCount entries
-        maxRow <- (entryKey<CellAddress> entries (count - 1)).Row
-        for i in 0 .. count - 1 do
-            let col = (entryKey<CellAddress> entries i).Col
-            if col > maxCol then maxCol <- col
+        let lastRow, lastCol = cellBounds model.Cells
+        maxRow <- lastRow
+        maxCol <- lastCol
     for merge in model.MergedCells do
         any <- true
         if merge.EndRow > maxRow then maxRow <- merge.EndRow

@@ -759,6 +759,164 @@ do
     ok "edits that are more than cells are calculated by the engine" (incremental * 100 >= seeds * steps * 97) (sprintf "%d of %d" incremental (seeds * steps))
     reportFullRuns "with edits that are more than cells"
 
+// ---- a sort: the rows that moved are known ------------------------------------------------------
+// A sort tells the engine which rows moved (`Model.RowsSorted`): it rewires the formulas that moved
+// and calculates what reads the moved cells, not every moved cell as a changed one. A formula that
+// moved as a copy and reads only cells that moved with it gives the value it gave. Each sort here is
+// applied to the workbook the engine holds (as the editor does) and compared with the full recalculation.
+let sortEdit (label: string) (change: Wb.Workbook -> Wb.Workbook) =
+    let edited = change engine.Workbook
+    checkFormulaIndex (label + " (edited)") edited
+    let full = fullRecalculation edited
+    countFull label
+    match Recalc.recalculate engine edited None with
+    | Some result ->
+        checkFormulaIndex (label + " (incremental)") result
+        (match difference result full with
+         | None -> pass <- pass + 1
+         | Some detail -> fail <- fail + 1; printfn "FAIL %s: incremental differs from full at %s" label detail)
+        current <- result
+        Incremental (Recalc.lastStats engine)
+    | None ->
+        fail <- fail + 1
+        printfn "FAIL %s: left to the full recalculation: %s" label (Recalc.lastDecline engine)
+        current <- full
+        engine <- Recalc.build full
+        Recalc.findCycles engine
+        Declined
+let sortKey column descending : Ops.SortKey = { Column = column; Descending = descending; By = Ops.SortByValue; Color = "" }
+let sortSheet (sheetId: string) (range: CellRange) (keys: Ops.SortKey list) (header: bool) (wb: Wb.Workbook) =
+    Wb.updateSheetModel sheetId (Ops.sortRange "t" range keys { HasHeader = header; CaseSensitive = false } (resolveSheet wb.Sheets.[sheetId].Model)) wb
+/// Rows 1..20 of A:F sorted (A a key, B a number; C..F formulas of the block), G beside the block,
+/// H reading the block from beside it, formulas below it, on another sheet and through names,
+/// a conditional format and a validation over the block.
+let sortWorkbook () =
+    let wb = Wb.createWorkbook () |> Wb.addSheet "Data"
+    let dataId = wb.SheetOrder |> List.last
+    let wb =
+        wb |> setCells "sheet1"
+                ([ at 0 0, Some (text "Key"); at 0 1, Some (text "Qty") ]
+                 @ [ for row in 1 .. 20 do
+                       let r = row + 1
+                       yield at row 0, Some (text (sprintf "k%02d" ((row * 7) % 20)))
+                       yield at row 1, Some (number (float ((row * 13) % 17)))
+                       // Its own row (moves with it), the next row (does not), a locked cell and its row, a range of its row.
+                       yield at row 2, Some (formula (sprintf "=B%d*2" r))
+                       yield at row 3, Some (formula (sprintf "=B%d+B%d" r (r + 1)))
+                       yield at row 4, Some (formula (sprintf "=$B$2+C%d" r))
+                       yield at row 5, Some (formula (sprintf "=SUM(B%d:C%d)+Sheet1!B%d+G%d" r r r r))
+                       yield at row 6, Some (number (float (row * 100)))
+                       yield at row 7, Some (formula (sprintf "=C%d+G%d" r r)) ]
+                 @ [ at 23 1, Some (formula "=SUM(B2:B21)"); at 24 1, Some (formula "=INDEX(B2:B21,3)"); at 25 1, Some (formula "=MATCH(5,B2:B21,0)")
+                     at 26 1, Some (formula "=B5"); at 27 1, Some (formula "=C7*10"); at 28 1, Some (formula "=ROW(B5)+B5"); at 29 1, Some (formula "=VLOOKUP(\"k03\",A2:B21,2,FALSE)")
+                     at 30 1, Some (formula "=FIRSTQTY*2"); at 31 1, Some (formula "=SUM(QTYCOL)+INDEX(QTYCOL,2)"); at 32 1, Some (formula "=SUM(B:B)"); at 33 1, Some (formula "=F4") ])
+           |> setCells dataId [ at 0 0, Some (number 3.0); at 0 1, Some (formula "=Sheet1!B3*2"); at 1 1, Some (formula "=SUM(Sheet1!B2:B21)"); at 2 1, Some (formula "=INDEX(Sheet1!C2:C21,2)")
+                                at 3 1, Some (formula "=Sheet1!D9+Sheet1!H9") ]
+    let wb = { wb with Names = wb.Names |> Map.add (None, "FIRSTQTY") "=Sheet1!$B$2" |> Map.add (None, "QTYCOL") "=Sheet1!$B$2:$B$21" }
+    let withRules (m: SpreadsheetModel) =
+        let m = { m with ConditionalFormats = [ { Id = 1; Ranges = [ { From = at 1 0; To = at 20 7 } ]; Format = { Rule = Expression "=$C2>16"; Style = { defaultFormat with BgColor = Some "#FF0000" } }; Priority = 1; StopIfTrue = false } ] }
+        setValidationRanges [ { From = at 1 3; To = at 20 3 } ] (validationOf (CustomFormula "=D2<C2+10")) m
+    Wb.updateSheetModel "sheet1" (withRules (resolveSheet wb.Sheets.["sheet1"].Model)) wb, dataId
+do
+    let wb, dataId = sortWorkbook ()
+    start wb
+    let block = { From = at 0 0; To = at 20 5 }
+    let formulasInBlock = 4 * 20
+    let sorted = sortEdit "a sort of a block with formulas" (sortSheet "sheet1" block [ sortKey 1 true; sortKey 0 false ] true)
+    (match sorted with
+     | Incremental stats ->
+        // Only the formula cells are changes; of the formulas of the block those that read their own row are not evaluated.
+        ok "a sort: the formula cells are the changes, not every moved cell" (stats.ChangedCells <= formulasInBlock) (sprintf "%A" stats)
+        ok "a sort: a formula that moved with what it reads is not evaluated" (stats.EvaluatedFormulas <= Recalc.formulaCount engine - 20) (sprintf "%A of %d" stats (Recalc.formulaCount engine))
+     | Declined -> ())
+    let sheet = resolveSheet current.Sheets.["sheet1"].Model
+    eq "a sort: the block is in order" ([ for row in 1 .. 4 -> valueAt "sheet1" row 1 current ]) [ CellValue.Number 16.0; CellValue.Number 15.0; CellValue.Number 14.0; CellValue.Number 13.0 ]
+    eq "a sort: what reads the block from beside it, below it, on another sheet and through a name follows"
+        (valueAt "sheet1" 1 7 current, valueAt "sheet1" 24 1 current, valueAt dataId 0 1 current, valueAt "sheet1" 30 1 current)
+        (CellValue.Number (32.0 + 100.0), CellValue.Number 14.0, CellValue.Number 30.0, CellValue.Number 32.0)
+    // Conditional formats and validations stay over the block and judge the cells now there.
+    let fullSheet = resolveSheet (Formula.recalculateWorkbook current).Sheets.["sheet1"].Model
+    let effects (m: SpreadsheetModel) = [ for row in 1 .. 20 -> Rbt.Spreadsheet.ConditionalFormatting.effectAt (Rbt.Spreadsheet.ConditionalFormatting.createContext evaluateFormulaAt m) (at row 0) |> Option.bind (fun e -> e.BgColor) ]
+    eq "a sort: the conditional format judges the sorted cells" (effects sheet) (effects fullSheet)
+    ok "a sort: the conditional format colours the rows of the largest numbers" ((effects sheet |> List.take 1) = [ Some "#FF0000" ] && (effects sheet |> List.last) = None) (sprintf "%A" (effects sheet))
+    let invalid (m: SpreadsheetModel) = invalidCells sameSheetListValues evaluateFormulaAt m |> List.map fst
+    eq "a sort: the validation judges the sorted cells" (invalid sheet) (invalid fullSheet)
+    eq "a sort: the conditional format and the validation stay where they were" (sheet.ConditionalFormats |> List.map (fun f -> f.Ranges), sheet.Validations |> List.map (fun v -> v.Ranges)) ([ [ { From = at 1 0; To = at 20 7 } ] ], [ [ { From = at 1 3; To = at 20 3 } ] ])
+    // Sorted again (from the sorted, calculated cells), by another key; a block that takes G, which formulas read; one without a header.
+    sortEdit "sorted again" (sortSheet "sheet1" block [ sortKey 0 true ] true) |> ignore
+    sortEdit "a wider block" (sortSheet "sheet1" { From = at 0 0; To = at 20 7 } [ sortKey 6 true ] true) |> ignore
+    sortEdit "a block without a header" (sortSheet "sheet1" { From = at 1 1; To = at 20 2 } [ sortKey 2 false ] false) |> ignore
+    // The undo of a sort puts the cells back as they were (the editor's undo).
+    let beforeSort = current
+    sortEdit "a sort to undo" (sortSheet "sheet1" block [ sortKey 1 false ] true) |> ignore
+    sortEdit "its undo" (fun wb ->
+        let restored = { resolveSheet wb.Sheets.["sheet1"].Model with Cells = (resolveSheet beforeSort.Sheets.["sheet1"].Model).Cells }
+        Wb.updateSheetModel "sheet1" restored wb) |> ignore
+    ok "the undo of a sort: the workbook is what it was" ((difference current beforeSort).IsNone) (sprintf "%A" (difference current beforeSort))
+    // An edit of a moved cell afterwards reaches what reads it where it is now.
+    sortEdit "a moved cell typed" (setCells "sheet1" [ at 3 1, Some (number 99.0) ]) |> ignore
+// Rows on circular references sorted, with iterative calculation: the moved formulas are calculated.
+do
+    let wb =
+        Wb.createWorkbook ()
+        |> setCells "sheet1" [ for row in 0 .. 5 do
+                                 yield at row 0, Some (number (float ((row * 5) % 7)))
+                                 yield at row 1, Some (formula (sprintf "=C%d*0.5+A%d" (row + 1) (row + 1)))
+                                 yield at row 2, Some (formula (sprintf "=B%d*0.5+1" (row + 1))) ]
+    start { wb with Iteration = Some { Wb.IterativeCalculation.MaxIterations = 3; MaxChange = 0.000001 } }
+    sortEdit "a sort of rows on circular references (iterative calculation)" (sortSheet "sheet1" { From = at 0 0; To = at 5 2 } [ sortKey 0 false ] false) |> ignore
+    sortEdit "... an edit afterwards" (setCells "sheet1" [ at 7 0, Some (number 1.0) ]) |> ignore
+/// Random sorts of a random sheet: formulas reading their row, other rows, ranges, other sheets,
+/// names; sorts by random keys, ranges and directions, undone now and then; typing between them.
+let randomSorts (seed: int) (steps: int) =
+    let random = Random seed
+    let wb = Wb.createWorkbook () |> Wb.addSheet "Data"
+    let dataId = wb.SheetOrder |> List.last
+    let bodies (r: int) =
+        [| sprintf "=B%d*2" r; sprintf "=A%d&\"-\"&B%d" r r; sprintf "=B%d+B%d" r (r + 2); sprintf "=SUM(B%d:D%d)" r r; sprintf "=$B$3+C%d" r; sprintf "=SUM(B$2:B%d)" r
+           sprintf "=Data!A%d+B%d" (1 + r % 5) r; sprintf "=COUNTIF(B:B,\">\"&B%d)" r; sprintf "=ROW()+B%d" r; sprintf "=RATE*B%d" r; sprintf "=F%d+1" r; sprintf "=IF(B%d>5,C%d,0)" r r; sprintf "=INDEX(B:B,%d)" r |]
+    let cells =
+        [ for row in 0 .. 29 do
+            let r = row + 1
+            yield at row 0, Some (text (sprintf "k%d" (random.Next 9)))
+            yield at row 1, Some (number (float (random.Next 12)))
+            for col in 2 .. 6 do
+                if random.Next 3 > 0 then
+                    let choices = bodies r
+                    yield at row col, Some (if random.Next 4 = 0 then number (float (random.Next 50)) else formula choices.[random.Next choices.Length]) ]
+        @ [ at 32 1, Some (formula "=SUM(B1:B30)"); at 33 1, Some (formula "=INDEX(C1:C30,4)"); at 34 1, Some (formula "=B7+D9"); at 35 1, Some (formula "=SUM(RATECOL)") ]
+    let wb = wb |> setCells "sheet1" cells |> setCells dataId [ for row in 0 .. 5 -> at row 0, Some (number (float row)) ] |> setCells dataId [ at 0 2, Some (formula "=SUM(Sheet1!C1:C30)"); at 1 2, Some (formula "=Sheet1!E5*2") ]
+    let wb = { wb with Names = wb.Names |> Map.add (None, "RATE") "=Sheet1!$B$1" |> Map.add (None, "RATECOL") "=Sheet1!$C$1:$C$30" }
+    start wb
+    let failuresBefore = fail
+    let mutable sorts = 0
+    for step in 1 .. steps do
+        if fail = failuresBefore then
+            let label = sprintf "random sorts seed %d step %d" seed step
+            match random.Next 5 with
+            | 0 ->
+                let before = current
+                sortEdit (label + " (a sort)") (sortSheet "sheet1" { From = at 0 0; To = at 29 (2 + random.Next 5) } [ sortKey (random.Next 3) (random.Next 2 = 0) ] (random.Next 2 = 0)) |> ignore
+                sortEdit (label + " (undone)") (fun wb ->
+                    Wb.updateSheetModel "sheet1" { resolveSheet wb.Sheets.["sheet1"].Model with Cells = (resolveSheet before.Sheets.["sheet1"].Model).Cells } wb) |> ignore
+                sorts <- sorts + 1
+            | 1 -> sortEdit (label + " (typed)") (setCells "sheet1" [ at (random.Next 30) (random.Next 2), Some (number (float (random.Next 12))) ]) |> ignore
+            | _ ->
+                let top = random.Next 10
+                let bottom = top + 3 + random.Next (29 - top - 2)
+                let left = random.Next 2
+                let range = { From = at top left; To = at bottom (left + 1 + random.Next (6 - left)) }
+                let keys = [ for _ in 0 .. random.Next 2 -> sortKey (range.From.Col + random.Next (range.To.Col - range.From.Col + 1)) (random.Next 2 = 0) ]
+                sortEdit (label + " (a sort)") (sortSheet "sheet1" range keys (random.Next 2 = 0)) |> ignore
+                sorts <- sorts + 1
+    sorts
+do
+    let seeds = (match Environment.GetEnvironmentVariable "SORT_SEEDS" with null | "" -> 40 | value -> int value)
+    let mutable sorts = 0
+    for seed in 1 .. seeds do sorts <- sorts + randomSorts (700 + seed) 30
+    printfn "  random sorts: %d sorts compared with the full recalculation" sorts
+    ok "random sorts: sorts took place" (sorts > seeds * 10) (string sorts)
+
 // The formula index: known for most of the cell maps that went by, and never wrong (checked in `edit`).
 printfn "  formula index: known for %d of %d cell maps checked" indexKnown indexChecks
 ok "the formula index was known for most cell maps" (indexKnown * 2 > indexChecks) (sprintf "%d of %d" indexKnown indexChecks)

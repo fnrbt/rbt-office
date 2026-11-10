@@ -800,6 +800,61 @@ let private sameSurroundings (engine: Engine) (edited: Workbook) =
                     && sameFilterState before after)
             | _ -> false))
 
+/// A sort of a sheet's rows as the engine holds it (`Model.RowsSorted`): where the cells of a
+/// moved row came from and went to, in the sorted columns.
+type private SortedRows(sorted: RowsSorted) =
+    let sourceOf = Dictionary<int, int>()
+    let targetOf = Dictionary<int, int>()
+    do
+        for i in 0 .. sorted.Rows.Length - 1 do
+            sourceOf.[sorted.Rows.[i]] <- sorted.Sources.[i]
+            targetOf.[sorted.Sources.[i]] <- sorted.Rows.[i]
+    /// The moved rows in order.
+    let ordered = Array.sort sorted.Rows
+    member _.Left = sorted.Left
+    member _.Right = sorted.Right
+    /// The cell holds what another one held.
+    member _.Moved (row: int) (col: int) = col >= sorted.Left && col <= sorted.Right && sourceOf.ContainsKey row
+    /// Where what stood at a cell before the sort stands now.
+    member _.TargetRow (row: int) (col: int) =
+        if col >= sorted.Left && col <= sorted.Right then
+            match targetOf.TryGetValue row with
+            | true, target -> target
+            | false, _ -> row
+        else row
+    /// Where what stands at a cell now stood before the sort.
+    member _.SourceRow (row: int) (col: int) =
+        if col >= sorted.Left && col <= sorted.Right then
+            match sourceOf.TryGetValue row with
+            | true, source -> source
+            | false, _ -> row
+        else row
+    /// Whether a range holds a moved cell.
+    member _.Meets (r0: int) (c0: int) (r1: int) (c1: int) =
+        if c1 < sorted.Left || c0 > sorted.Right || ordered.Length = 0 then false
+        else
+            // (The first moved row at or after r0.)
+            let mutable lo = 0
+            let mutable hi = ordered.Length
+            while lo < hi do
+                let mid = (lo + hi) >>> 1
+                if ordered.[mid] < r0 then lo <- mid + 1 else hi <- mid
+            lo < ordered.Length && ordered.[lo] <= r1
+
+/// The sort that made a sheet's cells from those the engine holds, or null.
+let private sortBetween (before: SpreadsheetModel) (after: SpreadsheetModel) : SortedRows =
+    let loaded (model: SpreadsheetModel) =
+        match model.Deferred with
+        | Some deferred -> (match deferred.Loaded with Some inner -> inner | None -> Unchecked.defaultof<SpreadsheetModel>)
+        | None -> model
+    let before = if isNull (box before) then before else loaded before
+    let after = loaded after
+    match (if isNull (box after) then None else after.RowsSorted) with
+    | Some sorted when not (isNull (box before)) && before.StructureVersion = after.StructureVersion
+                       && obj.ReferenceEquals(sorted.Before, before.Cells) && obj.ReferenceEquals(sorted.After, after.Cells) ->
+        SortedRows sorted
+    | _ -> Unchecked.defaultof<SortedRows>
+
 /// The cells an edit changed: those named by `hint`, or - without one - the
 /// cells of every sheet whose cell map is another one, compared cell by cell.
 /// `restyled` takes the spilled cells that changed in their format alone.
@@ -809,7 +864,8 @@ let private sameSurroundings (engine: Engine) (edited: Workbook) =
 /// index - the values are not walked); the caller has everything that reads
 /// the sheet calculated again.
 let private collectChanges (engine: Engine) (edited: Workbook) (hint: (SheetId * CellAddress) list option)
-                           (restyled: ResizeArray<struct (SheetState * CellAddress)>) (structural: HashSet<SheetId>) : ResizeArray<CellChange> =
+                           (restyled: ResizeArray<struct (SheetState * CellAddress)>) (structural: HashSet<SheetId>)
+                           (sorts: Dictionary<SheetId, SortedRows>) : ResizeArray<CellChange> =
     let changes = ResizeArray<CellChange>()
     comparedCells <- 0
     match hint with
@@ -863,6 +919,34 @@ let private collectChanges (engine: Engine) (edited: Workbook) (hint: (SheetId *
                         if seen.Add (keyOf addr.Row addr.Col) then
                             changes.Add { State = state; Row = addr.Row; Col = addr.Col; Before = ValueNone; After = (match Map.tryFind addr afterCells with Some cell -> ValueSome cell | None -> ValueNone) }
                 elif obj.ReferenceEquals(beforeCells, afterCells) then ()
+                elif sorts.ContainsKey sheetId then
+                    // A sort: the cells that moved are known. Only the cells that hold or held a
+                    // formula are compared - where each formula stood and, of one that moved, where
+                    // it stands now; a formula's value can be another one (the cells of a sort that
+                    // is taken back hold the values they had before it) -; the caller has what reads
+                    // the moved cells calculated.
+                    let sorted = sorts.[sheetId]
+                    let seen = HashSet<float>()
+                    let consider (row: int) (col: int) =
+                        if seen.Add (keyOf row col) then
+                            let addr = { Row = row; Col = col }
+                            let was = match Map.tryFind addr beforeCells with Some cell -> ValueSome cell | None -> ValueNone
+                            let now = match Map.tryFind addr afterCells with Some cell -> ValueSome cell | None -> ValueNone
+                            let differs =
+                                match was, now with
+                                | ValueSome a, ValueSome b -> not (obj.ReferenceEquals(a, b)) && a.Value <> b.Value
+                                | ValueNone, ValueNone -> false
+                                | ValueSome a, ValueNone -> a.Value <> CellValue.Empty
+                                | ValueNone, ValueSome b -> b.Value <> CellValue.Empty
+                            if differs then changes.Add { State = state; Row = row; Col = col; Before = was; After = now }
+                    for node in List.ofSeq state.Nodes.Values do
+                        if node.IsFormula then
+                            consider node.Row node.Col
+                            if sorted.Moved node.Row node.Col then consider (sorted.TargetRow node.Row node.Col) node.Col
+                    // (Formulas the graph does not know of: those too.)
+                    match tryFormulaIndex afterCells with
+                    | Some index -> for addr in index do consider addr.Row addr.Col
+                    | None -> ()
                 elif structural.Contains sheetId then
                     let seen = HashSet<float>()
                     let consider (addr: CellAddress) =
@@ -971,6 +1055,63 @@ let private followsMove (move: StructureMove) (onMovedSheet: string option -> bo
             else
                 let upper = nameA.ToUpperInvariant()
                 if upper = "ROW" || upper = "COLUMN" || upper = "CELL" || upper = "SHEET" || upper = "SHEETS" || upper = "FORMULATEXT" || upper = "ISFORMULA" || traitsOf nameA <> 0 then same <- false
+                else
+                    for arg in argsA do left.Push arg
+                    for arg in argsB do right.Push arg
+        | _ -> same <- false
+    same
+
+/// Whether a formula a sort moved (`before` as it stood, `after` re-pointed as a copy where it
+/// stands now) reads the very cells it read: every reference of it either reads cells the sort
+/// left in place, as it did, or one cell / one row of the sorted columns that moved with it,
+/// where they are now. Such a formula gives the value it gave. False - evaluate - for anything
+/// else: a range of several rows of the sorted columns (its cells are in another order), a
+/// reference to another sheet the copy re-pointed, a name, structured and spill references,
+/// the functions that answer with a position. `onSortedSheet` says whether a reference's sheet
+/// (None: the formula's own) is the sheet that was sorted.
+let private followsSort (sorted: SortedRows) (onSortedSheet: string option -> bool) (before: Expr) (after: Expr) : bool =
+    let sameRef (a: RefAst) (b: RefAst) = a.Row = b.Row && a.Col = b.Col
+    let follows (a: RefAst) (b: RefAst) (a2: RefAst) (b2: RefAst) =
+        a.Sheet = a2.Sheet && b.Sheet = b2.Sheet
+        && (if not (onSortedSheet a.Sheet) then sameRef a a2 && sameRef b b2
+            else
+                let r0, r1 = min a.Row b.Row, max a.Row b.Row
+                let c0, c1 = min a.Col b.Col, max a.Col b.Col
+                if not (sorted.Meets r0 c0 r1 c1) then sameRef a a2 && sameRef b b2
+                elif r0 = r1 && c0 >= sorted.Left && c1 <= sorted.Right then
+                    let target = sorted.TargetRow r0 c0
+                    a2.Row = target && b2.Row = target && a2.Col = a.Col && b2.Col = b.Col
+                else false)
+    let left = Stack<Expr>()
+    let right = Stack<Expr>()
+    left.Push before
+    right.Push after
+    let mutable same = true
+    while same && left.Count > 0 do
+        match left.Pop(), right.Pop() with
+        | Number a, Number b -> same <- a = b
+        | Str a, Str b -> same <- a = b
+        | Bool a, Bool b -> same <- a = b
+        | ErrorLit a, ErrorLit b -> same <- a = b
+        | MissingArg, MissingArg -> ()
+        | CellRef a, CellRef b -> same <- not (a.Sheet |> Option.exists (fun sheet -> sheet.IndexOf ':' >= 0)) && follows a a b b
+        | RangeRef (a, b), RangeRef (a2, b2) -> same <- not (a.Sheet |> Option.exists (fun sheet -> sheet.IndexOf ':' >= 0)) && follows a b a2 b2
+        | UnaryOp (opA, a), UnaryOp (opB, b) ->
+            same <- opA = opB
+            left.Push a
+            right.Push b
+        | BinOp (a1, opA, a2), BinOp (b1, opB, b2) ->
+            same <- opA = opB
+            left.Push a1
+            right.Push b1
+            left.Push a2
+            right.Push b2
+        | Function (nameA, argsA), Function (nameB, argsB) ->
+            if nameA <> nameB || List.length argsA <> List.length argsB then same <- false
+            else
+                let upper = nameA.ToUpperInvariant()
+                if upper = "ROW" || upper = "COLUMN" || upper = "ROWS" || upper = "COLUMNS" || upper = "CELL" || upper = "SHEET" || upper = "SHEETS"
+                   || upper = "FORMULATEXT" || upper = "ISFORMULA" || traitsOf nameA <> 0 then same <- false
                 else
                     for arg in argsA do left.Push arg
                     for arg in argsB do right.Push arg
@@ -1175,7 +1316,7 @@ let private blankModel = createEmpty 1 1
 let adopt (engine: Engine) (calculated: Workbook) : bool =
     if not (sameSurroundings engine calculated) then false
     else
-        let changes = collectChanges engine calculated None (ResizeArray()) (HashSet<SheetId>())
+        let changes = collectChanges engine calculated None (ResizeArray()) (HashSet<SheetId>()) (Dictionary<SheetId, SortedRows>())
         rewire engine calculated changes (fun _ _ -> ()) ignore
         // (Formulas that came in may close a circular reference nothing here has looked for.)
         if changes.Count > 0 then engine.CyclesKnown <- false
@@ -1351,9 +1492,18 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
             state.Model <- blankModel
             state.Name <- (Map.find sheetId edited.Sheets).Name
         let restyled = ResizeArray<struct (SheetState * CellAddress)>()
+        // Sheets whose rows a sort exchanged (`Model.RowsSorted`): the cells that moved are known.
+        let sorts = Dictionary<SheetId, SortedRows>()
+        if mode = 0 then
+            for KeyValue (sheetId, sheet) in edited.Sheets do
+                match engine.Sheets.TryGetValue sheetId with
+                | true, state when not (isNull (box state.Model)) && not (obj.ReferenceEquals(state.Model, sheet.Model)) ->
+                    let sorted = sortBetween state.Model sheet.Model
+                    if not (isNull (box sorted)) then sorts.[sheetId] <- sorted
+                | _ -> ()
         let changes =
             if mode <> 0 then ResizeArray<CellChange>()
-            else collectChanges engine edited (if surroundings.Any then None else hint) restyled surroundings.Structural
+            else collectChanges engine edited (if surroundings.Any || sorts.Count > 0 then None else hint) restyled surroundings.Structural sorts
         let mutable workbook = edited
         let models = Dictionary<SheetId, SpreadsheetModel>()
         /// The cells of a sheet as the pass first took them: the pass changes values, never which cells hold formulas.
@@ -1580,9 +1730,35 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                      | Some cell -> ValueSome cell
                      | None -> ValueNone)
                 | None -> ValueNone
-            | _ -> change.Before
+            | _ ->
+                match sorts.TryGetValue change.State.Id with
+                | true, sorted when sorted.Moved change.Row change.Col ->
+                    match Map.tryFind { Row = sorted.SourceRow change.Row change.Col; Col = change.Col } (loadedCells change.State.Model) with
+                    | Some cell -> ValueSome cell
+                    | None -> ValueNone
+                | _ -> change.Before
         /// A changed formula that only followed the cells it reads (they moved) and gives the value it gave.
         let followed (node: Node) (change: CellChange) (was: CellData voption) : bool =
+            match sorts.TryGetValue change.State.Id with
+            | true, sorted ->
+                // (Moved by the sort, as a copy: it gives what it gave when what it reads moved with it.
+                // With iterative calculation it is calculated: wired again, it is not known to be on a
+                // circular reference that is calculated at every edit.)
+                match node.Expr with
+                | Some expr when not node.Spills && node.Traits = 0 && edited.Iteration.IsNone && sorted.Moved change.Row change.Col ->
+                    let text = formulaOf was
+                    if isNull text || effectiveValue was <> effectiveValue change.After then false
+                    else
+                        match parseFormula text with
+                        | Ok before ->
+                            let ownName = change.State.Name
+                            followsSort sorted (fun qualifier ->
+                                match qualifier with
+                                | None -> true
+                                | Some q -> q.Equals(ownName, System.StringComparison.OrdinalIgnoreCase)) before expr
+                        | Result.Error _ -> false
+                | _ -> false
+            | _ ->
             match theMove, node.Expr with
             | Some (moved, movedName, move, _), Some expr when not node.Spills && node.Traits &&& ~~~16 = 0 ->
                 let onMoved = obj.ReferenceEquals(change.State, moved)
@@ -1598,9 +1774,27 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                             (fun name -> not (surroundings.ChangedNames.Contains (name.ToUpperInvariant()))) before expr
                     | Result.Error _ -> false
             | _ -> false
+        // A sort: what reads a cell that moved - by itself or in a range - reads other values
+        // now, as it is wired before the formulas that moved are wired again.
+        let sortReaders = ResizeArray<struct (Node * int)>()
+        for KeyValue (sheetId, sorted) in sorts do
+            match engine.Sheets.TryGetValue sheetId with
+            | true, state ->
+                let note (reader: Node) = if reader.IsFormula then sortReaders.Add (struct (reader, reader.WireStamp))
+                for node in state.Nodes.Values do
+                    if node.Dependents.Count > 0 && sorted.Moved node.Row node.Col then
+                        for reader in node.Dependents do note reader
+                for group in state.Groups.Values do
+                    if sorted.Meets group.R0 group.C0 group.R1 group.C1 then
+                        for owner in group.Owners do note owner
+            | false, _ -> ()
+        /// Changed formulas of a sorted sheet: whether they are calculated is `followed`'s to say,
+        /// also of one that kept its wiring (it moved where the same text stood: `=B5*2` in row 5).
+        let sortDecided = HashSet<Node>(HashIdentity.Reference)
         rewire engine edited changes
             (fun node change ->
                 let was = heldBefore change
+                if sorts.Count > 0 then sortDecided.Add node |> ignore
                 if not (followed node change was) then
                     reach node
                     node.NeedsEval <- true
@@ -1626,6 +1820,12 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
         // beyond the edit, the formulas that were not wired again.
         for struct (reader, stamp) in moveReaders do
             if reader.IsFormula && reader.WireStamp = stamp then
+                reach reader
+                reader.NeedsEval <- true
+        // (Of what read the moved cells, the formulas that moved and were wired again are
+        // calculated or not as `followed` says.)
+        for struct (reader, stamp) in sortReaders do
+            if reader.IsFormula && reader.WireStamp = stamp && not (sortDecided.Contains reader) then
                 reach reader
                 reader.NeedsEval <- true
         if true then

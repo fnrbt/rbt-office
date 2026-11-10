@@ -1830,19 +1830,21 @@ let sortRange (memberName: string) (range: CellRange) (keys: SortKey list) (opti
                 keys
                 |> List.map (fun key ->
                     match key.By with
-                    | SortByValue -> rows |> Array.map (fun row -> valueAt row key.Column), [||]
+                    | SortByValue ->
+                        let values = rows |> Array.map (fun row -> valueAt row key.Column)
+                        values, Array.map isBlank values, [||]
                     | SortByCellColor | SortByFontColor ->
                         let wanted = key.Color.ToUpperInvariant()
-                        [||], rows |> Array.map (fun row -> if colorAt (key.By = SortByFontColor) row key.Column = wanted then 0 else 1))
+                        [||], [||], rows |> Array.map (fun row -> if colorAt (key.By = SortByFontColor) row key.Column = wanted then 0 else 1))
                 |> Array.ofList
             let keyArray = Array.ofList keys
             let compareBy (index: int) (a: int) (b: int) : int =
                 let key = keyArray.[index]
-                let values, colors = keyColumns.[index]
+                let values, blanks, colors = keyColumns.[index]
                 match key.By with
                 | SortByValue ->
                     let va, vb = values.[a], values.[b]
-                    match isBlank va, isBlank vb with
+                    match blanks.[a], blanks.[b] with
                     | true, true -> 0
                     | true, false -> 1
                     | false, true -> -1
@@ -1880,6 +1882,16 @@ let sortRange (memberName: string) (range: CellRange) (keys: SortKey list) (opti
                         match data.Value with
                         | Formula (formula, cached) when delta <> 0 -> { data with Value = Formula (shiftFormulaReferences delta 0 formula, cached) }
                         | _ -> data)
+                // (The formula cells of the sorted map, from those of the map before: no walk of the cells.)
+                match tryFormulaIndex model.Cells with
+                | Some index ->
+                    let moved = index |> Set.map (fun addr -> if moves addr then { addr with Row = target.[addr.Row] } else addr)
+                    registerFormulaIndex cells moved
+                | None -> ()
+                // What moved, for the recalculation: the rows that took another's cells.
+                let sorted =
+                    let pairs = [| for i in 0 .. rows.Length - 1 do if ordered.[i] <> rows.[i] then yield rows.[i], ordered.[i] |]
+                    RowsSorted(left, right, Array.map fst pairs, Array.map snd pairs, model.Cells, cells)
                 let hyperlinks =
                     if model.Hyperlinks.IsEmpty then model.Hyperlinks
                     else
@@ -1895,7 +1907,8 @@ let sortRange (memberName: string) (range: CellRange) (keys: SortKey list) (opti
                     ArrayMarks = followArrayMarks cells (moveMap model.ArrayMarks (fun _ mark -> mark))
                     Threads = moveMap model.Threads (fun _ thread -> thread)
                     Hyperlinks = hyperlinks
-                    SortState = sortState }
+                    SortState = sortState
+                    RowsSorted = Some sorted }
                 |> invalidateFilterProjection
 
 /// What a quick sort (Sort A to Z / Z to A with one cell selected) acts on:
