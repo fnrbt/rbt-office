@@ -3792,11 +3792,12 @@ module Xlsx =
         | 65 -> Some "FFFFFF"  // system background
         | _ -> None
 
-    /// Apply an OOXML `tint` modifier to an RRGGBB color. Per the spec, tint
-    /// is in [-1, 1]: negative darkens, positive lightens, against the HLS
-    /// luminance channel. Cells in poi-51585 / poi-51710 lean on this for
-    /// banded "lighter accent" fills — without it, every banded row painted
-    /// the same accent color.
+    /// A colour with a tint (`tint` of a `<color>`: -1 darker .. 1 lighter) as Excel shows it: in the
+    /// integer HLS of Windows (hue, lightness and saturation 0..240, ColorRGBToHLS / ColorHLSToRGB), the
+    /// lightness L * (1 + tint) darker or L * (1 - tint) + 240 * tint lighter, cut to a whole number (a hair
+    /// above, as Excel's own sums land there). Checked against Excel 2019: every theme colour of the Office
+    /// theme with 25 tints, the ones files write (0.79998168889431442 ...) among them, 250 of 250
+    /// (tools/excel-parity/probe-tints.vbs; tests/formula/stage54-tablestyles.fsx).
     let applyColorTint (rgb: string) (tint: float) : string =
         if System.Double.IsNaN tint || tint = 0.0 then rgb
         else
@@ -3804,40 +3805,47 @@ module Xlsx =
             let hex = if clean.Length = 8 then clean.Substring 2 else clean
             if hex.Length <> 6 then rgb
             else
-                let r = ValueText.Color.hexByte hex 0 |> float
-                let g = ValueText.Color.hexByte hex 2 |> float
-                let b = ValueText.Color.hexByte hex 4 |> float
-                let r1, g1, b1 = r / 255.0, g / 255.0, b / 255.0
-                let mx = max r1 (max g1 b1)
-                let mn = min r1 (min g1 b1)
-                let l = (mx + mn) / 2.0
-                let d = mx - mn
-                let s = if d = 0.0 then 0.0 elif l < 0.5 then d / (mx + mn) else d / (2.0 - mx - mn)
-                let h =
-                    if d = 0.0 then 0.0
-                    elif mx = r1 then ((g1 - b1) / d + (if g1 < b1 then 6.0 else 0.0)) / 6.0
-                    elif mx = g1 then ((b1 - r1) / d + 2.0) / 6.0
-                    else ((r1 - g1) / d + 4.0) / 6.0
-                let t = max -1.0 (min 1.0 tint)
-                let l' =
-                    if t < 0.0 then l * (1.0 + t)
-                    else l * (1.0 - t) + t
-                let hueToRgb p q t =
-                    let t = if t < 0.0 then t + 1.0 elif t > 1.0 then t - 1.0 else t
-                    if t < 1.0 / 6.0 then p + (q - p) * 6.0 * t
-                    elif t < 0.5 then q
-                    elif t < 2.0 / 3.0 then p + (q - p) * (2.0 / 3.0 - t) * 6.0
-                    else p
-                let r2, g2, b2 =
-                    if s = 0.0 then l', l', l'
+                let most = 240
+                let r = ValueText.Color.hexByte hex 0
+                let g = ValueText.Color.hexByte hex 2
+                let b = ValueText.Color.hexByte hex 4
+                // ColorRGBToHLS
+                let mx, mn = max r (max g b), min r (min g b)
+                let l = ((mx + mn) * most + 255) / (2 * 255)
+                let h, s =
+                    if mx = mn then 0, 0
                     else
-                        let q = if l' < 0.5 then l' * (1.0 + s) else l' + s - l' * s
-                        let p = 2.0 * l' - q
-                        hueToRgb p q (h + 1.0 / 3.0),
-                        hueToRgb p q h,
-                        hueToRgb p q (h - 1.0 / 3.0)
-                let toByte v = int (max 0.0 (min 255.0 (v * 255.0 + 0.5)))
-                sprintf "%02X%02X%02X" (toByte r2) (toByte g2) (toByte b2)
+                        let d = mx - mn
+                        let s =
+                            if l <= most / 2 then (d * most + (mx + mn) / 2) / (mx + mn)
+                            else (d * most + (2 * 255 - mx - mn) / 2) / (2 * 255 - mx - mn)
+                        let part v = ((mx - v) * (most / 6) + d / 2) / d
+                        let h =
+                            if r = mx then part b - part g
+                            elif g = mx then most / 3 + part r - part b
+                            else 2 * most / 3 + part g - part r
+                        (if h < 0 then h + most elif h > most then h - most else h), s
+                let t = max -1.0 (min 1.0 tint)
+                let lighter =
+                    if t < 0.0 then float l * (1.0 + t)
+                    else float l * (1.0 - t) + (float most - float most * (1.0 - t))
+                let l' = max 0 (min most (int (floor (lighter + 0.025))))
+                // ColorHLSToRGB
+                let toByte v = (v * 255 + most / 2) / most
+                let hue (n1: int) (n2: int) (h: int) =
+                    let h = if h < 0 then h + most elif h > most then h - most else h
+                    if h < most / 6 then n1 + ((n2 - n1) * h + most / 12) / (most / 6)
+                    elif h < most / 2 then n2
+                    elif h < most * 2 / 3 then n1 + ((n2 - n1) * (most * 2 / 3 - h) + most / 12) / (most / 6)
+                    else n1
+                let r2, g2, b2 =
+                    if s = 0 then let v = toByte l' in v, v, v
+                    else
+                        let m2 = if l' <= most / 2 then (l' * (most + s) + most / 2) / most else l' + s - (l' * s + most / 2) / most
+                        let m1 = 2 * l' - m2
+                        toByte (hue m1 m2 (h + most / 3)), toByte (hue m1 m2 h), toByte (hue m1 m2 (h - most / 3))
+                let clamp v = max 0 (min 255 v)
+                sprintf "%02X%02X%02X" (clamp r2) (clamp g2) (clamp b2)
 
     /// Resolve a color element (`<fgColor .../>`, `<color .../>` etc.) into an
     /// RRGGBB string. Tries `rgb` → `theme` (+ optional `tint`) → `indexed`.

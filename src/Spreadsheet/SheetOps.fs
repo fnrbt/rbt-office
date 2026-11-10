@@ -2678,7 +2678,8 @@ let tableStyleFills (styleName: string) : string * string =
             n <- n * 10 + (int ch - int '0')
     let slot = (max 1 (if any then n else 2) - 1) % 7
     if slot = 0 then "#000000", "#D9D9D9"
-    else "#" + accents.[slot - 1], CF.blendColors ("#" + accents.[slot - 1]) "#FFFFFF" 0.8
+    // (The band is the accent lighter 80%, as Excel shows that tint.)
+    else "#" + accents.[slot - 1], "#" + XlsxReader.Xlsx.applyColorTint accents.[slot - 1] 0.79998168889431442
 
 /// The style record of a built-in table style ("TableStyleMedium2") with
 /// banded rows, as Excel applies one: Excel's definition of the style in the
