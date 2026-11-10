@@ -39,6 +39,12 @@ const WPS = 'http://schemas.microsoft.com/office/word/2010/wordprocessingShape';
 const WPG = 'http://schemas.microsoft.com/office/word/2010/wordprocessingGroup';
 const WPC = 'http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas';
 const escapeRegex = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// A run's shape as the writer has it when it is not the text of the paragraph around it (written from the model, moved):
+// the element the reader kept - its attributes in name order, the namespaces it uses declared on its first element.
+const asKept = (run) => {
+    const sorted = run.replace(/<([\w:]+)((?: [\w:]+="[^"]*")+)(\s*\/?)>/g, (_, name, attributes, close) => `<${name}${attributes.match(/ [\w:]+="[^"]*"/g).sort().join('')}${close}>`);
+    return escapeRegex(sorted).replace(/^(<w:r><[\w:]+)/, '$1(?: xmlns:\\w+="[^"]*")*');
+};
 // A shape of a group: its place and size in the group's child coordinates (EMU), its geometry, fill and text.
 const groupWsp = (x, y, cx, cy, prst, fill, text) =>
     `<wps:wsp><wps:cNvPr id="${pictureId++}" name="Shape ${x}-${y}"/><wps:cNvSpPr/><wps:spPr><a:xfrm><a:off x="${x}" y="${y}"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="${prst}"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="${fill}"/></a:solidFill></wps:spPr>` +
@@ -560,18 +566,18 @@ const docs = [
             { read: 'pkg.Paragraphs.4.Children.0.Paragraphs.0.Runs.0.Text', equals: 'group text' }, { read: 'pkg.Paragraphs.4.ChildSpaceWidth', equals: 200 },
             { read: 'pkg.Paragraphs.5.Children.length', equals: 1 }, { read: 'pkg.Paragraphs.5.FillColor', equals: '#FFFF00' },
             { read: 'pkg.Paragraphs.6.Children.length', equals: 2 }, { read: 'pkg.Paragraphs.6.AnchorBlock', equals: 2 },
-            // Written from the model: each group is the element it was read from.
-            { part: 'word/document.xml', has: escapeRegex(groupShapesWpg) }, { part: 'word/document.xml', has: escapeRegex(groupShapesCanvas) },
-            { part: 'word/document.xml', has: escapeRegex(groupShapesVml) },
-            { part: 'word/document.xml', has: 'anchor paragraph of the group</w:t></w:r><w:r><mc:AlternateContent>' },
+            // Written from the model: each group is the element it was read from (as the reader keeps it: see asKept).
+            { part: 'word/document.xml', has: asKept(groupShapesWpg) }, { part: 'word/document.xml', has: asKept(groupShapesCanvas) },
+            { part: 'word/document.xml', has: asKept(groupShapesVml) },
+            { part: 'word/document.xml', has: 'anchor paragraph of the group</w:t></w:r><w:r><mc:AlternateContent[ >]' },
             // A character typed into the paragraph the group is anchored in: the group's element as it was.
             { editKeeps: escapeRegex(groupShapesWpg) }, { editKeeps: escapeRegex(groupShapesCanvas) }, { editKeeps: escapeRegex(groupShapesVml) },
             // Every shape moved 10 px right and 5 px down: the anchors' offsets changed (95250 + 95250, 190500 + 47625; the canvas's
             // 0 + 95250, 2857500 + 47625), the VML groups' margins (7.5 + 7.5 pt, 15 + 3.75 pt; 300 + 7.5 pt, 120 + 3.75 pt), all else as it was.
-            { movedKeeps: escapeRegex(groupShapesWpg.replace('<wp:posOffset>95250</wp:posOffset>', '<wp:posOffset>190500</wp:posOffset>').replace('<wp:posOffset>190500</wp:posOffset></wp:positionV>', '<wp:posOffset>238125</wp:posOffset></wp:positionV>')
+            { movedKeeps: asKept(groupShapesWpg.replace('<wp:posOffset>95250</wp:posOffset>', '<wp:posOffset>190500</wp:posOffset>').replace('<wp:posOffset>190500</wp:posOffset></wp:positionV>', '<wp:posOffset>238125</wp:posOffset></wp:positionV>')
                 .replace('margin-left:7.5pt;margin-top:15pt', 'margin-left:15pt;margin-top:18.75pt')) },
-            { movedKeeps: escapeRegex(groupShapesCanvas.replace('<wp:posOffset>0</wp:posOffset>', '<wp:posOffset>95250</wp:posOffset>').replace('<wp:posOffset>2857500</wp:posOffset>', '<wp:posOffset>2905125</wp:posOffset>')) },
-            { movedKeeps: escapeRegex(groupShapesVml.replace('margin-left:300pt;margin-top:120pt', 'margin-left:307.5pt;margin-top:123.75pt')) },
+            { movedKeeps: asKept(groupShapesCanvas.replace('<wp:posOffset>0</wp:posOffset>', '<wp:posOffset>95250</wp:posOffset>').replace('<wp:posOffset>2857500</wp:posOffset>', '<wp:posOffset>2905125</wp:posOffset>')) },
+            { movedKeeps: asKept(groupShapesVml.replace('margin-left:300pt;margin-top:120pt', 'margin-left:307.5pt;margin-top:123.75pt')) },
         ],
     },
     {
