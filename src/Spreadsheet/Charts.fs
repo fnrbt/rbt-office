@@ -1731,8 +1731,9 @@ let private layoutPlottedChartEx (theme: ThemeColors) (data: ChartData) (chart: 
                 let y0, y1 = yOf high, yOf low
                 add (PRect (x, y0, barWidth, max 1.0 (y1 - y0), fill |> Option.map fst, (match fill with Some (_, opacity) -> opacity | None -> 1.0),
                             (outline |> Option.map (fun (color, _, _) -> color)), (match outline with Some (_, lineWidth, _) -> lineWidth | None -> 0.0), 0.0))
+                // (The lines that join the bars: light grey, as the gridlines - Excel 2019's.)
                 if connectors && index < count - 1 then
-                    add (PLine (x + barWidth, yOf ends.[index], x + band, yOf ends.[index], "#A6A6A6", 0.75, None))
+                    add (PLine (x + barWidth, yOf ends.[index], x + band, yOf ends.[index], "#D9D9D9", 0.75, None))
                 match labelText index (value index) with
                 | Some text ->
                     let position = labelSpec |> Option.bind (fun spec -> spec.Position) |> Option.defaultValue "outEnd"

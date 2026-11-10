@@ -1722,6 +1722,15 @@ checks['charts-in-grid'] = async () => {
         check('an entry a series reads: the charts that read the cell are laid out again', [redrawn[titles.indexOf('Column')], redraws() - redrawsBefore, redrawn.filter(Boolean).length], [true, redrawn.filter(Boolean).length, redraws() - redrawsBefore]);
         note(`charts laid out again by an entry in B3: ${redrawn.filter(Boolean).length} of ${redrawn.length}`);
         grid.Undo(); await frame(); grid.Undo(); await frame();
+        // (A waterfall: its bars joined by level lines, light grey as the gridlines, of one length - a fraction of the chart's width.)
+        const joined = (chart) => {
+            const width = chart.getBBox().width;
+            const lengths = [...chart.querySelectorAll('line')]
+                .filter((line) => line.getAttribute('stroke') === '#D9D9D9' && line.getAttribute('y1') === line.getAttribute('y2'))
+                .map((line) => Math.round(Math.abs(Number(line.getAttribute('x2')) - Number(line.getAttribute('x1')))))
+                .filter((length) => length > 0 && length < width / 3);
+            return lengths.some((length) => lengths.filter((other) => other === length).length >= 2);
+        };
         // The dashboards: charts inside group shapes, shapes with text, slicers as labelled frames.
         for (const [file, sheet] of [['tests/real-world/dashboard-ecommerce-sales.xlsx', 'Dashboard'], ['tests/real-world/dashboard-sales-analysis.xlsx', 'Dashboard']]) {
             const bytes = await bytesOf(file);
@@ -1739,7 +1748,7 @@ checks['charts-in-grid'] = async () => {
             // and has its points - the grand total its last bar, its bars joined by lines - when first shown.)
             if (file.includes('ecommerce')) {
                 const texts = drawn().flatMap((node) => [...node.querySelectorAll('svg text')].map((text) => text.textContent));
-                check('the waterfall, its data on a sheet not shown yet: its points on first display', [texts.includes('Grand Total'), drawn().some((node) => node.querySelector('line[stroke="#A6A6A6"]') !== null), grid.IsModified()], [true, true, false]);
+                check('the waterfall, its data on a sheet not shown yet: its points on first display', [texts.includes('Grand Total'), drawn().some((node) => [...node.querySelectorAll('svg g[clip-path]'), ...node.querySelectorAll('svg')].some(joined)), grid.IsModified()], [true, true, false]);
             }
             await shoot(`${file.split('/').pop()} ${sheet}`);
             // Another sheet and back: the objects are as they were drawn - nothing is laid out again.
@@ -1758,7 +1767,7 @@ checks['charts-in-grid'] = async () => {
                 // Each chart is a clipped group of the drawing's SVG, the innermost, or the SVG itself.)
                 const charts = drawn().flatMap((node) => { const groups = [...node.querySelectorAll('svg g[clip-path]')].filter((group) => !group.querySelector('g[clip-path]')); return groups.length ? groups : [...node.querySelectorAll('svg')].slice(0, 1); });
                 const textsOf = (chart) => [...chart.querySelectorAll('text')].map((text) => text.textContent);
-                const isWaterfall = (chart) => chart.querySelector('line[stroke="#A6A6A6"]') !== null;
+                const isWaterfall = joined;
                 check('no chart has a "Grand Total" among its points, its source sheet shown or not', charts.filter((chart) => !isWaterfall(chart)).flatMap(textsOf).filter((text) => text === 'Grand Total'), []);
                 check('shown again after another sheet: the same drawings, none laid out again', [grid.GetChartLayouts() - away, away - layouts, drawn().length === svgs.length && drawn().every((node, at) => node.innerHTML === svgs[at])], [0, 0, true]);
                 // Scrolling and an entry no object reads lay nothing out either.

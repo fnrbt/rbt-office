@@ -74,7 +74,8 @@ match waterfall with
         ok "waterfall: the end total is where the decreases left it" (close (bottomOf taxTop taxHeight) endTop) (sprintf "%g / %g" (bottomOf taxTop taxHeight) endTop)
         ok "waterfall: half as much as a total is half as high" (close (salesHeight * 2.0) startHeight) (sprintf "%g / %g" salesHeight startHeight)
     | _ -> ok "waterfall: five bars" false (sprintf "%A" bars)
-    eq "waterfall: a line joins each bar to the next" (lines scene |> List.filter (fun (_, y1, _, y2, color) -> color = "#A6A6A6" && y1 = y2) |> List.length) 4
+    // (Light grey, as the gridlines: Excel 2019's own picture of synthetic-chartex.xlsx.)
+    eq "waterfall: a line joins each bar to the next, light grey" (lines scene |> List.filter (fun (x1, y1, x2, y2, color) -> color = "#D9D9D9" && y1 = y2 && x2 - x1 < 100.0) |> List.length) 4
 | None -> ()
 
 // ---- a funnel ---------------------------------------------------------------------------------------
