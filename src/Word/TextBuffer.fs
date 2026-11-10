@@ -364,6 +364,12 @@ module Run =
         | Text tr -> Text { tr with Start = tr.Start + offset }
         | Image ir -> Image { ir with Start = ir.Start + offset }
 
+/// Whether two lists of a style are equal - at once when both are empty (most
+/// runs have no bookmark: two empty lists are two objects, and `=` on them goes
+/// through the list's own equality).
+let inline private sameList (left: 'T list) (right: 'T list) =
+    (left.IsEmpty && right.IsEmpty) || left = right
+
 /// Whether two styles are equal: what `left = right` says, field by field.
 /// (The record's own equality gathers the forty fields of both sides before
 /// it compares the first - most of the time of a format given to a whole long
@@ -400,8 +406,8 @@ let sameTextStyle (left: TextStyle) (right: TextStyle) : bool =
         && left.NoteId = right.NoteId
         && left.NoteType = right.NoteType
         && left.NoteText = right.NoteText
-        && left.BookmarkStarts = right.BookmarkStarts
-        && left.BookmarkEnds = right.BookmarkEnds
+        && sameList left.BookmarkStarts right.BookmarkStarts
+        && sameList left.BookmarkEnds right.BookmarkEnds
         && left.FieldCode = right.FieldCode
         && left.FieldResult = right.FieldResult
         && left.EquationXml = right.EquationXml
