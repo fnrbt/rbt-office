@@ -1,6 +1,6 @@
 // A long document loaded through a viewport shows its first screens at once
 // and lays the rest out in slices (docx4j-getting-started with its body
-// repeated 8 times: some 600 pages). The import returns with the first screen
+// repeated 8 times: some 400 pages (since a page Word recorded as started is not started again - layout/page-parity - 49 pages repeated 8 times: 392 with these checks' fonts; Word has 45 pages of it)). The import returns with the first screen
 // painted and a few pages laid out; getDocumentSize / getPageFrames then give
 // the pages there are so far, the onChange listeners are told as they grow
 // ({ LayoutChanged, LayoutComplete }), isLayoutComplete / whenLayoutComplete
@@ -38,7 +38,7 @@ try {
     // (Through a viewport, as the frames below: a narrower page is centred in the document's width.)
     const wholeFrames = JSON.stringify(Word.getPageFrames(whole));
     const wholeFirstScreen = pixelsOf(wholeCanvas);
-    check('a long document', pageCount > 500, true);
+    check('a long document', pageCount > 350, true);
 
     // ---- in slices ----
     const [editor, canvas] = editorOn('sliced');
@@ -170,11 +170,11 @@ try {
             plain.renderPage(again, 0, 1);
             viewer.renderPage(target, 0, 1);
             check('the first page is the same pixels before and after, and in a viewer that laid out at once', [same(pixelsOf(target), firstPixels), same(pixelsOf(again), firstPixels)], [true, true]);
-            plain.renderPage(again, 450, 1); viewer.renderPage(target, 450, 1);
+            plain.renderPage(again, 350, 1); viewer.renderPage(target, 350, 1);
             check('and so is a late page', same(pixelsOf(again), pixelsOf(target)), true);
             const late = createViewer(document.createElement('canvas'));
             late.load(editorPackage, { progressive: true });
-            check('renderPage of a late page lays a progressive viewer out at once', [late.renderPage(target, 450, 1), late.isLayoutComplete(), same(pixelsOf(again), pixelsOf(target))], [true, true, true]);
+            check('renderPage of a late page lays a progressive viewer out at once', [late.renderPage(target, 350, 1), late.isLayoutComplete(), same(pixelsOf(again), pixelsOf(target))], [true, true, true]);
             note(`the viewer: first page ${firstPage.toFixed(0)} ms with ${early.length} pages laid out, ${told.length} progress notices`);
         } catch (e) { fail(e); }
         finish();

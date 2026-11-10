@@ -1,5 +1,5 @@
 // Typing in a long document (docx4j-getting-started with its body repeated 8
-// times: some 600 pages, with tables, sections and paragraphs that break over
+// times: some 400 pages - 392 with these checks' fonts since layout/page-parity -, with tables, sections and paragraphs that break over
 // pages). An edit lays out and paints what it changed: the layout pass starts
 // at the edited block from the state the last pass had there and stops where
 // its state is the last pass's again, and the paint commands (with their
@@ -89,7 +89,7 @@ try {
     check('one frame per keystroke', [short.builds, long.builds], [20, 20]);
     note(`Enter: ${short.enter.toFixed(1)} ms / ${long.enter.toFixed(1)} ms; Backspace joining two paragraphs: ${short.merge.toFixed(1)} ms / ${long.merge.toFixed(1)} ms`);
     note(`the last keystroke laid out ${long.laidOut} and collected the commands of ${long.collected} of ${long.blocks} blocks`);
-    check('the long document is long', long.pages > 400, true);
+    check('the long document is long', long.pages > 350, true);
     check('a keystroke at some 600 pages stays under 45 ms (0.1.6: 125 ms, 0.1.5: 330 ms)', long.median < 45, true);
     check('and under 25 ms at 75 pages', short.median < 25, true);
     check('a keystroke lays out and collects a handful of blocks, not the document', [long.laidOut > 0 && long.laidOut < 60, long.collected > 0 && long.collected < 60, long.blocks > 5000], [true, true, true]);
