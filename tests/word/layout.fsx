@@ -1545,6 +1545,33 @@ check "a mark in a later section on a page it started starts no page"
 check "a mark in a later section on its first page starts a page"
     ((sectionPages [ Doc.Paragraph (hintLine 1); Doc.Paragraph (hintedPara "hinted" 2 false) ]) "hinted") 2
 
+// ---------------------------------------------------------------------------
+// Each line is as tall as its own text: a paragraph whose first word is set
+// large has one tall line, and the lines after it are those of the small text
+// (phpword-sample-11: an 18 pt run made all four lines 23.78 pt; Word and
+// LibreOffice make the others 12.4 pt). An exact line height stays the same on
+// every line; an at-least one is the least of each.
+// ---------------------------------------------------------------------------
+let mixedSizeText = "BIG " + String.concat " " [ for i in 1 .. 60 -> sprintf "w%02d" i ]
+let mixedSizePara (metadata: Doc.BlockMetadata) =
+    { paragraph "mixed-size" mixedSizeText with
+        Buffer = ofString mixedSizeText |> applyStyle 0 3 (fun style -> { style with FontSize = 32.0 })
+        Metadata = { metadata with SpacingAfter = Some 0.0; SpacingBefore = Some 0.0 } }
+let mixedLineHeights metadata =
+    let layout, _ = layoutParagraphAtWithRange settings measureText (rangeMeasurerFromTextMeasurer measureText) 120.0 0.0 0.0 (mixedSizePara metadata) Map.empty
+    layout.Lines |> List.map (fun line -> System.Math.Round(line.Height, 2))
+let smallLineHeight =
+    let layout, _ = layoutParagraphAtWithRange settings measureText (rangeMeasurerFromTextMeasurer measureText) 120.0 0.0 0.0 { paragraph "small" "w01 w02" with Metadata = { Doc.defaultMetadata with SpacingAfter = Some 0.0; SpacingBefore = Some 0.0 } } Map.empty
+    System.Math.Round(layout.Lines.Head.Height, 2)
+let autoHeights = mixedLineHeights Doc.defaultMetadata
+check "the large word's line is taller than the small text's" (autoHeights.Head > smallLineHeight) true
+check "the lines after it are the small text's" (autoHeights.Tail |> List.forall (fun height -> height = smallLineHeight)) true
+let exactHeights = mixedLineHeights { Doc.defaultMetadata with LineSpacing = Some (30.0 / 32.0); LineSpacingRule = Some "exact"; ParagraphMarkFontSize = Some 32.0 }
+check "an exact line height is every line's" (exactHeights |> List.distinct) [ 30.0 ]
+let atLeastHeights = mixedLineHeights { Doc.defaultMetadata with LineSpacing = Some (20.0 / 32.0); LineSpacingRule = Some "atLeast"; ParagraphMarkFontSize = Some 32.0 }
+check "an at-least line height is each line's least" (atLeastHeights.Tail |> List.distinct) [ max 20.0 smallLineHeight ]
+check "... and the large word's line is its own" (atLeastHeights.Head) autoHeights.Head
+
 printfn ""
 printfn "Word layout tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
