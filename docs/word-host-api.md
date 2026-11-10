@@ -154,6 +154,18 @@ any of them in place (a header's box on that page; what is typed is the
 header's on every page), and
 `setCurrentTextBoxStyle` sets its place, size, fill and border.
 
+**Groups and drawing canvases.** A group (`wpg:wgp`, a VML `v:group`) or a
+drawing canvas (`wpc:wpc`) is one shape of `getShapeRects`, with
+`IsGroup: true` and its shapes in `Children` (Id, X, Y, Width, Height in the
+same pixels, where the group's coordinates put them at the group's size
+now, before its turn; Rotation, FlipH / FlipV, IsGroup, Text, Children of
+their own). The group is selected, moved (`moveShape`) and resized
+(`resizeShape`) as a shape is - its shapes scale with it, a canvas's stay
+where they are - and saved as the element it was read from with its place
+and size changed in it; whatever else of it changes is not saved, and its
+shapes are not shapes of their own: `enterTextBox` refuses a group, and the
+text of its shapes is drawn, not edited.
+
 The pointer reaches them all (0.1.17). A click in a box of the body edits
 its text. A double click on a page's header or footer edits it in place -
 and where a text box of that header is under the pointer, the box's text,
@@ -451,7 +463,7 @@ Ctrl+C / Ctrl+X do.
 | `whenLayoutComplete(editor): Promise<object>` | A promise that resolves (with the document size, see getDocumentSize) once the whole document is laid out; at once when it is. |
 | `completeLayout(editor): void` | Lay out the rest of the document now (what getPageCount does, without the count). |
 | `getRenderStats(editor)` | Counters of the editor's renderer, for hosts and checks: { FrameBuilds (times a paint frame was built: the document was laid out and its paint commands collected - a caret move builds none), LaidOutBlocks / CollectedBlocks (of the last frame built: the top-level blocks that were laid out / whose paint commands were collected ... |
-| `getShapeRects(editor): object[]` | The shapes (text boxes) where they are painted: Id, X (from the left edge of the shape's page), Y (down the document), Width, Height - layout pixels, as getLayoutLines -, Rotation, FlipH / FlipV (the shape mirrored across / upside down; its text is not), BehindText, RelativeHeight, Wrap, AnchorBlockId and Text; Story says where the shape is: "body", or "header" / "footer" for a text box of a header or ... |
+| `getShapeRects(editor): object[]` | The shapes (text boxes) where they are painted: Id, X (from the left edge of the shape's page), Y (down the document), Width, Height - layout pixels, as getLayoutLines -, Rotation, FlipH / FlipV (the shape mirrored across / upside down; its text is not), BehindText, RelativeHeight, Wrap, AnchorBlockId and Text; Story says where the shape is: "body", or "header" / "footer" for a text box of a header or ... A group or a drawing canvas: IsGroup true, its shapes in Children (see *Groups and drawing canvases*). |
 | `getImageHitTest(editor, x: number, y: number)` | The picture under a point in layout coordinates: { BlockId, Offset, X, Y, Width, Height }, or null. |
 | `getPageFrames(editor)` | The page frames as shown on the canvas, top to bottom: each page's position and size (sections can differ in page size and orientation) and margins. |
 | `getPageCount(editor)` | The number of pages. Reads the rest of a document that is still being read and lays the whole document out. |
@@ -624,7 +636,7 @@ Ctrl+C / Ctrl+X do.
 | `deleteShape(editor, id: string): boolean` | Take a shape of the body, a header or a footer out of the document, its text with it. |
 | `getShapeHandles(editor, id: string): object[]` | The eight handles of a shape of the body, a header or a footer, for a host that shows it selected and lets it be dragged: Name ("nw", "n", "ne", "e", "se", "s", "sw", "w"), X, Y, Width, Height and Cursor. |
 | `hitTestShapeHandle(editor, id: string, x: number, y: number): string` | What of a shape of the body is at a point (layout pixels, as getShapeHandles): the Name of the handle there, "move" inside the shape where no handle is, "" outside it. |
-| `enterTextBox(editor, id: string): boolean` | Edit the text of a text box of the body in place (`id`: as getShapeRects gives it): the caret goes to the start of its text, and typing, selecting, formatting and undo work there as in the body. |
+| `enterTextBox(editor, id: string): boolean` | Edit the text of a text box of the body in place (`id`: as getShapeRects gives it): the caret goes to the start of its text, and typing, selecting, formatting and undo work there as in the body. False for a group or a drawing canvas. |
 | `exitTextBox(editor): boolean` | Back to the body from a text box that is edited in place. |
 | `insertCaption(editor, label: string, captionText: string)` | Insert a caption paragraph (label, a SEQ number, text) after the caret's paragraph. |
 | `insertCrossReferenceToLatestCaption(editor, label: string)` | Insert a reference field to the last caption with the given label. |
