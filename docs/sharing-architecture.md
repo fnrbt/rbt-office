@@ -296,7 +296,7 @@ Each step is shippable on its own:
 
 Sizes are rough: S under ~300 lines changed, M ~300-1,500, L ~1,500-4,000, XL more.
 
-1. **One cell look for both sheet painters (S-M).**
+1. **One cell look for both sheet painters (S-M).** Done on branch `sheet/shared-cell-look` (2026-11-11): `Paint.cellLook` / `CellLook`, the shared edges `Layout.edgeBetween` / `edgeRuns` / `tableEntryAt`; `drawCell` maps the look to CSS; xlsx-browser `cell-look-shared` compares every cell of its fixture with the look.
    - Extract the per-cell resolved look into `Paint.fs`: fill, font, colour, horizontal alignment including `generalAlign`, vertical alignment, wrap, rotation, indent, the table look, CF fill / font.
    - Make `drawCell` read it and map it to CSS.
    - This fixes General numbers drawn at the left (an alpha item) and removes the legacy `#4472C4` table look branch.
