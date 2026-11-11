@@ -1,6 +1,6 @@
 # Redbat adoption harness
 
-The scripts used to check a new `@rbt/office` release inside the host application redbat: regression suites, save-fidelity tables, performance runs and repro scripts for package bugs found there. Last full run: 0.1.29, 1104/1104 (the long document is 514 pages since 0.1.29 lays notes out at their real height: `LONG_PAGES` in `lib.mjs`).
+The scripts used to check a new `@rbt/office` release inside the host application redbat: regression suites, save-fidelity tables, performance runs and repro scripts for package bugs found there. Last full run: 0.1.30, 1101/1101 (the long document is 514 pages since 0.1.29 lays notes out at their real height: `LONG_PAGES` in `lib.mjs`).
 
 This is a snapshot of a working directory, not a polished tool. Paths are hard-coded:
 
